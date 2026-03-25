@@ -11,6 +11,9 @@
     "start:replay": "node dist/replay/cli.js",
     "dev": "tsc --watch",
     "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "migrate": "node dist/persistence/run-migrations.js",
     "plugin": "node dist/plugin/index.js"
   },
@@ -24,8 +27,8 @@
     "express": "^4.21.1",
     "node-fetch": "^2.7.0",
     "uuid": "^11.0.5",
-    "ws": "^8.18.0",
-    "winston": "^3.17.0"
+    "winston": "^3.17.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
@@ -34,7 +37,8 @@
     "@types/node-fetch": "^2.6.12",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.13",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.1"
   },
   "engines": {
     "node": ">=20.0.0"
