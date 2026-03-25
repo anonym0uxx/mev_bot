@@ -3,7 +3,7 @@
   "$id": "pump-quant-config",
   "title": "Pump Quant Bot Configuration",
   "type": "object",
-  "required": ["regime", "manipulation", "friction", "entry", "exit", "risk", "execution", "fees", "llm", "features", "learning", "health"],
+  "required": ["regime", "manipulation", "friction", "entry", "exit", "risk", "execution", "fees", "llm", "corecast", "features", "learning", "health"],
   "additionalProperties": false,
   "properties": {
     "regime": {
@@ -141,7 +141,7 @@
       "required": ["default_route_mode", "default_slippage_bps", "default_priority_fee_sol", "route_promotion", "route_health"],
       "additionalProperties": false,
       "properties": {
-        "default_route_mode": { "type": "string", "enum": ["local", "lightning", "jito"] },
+        "default_route_mode": { "type": "string", "enum": ["local", "lightning", "private", "jito"] },
         "default_slippage_bps": { "type": "integer", "minimum": 0, "maximum": 10000 },
         "default_priority_fee_sol": { "type": "number", "minimum": 0 },
         "skip_preflight": { "type": "boolean", "default": false },
@@ -171,6 +171,29 @@
             "congestion_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
             "freshness_max_s": { "type": "number", "minimum": 0 }
           }
+        },
+        "private_route": {
+          "type": "object",
+          "required": ["enabled"],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "description": "Enable Jito-protected private route" },
+            "jito_block_engine_url": { "type": "string" },
+            "jito_tip_lamports": { "type": "integer", "minimum": 0 },
+            "min_edge_for_private": { "type": "number", "minimum": 0 },
+            "max_tip_pct": { "type": "number", "minimum": 0, "maximum": 1 },
+            "exit_slippage_trigger_pct": { "type": "number", "minimum": 0, "maximum": 1, "description": "Use private route for exits when slippage exceeds this" }
+          }
+        },
+        "bundle_route": {
+          "type": "object",
+          "required": ["enabled"],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "description": "Enable Jito bundle route (multi-tx atomic only)" },
+            "max_bundle_size": { "type": "integer", "minimum": 1, "maximum": 5 },
+            "min_edge_for_bundle": { "type": "number", "minimum": 0 }
+          }
         }
       }
     },
@@ -198,11 +221,17 @@
     },
     "llm": {
       "type": "object",
-      "required": ["provider", "model"],
+      "required": ["provider", "default_model"],
       "additionalProperties": false,
       "properties": {
         "provider": { "type": "string", "const": "anthropic" },
-        "model": { "type": "string", "const": "anthropic/claude-opus-4-6" },
+        "default_model": { "type": "string", "description": "Default model for all model-invoked tasks" },
+        "escalation_model": { "type": "string", "description": "Model for hard supervisory tasks" },
+        "escalation_task_classes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Task classes that use escalation_model"
+        },
         "supervisory_thinking_budget": {
           "type": "object",
           "additionalProperties": false,
@@ -210,10 +239,29 @@
             "candidate_adjudication": { "type": "string", "enum": ["low", "medium", "high"], "default": "medium" },
             "daily_analysis": { "type": "string", "enum": ["low", "medium", "high"], "default": "high" },
             "operator_summary": { "type": "string", "enum": ["low", "medium", "high"], "default": "low" },
-            "weekly_review": { "type": "string", "enum": ["low", "medium", "high"], "default": "high" }
+            "weekly_review": { "type": "string", "enum": ["low", "medium", "high"], "default": "high" },
+            "complex_attribution": { "type": "string", "enum": ["low", "medium", "high"], "default": "high" },
+            "policy_improvement": { "type": "string", "enum": ["low", "medium", "high"], "default": "high" }
           }
         },
         "supervisory_timeout_ms": { "type": "integer", "minimum": 0, "default": 15000 }
+      }
+    },
+    "corecast": {
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Enable CoreCast as primary fast-lane feed" },
+        "endpoint": { "type": "string", "description": "CoreCast streaming endpoint URL" },
+        "api_key_env": { "type": "string", "description": "Environment variable name for API key" },
+        "subscribe_new_tokens": { "type": "boolean", "default": true },
+        "subscribe_trades": { "type": "boolean", "default": true },
+        "subscribe_migrations": { "type": "boolean", "default": true },
+        "reconnect_base_ms": { "type": "integer", "minimum": 100, "default": 1000 },
+        "reconnect_max_ms": { "type": "integer", "minimum": 1000, "default": 30000 },
+        "stale_threshold_ms": { "type": "integer", "minimum": 1000, "default": 5000 },
+        "primary_for_market_data": { "type": "boolean", "default": true, "description": "When true, PumpPortal becomes fallback-only for market data" }
       }
     },
     "features": {

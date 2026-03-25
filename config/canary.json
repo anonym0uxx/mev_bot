@@ -1,7 +1,7 @@
 {
   "regime": {
     "early_curve_max_progress": 0.15,
-    "mid_curve_max_progress": 0.50,
+    "mid_curve_max_progress": 0.5,
     "late_curve_max_progress": 0.85,
     "graduation_boundary_start": 0.85,
     "graduation_boundary_end": 1.0,
@@ -49,11 +49,11 @@
     "ev_wait_horizon_s": 5,
     "ev_enter_horizon_s": 5,
     "probability_weights": {
-      "flow_momentum": 0.30,
+      "flow_momentum": 0.3,
       "breadth_topology": 0.25,
-      "creator_wallet_prior": 0.10,
-      "friction_execution": 0.10,
-      "manipulation_distribution": 0.20,
+      "creator_wallet_prior": 0.1,
+      "friction_execution": 0.1,
+      "manipulation_distribution": 0.2,
       "multimodal_junk": 0.05
     },
     "calibration": {
@@ -76,7 +76,7 @@
   "risk": {
     "bankroll_sol": 0.5,
     "risk_per_trade_pct": 0.01,
-    "max_alloc_pct": 0.10,
+    "max_alloc_pct": 0.1,
     "max_positions": 1,
     "quick_spend_sol": 0.01,
     "raw_stop_pct": 0.08,
@@ -95,7 +95,7 @@
       "enabled": false,
       "opportunity_half_life_threshold_s": 3,
       "min_edge_for_lightning": 0.05,
-      "min_edge_for_jito": 0.10,
+      "min_edge_for_jito": 0.1,
       "demotion_cooldown_s": 60
     },
     "route_health": {
@@ -105,13 +105,26 @@
       "retry_rate_fail": 0.5,
       "congestion_threshold": 0.7,
       "freshness_max_s": 60
+    },
+    "private_route": {
+      "enabled": false,
+      "jito_block_engine_url": "https://mainnet.block-engine.jito.wtf",
+      "jito_tip_lamports": 10000,
+      "min_edge_for_private": 0.05,
+      "max_tip_pct": 0.01,
+      "exit_slippage_trigger_pct": 0.1
+    },
+    "bundle_route": {
+      "enabled": false,
+      "max_bundle_size": 3,
+      "min_edge_for_bundle": 0.1
     }
   },
   "fees": {
     "pump_fee_pct": 0.01,
     "pump_swap_fee_pct": 0.0025,
     "pump_portal_fee_pct": 0.005,
-    "solana_base_fee_sol": 0.000005,
+    "solana_base_fee_sol": 5e-06,
     "priority_fee_default_sol": 0.0001,
     "regime_fee_overrides": {
       "POST_MIGRATION": {
@@ -122,39 +135,48 @@
   },
   "llm": {
     "provider": "anthropic",
-    "model": "anthropic/claude-opus-4-6",
+    "default_model": "anthropic/claude-sonnet-4-6",
+    "escalation_model": "anthropic/claude-opus-4-6",
+    "escalation_task_classes": [],
     "supervisory_thinking_budget": {
-      "candidate_adjudication": "medium",
-      "daily_analysis": "high",
+      "candidate_adjudication": "low",
+      "daily_analysis": "medium",
       "operator_summary": "low",
-      "weekly_review": "high"
+      "weekly_review": "medium",
+      "complex_attribution": "medium",
+      "policy_improvement": "medium"
     },
-    "supervisory_timeout_ms": 15000
+    "supervisory_timeout_ms": 10000
   },
   "features": {
-    "windows_s": [1, 5, 15, 30],
+    "windows_s": [
+      1,
+      5,
+      15,
+      30
+    ],
     "qualified_wallet_prior": {
       "enabled": true,
       "max_positive_boost": 0.08,
-      "max_negative_penalty": 0.30,
+      "max_negative_penalty": 0.3,
       "min_core_ev_for_boost": 0.008,
       "creator_history_weight": 0.15,
-      "qualified_wallet_weight": 0.10,
-      "top_trader_weight": 0.10,
-      "first100_persistence_weight": 0.10,
+      "qualified_wallet_weight": 0.1,
+      "top_trader_weight": 0.1,
+      "first100_persistence_weight": 0.1,
       "dispersion_quality_weight": 0.05,
       "distribution_penalty_weight": 0.25
     },
     "multimodal_junk_filter": {
       "enabled": true,
       "async_timeout_ms": 5000,
-      "exclusion_threshold": 0.20,
+      "exclusion_threshold": 0.2,
       "tiebreak_weight": 0.05,
-      "ticker_clarity_weight": 0.20,
+      "ticker_clarity_weight": 0.2,
       "name_clarity_weight": 0.15,
       "logo_presence_weight": 0.15,
       "logo_quality_weight": 0.15,
-      "metadata_spam_weight": 0.20,
+      "metadata_spam_weight": 0.2,
       "comment_entropy_weight": 0.15
     }
   },
@@ -162,7 +184,13 @@
     "enabled": false,
     "hourly_micro_calibration": {
       "enabled": true,
-      "targets": ["slippage", "landing_risk", "route_health", "feed_latency", "friction_priors"]
+      "targets": [
+        "slippage",
+        "landing_risk",
+        "route_health",
+        "feed_latency",
+        "friction_priors"
+      ]
     },
     "daily_replay": {
       "enabled": true,
@@ -218,5 +246,17 @@
       "health_non_material",
       "low_level_metrics"
     ]
+  },
+  "corecast": {
+    "enabled": false,
+    "endpoint": "https://streaming.bitquery.io/graphql",
+    "api_key_env": "BITQUERY_API_KEY",
+    "subscribe_new_tokens": true,
+    "subscribe_trades": true,
+    "subscribe_migrations": true,
+    "reconnect_base_ms": 1000,
+    "reconnect_max_ms": 30000,
+    "stale_threshold_ms": 5000,
+    "primary_for_market_data": true
   }
 }

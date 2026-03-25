@@ -126,6 +126,8 @@ export interface ExecutionConfig {
   max_retries: number;
   route_promotion: RoutePromotionConfig;
   route_health: RouteHealthConfig;
+  private_route: PrivateRouteConfig;
+  bundle_route: BundleRouteConfig;
 }
 
 export interface RegimeFeeOverride {
@@ -144,14 +146,61 @@ export interface FeesConfig {
 
 export interface LLMConfig {
   provider: 'anthropic';
-  model: 'anthropic/claude-opus-4-6';
+  default_model: string; // anthropic/claude-sonnet-4-6
+  escalation_model: string; // anthropic/claude-opus-4-6
+  /** Task classes that use escalation_model instead of default_model */
+  escalation_task_classes: string[];
   supervisory_thinking_budget: {
     candidate_adjudication: 'low' | 'medium' | 'high';
     daily_analysis: 'low' | 'medium' | 'high';
     operator_summary: 'low' | 'medium' | 'high';
     weekly_review: 'low' | 'medium' | 'high';
+    complex_attribution: 'low' | 'medium' | 'high';
+    policy_improvement: 'low' | 'medium' | 'high';
   };
   supervisory_timeout_ms: number;
+}
+
+/** CoreCast gRPC feed configuration (primary fast-lane) */
+export interface CoreCastConfig {
+  enabled: boolean;
+  endpoint: string; // gRPC endpoint
+  api_key_env: string; // env var name for API key
+  /** Subscriptions for Solana/Pump.fun */
+  subscribe_new_tokens: boolean;
+  subscribe_trades: boolean;
+  subscribe_migrations: boolean;
+  /** Reconnect policy */
+  reconnect_base_ms: number;
+  reconnect_max_ms: number;
+  /** Staleness threshold for fast-lane health */
+  stale_threshold_ms: number;
+  /** When true, PumpPortal becomes fallback-only for market data */
+  primary_for_market_data: boolean;
+}
+
+/** MEV-aware route class */
+export type RouteClass = 'LOCAL' | 'LIGHTNING' | 'PRIVATE' | 'BUNDLE';
+
+/** Jito/private route configuration */
+export interface PrivateRouteConfig {
+  enabled: boolean;
+  jito_block_engine_url: string;
+  jito_tip_lamports: number;
+  /** Minimum expected edge improvement (SOL) to justify private submission */
+  min_edge_for_private: number;
+  /** Maximum tip as fraction of trade size */
+  max_tip_pct: number;
+  /** Use private for exits when slippage > threshold */
+  exit_slippage_trigger_pct: number;
+}
+
+/** Bundle route configuration */
+export interface BundleRouteConfig {
+  enabled: boolean;
+  /** Only for true multi-tx atomic requirements */
+  max_bundle_size: number;
+  min_edge_for_bundle: number;
 }
 
 export interface QualifiedWalletPriorConfig {
@@ -257,13 +306,14 @@ export interface PumpQuantConfig {
   execution: ExecutionConfig;
   fees: FeesConfig;
   llm: LLMConfig;
+  corecast: CoreCastConfig;
   features: FeaturesConfig;
   learning: LearningConfig;
   health: HealthConfig;
   alerts: AlertsConfig;
 }
 
-export type RouteMode = 'local' | 'lightning' | 'jito';
+export type RouteMode = 'local' | 'lightning' | 'private' | 'jito';
 
 /** Versioned config snapshot for audit trail */
 export interface ConfigVersion {

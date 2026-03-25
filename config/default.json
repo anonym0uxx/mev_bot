@@ -105,6 +105,19 @@
       "retry_rate_fail": 0.5,
       "congestion_threshold": 0.7,
       "freshness_max_s": 60
+    },
+    "private_route": {
+      "enabled": false,
+      "jito_block_engine_url": "https://mainnet.block-engine.jito.wtf",
+      "jito_tip_lamports": 10000,
+      "min_edge_for_private": 0.03,
+      "max_tip_pct": 0.01,
+      "exit_slippage_trigger_pct": 0.10
+    },
+    "bundle_route": {
+      "enabled": false,
+      "max_bundle_size": 3,
+      "min_edge_for_bundle": 0.10
     }
   },
   "fees": {
@@ -122,14 +135,36 @@
   },
   "llm": {
     "provider": "anthropic",
-    "model": "anthropic/claude-opus-4-6",
+    "default_model": "anthropic/claude-sonnet-4-6",
+    "escalation_model": "anthropic/claude-opus-4-6",
+    "escalation_task_classes": [
+      "candidate_adjudication_ambiguous",
+      "daily_challenger_generation",
+      "weekly_strategic_review",
+      "complex_attribution_synthesis",
+      "policy_improvement_proposals"
+    ],
     "supervisory_thinking_budget": {
       "candidate_adjudication": "medium",
       "daily_analysis": "high",
       "operator_summary": "low",
-      "weekly_review": "high"
+      "weekly_review": "high",
+      "complex_attribution": "high",
+      "policy_improvement": "high"
     },
     "supervisory_timeout_ms": 15000
+  },
+  "corecast": {
+    "enabled": false,
+    "endpoint": "https://streaming.bitquery.io/graphql",
+    "api_key_env": "BITQUERY_API_KEY",
+    "subscribe_new_tokens": true,
+    "subscribe_trades": true,
+    "subscribe_migrations": true,
+    "reconnect_base_ms": 1000,
+    "reconnect_max_ms": 30000,
+    "stale_threshold_ms": 5000,
+    "primary_for_market_data": true
   },
   "features": {
     "windows_s": [1, 5, 15, 30],

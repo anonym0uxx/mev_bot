@@ -24,6 +24,7 @@ import { nowMs, ageS } from '../utils/time';
 import { getConfigManager, getConfig, getConfigVersion } from '../config/loader';
 import { getDatabase, PumpQuantDB } from '../persistence/database';
 import { PumpPortalClient } from '../feed/pump-portal';
+import { CoreCastClient } from '../feed/corecast';
 import { BitqueryClient } from '../feed/bitquery';
 import { classifyRegime, computeBondingCurveProgress, isTradeableRegime, detectMayhem, detectTokenizedAgent } from '../regime/classifier';
 import { FeatureEngine } from '../features/engine';
@@ -56,6 +57,7 @@ class StrategyDaemon {
   private db: PumpQuantDB;
   private configManager = getConfigManager();
   private feed: PumpPortalClient;
+  private corecast: CoreCastClient | null = null;
   private bitquery: BitqueryClient;
   private featureEngine: FeatureEngine;
   private stateMachine: TokenStateMachine;
@@ -93,6 +95,11 @@ class StrategyDaemon {
     // Initialize subsystems
     const paper = isPaperMode();
     this.feed = new PumpPortalClient();
+    // CoreCast: primary fast-lane when enabled
+    if (config.corecast?.enabled) {
+      this.corecast = new CoreCastClient(config.corecast);
+      log.info('CoreCast enabled — primary fast-lane feed');
+    }
     this.bitquery = new BitqueryClient();
     this.featureEngine = new FeatureEngine(config);
     this.stateMachine = new TokenStateMachine(this.db, config);
@@ -112,16 +119,39 @@ class StrategyDaemon {
     // Wire up feed event handlers
     this.setupFeedHandlers();
 
+    // Wire up CoreCast handlers if enabled (primary fast-lane)
+    if (this.corecast) {
+      this.setupCoreCastHandlers();
+    }
+
     // Wire up state machine event handlers
     this.setupStateMachineHandlers();
 
-    // Connect to PumpPortal
+    // Connect to CoreCast first (primary), then PumpPortal (execution + fallback)
+    if (this.corecast) {
+      try {
+        await this.corecast.connect();
+        this.healthMonitor.recordUpdate('market_feed');
+        log.info('CoreCast primary feed connected');
+      } catch (err) {
+        log.warn(`CoreCast failed, falling back to PumpPortal: ${(err as Error).message}`);
+      }
+    }
+
+    // Connect to PumpPortal (always needed for execution; also fallback market data)
     try {
       await this.feed.connect();
-      this.healthMonitor.recordUpdate('market_feed');
+      if (!this.corecast?.connected) {
+        this.healthMonitor.recordUpdate('market_feed');
+        log.info('PumpPortal active as primary feed (CoreCast unavailable)');
+      } else {
+        log.info('PumpPortal connected (execution + supplemental context)');
+      }
     } catch (err) {
       log.error(`Failed to connect to PumpPortal: ${(err as Error).message}`);
-      this.healthMonitor.pause('Feed connection failed');
+      if (!this.corecast?.connected) {
+        this.healthMonitor.pause('All feeds failed');
+      }
     }
 
     // Start health check loop
@@ -149,6 +179,7 @@ class StrategyDaemon {
   /** Stop the daemon */
   async stop(): Promise<void> {
     log.info('Stopping strategy daemon...');
+    if (this.corecast) this.corecast.disconnect();
     this.feed.disconnect();
     this.learningJobs.stop();
     if (this.healthCheckInterval) clearInterval(this.healthCheckInterval);
@@ -160,23 +191,26 @@ class StrategyDaemon {
   // ====== FEED HANDLERS ======
 
   private setupFeedHandlers(): void {
-    // New token creation
+    // New token creation — only process from PumpPortal when CoreCast is not primary
     this.feed.on('newToken', (event: NewTokenEvent) => {
+      if (this.corecast?.connected) return; // CoreCast is primary
       this.handleNewToken(event);
     });
 
-    // Token trade
+    // Token trade — only process from PumpPortal when CoreCast is not primary
     let tradeCount = 0;
     this.feed.on('tokenTrade', (event: TokenTradeEvent) => {
+      if (this.corecast?.connected) return; // CoreCast is primary
       tradeCount++;
       if (tradeCount % 100 === 1) {
-        log.info(`Trade events received: ${tradeCount} (latest: ${event.mint.slice(0,8)} ${event.txType} ${event.solAmount?.toFixed(4)} SOL)`);
+        log.info(`PumpPortal trades (fallback): ${tradeCount} (latest: ${event.mint.slice(0,8)} ${event.txType} ${event.solAmount?.toFixed(4)} SOL)`);
       }
       this.handleTokenTrade(event);
     });
 
-    // Migration
+    // Migration — only from PumpPortal when CoreCast is not primary
     this.feed.on('migration', (event: MigrationEvent) => {
+      if (this.corecast?.connected) return;
       this.handleMigration(event);
     });
 
@@ -192,6 +226,51 @@ class StrategyDaemon {
     // Prevent unhandled 'error' event from crashing the process
     this.feed.on('error', (err: Error) => {
       log.warn(`Feed error (non-fatal, will reconnect): ${err.message}`);
+    });
+  }
+
+  // ====== CORECAST HANDLERS (PRIMARY FAST-LANE) ======
+
+  private setupCoreCastHandlers(): void {
+    if (!this.corecast) return;
+
+    // CoreCast new token → same handler as PumpPortal
+    this.corecast.on('newToken', (event: NewTokenEvent) => {
+      this.handleNewToken(event);
+    });
+
+    // CoreCast trade → same handler, but marks source
+    let ccTradeCount = 0;
+    this.corecast.on('tokenTrade', (event: TokenTradeEvent) => {
+      ccTradeCount++;
+      if (ccTradeCount % 100 === 1) {
+        log.info(`CoreCast trades: ${ccTradeCount} (latest: ${event.mint.slice(0,8)} ${event.txType})`);
+      }
+      this.handleTokenTrade(event);
+    });
+
+    // CoreCast migration
+    this.corecast.on('migration', (event: MigrationEvent) => {
+      this.handleMigration(event);
+    });
+
+    this.corecast.on('connected', () => {
+      this.healthMonitor.recordUpdate('market_feed');
+      log.info('CoreCast fast-lane connected');
+    });
+
+    this.corecast.on('disconnected', (reason: string) => {
+      log.warn(`CoreCast disconnected: ${reason}`);
+      // PumpPortal will pick up as fallback
+      if (this.feed.connected) {
+        log.info('PumpPortal active as fallback feed');
+      } else {
+        this.alertSystem.emitStaleFeed('market_feed', 0);
+      }
+    });
+
+    this.corecast.on('error', (err: Error) => {
+      log.warn(`CoreCast error (non-fatal): ${err.message}`);
     });
   }
 
@@ -242,8 +321,9 @@ class StrategyDaemon {
     // Initialize feature tracking
     this.featureEngine.initToken(event.mint, event.traderPublicKey);
 
-    // Subscribe to token trades
+    // Subscribe to token trades on both feeds
     this.feed.subscribeTokenTrades([event.mint]);
+    if (this.corecast) this.corecast.watchMints([event.mint]);
 
     // Start async metadata fetch (non-blocking)
     fetchTokenMetadata(event.mint, event.uri, event.symbol, event.name)
@@ -319,6 +399,7 @@ class StrategyDaemon {
     this.stateMachine.transitionToBan(event.mint, 'Token migrated — post-migration excluded');
     this.featureEngine.removeToken(event.mint);
     this.feed.unsubscribeTokenTrades([event.mint]);
+    if (this.corecast) this.corecast.unwatchMints([event.mint]);
   }
 
   // ====== STATE MACHINE HANDLERS ======
@@ -332,6 +413,7 @@ class StrategyDaemon {
       // Cleanup resources for banned tokens
       this.featureEngine.removeToken(mint);
       this.feed.unsubscribeTokenTrades([mint]);
+      if (this.corecast) this.corecast.unwatchMints([mint]);
 
       // Force exit if we have a position
       const position = this.db.getPositionByMint(mint);
@@ -493,6 +575,7 @@ class StrategyDaemon {
         this.stateMachine.cleanup(mint);
         this.featureEngine.removeToken(mint);
         this.feed.unsubscribeTokenTrades([mint]);
+        if (this.corecast) this.corecast.unwatchMints([mint]);
       }
     }
   }
@@ -750,10 +833,23 @@ class StrategyDaemon {
 
   private runHealthCheck(): void {
     const health = this.healthMonitor.check();
+    const config = this.configManager.getConfig();
 
-    // Check feed staleness
-    if (!this.feed.connected || ageS(this.feed.lastMessageTime) > this.configManager.getConfig().health.market_feed_stale_s) {
-      this.healthMonitor.recordUpdate('market_feed'); // Will show as stale if actually stale
+    // Check feed staleness — CoreCast is primary when available
+    const primaryFeed = this.corecast?.connected ? this.corecast : this.feed;
+    const lastMsg = primaryFeed === this.corecast
+      ? (this.corecast?.lastMessageTime || 0)
+      : this.feed.lastMessageTime;
+
+    if (ageS(lastMsg) > config.health.market_feed_stale_s) {
+      // If CoreCast is stale but PumpPortal is fresh, that's still OK
+      if (this.corecast?.connected && this.feed.connected &&
+          ageS(this.feed.lastMessageTime) <= config.health.market_feed_stale_s) {
+        this.healthMonitor.recordUpdate('market_feed');
+      }
+      // Otherwise stale
+    } else {
+      this.healthMonitor.recordUpdate('market_feed');
     }
   }
 
