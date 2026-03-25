@@ -73,6 +73,7 @@ class StrategyDaemon {
   private forcedExitCooldowns: Map<string, number> = new Map();
   private lastExecutionAttempt: number = 0;
   private executionCooldownMs: number = 5000; // 5s between execution attempts
+  private analysisLocks: Set<string> = new Set(); // Prevent concurrent analysis of same mint
 
   constructor() {
     // Load config
@@ -455,6 +456,20 @@ class StrategyDaemon {
   private analyzeToken(packet: CandidatePacket, config: PumpQuantConfig, health: SystemHealth): void {
     const mint = packet.mint;
 
+    // Prevent concurrent analysis of the same mint (dedup across event-driven + interval ticks)
+    if (this.analysisLocks.has(mint)) return;
+    this.analysisLocks.add(mint);
+    // Release lock after analysis completes (sync code, but protects against re-entry)
+    try {
+      this._analyzeTokenInner(packet, config, health);
+    } finally {
+      this.analysisLocks.delete(mint);
+    }
+  }
+
+  private _analyzeTokenInner(packet: CandidatePacket, config: PumpQuantConfig, health: SystemHealth): void {
+    const mint = packet.mint;
+
     // Compute features
     const features = this.featureEngine.computeFeatures(mint);
     if (!features) return;
@@ -534,10 +549,13 @@ class StrategyDaemon {
         this.stateMachine.transitionToEnterReady(mint, entryDecision.reason);
         // Execute immediately on promotion (single shot)
         const now = nowMs();
-        if (health.tradingAllowed && !this.pendingExecutions.has(mint) && (now - this.lastExecutionAttempt) > this.executionCooldownMs) {
+        // Gate: check position count + pending executions to prevent double-entry
+        const openPositionCount = this.db.getOpenPositions().length;
+        const totalPending = openPositionCount + this.pendingExecutions.size;
+        if (health.tradingAllowed && !this.pendingExecutions.has(mint) && totalPending < config.risk.max_positions && (now - this.lastExecutionAttempt) > this.executionCooldownMs) {
           this.pendingExecutions.add(mint);
           this.lastExecutionAttempt = now;
-          log.info(`💰 EXECUTING ENTRY: ${packet.symbol || mint.slice(0,8)} size=${entryDecision.sizing!.position_size.toFixed(4)} SOL`);
+          log.info(`💰 EXECUTING ENTRY: ${packet.symbol || mint.slice(0,8)} size=${entryDecision.sizing!.position_size.toFixed(4)} SOL (positions: ${openPositionCount}+${this.pendingExecutions.size-1} pending)`);
           this.executeEntry(packet, entryDecision.sizing!, config).finally(() => {
             this.pendingExecutions.delete(mint);
           });

@@ -16,10 +16,10 @@
     "same_size_print_window_s": 15,
     "same_size_tolerance_pct": 0.02,
     "price_breadth_divergence_threshold": 0.25,
-    "concentration_worsening_threshold": 0.35,
+    "concentration_worsening_threshold": 0.5,
     "cluster_correlation_threshold": 0.75,
     "suspicious_burst_threshold": 0.5,
-    "slippage_shock_threshold": 0.4,
+    "slippage_shock_threshold": 0.6,
     "continuous_penalty_weights": {
       "creator_sell": 1.0,
       "same_size_prints": 0.35,
