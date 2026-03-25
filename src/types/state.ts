@@ -166,4 +166,6 @@ export enum ExitReason {
   OPERATOR = 'operator',
   /** System health degraded */
   SYSTEM_HEALTH = 'system_health',
+  /** Raw stop loss hit (-40%) */
+  STOP_LOSS = 'stop_loss',
 }

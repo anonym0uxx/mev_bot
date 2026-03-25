@@ -83,8 +83,8 @@ describe('config/canary.json', () => {
     fs.readFileSync(path.join(__dirname, '../../config/canary.json'), 'utf-8')
   );
 
-  it('has max_positions = 1', () => {
-    expect(config.risk.max_positions).toBe(1);
+  it('has max_positions = 5 (canary allows 5 concurrent per QUANT_STRATEGY)', () => {
+    expect(config.risk.max_positions).toBe(5);
   });
 
   it('has corecast section', () => {

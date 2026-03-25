@@ -129,8 +129,8 @@ describe('computeBondingCurveProgress', () => {
 });
 
 describe('isTradeableRegime', () => {
-  it('allows EARLY_CURVE', () => {
-    expect(isTradeableRegime(Regime.EARLY_CURVE)).toBe(true);
+  it('rejects EARLY_CURVE (too risky per QUANT_STRATEGY)', () => {
+    expect(isTradeableRegime(Regime.EARLY_CURVE)).toBe(false);
   });
   it('allows MID_CURVE', () => {
     expect(isTradeableRegime(Regime.MID_CURVE)).toBe(true);

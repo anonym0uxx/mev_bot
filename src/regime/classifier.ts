@@ -76,7 +76,9 @@ export function classifyRegime(input: RegimeInput, config: RegimeConfig): Regime
  * Check if a regime is tradeable (not excluded and not post-migration in initial build).
  */
 export function isTradeableRegime(regime: Regime): boolean {
-  return regime !== Regime.EXCLUDED && regime !== Regime.POST_MIGRATION;
+  // Per QUANT_STRATEGY.md: Only MID_CURVE and LATE_CURVE are tradeable.
+  // EARLY_CURVE has highest rug risk and no edge. GRADUATION is too competitive.
+  return regime === Regime.MID_CURVE || regime === Regime.LATE_CURVE;
 }
 
 /**

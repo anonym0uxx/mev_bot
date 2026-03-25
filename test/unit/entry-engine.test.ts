@@ -25,7 +25,7 @@ function makePacket(overrides: Partial<CandidatePacket> = {}): CandidatePacket {
     bonding_curve_key: 'BC111111111111111111111111111111111111111111',
     uri: '',
     state: TokenState.WATCH,
-    regime: Regime.EARLY_CURVE,
+    regime: Regime.MID_CURVE,
     v_tokens_in_curve: 800_000_000_000_000,
     v_sol_in_curve: 30,
     market_cap_sol: 5,
@@ -144,20 +144,20 @@ function makeProbabilities(overrides: any = {}) {
 }
 
 describe('evaluateEntry', () => {
-  it('rejects when creator has sold', () => {
+  it('rejects when creator has sold (MID_CURVE with creator sell)', () => {
     const features = makeFeatures({
       creator_wallet_prior: { creator_sell_flag: true },
     });
     const result = evaluateEntry(
-      makePacket(), makeProbabilities(), features, config, 0, 0, false
+      makePacket({ regime: Regime.MID_CURVE }), makeProbabilities(), features, config, 0, 0, false
     );
     expect(result.shouldEnter).toBe(false);
     expect(result.hardFilterRejection).toBe('creator_sold');
   });
 
-  it('rejects excluded regime', () => {
+  it('rejects excluded regime (EARLY_CURVE now excluded per QUANT_STRATEGY)', () => {
     const result = evaluateEntry(
-      makePacket({ regime: Regime.EXCLUDED }),
+      makePacket({ regime: Regime.EARLY_CURVE }),
       makeProbabilities(),
       makeFeatures(),
       config, 0, 0, false
@@ -168,7 +168,7 @@ describe('evaluateEntry', () => {
 
   it('rejects when max positions reached', () => {
     const result = evaluateEntry(
-      makePacket(),
+      makePacket({ regime: Regime.MID_CURVE }),
       makeProbabilities(),
       makeFeatures(),
       config, config.risk.max_positions, 0, false

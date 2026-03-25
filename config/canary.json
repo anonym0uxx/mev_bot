@@ -1,8 +1,8 @@
 {
   "regime": {
-    "early_curve_max_progress": 0.15,
+    "early_curve_max_progress": 0.1,
     "mid_curve_max_progress": 0.5,
-    "late_curve_max_progress": 0.85,
+    "late_curve_max_progress": 0.9,
     "graduation_boundary_start": 0.85,
     "graduation_boundary_end": 1.0,
     "max_token_age_s": 300,
@@ -16,7 +16,7 @@
     "same_size_print_window_s": 15,
     "same_size_tolerance_pct": 0.02,
     "price_breadth_divergence_threshold": 0.25,
-    "concentration_worsening_threshold": 0.5,
+    "concentration_worsening_threshold": 0.7,
     "cluster_correlation_threshold": 0.75,
     "suspicious_burst_threshold": 0.5,
     "slippage_shock_threshold": 0.6,
@@ -40,20 +40,20 @@
     "landing_degradation_lightning_pct": 0.005
   },
   "entry": {
-    "min_entry_edge": 0.002,
-    "observation_window_s": 8,
-    "min_breadth_for_entry": 0.4,
+    "min_entry_edge": 0.0005,
+    "observation_window_s": 3,
+    "min_breadth_for_entry": 0.3,
     "min_unique_buyers": 5,
     "max_concentration_top10": 0.65,
     "max_slippage_pct": 0.12,
     "ev_wait_horizon_s": 5,
-    "ev_enter_horizon_s": 5,
+    "ev_enter_horizon_s": 15,
     "probability_weights": {
       "flow_momentum": 0.3,
       "breadth_topology": 0.25,
-      "creator_wallet_prior": 0.1,
+      "creator_wallet_prior": 0.2,
       "friction_execution": 0.1,
-      "manipulation_distribution": 0.2,
+      "manipulation_distribution": 0.1,
       "multimodal_junk": 0.05
     },
     "calibration": {
@@ -69,20 +69,20 @@
     "retrace_tightening_slippage": 0.04,
     "retrace_tightening_hold_edge": 0.03,
     "retrace_tightening_time": 0.015,
-    "time_decay_start_s": 45,
-    "time_decay_pressure_per_s": 0.001,
+    "time_decay_start_s": 30,
+    "time_decay_pressure_per_s": 1e-05,
     "max_hold_time_s": 300
   },
   "risk": {
-    "bankroll_sol": 0.4,
-    "risk_per_trade_pct": 0.01,
+    "bankroll_sol": 0.35,
+    "risk_per_trade_pct": 0.02,
     "max_alloc_pct": 0.1,
-    "max_positions": 1,
+    "max_positions": 5,
     "quick_spend_sol": 0.01,
-    "raw_stop_pct": 0.08,
+    "raw_stop_pct": 0.4,
     "liquidity_cap_sol": 0.2,
     "slippage_cap_sol": 0.1,
-    "max_daily_loss_sol": 0.08
+    "max_daily_loss_sol": 0.05
   },
   "execution": {
     "default_route_mode": "local",

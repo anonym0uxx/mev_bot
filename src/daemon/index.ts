@@ -74,6 +74,10 @@ class StrategyDaemon {
   private lastExecutionAttempt: number = 0;
   private executionCooldownMs: number = 5000; // 5s between execution attempts
   private analysisLocks: Set<string> = new Set(); // Prevent concurrent analysis of same mint
+  // Circuit breaker state
+  private consecutiveLosses: number = 0;
+  private circuitBreakerPauseUntil: number = 0;
+  private entryEdgeMultiplier: number = 1.0; // Increased on L1, reset on win
 
   constructor() {
     // Load config
@@ -536,8 +540,11 @@ class StrategyDaemon {
       // Entry evaluation
       const currentPositionCount = this.db.getOpenPositionCount();
       const dailyLoss = this.db.getDailyPnl();
+      // Apply circuit breaker edge multiplier (L1: 1.5x edge required)
+      const effectiveMinEdge = (config.entry.min_entry_edge || 0.0005) * this.entryEdgeMultiplier;
       const entryDecision = evaluateEntry(
-        packet, probabilities, features, config,
+        packet, probabilities, features,
+        { ...config, entry: { ...config.entry, min_entry_edge: effectiveMinEdge } },
         currentPositionCount, dailyLoss, isPaperMode()
       );
 
@@ -556,7 +563,7 @@ class StrategyDaemon {
         const now = nowMs();
         const openPositionCount = this.db.getOpenPositions().length;
         const totalPending = openPositionCount + this.pendingExecutions.size;
-        if (health.tradingAllowed && totalPending < config.risk.max_positions && (now - this.lastExecutionAttempt) > this.executionCooldownMs) {
+        if (health.tradingAllowed && now > this.circuitBreakerPauseUntil && totalPending < config.risk.max_positions && (now - this.lastExecutionAttempt) > this.executionCooldownMs) {
           this.pendingExecutions.add(mint);
           this.lastExecutionAttempt = now;
           log.info(`💰 EXECUTING ENTRY: ${packet.symbol || mint.slice(0,8)} size=${entryDecision.sizing!.position_size.toFixed(4)} SOL (positions: ${openPositionCount}+${this.pendingExecutions.size} pending)`);
@@ -748,6 +755,9 @@ class StrategyDaemon {
         });
 
         this.stateMachine.transitionToExit(mint, reason);
+
+        // Circuit breaker tracking
+        this.updateCircuitBreaker(pnl);
 
         // Alert
         this.alertSystem.emitFullExit(mint, position.symbol, pnl, reason);
@@ -989,6 +999,43 @@ class StrategyDaemon {
         return this.configManager.applyPatch(patch as any, 'operator', 'Config updated via plugin');
       },
     };
+  }
+
+  // ====== CIRCUIT BREAKER ======
+
+  /**
+   * Update circuit breaker state after each closed trade.
+   * L1: 3 consecutive losses → require 1.5x edge for 10 min
+   * L2: 5 consecutive losses → pause new entries for 30 min
+   */
+  private updateCircuitBreaker(pnl: number): void {
+    if (pnl >= 0) {
+      // Win resets the counter
+      if (this.consecutiveLosses > 0) {
+        log.info(`Circuit breaker reset: ${this.consecutiveLosses} consecutive losses cleared by win`);
+      }
+      this.consecutiveLosses = 0;
+      this.entryEdgeMultiplier = 1.0;
+      return;
+    }
+
+    this.consecutiveLosses++;
+    log.warn(`Circuit breaker: ${this.consecutiveLosses} consecutive losses`);
+
+    if (this.consecutiveLosses >= 5) {
+      // L2: pause for 30 min
+      const pauseMs = 30 * 60 * 1000;
+      this.circuitBreakerPauseUntil = nowMs() + pauseMs;
+      this.entryEdgeMultiplier = 2.0;
+      log.warn(`🔴 Circuit breaker L2: 5 consecutive losses — pausing entries for 30 min`);
+      this.alertSystem.emit('circuit_breaker', `🔴 Circuit breaker L2: 5 consecutive losses. Pausing entries 30 min.`, {});
+    } else if (this.consecutiveLosses >= 3) {
+      // L1: tighten edge requirement for 10 min
+      this.entryEdgeMultiplier = 1.5;
+      const tightenUntil = new Date(nowMs() + 10 * 60 * 1000).toLocaleTimeString();
+      log.warn(`🟡 Circuit breaker L1: 3 consecutive losses — requiring 1.5x edge until ${tightenUntil}`);
+      this.alertSystem.emit('circuit_breaker', `🟡 Circuit breaker L1: 3 consecutive losses. 1.5x edge required until ${tightenUntil}.`, {});
+    }
   }
 }
 

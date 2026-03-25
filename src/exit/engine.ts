@@ -49,6 +49,17 @@ export function evaluateExit(
     };
   }
 
+  // ====== 10.2b RAW STOP LOSS — hard floor at -40% ======
+  if (checkRawStopLoss(position, config)) {
+    return {
+      shouldExit: true,
+      shouldReduce: false,
+      exitPct: 100,
+      reason: ExitReason.STOP_LOSS,
+      ev: computeExitEV(packet, position, probabilities, features, config),
+    };
+  }
+
   // ====== 10.3 NET MARKING ======
   const ev = computeExitEV(packet, position, probabilities, features, config);
 
@@ -173,6 +184,17 @@ function checkCatastrophicOverrides(
   }
 
   return null;
+}
+
+/**
+ * Check raw stop loss: exit if unrealized loss exceeds raw_stop_pct.
+ * This is a hard floor — EV-based exits should trigger first, but
+ * if not, this guarantees we never ride a position to zero.
+ */
+function checkRawStopLoss(position: Position, config: PumpQuantConfig): boolean {
+  if (position.entry_sol <= 0) return false;
+  const unrealizedPct = (position.current_value_sol - position.entry_sol) / position.entry_sol;
+  return unrealizedPct <= -(config.risk.raw_stop_pct);
 }
 
 /**
