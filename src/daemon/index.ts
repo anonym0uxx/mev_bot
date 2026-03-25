@@ -43,7 +43,7 @@ import { startApiServer, DaemonContext } from './api';
 import { isPaperMode } from '../paper/engine';
 import { PumpQuantConfig, RouteMode } from '../types/config';
 import {
-  TokenState, Regime, CandidatePacket, AnalysisTier,
+  TokenState, Regime, CandidatePacket, AnalysisTier, ExitReason,
 } from '../types/state';
 import {
   NewTokenEvent, TokenTradeEvent, MigrationEvent,
@@ -169,6 +169,12 @@ class StrategyDaemon {
     this.analysisInterval = setInterval(() => {
       this.runAnalysisLoop();
     }, 1000);
+
+    // Position scanner: evaluate exit for all LONG positions every 2s
+    // regardless of incoming trade events (safety net for quiet markets)
+    setInterval(() => {
+      this.scanOpenPositions();
+    }, 2000);
 
     // Start learning jobs
     this.learningJobs.start();
@@ -1005,6 +1011,58 @@ class StrategyDaemon {
         return this.configManager.applyPatch(patch as any, 'operator', 'Config updated via plugin');
       },
     };
+  }
+
+  // ====== POSITION SCANNER ======
+
+  /**
+   * Periodic safety scan: evaluate stop loss and time decay for all open positions.
+   * Triggers even when no trade events arrive (quiet tokens). Fires every 2s.
+   */
+  private scanOpenPositions(): void {
+    const config = this.configManager.getConfig() as PumpQuantConfig;
+    const openPositions = this.db.getOpenPositions();
+
+    for (const position of openPositions) {
+      const { mint } = position;
+      if (this.pendingExecutions.has(mint)) continue;
+
+      const packet = this.stateMachine.getPacket(mint);
+      if (!packet) continue;
+
+      // Ensure state is LONG (fix transition if buy confirmed but state not updated)
+      if (packet.state === TokenState.WATCH || packet.state === TokenState.ENTER_READY) {
+        log.warn(`Position scanner: fixing stale state for ${packet.symbol || mint.slice(0,8)} → transitioning to LONG`);
+        this.stateMachine.transitionToLong(mint, 'position_scanner_recovery');
+      }
+
+      // Raw stop loss check (deterministic, no features needed)
+      if (position.entry_sol > 0) {
+        const lossPct = (position.current_value_sol - position.entry_sol) / position.entry_sol;
+        if (lossPct <= -config.risk.raw_stop_pct) {
+          log.warn(`🛑 Position scanner stop loss: ${packet.symbol || mint.slice(0,8)} loss=${(lossPct*100).toFixed(1)}%`);
+          if (!this.pendingExecutions.has(mint)) {
+            this.pendingExecutions.add(mint);
+            this.executeExit(mint, position, 100, ExitReason.STOP_LOSS, config).finally(() => {
+              this.pendingExecutions.delete(mint);
+            });
+          }
+          continue;
+        }
+      }
+
+      // Hard time limit
+      const holdS = ageS(position.entry_timestamp);
+      if (holdS > config.exit.max_hold_time_s) {
+        log.warn(`⏰ Position scanner time exit: ${packet.symbol || mint.slice(0,8)} held ${holdS.toFixed(0)}s`);
+        if (!this.pendingExecutions.has(mint)) {
+          this.pendingExecutions.add(mint);
+          this.executeExit(mint, position, 100, ExitReason.TIME_DECAY, config).finally(() => {
+            this.pendingExecutions.delete(mint);
+          });
+        }
+      }
+    }
   }
 
   // ====== CIRCUIT BREAKER ======
