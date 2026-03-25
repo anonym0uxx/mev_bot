@@ -1,0 +1,275 @@
+/**
+ * @module types/config
+ * Configuration type definitions matching config/schema.json
+ */
+
+export interface RegimeConfig {
+  early_curve_max_progress: number;
+  mid_curve_max_progress: number;
+  late_curve_max_progress: number;
+  graduation_boundary_start: number;
+  graduation_boundary_end: number;
+  max_token_age_s: number;
+  exclude_mayhem: boolean;
+  exclude_tokenized_agent: boolean;
+}
+
+export interface ManipulationPenaltyWeights {
+  creator_sell: number;
+  same_size_prints: number;
+  price_breadth_divergence: number;
+  concentration_worsening: number;
+  cluster_correlation: number;
+  suspicious_burst: number;
+  slippage_shock: number;
+}
+
+export interface ManipulationConfig {
+  hard_threshold: number;
+  creator_sell_instant_exit: boolean;
+  same_size_print_min_count: number;
+  same_size_print_window_s: number;
+  same_size_tolerance_pct: number;
+  price_breadth_divergence_threshold: number;
+  concentration_worsening_threshold: number;
+  cluster_correlation_threshold: number;
+  suspicious_burst_threshold: number;
+  slippage_shock_threshold: number;
+  continuous_penalty_weights: ManipulationPenaltyWeights;
+}
+
+export interface FrictionConfig {
+  stale_threshold_s: number;
+  safety_buffer_pct: number;
+  slippage_estimation_method: 'empirical' | 'model' | 'hybrid';
+  default_entry_slippage_pct: number;
+  default_exit_slippage_pct: number;
+  landing_degradation_local_pct: number;
+  landing_degradation_lightning_pct: number;
+}
+
+export interface ProbabilityWeights {
+  flow_momentum: number;
+  breadth_topology: number;
+  creator_wallet_prior: number;
+  friction_execution: number;
+  manipulation_distribution: number;
+  multimodal_junk: number;
+}
+
+export interface CalibrationConfig {
+  continuation_bias: number;
+  reversal_bias: number;
+  manipulation_bias: number;
+}
+
+export interface EntryConfig {
+  min_entry_edge: number;
+  observation_window_s: number;
+  min_breadth_for_entry: number;
+  min_unique_buyers: number;
+  max_concentration_top10: number;
+  max_slippage_pct: number;
+  ev_wait_horizon_s: number;
+  ev_enter_horizon_s: number;
+  probability_weights: ProbabilityWeights;
+  calibration: CalibrationConfig;
+}
+
+export interface ExitConfig {
+  hold_horizon_s: number;
+  retrace_threshold_base: number;
+  retrace_tightening_boundary: number;
+  retrace_tightening_slippage: number;
+  retrace_tightening_hold_edge: number;
+  retrace_tightening_time: number;
+  time_decay_start_s: number;
+  time_decay_pressure_per_s: number;
+  max_hold_time_s: number;
+}
+
+export interface RiskConfig {
+  bankroll_sol: number;
+  risk_per_trade_pct: number;
+  max_alloc_pct: number;
+  max_positions: number;
+  quick_spend_sol: number;
+  raw_stop_pct: number;
+  liquidity_cap_sol: number;
+  slippage_cap_sol: number;
+  max_daily_loss_sol: number;
+}
+
+export interface RoutePromotionConfig {
+  enabled: boolean;
+  opportunity_half_life_threshold_s: number;
+  min_edge_for_lightning: number;
+  min_edge_for_jito: number;
+  demotion_cooldown_s: number;
+}
+
+export interface RouteHealthConfig {
+  landing_latency_warn_ms: number;
+  landing_latency_fail_ms: number;
+  retry_rate_warn: number;
+  retry_rate_fail: number;
+  congestion_threshold: number;
+  freshness_max_s: number;
+}
+
+export interface ExecutionConfig {
+  default_route_mode: RouteMode;
+  default_slippage_bps: number;
+  default_priority_fee_sol: number;
+  skip_preflight: boolean;
+  confirmation_timeout_ms: number;
+  max_retries: number;
+  route_promotion: RoutePromotionConfig;
+  route_health: RouteHealthConfig;
+}
+
+export interface RegimeFeeOverride {
+  pump_fee_pct?: number;
+  pump_swap_fee_pct?: number;
+}
+
+export interface FeesConfig {
+  pump_fee_pct: number;
+  pump_swap_fee_pct: number;
+  pump_portal_fee_pct: number;
+  solana_base_fee_sol: number;
+  priority_fee_default_sol: number;
+  regime_fee_overrides: Record<string, RegimeFeeOverride>;
+}
+
+export interface LLMConfig {
+  provider: 'anthropic';
+  model: 'anthropic/claude-opus-4-6';
+  supervisory_thinking_budget: {
+    candidate_adjudication: 'low' | 'medium' | 'high';
+    daily_analysis: 'low' | 'medium' | 'high';
+    operator_summary: 'low' | 'medium' | 'high';
+    weekly_review: 'low' | 'medium' | 'high';
+  };
+  supervisory_timeout_ms: number;
+}
+
+export interface QualifiedWalletPriorConfig {
+  enabled: boolean;
+  max_positive_boost: number;
+  max_negative_penalty: number;
+  min_core_ev_for_boost: number;
+  creator_history_weight: number;
+  qualified_wallet_weight: number;
+  top_trader_weight: number;
+  first100_persistence_weight: number;
+  dispersion_quality_weight: number;
+  distribution_penalty_weight: number;
+}
+
+export interface MultimodalJunkFilterConfig {
+  enabled: boolean;
+  async_timeout_ms: number;
+  exclusion_threshold: number;
+  tiebreak_weight: number;
+  ticker_clarity_weight: number;
+  name_clarity_weight: number;
+  logo_presence_weight: number;
+  logo_quality_weight: number;
+  metadata_spam_weight: number;
+  comment_entropy_weight: number;
+}
+
+export interface FeaturesConfig {
+  windows_s: number[];
+  qualified_wallet_prior: QualifiedWalletPriorConfig;
+  multimodal_junk_filter: MultimodalJunkFilterConfig;
+}
+
+export interface HourlyMicroCalibrationConfig {
+  enabled: boolean;
+  targets: string[];
+}
+
+export interface DailyReplayConfig {
+  enabled: boolean;
+  session_cut_hour_utc: number;
+}
+
+export interface DailyCanaryPromotionConfig {
+  enabled: boolean;
+  min_sample_size: number;
+  min_net_expectancy: number;
+  max_drawdown: number;
+  min_precision_at_k: number;
+}
+
+export interface WeeklyRetrainConfig {
+  enabled: boolean;
+  day_of_week: number;
+  hour_utc: number;
+}
+
+export interface ChampionChallengerConfig {
+  max_challengers: number;
+  canary_pct: number;
+  promotion_min_trades: number;
+  rollback_drawdown_threshold: number;
+}
+
+export interface LearningConfig {
+  enabled: boolean;
+  hourly_micro_calibration: HourlyMicroCalibrationConfig;
+  daily_replay: DailyReplayConfig;
+  daily_canary_promotion: DailyCanaryPromotionConfig;
+  weekly_retrain: WeeklyRetrainConfig;
+  champion_challenger: ChampionChallengerConfig;
+}
+
+export interface HealthConfig {
+  check_interval_s: number;
+  market_feed_stale_s: number;
+  probability_stale_s: number;
+  execution_stale_s: number;
+  auto_pause_on_degraded: boolean;
+}
+
+export interface ScheduledSummaryConfig {
+  mid_session_enabled: boolean;
+  end_of_day_enabled: boolean;
+  mid_session_hour_utc: number;
+  end_of_day_hour_utc: number;
+}
+
+export interface AlertsConfig {
+  immediate: string[];
+  scheduled_summary: ScheduledSummaryConfig;
+  log_only: string[];
+}
+
+export interface PumpQuantConfig {
+  regime: RegimeConfig;
+  manipulation: ManipulationConfig;
+  friction: FrictionConfig;
+  entry: EntryConfig;
+  exit: ExitConfig;
+  risk: RiskConfig;
+  execution: ExecutionConfig;
+  fees: FeesConfig;
+  llm: LLMConfig;
+  features: FeaturesConfig;
+  learning: LearningConfig;
+  health: HealthConfig;
+  alerts: AlertsConfig;
+}
+
+export type RouteMode = 'local' | 'lightning' | 'jito';
+
+/** Versioned config snapshot for audit trail */
+export interface ConfigVersion {
+  version: number;
+  config: PumpQuantConfig;
+  timestamp: number;
+  source: 'file' | 'operator' | 'learning' | 'challenger';
+  description: string;
+}

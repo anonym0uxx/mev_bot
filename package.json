@@ -1,0 +1,43 @@
+{
+  "name": "@alon/pump-quant",
+  "version": "0.1.0",
+  "description": "Pump.fun Principal Crypto Quant Bot — regime-aware, friction-aware, risk-bounded autonomous trading system",
+  "main": "dist/daemon/index.js",
+  "types": "dist/daemon/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/daemon/index.js",
+    "start:paper": "PAPER_MODE=true node dist/daemon/index.js",
+    "start:replay": "node dist/replay/cli.js",
+    "dev": "tsc --watch",
+    "lint": "tsc --noEmit",
+    "migrate": "node dist/persistence/run-migrations.js",
+    "plugin": "node dist/plugin/index.js"
+  },
+  "dependencies": {
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.98.0",
+    "ajv": "^8.17.1",
+    "better-sqlite3": "^11.7.0",
+    "bs58": "^6.0.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.1",
+    "node-fetch": "^2.7.0",
+    "uuid": "^11.0.5",
+    "ws": "^8.18.0",
+    "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "@types/node-fetch": "^2.6.12",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "private": true
+}

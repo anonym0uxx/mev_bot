@@ -1,0 +1,222 @@
+{
+  "regime": {
+    "early_curve_max_progress": 0.15,
+    "mid_curve_max_progress": 0.50,
+    "late_curve_max_progress": 0.85,
+    "graduation_boundary_start": 0.85,
+    "graduation_boundary_end": 1.0,
+    "max_token_age_s": 300,
+    "exclude_mayhem": true,
+    "exclude_tokenized_agent": true
+  },
+  "manipulation": {
+    "hard_threshold": 0.6,
+    "creator_sell_instant_exit": true,
+    "same_size_print_min_count": 5,
+    "same_size_print_window_s": 15,
+    "same_size_tolerance_pct": 0.02,
+    "price_breadth_divergence_threshold": 0.25,
+    "concentration_worsening_threshold": 0.35,
+    "cluster_correlation_threshold": 0.75,
+    "suspicious_burst_threshold": 0.5,
+    "slippage_shock_threshold": 0.4,
+    "continuous_penalty_weights": {
+      "creator_sell": 1.0,
+      "same_size_prints": 0.35,
+      "price_breadth_divergence": 0.3,
+      "concentration_worsening": 0.25,
+      "cluster_correlation": 0.2,
+      "suspicious_burst": 0.25,
+      "slippage_shock": 0.35
+    }
+  },
+  "friction": {
+    "stale_threshold_s": 20,
+    "safety_buffer_pct": 0.03,
+    "slippage_estimation_method": "empirical",
+    "default_entry_slippage_pct": 0.015,
+    "default_exit_slippage_pct": 0.025,
+    "landing_degradation_local_pct": 0.01,
+    "landing_degradation_lightning_pct": 0.005
+  },
+  "entry": {
+    "min_entry_edge": 0.001,
+    "observation_window_s": 3,
+    "min_breadth_for_entry": 0.15,
+    "min_unique_buyers": 2,
+    "max_concentration_top10": 0.65,
+    "max_slippage_pct": 0.12,
+    "ev_wait_horizon_s": 5,
+    "ev_enter_horizon_s": 5,
+    "probability_weights": {
+      "flow_momentum": 0.30,
+      "breadth_topology": 0.25,
+      "creator_wallet_prior": 0.10,
+      "friction_execution": 0.10,
+      "manipulation_distribution": 0.20,
+      "multimodal_junk": 0.05
+    },
+    "calibration": {
+      "continuation_bias": 0.0,
+      "reversal_bias": 0.0,
+      "manipulation_bias": 0.0
+    }
+  },
+  "exit": {
+    "hold_horizon_s": 10,
+    "retrace_threshold_base": 0.15,
+    "retrace_tightening_boundary": 0.06,
+    "retrace_tightening_slippage": 0.04,
+    "retrace_tightening_hold_edge": 0.03,
+    "retrace_tightening_time": 0.015,
+    "time_decay_start_s": 20,
+    "time_decay_pressure_per_s": 0.003,
+    "max_hold_time_s": 180
+  },
+  "risk": {
+    "bankroll_sol": 0.5,
+    "risk_per_trade_pct": 0.01,
+    "max_alloc_pct": 0.10,
+    "max_positions": 1,
+    "quick_spend_sol": 0.01,
+    "raw_stop_pct": 0.08,
+    "liquidity_cap_sol": 0.2,
+    "slippage_cap_sol": 0.1,
+    "max_daily_loss_sol": 0.05
+  },
+  "execution": {
+    "default_route_mode": "local",
+    "default_slippage_bps": 500,
+    "default_priority_fee_sol": 0.0001,
+    "skip_preflight": false,
+    "confirmation_timeout_ms": 30000,
+    "max_retries": 2,
+    "route_promotion": {
+      "enabled": false,
+      "opportunity_half_life_threshold_s": 3,
+      "min_edge_for_lightning": 0.05,
+      "min_edge_for_jito": 0.10,
+      "demotion_cooldown_s": 60
+    },
+    "route_health": {
+      "landing_latency_warn_ms": 2000,
+      "landing_latency_fail_ms": 5000,
+      "retry_rate_warn": 0.2,
+      "retry_rate_fail": 0.5,
+      "congestion_threshold": 0.7,
+      "freshness_max_s": 60
+    }
+  },
+  "fees": {
+    "pump_fee_pct": 0.01,
+    "pump_swap_fee_pct": 0.0025,
+    "pump_portal_fee_pct": 0.005,
+    "solana_base_fee_sol": 0.000005,
+    "priority_fee_default_sol": 0.0001,
+    "regime_fee_overrides": {
+      "POST_MIGRATION": {
+        "pump_fee_pct": 0,
+        "pump_swap_fee_pct": 0.003
+      }
+    }
+  },
+  "llm": {
+    "provider": "anthropic",
+    "model": "anthropic/claude-opus-4-6",
+    "supervisory_thinking_budget": {
+      "candidate_adjudication": "medium",
+      "daily_analysis": "high",
+      "operator_summary": "low",
+      "weekly_review": "high"
+    },
+    "supervisory_timeout_ms": 15000
+  },
+  "features": {
+    "windows_s": [1, 5, 15, 30],
+    "qualified_wallet_prior": {
+      "enabled": true,
+      "max_positive_boost": 0.08,
+      "max_negative_penalty": 0.30,
+      "min_core_ev_for_boost": 0.008,
+      "creator_history_weight": 0.15,
+      "qualified_wallet_weight": 0.10,
+      "top_trader_weight": 0.10,
+      "first100_persistence_weight": 0.10,
+      "dispersion_quality_weight": 0.05,
+      "distribution_penalty_weight": 0.25
+    },
+    "multimodal_junk_filter": {
+      "enabled": true,
+      "async_timeout_ms": 5000,
+      "exclusion_threshold": 0.20,
+      "tiebreak_weight": 0.05,
+      "ticker_clarity_weight": 0.20,
+      "name_clarity_weight": 0.15,
+      "logo_presence_weight": 0.15,
+      "logo_quality_weight": 0.15,
+      "metadata_spam_weight": 0.20,
+      "comment_entropy_weight": 0.15
+    }
+  },
+  "learning": {
+    "enabled": false,
+    "hourly_micro_calibration": {
+      "enabled": true,
+      "targets": ["slippage", "landing_risk", "route_health", "feed_latency", "friction_priors"]
+    },
+    "daily_replay": {
+      "enabled": true,
+      "session_cut_hour_utc": 4
+    },
+    "daily_canary_promotion": {
+      "enabled": false,
+      "min_sample_size": 50,
+      "min_net_expectancy": 0.005,
+      "max_drawdown": 0.15,
+      "min_precision_at_k": 0.6
+    },
+    "weekly_retrain": {
+      "enabled": false,
+      "day_of_week": 0,
+      "hour_utc": 6
+    },
+    "champion_challenger": {
+      "max_challengers": 1,
+      "canary_pct": 0.05,
+      "promotion_min_trades": 100,
+      "rollback_drawdown_threshold": 0.15
+    }
+  },
+  "health": {
+    "check_interval_s": 5,
+    "market_feed_stale_s": 15,
+    "probability_stale_s": 30,
+    "execution_stale_s": 60,
+    "auto_pause_on_degraded": true
+  },
+  "alerts": {
+    "immediate": [
+      "buy_filled",
+      "reduce_filled",
+      "full_exit",
+      "forced_exit",
+      "auto_pause",
+      "stale_feed",
+      "execution_failure",
+      "config_integrity_failure"
+    ],
+    "scheduled_summary": {
+      "mid_session_enabled": true,
+      "end_of_day_enabled": true,
+      "mid_session_hour_utc": 16,
+      "end_of_day_hour_utc": 4
+    },
+    "log_only": [
+      "candidate_churn",
+      "state_transition",
+      "minor_reconnect",
+      "health_non_material",
+      "low_level_metrics"
+    ]
+  }
+}
