@@ -237,6 +237,11 @@ function checkHardFilters(
   if (packet.regime !== Regime.MID_CURVE && packet.regime !== Regime.LATE_CURVE) {
     return 'excluded_regime';
   }
+  // Minimum curve progress: 12% — prevents tokens right at the EARLY/MID boundary
+  // that could revert back to EARLY_CURVE if buyers sell
+  if (packet.bonding_curve_progress < 0.12) {
+    return 'curve_progress_too_low';
+  }
   if (features.creator_wallet_prior.creator_sell_flag) return 'creator_sold';
   if (features.manipulation_distribution.hard_shock) return 'manipulation_hard_shock';
   if (features.friction_execution.execution_freshness_s > config.friction.stale_threshold_s) return 'stale_friction';

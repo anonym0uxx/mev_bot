@@ -552,10 +552,14 @@ class StrategyDaemon {
       sizing = entryDecision.sizing;
 
       if (packet.state === TokenState.WATCH && entryDecision.shouldEnter) {
-        // GUARD: prevent duplicate entries for the same mint
+        // GUARD: multiple layers to prevent duplicate entries
+        if (this.pendingExecutions.has(mint)) return;
+        if (this.analysisLocks.has(mint + '_entry')) return;
         const existingPosition = this.db.getPositionByMint(mint);
         if (existingPosition) return;
-        if (this.pendingExecutions.has(mint)) return;
+        // Double-check state hasn't changed (another tick may have already transitioned it)
+        const freshPacket = this.stateMachine.getPacket(mint);
+        if (!freshPacket || freshPacket.state !== TokenState.WATCH) return;
 
         log.info(`🚀 Promoting to ENTER_READY: ${packet.symbol || mint.slice(0,8)} — ${entryDecision.reason}`);
         this.stateMachine.transitionToEnterReady(mint, entryDecision.reason);
@@ -565,10 +569,12 @@ class StrategyDaemon {
         const totalPending = openPositionCount + this.pendingExecutions.size;
         if (health.tradingAllowed && now > this.circuitBreakerPauseUntil && totalPending < config.risk.max_positions && (now - this.lastExecutionAttempt) > this.executionCooldownMs) {
           this.pendingExecutions.add(mint);
+          this.analysisLocks.add(mint + '_entry'); // Hard lock until confirmed/failed
           this.lastExecutionAttempt = now;
           log.info(`💰 EXECUTING ENTRY: ${packet.symbol || mint.slice(0,8)} size=${entryDecision.sizing!.position_size.toFixed(4)} SOL (positions: ${openPositionCount}+${this.pendingExecutions.size} pending)`);
           this.executeEntry(packet, entryDecision.sizing!, config).finally(() => {
             this.pendingExecutions.delete(mint);
+            this.analysisLocks.delete(mint + '_entry');
           });
         }
       }
