@@ -545,17 +545,21 @@ class StrategyDaemon {
       sizing = entryDecision.sizing;
 
       if (packet.state === TokenState.WATCH && entryDecision.shouldEnter) {
+        // GUARD: prevent duplicate entries for the same mint
+        const existingPosition = this.db.getPositionByMint(mint);
+        if (existingPosition) return;
+        if (this.pendingExecutions.has(mint)) return;
+
         log.info(`🚀 Promoting to ENTER_READY: ${packet.symbol || mint.slice(0,8)} — ${entryDecision.reason}`);
         this.stateMachine.transitionToEnterReady(mint, entryDecision.reason);
-        // Execute immediately on promotion (single shot)
+
         const now = nowMs();
-        // Gate: check position count + pending executions to prevent double-entry
         const openPositionCount = this.db.getOpenPositions().length;
         const totalPending = openPositionCount + this.pendingExecutions.size;
-        if (health.tradingAllowed && !this.pendingExecutions.has(mint) && totalPending < config.risk.max_positions && (now - this.lastExecutionAttempt) > this.executionCooldownMs) {
+        if (health.tradingAllowed && totalPending < config.risk.max_positions && (now - this.lastExecutionAttempt) > this.executionCooldownMs) {
           this.pendingExecutions.add(mint);
           this.lastExecutionAttempt = now;
-          log.info(`💰 EXECUTING ENTRY: ${packet.symbol || mint.slice(0,8)} size=${entryDecision.sizing!.position_size.toFixed(4)} SOL (positions: ${openPositionCount}+${this.pendingExecutions.size-1} pending)`);
+          log.info(`💰 EXECUTING ENTRY: ${packet.symbol || mint.slice(0,8)} size=${entryDecision.sizing!.position_size.toFixed(4)} SOL (positions: ${openPositionCount}+${this.pendingExecutions.size} pending)`);
           this.executeEntry(packet, entryDecision.sizing!, config).finally(() => {
             this.pendingExecutions.delete(mint);
           });

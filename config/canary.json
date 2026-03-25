@@ -41,9 +41,9 @@
   },
   "entry": {
     "min_entry_edge": 0.002,
-    "observation_window_s": 5,
+    "observation_window_s": 8,
     "min_breadth_for_entry": 0.4,
-    "min_unique_buyers": 4,
+    "min_unique_buyers": 5,
     "max_concentration_top10": 0.65,
     "max_slippage_pct": 0.12,
     "ev_wait_horizon_s": 5,
