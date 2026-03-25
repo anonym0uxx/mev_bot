@@ -337,7 +337,7 @@ export class PumpQuantDB {
 
   insertConfigVersion(cv: ConfigVersion): void {
     this.db.prepare(`
-      INSERT INTO config_versions (version, config, timestamp, source, description)
+      INSERT OR REPLACE INTO config_versions (version, config, timestamp, source, description)
       VALUES (?, ?, ?, ?, ?)
     `).run(cv.version, JSON.stringify(cv.config), cv.timestamp, cv.source, cv.description);
   }

@@ -10,7 +10,7 @@
     "exclude_tokenized_agent": true
   },
   "manipulation": {
-    "hard_threshold": 0.6,
+    "hard_threshold": 0.5,
     "creator_sell_instant_exit": true,
     "same_size_print_min_count": 5,
     "same_size_print_window_s": 15,
@@ -40,10 +40,10 @@
     "landing_degradation_lightning_pct": 0.005
   },
   "entry": {
-    "min_entry_edge": 0.001,
-    "observation_window_s": 3,
-    "min_breadth_for_entry": 0.15,
-    "min_unique_buyers": 2,
+    "min_entry_edge": 0.002,
+    "observation_window_s": 5,
+    "min_breadth_for_entry": 0.4,
+    "min_unique_buyers": 4,
     "max_concentration_top10": 0.65,
     "max_slippage_pct": 0.12,
     "ev_wait_horizon_s": 5,
@@ -63,18 +63,18 @@
     }
   },
   "exit": {
-    "hold_horizon_s": 10,
-    "retrace_threshold_base": 0.15,
+    "hold_horizon_s": 15,
+    "retrace_threshold_base": 0.3,
     "retrace_tightening_boundary": 0.06,
     "retrace_tightening_slippage": 0.04,
     "retrace_tightening_hold_edge": 0.03,
     "retrace_tightening_time": 0.015,
-    "time_decay_start_s": 20,
-    "time_decay_pressure_per_s": 0.003,
-    "max_hold_time_s": 180
+    "time_decay_start_s": 45,
+    "time_decay_pressure_per_s": 0.001,
+    "max_hold_time_s": 300
   },
   "risk": {
-    "bankroll_sol": 0.5,
+    "bankroll_sol": 0.4,
     "risk_per_trade_pct": 0.01,
     "max_alloc_pct": 0.1,
     "max_positions": 1,
@@ -82,7 +82,7 @@
     "raw_stop_pct": 0.08,
     "liquidity_cap_sol": 0.2,
     "slippage_cap_sol": 0.1,
-    "max_daily_loss_sol": 0.05
+    "max_daily_loss_sol": 0.08
   },
   "execution": {
     "default_route_mode": "local",

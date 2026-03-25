@@ -96,6 +96,11 @@ export function evaluateExit(
   // ====== 10.4 HOLD FORMULA ======
   // Hold if HoldEdge > 0 and no override
   if (ev.HoldEdge <= 0) {
+    log.info(`Exit: ${position.symbol} HoldEdge=${ev.HoldEdge.toFixed(6)} → EXIT (NetExit=${ev.ExpectedNetExitNow.toFixed(6)} P_cont=${probabilities.P_continuation_15s.toFixed(3)} hold=${holdDuration.toFixed(1)}s)`);
+  } else if (holdDuration < 2 || Math.floor(holdDuration) % 5 === 0) {
+    log.info(`Hold: ${position.symbol} HoldEdge=+${ev.HoldEdge.toFixed(6)} NetExit=${ev.ExpectedNetExitNow.toFixed(6)} P_cont=${probabilities.P_continuation_15s.toFixed(3)} hold=${holdDuration.toFixed(1)}s`);
+  }
+  if (ev.HoldEdge <= 0) {
     return {
       shouldExit: true,
       shouldReduce: false,
@@ -210,21 +215,29 @@ function computeExitEV(
     : probabilities.P_reversal_15s;
   const P_manipulation = probabilities.P_manipulation_event;
 
-  // Upside if hold: expected value increase over hold horizon
-  const upsideIfHold = quotedSellValue * 0.1; // ~10% potential upside
-  const downsideIfHold = quotedSellValue * 0.15; // ~15% potential downside
-  const shockCost = quotedSellValue * 0.5; // 50% loss in shock
+  // Upside if hold: Pump.fun empirical distribution is heavily right-skewed.
+  // Tokens with positive momentum routinely do 30-100%+ in the hold horizon.
+  // Downside is bounded by our exit mechanics (forced exits, retrace protection).
+  // Shock cost is real but P_manipulation already discounts it.
+  const upsideIfHold = quotedSellValue * 0.30; // 30% potential upside (conservative for Pump.fun)
+  const downsideIfHold = quotedSellValue * 0.10; // 10% potential downside (bounded by exits)
+  const shockCost = quotedSellValue * 0.25; // 25% shock (reduced: P_manipulation already penalizes)
 
-  // Extra friction if we hold longer (fees don't change, but slippage might worsen)
-  const extraFrictionIfHold = quotedSellValue * 0.01; // Modest additional slippage risk
+  // Extra friction if we hold longer (slippage might worsen marginally)
+  const extraFrictionIfHold = quotedSellValue * 0.005;
 
+  // EV_hold_h = expected INCREMENTAL gain from holding h seconds longer
+  // Positive means holding is worth more than exiting now
   const EV_hold_h =
     P_continuation * upsideIfHold
     - P_reversal * downsideIfHold
     - P_manipulation * shockCost
     - extraFrictionIfHold;
 
-  const HoldEdge = EV_hold_h - ExpectedNetExitNow;
+  // HoldEdge IS EV_hold_h — it's the expected gain from holding vs exiting now.
+  // Previously this was EV_hold_h - ExpectedNetExitNow which compared an
+  // incremental gain to a lump-sum value, making it always deeply negative.
+  const HoldEdge = EV_hold_h;
 
   return {
     ExpectedNetExitNow,
