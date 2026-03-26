@@ -71,23 +71,29 @@ export function computeProbabilities(
   const regimeAdjustment = getRegimeAdjustment(regime);
 
   // Calibrated continuation probability
-  // Apply 2x gain to raw signal for more dynamic range
-  // rawSignal of 0.3 → sigmoid(0.6+adj) ≈ 0.65 instead of 0.57
+  // Regime-adaptive gain: EARLY_CURVE signals are weaker (fewer trades, less data)
+  // so we use a modest multiplier to spread the probability distribution.
+  // Without gain: sigmoid range ≈ 0.35–0.65 (can't distinguish good from mediocre)
+  // With 1.5x gain: sigmoid range ≈ 0.28–0.72 (meaningful discrimination)
+  const gainMultiplier = regime === Regime.EARLY_CURVE ? 1.5 : 1.8;
   const calibratedContinuation = sigmoid(
-    rawContinuationSignal * 2 + regimeAdjustment + calibration.continuation_bias
+    rawContinuationSignal * gainMultiplier + regimeAdjustment + calibration.continuation_bias
   );
 
-  // Calibrated reversal probability
+  // Calibrated reversal probability — symmetric gain
   const calibratedReversal = sigmoid(
-    -rawContinuationSignal * 2 - regimeAdjustment + calibration.reversal_bias
+    -rawContinuationSignal * gainMultiplier - regimeAdjustment + calibration.reversal_bias
   );
 
   // Manipulation event probability
-  // Use moderate amplification — manipulation_penalty [0,1] maps through sigmoid
-  // penalty 0.3 → P≈0.55, penalty 0.5 → P≈0.62, penalty 0.8 → P≈0.69
+  // EARLY_CURVE adjustment: brand new tokens haven't had time to show manipulation
+  // signals yet. Reduce the base prior for clean early tokens so we don't penalize
+  // information absence as if it were evidence of manipulation.
+  // sigmoid(-1.5) ≈ 0.18 baseline (was -0.5 → 0.38, which crushed EV on every entry)
+  const earlyCurveOffset = regime === 'EARLY_CURVE' ? -1.0 : 0;
   const rawManipulationProb = sigmoid(
-    manipulationSignal * 1.5 - 0.5 + // Center sigmoid so low penalty → low probability
-    (features.manipulation_distribution.hard_shock ? 2 : 0) +
+    manipulationSignal * 1.5 - 1.5 + earlyCurveOffset + // Lower baseline prior
+    (features.manipulation_distribution.hard_shock ? 2.5 : 0) + // Hard shock still fires hard
     calibration.manipulation_bias
   );
 
@@ -134,10 +140,11 @@ export function computeProbabilities(
 function computeFlowSignal(features: FeatureSnapshot): number {
   const f = features.flow_momentum;
 
-  // Velocity signals — lower normalization thresholds for more sensitivity
+  // FIX #1 (cont): Increase velocity thresholds to match Pump.fun reality
+  // High velocity often = pump-and-dump setup, not organic growth
   const velocitySignal =
-    Math.min(1, f.buy_notional_velocity_5s / 0.15) * 0.35 +
-    Math.min(1, f.buy_notional_velocity_15s / 0.1) * 0.2;
+    Math.min(1, f.buy_notional_velocity_5s / 0.40) * 0.35 +  // Was 0.15
+    Math.min(1, f.buy_notional_velocity_15s / 0.25) * 0.2;   // Was 0.1
 
   // Acceleration signal
   const accelSignal = Math.tanh(f.buy_velocity_acceleration_5s * 15) * 0.15;
@@ -157,8 +164,9 @@ function computeFlowSignal(features: FeatureSnapshot): number {
 function computeBreadthSignal(features: FeatureSnapshot): number {
   const b = features.breadth_topology;
 
-  // Buyer count contribution: 5 buyers → 0.15, 10 → 0.25, 20+ → 0.3
-  const buyerContribution = Math.min(0.3, b.unique_buyers_total / 60);
+  // FIX #1 (cont): Fix buyer normalization — demand at least 15 buyers for max score
+  // 5 buyers in Pump.fun is NOT meaningful breadth
+  const buyerContribution = Math.min(0.3, b.unique_buyers_total / 100); // Was /60
 
   return Math.max(-1, Math.min(1,
     b.breadth_score * 0.35 +

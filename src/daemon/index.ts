@@ -24,7 +24,8 @@ import { nowMs, ageS } from '../utils/time';
 import { getConfigManager, getConfig, getConfigVersion } from '../config/loader';
 import { getDatabase, PumpQuantDB } from '../persistence/database';
 import { PumpPortalClient } from '../feed/pump-portal';
-import { CoreCastClient } from '../feed/corecast';
+import { CoreCastClient } from '../feed/corecast-v2';
+import { CoreCastV3Client } from '../feed/corecast-v3';
 import { BitqueryClient } from '../feed/bitquery';
 import { classifyRegime, computeBondingCurveProgress, isTradeableRegime, detectMayhem, detectTokenizedAgent } from '../regime/classifier';
 import { FeatureEngine } from '../features/engine';
@@ -57,7 +58,7 @@ class StrategyDaemon {
   private db: PumpQuantDB;
   private configManager = getConfigManager();
   private feed: PumpPortalClient;
-  private corecast: CoreCastClient | null = null;
+  private corecast: CoreCastClient | CoreCastV3Client | null = null;
   private bitquery: BitqueryClient;
   private featureEngine: FeatureEngine;
   private stateMachine: TokenStateMachine;
@@ -74,6 +75,10 @@ class StrategyDaemon {
   private lastExecutionAttempt: number = 0;
   private executionCooldownMs: number = 5000; // 5s between execution attempts
   private analysisLocks: Set<string> = new Set(); // Prevent concurrent analysis of same mint
+  // Committed mints: set the moment we decide to buy, cleared only after DB position confirmed or failed.
+  // This is the definitive guard against duplicate entries — survives async gaps where pendingExecutions
+  // is cleared before the position record is written.
+  private committedMints: Set<string> = new Set();
   // Circuit breaker state
   private consecutiveLosses: number = 0;
   private circuitBreakerPauseUntil: number = 0;
@@ -101,9 +106,16 @@ class StrategyDaemon {
     const paper = isPaperMode();
     this.feed = new PumpPortalClient();
     // CoreCast: primary fast-lane when enabled
+    // Use v3 (gRPC) if grpc_enabled flag is set, otherwise fall back to v2 (polling)
     if (config.corecast?.enabled) {
-      this.corecast = new CoreCastClient(config.corecast);
-      log.info('CoreCast enabled — primary fast-lane feed');
+      const useV3 = (config.corecast as any).grpc_enabled === true;
+      if (useV3) {
+        this.corecast = new CoreCastV3Client(config.corecast);
+        log.info('CoreCast v3 enabled — gRPC streaming (sub-100ms)');
+      } else {
+        this.corecast = new CoreCastClient(config.corecast);
+        log.info('CoreCast enabled — primary fast-lane feed');
+      }
     }
     this.bitquery = new BitqueryClient();
     this.featureEngine = new FeatureEngine(config);
@@ -170,11 +182,11 @@ class StrategyDaemon {
       this.runAnalysisLoop();
     }, 1000);
 
-    // Position scanner: evaluate exit for all LONG positions every 2s
-    // regardless of incoming trade events (safety net for quiet markets)
+    // Position scanner: evaluate exit for all LONG positions every 500ms
+    // (4x faster for active exits - Phase 1 data architect recommendation)
     setInterval(() => {
       this.scanOpenPositions();
-    }, 2000);
+    }, 500);
 
     // Start learning jobs
     this.learningJobs.start();
@@ -202,19 +214,21 @@ class StrategyDaemon {
   // ====== FEED HANDLERS ======
 
   private setupFeedHandlers(): void {
-    // New token creation — only process from PumpPortal when CoreCast is not primary
+    // New token creation — always process from PumpPortal.
+    // PumpPortal provides bondingCurveKey and full reserves; gRPC v3 doesn't.
     this.feed.on('newToken', (event: NewTokenEvent) => {
-      if (this.corecast?.connected) return; // CoreCast is primary
       this.handleNewToken(event);
     });
 
-    // Token trade — only process from PumpPortal when CoreCast is not primary
+    // Token trade — always process from PumpPortal for bonding curve state enrichment.
+    // When CoreCast v3 (gRPC) is primary, gRPC provides fast event discovery but lacks
+    // vTokensInBondingCurve/vSolInBondingCurve/marketCapSol fields. PumpPortal fills those in.
     let tradeCount = 0;
     this.feed.on('tokenTrade', (event: TokenTradeEvent) => {
-      if (this.corecast?.connected) return; // CoreCast is primary
       tradeCount++;
       if (tradeCount % 100 === 1) {
-        log.info(`PumpPortal trades (fallback): ${tradeCount} (latest: ${event.mint.slice(0,8)} ${event.txType} ${event.solAmount?.toFixed(4)} SOL)`);
+        const src = this.corecast?.connected ? 'enrichment' : 'fallback';
+        log.info(`PumpPortal trades (${src}): ${tradeCount} (latest: ${event.mint.slice(0,8)} ${event.txType} ${event.solAmount?.toFixed(4)} SOL)`);
       }
       this.handleTokenTrade(event);
     });
@@ -302,7 +316,10 @@ class StrategyDaemon {
     const isMayhem = detectMayhem(event.name, event.symbol, event.uri);
     const isTokenizedAgent = detectTokenizedAgent(event.name, event.symbol, event.uri);
 
-    const bondingCurveProgress = computeBondingCurveProgress(event.vTokensInBondingCurve);
+    const rawProgress = computeBondingCurveProgress(event.vTokensInBondingCurve);
+    // -1 sentinel = reserves unknown (new token, PumpPortal not yet enriched)
+    // Treat as 0 (fully fresh) for regime classification purposes
+    const bondingCurveProgress = rawProgress < 0 ? 0 : rawProgress;
 
     // Classify regime
     const regime = classifyRegime({
@@ -380,19 +397,33 @@ class StrategyDaemon {
     this.featureEngine.addTrade(event.mint, tradePoint);
 
     // Update market data in state machine
-    const bondingCurveProgress = computeBondingCurveProgress(event.vTokensInBondingCurve);
-    this.stateMachine.updateMarketData(
-      event.mint,
-      event.vTokensInBondingCurve,
-      event.vSolInBondingCurve,
-      event.marketCapSol,
-      bondingCurveProgress
-    );
+    // Only update if we have real reserve data (vTokens > 0 = PumpPortal enriched)
+    // Skip updates from gRPC-only events which have zero reserves
+    const rawBcp = computeBondingCurveProgress(event.vTokensInBondingCurve);
+    if (rawBcp >= 0) {
+      // Real data from PumpPortal — update state
+      this.stateMachine.updateMarketData(
+        event.mint,
+        event.vTokensInBondingCurve,
+        event.vSolInBondingCurve,
+        event.marketCapSol,
+        rawBcp
+      );
+    }
+    // If rawBcp < 0 (gRPC event, no reserves): skip market data update, keep last known state
 
     // Update position if we hold this token
     this.updatePositionMarketData(event.mint, event);
 
     this.healthMonitor.recordUpdate('market_feed');
+
+    // Event-driven analysis: fire immediately on each trade for active tokens
+    // Don't wait for the 1s polling interval — gRPC data is sub-100ms, act on it now
+    if (packet.state === TokenState.WATCH || packet.state === TokenState.ENTER_READY || packet.state === TokenState.LONG) {
+      const config = this.configManager.getConfig();
+      const health = this.healthMonitor.check();
+      this.analyzeToken(packet, config, health);
+    }
   }
 
   /** Handle migration event */
@@ -480,6 +511,14 @@ class StrategyDaemon {
   private _analyzeTokenInner(packet: CandidatePacket, config: PumpQuantConfig, health: SystemHealth): void {
     const mint = packet.mint;
 
+    // NEW: Defer analysis until sufficient trade density (Phase 1 data architect fix)
+    const tradeCount = this.featureEngine.getTradeCount(mint);
+    const minTrades = (config.entry as any).min_trades_for_analysis || 15;
+    if (tradeCount < minTrades) {
+      // Not enough data yet — skip analysis
+      return;
+    }
+
     // Compute features
     const features = this.featureEngine.computeFeatures(mint);
     if (!features) return;
@@ -528,13 +567,17 @@ class StrategyDaemon {
     // Other hard shocks need the token to be past the observation window,
     // because concentration_worsening, slippage_shock, same_size_prints are
     // expected in the first seconds of a token's life with very few trades.
+    // Phase 1 fix: age-adjusted thresholds (defer non-creator shocks until 1.6x observation window)
     if (manipAssessment.hardShock) {
       const isCreatorSell = manipAssessment.hardShockReason === 'creator_sell';
-      if (isCreatorSell || tokenAgeSec > config.entry.observation_window_s) {
+      const minAgeForHardBan = config.entry.observation_window_s * 1.6; // 8s when window=5s
+      
+      if (isCreatorSell || tokenAgeSec > minAgeForHardBan) {
         this.stateMachine.transitionToBan(mint, `Manipulation shock: ${manipAssessment.hardShockReason}`);
         return;
       }
       // Young token with non-creator hard shock: log but don't ban yet
+      log.debug(`${mint.slice(0,8)}: Hard shock (${manipAssessment.hardShockReason}) deferred, age=${tokenAgeSec.toFixed(1)}s`);
     }
 
     // State-specific logic
@@ -543,44 +586,57 @@ class StrategyDaemon {
     let sizing = null;
 
     if (packet.state === TokenState.WATCH || packet.state === TokenState.ENTER_READY) {
+      // Skip evaluation entirely if mint is already committed (in-flight buy).
+      // This prevents evaluateEntry from logging ENTRY APPROVED multiple times
+      // while executeEntry is still awaiting confirmation.
+      if (this.committedMints.has(mint)) return;
+
       // Entry evaluation
       const currentPositionCount = this.db.getOpenPositionCount();
       const dailyLoss = this.db.getDailyPnl();
+      const dailyEntryCount = this.db.getDailyEntryCount();
       // Apply circuit breaker edge multiplier (L1: 1.5x edge required)
       const effectiveMinEdge = (config.entry.min_entry_edge || 0.0005) * this.entryEdgeMultiplier;
       const entryDecision = evaluateEntry(
         packet, probabilities, features,
         { ...config, entry: { ...config.entry, min_entry_edge: effectiveMinEdge } },
-        currentPositionCount, dailyLoss, isPaperMode()
+        currentPositionCount, dailyLoss, dailyEntryCount, isPaperMode()
       );
 
       entryEv = entryDecision.ev;
       sizing = entryDecision.sizing;
 
       if (packet.state === TokenState.WATCH && entryDecision.shouldEnter) {
-        // GUARD: multiple layers to prevent duplicate entries
+        // GUARD: layered duplicate-entry prevention
+        // committedMints is the primary lock — set synchronously, cleared only after
+        // DB write succeeds or fails. Survives the async gap between decision and confirmation.
+        if (this.committedMints.has(mint)) return;
         if (this.pendingExecutions.has(mint)) return;
         if (this.analysisLocks.has(mint + '_entry')) return;
         const existingPosition = this.db.getPositionByMint(mint);
         if (existingPosition) return;
-        // Double-check state hasn't changed (another tick may have already transitioned it)
+        // Double-check state hasn't changed
         const freshPacket = this.stateMachine.getPacket(mint);
         if (!freshPacket || freshPacket.state !== TokenState.WATCH) return;
 
-        log.info(`🚀 Promoting to ENTER_READY: ${packet.symbol || mint.slice(0,8)} — ${entryDecision.reason}`);
-        this.stateMachine.transitionToEnterReady(mint, entryDecision.reason);
-
         const now = nowMs();
         const openPositionCount = this.db.getOpenPositions().length;
-        const totalPending = openPositionCount + this.pendingExecutions.size;
+        const totalPending = openPositionCount + this.committedMints.size;
         if (health.tradingAllowed && now > this.circuitBreakerPauseUntil && totalPending < config.risk.max_positions && (now - this.lastExecutionAttempt) > this.executionCooldownMs) {
+          // Commit synchronously — all subsequent ticks for this mint will see this and bail
+          this.committedMints.add(mint);
           this.pendingExecutions.add(mint);
-          this.analysisLocks.add(mint + '_entry'); // Hard lock until confirmed/failed
+          this.analysisLocks.add(mint + '_entry');
           this.lastExecutionAttempt = now;
-          log.info(`💰 EXECUTING ENTRY: ${packet.symbol || mint.slice(0,8)} size=${entryDecision.sizing!.position_size.toFixed(4)} SOL (positions: ${openPositionCount}+${this.pendingExecutions.size} pending)`);
+
+          log.info(`🚀 Promoting to ENTER_READY: ${packet.symbol || mint.slice(0,8)} — ${entryDecision.reason}`);
+          this.stateMachine.transitionToEnterReady(mint, entryDecision.reason);
+          log.info(`💰 EXECUTING ENTRY: ${packet.symbol || mint.slice(0,8)} size=${entryDecision.sizing!.position_size.toFixed(4)} SOL (positions: ${openPositionCount}+${this.committedMints.size - 1} pending)`);
+
           this.executeEntry(packet, entryDecision.sizing!, config).finally(() => {
             this.pendingExecutions.delete(mint);
             this.analysisLocks.delete(mint + '_entry');
+            // committedMints cleared in executeEntry after DB write (success or failure)
           });
         }
       }
@@ -696,6 +752,9 @@ class StrategyDaemon {
         };
 
         this.db.insertPosition(position);
+        // Position confirmed in DB — release the committed lock so the mint
+        // can be evaluated again in future sessions (but existingPosition check will block re-entry)
+        this.committedMints.delete(packet.mint);
         this.stateMachine.transitionToLong(packet.mint, 'Buy confirmed');
 
         // Alert
@@ -710,10 +769,15 @@ class StrategyDaemon {
         );
 
         this.healthMonitor.recordUpdate('execution_adapter');
+      } else {
+        // Order didn't confirm — release lock so the mint can retry
+        this.committedMints.delete(packet.mint);
       }
     } catch (err) {
       log.error(`Entry execution failed for ${packet.mint}: ${(err as Error).message}`);
       this.alertSystem.emitExecutionFailure(packet.mint, (err as Error).message);
+      // Release lock on failure so the mint can be retried
+      this.committedMints.delete(packet.mint);
     }
   }
 
@@ -746,25 +810,49 @@ class StrategyDaemon {
 
       if (order.status === OrderStatus.CONFIRMED) {
         const realizedSol = order.realized_sol || 0;
-        const pnl = realizedSol - position.entry_sol;
+        const closedAt = nowMs();
 
-        // Update position
+        // Close the primary position
+        const pnl = realizedSol - position.entry_sol;
         this.db.updatePosition(position.id, {
           current_tokens: 0,
           current_value_sol: 0,
           exit_orders: [...position.exit_orders, order.id],
           exit_price_sol: order.realized_price || 0,
           exit_sol: realizedSol,
-          exit_timestamp: nowMs(),
+          exit_timestamp: closedAt,
           exit_reason: reason as any,
           exit_route_mode: intent.route_mode,
           realized_pnl_sol: pnl,
           realized_pnl_pct: position.entry_sol > 0 ? pnl / position.entry_sol : 0,
           total_fees_sol: position.total_fees_sol + (order.fee_sol || 0),
           status: PositionStatus.CLOSED,
-          closed_at: nowMs(),
+          closed_at: closedAt,
           hold_duration_s: ageS(position.entry_timestamp),
         });
+
+        // Close any ghost duplicate positions for the same mint (race condition artifacts)
+        const allOpen = this.db.getAllOpenPositionsByMint(mint);
+        for (const ghost of allOpen) {
+          if (ghost.id === position.id) continue; // already closed above
+          log.warn(`Closing ghost duplicate position ${ghost.id.slice(0,8)} for ${position.symbol || mint.slice(0,8)}`);
+          this.db.updatePosition(ghost.id, {
+            current_tokens: 0,
+            current_value_sol: 0,
+            exit_orders: [order.id],
+            exit_price_sol: order.realized_price || 0,
+            exit_sol: 0, // Ghost — no real SOL realized separately
+            exit_timestamp: closedAt,
+            exit_reason: reason as any,
+            exit_route_mode: intent.route_mode,
+            realized_pnl_sol: 0, // Zero out ghost PnL — it didn't actually trade
+            realized_pnl_pct: 0,
+            total_fees_sol: ghost.total_fees_sol,
+            status: PositionStatus.CLOSED,
+            closed_at: closedAt,
+            hold_duration_s: ageS(ghost.entry_timestamp),
+          });
+        }
 
         this.stateMachine.transitionToExit(mint, reason);
 
@@ -878,6 +966,9 @@ class StrategyDaemon {
   private runHealthCheck(): void {
     const health = this.healthMonitor.check();
     const config = this.configManager.getConfig();
+
+    // Config is accessible and valid — record config_integrity heartbeat
+    this.healthMonitor.recordUpdate('config_integrity');
 
     // Check feed staleness — CoreCast is primary when available
     const primaryFeed = this.corecast?.connected ? this.corecast : this.feed;
@@ -1034,6 +1125,23 @@ class StrategyDaemon {
       if (packet.state === TokenState.WATCH || packet.state === TokenState.ENTER_READY) {
         log.warn(`Position scanner: fixing stale state for ${packet.symbol || mint.slice(0,8)} → transitioning to LONG`);
         this.stateMachine.transitionToLong(mint, 'position_scanner_recovery');
+      }
+
+      // Dead on arrival (DOA) check: if MFE ≤ 0 after 15s AND down >5%, exit immediately
+      const holdTime = ageS(position.entry_timestamp);
+      const mfeSol = position.mfe_sol || 0;
+      const currentPnL = position.current_value_sol - position.entry_sol;
+      const pnlPct = position.entry_sol > 0 ? currentPnL / position.entry_sol : 0;
+      
+      if (holdTime >= 15 && mfeSol <= 0 && pnlPct < -0.05) {
+        log.warn(`💀 DOA exit: ${packet.symbol || mint.slice(0,8)} held ${holdTime.toFixed(0)}s, MFE=0, down ${(pnlPct*100).toFixed(1)}%`);
+        if (!this.pendingExecutions.has(mint)) {
+          this.pendingExecutions.add(mint);
+          this.executeExit(mint, position, 100, ExitReason.STOP_LOSS, config).finally(() => {
+            this.pendingExecutions.delete(mint);
+          });
+        }
+        continue;
       }
 
       // Raw stop loss check (deterministic, no features needed)

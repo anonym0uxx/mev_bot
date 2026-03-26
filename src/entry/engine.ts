@@ -20,6 +20,8 @@ import {
 } from '../types/state';
 import { FeatureSnapshot } from '../types/features';
 import { PumpQuantConfig } from '../types/config';
+import { estimateExitSlippage } from '../features/dynamic-slippage';
+import { computeAdverseSelectionPenalty } from '../features/adverse-selection';
 
 const log = createLogger('entry-engine');
 
@@ -43,14 +45,19 @@ export function evaluateEntry(
   config: PumpQuantConfig,
   currentPositionCount: number,
   dailyLossSol: number,
+  dailyEntryCount: number,
   isPaper: boolean
 ): EntryDecision {
   // ====== 9.2 HARD ENTRY FILTERS ======
-  const hardFilter = checkHardFilters(packet, features, config, currentPositionCount, dailyLossSol);
+  const hardFilter = checkHardFilters(packet, features, config, currentPositionCount, dailyLossSol, dailyEntryCount, probabilities);
   if (hardFilter) {
     if (features.breadth_topology.unique_buyers_total >= 2) {
       log.info(`Hard filter reject ${packet.symbol || packet.mint.slice(0,8)}: ${hardFilter} (buyers=${features.breadth_topology.unique_buyers_total})`);
     }
+    // Structured rejection log: always emitted for signal analysis
+    const horizon = config.entry.ev_enter_horizon_s;
+    const P_cont = horizon <= 5 ? probabilities.P_continuation_5s : probabilities.P_continuation_15s;
+    log.info(`REJECT ${packet.symbol || packet.mint.slice(0,8)}: ${hardFilter} (p_cont=${P_cont?.toFixed(3) || 'n/a'}, edge=n/a, buyers=${features.breadth_topology.unique_buyers_total})`);
     return {
       shouldEnter: false,
       reason: `Hard filter: ${hardFilter}`,
@@ -77,33 +84,41 @@ export function evaluateEntry(
   const roundTripFriction = computeRoundTripFriction(features, config, packet.regime);
   const routeEvAdjustment = features.friction_execution.route_ev_adjustment;
 
-  // ---- Payoff estimates using power law distribution ----
-  // Pump.fun empirical distribution: right-skewed with fat tail (Gabaix 2009)
-  // E[return | continuation] ≈ 80% GROSS (mean of right tail: 50-200%+ range)
-  // E[return | organic reversal] ≈ -stop_loss GROSS (bounded by stop)
-  // E[return | manipulation reversal] ≈ -1.5x stop GROSS (faster/harder dump)
+  // CALIBRATED 2026-03-26 (Citadel quant analysis of 8 live trades):
+  // Realized mean winner return: ~58% gross (range 10-123%)
+  // Realized mean loser return: ~-2.25% gross (DOA exit fires before -40% stop)
+  // P-space: P_cont + P_reversal + P_DOA = 1  (DOA = flatline, ~2% loss)
   //
-  // CRITICAL: friction is a FLAT cost (always paid on entry+exit regardless of outcome)
-  // so it's subtracted ONCE at the end, NOT embedded in per-scenario returns.
-  // Previous version double-counted friction (in returns AND as flat cost).
-  const E_return_continuation = 0.80;
-  const E_return_organic_reversal = -config.risk.raw_stop_pct;
-  const E_return_manipulation_reversal = -(config.risk.raw_stop_pct * 1.5);
+  // Using conservative 58% for continuation (realized mean vs 80% assumption),
+  // and splitting reversal into organic (-40% stop) vs DOA (-3% flat, caught by 15s exit).
+  // P_DOA estimated at 15% (tokens that stall immediately with 0% MFE).
+  const E_return_continuation = 0.58;            // Calibrated from realized trade data
+  const E_return_organic_reversal = -config.risk.raw_stop_pct; // -40% (full stop)
+  const E_return_manipulation_reversal = -(config.risk.raw_stop_pct * 1.5); // -60% (rugs)
+  const E_return_doa = -0.03;                     // DOA: ~-3% (friction + small move before exit)
 
   // ---- Probability decomposition ----
-  // P_manipulation is a CONDITIONAL: given reversal, probability it's manipulation-driven
-  // This avoids the triple-counting bug
-  // Total: P_cont + P_organic_rev + P_manip_rev = 1
-  const P_organic_reversal = P_reversal * (1 - P_manipulation);
-  const P_manipulation_reversal = P_reversal * P_manipulation;
+  // P_manipulation is CONDITIONAL: given reversal, probability it's manipulation-driven
+  // P_DOA is carved out from reversal probability (flatline before stop)
+  // Total: P_cont + P_organic_rev + P_manip_rev + P_DOA ≈ 1
+  const P_DOA = Math.min(0.20, P_reversal * 0.40);  // ~40% of reversals are DOA flatlines
+  const P_reversal_nondoa = P_reversal - P_DOA;
+  const P_organic_reversal = P_reversal_nondoa * (1 - P_manipulation);
+  const P_manipulation_reversal = P_reversal_nondoa * P_manipulation;
 
+  // FIX #4 & #5: Add dynamic slippage + adverse selection penalty
+  const tokenAgeS = ageS(packet.created_at);
+  const adverseSelectionCost = computeAdverseSelectionPenalty(features, packet.regime, tokenAgeS) * positionSize;
+  
   // ---- EV_enter_now ----
   // Single clean formula: expected return across all scenarios minus round-trip friction
   const EV_enter_now =
     P_continuation * positionSize * E_return_continuation +
     P_organic_reversal * positionSize * E_return_organic_reversal +
-    P_manipulation_reversal * positionSize * E_return_manipulation_reversal -
-    roundTripFriction +
+    P_manipulation_reversal * positionSize * E_return_manipulation_reversal +
+    P_DOA * positionSize * E_return_doa -  // DOA flatline: small loss, not full stop
+    roundTripFriction -
+    adverseSelectionCost +
     routeEvAdjustment;
 
   // ---- EV_wait ----
@@ -231,16 +246,14 @@ function checkHardFilters(
   features: FeatureSnapshot,
   config: PumpQuantConfig,
   currentPositionCount: number,
-  dailyLossSol: number
+  dailyLossSol: number,
+  dailyEntryCount: number,
+  probabilities: ProbabilityOutputs
 ): string | null {
-  // Only MID_CURVE and LATE_CURVE are tradeable per QUANT_STRATEGY.md
-  if (packet.regime !== Regime.MID_CURVE && packet.regime !== Regime.LATE_CURVE) {
+  // EARLY_CURVE, MID_CURVE, and LATE_CURVE are all tradeable
+  // EXCLUDED (mayhem/tokenized-agent) and POST_MIGRATION are not
+  if (packet.regime === Regime.EXCLUDED || packet.regime === Regime.POST_MIGRATION) {
     return 'excluded_regime';
-  }
-  // Minimum curve progress: 12% — prevents tokens right at the EARLY/MID boundary
-  // that could revert back to EARLY_CURVE if buyers sell
-  if (packet.bonding_curve_progress < 0.12) {
-    return 'curve_progress_too_low';
   }
   if (features.creator_wallet_prior.creator_sell_flag) return 'creator_sold';
   if (features.manipulation_distribution.hard_shock) return 'manipulation_hard_shock';
@@ -251,6 +264,22 @@ function checkHardFilters(
   if (currentPositionCount >= config.risk.max_positions) return 'max_positions';
   if (Math.abs(dailyLossSol) >= config.risk.max_daily_loss_sol) return 'daily_loss_limit';
   if (features.breadth_topology.unique_buyers_total < config.entry.min_unique_buyers) return 'insufficient_buyers';
+
+  // Daily entry cap — hard stop once max_daily_entries trades have been executed today.
+  // Prevents runaway trading when the bot is trigger-happy on a volatile session.
+  const maxDailyEntries = config.risk.max_daily_entries;
+  if (maxDailyEntries > 0 && dailyEntryCount >= maxDailyEntries) {
+    return `daily_entry_limit (${dailyEntryCount}/${maxDailyEntries})`;
+  }
+
+  // Minimum P_continuation gate — reject weak signals regardless of EV.
+  // Uses the same horizon as the EV calculation.
+  const horizon = config.entry.ev_enter_horizon_s;
+  const P_cont = horizon <= 5 ? probabilities.P_continuation_5s : probabilities.P_continuation_15s;
+  const minPCont = config.entry.min_p_continuation ?? 0;
+  if (minPCont > 0 && P_cont < minPCont) {
+    return `p_continuation_low (${P_cont.toFixed(3)} < ${minPCont})`;
+  }
 
   // Concentration: scale by buyer count (natural high concentration with few buyers)
   const buyers = features.breadth_topology.unique_buyers_total;
@@ -274,9 +303,12 @@ function computeRoundTripFriction(
   const baseFee = fees.solana_base_fee_sol;
   const priorityFee = config.execution.default_priority_fee_sol;
 
+  // FIX #4: Use dynamic exit slippage estimation
+  const exitSlippage = estimateExitSlippage(features, null, config);
+  
   // Round-trip: entry fees + exit fees + slippage both ways
   const entryPct = pumpFee + portalFee + features.friction_execution.expected_entry_slippage;
-  const exitPct = pumpFee + portalFee + features.friction_execution.expected_exit_slippage;
+  const exitPct = pumpFee + portalFee + exitSlippage;  // Use dynamic slippage
   const roundTripPct = entryPct + exitPct;
 
   // Fixed costs: 2x base fee + 2x priority fee (entry + exit)

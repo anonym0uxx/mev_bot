@@ -50,6 +50,10 @@ export function classifyRegime(input: RegimeInput, config: RegimeConfig): Regime
 
   const progress = input.bondingCurveProgress;
 
+  // -1 sentinel = reserves unknown (gRPC event before PumpPortal enrichment)
+  // Classify conservatively as EARLY_CURVE — it's brand new, reserves will arrive shortly
+  if (progress < 0) return Regime.EARLY_CURVE;
+
   // Graduation boundary takes precedence over late curve
   if (progress >= config.graduation_boundary_start && progress <= config.graduation_boundary_end) {
     return Regime.GRADUATION_BOUNDARY;
@@ -76,9 +80,10 @@ export function classifyRegime(input: RegimeInput, config: RegimeConfig): Regime
  * Check if a regime is tradeable (not excluded and not post-migration in initial build).
  */
 export function isTradeableRegime(regime: Regime): boolean {
-  // Per QUANT_STRATEGY.md: Only MID_CURVE and LATE_CURVE are tradeable.
-  // EARLY_CURVE has highest rug risk and no edge. GRADUATION is too competitive.
-  return regime === Regime.MID_CURVE || regime === Regime.LATE_CURVE;
+  // CRITICAL MEV FIX: Pump.fun tokens go 0→85% in ONE WAVE (no mid-curve pause).
+  // The only viable entry window is EARLY_CURVE (0-15%) before graduation wave.
+  // MID_CURVE is still tradeable but rarely reached before graduation.
+  return regime === Regime.EARLY_CURVE || regime === Regime.MID_CURVE;
 }
 
 /**
@@ -95,6 +100,10 @@ export function computeBondingCurveProgress(
   initialVirtualTokens: number = 1_073_000_000
 ): number {
   if (initialVirtualTokens <= 0) return 0;
+  // Zero reserves = data not yet available (gRPC fires before PumpPortal enriches).
+  // Return -1 as sentinel meaning "unknown" — caller must handle this.
+  // Do NOT treat as 100% bonded (which was causing mass bans of EARLY_CURVE tokens).
+  if (vTokensInBondingCurve === 0) return -1;
   const progress = 1 - (vTokensInBondingCurve / initialVirtualTokens);
   return Math.max(0, Math.min(1, progress));
 }

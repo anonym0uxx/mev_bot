@@ -64,8 +64,22 @@ export class ExecutionAdapter {
 
   /**
    * Execute a buy trade.
+   * HARD CLAMP: enforces max_position_size_sol regardless of upstream sizing logic.
+   * This is a last-resort guard — the strategy layer should also enforce limits,
+   * but this ensures no oversize order ever reaches the chain.
    */
   async executeBuy(intent: TradeIntent): Promise<Order> {
+    const hardLimit = this.config.risk.max_position_size_sol;
+    if (intent.size_sol > hardLimit) {
+      const err = new Error(
+        `EXECUTION BLOCKED: size_sol=${intent.size_sol.toFixed(4)} exceeds ` +
+        `max_position_size_sol=${hardLimit} for mint=${intent.mint.slice(0, 8)}. ` +
+        `Order rejected before signing.`
+      );
+      log.error(err.message);
+      throw err;
+    }
+
     const order = this.createOrderFromIntent(intent);
     this.db.insertOrder(order);
 
@@ -93,7 +107,15 @@ export class ExecutionAdapter {
   /** Get wallet balance (live mode only) */
   async getBalance(): Promise<number> {
     if (this.isPaper) return this.config.risk.bankroll_sol;
-    const balance = await this.connection.getBalance(this.wallet.publicKey);
+    // PumpPortal wallet is the actual trading wallet — check its balance.
+    // Falls back to WALLET_PRIVATE_KEY wallet if no PumpPortal pubkey configured.
+    // NOTE: Use the already-imported PublicKey and LAMPORTS_PER_SOL (top-level static import),
+    // and this.connection which is already initialised in the constructor.
+    // The previous dynamic import(  '@solana/web3.js') inside an async method was fragile
+    // and redundant — removed.
+    const pubKeyStr = process.env.PUMP_PORTAL_PUBLIC_KEY || this.wallet.publicKey.toBase58();
+    const pubKey = new PublicKey(pubKeyStr);
+    const balance = await this.connection.getBalance(pubKey);
     return balance / LAMPORTS_PER_SOL;
   }
 
@@ -291,7 +313,17 @@ export class ExecutionAdapter {
       denominatedInSol = 'false';
     }
 
+    // PumpPortal requires wallet keys to sign and submit transactions
+    const publicKey = process.env.PUMP_PORTAL_PUBLIC_KEY || this.wallet.publicKey.toBase58();
+    const privateKey = process.env.PUMP_PORTAL_PRIVATE_KEY || process.env.WALLET_PRIVATE_KEY;
+    
+    if (!privateKey) {
+      throw new Error('Missing wallet private key for PumpPortal trade execution');
+    }
+
     const body: Record<string, any> = {
+      publicKey,
+      privateKey,
       action: side,
       mint: intent.mint,
       amount,

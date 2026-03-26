@@ -214,8 +214,11 @@ export class PumpQuantDB {
   // ====== ORDERS ======
 
   insertOrder(order: Order): void {
+    // INSERT OR IGNORE: if tx_signature already exists (unique index), silently skip the
+    // duplicate insert. This prevents the confirmation poller from writing multiple rows
+    // for the same on-chain transaction.
     this.db.prepare(`
-      INSERT INTO orders (id, trade_intent_id, mint, side, size_sol, amount_pct,
+      INSERT OR IGNORE INTO orders (id, trade_intent_id, mint, side, size_sol, amount_pct,
         slippage_bps, priority_fee_sol, route_mode, status, tx_signature,
         created_at, sent_at, confirmed_at, realized_sol, realized_tokens,
         realized_price, realized_slippage_pct, fee_sol, priority_fee_paid_sol,
@@ -230,6 +233,52 @@ export class PumpQuantDB {
       order.realized_slippage_pct, order.fee_sol, order.priority_fee_paid_sol,
       order.error, order.retry_count, order.config_version, order.is_paper ? 1 : 0
     );
+  }
+
+  /**
+   * Upsert an order by tx_signature — prevents duplicate rows when the confirmation
+   * poller fires multiple times for the same on-chain transaction.
+   * If no tx_signature (pending order), falls back to a plain insert.
+   * Uses INSERT OR IGNORE on the internal id PK to be safe.
+   */
+  upsertOrderBySignature(order: Order): void {
+    if (!order.tx_signature || order.tx_signature.trim() === '') {
+      // No sig yet — just insert (pending/sent state)
+      this.insertOrder(order);
+      return;
+    }
+
+    // Check if an order with this tx_signature already exists
+    const existing = this.db.prepare(
+      'SELECT id FROM orders WHERE tx_signature = ? LIMIT 1'
+    ).get(order.tx_signature) as { id: string } | undefined;
+
+    if (existing) {
+      // Update existing row — keep the highest realized_sol (final fill beats partial fill)
+      const existingFull = this.getOrder(existing.id);
+      const existingRealizedSol = existingFull?.realized_sol ?? 0;
+      const newRealizedSol = order.realized_sol ?? 0;
+
+      const updates: Partial<Order> = {
+        status: order.status,
+        confirmed_at: order.confirmed_at,
+        fee_sol: order.fee_sol,
+        priority_fee_paid_sol: order.priority_fee_paid_sol,
+        error: order.error,
+      };
+      // Only upgrade realized_sol if the new value is higher (final fill > partial fill)
+      if (newRealizedSol > existingRealizedSol) {
+        updates.realized_sol = order.realized_sol;
+        updates.realized_tokens = order.realized_tokens;
+        updates.realized_price = order.realized_price;
+        updates.realized_slippage_pct = order.realized_slippage_pct;
+      }
+      this.updateOrder(existing.id, updates);
+      // Update the in-memory order id to point to the canonical row
+      order.id = existing.id;
+    } else {
+      this.insertOrder(order);
+    }
   }
 
   updateOrder(id: string, updates: Partial<Order>): void {
@@ -262,8 +311,10 @@ export class PumpQuantDB {
   // ====== POSITIONS ======
 
   insertPosition(pos: Position): void {
+    // INSERT OR IGNORE: if a unique constraint fires (duplicate open position for same mint),
+    // silently drop the duplicate rather than creating a second row.
     this.db.prepare(`
-      INSERT INTO positions (id, mint, symbol, name, regime, entry_order_id,
+      INSERT OR IGNORE INTO positions (id, mint, symbol, name, regime, entry_order_id,
         entry_price_sol, entry_sol, entry_tokens, entry_timestamp, entry_route_mode,
         entry_config_version, current_tokens, current_value_sol, unrealized_pnl_sol,
         unrealized_pnl_pct, peak_net_exit_value, exit_orders, exit_price_sol, exit_sol,
@@ -318,6 +369,13 @@ export class PumpQuantDB {
       "SELECT * FROM positions WHERE mint = ? AND status IN ('open', 'reducing') LIMIT 1"
     ).get(mint) as any;
     return row ? this.mapPosition(row) : null;
+  }
+
+  // Returns ALL open positions for a mint — used for exit/close to avoid leaving ghost positions
+  getAllOpenPositionsByMint(mint: string): Position[] {
+    return (this.db.prepare(
+      "SELECT * FROM positions WHERE mint = ? AND status IN ('open', 'reducing') ORDER BY opened_at ASC"
+    ).all(mint) as any[]).map(this.mapPosition);
   }
 
   getAllPositions(limit: number = 100): Position[] {
@@ -449,12 +507,31 @@ export class PumpQuantDB {
 
   // ====== AGGREGATE QUERIES ======
 
-  getDailyPnl(): number {
+  /** Count new entries (buys) executed today — used to enforce max_daily_entries. */
+  getDailyEntryCount(): number {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const row = this.db.prepare(`
+      SELECT COUNT(*) as cnt
+      FROM positions
+      WHERE opened_at >= ?
+        AND is_paper = 0
+    `).get(startOfDay.getTime()) as any;
+    return row?.cnt ?? 0;
+  }
+
+  getDailyPnl(): number {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    // Positions table is kept deduplicated by migration 003 unique index + INSERT OR IGNORE.
+    // Simple sum of all closed positions today — no dedup gymnastics needed.
+    const row = this.db.prepare(`
       SELECT COALESCE(SUM(realized_pnl_sol), 0) as total
-      FROM positions WHERE closed_at >= ? AND status = 'closed'
+      FROM positions
+      WHERE closed_at >= ?
+        AND status = 'closed'
+        AND entry_sol > 0
+        AND realized_pnl_sol IS NOT NULL
     `).get(startOfDay.getTime()) as any;
     return row?.total ?? 0;
   }

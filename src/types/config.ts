@@ -72,8 +72,13 @@ export interface EntryConfig {
   max_slippage_pct: number;
   ev_wait_horizon_s: number;
   ev_enter_horizon_s: number;
+  /** Minimum P_continuation required to enter. Tokens with P_cont below this are rejected
+   *  regardless of EV — guards against entering on weak/noisy signals. */
+  min_p_continuation: number;
   probability_weights: ProbabilityWeights;
   calibration: CalibrationConfig;
+  /** Minimum number of raw trades before analysis is allowed (cold-start bootstrap guard) */
+  min_trades_for_analysis?: number;
 }
 
 export interface ExitConfig {
@@ -86,6 +91,11 @@ export interface ExitConfig {
   time_decay_start_s: number;
   time_decay_pressure_per_s: number;
   max_hold_time_s: number;
+  take_profit_pct?: number;            // Hard take-profit % (e.g. 0.5 = exit at +50%)
+  trailing_stop_activation_pct?: number; // Activate trailing stop after this gain % (e.g. 0.025 = +2.5%)
+  trailing_stop_distance_pct?: number;   // Trail distance from peak (e.g. 0.012 = 1.2%)
+  tier1_profit_pct?: number;             // Partial reduce trigger % (e.g. 0.04 = +4%)
+  tier1_reduce_pct?: number;             // How much to reduce at tier1 (e.g. 50 = sell 50%)
 }
 
 export interface RiskConfig {
@@ -94,7 +104,10 @@ export interface RiskConfig {
   max_alloc_pct: number;
   max_positions: number;
   quick_spend_sol: number;
+  max_position_size_sol: number;
+  max_daily_entries: number;
   raw_stop_pct: number;
+  take_profit_pct: number;
   liquidity_cap_sol: number;
   slippage_cap_sol: number;
   max_daily_loss_sol: number;

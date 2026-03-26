@@ -194,23 +194,27 @@ export class CoreCastClient extends EventEmitter {
           DEXTrades(
             where: {
               Trade: {
-                Dex: { ProtocolFamily: { is: "Pump.fun" } }
+                Dex: { ProgramAddress: { is: "${PUMP_FUN_PROGRAM}" } }
               }
-              Transaction: { Result: { Success: true } }
             }
           ) {
+            Block { Slot Time }
             Trade {
-              Currency { MintAddress Name Symbol }
-              Side { Type Amount { Amount } Currency { MintAddress } }
-              Dex { ProtocolFamily }
-              Price
-              Amount
+              Buy {
+                Amount
+                Account { Address }
+                Price
+                Currency { MintAddress Name }
+              }
+              Sell {
+                Amount
+                Currency { MintAddress Name }
+              }
             }
             Transaction {
               Signature
               Signer
             }
-            Block { Time Slot }
           }
         }
       }

@@ -149,21 +149,33 @@ describe('evaluateEntry', () => {
       creator_wallet_prior: { creator_sell_flag: true },
     });
     const result = evaluateEntry(
-      makePacket({ regime: Regime.MID_CURVE }), makeProbabilities(), features, config, 0, 0, false
+      makePacket({ regime: Regime.MID_CURVE }), makeProbabilities(), features, config, 0, 0, 0, false
     );
     expect(result.shouldEnter).toBe(false);
     expect(result.hardFilterRejection).toBe('creator_sold');
   });
 
-  it('rejects excluded regime (EARLY_CURVE now excluded per QUANT_STRATEGY)', () => {
+  it('rejects EXCLUDED regime (mayhem/tokenized-agent tokens)', () => {
     const result = evaluateEntry(
-      makePacket({ regime: Regime.EARLY_CURVE }),
-      makeProbabilities(),
+      makePacket({ regime: Regime.EXCLUDED }),
+      makeProbabilities({ P_continuation_5s: 0.85, P_continuation_15s: 0.85 }),
       makeFeatures(),
-      config, 0, 0, false
+      config, 0, 0, 0, false
     );
     expect(result.shouldEnter).toBe(false);
     expect(result.hardFilterRejection).toBe('excluded_regime');
+  });
+
+  it('rejects when P_continuation below min_p_continuation threshold', () => {
+    // Default config has min_p_continuation=0.68 (5s horizon); P_cont=0.55 should fail
+    const result = evaluateEntry(
+      makePacket({ regime: Regime.MID_CURVE }),
+      makeProbabilities({ P_continuation_5s: 0.55, P_continuation_15s: 0.55 }),
+      makeFeatures(),
+      config, 0, 0, 0, false
+    );
+    expect(result.shouldEnter).toBe(false);
+    expect(result.hardFilterRejection).toContain('p_continuation_low');
   });
 
   it('rejects when max positions reached', () => {
@@ -171,7 +183,7 @@ describe('evaluateEntry', () => {
       makePacket({ regime: Regime.MID_CURVE }),
       makeProbabilities(),
       makeFeatures(),
-      config, config.risk.max_positions, 0, false
+      config, config.risk.max_positions, 0, 0, false
     );
     expect(result.shouldEnter).toBe(false);
     expect(result.hardFilterRejection).toBe('max_positions');
@@ -182,7 +194,7 @@ describe('evaluateEntry', () => {
       breadth_topology: { unique_buyers_total: 2, breadth_score: 0.1 },
     });
     const result = evaluateEntry(
-      makePacket(), makeProbabilities(), features, config, 0, 0, false
+      makePacket(), makeProbabilities(), features, config, 0, 0, 0, false
     );
     expect(result.shouldEnter).toBe(false);
   });
@@ -192,7 +204,7 @@ describe('evaluateEntry', () => {
       manipulation_distribution: { hard_shock: true, manipulation_penalty: 0.9 },
     });
     const result = evaluateEntry(
-      makePacket(), makeProbabilities(), features, config, 0, 0, false
+      makePacket(), makeProbabilities(), features, config, 0, 0, 0, false
     );
     expect(result.shouldEnter).toBe(false);
   });
@@ -201,7 +213,7 @@ describe('evaluateEntry', () => {
     const packet = makePacket({ created_at: Date.now() - 30000 }); // 30s old
     const probs = makeProbabilities({ P_continuation_5s: 0.75, P_reversal_5s: 0.25 });
     const features = makeFeatures();
-    const result = evaluateEntry(packet, probs, features, config, 0, 0, false);
+    const result = evaluateEntry(packet, probs, features, config, 0, 0, 0, false);
 
     // Should compute positive EV
     expect(result.ev.EV_enter_now).toBeGreaterThan(0);
@@ -222,7 +234,7 @@ describe('evaluateEntry', () => {
     const probs = makeProbabilities({ P_continuation_5s: 0.65, P_reversal_5s: 0.35 });
     const features = makeFeatures();
     const packet = makePacket({ created_at: Date.now() - 30000 });
-    const result = evaluateEntry(packet, probs, features, config, 0, 0, false);
+    const result = evaluateEntry(packet, probs, features, config, 0, 0, 0, false);
     // friction_cost_now must be > 0 (fees exist)
     expect(result.ev.friction_cost_now).toBeGreaterThan(0);
   });

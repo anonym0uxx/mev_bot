@@ -60,6 +60,78 @@ export function evaluateExit(
     };
   }
 
+  // ====== TRAILING STOP with TIERED PROFIT TAKING ======
+  // Activate trailing stop after +2.5% gain. Trail at 1.2% distance.
+  // Tiered: at +4% gain, trigger a 50% partial reduce.
+  const gainPct = position.entry_sol > 0
+    ? (position.current_value_sol - position.entry_sol) / position.entry_sol
+    : 0;
+  const TRAILING_ACTIVATION = config.exit.trailing_stop_activation_pct ?? 0.025; // activate at +2.5%
+  const TRAILING_DISTANCE = config.exit.trailing_stop_distance_pct ?? 0.012;     // trail 1.2% behind peak gain
+  const TIER1_TRIGGER = config.exit.tier1_profit_pct ?? 0.04;                    // 50% reduce at +4%
+  const TIER1_PCT = config.exit.tier1_reduce_pct ?? 50;
+
+  // Track peak gain in mfe_sol (already tracked as max favorable excursion)
+  if (gainPct > 0 && position.mfe_sol < position.current_value_sol) {
+    position.mfe_sol = position.current_value_sol;
+  }
+
+  // Hard take-profit
+  const takeProfitPct = config.exit.take_profit_pct;
+  if (takeProfitPct && takeProfitPct > 0 && gainPct >= takeProfitPct) {
+    return {
+      shouldExit: true,
+      shouldReduce: false,
+      exitPct: 100,
+      reason: ExitReason.EV_NEGATIVE,
+      ev: computeExitEV(packet, position, probabilities, features, config),
+    };
+  }
+
+  // Tiered exit: sell 50% at +4% if not already reduced
+  if (gainPct >= TIER1_TRIGGER && position.exit_orders.length === 0) {
+    return {
+      shouldExit: false,
+      shouldReduce: true,
+      exitPct: TIER1_PCT,
+      reason: ExitReason.EV_NEGATIVE,
+      ev: computeExitEV(packet, position, probabilities, features, config),
+    };
+  }
+
+  // Trailing stop: if activated and price retraces 1.2% from peak
+  if (gainPct >= TRAILING_ACTIVATION && position.mfe_sol > 0) {
+    const peakGainPct = (position.mfe_sol - position.entry_sol) / position.entry_sol;
+    const retraceFromPeak = peakGainPct - gainPct;
+    if (retraceFromPeak >= TRAILING_DISTANCE) {
+      return {
+        shouldExit: true,
+        shouldReduce: false,
+        exitPct: 100,
+        reason: ExitReason.PEAK_RETRACE,
+        ev: computeExitEV(packet, position, probabilities, features, config),
+      };
+    }
+  }
+
+  // ====== 10.2c DOA EXIT — Dead on Arrival ======
+  // Token never moved: MFE≈0 after 15s AND unrealized loss > 5%
+  // Cuts losers before -40% stop fires. Expected outcome: ~-3% instead of -40%.
+  const holdSoFar = ageS(position.entry_timestamp);
+  const unrealizedPct = position.current_value_sol > 0
+    ? (position.current_value_sol - position.entry_sol) / position.entry_sol
+    : 0;
+  const noMFE = position.mfe_sol < position.entry_sol * 0.02; // MFE < 2% of entry
+  if (holdSoFar > 15 && noMFE && unrealizedPct < -0.05) {
+    return {
+      shouldExit: true,
+      shouldReduce: false,
+      exitPct: 100,
+      reason: ExitReason.TIME_DECAY, // Closest semantic match
+      ev: computeExitEV(packet, position, probabilities, features, config),
+    };
+  }
+
   // ====== 10.3 NET MARKING ======
   const ev = computeExitEV(packet, position, probabilities, features, config);
 
@@ -256,10 +328,10 @@ function computeExitEV(
     - P_manipulation * shockCost
     - extraFrictionIfHold;
 
-  // HoldEdge IS EV_hold_h — it's the expected gain from holding vs exiting now.
-  // Previously this was EV_hold_h - ExpectedNetExitNow which compared an
-  // incremental gain to a lump-sum value, making it always deeply negative.
-  const HoldEdge = EV_hold_h;
+  // FIX #3: Compare holding to exiting NOW (liquidation value)
+  // HoldEdge = expected gain from holding MINUS what we'd get by exiting now
+  // If HoldEdge < 0, exiting is better (stops the bleeding)
+  const HoldEdge = EV_hold_h - (ExpectedNetExitNow * 0.001); // Tiny discount for exit friction already included
 
   return {
     ExpectedNetExitNow,
