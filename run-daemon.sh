@@ -14,7 +14,16 @@ fi
 
 cleanup() {
     if [ -f "$PIDFILE" ]; then
-        kill $(cat "$PIDFILE") 2>/dev/null
+        DPID=$(cat "$PIDFILE")
+        echo "[$(date)] Graceful shutdown: sending SIGTERM to daemon $DPID" >> logs/supervisor.log
+        kill -TERM $DPID 2>/dev/null
+        # Wait up to 8s for clean shutdown (streams disconnect)
+        for i in $(seq 1 8); do
+            sleep 1
+            kill -0 $DPID 2>/dev/null || break
+        done
+        # Force-kill only if still running after grace period
+        kill -0 $DPID 2>/dev/null && kill -9 $DPID 2>/dev/null
         rm -f "$PIDFILE"
     fi
     rm -f "$LOCKFILE"
@@ -22,9 +31,18 @@ cleanup() {
 }
 trap cleanup EXIT SIGTERM SIGINT
 
-# Kill any existing daemon instances
-pkill -9 -f "node dist/daemon/index.js" 2>/dev/null
-sleep 2
+# Gracefully stop any existing daemon (SIGTERM first, not SIGKILL)
+if [ -f "$PIDFILE" ]; then
+    OLD_PID=$(cat "$PIDFILE")
+    echo "[$(date)] Stopping existing daemon $OLD_PID gracefully..." >> logs/supervisor.log
+    kill -TERM $OLD_PID 2>/dev/null
+    for i in $(seq 1 8); do sleep 1; kill -0 $OLD_PID 2>/dev/null || break; done
+    kill -0 $OLD_PID 2>/dev/null && kill -9 $OLD_PID 2>/dev/null
+    rm -f "$PIDFILE"
+fi
+# Also catch any stray daemon not tracked by pidfile
+pkill -TERM -f "node dist/daemon/index.js" 2>/dev/null
+sleep 3  # Give streams time to close cleanly
 
 echo "[$(date)] Supervisor started (PID $$)" >> logs/supervisor.log
 
