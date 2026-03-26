@@ -76,7 +76,7 @@
         "max_hold_time_s": 120,
         "take_profit_pct": 0.45,
         "trailing_stop_activation_pct": 0.12,
-        "trailing_stop_distance_pct": 0.02,
+        "trailing_stop_distance_pct": 0.05,
         "tier1_profit_pct": 0.15,
         "tier1_reduce_pct": 50
     },
