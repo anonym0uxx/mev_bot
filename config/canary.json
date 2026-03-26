@@ -10,7 +10,7 @@
         "exclude_tokenized_agent": true
     },
     "manipulation": {
-        "hard_threshold": 0.22,
+        "hard_threshold": 0.55,
         "creator_sell_instant_exit": true,
         "same_size_print_min_count": 5,
         "same_size_print_window_s": 15,

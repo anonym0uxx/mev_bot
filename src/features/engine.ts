@@ -40,6 +40,8 @@ export interface TokenTradeState {
   multimodalContext: MultimodalContext | null;
   /** Last feature computation timestamp */
   lastFeatureCompute: number;
+  /** Unix ms when this token was created on-chain — used for maturity-aware manipulation gating */
+  tokenCreatedAt: number;
 }
 
 export class FeatureEngine {
@@ -57,7 +59,7 @@ export class FeatureEngine {
   }
 
   /** Initialize tracking for a new token */
-  initToken(mint: string, creator: string): void {
+  initToken(mint: string, creator: string, tokenCreatedAt?: number): void {
     if (this.tokenStates.has(mint)) return;
 
     this.tokenStates.set(mint, {
@@ -68,6 +70,7 @@ export class FeatureEngine {
       walletBalances: new Map(),
       prevVelocities: new Map(),
       creatorContext: null,
+      tokenCreatedAt: tokenCreatedAt ?? Date.now(),
       frictionContext: {
         expectedEntrySlippage: this.config.friction.default_entry_slippage_pct,
         expectedExitSlippage: this.config.friction.default_exit_slippage_pct,
@@ -174,6 +177,7 @@ export class FeatureEngine {
         uniqueBuyers: state.uniqueBuyers,
         windows: this.windows,
         now,
+        tokenCreatedAt: state.tokenCreatedAt,
       },
       this.config.manipulation
     );

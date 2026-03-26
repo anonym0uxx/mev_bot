@@ -554,8 +554,8 @@ class StrategyDaemon {
       return;
     }
 
-    // Initialize feature tracking
-    this.featureEngine.initToken(event.mint, event.traderPublicKey);
+    // Initialize feature tracking — pass token creation timestamp for maturity-aware manipulation gating
+    this.featureEngine.initToken(event.mint, event.traderPublicKey, packet.created_at);
 
     // Subscribe to token trades on both feeds
     this.feed.subscribeTokenTrades([event.mint]);

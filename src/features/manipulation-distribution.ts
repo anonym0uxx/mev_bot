@@ -17,6 +17,8 @@ export interface ManipulationContext {
   uniqueBuyers: Set<string>;
   windows: number[];
   now: number;
+  /** Unix ms when this token was created on-chain. Used for maturity-aware signal gating. */
+  tokenCreatedAt?: number;
 }
 
 /**
@@ -26,12 +28,18 @@ export function computeManipulationDistribution(
   ctx: ManipulationContext,
   config: ManipulationConfig
 ): ManipulationDistributionFeatures {
-  const { trades, creator, walletBalances, uniqueBuyers, now } = ctx;
+  const { trades, creator, walletBalances, uniqueBuyers, now, tokenCreatedAt } = ctx;
+  const tokenAgeSec = tokenCreatedAt ? (now - tokenCreatedAt) / 1000 : 999;
+  const lifetimeBuyers = uniqueBuyers.size;
 
-  // 1. Creator sell detection
-  const creatorSell = detectCreatorSell(trades, creator);
+  // 1. Creator sell detection — with lookback window + minimum size threshold.
+  //    Ignores dust sells (< 0.05 SOL) and sells older than 5 min (deployment artifacts).
+  //    Rationale: Pump.fun creators routinely sell tiny amounts within seconds of launch
+  //    to recoup deployment gas or set aside team allocation. These are NOT rug signals.
+  const creatorSell = detectCreatorSell(trades, creator, now);
 
-  // 2. Same-size prints detection
+  // 2. Same-size prints detection — with minimum trade size filter.
+  //    Ignores micro trades (< 0.05 SOL) to avoid false-positives from min-buy clustering.
   const sameSizePrintCount = detectSameSizePrints(
     trades, config.same_size_print_window_s, config.same_size_tolerance_pct, now
   );
@@ -39,17 +47,23 @@ export function computeManipulationDistribution(
   // 3. Price up / breadth flat divergence
   const priceBreadthDivergence = detectPriceBreadthDivergence(trades, uniqueBuyers, now);
 
-  // 4. Concentration worsening
-  const concentrationWorsening = detectConcentrationWorsening(trades, walletBalances);
+  // 4. Concentration worsening — skip if < 25 wallet entries or token age < 180s.
+  //    Early tokens naturally have high concentration (one whale = 80% of 5 holders).
+  //    The indexOf value-equality bug is also fixed: use walletBalances keys directly.
+  const concentrationWorsening = detectConcentrationWorsening(trades, walletBalances, tokenAgeSec);
 
-  // 5. Cluster correlation
-  const clusterCorrelation = detectClusterCorrelation(trades, now);
+  // 5. Cluster correlation — with 100ms bucket (vs old 500ms) + dynamic denominator.
+  //    Organic FOMO spreads across 100-500ms; real sybil farms operate in <50ms lockstep.
+  //    Suppress entirely during the first 60s (launch rush is always high-concurrency).
+  const clusterCorrelation = detectClusterCorrelation(trades, now, tokenAgeSec, lifetimeBuyers);
 
   // 6. Suspicious burst behavior
   const suspiciousBurst = detectSuspiciousBurst(trades, now);
 
-  // 7. Slippage shock without healthy breadth
-  const slippageShock = detectSlippageShock(trades, uniqueBuyers, now);
+  // 7. Slippage shock — gated on token maturity.
+  //    Pump.fun bonding curve produces 10-40% price impact per trade by design on new tokens.
+  //    Skip entirely if lifetime buyers < 20 or token age < 120s.
+  const slippageShock = detectSlippageShock(trades, uniqueBuyers, now, tokenAgeSec, lifetimeBuyers);
 
   // 8. Distribution event signatures
   const distributionSignatures = detectDistributionSignatures(trades, walletBalances, creator);
@@ -97,34 +111,67 @@ export function computeManipulationDistribution(
   };
 }
 
-/** Detect if creator has sold tokens */
-function detectCreatorSell(trades: TradeDataPoint[], creator: string): boolean {
-  return trades.some(t => t.traderPublicKey === creator && t.txType === 'sell');
+/**
+ * Detect if creator has made a meaningful sell.
+ * Ignores:
+ *  - Sells older than 5 minutes (deployment/gas-recoup artifacts)
+ *  - Sells smaller than 0.05 SOL (dust / team allocation micro-sales)
+ * Rationale: Pump.fun creators routinely sell a dust amount in the first 1-3 seconds
+ * to recoup launch costs. This is NOT a rug signal. Real rugs involve the creator
+ * dumping a material percentage of supply (typically 0.1+ SOL equivalent).
+ */
+function detectCreatorSell(
+  trades: TradeDataPoint[],
+  creator: string,
+  now: number,
+  lookbackMs = 300_000,       // 5 minute window — ignores old history
+  minSellSolAmount = 0.05     // ignore dust sells below this threshold
+): boolean {
+  const cutoff = now - lookbackMs;
+  return trades.some(
+    t =>
+      t.traderPublicKey === creator &&
+      t.txType === 'sell' &&
+      t.timestamp >= cutoff &&
+      (t.solAmount ?? 0) >= minSellSolAmount
+  );
 }
 
 /**
  * Detect repeated same-size trades (wash trading indicator).
  * Counts trades within window that have nearly identical SOL amounts.
+ *
+ * Fixes:
+ * - Ignores micro trades < 0.05 SOL: min-buy on Pump.fun is often 0.001-0.005 SOL.
+ *   Hundreds of organic buyers at the minimum would falsely cluster as "same size prints".
+ * - Uses symmetric reference (average of pair) for tolerance, not sizes[i] alone.
+ *   The old approach was asymmetric: A vs B used A's tolerance; B vs A used B's tolerance.
+ *   This caused grouping to depend on iteration order.
  */
 function detectSameSizePrints(
   trades: TradeDataPoint[],
   windowS: number,
   tolerancePct: number,
-  now: number
+  now: number,
+  minAbsoluteSolSize = 0.05   // ignore micro trades — they're likely min-buys, not wash trades
 ): number {
   const cutoff = now - windowS * 1000;
-  const recentTrades = trades.filter(t => t.timestamp >= cutoff);
+  // Filter: recent AND above minimum trade size
+  const recentTrades = trades.filter(
+    t => t.timestamp >= cutoff && (t.solAmount ?? 0) >= minAbsoluteSolSize
+  );
   if (recentTrades.length < 2) return 0;
 
-  // Group by similar sizes
-  let maxGroupSize = 0;
   const sizes = recentTrades.map(t => t.solAmount);
+  let maxGroupSize = 0;
 
   for (let i = 0; i < sizes.length; i++) {
     let groupSize = 1;
     for (let j = i + 1; j < sizes.length; j++) {
       const diff = Math.abs(sizes[i] - sizes[j]);
-      const threshold = sizes[i] * tolerancePct;
+      // Use average of the pair as reference — symmetric, stable across iteration order
+      const ref = (sizes[i] + sizes[j]) / 2;
+      const threshold = ref * tolerancePct;
       if (diff <= threshold) {
         groupSize++;
       }
@@ -170,69 +217,105 @@ function detectPriceBreadthDivergence(
 /**
  * Detect concentration worsening: top holders gaining share.
  * Uses recent trades to see if concentration is increasing.
+ *
+ * Fixes:
+ * - Raised holder count guard from 10 → 25: young tokens naturally have high concentration.
+ * - Added tokenAgeSec gate: skip if token < 180s old.
+ * - Fixed indexOf value-equality bug: old code used sortedBalances.indexOf(balance) which
+ *   does float equality comparison — two wallets with identical balances both map to rank 0.
+ *   Fix: sort wallet entries by balance (addr, balance) pairs and rank by address, not value.
+ * - Raised top5Share threshold from 0.5 to 0.7: on early tokens, one whale owning 70% is normal.
  */
 function detectConcentrationWorsening(
   trades: TradeDataPoint[],
-  walletBalances: Map<string, number>
+  walletBalances: Map<string, number>,
+  tokenAgeSec: number
 ): number {
-  const sortedBalances = Array.from(walletBalances.values())
-    .filter(b => b > 0)
-    .sort((a, b) => b - a);
+  // Too young to judge — early concentration is structural, not adversarial
+  if (tokenAgeSec < 180) return 0;
 
-  // Need enough holders to meaningfully detect concentration changes
-  // With < 10 holders, high concentration is expected for new tokens
-  if (sortedBalances.length < 10) return 0;
+  // Build sorted entries as (address, balance) pairs — preserves identity across equal balances
+  const entries = Array.from(walletBalances.entries())
+    .filter(([_, b]) => b > 0)
+    .sort((a, b) => b[1] - a[1]);
 
-  const totalSupply = sortedBalances.reduce((a, b) => a + b, 0);
+  // Need enough distinct holders to meaningfully detect concentration changes
+  if (entries.length < 25) return 0;
+
+  const totalSupply = entries.reduce((s, [_, b]) => s + b, 0);
   if (totalSupply <= 0) return 0;
 
-  const top5Share = sortedBalances.slice(0, 5).reduce((a, b) => a + b, 0) / totalSupply;
+  const top5Addresses = new Set(entries.slice(0, 5).map(([addr]) => addr));
+  const top5Share = entries.slice(0, 5).reduce((s, [_, b]) => s + b, 0) / totalSupply;
 
-  // Only flag if top5 share is extreme AND growing via recent large buys
-  if (top5Share < 0.5) return 0; // Healthy concentration, no concern
+  // Only flag if concentration is extreme — 70%+ in top 5
+  if (top5Share < 0.7) return 0;
 
-  // Recent large buys by existing top holders indicate active accumulation
-  const recentBigBuys = trades.filter(t => {
-    if (t.txType !== 'buy') return false;
-    const balance = walletBalances.get(t.traderPublicKey) || 0;
-    // Only count if this wallet is already a top-5 holder AND buying more
-    const rank = sortedBalances.indexOf(balance);
-    return rank >= 0 && rank < 5 && t.solAmount > 0.1;
-  });
+  // Recent large buys by existing top-5 holders indicate active re-accumulation
+  // (correctly uses address identity, not balance value — fixes the indexOf bug)
+  const recentBigBuys = trades.filter(t =>
+    t.txType === 'buy' &&
+    top5Addresses.has(t.traderPublicKey) &&
+    (t.solAmount ?? 0) > 0.1
+  );
 
   if (recentBigBuys.length === 0) return 0;
 
-  // Scale by how extreme the concentration is above 50%
-  const worseningSignal = (top5Share - 0.5) * 2; // 0 at 50%, 1 at 100%
+  // Scale by how extreme the concentration is above 70%
+  const worseningSignal = (top5Share - 0.7) / 0.3; // 0 at 70%, 1 at 100%
   return Math.min(1, worseningSignal);
 }
 
 /**
  * Detect cluster correlation: multiple wallets trading in tight temporal correlation.
- * Indicates coordinated group activity.
+ * Indicates coordinated group activity (sybil farms, bot clusters).
+ *
+ * Fixes:
+ * - Reduced bucket size from 500ms → 100ms: organic FOMO spreads across 100-500ms due to
+ *   network and human latency. Real sybil farms submit transactions in near-lockstep (<50ms).
+ *   100ms buckets surgically target the latter while ignoring the former.
+ * - Dynamic denominator scaled to lifetime buyer count: the old fixed denominator of 10
+ *   fired at 7 wallets regardless of how many total buyers existed. On a token with 50
+ *   buyers, 7 in 100ms is suspicious. On a token with 500 buyers during a viral moment, it's noise.
+ * - Suppressed entirely during the first 60 seconds: launch rushes are always high-concurrency.
+ *   Applying this filter at token age < 60s blocks every trending launch.
+ * - Minimum 5 wallets in bucket to evaluate: prevents single-trade buckets from scoring.
  */
-function detectClusterCorrelation(trades: TradeDataPoint[], now: number): number {
+function detectClusterCorrelation(
+  trades: TradeDataPoint[],
+  now: number,
+  tokenAgeSec: number,
+  lifetimeBuyers: number
+): number {
+  // Suppress entirely during launch rush — organic FOMO is indistinguishable from bot clusters
+  if (tokenAgeSec < 60) return 0;
+
   const window5s = trades.filter(t => t.timestamp >= now - 5000);
   if (window5s.length < 3) return 0;
 
-  // Group trades into 500ms buckets
+  // 100ms buckets — catches sybil lockstep (<50ms spread) without penalizing organic crowd buys
   const buckets = new Map<number, TradeDataPoint[]>();
   for (const t of window5s) {
-    const bucket = Math.floor(t.timestamp / 500);
+    const bucket = Math.floor(t.timestamp / 100);
     const existing = buckets.get(bucket) || [];
     existing.push(t);
     buckets.set(bucket, existing);
   }
 
-  // Find max unique wallets in a single bucket
+  // Dynamic denominator: scale with how many buyers the token already has
+  // At 10 lifetime buyers, denominator=10. At 50 buyers, denominator=20. Caps at 30.
+  const denominator = Math.min(30, Math.max(10, Math.floor(lifetimeBuyers * 0.4)));
+
   let maxWalletsInBucket = 0;
   for (const [_, bucketTrades] of buckets) {
     const uniqueWallets = new Set(bucketTrades.map(t => t.traderPublicKey));
-    maxWalletsInBucket = Math.max(maxWalletsInBucket, uniqueWallets.size);
+    // Require minimum 5 wallets in a bucket to score — prevents single-trade noise
+    if (uniqueWallets.size >= 5) {
+      maxWalletsInBucket = Math.max(maxWalletsInBucket, uniqueWallets.size);
+    }
   }
 
-  // High correlation if many unique wallets trade in the same 500ms window
-  return Math.min(1, maxWalletsInBucket / 10);
+  return Math.min(1, maxWalletsInBucket / denominator);
 }
 
 /**
@@ -260,18 +343,32 @@ function detectSuspiciousBurst(trades: TradeDataPoint[], now: number): number {
 }
 
 /**
- * Detect slippage shock: sudden increase in slippage without healthy breadth.
- * Uses marketCapSol changes as proxy for slippage.
+ * Detect slippage shock: sudden large price move without healthy buyer breadth.
+ * Uses marketCapSol changes as proxy for slippage impact.
+ *
+ * Fixes:
+ * - Gated on token maturity: skip entirely if lifetime buyers < 20 OR token age < 120s.
+ *   Pump.fun bonding curve produces 10-40% price impact per early trade BY DESIGN.
+ *   Applying this filter to a 3-buyer token fires on every legitimate launch.
+ * - Actually uses the passed-in uniqueBuyers parameter (previously a dead argument).
+ *   Old code recomputed breadth from only the 5s window, ignoring all-time breadth context.
+ * - Raised price change threshold from 0.1 (10%) to 0.25 (25%) for mature tokens.
+ *   10% is within normal bonding curve mechanics; 25% is a genuine shock on a liquid token.
+ * - Dynamic breadth requirement: scales with lifetime buyer count, not hardcoded at 5.
  */
 function detectSlippageShock(
   trades: TradeDataPoint[],
   uniqueBuyers: Set<string>,
-  now: number
+  now: number,
+  tokenAgeSec: number,
+  lifetimeBuyers: number
 ): number {
+  // Gate on maturity: too young or too few buyers → bonding curve mechanics, not manipulation
+  if (tokenAgeSec < 120 || lifetimeBuyers < 20) return 0;
+
   const window5s = trades.filter(t => t.timestamp >= now - 5000);
   if (window5s.length < 3) return 0;
 
-  // Look for large price moves with few unique participants
   const priceChanges: number[] = [];
   for (let i = 1; i < window5s.length; i++) {
     const prev = window5s[i - 1].marketCapSol;
@@ -282,12 +379,16 @@ function detectSlippageShock(
   }
 
   const maxPriceChange = Math.max(0, ...priceChanges);
-  const uniqueIn5s = new Set(window5s.map(t => t.traderPublicKey));
-  const breadthOk = uniqueIn5s.size >= 5;
 
-  // Shock: large price move with low breadth
-  if (maxPriceChange > 0.1 && !breadthOk) {
-    return Math.min(1, maxPriceChange / 0.2);
+  // Use lifetime breadth (passed-in uniqueBuyers) — not just the 5s window.
+  // Dynamic breadth threshold: scale with token maturity (min 5, up to 15% of lifetime buyers)
+  const minBreadth = Math.max(5, Math.floor(lifetimeBuyers * 0.15));
+  const uniqueIn5s = new Set(window5s.map(t => t.traderPublicKey));
+  const breadthOk = uniqueIn5s.size >= minBreadth || uniqueBuyers.size >= minBreadth * 2;
+
+  // Shock: large price move (>25% on mature token) with genuinely low participation
+  if (maxPriceChange > 0.25 && !breadthOk) {
+    return Math.min(1, maxPriceChange / 0.5);
   }
   return 0;
 }
