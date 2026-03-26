@@ -5,7 +5,7 @@
         "late_curve_max_progress": 0.75,
         "graduation_boundary_start": 0.75,
         "graduation_boundary_end": 1,
-        "max_token_age_s": 45,
+        "max_token_age_s": 120,
         "exclude_mayhem": true,
         "exclude_tokenized_agent": true
     },
@@ -41,9 +41,9 @@
     },
     "entry": {
         "min_entry_edge": 0.0018,
-        "observation_window_s": 3,
+        "observation_window_s": 60,
         "min_breadth_for_entry": 0.4,
-        "min_unique_buyers": 5,
+        "min_unique_buyers": 20,
         "max_concentration_top10": 0.45,
         "max_slippage_pct": 0.08,
         "ev_wait_horizon_s": 5,
@@ -86,11 +86,11 @@
         "momentum_reversal_min_mfe_pct": 0.05
     },
     "risk": {
-        "bankroll_sol": 0.766,
+        "bankroll_sol": 0.71,
         "risk_per_trade_pct": 0.005,
         "max_alloc_pct": 0.03,
         "max_positions": 1,
-        "quick_spend_sol": 0.01,
+        "quick_spend_sol": 0.005,
         "raw_stop_pct": 0.15,
         "liquidity_cap_sol": 0.2,
         "slippage_cap_sol": 0.1,
