@@ -95,7 +95,7 @@
     },
     "execution": {
         "default_route_mode": "local",
-        "default_slippage_bps": 200,
+        "default_slippage_bps": 100,
         "default_priority_fee_sol": 0.0001,
         "skip_preflight": true,
         "confirmation_timeout_ms": 5000,
@@ -134,13 +134,13 @@
         "pump_swap_fee_pct": 0.0025,
         "pump_portal_fee_pct": 0.005,
         "solana_base_fee_sol": 5e-06,
-        "priority_fee_default_sol": 0.0001,
         "regime_fee_overrides": {
             "POST_MIGRATION": {
                 "pump_fee_pct": 0,
                 "pump_swap_fee_pct": 0.003
             }
-        }
+        },
+        "priority_fee_default_sol": 0.0001
     },
     "llm": {
         "provider": "anthropic",

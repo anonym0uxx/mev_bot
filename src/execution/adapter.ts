@@ -148,7 +148,8 @@ export class ExecutionAdapter {
       order.realized_tokens = 0; // Will be updated from on-chain data
       order.realized_price = intent.size_sol; // Simplified — real impl parses logs
       order.realized_slippage_pct = 0; // Computed from expected vs realized
-      order.fee_sol = this.config.fees.pump_fee_pct * intent.size_sol + this.config.fees.solana_base_fee_sol;
+      // FIX: include pump_portal_fee_pct (0.5%) — was previously only counting pump_fee_pct (1%)
+      order.fee_sol = (this.config.fees.pump_fee_pct + this.config.fees.pump_portal_fee_pct) * intent.size_sol + this.config.fees.solana_base_fee_sol;
       order.priority_fee_paid_sol = intent.priority_fee_sol;
 
       this.db.updateOrder(order.id, {
@@ -214,9 +215,14 @@ export class ExecutionAdapter {
       order.tx_signature = result.signature;
       order.confirmed_at = result.confirmedAt;
       order.status = OrderStatus.CONFIRMED;
-      order.realized_sol = intent.size_sol;
-      order.realized_slippage_pct = 0;
-      order.fee_sol = this.config.fees.pump_fee_pct * intent.size_sol + this.config.fees.solana_base_fee_sol;
+      // FIX: for sells, realized_sol should be estimated SOL received (after slippage).
+      // PumpPortal doesn't return the exact fill amount; approximate with configured slippage.
+      // This gives more accurate P&L than using input notional (which ignored slippage entirely).
+      const estimatedSlippage = (intent.slippage_bps / 10000) * 0.5; // assume ~50% of max slippage is realized
+      order.realized_sol = intent.size_sol * (1 - estimatedSlippage);
+      order.realized_slippage_pct = estimatedSlippage;
+      // FIX: include pump_portal_fee_pct (0.5%) — was only counting pump_fee_pct (1%)
+      order.fee_sol = (this.config.fees.pump_fee_pct + this.config.fees.pump_portal_fee_pct) * intent.size_sol + this.config.fees.solana_base_fee_sol;
       order.priority_fee_paid_sol = intent.priority_fee_sol;
 
       this.db.updateOrder(order.id, {
