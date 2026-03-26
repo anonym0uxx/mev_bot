@@ -158,8 +158,9 @@ export function evaluateEntry(
   // Adaptive edge threshold — uses rolling p50 of observed edge distribution.
   // Falls back to config.entry.min_entry_edge if window is too small (cold start).
   // This prevents "threshold above model ceiling" failures permanently.
-  const adaptiveMinEdge = getMinEdge(0.50);
-  const effectiveMinEdge = Math.max(adaptiveMinEdge, config.entry.min_entry_edge);
+  // In paper mode: skip adaptive floor entirely — purpose is data collection, not edge selectivity.
+  const adaptiveMinEdge = isPaper ? 0 : getMinEdge(0.50);
+  const effectiveMinEdge = isPaper ? 0 : Math.max(adaptiveMinEdge, config.entry.min_entry_edge);
 
   // Warn if config threshold is above empirical ceiling (would block all entries)
   if (detectCeilingViolation(config.entry.min_entry_edge)) {
