@@ -130,6 +130,29 @@ class StrategyDaemon {
     this.learningLedger = new LearningLedger(this.db);
     this.learningJobs = new LearningJobScheduler(this.db, this.configManager);
 
+    // Wire immediate alerts to Telegram via OpenClaw webhook
+    // TELEGRAM_CHAT_ID env var should be set to the Alon's chat ID
+    const telegramChatId = process.env.TELEGRAM_CHAT_ID || '5024153101';
+    const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
+    if (telegramBotToken) {
+      this.alertSystem.onImmediate(async (alert) => {
+        try {
+          const url = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
+          const body = JSON.stringify({
+            chat_id: telegramChatId,
+            text: alert.message,
+            parse_mode: 'Markdown',
+          });
+          await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+        } catch (err) {
+          log.warn(`Alert delivery failed: ${(err as Error).message}`, { component: 'alerts' });
+        }
+      });
+      log.info(`Alert delivery: Telegram chat ${telegramChatId}`, { component: 'alerts' });
+    } else {
+      log.warn('TELEGRAM_BOT_TOKEN not set — immediate alerts will log only', { component: 'alerts' });
+    }
+
     log.info(`Daemon initialized (paper=${paper})`);
   }
 
