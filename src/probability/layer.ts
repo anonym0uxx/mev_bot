@@ -42,8 +42,16 @@ export function computeProbabilities(
   // Breadth/topology signal: higher breadth + low concentration = continuation
   const breadthSignal = computeBreadthSignal(features);
 
-  // Creator/wallet prior signal: CAPPED, feeds as prior only
-  const walletPriorSignal = features.creator_wallet_prior.composite_prior;
+  // Creator/wallet prior signal: CAPPED, feeds as prior only.
+  // NORMALIZATION: composite_prior = 0.0 means UNKNOWN creator (no enrichment data), NOT bad creator.
+  // Using 0 directly collapses the effective weight sum from 1.0 to 0.75 for unknown-creator tokens
+  // (which is most Pump.fun tokens), systematically suppressing P_continuation by ~2-3%.
+  // Fix: treat unknown creators as neutral (0.5) — the signal is absent, not negative.
+  // Only known-negative priors (< 0) should drag down the score.
+  // Known-positive priors (> 0) continue to provide a boost above neutral.
+  const rawCreatorPrior = features.creator_wallet_prior.composite_prior;
+  const hasCreatorData = rawCreatorPrior !== 0 || features.creator_wallet_prior.creator_history_score > 0;
+  const walletPriorSignal = hasCreatorData ? rawCreatorPrior : 0.5; // Unknown = neutral, not penalized
 
   // Friction/execution signal: good execution = higher confidence
   const frictionSignal = computeFrictionSignal(features);
