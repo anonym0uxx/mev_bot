@@ -308,8 +308,9 @@ function checkHardFilters(
   const doaMinNewBuyers = (config.entry as any).doa_min_new_buyers_3s ?? 1;
   const vel5s = features.flow_momentum.buy_notional_velocity_5s;
   const vel15s = features.flow_momentum.buy_notional_velocity_15s;
-  // vel15s ≈ 0 AND vel5s ≈ 0 → completely dead momentum → ratio 0.0 (worst case).
+  // vel15s ≈ 0 AND vel5s ≈ 0 → both windows dead. Don't use ratio (0/0 = undefined).
   // vel15s ≈ 0 AND vel5s > 0 → token just launched, velocity building → ratio 1.0 (pass).
+  const bothVelDead = vel15s < 0.001 && vel5s < 0.001;
   const velocityDecayRatio = vel15s > 0.001 ? vel5s / vel15s : (vel5s > 0.001 ? 1.0 : 0.0);
   const recentBuyers = (features.flow_momentum as any).new_unique_buyers_3s ?? null;
   if (recentBuyers !== null) {
@@ -317,6 +318,15 @@ function checkHardFilters(
     if (velocityDecayRatio < doaVelocityThreshold && recentBuyers < doaMinNewBuyers) {
       return `doa_signal (vel_ratio=${velocityDecayRatio.toFixed(2)}, new_buyers_3s=${recentBuyers})`;
     }
+  } else if (bothVelDead) {
+    // Both velocity windows are zero — token is in consolidation at t=60s observation window.
+    // Only block if capital efficiency is also poor (ce < 0.5 SOL/swap = truly dead token).
+    // Tokens with good CE (arXiv signal) that are momentarily quiet should still be evaluated.
+    const ce = features.bonding_curve_dynamics.capital_efficiency_raw;
+    if (ce < 0.5) {
+      return `doa_signal_velocity_only (vel_ratio=0.00, ce=${ce.toFixed(4)} < 0.5)`;
+    }
+    // Good CE + both vels dead = consolidation pause, not DOA. Fall through to probability gate.
   } else {
     // Fallback: velocity-only filter with stricter threshold (buyer data not available)
     if (velocityDecayRatio < doaVelocityOnlyThreshold) {

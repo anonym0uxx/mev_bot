@@ -48,7 +48,7 @@
         "max_slippage_pct": 0.08,
         "ev_wait_horizon_s": 5,
         "ev_enter_horizon_s": 5,
-        "min_p_continuation": 0.45,
+        "min_p_continuation": 0.27,
         "min_creator_prior": 0.0,
         "probability_weights": {
             "bonding_curve_dynamics": 0.35,

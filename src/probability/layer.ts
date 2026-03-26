@@ -127,8 +127,22 @@ export function computeProbabilities(
   // -2.5 (graduation base rate) was mathematically correct for the wrong outcome.
   const BASE_RATE_BIAS = -1.2;
   const gainMultiplier = 2.0;
+
+  // Conditional gain boost: arXiv:2602.14860 — tokens with strong early-window CE that
+  // survive to t=60s have already screened out the ~80% that fail early. The conditional
+  // base rate for continuation given (ice > 0.7 AND bcd > 0.55) is ~40-50%, not 20-25%.
+  // Rather than adjust bias (which is too small to move the needle), boost the gain
+  // multiplier proportionally: max +1.5 boost at ice=1.0 + bcd=1.0.
+  // SAE (ice=1.0, bcd=0.626): earlyStrength=0.168 → gain=2.0+0.25=2.25 → p≈0.32
+  // Token (ice=1.0, bcd=0.80): earlyStrength=0.556 → gain=2.0+0.83=2.83 → p≈0.42
+  // Token (ice=1.0, bcd=1.0): earlyStrength=1.0   → gain=2.0+1.5=3.5  → p≈0.52
+  const iceScore = bcd.initial_capital_efficiency;
+  const bcdScore = bcd.bcd_score;
+  const earlySignalStrength = Math.max(0, (iceScore - 0.7) / 0.3) * Math.max(0, (bcdScore - 0.55) / 0.45);
+  const effectiveGain = gainMultiplier + earlySignalStrength * 1.5;
+
   const calibratedContinuation = sigmoid(
-    rawContinuationSignal * gainMultiplier + regimeAdjustment + BASE_RATE_BIAS + calibration.continuation_bias
+    rawContinuationSignal * effectiveGain + regimeAdjustment + BASE_RATE_BIAS + calibration.continuation_bias
   );
 
   // Calibrated reversal probability — symmetric gain
