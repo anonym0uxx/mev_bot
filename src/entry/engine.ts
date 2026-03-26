@@ -302,7 +302,9 @@ function checkHardFilters(
   const doaMinNewBuyers = (config.entry as any).doa_min_new_buyers_3s ?? 1;
   const vel5s = features.flow_momentum.buy_notional_velocity_5s;
   const vel15s = features.flow_momentum.buy_notional_velocity_15s;
-  const velocityDecayRatio = vel15s > 0.001 ? vel5s / vel15s : 1.0;
+  // vel15s ≈ 0 AND vel5s ≈ 0 → completely dead momentum → ratio 0.0 (worst case).
+  // vel15s ≈ 0 AND vel5s > 0 → token just launched, velocity building → ratio 1.0 (pass).
+  const velocityDecayRatio = vel15s > 0.001 ? vel5s / vel15s : (vel5s > 0.001 ? 1.0 : 0.0);
   const recentBuyers = (features.flow_momentum as any).new_unique_buyers_3s ?? null;
   if (recentBuyers !== null) {
     // Full filter: velocity decay AND no recent buyers

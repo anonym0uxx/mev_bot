@@ -82,12 +82,15 @@ export function evaluateExit(
   // exit immediately. This fires 1-2 events ahead of the trailing stop on violent dumps.
   const MOMENTUM_REV_PCT = (config.exit as any).momentum_reversal_pct ?? 0.03;
   const MOMENTUM_REV_MIN_MFE = (config.exit as any).momentum_reversal_min_mfe_pct ?? 0.05;
-  const mfePct = position.mfe_sol > 0 && position.entry_sol > 0
-    ? (position.mfe_sol - position.entry_sol) / position.entry_sol
+  // Safety guard: mfe_sol is initialized to entry_sol at position open (not 0).
+  // If somehow mfe_sol is 0 (legacy positions), fall back to entry_sol to avoid negative mfePct.
+  const effectiveMfe = (position.mfe_sol > 0) ? position.mfe_sol : position.entry_sol;
+  const mfePct = position.entry_sol > 0
+    ? (effectiveMfe - position.entry_sol) / position.entry_sol
     : 0;
-  if (mfePct >= MOMENTUM_REV_MIN_MFE && position.mfe_sol > 0) {
-    const dropFromMfe = position.mfe_sol > 0
-      ? (position.mfe_sol - position.current_value_sol) / position.mfe_sol
+  if (mfePct >= MOMENTUM_REV_MIN_MFE && effectiveMfe > 0) {
+    const dropFromMfe = effectiveMfe > 0
+      ? (effectiveMfe - position.current_value_sol) / effectiveMfe
       : 0;
     if (dropFromMfe >= MOMENTUM_REV_PCT) {
       log.info(`Momentum reversal exit: ${position.symbol} drop=${(dropFromMfe * 100).toFixed(1)}% from MFE (MFE=${(mfePct * 100).toFixed(1)}%)`);

@@ -223,10 +223,11 @@ export class CoreCastV3Client extends EventEmitter {
     // Without this, the TCP connection lingers until server keepalive times out.
     if (this.client) {
       try {
-        // grpc-js client exposes close() on the channel via getChannel()
-        const channel = (this.client as any).getChannel?.();
-        if (channel && typeof channel.close === 'function') {
-          channel.close();
+        // grpc-js: use client.close() directly (documented public API on grpc.Client).
+        // getChannel().close() is NOT a public API — it's implementation-internal and
+        // silently no-ops on some stub types (proxied clients, interceptors).
+        if (typeof (this.client as any).close === 'function') {
+          (this.client as any).close();
           log.debug('gRPC channel closed');
         }
       } catch {}

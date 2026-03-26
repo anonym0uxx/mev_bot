@@ -99,11 +99,16 @@ class StrategyDaemon {
    * getDailyPnl(configChangeEpoch) returns only losses AFTER this point,
    * so a new max_daily_loss_sol limit applies to the new config's trades
    * rather than being blocked by the old session's accumulated losses.
-   *
-   * L3 circuit breaker deliberately ignores this — passes undefined to
-   * getDailyPnl() so it always checks the full calendar day.
    */
   private configChangeEpoch: number = nowMs(); // Initialized to daemon start time
+
+  /**
+   * Session absolute start: set ONCE when the daemon boots, NEVER reset on config changes.
+   * Used by the L3 circuit breaker so an operator cannot bypass the 24h halt by simply
+   * reloading config. A -0.30 SOL session loss is a risk-of-ruin signal — it persists
+   * across config changes within the same daemon process lifetime.
+   */
+  private readonly sessionAbsoluteStartMs: number = nowMs();
   // REMOVED: entryEdgeMultiplier — was root cause of the 2x deadlock incident
 
   constructor() {
@@ -915,7 +920,12 @@ class StrategyDaemon {
           opened_at: nowMs(),
           closed_at: null,
           hold_duration_s: 0,
-          mfe_sol: 0,
+          // IMPORTANT: mfe_sol MUST initialize to entry_sol (not 0).
+          // The momentum reversal exit gate: mfePct = (mfe_sol - entry_sol) / entry_sol
+          // If mfe_sol = 0: mfePct = (0 - entry) / entry = -1.0 → gate PERMANENTLY inactive.
+          // If mfe_sol = entry_sol: mfePct = 0.0 → correctly waits for 5% unrealized gain.
+          // The DOA position-scanner check was `mfeSol <= 0` — updated below to `mfeSol <= entry_sol`.
+          mfe_sol: order.realized_sol || intent.size_sol, // = entry_sol at open; updated on every tick
           mae_sol: 0,
           is_paper: isPaperMode(),
           config_version: intent.config_version,
@@ -1316,13 +1326,15 @@ class StrategyDaemon {
         this.stateMachine.transitionToLong(mint, 'position_scanner_recovery');
       }
 
-      // Dead on arrival (DOA) check: if MFE ≤ 0 after 15s AND down >5%, exit immediately
+      // Dead on arrival (DOA) check: if MFE never exceeded entry_sol after 15s AND down >5%, exit immediately.
+      // NOTE: mfe_sol is initialized to entry_sol at open (not 0), so 'never moved above entry'
+      // is detected by mfeSol <= entry_sol (not mfeSol <= 0 as before).
       const holdTime = ageS(position.entry_timestamp);
-      const mfeSol = position.mfe_sol || 0;
+      const mfeSol = position.mfe_sol;
       const currentPnL = position.current_value_sol - position.entry_sol;
       const pnlPct = position.entry_sol > 0 ? currentPnL / position.entry_sol : 0;
       
-      if (holdTime >= 15 && mfeSol <= 0 && pnlPct < -0.05) {
+      if (holdTime >= 15 && mfeSol <= position.entry_sol && pnlPct < -0.05) {
         log.warn(`💀 DOA exit: ${packet.symbol || mint.slice(0,8)} held ${holdTime.toFixed(0)}s, MFE=0, down ${(pnlPct*100).toFixed(1)}%`);
         if (!this.pendingExecutions.has(mint)) {
           this.pendingExecutions.add(mint);
@@ -1402,8 +1414,11 @@ class StrategyDaemon {
     this.consecutiveLosses++;
     log.warn(`Circuit breaker: ${this.consecutiveLosses} consecutive losses (level=${this.circuitBreakerLevel})`);
 
-    // Check L3: session hard stop
-    const sessionPnl = this.db.getDailyPnl();
+    // Check L3: session hard stop.
+    // IMPORTANT: L3 uses sessionAbsoluteStartMs (set at daemon boot, NEVER reset on config reload).
+    // This prevents an operator from bypassing the 24h halt by reloading config — the session PnL
+    // window spans the entire process lifetime, regardless of mid-session config changes.
+    const sessionPnl = this.db.getDailyPnl(this.sessionAbsoluteStartMs);
     if (sessionPnl <= -0.30) {
       this.circuitBreakerLevel = 3;
       this.circuitBreakerPauseUntil = now + 24 * 60 * 60 * 1000; // session halt
