@@ -272,12 +272,18 @@ function checkHardFilters(
   }
   if (features.creator_wallet_prior.creator_sell_flag) return 'creator_sold';
 
-  // Hard gate: creator prior floor — blocks creators with no/weak positive history.
+  // Hard gate: creator prior floor — blocks creators with KNOWN negative history.
   // creator_sell is #1 exit reason; weight increase alone is insufficient — hard gate is more robust.
-  // Configurable via entry.min_creator_prior (default 0.45). Lower = permissive, higher = strict.
-  const minCreatorPrior = (config.entry as any).min_creator_prior ?? 0.45;
-  if (minCreatorPrior > 0 && features.creator_wallet_prior.composite_prior < minCreatorPrior) {
-    return `creator_prior_low (${features.creator_wallet_prior.composite_prior.toFixed(3)} < ${minCreatorPrior})`;
+  // IMPORTANT: composite_prior = 0.000 means UNKNOWN creator (no enrichment data), NOT bad creator.
+  // The gate only fires when prior is demonstrably negative (below zero), not on data absence.
+  // Configurable via entry.min_creator_prior. Default: block only negative priors (< 0).
+  // Set to 0.45+ only if enrichment data is reliably populated for most tokens.
+  const minCreatorPrior = (config.entry as any).min_creator_prior ?? 0.0;
+  const creatorPrior = features.creator_wallet_prior.composite_prior;
+  // Only apply gate if prior is non-zero (i.e., we have actual data) OR if prior is clearly negative
+  const hasCreatorData = creatorPrior !== 0 || features.creator_wallet_prior.creator_history_score > 0;
+  if (minCreatorPrior > 0 && hasCreatorData && creatorPrior < minCreatorPrior) {
+    return `creator_prior_low (${creatorPrior.toFixed(3)} < ${minCreatorPrior})`;
   }
 
   if (features.manipulation_distribution.hard_shock) return 'manipulation_hard_shock';

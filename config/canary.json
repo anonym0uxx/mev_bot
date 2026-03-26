@@ -49,7 +49,7 @@
         "ev_wait_horizon_s": 5,
         "ev_enter_horizon_s": 5,
         "min_p_continuation": 0.75,
-        "min_creator_prior": 0.45,
+        "min_creator_prior": 0.0,
         "probability_weights": {
             "flow_momentum": 0.25,
             "breadth_topology": 0.22,
@@ -94,7 +94,7 @@
         "raw_stop_pct": 0.15,
         "liquidity_cap_sol": 0.2,
         "slippage_cap_sol": 0.1,
-        "max_daily_loss_sol": 0.038,
+        "max_daily_loss_sol": 0.25,
         "max_position_size_sol": 0.01,
         "max_daily_entries": 50,
         "circuit_breaker_session_halt_sol": -0.30
