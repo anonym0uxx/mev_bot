@@ -58,7 +58,8 @@ export function evaluateEntry(
     // Structured rejection log: always emitted for signal analysis
     const horizon = config.entry.ev_enter_horizon_s;
     const P_cont = horizon <= 5 ? probabilities.P_continuation_5s : probabilities.P_continuation_15s;
-    log.info(`REJECT ${packet.symbol || packet.mint.slice(0,8)}: ${hardFilter} (p_cont=${P_cont?.toFixed(3) || 'n/a'}, edge=n/a, buyers=${features.breadth_topology.unique_buyers_total})`);
+    const bcd = features.bonding_curve_dynamics;
+    log.info(`REJECT ${packet.symbol || packet.mint.slice(0,8)}: ${hardFilter} (p_cont=${P_cont?.toFixed(3) || 'n/a'}, bcd=${bcd.bcd_score.toFixed(3)}, ce=${bcd.capital_efficiency_raw.toFixed(4)}, buyers=${features.breadth_topology.unique_buyers_total}, swaps=${features.total_swap_count})`);
     return {
       shouldEnter: false,
       reason: `Hard filter: ${hardFilter}`,
@@ -347,6 +348,8 @@ function checkHardFilters(
   const P_cont = horizon <= 5 ? probabilities.P_continuation_5s : probabilities.P_continuation_15s;
   const minPCont = config.entry.min_p_continuation ?? 0;
   if (minPCont > 0 && P_cont < minPCont) {
+    const bcd = features.bonding_curve_dynamics;
+    log.info(`REJECT ${(packet as any).symbol || 'token'}: p_continuation_low (p_cont=${P_cont.toFixed(3)} < ${minPCont}, bcd=${bcd.bcd_score.toFixed(3)}, ce=${bcd.capital_efficiency_raw.toFixed(4)}, ice=${bcd.initial_capital_efficiency.toFixed(3)}, shape=${bcd.accumulation_shape.toFixed(3)}, swaps=${features.total_swap_count})`);
     return `p_continuation_low (${P_cont.toFixed(3)} < ${minPCont})`;
   }
 
