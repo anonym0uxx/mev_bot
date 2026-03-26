@@ -89,7 +89,10 @@ export function evaluateExit(
   }
 
   // Tiered exit: sell 50% at +4% if not already reduced
-  if (gainPct >= TIER1_TRIGGER && position.exit_orders.length === 0) {
+  // Minimum hold gate: don't reduce before 10s — bonding curve price noise on early ticks
+  // can falsely show +4% gain immediately after entry from other buyers' trades.
+  const holdTimeForTier = ageS(position.entry_timestamp);
+  if (gainPct >= TIER1_TRIGGER && position.exit_orders.length === 0 && holdTimeForTier >= 10) {
     return {
       shouldExit: false,
       shouldReduce: true,
