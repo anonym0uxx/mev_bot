@@ -1008,6 +1008,21 @@ class StrategyDaemon {
     sizing: { position_size: number; limiting_factor: string },
     config: PumpQuantConfig
   ): Promise<void> {
+    // Pre-execution migration guard: check bonding curve progress right before sending.
+    // A token can graduate between entry approval and execution (typically 100-500ms).
+    // If progress >= graduation_boundary_start, abort — don't attempt the buy.
+    const latestProgress = packet.bonding_curve_progress ?? 0;
+    const gradBoundary = config.regime.graduation_boundary_start ?? 0.75;
+    if (latestProgress >= gradBoundary) {
+      log.warn(`${packet.mint.slice(0,8)}: Aborting entry — bonding curve graduated (progress=${latestProgress.toFixed(3)} >= ${gradBoundary})`);
+      this.stateMachine.transitionToBan(packet.mint, 'Pre-execution migration guard: curve graduated');
+      this.featureEngine.removeToken(packet.mint);
+      this.feed.unsubscribeTokenTrades([packet.mint]);
+      if (this.corecast) this.corecast.unwatchMints([packet.mint]);
+      this.committedMints.delete(packet.mint);
+      return;
+    }
+
     const priorityFee = await this.resolvePriorityFee(config);
     const intent: TradeIntent = {
       id: uuidv4(),
@@ -1104,10 +1119,23 @@ class StrategyDaemon {
         this.committedMints.delete(packet.mint);
       }
     } catch (err) {
-      log.error(`Entry execution failed for ${packet.mint}: ${(err as Error).message}`);
-      this.alertSystem.emitExecutionFailure(packet.mint, (err as Error).message);
-      // Release lock on failure so the mint can be retried
-      this.committedMints.delete(packet.mint);
+      const errMsg = (err as Error).message;
+      log.error(`Entry execution failed for ${packet.mint}: ${errMsg}`);
+      this.alertSystem.emitExecutionFailure(packet.mint, errMsg);
+
+      // Migration race: token graduated to Raydium AMM between approval and execution.
+      // PumpPortal returns 400 with "migrated or does not exist" or "pump-amm is the correct option".
+      // Don't retry — BAN immediately so the state machine doesn't keep re-approving.
+      if (errMsg.includes('migrated') || errMsg.includes('pump-amm') || errMsg.includes('does not exist')) {
+        log.warn(`${packet.mint.slice(0,8)}: Migration race detected on entry — banning token`);
+        this.stateMachine.transitionToBan(packet.mint, 'Migration race: token graduated before entry confirmed');
+        this.featureEngine.removeToken(packet.mint);
+        this.feed.unsubscribeTokenTrades([packet.mint]);
+        if (this.corecast) this.corecast.unwatchMints([packet.mint]);
+      } else {
+        // Non-migration failure — release lock so the mint can be retried on next tick
+        this.committedMints.delete(packet.mint);
+      }
     }
   }
 
