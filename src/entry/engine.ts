@@ -50,7 +50,7 @@ export function evaluateEntry(
   isPaper: boolean
 ): EntryDecision {
   // ====== 9.2 HARD ENTRY FILTERS ======
-  const hardFilter = checkHardFilters(packet, features, config, currentPositionCount, dailyLossSol, dailyEntryCount, probabilities);
+  const hardFilter = checkHardFilters(packet, features, config, currentPositionCount, dailyLossSol, dailyEntryCount, probabilities, isPaper);
   if (hardFilter) {
     if (features.breadth_topology.unique_buyers_total >= 2) {
       log.info(`Hard filter reject ${packet.symbol || packet.mint.slice(0,8)}: ${hardFilter} (buyers=${features.breadth_topology.unique_buyers_total})`);
@@ -263,7 +263,8 @@ function checkHardFilters(
   currentPositionCount: number,
   dailyLossSol: number,
   dailyEntryCount: number,
-  probabilities: ProbabilityOutputs
+  probabilities: ProbabilityOutputs,
+  isPaper: boolean = false
 ): string | null {
   // EARLY_CURVE, MID_CURVE, and LATE_CURVE are all tradeable
   // EXCLUDED (mayhem/tokenized-agent) and POST_MIGRATION are not
@@ -331,9 +332,13 @@ function checkHardFilters(
 
   // Daily entry cap — hard stop once max_daily_entries trades have been executed today.
   // Prevents runaway trading when the bot is trigger-happy on a volatile session.
-  const maxDailyEntries = config.risk.max_daily_entries;
-  if (maxDailyEntries > 0 && dailyEntryCount >= maxDailyEntries) {
-    return `daily_entry_limit (${dailyEntryCount}/${maxDailyEntries})`;
+  // PAPER MODE: skip daily cap entirely — we want maximum learning data, and
+  // live trade history from earlier sessions should not constrain paper evaluation.
+  if (!isPaper) {
+    const maxDailyEntries = config.risk.max_daily_entries;
+    if (maxDailyEntries > 0 && dailyEntryCount >= maxDailyEntries) {
+      return `daily_entry_limit (${dailyEntryCount}/${maxDailyEntries})`;
+    }
   }
 
   // Minimum P_continuation gate — reject weak signals regardless of EV.
