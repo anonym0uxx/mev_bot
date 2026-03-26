@@ -342,6 +342,17 @@ function checkHardFilters(
   if (!isPaper && Math.abs(dailyLossSol) >= config.risk.max_daily_loss_sol) return 'daily_loss_limit';
   if (features.breadth_topology.unique_buyers_total < config.entry.min_unique_buyers) return 'insufficient_buyers';
 
+  // Market cap gate: filter by vSolInBondingCurve at entry time.
+  // Paper trade analysis shows $5k–$31k mcap band has 44.7% WR vs 3–13% below $5k.
+  // At $90/SOL: $5k mcap ≈ 55 SOL in curve, $31k ≈ 344 SOL in curve.
+  // Config: min_vsol_in_curve (default 0 = disabled), max_vsol_in_curve (default 0 = disabled)
+  // Derive current vSol: capital_efficiency_raw = vSol / totalSwapCount
+  const currentVSol = features.bonding_curve_dynamics.capital_efficiency_raw * features.total_swap_count;
+  const minVSol = (config.entry as any).min_vsol_in_curve ?? 0;
+  const maxVSol = (config.entry as any).max_vsol_in_curve ?? 0;
+  if (minVSol > 0 && currentVSol < minVSol) return `mcap_too_low (vSol=${currentVSol.toFixed(1)} < ${minVSol})`;
+  if (maxVSol > 0 && currentVSol > maxVSol) return `mcap_too_high (vSol=${currentVSol.toFixed(1)} > ${maxVSol})`;
+
   // Daily entry cap — hard stop once max_daily_entries trades have been executed today.
   // Prevents runaway trading when the bot is trigger-happy on a volatile session.
   // PAPER MODE: skip daily cap entirely — we want maximum learning data, and
