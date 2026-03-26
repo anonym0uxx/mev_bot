@@ -640,8 +640,14 @@ class StrategyDaemon {
       const currentPositionCount = this.db.getOpenPositionCount();
       const dailyLoss = this.db.getDailyPnl();
       const dailyEntryCount = this.db.getDailyEntryCount();
-      // Apply circuit breaker edge multiplier (L1: 1.5x edge required)
-      const effectiveMinEdge = (config.entry.min_entry_edge || 0.0005) * this.entryEdgeMultiplier;
+      // Apply circuit breaker edge multiplier (L1: 1.5x, L2: 2x — capped at model empirical ceiling)
+      // Model max observed edge is ~0.00496; 2x would be 0.008 which is unreachable → hard trading halt.
+      // Cap effective edge at 0.9× empirical ceiling (0.00496 * 0.9 = 0.00446) to prevent permanent lockout.
+      const EMPIRICAL_EDGE_CEILING = 0.00496;
+      const effectiveMinEdge = Math.min(
+        (config.entry.min_entry_edge || 0.0005) * this.entryEdgeMultiplier,
+        EMPIRICAL_EDGE_CEILING * 0.9
+      );
       const entryDecision = evaluateEntry(
         packet, probabilities, features,
         { ...config, entry: { ...config.entry, min_entry_edge: effectiveMinEdge } },
