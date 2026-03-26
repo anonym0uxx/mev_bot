@@ -48,13 +48,14 @@
         "max_slippage_pct": 0.08,
         "ev_wait_horizon_s": 5,
         "ev_enter_horizon_s": 5,
-        "min_p_continuation": 0.7,
+        "min_p_continuation": 0.75,
+        "min_creator_prior": 0.45,
         "probability_weights": {
-            "flow_momentum": 0.3,
-            "breadth_topology": 0.25,
-            "creator_wallet_prior": 0.2,
-            "friction_execution": 0.1,
-            "manipulation_distribution": 0.1,
+            "flow_momentum": 0.25,
+            "breadth_topology": 0.22,
+            "creator_wallet_prior": 0.25,
+            "friction_execution": 0.08,
+            "manipulation_distribution": 0.15,
             "multimodal_junk": 0.05
         },
         "calibration": {
@@ -62,7 +63,9 @@
             "reversal_bias": 0,
             "manipulation_bias": 0
         },
-        "min_trades_for_analysis": 3
+        "min_trades_for_analysis": 3,
+        "doa_velocity_decay_threshold": 0.35,
+        "doa_min_new_buyers_3s": 1
     },
     "exit": {
         "hold_horizon_s": 10,
@@ -85,18 +88,23 @@
         "risk_per_trade_pct": 0.005,
         "max_alloc_pct": 0.03,
         "max_positions": 1,
-        "quick_spend_sol": 0.02,
+        "quick_spend_sol": 0.01,
         "raw_stop_pct": 0.15,
         "liquidity_cap_sol": 0.2,
         "slippage_cap_sol": 0.1,
-        "max_daily_loss_sol": 0.25,
-        "max_position_size_sol": 0.02,
-        "max_daily_entries": 200
+        "max_daily_loss_sol": 0.038,
+        "max_position_size_sol": 0.01,
+        "max_daily_entries": 50,
+        "circuit_breaker_session_halt_sol": -0.30
     },
     "execution": {
         "default_route_mode": "local",
         "default_slippage_bps": 100,
-        "default_priority_fee_sol": 0.0001,
+        "default_priority_fee_sol": 0.00005,
+        "priority_fee_floor_sol": 0.00005,
+        "priority_fee_cap_sol": 0.0002,
+        "dynamic_priority_fee": true,
+        "dynamic_priority_fee_percentile": 75,
         "skip_preflight": true,
         "confirmation_timeout_ms": 5000,
         "max_retries": 1,

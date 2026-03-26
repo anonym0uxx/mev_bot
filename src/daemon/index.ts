@@ -85,9 +85,15 @@ class StrategyDaemon {
   // is cleared before the position record is written.
   private committedMints: Set<string> = new Set();
   // Circuit breaker state
+  // ARCHITECTURE: CB modulates EXPOSURE (size + pauses), NEVER edge thresholds.
+  // Multiplying edge thresholds without model ceiling awareness causes deadlocks.
+  // L1 = size cut, L2 = full pause, L3 = session halt. No multipliers. No recovery traps.
   private consecutiveLosses: number = 0;
   private circuitBreakerPauseUntil: number = 0;
-  private entryEdgeMultiplier: number = 1.0; // Increased on L1, reset on win
+  private circuitBreakerLevel: 0 | 1 | 2 | 3 = 0;
+  private circuitBreakerSizeMul: number = 1.0; // L1: 0.5x, others: 1.0x
+  private circuitBreakerDeadlockWatchdogAt: number = 0; // timestamp of last trade attempt or CB transition
+  // REMOVED: entryEdgeMultiplier — was root cause of the 2x deadlock incident
 
   constructor() {
     // Load config
@@ -542,6 +548,9 @@ class StrategyDaemon {
   private analyzeToken(packet: CandidatePacket, config: PumpQuantConfig, health: SystemHealth): void {
     const mint = packet.mint;
 
+    // Deadlock watchdog: check CB state on every analysis call
+    this.tickCircuitBreakerWatchdog();
+
     // Prevent concurrent analysis of the same mint (dedup across event-driven + interval ticks)
     if (this.analysisLocks.has(mint)) return;
     this.analysisLocks.add(mint);
@@ -640,17 +649,16 @@ class StrategyDaemon {
       const currentPositionCount = this.db.getOpenPositionCount();
       const dailyLoss = this.db.getDailyPnl();
       const dailyEntryCount = this.db.getDailyEntryCount();
-      // Apply circuit breaker edge multiplier (L1: 1.5x, L2: 2x — capped at model empirical ceiling)
-      // Model max observed edge is ~0.00496; 2x would be 0.008 which is unreachable → hard trading halt.
-      // Cap effective edge at 0.9× empirical ceiling (0.00496 * 0.9 = 0.00446) to prevent permanent lockout.
-      const EMPIRICAL_EDGE_CEILING = 0.00496;
-      const effectiveMinEdge = Math.min(
-        (config.entry.min_entry_edge || 0.0005) * this.entryEdgeMultiplier,
-        EMPIRICAL_EDGE_CEILING * 0.9
-      );
+      // Circuit breaker: NEVER multiply edge threshold — only adjust position size (L1) or pause (L2/L3).
+      // Edge threshold is anchored to model output ceiling via threshold/manager. Multiplying it can
+      // exceed the model's physical output range → infinite deadlock (the March-26 incident).
+      // Size is scaled by circuitBreakerSizeMul (1.0 normal, 0.5 at L1).
+      const cbConfig = this.circuitBreakerSizeMul !== 1.0
+        ? { ...config, risk: { ...config.risk, quick_spend_sol: config.risk.quick_spend_sol * this.circuitBreakerSizeMul } }
+        : config;
       const entryDecision = evaluateEntry(
         packet, probabilities, features,
-        { ...config, entry: { ...config.entry, min_entry_edge: effectiveMinEdge } },
+        cbConfig,
         currentPositionCount, dailyLoss, dailyEntryCount, isPaperMode()
       );
 
@@ -739,18 +747,71 @@ class StrategyDaemon {
 
   // ====== TRADE EXECUTION ======
 
+  /**
+   * Dynamic priority fee resolver.
+   * If dynamic_priority_fee is enabled in config, queries getRecentPrioritizationFees
+   * and returns the p75 of recent slot fees + 20% buffer, capped at priority_fee_cap_sol.
+   * Falls back to default_priority_fee_sol on error.
+   */
+  private async resolvePriorityFee(config: PumpQuantConfig): Promise<number> {
+    const execCfg = config.execution as any;
+    const floor = execCfg.priority_fee_floor_sol ?? config.execution.default_priority_fee_sol;
+    const cap = execCfg.priority_fee_cap_sol ?? config.execution.default_priority_fee_sol;
+    const dflt = config.execution.default_priority_fee_sol;
+
+    if (!execCfg.dynamic_priority_fee) return dflt;
+
+    try {
+      // Use the PumpPortal or connection endpoint to query recent fees
+      // PUMP_FUN_PROGRAM is the program whose slots we care about
+      const PUMP_PROGRAM = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
+      const rpcUrl = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+      const body = JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'getRecentPrioritizationFees',
+        params: [[PUMP_PROGRAM]],
+      });
+      const resp = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        signal: AbortSignal.timeout(1500), // 1.5s max — don't block execution
+      });
+      const json = await resp.json() as any;
+      const fees: number[] = (json?.result || [])
+        .map((f: any) => f.prioritizationFee as number)
+        .filter((f: number) => f > 0)
+        .sort((a: number, b: number) => a - b);
+
+      if (fees.length === 0) return dflt;
+
+      const pctTarget = (execCfg.dynamic_priority_fee_percentile ?? 75) / 100;
+      const idx = Math.floor(fees.length * pctTarget);
+      const p75FeeLamports = fees[Math.min(idx, fees.length - 1)];
+      // Convert lamports to SOL, add 20% buffer
+      const feeSol = (p75FeeLamports * 1.2) / 1_000_000_000;
+      const clamped = Math.min(cap, Math.max(floor, feeSol));
+      log.debug(`Dynamic priority fee: p75=${p75FeeLamports} lamports → ${clamped.toFixed(7)} SOL (floor=${floor}, cap=${cap})`);
+      return clamped;
+    } catch (err) {
+      log.debug(`Dynamic priority fee fallback to default: ${(err as Error).message}`);
+      return dflt;
+    }
+  }
+
   private async executeEntry(
     packet: CandidatePacket,
     sizing: { position_size: number; limiting_factor: string },
     config: PumpQuantConfig
   ): Promise<void> {
+    const priorityFee = await this.resolvePriorityFee(config);
     const intent: TradeIntent = {
       id: uuidv4(),
       mint: packet.mint,
       side: 'buy',
       size_sol: sizing.position_size,
       slippage_bps: config.execution.default_slippage_bps,
-      priority_fee_sol: config.execution.default_priority_fee_sol,
+      priority_fee_sol: priorityFee,
       route_mode: config.execution.default_route_mode,
       reason: `Entry: edge=${packet.entry_ev?.EntryEdge?.toFixed(6) || 'N/A'}`,
       config_version: getConfigVersion(),
@@ -848,6 +909,7 @@ class StrategyDaemon {
     reason: string,
     config: PumpQuantConfig
   ): Promise<void> {
+    const priorityFee = await this.resolvePriorityFee(config);
     const intent: TradeIntent = {
       id: uuidv4(),
       mint,
@@ -855,7 +917,7 @@ class StrategyDaemon {
       size_sol: position.current_value_sol * (exitPct / 100),
       amount_pct: exitPct,
       slippage_bps: config.execution.default_slippage_bps,
-      priority_fee_sol: config.execution.default_priority_fee_sol,
+      priority_fee_sol: priorityFee,
       route_mode: config.execution.default_route_mode,
       reason: `Exit: ${reason}`,
       config_version: getConfigVersion(),
@@ -954,6 +1016,7 @@ class StrategyDaemon {
     reason: string,
     config: PumpQuantConfig
   ): Promise<void> {
+    const priorityFee = await this.resolvePriorityFee(config);
     const intent: TradeIntent = {
       id: uuidv4(),
       mint,
@@ -961,7 +1024,7 @@ class StrategyDaemon {
       size_sol: position.current_value_sol * (reducePct / 100),
       amount_pct: reducePct,
       slippage_bps: config.execution.default_slippage_bps,
-      priority_fee_sol: config.execution.default_priority_fee_sol,
+      priority_fee_sol: priorityFee,
       route_mode: config.execution.default_route_mode,
       reason: `Reduce ${reducePct}%: ${reason}`,
       config_version: getConfigVersion(),
@@ -1244,36 +1307,96 @@ class StrategyDaemon {
 
   /**
    * Update circuit breaker state after each closed trade.
-   * L1: 3 consecutive losses → require 1.5x edge for 10 min
-   * L2: 5 consecutive losses → pause new entries for 30 min
+   *
+   * REDESIGNED (2026-03-26) — post-deadlock incident:
+   * Old design multiplied edge thresholds (1.5x L1, 2.0x L2) which could exceed the model's
+   * physical output ceiling → permanent deadlock requiring manual intervention.
+   *
+   * New design: modulates EXPOSURE (position size + time pauses), never thresholds.
+   *   L0: Normal operation (full size, no pause)
+   *   L1: 3 consecutive losses → 50% size for 5 min, then reassess
+   *   L2: 5 consecutive losses → full pause 15 min, resume at L1
+   *   L3: session PnL < -0.30 SOL → session halt, alert, manual restart required
+   *
+   * Rules:
+   * - A WIN always resets the streak and restores full size
+   * - No multipliers on any threshold, ever
+   * - Deadlock watchdog: if no trade attempt for 15 min during trading hours, auto-reset to L0 with alert
    */
   private updateCircuitBreaker(pnl: number): void {
+    const now = nowMs();
+    this.circuitBreakerDeadlockWatchdogAt = now; // Touch watchdog
+
     if (pnl >= 0) {
-      // Win resets the counter
-      if (this.consecutiveLosses > 0) {
-        log.info(`Circuit breaker reset: ${this.consecutiveLosses} consecutive losses cleared by win`);
+      // Win resets everything — no gambler's fallacy "need a win to reset"
+      if (this.consecutiveLosses > 0 || this.circuitBreakerLevel > 0) {
+        log.info(`✅ Circuit breaker reset: ${this.consecutiveLosses} consecutive losses cleared by win. Level ${this.circuitBreakerLevel} → L0`);
+        this.alertSystem.emit('circuit_breaker', `✅ Circuit breaker reset to L0 after win. Full size restored.`, {});
       }
       this.consecutiveLosses = 0;
-      this.entryEdgeMultiplier = 1.0;
+      this.circuitBreakerLevel = 0;
+      this.circuitBreakerSizeMul = 1.0;
+      this.circuitBreakerPauseUntil = 0;
       return;
     }
 
     this.consecutiveLosses++;
-    log.warn(`Circuit breaker: ${this.consecutiveLosses} consecutive losses`);
+    log.warn(`Circuit breaker: ${this.consecutiveLosses} consecutive losses (level=${this.circuitBreakerLevel})`);
 
-    if (this.consecutiveLosses >= 5) {
-      // L2: pause for 30 min
-      const pauseMs = 30 * 60 * 1000;
-      this.circuitBreakerPauseUntil = nowMs() + pauseMs;
-      this.entryEdgeMultiplier = 2.0;
-      log.warn(`🔴 Circuit breaker L2: 5 consecutive losses — pausing entries for 30 min`);
-      this.alertSystem.emit('circuit_breaker', `🔴 Circuit breaker L2: 5 consecutive losses. Pausing entries 30 min.`, {});
-    } else if (this.consecutiveLosses >= 3) {
-      // L1: tighten edge requirement for 10 min
-      this.entryEdgeMultiplier = 1.5;
-      const tightenUntil = new Date(nowMs() + 10 * 60 * 1000).toLocaleTimeString();
-      log.warn(`🟡 Circuit breaker L1: 3 consecutive losses — requiring 1.5x edge until ${tightenUntil}`);
-      this.alertSystem.emit('circuit_breaker', `🟡 Circuit breaker L1: 3 consecutive losses. 1.5x edge required until ${tightenUntil}.`, {});
+    // Check L3: session hard stop
+    const sessionPnl = this.db.getDailyPnl();
+    if (sessionPnl <= -0.30) {
+      this.circuitBreakerLevel = 3;
+      this.circuitBreakerPauseUntil = now + 24 * 60 * 60 * 1000; // session halt
+      this.circuitBreakerSizeMul = 0;
+      log.error(`🛑 Circuit breaker L3: session PnL=${sessionPnl.toFixed(4)} SOL <= -0.30 SOL threshold. Session halted.`);
+      this.alertSystem.emit('circuit_breaker', `🛑 Circuit breaker L3: session loss limit hit (${sessionPnl.toFixed(4)} SOL). Manual restart required.`, {});
+      return;
+    }
+
+    if (this.consecutiveLosses >= 5 && this.circuitBreakerLevel < 2) {
+      // L2: 15-minute full pause, then resume at L1 size
+      const pauseMs = 15 * 60 * 1000;
+      this.circuitBreakerLevel = 2;
+      this.circuitBreakerPauseUntil = now + pauseMs;
+      this.circuitBreakerSizeMul = 0.5; // Resume at half size after pause
+      const resumeAt = new Date(now + pauseMs).toLocaleTimeString();
+      log.warn(`🔴 Circuit breaker L2: 5 consecutive losses — pausing entries for 15 min (resume ~${resumeAt})`);
+      this.alertSystem.emit('circuit_breaker', `🔴 Circuit breaker L2: 5 consecutive losses. Pausing 15 min, resuming at 50% size. NO threshold changes.`, {});
+    } else if (this.consecutiveLosses >= 3 && this.circuitBreakerLevel < 1) {
+      // L1: 50% position size for 5 min (no pause, no threshold change)
+      this.circuitBreakerLevel = 1;
+      this.circuitBreakerSizeMul = 0.5;
+      const restoreAt = new Date(now + 5 * 60 * 1000).toLocaleTimeString();
+      log.warn(`🟡 Circuit breaker L1: 3 consecutive losses — position size cut to 50% until ${restoreAt}`);
+      this.alertSystem.emit('circuit_breaker', `🟡 Circuit breaker L1: 3 consecutive losses. 50% size until ${restoreAt}. Edge threshold unchanged.`, {});
+      // Schedule L1 auto-restore after 5 min
+      setTimeout(() => {
+        if (this.circuitBreakerLevel === 1) {
+          this.circuitBreakerLevel = 0;
+          this.circuitBreakerSizeMul = 1.0;
+          log.info('Circuit breaker L1 auto-restored: 5 min elapsed, full size restored');
+        }
+      }, 5 * 60 * 1000);
+    }
+  }
+
+  /**
+   * Deadlock watchdog: called on every analysis tick.
+   * If we've been in a non-L0 state for > 15 min with no activity, auto-reset.
+   * Prevents the March-26 class of "stuck in CB, can't trade, can't reset" incidents.
+   */
+  private tickCircuitBreakerWatchdog(): void {
+    if (this.circuitBreakerLevel === 0 || this.circuitBreakerLevel === 3) return;
+    const now = nowMs();
+    const idleMs = now - this.circuitBreakerDeadlockWatchdogAt;
+    if (idleMs > 15 * 60 * 1000) {
+      const prevLevel = this.circuitBreakerLevel;
+      this.circuitBreakerLevel = 0;
+      this.circuitBreakerSizeMul = 1.0;
+      this.circuitBreakerPauseUntil = 0;
+      log.warn(`⚠️ Circuit breaker watchdog: ${(idleMs / 60000).toFixed(1)} min idle at L${prevLevel} → auto-reset to L0`);
+      this.alertSystem.emit('circuit_breaker', `⚠️ CB watchdog: idle ${(idleMs / 60000).toFixed(1)} min at L${prevLevel} — auto-reset to L0. Verify market conditions.`, {});
     }
   }
 }

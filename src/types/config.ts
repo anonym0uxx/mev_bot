@@ -111,6 +111,8 @@ export interface RiskConfig {
   liquidity_cap_sol: number;
   slippage_cap_sol: number;
   max_daily_loss_sol: number;
+  /** L3 circuit breaker: session halt if net PnL drops below this SOL value (negative) */
+  circuit_breaker_session_halt_sol?: number;
 }
 
 export interface RoutePromotionConfig {
@@ -134,6 +136,14 @@ export interface ExecutionConfig {
   default_route_mode: RouteMode;
   default_slippage_bps: number;
   default_priority_fee_sol: number;
+  /** Dynamic priority fee: query getRecentPrioritizationFees and use p75 + 20% buffer */
+  dynamic_priority_fee?: boolean;
+  /** Percentile to use for dynamic fee (0–100, default 75) */
+  dynamic_priority_fee_percentile?: number;
+  /** Floor for dynamic fee in SOL */
+  priority_fee_floor_sol?: number;
+  /** Cap for dynamic fee in SOL */
+  priority_fee_cap_sol?: number;
   skip_preflight: boolean;
   confirmation_timeout_ms: number;
   max_retries: number;

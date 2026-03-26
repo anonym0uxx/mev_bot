@@ -341,6 +341,20 @@
         "min_trades_for_analysis": {
           "type": "number",
           "minimum": 1
+        },
+        "min_creator_prior": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "doa_velocity_decay_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "doa_min_new_buyers_3s": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },
@@ -493,6 +507,9 @@
         "take_profit_pct": {
           "type": "number",
           "minimum": 0
+        },
+        "circuit_breaker_session_halt_sol": {
+          "type": "number"
         }
       }
     },
@@ -668,6 +685,22 @@
               "minimum": 0
             }
           }
+        },
+        "dynamic_priority_fee": {
+          "type": "boolean"
+        },
+        "dynamic_priority_fee_percentile": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 99
+        },
+        "priority_fee_floor_sol": {
+          "type": "number",
+          "minimum": 0
+        },
+        "priority_fee_cap_sol": {
+          "type": "number",
+          "minimum": 0
         }
       }
     },

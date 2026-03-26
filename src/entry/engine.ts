@@ -271,7 +271,29 @@ function checkHardFilters(
     return 'excluded_regime';
   }
   if (features.creator_wallet_prior.creator_sell_flag) return 'creator_sold';
+
+  // Hard gate: creator prior floor — blocks creators with no/weak positive history.
+  // creator_sell is #1 exit reason; weight increase alone is insufficient — hard gate is more robust.
+  // Configurable via entry.min_creator_prior (default 0.45). Lower = permissive, higher = strict.
+  const minCreatorPrior = (config.entry as any).min_creator_prior ?? 0.45;
+  if (minCreatorPrior > 0 && features.creator_wallet_prior.composite_prior < minCreatorPrior) {
+    return `creator_prior_low (${features.creator_wallet_prior.composite_prior.toFixed(3)} < ${minCreatorPrior})`;
+  }
+
   if (features.manipulation_distribution.hard_shock) return 'manipulation_hard_shock';
+
+  // DOA pre-filter: block tokens where velocity is already dying and no new buyers in 3s.
+  // Eliminates flatline trades that waste capital and slot capacity.
+  // Activated when: velocity_decay < threshold AND no sustained new buyer flow.
+  const doaVelocityThreshold = (config.entry as any).doa_velocity_decay_threshold ?? 0.35;
+  const doaMinNewBuyers = (config.entry as any).doa_min_new_buyers_3s ?? 1;
+  const vel5s = features.flow_momentum.buy_notional_velocity_5s;
+  const vel15s = features.flow_momentum.buy_notional_velocity_15s;
+  const velocityDecayRatio = vel15s > 0.001 ? vel5s / vel15s : 1.0; // ratio < threshold = dying
+  const recentBuyers = (features.flow_momentum as any).new_unique_buyers_3s ?? null;
+  if (velocityDecayRatio < doaVelocityThreshold && recentBuyers !== null && recentBuyers < doaMinNewBuyers) {
+    return `doa_signal (vel_ratio=${velocityDecayRatio.toFixed(2)}, new_buyers_3s=${recentBuyers})`;
+  }
   if (features.friction_execution.execution_freshness_s > config.friction.stale_threshold_s) return 'stale_friction';
   if (ageS(packet.last_updated) > config.health.market_feed_stale_s) return 'stale_feed';
   if (features.manipulation_distribution.manipulation_penalty > config.manipulation.hard_threshold) return 'manipulation_risk';
