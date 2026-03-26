@@ -65,6 +65,7 @@ export class CoreCastV3Client extends EventEmitter {
   private reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
   private reconnectAttempts: Map<string, number> = new Map();
   private shouldRun = false;
+  private isShuttingDown = false; // Set on disconnect() — blocks new reconnect timers
   private _connected = false;
   private messageCount = 0;
   private startTime = 0;
@@ -195,14 +196,16 @@ export class CoreCastV3Client extends EventEmitter {
 
   disconnect(): void {
     this.shouldRun = false;
+    this.isShuttingDown = true; // Block any new reconnect timers from firing
 
-    // Cancel all reconnect timers
-    for (const timer of this.reconnectTimers.values()) {
+    // Cancel all pending reconnect timers — prevents orphaned reconnects after shutdown
+    for (const [name, timer] of this.reconnectTimers) {
       clearTimeout(timer);
+      log.debug(`Reconnect timer cleared: ${name}`);
     }
     this.reconnectTimers.clear();
 
-    // Cancel all streams
+    // Cancel all active gRPC streams — sends RST_STREAM to server (clean closure)
     for (const [name, stream] of this.streams) {
       try {
         stream.cancel();
@@ -211,9 +214,23 @@ export class CoreCastV3Client extends EventEmitter {
     }
     this.streams.clear();
 
+    // Close the underlying gRPC channel to release all server-side resources.
+    // Without this, the TCP connection lingers until server keepalive times out.
+    if (this.client) {
+      try {
+        // grpc-js client exposes close() on the channel via getChannel()
+        const channel = (this.client as any).getChannel?.();
+        if (channel && typeof channel.close === 'function') {
+          channel.close();
+          log.debug('gRPC channel closed');
+        }
+      } catch {}
+      this.client = null;
+    }
+
     this.joiner.destroy();
     this._connected = false;
-    log.info('CoreCast v3 disconnected');
+    log.info(`CoreCast v3 disconnected cleanly (${this.streams.size} streams, all timers cleared)`);
     this.emit('disconnected', 'operator');
   }
 
@@ -285,7 +302,7 @@ export class CoreCastV3Client extends EventEmitter {
   }
 
   private scheduleReconnect(config: StreamConfig): void {
-    if (!this.shouldRun) return;
+    if (!this.shouldRun || this.isShuttingDown) return; // Don't reconnect during shutdown
 
     const attempts = this.reconnectAttempts.get(config.name) || 0;
     const maxAttempts = 10;
@@ -304,7 +321,7 @@ export class CoreCastV3Client extends EventEmitter {
 
     const timer = setTimeout(() => {
       this.reconnectTimers.delete(config.name);
-      this.startStream(config);
+      if (!this.isShuttingDown) this.startStream(config); // Double-check — timer may have fired during shutdown
     }, delay);
 
     this.reconnectTimers.set(config.name, timer);

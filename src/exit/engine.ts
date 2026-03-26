@@ -76,6 +76,31 @@ export function evaluateExit(
     position.mfe_sol = position.current_value_sol;
   }
 
+  // ====== MOMENTUM REVERSAL FAST-EXIT ======
+  // Fires BEFORE trailing stop activates — catches first-trade-in-a-dump sequence.
+  // If price drops >momentum_reversal_pct from MFE in a single tick AND MFE > min threshold:
+  // exit immediately. This fires 1-2 events ahead of the trailing stop on violent dumps.
+  const MOMENTUM_REV_PCT = (config.exit as any).momentum_reversal_pct ?? 0.03;
+  const MOMENTUM_REV_MIN_MFE = (config.exit as any).momentum_reversal_min_mfe_pct ?? 0.05;
+  const mfePct = position.mfe_sol > 0 && position.entry_sol > 0
+    ? (position.mfe_sol - position.entry_sol) / position.entry_sol
+    : 0;
+  if (mfePct >= MOMENTUM_REV_MIN_MFE && position.mfe_sol > 0) {
+    const dropFromMfe = position.mfe_sol > 0
+      ? (position.mfe_sol - position.current_value_sol) / position.mfe_sol
+      : 0;
+    if (dropFromMfe >= MOMENTUM_REV_PCT) {
+      log.info(`Momentum reversal exit: ${position.symbol} drop=${(dropFromMfe * 100).toFixed(1)}% from MFE (MFE=${(mfePct * 100).toFixed(1)}%)`);
+      return {
+        shouldExit: true,
+        shouldReduce: false,
+        exitPct: 100,
+        reason: ExitReason.PEAK_RETRACE,
+        ev: computeExitEV(packet, position, probabilities, features, config),
+      };
+    }
+  }
+
   // Hard take-profit — fallback to risk config if exit-specific field unset
   const takeProfitPct = config.exit.take_profit_pct ?? (config.risk as any).take_profit_pct;
   if (takeProfitPct && takeProfitPct > 0 && gainPct >= takeProfitPct) {

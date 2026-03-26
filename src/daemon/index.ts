@@ -142,20 +142,36 @@ class StrategyDaemon {
     const telegramChatId = process.env.TELEGRAM_CHAT_ID || '5024153101';
     const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
     if (telegramBotToken) {
-      this.alertSystem.onImmediate(async (alert) => {
+      // Telegram delivery helper — async but fully logged on success AND failure.
+      // IMPORTANT: parse_mode 'Markdown' rejects messages with unescaped special chars
+      // (underscores, brackets, Cyrillic in token names, etc.) → silently dropped.
+      // Use no parse_mode (plain text) for reliability. Rate limit: 1 msg/sec per chat.
+      const sendTelegram = async (text: string): Promise<void> => {
+        const url = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
+        const body = JSON.stringify({ chat_id: telegramChatId, text });
         try {
-          const url = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
-          const body = JSON.stringify({
-            chat_id: telegramChatId,
-            text: alert.message,
-            parse_mode: 'Markdown',
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+            signal: AbortSignal.timeout(5000),
           });
-          await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+          if (!res.ok) {
+            const errText = await res.text().catch(() => '');
+            log.warn(`Telegram delivery HTTP ${res.status}: ${errText.slice(0, 200)}`, { component: 'alerts' });
+          } else {
+            log.debug(`Telegram delivered: ${text.slice(0, 60)}`, { component: 'alerts' });
+          }
         } catch (err) {
-          log.warn(`Alert delivery failed: ${(err as Error).message}`, { component: 'alerts' });
+          log.warn(`Telegram delivery failed: ${(err as Error).message}`, { component: 'alerts' });
         }
+      };
+
+      this.alertSystem.onImmediate((alert) => {
+        // Fire-and-forget but with full error logging above
+        sendTelegram(alert.message).catch(() => {});
       });
-      log.info(`Alert delivery: Telegram chat ${telegramChatId}`, { component: 'alerts' });
+      log.info(`Alert delivery: Telegram chat ${telegramChatId} (plain text, no parse_mode)`, { component: 'alerts' });
     } else {
       log.warn('TELEGRAM_BOT_TOKEN not set — immediate alerts will log only', { component: 'alerts' });
     }
@@ -1409,18 +1425,27 @@ async function main(): Promise<void> {
 
   const daemon = new StrategyDaemon();
 
-  // Graceful shutdown
-  process.on('SIGINT', async () => {
-    log.info('Received SIGINT, shutting down...');
-    await daemon.stop();
+  // Graceful shutdown with hard deadline.
+  // Must complete before supervisor's kill timeout (run-daemon.sh waits 8s then SIGKILL).
+  const SHUTDOWN_TIMEOUT_MS = 6000;
+  const shutdown = async (signal: string): Promise<void> => {
+    log.info(`Received ${signal}, shutting down...`);
+    const forceExitTimer = setTimeout(() => {
+      log.error('Shutdown timed out after 6s — forcing exit');
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+    forceExitTimer.unref(); // Don't prevent exit if cleanup finishes naturally
+    try {
+      await daemon.stop();
+    } catch (err) {
+      log.error(`Error during shutdown: ${(err as Error).message}`);
+    }
+    clearTimeout(forceExitTimer);
     process.exit(0);
-  });
+  };
 
-  process.on('SIGTERM', async () => {
-    log.info('Received SIGTERM, shutting down...');
-    await daemon.stop();
-    process.exit(0);
-  });
+  process.on('SIGINT', () => shutdown('SIGINT').catch(() => process.exit(1)));
+  process.on('SIGTERM', () => shutdown('SIGTERM').catch(() => process.exit(1)));
 
   await daemon.start();
 }

@@ -438,6 +438,16 @@
           "type": "number",
           "minimum": 0,
           "maximum": 100
+        },
+        "momentum_reversal_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "momentum_reversal_min_mfe_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
         }
       }
     },

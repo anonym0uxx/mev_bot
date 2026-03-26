@@ -78,10 +78,12 @@
         "time_decay_pressure_per_s": 0.001,
         "max_hold_time_s": 120,
         "take_profit_pct": 0.45,
-        "trailing_stop_activation_pct": 0.12,
-        "trailing_stop_distance_pct": 0.05,
-        "tier1_profit_pct": 0.15,
-        "tier1_reduce_pct": 50
+        "trailing_stop_activation_pct": 0.06,
+        "trailing_stop_distance_pct": 0.035,
+        "tier1_profit_pct": 0.08,
+        "tier1_reduce_pct": 40,
+        "momentum_reversal_pct": 0.03,
+        "momentum_reversal_min_mfe_pct": 0.05
     },
     "risk": {
         "bankroll_sol": 0.766,
@@ -244,7 +246,6 @@
             "buy_filled",
             "reduce_filled",
             "full_exit",
-            "forced_exit",
             "auto_pause",
             "stale_feed",
             "execution_failure",
@@ -258,10 +259,11 @@
             "end_of_day_hour_utc": 4
         },
         "log_only": [
+            "forced_exit",
             "candidate_churn",
             "state_transition",
             "minor_reconnect",
-            "health_non_material",
+            "health_non_critical",
             "low_level_metrics"
         ]
     },
