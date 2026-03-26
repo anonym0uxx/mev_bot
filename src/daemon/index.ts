@@ -27,6 +27,7 @@ import { PumpPortalClient } from '../feed/pump-portal';
 import { CoreCastClient } from '../feed/corecast-v2';
 import { CoreCastV3Client } from '../feed/corecast-v3';
 import { BitqueryClient } from '../feed/bitquery';
+import { SocialCache } from '../feed/social-cache';
 import { classifyRegime, computeBondingCurveProgress, isTradeableRegime, detectMayhem, detectTokenizedAgent } from '../regime/classifier';
 import { FeatureEngine } from '../features/engine';
 import { fetchTokenMetadata } from '../features/multimodal-junk-filter';
@@ -60,6 +61,7 @@ class StrategyDaemon {
   private configManager = getConfigManager();
   private feed: PumpPortalClient;
   private corecast: CoreCastClient | CoreCastV3Client | null = null;
+  private socialCache = new SocialCache();
   private bitquery: BitqueryClient;
   private featureEngine: FeatureEngine;
   private stateMachine: TokenStateMachine;
@@ -520,6 +522,9 @@ class StrategyDaemon {
     const config = this.configManager.getConfig();
     const now = nowMs();
 
+    // Async social pre-fetch — non-blocking, result cached for entry evaluation
+    if (event.mint) this.socialCache.prefetch(event.mint);
+
     // Persist raw event
     this.db.insertRawEvent({
       type: 'new_token',
@@ -840,6 +845,14 @@ class StrategyDaemon {
       // New max_daily_loss_sol limits apply to trades AFTER the config change, not the full day.
       const dailyLoss = this.db.getDailyPnl(this.configChangeEpoch);
       const dailyEntryCount = this.db.getDailyEntryCount();
+
+      // Social pre-filter: banned or NSFW tokens are instant disqualifiers
+      const social = this.socialCache.getOrNeutral(mint);
+      if (social.fetchOk && (social.is_banned || social.nsfw)) {
+        log.info(`REJECT ${packet.symbol || mint.slice(0,8)}: social_banned (banned=${social.is_banned} nsfw=${social.nsfw})`);
+        return;
+      }
+
       // Circuit breaker: NEVER multiply edge threshold — only adjust position size (L1) or pause (L2/L3).
       // Edge threshold is anchored to model output ceiling via threshold/manager. Multiplying it can
       // exceed the model's physical output range → infinite deadlock (the March-26 incident).
@@ -887,7 +900,7 @@ class StrategyDaemon {
 
           log.info(`🚀 Promoting to ENTER_READY: ${packet.symbol || mint.slice(0,8)} — ${entryDecision.reason}`);
           this.stateMachine.transitionToEnterReady(mint, entryDecision.reason);
-          log.info(`💰 EXECUTING ENTRY: ${packet.symbol || mint.slice(0,8)} size=${entryDecision.sizing!.position_size.toFixed(4)} SOL (positions: ${openPositionCount}+${this.committedMints.size - 1} pending)`);
+          log.info(`💰 EXECUTING ENTRY: ${packet.symbol || mint.slice(0,8)} size=${entryDecision.sizing!.position_size.toFixed(4)} SOL | social: twitter=${social.has_twitter} tg=${social.has_telegram} replies=${social.reply_count} score=${social.social_score.toFixed(2)} (positions: ${openPositionCount}+${this.committedMints.size - 1} pending)`);
 
           if (!this.isShuttingDown) {
             this._trackTrade(
