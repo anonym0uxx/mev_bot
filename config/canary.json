@@ -43,7 +43,7 @@
         "min_entry_edge": 0.0018,
         "observation_window_s": 60,
         "min_breadth_for_entry": 0.4,
-        "min_unique_buyers": 4,
+        "min_unique_buyers": 3,
         "max_concentration_top10": 0.45,
         "max_slippage_pct": 0.08,
         "ev_wait_horizon_s": 5,

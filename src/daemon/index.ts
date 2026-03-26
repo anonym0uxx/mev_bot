@@ -489,7 +489,15 @@ class StrategyDaemon {
 
     this.corecast.on('connected', () => {
       this.healthMonitor.recordUpdate('market_feed');
-      log.info('CoreCast fast-lane connected');
+      // Verify all 3 Bitquery streams are active — hard limit is 3 concurrent gRPC streams
+      const v3 = this.corecast as import('../feed/corecast-v3').CoreCastV3Client;
+      const activeStreams = typeof v3.activeStreamCount === 'number' ? v3.activeStreamCount : -1;
+      if (activeStreams !== -1 && activeStreams !== 3) {
+        log.error(`CRITICAL: CoreCast connected with ${activeStreams}/3 streams. Bitquery limit is 3. Halting to prevent blind trading.`);
+        this.healthMonitor.pause('stream_count_mismatch');
+      } else {
+        log.info(`CoreCast fast-lane connected (${activeStreams === -1 ? '?' : activeStreams}/3 streams active)`);
+      }
     });
 
     this.corecast.on('disconnected', (reason: string) => {

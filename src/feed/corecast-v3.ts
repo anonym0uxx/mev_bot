@@ -90,6 +90,7 @@ export class CoreCastV3Client extends EventEmitter {
   }
 
   get connected(): boolean { return this._connected; }
+  get activeStreamCount(): number { return this.streams.size; }
   get lastMessageTime(): number { return this.lastMessageAt; }
   get stats() {
     return {
@@ -191,7 +192,13 @@ export class CoreCastV3Client extends EventEmitter {
     }
 
     if (streams.length !== EXPECTED_STREAMS) {
-      log.error(`CoreCast v3: expected ${EXPECTED_STREAMS} streams but configured ${streams.length}. Check subscribe_trades/subscribe_new_tokens/subscribe_migrations config.`);
+      // Hard fail — Bitquery concurrent stream limit is 3. Misconfiguration means we'd be
+      // trading blind or wasting quota. Refuse to start rather than silently under-subscribe.
+      throw new Error(
+        `CoreCast v3: expected exactly ${EXPECTED_STREAMS} streams but configured ${streams.length}. ` +
+        `Check subscribe_trades/subscribe_new_tokens/subscribe_migrations in config. ` +
+        `Bitquery concurrent stream limit is 3 — do not add streams without removing others.`
+      );
     }
 
     this._connected = true;
