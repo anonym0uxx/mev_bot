@@ -327,7 +327,14 @@ export class TokenStateMachine extends EventEmitter {
         window_capital_efficiency: 0, efficiency_trend: 0.5,
         curve_fill_rate_sol_per_min: 0, curve_fill_rate_normalized: 0,
         large_trade_fraction: 0, median_trade_size_sol: 0,
-        median_trade_size_normalized: 0, bcd_score: 0,
+        median_trade_size_normalized: 0,
+        initial_capital_efficiency: 0.5,   // neutral (insufficient data)
+        accumulation_shape: 0.5,           // neutral
+        initial_burst_impact: 0,
+        high_impact_fraction: 0,
+        max_impact_ratio_normalized: 0,
+        organic_diversity_score: 0.5,      // neutral
+        bcd_score: 0,
       },
       creator_net_sol_position: 0,
       total_swap_count: 0,

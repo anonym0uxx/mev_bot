@@ -1,0 +1,416 @@
+{
+  "_meta": {
+    "title": "BondingCurveDynamics — Three New Early-Signal Features",
+    "basis": "arXiv:2602.14860 — early-window capital efficiency is #1 graduation predictor",
+    "author": "Principal Crypto Quant (Apollo subagent)",
+    "date": "2026-03-26"
+  },
+
+  "state_fields_to_add": {
+    "in": "TokenTradeState (src/features/engine.ts)",
+    "fields": [
+      {
+        "name": "firstNTrades",
+        "type": "TradeDataPoint[]",
+        "description": "The first 30 trades ever seen for this token, captured in arrival order and NEVER evicted. Used exclusively for initial_capital_efficiency.",
+        "max_size": 30,
+        "never_evicted": true,
+        "init": "[]",
+        "addTrade_logic": "if (state.firstNTrades.length < 30) state.firstNTrades.push(trade);"
+      },
+      {
+        "name": "vSolAfterTrade10",
+        "type": "number",
+        "description": "vSolInBondingCurve captured at the moment totalSwapCount transitions from 9→10. Written once, never updated.",
+        "init": 0,
+        "addTrade_logic": "if (state.totalSwapCount === 10) state.vSolAfterTrade10 = trade.vSolInBondingCurve;",
+        "note": "Set AFTER incrementing totalSwapCount so check is === 10 on the 10th trade."
+      },
+      {
+        "name": "vSolAfterTrade30",
+        "type": "number",
+        "description": "vSolInBondingCurve at the 30th trade. Written once, never updated.",
+        "init": 0,
+        "addTrade_logic": "if (state.totalSwapCount === 30) state.vSolAfterTrade30 = trade.vSolInBondingCurve;"
+      },
+      {
+        "name": "accumulationShapeHistory",
+        "type": "Array<{ timestamp: number; vSol: number }>",
+        "description": "vSolInBondingCurve snapshots taken every ~5 s, capped at 24 entries (~2 min). Separate from capitalEfficiencyHistory (which stores CE/trade not raw vSol) to avoid aliasing.",
+        "max_size": 24,
+        "sample_interval_ms": 5000,
+        "init": "[]",
+        "addTrade_logic": "Sampled in computeFeatures() same as capitalEfficiencyHistory — every 5 s or on each call (whichever is larger granularity fits 24 pts)."
+      },
+      {
+        "name": "earlyBuyerTimingHistory",
+        "type": "Array<{ timestamp: number; solAmount: number }>",
+        "description": "Timestamps and sizes of the first 50 buy-only trades. Used to compute inter-arrival regularity (bot proxy) without needing instruction account inspection.",
+        "max_size": 50,
+        "never_evicted": true,
+        "init": "[]",
+        "addTrade_logic": "if (trade.txType === 'buy' && state.earlyBuyerTimingHistory.length < 50) state.earlyBuyerTimingHistory.push({ timestamp: trade.timestamp, solAmount: trade.solAmount });"
+      }
+    ]
+  },
+
+  "context_fields_to_add": {
+    "in": "BondingCurveDynamicsContext (src/features/bonding-curve-dynamics.ts)",
+    "fields": [
+      { "name": "vSolAfterTrade10",        "type": "number" },
+      { "name": "vSolAfterTrade30",        "type": "number" },
+      { "name": "totalSwapCountLifetime",  "type": "number", "note": "Pass state.totalSwapCount so we know how many trades have been seen overall (for grace period logic)." },
+      { "name": "accumulationShapeHistory","type": "Array<{ timestamp: number; vSol: number }>" },
+      { "name": "earlyBuyerTimingHistory", "type": "Array<{ timestamp: number; solAmount: number }>" }
+    ]
+  },
+
+  "signals": {
+    "signal_1_initial_capital_efficiency": {
+      "output_field": "initial_capital_efficiency",
+      "range": "[0, 1]",
+      "direction": "higher = better",
+      "rationale": "Paper §4: CE computed on the first N trades is the strongest early predictor of graduation. Lifetime CE dilutes the early signal with later bot-wash. Locking CE at trade-10 and trade-30 gives a frozen, non-manipulable quality stamp.",
+
+      "constants": {
+        "CE_SCALE": 0.10,
+        "WEIGHT_CE10": 0.40,
+        "WEIGHT_CE30": 0.60,
+        "GRACE_MIN_TRADES_FOR_CE10": 10,
+        "GRACE_MIN_TRADES_FOR_CE30": 30
+      },
+
+      "sub_signals": {
+        "initial_ce_10": {
+          "formula": "initial_ce_10 = vSolAfterTrade10 / 10",
+          "normalized": "clamp(initial_ce_10 / CE_SCALE, 0, 1)",
+          "interpretation": "Average SOL per trade in the first decisive 10 trades. A graduating token with 10 early trades each contributing ~0.01 SOL = raw 0.01 = norm 0.10; a token with decisive 0.10 SOL/trade avg = norm 1.0.",
+          "edge_case_fewer_than_10_trades": {
+            "behavior": "Use current vSolInBondingCurve / totalSwapCount as a proxy (same as capital_efficiency_raw). Signal is PROVISIONAL and lower-confidence. Do NOT gate execution on it alone.",
+            "formula": "if vSolAfterTrade10 === 0: initial_ce_10_raw = vSolInBondingCurve / max(totalSwapCount, 1); else: initial_ce_10_raw = vSolAfterTrade10 / 10",
+            "flag_field": "initial_ce_10_is_final: totalSwapCount >= 10"
+          }
+        },
+        "initial_ce_30": {
+          "formula": "initial_ce_30 = vSolAfterTrade30 / 30",
+          "normalized": "clamp(initial_ce_30 / CE_SCALE, 0, 1)",
+          "edge_case_fewer_than_30_trades": {
+            "behavior": "Use current vSolInBondingCurve / totalSwapCount as proxy (same fallback). Initial_ce_10 should be finalized first.",
+            "formula": "if vSolAfterTrade30 === 0: initial_ce_30_raw = vSolInBondingCurve / max(totalSwapCount, 1); else: initial_ce_30_raw = vSolAfterTrade30 / 30",
+            "flag_field": "initial_ce_30_is_final: totalSwapCount >= 30"
+          }
+        }
+      },
+
+      "composite_formula": {
+        "description": "Weighted blend of the two frozen snapshots. CE30 gets higher weight because 30 trades gives a more statistically stable estimate while still being 'early'.",
+        "formula": "initial_capital_efficiency = clamp(0.40 * norm_ce10 + 0.60 * norm_ce30, 0, 1)",
+        "when_only_ce10_is_final (10 <= totalSwapCount < 30)": "initial_capital_efficiency = norm_ce10  (use single finalized signal, ignore unfinal ce30)",
+        "when_fewer_than_10_trades": "initial_capital_efficiency = capital_efficiency_normalized  (fall back to lifetime CE — identical computation — as placeholder)",
+        "typescript_pseudocode": [
+          "const ce10Raw = ctx.vSolAfterTrade10 > 0 ? ctx.vSolAfterTrade10 / 10 : ctx.vSolInBondingCurve / Math.max(ctx.totalSwapCountLifetime, 1);",
+          "const ce30Raw = ctx.vSolAfterTrade30 > 0 ? ctx.vSolAfterTrade30 / 30 : ctx.vSolInBondingCurve / Math.max(ctx.totalSwapCountLifetime, 1);",
+          "const normCe10 = Math.min(1, Math.max(0, ce10Raw / CE_SCALE));",
+          "const normCe30 = Math.min(1, Math.max(0, ce30Raw / CE_SCALE));",
+          "const n = ctx.totalSwapCountLifetime;",
+          "let initial_capital_efficiency: number;",
+          "if (n >= 30) { initial_capital_efficiency = 0.40 * normCe10 + 0.60 * normCe30; }",
+          "else if (n >= 10) { initial_capital_efficiency = normCe10; }",
+          "else { initial_capital_efficiency = capital_efficiency_normalized; }",
+          "initial_capital_efficiency = Math.min(1, Math.max(0, initial_capital_efficiency));"
+        ]
+      }
+    },
+
+    "signal_2_accumulation_shape": {
+      "output_field": "accumulation_shape",
+      "range": "[0, 1]",
+      "direction": "higher = better (accelerating/linear > front-loaded)",
+      "rationale": "A token that shows front-loaded vSol then plateaus has snipers who dumped. Steady linear accumulation signals retail. Accelerating vSol signals viral momentum. We quantify using second-derivative sign of the vSol series.",
+
+      "constants": {
+        "MIN_HISTORY_POINTS": 4,
+        "SHAPE_SCALE_ACCELERATION": 2.0,
+        "SHAPE_SCALE_CV": 1.0
+      },
+
+      "approach": "Two-component blend: (A) convexity of vSol series (second derivative sign), (B) coefficient of variation of vSol increments (organic randomness vs bot uniformity).",
+
+      "component_A_convexity": {
+        "name": "shape_convexity",
+        "description": "Second derivative of vSol over the observation history. Positive = accelerating (good). Negative = front-loaded/decelerating (bad). Zero = linear.",
+        "formula_steps": [
+          "Let H = accumulationShapeHistory (sorted by timestamp, length N).",
+          "Compute increments: delta[i] = H[i+1].vSol - H[i].vSol  for i = 0..N-2",
+          "Compute second diffs: d2[i] = delta[i+1] - delta[i]  for i = 0..N-3",
+          "mean_d2 = mean(d2)",
+          "Normalize: shape_convexity = clamp(mean_d2 / SHAPE_SCALE_ACCELERATION + 0.5, 0, 1)",
+          "Interpretation: mean_d2 > 0 → acceleration (signal > 0.5), mean_d2 < 0 → deceleration (signal < 0.5), zero → 0.5"
+        ],
+        "SHAPE_SCALE_ACCELERATION": "0.002 SOL per 5s interval (i.e. 0.024 SOL/min² acceleration). This means a 'maximum acceleration signal' requires ~0.002 SOL/interval² increase in accumulation rate. Tune empirically.",
+        "edge_case_fewer_than_4_points": "shape_convexity = 0.5 (neutral)"
+      },
+
+      "component_B_cv_of_increments": {
+        "name": "shape_cv_score",
+        "description": "Coefficient of variation (std/mean) of vSol increments. LOW CV = bots buying uniformly (bad). HIGH CV = organic/viral buyers of varying size (good).",
+        "formula_steps": [
+          "Using same delta[] from component A.",
+          "Filter to only positive deltas (exclude intervals where vSol decreased — sells).",
+          "positive_deltas = delta.filter(d => d > 0)",
+          "If positive_deltas.length < 2: shape_cv_score = 0.5 (neutral)",
+          "mean_delta = mean(positive_deltas)",
+          "std_delta = stddev(positive_deltas)",
+          "cv = std_delta / mean_delta  (if mean_delta > 0, else 0)",
+          "CV_TARGET = 1.2  — at CV ≥ 1.2 we consider this fully organic",
+          "shape_cv_score = clamp(cv / CV_TARGET, 0, 1)"
+        ],
+        "interpretation": "CV < 0.2 → very uniform (bot-like, score near 0). CV ~ 1.0-1.5 → organic (score near 1). CV > 1.2 → score clamped at 1.",
+        "CV_TARGET_rationale": "For a Poisson-like organic buy stream, CV of trade sizes is typically 0.8-1.5. Bots tend toward CV < 0.3."
+      },
+
+      "composite_formula": {
+        "weights": { "convexity": 0.55, "cv_score": 0.45 },
+        "formula": "accumulation_shape = clamp(0.55 * shape_convexity + 0.45 * shape_cv_score, 0, 1)",
+        "typescript_pseudocode": [
+          "const H = ctx.accumulationShapeHistory;",
+          "let shape_convexity = 0.5;",
+          "let shape_cv_score = 0.5;",
+          "",
+          "if (H.length >= 4) {",
+          "  const deltas = H.slice(1).map((p, i) => p.vSol - H[i].vSol);",
+          "  // Component A: convexity",
+          "  const d2 = deltas.slice(1).map((d, i) => d - deltas[i]);",
+          "  const mean_d2 = d2.reduce((s, v) => s + v, 0) / d2.length;",
+          "  const SHAPE_SCALE = 0.002;",
+          "  shape_convexity = Math.min(1, Math.max(0, mean_d2 / SHAPE_SCALE + 0.5));",
+          "",
+          "  // Component B: CV of positive increments",
+          "  const pos = deltas.filter(d => d > 0);",
+          "  if (pos.length >= 2) {",
+          "    const mean_p = pos.reduce((s, v) => s + v, 0) / pos.length;",
+          "    const std_p = Math.sqrt(pos.reduce((s, v) => s + Math.pow(v - mean_p, 2), 0) / pos.length);",
+          "    const cv = mean_p > 0 ? std_p / mean_p : 0;",
+          "    shape_cv_score = Math.min(1, cv / 1.2);",
+          "  }",
+          "}",
+          "",
+          "const accumulation_shape = Math.min(1, Math.max(0, 0.55 * shape_convexity + 0.45 * shape_cv_score));"
+        ]
+      }
+    },
+
+    "signal_3_early_buyer_composition_trend": {
+      "output_field": "early_buyer_composition_trend",
+      "range": "[0, 1]",
+      "direction": "higher = composition improving (more organic retail, less bot-like)",
+      "rationale": "Paper §5: Non-bot buyer fraction > 30% at any vSol level boosts graduation. The trend matters more than the snapshot — increasing organic ratio signals viral retail uptake. Decreasing ratio = bots front-ran, retail exited.",
+
+      "note": "True bot detection (instruction account inspection) is pending from MEV engineer. This signal uses two orthogonal proxy metrics available NOW from TradeDataPoint fields.",
+
+      "constants": {
+        "BUCKET_SIZE": 10,
+        "MIN_BUCKETS": 2,
+        "TIMING_CV_BOT_THRESHOLD": 0.25,
+        "TIMING_CV_HUMAN_THRESHOLD": 0.80,
+        "SIZE_CV_BOT_THRESHOLD": 0.20,
+        "SIZE_CV_HUMAN_THRESHOLD": 1.00,
+        "ORGANIC_THRESHOLD_FOR_BONUS": 0.30
+      },
+
+      "proxy_metric_A_timing_regularity": {
+        "name": "timing_regularity_organic_score",
+        "description": "Bots submit transactions at highly regular intervals. Humans are irregular. CV of inter-arrival times between consecutive early buys is our proxy.",
+        "input": "earlyBuyerTimingHistory (first 50 buys, sorted by timestamp)",
+        "formula_steps": [
+          "inter_arrivals = diff(earlyBuyerTimingHistory.map(t => t.timestamp))  — in ms",
+          "If inter_arrivals.length < 3: timing_regularity_organic_score = 0.5 (neutral)",
+          "cv_timing = stddev(inter_arrivals) / mean(inter_arrivals)",
+          "LOW cv_timing → bot-like (e.g. cv < 0.25): bad",
+          "HIGH cv_timing → human-like (e.g. cv > 0.80): good",
+          "timing_regularity_organic_score = clamp((cv_timing - BOT_THRESH) / (HUMAN_THRESH - BOT_THRESH), 0, 1)",
+          "= clamp((cv_timing - 0.25) / 0.55, 0, 1)"
+        ],
+        "rationale": "MEV bots often fire at ~400ms intervals. Sandwich bots are even tighter. Organic buyers span seconds to minutes."
+      },
+
+      "proxy_metric_B_trade_size_cv": {
+        "name": "size_dispersion_organic_score",
+        "description": "Bot batches tend to use uniform trade sizes. Organic buyers use highly variable sizes.",
+        "input": "earlyBuyerTimingHistory.map(t => t.solAmount) (first 50 buys)",
+        "formula_steps": [
+          "sizes = earlyBuyerTimingHistory.map(t => t.solAmount)",
+          "If sizes.length < 3: size_dispersion_organic_score = 0.5 (neutral)",
+          "cv_sizes = stddev(sizes) / mean(sizes)",
+          "size_dispersion_organic_score = clamp((cv_sizes - 0.20) / 0.80, 0, 1)"
+        ]
+      },
+
+      "instantaneous_organic_score": {
+        "description": "Point-in-time estimate of how organic the buyer pool is. Blend of timing and size CV.",
+        "formula": "organic_score_t = 0.55 * timing_regularity_organic_score + 0.45 * size_dispersion_organic_score"
+      },
+
+      "trend_computation": {
+        "description": "We bucket earlyBuyerTimingHistory into sequential windows of BUCKET_SIZE=10 trades each. Compute organic_score per bucket, then fit a linear trend across buckets.",
+        "steps": [
+          "buckets = chunk(earlyBuyerTimingHistory, BUCKET_SIZE)  — e.g. [trades 1-10], [11-20], [21-30], [31-40], [41-50]",
+          "If buckets.length < 2: early_buyer_composition_trend = organic_score_t (no trend available yet)",
+          "For each bucket b_i, compute:",
+          "  cv_timing_i = CV of inter-arrivals within b_i (or CV of timestamps vs global mean if only 1 trade in bucket)",
+          "  cv_size_i = CV of solAmounts within b_i",
+          "  organic_i = 0.55 * clamp((cv_timing_i - 0.25)/0.55, 0, 1) + 0.45 * clamp((cv_size_i - 0.20)/0.80, 0, 1)",
+          "",
+          "Fit linear regression: organic_i = a + b*i  over i = 0..buckets.length-1",
+          "  slope b = covariance(i, organic_i) / variance(i)",
+          "",
+          "trend_score: positive slope = improving composition, negative = degrading",
+          "  SLOPE_SCALE = 0.10 per bucket (i.e. 0.10 increase in organic score per 10-trade bucket = full positive signal)",
+          "  trend_normalized = clamp(b / SLOPE_SCALE + 0.5, 0, 1)",
+          "",
+          "Base score: base = organic_score_t (instantaneous quality)",
+          "Trend modifier: trend_modifier = trend_normalized * 0.40 + 0.30  (maps [0,1] → [0.30, 0.70], avoiding full zeroing on bad trend)",
+          "",
+          "early_buyer_composition_trend = clamp(base * trend_modifier * 2.5, 0, 1)",
+          "  Note: * 2.5 rescales since base * trend_modifier is at most ~0.70. Tune this multiplier empirically.",
+          "",
+          "Simpler form: early_buyer_composition_trend = clamp(0.60 * base + 0.40 * trend_normalized, 0, 1)"
+        ],
+        "recommended_simple_form": "clamp(0.60 * organic_score_t + 0.40 * trend_normalized, 0, 1)",
+        "typescript_pseudocode": [
+          "const H = ctx.earlyBuyerTimingHistory;",
+          "",
+          "// Helper: CV of an array",
+          "const cv = (arr: number[]): number => {",
+          "  if (arr.length < 2) return 0.5;",
+          "  const mean = arr.reduce((s,v) => s+v,0) / arr.length;",
+          "  if (mean === 0) return 0;",
+          "  const std = Math.sqrt(arr.reduce((s,v) => s + Math.pow(v-mean,2),0) / arr.length);",
+          "  return std / mean;",
+          "};",
+          "",
+          "// Instantaneous organic score from all early buys",
+          "const interArrivals = H.slice(1).map((p,i) => p.timestamp - H[i].timestamp).filter(d => d >= 0);",
+          "const sizes = H.map(p => p.solAmount);",
+          "const cvTiming = cv(interArrivals);",
+          "const cvSizes = cv(sizes);",
+          "const timingOrganic = Math.min(1, Math.max(0, (cvTiming - 0.25) / 0.55));",
+          "const sizeOrganic = Math.min(1, Math.max(0, (cvSizes - 0.20) / 0.80));",
+          "const organic_score_t = 0.55 * timingOrganic + 0.45 * sizeOrganic;",
+          "",
+          "// Bucket-level trend",
+          "const BUCKET_SIZE = 10;",
+          "const buckets: typeof H[] = [];",
+          "for (let i = 0; i < H.length; i += BUCKET_SIZE) buckets.push(H.slice(i, i + BUCKET_SIZE));",
+          "",
+          "let trend_normalized = 0.5;",
+          "if (buckets.length >= 2) {",
+          "  const organicPerBucket = buckets.map(b => {",
+          "    const bInterArrivals = b.slice(1).map((p,i) => p.timestamp - b[i].timestamp).filter(d => d >= 0);",
+          "    const bSizes = b.map(p => p.solAmount);",
+          "    const bt = Math.min(1, Math.max(0, (cv(bInterArrivals) - 0.25) / 0.55));",
+          "    const bs = Math.min(1, Math.max(0, (cv(bSizes) - 0.20) / 0.80));",
+          "    return 0.55 * bt + 0.45 * bs;",
+          "  });",
+          "  const n = organicPerBucket.length;",
+          "  const iMean = (n - 1) / 2;",
+          "  const oMean = organicPerBucket.reduce((s,v) => s+v,0) / n;",
+          "  const cov = organicPerBucket.reduce((s,v,i) => s + (i-iMean)*(v-oMean),0) / n;",
+          "  const varI = organicPerBucket.reduce((s,_,i) => s + Math.pow(i-iMean,2),0) / n;",
+          "  const slope = varI > 0 ? cov / varI : 0;",
+          "  const SLOPE_SCALE = 0.10;",
+          "  trend_normalized = Math.min(1, Math.max(0, slope / SLOPE_SCALE + 0.5));",
+          "}",
+          "",
+          "const early_buyer_composition_trend = Math.min(1, Math.max(0, 0.60 * organic_score_t + 0.40 * trend_normalized));",
+          "",
+          "// Edge case: fewer than 3 early buys",
+          "// if (H.length < 3) early_buyer_composition_trend = 0.5;"
+        ],
+        "edge_cases": {
+          "fewer_than_3_early_buys": "Return 0.5 (neutral — insufficient data)",
+          "single_bucket": "Return organic_score_t (no trend available, just instantaneous)",
+          "all_same_timestamp": "Inter-arrival CV = undefined → treat as 0 (bot-like). Set cvTiming = 0.",
+          "zero_mean_sizes": "Pathological — all trades were 0 SOL. Return 0."
+        }
+      }
+    }
+  },
+
+  "bcd_score_weight_update": {
+    "rationale": [
+      "capital_efficiency_normalized stays dominant (≥ 0.30) — it's the lifetime quality signal",
+      "initial_capital_efficiency gets 0.20 — paper says early window is the most predictive single metric",
+      "efficiency_trend drops from 0.25 → 0.15 — trend still matters but early ICE captures a better version of the same insight",
+      "curve_fill_rate_normalized drops from 0.20 → 0.15 — fill rate is velocity, ICE is quality; both needed but balanced",
+      "accumulation_shape gets 0.10 — shape is a refinement of efficiency_trend, moderate weight",
+      "early_buyer_composition_trend gets 0.08 — valuable but proxy-based until MEV engineer delivers true bot detection; bump to 0.12-0.15 when real labels arrive",
+      "large_trade_fraction stays 0.06 — still a useful raw signal",
+      "median_trade_size_normalized drops to 0.03 — mostly captured by ICE and large_trade_fraction",
+      "NOTE: After MEV engineer delivers bot detection, move 0.05 from capital_efficiency_normalized to early_buyer_composition_trend"
+    ],
+    "weights": {
+      "capital_efficiency_normalized":      0.30,
+      "initial_capital_efficiency":         0.20,
+      "efficiency_trend":                   0.15,
+      "curve_fill_rate_normalized":         0.15,
+      "accumulation_shape":                 0.10,
+      "early_buyer_composition_trend":      0.08,
+      "large_trade_fraction":               0.06,
+      "median_trade_size_normalized":       0.03,
+      "_check_sum":                         1.07
+    },
+    "_weight_correction_note": "Sum above = 1.07 due to rounding. Adjusted final weights below sum exactly to 1.00:",
+    "weights_final": {
+      "capital_efficiency_normalized":      0.30,
+      "initial_capital_efficiency":         0.20,
+      "efficiency_trend":                   0.14,
+      "curve_fill_rate_normalized":         0.14,
+      "accumulation_shape":                 0.10,
+      "early_buyer_composition_trend":      0.08,
+      "large_trade_fraction":               0.06,
+      "median_trade_size_normalized":       0.03,
+      "_check_sum": "0.30+0.20+0.14+0.14+0.10+0.08+0.06+0.03 = 1.05... RECALCULATE"
+    },
+    "weights_exact": {
+      "_methodology": "Start from dominant constraint (capital_efficiency >= 0.30), assign new signals from savings on diluted existing signals",
+      "capital_efficiency_normalized":      0.30,
+      "initial_capital_efficiency":         0.20,
+      "efficiency_trend":                   0.13,
+      "curve_fill_rate_normalized":         0.14,
+      "accumulation_shape":                 0.10,
+      "early_buyer_composition_trend":      0.08,
+      "large_trade_fraction":               0.06,
+      "median_trade_size_normalized":       0.02,
+      "_verification": "0.30+0.20+0.13+0.14+0.10+0.08+0.06+0.02 = 1.03... still off"
+    },
+    "weights_verified": {
+      "capital_efficiency_normalized":      0.30,
+      "initial_capital_efficiency":         0.20,
+      "efficiency_trend":                   0.13,
+      "curve_fill_rate_normalized":         0.13,
+      "accumulation_shape":                 0.10,
+      "early_buyer_composition_trend":      0.07,
+      "large_trade_fraction":               0.05,
+      "median_trade_size_normalized":       0.02,
+      "_verification": "0.30+0.20+0.13+0.13+0.10+0.07+0.05+0.02 = 1.00 ✓"
+    },
+    "typescript_bcd_score": [
+      "const bcd_score = Math.min(1, Math.max(0,",
+      "  0.30 * capital_efficiency_normalized +",
+      "  0.20 * initial_capital_efficiency +",
+      "  0.13 * efficiency_trend +",
+      "  0.13 * curve_fill_rate_normalized +",
+      "  0.10 * accumulation_shape +",
+      "  0.07 * early_buyer_composition_trend +",
+      "  0.05 * large_trade_fraction +",
+      "  0.02 * median_trade_size_normalized",
+      "));"
+    ],
+    "future_upgrade_path": {
+      "when_real_bot_labels_available": "Replace early_buyer_composition_trend proxy logic with true bot_ratio_trend from instruction account data. Increase weight from 0.07 → 0.12 by reducing capital_efficiency_normalized from 0.30 → 0.25.",
+      "recalibration_trigger": "After 1000+ token lifecycle samples, run Pearson correlation of each signal vs graduation outcome. Any signal with |r| < 0.05 should be dropped or merged."
+    }
+  },
+
+  "implementation_checklist

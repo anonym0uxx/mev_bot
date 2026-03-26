@@ -65,6 +65,16 @@ export interface TokenTradeState {
   capitalEfficiencyHistory: Array<{ timestamp: number; value: number }>;
   /** Sum of creator sells received - creator buys spent (SOL). Positive = dumping. */
   creatorNetSolPosition: number;
+  /** vSolInBondingCurve after each of first 30 trades (capped at 30, never evicted) */
+  firstTradesVSolSnapshot: number[];
+  /** How many trades are in firstTradesVSolSnapshot (≤ 30) */
+  firstTradesCount: number;
+  /** Impact ratios for first 20 trades (never evicted): solAmount / preTrade_vSol */
+  firstNTradeImpacts: number[];
+  /** Count of all trades where impact_ratio > 0.05 (5% of curve depth) */
+  highImpactTradeCount: number;
+  /** Max single trade impact ratio across all trades */
+  maxImpactRatio: number;
 }
 
 export class FeatureEngine {
@@ -121,6 +131,11 @@ export class FeatureEngine {
       largeTradeCount: 0,
       capitalEfficiencyHistory: [],
       creatorNetSolPosition: 0,
+      firstTradesVSolSnapshot: [],
+      firstTradesCount: 0,
+      firstNTradeImpacts: [],
+      highImpactTradeCount: 0,
+      maxImpactRatio: 0,
     });
   }
 
@@ -162,6 +177,27 @@ export class FeatureEngine {
       } else {
         state.creatorNetSolPosition += trade.solAmount;
       }
+    }
+
+    // --- First-N-trades snapshot (never evicted, capped at 30) ---
+    if (state.firstTradesCount < 30) {
+      state.firstTradesVSolSnapshot.push(trade.vSolInBondingCurve);
+      state.firstTradesCount++;
+    }
+
+    // --- Trade impact ratio ---
+    if (trade.solAmount > 0) {
+      // Approximate pre-trade vSol: post-trade vSol minus solAmount for buys
+      const preTradeVSol = trade.txType === 'buy'
+        ? Math.max(trade.vSolInBondingCurve - trade.solAmount, 0.001)
+        : trade.vSolInBondingCurve + trade.solAmount;
+      const tradeImpact = Math.min(trade.solAmount / preTradeVSol, 1.0);
+
+      if (state.firstNTradeImpacts.length < 20) {
+        state.firstNTradeImpacts.push(tradeImpact);
+      }
+      if (tradeImpact > 0.05) state.highImpactTradeCount++;
+      if (tradeImpact > state.maxImpactRatio) state.maxImpactRatio = tradeImpact;
     }
 
     // Update derived accumulation fields
@@ -303,6 +339,11 @@ export class FeatureEngine {
       largeTradeCount: state.largeTradeCount,
       capitalEfficiencyHistory: state.capitalEfficiencyHistory,
       trades: state.trades,
+      firstTradesVSolSnapshot: state.firstTradesVSolSnapshot,
+      firstTradesCount: state.firstTradesCount,
+      firstNTradeImpacts: state.firstNTradeImpacts,
+      highImpactTradeCount: state.highImpactTradeCount,
+      maxImpactRatio: state.maxImpactRatio,
     };
     const bondingCurveDynamics = computeBondingCurveDynamics(bcdCtx);
 

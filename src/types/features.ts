@@ -123,6 +123,18 @@ export interface BondingCurveDynamicsFeatures {
   median_trade_size_sol: number;         // approximated from recent trades
   median_trade_size_normalized: number;  // clamp(value / 0.05, 0, 1)
 
+  // ── NEW v2: Early capital efficiency (first 10–30 trades) ──
+  initial_capital_efficiency: number;    // [0,1] CE from first 10-30 trades; 0.5=insufficient data (<5 trades)
+
+  // ── NEW v2: Accumulation shape ──
+  accumulation_shape: number;            // [0,1] 0=front-loaded, 0.5=linear, 1=accelerating
+
+  // ── NEW v2: Trade impact ratio signals ──
+  initial_burst_impact: number;          // [0,1] avg impact ratio of first 10 trades
+  high_impact_fraction: number;          // [0,1] fraction of all trades with >5% curve impact
+  max_impact_ratio_normalized: number;   // [0,1] single largest trade impact, capped at 20% → 1.0
+  organic_diversity_score: number;       // [0,1] 0=bot-uniform (low CV of impacts), 1=organic-diverse
+
   // Composite bonding curve dynamics score [0,1]
   bcd_score: number;
 }
