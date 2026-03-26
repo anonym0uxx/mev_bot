@@ -152,6 +152,19 @@ export interface ExecutionConfig {
   route_health: RouteHealthConfig;
   private_route: PrivateRouteConfig;
   bundle_route: BundleRouteConfig;
+  /**
+   * Explicit Jito on/off toggle.
+   * When true + bundle_route.enabled, Jito bundle submission is attempted for
+   * trades with route_mode === 'jito'. Failures always fall back to PumpPortal.
+   * Default: false (opt-in).
+   */
+  jito_enabled?: boolean;
+  /**
+   * Tip to pay per Jito bundle in lamports.
+   * Range: 1_000–100_000 (0.000001–0.0001 SOL). Default: 10_000.
+   * Overrides private_route.jito_tip_lamports when present.
+   */
+  jito_tip_lamports?: number;
 }
 
 export interface RegimeFeeOverride {

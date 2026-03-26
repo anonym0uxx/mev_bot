@@ -3,17 +3,145 @@
  * Solana transaction construction for Pump.fun bonding curve trades.
  * Wallet signing via @solana/web3.js Keypair from env secret.
  * Private key NEVER in code/logs/chat — only from env.
+ *
+ * Also exports BlockhashCache — a pre-fetch cache that auto-refreshes
+ * the recent blockhash so trade transactions don't stall on RPC latency.
  */
 
 import {
   Connection, Keypair, PublicKey, Transaction, SystemProgram,
   sendAndConfirmTransaction, TransactionInstruction,
   LAMPORTS_PER_SOL, ComputeBudgetProgram,
+  BlockhashWithExpiryBlockHeight,
 } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { createLogger } from '../utils/logger';
+import { nowMs } from '../utils/time';
 
 const log = createLogger('solana');
+
+// ─── BlockhashCache ───────────────────────────────────────────────────────────
+
+/**
+ * Blockhash validity constants.
+ *
+ * A Solana blockhash is valid for ~150 slots ≈ 60 seconds.
+ * We refresh every 10s (1/6 of validity) to stay well within bounds.
+ * get() throws if the cached value is older than 45s — still valid on-chain
+ * but risky enough that we'd rather surface the staleness than use it.
+ */
+const BLOCKHASH_REFRESH_INTERVAL_MS = 10_000;   // 10 s  — default auto-refresh cadence
+const BLOCKHASH_STALE_THRESHOLD_MS   = 45_000;   // 45 s  — throw if older than this
+
+export interface CachedBlockhash {
+  blockhash: string;
+  lastValidBlockHeight: number;
+  fetchedAt: number; // nowMs() timestamp
+}
+
+/**
+ * BlockhashCache keeps a hot recent blockhash in memory.
+ *
+ * Usage:
+ *   const cache = new BlockhashCache();
+ *   cache.startAutoRefresh(connection);  // starts background timer
+ *   const { blockhash } = cache.get();   // O(1) — never awaits RPC
+ *
+ * Call refresh() manually at startup before the first trade to warm the cache.
+ */
+export class BlockhashCache {
+  private cached: CachedBlockhash | null = null;
+  private refreshTimer: NodeJS.Timeout | null = null;
+  private refreshInFlight: boolean = false;
+
+  /**
+   * Get the cached blockhash.
+   * @throws Error if the cache is empty or the cached value is stale (>45s old).
+   */
+  get(): CachedBlockhash {
+    if (!this.cached) {
+      throw new Error('BlockhashCache: cache is empty — call refresh() or startAutoRefresh() first');
+    }
+
+    const ageMs = nowMs() - this.cached.fetchedAt;
+    if (ageMs > BLOCKHASH_STALE_THRESHOLD_MS) {
+      throw new Error(
+        `BlockhashCache: cached blockhash is stale (age=${ageMs}ms > threshold=${BLOCKHASH_STALE_THRESHOLD_MS}ms). ` +
+        'Ensure auto-refresh is running.'
+      );
+    }
+
+    return this.cached;
+  }
+
+  /**
+   * Fetch a fresh blockhash from the RPC node and update the cache.
+   * Safe to call concurrently — duplicate in-flight fetches are deduplicated.
+   */
+  async refresh(connection: Connection): Promise<void> {
+    // Deduplicate concurrent refresh calls
+    if (this.refreshInFlight) return;
+    this.refreshInFlight = true;
+
+    try {
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+      this.cached = { blockhash, lastValidBlockHeight, fetchedAt: nowMs() };
+      log.debug(`BlockhashCache refreshed: ${blockhash.slice(0, 12)}… height=${lastValidBlockHeight}`);
+    } catch (err) {
+      log.warn(`BlockhashCache refresh failed: ${(err as Error).message}`);
+      // Do NOT clear the existing cached value — stale-but-available beats nothing
+    } finally {
+      this.refreshInFlight = false;
+    }
+  }
+
+  /**
+   * Start a background interval that refreshes the blockhash automatically.
+   * Also performs an immediate refresh so the cache is warm before the first trade.
+   *
+   * @param connection  Solana connection to use for RPC calls.
+   * @param intervalMs  Refresh cadence in ms. Default: 10_000 (10s).
+   * @returns           `this` for chaining.
+   */
+  startAutoRefresh(
+    connection: Connection,
+    intervalMs: number = BLOCKHASH_REFRESH_INTERVAL_MS,
+  ): this {
+    // Warm immediately
+    void this.refresh(connection);
+
+    // Clear any existing timer before starting a new one
+    this.stopAutoRefresh();
+
+    this.refreshTimer = setInterval(() => {
+      void this.refresh(connection);
+    }, intervalMs);
+
+    // Allow the Node.js event loop to exit even while this timer is running
+    if (this.refreshTimer.unref) {
+      this.refreshTimer.unref();
+    }
+
+    log.info(`BlockhashCache auto-refresh started: interval=${intervalMs}ms staleThreshold=${BLOCKHASH_STALE_THRESHOLD_MS}ms`);
+    return this;
+  }
+
+  /**
+   * Stop the auto-refresh timer. Call on shutdown to avoid dangling timers.
+   */
+  stopAutoRefresh(): void {
+    if (this.refreshTimer) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+  }
+
+  /** True if a blockhash is cached and not yet stale. */
+  isReady(): boolean {
+    if (!this.cached) return false;
+    return (nowMs() - this.cached.fetchedAt) <= BLOCKHASH_STALE_THRESHOLD_MS;
+  }
+}
 
 /**
  * Initialize Solana connection and wallet from environment.

@@ -91,6 +91,8 @@
   },
   "execution": {
     "default_route_mode": "local",
+    "jito_enabled": false,
+    "jito_tip_lamports": 10000,
     "default_slippage_bps": 500,
     "default_priority_fee_sol": 0.0005,
     "skip_preflight": false,

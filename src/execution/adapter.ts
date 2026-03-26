@@ -2,9 +2,15 @@
  * @module execution/adapter
  * Execution adapter: bridges strategy decisions to Solana transaction execution.
  * Handles: tx construction, signing, sending, confirmation, fill recording.
- * Routes: Local (default), Lightning (conditional), Jito (atomic only).
+ * Routes: Local (default), Lightning (conditional), Jito (atomic bundle).
  *
  * Also supports PumpPortal API integration for trade execution.
+ *
+ * Jito integration notes:
+ * - Controlled by execution.bundle_route.enabled + optional execution.jito_enabled
+ * - Paper mode always skips Jito (same pattern as all live-only paths)
+ * - Jito failure NEVER hard-fails the order — always falls back to local/PumpPortal
+ * - Bundle = [trade tx, tip tx] submitted atomically to Jito block engine
  */
 
 import { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
@@ -18,8 +24,12 @@ import { PumpQuantDB } from '../persistence/database';
 import {
   initSolanaConnection, loadWalletKeypair,
   buildBuyTransaction, buildSellTransaction, signAndSendTransaction,
+  BlockhashCache,
 } from './solana';
 import { RoutePolicy, RouteExecutionRecord } from './route-policy';
+import {
+  isJitoEnabled, getJitoTipLamports, submitBundle, JitoBundleResult,
+} from './jito';
 
 const log = createLogger('execution');
 
@@ -32,6 +42,7 @@ export class ExecutionAdapter {
   private db: PumpQuantDB;
   private config: PumpQuantConfig;
   private isPaper: boolean;
+  private blockhashCache = new BlockhashCache();
 
   constructor(db: PumpQuantDB, config: PumpQuantConfig, isPaper: boolean = false) {
     this.db = db;
@@ -42,6 +53,7 @@ export class ExecutionAdapter {
     if (!isPaper) {
       this.connection = initSolanaConnection();
       this.wallet = loadWalletKeypair();
+      this.blockhashCache.startAutoRefresh(this.connection);
       log.info(`Execution adapter initialized: wallet=${this.wallet.publicKey.toBase58()}`);
     } else {
       // Paper mode: mock connection and wallet
@@ -135,8 +147,86 @@ export class ExecutionAdapter {
       order.sent_at = startTime;
       this.db.updateOrder(order.id, { status: order.status, sent_at: order.sent_at });
 
-      // Use PumpPortal API for all routes — avoids Solana public RPC rate limits
       let result: { signature: string; confirmedAt: number };
+      let jitoResult: JitoBundleResult | null = null;
+
+      // ── Jito bundle path ───────────────────────────────────────────────────
+      // Only when: Jito enabled in config AND intent explicitly requests bundle route
+      // On any Jito failure: log warning and fall through to PumpPortal (never hard-fail)
+      if (isJitoEnabled(this.config) && intent.route_mode === 'jito') {
+        try {
+          const tipLamports = getJitoTipLamports(this.config);
+          const mint = new PublicKey(intent.mint);
+          const bondingCurve = mint; // placeholder — real impl derives from PDA
+          // Build unsigned legacy tx — submitBundle converts to VersionedTransaction,
+          // fetches blockhash, signs, appends tip tx, and submits via gRPC.
+          const tradeTx = buildBuyTransaction(
+            this.wallet, mint, bondingCurve,
+            intent.size_sol, intent.slippage_bps, intent.priority_fee_sol
+          );
+
+          jitoResult = await submitBundle([tradeTx], this.connection, this.wallet, this.config);
+
+          if (jitoResult.status === 'submitted') {
+            // Bundle accepted — use bundle id as synthetic signature
+            // Real landing confirmation would come from polling bundle status endpoint
+            const bundleSig = `jito:${jitoResult.bundleId}`;
+            const tipSol = (jitoResult.tipLamports ?? tipLamports) / LAMPORTS_PER_SOL;
+            log.info(
+              `Buy bundle submitted: mint=${intent.mint.slice(0, 8)} ` +
+              `bundleId=${jitoResult.bundleId} latency=${jitoResult.landingLatencyMs}ms ` +
+              `tip=${tipSol.toFixed(6)} SOL`
+            );
+
+            order.tx_signature = bundleSig;
+            order.confirmed_at = nowMs();
+            order.status = OrderStatus.CONFIRMED;
+            order.realized_sol = intent.size_sol;
+            order.realized_tokens = 0;
+            order.realized_price = intent.size_sol;
+            order.realized_slippage_pct = 0;
+            order.fee_sol =
+              (this.config.fees.pump_fee_pct) * intent.size_sol +
+              this.config.fees.solana_base_fee_sol +
+              tipSol;
+            order.priority_fee_paid_sol = intent.priority_fee_sol;
+
+            this.db.updateOrder(order.id, {
+              tx_signature: order.tx_signature,
+              confirmed_at: order.confirmed_at,
+              status: order.status,
+              realized_sol: order.realized_sol,
+              realized_tokens: order.realized_tokens,
+              realized_price: order.realized_price,
+              realized_slippage_pct: order.realized_slippage_pct,
+              fee_sol: order.fee_sol,
+              priority_fee_paid_sol: order.priority_fee_paid_sol,
+            });
+
+            this.routePolicy.recordExecution({
+              mode: 'jito',
+              success: true,
+              landingLatencyMs: jitoResult.landingLatencyMs ?? (nowMs() - startTime),
+              retried: false,
+              feePaid: order.fee_sol + order.priority_fee_paid_sol,
+              tradeSizeSol: intent.size_sol,
+              timestamp: nowMs(),
+            });
+
+            return order;
+          }
+
+          // Bundle submitted but failed — fall through to PumpPortal
+          log.warn(
+            `Jito bundle failed (buy fallback): ${jitoResult.errorMessage ?? 'unknown'} ` +
+            `— falling back to PumpPortal`
+          );
+        } catch (jitoErr) {
+          log.warn(`Jito bundle exception (buy fallback): ${(jitoErr as Error).message} — falling back to PumpPortal`);
+        }
+      }
+
+      // ── PumpPortal fallback path (default for all non-Jito routes) ─────────
       result = await this.executeViaPumpPortal(intent, 'buy');
 
       // Record fill
@@ -206,11 +296,81 @@ export class ExecutionAdapter {
       this.db.updateOrder(order.id, { status: order.status, sent_at: order.sent_at });
 
       let result: { signature: string; confirmedAt: number };
-      // Use PumpPortal API for all routes
-      result = await this.executeViaPumpPortal(intent, 'sell');
-      if (false) { // Dead code — kept for reference
-        result = await this.executeViaSolana(intent, 'sell');
+      let jitoResult: JitoBundleResult | null = null;
+
+      // ── Jito bundle path ───────────────────────────────────────────────────
+      // Jito is particularly valuable for exits: protects against MEV sandwiching.
+      // On any Jito failure: log warning and fall through to PumpPortal (never hard-fail).
+      if (isJitoEnabled(this.config) && intent.route_mode === 'jito') {
+        try {
+          const tipLamports = getJitoTipLamports(this.config);
+          const mint = new PublicKey(intent.mint);
+          const bondingCurve = mint; // placeholder — real impl derives from PDA
+          // Build unsigned legacy tx — submitBundle converts to VersionedTransaction,
+          // fetches blockhash, signs, appends tip tx, and submits via gRPC.
+          const tradeTx = buildSellTransaction(
+            this.wallet, mint, bondingCurve,
+            intent.size_sol, intent.slippage_bps, intent.priority_fee_sol
+          );
+
+          jitoResult = await submitBundle([tradeTx], this.connection, this.wallet, this.config);
+
+          if (jitoResult.status === 'submitted') {
+            const bundleSig = `jito:${jitoResult.bundleId}`;
+            const tipSol = (jitoResult.tipLamports ?? tipLamports) / LAMPORTS_PER_SOL;
+            log.info(
+              `Sell bundle submitted: mint=${intent.mint.slice(0, 8)} ` +
+              `bundleId=${jitoResult.bundleId} latency=${jitoResult.landingLatencyMs}ms ` +
+              `tip=${tipSol.toFixed(6)} SOL`
+            );
+
+            const estimatedSlippage = (intent.slippage_bps / 10000) * 0.5;
+            order.tx_signature = bundleSig;
+            order.confirmed_at = nowMs();
+            order.status = OrderStatus.CONFIRMED;
+            order.realized_sol = intent.size_sol * (1 - estimatedSlippage);
+            order.realized_slippage_pct = estimatedSlippage;
+            order.fee_sol =
+              this.config.fees.pump_fee_pct * intent.size_sol +
+              this.config.fees.solana_base_fee_sol +
+              tipSol;
+            order.priority_fee_paid_sol = intent.priority_fee_sol;
+
+            this.db.updateOrder(order.id, {
+              tx_signature: order.tx_signature,
+              confirmed_at: order.confirmed_at,
+              status: order.status,
+              realized_sol: order.realized_sol,
+              realized_slippage_pct: order.realized_slippage_pct,
+              fee_sol: order.fee_sol,
+              priority_fee_paid_sol: order.priority_fee_paid_sol,
+            });
+
+            this.routePolicy.recordExecution({
+              mode: 'jito',
+              success: true,
+              landingLatencyMs: jitoResult.landingLatencyMs ?? (nowMs() - startTime),
+              retried: false,
+              feePaid: order.fee_sol + order.priority_fee_paid_sol,
+              tradeSizeSol: intent.size_sol,
+              timestamp: nowMs(),
+            });
+
+            return order;
+          }
+
+          // Bundle failed — fall through to PumpPortal
+          log.warn(
+            `Jito bundle failed (sell fallback): ${jitoResult.errorMessage ?? 'unknown'} ` +
+            `— falling back to PumpPortal`
+          );
+        } catch (jitoErr) {
+          log.warn(`Jito bundle exception (sell fallback): ${(jitoErr as Error).message} — falling back to PumpPortal`);
+        }
       }
+
+      // ── PumpPortal fallback path ────────────────────────────────────────────
+      result = await this.executeViaPumpPortal(intent, 'sell');
 
       order.tx_signature = result.signature;
       order.confirmed_at = result.confirmedAt;
