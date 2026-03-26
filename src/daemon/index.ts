@@ -687,17 +687,26 @@ class StrategyDaemon {
       // Exit evaluation
       const position = this.db.getPositionByMint(mint);
       if (position) {
-        const exitDecision = evaluateExit(packet, position, probabilities, features, config);
-        exitEv = exitDecision.ev;
+        // SETTLEMENT GUARD: don't evaluate exits within 3s of entry
+        // PumpPortal needs time to settle the buy on-chain before we can sell.
+        // Selling too early results in "sell zero amount" (error 6022) because
+        // the token account hasn't been credited yet.
+        const holdMs = nowMs() - position.entry_timestamp;
+        if (holdMs < 3000) {
+          // Skip exit eval — too early, buy not settled yet
+        } else {
+          const exitDecision = evaluateExit(packet, position, probabilities, features, config);
+          exitEv = exitDecision.ev;
 
-        if (exitDecision.shouldExit && !this.pendingExecutions.has(mint)) {
-          this.pendingExecutions.add(mint);
-          this.executeExit(mint, position, exitDecision.exitPct, exitDecision.reason, config)
-            .finally(() => this.pendingExecutions.delete(mint));
-        } else if (exitDecision.shouldReduce && !this.pendingExecutions.has(mint)) {
-          this.pendingExecutions.add(mint);
-          this.executeReduce(mint, position, exitDecision.exitPct, exitDecision.reason, config)
-            .finally(() => this.pendingExecutions.delete(mint));
+          if (exitDecision.shouldExit && !this.pendingExecutions.has(mint)) {
+            this.pendingExecutions.add(mint);
+            this.executeExit(mint, position, exitDecision.exitPct, exitDecision.reason, config)
+              .finally(() => this.pendingExecutions.delete(mint));
+          } else if (exitDecision.shouldReduce && !this.pendingExecutions.has(mint)) {
+            this.pendingExecutions.add(mint);
+            this.executeReduce(mint, position, exitDecision.exitPct, exitDecision.reason, config)
+              .finally(() => this.pendingExecutions.delete(mint));
+          }
         }
       }
     }
@@ -843,6 +852,13 @@ class StrategyDaemon {
       created_at: nowMs(),
       ev_at_intent: 0,
     };
+
+    // SAFETY GUARD: never sell if we have no tokens — PumpPortal returns error 6022 "sell zero amount"
+    // This can happen if the buy hasn't settled on-chain yet when exit fires
+    if (position.current_tokens <= 0) {
+      log.warn(`Exit aborted for ${mint}: current_tokens=${position.current_tokens} (buy not settled yet)`);
+      return;
+    }
 
     this.db.insertTradeIntent(intent);
 
