@@ -184,13 +184,18 @@ export class CoreCastV3Client extends EventEmitter {
     }
 
     // Start all streams
+    const EXPECTED_STREAMS = 3;
     for (const stream of streams) {
       this.reconnectAttempts.set(stream.name, 0);
       this.startStream(stream);
     }
 
+    if (streams.length !== EXPECTED_STREAMS) {
+      log.error(`CoreCast v3: expected ${EXPECTED_STREAMS} streams but configured ${streams.length}. Check subscribe_trades/subscribe_new_tokens/subscribe_migrations config.`);
+    }
+
     this._connected = true;
-    log.info(`CoreCast v3 connected — ${streams.length} streams active`);
+    log.info(`CoreCast v3 connected — ${streams.length}/${EXPECTED_STREAMS} streams active`);
     this.emit('connected');
   }
 

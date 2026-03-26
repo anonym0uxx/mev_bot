@@ -520,11 +520,20 @@ export class PumpQuantDB {
     return row?.cnt ?? 0;
   }
 
-  getDailyPnl(): number {
+  /**
+   * Get realized PnL since a given timestamp (default: start of calendar day).
+   *
+   * @param sinceMs - Optional epoch ms. Pass configChangeEpoch to get PnL only
+   *   from trades after a mid-session config change, so the new daily limit applies
+   *   fresh to the new config's trades rather than the full day's accumulated loss.
+   *
+   * NOTE: L3 circuit breaker uses sinceMs=undefined (full day) intentionally — a
+   * -0.30 SOL session loss warrants halting regardless of config changes mid-day.
+   */
+  getDailyPnl(sinceMs?: number): number {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
-    // Positions table is kept deduplicated by migration 003 unique index + INSERT OR IGNORE.
-    // Simple sum of all closed positions today — no dedup gymnastics needed.
+    const epochMs = sinceMs !== undefined ? Math.max(sinceMs, startOfDay.getTime()) : startOfDay.getTime();
     const row = this.db.prepare(`
       SELECT COALESCE(SUM(realized_pnl_sol), 0) as total
       FROM positions
@@ -532,7 +541,7 @@ export class PumpQuantDB {
         AND status = 'closed'
         AND entry_sol > 0
         AND realized_pnl_sol IS NOT NULL
-    `).get(startOfDay.getTime()) as any;
+    `).get(epochMs) as any;
     return row?.total ?? 0;
   }
 

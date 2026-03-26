@@ -93,6 +93,17 @@ class StrategyDaemon {
   private circuitBreakerLevel: 0 | 1 | 2 | 3 = 0;
   private circuitBreakerSizeMul: number = 1.0; // L1: 0.5x, others: 1.0x
   private circuitBreakerDeadlockWatchdogAt: number = 0; // timestamp of last trade attempt or CB transition
+
+  /**
+   * Config change epoch: set whenever config is reloaded mid-session.
+   * getDailyPnl(configChangeEpoch) returns only losses AFTER this point,
+   * so a new max_daily_loss_sol limit applies to the new config's trades
+   * rather than being blocked by the old session's accumulated losses.
+   *
+   * L3 circuit breaker deliberately ignores this — passes undefined to
+   * getDailyPnl() so it always checks the full calendar day.
+   */
+  private configChangeEpoch: number = nowMs(); // Initialized to daemon start time
   // REMOVED: entryEdgeMultiplier — was root cause of the 2x deadlock incident
 
   constructor() {
@@ -663,7 +674,9 @@ class StrategyDaemon {
 
       // Entry evaluation
       const currentPositionCount = this.db.getOpenPositionCount();
-      const dailyLoss = this.db.getDailyPnl();
+      // Use configChangeEpoch so mid-session config changes reset the daily loss window.
+      // New max_daily_loss_sol limits apply to trades AFTER the config change, not the full day.
+      const dailyLoss = this.db.getDailyPnl(this.configChangeEpoch);
       const dailyEntryCount = this.db.getDailyEntryCount();
       // Circuit breaker: NEVER multiply edge threshold — only adjust position size (L1) or pause (L2/L3).
       // Edge threshold is anchored to model output ceiling via threshold/manager. Multiplying it can
@@ -763,11 +776,17 @@ class StrategyDaemon {
 
   // ====== TRADE EXECUTION ======
 
+  // Priority fee cache: refresh every 10s to avoid per-trade RPC latency on exit path.
+  // A 1.5s RPC call before every exit on a fast dump would cost more in slippage than it saves in fees.
+  private _priorityFeeCache: number | null = null;
+  private _priorityFeeCacheAt: number = 0;
+  private readonly PRIORITY_FEE_CACHE_TTL_MS = 10_000; // 10 seconds
+
   /**
-   * Dynamic priority fee resolver.
-   * If dynamic_priority_fee is enabled in config, queries getRecentPrioritizationFees
-   * and returns the p75 of recent slot fees + 20% buffer, capped at priority_fee_cap_sol.
-   * Falls back to default_priority_fee_sol on error.
+   * Dynamic priority fee resolver — cached.
+   * Refreshes at most every 10s via getRecentPrioritizationFees.
+   * Returns cached value on subsequent calls within the TTL window.
+   * Falls back to default_priority_fee_sol on error or if dynamic disabled.
    */
   private async resolvePriorityFee(config: PumpQuantConfig): Promise<number> {
     const execCfg = config.execution as any;
@@ -777,9 +796,14 @@ class StrategyDaemon {
 
     if (!execCfg.dynamic_priority_fee) return dflt;
 
+    // Return cached value if fresh (< 10s old) — avoids per-trade RPC latency on critical exit path.
+    // A 1.5s network call before every exit on a fast dump costs more in slippage than it saves.
+    const now = nowMs();
+    if (this._priorityFeeCache !== null && (now - this._priorityFeeCacheAt) < this.PRIORITY_FEE_CACHE_TTL_MS) {
+      return this._priorityFeeCache;
+    }
+
     try {
-      // Use the PumpPortal or connection endpoint to query recent fees
-      // PUMP_FUN_PROGRAM is the program whose slots we care about
       const PUMP_PROGRAM = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
       const rpcUrl = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
       const body = JSON.stringify({
@@ -791,7 +815,7 @@ class StrategyDaemon {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
-        signal: AbortSignal.timeout(1500), // 1.5s max — don't block execution
+        signal: AbortSignal.timeout(1500),
       });
       const json = await resp.json() as any;
       const fees: number[] = (json?.result || [])
@@ -799,18 +823,27 @@ class StrategyDaemon {
         .filter((f: number) => f > 0)
         .sort((a: number, b: number) => a - b);
 
-      if (fees.length === 0) return dflt;
-
       const pctTarget = (execCfg.dynamic_priority_fee_percentile ?? 75) / 100;
-      const idx = Math.floor(fees.length * pctTarget);
-      const p75FeeLamports = fees[Math.min(idx, fees.length - 1)];
-      // Convert lamports to SOL, add 20% buffer
-      const feeSol = (p75FeeLamports * 1.2) / 1_000_000_000;
-      const clamped = Math.min(cap, Math.max(floor, feeSol));
-      log.debug(`Dynamic priority fee: p75=${p75FeeLamports} lamports → ${clamped.toFixed(7)} SOL (floor=${floor}, cap=${cap})`);
+      let clamped = dflt;
+      if (fees.length > 0) {
+        const idx = Math.floor(fees.length * pctTarget);
+        const p75FeeLamports = fees[Math.min(idx, fees.length - 1)];
+        const feeSol = (p75FeeLamports * 1.2) / 1_000_000_000;
+        clamped = Math.min(cap, Math.max(floor, feeSol));
+        log.debug(`Dynamic priority fee: p75=${p75FeeLamports} lamports → ${clamped.toFixed(7)} SOL`);
+      } else {
+        // No prioritization fees in recent slots — network is uncongested, use floor
+        clamped = floor;
+        log.debug(`Dynamic priority fee: no recent fees, using floor ${floor}`);
+      }
+
+      // Cache the result
+      this._priorityFeeCache = clamped;
+      this._priorityFeeCacheAt = now;
       return clamped;
     } catch (err) {
       log.debug(`Dynamic priority fee fallback to default: ${(err as Error).message}`);
+      // Don't cache on error — retry next call
       return dflt;
     }
   }
@@ -1219,7 +1252,11 @@ class StrategyDaemon {
 
       updateRiskSettings: (settings: Record<string, unknown>) => {
         const patch = { risk: settings };
-        return this.configManager.applyPatch(patch as any, 'operator', 'Risk settings updated via plugin');
+        const result = this.configManager.applyPatch(patch as any, 'operator', 'Risk settings updated via plugin');
+        // Risk changes mean new limits — reset epoch so they apply to new trades only
+        this.configChangeEpoch = nowMs();
+        log.info('Risk settings updated — daily loss counter reset');
+        return result;
       },
 
       getStrategyProfile: () => {
@@ -1237,7 +1274,9 @@ class StrategyDaemon {
         } else {
           this.configManager.loadFromFile('config/default.json');
         }
-        log.info(`Strategy profile set to: ${name}`);
+        // Reset daily loss epoch so new limits apply to this config's trades, not old session's losses
+        this.configChangeEpoch = nowMs();
+        log.info(`Strategy profile set to: ${name} — daily loss counter reset`);
       },
 
       getRuntimeConfig: () => {
@@ -1245,7 +1284,11 @@ class StrategyDaemon {
       },
 
       updateRuntimeConfig: (patch: Record<string, unknown>) => {
-        return this.configManager.applyPatch(patch as any, 'operator', 'Config updated via plugin');
+        const result = this.configManager.applyPatch(patch as any, 'operator', 'Config updated via plugin');
+        // Reset daily loss epoch on any runtime config change so new limits apply fresh
+        this.configChangeEpoch = nowMs();
+        log.info('Config updated via plugin — daily loss counter reset');
+        return result;
       },
     };
   }

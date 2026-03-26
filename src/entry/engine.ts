@@ -288,17 +288,32 @@ function checkHardFilters(
 
   if (features.manipulation_distribution.hard_shock) return 'manipulation_hard_shock';
 
-  // DOA pre-filter: block tokens where velocity is already dying and no new buyers in 3s.
+  // DOA pre-filter: block tokens where velocity is already dying and buyer flow has stalled.
   // Eliminates flatline trades that waste capital and slot capacity.
-  // Activated when: velocity_decay < threshold AND no sustained new buyer flow.
+  // Two-condition filter (both must be true):
+  //   1. buy_velocity_5s/buy_velocity_15s < threshold (velocity decaying fast)
+  //   2. new_unique_buyers_3s < min_buyers (no new buyers sustaining the move)
+  //
+  // If new_unique_buyers_3s is not populated by the feature engine (null/undefined),
+  // we STILL apply the filter using velocity alone with a stricter threshold (0.20)
+  // to avoid a silent no-op when buyer flow data is unavailable.
   const doaVelocityThreshold = (config.entry as any).doa_velocity_decay_threshold ?? 0.35;
+  const doaVelocityOnlyThreshold = doaVelocityThreshold * 0.6; // Stricter fallback (e.g. 0.21)
   const doaMinNewBuyers = (config.entry as any).doa_min_new_buyers_3s ?? 1;
   const vel5s = features.flow_momentum.buy_notional_velocity_5s;
   const vel15s = features.flow_momentum.buy_notional_velocity_15s;
-  const velocityDecayRatio = vel15s > 0.001 ? vel5s / vel15s : 1.0; // ratio < threshold = dying
+  const velocityDecayRatio = vel15s > 0.001 ? vel5s / vel15s : 1.0;
   const recentBuyers = (features.flow_momentum as any).new_unique_buyers_3s ?? null;
-  if (velocityDecayRatio < doaVelocityThreshold && recentBuyers !== null && recentBuyers < doaMinNewBuyers) {
-    return `doa_signal (vel_ratio=${velocityDecayRatio.toFixed(2)}, new_buyers_3s=${recentBuyers})`;
+  if (recentBuyers !== null) {
+    // Full filter: velocity decay AND no recent buyers
+    if (velocityDecayRatio < doaVelocityThreshold && recentBuyers < doaMinNewBuyers) {
+      return `doa_signal (vel_ratio=${velocityDecayRatio.toFixed(2)}, new_buyers_3s=${recentBuyers})`;
+    }
+  } else {
+    // Fallback: velocity-only filter with stricter threshold (buyer data not available)
+    if (velocityDecayRatio < doaVelocityOnlyThreshold) {
+      return `doa_signal_velocity_only (vel_ratio=${velocityDecayRatio.toFixed(2)} < ${doaVelocityOnlyThreshold.toFixed(2)})`;
+    }
   }
   if (features.friction_execution.execution_freshness_s > config.friction.stale_threshold_s) return 'stale_friction';
   if (ageS(packet.last_updated) > config.health.market_feed_stale_s) return 'stale_feed';
