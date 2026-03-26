@@ -872,7 +872,13 @@ class StrategyDaemon {
         const now = nowMs();
         const openPositionCount = this.db.getOpenPositions().length;
         const totalPending = openPositionCount + this.committedMints.size;
-        if (health.tradingAllowed && now > this.circuitBreakerPauseUntil && totalPending < config.risk.max_positions && (now - this.lastExecutionAttempt) > this.executionCooldownMs) {
+        // Paper mode: bypass circuit breaker pause, execution cooldown, and position limit.
+        // Purpose is maximum data collection — risk controls are irrelevant for paper trades.
+        const paperBypass = isPaperMode();
+        const cbAllowed = paperBypass || (now > this.circuitBreakerPauseUntil);
+        const cooldownAllowed = paperBypass || ((now - this.lastExecutionAttempt) > this.executionCooldownMs);
+        const positionAllowed = paperBypass || (totalPending < config.risk.max_positions);
+        if (health.tradingAllowed && cbAllowed && positionAllowed && cooldownAllowed) {
           // Commit synchronously — all subsequent ticks for this mint will see this and bail
           this.committedMints.add(mint);
           this.pendingExecutions.add(mint);
@@ -1240,8 +1246,10 @@ class StrategyDaemon {
 
         this.stateMachine.transitionToExit(mint, reason);
 
-        // Circuit breaker tracking
-        this.updateCircuitBreaker(pnl);
+        // Circuit breaker tracking — skip for paper trades (no real capital at risk)
+        if (!isPaperMode()) {
+          this.updateCircuitBreaker(pnl);
+        }
 
         // Alert
         this.alertSystem.emitFullExit(mint, position.symbol, pnl, reason);

@@ -338,8 +338,8 @@ function checkHardFilters(
   if (ageS(packet.last_updated) > config.health.market_feed_stale_s) return 'stale_feed';
   if (features.manipulation_distribution.manipulation_penalty > config.manipulation.hard_threshold) return 'manipulation_risk';
   if (features.friction_execution.expected_entry_slippage > config.entry.max_slippage_pct) return 'slippage_high';
-  if (currentPositionCount >= config.risk.max_positions) return 'max_positions';
-  if (Math.abs(dailyLossSol) >= config.risk.max_daily_loss_sol) return 'daily_loss_limit';
+  if (!isPaper && currentPositionCount >= config.risk.max_positions) return 'max_positions';
+  if (!isPaper && Math.abs(dailyLossSol) >= config.risk.max_daily_loss_sol) return 'daily_loss_limit';
   if (features.breadth_topology.unique_buyers_total < config.entry.min_unique_buyers) return 'insufficient_buyers';
 
   // Daily entry cap — hard stop once max_daily_entries trades have been executed today.
