@@ -40,7 +40,7 @@
         "landing_degradation_lightning_pct": 0.005
     },
     "entry": {
-        "min_entry_edge": 0.004,
+        "min_entry_edge": 0.0018,
         "observation_window_s": 3,
         "min_breadth_for_entry": 0.4,
         "min_unique_buyers": 5,
