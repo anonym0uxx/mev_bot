@@ -119,11 +119,13 @@ export function computeProbabilities(
   const regimeAdjustment = getRegimeAdjustment(regime);
 
   // Calibrated continuation probability.
-  // Bias of -2.5 corrects the broken 50% baseline → ~8% base rate
-  // (realistic for "token continues for 60s from our entry point").
-  // This is intentionally hardcoded — not in config — to prevent accidental
-  // re-tuning back to the broken 50% baseline.
-  const BASE_RATE_BIAS = -2.5;
+  // Bias of -1.2 gives ~15% baseline for a zero-signal token.
+  // Task is "token continues for 60s after entry" — NOT graduation (0.63%).
+  // Empirical base rate for continuation-after-t60s is ~20-25%.
+  // -1.2 allows strong signals (BCD > 0.7) to clear 0.52 min_p_continuation
+  // while correctly rejecting moderate (0.4 → p=0.43) and weak (0.1 → p=0.29) signals.
+  // -2.5 (graduation base rate) was mathematically correct for the wrong outcome.
+  const BASE_RATE_BIAS = -1.2;
   const gainMultiplier = 2.0;
   const calibratedContinuation = sigmoid(
     rawContinuationSignal * gainMultiplier + regimeAdjustment + BASE_RATE_BIAS + calibration.continuation_bias
