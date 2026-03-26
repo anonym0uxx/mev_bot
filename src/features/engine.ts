@@ -101,7 +101,10 @@ export class FeatureEngine {
 
     // Update wallet balances
     const currentBalance = state.walletBalances.get(trade.traderPublicKey) || 0;
-    state.walletBalances.set(trade.traderPublicKey, trade.newTokenBalance);
+    // Only update wallet balance if we have real data (gRPC events have newTokenBalance=0, which would corrupt concentration metrics)
+    if (trade.newTokenBalance > 0 || trade.txType === 'sell') {
+      state.walletBalances.set(trade.traderPublicKey, trade.newTokenBalance);
+    }
 
     // Prune old trades (keep max 30s window + buffer)
     const maxWindow = Math.max(...this.windows);

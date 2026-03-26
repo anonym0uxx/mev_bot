@@ -19,23 +19,26 @@ export function computeAdverseSelectionPenalty(
   regime: Regime,
   tokenAge: number
 ): number {
-  // Reduced by 15% (0.85 scalar) to account for single-feed data handicap
-  const SINGLE_FEED_SCALAR = 0.85;
+  // Adverse selection penalty expressed as a FRACTION of position size.
+  // Must be calibrated so that total penalty does not exceed ~15% of position
+  // (i.e., return value <= 0.15, so adverseSelectionCost = penalty * positionSize <= 0.0015 SOL on 0.01).
+  // Previous miscalibration had penalties up to 0.50 (50% of position), swamping EV.
   
-  // Late entry penalty: entering MID_CURVE means you're late
-  const latePenalty = regime === Regime.MID_CURVE ? 0.15 : 
-                      regime === Regime.LATE_CURVE ? 0.25 : 0;
+  // Late entry penalty: MID_CURVE = you're behind smart money
+  const latePenalty = regime === Regime.MID_CURVE ? 0.04 :
+                      regime === Regime.LATE_CURVE ? 0.08 : 0.01;
   
-  // Fast velocity = pump-and-dump signal, not organic growth
-  const velocityPenalty = features.flow_momentum.buy_notional_velocity_5s > 0.3 
-    ? 0.20 : 0;
+  // Fast velocity = potential pump-and-dump (soft signal, not killer)
+  const velocityPenalty = features.flow_momentum.buy_notional_velocity_5s > 0.3
+    ? 0.03 : 0;
   
-  // High concentration + velocity = coordinated dump setup
+  // High concentration + velocity = coordinated dump setup (harder signal)
   const concentrationPenalty = (
     features.breadth_topology.top_10_concentration > 0.6 &&
     features.flow_momentum.buy_notional_velocity_5s > 0.2
-  ) ? 0.25 : 0;
-  
+  ) ? 0.04 : 0;
+
   const rawPenalty = latePenalty + velocityPenalty + concentrationPenalty;
-  return Math.min(0.5, rawPenalty * SINGLE_FEED_SCALAR);
+  // Hard cap at 15% of position — keeps adverse selection as a signal modifier, not an EV killer
+  return Math.min(0.15, rawPenalty);
 }

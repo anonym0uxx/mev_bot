@@ -72,6 +72,10 @@ class StrategyDaemon {
   private strategyProfile: string = 'default';
   private pendingExecutions: Set<string> = new Set();
   private forcedExitCooldowns: Map<string, number> = new Map();
+  // Cross-feed dedup: prevents gRPC + PumpPortal from double-adding same trade to featureEngine
+  private tradeDedupSet: Set<string> = new Set();
+  private tradeDedupOrder: string[] = [];
+  private readonly TRADE_DEDUP_MAX = 50_000;
   private lastExecutionAttempt: number = 0;
   private executionCooldownMs: number = 5000; // 5s between execution attempts
   private analysisLocks: Set<string> = new Set(); // Prevent concurrent analysis of same mint
@@ -394,7 +398,21 @@ class StrategyDaemon {
       newTokenBalance: event.newTokenBalance,
     };
 
-    this.featureEngine.addTrade(event.mint, tradePoint);
+    // Cross-feed dedup: only add to featureEngine once per tx signature
+    // (gRPC + PumpPortal both fire this handler for same on-chain trade)
+    const sig = event.signature || event.traderPublicKey + ':' + (event.timestamp || 0);
+    const alreadySeen = sig && this.tradeDedupSet.has(sig);
+    if (!alreadySeen) {
+      if (sig) {
+        this.tradeDedupSet.add(sig);
+        this.tradeDedupOrder.push(sig);
+        if (this.tradeDedupOrder.length > this.TRADE_DEDUP_MAX) {
+          const evicted = this.tradeDedupOrder.shift();
+          if (evicted) this.tradeDedupSet.delete(evicted);
+        }
+      }
+      this.featureEngine.addTrade(event.mint, tradePoint);
+    }
 
     // Update market data in state machine
     // Only update if we have real reserve data (vTokens > 0 = PumpPortal enriched)
@@ -513,9 +531,9 @@ class StrategyDaemon {
 
     // NEW: Defer analysis until sufficient trade density (Phase 1 data architect fix)
     const tradeCount = this.featureEngine.getTradeCount(mint);
-    const minTrades = (config.entry as any).min_trades_for_analysis || 15;
+    const minTrades = (config.entry as any).min_trades_for_analysis ?? 3;
     if (tradeCount < minTrades) {
-      // Not enough data yet — skip analysis
+      log.debug(`${mint.slice(0, 8)}: deferred eval (trades=${tradeCount}/${minTrades})`, { component: 'daemon' });
       return;
     }
 

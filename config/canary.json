@@ -40,15 +40,15 @@
         "landing_degradation_lightning_pct": 0.005
     },
     "entry": {
-        "min_entry_edge": 0.0025,
+        "min_entry_edge": 0.001,
         "observation_window_s": 5,
         "min_breadth_for_entry": 0.4,
         "min_unique_buyers": 8,
-        "max_concentration_top10": 0.5,
+        "max_concentration_top10": 0.45,
         "max_slippage_pct": 0.08,
         "ev_wait_horizon_s": 5,
-        "ev_enter_horizon_s": 10,
-        "min_p_continuation": 0.72,
+        "ev_enter_horizon_s": 5,
+        "min_p_continuation": 0.695,
         "probability_weights": {
             "flow_momentum": 0.3,
             "breadth_topology": 0.25,
@@ -62,7 +62,7 @@
             "reversal_bias": 0,
             "manipulation_bias": 0
         },
-        "min_trades_for_analysis": 10
+        "min_trades_for_analysis": 3
     },
     "exit": {
         "hold_horizon_s": 10,
@@ -76,7 +76,7 @@
         "max_hold_time_s": 120,
         "take_profit_pct": 0.45,
         "trailing_stop_activation_pct": 0.025,
-        "trailing_stop_distance_pct": 0.012,
+        "trailing_stop_distance_pct": 0.02,
         "tier1_profit_pct": 0.04,
         "tier1_reduce_pct": 50
     },
@@ -91,7 +91,7 @@
         "slippage_cap_sol": 0.1,
         "max_daily_loss_sol": 0.25,
         "max_position_size_sol": 0.01,
-        "max_daily_entries": 5
+        "max_daily_entries": 200
     },
     "execution": {
         "default_route_mode": "local",

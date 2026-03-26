@@ -49,7 +49,7 @@ export function evaluateExit(
     };
   }
 
-  // ====== 10.2b RAW STOP LOSS — hard floor at -40% ======
+  // ====== 10.2b RAW STOP LOSS — hard floor at -raw_stop_pct (default -10%) ======
   if (checkRawStopLoss(position, config)) {
     return {
       shouldExit: true,
@@ -67,7 +67,7 @@ export function evaluateExit(
     ? (position.current_value_sol - position.entry_sol) / position.entry_sol
     : 0;
   const TRAILING_ACTIVATION = config.exit.trailing_stop_activation_pct ?? 0.025; // activate at +2.5%
-  const TRAILING_DISTANCE = config.exit.trailing_stop_distance_pct ?? 0.012;     // trail 1.2% behind peak gain
+  const TRAILING_DISTANCE = config.exit.trailing_stop_distance_pct ?? 0.020;     // trail 2% behind peak gain
   const TIER1_TRIGGER = config.exit.tier1_profit_pct ?? 0.04;                    // 50% reduce at +4%
   const TIER1_PCT = config.exit.tier1_reduce_pct ?? 50;
 
@@ -76,14 +76,14 @@ export function evaluateExit(
     position.mfe_sol = position.current_value_sol;
   }
 
-  // Hard take-profit
-  const takeProfitPct = config.exit.take_profit_pct;
+  // Hard take-profit — fallback to risk config if exit-specific field unset
+  const takeProfitPct = config.exit.take_profit_pct ?? (config.risk as any).take_profit_pct;
   if (takeProfitPct && takeProfitPct > 0 && gainPct >= takeProfitPct) {
     return {
       shouldExit: true,
       shouldReduce: false,
       exitPct: 100,
-      reason: ExitReason.EV_NEGATIVE,
+      reason: ExitReason.TAKE_PROFIT,
       ev: computeExitEV(packet, position, probabilities, features, config),
     };
   }
@@ -94,14 +94,17 @@ export function evaluateExit(
       shouldExit: false,
       shouldReduce: true,
       exitPct: TIER1_PCT,
-      reason: ExitReason.EV_NEGATIVE,
+      reason: ExitReason.TIER_REDUCE,
       ev: computeExitEV(packet, position, probabilities, features, config),
     };
   }
 
-  // Trailing stop: if activated and price retraces 1.2% from peak
-  if (gainPct >= TRAILING_ACTIVATION && position.mfe_sol > 0) {
-    const peakGainPct = (position.mfe_sol - position.entry_sol) / position.entry_sol;
+  // Trailing stop: activate based on PEAK gain ever reached (not current gain)
+  // This ensures trailing stop stays active even after price pulls back below activation threshold
+  const peakGainPct = position.mfe_sol > 0
+    ? (position.mfe_sol - position.entry_sol) / position.entry_sol
+    : 0;
+  if (peakGainPct >= TRAILING_ACTIVATION && position.mfe_sol > 0) {
     const retraceFromPeak = peakGainPct - gainPct;
     if (retraceFromPeak >= TRAILING_DISTANCE) {
       return {

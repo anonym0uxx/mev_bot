@@ -166,6 +166,10 @@ export enum ExitReason {
   OPERATOR = 'operator',
   /** System health degraded */
   SYSTEM_HEALTH = 'system_health',
+  /** Hard take-profit triggered */
+  TAKE_PROFIT = 'take_profit',
+  /** Tiered partial exit */
+  TIER_REDUCE = 'tier_reduce',
   /** Raw stop loss hit (-40%) */
   STOP_LOSS = 'stop_loss',
 }
