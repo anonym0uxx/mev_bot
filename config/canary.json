@@ -40,15 +40,15 @@
         "landing_degradation_lightning_pct": 0.005
     },
     "entry": {
-        "min_entry_edge": 0.003,
-        "observation_window_s": 3,
+        "min_entry_edge": 0.004,
+        "observation_window_s": 5,
         "min_breadth_for_entry": 0.4,
         "min_unique_buyers": 8,
         "max_concentration_top10": 0.45,
         "max_slippage_pct": 0.08,
         "ev_wait_horizon_s": 5,
         "ev_enter_horizon_s": 5,
-        "min_p_continuation": 0.695,
+        "min_p_continuation": 0.7,
         "probability_weights": {
             "flow_momentum": 0.3,
             "breadth_topology": 0.25,
@@ -86,7 +86,7 @@
         "max_alloc_pct": 0.03,
         "max_positions": 1,
         "quick_spend_sol": 0.02,
-        "raw_stop_pct": 0.08,
+        "raw_stop_pct": 0.15,
         "liquidity_cap_sol": 0.2,
         "slippage_cap_sol": 0.1,
         "max_daily_loss_sol": 0.25,
