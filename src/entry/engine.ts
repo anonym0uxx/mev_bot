@@ -22,6 +22,7 @@ import { FeatureSnapshot } from '../types/features';
 import { PumpQuantConfig } from '../types/config';
 import { estimateExitSlippage } from '../features/dynamic-slippage';
 import { computeAdverseSelectionPenalty } from '../features/adverse-selection';
+import { recordEval, getMinEdge, detectCeilingViolation } from '../threshold/manager';
 
 const log = createLogger('entry-engine');
 
@@ -140,6 +141,9 @@ export function evaluateEntry(
     route_ev_adjustment: routeEvAdjustment,
   };
 
+  // Record eval in adaptive threshold manager (before any gate check)
+  recordEval(EntryEdge, EV_enter_now, P_continuation);
+
   // Log all evaluations
   log.info(`Entry eval ${packet.symbol || packet.mint.slice(0,8)}: EV=${EV_enter_now.toFixed(6)} Edge=${EntryEdge.toFixed(6)} P_cont=${P_continuation.toFixed(3)} P_rev=${P_reversal.toFixed(3)} P_manip=${P_manipulation.toFixed(3)} friction=${roundTripFriction.toFixed(6)} breadth=${features.breadth_topology.breadth_score.toFixed(3)} buyers=${features.breadth_topology.unique_buyers_total}`);
 
@@ -150,12 +154,23 @@ export function evaluateEntry(
     ? 3  // Fast-moving token: 3s observation
     : config.entry.observation_window_s;
 
+  // Adaptive edge threshold — uses rolling p50 of observed edge distribution.
+  // Falls back to config.entry.min_entry_edge if window is too small (cold start).
+  // This prevents "threshold above model ceiling" failures permanently.
+  const adaptiveMinEdge = getMinEdge(0.50);
+  const effectiveMinEdge = Math.max(adaptiveMinEdge, config.entry.min_entry_edge);
+
+  // Warn if config threshold is above empirical ceiling (would block all entries)
+  if (detectCeilingViolation(config.entry.min_entry_edge)) {
+    log.warn(`CEILING VIOLATION: config min_entry_edge=${config.entry.min_entry_edge.toFixed(6)} > observed max. Using adaptive p50=${adaptiveMinEdge.toFixed(6)}`);
+  }
+
   if (tokenAge < dynamicObsWindow) {
-    if (EV_enter_now > 0 && EntryEdge > config.entry.min_entry_edge * 2) {
+    if (EV_enter_now > 0 && EntryEdge > effectiveMinEdge * 2) {
       log.info(`Observation override for ${packet.symbol || packet.mint.slice(0,8)}: age=${tokenAge.toFixed(1)}s Edge=${EntryEdge.toFixed(6)}`);
     } else {
       if (EV_enter_now > 0) {
-        log.info(`Obs window block ${packet.symbol || packet.mint.slice(0,8)}: age=${tokenAge.toFixed(1)}s < ${dynamicObsWindow}s (EV=${EV_enter_now.toFixed(6)} but edge ${EntryEdge.toFixed(6)} < ${(config.entry.min_entry_edge * 2).toFixed(6)})`);
+        log.info(`Obs window block ${packet.symbol || packet.mint.slice(0,8)}: age=${tokenAge.toFixed(1)}s < ${dynamicObsWindow}s (EV=${EV_enter_now.toFixed(6)} but edge ${EntryEdge.toFixed(6)} < ${(effectiveMinEdge * 2).toFixed(6)})`);
       }
       return {
         shouldEnter: false,
@@ -183,10 +198,10 @@ export function evaluateEntry(
     };
   }
 
-  if (EntryEdge <= config.entry.min_entry_edge) {
+  if (EntryEdge <= effectiveMinEdge) {
     return {
       shouldEnter: false,
-      reason: `EntryEdge ${EntryEdge.toFixed(6)} below threshold ${config.entry.min_entry_edge}`,
+      reason: `EntryEdge ${EntryEdge.toFixed(6)} below adaptive threshold ${effectiveMinEdge.toFixed(6)}`,
       ev,
       sizing: null,
       hardFilterRejection: null,

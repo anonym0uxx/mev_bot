@@ -89,6 +89,34 @@ if (newTrades >= 5 && recent10WR < 0.35) {
   report.recommendation_needed = true;
 }
 
+// CEILING VIOLATION CHECK: detect if config threshold is above model's empirical output ceiling
+// This is the root cause of entry droughts. Auto-fix by resetting to adaptive p50.
+try {
+  const THRESHOLD_STATE_PATH = path.join(__dirname, '../data/threshold_state.json');
+  const CONFIG_PATH = path.join(__dirname, '../config/canary.json');
+  if (fs.existsSync(THRESHOLD_STATE_PATH) && fs.existsSync(CONFIG_PATH)) {
+    const threshState = JSON.parse(fs.readFileSync(THRESHOLD_STATE_PATH, 'utf8'));
+    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    const edgeWindow = threshState.edgeWindow || [];
+    if (edgeWindow.length >= 50) {
+      const sorted = [...edgeWindow].sort((a,b) => a-b);
+      const edgeMax = sorted[sorted.length - 1];
+      const edgeP50 = sorted[Math.floor(sorted.length * 0.5)];
+      const configThreshold = cfg.entry?.min_entry_edge || 0;
+      if (configThreshold > edgeMax && edgeMax > 0) {
+        // AUTO-FIX: ceiling violation — threshold above all observed signals
+        const newThreshold = Math.max(0.0001, edgeP50 * 0.8);
+        cfg.entry.min_entry_edge = parseFloat(newThreshold.toFixed(6));
+        fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+        report.alerts.push(`CEILING_VIOLATION_AUTOFIX: min_entry_edge ${configThreshold.toFixed(6)} > edgeMax ${edgeMax.toFixed(6)} — reset to ${newThreshold.toFixed(6)}`);
+        report.recommendation_needed = false; // we already fixed it
+      }
+      // Add threshold stats to report
+      report.threshold_stats = { edgeP50: edgeP50.toFixed(6), edgeMax: edgeMax.toFixed(6), configThreshold: configThreshold.toFixed(6), samples: edgeWindow.length };
+    }
+  }
+} catch (e) { /* non-fatal */ }
+
 // Update state
 const newState = {
   last_trade_count: totalTrades,

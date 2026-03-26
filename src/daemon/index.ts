@@ -39,6 +39,7 @@ import { ExecutionAdapter } from '../execution/adapter';
 import { HealthMonitor, SystemHealth } from '../health/monitor';
 import { AlertSystem } from '../alerts/system';
 import { LearningLedger } from '../learning/ledger';
+import { loadThresholdState, getStats as getThresholdStats } from '../threshold/manager';
 import { LearningJobScheduler } from '../learning/jobs';
 import { startApiServer, DaemonContext } from './api';
 import { isPaperMode } from '../paper/engine';
@@ -152,6 +153,9 @@ class StrategyDaemon {
     } else {
       log.warn('TELEGRAM_BOT_TOKEN not set — immediate alerts will log only', { component: 'alerts' });
     }
+
+    // Load adaptive threshold state (persisted across restarts)
+    loadThresholdState();
 
     log.info(`Daemon initialized (paper=${paper})`);
   }
