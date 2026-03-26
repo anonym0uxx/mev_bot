@@ -49,7 +49,7 @@
         "ev_wait_horizon_s": 5,
         "ev_enter_horizon_s": 5,
         "min_p_continuation": 0.73,
-        "min_creator_prior": -0.05,
+        "min_creator_prior": 0.0,
         "probability_weights": {
             "flow_momentum": 0.25,
             "breadth_topology": 0.22,
