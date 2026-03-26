@@ -5,7 +5,7 @@
         "late_curve_max_progress": 0.75,
         "graduation_boundary_start": 0.75,
         "graduation_boundary_end": 1,
-        "max_token_age_s": 120,
+        "max_token_age_s": 45,
         "exclude_mayhem": true,
         "exclude_tokenized_agent": true
     },
@@ -41,14 +41,14 @@
     },
     "entry": {
         "min_entry_edge": 0.004,
-        "observation_window_s": 5,
+        "observation_window_s": 3,
         "min_breadth_for_entry": 0.4,
-        "min_unique_buyers": 8,
+        "min_unique_buyers": 5,
         "max_concentration_top10": 0.45,
         "max_slippage_pct": 0.08,
         "ev_wait_horizon_s": 5,
         "ev_enter_horizon_s": 5,
-        "min_p_continuation": 0.75,
+        "min_p_continuation": 0.73,
         "min_creator_prior": -0.05,
         "probability_weights": {
             "flow_momentum": 0.25,
