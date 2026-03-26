@@ -25,10 +25,11 @@ export function estimateExitSlippage(
   const SINGLE_FEED_MULTIPLIER = 1.0;
   
   // Penalty for high concentration (top holders can dump on you)
-  const concentrationPenalty = features.breadth_topology.top_10_concentration * 0.15;
+  // Capped: 0.01 SOL trades have negligible market impact — concentration affects exit timing, not slippage
+  const concentrationPenalty = Math.min(0.015, features.breadth_topology.top_10_concentration * 0.03);
   
   // Penalty for adverse velocity (fast tokens = more sharks)
-  const velocityPenalty = Math.min(0.1, features.flow_momentum.buy_notional_velocity_5s * 0.2);
+  const velocityPenalty = Math.min(0.01, features.flow_momentum.buy_notional_velocity_5s * 0.02);
   
   // Penalty for holding longer (telegraphed exit)
   const holdPenalty = position 

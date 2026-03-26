@@ -34,14 +34,14 @@
         "stale_threshold_s": 20,
         "safety_buffer_pct": 0.01,
         "slippage_estimation_method": "empirical",
-        "default_entry_slippage_pct": 0.005,
-        "default_exit_slippage_pct": 0.01,
+        "default_entry_slippage_pct": 0.003,
+        "default_exit_slippage_pct": 0.005,
         "landing_degradation_local_pct": 0.01,
         "landing_degradation_lightning_pct": 0.005
     },
     "entry": {
         "min_entry_edge": 0.001,
-        "observation_window_s": 5,
+        "observation_window_s": 1,
         "min_breadth_for_entry": 0.4,
         "min_unique_buyers": 8,
         "max_concentration_top10": 0.45,
