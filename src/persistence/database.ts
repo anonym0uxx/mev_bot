@@ -58,6 +58,11 @@ export class PumpQuantDB {
   }
 
   /** Close the database */
+  /** Direct access to the underlying better-sqlite3 instance for ad-hoc queries (use sparingly). */
+  raw(): Database.Database {
+    return this.db;
+  }
+
   close(): void {
     this.db.close();
     log.info('Database closed');

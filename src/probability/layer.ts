@@ -43,15 +43,17 @@ export function computeProbabilities(
   const breadthSignal = computeBreadthSignal(features);
 
   // Creator/wallet prior signal: CAPPED, feeds as prior only.
+  // Signal range: [-0.30, +0.08] (max_negative_penalty=0.3, max_positive_boost=0.08 in config).
+  // Neutral is 0.0 in this range.
+  //
   // NORMALIZATION: composite_prior = 0.0 means UNKNOWN creator (no enrichment data), NOT bad creator.
-  // Using 0 directly collapses the effective weight sum from 1.0 to 0.75 for unknown-creator tokens
-  // (which is most Pump.fun tokens), systematically suppressing P_continuation by ~2-3%.
-  // Fix: treat unknown creators as neutral (0.5) — the signal is absent, not negative.
-  // Only known-negative priors (< 0) should drag down the score.
-  // Known-positive priors (> 0) continue to provide a boost above neutral.
+  // For unknown creators, we exclude the creator_wallet_prior weight from the denominator entirely,
+  // so its 0.25 weight doesn't drag down the effective weight sum for most Pump.fun tokens.
+  // Known creators (data present): use composite_prior directly — positive boosts, negative penalizes.
+  // Unknown creators (no data): contribute 0.0 directionally, weight excluded from denominator.
   const rawCreatorPrior = features.creator_wallet_prior.composite_prior;
   const hasCreatorData = rawCreatorPrior !== 0 || features.creator_wallet_prior.creator_history_score > 0;
-  const walletPriorSignal = hasCreatorData ? rawCreatorPrior : 0.5; // Unknown = neutral, not penalized
+  const walletPriorSignal = hasCreatorData ? rawCreatorPrior : 0.0; // Unknown = neutral (0 in [-0.3, +0.08])
 
   // Friction/execution signal: good execution = higher confidence
   const frictionSignal = computeFrictionSignal(features);
@@ -64,14 +66,28 @@ export function computeProbabilities(
     ? 0 // No contribution when stale
     : (features.multimodal_junk.junk_score - 0.5) * 2; // Normalize to [-1, 1]
 
-  // Weighted composite
-  const rawContinuationSignal =
+  // Weighted composite — normalized denominator.
+  // When creator data is absent, exclude that weight from the denominator so the
+  // remaining signals carry full weight (effective sum = 1.0, not 0.75).
+  // This prevents unknown-creator tokens from being systematically penalized.
+  const creatorWeight = hasCreatorData ? weights.creator_wallet_prior : 0;
+  const effectiveWeightSum =
+    weights.flow_momentum +
+    weights.breadth_topology +
+    creatorWeight +
+    weights.friction_execution +
+    weights.manipulation_distribution +
+    weights.multimodal_junk;
+  const normFactor = effectiveWeightSum > 0 ? (1.0 / effectiveWeightSum) : 1.0;
+
+  const rawContinuationSignal = normFactor * (
     weights.flow_momentum * flowSignal +
     weights.breadth_topology * breadthSignal +
-    weights.creator_wallet_prior * walletPriorSignal +
+    creatorWeight * walletPriorSignal +
     weights.friction_execution * frictionSignal -
     weights.manipulation_distribution * manipulationSignal +
-    weights.multimodal_junk * multimodalSignal;
+    weights.multimodal_junk * multimodalSignal
+  );
 
   // ====== Step 2: Calibration layer ======
 

@@ -49,7 +49,7 @@
         "ev_wait_horizon_s": 5,
         "ev_enter_horizon_s": 5,
         "min_p_continuation": 0.75,
-        "min_creator_prior": 0.0,
+        "min_creator_prior": -0.05,
         "probability_weights": {
             "flow_momentum": 0.25,
             "breadth_topology": 0.22,
@@ -82,7 +82,7 @@
         "trailing_stop_distance_pct": 0.035,
         "tier1_profit_pct": 0.08,
         "tier1_reduce_pct": 40,
-        "momentum_reversal_pct": 0.03,
+        "momentum_reversal_pct": 0.06,
         "momentum_reversal_min_mfe_pct": 0.05
     },
     "risk": {
@@ -97,7 +97,8 @@
         "max_daily_loss_sol": 0.25,
         "max_position_size_sol": 0.01,
         "max_daily_entries": 50,
-        "circuit_breaker_session_halt_sol": -0.30
+        "circuit_breaker_session_halt_sol": -0.30,
+        "min_bankroll_sol": 0.20
     },
     "execution": {
         "default_route_mode": "local",

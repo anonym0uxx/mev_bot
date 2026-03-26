@@ -73,6 +73,21 @@ class StrategyDaemon {
   private strategyProfile: string = 'default';
   private pendingExecutions: Set<string> = new Set();
   private forcedExitCooldowns: Map<string, number> = new Map();
+
+  /** Set to true immediately on SIGTERM — gates new entries and stream event processing. */
+  private isShuttingDown: boolean = false;
+
+  /**
+   * Tracks in-flight executeExit() / executeEntry() promises for graceful drain on stop().
+   * stop() awaits all in-flight trades (up to 15s) before closing DB.
+   * Prevents ghost open positions from SIGTERM racing mid-exit-confirmation.
+   */
+  private _inflightTrades: Set<Promise<void>> = new Set();
+  private _trackTrade(p: Promise<void>): Promise<void> {
+    this._inflightTrades.add(p);
+    p.finally(() => this._inflightTrades.delete(p));
+    return p;
+  }
   // Cross-feed dedup: prevents gRPC + PumpPortal from double-adding same trade to featureEngine
   private tradeDedupSet: Set<string> = new Set();
   private tradeDedupOrder: string[] = [];
@@ -198,9 +213,110 @@ class StrategyDaemon {
     log.info(`Daemon initialized (paper=${paper})`);
   }
 
+  /** Log config change to DB audit table (config_changes). Zero-cost post-mortem tool. */
+  private _logConfigChange(oldConfig: PumpQuantConfig | null, newConfig: PumpQuantConfig): void {
+    try {
+      const sessionPnl = this.db.getDailyPnl(this.sessionAbsoluteStartMs);
+      this.db.raw().prepare(`
+        INSERT INTO config_changes (changed_at, old_config, new_config, session_pnl)
+        VALUES (?, ?, ?, ?)
+      `).run(nowMs(), JSON.stringify(oldConfig ?? {}), JSON.stringify(newConfig), sessionPnl);
+    } catch (err) {
+      log.warn(`Config audit log failed (non-critical): ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Startup reconciliation: check on-chain token balances for any positions that
+   * appear 'open' in DB from a previous hard-killed process.
+   * If balance = 0 on-chain, the position was sold but DB wasn't updated → mark closed.
+   * Called BEFORE streams connect so the position manager doesn't re-manage ghost positions.
+   */
+  private async reconcileOpenPositions(): Promise<void> {
+    const openPositions = this.db.getOpenPositions();
+    if (openPositions.length === 0) return;
+
+    log.warn(`Startup reconciliation: found ${openPositions.length} open position(s) — verifying on-chain state`);
+
+    const rpcUrl = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+    const walletPubkey = this.executionAdapter.getPublicKey();
+
+    for (const pos of openPositions) {
+      try {
+        // Query SPL token balance for this mint in our wallet
+        const body = JSON.stringify({
+          jsonrpc: '2.0', id: 1,
+          method: 'getTokenAccountsByOwner',
+          params: [
+            walletPubkey,
+            { mint: pos.mint },
+            { encoding: 'jsonParsed' },
+          ],
+        });
+        const resp = await fetch(rpcUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          signal: AbortSignal.timeout(5000),
+        });
+        const json = await resp.json() as any;
+        const accounts = json?.result?.value ?? [];
+        const totalBalance = accounts.reduce((sum: number, acct: any) => {
+          return sum + (acct.account?.data?.parsed?.info?.tokenAmount?.uiAmount ?? 0);
+        }, 0);
+
+        if (totalBalance === 0) {
+          log.warn(`Reconcile: position ${pos.mint.slice(0,8)} has zero on-chain balance — marking closed (ghost from prior process)`);
+          this.db.updatePosition(pos.id, {
+            status: 'closed' as any,
+            closed_at: nowMs(),
+            exit_reason: 'reconciled_on_boot' as any,
+            realized_pnl_sol: null as any, // unknown — flagged for manual review
+            hold_duration_s: pos.opened_at ? (nowMs() - pos.opened_at) / 1000 : 0,
+          });
+        } else {
+          log.info(`Reconcile: position ${pos.mint.slice(0,8)} confirmed open (balance=${totalBalance.toFixed(0)} tokens) — resuming management`);
+        }
+      } catch (err) {
+        // Don't crash boot on reconciliation failure — log and continue managing (safe default)
+        log.error(`Reconcile: RPC check failed for ${pos.mint.slice(0,8)} — assuming still open: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  /**
+   * Bankroll floor check: if live wallet balance falls below min_bankroll_sol,
+   * self-halt to prevent fee drag grinding to zero.
+   * Called on startup and after each closed position.
+   */
+  private async checkBankrollFloor(config: PumpQuantConfig): Promise<void> {
+    const floor = (config.risk as any).min_bankroll_sol ?? 0.20;
+    if (floor <= 0 || isPaperMode()) return;
+
+    try {
+      const balance = await this.executionAdapter.getBalance();
+      if (balance < floor) {
+        log.error(`🛑 Bankroll floor: wallet balance ${balance.toFixed(4)} SOL < floor ${floor} SOL. Self-halting to prevent fee drain.`);
+        this.alertSystem.emit('circuit_breaker',
+          `🛑 Bankroll floor hit: ${balance.toFixed(4)} SOL remaining (floor: ${floor} SOL). Add capital or reduce position size before resuming.`, {});
+        this.healthMonitor.pause(`Bankroll below floor (${balance.toFixed(4)} < ${floor} SOL)`);
+      }
+    } catch (err) {
+      log.warn(`Bankroll floor check failed: ${(err as Error).message}`);
+    }
+  }
+
   /** Start the daemon */
   async start(): Promise<void> {
     log.info('Starting strategy daemon...');
+
+    // Startup reconciliation: resolve any ghost open positions from prior hard-killed process.
+    // Must run BEFORE streams connect so position manager doesn't re-manage stale state.
+    await this.reconcileOpenPositions();
+
+    // Bankroll floor check: self-halt if wallet is below minimum viable operating balance.
+    const startupConfig = this.configManager.getConfig();
+    await this.checkBankrollFloor(startupConfig);
 
     // Wire up feed event handlers
     this.setupFeedHandlers();
@@ -271,11 +387,34 @@ class StrategyDaemon {
   /** Stop the daemon */
   async stop(): Promise<void> {
     log.info('Stopping strategy daemon...');
+
+    // Gate new entries/exits immediately — before disconnecting streams
+    this.isShuttingDown = true;
+
+    // Stop stream event delivery first
     if (this.corecast) this.corecast.disconnect();
     this.feed.disconnect();
     this.learningJobs.stop();
     if (this.healthCheckInterval) clearInterval(this.healthCheckInterval);
     if (this.analysisInterval) clearInterval(this.analysisInterval);
+
+    // Drain in-flight trades (executeEntry / executeExit) before closing DB.
+    // Prevents ghost open positions from SIGTERM racing mid-exit-confirmation.
+    // Max 15s drain window — exit confirmation typically resolves in <2s on mainnet.
+    const inflightCount = this._inflightTrades.size;
+    if (inflightCount > 0) {
+      log.info(`Draining ${inflightCount} in-flight trade(s) before shutdown...`);
+      const drainPromise = Promise.allSettled([...this._inflightTrades]);
+      const timeoutPromise = new Promise<void>(resolve => setTimeout(resolve, 15_000));
+      await Promise.race([drainPromise, timeoutPromise]);
+      const remaining = this._inflightTrades.size;
+      if (remaining > 0) {
+        log.error(`Drain timeout — closing DB with ${remaining} in-flight trade(s) still pending. Positions may be inconsistent.`);
+      } else {
+        log.info('All in-flight trades drained cleanly');
+      }
+    }
+
     this.db.close();
     log.info('Strategy daemon stopped');
   }
@@ -726,11 +865,18 @@ class StrategyDaemon {
           this.stateMachine.transitionToEnterReady(mint, entryDecision.reason);
           log.info(`💰 EXECUTING ENTRY: ${packet.symbol || mint.slice(0,8)} size=${entryDecision.sizing!.position_size.toFixed(4)} SOL (positions: ${openPositionCount}+${this.committedMints.size - 1} pending)`);
 
-          this.executeEntry(packet, entryDecision.sizing!, config).finally(() => {
+          if (!this.isShuttingDown) {
+            this._trackTrade(
+              this.executeEntry(packet, entryDecision.sizing!, config).finally(() => {
+                this.pendingExecutions.delete(mint);
+                this.analysisLocks.delete(mint + '_entry');
+                // committedMints cleared in executeEntry after DB write (success or failure)
+              })
+            );
+          } else {
             this.pendingExecutions.delete(mint);
             this.analysisLocks.delete(mint + '_entry');
-            // committedMints cleared in executeEntry after DB write (success or failure)
-          });
+          }
         }
       }
     }
@@ -752,12 +898,16 @@ class StrategyDaemon {
 
           if (exitDecision.shouldExit && !this.pendingExecutions.has(mint)) {
             this.pendingExecutions.add(mint);
-            this.executeExit(mint, position, exitDecision.exitPct, exitDecision.reason, config)
-              .finally(() => this.pendingExecutions.delete(mint));
+            this._trackTrade(
+              this.executeExit(mint, position, exitDecision.exitPct, exitDecision.reason, config)
+                .finally(() => this.pendingExecutions.delete(mint))
+            );
           } else if (exitDecision.shouldReduce && !this.pendingExecutions.has(mint)) {
             this.pendingExecutions.add(mint);
-            this.executeReduce(mint, position, exitDecision.exitPct, exitDecision.reason, config)
-              .finally(() => this.pendingExecutions.delete(mint));
+            this._trackTrade(
+              this.executeReduce(mint, position, exitDecision.exitPct, exitDecision.reason, config)
+                .finally(() => this.pendingExecutions.delete(mint))
+            );
           }
         }
       }
@@ -1061,6 +1211,12 @@ class StrategyDaemon {
         }
 
         this.healthMonitor.recordUpdate('execution_adapter');
+
+        // Bankroll floor check after each closed position — self-halt if below minimum viable
+        const currentConfig = this.configManager.getConfig();
+        this.checkBankrollFloor(currentConfig).catch(err =>
+          log.warn(`Post-exit bankroll check failed: ${(err as Error).message}`)
+        );
       }
     } catch (err) {
       log.error(`Exit execution failed for ${mint}: ${(err as Error).message}`);
@@ -1261,10 +1417,12 @@ class StrategyDaemon {
       },
 
       updateRiskSettings: (settings: Record<string, unknown>) => {
+        const oldCfg = this.configManager.getConfig();
         const patch = { risk: settings };
         const result = this.configManager.applyPatch(patch as any, 'operator', 'Risk settings updated via plugin');
         // Risk changes mean new limits — reset epoch so they apply to new trades only
         this.configChangeEpoch = nowMs();
+        this._logConfigChange(oldCfg, this.configManager.getConfig());
         log.info('Risk settings updated — daily loss counter reset');
         return result;
       },
@@ -1286,6 +1444,7 @@ class StrategyDaemon {
         }
         // Reset daily loss epoch so new limits apply to this config's trades, not old session's losses
         this.configChangeEpoch = nowMs();
+        this._logConfigChange(null, this.configManager.getConfig());
         log.info(`Strategy profile set to: ${name} — daily loss counter reset`);
       },
 
@@ -1294,9 +1453,11 @@ class StrategyDaemon {
       },
 
       updateRuntimeConfig: (patch: Record<string, unknown>) => {
+        const oldCfg = this.configManager.getConfig();
         const result = this.configManager.applyPatch(patch as any, 'operator', 'Config updated via plugin');
         // Reset daily loss epoch on any runtime config change so new limits apply fresh
         this.configChangeEpoch = nowMs();
+        this._logConfigChange(oldCfg, this.configManager.getConfig());
         log.info('Config updated via plugin — daily loss counter reset');
         return result;
       },
@@ -1336,11 +1497,13 @@ class StrategyDaemon {
       
       if (holdTime >= 15 && mfeSol <= position.entry_sol && pnlPct < -0.05) {
         log.warn(`💀 DOA exit: ${packet.symbol || mint.slice(0,8)} held ${holdTime.toFixed(0)}s, MFE=0, down ${(pnlPct*100).toFixed(1)}%`);
-        if (!this.pendingExecutions.has(mint)) {
+        if (!this.pendingExecutions.has(mint) && !this.isShuttingDown) {
           this.pendingExecutions.add(mint);
-          this.executeExit(mint, position, 100, ExitReason.STOP_LOSS, config).finally(() => {
-            this.pendingExecutions.delete(mint);
-          });
+          this._trackTrade(
+            this.executeExit(mint, position, 100, ExitReason.STOP_LOSS, config).finally(() => {
+              this.pendingExecutions.delete(mint);
+            })
+          );
         }
         continue;
       }
@@ -1350,11 +1513,13 @@ class StrategyDaemon {
         const lossPct = (position.current_value_sol - position.entry_sol) / position.entry_sol;
         if (lossPct <= -config.risk.raw_stop_pct) {
           log.warn(`🛑 Position scanner stop loss: ${packet.symbol || mint.slice(0,8)} loss=${(lossPct*100).toFixed(1)}%`);
-          if (!this.pendingExecutions.has(mint)) {
+          if (!this.pendingExecutions.has(mint) && !this.isShuttingDown) {
             this.pendingExecutions.add(mint);
-            this.executeExit(mint, position, 100, ExitReason.STOP_LOSS, config).finally(() => {
-              this.pendingExecutions.delete(mint);
-            });
+            this._trackTrade(
+              this.executeExit(mint, position, 100, ExitReason.STOP_LOSS, config).finally(() => {
+                this.pendingExecutions.delete(mint);
+              })
+            );
           }
           continue;
         }
@@ -1444,7 +1609,12 @@ class StrategyDaemon {
       const restoreAt = new Date(now + 5 * 60 * 1000).toLocaleTimeString();
       log.warn(`🟡 Circuit breaker L1: 3 consecutive losses — position size cut to 50% until ${restoreAt}`);
       this.alertSystem.emit('circuit_breaker', `🟡 Circuit breaker L1: 3 consecutive losses. 50% size until ${restoreAt}. Edge threshold unchanged.`, {});
-      // Schedule L1 auto-restore after 5 min
+      // Schedule L1 auto-restore after 5 min.
+      // NOTE: This timer is intentionally ephemeral — NOT persisted to disk.
+      // A daemon restart always resets CB state to L0 (see class field defaults),
+      // so there is NO scenario where L1 incorrectly persists across a restart.
+      // DO NOT add persistence for this timer — it would create state-reconciliation
+      // complexity with no benefit. The 5-min window is a within-session cooldown only.
       setTimeout(() => {
         if (this.circuitBreakerLevel === 1) {
           this.circuitBreakerLevel = 0;

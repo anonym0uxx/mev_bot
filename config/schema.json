@@ -344,7 +344,7 @@
         },
         "min_creator_prior": {
           "type": "number",
-          "minimum": 0,
+          "minimum": -1,
           "maximum": 1
         },
         "doa_velocity_decay_threshold": {
