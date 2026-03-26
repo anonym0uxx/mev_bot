@@ -151,9 +151,19 @@ export function evaluateEntry(
   // ====== 9.4 OBSERVATION PREMIUM ======
   // Reduced window: alpha decays fast on Pump.fun (Budish/Cramton/Shim 2015)
   const tokenAge = ageS(packet.created_at);
-  const dynamicObsWindow = features.flow_momentum.buy_notional_velocity_5s > 0.2
-    ? 3  // Fast-moving token: 3s observation
-    : config.entry.observation_window_s;
+
+  // For tokens already in the target mcap band (vSol > min_vsol_in_curve), the token has
+  // already proven survival by reaching that market cap. Observation window is irrelevant —
+  // evaluate on current momentum signals only. Collapse window to 0.
+  const minVSolCfg = (config.entry as any).min_vsol_in_curve ?? 0;
+  const currentVSolForObs = features.bonding_curve_dynamics.capital_efficiency_raw * features.total_swap_count;
+  const isEstablishedToken = minVSolCfg > 0 && currentVSolForObs >= minVSolCfg;
+
+  const dynamicObsWindow = isEstablishedToken
+    ? 0  // Already proven survival by reaching target mcap — evaluate immediately
+    : features.flow_momentum.buy_notional_velocity_5s > 0.2
+      ? 3  // Fast-moving new token: 3s observation
+      : config.entry.observation_window_s;
 
   // Adaptive edge threshold — uses rolling p50 of observed edge distribution.
   // Falls back to config.entry.min_entry_edge if window is too small (cold start).
