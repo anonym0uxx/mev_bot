@@ -319,6 +319,24 @@ function checkHardFilters(
   const doaMinNewBuyers = (config.entry as any).doa_min_new_buyers_3s ?? 1;
   const vel5s = features.flow_momentum.buy_notional_velocity_5s;
   const vel15s = features.flow_momentum.buy_notional_velocity_15s;
+  const vel30s = features.flow_momentum.buy_notional_velocity_30s;
+
+  // For established mid-curve tokens, use 30s velocity window for DOA check.
+  // Mid-curve momentum plays out over 30-120s; 5s/15s windows are too noisy
+  // and treat normal consolidation pauses as death signals.
+  const doaVSol = features.bonding_curve_dynamics.capital_efficiency_raw * features.total_swap_count;
+  const doaMinVSol = (config.entry as any).min_vsol_in_curve ?? 0;
+  const isEstablishedForDOA = doaMinVSol > 0 && doaVSol >= doaMinVSol;
+
+  if (isEstablishedForDOA) {
+    // Established token: only block if 30s velocity is also dead AND CE is poor
+    const bothVelDead30 = vel30s < 0.001 && vel15s < 0.001 && vel5s < 0.001;
+    const ce = features.bonding_curve_dynamics.capital_efficiency_raw;
+    if (bothVelDead30 && ce < 0.5) {
+      return `doa_signal_midcurve (vel30s=0.00, ce=${ce.toFixed(4)} < 0.5)`;
+    }
+    // Any velocity in any window = alive. Fall through.
+  } else {
   // vel15s ≈ 0 AND vel5s ≈ 0 → both windows dead. Don't use ratio (0/0 = undefined).
   // vel15s ≈ 0 AND vel5s > 0 → token just launched, velocity building → ratio 1.0 (pass).
   const bothVelDead = vel15s < 0.001 && vel5s < 0.001;
@@ -344,6 +362,7 @@ function checkHardFilters(
       return `doa_signal_velocity_only (vel_ratio=${velocityDecayRatio.toFixed(2)} < ${doaVelocityOnlyThreshold.toFixed(2)})`;
     }
   }
+  } // end early-curve DOA block
   if (features.friction_execution.execution_freshness_s > config.friction.stale_threshold_s) return 'stale_friction';
   if (ageS(packet.last_updated) > config.health.market_feed_stale_s) return 'stale_feed';
   if (features.manipulation_distribution.manipulation_penalty > config.manipulation.hard_threshold) return 'manipulation_risk';

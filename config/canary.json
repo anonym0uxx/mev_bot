@@ -95,6 +95,7 @@
     "max_positions": 1,
     "quick_spend_sol": 0.005,
     "raw_stop_pct": 0.15,
+    "mid_curve_stop_pct": 0.25,
     "liquidity_cap_sol": 0.2,
     "slippage_cap_sol": 0.1,
     "max_daily_loss_sol": 0.25,

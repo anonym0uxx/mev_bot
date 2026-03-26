@@ -50,7 +50,16 @@ export function evaluateExit(
   }
 
   // ====== 10.2b RAW STOP LOSS — hard floor at -raw_stop_pct (default -10%) ======
-  if (checkRawStopLoss(position, config)) {
+  // For established mid-curve tokens (vSol >= min_vsol_in_curve), use a wider stop.
+  // Mid-curve tokens retrace 20-25% on normal sell pressure before continuing;
+  // the tight early-curve stop fires on noise and exits before the move plays out.
+  const minVSolCfg = (config.entry as any).min_vsol_in_curve ?? 0;
+  const tokenVSol = features.bonding_curve_dynamics.capital_efficiency_raw * features.total_swap_count;
+  const isEstablished = minVSolCfg > 0 && tokenVSol >= minVSolCfg;
+  const effectiveStopPct = isEstablished
+    ? ((config.risk as any).mid_curve_stop_pct ?? config.risk.raw_stop_pct * 1.5)
+    : config.risk.raw_stop_pct;
+  if (checkRawStopLoss(position, config, effectiveStopPct)) {
     return {
       shouldExit: true,
       shouldReduce: false,
@@ -297,10 +306,11 @@ function checkCatastrophicOverrides(
  * This is a hard floor — EV-based exits should trigger first, but
  * if not, this guarantees we never ride a position to zero.
  */
-function checkRawStopLoss(position: Position, config: PumpQuantConfig): boolean {
+function checkRawStopLoss(position: Position, config: PumpQuantConfig, overrideStopPct?: number): boolean {
   if (position.entry_sol <= 0) return false;
   const unrealizedPct = (position.current_value_sol - position.entry_sol) / position.entry_sol;
-  return unrealizedPct <= -(config.risk.raw_stop_pct);
+  const stopPct = overrideStopPct ?? config.risk.raw_stop_pct;
+  return unrealizedPct <= -stopPct;
 }
 
 /**
