@@ -50,11 +50,12 @@
     "ev_wait_horizon_s": 5,
     "ev_enter_horizon_s": 5,
     "probability_weights": {
-      "flow_momentum": 0.3,
-      "breadth_topology": 0.25,
+      "bonding_curve_dynamics": 0.35,
+      "flow_momentum": 0.15,
+      "breadth_topology": 0.12,
       "creator_wallet_prior": 0.1,
-      "friction_execution": 0.1,
-      "manipulation_distribution": 0.2,
+      "friction_execution": 0.08,
+      "manipulation_distribution": 0.15,
       "multimodal_junk": 0.05
     },
     "calibration": {

@@ -48,7 +48,7 @@ echo "[$(date)] Supervisor started (PID $$)" >> logs/supervisor.log
 
 while true; do
     echo "[$(date)] Starting daemon..." >> logs/supervisor.log
-    CONFIG_PATH=config/canary.json PAPER_MODE=false node dist/daemon/index.js >> logs/daemon.log 2>&1 &
+    CONFIG_PATH=config/canary.json PAPER_MODE=${PAPER_MODE:-false} node dist/daemon/index.js >> logs/daemon.log 2>&1 &
     DAEMON_PID=$!
     echo $DAEMON_PID > "$PIDFILE"
     echo "[$(date)] Daemon PID: $DAEMON_PID" >> logs/supervisor.log

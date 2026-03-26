@@ -284,6 +284,7 @@
         "probability_weights": {
           "type": "object",
           "required": [
+            "bonding_curve_dynamics",
             "flow_momentum",
             "breadth_topology",
             "creator_wallet_prior",
@@ -293,6 +294,9 @@
           ],
           "additionalProperties": false,
           "properties": {
+            "bonding_curve_dynamics": {
+              "type": "number"
+            },
             "flow_momentum": {
               "type": "number"
             },
