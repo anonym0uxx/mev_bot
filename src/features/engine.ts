@@ -18,6 +18,7 @@ import { computeCreatorWalletPriors, CreatorWalletContext } from './creator-wall
 import { computeFrictionExecution, FrictionContext } from './friction-execution';
 import { computeManipulationDistribution, ManipulationContext } from './manipulation-distribution';
 import { getMultimodalJunkScore, MultimodalContext } from './multimodal-junk-filter';
+import { computeBondingCurveDynamics, BondingCurveDynamicsContext } from './bonding-curve-dynamics';
 
 const log = createLogger('features');
 
@@ -42,6 +43,28 @@ export interface TokenTradeState {
   lastFeatureCompute: number;
   /** Unix ms when this token was created on-chain — used for maturity-aware manipulation gating */
   tokenCreatedAt: number;
+
+  // ── Capital efficiency tracking (arXiv:2602.14860 primary predictor) ──
+  /** Cumulative swap count since token creation */
+  totalSwapCount: number;
+  /** vSolInBondingCurve at first observed trade */
+  vSolAtFirstTrade: number;
+  /** vSolInBondingCurve when token entered monitoring window */
+  vSolAtObservationStart: number;
+  /** totalSwapCount when monitoring window started */
+  swapCountAtObservationStart: number;
+  /** current vSol - vSolAtFirstTrade */
+  lifetimeVSolAccumulated: number;
+  /** current vSol - vSolAtObservationStart */
+  windowVSolAccumulated: number;
+  /** totalSwapCount - swapCountAtObservationStart */
+  windowSwapCount: number;
+  /** Count of trades where solAmount >= 0.10 SOL */
+  largeTradeCount: number;
+  /** Capital efficiency sampled every 10s, max 12 entries (for trend analysis) */
+  capitalEfficiencyHistory: Array<{ timestamp: number; value: number }>;
+  /** Sum of creator sells received - creator buys spent (SOL). Positive = dumping. */
+  creatorNetSolPosition: number;
 }
 
 export class FeatureEngine {
@@ -87,6 +110,17 @@ export class FeatureEngine {
       },
       multimodalContext: null,
       lastFeatureCompute: 0,
+      // Capital efficiency tracking (arXiv:2602.14860)
+      totalSwapCount: 0,
+      vSolAtFirstTrade: 0,
+      vSolAtObservationStart: 0,
+      swapCountAtObservationStart: 0,
+      lifetimeVSolAccumulated: 0,
+      windowVSolAccumulated: 0,
+      windowSwapCount: 0,
+      largeTradeCount: 0,
+      capitalEfficiencyHistory: [],
+      creatorNetSolPosition: 0,
     });
   }
 
@@ -103,16 +137,71 @@ export class FeatureEngine {
     }
 
     // Update wallet balances
-    const currentBalance = state.walletBalances.get(trade.traderPublicKey) || 0;
     // Only update wallet balance if we have real data (gRPC events have newTokenBalance=0, which would corrupt concentration metrics)
     if (trade.newTokenBalance > 0 || trade.txType === 'sell') {
       state.walletBalances.set(trade.traderPublicKey, trade.newTokenBalance);
     }
 
-    // Prune old trades (keep max 30s window + buffer)
-    const maxWindow = Math.max(...this.windows);
-    const cutoff = nowMs() - (maxWindow + 5) * 1000;
+    // ── Capital efficiency tracking (arXiv:2602.14860) ──
+    state.totalSwapCount++;
+
+    // Snapshot vSol at first trade
+    if (state.vSolAtFirstTrade === 0 && trade.vSolInBondingCurve > 0) {
+      state.vSolAtFirstTrade = trade.vSolInBondingCurve;
+    }
+
+    // Large trade detection
+    if (trade.solAmount >= 0.10) {
+      state.largeTradeCount++;
+    }
+
+    // Creator net SOL position tracking
+    if (trade.traderPublicKey === state.creator) {
+      if (trade.txType === 'buy') {
+        state.creatorNetSolPosition -= trade.solAmount;
+      } else {
+        state.creatorNetSolPosition += trade.solAmount;
+      }
+    }
+
+    // Update derived accumulation fields
+    if (state.vSolAtFirstTrade > 0) {
+      state.lifetimeVSolAccumulated = trade.vSolInBondingCurve - state.vSolAtFirstTrade;
+    }
+    if (state.vSolAtObservationStart > 0) {
+      state.windowVSolAccumulated = trade.vSolInBondingCurve - state.vSolAtObservationStart;
+    }
+    state.windowSwapCount = state.totalSwapCount - state.swapCountAtObservationStart;
+
+    // Prune old trades — 120s retention for full pre-entry capital efficiency history
+    const cutoff = nowMs() - 120 * 1000;
     state.trades = state.trades.filter(t => t.timestamp >= cutoff);
+  }
+
+  /**
+   * Snapshot the observation start baseline for window-scoped efficiency metrics.
+   * Idempotent: only snapshots once (when vSolAtObservationStart === 0).
+   * Called when a token's observation window has elapsed and entry evaluation begins.
+   */
+  markObservationStart(mint: string): void {
+    const state = this.tokenStates.get(mint);
+    if (!state) return;
+    // Only snapshot once — subsequent calls are no-ops
+    if (state.vSolAtObservationStart > 0) return;
+    const latestTrade = state.trades[state.trades.length - 1];
+    if (latestTrade) {
+      state.vSolAtObservationStart = latestTrade.vSolInBondingCurve;
+    }
+    state.swapCountAtObservationStart = state.totalSwapCount;
+    // Initialize window-scoped accumulators from this point forward
+    state.windowVSolAccumulated = 0;
+    state.windowSwapCount = 0;
+  }
+
+  /** Check whether the observation start baseline has been snapshotted */
+  isObservationStartMarked(mint: string): boolean {
+    const state = this.tokenStates.get(mint);
+    return (state?.vSolAtObservationStart ?? 0) > 0;
   }
 
   /** Set creator wallet context for deep-lane enrichment */
@@ -187,6 +276,36 @@ export class FeatureEngine {
       this.config.features.multimodal_junk_filter
     );
 
+    // ── Bonding curve dynamics (capital efficiency) ──
+    // Sample capital efficiency history every 10s (max 12 samples = 2 min of data)
+    const latestHistory = state.capitalEfficiencyHistory;
+    const lastSample = latestHistory.length > 0 ? latestHistory[latestHistory.length - 1] : null;
+    if (!lastSample || (now - lastSample.timestamp) >= 10000) {
+      const ceRaw = state.totalSwapCount > 0
+        ? (state.trades[state.trades.length - 1]?.vSolInBondingCurve ?? 0) / state.totalSwapCount
+        : 0;
+      latestHistory.push({ timestamp: now, value: ceRaw });
+      if (latestHistory.length > 12) latestHistory.shift();
+    }
+
+    // Window duration: time from earliest retained trade to now
+    const windowDurationMs = state.vSolAtObservationStart > 0 && state.trades.length > 0
+      ? now - (state.trades[0]?.timestamp ?? now)
+      : 0;
+
+    const bcdCtx: BondingCurveDynamicsContext = {
+      vSolInBondingCurve: state.trades[state.trades.length - 1]?.vSolInBondingCurve ?? 0,
+      totalSwapCount: state.totalSwapCount,
+      vSolAtFirstTrade: state.vSolAtFirstTrade,
+      windowVSolAccumulated: state.windowVSolAccumulated,
+      windowSwapCount: state.windowSwapCount,
+      windowDurationMs,
+      largeTradeCount: state.largeTradeCount,
+      capitalEfficiencyHistory: state.capitalEfficiencyHistory,
+      trades: state.trades,
+    };
+    const bondingCurveDynamics = computeBondingCurveDynamics(bcdCtx);
+
     // Store previous velocities for acceleration
     state.prevVelocities.set('buy_velocity_5s', flowMomentum.buy_notional_velocity_5s);
     state.prevVelocities.set('buy_velocity_15s', flowMomentum.buy_notional_velocity_15s);
@@ -201,6 +320,9 @@ export class FeatureEngine {
       friction_execution: frictionExecution,
       manipulation_distribution: manipulationDistribution,
       multimodal_junk: multimodalJunk,
+      bonding_curve_dynamics: bondingCurveDynamics,
+      creator_net_sol_position: state.creatorNetSolPosition,
+      total_swap_count: state.totalSwapCount,
     };
   }
 

@@ -100,6 +100,33 @@ export interface MultimodalJunkFeatures {
   is_stale: boolean;
 }
 
+/** Bonding curve dynamics features — primary graduation predictor (arXiv:2602.14860) */
+export interface BondingCurveDynamicsFeatures {
+  // Primary signal: vSol accumulated per swap (higher = fewer decisive trades = better)
+  capital_efficiency_raw: number;        // vSolInBondingCurve / totalSwapCount
+  capital_efficiency_normalized: number; // clamp(raw / CE_SCALE, 0, 1) → [0,1] higher=better
+
+  // Window efficiency: recent accumulation quality
+  window_capital_efficiency: number;     // windowVSolAccumulated / windowSwapCount
+
+  // Trend: is efficiency improving (more SOL/trade over time) or degrading?
+  efficiency_trend: number;              // [0,1] where 1=strongly improving
+
+  // Fill rate: SOL per minute of curve fill (absolute velocity)
+  curve_fill_rate_sol_per_min: number;   // raw
+  curve_fill_rate_normalized: number;    // clamp(raw / 10.0, 0, 1)
+
+  // Large trade presence: fraction of trades >= 0.10 SOL
+  large_trade_fraction: number;          // largeTradeCount / totalSwapCount, [0,1]
+
+  // Median trade size (approximated as mean for simplicity)
+  median_trade_size_sol: number;         // approximated from recent trades
+  median_trade_size_normalized: number;  // clamp(value / 0.05, 0, 1)
+
+  // Composite bonding curve dynamics score [0,1]
+  bcd_score: number;
+}
+
 /** Complete feature snapshot across all families */
 export interface FeatureSnapshot {
   timestamp: number;
@@ -110,6 +137,11 @@ export interface FeatureSnapshot {
   friction_execution: FrictionExecutionFeatures;
   manipulation_distribution: ManipulationDistributionFeatures;
   multimodal_junk: MultimodalJunkFeatures;
+  bonding_curve_dynamics: BondingCurveDynamicsFeatures;
+  /** Creator net SOL position: positive = dumping, negative = still holding (for veto) */
+  creator_net_sol_position: number;
+  /** Total swap count since creation (for veto rules) */
+  total_swap_count: number;
 }
 
 /** Rolling window data point for feature computation */

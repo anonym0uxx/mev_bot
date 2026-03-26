@@ -179,6 +179,16 @@ export class PumpQuantDB {
       friction_execution: JSON.parse(row.friction_execution),
       manipulation_distribution: JSON.parse(row.manipulation_distribution),
       multimodal_junk: JSON.parse(row.multimodal_junk),
+      // BCD fields added in signal stack v2; default to zero if not present in DB row
+      bonding_curve_dynamics: row.bonding_curve_dynamics ? JSON.parse(row.bonding_curve_dynamics) : {
+        capital_efficiency_raw: 0, capital_efficiency_normalized: 0,
+        window_capital_efficiency: 0, efficiency_trend: 0.5,
+        curve_fill_rate_sol_per_min: 0, curve_fill_rate_normalized: 0,
+        large_trade_fraction: 0, median_trade_size_sol: 0,
+        median_trade_size_normalized: 0, bcd_score: 0,
+      },
+      creator_net_sol_position: row.creator_net_sol_position ?? 0,
+      total_swap_count: row.total_swap_count ?? 0,
     };
   }
 

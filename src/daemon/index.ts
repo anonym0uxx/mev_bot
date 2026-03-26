@@ -748,6 +748,16 @@ class StrategyDaemon {
     const features = this.featureEngine.computeFeatures(mint);
     if (!features) return;
 
+    // Mark observation start baseline once the observation window has elapsed.
+    // This snapshots vSolAtObservationStart and swapCountAtObservationStart so that
+    // window-scoped capital efficiency metrics (windowVSolAccumulated, windowSwapCount)
+    // measure quality from the entry-evaluation window forward, not from token creation.
+    // markObservationStart() is idempotent — subsequent calls are no-ops.
+    const tokenAgeS = ageS(packet.created_at);
+    if (tokenAgeS >= config.entry.observation_window_s && !this.featureEngine.isObservationStartMarked(mint)) {
+      this.featureEngine.markObservationStart(mint);
+    }
+
     // Re-classify regime
     const regime = classifyRegime({
       bondingCurveProgress: packet.bonding_curve_progress,

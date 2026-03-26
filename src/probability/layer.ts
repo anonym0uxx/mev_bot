@@ -3,10 +3,11 @@
  * Regime-specific probabilistic outputs:
  * P_continuation_5s, P_continuation_15s, P_reversal_5s, P_reversal_15s, P_manipulation_event
  *
- * Implementation order:
- * 1. Deterministic weighted feature stack
- * 2. Calibration layer
- * 3. EV decision layer (used by entry/exit engines)
+ * Signal Stack v2 (arXiv:2602.14860):
+ * - Primary predictor: bonding_curve_dynamics (capital efficiency) — weight 0.35
+ * - Hard veto rules: creator dump, bot wash, efficiency floor
+ * - Recalibrated sigmoid baseline (-2.5) to correct 50% → ~8% base probability
+ * - 30s flow signal windows replace noisy 5s derivatives
  */
 
 import { FeatureSnapshot } from '../types/features';
@@ -20,11 +21,11 @@ const log = createLogger('probability');
  * Compute probability outputs from feature snapshot.
  * Uses deterministic weighted feature stack with calibration.
  *
- * Rules:
- * - qualified-wallet prior: capped positive / stronger negative prior
- * - multimodal junk filter: exclusion/tie-break/ranking refinement only
- * - route_ev_adjustment feeds EV comparisons
- * - no single enhancement module overrides core gates
+ * Signal Stack v2 changes:
+ * - BCD (capital efficiency) is the dominant signal at weight 0.35
+ * - Hard veto rules applied before weighted computation
+ * - Sigmoid bias of -2.5 anchors base rate to ~8% (vs broken 50%)
+ * - 30s flow windows for more stable momentum signal
  */
 export function computeProbabilities(
   features: FeatureSnapshot,
@@ -34,26 +35,49 @@ export function computeProbabilities(
   const weights = config.entry.probability_weights;
   const calibration = config.entry.calibration;
 
+  // ====== Step 0: Hard veto rules (applied before any weighted computation) ======
+  // These return a near-zero probability immediately, bypassing the weighted stack.
+
+  const bcd = features.bonding_curve_dynamics;
+  const creatorNetSol = features.creator_net_sol_position;
+  const totalSwaps = features.total_swap_count;
+
+  // CREATOR_DUMP_VETO: creator has extracted > 0.5 SOL net → systematic dump, block entry
+  if (creatorNetSol > 0.5) {
+    log.debug(`Creator dump veto: creatorNetSol=${creatorNetSol.toFixed(3)} SOL`);
+    return buildVetoOutput(0.05);
+  }
+
+  // BOT_WASH_VETO: very low BCD score with high swap count → bot wash pattern
+  if (bcd.bcd_score < 0.1 && totalSwaps > 150) {
+    log.debug(`Bot wash veto: bcd_score=${bcd.bcd_score.toFixed(3)}, totalSwaps=${totalSwaps}`);
+    return buildVetoOutput(0.05);
+  }
+
+  // EFFICIENCY_FLOOR_VETO: extremely low capital efficiency with high swap count
+  if (bcd.capital_efficiency_raw < 0.0005 && totalSwaps > 200) {
+    log.debug(`Efficiency floor veto: CE=${bcd.capital_efficiency_raw.toFixed(5)}, totalSwaps=${totalSwaps}`);
+    return buildVetoOutput(0.05);
+  }
+
   // ====== Step 1: Deterministic weighted feature stack ======
 
-  // Flow/momentum signal: higher velocity + positive imbalance + acceleration = continuation
+  // BCD signal: primary predictor from arXiv:2602.14860
+  // bcd_score is [0,1] → normalize to [-1, 1] for weighted composite
+  const bcdSignal = bcd.bcd_score * 2 - 1;
+
+  // Flow/momentum signal: 30s window (more stable than 5s)
   const flowSignal = computeFlowSignal(features);
 
   // Breadth/topology signal: higher breadth + low concentration = continuation
   const breadthSignal = computeBreadthSignal(features);
 
   // Creator/wallet prior signal: CAPPED, feeds as prior only.
-  // Signal range: [-0.30, +0.08] (max_negative_penalty=0.3, max_positive_boost=0.08 in config).
-  // Neutral is 0.0 in this range.
-  //
-  // NORMALIZATION: composite_prior = 0.0 means UNKNOWN creator (no enrichment data), NOT bad creator.
-  // For unknown creators, we exclude the creator_wallet_prior weight from the denominator entirely,
-  // so its 0.25 weight doesn't drag down the effective weight sum for most Pump.fun tokens.
-  // Known creators (data present): use composite_prior directly — positive boosts, negative penalizes.
-  // Unknown creators (no data): contribute 0.0 directionally, weight excluded from denominator.
+  // NORMALIZATION: composite_prior = 0.0 means UNKNOWN creator (no enrichment data).
+  // For unknown creators, exclude the weight from the denominator entirely.
   const rawCreatorPrior = features.creator_wallet_prior.composite_prior;
   const hasCreatorData = rawCreatorPrior !== 0 || features.creator_wallet_prior.creator_history_score > 0;
-  const walletPriorSignal = hasCreatorData ? rawCreatorPrior : 0.0; // Unknown = neutral (0 in [-0.3, +0.08])
+  const walletPriorSignal = hasCreatorData ? rawCreatorPrior : 0.0;
 
   // Friction/execution signal: good execution = higher confidence
   const frictionSignal = computeFrictionSignal(features);
@@ -63,15 +87,14 @@ export function computeProbabilities(
 
   // Multimodal signal: only for refinement, not core gate
   const multimodalSignal = features.multimodal_junk.is_stale
-    ? 0 // No contribution when stale
+    ? 0
     : (features.multimodal_junk.junk_score - 0.5) * 2; // Normalize to [-1, 1]
 
   // Weighted composite — normalized denominator.
-  // When creator data is absent, exclude that weight from the denominator so the
-  // remaining signals carry full weight (effective sum = 1.0, not 0.75).
-  // This prevents unknown-creator tokens from being systematically penalized.
+  // When creator data is absent, exclude that weight so remaining signals carry full weight.
   const creatorWeight = hasCreatorData ? weights.creator_wallet_prior : 0;
   const effectiveWeightSum =
+    weights.bonding_curve_dynamics +
     weights.flow_momentum +
     weights.breadth_topology +
     creatorWeight +
@@ -81,6 +104,7 @@ export function computeProbabilities(
   const normFactor = effectiveWeightSum > 0 ? (1.0 / effectiveWeightSum) : 1.0;
 
   const rawContinuationSignal = normFactor * (
+    weights.bonding_curve_dynamics * bcdSignal +
     weights.flow_momentum * flowSignal +
     weights.breadth_topology * breadthSignal +
     creatorWeight * walletPriorSignal +
@@ -94,43 +118,38 @@ export function computeProbabilities(
   // Apply regime-specific adjustments
   const regimeAdjustment = getRegimeAdjustment(regime);
 
-  // Calibrated continuation probability
-  // Regime-adaptive gain: EARLY_CURVE signals are weaker (fewer trades, less data)
-  // so we use a modest multiplier to spread the probability distribution.
-  // Without gain: sigmoid range ≈ 0.35–0.65 (can't distinguish good from mediocre)
-  // With 1.5x gain: sigmoid range ≈ 0.28–0.72 (meaningful discrimination)
-  const gainMultiplier = regime === Regime.EARLY_CURVE ? 1.5 : 1.8;
+  // Calibrated continuation probability.
+  // Bias of -2.5 corrects the broken 50% baseline → ~8% base rate
+  // (realistic for "token continues for 60s from our entry point").
+  // This is intentionally hardcoded — not in config — to prevent accidental
+  // re-tuning back to the broken 50% baseline.
+  const BASE_RATE_BIAS = -2.5;
+  const gainMultiplier = 2.0;
   const calibratedContinuation = sigmoid(
-    rawContinuationSignal * gainMultiplier + regimeAdjustment + calibration.continuation_bias
+    rawContinuationSignal * gainMultiplier + regimeAdjustment + BASE_RATE_BIAS + calibration.continuation_bias
   );
 
   // Calibrated reversal probability — symmetric gain
   const calibratedReversal = sigmoid(
-    -rawContinuationSignal * gainMultiplier - regimeAdjustment + calibration.reversal_bias
+    -rawContinuationSignal * gainMultiplier - regimeAdjustment + BASE_RATE_BIAS + calibration.reversal_bias
   );
 
   // Manipulation event probability
-  // EARLY_CURVE adjustment: brand new tokens haven't had time to show manipulation
-  // signals yet. Reduce the base prior for clean early tokens so we don't penalize
-  // information absence as if it were evidence of manipulation.
-  // sigmoid(-1.5) ≈ 0.18 baseline (was -0.5 → 0.38, which crushed EV on every entry)
   const earlyCurveOffset = regime === 'EARLY_CURVE' ? -1.0 : 0;
   const rawManipulationProb = sigmoid(
-    manipulationSignal * 1.5 - 1.5 + earlyCurveOffset + // Lower baseline prior
-    (features.manipulation_distribution.hard_shock ? 2.5 : 0) + // Hard shock still fires hard
+    manipulationSignal * 1.5 - 1.5 + earlyCurveOffset +
+    (features.manipulation_distribution.hard_shock ? 2.5 : 0) +
     calibration.manipulation_bias
   );
 
   // ====== Step 3: Horizon-specific probabilities ======
 
-  // 5s horizon: more responsive to fast-lane signals
   const P_continuation_5s = Math.min(0.95, Math.max(0.05,
-    calibratedContinuation * (1 + 0.1 * flowSignal) // Boost by fast flow signal
+    calibratedContinuation * (1 + 0.1 * flowSignal)
   ));
 
-  // 15s horizon: more influenced by breadth and structure
   const P_continuation_15s = Math.min(0.95, Math.max(0.05,
-    calibratedContinuation * (1 + 0.05 * breadthSignal) // Modest breadth boost
+    calibratedContinuation * (1 + 0.05 * breadthSignal)
   ));
 
   const P_reversal_5s = Math.min(0.95, Math.max(0.05,
@@ -158,46 +177,48 @@ export function computeProbabilities(
   };
 }
 
-/** Compute flow/momentum signal from features → [-1, 1]
- * Increased gain: positive velocity should produce strong signals.
- * A token with active buying should produce flow signal > 0.5 */
+/** Build a veto output with near-zero continuation probability */
+function buildVetoOutput(pContinuation: number): ProbabilityOutputs {
+  return {
+    P_continuation_5s: pContinuation,
+    P_continuation_15s: pContinuation,
+    P_reversal_5s: 1 - pContinuation,
+    P_reversal_15s: 1 - pContinuation,
+    P_manipulation_event: 0.90,
+  };
+}
+
+/**
+ * Compute flow/momentum signal from features → [-1, 1]
+ * v2: Use 30s window signals for more stable momentum (less noisy than 5s).
+ */
 function computeFlowSignal(features: FeatureSnapshot): number {
   const f = features.flow_momentum;
 
-  // FIX #1 (cont): Increase velocity thresholds to match Pump.fun reality
-  // High velocity often = pump-and-dump setup, not organic growth
-  const velocitySignal =
-    Math.min(1, f.buy_notional_velocity_5s / 0.40) * 0.35 +  // Was 0.15
-    Math.min(1, f.buy_notional_velocity_15s / 0.25) * 0.2;   // Was 0.1
+  // 30s buy pressure ratio as primary (0.15 SOL/s = full score)
+  const buyPressureNorm = Math.min(1, f.buy_notional_velocity_30s / 0.15);
 
-  // Acceleration signal
-  const accelSignal = Math.tanh(f.buy_velocity_acceleration_5s * 15) * 0.15;
+  // 30s imbalance signal
+  const imbalanceSignal = f.buy_sell_imbalance_30s * 0.3;
 
-  // Imbalance signal — strong positive imbalance is very bullish
-  const imbalanceSignal = f.buy_sell_imbalance_5s * 0.2;
+  // Average trade size (15s window — balanced between noise and recency)
+  const sizeSignal = Math.min(1, f.avg_trade_size_15s / 0.05) * 0.2;
 
-  // Trade count — even 1 trade/s is significant for new tokens
-  const tradeCountSignal = Math.min(1, f.trade_count_velocity_5s / 1) * 0.1;
-
-  return Math.max(-1, Math.min(1, velocitySignal + accelSignal + imbalanceSignal + tradeCountSignal));
+  return Math.max(-1, Math.min(1, buyPressureNorm * 0.5 + imbalanceSignal + sizeSignal));
 }
 
-/** Compute breadth/topology signal → [-1, 1]
- * For new tokens, even 3-5 unique buyers is meaningful breadth.
- * Scale buyer contribution more aggressively. */
+/** Compute breadth/topology signal → [-1, 1] */
 function computeBreadthSignal(features: FeatureSnapshot): number {
   const b = features.breadth_topology;
 
-  // FIX #1 (cont): Fix buyer normalization — demand at least 15 buyers for max score
-  // 5 buyers in Pump.fun is NOT meaningful breadth
-  const buyerContribution = Math.min(0.3, b.unique_buyers_total / 100); // Was /60
+  const buyerContribution = Math.min(0.3, b.unique_buyers_total / 100);
 
   return Math.max(-1, Math.min(1,
     b.breadth_score * 0.35 +
     b.non_dev_participation * 0.2 +
     b.first_100_persistence * 0.1 +
     buyerContribution +
-    (1 - b.top_10_concentration) * 0.05
+    (1 - b.top_10_concentration) * 0.05,
   ));
 }
 
@@ -210,7 +231,7 @@ function computeFrictionSignal(features: FeatureSnapshot): number {
     f.expected_entry_slippage * 2 -
     f.expected_exit_slippage * 2 -
     f.landing_risk_estimate * 0.3 +
-    f.route_ev_adjustment
+    f.route_ev_adjustment,
   ));
 }
 
@@ -218,17 +239,17 @@ function computeFrictionSignal(features: FeatureSnapshot): number {
 function getRegimeAdjustment(regime: Regime): number {
   switch (regime) {
     case Regime.EARLY_CURVE:
-      return 0.1;  // Slight positive bias — early stage has more upside potential
+      return 0.1;
     case Regime.MID_CURVE:
-      return 0;    // Neutral
+      return 0;
     case Regime.LATE_CURVE:
-      return -0.05; // Slight caution — more risk of reversal
+      return -0.05;
     case Regime.GRADUATION_BOUNDARY:
-      return -0.15; // Higher caution — boundary is risky
+      return -0.15;
     case Regime.POST_MIGRATION:
-      return -0.3;  // Strong caution — excluded in initial build
+      return -0.3;
     case Regime.EXCLUDED:
-      return -1;    // Should never reach here, but fail safe
+      return -1;
     default:
       return 0;
   }

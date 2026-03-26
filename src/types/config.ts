@@ -49,6 +49,7 @@ export interface FrictionConfig {
 }
 
 export interface ProbabilityWeights {
+  bonding_curve_dynamics: number;
   flow_momentum: number;
   breadth_topology: number;
   creator_wallet_prior: number;
