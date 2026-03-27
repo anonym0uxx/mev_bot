@@ -32,6 +32,18 @@ export interface EntryDecision {
   ev: EntryEVCalculation;
   sizing: PositionSizing | null;
   hardFilterRejection: string | null;
+  // ML feature snapshot: signal values at the moment of entry decision (for training data)
+  featureSnapshot?: {
+    p_cont: number;
+    bcd_score: number;
+    capital_efficiency: number;
+    manip_score: number;
+    creator_prior: number;
+    velocity: number;
+    breadth_score: number;
+    unique_buyers: number;
+    vsol_in_curve: number;
+  };
 }
 
 /**
@@ -257,12 +269,27 @@ export function evaluateEntry(
 
   log.info(`🟢 ENTRY APPROVED ${packet.symbol || packet.mint.slice(0,8)}: EV=${EV_enter_now.toFixed(6)} Edge=${EntryEdge.toFixed(6)} Size=${sizing.position_size.toFixed(4)} SOL buyers=${features.breadth_topology.unique_buyers_total}`);
 
+  // Capture ML feature snapshot at entry decision time
+  const bcdFeatures = features.bonding_curve_dynamics;
+  const featureSnapshot = {
+    p_cont: P_continuation,
+    bcd_score: bcdFeatures.bcd_score,
+    capital_efficiency: bcdFeatures.capital_efficiency_raw,
+    manip_score: probabilities.P_manipulation_event,
+    creator_prior: (packet as any).creator_prior ?? 0,
+    velocity: features.flow_momentum?.buy_notional_velocity_5s ?? 0,
+    breadth_score: features.breadth_topology?.breadth_score ?? 0,
+    unique_buyers: features.breadth_topology?.unique_buyers_total ?? 0,
+    vsol_in_curve: (packet as any).v_sol_in_curve ?? 0,
+  };
+
   return {
     shouldEnter: true,
     reason: `Entry approved: EV=${EV_enter_now.toFixed(6)}, Edge=${EntryEdge.toFixed(6)}, Size=${sizing.position_size.toFixed(4)} SOL`,
     ev,
     sizing,
     hardFilterRejection: null,
+    featureSnapshot,
   };
 }
 

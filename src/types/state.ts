@@ -101,6 +101,9 @@ export interface CandidatePacket {
   /** Entry EV (only relevant in WATCH / ENTER_READY) */
   entry_ev: EntryEVCalculation | null;
 
+  /** Full entry decision (captures featureSnapshot for ML training) */
+  entry_decision?: import('../entry/engine').EntryDecision | null;
+
   /** Exit EV (only relevant in LONG / REDUCE) */
   exit_ev: ExitEVCalculation | null;
 

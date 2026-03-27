@@ -118,6 +118,26 @@ export interface Position {
   is_paper: boolean;
 
   config_version: number;
+
+  /** ML feature snapshot at entry (for supervised learning) */
+  entry_features?: string | null;       // JSON blob of full signal vector
+  feat_p_cont?: number | null;
+  feat_bcd_score?: number | null;
+  feat_manip_score?: number | null;
+  feat_creator_prior?: number | null;
+  feat_velocity?: number | null;
+  feat_breadth_score?: number | null;
+  feat_unique_buyers?: number | null;
+  feat_mcap_sol?: number | null;
+
+  /** Timestamps (explicit ms epoch) */
+  entry_ts?: number | null;
+  exit_ts?: number | null;
+
+  /** Active risk params at trade time */
+  active_stop_pct?: number | null;
+  active_target_pct?: number | null;
+  active_max_hold_s?: number | null;
 }
 
 export enum PositionStatus {

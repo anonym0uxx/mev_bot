@@ -898,6 +898,8 @@ class StrategyDaemon {
           this.analysisLocks.add(mint + '_entry');
           this.lastExecutionAttempt = now;
 
+          // Store full entry decision on packet for ML feature capture in executeEntry
+          packet.entry_decision = entryDecision;
           log.info(`🚀 Promoting to ENTER_READY: ${packet.symbol || mint.slice(0,8)} — ${entryDecision.reason}`);
           this.stateMachine.transitionToEnterReady(mint, entryDecision.reason);
           log.info(`💰 EXECUTING ENTRY: ${packet.symbol || mint.slice(0,8)} size=${entryDecision.sizing!.position_size.toFixed(4)} SOL | social: twitter=${social.has_twitter} tg=${social.has_telegram} replies=${social.reply_count} score=${social.social_score.toFixed(2)} (positions: ${openPositionCount}+${this.committedMints.size - 1} pending)`);
@@ -1127,10 +1129,26 @@ class StrategyDaemon {
           // If mfe_sol = 0: mfePct = (0 - entry) / entry = -1.0 → gate PERMANENTLY inactive.
           // If mfe_sol = entry_sol: mfePct = 0.0 → correctly waits for 5% unrealized gain.
           // The DOA position-scanner check was `mfeSol <= 0` — updated below to `mfeSol <= entry_sol`.
-          mfe_sol: order.realized_sol || intent.size_sol, // = entry_sol at open; updated on every tick
-          mae_sol: 0,
+          mfe_sol: 0, // tracks max unrealized PnL (SOL) during hold; 0 = never went positive
+          mae_sol: 0, // tracks max adverse excursion (negative SOL); 0 = never went negative
           is_paper: isPaperMode(),
           config_version: intent.config_version,
+          // ML feature snapshot — entry signal values for supervised learning
+          entry_features: packet.entry_decision?.featureSnapshot
+            ? JSON.stringify(packet.entry_decision.featureSnapshot)
+            : null,
+          feat_p_cont: packet.entry_decision?.featureSnapshot?.p_cont ?? null,
+          feat_bcd_score: packet.entry_decision?.featureSnapshot?.bcd_score ?? null,
+          feat_manip_score: packet.entry_decision?.featureSnapshot?.manip_score ?? null,
+          feat_creator_prior: packet.entry_decision?.featureSnapshot?.creator_prior ?? null,
+          feat_velocity: packet.entry_decision?.featureSnapshot?.velocity ?? null,
+          feat_breadth_score: packet.entry_decision?.featureSnapshot?.breadth_score ?? null,
+          feat_unique_buyers: packet.entry_decision?.featureSnapshot?.unique_buyers ?? null,
+          feat_mcap_sol: packet.entry_decision?.featureSnapshot?.vsol_in_curve ?? null,
+          entry_ts: nowMs(),
+          active_stop_pct: config.risk.raw_stop_pct,
+          active_target_pct: config.exit.take_profit_pct,
+          active_max_hold_s: config.exit.max_hold_time_s,
         };
 
         this.db.insertPosition(position);
@@ -1232,6 +1250,7 @@ class StrategyDaemon {
           status: PositionStatus.CLOSED,
           closed_at: closedAt,
           hold_duration_s: ageS(position.entry_timestamp),
+          exit_ts: closedAt,
         });
 
         // Close any ghost duplicate positions for the same mint (race condition artifacts)
@@ -1359,7 +1378,9 @@ class StrategyDaemon {
     const unrealizedPnl = currentValue - position.entry_sol;
     const unrealizedPnlPct = position.entry_sol > 0 ? unrealizedPnl / position.entry_sol : 0;
 
-    // Track MFE/MAE
+    // Track MFE/MAE as unrealized PnL (SOL), relative to entry cost.
+    // mfe_sol initialized to 0 at open (not entry_sol — that was a unit mismatch bug).
+    // unrealizedPnl = currentValue - entry_sol, so MFE=0 means "never went positive".
     const mfe = Math.max(position.mfe_sol, unrealizedPnl);
     const mae = Math.min(position.mae_sol, unrealizedPnl);
 
