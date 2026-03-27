@@ -30,7 +30,9 @@ async function sendTelegram(message) {
 function buildReport() {
   const db = new Database(DB_PATH, { readonly: true });
 
-  const rawOrders = db.prepare("SELECT * FROM orders WHERE status='confirmed' AND is_paper=0 ORDER BY created_at ASC").all();
+  const isPaperMode = process.env.PAPER_MODE === 'true' || process.env.PAPER_MODE === '1';
+  const paperFilter = isPaperMode ? 1 : 0;
+  const rawOrders = db.prepare(`SELECT * FROM orders WHERE status='confirmed' AND is_paper=${paperFilter} ORDER BY created_at ASC`).all();
   const open = db.prepare("SELECT * FROM positions WHERE status='OPEN'").all();
 
   // Deduplicate by tx_signature — keep the entry with the highest realized_sol per sig.

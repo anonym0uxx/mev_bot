@@ -333,6 +333,28 @@ export interface AlertsConfig {
   log_only: string[];
 }
 
+export interface MevConfig {
+  enabled: boolean;
+  paper_mode: boolean;
+  trigger_min_buy_sol: number;
+  trigger_min_score: number;
+  min_vsol_in_curve: number;
+  max_vsol_in_curve: number;
+  max_token_age_s: number;
+  min_unique_buyers: number;
+  entry_size_sol: number;
+  max_entry_size_sol: number;
+  max_concurrent_positions: number;
+  take_profit_pct: number;
+  stop_loss_pct: number;
+  max_hold_ms: number;
+  next_buyer_exit: boolean;
+  daily_loss_cap_sol: number;
+  jito_tip_lamports: number;
+  conflict_policy: 'skip' | 'replace';
+  log_file: string;
+}
+
 export interface PumpQuantConfig {
   regime: RegimeConfig;
   manipulation: ManipulationConfig;
@@ -348,6 +370,7 @@ export interface PumpQuantConfig {
   learning: LearningConfig;
   health: HealthConfig;
   alerts: AlertsConfig;
+  mev?: MevConfig;
 }
 
 export type RouteMode = 'local' | 'lightning' | 'private' | 'jito';

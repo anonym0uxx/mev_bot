@@ -1271,6 +1271,31 @@
           ]
         }
       }
+    },
+    "mev": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "paper_mode": { "type": "boolean" },
+        "trigger_min_buy_sol": { "type": "number", "minimum": 0 },
+        "trigger_min_score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "min_vsol_in_curve": { "type": "number", "minimum": 0 },
+        "max_vsol_in_curve": { "type": "number", "minimum": 0 },
+        "max_token_age_s": { "type": "number", "minimum": 0 },
+        "min_unique_buyers": { "type": "integer", "minimum": 0 },
+        "entry_size_sol": { "type": "number", "minimum": 0 },
+        "max_entry_size_sol": { "type": "number", "minimum": 0 },
+        "max_concurrent_positions": { "type": "integer", "minimum": 1 },
+        "take_profit_pct": { "type": "number", "minimum": 0 },
+        "stop_loss_pct": { "type": "number", "minimum": 0 },
+        "max_hold_ms": { "type": "integer", "minimum": 0 },
+        "next_buyer_exit": { "type": "boolean" },
+        "daily_loss_cap_sol": { "type": "number", "minimum": 0 },
+        "jito_tip_lamports": { "type": "integer", "minimum": 0 },
+        "conflict_policy": { "type": "string", "enum": ["skip", "replace"] },
+        "log_file": { "type": "string" }
+      }
     }
   }
 }

@@ -4,7 +4,7 @@
     "mid_curve_max_progress": 0.5,
     "late_curve_max_progress": 0.85,
     "graduation_boundary_start": 0.85,
-    "graduation_boundary_end": 1.0,
+    "graduation_boundary_end": 1,
     "max_token_age_s": 600,
     "exclude_mayhem": true,
     "exclude_tokenized_agent": true
@@ -21,7 +21,7 @@
     "suspicious_burst_threshold": 0.6,
     "slippage_shock_threshold": 0.5,
     "continuous_penalty_weights": {
-      "creator_sell": 1.0,
+      "creator_sell": 1,
       "same_size_prints": 0.3,
       "price_breadth_divergence": 0.25,
       "concentration_worsening": 0.2,
@@ -59,9 +59,9 @@
       "multimodal_junk": 0.05
     },
     "calibration": {
-      "continuation_bias": 0.0,
-      "reversal_bias": 0.0,
-      "manipulation_bias": 0.0
+      "continuation_bias": 0,
+      "reversal_bias": 0,
+      "manipulation_bias": 0
     }
   },
   "exit": {
@@ -76,7 +76,7 @@
     "max_hold_time_s": 900
   },
   "risk": {
-    "bankroll_sol": 1.0,
+    "bankroll_sol": 1,
     "risk_per_trade_pct": 0.01,
     "max_alloc_pct": 0.03,
     "max_positions": 1,
@@ -84,15 +84,13 @@
     "max_position_size_sol": 0.02,
     "max_daily_entries": 2,
     "raw_stop_pct": 0.15,
-    "take_profit_pct": 0.40,
+    "take_profit_pct": 0.4,
     "liquidity_cap_sol": 0.5,
     "slippage_cap_sol": 0.3,
     "max_daily_loss_sol": 0.05
   },
   "execution": {
     "default_route_mode": "local",
-    "jito_enabled": false,
-    "jito_tip_lamports": 10000,
     "default_slippage_bps": 500,
     "default_priority_fee_sol": 0.0005,
     "skip_preflight": false,
@@ -131,7 +129,7 @@
     "pump_fee_pct": 0.01,
     "pump_swap_fee_pct": 0.0025,
     "pump_portal_fee_pct": 0.005,
-    "solana_base_fee_sol": 5e-06,
+    "solana_base_fee_sol": 0.000005,
     "priority_fee_default_sol": 0.0005,
     "regime_fee_overrides": {
       "POST_MIGRATION": {

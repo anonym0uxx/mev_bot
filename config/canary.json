@@ -291,5 +291,26 @@
     "primary_for_market_data": true,
     "grpc_enabled": true,
     "grpc_endpoint": "corecast.bitquery.io"
+  },
+  "mev": {
+    "enabled": true,
+    "paper_mode": true,
+    "trigger_min_buy_sol": 0.10,
+    "trigger_min_score": 0.55,
+    "min_vsol_in_curve": 28,
+    "max_vsol_in_curve": 80,
+    "max_token_age_s": 300,
+    "min_unique_buyers": 3,
+    "entry_size_sol": 0.10,
+    "max_entry_size_sol": 0.20,
+    "max_concurrent_positions": 2,
+    "take_profit_pct": 0.08,
+    "stop_loss_pct": 0.05,
+    "max_hold_ms": 5000,
+    "next_buyer_exit": true,
+    "daily_loss_cap_sol": 0.50,
+    "jito_tip_lamports": 10000,
+    "conflict_policy": "skip",
+    "log_file": "data/mev_paper_trades.jsonl"
   }
 }

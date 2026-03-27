@@ -45,6 +45,7 @@ import { LearningJobScheduler } from '../learning/jobs';
 import { startApiServer, DaemonContext } from './api';
 import { isPaperMode } from '../paper/engine';
 import { PumpQuantConfig, RouteMode } from '../types/config';
+import { BackrunEngine } from '../mev/backrun-engine';
 import {
   TokenState, Regime, CandidatePacket, AnalysisTier, ExitReason,
 } from '../types/state';
@@ -73,6 +74,7 @@ class StrategyDaemon {
   private healthCheckInterval: NodeJS.Timeout | null = null;
   private analysisInterval: NodeJS.Timeout | null = null;
   private strategyProfile: string = 'default';
+  private backrunEngine: BackrunEngine | null = null;
   private pendingExecutions: Set<string> = new Set();
   private forcedExitCooldowns: Map<string, number> = new Map();
 
@@ -211,6 +213,12 @@ class StrategyDaemon {
 
     // Load adaptive threshold state (persisted across restarts)
     loadThresholdState();
+
+    // Initialize MEV backrun engine if enabled
+    if (config.mev?.enabled) {
+      this.backrunEngine = new BackrunEngine(config.mev, this.feed);
+      log.info(`MEV BackrunEngine initialized (paper_mode=${config.mev.paper_mode})`);
+    }
 
     log.info(`Daemon initialized (paper=${paper})`);
   }
@@ -383,6 +391,11 @@ class StrategyDaemon {
     const apiHost = process.env.DAEMON_HOST || '127.0.0.1';
     startApiServer(this.buildApiContext(), apiPort, apiHost);
 
+    // Start MEV backrun engine (after feed is connected)
+    if (this.backrunEngine) {
+      this.backrunEngine.start();
+    }
+
     log.info('Strategy daemon started');
   }
 
@@ -397,6 +410,7 @@ class StrategyDaemon {
     if (this.corecast) this.corecast.disconnect();
     this.feed.disconnect();
     this.learningJobs.stop();
+    if (this.backrunEngine) this.backrunEngine.stop();
     if (this.healthCheckInterval) clearInterval(this.healthCheckInterval);
     if (this.analysisInterval) clearInterval(this.analysisInterval);
 

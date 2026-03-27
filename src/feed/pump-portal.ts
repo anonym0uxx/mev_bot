@@ -256,6 +256,8 @@ export class PumpPortalClient extends EventEmitter {
           timestamp: msg.timestamp || nowMs(),
         };
         this.emit('tokenTrade', event);
+        // Per-mint event for MEV / backrun modules that need targeted routing
+        this.emit('trade:' + event.mint, event);
       }
     } else if (msg.pool || msg.migration) {
       const event: MigrationEvent = {

@@ -19,7 +19,10 @@ let state = { last_trade_count: 0, last_check_ts: 0, last_win_rate: null, pendin
 try { state = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')); } catch {}
 
 // Dedup orders
-const rawOrders = db.prepare("SELECT * FROM orders WHERE status='confirmed' AND is_paper=0 ORDER BY created_at ASC").all();
+// In paper mode, analyze paper trades; otherwise analyze live trades
+const isPaperMode = process.env.PAPER_MODE === 'true' || process.env.PAPER_MODE === '1';
+const paperFilter = isPaperMode ? 1 : 0;
+const rawOrders = db.prepare(`SELECT * FROM orders WHERE status='confirmed' AND is_paper=${paperFilter} ORDER BY created_at ASC`).all();
 const sigBest = new Map();
 for (const o of rawOrders) {
   if (!o.tx_signature) continue;
