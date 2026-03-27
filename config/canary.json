@@ -44,7 +44,7 @@
     "observation_window_s": 60,
     "min_breadth_for_entry": 0.4,
     "min_unique_buyers": 4,
-    "min_vsol_in_curve": 35,
+    "min_vsol_in_curve": 32,
     "max_vsol_in_curve": 344,
     "max_concentration_top10": 0.45,
     "max_slippage_pct": 0.08,
