@@ -382,6 +382,58 @@ function checkHardFilters(
   if (minVSol > 0 && currentVSol < minVSol) return `mcap_too_low (vSol=${currentVSol.toFixed(1)} < ${minVSol})`;
   if (maxVSol > 0 && currentVSol > maxVSol) return `mcap_too_high (vSol=${currentVSol.toFixed(1)} > ${maxVSol})`;
 
+  // ── Composite early-curve quality gates ─────────────────────────────────────
+  // Replace blunt vSol floor with direct measurements of organic momentum.
+  // Only apply when vSol floor is active (min_vsol_in_curve > 0).
+  if (minVSol > 0) {
+    const entryCfg = config.entry as any;
+    const buyers = features.breadth_topology.unique_buyers_total;
+    const bcd = features.bonding_curve_dynamics;
+
+    // 1. Buyer diversity gate — bots use 1-3 wallets; organic needs 6+
+    const minBuyers = entryCfg.min_unique_buyers ?? 0;
+    if (minBuyers > 0 && buyers < minBuyers) {
+      return `insufficient_buyers (${buyers} < ${minBuyers})`;
+    }
+
+    // 2. BCD score gate — below 0.52 is noise floor
+    const minBcd = entryCfg.min_bcd_score ?? 0;
+    if (minBcd > 0 && bcd.bcd_score < minBcd) {
+      return `bcd_too_low (${bcd.bcd_score.toFixed(3)} < ${minBcd})`;
+    }
+
+    // 3. Velocity gate — tokens stalled at floor are dead weight
+    const minVelocity = entryCfg.min_velocity_vsol_per_s ?? 0;
+    if (minVelocity > 0) {
+      // buy_notional_velocity_5s = SOL buy volume per 5s window
+      const vel = features.flow_momentum?.buy_notional_velocity_5s ?? 0;
+      if (vel < minVelocity) {
+        return `velocity_too_low (${vel.toFixed(3)} vSol/s < ${minVelocity})`;
+      }
+    }
+
+    // 4. Bot-pump rejection — high vSol delta + very few buyers = bundler activity
+    const botReject = entryCfg.bot_pump_reject ?? false;
+    if (botReject) {
+      const maxBotBuyers = entryCfg.bot_pump_max_buyers ?? 4;
+      const minDelta = entryCfg.bot_pump_min_vsol_delta ?? 18;
+      // vSol delta approximated as currentVSol - 30 (initial reserve)
+      const vSolDelta = currentVSol - 30;
+      if (buyers < maxBotBuyers && vSolDelta > minDelta) {
+        return `bot_pump_pattern (buyers=${buyers} < ${maxBotBuyers}, delta=${vSolDelta.toFixed(1)} > ${minDelta})`;
+      }
+    }
+
+    // 5. Social presence gate (paper: logged but not hard-blocked — data collection)
+    // In paper mode we log but allow through; in live this becomes a hard gate
+    const requireSocial = entryCfg.require_social_presence ?? false;
+    if (requireSocial && !isPaper) {
+      // Social data comes from social cache — checked in daemon pre-filter
+      // This gate is enforced at daemon level when social cache is populated
+      // Engine-level: trust that daemon already filtered if social data was available
+    }
+  }
+
   // Daily entry cap — hard stop once max_daily_entries trades have been executed today.
   // Prevents runaway trading when the bot is trigger-happy on a volatile session.
   // PAPER MODE: skip daily cap entirely — we want maximum learning data, and

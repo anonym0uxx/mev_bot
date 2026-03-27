@@ -43,8 +43,8 @@
     "min_entry_edge": 0.0001,
     "observation_window_s": 60,
     "min_breadth_for_entry": 0.4,
-    "min_unique_buyers": 3,
-    "min_vsol_in_curve": 55,
+    "min_unique_buyers": 6,
+    "min_vsol_in_curve": 35,
     "max_vsol_in_curve": 344,
     "max_concentration_top10": 0.45,
     "max_slippage_pct": 0.08,
@@ -68,7 +68,13 @@
     },
     "min_trades_for_analysis": 3,
     "doa_velocity_decay_threshold": 0.1,
-    "doa_min_new_buyers_3s": 1
+    "doa_min_new_buyers_3s": 1,
+    "min_bcd_score": 0.52,
+    "min_velocity_vsol_per_s": 0.2,
+    "require_social_presence": true,
+    "bot_pump_reject": true,
+    "bot_pump_max_buyers": 4,
+    "bot_pump_min_vsol_delta": 18
   },
   "exit": {
     "hold_horizon_s": 10,
