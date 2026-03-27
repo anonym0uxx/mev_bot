@@ -4,14 +4,13 @@
  *
  * Score components:
  *   size component    35%  — normalised buy size vs trigger threshold
- *   momentum          25%  — 30-second net SOL flow
- *   unique buyers     20%  — unique buyer count in last 60 s
- *   curve fill        20%  — how far through the target vSol band
+ *   momentum          40%  — 2s+5s weighted net flow (replaces stale 30s signal)
+ *   unique buyers     15%  — unique buyer count in last 60 s
+ *   curve fill        10%  — how far through the target vSol band
  *
- * Entry gates: txType=buy, solAmount >= trigger_min_buy_sol, vSol in range,
- * token age <= max_token_age_s, uniqueBuyers >= min_unique_buyers, score >= trigger_min_score.
- *
- * Per-mint 60 s sliding history window; stale entries evicted after 300 s.
+ * Pre-trigger momentum gate (when enabled):
+ *   - Requires recent buy activity BEFORE the trigger event
+ *   - Eliminates isolated buys with no crowd behind them (max_hold prevention)
  */
 
 import { EventEmitter } from 'events';
@@ -26,18 +25,25 @@ export interface BackrunOpportunity {
   mint: string;
   triggerEvent: TokenTradeEvent;
   score: number;
-  /** Component breakdown for diagnostics */
   components: {
     size: number;
     momentum: number;
     uniqueBuyers: number;
     curveFill: number;
   };
+  preTriggerSignals?: {
+    buyCount2s: number;
+    buyCount5s: number;
+    netFlow2s: number;
+    netFlow5s: number;
+    timeSinceLastBuyMs: number;
+    accel: number;
+    vSolDelta3s: number;
+  };
   entryVSol: number;
   tokenFirstSeenMs: number;
   uniqueBuyerCount: number;
   detectedAt: number;
-  /** Override entry size (SOL) set by EntryRandomizer for anti-fingerprinting */
   recommendedSizeSol?: number;
 }
 
@@ -55,9 +61,7 @@ interface MintHistory {
   lastUpdatedMs: number;
 }
 
-/** How long to keep per-mint history (ms) */
 const HISTORY_WINDOW_MS = 60_000;
-/** How long before a mint with no trades is evicted (ms) */
 const STALE_EVICT_MS = 300_000;
 
 export declare interface BackrunDetector {
@@ -73,20 +77,14 @@ export class BackrunDetector extends EventEmitter {
   constructor(cfg: MevConfig) {
     super();
     this.cfg = cfg;
-    // Evict stale mint histories every 60 s
     this.evictTimer = setInterval(() => this.evictStale(), 60_000);
     this.evictTimer.unref();
   }
 
-  /**
-   * Feed a TokenTradeEvent into the detector.
-   * Will emit 'opportunity' if the event passes all gates.
-   */
   onTrade(event: TokenTradeEvent): void {
     const now = nowMs();
     const mint = event.mint;
 
-    // Upsert mint history
     let mh = this.history.get(mint);
     if (!mh) {
       mh = { trades: [], firstSeenMs: now, lastUpdatedMs: now };
@@ -94,11 +92,10 @@ export class BackrunDetector extends EventEmitter {
     }
     mh.lastUpdatedMs = now;
 
-    // Prune records outside sliding window
     const cutoff = now - HISTORY_WINDOW_MS;
     mh.trades = mh.trades.filter(t => t.ts >= cutoff);
 
-    // Append this trade
+    // Append BEFORE gate checks so future events have full history
     mh.trades.push({
       ts: now,
       solAmount: event.solAmount,
@@ -113,7 +110,7 @@ export class BackrunDetector extends EventEmitter {
     // Gate 2: minimum buy size
     if (event.solAmount < this.cfg.trigger_min_buy_sol) return;
 
-    // Gate 2b: maximum buy size — large buys are bot-contested and enter at elevated prices
+    // Gate 2b: maximum buy size
     if (this.cfg.trigger_max_buy_sol !== undefined && event.solAmount > this.cfg.trigger_max_buy_sol) return;
 
     // Gate 3: vSol within target range
@@ -128,10 +125,42 @@ export class BackrunDetector extends EventEmitter {
     const uniqueBuyers = new Set(mh.trades.map(t => t.trader)).size;
     if (uniqueBuyers < this.cfg.min_unique_buyers) return;
 
-    // Compute score
-    const score = this.computeScore(event, mh, uniqueBuyers, vSol);
+    // Gate 6: pre-trigger momentum gate
+    // Use all trades EXCEPT the current trigger (slice off last element)
+    const preTrades = mh.trades.slice(0, -1);
+    const preTriggerSignals = this.computePreTriggerSignals(preTrades, now, event.vSolInBondingCurve);
 
-    // Gate 6: score threshold
+    if (this.cfg.pre_trigger_gate_enabled !== false) {
+      const maxGapMs = this.cfg.pre_trigger_max_gap_ms ?? 3000;
+      const minBuys2s = this.cfg.pre_trigger_min_buys_2s ?? 1;
+      const minBuys5s = this.cfg.pre_trigger_min_buys_5s ?? 2;
+      const minVSolAccel = this.cfg.pre_trigger_min_vsol_accel ?? 0.3;
+
+      if (preTriggerSignals.timeSinceLastBuyMs > maxGapMs) {
+        log.debug(`[gate:isolated] ${mint.slice(0,8)} gap=${preTriggerSignals.timeSinceLastBuyMs}ms — skip`);
+        return;
+      }
+
+      if (event.solAmount < 0.5) {
+        if (preTriggerSignals.buyCount2s < minBuys2s) {
+          log.debug(`[gate:no-crowd-2s] ${mint.slice(0,8)} buys2s=${preTriggerSignals.buyCount2s} — skip`);
+          return;
+        }
+        if (preTriggerSignals.buyCount5s < minBuys5s) {
+          log.debug(`[gate:no-crowd-5s] ${mint.slice(0,8)} buys5s=${preTriggerSignals.buyCount5s} — skip`);
+          return;
+        }
+      }
+
+      if (preTriggerSignals.vSolDelta3s < minVSolAccel) {
+        log.debug(`[gate:no-accel] ${mint.slice(0,8)} vSolDelta3s=${preTriggerSignals.vSolDelta3s.toFixed(3)} — skip`);
+        return;
+      }
+    }
+
+    const score = this.computeScore(event, uniqueBuyers, vSol, preTriggerSignals);
+
+    // Gate 7: score threshold
     if (score < this.cfg.trigger_min_score) return;
 
     const opp: BackrunOpportunity = {
@@ -139,64 +168,71 @@ export class BackrunDetector extends EventEmitter {
       triggerEvent: event,
       score,
       components: this.lastComponents,
+      preTriggerSignals,
       entryVSol: vSol,
       tokenFirstSeenMs: mh.firstSeenMs,
       uniqueBuyerCount: uniqueBuyers,
       detectedAt: now,
     };
 
-    log.debug(`Opportunity detected: ${mint.slice(0, 8)} score=${score.toFixed(3)} vSol=${vSol.toFixed(1)}`);
+    log.debug(`Opportunity: ${mint.slice(0,8)} score=${score.toFixed(3)} vSol=${vSol.toFixed(1)} buys2s=${preTriggerSignals.buyCount2s} gap=${preTriggerSignals.timeSinceLastBuyMs}ms`);
     this.emit('opportunity', opp);
   }
 
-  /** Populated by computeScore() for the last call — avoids repeated calculation. */
   private lastComponents = { size: 0, momentum: 0, uniqueBuyers: 0, curveFill: 0 };
+
+  private computePreTriggerSignals(
+    preTrades: TradeRecord[],
+    now: number,
+    currentVSol: number,
+  ): { buyCount2s: number; buyCount5s: number; netFlow2s: number; netFlow5s: number; timeSinceLastBuyMs: number; accel: number; vSolDelta3s: number } {
+    const buys2s = preTrades.filter(t => t.txType === 'buy' && now - t.ts < 2_000);
+    const buys5s = preTrades.filter(t => t.txType === 'buy' && now - t.ts < 5_000);
+    const netFlow2s = buys2s.reduce((s, t) => s + t.solAmount, 0);
+    const netFlow5s = buys5s.reduce((s, t) => s + t.solAmount, 0);
+
+    const lastBuy = [...preTrades].reverse().find(t => t.txType === 'buy');
+    const timeSinceLastBuyMs = lastBuy ? now - lastBuy.ts : Infinity;
+
+    const olderCount = buys5s.length - buys2s.length;
+    const accel = buys2s.length / Math.max(1, olderCount);
+
+    const trades3s = preTrades.filter(t => now - t.ts < 3_000 && t.vSol > 0);
+    const oldestVSol = trades3s.length > 0 ? trades3s[0].vSol : currentVSol;
+    const vSolDelta3s = Math.max(0, currentVSol - oldestVSol);
+
+    return { buyCount2s: buys2s.length, buyCount5s: buys5s.length, netFlow2s, netFlow5s, timeSinceLastBuyMs, accel, vSolDelta3s };
+  }
 
   private computeScore(
     event: TokenTradeEvent,
-    mh: MintHistory,
     uniqueBuyers: number,
     vSol: number,
+    pts: { netFlow2s: number; netFlow5s: number; accel: number; buyCount2s: number },
   ): number {
-    // --- Component 1: size (35%) ---
-    // Normalised: 1.0 at 10× threshold, clamped [0,1]
+    // Size (35%)
     const sizeRatio = event.solAmount / this.cfg.trigger_min_buy_sol;
     const sizeScore = Math.min(1, sizeRatio / 10);
 
-    // --- Component 2: 30 s momentum (25%) ---
-    const momentumCutoff = nowMs() - 30_000;
-    const recentBuys = mh.trades.filter(t => t.ts >= momentumCutoff && t.txType === 'buy');
-    const recentSells = mh.trades.filter(t => t.ts >= momentumCutoff && t.txType === 'sell');
-    const buyFlow = recentBuys.reduce((s, t) => s + t.solAmount, 0);
-    const sellFlow = recentSells.reduce((s, t) => s + t.solAmount, 0);
-    // Net flow capped at 2× trigger threshold per second for normalisation
-    const netFlow = buyFlow - sellFlow;
-    const momentumScore = Math.max(0, Math.min(1, netFlow / (this.cfg.trigger_min_buy_sol * 20)));
+    // Momentum (40%) — 2s/5s weighted, kills 30s stale signal
+    const triggerSol = event.solAmount;
+    const flow2sNorm  = Math.min(1, pts.netFlow2s  / Math.max(0.01, triggerSol * 3));
+    const flow5sNorm  = Math.min(1, pts.netFlow5s  / Math.max(0.01, triggerSol * 8));
+    const accelScore  = Math.min(1, pts.accel / 1.5);
+    const velocityScore = Math.min(1, pts.buyCount2s / 4);
+    const momentumScore = 0.45 * flow2sNorm + 0.25 * flow5sNorm + 0.20 * accelScore + 0.10 * velocityScore;
 
-    // --- Component 3: unique buyers (20%) ---
-    // 1.0 at 10 buyers, scaled linearly
+    // Unique buyers (15%)
     const uniqueBuyerScore = Math.min(1, uniqueBuyers / 10);
 
-    // --- Component 4: curve fill (20%) ---
-    // Reward early curve position — data shows WR degrades monotonically with curve %.
-    // Score 1.0 at min_vsol, 0.0 at max_vsol (linear decay favouring early entries).
+    // Curve fill (10%)
     const range = this.cfg.max_vsol_in_curve - this.cfg.min_vsol_in_curve;
-    const fill = (vSol - this.cfg.min_vsol_in_curve) / range; // 0..1
-    const curveFillScore = Math.max(0, 1 - fill); // 1.0 early, 0.0 late
+    const fill = (vSol - this.cfg.min_vsol_in_curve) / range;
+    const curveFillScore = Math.max(0, 1 - fill);
 
-    this.lastComponents = {
-      size: sizeScore,
-      momentum: momentumScore,
-      uniqueBuyers: uniqueBuyerScore,
-      curveFill: curveFillScore,
-    };
+    this.lastComponents = { size: sizeScore, momentum: momentumScore, uniqueBuyers: uniqueBuyerScore, curveFill: curveFillScore };
 
-    return (
-      sizeScore * 0.35 +
-      momentumScore * 0.25 +
-      uniqueBuyerScore * 0.20 +
-      curveFillScore * 0.20
-    );
+    return sizeScore * 0.35 + momentumScore * 0.40 + uniqueBuyerScore * 0.15 + curveFillScore * 0.10;
   }
 
   private evictStale(): void {
@@ -208,9 +244,7 @@ export class BackrunDetector extends EventEmitter {
         evicted++;
       }
     }
-    if (evicted > 0) {
-      log.debug(`Evicted ${evicted} stale mint histories (${this.history.size} remaining)`);
-    }
+    if (evicted > 0) log.debug(`Evicted ${evicted} stale histories`);
   }
 
   destroy(): void {

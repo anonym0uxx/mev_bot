@@ -364,6 +364,15 @@ export interface MevConfig {
   min_raydium_depth_sol?: number;       // default 5 — minimum Raydium pool SOL depth for graduated tokens
   subscribe_pool_stream?: boolean;      // default true — subscribe to DexPools stream (Stream 4)
   subscribe_whale_stream?: boolean;     // default true — subscribe to whale_trades stream (Stream 5)
+  pre_trigger_gate_enabled?: boolean;
+  pre_trigger_min_buys_2s?: number;
+  pre_trigger_min_buys_5s?: number;
+  pre_trigger_max_gap_ms?: number;
+  pre_trigger_min_vsol_accel?: number;
+  tp_tiers?: Array<{ trigger_max_sol: number; tp_pct: number; sl_pct: number }>;
+  size_tiers?: Array<{ trigger_max_sol: number; size_sol: number }>;
+  next_buyer_aggregate_flow_ratio?: number;
+  next_buyer_count_threshold?: number;
 }
 
 export interface PumpQuantConfig {

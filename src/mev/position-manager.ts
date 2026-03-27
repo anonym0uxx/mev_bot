@@ -72,6 +72,8 @@ interface OpenPosition {
   // MFE/MAE tracking — peak and trough vSol seen while holding
   peakVSol: number;
   troughVSol: number;
+  flowSinceEntry: number;
+  buySinceEntry: number;
 }
 
 export declare interface PositionManager {
@@ -151,6 +153,8 @@ export class PositionManager extends EventEmitter {
       // MFE/MAE — initialise to entry price
       peakVSol: opp.entryVSol,
       troughVSol: opp.entryVSol,
+      flowSinceEntry: 0,
+      buySinceEntry: 0,
     };
 
     this.positions.set(opp.mint, pos);
@@ -180,14 +184,35 @@ export class PositionManager extends EventEmitter {
 
     const pnlPct = (currentVSol - pos.entryVSol) / pos.entryVSol;
 
+    // Track buy flow since entry for aggregate next_buyer exit
+    if (event.txType === 'buy') {
+      pos.flowSinceEntry += event.solAmount;
+      pos.buySinceEntry++;
+    }
+
+    // Tiered TP/SL based on trigger buy size
+    const triggerSol = pos.opportunity.triggerEvent.solAmount;
+    const tpTiers = this.cfg.tp_tiers;
+    let tpPct = this.cfg.take_profit_pct;
+    let slPct = this.cfg.stop_loss_pct;
+    if (tpTiers && tpTiers.length > 0) {
+      for (const tier of tpTiers) {
+        if (triggerSol <= tier.trigger_max_sol) {
+          tpPct = tier.tp_pct;
+          slPct = tier.sl_pct;
+          break;
+        }
+      }
+    }
+
     // Take profit
-    if (pnlPct >= this.cfg.take_profit_pct) {
+    if (pnlPct >= tpPct) {
       this.closePosition(event.mint, currentVSol, 'take_profit');
       return;
     }
 
     // Stop loss
-    if (pnlPct <= -this.cfg.stop_loss_pct) {
+    if (pnlPct <= -slPct) {
       this.closePosition(event.mint, currentVSol, 'stop_loss');
       return;
     }
@@ -204,16 +229,24 @@ export class PositionManager extends EventEmitter {
     const holdSoFar = nowMs() - pos.entryTimestampMs;
     if (pos.tradesSeenAfterEntry < 2 || holdSoFar < 500) return;
 
-    // next_buyer_exit: exit on the first buy that arrives after entry
+    // Aggregate next_buyer exit: exit when crowd arrives
     if (this.cfg.next_buyer_exit && event.txType === 'buy') {
-      if (pos.isFirstTradeAfterEntry) {
-        pos.isFirstTradeAfterEntry = false;
+      const triggerSol2 = pos.opportunity.triggerEvent.solAmount;
+      const flowRatio = this.cfg.next_buyer_aggregate_flow_ratio ?? 0.5;
+      const countThreshold = this.cfg.next_buyer_count_threshold ?? 5;
+      const singleBuyThreshold = triggerSol2 * 0.4;
+
+      const exitOnFlow = pos.flowSinceEntry >= triggerSol2 * flowRatio;
+      const exitOnCount = pos.buySinceEntry >= countThreshold;
+      const exitOnSingleBuy = event.solAmount >= singleBuyThreshold;
+
+      if (exitOnSingleBuy || exitOnFlow || exitOnCount) {
         this.closePosition(event.mint, currentVSol, 'next_buyer');
         return;
       }
     }
 
-    // Mark that we've seen at least one trade after entry
+    // Mark first trade seen
     if (pos.isFirstTradeAfterEntry) {
       pos.isFirstTradeAfterEntry = false;
     }

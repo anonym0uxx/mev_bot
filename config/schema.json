@@ -1404,6 +1404,59 @@
         "subscribe_whale_stream": {
           "type": "boolean",
           "default": true
+        },
+        "pre_trigger_gate_enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "pre_trigger_min_buys_2s": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pre_trigger_min_buys_5s": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pre_trigger_max_gap_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "pre_trigger_min_vsol_accel": {
+          "type": "number",
+          "minimum": 0
+        },
+        "next_buyer_aggregate_flow_ratio": {
+          "type": "number",
+          "minimum": 0
+        },
+        "next_buyer_count_threshold": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tp_tiers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["trigger_max_sol", "tp_pct", "sl_pct"],
+            "properties": {
+              "trigger_max_sol": { "type": "number", "minimum": 0 },
+              "tp_pct": { "type": "number", "minimum": 0 },
+              "sl_pct": { "type": "number", "minimum": 0 }
+            }
+          }
+        },
+        "size_tiers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["trigger_max_sol", "size_sol"],
+            "properties": {
+              "trigger_max_sol": { "type": "number", "minimum": 0 },
+              "size_sol": { "type": "number", "minimum": 0 }
+            }
+          }
         }
       }
     }

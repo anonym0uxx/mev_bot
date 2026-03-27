@@ -142,7 +142,7 @@
     },
     "private_route": {
       "enabled": false,
-      "jito_block_engine_url": "https://mainnet.block-engine.jito.wtf",
+      "jito_block_engine_url": "https://ny.mainnet.block-engine.jito.wtf",
       "jito_tip_lamports": 10000,
       "min_edge_for_private": 0.05,
       "max_tip_pct": 0.01,
@@ -299,7 +299,8 @@
   "mev": {
     "enabled": true,
     "paper_mode": true,
-    "trigger_min_buy_sol": 0.2,
+    "trigger_min_buy_sol": 0.35,
+    "trigger_max_buy_sol": 0.5,
     "trigger_min_score": 0.55,
     "min_vsol_in_curve": 31,
     "max_vsol_in_curve": 48,
@@ -313,7 +314,7 @@
     "max_hold_ms": 2000,
     "next_buyer_exit": true,
     "daily_loss_cap_sol": 0.5,
-    "jito_tip_lamports": 10000,
+    "jito_tip_lamports": 50000,
     "conflict_policy": "skip",
     "log_file": "data/mev_paper_trades.jsonl",
     "use_scalper_prequalification": false,
@@ -323,6 +324,27 @@
     "min_raydium_depth_sol": 5,
     "subscribe_pool_stream": true,
     "subscribe_whale_stream": true,
-    "trigger_max_buy_sol": 0.5
+    "pre_trigger_gate_enabled": true,
+    "pre_trigger_min_buys_2s": 1,
+    "pre_trigger_min_buys_5s": 2,
+    "pre_trigger_max_gap_ms": 3000,
+    "pre_trigger_min_vsol_accel": 0.3,
+    "next_buyer_aggregate_flow_ratio": 0.5,
+    "next_buyer_count_threshold": 5,
+    "tp_tiers": [
+      {"trigger_max_sol": 0.3, "tp_pct": 0.03, "sl_pct": 0.015},
+      {"trigger_max_sol": 0.5, "tp_pct": 0.04, "sl_pct": 0.025},
+      {"trigger_max_sol": 0.8, "tp_pct": 0.055, "sl_pct": 0.03},
+      {"trigger_max_sol": 1.5, "tp_pct": 0.07, "sl_pct": 0.04},
+      {"trigger_max_sol": 999, "tp_pct": 0.08, "sl_pct": 0.05}
+    ],
+    "size_tiers": [
+      {"trigger_max_sol": 0.2, "size_sol": 0.0},
+      {"trigger_max_sol": 0.3, "size_sol": 0.06},
+      {"trigger_max_sol": 0.5, "size_sol": 0.15},
+      {"trigger_max_sol": 0.8, "size_sol": 0.08},
+      {"trigger_max_sol": 1.5, "size_sol": 0.15},
+      {"trigger_max_sol": 999, "size_sol": 0.10}
+    ]
   }
 }

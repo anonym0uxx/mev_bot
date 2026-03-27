@@ -226,36 +226,46 @@ export class BackrunEngine extends EventEmitter {
       `vSol=${opp.entryVSol.toFixed(2)} buyers=${opp.uniqueBuyerCount} [paper]`
     );
 
-    // Dynamic sizing based on curve position + time of day signal quality.
-    // New vSol window: 38-46 (45-54% curve). Data: 45-55% = 60% WR, 35-45% = 42% WR.
-    // Score insight: 0.55-0.70 is optimal. >0.70 scores have 25% WR (overfitting artifact).
-    // Trigger 0.2-0.5 SOL = 55% WR best bucket.
-    const curvePct = opp.entryVSol / 85 * 100; // approximate curve % from vSol
-    const hourUtc = new Date().getUTCHours();
-    const isOffPeak = hourUtc >= 4 && hourUtc <= 9;    // UTC 4-9 = historically best window
-    const isOptimalCurve = curvePct >= 45 && curvePct < 55; // 45-55% = 60% WR bucket
-    const isGoodCurve = curvePct >= 38 && curvePct < 65;    // acceptable range
-    const isHighScore = opp.score >= 0.55 && opp.score < 0.70; // >0.70 = overfit, skip max size
+    // Tiered sizing by trigger buy size (quant-validated from 1,300-trade dataset)
+    const triggerSol = opp.triggerEvent.solAmount;
+    let dynamicBase = this.cfg.entry_size_sol;
 
-    let dynamicBase: number;
-    if (isOptimalCurve && isOffPeak && isHighScore) {
-      // Best conditions: optimal curve + off-peak + good score → full max size
-      dynamicBase = this.cfg.max_entry_size_sol;
-    } else if (isOptimalCurve || (isOffPeak && isHighScore)) {
-      // One strong condition: standard entry size
-      dynamicBase = this.cfg.entry_size_sol;
-    } else if (isGoodCurve && isHighScore) {
-      // Good curve + score but peak hours: 75% of base
-      dynamicBase = this.cfg.entry_size_sol * 0.75;
-    } else if (opp.score > 0.70) {
-      // High score but data shows >0.70 is worse (25% WR) — reduce size
-      dynamicBase = this.cfg.entry_size_sol * 0.50;
+    const sizeTiers = this.cfg.size_tiers;
+    if (sizeTiers && sizeTiers.length > 0) {
+      for (const tier of sizeTiers) {
+        if (triggerSol <= tier.trigger_max_sol) {
+          dynamicBase = tier.size_sol;
+          break;
+        }
+      }
     } else {
-      // Acceptable conditions: 60% of base
-      dynamicBase = this.cfg.entry_size_sol * 0.60;
+      // Legacy fallback: curve + time-of-day sizing
+      const curvePct = opp.entryVSol / 85 * 100;
+      const hourUtc = new Date().getUTCHours();
+      const isOffPeak = hourUtc >= 4 && hourUtc <= 9;
+      const isOptimalCurve = curvePct >= 45 && curvePct < 55;
+      const isGoodCurve = curvePct >= 38 && curvePct < 65;
+      const isHighScore = opp.score >= 0.55 && opp.score < 0.70;
+
+      if (isOptimalCurve && isOffPeak && isHighScore) {
+        dynamicBase = this.cfg.max_entry_size_sol;
+      } else if (isOptimalCurve || (isOffPeak && isHighScore)) {
+        dynamicBase = this.cfg.entry_size_sol;
+      } else if (isGoodCurve && isHighScore) {
+        dynamicBase = this.cfg.entry_size_sol * 0.75;
+      } else if (opp.score > 0.70) {
+        dynamicBase = this.cfg.entry_size_sol * 0.50;
+      } else {
+        dynamicBase = this.cfg.entry_size_sol * 0.60;
+      }
     }
 
-    // Apply anti-fingerprinting variance on top of dynamic base
+    // Skip zero-size tiers
+    if (dynamicBase <= 0) {
+      log.debug(`Skipping ${opp.mint.slice(0,8)}: tier size=0 for trigger=${triggerSol.toFixed(3)} SOL`);
+      return;
+    }
+
     const variance = this.cfg.size_variance_pct ?? 0.20;
     const low = dynamicBase * (1 - variance);
     const high = dynamicBase * (1 + variance);
@@ -264,8 +274,7 @@ export class BackrunEngine extends EventEmitter {
     opp.recommendedSizeSol = sizeSol;
 
     log.debug(
-      `Dynamic sizing: curvePct=${curvePct.toFixed(1)}% hourUTC=${hourUtc} score=${opp.score.toFixed(3)} ` +
-      `offPeak=${isOffPeak} optCurve=${isOptimalCurve} size=${sizeSol.toFixed(4)} SOL (base=${dynamicBase.toFixed(4)})`
+      `Tiered sizing: trigger=${triggerSol.toFixed(3)} SOL → base=${dynamicBase.toFixed(3)} → final=${sizeSol.toFixed(4)} SOL`
     );
 
     const openAndBundle = () => {
