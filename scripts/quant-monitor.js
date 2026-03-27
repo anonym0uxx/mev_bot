@@ -69,6 +69,29 @@ const sessionDormantMs = Date.now() - lastTradeTs;
 // Dormant if: no trades in 24h window OR no new trades since last check AND last trade >3h ago
 const sessionDormant = totalTrades === 0 || (newTrades === 0 && sessionDormantMs > 3 * 60 * 60 * 1000);
 
+// MEV post-gate tracking
+// Gate deployed at 2026-03-27T21:45:00.000Z — only count trades after this cutoff
+const MEV_GATE_CUTOFF_MS = new Date('2026-03-27T21:45:00.000Z').getTime();
+const MEV_LIVE_GOAL_WR = 0.55;   // target WR before going live
+const MEV_LIVE_MIN_TRADES = 100; // minimum trades before live review
+let mevPostGate = { trades: 0, wins: 0, pnl: 0, exits: {} };
+try {
+  const mevLines = fs.readFileSync(path.join(__dirname, '../data/mev_paper_trades.jsonl'), 'utf8')
+    .trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+  const postGate = mevLines.filter(t => (t.exitTimestampMs || 0) >= MEV_GATE_CUTOFF_MS);
+  mevPostGate.trades = postGate.length;
+  mevPostGate.wins = postGate.filter(t => t.pnlSol > 0).length;
+  mevPostGate.pnl = postGate.reduce((s, t) => s + (t.pnlSol || 0), 0);
+  postGate.forEach(t => {
+    if (!mevPostGate.exits[t.exitReason]) mevPostGate.exits[t.exitReason] = 0;
+    mevPostGate.exits[t.exitReason]++;
+  });
+} catch(_) {}
+
+const mevWr = mevPostGate.trades > 0 ? mevPostGate.wins / mevPostGate.trades : 0;
+const mevReadyForLive = mevPostGate.trades >= MEV_LIVE_MIN_TRADES && mevWr >= MEV_LIVE_GOAL_WR;
+const mevProgress = `${mevPostGate.trades}/${MEV_LIVE_MIN_TRADES} trades | WR ${(mevWr*100).toFixed(1)}% (target ≥55%)`;
+
 const report = {
   generated_at: new Date().toISOString(),
   mode: isPaperMode ? 'paper' : 'live',
@@ -83,6 +106,17 @@ const report = {
   fee_drag_pct: feeDrag.toFixed(2),
   threshold_stats: thresholdStats,
   worst_recent: recent10.filter(p => p.pnl < 0).sort((a,b) => a.pnl - b.pnl).slice(0,3).map(p => ({ pnl: p.pnl.toFixed(5), exit: p.exit_reason })),
+  // MEV post-gate live-readiness tracking
+  mev_post_gate: {
+    trades: mevPostGate.trades,
+    wins: mevPostGate.wins,
+    win_rate_pct: (mevWr * 100).toFixed(1),
+    pnl_sol: mevPostGate.pnl.toFixed(4),
+    exits: mevPostGate.exits,
+    progress: mevProgress,
+    ready_for_live: mevReadyForLive,
+    trades_needed: Math.max(0, MEV_LIVE_MIN_TRADES - mevPostGate.trades),
+  },
   alerts: [],
   recommendation_needed: false,
 };
@@ -99,6 +133,14 @@ if (!sessionDormant) {
     report.alerts.push(`LOSS_PATTERN: ${newTrades} new trades, recent WR=${(recent10WR*100).toFixed(0)}%`);
     report.recommendation_needed = true;
   }
+}
+
+// MEV alerts (independent of scalper state)
+if (mevPostGate.trades >= 30 && mevWr < 0.45) {
+  report.alerts.push(`MEV_WR_LOW: ${(mevWr*100).toFixed(1)}% on ${mevPostGate.trades} post-gate trades — investigate`);
+}
+if (mevReadyForLive) {
+  report.alerts.push(`MEV_READY_FOR_LIVE: ${(mevWr*100).toFixed(1)}% WR on ${mevPostGate.trades} post-gate trades — review for go-live`);
 }
 
 console.log(JSON.stringify(report, null, 2));
