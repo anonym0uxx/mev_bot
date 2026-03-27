@@ -32,6 +32,7 @@ export interface BackrunOpportunity {
     curveFill: number;
   };
   preTriggerSignals?: {
+    buyCount1s: number;
     buyCount2s: number;
     buyCount5s: number;
     netFlow2s: number;
@@ -156,6 +157,13 @@ export class BackrunDetector extends EventEmitter {
         log.debug(`[gate:no-accel] ${mint.slice(0,8)} vSolDelta3s=${preTriggerSignals.vSolDelta3s.toFixed(3)} — skip`);
         return;
       }
+
+      // Gate: at least one buy in the final 1s before trigger (momentum still live)
+      const minBuys1s = this.cfg.pre_trigger_min_buys_1s ?? 1;
+      if (preTriggerSignals.buyCount1s < minBuys1s) {
+        log.debug(`[gate:stale-momentum] ${mint.slice(0,8)} buys1s=${preTriggerSignals.buyCount1s} < ${minBuys1s} — skip`);
+        return;
+      }
     }
 
     const score = this.computeScore(event, uniqueBuyers, vSol, preTriggerSignals);
@@ -175,7 +183,7 @@ export class BackrunDetector extends EventEmitter {
       detectedAt: now,
     };
 
-    log.debug(`Opportunity: ${mint.slice(0,8)} score=${score.toFixed(3)} vSol=${vSol.toFixed(1)} buys2s=${preTriggerSignals.buyCount2s} gap=${preTriggerSignals.timeSinceLastBuyMs}ms`);
+    log.debug(`Opportunity: ${mint.slice(0,8)} score=${score.toFixed(3)} vSol=${vSol.toFixed(1)} buys1s=${preTriggerSignals.buyCount1s} buys2s=${preTriggerSignals.buyCount2s} gap=${preTriggerSignals.timeSinceLastBuyMs}ms`);
     this.emit('opportunity', opp);
   }
 
@@ -185,7 +193,9 @@ export class BackrunDetector extends EventEmitter {
     preTrades: TradeRecord[],
     now: number,
     currentVSol: number,
-  ): { buyCount2s: number; buyCount5s: number; netFlow2s: number; netFlow5s: number; timeSinceLastBuyMs: number; accel: number; vSolDelta3s: number } {
+  ): { buyCount1s: number; buyCount2s: number; buyCount5s: number; netFlow2s: number; netFlow5s: number; timeSinceLastBuyMs: number; accel: number; vSolDelta3s: number } {
+    const buys1s = preTrades.filter(t => t.txType === 'buy' && now - t.ts < 1_000);
+    const buyCount1s = buys1s.length;
     const buys2s = preTrades.filter(t => t.txType === 'buy' && now - t.ts < 2_000);
     const buys5s = preTrades.filter(t => t.txType === 'buy' && now - t.ts < 5_000);
     const netFlow2s = buys2s.reduce((s, t) => s + t.solAmount, 0);
@@ -201,7 +211,7 @@ export class BackrunDetector extends EventEmitter {
     const oldestVSol = trades3s.length > 0 ? trades3s[0].vSol : currentVSol;
     const vSolDelta3s = Math.max(0, currentVSol - oldestVSol);
 
-    return { buyCount2s: buys2s.length, buyCount5s: buys5s.length, netFlow2s, netFlow5s, timeSinceLastBuyMs, accel, vSolDelta3s };
+    return { buyCount1s, buyCount2s: buys2s.length, buyCount5s: buys5s.length, netFlow2s, netFlow5s, timeSinceLastBuyMs, accel, vSolDelta3s };
   }
 
   private computeScore(

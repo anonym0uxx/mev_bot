@@ -1409,9 +1409,18 @@
           "type": "boolean",
           "default": true
         },
+        "pre_trigger_min_buys_1s": {
+          "type": "number"
+        },
         "pre_trigger_min_buys_2s": {
           "type": "integer",
           "minimum": 0
+        },
+        "consecutive_stop_pause_count": {
+          "type": "number"
+        },
+        "consecutive_stop_pause_ms": {
+          "type": "number"
         },
         "pre_trigger_min_buys_5s": {
           "type": "integer",

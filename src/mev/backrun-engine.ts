@@ -48,6 +48,10 @@ export class BackrunEngine extends EventEmitter {
 
   private running = false;
 
+  // Consecutive stop circuit breaker
+  private consecutiveStops = 0;
+  private stopPauseUntilMs = 0;
+
   // Daily loss tracking — reset at midnight UTC
   private dailyLossSol = 0;
   private dailyLossResetDay = -1; // UTC day of month
@@ -105,6 +109,20 @@ export class BackrunEngine extends EventEmitter {
       if (record.pnlSol < 0) {
         this.checkAndResetDailyLoss();
         this.dailyLossSol += Math.abs(record.pnlSol);
+      }
+
+      // Consecutive stop circuit breaker — reset on win, increment on loss
+      if (record.exitReason === 'stop_loss') {
+        this.consecutiveStops++;
+        const pauseCount = this.cfg.consecutive_stop_pause_count ?? 3;
+        const pauseMs = this.cfg.consecutive_stop_pause_ms ?? 180_000;
+        if (this.consecutiveStops >= pauseCount) {
+          this.stopPauseUntilMs = Date.now() + pauseMs;
+          log.warn(`[circuit-breaker] ${this.consecutiveStops} consecutive stops — pausing new entries for ${pauseMs/1000}s`);
+          this.consecutiveStops = 0;
+        }
+      } else if (record.exitReason === 'take_profit' || record.exitReason === 'next_buyer') {
+        this.consecutiveStops = 0;
       }
 
       // Execute sell (paper: logs simulation; live: submits via Helius staked RPC)
@@ -201,6 +219,13 @@ export class BackrunEngine extends EventEmitter {
     // Guard: Jito circuit breaker (paper mode: log-only, but still honour pauses)
     if (this.jitoHandler.isPaused()) {
       log.debug(`Skipping opportunity ${opp.mint.slice(0, 8)}: Jito circuit breaker active`);
+      return;
+    }
+
+    // Guard: consecutive stop circuit breaker
+    if (Date.now() < this.stopPauseUntilMs) {
+      const remainingSec = ((this.stopPauseUntilMs - Date.now()) / 1000).toFixed(0);
+      log.debug(`Skipping ${opp.mint.slice(0,8)}: consecutive stop pause active (${remainingSec}s remaining)`);
       return;
     }
 
