@@ -7,6 +7,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import Ajv from 'ajv';
 import { PumpQuantConfig, ConfigVersion } from '../types/config';
 import { createLogger } from '../utils/logger';
@@ -89,7 +90,39 @@ export class ConfigManager {
     this.history.push(snapshot);
 
     log.info(`Config loaded v${this.version}: ${description}`, { source, version: this.version });
+
+    // Auto-git: when learning/operator updates config, persist canary.json and commit
+    if (source === 'learning' || source === 'operator') {
+      this.persistAndCommit();
+    }
+
     return this.config;
+  }
+
+  /**
+   * Write current config to canary.json and commit with git.
+   * Non-fatal: any failure is logged and swallowed.
+   */
+  private persistAndCommit(): void {
+    try {
+      const canaryPath = path.join(PROJECT_ROOT, 'config', 'canary.json');
+      fs.writeFileSync(canaryPath, JSON.stringify(this.config, null, 4));
+      log.debug('Config persisted to canary.json');
+    } catch (err) {
+      log.warn(`Config persist failed (non-fatal): ${(err as Error).message}`);
+      return;
+    }
+    try {
+      execSync('git add config/canary.json && git commit -m "auto-tune: config updated by improvement loop"', {
+        cwd: PROJECT_ROOT,
+        stdio: 'ignore',
+        timeout: 5000,
+      });
+      log.info('auto-git: config change committed to git');
+    } catch (_) {
+      // git commit failure is non-fatal — log but continue
+      log.debug('auto-git: commit skipped (no changes or git error)');
+    }
   }
 
   /**
