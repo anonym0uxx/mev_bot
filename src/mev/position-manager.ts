@@ -8,11 +8,15 @@
  */
 
 import { EventEmitter } from 'events';
+import { LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { MevConfig } from '../types/config';
 import { TokenTradeEvent } from '../types/events';
 import { BackrunOpportunity } from './detector';
+import { BondingCurveSimulator } from './bonding-curve-sim';
 import { createLogger } from '../utils/logger';
 import { nowMs } from '../utils/time';
+
+const sim = new BondingCurveSimulator();
 
 const log = createLogger('mev:position-manager');
 
@@ -28,6 +32,14 @@ export interface PnLRecord {
   pnlPct: number;
   exitReason: ExitReason;
   score: number;
+  // Fields for live sell execution (populated from triggerEvent at open)
+  bondingCurveKey?: string;
+  associatedBondingCurve?: string;
+  /** Estimated token balance held (from simulateBuy at entry). 0 in paper mode. */
+  tokensHeld?: bigint;
+  /** Current virtual reserves at exit (for live sell tx building) */
+  exitVSolLamports?: bigint;
+  exitVTokens?: bigint;
 }
 
 export type ExitReason = 'take_profit' | 'stop_loss' | 'next_buyer' | 'max_hold';
@@ -42,6 +54,12 @@ interface OpenPosition {
   isFirstTradeAfterEntry: boolean;
   triggerSignature: string;
   tradesSeenAfterEntry: number;
+  bondingCurveKey: string;
+  associatedBondingCurve: string;
+  tokensHeld: bigint;
+  // Track current vSol/vToken reserves for sell tx building
+  currentVSolLamports: bigint;
+  currentVTokens: bigint;
 }
 
 export declare interface PositionManager {
@@ -72,7 +90,7 @@ export class PositionManager extends EventEmitter {
       return;
     }
 
-    const sizeSol = this.cfg.entry_size_sol;
+    const sizeSol = opp.recommendedSizeSol ?? this.cfg.entry_size_sol;
     const holdTimer = setTimeout(() => {
       const pos = this.positions.get(opp.mint);
       if (pos) {
@@ -81,6 +99,25 @@ export class PositionManager extends EventEmitter {
       }
     }, this.cfg.max_hold_ms);
     holdTimer.unref();
+
+    // Simulate buy to estimate tokensHeld and post-entry reserves
+    const vSolLamports = BigInt(Math.floor(opp.triggerEvent.vSolInBondingCurve * Number(LAMPORTS_PER_SOL)));
+    const vTokens = BigInt(Math.floor(opp.triggerEvent.vTokensInBondingCurve));
+    const solInLamports = BigInt(Math.floor(sizeSol * Number(LAMPORTS_PER_SOL)));
+    let tokensHeld = 0n;
+    let postVSolLamports = vSolLamports;
+    let postVTokens = vTokens;
+    try {
+      const buyResult = sim.simulateBuy(vSolLamports, vTokens, solInLamports, 100n);
+      tokensHeld = buyResult.tokensOut;
+      postVSolLamports = buyResult.newVSol;
+      postVTokens = buyResult.newVTokens;
+    } catch (e) {
+      log.warn(`simulateBuy failed for ${opp.mint.slice(0, 8)}: ${(e as Error).message}`);
+    }
+
+    const bondingCurveKey = opp.triggerEvent.bondingCurveKey ?? '';
+    const associatedBondingCurve = (opp.triggerEvent as any).associatedBondingCurve ?? bondingCurveKey;
 
     const pos: OpenPosition = {
       mint: opp.mint,
@@ -92,12 +129,17 @@ export class PositionManager extends EventEmitter {
       isFirstTradeAfterEntry: true,
       triggerSignature: opp.triggerEvent.signature ?? '',
       tradesSeenAfterEntry: 0,
+      bondingCurveKey,
+      associatedBondingCurve,
+      tokensHeld,
+      currentVSolLamports: postVSolLamports,
+      currentVTokens: postVTokens,
     };
 
     this.positions.set(opp.mint, pos);
     log.info(
       `📥 Opened paper position: ${opp.mint.slice(0, 8)} entryVSol=${opp.entryVSol.toFixed(2)} ` +
-      `size=${sizeSol} SOL score=${opp.score.toFixed(3)}`
+      `size=${sizeSol} SOL score=${opp.score.toFixed(3)} tokensHeld=${tokensHeld}`
     );
   }
 
@@ -108,6 +150,10 @@ export class PositionManager extends EventEmitter {
   onSubsequentTrade(event: TokenTradeEvent): void {
     const pos = this.positions.get(event.mint);
     if (!pos) return;
+
+    // Update current reserves from live event data
+    pos.currentVSolLamports = BigInt(Math.floor(event.vSolInBondingCurve * Number(LAMPORTS_PER_SOL)));
+    pos.currentVTokens = BigInt(Math.floor(event.vTokensInBondingCurve));
 
     const currentVSol = event.vSolInBondingCurve;
     const pnlPct = (currentVSol - pos.entryVSol) / pos.entryVSol;
@@ -175,6 +221,12 @@ export class PositionManager extends EventEmitter {
       pnlPct,
       exitReason: reason,
       score: pos.opportunity.score,
+      // Live sell fields
+      bondingCurveKey: pos.bondingCurveKey,
+      associatedBondingCurve: pos.associatedBondingCurve,
+      tokensHeld: pos.tokensHeld,
+      exitVSolLamports: pos.currentVSolLamports,
+      exitVTokens: pos.currentVTokens,
     };
 
     const emoji = pnlSol >= 0 ? '✅' : '❌';
