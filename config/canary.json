@@ -43,7 +43,7 @@
     "min_entry_edge": 0.0001,
     "observation_window_s": 60,
     "min_breadth_for_entry": 0.4,
-    "min_unique_buyers": 6,
+    "min_unique_buyers": 4,
     "min_vsol_in_curve": 35,
     "max_vsol_in_curve": 344,
     "max_concentration_top10": 0.45,
@@ -51,7 +51,7 @@
     "ev_wait_horizon_s": 5,
     "ev_enter_horizon_s": 5,
     "min_p_continuation": 0.27,
-    "min_creator_prior": 0.25,
+    "min_creator_prior": 0.1,
     "probability_weights": {
       "bonding_curve_dynamics": 0.35,
       "flow_momentum": 0.15,
