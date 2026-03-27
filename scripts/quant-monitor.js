@@ -120,6 +120,84 @@ try {
   }
 } catch (e) { /* non-fatal */ }
 
+// ─── MEV analysis ─────────────────────────────────────────────────────────────
+let mevStats = { total: 0, wins: 0, wr: 0, totalPnl: 0, exitBreakdown: {} };
+try {
+  const MEV_LOG_PATH = path.join(__dirname, '../data/mev_paper_trades.jsonl');
+  const mevLines = fs.readFileSync(MEV_LOG_PATH, 'utf8')
+    .trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+  mevStats.total = mevLines.length;
+  mevStats.wins = mevLines.filter(l => l.pnlSol > 0).length;
+  mevStats.wr = mevStats.total > 0 ? mevStats.wins / mevStats.total : 0;
+  mevStats.totalPnl = mevLines.reduce((s, l) => s + (l.pnlSol || 0), 0);
+  mevLines.forEach(l => {
+    const reason = l.exitReason || 'unknown';
+    mevStats.exitBreakdown[reason] = (mevStats.exitBreakdown[reason] || 0) + 1;
+  });
+} catch(_) { /* file may not exist yet */ }
+
+// Exit reason analysis: flag problematic patterns
+const mevExitTotal = Object.values(mevStats.exitBreakdown).reduce((s, v) => s + v, 0);
+const exitAlerts = [];
+if (mevExitTotal >= 10) {
+  const stopLossCount = mevStats.exitBreakdown['stop_loss'] || 0;
+  const maxHoldCount  = mevStats.exitBreakdown['max_hold']  || 0;
+  const stopLossPct   = stopLossCount / mevExitTotal;
+  const maxHoldPct    = maxHoldCount  / mevExitTotal;
+  if (stopLossPct > 0.40) {
+    exitAlerts.push(`MEV_ENTRY_FILTER_LOOSE: stop_loss=${(stopLossPct*100).toFixed(0)}% of exits (>40%)`);
+  }
+  if (maxHoldPct > 0.50) {
+    exitAlerts.push(`MEV_ENTRY_TIMING_WRONG: max_hold=${(maxHoldPct*100).toFixed(0)}% of exits (>50%)`);
+  }
+}
+
+// Time-of-day analysis: compute WR by hour bucket
+const hourBuckets = {};
+try {
+  const MEV_LOG_PATH = path.join(__dirname, '../data/mev_paper_trades.jsonl');
+  const mevLines2 = fs.readFileSync(MEV_LOG_PATH, 'utf8')
+    .trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+  for (const t of mevLines2) {
+    const ts = t.exitTimestampMs || t.entryTimestampMs || t.timestamp;
+    if (!ts) continue;
+    const hour = new Date(ts).getUTCHours();
+    if (!hourBuckets[hour]) hourBuckets[hour] = { wins: 0, total: 0 };
+    hourBuckets[hour].total++;
+    if (t.pnlSol > 0) hourBuckets[hour].wins++;
+  }
+} catch(_) {}
+
+const currentHourUTC = new Date().getUTCHours();
+const currentHourStats = hourBuckets[currentHourUTC];
+if (currentHourStats && currentHourStats.total >= 5) {
+  const hourWR = currentHourStats.wins / currentHourStats.total;
+  if (hourWR < 0.35) {
+    exitAlerts.push(`MEV_BAD_HOUR: UTC hour ${currentHourUTC} WR=${(hourWR*100).toFixed(0)}% on ${currentHourStats.total} trades`);
+  }
+}
+
+// Add MEV stats to report
+report.mev_stats = {
+  total_trades: mevStats.total,
+  win_rate_pct: (mevStats.wr * 100).toFixed(1),
+  total_pnl_sol: mevStats.totalPnl.toFixed(5),
+  exit_breakdown: mevStats.exitBreakdown,
+  exit_alerts: exitAlerts,
+  time_of_day_wr: currentHourStats
+    ? { hour_utc: currentHourUTC, wr_pct: ((currentHourStats.wins / currentHourStats.total) * 100).toFixed(1), sample: currentHourStats.total }
+    : null,
+};
+
+// Push exit alerts into main alerts array
+for (const a of exitAlerts) report.alerts.push(a);
+
+// Trigger recommendation if MEV WR is low
+if (mevStats.total >= 20 && mevStats.wr < 0.45) {
+  report.recommendation_needed = true;
+  report.alerts.push(`MEV_WR_LOW: ${(mevStats.wr*100).toFixed(1)}% on ${mevStats.total} trades`);
+}
+
 // Update state
 const newState = {
   last_trade_count: totalTrades,
