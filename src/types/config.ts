@@ -357,6 +357,7 @@ export interface MevConfig {
   jitter_ms_min?: number;               // default 50
   jitter_ms_max?: number;               // default 200
   size_variance_pct?: number;           // default 0.20 (±20% of entry_size_sol)
+  wallet_private_keys?: string[];       // array of base58 or JSON uint8array strings (from env only)
 }
 
 export interface PumpQuantConfig {

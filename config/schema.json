@@ -1298,7 +1298,8 @@
         "use_scalper_prequalification": { "type": "boolean" },
         "jitter_ms_min": { "type": "number", "minimum": 0 },
         "jitter_ms_max": { "type": "number", "minimum": 0 },
-        "size_variance_pct": { "type": "number", "minimum": 0, "maximum": 1 }
+        "size_variance_pct": { "type": "number", "minimum": 0, "maximum": 1 },
+        "wallet_private_keys": { "type": "array", "items": { "type": "string" } }
       }
     }
   }
