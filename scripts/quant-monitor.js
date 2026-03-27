@@ -138,9 +138,58 @@ if (!sessionDormant) {
 // MEV alerts (independent of scalper state)
 if (mevPostGate.trades >= 30 && mevWr < 0.45) {
   report.alerts.push(`MEV_WR_LOW: ${(mevWr*100).toFixed(1)}% on ${mevPostGate.trades} post-gate trades — investigate`);
+  report.recommendation_needed = true;
+  report.mev_review_needed = true;
+}
+if (mevPostGate.trades >= 30 && mevWr < 0.35) {
+  report.alerts.push(`MEV_WR_CRITICAL: ${(mevWr*100).toFixed(1)}% on ${mevPostGate.trades} post-gate trades — urgent review`);
+  report.recommendation_needed = true;
+  report.mev_review_needed = true;
 }
 if (mevReadyForLive) {
   report.alerts.push(`MEV_READY_FOR_LIVE: ${(mevWr*100).toFixed(1)}% WR on ${mevPostGate.trades} post-gate trades — review for go-live`);
+}
+
+// Attach full MEV dataset summary for subagent consumption when review is needed
+if (report.mev_review_needed || report.recommendation_needed) {
+  try {
+    const mevLines = fs.readFileSync(path.join(__dirname, '../data/mev_paper_trades.jsonl'), 'utf8')
+      .trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+    const postGateTrades = mevLines.filter(t => (t.exitTimestampMs || 0) >= MEV_GATE_CUTOFF_MS);
+
+    // Exit breakdown
+    const exitBreakdown = {};
+    postGateTrades.forEach(t => {
+      if (!exitBreakdown[t.exitReason]) exitBreakdown[t.exitReason] = { n: 0, pnl: 0, wins: 0 };
+      exitBreakdown[t.exitReason].n++;
+      exitBreakdown[t.exitReason].pnl += t.pnlSol || 0;
+      if ((t.pnlSol || 0) > 0) exitBreakdown[t.exitReason].wins++;
+    });
+
+    // Trigger tier breakdown
+    const tierBreakdown = {};
+    postGateTrades.forEach(t => {
+      const s = t.triggerBuySol || 0;
+      const k = s < 0.3 ? '<0.3' : s < 0.5 ? '0.3-0.5' : s < 0.8 ? '0.5-0.8' : s < 1.5 ? '0.8-1.5' : '>1.5';
+      if (!tierBreakdown[k]) tierBreakdown[k] = { n: 0, pnl: 0, wins: 0 };
+      tierBreakdown[k].n++;
+      tierBreakdown[k].pnl += t.pnlSol || 0;
+      if ((t.pnlSol || 0) > 0) tierBreakdown[k].wins++;
+    });
+
+    // Worst 5 trades
+    const worst5 = [...postGateTrades].sort((a, b) => (a.pnlSol || 0) - (b.pnlSol || 0)).slice(0, 5)
+      .map(t => ({ mint: t.mint?.slice(0,8), pnl: t.pnlSol?.toFixed(4), exit: t.exitReason, trigger: t.triggerBuySol?.toFixed(3), hold: t.holdMs }));
+
+    report.mev_dataset_for_review = {
+      post_gate_trades: postGateTrades.length,
+      win_rate_pct: (mevWr * 100).toFixed(1),
+      total_pnl: mevPostGate.pnl.toFixed(4),
+      exit_breakdown: exitBreakdown,
+      trigger_tier_breakdown: tierBreakdown,
+      worst_5_trades: worst5,
+    };
+  } catch(_) {}
 }
 
 console.log(JSON.stringify(report, null, 2));
