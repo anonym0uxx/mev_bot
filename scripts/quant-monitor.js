@@ -71,7 +71,7 @@ const sessionDormant = totalTrades === 0 || (newTrades === 0 && sessionDormantMs
 
 // MEV post-gate tracking
 // Gate deployed at 2026-03-27T21:45:00.000Z — only count trades after this cutoff
-const MEV_GATE_CUTOFF_MS = new Date('2026-03-27T21:45:00.000Z').getTime();
+const MEV_GATE_CUTOFF_MS = new Date('2026-03-27T22:50:00.000Z').getTime(); // gate v2 deployed
 const MEV_LIVE_GOAL_WR = 0.55;   // target WR before going live
 const MEV_LIVE_MIN_TRADES = 100; // minimum trades before live review
 let mevPostGate = { trades: 0, wins: 0, pnl: 0, exits: {} };
