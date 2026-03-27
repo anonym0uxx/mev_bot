@@ -15,6 +15,7 @@
 import { Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { createLogger } from '../utils/logger';
+import { EncryptedWalletStore } from './wallet-store';
 
 const log = createLogger('mev:wallet-rotator');
 
@@ -42,9 +43,21 @@ export class WalletRotator {
     }
 
     if (this.wallets.length === 0) {
-      log.warn('No wallets loaded — wallet rotator disabled');
+      // Fallback: load from EncryptedWalletStore
+      try {
+        const storeKeypairs = new EncryptedWalletStore().loadKeypairs();
+        if (storeKeypairs.length > 0) {
+          this.wallets = storeKeypairs;
+          log.info(`WalletRotator loaded ${this.wallets.length} wallet(s) from encrypted store`);
+        } else {
+          log.warn('No wallets loaded — wallet rotator disabled (no env keys, no store wallets)');
+        }
+      } catch (e) {
+        log.warn(`Failed to load wallets from encrypted store: ${(e as Error).message}`);
+        log.warn('No wallets loaded — wallet rotator disabled');
+      }
     } else {
-      log.info(`WalletRotator initialized with ${this.wallets.length} wallet(s)`);
+      log.info(`WalletRotator initialized with ${this.wallets.length} wallet(s) from env`);
     }
   }
 
