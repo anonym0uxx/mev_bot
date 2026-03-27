@@ -208,6 +208,11 @@ export class BackrunEngine {
         sizeSol,
         tipLamports: this.cfg.jito_tip_lamports,
         paperMode: this.cfg.paper_mode,
+        bondingCurve: opp.triggerEvent.bondingCurveKey,
+        associatedBondingCurve: (opp.triggerEvent as any).associatedBondingCurve ?? opp.triggerEvent.bondingCurveKey,
+        vSolLamports: BigInt(Math.floor(opp.triggerEvent.vSolInBondingCurve * 1e9)),
+        vTokens: BigInt(Math.floor(opp.triggerEvent.vTokensInBondingCurve)),
+        // buyerKeypair: not set here — live mode uses wallet-rotator separately
       }).catch((err: Error) => {
         log.warn(`JitoBundleBuilder error for ${opp.mint.slice(0, 8)}: ${err.message}`);
       });
