@@ -55,12 +55,37 @@ export class PaperTradeLogger {
     this.totalHoldMs += trade.holdMs;
 
     // Append to JSONL log
-    const line = JSON.stringify({
-      ...trade,
-      recordedAt: Date.now(),
-    }) + '\n';
-
     try {
+      // Serialize BigInt fields as strings to avoid JSON.stringify TypeError
+      // Explicitly list fields — avoids nested BigInt in trade.opportunity.triggerEvent
+      const serializable = {
+        mint: trade.mint,
+        entryVSol: trade.entryVSol,
+        exitVSol: trade.exitVSol,
+        entryTimestampMs: trade.entryTimestampMs,
+        exitTimestampMs: trade.exitTimestampMs,
+        holdMs: trade.holdMs,
+        sizeSol: trade.sizeSol,
+        pnlSol: trade.pnlSol,
+        pnlPct: trade.pnlPct,
+        exitReason: trade.exitReason,
+        score: trade.score,
+        bondingCurveKey: trade.bondingCurveKey,
+        tokensHeld: trade.tokensHeld?.toString(),
+        exitVSolLamports: trade.exitVSolLamports?.toString(),
+        exitVTokens: trade.exitVTokens?.toString(),
+        // ML training context
+        triggerBuySol: trade.triggerBuySol,
+        triggerBuyerCount: trade.triggerBuyerCount,
+        triggerHourUtc: trade.triggerHourUtc,
+        curvePct: trade.curvePct,
+        uniqueBuyerCount: trade.uniqueBuyerCount,
+        // MFE/MAE — essential for training (captures best/worst unrealised P&L during hold)
+        mfeSol: trade.mfeSol,
+        maeSol: trade.maeSol,
+        recordedAt: Date.now(),
+      };
+      const line = JSON.stringify(serializable) + '\n';
       fs.appendFileSync(this.logFile, line, 'utf8');
     } catch (err) {
       log.warn(`Failed to write paper trade log: ${(err as Error).message}`);

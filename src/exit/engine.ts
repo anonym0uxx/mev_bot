@@ -208,6 +208,22 @@ export function evaluateExit(
   const holdDuration = ageS(position.entry_timestamp);
   ev.time_decay_pressure = computeTimeDecayPressure(holdDuration, config);
 
+  // Soft early exit: if flat or negative at time_decay_exit_s threshold, cut losses fast.
+  // Data: WR at <2s = 24.8%, 2-5s = 10.1%, 5-10s = 4.2% — edge is almost entirely in first 2s.
+  const softExitThreshold = (config.exit as any).time_decay_exit_s ?? 0;
+  if (softExitThreshold > 0 && holdDuration >= softExitThreshold) {
+    const currentPnl = position.current_value_sol - position.entry_sol;
+    if (currentPnl <= 0) {
+      return {
+        shouldExit: true,
+        shouldReduce: false,
+        exitPct: 100,
+        reason: ExitReason.TIME_DECAY,
+        ev,
+      };
+    }
+  }
+
   // Max hold time override
   if (holdDuration > config.exit.max_hold_time_s) {
     return {

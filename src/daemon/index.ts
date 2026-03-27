@@ -187,32 +187,143 @@ class StrategyDaemon {
       // IMPORTANT: parse_mode 'Markdown' rejects messages with unescaped special chars
       // (underscores, brackets, Cyrillic in token names, etc.) → silently dropped.
       // Use no parse_mode (plain text) for reliability. Rate limit: 1 msg/sec per chat.
-      const sendTelegram = async (text: string): Promise<void> => {
-        const url = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
-        const body = JSON.stringify({ chat_id: telegramChatId, text });
-        try {
-          const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body,
-            signal: AbortSignal.timeout(5000),
-          });
-          if (!res.ok) {
-            const errText = await res.text().catch(() => '');
-            log.warn(`Telegram delivery HTTP ${res.status}: ${errText.slice(0, 200)}`, { component: 'alerts' });
-          } else {
-            log.debug(`Telegram delivered: ${text.slice(0, 60)}`, { component: 'alerts' });
+      // Rate-limited Telegram sender: enforces ≥1.1s between messages via a queue.
+      // Prevents 429s when MEV paper trades fire many alerts per second.
+      let tgQueue: string[] = [];
+      let tgSending = false;
+      const flushTgQueue = async (): Promise<void> => {
+        if (tgSending || tgQueue.length === 0) return;
+        tgSending = true;
+        while (tgQueue.length > 0) {
+          const text = tgQueue.shift()!;
+          const url = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
+          const body = JSON.stringify({ chat_id: telegramChatId, text });
+          try {
+            const res = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body,
+              signal: AbortSignal.timeout(8000),
+            });
+            if (!res.ok) {
+              const errText = await res.text().catch(() => '');
+              log.warn(`Telegram delivery HTTP ${res.status}: ${errText.slice(0, 200)}`, { component: 'alerts' });
+              // On 429, back off and discard remaining queue to avoid flooding
+              if (res.status === 429) {
+                const retryAfter = JSON.parse(errText)?.parameters?.retry_after ?? 5;
+                log.warn(`Rate limited — backing off ${retryAfter}s, dropping ${tgQueue.length} queued alerts`, { component: 'alerts' });
+                tgQueue = [];
+                await new Promise(r => setTimeout(r, retryAfter * 1000));
+                break;
+              }
+            } else {
+              log.debug(`Telegram delivered: ${text.slice(0, 60)}`, { component: 'alerts' });
+            }
+          } catch (err) {
+            log.warn(`Telegram delivery failed: ${(err as Error).message}`, { component: 'alerts' });
           }
+          // Respect Telegram's 1 msg/sec limit
+          if (tgQueue.length > 0) await new Promise(r => setTimeout(r, 1100));
+        }
+        tgSending = false;
+      };
+
+      const sendTelegram = (text: string): void => {
+        tgQueue.push(text);
+        flushTgQueue().catch(() => {});
+      };
+
+      // 5-minute P&L summary — same format in both paper and live modes.
+      // Per-trade entry/exit noise is suppressed in both modes.
+      // Only critical system alerts (circuit breaker, auto-pause, stale feed, execution failure) fire immediately.
+      const SUMMARY_INTERVAL_MS = 5 * 60 * 1000;
+
+      const sendPnlSummary = (): void => {
+        try {
+          const dbRaw = this.db.raw();
+          const paperMode = isPaperMode();
+          const mevPaperMode = config.mev?.paper_mode ?? true;
+          const sessionStart = this.sessionAbsoluteStartMs;
+          const windowStart = sessionStart; // session-scoped only
+
+          // Scalper stats — session-scoped (positions opened since this daemon started)
+          const scalperRows = dbRaw.prepare(
+            'SELECT realized_pnl_sol FROM positions WHERE is_paper=? AND status=? AND opened_at >= ?'
+          ).all(paperMode ? 1 : 0, 'closed', windowStart) as Array<{ realized_pnl_sol: number }>;
+          const scalperTotal = scalperRows.length;
+          const scalperWins = scalperRows.filter(r => r.realized_pnl_sol > 0).length;
+          const scalperPnl = scalperRows.reduce((s, r) => s + (r.realized_pnl_sol || 0), 0);
+          const scalperWR = scalperTotal > 0 ? (scalperWins / scalperTotal * 100).toFixed(1) : '—';
+          const scalperLabel = scalperTotal > 0
+            ? `${scalperTotal} trades | WR ${scalperWR}% | ${scalperPnl >= 0 ? '+' : ''}${scalperPnl.toFixed(4)} SOL`
+            : `0 trades this session`;
+
+          // MEV stats — session-scoped
+          let mevTrades = 0, mevWins = 0, mevPnl = 0;
+          if (mevPaperMode) {
+            const fsLib = require('fs') as typeof import('fs');
+            const pathLib = require('path') as typeof import('path');
+            const mevLogFile = pathLib.resolve(__dirname, '../../data/mev_paper_trades.jsonl');
+            try {
+              const lines = fsLib.readFileSync(mevLogFile, 'utf8').trim().split('\n').filter(Boolean);
+              for (const line of lines) {
+                const r = JSON.parse(line);
+                // Only count trades from this session
+                if ((r.exitTimestampMs || 0) < windowStart) continue;
+                mevTrades++;
+                mevPnl += r.pnlSol || 0;
+                if ((r.pnlSol || 0) > 0) mevWins++;
+              }
+            } catch (_) { /* no file yet */ }
+          } else {
+            const mevRows = dbRaw.prepare(
+              "SELECT realized_pnl_sol FROM positions WHERE is_paper=0 AND status='closed' AND opened_at >= ? AND regime LIKE '%MEV%'"
+            ).all(windowStart) as Array<{ realized_pnl_sol: number }>;
+            mevTrades = mevRows.length;
+            mevWins = mevRows.filter(r => r.realized_pnl_sol > 0).length;
+            mevPnl = mevRows.reduce((s, r) => s + (r.realized_pnl_sol || 0), 0);
+          }
+          const mevWR = mevTrades > 0 ? (mevWins / mevTrades * 100).toFixed(1) : '—';
+          const mevLabel = mevTrades > 0
+            ? `${mevTrades} trades | WR ${mevWR}% | ${mevPnl >= 0 ? '+' : ''}${mevPnl.toFixed(4)} SOL`
+            : `0 trades this session`;
+
+          const combined = scalperPnl + mevPnl;
+          const modeTag = (!paperMode && !mevPaperMode) ? '💵 LIVE' : '📄 PAPER';
+
+          // Skip summary if not enough data yet — avoid misleading low-sample WR noise
+          const MIN_TRADES_FOR_SUMMARY = 10;
+          const totalSessionTrades = scalperTotal + mevTrades;
+          if (totalSessionTrades < MIN_TRADES_FOR_SUMMARY && totalSessionTrades > 0) {
+            log.debug(`PnL summary skipped — only ${totalSessionTrades} session trades (min ${MIN_TRADES_FOR_SUMMARY})`, { component: 'alerts' });
+            return;
+          }
+
+          const msg = [
+            `${modeTag} P&L — session update`,
+            `📊 Scalper: ${scalperLabel}`,
+            `🎯 MEV: ${mevLabel}`,
+            `💰 Combined: ${combined >= 0 ? '+' : ''}${combined.toFixed(4)} SOL`,
+          ].join('\n');
+
+          sendTelegram(msg);
+          log.info(`PnL summary sent (${modeTag})`, { component: 'alerts' });
         } catch (err) {
-          log.warn(`Telegram delivery failed: ${(err as Error).message}`, { component: 'alerts' });
+          log.warn(`PnL summary error: ${(err as Error).message}`, { component: 'alerts' });
         }
       };
 
+      const summaryTimer = setInterval(sendPnlSummary, SUMMARY_INTERVAL_MS);
+      summaryTimer.unref();
+
+      // Per-trade entry/exit alerts suppressed in all modes — PnL summary covers it.
+      // Only critical system events fire immediately regardless of mode.
+      const SUPPRESS_ALERT_TYPES = new Set(['buy_filled', 'full_exit', 'reduce_filled', 'forced_exit']);
       this.alertSystem.onImmediate((alert) => {
-        // Fire-and-forget but with full error logging above
-        sendTelegram(alert.message).catch(() => {});
+        if (SUPPRESS_ALERT_TYPES.has(alert.type)) return;
+        sendTelegram(alert.message);
       });
-      log.info(`Alert delivery: Telegram chat ${telegramChatId} (plain text, no parse_mode)`, { component: 'alerts' });
+      log.info(`Alert delivery: Telegram chat ${telegramChatId} | trade alerts=suppressed, critical=immediate, pnl=5min`, { component: 'alerts' });
     } else {
       log.warn('TELEGRAM_BOT_TOKEN not set — immediate alerts will log only', { component: 'alerts' });
     }
@@ -224,6 +335,9 @@ class StrategyDaemon {
     if (config.mev?.enabled) {
       this.backrunEngine = new BackrunEngine(config.mev, this.feed, this.qualifiedMintCache, this.poolDepthCache);
       log.info(`MEV BackrunEngine initialized (paper_mode=${config.mev.paper_mode})`);
+
+      // MEV trade events (paper or live) are covered by the 5-min PnL summary.
+      // No per-trade wiring needed — events are logged internally by the engine.
     }
 
     log.info(`Daemon initialized (paper=${paper})`);

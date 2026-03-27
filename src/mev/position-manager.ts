@@ -40,6 +40,15 @@ export interface PnLRecord {
   /** Current virtual reserves at exit (for live sell tx building) */
   exitVSolLamports?: bigint;
   exitVTokens?: bigint;
+  // ML training context — entry features for model training
+  triggerBuySol?: number;        // trigger trade size in SOL
+  triggerBuyerCount?: number;    // unique buyers at time of entry
+  triggerHourUtc?: number;       // hour of day (UTC) at entry — time-of-day signal
+  curvePct?: number;             // bonding curve progress % at entry (0-100)
+  uniqueBuyerCount?: number;     // unique buyers seen by detector
+  // MFE/MAE in SOL terms (based on position size × vSol % move)
+  mfeSol?: number;               // max favorable excursion (best unrealised P&L during hold)
+  maeSol?: number;               // max adverse excursion (worst unrealised drawdown during hold)
 }
 
 export type ExitReason = 'take_profit' | 'stop_loss' | 'next_buyer' | 'max_hold';
@@ -60,6 +69,9 @@ interface OpenPosition {
   // Track current vSol/vToken reserves for sell tx building
   currentVSolLamports: bigint;
   currentVTokens: bigint;
+  // MFE/MAE tracking — peak and trough vSol seen while holding
+  peakVSol: number;
+  troughVSol: number;
 }
 
 export declare interface PositionManager {
@@ -70,6 +82,8 @@ export declare interface PositionManager {
 export class PositionManager extends EventEmitter {
   private cfg: MevConfig;
   private positions: Map<string, OpenPosition> = new Map();
+  /** Optional callback fired synchronously after each position closes, for direct alert wiring. */
+  onCloseCallback: ((record: PnLRecord) => void) | null = null;
 
   constructor(cfg: MevConfig) {
     super();
@@ -134,6 +148,9 @@ export class PositionManager extends EventEmitter {
       tokensHeld,
       currentVSolLamports: postVSolLamports,
       currentVTokens: postVTokens,
+      // MFE/MAE — initialise to entry price
+      peakVSol: opp.entryVSol,
+      troughVSol: opp.entryVSol,
     };
 
     this.positions.set(opp.mint, pos);
@@ -156,6 +173,11 @@ export class PositionManager extends EventEmitter {
     pos.currentVTokens = BigInt(Math.floor(event.vTokensInBondingCurve));
 
     const currentVSol = event.vSolInBondingCurve;
+
+    // Update MFE/MAE running extremes
+    if (currentVSol > pos.peakVSol) pos.peakVSol = currentVSol;
+    if (currentVSol < pos.troughVSol) pos.troughVSol = currentVSol;
+
     const pnlPct = (currentVSol - pos.entryVSol) / pos.entryVSol;
 
     // Take profit
@@ -227,6 +249,17 @@ export class PositionManager extends EventEmitter {
       tokensHeld: pos.tokensHeld,
       exitVSolLamports: pos.currentVSolLamports,
       exitVTokens: pos.currentVTokens,
+      // ML training context
+      triggerBuySol: pos.opportunity.triggerEvent.solAmount,
+      triggerBuyerCount: pos.opportunity.uniqueBuyerCount,
+      triggerHourUtc: new Date(pos.entryTimestampMs).getUTCHours(),
+      curvePct: pos.opportunity.triggerEvent.vSolInBondingCurve
+        ? Math.min(100, (pos.opportunity.triggerEvent.vSolInBondingCurve / 85) * 100)
+        : undefined,
+      uniqueBuyerCount: pos.opportunity.uniqueBuyerCount,
+      // MFE/MAE — peak and trough vSol converted to SOL P&L
+      mfeSol: ((pos.peakVSol - pos.entryVSol) / pos.entryVSol) * pos.sizeSol,
+      maeSol: ((pos.troughVSol - pos.entryVSol) / pos.entryVSol) * pos.sizeSol,
     };
 
     const emoji = pnlSol >= 0 ? '✅' : '❌';
@@ -236,7 +269,16 @@ export class PositionManager extends EventEmitter {
       `hold=${holdMs}ms`
     );
 
+    const nListeners = this.listenerCount('closed');
+    log.info(`[posManager:emit-closed] listeners=${nListeners} mint=${mint.slice(0,8)} reason=${reason}`);
     this.emit('closed', record);
+    // Direct callback — bypasses EventEmitter to guarantee execution even if listeners throw
+    log.info(`[posManager:callback-check] onCloseCallback=${this.onCloseCallback !== null} mint=${mint.slice(0,8)}`);
+    if (this.onCloseCallback) {
+      try { this.onCloseCallback(record); } catch (err) {
+        log.warn(`onCloseCallback error: ${(err as Error).message}`);
+      }
+    }
   }
 
   /**

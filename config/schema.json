@@ -359,6 +359,16 @@
         "doa_min_new_buyers_3s": {
           "type": "integer",
           "minimum": 0
+        },
+        "min_flow_momentum": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "min_breadth_topology": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
         }
       }
     },
@@ -452,6 +462,11 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1
+        },
+        "time_decay_exit_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Soft exit: if PnL flat/negative at this hold time, exit immediately. 0=disabled."
         }
       }
     },
@@ -1276,33 +1291,120 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": { "type": "boolean" },
-        "paper_mode": { "type": "boolean" },
-        "trigger_min_buy_sol": { "type": "number", "minimum": 0 },
-        "trigger_min_score": { "type": "number", "minimum": 0, "maximum": 1 },
-        "min_vsol_in_curve": { "type": "number", "minimum": 0 },
-        "max_vsol_in_curve": { "type": "number", "minimum": 0 },
-        "max_token_age_s": { "type": "number", "minimum": 0 },
-        "min_unique_buyers": { "type": "integer", "minimum": 0 },
-        "entry_size_sol": { "type": "number", "minimum": 0 },
-        "max_entry_size_sol": { "type": "number", "minimum": 0 },
-        "max_concurrent_positions": { "type": "integer", "minimum": 1 },
-        "take_profit_pct": { "type": "number", "minimum": 0 },
-        "stop_loss_pct": { "type": "number", "minimum": 0 },
-        "max_hold_ms": { "type": "integer", "minimum": 0 },
-        "next_buyer_exit": { "type": "boolean" },
-        "daily_loss_cap_sol": { "type": "number", "minimum": 0 },
-        "jito_tip_lamports": { "type": "integer", "minimum": 0 },
-        "conflict_policy": { "type": "string", "enum": ["skip", "replace"] },
-        "log_file": { "type": "string" },
-        "use_scalper_prequalification": { "type": "boolean" },
-        "jitter_ms_min": { "type": "number", "minimum": 0 },
-        "jitter_ms_max": { "type": "number", "minimum": 0 },
-        "size_variance_pct": { "type": "number", "minimum": 0, "maximum": 1 },
-        "wallet_private_keys": { "type": "array", "items": { "type": "string" } },
-        "min_raydium_depth_sol": { "type": "number", "default": 5 },
-        "subscribe_pool_stream": { "type": "boolean", "default": true },
-        "subscribe_whale_stream": { "type": "boolean", "default": true }
+        "enabled": {
+          "type": "boolean"
+        },
+        "paper_mode": {
+          "type": "boolean"
+        },
+        "trigger_min_buy_sol": {
+          "type": "number",
+          "minimum": 0
+        },
+        "trigger_max_buy_sol": {
+          "type": "number",
+          "minimum": 0
+        },
+        "trigger_min_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "min_vsol_in_curve": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_vsol_in_curve": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_token_age_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "min_unique_buyers": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "entry_size_sol": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_entry_size_sol": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_concurrent_positions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "take_profit_pct": {
+          "type": "number",
+          "minimum": 0
+        },
+        "stop_loss_pct": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_hold_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "next_buyer_exit": {
+          "type": "boolean"
+        },
+        "daily_loss_cap_sol": {
+          "type": "number",
+          "minimum": 0
+        },
+        "jito_tip_lamports": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "conflict_policy": {
+          "type": "string",
+          "enum": [
+            "skip",
+            "replace"
+          ]
+        },
+        "log_file": {
+          "type": "string"
+        },
+        "use_scalper_prequalification": {
+          "type": "boolean"
+        },
+        "jitter_ms_min": {
+          "type": "number",
+          "minimum": 0
+        },
+        "jitter_ms_max": {
+          "type": "number",
+          "minimum": 0
+        },
+        "size_variance_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "wallet_private_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "min_raydium_depth_sol": {
+          "type": "number",
+          "default": 5
+        },
+        "subscribe_pool_stream": {
+          "type": "boolean",
+          "default": true
+        },
+        "subscribe_whale_stream": {
+          "type": "boolean",
+          "default": true
+        }
       }
     }
   }

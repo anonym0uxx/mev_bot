@@ -430,12 +430,34 @@ function checkHardFilters(
     }
 
     // 3. Velocity gate — tokens stalled at floor are dead weight
+    // Data: only >2.0 SOL/s bucket has positive WR (49%). Everything below is noise.
     const minVelocity = entryCfg.min_velocity_vsol_per_s ?? 0;
     if (minVelocity > 0) {
       // buy_notional_velocity_5s = SOL buy volume per 5s window
       const vel = features.flow_momentum?.buy_notional_velocity_5s ?? 0;
       if (vel < minVelocity) {
         return `velocity_too_low (${vel.toFixed(3)} vSol/s < ${minVelocity})`;
+      }
+    }
+
+    // 3b. Flow momentum attribution gate — strongest differentiating signal in data.
+    // WIN avg: 0.732, LOSS avg: 0.523, delta +0.209. Threshold at 0.68 cuts bulk of loss dist.
+    const minFlowMomentum = entryCfg.min_flow_momentum ?? 0;
+    if (minFlowMomentum > 0) {
+      // flow_momentum is the probability layer attribution score (0-1)
+      const flowMomentumScore = (features as any).flow_momentum_score ?? (features as any).attribution_flow_momentum ?? 0;
+      if (flowMomentumScore < minFlowMomentum) {
+        return `flow_momentum_low (${flowMomentumScore.toFixed(3)} < ${minFlowMomentum})`;
+      }
+    }
+
+    // 3c. Breadth topology attribution gate — secondary differentiator.
+    // WIN avg: 0.618, LOSS avg: 0.547, delta +0.071.
+    const minBreadthTopology = entryCfg.min_breadth_topology ?? 0;
+    if (minBreadthTopology > 0) {
+      const breadthTopologyScore = (features as any).breadth_topology_score ?? (features as any).attribution_breadth_topology ?? 0;
+      if (breadthTopologyScore < minBreadthTopology) {
+        return `breadth_topology_low (${breadthTopologyScore.toFixed(3)} < ${minBreadthTopology})`;
       }
     }
 

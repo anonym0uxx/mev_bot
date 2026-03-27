@@ -113,6 +113,9 @@ export class BackrunDetector extends EventEmitter {
     // Gate 2: minimum buy size
     if (event.solAmount < this.cfg.trigger_min_buy_sol) return;
 
+    // Gate 2b: maximum buy size — large buys are bot-contested and enter at elevated prices
+    if (this.cfg.trigger_max_buy_sol !== undefined && event.solAmount > this.cfg.trigger_max_buy_sol) return;
+
     // Gate 3: vSol within target range
     const vSol = event.vSolInBondingCurve;
     if (vSol < this.cfg.min_vsol_in_curve || vSol > this.cfg.max_vsol_in_curve) return;
@@ -175,11 +178,11 @@ export class BackrunDetector extends EventEmitter {
     const uniqueBuyerScore = Math.min(1, uniqueBuyers / 10);
 
     // --- Component 4: curve fill (20%) ---
-    // Position within [min_vsol, max_vsol] range: sweet spot in the middle
+    // Reward early curve position — data shows WR degrades monotonically with curve %.
+    // Score 1.0 at min_vsol, 0.0 at max_vsol (linear decay favouring early entries).
     const range = this.cfg.max_vsol_in_curve - this.cfg.min_vsol_in_curve;
     const fill = (vSol - this.cfg.min_vsol_in_curve) / range; // 0..1
-    // Peak at mid-range (fill=0.5)
-    const curveFillScore = 1 - Math.abs(fill - 0.5) * 2;
+    const curveFillScore = Math.max(0, 1 - fill); // 1.0 early, 0.0 late
 
     this.lastComponents = {
       size: sizeScore,

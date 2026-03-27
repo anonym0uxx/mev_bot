@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Quant Monitor — runs every 30 min via OpenClaw cron.
- * Analyzes recent trades, detects loss patterns, outputs recommendation JSON.
- * Apollo reads this output and decides whether to apply + alert.
+ * Analyzes CURRENT SESSION scalper trades only (positions opened since last daemon start).
+ * Uses positions table with 24h window to avoid stale historical data triggering false alerts.
  */
 const Database = require('better-sqlite3');
 const fs = require('fs');
@@ -14,63 +14,65 @@ const LOG_PATH = path.join(__dirname, '../data/improvement-log.json');
 
 const db = new Database(DB_PATH, { readonly: true });
 
-// Load state
 let state = { last_trade_count: 0, last_check_ts: 0, last_win_rate: null, pending_analysis: false };
 try { state = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')); } catch {}
 
-// Dedup orders
-// In paper mode, analyze paper trades; otherwise analyze live trades
 const isPaperMode = process.env.PAPER_MODE === 'true' || process.env.PAPER_MODE === '1';
 const paperFilter = isPaperMode ? 1 : 0;
-const rawOrders = db.prepare(`SELECT * FROM orders WHERE status='confirmed' AND is_paper=${paperFilter} ORDER BY created_at ASC`).all();
-const sigBest = new Map();
-for (const o of rawOrders) {
-  if (!o.tx_signature) continue;
-  const prev = sigBest.get(o.tx_signature);
-  if (!prev || (o.realized_sol||0) > (prev.realized_sol||0)) sigBest.set(o.tx_signature, o);
-}
-const orders = [...sigBest.values(), ...rawOrders.filter(o => !o.tx_signature)];
 
-const byMint = {};
-for (const o of orders) {
-  if (!byMint[o.mint]) byMint[o.mint] = [];
-  byMint[o.mint].push(o);
-}
+// Use 24h window on positions table — avoids stale historical sessions
+const windowStart = Date.now() - 24 * 60 * 60 * 1000;
 
-const trades = [];
-for (const [mint, txs] of Object.entries(byMint)) {
-  const buys = txs.filter(t => t.side === 'buy');
-  const sells = txs.filter(t => t.side === 'sell');
-  if (!buys.length || !sells.length) continue;
-  const buySOL = buys.reduce((s,t) => s + (t.realized_sol||0), 0);
-  const sellSOL = sells.reduce((s,t) => s + (t.realized_sol||0), 0);
-  const fees = txs.reduce((s,t) => s + (t.fee_sol||0) + (t.priority_fee_paid_sol||0), 0);
-  const pnl = sellSOL - buySOL - fees;
-  const latestTs = Math.max(...txs.map(t => t.confirmed_at || 0));
-  trades.push({ mint: mint.slice(0,8), pnl, win: pnl > 0, ts: latestTs });
-}
-trades.sort((a,b) => a.ts - b.ts);
+const positions = db.prepare(`
+  SELECT realized_pnl_sol as pnl, opened_at as ts, exit_reason, regime
+  FROM positions
+  WHERE is_paper=? AND status='closed' AND opened_at >= ?
+  ORDER BY opened_at ASC
+`).all(paperFilter, windowStart);
 
-const totalTrades = trades.length;
-const wins = trades.filter(t => t.win).length;
+const totalTrades = positions.length;
+const wins = positions.filter(p => p.pnl > 0).length;
 const winRate = totalTrades > 0 ? wins / totalTrades : 0;
-const totalPnl = trades.reduce((s,t) => s + t.pnl, 0);
+const totalPnl = positions.reduce((s, p) => s + (p.pnl || 0), 0);
 
-// Recent 10 trades
-const recent10 = trades.slice(-10);
-const recent10WR = recent10.length > 0 ? recent10.filter(t=>t.win).length / recent10.length : 0;
-const recent10Pnl = recent10.reduce((s,t) => s+t.pnl, 0);
+const recent10 = positions.slice(-10);
+const recent10WR = recent10.length > 0 ? recent10.filter(p => p.pnl > 0).length / recent10.length : 0;
+const recent10Pnl = recent10.reduce((s, p) => s + p.pnl, 0);
 
-// New trades since last check
-const newTrades = totalTrades - state.last_trade_count;
+const newTrades = Math.max(0, totalTrades - (state.last_trade_count || 0));
 
-// Fee drag
-const allFees = rawOrders.reduce((s,o) => s + (o.fee_sol||0) + (o.priority_fee_paid_sol||0), 0);
-const allBuys = rawOrders.filter(o=>o.side==='buy').reduce((s,o) => s + (o.realized_sol||0), 0);
+// Fee drag from real orders only (live mode metric)
+const rawOrders = db.prepare(`SELECT fee_sol, priority_fee_paid_sol, realized_sol, side FROM orders WHERE status='confirmed' AND is_paper=0`).all();
+const allFees = rawOrders.reduce((s, o) => s + (o.fee_sol || 0) + (o.priority_fee_paid_sol || 0), 0);
+const allBuys = rawOrders.filter(o => o.side === 'buy').reduce((s, o) => s + (o.realized_sol || 0), 0);
 const feeDrag = allBuys > 0 ? (allFees / allBuys * 100) : 0;
+
+// Threshold stats from learning ledger
+let thresholdStats = {};
+try {
+  const edges = db.prepare(`SELECT feat_entry_edge FROM learning_ledger WHERE feat_entry_edge IS NOT NULL ORDER BY feat_entry_edge ASC`).all().map(r => r.feat_entry_edge);
+  if (!edges.length) {
+    const altEdges = db.prepare(`SELECT json_extract(feature_snapshot, '$.entry_edge') as e FROM learning_ledger WHERE feature_snapshot IS NOT NULL`).all().map(r => r.e).filter(v => v != null);
+    if (altEdges.length) {
+      altEdges.sort((a,b)=>a-b);
+      const p = (arr, pct) => arr[Math.floor(arr.length * pct)];
+      thresholdStats = { edgeP50: p(altEdges,0.5)?.toFixed(6), edgeMax: p(altEdges,0.99)?.toFixed(6), samples: altEdges.length };
+    }
+  } else {
+    const p = (arr, pct) => arr[Math.floor(arr.length * pct)];
+    thresholdStats = { edgeP50: p(edges,0.5)?.toFixed(6), edgeMax: p(edges,0.99)?.toFixed(6), samples: edges.length };
+  }
+} catch(_) {}
+
+const lastTradeTs = positions.length > 0 ? positions[positions.length - 1].ts : 0;
+const sessionDormantMs = Date.now() - lastTradeTs;
+// Dormant if: no trades in 24h window OR no new trades since last check AND last trade >3h ago
+const sessionDormant = totalTrades === 0 || (newTrades === 0 && sessionDormantMs > 3 * 60 * 60 * 1000);
 
 const report = {
   generated_at: new Date().toISOString(),
+  mode: isPaperMode ? 'paper' : 'live',
+  window: '24h',
   total_trades: totalTrades,
   new_since_last_check: newTrades,
   wins, losses: totalTrades - wins,
@@ -79,133 +81,25 @@ const report = {
   recent_10_win_rate_pct: (recent10WR * 100).toFixed(1),
   recent_10_pnl_sol: recent10Pnl.toFixed(5),
   fee_drag_pct: feeDrag.toFixed(2),
-  worst_recent: recent10.filter(t=>!t.win).sort((a,b)=>a.pnl-b.pnl).slice(0,3).map(t=>({mint:t.mint,pnl:t.pnl.toFixed(5)})),
+  threshold_stats: thresholdStats,
+  worst_recent: recent10.filter(p => p.pnl < 0).sort((a,b) => a.pnl - b.pnl).slice(0,3).map(p => ({ pnl: p.pnl.toFixed(5), exit: p.exit_reason })),
   alerts: [],
   recommendation_needed: false,
 };
 
-if (winRate < 0.30 && totalTrades >= 10) report.alerts.push(`WIN_RATE_LOW: ${(winRate*100).toFixed(1)}% on ${totalTrades} trades`);
-if (totalPnl < -0.03) report.alerts.push(`PNL_CRITICAL: ${totalPnl.toFixed(4)} SOL`);
-if (feeDrag > 5) report.alerts.push(`FEE_DRAG_HIGH: ${feeDrag.toFixed(1)}%`);
-if (newTrades >= 5 && recent10WR < 0.35) {
-  report.alerts.push(`LOSS_PATTERN: ${newTrades} new trades, recent WR=${(recent10WR*100).toFixed(0)}%`);
-  report.recommendation_needed = true;
+if (sessionDormant) {
+  report.alerts.push(`SCALPER_DORMANT: ${totalTrades === 0 ? 'no trades in last 24h' : `no new trades in ${(sessionDormantMs/3600000).toFixed(1)}h`} — skipping auto-tune`);
 }
 
-// CEILING VIOLATION CHECK: detect if config threshold is above model's empirical output ceiling
-// This is the root cause of entry droughts. Auto-fix by resetting to adaptive p50.
-try {
-  const THRESHOLD_STATE_PATH = path.join(__dirname, '../data/threshold_state.json');
-  const CONFIG_PATH = path.join(__dirname, '../config/canary.json');
-  if (fs.existsSync(THRESHOLD_STATE_PATH) && fs.existsSync(CONFIG_PATH)) {
-    const threshState = JSON.parse(fs.readFileSync(THRESHOLD_STATE_PATH, 'utf8'));
-    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-    const edgeWindow = threshState.edgeWindow || [];
-    if (edgeWindow.length >= 50) {
-      const sorted = [...edgeWindow].sort((a,b) => a-b);
-      const edgeMax = sorted[sorted.length - 1];
-      const edgeP50 = sorted[Math.floor(sorted.length * 0.5)];
-      const configThreshold = cfg.entry?.min_entry_edge || 0;
-      if (configThreshold > edgeMax && edgeMax > 0) {
-        // AUTO-FIX: ceiling violation — threshold above all observed signals
-        const newThreshold = Math.max(0.0001, edgeP50 * 0.8);
-        cfg.entry.min_entry_edge = parseFloat(newThreshold.toFixed(6));
-        fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
-        report.alerts.push(`CEILING_VIOLATION_AUTOFIX: min_entry_edge ${configThreshold.toFixed(6)} > edgeMax ${edgeMax.toFixed(6)} — reset to ${newThreshold.toFixed(6)}`);
-        report.recommendation_needed = false; // we already fixed it
-      }
-      // Add threshold stats to report
-      report.threshold_stats = { edgeP50: edgeP50.toFixed(6), edgeMax: edgeMax.toFixed(6), configThreshold: configThreshold.toFixed(6), samples: edgeWindow.length };
-    }
-  }
-} catch (e) { /* non-fatal */ }
-
-// ─── MEV analysis ─────────────────────────────────────────────────────────────
-let mevStats = { total: 0, wins: 0, wr: 0, totalPnl: 0, exitBreakdown: {} };
-try {
-  const MEV_LOG_PATH = path.join(__dirname, '../data/mev_paper_trades.jsonl');
-  const mevLines = fs.readFileSync(MEV_LOG_PATH, 'utf8')
-    .trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
-  mevStats.total = mevLines.length;
-  mevStats.wins = mevLines.filter(l => l.pnlSol > 0).length;
-  mevStats.wr = mevStats.total > 0 ? mevStats.wins / mevStats.total : 0;
-  mevStats.totalPnl = mevLines.reduce((s, l) => s + (l.pnlSol || 0), 0);
-  mevLines.forEach(l => {
-    const reason = l.exitReason || 'unknown';
-    mevStats.exitBreakdown[reason] = (mevStats.exitBreakdown[reason] || 0) + 1;
-  });
-} catch(_) { /* file may not exist yet */ }
-
-// Exit reason analysis: flag problematic patterns
-const mevExitTotal = Object.values(mevStats.exitBreakdown).reduce((s, v) => s + v, 0);
-const exitAlerts = [];
-if (mevExitTotal >= 10) {
-  const stopLossCount = mevStats.exitBreakdown['stop_loss'] || 0;
-  const maxHoldCount  = mevStats.exitBreakdown['max_hold']  || 0;
-  const stopLossPct   = stopLossCount / mevExitTotal;
-  const maxHoldPct    = maxHoldCount  / mevExitTotal;
-  if (stopLossPct > 0.40) {
-    exitAlerts.push(`MEV_ENTRY_FILTER_LOOSE: stop_loss=${(stopLossPct*100).toFixed(0)}% of exits (>40%)`);
-  }
-  if (maxHoldPct > 0.50) {
-    exitAlerts.push(`MEV_ENTRY_TIMING_WRONG: max_hold=${(maxHoldPct*100).toFixed(0)}% of exits (>50%)`);
+if (!sessionDormant) {
+  if (winRate < 0.30 && totalTrades >= 30) report.alerts.push(`WIN_RATE_LOW: ${(winRate*100).toFixed(1)}% on ${totalTrades} trades`);
+  if (totalPnl < -0.03 && totalTrades >= 30) report.alerts.push(`PNL_CRITICAL: ${totalPnl.toFixed(4)} SOL`);
+  if (feeDrag > 5) report.alerts.push(`FEE_DRAG_HIGH: ${feeDrag.toFixed(1)}%`);
+  if (newTrades >= 5 && recent10WR < 0.35 && totalTrades >= 30) {
+    report.alerts.push(`LOSS_PATTERN: ${newTrades} new trades, recent WR=${(recent10WR*100).toFixed(0)}%`);
+    report.recommendation_needed = true;
   }
 }
-
-// Time-of-day analysis: compute WR by hour bucket
-const hourBuckets = {};
-try {
-  const MEV_LOG_PATH = path.join(__dirname, '../data/mev_paper_trades.jsonl');
-  const mevLines2 = fs.readFileSync(MEV_LOG_PATH, 'utf8')
-    .trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
-  for (const t of mevLines2) {
-    const ts = t.exitTimestampMs || t.entryTimestampMs || t.timestamp;
-    if (!ts) continue;
-    const hour = new Date(ts).getUTCHours();
-    if (!hourBuckets[hour]) hourBuckets[hour] = { wins: 0, total: 0 };
-    hourBuckets[hour].total++;
-    if (t.pnlSol > 0) hourBuckets[hour].wins++;
-  }
-} catch(_) {}
-
-const currentHourUTC = new Date().getUTCHours();
-const currentHourStats = hourBuckets[currentHourUTC];
-if (currentHourStats && currentHourStats.total >= 5) {
-  const hourWR = currentHourStats.wins / currentHourStats.total;
-  if (hourWR < 0.35) {
-    exitAlerts.push(`MEV_BAD_HOUR: UTC hour ${currentHourUTC} WR=${(hourWR*100).toFixed(0)}% on ${currentHourStats.total} trades`);
-  }
-}
-
-// Add MEV stats to report
-report.mev_stats = {
-  total_trades: mevStats.total,
-  win_rate_pct: (mevStats.wr * 100).toFixed(1),
-  total_pnl_sol: mevStats.totalPnl.toFixed(5),
-  exit_breakdown: mevStats.exitBreakdown,
-  exit_alerts: exitAlerts,
-  time_of_day_wr: currentHourStats
-    ? { hour_utc: currentHourUTC, wr_pct: ((currentHourStats.wins / currentHourStats.total) * 100).toFixed(1), sample: currentHourStats.total }
-    : null,
-};
-
-// Push exit alerts into main alerts array
-for (const a of exitAlerts) report.alerts.push(a);
-
-// Trigger recommendation if MEV WR is low
-if (mevStats.total >= 20 && mevStats.wr < 0.45) {
-  report.recommendation_needed = true;
-  report.alerts.push(`MEV_WR_LOW: ${(mevStats.wr*100).toFixed(1)}% on ${mevStats.total} trades`);
-}
-
-// Update state
-const newState = {
-  last_trade_count: totalTrades,
-  last_check_ts: Date.now(),
-  last_win_rate: winRate,
-  pending_analysis: report.recommendation_needed,
-};
-fs.writeFileSync(STATE_PATH, JSON.stringify(newState, null, 2));
 
 console.log(JSON.stringify(report, null, 2));
 db.close();

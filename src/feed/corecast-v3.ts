@@ -323,8 +323,25 @@ export class CoreCastV3Client extends EventEmitter {
 
   // ====== STREAM MANAGEMENT ======
 
+  // Generation counters — incremented each time a stream is replaced.
+  // Closures capture their generation; stale closures from replaced streams are ignored.
+  private streamGenerations: Map<string, number> = new Map();
+
   private startStream(config: StreamConfig): void {
     if (!this.shouldRun || !this.client) return;
+
+    // Bump generation for this stream name. Any closures from the previous
+    // stream instance will see a stale generation and skip reconnect/error handling.
+    const myGeneration = (this.streamGenerations.get(config.name) ?? 0) + 1;
+    this.streamGenerations.set(config.name, myGeneration);
+
+    // Cancel the existing stream (if any) AFTER bumping generation so its
+    // error/end closures see the stale generation and bail out immediately.
+    const existing = this.streams.get(config.name);
+    if (existing) {
+      this.streams.delete(config.name);
+      try { existing.cancel(); } catch (_) {}
+    }
 
     const metadata = new grpc.Metadata();
     metadata.add('authorization', this.apiKey);
@@ -336,6 +353,7 @@ export class CoreCastV3Client extends EventEmitter {
       );
 
       stream.on('data', (msg: any) => {
+        if (this.streamGenerations.get(config.name) !== myGeneration) return;
         this.lastMessageAt = nowMs();
         this.messageCount++;
         try {
@@ -346,6 +364,8 @@ export class CoreCastV3Client extends EventEmitter {
       });
 
       stream.on('error', (err: grpc.ServiceError) => {
+        // Stale generation = this stream was intentionally replaced; ignore.
+        if (this.streamGenerations.get(config.name) !== myGeneration) return;
         log.warn(`Stream error [${config.name}]: code=${err.code} ${err.message}`);
         this.emit('error', err);
         if (err.code === grpc.status.UNAVAILABLE || err.code === grpc.status.INTERNAL) {
@@ -354,6 +374,8 @@ export class CoreCastV3Client extends EventEmitter {
       });
 
       stream.on('end', () => {
+        // Stale generation = this stream was intentionally replaced; ignore.
+        if (this.streamGenerations.get(config.name) !== myGeneration) return;
         log.warn(`Stream ended: ${config.name}`);
         if (this.shouldRun) {
           this.scheduleReconnect(config);

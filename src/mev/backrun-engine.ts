@@ -24,12 +24,14 @@ import { PoolDepthCache } from './pool-depth-cache';
 import { EntryRandomizer } from './entry-randomizer';
 import { JitoBundleBuilder } from './jito-bundle-builder';
 import { SellExecutor } from './sell-executor';
+import { EventEmitter } from 'events';
 import { createLogger } from '../utils/logger';
 import { nowMs } from '../utils/time';
+import { AlertSystem } from '../alerts/system';
 
 const log = createLogger('mev:backrun-engine');
 
-export class BackrunEngine {
+export class BackrunEngine extends EventEmitter {
   private cfg: MevConfig;
   private feed: PumpPortalClient;
 
@@ -55,6 +57,7 @@ export class BackrunEngine {
   private onMintTrade: ((event: TokenTradeEvent) => void) | null = null;
 
   constructor(cfg: MevConfig, feed: PumpPortalClient, qualifiedMints?: QualifiedMintCache, poolDepthCache?: PoolDepthCache) {
+    super();
     this.cfg = cfg;
     this.feed = feed;
     this.qualifiedMints = qualifiedMints;
@@ -77,6 +80,14 @@ export class BackrunEngine {
     }
     this.running = true;
 
+    // Wire direct close callback for guaranteed alert delivery
+    // (EventEmitter listeners can be silently interrupted; this callback cannot)
+    this.posManager.onCloseCallback = (record) => {
+      const listenerCount = this.listenerCount('trade');
+      log.info(`[mev:trade-emit] listeners=${listenerCount} mint=${record.mint.slice(0,8)} pnl=${record.pnlSol.toFixed(4)}`);
+      this.emit('trade', record);
+    };
+
     log.info(
       `BackrunEngine started [paper_mode=${this.cfg.paper_mode}] ` +
       `maxPositions=${this.cfg.max_concurrent_positions} ` +
@@ -88,7 +99,7 @@ export class BackrunEngine {
       this.handleOpportunity(opp);
     });
 
-    // Wire position closures → execution layer + logger + stats
+    // Wire position closures → execution layer + logger + stats + alerts
     this.posManager.on('closed', (record: PnLRecord) => {
       // Track daily loss
       if (record.pnlSol < 0) {
@@ -103,6 +114,8 @@ export class BackrunEngine {
 
       this.tradeLogger.record(record);
       this.statsReporter.onTrade();
+      // NOTE: trade alert is fired via posManager.onCloseCallback (set in start())
+      // to guarantee delivery even if the EventEmitter chain is interrupted
     });
 
     // Listen to all tokenTrade events for scoring
@@ -137,6 +150,9 @@ export class BackrunEngine {
       this.feed.off('tokenTrade', this.onTokenTrade);
       this.onTokenTrade = null;
     }
+
+    // Clear direct callback before closing positions
+    this.posManager.onCloseCallback = null;
 
     // Force-close any open positions
     this.posManager.closeAll();
@@ -189,7 +205,8 @@ export class BackrunEngine {
     }
 
     // Guard: scalper pre-qualification (signal bridge)
-    if (this.qualifiedMints && !this.qualifiedMints.has(opp.mint)) {
+    // Skipped when use_scalper_prequalification=false — MEV runs independently
+    if (this.cfg.use_scalper_prequalification !== false && this.qualifiedMints && !this.qualifiedMints.has(opp.mint)) {
       log.debug(`[paper] skipped ${opp.mint.slice(0, 8)} — not in scalper hot-list`);
       return;
     }
@@ -209,12 +226,56 @@ export class BackrunEngine {
       `vSol=${opp.entryVSol.toFixed(2)} buyers=${opp.uniqueBuyerCount} [paper]`
     );
 
-    // Apply anti-fingerprinting: randomize entry size and delay
-    const { delayMs, sizeSol } = this.randomizer.randomize();
-    opp.recommendedSizeSol = sizeSol; // override with randomized size
+    // Dynamic sizing based on curve position + time of day signal quality.
+    // New vSol window: 38-46 (45-54% curve). Data: 45-55% = 60% WR, 35-45% = 42% WR.
+    // Score insight: 0.55-0.70 is optimal. >0.70 scores have 25% WR (overfitting artifact).
+    // Trigger 0.2-0.5 SOL = 55% WR best bucket.
+    const curvePct = opp.entryVSol / 85 * 100; // approximate curve % from vSol
+    const hourUtc = new Date().getUTCHours();
+    const isOffPeak = hourUtc >= 4 && hourUtc <= 9;    // UTC 4-9 = historically best window
+    const isOptimalCurve = curvePct >= 45 && curvePct < 55; // 45-55% = 60% WR bucket
+    const isGoodCurve = curvePct >= 38 && curvePct < 65;    // acceptable range
+    const isHighScore = opp.score >= 0.55 && opp.score < 0.70; // >0.70 = overfit, skip max size
+
+    let dynamicBase: number;
+    if (isOptimalCurve && isOffPeak && isHighScore) {
+      // Best conditions: optimal curve + off-peak + good score → full max size
+      dynamicBase = this.cfg.max_entry_size_sol;
+    } else if (isOptimalCurve || (isOffPeak && isHighScore)) {
+      // One strong condition: standard entry size
+      dynamicBase = this.cfg.entry_size_sol;
+    } else if (isGoodCurve && isHighScore) {
+      // Good curve + score but peak hours: 75% of base
+      dynamicBase = this.cfg.entry_size_sol * 0.75;
+    } else if (opp.score > 0.70) {
+      // High score but data shows >0.70 is worse (25% WR) — reduce size
+      dynamicBase = this.cfg.entry_size_sol * 0.50;
+    } else {
+      // Acceptable conditions: 60% of base
+      dynamicBase = this.cfg.entry_size_sol * 0.60;
+    }
+
+    // Apply anti-fingerprinting variance on top of dynamic base
+    const variance = this.cfg.size_variance_pct ?? 0.20;
+    const low = dynamicBase * (1 - variance);
+    const high = dynamicBase * (1 + variance);
+    const { delayMs } = this.randomizer.randomize();
+    const sizeSol = parseFloat((Math.random() * (high - low) + low).toFixed(4));
+    opp.recommendedSizeSol = sizeSol;
+
+    log.debug(
+      `Dynamic sizing: curvePct=${curvePct.toFixed(1)}% hourUTC=${hourUtc} score=${opp.score.toFixed(3)} ` +
+      `offPeak=${isOffPeak} optCurve=${isOptimalCurve} size=${sizeSol.toFixed(4)} SOL (base=${dynamicBase.toFixed(4)})`
+    );
 
     const openAndBundle = () => {
+      // Guard: engine may have stopped during the jitter delay — abort if so
+      if (!this.running) return;
       this.posManager.openPosition(opp);
+
+      // Emit entry event for external listeners (e.g. daemon alert system)
+      this.emit('entry', { mint: opp.mint, sizeSol, score: opp.score, vSol: opp.entryVSol, paper: this.cfg.paper_mode });
+
       // Fire-and-forget Jito bundle (paper: logs simulation; live: submits bundle)
       this.jitoBundleBuilder.buildBundle({
         mint: opp.mint,

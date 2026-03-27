@@ -14,33 +14,13 @@ const paperFlag = isPaper ? 1 : 0;
 
 const db = new Database(DB_PATH, { readonly: true });
 
-// Scalper stats
-const rawOrders = db.prepare(`SELECT * FROM orders WHERE status='confirmed' AND is_paper=${paperFlag} ORDER BY created_at ASC`).all();
-const sigBest = new Map();
-for (const o of rawOrders) {
-  if (!o.tx_signature) continue;
-  const prev = sigBest.get(o.tx_signature);
-  if (!prev || (o.realized_sol||0) > (prev.realized_sol||0)) sigBest.set(o.tx_signature, o);
-}
-const orders = [...sigBest.values(), ...rawOrders.filter(o => !o.tx_signature)];
-const byMint = {};
-for (const o of orders) {
-  if (!byMint[o.mint]) byMint[o.mint] = [];
-  byMint[o.mint].push(o);
-}
-const scalperTrades = [];
-for (const [mint, txs] of Object.entries(byMint)) {
-  const buys = txs.filter(t => t.side === 'buy');
-  const sells = txs.filter(t => t.side === 'sell');
-  if (!buys.length || !sells.length) continue;
-  const buySOL = buys.reduce((s,t) => s + (t.realized_sol||0), 0);
-  const sellSOL = sells.reduce((s,t) => s + (t.realized_sol||0), 0);
-  const fees = txs.reduce((s,t) => s + (t.fee_sol||0) + (t.priority_fee_paid_sol||0), 0);
-  scalperTrades.push({ pnl: sellSOL - buySOL - fees });
-}
-const sWins = scalperTrades.filter(t => t.pnl > 0).length;
-const sTotal = scalperTrades.length;
-const sPnl = scalperTrades.reduce((s,t) => s + t.pnl, 0);
+// Scalper stats — read from positions table (source of truth for realized P&L)
+const scalperRows = db.prepare(
+  `SELECT realized_pnl_sol, status FROM positions WHERE is_paper=${paperFlag} AND status='closed'`
+).all();
+const sTotal = scalperRows.length;
+const sWins = scalperRows.filter(r => r.realized_pnl_sol > 0).length;
+const sPnl = scalperRows.reduce((s, r) => s + (r.realized_pnl_sol || 0), 0);
 const sWR = sTotal > 0 ? (sWins/sTotal*100).toFixed(1) : '—';
 
 // MEV stats

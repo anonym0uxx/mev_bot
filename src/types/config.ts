@@ -339,6 +339,7 @@ export interface MevConfig {
   enabled: boolean;
   paper_mode: boolean;
   trigger_min_buy_sol: number;
+  trigger_max_buy_sol?: number;          // upper bound on trigger size — filters large bot-driven buys
   trigger_min_score: number;
   min_vsol_in_curve: number;
   max_vsol_in_curve: number;
