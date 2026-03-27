@@ -247,7 +247,7 @@
   },
   "health": {
     "check_interval_s": 5,
-    "market_feed_stale_s": 15,
+    "market_feed_stale_s": 45,
     "probability_stale_s": 30,
     "execution_stale_s": 60,
     "auto_pause_on_degraded": true
