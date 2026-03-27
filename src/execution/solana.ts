@@ -148,6 +148,7 @@ export class BlockhashCache {
  */
 export function initSolanaConnection(): Connection {
   const rpcUrl = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+  log.info(`RPC: ${rpcUrl.replace(/api-key=[^&]+/, 'api-key=***')}`);
   return new Connection(rpcUrl, 'confirmed');
 }
 
@@ -353,7 +354,12 @@ export async function signAndSendTransaction(
   transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
   transaction.sign(wallet);
 
-  const signature = await connection.sendRawTransaction(transaction.serialize(), {
+  // Prefer staked endpoint for sendRawTransaction (lower slot skip rate)
+  // Falls back to the standard connection if HELIUS_STAKED_URL not set
+  const stakedUrl = process.env.HELIUS_STAKED_URL;
+  const sendConn = stakedUrl ? new Connection(stakedUrl, 'confirmed') : connection;
+
+  const signature = await sendConn.sendRawTransaction(transaction.serialize(), {
     skipPreflight,
     maxRetries: 2,
     preflightCommitment: 'confirmed',
