@@ -315,6 +315,8 @@
     "use_scalper_prequalification": true,
     "jitter_ms_min": 50,
     "jitter_ms_max": 200,
-    "size_variance_pct": 0.20
+    "size_variance_pct": 0.20,
+    "min_raydium_depth_sol": 5,
+    "subscribe_pool_stream": true
   }
 }

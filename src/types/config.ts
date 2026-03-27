@@ -207,6 +207,8 @@ export interface CoreCastConfig {
   subscribe_new_tokens: boolean;
   subscribe_trades: boolean;
   subscribe_migrations: boolean;
+  /** Stream 4: DexPools — Raydium LP monitor (optional enhancement, default true) */
+  subscribe_pool_stream?: boolean;
   /** Reconnect policy */
   reconnect_base_ms: number;
   reconnect_max_ms: number;
@@ -358,6 +360,8 @@ export interface MevConfig {
   jitter_ms_max?: number;               // default 200
   size_variance_pct?: number;           // default 0.20 (±20% of entry_size_sol)
   wallet_private_keys?: string[];       // array of base58 or JSON uint8array strings (from env only)
+  min_raydium_depth_sol?: number;       // default 5 — minimum Raydium pool SOL depth for graduated tokens
+  subscribe_pool_stream?: boolean;      // default true — subscribe to DexPools stream (Stream 4)
 }
 
 export interface PumpQuantConfig {

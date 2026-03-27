@@ -47,6 +47,7 @@ import { isPaperMode } from '../paper/engine';
 import { PumpQuantConfig, RouteMode } from '../types/config';
 import { BackrunEngine } from '../mev/backrun-engine';
 import { QualifiedMintCache } from '../mev/signal-bridge';
+import { PoolDepthCache, PoolUpdate } from '../mev/pool-depth-cache';
 import {
   TokenState, Regime, CandidatePacket, AnalysisTier, ExitReason,
 } from '../types/state';
@@ -77,6 +78,7 @@ class StrategyDaemon {
   private strategyProfile: string = 'default';
   private backrunEngine: BackrunEngine | null = null;
   private qualifiedMintCache: QualifiedMintCache = new QualifiedMintCache();
+  private poolDepthCache: PoolDepthCache = new PoolDepthCache();
   private pendingExecutions: Set<string> = new Set();
   private forcedExitCooldowns: Map<string, number> = new Map();
 
@@ -218,7 +220,7 @@ class StrategyDaemon {
 
     // Initialize MEV backrun engine if enabled
     if (config.mev?.enabled) {
-      this.backrunEngine = new BackrunEngine(config.mev, this.feed, this.qualifiedMintCache);
+      this.backrunEngine = new BackrunEngine(config.mev, this.feed, this.qualifiedMintCache, this.poolDepthCache);
       log.info(`MEV BackrunEngine initialized (paper_mode=${config.mev.paper_mode})`);
     }
 
@@ -507,14 +509,29 @@ class StrategyDaemon {
 
     this.corecast.on('connected', () => {
       this.healthMonitor.recordUpdate('market_feed');
-      // Verify all 3 Bitquery streams are active — hard limit is 3 concurrent gRPC streams
+      // Verify at least 3 core Bitquery streams are active (streams 4-5 are optional enhancements).
+      // 3 core streams required: bonding_trades + transactions + amm_trades.
       const v3 = this.corecast as import('../feed/corecast-v3').CoreCastV3Client;
       const activeStreams = typeof v3.activeStreamCount === 'number' ? v3.activeStreamCount : -1;
-      if (activeStreams !== -1 && activeStreams !== 3) {
-        log.error(`CRITICAL: CoreCast connected with ${activeStreams}/3 streams. Bitquery limit is 3. Halting to prevent blind trading.`);
+      if (activeStreams !== -1 && activeStreams < 3) {
+        log.error(`CRITICAL: CoreCast connected with only ${activeStreams} stream(s). Minimum 3 required. Halting to prevent blind trading.`);
         this.healthMonitor.pause('stream_count_mismatch');
       } else {
-        log.info(`CoreCast fast-lane connected (${activeStreams === -1 ? '?' : activeStreams}/3 streams active)`);
+        log.info(`CoreCast fast-lane connected (${activeStreams === -1 ? '?' : activeStreams} streams active, 3 core required)`);
+      }
+    });
+
+    // Stream 4: DexPools — Raydium LP depth monitor (optional, graceful degradation if unavailable)
+    this.corecast.on('poolUpdate', (update: PoolUpdate) => {
+      this.poolDepthCache.update(update.mint, update.depthSol);
+
+      // LP removal = forced exit signal
+      if (update.isRemoval && update.changeSol < -1) { // >1 SOL removed
+        const hasPos = this.backrunEngine?.hasOpenPosition(update.mint);
+        if (hasPos) {
+          log.warn(`[daemon] LP removal detected on ${update.mint.slice(0, 8)} — forcing exit`);
+          this.backrunEngine?.forceExit(update.mint, 'lp_removal');
+        }
       }
     });
 

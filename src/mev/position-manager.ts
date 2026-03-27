@@ -239,6 +239,20 @@ export class PositionManager extends EventEmitter {
     this.emit('closed', record);
   }
 
+  /**
+   * Force-close a single position by mint.
+   * Used for external exit signals (e.g. LP removal, rug detection).
+   * reason is cast to ExitReason; callers should use 'max_hold' for unrecognised reasons.
+   */
+  forceClosePosition(mint: string, reason: ExitReason | string): void {
+    const pos = this.positions.get(mint);
+    if (!pos) return;
+    const exitReason: ExitReason = (['take_profit', 'stop_loss', 'next_buyer', 'max_hold'] as string[]).includes(reason)
+      ? (reason as ExitReason)
+      : 'max_hold';
+    this.closePosition(mint, pos.entryVSol, exitReason);
+  }
+
   /** Force-close all open positions (e.g. on shutdown) */
   closeAll(): void {
     for (const [mint, pos] of this.positions) {

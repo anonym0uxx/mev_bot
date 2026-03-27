@@ -20,6 +20,7 @@ import { PaperTradeLogger } from './paper-trade-logger';
 import { JitoFailureHandler } from './jito-failure-handler';
 import { MevStatsReporter } from './stats-reporter';
 import { QualifiedMintCache } from './signal-bridge';
+import { PoolDepthCache } from './pool-depth-cache';
 import { EntryRandomizer } from './entry-randomizer';
 import { JitoBundleBuilder } from './jito-bundle-builder';
 import { SellExecutor } from './sell-executor';
@@ -38,6 +39,7 @@ export class BackrunEngine {
   private jitoHandler: JitoFailureHandler;
   private statsReporter: MevStatsReporter;
   private qualifiedMints: QualifiedMintCache | undefined;
+  private poolDepthCache: PoolDepthCache | undefined;
   private randomizer: EntryRandomizer;
   private jitoBundleBuilder: JitoBundleBuilder;
   private sellExecutor: SellExecutor;
@@ -52,10 +54,11 @@ export class BackrunEngine {
   private onTokenTrade: ((event: TokenTradeEvent) => void) | null = null;
   private onMintTrade: ((event: TokenTradeEvent) => void) | null = null;
 
-  constructor(cfg: MevConfig, feed: PumpPortalClient, qualifiedMints?: QualifiedMintCache) {
+  constructor(cfg: MevConfig, feed: PumpPortalClient, qualifiedMints?: QualifiedMintCache, poolDepthCache?: PoolDepthCache) {
     this.cfg = cfg;
     this.feed = feed;
     this.qualifiedMints = qualifiedMints;
+    this.poolDepthCache = poolDepthCache;
 
     this.detector = new BackrunDetector(cfg);
     this.posManager = new PositionManager(cfg);
@@ -191,6 +194,16 @@ export class BackrunEngine {
       return;
     }
 
+    // Guard: pool depth gate for graduated tokens
+    // If this mint has migrated to Raydium but the pool is too shallow, skip entry.
+    if (this.poolDepthCache?.hasMigrated(opp.mint)) {
+      const minDepth = this.cfg.min_raydium_depth_sol ?? 5;
+      if (!this.poolDepthCache.isDeep(opp.mint, minDepth)) {
+        log.debug(`[backrun] Skipping ${opp.mint.slice(0, 8)}: migrated but pool depth too shallow`);
+        return;
+      }
+    }
+
     log.info(
       `🎯 Backrun opportunity: ${opp.mint.slice(0, 8)} score=${opp.score.toFixed(3)} ` +
       `vSol=${opp.entryVSol.toFixed(2)} buyers=${opp.uniqueBuyerCount} [paper]`
@@ -223,6 +236,32 @@ export class BackrunEngine {
     } else {
       openAndBundle();
     }
+  }
+
+  /** Returns true if an open position exists for the given mint. */
+  hasOpenPosition(mint: string): boolean {
+    return this.posManager.hasPosition(mint);
+  }
+
+  /**
+   * Force-close an open position for the given mint.
+   * Used by the daemon for LP removal / external exit signals.
+   */
+  forceExit(mint: string, reason: string): void {
+    if (!this.posManager.hasPosition(mint)) return;
+    log.warn(`[backrun] forceExit triggered for ${mint.slice(0, 8)} reason=${reason}`);
+    // Use max_hold exit path by closing via closeAll-equivalent with a targeted close
+    // PositionManager doesn't expose a public closePosition directly, so we use a
+    // private-access workaround via the event cycle: emit a synthetic sell at entry price
+    // to trigger stop_loss path would be wrong — instead we expose a targeted close.
+    // PositionManager.closeAll() closes everything — too broad.
+    // We call posManager directly using the public interface.
+    this.posManager.forceClosePosition(mint, reason as any);
+  }
+
+  /** Set or update the pool depth cache (can be injected post-construction). */
+  setPoolDepthCache(cache: PoolDepthCache): void {
+    this.poolDepthCache = cache;
   }
 
   private checkAndResetDailyLoss(): void {

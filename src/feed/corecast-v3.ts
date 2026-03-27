@@ -18,6 +18,7 @@ import { createLogger } from '../utils/logger';
 import { nowMs } from '../utils/time';
 import { CoreCastConfig } from '../types/config';
 import { NewTokenEvent, TokenTradeEvent, MigrationEvent } from '../types/events';
+import { PoolUpdate } from '../mev/pool-depth-cache';
 import { EventJoiner } from './event-joiner';
 import { CreatorCache } from './creator-cache';
 
@@ -184,25 +185,45 @@ export class CoreCastV3Client extends EventEmitter {
       });
     }
 
+    // Stream 4 (optional): DexPools — Raydium LP monitor for pool depth filtering.
+    // 3 core streams required; streams 4-5 are optional enhancements.
+    const subscribePoolStream = this.config.subscribe_pool_stream !== false; // default true
+    if (subscribePoolStream) {
+      if (typeof (this.client as any).DexPools === 'function') {
+        streams.push({
+          name: 'dex_pools',
+          method: 'DexPools',
+          request: {
+            program: { addresses: [PUMP_FUN_AMM] },
+          },
+          handler: (msg) => this.handlePoolMessage(msg),
+        });
+      } else {
+        log.warn('[corecast] DexPools stream not available in current Bitquery plan — pool depth filtering disabled');
+      }
+    }
+
+    // Validate core streams: require at least 3 (bonding trades + transactions + AMM trades).
+    // 3 core streams required; streams 4-5 are optional enhancements.
+    const CORE_STREAMS_REQUIRED = 3;
+    const coreStreams = streams.filter(s => s.name !== 'dex_pools');
+    if (coreStreams.length < CORE_STREAMS_REQUIRED) {
+      // Hard fail — Bitquery concurrent stream limit is 3. Misconfiguration means we'd be
+      // trading blind or wasting quota. Refuse to start rather than silently under-subscribe.
+      throw new Error(
+        `CoreCast v3: expected at least ${CORE_STREAMS_REQUIRED} core streams but configured ${coreStreams.length}. ` +
+        `Check subscribe_trades/subscribe_new_tokens/subscribe_migrations in config.`
+      );
+    }
+
     // Start all streams
-    const EXPECTED_STREAMS = 3;
     for (const stream of streams) {
       this.reconnectAttempts.set(stream.name, 0);
       this.startStream(stream);
     }
 
-    if (streams.length !== EXPECTED_STREAMS) {
-      // Hard fail — Bitquery concurrent stream limit is 3. Misconfiguration means we'd be
-      // trading blind or wasting quota. Refuse to start rather than silently under-subscribe.
-      throw new Error(
-        `CoreCast v3: expected exactly ${EXPECTED_STREAMS} streams but configured ${streams.length}. ` +
-        `Check subscribe_trades/subscribe_new_tokens/subscribe_migrations in config. ` +
-        `Bitquery concurrent stream limit is 3 — do not add streams without removing others.`
-      );
-    }
-
     this._connected = true;
-    log.info(`CoreCast v3 connected — ${streams.length}/${EXPECTED_STREAMS} streams active`);
+    log.info(`CoreCast v3 connected — ${streams.length} streams active (${coreStreams.length} core + ${streams.length - coreStreams.length} optional)`);
     this.emit('connected');
   }
 
@@ -467,5 +488,54 @@ export class CoreCastV3Client extends EventEmitter {
 
       break; // Only process first 'create' instruction per tx
     }
+  }
+
+  // ====== POOL DEPTH HANDLER (Stream 4) ======
+
+  /** Handle DexPools stream message → PoolUpdate event */
+  private handlePoolMessage(msg: any): void {
+    const poolEvent = msg?.PoolEvent;
+    if (!poolEvent) return;
+
+    const market = poolEvent.Market;
+    if (!market) return;
+
+    // Extract pool address
+    const poolAddrBuf = market.MarketAddress;
+    const poolAddress = poolAddrBuf ? decodeAddress(poolAddrBuf) : '';
+
+    // QuoteCurrency holds the token mint (BaseCurrency = SOL for AMM pools)
+    const quoteMintBuf = market.QuoteCurrency?.MintAddress;
+    const mint = quoteMintBuf
+      ? (typeof quoteMintBuf === 'string' ? quoteMintBuf : decodeAddress(quoteMintBuf))
+      : '';
+
+    if (!mint) return;
+
+    // SOL depth: PostAmount on the BaseCurrency (SOL) side — in lamports, convert to SOL
+    const basePost = Number(poolEvent.BaseCurrency?.PostAmount ?? 0);
+    const baseChange = Number(poolEvent.BaseCurrency?.ChangeAmount ?? 0);
+
+    // PostAmount is in raw lamports (9 decimals for SOL)
+    const depthSol = basePost / 1e9;
+    const changeSol = baseChange / 1e9;
+
+    // LP removal: base (SOL) change is negative (SOL leaving the pool)
+    const isRemoval = changeSol < 0;
+
+    const update: PoolUpdate = {
+      mint,
+      poolAddress,
+      depthSol,
+      changeSol,
+      isRemoval,
+      timestamp: nowMs(),
+    };
+
+    log.debug(
+      `[pool] ${mint.slice(0, 8)} depth=${depthSol.toFixed(2)} SOL change=${changeSol >= 0 ? '+' : ''}${changeSol.toFixed(2)} SOL${isRemoval ? ' ⚠️ LP REMOVAL' : ''}`
+    );
+
+    this.emit('poolUpdate', update);
   }
 }

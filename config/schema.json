@@ -1299,7 +1299,9 @@
         "jitter_ms_min": { "type": "number", "minimum": 0 },
         "jitter_ms_max": { "type": "number", "minimum": 0 },
         "size_variance_pct": { "type": "number", "minimum": 0, "maximum": 1 },
-        "wallet_private_keys": { "type": "array", "items": { "type": "string" } }
+        "wallet_private_keys": { "type": "array", "items": { "type": "string" } },
+        "min_raydium_depth_sol": { "type": "number", "default": 5 },
+        "subscribe_pool_stream": { "type": "boolean", "default": true }
       }
     }
   }
