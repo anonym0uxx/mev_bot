@@ -11,6 +11,7 @@
  */
 
 import { EventEmitter } from 'events';
+import * as fs from 'fs';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import * as path from 'path';
@@ -23,6 +24,15 @@ import { EventJoiner } from './event-joiner';
 import { CreatorCache } from './creator-cache';
 
 const log = createLogger('corecast-v3');
+
+/** Emitted by Stream 5 (whale_trades) when a known whale wallet buys a Pump.fun token */
+export interface WhaleTradeEvent {
+  mint: string;
+  traderAddress: string;
+  solAmount: number;
+  txType: string;
+  timestamp: number;
+}
 
 const PUMP_FUN_BONDING = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 const PUMP_FUN_AMM     = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
@@ -203,10 +213,34 @@ export class CoreCastV3Client extends EventEmitter {
       }
     }
 
+    // Stream 5 (optional): whale_trades — DexTrades filtered to known alpha wallet addresses.
+    // Only activated when: subscribe_whale_stream !== false AND whale list has >= 5 addresses.
+    // Emits 'whaleTrade' events for fast MEV pre-qualification via signal bridge.
+    const subscribeWhaleStream = (this.config as any).subscribe_whale_stream !== false; // default true
+    if (subscribeWhaleStream) {
+      const whaleAddresses = this.loadWhaleAddresses();
+      if (whaleAddresses.length >= 5) {
+        streams.push({
+          name: 'whale_trades',
+          method: 'DexTrades',
+          request: {
+            program: { addresses: [PUMP_FUN_BONDING] },
+            trader: { addresses: whaleAddresses },
+          },
+          handler: (msg) => this.handleWhaleTradeMessage(msg),
+        });
+        log.info(`[corecast] Stream 5 (whale_trades) active — tracking ${whaleAddresses.length} whale wallets`);
+      } else {
+        log.warn(`[corecast] Stream 5 (whale_trades) skipped — whale list has ${whaleAddresses.length} addresses (need >= 5). Run scripts/build-whale-list.js to populate.`);
+      }
+    } else {
+      log.info('[corecast] Stream 5 (whale_trades) disabled via config (subscribe_whale_stream=false)');
+    }
+
     // Validate core streams: require at least 3 (bonding trades + transactions + AMM trades).
     // 3 core streams required; streams 4-5 are optional enhancements.
     const CORE_STREAMS_REQUIRED = 3;
-    const coreStreams = streams.filter(s => s.name !== 'dex_pools');
+    const coreStreams = streams.filter(s => s.name !== 'dex_pools' && s.name !== 'whale_trades');
     if (coreStreams.length < CORE_STREAMS_REQUIRED) {
       // Hard fail — Bitquery concurrent stream limit is 3. Misconfiguration means we'd be
       // trading blind or wasting quota. Refuse to start rather than silently under-subscribe.
@@ -223,7 +257,8 @@ export class CoreCastV3Client extends EventEmitter {
     }
 
     this._connected = true;
-    log.info(`CoreCast v3 connected — ${streams.length} streams active (${coreStreams.length} core + ${streams.length - coreStreams.length} optional)`);
+    const optionalCount = streams.length - coreStreams.length;
+    log.info(`CoreCast v3 connected — ${streams.length} streams active (${coreStreams.length} core + ${optionalCount} optional)`);
     this.emit('connected');
   }
 
@@ -488,6 +523,72 @@ export class CoreCastV3Client extends EventEmitter {
 
       break; // Only process first 'create' instruction per tx
     }
+  }
+
+  // ====== WHALE WALLET LOADER ======
+
+  /** Load whale wallet addresses from data/whale-wallets.json for Stream 5 filter */
+  private loadWhaleAddresses(): string[] {
+    const whalePath = path.join(process.cwd(), 'data', 'whale-wallets.json');
+    try {
+      if (!fs.existsSync(whalePath)) {
+        log.warn('[corecast] whale-wallets.json not found — run scripts/build-whale-list.js');
+        return [];
+      }
+      const data = JSON.parse(fs.readFileSync(whalePath, 'utf8'));
+      const wallets: Array<{ address: string }> = data.wallets || [];
+      return wallets.map(w => w.address).filter(Boolean);
+    } catch (e) {
+      log.error(`[corecast] Failed to load whale list: ${(e as Error).message}`);
+      return [];
+    }
+  }
+
+  // ====== WHALE TRADES HANDLER (Stream 5) ======
+
+  /** Handle whale_trades stream message → WhaleTradeEvent */
+  private handleWhaleTradeMessage(msg: any): void {
+    const trade = msg?.Trade;
+    if (!trade) return;
+
+    // Deduplicate by tx signature (shared dedup set)
+    const sig = msg?.Transaction?.Signature;
+    const sigStr = sig ? (Buffer.isBuffer(sig) ? sig.toString('hex') : String(sig)) : '';
+    if (sigStr && this.isDupe(sigStr)) return;
+    if (sigStr) this.addDedupe(sigStr);
+
+    const mint = trade.Market?.QuoteCurrency?.MintAddress;
+    const mintStr = mint
+      ? (typeof mint === 'string' ? mint : decodeAddress(mint))
+      : '';
+    if (!mintStr) return;
+
+    // Determine buy vs sell
+    const buyAmount = trade.Buy?.Amount || 0;
+    const sellAmount = trade.Sell?.Amount || 0;
+    const isBuy = buyAmount > 0 && buyAmount > sellAmount;
+
+    const traderBuf = isBuy
+      ? trade.Buy?.Account?.Address
+      : trade.Sell?.Account?.Address;
+    const traderAddress = traderBuf ? decodeAddress(traderBuf) : '';
+
+    const solAmount = isBuy
+      ? Number(trade.Sell?.Amount || 0) / 1e9
+      : Number(trade.Buy?.Amount || 0) / 1e9;
+
+    const txType = isBuy ? 'buy' : 'sell';
+
+    const event: WhaleTradeEvent = {
+      mint: mintStr,
+      traderAddress,
+      solAmount,
+      txType,
+      timestamp: nowMs(),
+    };
+
+    log.debug(`[whale] ${txType.toUpperCase()} ${mintStr.slice(0,8)} by ${traderAddress.slice(0,8)} (${solAmount.toFixed(4)} SOL)`);
+    this.emit('whaleTrade', event);
   }
 
   // ====== POOL DEPTH HANDLER (Stream 4) ======

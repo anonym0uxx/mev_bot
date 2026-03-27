@@ -362,6 +362,7 @@ export interface MevConfig {
   wallet_private_keys?: string[];       // array of base58 or JSON uint8array strings (from env only)
   min_raydium_depth_sol?: number;       // default 5 — minimum Raydium pool SOL depth for graduated tokens
   subscribe_pool_stream?: boolean;      // default true — subscribe to DexPools stream (Stream 4)
+  subscribe_whale_stream?: boolean;     // default true — subscribe to whale_trades stream (Stream 5)
 }
 
 export interface PumpQuantConfig {

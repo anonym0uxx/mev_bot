@@ -48,6 +48,7 @@ import { PumpQuantConfig, RouteMode } from '../types/config';
 import { BackrunEngine } from '../mev/backrun-engine';
 import { QualifiedMintCache } from '../mev/signal-bridge';
 import { PoolDepthCache, PoolUpdate } from '../mev/pool-depth-cache';
+import { WhaleTracker, WhaleBuyEvent } from '../feed/whale-tracker';
 import {
   TokenState, Regime, CandidatePacket, AnalysisTier, ExitReason,
 } from '../types/state';
@@ -79,6 +80,7 @@ class StrategyDaemon {
   private backrunEngine: BackrunEngine | null = null;
   private qualifiedMintCache: QualifiedMintCache = new QualifiedMintCache();
   private poolDepthCache: PoolDepthCache = new PoolDepthCache();
+  private whaleTracker: WhaleTracker = new WhaleTracker();
   private pendingExecutions: Set<string> = new Set();
   private forcedExitCooldowns: Map<string, number> = new Map();
 
@@ -492,7 +494,7 @@ class StrategyDaemon {
       this.handleNewToken(event);
     });
 
-    // CoreCast trade → same handler, but marks source
+    // CoreCast trade → same handler, but marks source; also route through whale tracker
     let ccTradeCount = 0;
     this.corecast.on('tokenTrade', (event: TokenTradeEvent) => {
       ccTradeCount++;
@@ -500,6 +502,8 @@ class StrategyDaemon {
         log.info(`CoreCast trades: ${ccTradeCount} (latest: ${event.mint.slice(0,8)} ${event.txType})`);
       }
       this.handleTokenTrade(event);
+      // Route every trade through whale tracker (fallback path when Stream 5 is inactive)
+      this.whaleTracker.checkTrade(event.mint, event.traderPublicKey, event.solAmount, event.txType);
     });
 
     // CoreCast migration
@@ -533,6 +537,18 @@ class StrategyDaemon {
           this.backrunEngine?.forceExit(update.mint, 'lp_removal');
         }
       }
+    });
+
+    // Stream 5: whale_trades — dedicated whale stream (only active when whale list >= 5 addresses)
+    // Catches whale buys with lower latency than the general tokenTrade path above
+    this.corecast.on('whaleTrade', (event: { mint: string; traderAddress: string; solAmount: number; txType: string }) => {
+      this.whaleTracker.checkTrade(event.mint, event.traderAddress, event.solAmount, event.txType);
+    });
+
+    // Whale buy → pre-qualify mint in signal bridge with extended TTL (60s)
+    this.whaleTracker.on('whaleBuy', (event: WhaleBuyEvent) => {
+      log.info(`[daemon] Whale buy: ${event.traderAddress.slice(0,8)}... on ${event.mint.slice(0,8)}... — pre-qualifying for MEV (60s TTL)`);
+      this.qualifiedMintCache.preQualify(event.mint, 60_000);
     });
 
     this.corecast.on('disconnected', (reason: string) => {

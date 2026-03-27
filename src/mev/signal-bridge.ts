@@ -18,6 +18,16 @@ export class QualifiedMintCache {
     this.cache.set(mint, Date.now() + this.ttlMs);
   }
 
+  /**
+   * Pre-qualify a mint with an extended TTL (e.g. whale signal = 60s).
+   * Uses Math.max so existing entries are only extended, never shortened.
+   */
+  preQualify(mint: string, ttlMs = 60_000): void {
+    const existingExpiry = this.cache.get(mint) ?? 0;
+    const newExpiry = Date.now() + ttlMs;
+    this.cache.set(mint, Math.max(existingExpiry, newExpiry));
+  }
+
   has(mint: string): boolean {
     const expiry = this.cache.get(mint);
     if (!expiry) return false;

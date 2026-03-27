@@ -317,6 +317,7 @@
     "jitter_ms_max": 200,
     "size_variance_pct": 0.20,
     "min_raydium_depth_sol": 5,
-    "subscribe_pool_stream": true
+    "subscribe_pool_stream": true,
+    "subscribe_whale_stream": true
   }
 }
