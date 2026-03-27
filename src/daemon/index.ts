@@ -46,6 +46,7 @@ import { startApiServer, DaemonContext } from './api';
 import { isPaperMode } from '../paper/engine';
 import { PumpQuantConfig, RouteMode } from '../types/config';
 import { BackrunEngine } from '../mev/backrun-engine';
+import { QualifiedMintCache } from '../mev/signal-bridge';
 import {
   TokenState, Regime, CandidatePacket, AnalysisTier, ExitReason,
 } from '../types/state';
@@ -75,6 +76,7 @@ class StrategyDaemon {
   private analysisInterval: NodeJS.Timeout | null = null;
   private strategyProfile: string = 'default';
   private backrunEngine: BackrunEngine | null = null;
+  private qualifiedMintCache: QualifiedMintCache = new QualifiedMintCache();
   private pendingExecutions: Set<string> = new Set();
   private forcedExitCooldowns: Map<string, number> = new Map();
 
@@ -216,7 +218,7 @@ class StrategyDaemon {
 
     // Initialize MEV backrun engine if enabled
     if (config.mev?.enabled) {
-      this.backrunEngine = new BackrunEngine(config.mev, this.feed);
+      this.backrunEngine = new BackrunEngine(config.mev, this.feed, this.qualifiedMintCache);
       log.info(`MEV BackrunEngine initialized (paper_mode=${config.mev.paper_mode})`);
     }
 
@@ -914,6 +916,8 @@ class StrategyDaemon {
 
           // Store full entry decision on packet for ML feature capture in executeEntry
           packet.entry_decision = entryDecision;
+          // Signal bridge: pre-qualify this mint for MEV engine (30s TTL)
+          this.qualifiedMintCache.add(mint);
           log.info(`🚀 Promoting to ENTER_READY: ${packet.symbol || mint.slice(0,8)} — ${entryDecision.reason}`);
           this.stateMachine.transitionToEnterReady(mint, entryDecision.reason);
           log.info(`💰 EXECUTING ENTRY: ${packet.symbol || mint.slice(0,8)} size=${entryDecision.sizing!.position_size.toFixed(4)} SOL | social: twitter=${social.has_twitter} tg=${social.has_telegram} replies=${social.reply_count} score=${social.social_score.toFixed(2)} (positions: ${openPositionCount}+${this.committedMints.size - 1} pending)`);

@@ -19,6 +19,8 @@ import { PositionManager } from './position-manager';
 import { PaperTradeLogger } from './paper-trade-logger';
 import { JitoFailureHandler } from './jito-failure-handler';
 import { MevStatsReporter } from './stats-reporter';
+import { QualifiedMintCache } from './signal-bridge';
+import { EntryRandomizer } from './entry-randomizer';
 import { createLogger } from '../utils/logger';
 import { nowMs } from '../utils/time';
 
@@ -33,6 +35,8 @@ export class BackrunEngine {
   private tradeLogger: PaperTradeLogger;
   private jitoHandler: JitoFailureHandler;
   private statsReporter: MevStatsReporter;
+  private qualifiedMints: QualifiedMintCache | undefined;
+  private randomizer: EntryRandomizer;
 
   private running = false;
 
@@ -44,15 +48,17 @@ export class BackrunEngine {
   private onTokenTrade: ((event: TokenTradeEvent) => void) | null = null;
   private onMintTrade: ((event: TokenTradeEvent) => void) | null = null;
 
-  constructor(cfg: MevConfig, feed: PumpPortalClient) {
+  constructor(cfg: MevConfig, feed: PumpPortalClient, qualifiedMints?: QualifiedMintCache) {
     this.cfg = cfg;
     this.feed = feed;
+    this.qualifiedMints = qualifiedMints;
 
     this.detector = new BackrunDetector(cfg);
     this.posManager = new PositionManager(cfg);
     this.tradeLogger = new PaperTradeLogger(cfg.log_file);
     this.jitoHandler = new JitoFailureHandler();
     this.statsReporter = new MevStatsReporter(this.tradeLogger);
+    this.randomizer = new EntryRandomizer(cfg);
   }
 
   start(): void {
@@ -167,13 +173,25 @@ export class BackrunEngine {
       return;
     }
 
+    // Guard: scalper pre-qualification (signal bridge)
+    if (this.qualifiedMints && !this.qualifiedMints.has(opp.mint)) {
+      log.debug(`[paper] skipped ${opp.mint.slice(0, 8)} — not in scalper hot-list`);
+      return;
+    }
+
     log.info(
       `🎯 Backrun opportunity: ${opp.mint.slice(0, 8)} score=${opp.score.toFixed(3)} ` +
       `vSol=${opp.entryVSol.toFixed(2)} buyers=${opp.uniqueBuyerCount} [paper]`
     );
 
-    // Open paper position
-    this.posManager.openPosition(opp);
+    // Apply anti-fingerprinting: randomize entry size and delay
+    const { delayMs, sizeSol } = this.randomizer.randomize();
+    opp.recommendedSizeSol = sizeSol; // override with randomized size
+    if (delayMs > 0) {
+      setTimeout(() => this.posManager.openPosition(opp), delayMs);
+    } else {
+      this.posManager.openPosition(opp);
+    }
   }
 
   private checkAndResetDailyLoss(): void {

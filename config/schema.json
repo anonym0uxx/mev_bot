@@ -1294,7 +1294,11 @@
         "daily_loss_cap_sol": { "type": "number", "minimum": 0 },
         "jito_tip_lamports": { "type": "integer", "minimum": 0 },
         "conflict_policy": { "type": "string", "enum": ["skip", "replace"] },
-        "log_file": { "type": "string" }
+        "log_file": { "type": "string" },
+        "use_scalper_prequalification": { "type": "boolean" },
+        "jitter_ms_min": { "type": "number", "minimum": 0 },
+        "jitter_ms_max": { "type": "number", "minimum": 0 },
+        "size_variance_pct": { "type": "number", "minimum": 0, "maximum": 1 }
       }
     }
   }

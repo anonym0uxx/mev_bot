@@ -37,6 +37,8 @@ export interface BackrunOpportunity {
   tokenFirstSeenMs: number;
   uniqueBuyerCount: number;
   detectedAt: number;
+  /** Override entry size (SOL) set by EntryRandomizer for anti-fingerprinting */
+  recommendedSizeSol?: number;
 }
 
 interface TradeRecord {

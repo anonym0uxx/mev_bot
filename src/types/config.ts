@@ -353,6 +353,10 @@ export interface MevConfig {
   jito_tip_lamports: number;
   conflict_policy: 'skip' | 'replace';
   log_file: string;
+  use_scalper_prequalification?: boolean; // default true
+  jitter_ms_min?: number;               // default 50
+  jitter_ms_max?: number;               // default 200
+  size_variance_pct?: number;           // default 0.20 (±20% of entry_size_sol)
 }
 
 export interface PumpQuantConfig {
