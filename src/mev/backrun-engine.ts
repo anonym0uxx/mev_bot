@@ -15,12 +15,14 @@ import { PumpPortalClient } from '../feed/pump-portal';
 import { MevConfig } from '../types/config';
 import { TokenTradeEvent } from '../types/events';
 import { BackrunDetector, BackrunOpportunity } from './detector';
-import { PositionManager } from './position-manager';
+import { PositionManager, PnLRecord } from './position-manager';
 import { PaperTradeLogger } from './paper-trade-logger';
 import { JitoFailureHandler } from './jito-failure-handler';
 import { MevStatsReporter } from './stats-reporter';
 import { QualifiedMintCache } from './signal-bridge';
 import { EntryRandomizer } from './entry-randomizer';
+import { JitoBundleBuilder } from './jito-bundle-builder';
+import { SellExecutor } from './sell-executor';
 import { createLogger } from '../utils/logger';
 import { nowMs } from '../utils/time';
 
@@ -37,6 +39,8 @@ export class BackrunEngine {
   private statsReporter: MevStatsReporter;
   private qualifiedMints: QualifiedMintCache | undefined;
   private randomizer: EntryRandomizer;
+  private jitoBundleBuilder: JitoBundleBuilder;
+  private sellExecutor: SellExecutor;
 
   private running = false;
 
@@ -59,6 +63,8 @@ export class BackrunEngine {
     this.jitoHandler = new JitoFailureHandler();
     this.statsReporter = new MevStatsReporter(this.tradeLogger);
     this.randomizer = new EntryRandomizer(cfg);
+    this.jitoBundleBuilder = new JitoBundleBuilder(cfg);
+    this.sellExecutor = new SellExecutor(cfg);
   }
 
   start(): void {
@@ -79,13 +85,19 @@ export class BackrunEngine {
       this.handleOpportunity(opp);
     });
 
-    // Wire position closures → logger + stats
-    this.posManager.on('closed', (record) => {
+    // Wire position closures → execution layer + logger + stats
+    this.posManager.on('closed', (record: PnLRecord) => {
       // Track daily loss
       if (record.pnlSol < 0) {
         this.checkAndResetDailyLoss();
         this.dailyLossSol += Math.abs(record.pnlSol);
       }
+
+      // Execute sell (paper: logs simulation; live: submits via Helius staked RPC)
+      this.sellExecutor.executeSell(record).catch((err: Error) => {
+        log.warn(`SellExecutor error for ${record.mint.slice(0, 8)}: ${err.message}`);
+      });
+
       this.tradeLogger.record(record);
       this.statsReporter.onTrade();
     });
@@ -187,10 +199,24 @@ export class BackrunEngine {
     // Apply anti-fingerprinting: randomize entry size and delay
     const { delayMs, sizeSol } = this.randomizer.randomize();
     opp.recommendedSizeSol = sizeSol; // override with randomized size
-    if (delayMs > 0) {
-      setTimeout(() => this.posManager.openPosition(opp), delayMs);
-    } else {
+
+    const openAndBundle = () => {
       this.posManager.openPosition(opp);
+      // Fire-and-forget Jito bundle (paper: logs simulation; live: submits bundle)
+      this.jitoBundleBuilder.buildBundle({
+        mint: opp.mint,
+        sizeSol,
+        tipLamports: this.cfg.jito_tip_lamports,
+        paperMode: this.cfg.paper_mode,
+      }).catch((err: Error) => {
+        log.warn(`JitoBundleBuilder error for ${opp.mint.slice(0, 8)}: ${err.message}`);
+      });
+    };
+
+    if (delayMs > 0) {
+      setTimeout(openAndBundle, delayMs);
+    } else {
+      openAndBundle();
     }
   }
 
