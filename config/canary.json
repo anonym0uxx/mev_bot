@@ -76,8 +76,8 @@
     "bot_pump_max_buyers": 4,
     "bot_pump_min_vsol_delta": 18,
     "max_token_age_s": 60,
-    "min_flow_momentum": 0.0,
-    "min_breadth_topology": 0.0
+    "min_flow_momentum": 0,
+    "min_breadth_topology": 0
   },
   "exit": {
     "hold_horizon_s": 10,
@@ -86,7 +86,7 @@
     "retrace_tightening_slippage": 0.04,
     "retrace_tightening_hold_edge": 0.03,
     "retrace_tightening_time": 0.015,
-    "time_decay_start_s": 2.0,
+    "time_decay_start_s": 2,
     "time_decay_pressure_per_s": 0.008,
     "max_hold_time_s": 4,
     "take_profit_pct": 0.06,
@@ -96,7 +96,7 @@
     "tier1_reduce_pct": 40,
     "momentum_reversal_pct": 0.06,
     "momentum_reversal_min_mfe_pct": 0.05,
-    "time_decay_exit_s": 2.0
+    "time_decay_exit_s": 2
   },
   "risk": {
     "bankroll_sol": 0.71,
@@ -117,8 +117,8 @@
   "execution": {
     "default_route_mode": "local",
     "default_slippage_bps": 100,
-    "default_priority_fee_sol": 5e-05,
-    "priority_fee_floor_sol": 5e-05,
+    "default_priority_fee_sol": 0.00005,
+    "priority_fee_floor_sol": 0.00005,
     "priority_fee_cap_sol": 0.0002,
     "dynamic_priority_fee": true,
     "dynamic_priority_fee_percentile": 75,
@@ -158,7 +158,7 @@
     "pump_fee_pct": 0.01,
     "pump_swap_fee_pct": 0.0025,
     "pump_portal_fee_pct": 0.005,
-    "solana_base_fee_sol": 5e-06,
+    "solana_base_fee_sol": 0.000005,
     "regime_fee_overrides": {
       "POST_MIGRATION": {
         "pump_fee_pct": 0,
@@ -300,8 +300,8 @@
     "enabled": true,
     "paper_mode": true,
     "trigger_min_buy_sol": 0.35,
-    "trigger_max_buy_sol": 5.0,
-    "trigger_min_score": 0.0,
+    "trigger_max_buy_sol": 5,
+    "trigger_min_score": 0,
     "min_vsol_in_curve": 31,
     "max_vsol_in_curve": 48,
     "max_token_age_s": 300,
@@ -313,7 +313,7 @@
     "stop_loss_pct": 0.04,
     "max_hold_ms": 1500,
     "next_buyer_exit": true,
-    "daily_loss_cap_sol": 0.5,
+    "daily_loss_cap_sol": 5,
     "jito_tip_lamports": 50000,
     "conflict_policy": "skip",
     "log_file": "data/mev_paper_trades.jsonl",
@@ -337,20 +337,61 @@
     "next_buyer_single_buy_ratio": 0.25,
     "next_buyer_profit_exit_pct": 0.015,
     "tp_tiers": [
-      {"trigger_max_sol": 0.38, "tp_pct": 0.03, "sl_pct": 0.015},
-      {"trigger_max_sol": 0.45, "tp_pct": 0.04, "sl_pct": 0.02},
-      {"trigger_max_sol": 0.80, "tp_pct": 0.055, "sl_pct": 0.025},
-      {"trigger_max_sol": 1.50, "tp_pct": 0.07, "sl_pct": 0.035},
-      {"trigger_max_sol": 5.00, "tp_pct": 0.09, "sl_pct": 0.045}
+      {
+        "trigger_max_sol": 0.38,
+        "tp_pct": 0.03,
+        "sl_pct": 0.015
+      },
+      {
+        "trigger_max_sol": 0.45,
+        "tp_pct": 0.04,
+        "sl_pct": 0.02
+      },
+      {
+        "trigger_max_sol": 0.8,
+        "tp_pct": 0.055,
+        "sl_pct": 0.025
+      },
+      {
+        "trigger_max_sol": 1.5,
+        "tp_pct": 0.07,
+        "sl_pct": 0.035
+      },
+      {
+        "trigger_max_sol": 5,
+        "tp_pct": 0.09,
+        "sl_pct": 0.045
+      }
     ],
     "size_tiers": [
-      {"trigger_max_sol": 0.2, "size_sol": 0.0},
-      {"trigger_max_sol": 0.3, "size_sol": 0.06},
-      {"trigger_max_sol": 0.42, "size_sol": 0.10},
-      {"trigger_max_sol": 0.45, "size_sol": 0.18},
-      {"trigger_max_sol": 0.80, "size_sol": 0.15},
-      {"trigger_max_sol": 1.50, "size_sol": 0.20},
-      {"trigger_max_sol": 5.00, "size_sol": 0.12}
+      {
+        "trigger_max_sol": 0.2,
+        "size_sol": 0
+      },
+      {
+        "trigger_max_sol": 0.3,
+        "size_sol": 0.06
+      },
+      {
+        "trigger_max_sol": 0.42,
+        "size_sol": 0.1
+      },
+      {
+        "trigger_max_sol": 0.45,
+        "size_sol": 0.18
+      },
+      {
+        "trigger_max_sol": 0.8,
+        "size_sol": 0.15
+      },
+      {
+        "trigger_max_sol": 1.5,
+        "size_sol": 0.2
+      },
+      {
+        "trigger_max_sol": 5,
+        "size_sol": 0.12
+      }
     ]
   }
 }
