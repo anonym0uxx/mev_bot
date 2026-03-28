@@ -47,7 +47,7 @@ import { isPaperMode } from '../paper/engine';
 import { PumpQuantConfig, RouteMode } from '../types/config';
 import { BackrunEngine } from '../mev/backrun-engine';
 import { QualifiedMintCache } from '../mev/signal-bridge';
-import { PoolDepthCache, PoolUpdate } from '../mev/pool-depth-cache';
+import { PoolDepthCache } from '../mev/pool-depth-cache';
 import { WhaleTracker, WhaleBuyEvent } from '../feed/whale-tracker';
 import {
   TokenState, Regime, CandidatePacket, AnalysisTier, ExitReason,
@@ -166,6 +166,8 @@ class StrategyDaemon {
         const corecastCfg = { ...config.corecast } as any;
         if (config.mev?.subscribe_whale_stream === false) corecastCfg.subscribe_whale_stream = false;
         if (config.mev?.subscribe_pool_stream === false) corecastCfg.subscribe_pool_stream = false;
+        if (config.mev?.subscribe_transfer_stream === false) corecastCfg.subscribe_transfer_stream = false;
+        if (config.mev?.subscribe_bonding_pool_stream === false) corecastCfg.subscribe_bonding_pool_stream = false;
         this.corecast = new CoreCastV3Client(corecastCfg);
         log.info('CoreCast v3 enabled — gRPC streaming (sub-100ms)');
       } else {
@@ -655,24 +657,35 @@ class StrategyDaemon {
       }
     });
 
-    // Stream 4: DexPools — Raydium LP depth monitor (optional, graceful degradation if unavailable)
-    this.corecast.on('poolUpdate', (update: PoolUpdate) => {
-      this.poolDepthCache.update(update.mint, update.depthSol);
-
-      // LP removal = forced exit signal
-      if (update.isRemoval && update.changeSol < -1) { // >1 SOL removed
-        const hasPos = this.backrunEngine?.hasOpenPosition(update.mint);
-        if (hasPos) {
-          log.warn(`[daemon] LP removal detected on ${update.mint.slice(0, 8)} — forcing exit`);
-          this.backrunEngine?.forceExit(update.mint, 'lp_removal');
+    // Stream 4: Transfers — early exit signal for large holder token transfers.
+    // If a large holder is transferring tokens to another wallet before selling on DEX,
+    // that's a 30-60s early warning of an upcoming dump.
+    this.corecast.on('largeTransfer', (event: { mint: string; senderAddress: string; receiverAddress: string; tokenAmount: number; transferPctEstimate: number; timestamp: number }) => {
+      // Check if we have an open MEV position on this mint
+      if (this.backrunEngine?.hasOpenPosition(event.mint)) {
+        // Large transfer (>5% of estimated supply) = early exit signal
+        if (event.transferPctEstimate > 5.0) {
+          log.warn(`[daemon] Large transfer exit: ${event.mint.slice(0, 8)} sender=${event.senderAddress.slice(0, 8)} ${event.transferPctEstimate.toFixed(1)}% of supply → forcing exit`);
+          this.backrunEngine.forceExit(event.mint, 'large_transfer_exit');
         }
       }
     });
 
-    // Stream 5: whale_trades — dedicated whale stream (only active when whale list >= 5 addresses)
-    // Catches whale buys with lower latency than the general tokenTrade path above
-    this.corecast.on('whaleTrade', (event: { mint: string; traderAddress: string; solAmount: number; txType: string }) => {
-      this.whaleTracker.checkTrade(event.mint, event.traderAddress, event.solAmount, event.txType);
+    // Stream 5: bonding_pools — significant bonding curve pushes.
+    // Large curve moves (>0.5 SOL) can inform scoring and pre-qualification.
+    this.corecast.on('bondingCurvePool', (event: { mint: string; poolAddress: string; changeSol: number; depthSol: number; timestamp: number }) => {
+      // Large positive push (buy) → pre-qualify for MEV engine (signals whale activity on curve)
+      if (event.changeSol > 2.0) {
+        log.debug(`[daemon] Bonding curve push: ${event.mint.slice(0, 8)} +${event.changeSol.toFixed(2)} SOL → pre-qualifying for MEV`);
+        this.qualifiedMintCache.preQualify(event.mint, 30_000);
+      }
+      // Large negative push (sell) → force exit if we have position
+      if (event.changeSol < -2.0 && this.backrunEngine?.hasOpenPosition(event.mint)) {
+        log.warn(`[daemon] Large curve sell: ${event.mint.slice(0, 8)} ${event.changeSol.toFixed(2)} SOL → forcing exit`);
+        this.backrunEngine.forceExit(event.mint, 'large_curve_sell');
+      }
+      // Update pool depth cache for graduated tokens that may have both bonding + AMM activity
+      this.poolDepthCache.update(event.mint, event.depthSol);
     });
 
     // Creator sell detection — from Transactions stream (stream 2, zero extra connections)

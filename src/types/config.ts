@@ -364,8 +364,10 @@ export interface MevConfig {
   size_variance_pct?: number;           // default 0.20 (±20% of entry_size_sol)
   wallet_private_keys?: string[];       // array of base58 or JSON uint8array strings (from env only)
   min_raydium_depth_sol?: number;       // default 5 — minimum Raydium pool SOL depth for graduated tokens
-  subscribe_pool_stream?: boolean;      // default true — subscribe to DexPools stream (Stream 4)
-  subscribe_whale_stream?: boolean;     // default true — subscribe to whale_trades stream (Stream 5)
+  subscribe_pool_stream?: boolean;      // DEPRECATED — replaced by subscribe_bonding_pool_stream
+  subscribe_whale_stream?: boolean;     // DEPRECATED — replaced by subscribe_transfer_stream
+  subscribe_transfer_stream?: boolean;  // default true — subscribe to Transfers stream (Stream 4: early exit signal)
+  subscribe_bonding_pool_stream?: boolean; // default true — subscribe to DexPools bonding curve stream (Stream 5)
   pre_trigger_gate_enabled?: boolean;
   pre_trigger_min_buys_1s?: number;
   pre_trigger_min_buys_2s?: number;

@@ -2,10 +2,12 @@
  * @module feed/corecast-v3
  * Bitquery CoreCast gRPC client — sub-100ms real-time Pump.fun data.
  *
- * Streams:
+ * Streams (5/5 slots used):
  *   1. dex_trades  — Pump.fun bonding curve trades (primary)
  *   2. transactions — Pool creation events + creator address
  *   3. dex_trades  — Pump.fun AMM post-graduation trades
+ *   4. transfers   — SPL token transfers for early exit signal (large holder transfers = dump warning)
+ *   5. dex_pools   — Pump.fun bonding curve pool events (large curve pushes)
  *
  * Replaces corecast-v2.ts (HTTP polling, 1-2s latency, ~86k calls/day).
  */
@@ -31,6 +33,28 @@ export interface WhaleTradeEvent {
   traderAddress: string;
   solAmount: number;
   txType: string;
+  timestamp: number;
+}
+
+/** Emitted by Stream 4 (transfers) when a large SPL token transfer is detected for a held mint */
+export interface LargeTransferEvent {
+  mint: string;
+  senderAddress: string;
+  receiverAddress: string;
+  tokenAmount: number;
+  /** Estimated % of supply this transfer represents (if available) */
+  transferPctEstimate: number;
+  timestamp: number;
+}
+
+/** Emitted by Stream 5 (dex_pools bonding) when a significant curve push is detected */
+export interface BondingCurvePoolEvent {
+  mint: string;
+  poolAddress: string;
+  /** SOL depth change (positive = large buy pushing curve, negative = large sell) */
+  changeSol: number;
+  /** Current total SOL in bonding curve */
+  depthSol: number;
   timestamp: number;
 }
 
@@ -219,53 +243,54 @@ export class CoreCastV3Client extends EventEmitter {
       });
     }
 
-    // Stream 4 (optional): DexPools — Raydium LP monitor for pool depth filtering.
-    // 3 core streams required; streams 4-5 are optional enhancements.
-    const subscribePoolStream = this.config.subscribe_pool_stream !== false; // default true
-    if (subscribePoolStream) {
-      if (typeof (this.client as any).DexPools === 'function') {
+    // Stream 4: Transfers — SPL token transfers for early exit signal.
+    // Subscribes to transfers involving the pump.fun bonding curve program.
+    // When a large holder transfers tokens OUT before selling on DEX, that's
+    // an early dump warning (30-60s ahead of DEX sell).
+    const subscribeTransferStream = (this.config as any).subscribe_transfer_stream !== false;
+    if (subscribeTransferStream) {
+      if (typeof (this.client as any).Transfers === 'function') {
         streams.push({
-          name: 'dex_pools',
-          method: 'DexPools',
+          name: 'transfers',
+          method: 'Transfers',
           request: {
-            program: { addresses: [PUMP_FUN_AMM] },
+            // Subscribe broadly to transfers involving pump.fun bonding curve program
+            // This catches SPL token transfers for all tokens on the bonding curve
+            sender: { addresses: [PUMP_FUN_BONDING] },
           },
-          handler: (msg) => this.handlePoolMessage(msg),
+          handler: (msg) => this.handleTransferMessage(msg),
         });
+        log.info('[corecast] Stream 4 (transfers) active — early exit signal for large holder transfers');
       } else {
-        log.warn('[corecast] DexPools stream not available in current Bitquery plan — pool depth filtering disabled');
+        log.warn('[corecast] Transfers stream not available in current Bitquery plan');
       }
     }
 
-    // Stream 5 (optional): whale_trades — DexTrades filtered to known alpha wallet addresses.
-    // Only activated when: subscribe_whale_stream !== false AND whale list has >= 5 addresses.
-    // Emits 'whaleTrade' events for fast MEV pre-qualification via signal bridge.
-    const subscribeWhaleStream = (this.config as any).subscribe_whale_stream !== false; // default true
-    if (subscribeWhaleStream) {
-      const whaleAddresses = this.loadWhaleAddresses();
-      if (whaleAddresses.length >= 5) {
+    // Stream 5: DexPools — Pump.fun bonding curve pool events.
+    // Tracks significant curve pushes (large buys/sells affecting the bonding curve).
+    // Replaces the old Raydium AMM pool monitor + whale_trades streams.
+    const subscribeBondingPoolStream = (this.config as any).subscribe_bonding_pool_stream !== false;
+    if (subscribeBondingPoolStream) {
+      if (typeof (this.client as any).DexPools === 'function') {
         streams.push({
-          name: 'whale_trades',
-          method: 'DexTrades',
+          name: 'bonding_pools',
+          method: 'DexPools',
           request: {
             program: { addresses: [PUMP_FUN_BONDING] },
-            trader: { addresses: whaleAddresses },
           },
-          handler: (msg) => this.handleWhaleTradeMessage(msg),
+          handler: (msg) => this.handleBondingPoolMessage(msg),
         });
-        log.info(`[corecast] Stream 5 (whale_trades) active — tracking ${whaleAddresses.length} whale wallets`);
+        log.info('[corecast] Stream 5 (bonding_pools) active — bonding curve push detection');
       } else {
-        log.warn(`[corecast] Stream 5 (whale_trades) skipped — whale list has ${whaleAddresses.length} addresses (need >= 5). Run scripts/build-whale-list.js to populate.`);
+        log.warn('[corecast] DexPools stream not available in current Bitquery plan — bonding pool monitoring disabled');
       }
-    } else {
-      log.info('[corecast] Stream 5 (whale_trades) disabled via config (subscribe_whale_stream=false)');
     }
 
     // Validate core streams: require at least 3 (bonding trades + transactions + AMM trades).
-    // 3 core streams required; streams 4-5 are optional enhancements.
+    // 3 core streams required; streams 4-5 are enhancement streams.
     const CORE_STREAMS_REQUIRED = 3;
     const MAX_STREAMS = 5; // Hard cap — Bitquery plan limit. Never exceed this.
-    const coreStreams = streams.filter(s => s.name !== 'dex_pools' && s.name !== 'whale_trades');
+    const coreStreams = streams.filter(s => s.name !== 'transfers' && s.name !== 'bonding_pools');
     if (coreStreams.length < CORE_STREAMS_REQUIRED) {
       // Hard fail — Bitquery concurrent stream limit is 3. Misconfiguration means we'd be
       // trading blind or wasting quota. Refuse to start rather than silently under-subscribe.
@@ -778,5 +803,113 @@ export class CoreCastV3Client extends EventEmitter {
     );
 
     this.emit('poolUpdate', update);
+  }
+
+  // ====== TRANSFERS HANDLER (Stream 4 — new) ======
+
+  /** Handle Transfers stream message → LargeTransferEvent */
+  private handleTransferMessage(msg: any): void {
+    const transfer = msg?.Transfer;
+    if (!transfer) return;
+
+    // Deduplicate by tx signature
+    const sig = msg?.Transaction?.Signature;
+    const sigStr = sig ? (Buffer.isBuffer(sig) ? sig.toString('hex') : String(sig)) : '';
+    if (sigStr && this.isDupe(sigStr)) return;
+    if (sigStr) this.addDedupe(sigStr);
+
+    // Extract sender, receiver, mint, amount
+    const senderBuf = transfer.Sender?.Address;
+    const senderAddress = senderBuf ? decodeAddress(senderBuf) : '';
+
+    const receiverBuf = transfer.Receiver?.Address;
+    const receiverAddress = receiverBuf ? decodeAddress(receiverBuf) : '';
+
+    const mintBuf = transfer.Currency?.MintAddress;
+    const mint = mintBuf
+      ? (typeof mintBuf === 'string' ? mintBuf : decodeAddress(mintBuf))
+      : '';
+
+    if (!mint || !senderAddress) return;
+
+    // Skip SOL transfers (we want SPL token transfers only)
+    if (mint === 'So11111111111111111111111111111111111111112') return;
+
+    const amount = Number(transfer.Amount ?? 0);
+    if (amount <= 0) return;
+
+    // Skip transfers involving the bonding curve or AMM program addresses (these are DEX trades, not wallet-to-wallet)
+    if (senderAddress === PUMP_FUN_BONDING || receiverAddress === PUMP_FUN_BONDING) return;
+    if (senderAddress === PUMP_FUN_AMM || receiverAddress === PUMP_FUN_AMM) return;
+
+    // Estimate transfer percentage — rough: pump.fun tokens have ~1B total supply
+    const estimatedSupply = 1_000_000_000;
+    const transferPctEstimate = (amount / estimatedSupply) * 100;
+
+    // Only emit if transfer is significant (>1% of estimated supply)
+    if (transferPctEstimate < 1.0) return;
+
+    const event: LargeTransferEvent = {
+      mint,
+      senderAddress,
+      receiverAddress,
+      tokenAmount: amount,
+      transferPctEstimate,
+      timestamp: nowMs(),
+    };
+
+    log.debug(
+      `[transfer] ${mint.slice(0, 8)} ${senderAddress.slice(0, 8)}→${receiverAddress.slice(0, 8)} ` +
+      `amount=${amount.toFixed(0)} (~${transferPctEstimate.toFixed(1)}% supply)`
+    );
+
+    this.emit('largeTransfer', event);
+  }
+
+  // ====== BONDING CURVE POOL HANDLER (Stream 5 — new) ======
+
+  /** Handle DexPools stream message for pump.fun bonding curve → BondingCurvePoolEvent */
+  private handleBondingPoolMessage(msg: any): void {
+    const poolEvent = msg?.PoolEvent;
+    if (!poolEvent) return;
+
+    const market = poolEvent.Market;
+    if (!market) return;
+
+    // Extract pool address
+    const poolAddrBuf = market.MarketAddress;
+    const poolAddress = poolAddrBuf ? decodeAddress(poolAddrBuf) : '';
+
+    // QuoteCurrency holds the token mint
+    const quoteMintBuf = market.QuoteCurrency?.MintAddress;
+    const mint = quoteMintBuf
+      ? (typeof quoteMintBuf === 'string' ? quoteMintBuf : decodeAddress(quoteMintBuf))
+      : '';
+
+    if (!mint) return;
+
+    // SOL depth from BaseCurrency (SOL side of the bonding curve)
+    const basePost = Number(poolEvent.BaseCurrency?.PostAmount ?? 0);
+    const baseChange = Number(poolEvent.BaseCurrency?.ChangeAmount ?? 0);
+
+    const depthSol = basePost / 1e9;
+    const changeSol = baseChange / 1e9;
+
+    // Only emit significant curve pushes (> 0.5 SOL change)
+    if (Math.abs(changeSol) < 0.5) return;
+
+    const event: BondingCurvePoolEvent = {
+      mint,
+      poolAddress,
+      changeSol,
+      depthSol,
+      timestamp: nowMs(),
+    };
+
+    log.debug(
+      `[bonding-pool] ${mint.slice(0, 8)} depth=${depthSol.toFixed(2)} SOL change=${changeSol >= 0 ? '+' : ''}${changeSol.toFixed(2)} SOL`
+    );
+
+    this.emit('bondingCurvePool', event);
   }
 }
