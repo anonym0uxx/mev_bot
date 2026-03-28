@@ -264,8 +264,8 @@ class StrategyDaemon {
             ? `${scalperTotal} trades | WR ${scalperWR}% | ${scalperPnl >= 0 ? '+' : ''}${scalperPnl.toFixed(4)} SOL`
             : `0 trades this session`;
 
-          // MEV stats — session-scoped
-          let mevTrades = 0, mevWins = 0, mevPnl = 0;
+          // MEV stats — session-scoped (gross + net fee-adjusted)
+          let mevTrades = 0, mevWins = 0, mevGrossPnl = 0, mevNetPnl = 0;
           if (mevPaperMode) {
             const fsLib = require('fs') as typeof import('fs');
             const pathLib = require('path') as typeof import('path');
@@ -274,10 +274,14 @@ class StrategyDaemon {
               const lines = fsLib.readFileSync(mevLogFile, 'utf8').trim().split('\n').filter(Boolean);
               for (const line of lines) {
                 const r = JSON.parse(line);
-                // Only count trades from this session
+                // Only count trades from this session, exclude bug-flagged trades
                 if ((r.exitTimestampMs || 0) < windowStart) continue;
+                if (r.excludeFromAnalysis) continue;
                 mevTrades++;
-                mevPnl += r.pnlSol || 0;
+                mevGrossPnl += r.pnlSol || 0;
+                // Use netPnlSol if available, else estimate: gross - 2% fees - 0.0001 Jito
+                const net = r.netPnlSol != null ? r.netPnlSol : (r.pnlSol || 0) - (r.sizeSol || 0) * 0.02 - 0.0001;
+                mevNetPnl += net;
                 if ((r.pnlSol || 0) > 0) mevWins++;
               }
             } catch (_) { /* no file yet */ }
@@ -287,14 +291,16 @@ class StrategyDaemon {
             ).all(windowStart) as Array<{ realized_pnl_sol: number }>;
             mevTrades = mevRows.length;
             mevWins = mevRows.filter(r => r.realized_pnl_sol > 0).length;
-            mevPnl = mevRows.reduce((s, r) => s + (r.realized_pnl_sol || 0), 0);
+            mevGrossPnl = mevRows.reduce((s, r) => s + (r.realized_pnl_sol || 0), 0);
+            // Live: fees already deducted from realized_pnl_sol by execution layer
+            mevNetPnl = mevGrossPnl;
           }
           const mevWR = mevTrades > 0 ? (mevWins / mevTrades * 100).toFixed(1) : '—';
           const mevLabel = mevTrades > 0
-            ? `${mevTrades} trades | WR ${mevWR}% | ${mevPnl >= 0 ? '+' : ''}${mevPnl.toFixed(4)} SOL`
+            ? `${mevTrades} trades | WR ${mevWR}% | Gross ${mevGrossPnl >= 0 ? '+' : ''}${mevGrossPnl.toFixed(4)} | Net ${mevNetPnl >= 0 ? '+' : ''}${mevNetPnl.toFixed(4)} SOL`
             : `0 trades this session`;
 
-          const combined = scalperPnl + mevPnl;
+          const combinedNet = scalperPnl + mevNetPnl;
           const modeTag = (!paperMode && !mevPaperMode) ? '💵 LIVE' : '📄 PAPER';
 
           // Skip summary if not enough data yet — avoid misleading low-sample WR noise
@@ -309,7 +315,7 @@ class StrategyDaemon {
             `${modeTag} P&L — session update`,
             `📊 Scalper: ${scalperLabel}`,
             `🎯 MEV: ${mevLabel}`,
-            `💰 Combined: ${combined >= 0 ? '+' : ''}${combined.toFixed(4)} SOL`,
+            `💰 Combined Net: ${combinedNet >= 0 ? '+' : ''}${combinedNet.toFixed(4)} SOL`,
           ].join('\n');
 
           sendTelegram(msg);
