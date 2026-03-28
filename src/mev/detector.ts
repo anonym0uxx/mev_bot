@@ -27,6 +27,7 @@ export interface BackrunOpportunity {
   score: number;
   components: {
     triggerIsolation: number;
+    buyMomentumTrend: number;
     uniqueBuyersBanded: number;
     buyerDiversity: number;
     curveFill: number;
@@ -202,7 +203,7 @@ export class BackrunDetector extends EventEmitter {
     this.emit('opportunity', opp);
   }
 
-  private lastComponents = { triggerIsolation: 0, uniqueBuyersBanded: 0, buyerDiversity: 0, curveFill: 0 };
+  private lastComponents = { triggerIsolation: 0, buyMomentumTrend: 0, uniqueBuyersBanded: 0, buyerDiversity: 0, curveFill: 0 };
   private lastAdversarialConcentration = 0;
 
   private computePreTriggerSignals(
@@ -235,12 +236,21 @@ export class BackrunDetector extends EventEmitter {
     event: TokenTradeEvent,
     uniqueBuyers: number,
     vSol: number,
-    pts: { netFlow2s: number; netFlow5s: number; accel: number; buyCount2s: number; volume5sBuys: number; preTrades: TradeRecord[] },
+    pts: { buyCount1s: number; netFlow2s: number; netFlow5s: number; accel: number; buyCount2s: number; volume5sBuys: number; preTrades: TradeRecord[] },
   ): number {
-    // 1. Trigger Isolation (40%) — how much of recent volume is THIS trigger vs background noise
+    // 1a. Legacy Trigger Isolation (kept for logging/JSONL but NOT used in score)
     const triggerSol = event.solAmount;
     const isolationRatio = triggerSol / (pts.volume5sBuys + triggerSol);
     const triggerIsolation = Math.pow(Math.max(0, Math.min(1, isolationRatio)), 1.5);
+
+    // 1b. Buy Momentum Trend (40%) — is buy velocity ACCELERATING in 0-2s before trigger?
+    // Compute: buyCount_1s / max(buyCount_2s - buyCount_1s, 0.1)
+    // >1.0 = accelerating (more buys in last 1s than prior 1s), <1.0 = decelerating
+    const recentBuys1s = pts.buyCount1s;
+    const olderBuys1s = Math.max(pts.buyCount2s - pts.buyCount1s, 0.1);
+    const momentumRatio = recentBuys1s / olderBuys1s;
+    // Normalize: ratio 0.5→0, ratio 2.0→1.0, cap at 1.0
+    const buyMomentumTrend = Math.max(0, Math.min(1, (momentumRatio - 0.5) / 1.5));
 
     // 2. Unique Buyers Banded (25%) — sweet spot at 5-10 buyers, penalise <3 and >15
     let buyerScore: number;
@@ -272,10 +282,11 @@ export class BackrunDetector extends EventEmitter {
     const adversarialPenalty = concentrationRatio > 0.6 ? 0.5 : 1.0;
 
     // Final weighted score with adversarial penalty
-    const rawScore = triggerIsolation * 0.40 + buyerScore * 0.25 + buyerDiversity * 0.20 + curveFillScore * 0.15;
+    // v3: buyMomentumTrend replaces triggerIsolation at 40% weight
+    const rawScore = buyMomentumTrend * 0.40 + buyerScore * 0.25 + buyerDiversity * 0.20 + curveFillScore * 0.15;
     const score = rawScore * adversarialPenalty;
-    this.lastComponents = { triggerIsolation, uniqueBuyersBanded: buyerScore, buyerDiversity, curveFill: curveFillScore };
-    log.debug(`[score-v2] ${event.mint.slice(0,8)} isolation=${triggerIsolation.toFixed(3)} buyers=${buyerScore.toFixed(3)} diversity=${buyerDiversity.toFixed(3)} curve=${curveFillScore.toFixed(3)} adversarial=${adversarialPenalty} → ${score.toFixed(3)}`);
+    this.lastComponents = { triggerIsolation, buyMomentumTrend, uniqueBuyersBanded: buyerScore, buyerDiversity, curveFill: curveFillScore };
+    log.debug(`[score-v3] ${event.mint.slice(0,8)} momentum=${buyMomentumTrend.toFixed(3)} isolation=${triggerIsolation.toFixed(3)} buyers=${buyerScore.toFixed(3)} diversity=${buyerDiversity.toFixed(3)} curve=${curveFillScore.toFixed(3)} adversarial=${adversarialPenalty} → ${score.toFixed(3)}`);
     return score;
   }
 
