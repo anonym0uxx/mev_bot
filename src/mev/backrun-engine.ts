@@ -108,7 +108,10 @@ export class BackrunEngine extends EventEmitter {
       // Track daily loss
       if (record.pnlSol < 0) {
         this.checkAndResetDailyLoss();
-        this.dailyLossSol += Math.abs(record.pnlSol);
+        // Only count actual losses against the daily cap (negative PnL trades only)
+        if (record.pnlSol < 0) {
+          this.dailyLossSol += Math.abs(record.pnlSol);
+        }
       }
 
       // Consecutive stop circuit breaker — reset on win, increment on loss
