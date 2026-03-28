@@ -1529,15 +1529,27 @@
           "properties": {
             "blocked_hours_utc": {
               "type": "array",
-              "items": { "type": "integer", "minimum": 0, "maximum": 23 }
+              "items": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 23
+              }
             },
             "boosted_hours_utc": {
               "type": "array",
-              "items": { "type": "integer", "minimum": 0, "maximum": 23 }
+              "items": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 23
+              }
             },
             "reduced_hours_utc": {
               "type": "array",
-              "items": { "type": "integer", "minimum": 0, "maximum": 23 }
+              "items": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 23
+              }
             }
           }
         },
@@ -1554,6 +1566,9 @@
           "description": "Minimum MFE above entry to activate trailing stop (default 0.01)"
         }
       }
+    },
+    "scalper_enabled": {
+      "type": "boolean"
     }
   }
 }
