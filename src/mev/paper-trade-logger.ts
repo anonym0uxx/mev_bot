@@ -100,6 +100,9 @@ export class PaperTradeLogger {
         creatorSellDetected: trade.creatorSellDetected,
         // Sizing context
         todMultiplier: trade.todMultiplier,
+        // Trigger source tracking (Helius fast lane)
+        triggerSource: (trade as any).triggerSource,
+        heliusLeadMs: (trade as any).heliusLeadMs,
         recordedAt: Date.now(),
       };
       const line = JSON.stringify(serializable) + '\n';

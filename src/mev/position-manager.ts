@@ -74,6 +74,9 @@ export interface PnLRecord {
   creatorSellDetected?: boolean;     // true if creator sold within 30s before trigger
   // Sizing context
   todMultiplier?: number;            // time-of-day size multiplier applied
+  // Trigger source tracking (Helius fast lane)
+  triggerSource?: string;            // 'corecast' | 'helius' — which feed delivered the trigger first
+  heliusLeadMs?: number;             // ms Helius was ahead of CoreCast (negative = CoreCast was faster)
 }
 
 export type ExitReason = 'take_profit' | 'stop_loss' | 'next_buyer' | 'max_hold' | 'intra_hold_trail';
@@ -353,6 +356,8 @@ export class PositionManager extends EventEmitter {
       creatorSellDetected: pos.opportunity.preTriggerSignals?.creatorSellDetected,
       // Sizing context
       todMultiplier: pos.opportunity.todMultiplier,
+      // Trigger source tracking
+      triggerSource: (pos.opportunity.triggerEvent as any).triggerSource,
     };
 
     const emoji = pnlSol >= 0 ? '✅' : '❌';

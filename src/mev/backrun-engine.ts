@@ -24,10 +24,25 @@ import { PoolDepthCache } from './pool-depth-cache';
 import { EntryRandomizer } from './entry-randomizer';
 import { JitoBundleBuilder } from './jito-bundle-builder';
 import { SellExecutor } from './sell-executor';
+import { HeliusWsClient, HeliusWsConfig } from '../feed/helius-ws';
 import { EventEmitter } from 'events';
 import { createLogger } from '../utils/logger';
 import { nowMs } from '../utils/time';
 import { AlertSystem } from '../alerts/system';
+
+/** Trigger source for dedup and latency tracking */
+export type TriggerSource = 'corecast' | 'helius';
+
+/**
+ * Cross-feed dedup cache entry.
+ * When a tx signature is first seen from either source, we record the timestamp.
+ * When the same signature arrives from the other source, we compute the lead time.
+ */
+interface DedupEntry {
+  firstSource: TriggerSource;
+  firstReceivedAt: number;
+  processed: boolean; // Whether detector already processed this event
+}
 
 const log = createLogger('mev:backrun-engine');
 
@@ -46,7 +61,20 @@ export class BackrunEngine extends EventEmitter {
   private jitoBundleBuilder: JitoBundleBuilder;
   private sellExecutor: SellExecutor;
 
+  private heliusWs: HeliusWsClient | null = null;
   private running = false;
+
+  // Cross-feed dedup cache: tx signature → DedupEntry (60s TTL)
+  private triggerDedup: Map<string, DedupEntry> = new Map();
+  private triggerDedupOrder: string[] = [];
+  private readonly TRIGGER_DEDUP_MAX = 10_000;
+  private readonly TRIGGER_DEDUP_TTL_MS = 60_000;
+  private dedupEvictTimer: NodeJS.Timeout | null = null;
+
+  // Helius lead time tracking
+  private heliusLeadSamples: number[] = [];
+  private heliusFirstCount = 0;
+  private corecastFirstCount = 0;
 
   // Consecutive stop circuit breaker
   private consecutiveStops = 0;
@@ -83,6 +111,21 @@ export class BackrunEngine extends EventEmitter {
     this.randomizer = new EntryRandomizer(cfg);
     this.jitoBundleBuilder = new JitoBundleBuilder(cfg);
     this.sellExecutor = new SellExecutor(cfg);
+
+    // Initialize Helius WS (processed commitment fast lane)
+    const heliusApiKey = process.env.HELIUS_API_KEY || '';
+    const heliusWsUrl = process.env.SOLANA_WS_URL || '';
+    if (heliusApiKey || heliusWsUrl) {
+      const heliusCfg: HeliusWsConfig = {
+        wsUrl: heliusWsUrl,
+        apiKey: heliusApiKey,
+        enabled: true,
+      };
+      this.heliusWs = new HeliusWsClient(heliusCfg);
+      log.info('Helius WS fast lane initialized (processed commitment)');
+    } else {
+      log.warn('Helius WS: HELIUS_API_KEY and SOLANA_WS_URL not set — fast lane disabled');
+    }
   }
 
   start(): void {
@@ -147,24 +190,32 @@ export class BackrunEngine extends EventEmitter {
       // to guarantee delivery even if the EventEmitter chain is interrupted
     });
 
-    // Listen to all tokenTrade events for scoring
+    // Listen to all tokenTrade events for scoring — route through dedup layer
     this.onTokenTrade = (event: TokenTradeEvent) => {
       if (!this.running) return;
       // Skip AMM (post-graduation Raydium) trades — MEV engine targets pre-graduation bonding curve only.
-      // AMM trades have vSol=0 which fail Gate 3 anyway, but they still pollute detector trade history
-      // and waste CPU cycles on score computation for tokens that have already graduated.
       if ((event as any).isAmm) return;
-      // Check existing positions BEFORE feeding to detector (so trigger event doesn't
-      // immediately close a position opened in the same tick by the opportunity handler)
-      const hadOpenPosition = this.posManager.hasPosition(event.mint);
-      this.detector.onTrade(event);
-      // Only route to position manager if position was already open before this event
-      // (prevents the trigger trade from immediately closing the position it just opened)
-      if (hadOpenPosition) {
-        this.posManager.onSubsequentTrade(event);
-      }
+      this.handleTriggerEvent(event, 'corecast');
     };
     this.feed.on('tokenTrade', this.onTokenTrade);
+
+    // Start Helius WS fast lane (parallel trigger source)
+    if (this.heliusWs) {
+      this.heliusWs.on('tokenTrade', (event: TokenTradeEvent) => {
+        if (!this.running) return;
+        if ((event as any).isAmm) return;
+        this.handleTriggerEvent(event, 'helius');
+      });
+      this.heliusWs.on('error', (err: Error) => {
+        log.warn(`Helius WS error (non-fatal): ${err.message}`);
+      });
+      this.heliusWs.connect();
+      log.info('Helius WS fast lane started');
+    }
+
+    // Start dedup eviction timer
+    this.dedupEvictTimer = setInterval(() => this.evictDedupEntries(), 30_000);
+    this.dedupEvictTimer.unref();
 
     // Register stats reporter SIGINT handler
     this.statsReporter.registerSigint();
@@ -184,6 +235,23 @@ export class BackrunEngine extends EventEmitter {
       this.onTokenTrade = null;
     }
 
+    // Stop Helius WS
+    if (this.heliusWs) {
+      this.heliusWs.disconnect();
+    }
+
+    // Stop dedup eviction
+    if (this.dedupEvictTimer) {
+      clearInterval(this.dedupEvictTimer);
+      this.dedupEvictTimer = null;
+    }
+
+    // Log Helius lead time stats
+    if (this.heliusLeadSamples.length > 0) {
+      const avg = this.heliusLeadSamples.reduce((a, b) => a + b, 0) / this.heliusLeadSamples.length;
+      log.info(`Helius lead time stats: avg=${avg.toFixed(0)}ms samples=${this.heliusLeadSamples.length} heliusFirst=${this.heliusFirstCount} corecastFirst=${this.corecastFirstCount}`);
+    }
+
     // Clear direct callback before closing positions
     this.posManager.onCloseCallback = null;
 
@@ -199,6 +267,88 @@ export class BackrunEngine extends EventEmitter {
     this.posManager.destroy();
 
     log.info('BackrunEngine stopped');
+  }
+
+  /**
+   * Cross-feed dedup: route trigger events from CoreCast or Helius.
+   * First arrival wins (gets processed by detector); second arrival logs lead time.
+   */
+  private handleTriggerEvent(event: TokenTradeEvent, source: TriggerSource): void {
+    const sig = event.signature || '';
+
+    // Tag the event with source metadata
+    (event as any).triggerSource = source;
+
+    if (sig) {
+      const existing = this.triggerDedup.get(sig);
+
+      if (existing) {
+        // Second arrival — compute lead time and skip processing
+        if (existing.firstSource !== source) {
+          const leadMs = nowMs() - existing.firstReceivedAt;
+          if (existing.firstSource === 'helius') {
+            // Helius arrived first, CoreCast arrived now
+            this.heliusLeadSamples.push(leadMs);
+          } else {
+            // CoreCast arrived first, Helius arrived now (negative lead = CoreCast was faster)
+            this.heliusLeadSamples.push(-leadMs);
+          }
+
+          if (this.heliusLeadSamples.length % 50 === 0) {
+            const avg = this.heliusLeadSamples.reduce((a, b) => a + b, 0) / this.heliusLeadSamples.length;
+            log.info(`[dedup] Helius lead stats: avg=${avg.toFixed(0)}ms samples=${this.heliusLeadSamples.length} heliusFirst=${this.heliusFirstCount} corecastFirst=${this.corecastFirstCount}`);
+          }
+        }
+        // Already processed — skip
+        return;
+      }
+
+      // First arrival — record and process
+      this.triggerDedup.set(sig, {
+        firstSource: source,
+        firstReceivedAt: nowMs(),
+        processed: true,
+      });
+      this.triggerDedupOrder.push(sig);
+
+      if (source === 'helius') this.heliusFirstCount++;
+      else this.corecastFirstCount++;
+
+      // Evict if too large
+      while (this.triggerDedupOrder.length > this.TRIGGER_DEDUP_MAX) {
+        const old = this.triggerDedupOrder.shift();
+        if (old) this.triggerDedup.delete(old);
+      }
+    }
+
+    // Process the event through detector + position manager
+    const hadOpenPosition = this.posManager.hasPosition(event.mint);
+    this.detector.onTrade(event);
+    if (hadOpenPosition) {
+      this.posManager.onSubsequentTrade(event);
+    }
+  }
+
+  /** Evict stale dedup entries older than TTL */
+  private evictDedupEntries(): void {
+    const cutoff = nowMs() - this.TRIGGER_DEDUP_TTL_MS;
+    let evicted = 0;
+    for (const [sig, entry] of this.triggerDedup) {
+      if (entry.firstReceivedAt < cutoff) {
+        this.triggerDedup.delete(sig);
+        evicted++;
+      }
+    }
+    // Also trim the order array
+    while (this.triggerDedupOrder.length > 0) {
+      const oldSig = this.triggerDedupOrder[0];
+      if (!this.triggerDedup.has(oldSig)) {
+        this.triggerDedupOrder.shift();
+      } else {
+        break;
+      }
+    }
+    if (evicted > 0) log.debug(`[dedup] Evicted ${evicted} stale entries`);
   }
 
   private handleOpportunity(opp: BackrunOpportunity): void {
