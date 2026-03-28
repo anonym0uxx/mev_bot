@@ -285,6 +285,15 @@ export class BackrunEngine extends EventEmitter {
       }
     }
 
+    // Time-of-day position sizing (UTC20-21 = 28.3% WR, UTC15/06 = 12-15% WR)
+    const hourUtc = new Date().getUTCHours();
+    let todMultiplier = 1.0;
+    if (hourUtc >= 20 && hourUtc <= 21) todMultiplier = 1.25;
+    else if (hourUtc >= 16 && hourUtc <= 19) todMultiplier = 1.10;
+    else if (hourUtc === 15 || hourUtc === 6) todMultiplier = 0.75;
+    dynamicBase = Math.min(dynamicBase * todMultiplier, this.cfg.max_entry_size_sol);
+    log.debug(`[sizing] ToD multiplier=${todMultiplier} hour=${hourUtc}UTC base=${dynamicBase.toFixed(4)}`);
+
     // Skip zero-size tiers
     if (dynamicBase <= 0) {
       log.debug(`Skipping ${opp.mint.slice(0,8)}: tier size=0 for trigger=${triggerSol.toFixed(3)} SOL`);

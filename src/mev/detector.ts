@@ -26,9 +26,9 @@ export interface BackrunOpportunity {
   triggerEvent: TokenTradeEvent;
   score: number;
   components: {
-    size: number;
-    momentum: number;
-    uniqueBuyers: number;
+    triggerIsolation: number;
+    uniqueBuyersBanded: number;
+    buyerDiversity: number;
     curveFill: number;
   };
   preTriggerSignals?: {
@@ -126,6 +126,12 @@ export class BackrunDetector extends EventEmitter {
     const uniqueBuyers = new Set(mh.trades.map(t => t.trader)).size;
     if (uniqueBuyers < this.cfg.min_unique_buyers) return;
 
+    // Gate 5b: large-trigger concentration guard
+    if (event.solAmount > 1.5 && uniqueBuyers < 5) {
+      log.debug(`[gate:large-trigger] ${mint.slice(0,8)} trigger=${event.solAmount.toFixed(2)} buyers=${uniqueBuyers} < 5 — skip`);
+      return;
+    }
+
     // Gate 6: pre-trigger momentum gate
     // Use all trades EXCEPT the current trigger (slice off last element)
     const preTrades = mh.trades.slice(0, -1);
@@ -187,19 +193,20 @@ export class BackrunDetector extends EventEmitter {
     this.emit('opportunity', opp);
   }
 
-  private lastComponents = { size: 0, momentum: 0, uniqueBuyers: 0, curveFill: 0 };
+  private lastComponents = { triggerIsolation: 0, uniqueBuyersBanded: 0, buyerDiversity: 0, curveFill: 0 };
 
   private computePreTriggerSignals(
     preTrades: TradeRecord[],
     now: number,
     currentVSol: number,
-  ): { buyCount1s: number; buyCount2s: number; buyCount5s: number; netFlow2s: number; netFlow5s: number; timeSinceLastBuyMs: number; accel: number; vSolDelta3s: number } {
+  ): { buyCount1s: number; buyCount2s: number; buyCount5s: number; netFlow2s: number; netFlow5s: number; timeSinceLastBuyMs: number; accel: number; vSolDelta3s: number; volume5sBuys: number; preTrades: TradeRecord[] } {
     const buys1s = preTrades.filter(t => t.txType === 'buy' && now - t.ts < 1_000);
     const buyCount1s = buys1s.length;
     const buys2s = preTrades.filter(t => t.txType === 'buy' && now - t.ts < 2_000);
     const buys5s = preTrades.filter(t => t.txType === 'buy' && now - t.ts < 5_000);
     const netFlow2s = buys2s.reduce((s, t) => s + t.solAmount, 0);
     const netFlow5s = buys5s.reduce((s, t) => s + t.solAmount, 0);
+    const volume5sBuys = buys5s.reduce((s, t) => s + t.solAmount, 0);
 
     const lastBuy = [...preTrades].reverse().find(t => t.txType === 'buy');
     const timeSinceLastBuyMs = lastBuy ? now - lastBuy.ts : Infinity;
@@ -211,38 +218,54 @@ export class BackrunDetector extends EventEmitter {
     const oldestVSol = trades3s.length > 0 ? trades3s[0].vSol : currentVSol;
     const vSolDelta3s = Math.max(0, currentVSol - oldestVSol);
 
-    return { buyCount1s, buyCount2s: buys2s.length, buyCount5s: buys5s.length, netFlow2s, netFlow5s, timeSinceLastBuyMs, accel, vSolDelta3s };
+    return { buyCount1s, buyCount2s: buys2s.length, buyCount5s: buys5s.length, netFlow2s, netFlow5s, timeSinceLastBuyMs, accel, vSolDelta3s, volume5sBuys, preTrades };
   }
 
   private computeScore(
     event: TokenTradeEvent,
     uniqueBuyers: number,
     vSol: number,
-    pts: { netFlow2s: number; netFlow5s: number; accel: number; buyCount2s: number },
+    pts: { netFlow2s: number; netFlow5s: number; accel: number; buyCount2s: number; volume5sBuys: number; preTrades: TradeRecord[] },
   ): number {
-    // Size (35%)
-    const sizeRatio = event.solAmount / this.cfg.trigger_min_buy_sol;
-    const sizeScore = Math.min(1, sizeRatio / 10);
-
-    // Momentum (40%) — 2s/5s weighted, kills 30s stale signal
+    // 1. Trigger Isolation (40%) — how much of recent volume is THIS trigger vs background noise
     const triggerSol = event.solAmount;
-    const flow2sNorm  = Math.min(1, pts.netFlow2s  / Math.max(0.01, triggerSol * 3));
-    const flow5sNorm  = Math.min(1, pts.netFlow5s  / Math.max(0.01, triggerSol * 8));
-    const accelScore  = Math.min(1, pts.accel / 1.5);
-    const velocityScore = Math.min(1, pts.buyCount2s / 4);
-    const momentumScore = 0.45 * flow2sNorm + 0.25 * flow5sNorm + 0.20 * accelScore + 0.10 * velocityScore;
+    const isolationRatio = triggerSol / (pts.volume5sBuys + triggerSol);
+    const triggerIsolation = Math.pow(Math.max(0, Math.min(1, isolationRatio)), 1.5);
 
-    // Unique buyers (15%)
-    const uniqueBuyerScore = Math.min(1, uniqueBuyers / 10);
+    // 2. Unique Buyers Banded (25%) — sweet spot at 5-10 buyers, penalise <3 and >15
+    let buyerScore: number;
+    if (uniqueBuyers < 3) buyerScore = 0.1;
+    else if (uniqueBuyers <= 5) buyerScore = 0.5 + (uniqueBuyers - 3) * 0.15;
+    else if (uniqueBuyers <= 10) buyerScore = 0.8 + (uniqueBuyers - 5) * 0.04;
+    else if (uniqueBuyers <= 15) buyerScore = 1.0 - (uniqueBuyers - 10) * 0.06;
+    else buyerScore = 0.7;
 
-    // Curve fill (10%)
+    // 3. Buyer Diversity (20%) — unique wallets / total buys in last 30s
+    const now30sCutoff = Date.now() - 30_000;
+    const recentBuys = [...pts.preTrades, { ts: Date.now(), solAmount: event.solAmount, txType: 'buy' as const, trader: event.traderPublicKey, vSol }]
+      .filter(t => t.txType === 'buy' && t.ts >= now30sCutoff);
+    const uniqueTraders30s = new Set(recentBuys.map(t => t.trader)).size;
+    const buyerDiversity = Math.min(1, (uniqueTraders30s / Math.max(1, recentBuys.length)) * 1.5);
+
+    // 4. Curve Fill (15%) — prefer early curve (lower vSol = higher score)
     const range = this.cfg.max_vsol_in_curve - this.cfg.min_vsol_in_curve;
     const fill = (vSol - this.cfg.min_vsol_in_curve) / range;
     const curveFillScore = Math.max(0, 1 - fill);
 
-    this.lastComponents = { size: sizeScore, momentum: momentumScore, uniqueBuyers: uniqueBuyerScore, curveFill: curveFillScore };
+    // Adversarial concentration check: single wallet > 60% of 30s buy volume = likely pump setup
+    const totalBuyVol30s = recentBuys.reduce((s, t) => s + t.solAmount, 0);
+    const walletVols = new Map<string, number>();
+    for (const t of recentBuys) walletVols.set(t.trader, (walletVols.get(t.trader) ?? 0) + t.solAmount);
+    const maxWalletVol = Math.max(...walletVols.values(), 0);
+    const concentrationRatio = totalBuyVol30s > 0 ? maxWalletVol / totalBuyVol30s : 0;
+    const adversarialPenalty = concentrationRatio > 0.6 ? 0.5 : 1.0;
 
-    return sizeScore * 0.35 + momentumScore * 0.40 + uniqueBuyerScore * 0.15 + curveFillScore * 0.10;
+    // Final weighted score with adversarial penalty
+    const rawScore = triggerIsolation * 0.40 + buyerScore * 0.25 + buyerDiversity * 0.20 + curveFillScore * 0.15;
+    const score = rawScore * adversarialPenalty;
+    this.lastComponents = { triggerIsolation, uniqueBuyersBanded: buyerScore, buyerDiversity, curveFill: curveFillScore };
+    log.debug(`[score-v2] ${event.mint.slice(0,8)} isolation=${triggerIsolation.toFixed(3)} buyers=${buyerScore.toFixed(3)} diversity=${buyerDiversity.toFixed(3)} curve=${curveFillScore.toFixed(3)} adversarial=${adversarialPenalty} → ${score.toFixed(3)}`);
+    return score;
   }
 
   private evictStale(): void {

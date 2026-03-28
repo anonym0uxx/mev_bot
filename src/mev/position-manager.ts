@@ -229,12 +229,19 @@ export class PositionManager extends EventEmitter {
     const holdSoFar = nowMs() - pos.entryTimestampMs;
     if (pos.tradesSeenAfterEntry < 2 || holdSoFar < 500) return;
 
+    // Early profit exit: up ≥1.5% and held ≥200ms = curve is alive, take profit via NB path
+    const profitExitPct = (this.cfg as any).next_buyer_profit_exit_pct ?? 0.015;
+    if (pnlPct >= profitExitPct && holdSoFar >= 200) {
+      this.closePosition(event.mint, currentVSol, 'next_buyer');
+      return;
+    }
+
     // Aggregate next_buyer exit: exit when crowd arrives
     if (this.cfg.next_buyer_exit && event.txType === 'buy') {
       const triggerSol2 = pos.opportunity.triggerEvent.solAmount;
       const flowRatio = this.cfg.next_buyer_aggregate_flow_ratio ?? 0.5;
       const countThreshold = this.cfg.next_buyer_count_threshold ?? 5;
-      const singleBuyThreshold = triggerSol2 * 0.4;
+      const singleBuyThreshold = triggerSol2 * (this.cfg.next_buyer_single_buy_ratio ?? 0.25);
 
       const exitOnFlow = pos.flowSinceEntry >= triggerSol2 * flowRatio;
       const exitOnCount = pos.buySinceEntry >= countThreshold;

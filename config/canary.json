@@ -300,8 +300,8 @@
     "enabled": true,
     "paper_mode": true,
     "trigger_min_buy_sol": 0.35,
-    "trigger_max_buy_sol": 0.45,
-    "trigger_min_score": 0.55,
+    "trigger_max_buy_sol": 5.0,
+    "trigger_min_score": 0.0,
     "min_vsol_in_curve": 31,
     "max_vsol_in_curve": 48,
     "max_token_age_s": 300,
@@ -311,7 +311,7 @@
     "max_concurrent_positions": 5,
     "take_profit_pct": 0.04,
     "stop_loss_pct": 0.04,
-    "max_hold_ms": 1000,
+    "max_hold_ms": 1500,
     "next_buyer_exit": true,
     "daily_loss_cap_sol": 0.5,
     "jito_tip_lamports": 50000,
@@ -332,22 +332,25 @@
     "pre_trigger_min_vsol_accel": 0.3,
     "consecutive_stop_pause_count": 3,
     "consecutive_stop_pause_ms": 180000,
-    "next_buyer_aggregate_flow_ratio": 0.5,
-    "next_buyer_count_threshold": 5,
+    "next_buyer_aggregate_flow_ratio": 0.35,
+    "next_buyer_count_threshold": 3,
+    "next_buyer_single_buy_ratio": 0.25,
+    "next_buyer_profit_exit_pct": 0.015,
     "tp_tiers": [
-      {"trigger_max_sol": 0.3, "tp_pct": 0.03, "sl_pct": 0.015},
-      {"trigger_max_sol": 0.5, "tp_pct": 0.04, "sl_pct": 0.025},
-      {"trigger_max_sol": 0.8, "tp_pct": 0.055, "sl_pct": 0.03},
-      {"trigger_max_sol": 1.5, "tp_pct": 0.07, "sl_pct": 0.04},
-      {"trigger_max_sol": 999, "tp_pct": 0.08, "sl_pct": 0.05}
+      {"trigger_max_sol": 0.38, "tp_pct": 0.03, "sl_pct": 0.015},
+      {"trigger_max_sol": 0.45, "tp_pct": 0.04, "sl_pct": 0.02},
+      {"trigger_max_sol": 0.80, "tp_pct": 0.055, "sl_pct": 0.025},
+      {"trigger_max_sol": 1.50, "tp_pct": 0.07, "sl_pct": 0.035},
+      {"trigger_max_sol": 5.00, "tp_pct": 0.09, "sl_pct": 0.045}
     ],
     "size_tiers": [
       {"trigger_max_sol": 0.2, "size_sol": 0.0},
       {"trigger_max_sol": 0.3, "size_sol": 0.06},
-      {"trigger_max_sol": 0.5, "size_sol": 0.15},
-      {"trigger_max_sol": 0.8, "size_sol": 0.08},
-      {"trigger_max_sol": 1.5, "size_sol": 0.15},
-      {"trigger_max_sol": 999, "size_sol": 0.10}
+      {"trigger_max_sol": 0.42, "size_sol": 0.10},
+      {"trigger_max_sol": 0.45, "size_sol": 0.18},
+      {"trigger_max_sol": 0.80, "size_sol": 0.15},
+      {"trigger_max_sol": 1.50, "size_sol": 0.20},
+      {"trigger_max_sol": 5.00, "size_sol": 0.12}
     ]
   }
 }

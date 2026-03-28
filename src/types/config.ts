@@ -376,6 +376,8 @@ export interface MevConfig {
   size_tiers?: Array<{ trigger_max_sol: number; size_sol: number }>;
   next_buyer_aggregate_flow_ratio?: number;
   next_buyer_count_threshold?: number;
+  next_buyer_single_buy_ratio?: number;   // single-buy threshold as fraction of trigger (default 0.25)
+  next_buyer_profit_exit_pct?: number;    // early profit exit threshold (default 0.015 = 1.5%)
 }
 
 export interface PumpQuantConfig {
