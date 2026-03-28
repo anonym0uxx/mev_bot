@@ -315,7 +315,7 @@
     "max_concurrent_positions": 10,
     "take_profit_pct": 0.04,
     "stop_loss_pct": 0.015,
-    "max_hold_ms": 600,
+    "max_hold_ms": 400,
     "next_buyer_exit": true,
     "daily_loss_cap_sol": 5,
     "jito_tip_lamports": 50000,
@@ -387,8 +387,9 @@
     "live_daily_loss_cap_sol": 0.18,
     "pre_trigger_min_sell_count_5s": 1,
     "pre_trigger_max_vsol_delta_3s": 6.00000,
-    "momentum_decay_check_ms": 200,
-    "momentum_decay_min_mfe_pct": 0.00500,
+    "momentum_decay_check_ms": 50,
+    "momentum_decay_min_mfe_pct": 0.00100,
+    "momentum_decay_max_drawdown_pct": 0.00300,
     "tod_config": {
       "blocked_hours_utc": [
         0,
@@ -404,6 +405,8 @@
         10,
         11,
         12,
+        16,
+        17,
         18,
         19,
         20,
@@ -412,8 +415,8 @@
         23
       ],
       "boosted_hours_utc": [
-        13,
-        14
+        14,
+        15
       ],
       "reduced_hours_utc": []
     },
