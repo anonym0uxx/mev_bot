@@ -9,3 +9,4 @@ data/
 logs/
 .DS_Store
 config/keys/*.json
+rust/target/
