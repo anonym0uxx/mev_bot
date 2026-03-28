@@ -162,7 +162,11 @@ class StrategyDaemon {
     if (config.corecast?.enabled) {
       const useV3 = (config.corecast as any).grpc_enabled === true;
       if (useV3) {
-        this.corecast = new CoreCastV3Client(config.corecast);
+        // Merge MEV-sourced stream flags into corecast config (schema doesn't allow extras in corecast block)
+        const corecastCfg = { ...config.corecast } as any;
+        if (config.mev?.subscribe_whale_stream === false) corecastCfg.subscribe_whale_stream = false;
+        if (config.mev?.subscribe_pool_stream === false) corecastCfg.subscribe_pool_stream = false;
+        this.corecast = new CoreCastV3Client(corecastCfg);
         log.info('CoreCast v3 enabled — gRPC streaming (sub-100ms)');
       } else {
         this.corecast = new CoreCastClient(config.corecast);
