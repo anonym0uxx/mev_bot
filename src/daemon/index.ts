@@ -517,6 +517,18 @@ class StrategyDaemon {
     }
 
     log.info('Strategy daemon started');
+
+    // Write engine-state.json for pnl-summary.js session tracking
+    try {
+      const fs = await import('fs');
+      const engineState = {
+        daemonStartedAt: nowMs(),
+        engineVersion: 'v4',
+        configVersion: this.configManager.getVersion(),
+        paperMode: isPaperMode(),
+      };
+      fs.writeFileSync('data/engine-state.json', JSON.stringify(engineState, null, 2));
+    } catch (_) { /* non-critical */ }
   }
 
   /** Stop the daemon */
