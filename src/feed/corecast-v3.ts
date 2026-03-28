@@ -75,6 +75,8 @@ export class CoreCastV3Client extends EventEmitter {
   private streams: Map<string, grpc.ClientReadableStream<any>> = new Map();
   private reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
   private reconnectAttempts: Map<string, number> = new Map();
+  /** Tracks streams currently in reconnect-pending state — prevents error+end double-firing */
+  private reconnectPending: Set<string> = new Set();
   private shouldRun = false;
   private isShuttingDown = false; // Set on disconnect() — blocks new reconnect timers
   private _connected = false;
@@ -114,6 +116,12 @@ export class CoreCastV3Client extends EventEmitter {
   async connect(): Promise<void> {
     if (!this.apiKey) {
       throw new Error(`CoreCast v3: API key not found in ${this.config.api_key_env}`);
+    }
+
+    // Guard against double-connect — already connected streams would create duplicates on Bitquery side
+    if (this._connected || this.streams.size > 0) {
+      log.warn(`CoreCast v3: connect() called while already connected (${this.streams.size} streams active) — ignoring duplicate call`);
+      return;
     }
 
     this.shouldRun = true;
@@ -272,6 +280,7 @@ export class CoreCastV3Client extends EventEmitter {
       log.debug(`Reconnect timer cleared: ${name}`);
     }
     this.reconnectTimers.clear();
+    this.reconnectPending.clear();
 
     // Cancel all active gRPC streams — sends RST_STREAM to server (clean closure)
     for (const [name, stream] of this.streams) {
@@ -395,10 +404,19 @@ export class CoreCastV3Client extends EventEmitter {
   private scheduleReconnect(config: StreamConfig): void {
     if (!this.shouldRun || this.isShuttingDown) return; // Don't reconnect during shutdown
 
+    // DEDUPLICATE: both 'error' and 'end' events fire for the same stream drop in rapid succession.
+    // Use reconnectPending set as the authoritative lock — first caller wins, rest are ignored.
+    if (this.reconnectPending.has(config.name)) {
+      log.debug(`Stream ${config.name}: reconnect already pending — skipping duplicate (error+end race)`);
+      return;
+    }
+    this.reconnectPending.add(config.name);
+
     const attempts = this.reconnectAttempts.get(config.name) || 0;
     const maxAttempts = 10;
 
     if (attempts >= maxAttempts) {
+      this.reconnectPending.delete(config.name);
       log.error(`Stream ${config.name}: max reconnect attempts (${maxAttempts}) reached`);
       this.emit('disconnected', `${config.name}: max reconnect attempts`);
       return;
@@ -412,7 +430,8 @@ export class CoreCastV3Client extends EventEmitter {
 
     const timer = setTimeout(() => {
       this.reconnectTimers.delete(config.name);
-      if (!this.isShuttingDown) this.startStream(config); // Double-check — timer may have fired during shutdown
+      this.reconnectPending.delete(config.name); // Release lock before startStream (allows future reconnects)
+      if (!this.isShuttingDown) this.startStream(config);
     }, delay);
 
     this.reconnectTimers.set(config.name, timer);
