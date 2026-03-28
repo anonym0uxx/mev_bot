@@ -392,6 +392,8 @@
         "trigger_max_sol": 5,
         "size_sol": 0.12
       }
-    ]
+    ],
+    "paper_daily_loss_cap_sol": 5,
+    "live_daily_loss_cap_sol": 0.18
   }
 }

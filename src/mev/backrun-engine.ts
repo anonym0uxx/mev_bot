@@ -56,6 +56,14 @@ export class BackrunEngine extends EventEmitter {
   private dailyLossSol = 0;
   private dailyLossResetDay = -1; // UTC day of month
 
+  /** Effective daily loss cap: paper vs live mode-specific, falls back to daily_loss_cap_sol */
+  private get effectiveDailyLossCap(): number {
+    if (this.cfg.paper_mode) {
+      return this.cfg.paper_daily_loss_cap_sol ?? this.cfg.daily_loss_cap_sol;
+    }
+    return this.cfg.live_daily_loss_cap_sol ?? this.cfg.daily_loss_cap_sol;
+  }
+
   // Bound listener refs for clean removal
   private onTokenTrade: ((event: TokenTradeEvent) => void) | null = null;
   private onMintTrade: ((event: TokenTradeEvent) => void) | null = null;
@@ -95,7 +103,7 @@ export class BackrunEngine extends EventEmitter {
     log.info(
       `BackrunEngine started [paper_mode=${this.cfg.paper_mode}] ` +
       `maxPositions=${this.cfg.max_concurrent_positions} ` +
-      `dailyCap=${this.cfg.daily_loss_cap_sol} SOL`
+      `dailyCap=${this.effectiveDailyLossCap} SOL [${this.cfg.paper_mode ? 'paper' : 'live'}]`
     );
 
     // Wire detector opportunities → position manager
@@ -211,10 +219,10 @@ export class BackrunEngine extends EventEmitter {
 
     // Guard: daily loss cap
     this.checkAndResetDailyLoss();
-    if (this.dailyLossSol >= this.cfg.daily_loss_cap_sol) {
+    if (this.dailyLossSol >= this.effectiveDailyLossCap) {
       log.warn(
         `Daily loss cap reached: ${this.dailyLossSol.toFixed(4)} SOL >= ` +
-        `${this.cfg.daily_loss_cap_sol} SOL — no new MEV positions today`
+        `${this.effectiveDailyLossCap} SOL [${this.cfg.paper_mode ? 'paper' : 'live'}] — no new MEV positions today`
       );
       return;
     }

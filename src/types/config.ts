@@ -352,7 +352,9 @@ export interface MevConfig {
   stop_loss_pct: number;
   max_hold_ms: number;
   next_buyer_exit: boolean;
-  daily_loss_cap_sol: number;
+  daily_loss_cap_sol: number;           // fallback if mode-specific caps not set
+  paper_daily_loss_cap_sol?: number;    // cap for paper mode (default 5.0)
+  live_daily_loss_cap_sol?: number;     // cap for live mode (default 0.18)
   jito_tip_lamports: number;
   conflict_policy: 'skip' | 'replace';
   log_file: string;

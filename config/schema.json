@@ -1357,6 +1357,16 @@
           "type": "number",
           "minimum": 0
         },
+        "paper_daily_loss_cap_sol": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Daily loss cap in paper mode (default 5.0 SOL)"
+        },
+        "live_daily_loss_cap_sol": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Daily loss cap in live mode (default 0.18 SOL)"
+        },
         "jito_tip_lamports": {
           "type": "integer",
           "minimum": 0
