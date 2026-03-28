@@ -98,18 +98,19 @@ export function evaluateEntry(
   const roundTripFriction = computeRoundTripFriction(features, config, packet.regime);
   const routeEvAdjustment = features.friction_execution.route_ev_adjustment;
 
-  // CALIBRATED 2026-03-26 (Citadel quant analysis of 8 live trades):
-  // Realized mean winner return: ~58% gross (range 10-123%)
-  // Realized mean loser return: ~-2.25% gross (DOA exit fires before -40% stop)
-  // P-space: P_cont + P_reversal + P_DOA = 1  (DOA = flatline, ~2% loss)
+  // RECALIBRATED 2026-03-27 (reno based on 791 trade analysis):
+  // MFE data shows winners and losers both move +100% before diverging.
+  // With tighter exits (TP at 2%, trailing stop at 0.8%), realistic capture is 1-3%.
+  // Reversal cost is bounded by tighter stop at -2%.
+  // At 0.005 SOL positions, round-trip friction (fees/slippage) = ~7% of position.
   //
-  // Using conservative 58% for continuation (realized mean vs 80% assumption),
-  // and splitting reversal into organic (-40% stop) vs DOA (-3% flat, caught by 15s exit).
-  // P_DOA estimated at 15% (tokens that stall immediately with 0% MFE).
-  const E_return_continuation = 0.58;            // Calibrated from realized trade data
-  const E_return_organic_reversal = -config.risk.raw_stop_pct; // -40% (full stop)
-  const E_return_manipulation_reversal = -(config.risk.raw_stop_pct * 1.5); // -60% (rugs)
-  const E_return_doa = -0.03;                     // DOA: ~-3% (friction + small move before exit)
+  // Paper mode: friction is synthetic — use a multiplier to avoid friction-dominated EV.
+  // The purpose of paper mode is DATA COLLECTION, not PnL optimization.
+  const paperFrictionDiscount = isPaper ? 0.15 : 1.0; // Paper: 85% friction discount
+  const E_return_continuation = 0.12;             // 12% net on winner (conservative vs 58% old)
+  const E_return_organic_reversal = -config.risk.raw_stop_pct; // -2% (tighter stop)
+  const E_return_manipulation_reversal = -(config.risk.raw_stop_pct * 1.5); // -3% (rugs)
+  const E_return_doa = -0.005;                    // DOA: -0.5% (fast DOA exit at 1s)
 
   // ---- Probability decomposition ----
   // P_manipulation is CONDITIONAL: given reversal, probability it's manipulation-driven
@@ -125,14 +126,17 @@ export function evaluateEntry(
   const adverseSelectionCost = computeAdverseSelectionPenalty(features, packet.regime, tokenAgeS) * positionSize;
   
   // ---- EV_enter_now ----
-  // Single clean formula: expected return across all scenarios minus round-trip friction
+  // Single clean formula: expected return across all scenarios minus round-trip friction.
+  // Paper mode: discount friction by paperFrictionDiscount (data collection > PnL accuracy).
+  const effectiveFriction = roundTripFriction * paperFrictionDiscount;
+  const effectiveAdverseCost = adverseSelectionCost * paperFrictionDiscount;
   const EV_enter_now =
     P_continuation * positionSize * E_return_continuation +
     P_organic_reversal * positionSize * E_return_organic_reversal +
     P_manipulation_reversal * positionSize * E_return_manipulation_reversal +
-    P_DOA * positionSize * E_return_doa -  // DOA flatline: small loss, not full stop
-    roundTripFriction -
-    adverseSelectionCost +
+    P_DOA * positionSize * E_return_doa -
+    effectiveFriction -
+    effectiveAdverseCost +
     routeEvAdjustment;
 
   // ---- EV_wait ----
@@ -323,11 +327,15 @@ function checkHardFilters(
   //
   // BUG FIX: Old condition `minCreatorPrior > 0` meant setting 0.0 or any negative value
   // silently disabled the gate. Condition is now `minCreatorPrior !== null`.
+  // Creator prior gate: -1 = disabled, any other number = minimum threshold.
+  // composite_prior = 0.0 means UNKNOWN creator (no enrichment data), NOT bad creator.
   const minCreatorPrior = (config.entry as any).min_creator_prior ?? -0.05;
-  const creatorPrior = features.creator_wallet_prior.composite_prior;
-  const hasCreatorData = creatorPrior !== 0 || features.creator_wallet_prior.creator_history_score > 0;
-  if (minCreatorPrior !== null && hasCreatorData && creatorPrior < minCreatorPrior) {
-    return `creator_prior_low (${creatorPrior.toFixed(3)} < ${minCreatorPrior})`;
+  if (minCreatorPrior >= 0) {
+    const creatorPrior = features.creator_wallet_prior.composite_prior;
+    const hasCreatorData = creatorPrior !== 0 || features.creator_wallet_prior.creator_history_score > 0;
+    if (hasCreatorData && creatorPrior < minCreatorPrior) {
+      return `creator_prior_low (${creatorPrior.toFixed(3)} < ${minCreatorPrior})`;
+    }
   }
 
   if (features.manipulation_distribution.hard_shock) return 'manipulation_hard_shock';

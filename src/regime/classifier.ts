@@ -80,10 +80,11 @@ export function classifyRegime(input: RegimeInput, config: RegimeConfig): Regime
  * Check if a regime is tradeable (not excluded and not post-migration in initial build).
  */
 export function isTradeableRegime(regime: Regime): boolean {
-  // CRITICAL MEV FIX: Pump.fun tokens go 0→85% in ONE WAVE (no mid-curve pause).
-  // The only viable entry window is EARLY_CURVE (0-15%) before graduation wave.
-  // MID_CURVE is still tradeable but rarely reached before graduation.
-  return regime === Regime.EARLY_CURVE || regime === Regime.MID_CURVE;
+  // RENO: LATE_CURVE is now tradeable — data shows regime transition to LATE_CURVE
+  // has 97% WR and is the best exit signal. We need to be IN the position to exit on it.
+  // EARLY_CURVE, MID_CURVE, LATE_CURVE are all valid entry/hold regimes.
+  // GRADUATION_BOUNDARY is excluded (too close to migration, high slippage risk).
+  return regime === Regime.EARLY_CURVE || regime === Regime.MID_CURVE || regime === Regime.LATE_CURVE;
 }
 
 /**

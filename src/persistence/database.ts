@@ -346,6 +346,7 @@ export class PumpQuantDB {
   insertPosition(pos: Position): void {
     // INSERT OR IGNORE: if a unique constraint fires (duplicate open position for same mint),
     // silently drop the duplicate rather than creating a second row.
+    // RENO FIX: includes entry_features and feat_* columns for ML feature logging.
     this.db.prepare(`
       INSERT OR IGNORE INTO positions (id, mint, symbol, name, regime, entry_order_id,
         entry_price_sol, entry_sol, entry_tokens, entry_timestamp, entry_route_mode,
@@ -353,8 +354,12 @@ export class PumpQuantDB {
         unrealized_pnl_pct, peak_net_exit_value, exit_orders, exit_price_sol, exit_sol,
         exit_timestamp, exit_reason, exit_route_mode, realized_pnl_sol, realized_pnl_pct,
         total_fees_sol, status, opened_at, closed_at, hold_duration_s, mfe_sol, mae_sol,
-        is_paper, config_version)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        is_paper, config_version,
+        entry_features, feat_p_cont, feat_bcd_score, feat_manip_score, feat_creator_prior,
+        feat_velocity, feat_breadth_score, feat_unique_buyers, feat_mcap_sol,
+        entry_ts, active_stop_pct, active_target_pct, active_max_hold_s)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       pos.id, pos.mint, pos.symbol, pos.name, pos.regime, pos.entry_order_id,
       pos.entry_price_sol, pos.entry_sol, pos.entry_tokens, pos.entry_timestamp,
@@ -365,7 +370,13 @@ export class PumpQuantDB {
       pos.exit_route_mode, pos.realized_pnl_sol, pos.realized_pnl_pct,
       pos.total_fees_sol, pos.status, pos.opened_at, pos.closed_at,
       pos.hold_duration_s, pos.mfe_sol, pos.mae_sol, pos.is_paper ? 1 : 0,
-      pos.config_version
+      pos.config_version,
+      pos.entry_features ?? null, pos.feat_p_cont ?? null, pos.feat_bcd_score ?? null,
+      pos.feat_manip_score ?? null, pos.feat_creator_prior ?? null,
+      pos.feat_velocity ?? null, pos.feat_breadth_score ?? null,
+      pos.feat_unique_buyers ?? null, pos.feat_mcap_sol ?? null,
+      pos.entry_ts ?? null, pos.active_stop_pct ?? null,
+      pos.active_target_pct ?? null, pos.active_max_hold_s ?? null
     );
   }
 

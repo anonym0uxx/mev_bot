@@ -347,9 +347,11 @@
           "minimum": 1
         },
         "min_creator_prior": {
-          "type": "number",
-          "minimum": -1,
-          "maximum": 1
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Minimum creator prior. null = disabled"
         },
         "doa_velocity_decay_threshold": {
           "type": "number",
@@ -385,7 +387,7 @@
         "time_decay_pressure_per_s",
         "max_hold_time_s"
       ],
-      "additionalProperties": false,
+      "additionalProperties": true,
       "properties": {
         "hold_horizon_s": {
           "type": "number",
@@ -467,6 +469,20 @@
           "type": "number",
           "minimum": 0,
           "description": "Soft exit: if PnL flat/negative at this hold time, exit immediately. 0=disabled."
+        },
+        "velocity_exit_enabled": {
+          "type": "boolean",
+          "description": "Enable velocity evaporation exit"
+        },
+        "velocity_exit_min_hold_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Min hold before velocity exit"
+        },
+        "velocity_exit_zero_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Velocity threshold for exit"
         }
       }
     },
@@ -1465,11 +1481,24 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["trigger_max_sol", "tp_pct", "sl_pct"],
+            "required": [
+              "trigger_max_sol",
+              "tp_pct",
+              "sl_pct"
+            ],
             "properties": {
-              "trigger_max_sol": { "type": "number", "minimum": 0 },
-              "tp_pct": { "type": "number", "minimum": 0 },
-              "sl_pct": { "type": "number", "minimum": 0 }
+              "trigger_max_sol": {
+                "type": "number",
+                "minimum": 0
+              },
+              "tp_pct": {
+                "type": "number",
+                "minimum": 0
+              },
+              "sl_pct": {
+                "type": "number",
+                "minimum": 0
+              }
             }
           }
         },
@@ -1478,10 +1507,19 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["trigger_max_sol", "size_sol"],
+            "required": [
+              "trigger_max_sol",
+              "size_sol"
+            ],
             "properties": {
-              "trigger_max_sol": { "type": "number", "minimum": 0 },
-              "size_sol": { "type": "number", "minimum": 0 }
+              "trigger_max_sol": {
+                "type": "number",
+                "minimum": 0
+              },
+              "size_sol": {
+                "type": "number",
+                "minimum": 0
+              }
             }
           }
         }

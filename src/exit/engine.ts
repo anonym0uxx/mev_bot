@@ -49,6 +49,35 @@ export function evaluateExit(
     };
   }
 
+  // ====== VELOCITY EVAPORATION EXIT — liquidity dried up ======
+  // If buy velocity drops to zero after minimum hold, exit immediately.
+  // Data shows: when velocity dies, the token is dead. Don't wait for stop loss.
+  const velExitEnabled = (config.exit as any).velocity_exit_enabled ?? false;
+  if (velExitEnabled) {
+    const holdForVel = ageS(position.entry_timestamp);
+    const velMinHold = (config.exit as any).velocity_exit_min_hold_s ?? 0.5;
+    const velThreshold = (config.exit as any).velocity_exit_zero_threshold ?? 0.001;
+    if (holdForVel >= velMinHold) {
+      const currentVel = features.flow_momentum.buy_notional_velocity_5s;
+      if (currentVel < velThreshold) {
+        const gainNow = position.entry_sol > 0
+          ? (position.current_value_sol - position.entry_sol) / position.entry_sol
+          : 0;
+        // Only velocity-exit if we're flat or negative — if positive, let trailing stop handle it
+        if (gainNow <= 0.005) {
+          log.info(`Velocity exit: ${position.symbol} vel=${currentVel.toFixed(4)} < ${velThreshold} after ${holdForVel.toFixed(1)}s (gain=${(gainNow * 100).toFixed(2)}%)`);
+          return {
+            shouldExit: true,
+            shouldReduce: false,
+            exitPct: 100,
+            reason: ExitReason.TIME_DECAY, // Closest match — velocity death
+            ev: computeExitEV(packet, position, probabilities, features, config),
+          };
+        }
+      }
+    }
+  }
+
   // ====== 10.2b RAW STOP LOSS — hard floor at -raw_stop_pct (default -10%) ======
   // For established mid-curve tokens (vSol >= min_vsol_in_curve), use a wider stop.
   // Mid-curve tokens retrace 20-25% on normal sell pressure before continuing;
@@ -70,39 +99,33 @@ export function evaluateExit(
   }
 
   // ====== TRAILING STOP with TIERED PROFIT TAKING ======
-  // Activate trailing stop after +2.5% gain. Trail at 1.2% distance.
-  // Tiered: at +4% gain, trigger a 50% partial reduce.
   const gainPct = position.entry_sol > 0
     ? (position.current_value_sol - position.entry_sol) / position.entry_sol
     : 0;
-  const TRAILING_ACTIVATION = config.exit.trailing_stop_activation_pct ?? 0.025; // activate at +2.5%
-  const TRAILING_DISTANCE = config.exit.trailing_stop_distance_pct ?? 0.020;     // trail 2% behind peak gain
-  const TIER1_TRIGGER = config.exit.tier1_profit_pct ?? 0.04;                    // 50% reduce at +4%
+  const TRAILING_ACTIVATION = config.exit.trailing_stop_activation_pct ?? 0.008;
+  const TRAILING_DISTANCE = config.exit.trailing_stop_distance_pct ?? 0.005;
+  const TIER1_TRIGGER = config.exit.tier1_profit_pct ?? 0.03;
   const TIER1_PCT = config.exit.tier1_reduce_pct ?? 50;
 
-  // Track peak gain in mfe_sol (already tracked as max favorable excursion)
-  if (gainPct > 0 && position.mfe_sol < position.current_value_sol) {
-    position.mfe_sol = position.current_value_sol;
-  }
+  // NOTE: mfe_sol is tracked by the daemon as PnL delta (unrealizedPnl = currentValue - entry_sol).
+  // Do NOT overwrite it here with absolute value — the daemon persists it to DB each tick.
 
   // ====== MOMENTUM REVERSAL FAST-EXIT ======
-  // Fires BEFORE trailing stop activates — catches first-trade-in-a-dump sequence.
-  // If price drops >momentum_reversal_pct from MFE in a single tick AND MFE > min threshold:
-  // exit immediately. This fires 1-2 events ahead of the trailing stop on violent dumps.
-  const MOMENTUM_REV_PCT = (config.exit as any).momentum_reversal_pct ?? 0.03;
-  const MOMENTUM_REV_MIN_MFE = (config.exit as any).momentum_reversal_min_mfe_pct ?? 0.05;
-  // Safety guard: mfe_sol is initialized to entry_sol at position open (not 0).
-  // If somehow mfe_sol is 0 (legacy positions), fall back to entry_sol to avoid negative mfePct.
-  const effectiveMfe = (position.mfe_sol > 0) ? position.mfe_sol : position.entry_sol;
-  const mfePct = position.entry_sol > 0
-    ? (effectiveMfe - position.entry_sol) / position.entry_sol
-    : 0;
-  if (mfePct >= MOMENTUM_REV_MIN_MFE && effectiveMfe > 0) {
-    const dropFromMfe = effectiveMfe > 0
-      ? (effectiveMfe - position.current_value_sol) / effectiveMfe
+  // mfe_sol is PnL delta (tracked by daemon): 0 = never positive, >0 = best unrealized gain.
+  // mfePct = mfe_sol / entry_sol = peak gain % ever reached.
+  // If current gain has dropped more than MOMENTUM_REV_PCT from peak, exit.
+  const MOMENTUM_REV_PCT = (config.exit as any).momentum_reversal_pct ?? 0.015;
+  const MOMENTUM_REV_MIN_MFE = (config.exit as any).momentum_reversal_min_mfe_pct ?? 0.005;
+  const mfePnl = position.mfe_sol; // PnL delta: 0 = never went positive
+  const mfePct = position.entry_sol > 0 ? mfePnl / position.entry_sol : 0;
+  if (mfePct >= MOMENTUM_REV_MIN_MFE && mfePnl > 0) {
+    // Peak value = entry_sol + mfe_sol, current value = position.current_value_sol
+    const peakValue = position.entry_sol + mfePnl;
+    const dropFromPeak = peakValue > 0
+      ? (peakValue - position.current_value_sol) / peakValue
       : 0;
-    if (dropFromMfe >= MOMENTUM_REV_PCT) {
-      log.info(`Momentum reversal exit: ${position.symbol} drop=${(dropFromMfe * 100).toFixed(1)}% from MFE (MFE=${(mfePct * 100).toFixed(1)}%)`);
+    if (dropFromPeak >= MOMENTUM_REV_PCT) {
+      log.info(`Momentum reversal exit: ${position.symbol} drop=${(dropFromPeak * 100).toFixed(1)}% from peak (MFE=${(mfePct * 100).toFixed(1)}%)`);
       return {
         shouldExit: true,
         shouldReduce: false,
@@ -139,14 +162,12 @@ export function evaluateExit(
     };
   }
 
-  // Trailing stop: activate based on PEAK gain ever reached (not current gain)
-  // This ensures trailing stop stays active even after price pulls back below activation threshold
-  const peakGainPct = position.mfe_sol > 0
-    ? (position.mfe_sol - position.entry_sol) / position.entry_sol
-    : 0;
+  // Trailing stop: activate based on PEAK gain ever reached (mfe_sol as PnL delta)
+  const peakGainPct = position.entry_sol > 0 ? position.mfe_sol / position.entry_sol : 0;
   if (peakGainPct >= TRAILING_ACTIVATION && position.mfe_sol > 0) {
     const retraceFromPeak = peakGainPct - gainPct;
     if (retraceFromPeak >= TRAILING_DISTANCE) {
+      log.info(`Trailing stop: ${position.symbol} peak=${(peakGainPct * 100).toFixed(2)}% now=${(gainPct * 100).toFixed(2)}% retrace=${(retraceFromPeak * 100).toFixed(2)}%`);
       return {
         shouldExit: true,
         shouldReduce: false,
@@ -157,20 +178,23 @@ export function evaluateExit(
     }
   }
 
-  // ====== 10.2c DOA EXIT — Dead on Arrival ======
-  // Token never moved: MFE≈0 after 15s AND unrealized loss > 5%
-  // Cuts losers before -40% stop fires. Expected outcome: ~-3% instead of -40%.
+  // ====== 10.2c DOA EXIT — Dead on Arrival (fast) ======
+  // Token never moved positive: MFE ≈ 0 after 1s AND currently at a loss.
+  // mfe_sol is PnL delta: 0 = never went positive.
+  // Cuts DOA positions in ~1s instead of waiting for stop loss at 3s.
   const holdSoFar = ageS(position.entry_timestamp);
-  const unrealizedPct = position.current_value_sol > 0
+  const unrealizedPct = position.entry_sol > 0
     ? (position.current_value_sol - position.entry_sol) / position.entry_sol
     : 0;
-  const noMFE = position.mfe_sol < position.entry_sol * 0.02; // MFE < 2% of entry
-  if (holdSoFar > 15 && noMFE && unrealizedPct < -0.05) {
+  // MFE < 0.3% of entry = essentially never moved positive
+  const noMFE = position.mfe_sol < position.entry_sol * 0.003;
+  if (holdSoFar > 1.0 && noMFE && unrealizedPct < -0.003) {
+    log.info(`DOA exit: ${position.symbol} hold=${holdSoFar.toFixed(1)}s mfe=${position.mfe_sol.toFixed(6)} unrealized=${(unrealizedPct * 100).toFixed(2)}%`);
     return {
       shouldExit: true,
       shouldReduce: false,
       exitPct: 100,
-      reason: ExitReason.TIME_DECAY, // Closest semantic match
+      reason: ExitReason.TIME_DECAY,
       ev: computeExitEV(packet, position, probabilities, features, config),
     };
   }
@@ -209,11 +233,13 @@ export function evaluateExit(
   ev.time_decay_pressure = computeTimeDecayPressure(holdDuration, config);
 
   // Soft early exit: if flat or negative at time_decay_exit_s threshold, cut losses fast.
-  // Data: WR at <2s = 24.8%, 2-5s = 10.1%, 5-10s = 4.2% — edge is almost entirely in first 2s.
-  const softExitThreshold = (config.exit as any).time_decay_exit_s ?? 0;
+  // RENO: Data shows WR at <1s = 26%, 1-2s = 23%, 2-4s = 16%, 4s+ = 1-8%.
+  // Edge is almost entirely in first 1-2s. If not positive by 1.5s, exit.
+  const softExitThreshold = (config.exit as any).time_decay_exit_s ?? 1.5;
   if (softExitThreshold > 0 && holdDuration >= softExitThreshold) {
     const currentPnl = position.current_value_sol - position.entry_sol;
     if (currentPnl <= 0) {
+      log.info(`Time decay exit: ${position.symbol} hold=${holdDuration.toFixed(1)}s pnl=${currentPnl.toFixed(6)} (flat/negative at ${softExitThreshold}s)`);
       return {
         shouldExit: true,
         shouldReduce: false,
