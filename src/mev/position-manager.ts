@@ -49,6 +49,23 @@ export interface PnLRecord {
   // MFE/MAE in SOL terms (based on position size × vSol % move)
   mfeSol?: number;               // max favorable excursion (best unrealised P&L during hold)
   maeSol?: number;               // max adverse excursion (worst unrealised drawdown during hold)
+  // Score model v2 components (for future calibration)
+  scoreComponents?: {
+    triggerIsolation: number;
+    uniqueBuyersBanded: number;
+    buyerDiversity: number;
+    curveFill: number;
+  };
+  adversarialConcentration?: number;  // wallet concentration ratio (>0.6 = penalty applied)
+  // Pre-trigger gate signals (for gate validation)
+  preTriggerBuys1s?: number;
+  preTriggerBuys2s?: number;
+  preTriggerBuys5s?: number;
+  preTriggerGapMs?: number;          // inter-buy gap before trigger (ms)
+  preTriggerVSolDelta3s?: number;    // vSol acceleration in 3s before trigger
+  preTriggerVolume5s?: number;       // total buy volume in 5s before trigger (for isolation ratio)
+  // Sizing context
+  todMultiplier?: number;            // time-of-day size multiplier applied
 }
 
 export type ExitReason = 'take_profit' | 'stop_loss' | 'next_buyer' | 'max_hold';
@@ -300,6 +317,18 @@ export class PositionManager extends EventEmitter {
       // MFE/MAE — peak and trough vSol converted to SOL P&L
       mfeSol: ((pos.peakVSol - pos.entryVSol) / pos.entryVSol) * pos.sizeSol,
       maeSol: ((pos.troughVSol - pos.entryVSol) / pos.entryVSol) * pos.sizeSol,
+      // Score model v2 components
+      scoreComponents: pos.opportunity.components,
+      adversarialConcentration: pos.opportunity.adversarialConcentration,
+      // Pre-trigger gate signals
+      preTriggerBuys1s: pos.opportunity.preTriggerSignals?.buyCount1s,
+      preTriggerBuys2s: pos.opportunity.preTriggerSignals?.buyCount2s,
+      preTriggerBuys5s: pos.opportunity.preTriggerSignals?.buyCount5s,
+      preTriggerGapMs: pos.opportunity.preTriggerSignals?.interBuyGapMs,
+      preTriggerVSolDelta3s: pos.opportunity.preTriggerSignals?.vSolDelta3s,
+      preTriggerVolume5s: pos.opportunity.preTriggerSignals?.volume5sBuys,
+      // Sizing context
+      todMultiplier: pos.opportunity.todMultiplier,
     };
 
     const emoji = pnlSol >= 0 ? '✅' : '❌';

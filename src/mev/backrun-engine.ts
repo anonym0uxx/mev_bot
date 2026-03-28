@@ -306,6 +306,7 @@ export class BackrunEngine extends EventEmitter {
     const { delayMs } = this.randomizer.randomize();
     const sizeSol = parseFloat((Math.random() * (high - low) + low).toFixed(4));
     opp.recommendedSizeSol = sizeSol;
+    opp.todMultiplier = todMultiplier;
 
     log.debug(
       `Tiered sizing: trigger=${triggerSol.toFixed(3)} SOL → base=${dynamicBase.toFixed(3)} → final=${sizeSol.toFixed(4)} SOL`

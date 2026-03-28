@@ -31,6 +31,8 @@ export interface BackrunOpportunity {
     buyerDiversity: number;
     curveFill: number;
   };
+  /** Raw adversarial concentration ratio (0–1). >0.6 triggers 0.5x penalty. */
+  adversarialConcentration?: number;
   preTriggerSignals?: {
     buyCount1s: number;
     buyCount2s: number;
@@ -38,14 +40,20 @@ export interface BackrunOpportunity {
     netFlow2s: number;
     netFlow5s: number;
     timeSinceLastBuyMs: number;
+    /** inter-buy gap at trigger: alias of timeSinceLastBuyMs for clarity in logs/JSONL */
+    interBuyGapMs: number;
     accel: number;
     vSolDelta3s: number;
+    /** Total buy volume in 5s window before trigger (used for isolationRatio) */
+    volume5sBuys: number;
   };
   entryVSol: number;
   tokenFirstSeenMs: number;
   uniqueBuyerCount: number;
   detectedAt: number;
   recommendedSizeSol?: number;
+  /** Time-of-day sizing multiplier applied at entry (1.25/1.10/1.0/0.75) */
+  todMultiplier?: number;
 }
 
 interface TradeRecord {
@@ -182,6 +190,7 @@ export class BackrunDetector extends EventEmitter {
       triggerEvent: event,
       score,
       components: this.lastComponents,
+      adversarialConcentration: this.lastAdversarialConcentration,
       preTriggerSignals,
       entryVSol: vSol,
       tokenFirstSeenMs: mh.firstSeenMs,
@@ -194,12 +203,13 @@ export class BackrunDetector extends EventEmitter {
   }
 
   private lastComponents = { triggerIsolation: 0, uniqueBuyersBanded: 0, buyerDiversity: 0, curveFill: 0 };
+  private lastAdversarialConcentration = 0;
 
   private computePreTriggerSignals(
     preTrades: TradeRecord[],
     now: number,
     currentVSol: number,
-  ): { buyCount1s: number; buyCount2s: number; buyCount5s: number; netFlow2s: number; netFlow5s: number; timeSinceLastBuyMs: number; accel: number; vSolDelta3s: number; volume5sBuys: number; preTrades: TradeRecord[] } {
+  ): { buyCount1s: number; buyCount2s: number; buyCount5s: number; netFlow2s: number; netFlow5s: number; timeSinceLastBuyMs: number; interBuyGapMs: number; accel: number; vSolDelta3s: number; volume5sBuys: number; preTrades: TradeRecord[] } {
     const buys1s = preTrades.filter(t => t.txType === 'buy' && now - t.ts < 1_000);
     const buyCount1s = buys1s.length;
     const buys2s = preTrades.filter(t => t.txType === 'buy' && now - t.ts < 2_000);
@@ -218,7 +228,7 @@ export class BackrunDetector extends EventEmitter {
     const oldestVSol = trades3s.length > 0 ? trades3s[0].vSol : currentVSol;
     const vSolDelta3s = Math.max(0, currentVSol - oldestVSol);
 
-    return { buyCount1s, buyCount2s: buys2s.length, buyCount5s: buys5s.length, netFlow2s, netFlow5s, timeSinceLastBuyMs, accel, vSolDelta3s, volume5sBuys, preTrades };
+    return { buyCount1s, buyCount2s: buys2s.length, buyCount5s: buys5s.length, netFlow2s, netFlow5s, timeSinceLastBuyMs, interBuyGapMs: timeSinceLastBuyMs, accel, vSolDelta3s, volume5sBuys, preTrades };
   }
 
   private computeScore(
@@ -258,6 +268,7 @@ export class BackrunDetector extends EventEmitter {
     for (const t of recentBuys) walletVols.set(t.trader, (walletVols.get(t.trader) ?? 0) + t.solAmount);
     const maxWalletVol = Math.max(...walletVols.values(), 0);
     const concentrationRatio = totalBuyVol30s > 0 ? maxWalletVol / totalBuyVol30s : 0;
+    this.lastAdversarialConcentration = concentrationRatio;
     const adversarialPenalty = concentrationRatio > 0.6 ? 0.5 : 1.0;
 
     // Final weighted score with adversarial penalty

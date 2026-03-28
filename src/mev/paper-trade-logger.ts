@@ -83,6 +83,18 @@ export class PaperTradeLogger {
         // MFE/MAE — essential for training (captures best/worst unrealised P&L during hold)
         mfeSol: trade.mfeSol,
         maeSol: trade.maeSol,
+        // Score model v2 components — for calibration and future model training
+        scoreComponents: trade.scoreComponents,
+        adversarialConcentration: trade.adversarialConcentration,
+        // Pre-trigger gate signals — for gate validation and tuning
+        preTriggerBuys1s: trade.preTriggerBuys1s,
+        preTriggerBuys2s: trade.preTriggerBuys2s,
+        preTriggerBuys5s: trade.preTriggerBuys5s,
+        preTriggerGapMs: trade.preTriggerGapMs,
+        preTriggerVSolDelta3s: trade.preTriggerVSolDelta3s,
+        preTriggerVolume5s: trade.preTriggerVolume5s,
+        // Sizing context
+        todMultiplier: trade.todMultiplier,
         recordedAt: Date.now(),
       };
       const line = JSON.stringify(serializable) + '\n';
