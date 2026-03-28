@@ -1052,7 +1052,7 @@ class StrategyDaemon {
       entryEv = entryDecision.ev;
       sizing = entryDecision.sizing;
 
-      if (packet.state === TokenState.WATCH && entryDecision.shouldEnter) {
+      if (packet.state === TokenState.WATCH && entryDecision.shouldEnter && (config as any).scalper_enabled !== false) {
         // GUARD: layered duplicate-entry prevention
         // committedMints is the primary lock — set synchronously, cleared only after
         // DB write succeeds or fails. Survives the async gap between decision and confirmation.
