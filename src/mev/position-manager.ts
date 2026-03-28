@@ -65,6 +65,11 @@ export interface PnLRecord {
   preTriggerGapMs?: number;          // inter-buy gap before trigger (ms)
   preTriggerVSolDelta3s?: number;    // vSol acceleration in 3s before trigger
   preTriggerVolume5s?: number;       // total buy volume in 5s before trigger (for isolation ratio)
+  // Sell flow signals (new: creator sell detection + net flow analysis)
+  preTriggerSellCount5s?: number;    // sell count in 5s before trigger
+  preTriggerSellVolume5s?: number;   // total sell volume in 5s before trigger (SOL)
+  preTriggerNetFlowRatio5s?: number; // (buyVol - sellVol) / (buyVol + sellVol), range -1 to +1
+  creatorSellDetected?: boolean;     // true if creator sold within 30s before trigger
   // Sizing context
   todMultiplier?: number;            // time-of-day size multiplier applied
 }
@@ -339,6 +344,11 @@ export class PositionManager extends EventEmitter {
       preTriggerGapMs: pos.opportunity.preTriggerSignals?.interBuyGapMs,
       preTriggerVSolDelta3s: pos.opportunity.preTriggerSignals?.vSolDelta3s,
       preTriggerVolume5s: pos.opportunity.preTriggerSignals?.volume5sBuys,
+      // Sell flow signals
+      preTriggerSellCount5s: pos.opportunity.preTriggerSignals?.sellCount5s,
+      preTriggerSellVolume5s: pos.opportunity.preTriggerSignals?.sellVolume5s,
+      preTriggerNetFlowRatio5s: pos.opportunity.preTriggerSignals?.netFlowRatio5s,
+      creatorSellDetected: pos.opportunity.preTriggerSignals?.creatorSellDetected,
       // Sizing context
       todMultiplier: pos.opportunity.todMultiplier,
     };

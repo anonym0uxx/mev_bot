@@ -93,6 +93,11 @@ export class PaperTradeLogger {
         preTriggerGapMs: trade.preTriggerGapMs,
         preTriggerVSolDelta3s: trade.preTriggerVSolDelta3s,
         preTriggerVolume5s: trade.preTriggerVolume5s,
+        // Sell flow signals (new: creator sell + net flow)
+        preTriggerSellCount5s: trade.preTriggerSellCount5s,
+        preTriggerSellVolume5s: trade.preTriggerSellVolume5s,
+        preTriggerNetFlowRatio5s: trade.preTriggerNetFlowRatio5s,
+        creatorSellDetected: trade.creatorSellDetected,
         // Sizing context
         todMultiplier: trade.todMultiplier,
         recordedAt: Date.now(),

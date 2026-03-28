@@ -1460,6 +1460,12 @@
           "type": "number",
           "minimum": 0
         },
+        "max_trigger_isolation": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Max trigger isolation ratio (trigger SOL / total 5s buy volume + trigger). Higher = more isolated trigger = higher max_hold probability. Default 0.45. Data: isolation >0.3 has 53% max_hold rate."
+        },
         "next_buyer_aggregate_flow_ratio": {
           "type": "number",
           "minimum": 0

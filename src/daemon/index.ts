@@ -675,6 +675,24 @@ class StrategyDaemon {
       this.whaleTracker.checkTrade(event.mint, event.traderAddress, event.solAmount, event.txType);
     });
 
+    // Creator sell detection — from Transactions stream (stream 2, zero extra connections)
+    // When a token creator sells, mark the mint in the MEV detector to reject future triggers.
+    // Data shows 0 creator sell fields across 3,093 trades — this signal was entirely missing.
+    this.corecast.on('creatorSell', (event: { mint: string; creatorAddress: string; solAmount: number; timestamp: number }) => {
+      log.warn(`[daemon] Creator sell: ${event.creatorAddress.slice(0,8)} sold ${event.mint.slice(0,8)} (${event.solAmount.toFixed(4)} SOL)`);
+
+      // Route to MEV detector for trigger rejection (30s kill signal)
+      if (this.backrunEngine) {
+        this.backrunEngine.onCreatorSell(event.mint);
+      }
+
+      // Also force-exit any open MEV position on this mint — creator selling = bail immediately
+      if (this.backrunEngine?.hasOpenPosition(event.mint)) {
+        log.warn(`[daemon] Force-exiting MEV position on ${event.mint.slice(0,8)} — creator sell detected`);
+        this.backrunEngine.forceExit(event.mint, 'creator_sell');
+      }
+    });
+
     // Whale buy → pre-qualify mint in signal bridge with extended TTL (60s)
     this.whaleTracker.on('whaleBuy', (event: WhaleBuyEvent) => {
       log.info(`[daemon] Whale buy: ${event.traderAddress.slice(0,8)}... on ${event.mint.slice(0,8)}... — pre-qualifying for MEV (60s TTL)`);

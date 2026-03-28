@@ -34,6 +34,15 @@ export interface WhaleTradeEvent {
   timestamp: number;
 }
 
+/** Emitted when a token creator is detected selling via the Transactions stream */
+export interface CreatorSellEvent {
+  mint: string;
+  creatorAddress: string;
+  /** Estimated SOL amount of the sell (0 if not parseable from instruction) */
+  solAmount: number;
+  timestamp: number;
+}
+
 const PUMP_FUN_BONDING = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 const PUMP_FUN_AMM     = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
 const CORECAST_ENDPOINT = 'corecast.bitquery.io';
@@ -92,6 +101,13 @@ export class CoreCastV3Client extends EventEmitter {
   // Sub-components
   private joiner: EventJoiner;
   private creatorCache: CreatorCache;
+
+  // Creator → mint mapping: tracks which creator launched which tokens (for sell detection)
+  // Key: creator address, Value: Set of mint addresses
+  private creatorToMints: Map<string, Set<string>> = new Map();
+  // Reverse: mint → creator address (for sell event enrichment)
+  private mintToCreator: Map<string, string> = new Map();
+  private readonly CREATOR_MAP_MAX = 20_000;
 
   private apiKey: string;
 
@@ -506,7 +522,7 @@ export class CoreCastV3Client extends EventEmitter {
     }
   }
 
-  /** Handle transactions stream message → NewTokenEvent (pool creation) */
+  /** Handle transactions stream message → NewTokenEvent (pool creation) + CreatorSellEvent */
   private handleTransactionMessage(msg: any): void {
     const tx = msg?.Transaction;
     if (!tx) return;
@@ -517,7 +533,12 @@ export class CoreCastV3Client extends EventEmitter {
     const instructions: any[] = tx?.ParsedIdlInstructions || [];
     if (instructions.length === 0) return;
 
-    // Look for 'create' instruction from Pump.fun
+    // Extract signer once for all instructions in this tx
+    const signerBuf = tx?.Header?.Signer;
+    const signer = signerBuf ? decodeAddress(signerBuf) : '';
+
+    let foundCreate = false;
+
     for (const instr of instructions) {
       const programAddr = instr?.Program?.Address;
       const programAddrStr = programAddr
@@ -525,57 +546,123 @@ export class CoreCastV3Client extends EventEmitter {
         : '';
       const method = instr?.Program?.Method || '';
 
-      if (!programAddrStr.includes(PUMP_FUN_BONDING.slice(0, 8)) && method !== 'create') continue;
-      if (method !== 'create') continue;
+      // Only process pump.fun bonding curve instructions
+      if (!programAddrStr.includes(PUMP_FUN_BONDING.slice(0, 8))) continue;
 
-      // Extract creator from transaction signer
-      const signerBuf = tx?.Header?.Signer;
-      const creator = signerBuf ? decodeAddress(signerBuf) : '';
-      if (!creator) continue;
+      // === CREATE instruction: new token creation ===
+      if (method === 'create' && !foundCreate) {
+        foundCreate = true;
+        if (!signer) continue;
 
-      // Parse arguments
-      const args: any[] = instr?.Arguments || [];
-      const getArg = (name: string): string =>
-        args.find((a: any) => a.Name === name)?.Value || '';
+        // Parse arguments
+        const args: any[] = instr?.Arguments || [];
+        const getArg = (name: string): string =>
+          args.find((a: any) => a.Name === name)?.Value || '';
 
-      // Extract mint from accounts
-      const accounts: any[] = instr?.Accounts || [];
-      const mintAccount = accounts.find((a: any) => a.IsSigner === false && a.IsWritable === true);
-      const mintBuf = mintAccount?.Address;
-      const mint = mintBuf ? decodeAddress(mintBuf) : '';
+        // Extract mint from accounts
+        const accounts: any[] = instr?.Accounts || [];
+        const mintAccount = accounts.find((a: any) => a.IsSigner === false && a.IsWritable === true);
+        const mintBuf = mintAccount?.Address;
+        const mint = mintBuf ? decodeAddress(mintBuf) : '';
 
-      if (!mint) continue;
+        if (!mint) continue;
 
-      const name = getArg('name');
-      const symbol = getArg('symbol');
-      const uri = getArg('uri');
+        const name = getArg('name');
+        const symbol = getArg('symbol');
+        const uri = getArg('uri');
 
-      // Store creator in extended metadata (not in NewTokenEvent type directly)
-      const event: NewTokenEvent = {
-        signature: sigStr,
-        mint,
-        traderPublicKey: creator, // creator = first signer
-        txType: 'create',
-        name,
-        symbol,
-        uri,
-        bondingCurveKey: '',
-        vTokensInBondingCurve: 1_073_000_000,
-        vSolInBondingCurve: 30_000_000_000,
-        marketCapSol: 0,
-        timestamp: nowMs(),
-      };
+        // Track creator → mint mapping for sell detection
+        this.trackCreatorMint(signer, mint);
 
-      log.info(`New token: ${symbol || mint.slice(0, 8)} creator=${creator.slice(0, 8)}`);
-      this.emit('newToken', event);
+        // Store creator in extended metadata (not in NewTokenEvent type directly)
+        const event: NewTokenEvent = {
+          signature: sigStr,
+          mint,
+          traderPublicKey: signer, // creator = first signer
+          txType: 'create',
+          name,
+          symbol,
+          uri,
+          bondingCurveKey: '',
+          vTokensInBondingCurve: 1_073_000_000,
+          vSolInBondingCurve: 30_000_000_000,
+          marketCapSol: 0,
+          timestamp: nowMs(),
+        };
 
-      // Async creator lookup (non-blocking, respects daily budget)
-      if (this.creatorCache.shouldLookup(creator)) {
-        this.creatorCache.fetchFromApi(creator).catch(() => {});
+        log.info(`New token: ${symbol || mint.slice(0, 8)} creator=${signer.slice(0, 8)}`);
+        this.emit('newToken', event);
+
+        // Async creator lookup (non-blocking, respects daily budget)
+        if (this.creatorCache.shouldLookup(signer)) {
+          this.creatorCache.fetchFromApi(signer).catch(() => {});
+        }
       }
 
-      break; // Only process first 'create' instruction per tx
+      // === SELL instruction: check if signer is a known creator ===
+      if (method === 'sell' && signer) {
+        const creatorMints = this.creatorToMints.get(signer);
+        if (creatorMints && creatorMints.size > 0) {
+          // Extract mint from instruction accounts
+          const accounts: any[] = instr?.Accounts || [];
+          const mintAccount = accounts.find((a: any) => a.IsSigner === false && a.IsWritable === true);
+          const mintBuf = mintAccount?.Address;
+          const sellMint = mintBuf ? decodeAddress(mintBuf) : '';
+
+          // Parse SOL amount from arguments if available
+          const args: any[] = instr?.Arguments || [];
+          const amountArg = args.find((a: any) => a.Name === 'amount' || a.Name === 'minSolOutput');
+          const solAmount = amountArg?.Value ? Number(amountArg.Value) / 1e9 : 0;
+
+          // Determine which mint this sell is for
+          // If sellMint is in creatorMints, it's a confirmed creator sell on their own token
+          const targetMint = (sellMint && creatorMints.has(sellMint))
+            ? sellMint
+            : (creatorMints.size === 1 ? [...creatorMints][0] : '');
+
+          if (targetMint) {
+            const event: CreatorSellEvent = {
+              mint: targetMint,
+              creatorAddress: signer,
+              solAmount,
+              timestamp: nowMs(),
+            };
+            log.warn(`🚨 Creator sell detected: ${signer.slice(0, 8)} selling ${targetMint.slice(0, 8)} (${solAmount.toFixed(4)} SOL)`);
+            this.emit('creatorSell', event);
+          }
+        }
+      }
     }
+  }
+
+  /** Track creator-to-mint mapping for creator sell detection */
+  private trackCreatorMint(creator: string, mint: string): void {
+    // Evict oldest entries if map is too large
+    if (this.mintToCreator.size >= this.CREATOR_MAP_MAX) {
+      const keysToDelete = [...this.mintToCreator.keys()].slice(0, 1000);
+      for (const k of keysToDelete) {
+        const c = this.mintToCreator.get(k);
+        this.mintToCreator.delete(k);
+        if (c) {
+          const mints = this.creatorToMints.get(c);
+          if (mints) {
+            mints.delete(k);
+            if (mints.size === 0) this.creatorToMints.delete(c);
+          }
+        }
+      }
+    }
+
+    this.mintToCreator.set(mint, creator);
+    if (!this.creatorToMints.has(creator)) {
+      this.creatorToMints.set(creator, new Set());
+    }
+    this.creatorToMints.get(creator)!.add(mint);
+  }
+
+  /** Get the creator address for a mint (if tracked) */
+  getCreatorForMint(mint: string): string | undefined {
+    return this.mintToCreator.get(mint);
   }
 
   // ====== WHALE WALLET LOADER ======

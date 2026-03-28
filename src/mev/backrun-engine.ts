@@ -369,6 +369,15 @@ export class BackrunEngine extends EventEmitter {
     }
   }
 
+  /**
+   * Notify the detector that a creator sold tokens for this mint.
+   * Called by daemon when corecast emits 'creatorSell' events.
+   * The detector marks the mint and rejects future triggers for 30s.
+   */
+  onCreatorSell(mint: string): void {
+    this.detector.onCreatorSell(mint);
+  }
+
   /** Returns true if an open position exists for the given mint. */
   hasOpenPosition(mint: string): boolean {
     return this.posManager.hasPosition(mint);

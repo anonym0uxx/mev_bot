@@ -47,6 +47,14 @@ export interface BackrunOpportunity {
     vSolDelta3s: number;
     /** Total buy volume in 5s window before trigger (used for isolationRatio) */
     volume5sBuys: number;
+    /** Sell count in 5s window before trigger */
+    sellCount5s: number;
+    /** Total sell volume in 5s window before trigger */
+    sellVolume5s: number;
+    /** Net flow ratio: (buyVol - sellVol) / (buyVol + sellVol). 1.0 = all buys, -1.0 = all sells */
+    netFlowRatio5s: number;
+    /** True if creator sold this token within last 30s */
+    creatorSellDetected: boolean;
   };
   entryVSol: number;
   tokenFirstSeenMs: number;
@@ -69,6 +77,8 @@ interface MintHistory {
   trades: TradeRecord[];
   firstSeenMs: number;
   lastUpdatedMs: number;
+  /** Timestamp of most recent creator sell detected for this mint (0 = none) */
+  creatorSellAt: number;
 }
 
 const HISTORY_WINDOW_MS = 60_000;
@@ -91,13 +101,25 @@ export class BackrunDetector extends EventEmitter {
     this.evictTimer.unref();
   }
 
+  /**
+   * Called when a creator sell is detected (from corecast-v3 Transactions stream).
+   * Marks the mint so subsequent trigger events get the creatorSellDetected flag.
+   */
+  onCreatorSell(mint: string): void {
+    const mh = this.history.get(mint);
+    if (mh) {
+      mh.creatorSellAt = nowMs();
+      log.info(`[creator-sell] Marked ${mint.slice(0,8)} — will reject future triggers (30s TTL)`);
+    }
+  }
+
   onTrade(event: TokenTradeEvent): void {
     const now = nowMs();
     const mint = event.mint;
 
     let mh = this.history.get(mint);
     if (!mh) {
-      mh = { trades: [], firstSeenMs: now, lastUpdatedMs: now };
+      mh = { trades: [], firstSeenMs: now, lastUpdatedMs: now, creatorSellAt: 0 };
       this.history.set(mint, mh);
     }
     mh.lastUpdatedMs = now;
@@ -144,7 +166,7 @@ export class BackrunDetector extends EventEmitter {
     // Gate 6: pre-trigger momentum gate
     // Use all trades EXCEPT the current trigger (slice off last element)
     const preTrades = mh.trades.slice(0, -1);
-    const preTriggerSignals = this.computePreTriggerSignals(preTrades, now, event.vSolInBondingCurve);
+    const preTriggerSignals = this.computePreTriggerSignals(preTrades, now, event.vSolInBondingCurve, mint);
 
     if (this.cfg.pre_trigger_gate_enabled !== false) {
       const maxGapMs = this.cfg.pre_trigger_max_gap_ms ?? 3000;
@@ -181,6 +203,32 @@ export class BackrunDetector extends EventEmitter {
       }
     }
 
+    // Gate 6b: Creator sell gate — if creator sold this token within last 30s, reject
+    // Data shows 0 creator sell fields across 3,093 trades = this signal was missing entirely.
+    // Creator sells indicate dump bait — continuation probability drops to near-zero.
+    if (preTriggerSignals.creatorSellDetected) {
+      log.info(`[gate:creator-sell] ${mint.slice(0,8)} creator sold within 30s — skip`);
+      return;
+    }
+
+    // Gate 6c: Sell pressure gate — if net flow ratio is negative (more sells than buys), reject
+    // This catches coordinated selling that the pure buy-count gates miss
+    if (preTriggerSignals.netFlowRatio5s < 0.2) {
+      log.debug(`[gate:sell-pressure] ${mint.slice(0,8)} netFlowRatio5s=${preTriggerSignals.netFlowRatio5s.toFixed(3)} — skip`);
+      return;
+    }
+
+    // Gate 6d: Trigger isolation gate — the strongest max_hold predictor from data analysis
+    // Data: isolation < 0.1 → 25% max_hold rate, isolation > 0.3 → 53% max_hold rate
+    // This is the key finding: isolated buys (trigger is large share of total flow) predict dead trades
+    const maxTriggerIsolation = (this.cfg as any).max_trigger_isolation ?? 0.45;
+    const triggerSol = event.solAmount;
+    const isolationCheck = triggerSol / (preTriggerSignals.volume5sBuys + triggerSol);
+    if (isolationCheck > maxTriggerIsolation) {
+      log.debug(`[gate:isolation] ${mint.slice(0,8)} isolation=${isolationCheck.toFixed(3)} > ${maxTriggerIsolation} — skip`);
+      return;
+    }
+
     const score = this.computeScore(event, uniqueBuyers, vSol, preTriggerSignals);
 
     // Gate 7: score threshold
@@ -210,7 +258,8 @@ export class BackrunDetector extends EventEmitter {
     preTrades: TradeRecord[],
     now: number,
     currentVSol: number,
-  ): { buyCount1s: number; buyCount2s: number; buyCount5s: number; netFlow2s: number; netFlow5s: number; timeSinceLastBuyMs: number; interBuyGapMs: number; accel: number; vSolDelta3s: number; volume5sBuys: number; preTrades: TradeRecord[] } {
+    mint: string,
+  ): { buyCount1s: number; buyCount2s: number; buyCount5s: number; netFlow2s: number; netFlow5s: number; timeSinceLastBuyMs: number; interBuyGapMs: number; accel: number; vSolDelta3s: number; volume5sBuys: number; sellCount5s: number; sellVolume5s: number; netFlowRatio5s: number; creatorSellDetected: boolean; preTrades: TradeRecord[] } {
     const buys1s = preTrades.filter(t => t.txType === 'buy' && now - t.ts < 1_000);
     const buyCount1s = buys1s.length;
     const buys2s = preTrades.filter(t => t.txType === 'buy' && now - t.ts < 2_000);
@@ -218,6 +267,20 @@ export class BackrunDetector extends EventEmitter {
     const netFlow2s = buys2s.reduce((s, t) => s + t.solAmount, 0);
     const netFlow5s = buys5s.reduce((s, t) => s + t.solAmount, 0);
     const volume5sBuys = buys5s.reduce((s, t) => s + t.solAmount, 0);
+
+    // NEW: Sell flow tracking — captures sell pressure that buy-only signals miss
+    const sells5s = preTrades.filter(t => t.txType === 'sell' && now - t.ts < 5_000);
+    const sellCount5s = sells5s.length;
+    const sellVolume5s = sells5s.reduce((s, t) => s + t.solAmount, 0);
+
+    // Net flow ratio: (buyVol - sellVol) / (buyVol + sellVol)
+    // Range: -1.0 (all sells) to +1.0 (all buys). 0.0 = balanced.
+    const totalVol5s = volume5sBuys + sellVolume5s;
+    const netFlowRatio5s = totalVol5s > 0 ? (volume5sBuys - sellVolume5s) / totalVol5s : 1.0;
+
+    // Creator sell detection: check if this mint's creator sold within last 30s
+    const mh = this.history.get(mint);
+    const creatorSellDetected = mh ? (mh.creatorSellAt > 0 && (now - mh.creatorSellAt) < 30_000) : false;
 
     const lastBuy = [...preTrades].reverse().find(t => t.txType === 'buy');
     const timeSinceLastBuyMs = lastBuy ? now - lastBuy.ts : Infinity;
@@ -229,7 +292,7 @@ export class BackrunDetector extends EventEmitter {
     const oldestVSol = trades3s.length > 0 ? trades3s[0].vSol : currentVSol;
     const vSolDelta3s = Math.max(0, currentVSol - oldestVSol);
 
-    return { buyCount1s, buyCount2s: buys2s.length, buyCount5s: buys5s.length, netFlow2s, netFlow5s, timeSinceLastBuyMs, interBuyGapMs: timeSinceLastBuyMs, accel, vSolDelta3s, volume5sBuys, preTrades };
+    return { buyCount1s, buyCount2s: buys2s.length, buyCount5s: buys5s.length, netFlow2s, netFlow5s, timeSinceLastBuyMs, interBuyGapMs: timeSinceLastBuyMs, accel, vSolDelta3s, volume5sBuys, sellCount5s, sellVolume5s, netFlowRatio5s, creatorSellDetected, preTrades };
   }
 
   private computeScore(

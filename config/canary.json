@@ -334,6 +334,7 @@
     "pre_trigger_min_buys_5s": 3,
     "pre_trigger_max_gap_ms": 1000,
     "pre_trigger_min_vsol_accel": 0.8,
+    "max_trigger_isolation": 0.45,
     "consecutive_stop_pause_count": 3,
     "consecutive_stop_pause_ms": 180000,
     "next_buyer_aggregate_flow_ratio": 0.35,
