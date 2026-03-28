@@ -448,6 +448,16 @@ function checkHardFilters(
       }
     }
 
+    // 3a. Max velocity gate — extremely high velocity tokens are creator_sell traps.
+    // Data (175 trades): velocity 0.60+ = 7.7% WR, -14 mSOL. These attract creator dumps.
+    const maxVelocity = entryCfg.max_velocity_vsol_per_s ?? 0;
+    if (maxVelocity > 0) {
+      const vel = features.flow_momentum?.buy_notional_velocity_5s ?? 0;
+      if (vel > maxVelocity) {
+        return `velocity_too_high (${vel.toFixed(3)} vSol/s > ${maxVelocity})`;
+      }
+    }
+
     // 3b. Flow momentum attribution gate — strongest differentiating signal in data.
     // WIN avg: 0.732, LOSS avg: 0.523, delta +0.209. Threshold at 0.68 cuts bulk of loss dist.
     const minFlowMomentum = entryCfg.min_flow_momentum ?? 0;

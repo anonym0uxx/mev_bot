@@ -1014,6 +1014,14 @@ class StrategyDaemon {
       // while executeEntry is still awaiting confirmation.
       if (this.committedMints.has(mint)) return;
 
+      // Pre-entry creator_sell guard: if creator has already sold, do NOT enter.
+      // Data: 49 trades exited as creator_sell with 27% WR, -31 mSOL total.
+      // Many had <0.5s hold time — we entered INTO the dump. Block at entry instead.
+      if (manipAssessment.hardShock && manipAssessment.hardShockReason === 'creator_sell') {
+        log.info(`REJECT ${packet.symbol || mint.slice(0,8)}: pre_entry_creator_sell (creator already sold — avoiding dump)`);
+        return;
+      }
+
       // Entry evaluation
       const currentPositionCount = this.db.getOpenPositionCount();
       // Use configChangeEpoch so mid-session config changes reset the daily loss window.
