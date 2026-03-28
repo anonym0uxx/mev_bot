@@ -5,6 +5,7 @@ use super::trade_record::TradeRecord;
 
 pub const RING_CAP: usize = 64;
 
+#[derive(Clone)]
 pub struct MintHistory {
     pub trades: [TradeRecord; RING_CAP], // 8192 bytes
     pub head: u32,                       // write pointer (next slot)
@@ -135,6 +136,9 @@ impl MintHistory {
 
     /// Recompute all cached_* aggregate fields by scanning the ring buffer.
     fn recompute_aggregates(&mut self, now_ms: u64) {
+        #[cfg(debug_assertions)]
+        let _t0 = std::time::Instant::now();
+
         let cutoff_1s = now_ms.saturating_sub(1_000);
         let cutoff_2s = now_ms.saturating_sub(2_000);
         let cutoff_3s = now_ms.saturating_sub(3_000);
@@ -218,6 +222,17 @@ impl MintHistory {
 
         // Unique buyers in 30s — use the dedicated method
         self.cached_unique_buyers_30s = self.unique_buyers_in_window(cutoff_30s);
+
+        #[cfg(debug_assertions)]
+        {
+            let elapsed = _t0.elapsed();
+            if elapsed.as_micros() > 10 {
+                tracing::warn!(
+                    elapsed_us = elapsed.as_micros(),
+                    "mint_map aggregate recompute slow"
+                );
+            }
+        }
     }
 }
 
