@@ -230,7 +230,7 @@ export class PositionManager extends EventEmitter {
     if (pos.tradesSeenAfterEntry < 2 || holdSoFar < 500) return;
 
     // Early profit exit: up ≥1.5% and held ≥200ms = curve is alive, take profit via NB path
-    const profitExitPct = (this.cfg as any).next_buyer_profit_exit_pct ?? 0.015;
+    const profitExitPct = this.cfg.next_buyer_profit_exit_pct ?? 0.015;
     if (pnlPct >= profitExitPct && holdSoFar >= 200) {
       this.closePosition(event.mint, currentVSol, 'next_buyer');
       return;
