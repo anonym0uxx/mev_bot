@@ -19,7 +19,6 @@ import { PositionManager, PnLRecord } from './position-manager';
 import { PaperTradeLogger } from './paper-trade-logger';
 import { JitoFailureHandler } from './jito-failure-handler';
 import { MevStatsReporter } from './stats-reporter';
-import { QualifiedMintCache } from './signal-bridge';
 import { PoolDepthCache } from './pool-depth-cache';
 import { EntryRandomizer } from './entry-randomizer';
 import { JitoBundleBuilder } from './jito-bundle-builder';
@@ -87,7 +86,6 @@ export class BackrunEngine extends EventEmitter {
   private tradeLogger: PaperTradeLogger;
   private jitoHandler: JitoFailureHandler;
   private statsReporter: MevStatsReporter;
-  private qualifiedMints: QualifiedMintCache | undefined;
   private poolDepthCache: PoolDepthCache | undefined;
   private randomizer: EntryRandomizer;
   private jitoBundleBuilder: JitoBundleBuilder;
@@ -128,11 +126,10 @@ export class BackrunEngine extends EventEmitter {
   private onTokenTrade: ((event: TokenTradeEvent) => void) | null = null;
   private onMintTrade: ((event: TokenTradeEvent) => void) | null = null;
 
-  constructor(cfg: MevConfig, feed: PumpPortalClient, qualifiedMints?: QualifiedMintCache, poolDepthCache?: PoolDepthCache) {
+  constructor(cfg: MevConfig, feed: PumpPortalClient, poolDepthCache?: PoolDepthCache) {
     super();
     this.cfg = cfg;
     this.feed = feed;
-    this.qualifiedMints = qualifiedMints;
     this.poolDepthCache = poolDepthCache;
 
     this.detector = new BackrunDetector(cfg);
@@ -476,13 +473,6 @@ export class BackrunEngine extends EventEmitter {
     if (Date.now() < this.stopPauseUntilMs) {
       const remainingSec = ((this.stopPauseUntilMs - Date.now()) / 1000).toFixed(0);
       log.debug(`Skipping ${opp.mint.slice(0,8)}: consecutive stop pause active (${remainingSec}s remaining)`);
-      return;
-    }
-
-    // Guard: scalper pre-qualification (signal bridge)
-    // Skipped when use_scalper_prequalification=false — MEV runs independently
-    if (this.cfg.use_scalper_prequalification !== false && this.qualifiedMints && !this.qualifiedMints.has(opp.mint)) {
-      log.debug(`[paper] skipped ${opp.mint.slice(0, 8)} — not in scalper hot-list`);
       return;
     }
 

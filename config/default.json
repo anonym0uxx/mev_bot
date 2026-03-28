@@ -290,7 +290,6 @@
     "jito_tip_lamports": 10000,
     "conflict_policy": "skip",
     "log_file": "data/mev_paper_trades.jsonl",
-    "use_scalper_prequalification": true,
     "jitter_ms_min": 50,
     "jitter_ms_max": 200,
     "size_variance_pct": 0.20,

@@ -3,7 +3,7 @@
  * WhaleTracker: loads a list of known alpha wallets and emits 'whaleBuy' events
  * when any of those wallets buys a Pump.fun token.
  *
- * Used by daemon/index.ts to pre-qualify mints for MEV via qualifiedMintCache.preQualify().
+ * Used by daemon/index.ts to log whale activity.
  * Whale list populated by: scripts/build-whale-list.js (run periodically to refresh).
  */
 import * as fs from 'fs';

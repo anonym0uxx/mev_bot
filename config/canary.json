@@ -321,7 +321,6 @@
     "jito_tip_lamports": 50000,
     "conflict_policy": "skip",
     "log_file": "data/mev_paper_trades.jsonl",
-    "use_scalper_prequalification": false,
     "jitter_ms_min": 50,
     "jitter_ms_max": 200,
     "size_variance_pct": 0.2,
@@ -421,6 +420,5 @@
     "intra_hold_trailing_stop_pct": 1.0,
     "intra_hold_trailing_stop_min_mfe_pct": 1.0,
     "blocked_trigger_sources": ["corecast"]
-  },
-  "scalper_enabled": false
+  }
 }

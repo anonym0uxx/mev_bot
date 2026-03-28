@@ -46,7 +46,6 @@ import { startApiServer, DaemonContext } from './api';
 import { isPaperMode } from '../paper/engine';
 import { PumpQuantConfig, RouteMode } from '../types/config';
 import { BackrunEngine } from '../mev/backrun-engine';
-import { QualifiedMintCache } from '../mev/signal-bridge';
 import { PoolDepthCache } from '../mev/pool-depth-cache';
 import { WhaleTracker, WhaleBuyEvent } from '../feed/whale-tracker';
 import {
@@ -78,7 +77,6 @@ class StrategyDaemon {
   private analysisInterval: NodeJS.Timeout | null = null;
   private strategyProfile: string = 'default';
   private backrunEngine: BackrunEngine | null = null;
-  private qualifiedMintCache: QualifiedMintCache = new QualifiedMintCache();
   private poolDepthCache: PoolDepthCache = new PoolDepthCache();
   private whaleTracker: WhaleTracker = new WhaleTracker();
   private pendingExecutions: Set<string> = new Set();
@@ -252,18 +250,6 @@ class StrategyDaemon {
           const sessionStart = this.sessionAbsoluteStartMs;
           const windowStart = sessionStart; // session-scoped only
 
-          // Scalper stats — session-scoped (positions opened since this daemon started)
-          const scalperRows = dbRaw.prepare(
-            'SELECT realized_pnl_sol FROM positions WHERE is_paper=? AND status=? AND opened_at >= ?'
-          ).all(paperMode ? 1 : 0, 'closed', windowStart) as Array<{ realized_pnl_sol: number }>;
-          const scalperTotal = scalperRows.length;
-          const scalperWins = scalperRows.filter(r => r.realized_pnl_sol > 0).length;
-          const scalperPnl = scalperRows.reduce((s, r) => s + (r.realized_pnl_sol || 0), 0);
-          const scalperWR = scalperTotal > 0 ? (scalperWins / scalperTotal * 100).toFixed(1) : '—';
-          const scalperLabel = scalperTotal > 0
-            ? `${scalperTotal} trades | WR ${scalperWR}% | ${scalperPnl >= 0 ? '+' : ''}${scalperPnl.toFixed(4)} SOL`
-            : `0 trades this session`;
-
           // MEV stats — session-scoped (gross + net fee-adjusted)
           let mevTrades = 0, mevWins = 0, mevGrossPnl = 0, mevNetPnl = 0;
           if (mevPaperMode) {
@@ -300,12 +286,11 @@ class StrategyDaemon {
             ? `${mevTrades} trades | WR ${mevWR}% | Gross ${mevGrossPnl >= 0 ? '+' : ''}${mevGrossPnl.toFixed(4)} | Net ${mevNetPnl >= 0 ? '+' : ''}${mevNetPnl.toFixed(4)} SOL`
             : `0 trades this session`;
 
-          const combinedNet = scalperPnl + mevNetPnl;
           const modeTag = (!paperMode && !mevPaperMode) ? '💵 LIVE' : '📄 PAPER';
 
           // Skip summary if not enough data yet — avoid misleading low-sample WR noise
           const MIN_TRADES_FOR_SUMMARY = 10;
-          const totalSessionTrades = scalperTotal + mevTrades;
+          const totalSessionTrades = mevTrades;
           if (totalSessionTrades < MIN_TRADES_FOR_SUMMARY && totalSessionTrades > 0) {
             log.debug(`PnL summary skipped — only ${totalSessionTrades} session trades (min ${MIN_TRADES_FOR_SUMMARY})`, { component: 'alerts' });
             return;
@@ -313,9 +298,8 @@ class StrategyDaemon {
 
           const msg = [
             `${modeTag} P&L — session update`,
-            `📊 Scalper: ${scalperLabel}`,
             `🎯 MEV: ${mevLabel}`,
-            `💰 Combined Net: ${combinedNet >= 0 ? '+' : ''}${combinedNet.toFixed(4)} SOL`,
+            `💰 Net: ${mevNetPnl >= 0 ? '+' : ''}${mevNetPnl.toFixed(4)} SOL`,
           ].join('\n');
 
           sendTelegram(msg);
@@ -345,7 +329,7 @@ class StrategyDaemon {
 
     // Initialize MEV backrun engine if enabled
     if (config.mev?.enabled) {
-      this.backrunEngine = new BackrunEngine(config.mev, this.feed, this.qualifiedMintCache, this.poolDepthCache);
+      this.backrunEngine = new BackrunEngine(config.mev, this.feed, this.poolDepthCache);
       log.info(`MEV BackrunEngine initialized (paper_mode=${config.mev.paper_mode})`);
 
       // MEV trade events (paper or live) are covered by the 5-min PnL summary.
@@ -682,8 +666,7 @@ class StrategyDaemon {
     this.corecast.on('bondingCurvePool', (event: { mint: string; poolAddress: string; changeSol: number; depthSol: number; timestamp: number }) => {
       // Large positive push (buy) → pre-qualify for MEV engine (signals whale activity on curve)
       if (event.changeSol > 2.0) {
-        log.debug(`[daemon] Bonding curve push: ${event.mint.slice(0, 8)} +${event.changeSol.toFixed(2)} SOL → pre-qualifying for MEV`);
-        this.qualifiedMintCache.preQualify(event.mint, 30_000);
+        log.debug(`[daemon] Bonding curve push: ${event.mint.slice(0, 8)} +${event.changeSol.toFixed(2)} SOL`);
       }
       // Large negative push (sell) → force exit if we have position
       if (event.changeSol < -2.0 && this.backrunEngine?.hasOpenPosition(event.mint)) {
@@ -714,8 +697,7 @@ class StrategyDaemon {
 
     // Whale buy → pre-qualify mint in signal bridge with extended TTL (60s)
     this.whaleTracker.on('whaleBuy', (event: WhaleBuyEvent) => {
-      log.info(`[daemon] Whale buy: ${event.traderAddress.slice(0,8)}... on ${event.mint.slice(0,8)}... — pre-qualifying for MEV (60s TTL)`);
-      this.qualifiedMintCache.preQualify(event.mint, 60_000);
+      log.info(`[daemon] Whale buy: ${event.traderAddress.slice(0,8)}... on ${event.mint.slice(0,8)}...`);
     });
 
     this.corecast.on('disconnected', (reason: string) => {
@@ -1093,7 +1075,7 @@ class StrategyDaemon {
       entryEv = entryDecision.ev;
       sizing = entryDecision.sizing;
 
-      if (packet.state === TokenState.WATCH && entryDecision.shouldEnter && (config as any).scalper_enabled !== false) {
+      if (packet.state === TokenState.WATCH && entryDecision.shouldEnter) {
         // GUARD: layered duplicate-entry prevention
         // committedMints is the primary lock — set synchronously, cleared only after
         // DB write succeeds or fails. Survives the async gap between decision and confirmation.
@@ -1124,8 +1106,6 @@ class StrategyDaemon {
 
           // Store full entry decision on packet for ML feature capture in executeEntry
           packet.entry_decision = entryDecision;
-          // Signal bridge: pre-qualify this mint for MEV engine (30s TTL)
-          this.qualifiedMintCache.add(mint);
           log.info(`🚀 Promoting to ENTER_READY: ${packet.symbol || mint.slice(0,8)} — ${entryDecision.reason}`);
           this.stateMachine.transitionToEnterReady(mint, entryDecision.reason);
           log.info(`💰 EXECUTING ENTRY: ${packet.symbol || mint.slice(0,8)} size=${entryDecision.sizing!.position_size.toFixed(4)} SOL | social: twitter=${social.has_twitter} tg=${social.has_telegram} replies=${social.reply_count} score=${social.social_score.toFixed(2)} (positions: ${openPositionCount}+${this.committedMints.size - 1} pending)`);
