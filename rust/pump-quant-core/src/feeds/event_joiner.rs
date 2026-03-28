@@ -1,8 +1,15 @@
 //! EventJoiner — merges PumpPortal, Helius, ShredStream (optional), and timer
 //! events into a single ordered stream for the engine hot-path thread.
+//!
+//! Resilience rules:
+//! - Helius closed → fall back to PumpPortal + tick only (Helius is optional pre-warmer)
+//! - ShredStream closed → fall back to without ShredStream
+//! - PumpPortal closed → exit (it's the primary trigger feed; it has its own reconnect loop)
+//! - Tick closed → exit (tick generator died, something is very wrong)
+//! - Engine channel closed → exit cleanly
 
 use crossbeam_channel::{Receiver, Sender, select};
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::feeds::FeedEvent;
 
@@ -21,10 +28,8 @@ impl EventJoiner {
         shredstream_rx: Option<Receiver<FeedEvent>>,
         engine_tx: Sender<FeedEvent>,
     ) -> Self {
-        // Create internal tick channel — joiner owns the sender, runtime spawns the generator
         let (tick_tx, tick_rx) = crossbeam_channel::bounded::<FeedEvent>(8);
 
-        // Spawn tick generator as a std thread (avoids tokio dependency here)
         std::thread::spawn(move || {
             let interval = std::time::Duration::from_millis(50);
             loop {
@@ -34,7 +39,7 @@ impl EventJoiner {
                     .unwrap_or_default()
                     .as_millis() as u64;
                 if tick_tx.send(FeedEvent::Tick { ts_ms }).is_err() {
-                    break; // engine shut down
+                    break;
                 }
             }
         });
@@ -48,31 +53,28 @@ impl EventJoiner {
         }
     }
 
-    /// Run the event joining loop. Blocking — call from a dedicated thread.
-    /// Forwards events from all channels to the engine in arrival order.
-    /// Exits when the engine channel is closed (sender dropped).
-    ///
-    /// ShredStream channel is optional — if `None`, only PumpPortal, Helius,
-    /// and tick events are processed.
     pub fn run(mut self) {
-        // Take the optional shredstream channel out of self so we can move self freely.
         let shred_rx = self.shredstream_rx.take();
-        // Destructure self into locals to avoid partial-move issues.
         let pp_rx = self.pumpportal_rx;
         let h_rx = self.helius_rx;
         let t_rx = self.tick_rx;
         let e_tx = self.engine_tx;
 
         match shred_rx {
-            Some(s_rx) => run_4way(pp_rx, h_rx, s_rx, t_rx, e_tx),
-            None => run_3way(pp_rx, h_rx, t_rx, e_tx),
+            Some(s_rx) => run_with_shred(pp_rx, h_rx, s_rx, t_rx, e_tx),
+            None => run_pp_helius_tick(pp_rx, h_rx, t_rx, e_tx),
         }
     }
 }
 
-/// 4-way select: PumpPortal + Helius + ShredStream + Tick.
-/// If ShredStream disconnects, falls back to 3-way.
-fn run_4way(
+// ── Forward helper — returns false if engine channel closed ──────────
+#[inline(always)]
+fn forward(event: FeedEvent, e_tx: &Sender<FeedEvent>) -> bool {
+    e_tx.send(event).is_ok()
+}
+
+// ── 4-way: PP + Helius + ShredStream + Tick ─────────────────────────
+fn run_with_shred(
     pp_rx: Receiver<FeedEvent>,
     h_rx: Receiver<FeedEvent>,
     s_rx: Receiver<FeedEvent>,
@@ -81,63 +83,34 @@ fn run_4way(
 ) {
     loop {
         select! {
-            recv(pp_rx) -> msg => {
-                match msg {
-                    Ok(event) => {
-                        if e_tx.send(event).is_err() {
-                            debug!("[joiner] engine channel closed — exiting");
-                            return;
-                        }
-                    }
-                    Err(_) => {
-                        debug!("[joiner] pumpportal channel closed");
-                        return;
-                    }
+            recv(pp_rx) -> msg => match msg {
+                Ok(ev) => { if !forward(ev, &e_tx) { return; } }
+                Err(_) => { debug!("[joiner] pumpportal closed"); return; }
+            },
+            recv(h_rx) -> msg => match msg {
+                Ok(ev) => { if !forward(ev, &e_tx) { return; } }
+                Err(_) => {
+                    info!("[joiner] helius closed — continuing without it");
+                    return run_pp_shred_tick(pp_rx, s_rx, t_rx, e_tx);
                 }
-            }
-            recv(h_rx) -> msg => {
-                match msg {
-                    Ok(event) => {
-                        if e_tx.send(event).is_err() {
-                            return;
-                        }
-                    }
-                    Err(_) => {
-                        debug!("[joiner] helius channel closed");
-                        return;
-                    }
+            },
+            recv(s_rx) -> msg => match msg {
+                Ok(ev) => { if !forward(ev, &e_tx) { return; } }
+                Err(_) => {
+                    info!("[joiner] shredstream closed — falling back to pp+helius+tick");
+                    return run_pp_helius_tick(pp_rx, h_rx, t_rx, e_tx);
                 }
-            }
-            recv(s_rx) -> msg => {
-                match msg {
-                    Ok(event) => {
-                        if e_tx.send(event).is_err() {
-                            debug!("[joiner] engine channel closed — exiting");
-                            return;
-                        }
-                    }
-                    Err(_) => {
-                        debug!("[joiner] shredstream channel closed — falling back to 3-way");
-                        return run_3way(pp_rx, h_rx, t_rx, e_tx);
-                    }
-                }
-            }
-            recv(t_rx) -> msg => {
-                match msg {
-                    Ok(event) => {
-                        if e_tx.send(event).is_err() {
-                            return;
-                        }
-                    }
-                    Err(_) => return,
-                }
-            }
+            },
+            recv(t_rx) -> msg => match msg {
+                Ok(ev) => { if !forward(ev, &e_tx) { return; } }
+                Err(_) => { debug!("[joiner] tick closed"); return; }
+            },
         }
     }
 }
 
-/// 3-way select: PumpPortal + Helius + Tick (no ShredStream).
-fn run_3way(
+// ── 3-way: PP + Helius + Tick ────────────────────────────────────────
+fn run_pp_helius_tick(
     pp_rx: Receiver<FeedEvent>,
     h_rx: Receiver<FeedEvent>,
     t_rx: Receiver<FeedEvent>,
@@ -145,43 +118,69 @@ fn run_3way(
 ) {
     loop {
         select! {
-            recv(pp_rx) -> msg => {
-                match msg {
-                    Ok(event) => {
-                        if e_tx.send(event).is_err() {
-                            debug!("[joiner] engine channel closed — exiting");
-                            return;
-                        }
-                    }
-                    Err(_) => {
-                        debug!("[joiner] pumpportal channel closed");
-                        return;
-                    }
+            recv(pp_rx) -> msg => match msg {
+                Ok(ev) => { if !forward(ev, &e_tx) { return; } }
+                Err(_) => { debug!("[joiner] pumpportal closed"); return; }
+            },
+            recv(h_rx) -> msg => match msg {
+                Ok(ev) => { if !forward(ev, &e_tx) { return; } }
+                Err(_) => {
+                    info!("[joiner] helius closed — continuing pp+tick only");
+                    return run_pp_tick(pp_rx, t_rx, e_tx);
                 }
-            }
-            recv(h_rx) -> msg => {
-                match msg {
-                    Ok(event) => {
-                        if e_tx.send(event).is_err() {
-                            return;
-                        }
-                    }
-                    Err(_) => {
-                        debug!("[joiner] helius channel closed");
-                        return;
-                    }
+            },
+            recv(t_rx) -> msg => match msg {
+                Ok(ev) => { if !forward(ev, &e_tx) { return; } }
+                Err(_) => { debug!("[joiner] tick closed"); return; }
+            },
+        }
+    }
+}
+
+// ── 3-way: PP + ShredStream + Tick (Helius gone) ────────────────────
+fn run_pp_shred_tick(
+    pp_rx: Receiver<FeedEvent>,
+    s_rx: Receiver<FeedEvent>,
+    t_rx: Receiver<FeedEvent>,
+    e_tx: Sender<FeedEvent>,
+) {
+    loop {
+        select! {
+            recv(pp_rx) -> msg => match msg {
+                Ok(ev) => { if !forward(ev, &e_tx) { return; } }
+                Err(_) => { debug!("[joiner] pumpportal closed"); return; }
+            },
+            recv(s_rx) -> msg => match msg {
+                Ok(ev) => { if !forward(ev, &e_tx) { return; } }
+                Err(_) => {
+                    info!("[joiner] shredstream closed — pp+tick only");
+                    return run_pp_tick(pp_rx, t_rx, e_tx);
                 }
-            }
-            recv(t_rx) -> msg => {
-                match msg {
-                    Ok(event) => {
-                        if e_tx.send(event).is_err() {
-                            return;
-                        }
-                    }
-                    Err(_) => return,
-                }
-            }
+            },
+            recv(t_rx) -> msg => match msg {
+                Ok(ev) => { if !forward(ev, &e_tx) { return; } }
+                Err(_) => { debug!("[joiner] tick closed"); return; }
+            },
+        }
+    }
+}
+
+// ── 2-way: PP + Tick (everything else gone) ──────────────────────────
+fn run_pp_tick(
+    pp_rx: Receiver<FeedEvent>,
+    t_rx: Receiver<FeedEvent>,
+    e_tx: Sender<FeedEvent>,
+) {
+    loop {
+        select! {
+            recv(pp_rx) -> msg => match msg {
+                Ok(ev) => { if !forward(ev, &e_tx) { return; } }
+                Err(_) => { debug!("[joiner] pumpportal closed"); return; }
+            },
+            recv(t_rx) -> msg => match msg {
+                Ok(ev) => { if !forward(ev, &e_tx) { return; } }
+                Err(_) => { debug!("[joiner] tick closed"); return; }
+            },
         }
     }
 }

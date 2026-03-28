@@ -46,6 +46,9 @@ fn exit_reason_str(reason: ExitReason) -> &'static str {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Install rustls crypto provider (required before any TLS connections)
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // Init tracing
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
