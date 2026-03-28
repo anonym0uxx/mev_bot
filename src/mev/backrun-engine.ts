@@ -35,8 +35,30 @@ import { AlertSystem } from '../alerts/system';
 const _bs58 = require('bs58');
 const bs58 = _bs58.default ?? _bs58;
 
+// ═══════════════════════════════════════════════════════════════════════
+// DATA SOURCE ARCHITECTURE:
+//
+// PRIMARY TRIGGER (fires entries): PumpPortal WS
+//   - Provides: vSolInBondingCurve, bondingCurveKey, vTokensInBondingCurve, marketCapSol
+//   - Required for: Gate 3 (vSol range check), curveFill score component, Jito bundle construction
+//   - Latency: ~50-200ms after block confirmation (PumpPortal enriches with account state)
+//   - BackrunEngine listens on PumpPortalClient.on('tokenTrade') — these ARE PumpPortal events
+//
+// PRE-WARMER (history only, never triggers): Helius WS (processed commitment)
+//   - Provides: trade direction, SOL delta, mint address
+//   - Missing: vSol=0, bondingCurveKey='', tokenAmount=0
+//   - Arrives: ~200-400ms BEFORE PumpPortal (processed vs confirmed)
+//   - Role: pre-warm mint trade history so crowd metrics are accurate when PumpPortal fires
+//
+// ENRICHMENT (signals, never triggers): CoreCast gRPC
+//   - Provides: creator sell detection, AMM filtering, transfer alerts, bonding curve pool events
+//   - vSol: always 0 in DexTrades (Bitquery proto limitation — vSol is account state, not in trade events)
+//   - Role: feeds detector.onTrade() for history/signals via daemon, NOT for entry decisions
+//   - CoreCast events are routed through daemon's setupCoreCastHandlers(), NOT through BackrunEngine
+// ═══════════════════════════════════════════════════════════════════════
+
 /** Trigger source for dedup and latency tracking */
-export type TriggerSource = 'corecast' | 'helius';
+export type TriggerSource = 'pumpportal' | 'helius';
 
 /**
  * Cross-feed dedup cache entry — two-phase pipeline.
@@ -44,14 +66,14 @@ export type TriggerSource = 'corecast' | 'helius';
  * Phase 1 (Helius, fast, sparse): pre-warms mint trade history only.
  *   Helius events lack vSol/tokenAmount data, so they NEVER trigger scoring/gating.
  *
- * Phase 2 (CoreCast, ~24ms later, rich data): runs full detector pipeline.
+ * Phase 2 (PumpPortal, ~30ms later, rich data): runs full detector pipeline.
  *   If Helius pre-warmed, we log the lead time and mark processed.
  */
 interface DedupEntry {
   source: TriggerSource;
   ts: number;
   prewarmed: boolean;  // true if Helius pre-warmed history for this sig
-  processed: boolean;  // true if full detector pipeline ran (CoreCast only)
+  processed: boolean;  // true if full detector pipeline ran (PumpPortal only)
 }
 
 const log = createLogger('mev:backrun-engine');
@@ -84,7 +106,7 @@ export class BackrunEngine extends EventEmitter {
   // Helius lead time tracking
   private heliusLeadSamples: number[] = [];
   private heliusFirstCount = 0;
-  private corecastFirstCount = 0;
+  private pumpportalFirstCount = 0;
 
   // Consecutive stop circuit breaker
   private consecutiveStops = 0;
@@ -200,12 +222,14 @@ export class BackrunEngine extends EventEmitter {
       // to guarantee delivery even if the EventEmitter chain is interrupted
     });
 
-    // Listen to all tokenTrade events for scoring — route through dedup layer
+    // Listen to PumpPortal tokenTrade events for scoring — route through dedup layer.
+    // NOTE: this.feed is PumpPortalClient — these events ARE from PumpPortal, NOT CoreCast.
+    // PumpPortal provides the rich data (vSol, bondingCurveKey, vTokens) required for entry decisions.
     this.onTokenTrade = (event: TokenTradeEvent) => {
       if (!this.running) return;
       // Skip AMM (post-graduation Raydium) trades — MEV engine targets pre-graduation bonding curve only.
       if ((event as any).isAmm) return;
-      this.handleTriggerEvent(event, 'corecast');
+      this.handleTriggerEvent(event, 'pumpportal');
     };
     this.feed.on('tokenTrade', this.onTokenTrade);
 
@@ -259,7 +283,7 @@ export class BackrunEngine extends EventEmitter {
     // Log Helius lead time stats
     if (this.heliusLeadSamples.length > 0) {
       const avg = this.heliusLeadSamples.reduce((a, b) => a + b, 0) / this.heliusLeadSamples.length;
-      log.info(`Helius lead time stats: avg=${avg.toFixed(0)}ms samples=${this.heliusLeadSamples.length} heliusFirst=${this.heliusFirstCount} corecastFirst=${this.corecastFirstCount}`);
+      log.info(`Helius lead time stats: avg=${avg.toFixed(0)}ms samples=${this.heliusLeadSamples.length} heliusFirst=${this.heliusFirstCount} pumpportalFirst=${this.pumpportalFirstCount}`);
     }
 
     // Clear direct callback before closing positions
@@ -293,14 +317,14 @@ export class BackrunEngine extends EventEmitter {
   }
 
   /**
-   * Two-phase cross-feed pipeline: Helius pre-warms, CoreCast triggers.
+   * Two-phase cross-feed pipeline: Helius pre-warms, PumpPortal triggers.
    *
    * Phase 1 (Helius, fast, sparse data — vSol=0, tokenAmount=0):
    *   → Pre-warm mint buy history ONLY (detector.addTradeToHistory)
    *   → Do NOT run scoring/gating/trigger logic
    *   → Return early
    *
-   * Phase 2 (CoreCast, ~24ms later, complete data):
+   * Phase 2 (PumpPortal, ~30ms later, complete data):
    *   → If pre-warmed by Helius: log lead time, mark processed
    *   → Run full detector.onTrade() with complete vSol/amount/bondingCurveKey
    *   → Also feed position manager for open positions
@@ -342,9 +366,9 @@ export class BackrunEngine extends EventEmitter {
         return; // NEVER trigger from Helius
       }
 
-      // --- Phase 2: CoreCast full pipeline ---
+      // --- Phase 2: PumpPortal full pipeline ---
       if (existing?.processed) {
-        // Already fully processed (CoreCast duplicate) — skip
+        // Already fully processed (PumpPortal duplicate) — skip
         return;
       }
 
@@ -357,13 +381,13 @@ export class BackrunEngine extends EventEmitter {
 
         if (this.heliusLeadSamples.length % 50 === 0) {
           const avg = this.heliusLeadSamples.reduce((a, b) => a + b, 0) / this.heliusLeadSamples.length;
-          log.info(`[dedup] Helius lead stats: avg=${avg.toFixed(0)}ms samples=${this.heliusLeadSamples.length} heliusFirst=${this.heliusFirstCount} corecastFirst=${this.corecastFirstCount}`);
+          log.info(`[dedup] Helius lead stats: avg=${avg.toFixed(0)}ms samples=${this.heliusLeadSamples.length} heliusFirst=${this.heliusFirstCount} pumpportalFirst=${this.pumpportalFirstCount}`);
         }
       } else {
-        // CoreCast arrived first (no Helius pre-warm)
-        this.triggerDedup.set(sig, { source: 'corecast', ts: now, prewarmed: false, processed: true });
+        // PumpPortal arrived first (no Helius pre-warm)
+        this.triggerDedup.set(sig, { source: 'pumpportal', ts: now, prewarmed: false, processed: true });
         this.triggerDedupOrder.push(sig);
-        this.corecastFirstCount++;
+        this.pumpportalFirstCount++;
 
         // Evict if too large
         while (this.triggerDedupOrder.length > this.TRIGGER_DEDUP_MAX) {

@@ -75,8 +75,8 @@ export interface PnLRecord {
   // Sizing context
   todMultiplier?: number;            // time-of-day size multiplier applied
   // Trigger source tracking (Helius fast lane)
-  triggerSource?: string;            // 'corecast' | 'helius' — which feed delivered the trigger first
-  heliusLeadMs?: number;             // ms Helius was ahead of CoreCast (negative = CoreCast was faster)
+  triggerSource?: string;            // 'pumpportal' | 'helius' — which feed delivered the trigger event
+  heliusLeadMs?: number;             // ms Helius was ahead of PumpPortal (positive = Helius pre-warmed first)
 }
 
 export type ExitReason = 'take_profit' | 'stop_loss' | 'next_buyer' | 'max_hold' | 'intra_hold_trail';
@@ -358,6 +358,7 @@ export class PositionManager extends EventEmitter {
       todMultiplier: pos.opportunity.todMultiplier,
       // Trigger source tracking
       triggerSource: (pos.opportunity.triggerEvent as any).triggerSource,
+      heliusLeadMs: (pos.opportunity.triggerEvent as any).heliusLeadMs,
     };
 
     const emoji = pnlSol >= 0 ? '✅' : '❌';
