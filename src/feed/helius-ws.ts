@@ -15,6 +15,11 @@ import { createLogger } from '../utils/logger';
 import { nowMs } from '../utils/time';
 import { TokenTradeEvent } from '../types/events';
 
+// bs58 for signature format normalization (CoreCast uses hex, Helius uses base58)
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const _bs58 = require('bs58');
+const bs58Encoder = _bs58.default ?? _bs58;
+
 const log = createLogger('helius-ws');
 
 const PUMP_FUN_BONDING = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
