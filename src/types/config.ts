@@ -374,6 +374,7 @@ export interface MevConfig {
   pre_trigger_min_buys_5s?: number;
   pre_trigger_max_gap_ms?: number;
   pre_trigger_min_vsol_accel?: number;
+  pre_trigger_min_volume_5s?: number;     // min total buy volume in 5s before trigger (SOL). Default 1.0
   consecutive_stop_pause_count?: number;
   consecutive_stop_pause_ms?: number;
   tp_tiers?: Array<{ trigger_max_sol: number; tp_pct: number; sl_pct: number }>;

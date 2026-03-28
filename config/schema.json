@@ -1431,6 +1431,16 @@
           "type": "boolean",
           "default": true
         },
+        "subscribe_transfer_stream": {
+          "type": "boolean",
+          "default": false,
+          "description": "Subscribe to Transfers stream (Stream 4: early exit signal). Disabled — 0 events in 3,148 trades."
+        },
+        "subscribe_bonding_pool_stream": {
+          "type": "boolean",
+          "default": false,
+          "description": "Subscribe to DexPools bonding curve stream (Stream 5). Disabled — redundant with DexTrades."
+        },
         "pre_trigger_gate_enabled": {
           "type": "boolean",
           "default": true
@@ -1459,6 +1469,11 @@
         "pre_trigger_min_vsol_accel": {
           "type": "number",
           "minimum": 0
+        },
+        "pre_trigger_min_volume_5s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Minimum total buy volume in 5s window before trigger (SOL). Filters low-conviction entries. Default 1.0 (recalibrated after double-counting fix)."
         },
         "max_trigger_isolation": {
           "type": "number",

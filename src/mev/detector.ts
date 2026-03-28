@@ -115,6 +115,34 @@ export class BackrunDetector extends EventEmitter {
     }
   }
 
+  /**
+   * Lightweight history pre-warm: appends trade to mint's ring buffer
+   * WITHOUT running gate checks or scoring.
+   * Used by BackrunEngine for Helius Phase 1 (fast, sparse data).
+   */
+  addTradeToHistory(event: TokenTradeEvent): void {
+    const now = nowMs();
+    const mint = event.mint;
+
+    let mh = this.history.get(mint);
+    if (!mh) {
+      mh = { trades: [], firstSeenMs: now, lastUpdatedMs: now, creatorSellAt: 0 };
+      this.history.set(mint, mh);
+    }
+    mh.lastUpdatedMs = now;
+
+    const cutoff = now - HISTORY_WINDOW_MS;
+    mh.trades = mh.trades.filter(t => t.ts >= cutoff);
+
+    mh.trades.push({
+      ts: now,
+      solAmount: event.solAmount,
+      txType: event.txType,
+      trader: event.traderPublicKey,
+      vSol: event.vSolInBondingCurve,
+    });
+  }
+
   onTrade(event: TokenTradeEvent): void {
     const now = nowMs();
     const mint = event.mint;
@@ -341,9 +369,9 @@ export class BackrunDetector extends EventEmitter {
     // 5. Crowd Depth 5s (20%) — pre-trigger buy volume normalized to [0, 1]
     // v5 NEW: r_pb = 0.097 for win prediction, r_pb = -0.230 for max_hold prediction.
     // This is the STRONGEST max_hold predictor in the dataset.
-    // vol5s 0-1 → 54% max_hold; vol5s 5-10 → 22% max_hold.
-    // Normalized: 10 SOL in 5s = max score (rare but achievable).
-    const crowdDepth5s = Math.min(1, pts.volume5sBuys / 10);
+    // After fixing double-counting bug, true values are ~half of historical data.
+    // Recalibrated: 5 SOL in 5s = max score (was 10 when data was 2x inflated).
+    const crowdDepth5s = Math.min(1, pts.volume5sBuys / 5);
 
     // 6. Recent Buyers 1s (15%) — buy count in final 1s before trigger
     // v5 NEW: r_pb = 0.121 for win prediction, r_pb = -0.189 for max_hold prediction.

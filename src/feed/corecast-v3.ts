@@ -494,7 +494,9 @@ export class CoreCastV3Client extends EventEmitter {
 
     // Deduplicate by tx signature
     const sig = msg?.Transaction?.Signature;
-    const sigStr = sig ? (Buffer.isBuffer(sig) ? sig.toString('hex') : String(sig)) : '';
+    const sigRaw = sig ? (Buffer.isBuffer(sig) ? sig : Buffer.from(String(sig), 'hex')) : null;
+    // Normalize signature to base58 for cross-feed dedup (Helius emits base58, CoreCast emits hex bytes)
+    const sigStr = sigRaw ? _bs58enc.encode(sigRaw) : '';
     if (sigStr && this.isDupe(sigStr)) return;
     if (sigStr) this.addDedupe(sigStr);
 
@@ -553,7 +555,8 @@ export class CoreCastV3Client extends EventEmitter {
     if (!tx) return;
 
     const txSig = tx?.Signature;
-    const sigStr = txSig ? (Buffer.isBuffer(txSig) ? txSig.toString('hex') : String(txSig)) : '';
+    const txSigBuf = txSig ? (Buffer.isBuffer(txSig) ? txSig : Buffer.from(String(txSig), 'hex')) : null;
+    const sigStr = txSigBuf ? _bs58enc.encode(txSigBuf) : '';
 
     const instructions: any[] = tx?.ParsedIdlInstructions || [];
     if (instructions.length === 0) return;
@@ -718,7 +721,8 @@ export class CoreCastV3Client extends EventEmitter {
 
     // Deduplicate by tx signature (shared dedup set)
     const sig = msg?.Transaction?.Signature;
-    const sigStr = sig ? (Buffer.isBuffer(sig) ? sig.toString('hex') : String(sig)) : '';
+    const sigRawW = sig ? (Buffer.isBuffer(sig) ? sig : Buffer.from(String(sig), 'hex')) : null;
+    const sigStr = sigRawW ? _bs58enc.encode(sigRawW) : '';
     if (sigStr && this.isDupe(sigStr)) return;
     if (sigStr) this.addDedupe(sigStr);
 
@@ -812,9 +816,10 @@ export class CoreCastV3Client extends EventEmitter {
     const transfer = msg?.Transfer;
     if (!transfer) return;
 
-    // Deduplicate by tx signature
+    // Deduplicate by tx signature — normalize to base58 for cross-feed dedup
     const sig = msg?.Transaction?.Signature;
-    const sigStr = sig ? (Buffer.isBuffer(sig) ? sig.toString('hex') : String(sig)) : '';
+    const sigRawT = sig ? (Buffer.isBuffer(sig) ? sig : Buffer.from(String(sig), 'hex')) : null;
+    const sigStr = sigRawT ? _bs58enc.encode(sigRawT) : '';
     if (sigStr && this.isDupe(sigStr)) return;
     if (sigStr) this.addDedupe(sigStr);
 

@@ -30,18 +30,28 @@ import { createLogger } from '../utils/logger';
 import { nowMs } from '../utils/time';
 import { AlertSystem } from '../alerts/system';
 
+// bs58 for signature normalization (hex→base58)
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const _bs58 = require('bs58');
+const bs58 = _bs58.default ?? _bs58;
+
 /** Trigger source for dedup and latency tracking */
 export type TriggerSource = 'corecast' | 'helius';
 
 /**
- * Cross-feed dedup cache entry.
- * When a tx signature is first seen from either source, we record the timestamp.
- * When the same signature arrives from the other source, we compute the lead time.
+ * Cross-feed dedup cache entry — two-phase pipeline.
+ *
+ * Phase 1 (Helius, fast, sparse): pre-warms mint trade history only.
+ *   Helius events lack vSol/tokenAmount data, so they NEVER trigger scoring/gating.
+ *
+ * Phase 2 (CoreCast, ~24ms later, rich data): runs full detector pipeline.
+ *   If Helius pre-warmed, we log the lead time and mark processed.
  */
 interface DedupEntry {
-  firstSource: TriggerSource;
-  firstReceivedAt: number;
-  processed: boolean; // Whether detector already processed this event
+  source: TriggerSource;
+  ts: number;
+  prewarmed: boolean;  // true if Helius pre-warmed history for this sig
+  processed: boolean;  // true if full detector pipeline ran (CoreCast only)
 }
 
 const log = createLogger('mev:backrun-engine');
@@ -270,58 +280,100 @@ export class BackrunEngine extends EventEmitter {
   }
 
   /**
-   * Cross-feed dedup: route trigger events from CoreCast or Helius.
-   * First arrival wins (gets processed by detector); second arrival logs lead time.
+   * Normalize a tx signature to base58 (canonical format).
+   * CoreCast emits hex (128 chars), Helius emits base58 (~88 chars).
+   */
+  private normalizeSig(sig: string): string {
+    if (!sig) return '';
+    // hex signatures are exactly 128 lowercase hex chars (64 bytes)
+    if (sig.length === 128 && /^[0-9a-f]+$/i.test(sig)) {
+      try { return bs58.encode(Buffer.from(sig, 'hex')); } catch { return sig; }
+    }
+    return sig; // already base58
+  }
+
+  /**
+   * Two-phase cross-feed pipeline: Helius pre-warms, CoreCast triggers.
+   *
+   * Phase 1 (Helius, fast, sparse data — vSol=0, tokenAmount=0):
+   *   → Pre-warm mint buy history ONLY (detector.addTradeToHistory)
+   *   → Do NOT run scoring/gating/trigger logic
+   *   → Return early
+   *
+   * Phase 2 (CoreCast, ~24ms later, complete data):
+   *   → If pre-warmed by Helius: log lead time, mark processed
+   *   → Run full detector.onTrade() with complete vSol/amount/bondingCurveKey
+   *   → Also feed position manager for open positions
    */
   private handleTriggerEvent(event: TokenTradeEvent, source: TriggerSource): void {
-    const sig = event.signature || '';
+    const rawSig = event.signature || '';
+    const sig = this.normalizeSig(rawSig);
 
     // Tag the event with source metadata
     (event as any).triggerSource = source;
 
+    const now = nowMs();
+
     if (sig) {
       const existing = this.triggerDedup.get(sig);
 
-      if (existing) {
-        // Second arrival — compute lead time and skip processing
-        if (existing.firstSource !== source) {
-          const leadMs = nowMs() - existing.firstReceivedAt;
-          if (existing.firstSource === 'helius') {
-            // Helius arrived first, CoreCast arrived now
-            this.heliusLeadSamples.push(leadMs);
-          } else {
-            // CoreCast arrived first, Helius arrived now (negative lead = CoreCast was faster)
-            this.heliusLeadSamples.push(-leadMs);
-          }
-
-          if (this.heliusLeadSamples.length % 50 === 0) {
-            const avg = this.heliusLeadSamples.reduce((a, b) => a + b, 0) / this.heliusLeadSamples.length;
-            log.info(`[dedup] Helius lead stats: avg=${avg.toFixed(0)}ms samples=${this.heliusLeadSamples.length} heliusFirst=${this.heliusFirstCount} corecastFirst=${this.corecastFirstCount}`);
-          }
+      if (source === 'helius') {
+        // --- Phase 1: Helius pre-warm ---
+        if (existing) {
+          // Already seen (either Helius dupe or CoreCast arrived first) — skip
+          return;
         }
-        // Already processed — skip
+        // Pre-warm history only — no gates, no scoring
+        this.detector.addTradeToHistory(event);
+        this.triggerDedup.set(sig, { source: 'helius', ts: now, prewarmed: true, processed: false });
+        this.triggerDedupOrder.push(sig);
+        this.heliusFirstCount++;
+
+        // Feed position manager for open positions (price tracking)
+        if (this.posManager.hasPosition(event.mint)) {
+          this.posManager.onSubsequentTrade(event);
+        }
+
+        // Evict if too large
+        while (this.triggerDedupOrder.length > this.TRIGGER_DEDUP_MAX) {
+          const old = this.triggerDedupOrder.shift();
+          if (old) this.triggerDedup.delete(old);
+        }
+        return; // NEVER trigger from Helius
+      }
+
+      // --- Phase 2: CoreCast full pipeline ---
+      if (existing?.processed) {
+        // Already fully processed (CoreCast duplicate) — skip
         return;
       }
 
-      // First arrival — record and process
-      this.triggerDedup.set(sig, {
-        firstSource: source,
-        firstReceivedAt: nowMs(),
-        processed: true,
-      });
-      this.triggerDedupOrder.push(sig);
+      if (existing?.prewarmed) {
+        // Helius pre-warmed this sig — compute lead time
+        const leadMs = now - existing.ts;
+        (event as any).heliusLeadMs = leadMs;
+        this.heliusLeadSamples.push(leadMs);
+        existing.processed = true;
 
-      if (source === 'helius') this.heliusFirstCount++;
-      else this.corecastFirstCount++;
+        if (this.heliusLeadSamples.length % 50 === 0) {
+          const avg = this.heliusLeadSamples.reduce((a, b) => a + b, 0) / this.heliusLeadSamples.length;
+          log.info(`[dedup] Helius lead stats: avg=${avg.toFixed(0)}ms samples=${this.heliusLeadSamples.length} heliusFirst=${this.heliusFirstCount} corecastFirst=${this.corecastFirstCount}`);
+        }
+      } else {
+        // CoreCast arrived first (no Helius pre-warm)
+        this.triggerDedup.set(sig, { source: 'corecast', ts: now, prewarmed: false, processed: true });
+        this.triggerDedupOrder.push(sig);
+        this.corecastFirstCount++;
 
-      // Evict if too large
-      while (this.triggerDedupOrder.length > this.TRIGGER_DEDUP_MAX) {
-        const old = this.triggerDedupOrder.shift();
-        if (old) this.triggerDedup.delete(old);
+        // Evict if too large
+        while (this.triggerDedupOrder.length > this.TRIGGER_DEDUP_MAX) {
+          const old = this.triggerDedupOrder.shift();
+          if (old) this.triggerDedup.delete(old);
+        }
       }
     }
 
-    // Process the event through detector + position manager
+    // Full pipeline: detector scoring + gating + position tracking
     const hadOpenPosition = this.posManager.hasPosition(event.mint);
     this.detector.onTrade(event);
     if (hadOpenPosition) {
@@ -334,7 +386,7 @@ export class BackrunEngine extends EventEmitter {
     const cutoff = nowMs() - this.TRIGGER_DEDUP_TTL_MS;
     let evicted = 0;
     for (const [sig, entry] of this.triggerDedup) {
-      if (entry.firstReceivedAt < cutoff) {
+      if (entry.ts < cutoff) {
         this.triggerDedup.delete(sig);
         evicted++;
       }
@@ -408,6 +460,15 @@ export class BackrunEngine extends EventEmitter {
         log.debug(`[gate:tod] Skipping ${opp.mint.slice(0,8)}: UTC hour ${hourUtcNow} is blocked`);
         return;
       }
+    }
+
+    // Guard: pre-trigger volume 5s gate (data-backed — filters low-conviction entries)
+    // After fixing double-counting bug, true values are ~half of historical data.
+    // Analysis: vol5s >= 1.0 SOL → 44% WR, 27% max_hold vs below: 38% WR, 51% max_hold
+    const minVolume5s = this.cfg.pre_trigger_min_volume_5s ?? 1.0;
+    if (opp.preTriggerSignals?.volume5sBuys !== undefined && opp.preTriggerSignals.volume5sBuys < minVolume5s) {
+      log.debug(`[gate:volume5s] Skipping ${opp.mint.slice(0,8)}: vol5s=${opp.preTriggerSignals.volume5sBuys.toFixed(3)} < ${minVolume5s}`);
+      return;
     }
 
     // Guard: pool depth gate for graduated tokens
