@@ -1442,6 +1442,14 @@
           "type": "integer",
           "minimum": 0
         },
+        "next_buyer_single_buy_ratio": {
+          "type": "number",
+          "minimum": 0
+        },
+        "next_buyer_profit_exit_pct": {
+          "type": "number",
+          "minimum": 0
+        },
         "tp_tiers": {
           "type": "array",
           "items": {
