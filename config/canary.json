@@ -298,7 +298,8 @@
     "stale_threshold_ms": 5000,
     "primary_for_market_data": true,
     "grpc_enabled": true,
-    "grpc_endpoint": "corecast.bitquery.io"
+    "grpc_endpoint": "corecast.bitquery.io",
+    "subscribe_whale_stream": false
   },
   "mev": {
     "enabled": true,
