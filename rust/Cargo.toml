@@ -1,0 +1,3 @@
+[workspace]
+members = ["pump-quant-core"]
+resolver = "2"
