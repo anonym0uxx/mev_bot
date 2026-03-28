@@ -197,21 +197,41 @@ export class PositionManager extends EventEmitter {
 
     this.positions.set(opp.mint, pos);
 
-    // Momentum decay early exit — if MFE hasn't reached threshold by check time, exit early
-    // Data: 18/29 max_hold trades have MFE < 0.5% at 200ms. Avg MH hold = 600ms.
-    // This catches dead trades before the full max_hold timeout.
-    if (this.cfg.momentum_decay_check_ms && this.cfg.momentum_decay_min_mfe_pct !== undefined) {
-      const decayTimer = setTimeout(() => {
+    // Momentum decay early exit — recurring interval checks for stalled or reversing trades.
+    // Gate 1 (flat): if MFE never reached min threshold → dead trade, exit now.
+    // Gate 2 (drawdown): if price pumped then drew down past threshold from peak → fade catching.
+    // Fixes: was one-shot setTimeout, wrong exit price (peakVSol), threshold too high (0.5%).
+    if (this.cfg.momentum_decay_check_ms) {
+      const decayInterval = setInterval(() => {
         const p = this.positions.get(opp.mint);
-        if (!p) return;
+        if (!p) { clearInterval(decayInterval); return; }
+
+        const currentVSol = Number(p.currentVSolLamports) / 1e9;
         const mfePct = (p.peakVSol - p.entryVSol) / p.entryVSol;
-        if (mfePct < this.cfg.momentum_decay_min_mfe_pct!) {
-          log.debug(`[momentum-decay] ${opp.mint.slice(0,8)} mfePct=${(mfePct*100).toFixed(3)}% < threshold → early exit`);
-          this.closePosition(opp.mint, p.peakVSol, 'momentum_decay');
+        const drawdownFromPeak = p.peakVSol > p.entryVSol
+          ? (p.peakVSol - currentVSol) / p.peakVSol
+          : 0;
+
+        // Gate 1: price hasn't moved enough — flat/dead trade
+        if (this.cfg.momentum_decay_min_mfe_pct !== undefined &&
+            mfePct < this.cfg.momentum_decay_min_mfe_pct) {
+          log.debug(`[momentum-decay:flat] ${opp.mint.slice(0,8)} mfePct=${(mfePct*100).toFixed(3)}% < ${(this.cfg.momentum_decay_min_mfe_pct*100).toFixed(3)}% → flat exit`);
+          clearInterval(decayInterval);
+          this.closePosition(opp.mint, currentVSol, 'momentum_decay');
+          return;
+        }
+
+        // Gate 2: price pumped then reversed past drawdown threshold
+        if (this.cfg.momentum_decay_max_drawdown_pct !== undefined &&
+            drawdownFromPeak > this.cfg.momentum_decay_max_drawdown_pct) {
+          log.debug(`[momentum-decay:fade] ${opp.mint.slice(0,8)} drawdown=${(drawdownFromPeak*100).toFixed(3)}% > ${(this.cfg.momentum_decay_max_drawdown_pct*100).toFixed(3)}% → peak-fade exit`);
+          clearInterval(decayInterval);
+          this.closePosition(opp.mint, currentVSol, 'momentum_decay');
+          return;
         }
       }, this.cfg.momentum_decay_check_ms);
-      decayTimer.unref();
-      pos.decayTimer = decayTimer;
+      decayInterval.unref();
+      pos.decayTimer = decayInterval as unknown as ReturnType<typeof setTimeout>;
     }
 
     log.info(
@@ -336,7 +356,7 @@ export class PositionManager extends EventEmitter {
     if (!pos) return;
 
     clearTimeout(pos.holdTimer);
-    if (pos.decayTimer) { clearTimeout(pos.decayTimer); pos.decayTimer = undefined; }
+    if (pos.decayTimer) { clearInterval(pos.decayTimer); pos.decayTimer = undefined; }
     this.positions.delete(mint);
 
     const exitTimestampMs = nowMs();
@@ -460,7 +480,7 @@ export class PositionManager extends EventEmitter {
   destroy(): void {
     for (const pos of this.positions.values()) {
       clearTimeout(pos.holdTimer);
-      if (pos.decayTimer) clearTimeout(pos.decayTimer);
+      if (pos.decayTimer) clearInterval(pos.decayTimer);
     }
     this.positions.clear();
   }

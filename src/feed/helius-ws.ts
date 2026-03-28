@@ -329,6 +329,7 @@ export class HeliusWsClient extends EventEmitter {
 
       // Tag as Helius source for dedup/logging
       (event as any).source = 'helius';
+      (event as any).triggerSource = 'helius';
       (event as any).heliusReceivedAt = nowMs();
 
       if (this.messageCount % 50 === 0) {

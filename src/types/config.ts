@@ -397,8 +397,10 @@ export interface MevConfig {
   pre_trigger_max_vsol_delta_3s?: number;
   /** Momentum decay check: ms after entry to verify MFE progress. 0/undefined = disabled. */
   momentum_decay_check_ms?: number;
-  /** Minimum MFE % at decay check time. Below this → early exit. Default undefined (disabled). */
+  /** Minimum MFE % at decay check time. Below this → flat exit. Default undefined (disabled). */
   momentum_decay_min_mfe_pct?: number;
+  /** Max drawdown from MFE peak before decay exit triggers. e.g. 0.003 = 0.3% drawdown from peak. */
+  momentum_decay_max_drawdown_pct?: number;
 }
 
 export interface PumpQuantConfig {

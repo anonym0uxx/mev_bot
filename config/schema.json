@@ -1608,7 +1608,12 @@
         "momentum_decay_min_mfe_pct": {
           "type": "number",
           "minimum": 0,
-          "description": "Minimum MFE fraction at decay check time. Below this triggers early exit."
+          "description": "Minimum MFE fraction at decay check time. Below this triggers flat exit."
+        },
+        "momentum_decay_max_drawdown_pct": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Max drawdown from MFE peak before decay exit. e.g. 0.003 = 0.3% from peak."
         }
       }
     }
