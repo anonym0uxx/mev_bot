@@ -400,6 +400,8 @@
         4,
         5
       ]
-    }
+    },
+    "intra_hold_trailing_stop_pct": 0.018,
+    "intra_hold_trailing_stop_min_mfe_pct": 0.012
   }
 }

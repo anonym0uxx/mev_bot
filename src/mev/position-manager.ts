@@ -208,6 +208,17 @@ export class PositionManager extends EventEmitter {
       pos.buySinceEntry++;
     }
 
+    // Intra-hold trailing stop: if peak MFE exceeded threshold and price dropped from peak
+    const trailStopPct = this.cfg.intra_hold_trailing_stop_pct ?? 0.025;
+    const trailMinMfePct = this.cfg.intra_hold_trailing_stop_min_mfe_pct ?? 0.01;
+    const mfePctFromEntry = (pos.peakVSol - pos.entryVSol) / pos.entryVSol;
+    const dropFromPeakPct = (pos.peakVSol - currentVSol) / pos.peakVSol;
+    if (mfePctFromEntry >= trailMinMfePct && dropFromPeakPct >= trailStopPct) {
+      log.debug(`[intra-trail] ${event.mint.slice(0,8)} MFE=${(mfePctFromEntry*100).toFixed(2)}% dropFromPeak=${(dropFromPeakPct*100).toFixed(2)}% → trailing stop`);
+      this.closePosition(event.mint, currentVSol, 'intra_hold_trail');
+      return;
+    }
+
     // Tiered TP/SL based on trigger buy size
     const triggerSol = pos.opportunity.triggerEvent.solAmount;
     const tpTiers = this.cfg.tp_tiers;

@@ -132,7 +132,7 @@ export class BackrunEngine extends EventEmitter {
           log.warn(`[circuit-breaker] ${this.consecutiveStops} consecutive stops — pausing new entries for ${pauseMs/1000}s`);
           this.consecutiveStops = 0;
         }
-      } else if (record.exitReason === 'take_profit' || record.exitReason === 'next_buyer') {
+      } else if (record.exitReason === 'take_profit' || record.exitReason === 'next_buyer' || record.exitReason === 'intra_hold_trail') {
         this.consecutiveStops = 0;
       }
 
