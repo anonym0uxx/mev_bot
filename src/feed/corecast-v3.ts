@@ -248,6 +248,7 @@ export class CoreCastV3Client extends EventEmitter {
     // Validate core streams: require at least 3 (bonding trades + transactions + AMM trades).
     // 3 core streams required; streams 4-5 are optional enhancements.
     const CORE_STREAMS_REQUIRED = 3;
+    const MAX_STREAMS = 5; // Hard cap — Bitquery plan limit. Never exceed this.
     const coreStreams = streams.filter(s => s.name !== 'dex_pools' && s.name !== 'whale_trades');
     if (coreStreams.length < CORE_STREAMS_REQUIRED) {
       // Hard fail — Bitquery concurrent stream limit is 3. Misconfiguration means we'd be
@@ -256,6 +257,12 @@ export class CoreCastV3Client extends EventEmitter {
         `CoreCast v3: expected at least ${CORE_STREAMS_REQUIRED} core streams but configured ${coreStreams.length}. ` +
         `Check subscribe_trades/subscribe_new_tokens/subscribe_migrations in config.`
       );
+    }
+    if (streams.length > MAX_STREAMS) {
+      // Hard cap: never open more than 5 streams regardless of config.
+      // Truncate to the first MAX_STREAMS to protect Bitquery quota.
+      log.error(`CoreCast v3: ${streams.length} streams configured but hard cap is ${MAX_STREAMS} — truncating to first ${MAX_STREAMS}`);
+      streams.length = MAX_STREAMS;
     }
 
     // Start all streams
