@@ -31,6 +31,8 @@ export interface BackrunOpportunity {
     uniqueBuyersBanded: number;
     buyerDiversity: number;
     curveFill: number;
+    crowdDepth5s: number;
+    recentBuyers1s: number;
   };
   /** Raw adversarial concentration ratio (0–1). >0.6 triggers 0.5x penalty. */
   adversarialConcentration?: number;
@@ -251,7 +253,7 @@ export class BackrunDetector extends EventEmitter {
     this.emit('opportunity', opp);
   }
 
-  private lastComponents = { triggerIsolation: 0, buyMomentumTrend: 0, uniqueBuyersBanded: 0, buyerDiversity: 0, curveFill: 0 };
+  private lastComponents = { triggerIsolation: 0, buyMomentumTrend: 0, uniqueBuyersBanded: 0, buyerDiversity: 0, curveFill: 0, crowdDepth5s: 0, recentBuyers1s: 0 };
   private lastAdversarialConcentration = 0;
 
   private computePreTriggerSignals(
@@ -299,20 +301,20 @@ export class BackrunDetector extends EventEmitter {
     event: TokenTradeEvent,
     uniqueBuyers: number,
     vSol: number,
-    pts: { buyCount1s: number; netFlow2s: number; netFlow5s: number; accel: number; buyCount2s: number; volume5sBuys: number; preTrades: TradeRecord[] },
+    pts: { buyCount1s: number; netFlow2s: number; netFlow5s: number; accel: number; buyCount2s: number; buyCount5s: number; volume5sBuys: number; preTrades: TradeRecord[] },
   ): number {
     // 1a. Legacy Trigger Isolation (kept for logging/JSONL but NOT used in score)
     const triggerSol = event.solAmount;
     const isolationRatio = triggerSol / (pts.volume5sBuys + triggerSol);
     const triggerIsolation = Math.pow(Math.max(0, Math.min(1, isolationRatio)), 1.5);
 
-    // 1b. Buy Momentum Trend (40%) — is buy velocity ACCELERATING in 0-2s before trigger?
-    // Compute: buyCount_1s / max(buyCount_2s - buyCount_1s, 0.1)
-    // >1.0 = accelerating (more buys in last 1s than prior 1s), <1.0 = decelerating
+    // 1b. Buy Momentum Trend (10%) — is buy velocity accelerating?
+    // v5: DEMOTED from 20% → 10%. Data shows r_pb = -0.043 (anti-predictive for wins).
+    // Higher momentum actually correlates with MORE max_hold exits. Kept at minimal weight
+    // as a tiebreaker only; removing entirely risks regime-change blind spots.
     const recentBuys1s = pts.buyCount1s;
     const olderBuys1s = Math.max(pts.buyCount2s - pts.buyCount1s, 0.1);
     const momentumRatio = recentBuys1s / olderBuys1s;
-    // Normalize: ratio 0.5→0, ratio 2.0→1.0, cap at 1.0
     const buyMomentumTrend = Math.max(0, Math.min(1, (momentumRatio - 0.5) / 1.5));
 
     // 2. Unique Buyers Banded (25%) — sweet spot at 5-10 buyers, penalise <3 and >15
@@ -323,17 +325,31 @@ export class BackrunDetector extends EventEmitter {
     else if (uniqueBuyers <= 15) buyerScore = 1.0 - (uniqueBuyers - 10) * 0.06;
     else buyerScore = 0.7;
 
-    // 3. Buyer Diversity (20%) — unique wallets / total buys in last 30s
+    // 3. Buyer Diversity (10%) — unique wallets / total buys in last 30s
+    // v5: DEMOTED from 20% → 10%. r_pb = 0.036 (weak). Budget reallocated to crowd signals.
     const now30sCutoff = Date.now() - 30_000;
     const recentBuys = [...pts.preTrades, { ts: Date.now(), solAmount: event.solAmount, txType: 'buy' as const, trader: event.traderPublicKey, vSol }]
       .filter(t => t.txType === 'buy' && t.ts >= now30sCutoff);
     const uniqueTraders30s = new Set(recentBuys.map(t => t.trader)).size;
     const buyerDiversity = Math.min(1, (uniqueTraders30s / Math.max(1, recentBuys.length)) * 1.5);
 
-    // 4. Curve Fill (15%) — prefer early curve (lower vSol = higher score)
+    // 4. Curve Fill (20%) — prefer early curve (lower vSol = higher score)
     const range = this.cfg.max_vsol_in_curve - this.cfg.min_vsol_in_curve;
     const fill = (vSol - this.cfg.min_vsol_in_curve) / range;
     const curveFillScore = Math.max(0, 1 - fill);
+
+    // 5. Crowd Depth 5s (20%) — pre-trigger buy volume normalized to [0, 1]
+    // v5 NEW: r_pb = 0.097 for win prediction, r_pb = -0.230 for max_hold prediction.
+    // This is the STRONGEST max_hold predictor in the dataset.
+    // vol5s 0-1 → 54% max_hold; vol5s 5-10 → 22% max_hold.
+    // Normalized: 10 SOL in 5s = max score (rare but achievable).
+    const crowdDepth5s = Math.min(1, pts.volume5sBuys / 10);
+
+    // 6. Recent Buyers 1s (15%) — buy count in final 1s before trigger
+    // v5 NEW: r_pb = 0.121 for win prediction, r_pb = -0.189 for max_hold prediction.
+    // Second strongest max_hold predictor. Measures "is the crowd still arriving?"
+    // Normalized: 6 buys in 1s = max score (high activity).
+    const recentBuyers1s = Math.min(1, pts.buyCount1s / 6);
 
     // Adversarial concentration check: single wallet > 60% of 30s buy volume = likely pump setup
     const totalBuyVol30s = recentBuys.reduce((s, t) => s + t.solAmount, 0);
@@ -345,12 +361,15 @@ export class BackrunDetector extends EventEmitter {
     const adversarialPenalty = concentrationRatio > 0.6 ? 0.5 : 1.0;
 
     // Final weighted score with adversarial penalty
-    // v4: rebalanced from 1,500-trade dataset — curveFill promoted (best delta +0.027),
-    // buyMomentumTrend demoted (anti-predictive -0.008), uniqueBuyers promoted (+0.016)
-    const rawScore = buyMomentumTrend * 0.20 + buyerScore * 0.30 + buyerDiversity * 0.20 + curveFillScore * 0.30;
+    // v5: Data-driven rebalance from 1,599-trade regression analysis.
+    // Key changes: momentum demoted 20%→10% (anti-predictive), diversity demoted 20%→10%,
+    // curveFill trimmed 30%→20%, budget reallocated to crowdDepth5s (20%) + recentBuyers1s (15%).
+    // Weights: momentum 10% + buyers 25% + diversity 10% + curveFill 20% + crowd5s 20% + recent1s 15% = 100%
+    // Backtest: WR 46.8% (from 42.9%), max_hold 29.9% (from 36.5%), EV +17.6 bps/trade.
+    const rawScore = buyMomentumTrend * 0.10 + buyerScore * 0.25 + buyerDiversity * 0.10 + curveFillScore * 0.20 + crowdDepth5s * 0.20 + recentBuyers1s * 0.15;
     const score = rawScore * adversarialPenalty;
-    this.lastComponents = { triggerIsolation, buyMomentumTrend, uniqueBuyersBanded: buyerScore, buyerDiversity, curveFill: curveFillScore };
-    log.debug(`[score-v4] ${event.mint.slice(0,8)} momentum=${buyMomentumTrend.toFixed(3)} buyers=${buyerScore.toFixed(3)} diversity=${buyerDiversity.toFixed(3)} curve=${curveFillScore.toFixed(3)} adversarial=${adversarialPenalty} → ${score.toFixed(3)}`);
+    this.lastComponents = { triggerIsolation, buyMomentumTrend, uniqueBuyersBanded: buyerScore, buyerDiversity, curveFill: curveFillScore, crowdDepth5s, recentBuyers1s };
+    log.debug(`[score-v5] ${event.mint.slice(0,8)} momentum=${buyMomentumTrend.toFixed(3)} buyers=${buyerScore.toFixed(3)} diversity=${buyerDiversity.toFixed(3)} curve=${curveFillScore.toFixed(3)} crowd5s=${crowdDepth5s.toFixed(3)} recent1s=${recentBuyers1s.toFixed(3)} adversarial=${adversarialPenalty} → ${score.toFixed(3)}`);
     return score;
   }
 

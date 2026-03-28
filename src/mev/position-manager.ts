@@ -49,13 +49,15 @@ export interface PnLRecord {
   // MFE/MAE in SOL terms (based on position size × vSol % move)
   mfeSol?: number;               // max favorable excursion (best unrealised P&L during hold)
   maeSol?: number;               // max adverse excursion (worst unrealised drawdown during hold)
-  // Score model v3 components (for future calibration)
+  // Score model v5 components (for future calibration)
   scoreComponents?: {
     triggerIsolation: number;
     buyMomentumTrend: number;
     uniqueBuyersBanded: number;
     buyerDiversity: number;
     curveFill: number;
+    crowdDepth5s: number;
+    recentBuyers1s: number;
   };
   adversarialConcentration?: number;  // wallet concentration ratio (>0.6 = penalty applied)
   // Pre-trigger gate signals (for gate validation)
