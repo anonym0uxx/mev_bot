@@ -121,8 +121,8 @@
   "execution": {
     "default_route_mode": "local",
     "default_slippage_bps": 100,
-    "default_priority_fee_sol": 0.00005,
-    "priority_fee_floor_sol": 0.00005,
+    "default_priority_fee_sol": 5e-05,
+    "priority_fee_floor_sol": 5e-05,
     "priority_fee_cap_sol": 0.0002,
     "dynamic_priority_fee": true,
     "dynamic_priority_fee_percentile": 75,
@@ -162,7 +162,7 @@
     "pump_fee_pct": 0.01,
     "pump_swap_fee_pct": 0.0025,
     "pump_portal_fee_pct": 0.005,
-    "solana_base_fee_sol": 0.000005,
+    "solana_base_fee_sol": 5e-06,
     "regime_fee_overrides": {
       "POST_MIGRATION": {
         "pump_fee_pct": 0,
@@ -307,14 +307,14 @@
     "trigger_max_buy_sol": 5,
     "trigger_min_score": 0.48,
     "min_vsol_in_curve": 33,
-    "max_vsol_in_curve": 44,
+    "max_vsol_in_curve": 43,
     "max_token_age_s": 300,
     "min_unique_buyers": 3,
     "entry_size_sol": 0.12,
     "max_entry_size_sol": 0.25,
     "max_concurrent_positions": 5,
     "take_profit_pct": 0.04,
-    "stop_loss_pct": 0.04,
+    "stop_loss_pct": 0.015,
     "max_hold_ms": 1500,
     "next_buyer_exit": true,
     "daily_loss_cap_sol": 5,
@@ -331,7 +331,7 @@
     "subscribe_transfer_stream": false,
     "subscribe_bonding_pool_stream": false,
     "pre_trigger_gate_enabled": true,
-    "pre_trigger_min_buys_1s": 2,
+    "pre_trigger_min_buys_1s": 3,
     "pre_trigger_min_buys_2s": 2,
     "pre_trigger_min_buys_5s": 3,
     "pre_trigger_max_gap_ms": 1000,
@@ -348,22 +348,22 @@
       {
         "trigger_max_sol": 0.45,
         "tp_pct": 0.035,
-        "sl_pct": 0.02
+        "sl_pct": 0.015
       },
       {
         "trigger_max_sol": 0.8,
         "tp_pct": 0.055,
-        "sl_pct": 0.025
+        "sl_pct": 0.015
       },
       {
         "trigger_max_sol": 1.5,
         "tp_pct": 0.08,
-        "sl_pct": 0.035
+        "sl_pct": 0.015
       },
       {
         "trigger_max_sol": 5,
         "tp_pct": 0.09,
-        "sl_pct": 0.045
+        "sl_pct": 0.015
       }
     ],
     "size_tiers": [
@@ -389,11 +389,10 @@
     "tod_config": {
       "blocked_hours_utc": [
         0,
-        1
+        7
       ],
       "boosted_hours_utc": [
         6,
-        7,
         8,
         9,
         10
@@ -405,8 +404,8 @@
         5
       ]
     },
-    "intra_hold_trailing_stop_pct": 0.018,
-    "intra_hold_trailing_stop_min_mfe_pct": 0.012
+    "intra_hold_trailing_stop_pct": 1.0,
+    "intra_hold_trailing_stop_min_mfe_pct": 1.0
   },
   "scalper_enabled": false
 }
