@@ -519,7 +519,7 @@ class StrategyDaemon {
       const fs = await import('fs');
       const engineState = {
         daemonStartedAt: nowMs(),
-        engineVersion: 'v4',
+        engineVersion: 'v5',
         configVersion: this.configManager.getVersion(),
         paperMode: isPaperMode(),
       };

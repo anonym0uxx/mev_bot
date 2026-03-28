@@ -47,7 +47,7 @@ const sSesSL = sessionTrades.filter(t => t.exitReason === 'stop_loss').length;
 const sSesMH = sessionTrades.filter(t => t.exitReason === 'max_hold').length;
 
 // Engine version from state file
-let engineVersion = 'v4';
+let engineVersion = 'v5';
 let configVersion = '—';
 try {
   const state = JSON.parse(fs.readFileSync(ENGINE_STATE, 'utf8'));
@@ -100,8 +100,7 @@ const block2 = [
   `📊 Overall ${mode} P&L`,
   ``,
   `🎯 MEV: ${mTotal} trades | WR ${mWR}% | Gross ${mPnl >= 0 ? '+' : ''}${mPnl.toFixed(4)} | Net ${mNetPnl >= 0 ? '+' : ''}${mNetPnl.toFixed(4)} SOL`,
-  `📈 Scalper: ${sTotal} trades | WR ${sWR}% | ${sPnl >= 0 ? '+' : ''}${sPnl.toFixed(4)} SOL`,
-  `💰 Combined Net: ${combinedNetPnl >= 0 ? '+' : ''}${combinedNetPnl.toFixed(4)} SOL`,
+  `💰 Net: ${mNetPnl >= 0 ? '+' : ''}${mNetPnl.toFixed(4)} SOL`,
   `   (break-even WR: ~66.5% gross)`,
 ].join('\n');
 
