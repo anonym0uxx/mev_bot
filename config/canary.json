@@ -106,7 +106,7 @@
     "bankroll_sol": 0.71,
     "risk_per_trade_pct": 0.005,
     "max_alloc_pct": 0.03,
-    "max_positions": 1,
+    "max_positions": 0,
     "quick_spend_sol": 0.125,
     "raw_stop_pct": 0.015,
     "mid_curve_stop_pct": 0.03,
