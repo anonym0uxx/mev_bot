@@ -58,7 +58,7 @@ export class PaperTradeLogger {
     try {
       // Serialize BigInt fields as strings to avoid JSON.stringify TypeError
       // Explicitly list fields — avoids nested BigInt in trade.opportunity.triggerEvent
-      const serializable = {
+      const serializable: Record<string, any> = {
         mint: trade.mint,
         entryVSol: trade.entryVSol,
         exitVSol: trade.exitVSol,
@@ -103,8 +103,25 @@ export class PaperTradeLogger {
         // Trigger source tracking (Helius fast lane)
         triggerSource: (trade as any).triggerSource,
         heliusLeadMs: (trade as any).heliusLeadMs,
+        // Fee-adjusted PnL (v2 data schema)
+        feesSol: trade.feesSol,
+        netPnlSol: trade.netPnlSol,
+        netPnlPct: trade.netPnlPct,
+        // Derived ML training labels
+        mfePct: trade.mfePct,
+        maePct: trade.maePct,
+        engineVersion: trade.engineVersion,
+        dataVersion: trade.dataVersion,
         recordedAt: Date.now(),
       };
+
+      // Auto-flag anomalous trades: >90% loss in paper trading = data bug
+      if (trade.pnlSol < -0.9 * trade.sizeSol) {
+        serializable.excludeFromAnalysis = true;
+        serializable.dataBugNote = 'auto-flagged: pnlSol exceeds 90% of sizeSol (likely data anomaly)';
+        log.warn(`Auto-flagged anomalous trade: ${trade.mint.slice(0, 8)} pnlSol=${trade.pnlSol.toFixed(4)} sizeSol=${trade.sizeSol.toFixed(4)}`);
+      }
+
       const line = JSON.stringify(serializable) + '\n';
       fs.appendFileSync(this.logFile, line, 'utf8');
     } catch (err) {

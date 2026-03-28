@@ -77,6 +77,15 @@ export interface PnLRecord {
   // Trigger source tracking (Helius fast lane)
   triggerSource?: string;            // 'pumpportal' | 'helius' — which feed delivered the trigger event
   heliusLeadMs?: number;             // ms Helius was ahead of PumpPortal (positive = Helius pre-warmed first)
+  // Fee-adjusted PnL fields (v2 data schema)
+  feesSol?: number;                  // total friction (pump fees + Jito tips)
+  netPnlSol?: number;               // pnlSol - feesSol — true economic PnL
+  netPnlPct?: number;               // netPnlSol / sizeSol — true economic return
+  // Derived ML training labels
+  mfePct?: number;                   // MFE as fraction of position size
+  maePct?: number;                   // MAE as fraction of position size
+  engineVersion?: string;            // score model version that generated this trade
+  dataVersion?: number;              // JSONL schema version (for backtesting compatibility)
 }
 
 export type ExitReason = 'take_profit' | 'stop_loss' | 'next_buyer' | 'max_hold' | 'intra_hold_trail';
@@ -315,6 +324,15 @@ export class PositionManager extends EventEmitter {
     const pnlPct = (exitVSol - pos.entryVSol) / pos.entryVSol;
     const pnlSol = pnlPct * pos.sizeSol;
 
+    // Fee-adjusted (net) PnL — reflects realistic live economics
+    // Pump.fun charges 1% on buy and 1% on sell
+    const pumpFeeSol = pos.sizeSol * 0.01 * 2;
+    // Jito bundle tip: entry + exit = 2 bundles × configured tip
+    const jitoTipSol = (this.cfg.jito_tip_lamports * 2) / Number(LAMPORTS_PER_SOL);
+    const frictionSol = pumpFeeSol + jitoTipSol;
+    const netPnlSol = pnlSol - frictionSol;
+    const netPnlPct = pos.sizeSol > 0 ? netPnlSol / pos.sizeSol : 0;
+
     const record: PnLRecord = {
       mint,
       entryVSol: pos.entryVSol,
@@ -364,13 +382,26 @@ export class PositionManager extends EventEmitter {
       // Trigger source tracking
       triggerSource: (pos.opportunity.triggerEvent as any).triggerSource,
       heliusLeadMs: (pos.opportunity.triggerEvent as any).heliusLeadMs,
+      // Fee-adjusted PnL (v2 data schema)
+      feesSol: frictionSol,
+      netPnlSol,
+      netPnlPct,
+      // Derived ML training labels
+      mfePct: pos.sizeSol > 0
+        ? (((pos.peakVSol - pos.entryVSol) / pos.entryVSol) * pos.sizeSol) / pos.sizeSol
+        : 0,
+      maePct: pos.sizeSol > 0
+        ? (((pos.troughVSol - pos.entryVSol) / pos.entryVSol) * pos.sizeSol) / pos.sizeSol
+        : 0,
+      engineVersion: 'v5',
+      dataVersion: 2,
     };
 
-    const emoji = pnlSol >= 0 ? '✅' : '❌';
+    const emoji = netPnlSol >= 0 ? '✅' : '❌';
     log.info(
       `${emoji} Closed paper position: ${mint.slice(0, 8)} reason=${reason} ` +
-      `pnl=${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(4)} SOL (${(pnlPct * 100).toFixed(2)}%) ` +
-      `hold=${holdMs}ms`
+      `gross=${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(4)} net=${netPnlSol >= 0 ? '+' : ''}${netPnlSol.toFixed(4)} SOL ` +
+      `(${(pnlPct * 100).toFixed(2)}%) hold=${holdMs}ms fees=${frictionSol.toFixed(4)}`
     );
 
     const nListeners = this.listenerCount('closed');
