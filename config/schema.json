@@ -1522,6 +1522,36 @@
               }
             }
           }
+        },
+        "tod_config": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "blocked_hours_utc": {
+              "type": "array",
+              "items": { "type": "integer", "minimum": 0, "maximum": 23 }
+            },
+            "boosted_hours_utc": {
+              "type": "array",
+              "items": { "type": "integer", "minimum": 0, "maximum": 23 }
+            },
+            "reduced_hours_utc": {
+              "type": "array",
+              "items": { "type": "integer", "minimum": 0, "maximum": 23 }
+            }
+          }
+        },
+        "intra_hold_trailing_stop_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Trailing stop drop from peak to trigger intra-hold exit (default 0.025)"
+        },
+        "intra_hold_trailing_stop_min_mfe_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Minimum MFE above entry to activate trailing stop (default 0.01)"
         }
       }
     }
