@@ -200,6 +200,11 @@ export class PositionManager extends EventEmitter {
     const pos = this.positions.get(event.mint);
     if (!pos) return;
 
+    // Skip events with missing/zero reserve data (e.g. Helius fast lane events
+    // that don't carry bonding curve reserves). Using these would produce
+    // exitVSol=0 → pnlPct=-100% → false stop loss triggering.
+    if (!event.vSolInBondingCurve || event.vSolInBondingCurve <= 0) return;
+
     // Update current reserves from live event data
     pos.currentVSolLamports = BigInt(Math.floor(event.vSolInBondingCurve * Number(LAMPORTS_PER_SOL)));
     pos.currentVTokens = BigInt(Math.floor(event.vTokensInBondingCurve));

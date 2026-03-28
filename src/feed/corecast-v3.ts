@@ -10,6 +10,39 @@
  *   5. dex_pools   — Pump.fun bonding curve pool events (large curve pushes)
  *
  * Replaces corecast-v2.ts (HTTP polling, 1-2s latency, ~86k calls/day).
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * WHY CoreCast CANNOT REPLACE PumpPortal AS PRIMARY TRIGGER:
+ *
+ * CoreCast's DexTrades stream (Stream 1) provides trade events but
+ * hardcodes vSolInBondingCurve=0, bondingCurveKey='', vTokensInBondingCurve=0.
+ * These fields are REQUIRED for:
+ *   - Gate 3: vSol range check (reject trades outside 30-70 SOL range)
+ *   - curveFill score component (bonding curve progress %)
+ *   - Jito bundle construction (needs actual reserves for simulated buy)
+ *
+ * WHY vSol IS NOT AVAILABLE IN CoreCast:
+ *   The pump.fun buy instruction has only two arguments:
+ *     - amount (uint64): tokens to purchase
+ *     - maxSolCost (uint64): slippage limit in lamports
+ *   vSol (virtualSolReserves) is ACCOUNT STATE stored in the bonding curve
+ *   PDA's data field as a Borsh-serialized struct. It is NOT an instruction
+ *   argument and therefore NOT in ParsedIdlInstruction.Arguments.
+ *
+ *   The ParsedIdlInstruction does include BalanceUpdates (pre/post SOL balances)
+ *   but the bonding curve's virtual reserves ≠ its SOL balance. Virtual reserves
+ *   include a ~30 SOL starting offset that doesn't correspond to actual SOL held.
+ *
+ *   To get vSol from CoreCast, we'd need to:
+ *   1. Identify the bonding curve PDA from the instruction's Accounts array
+ *   2. Call getAccountInfo on the RPC to read its data field
+ *   3. Deserialize the Borsh struct to extract virtualSolReserves
+ *   This adds ~50-200ms latency, defeating CoreCast's speed advantage.
+ *
+ * VERDICT: PumpPortal remains irreplaceable as primary trigger source.
+ * CoreCast's role is enrichment only: creator sell detection, AMM filtering,
+ * large transfer alerts, and bonding curve pool events.
+ * ═══════════════════════════════════════════════════════════════════
  */
 
 import { EventEmitter } from 'events';
