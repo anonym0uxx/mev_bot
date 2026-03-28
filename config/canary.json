@@ -311,7 +311,7 @@
     "max_concurrent_positions": 5,
     "take_profit_pct": 0.04,
     "stop_loss_pct": 0.04,
-    "max_hold_ms": 2000,
+    "max_hold_ms": 1000,
     "next_buyer_exit": true,
     "daily_loss_cap_sol": 0.5,
     "jito_tip_lamports": 50000,
