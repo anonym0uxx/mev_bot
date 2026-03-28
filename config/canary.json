@@ -390,13 +390,6 @@
     "pre_trigger_max_vsol_delta_3s": 6.00000,
     "momentum_decay_check_ms": 200,
     "momentum_decay_min_mfe_pct": 0.00500,
-    "sandwich_enabled": false,
-    "sandwich_min_trigger_sol": 0.75000,
-    "sandwich_position_size_sol": 0.10000,
-    "sandwich_tip_lamports": 200000,
-    "sandwich_tip_large_lamports": 500000,
-    "sandwich_large_trigger_threshold": 3.00000,
-    "sandwich_max_staleness_slots": 5,
     "tod_config": {
       "blocked_hours_utc": [
         0,

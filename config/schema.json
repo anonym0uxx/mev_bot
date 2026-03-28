@@ -1613,13 +1613,6 @@
           "minimum": 0,
           "description": "Minimum MFE fraction at decay check time. Below this triggers early exit."
         },
-        "sandwich_enabled":                  { "type": "boolean", "description": "Enable sandwich attack strategy (requires shredstream_enabled)" },
-        "sandwich_min_trigger_sol":          { "type": "number",  "description": "Minimum victim buy SOL to attempt sandwich" },
-        "sandwich_position_size_sol":        { "type": "number",  "description": "Base sandwich position size SOL (overridden by tiers)" },
-        "sandwich_tip_lamports":             { "type": "number",  "description": "Jito tip lamports for standard sandwich bundles" },
-        "sandwich_tip_large_lamports":       { "type": "number",  "description": "Jito tip lamports for large-trigger sandwich bundles" },
-        "sandwich_large_trigger_threshold":  { "type": "number",  "description": "Trigger SOL threshold for large tip tier" },
-        "sandwich_max_staleness_slots":      { "type": "number",  "description": "Max curve state staleness in slots before skipping" }
       }
     },
     "scalper_enabled": {

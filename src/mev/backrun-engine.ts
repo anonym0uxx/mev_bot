@@ -207,7 +207,7 @@ export class BackrunEngine extends EventEmitter {
           log.warn(`[circuit-breaker] ${this.consecutiveStops} consecutive stops — pausing new entries for ${pauseMs/1000}s`);
           this.consecutiveStops = 0;
         }
-      } else if (record.exitReason === 'take_profit' || record.exitReason === 'next_buyer' || record.exitReason === 'intra_hold_trail') {
+      } else if (record.exitReason === 'take_profit' || record.exitReason === 'next_buyer' || record.exitReason === 'intra_hold_trail' || record.exitReason === 'momentum_decay') {
         this.consecutiveStops = 0;
       }
 
@@ -394,6 +394,15 @@ export class BackrunEngine extends EventEmitter {
           const old = this.triggerDedupOrder.shift();
           if (old) this.triggerDedup.delete(old);
         }
+      }
+    }
+
+    // Guard: blocked trigger sources
+    if (this.cfg.blocked_trigger_sources && this.cfg.blocked_trigger_sources.length > 0) {
+      const eventSource = (event as any).triggerSource as string | undefined;
+      if (eventSource && this.cfg.blocked_trigger_sources.includes(eventSource)) {
+        log.debug(`[gate:blocked-source] Skipping ${event.mint.slice(0,8)}: source=${eventSource} is blocked`);
+        return;
       }
     }
 

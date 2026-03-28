@@ -88,7 +88,7 @@ export interface PnLRecord {
   dataVersion?: number;              // JSONL schema version (for backtesting compatibility)
 }
 
-export type ExitReason = 'take_profit' | 'stop_loss' | 'next_buyer' | 'max_hold' | 'intra_hold_trail';
+export type ExitReason = 'take_profit' | 'stop_loss' | 'next_buyer' | 'max_hold' | 'intra_hold_trail' | 'momentum_decay';
 
 interface OpenPosition {
   mint: string;
@@ -111,6 +111,7 @@ interface OpenPosition {
   troughVSol: number;
   flowSinceEntry: number;
   buySinceEntry: number;
+  decayTimer?: ReturnType<typeof setTimeout>;
 }
 
 export declare interface PositionManager {
@@ -195,6 +196,24 @@ export class PositionManager extends EventEmitter {
     };
 
     this.positions.set(opp.mint, pos);
+
+    // Momentum decay early exit — if MFE hasn't reached threshold by check time, exit early
+    // Data: 18/29 max_hold trades have MFE < 0.5% at 200ms. Avg MH hold = 600ms.
+    // This catches dead trades before the full max_hold timeout.
+    if (this.cfg.momentum_decay_check_ms && this.cfg.momentum_decay_min_mfe_pct !== undefined) {
+      const decayTimer = setTimeout(() => {
+        const p = this.positions.get(opp.mint);
+        if (!p) return;
+        const mfePct = (p.peakVSol - p.entryVSol) / p.entryVSol;
+        if (mfePct < this.cfg.momentum_decay_min_mfe_pct!) {
+          log.debug(`[momentum-decay] ${opp.mint.slice(0,8)} mfePct=${(mfePct*100).toFixed(3)}% < threshold → early exit`);
+          this.closePosition(opp.mint, p.peakVSol, 'momentum_decay');
+        }
+      }, this.cfg.momentum_decay_check_ms);
+      decayTimer.unref();
+      pos.decayTimer = decayTimer;
+    }
+
     log.info(
       `📥 Opened paper position: ${opp.mint.slice(0, 8)} entryVSol=${opp.entryVSol.toFixed(2)} ` +
       `size=${sizeSol} SOL score=${opp.score.toFixed(3)} tokensHeld=${tokensHeld}`
@@ -317,6 +336,7 @@ export class PositionManager extends EventEmitter {
     if (!pos) return;
 
     clearTimeout(pos.holdTimer);
+    if (pos.decayTimer) { clearTimeout(pos.decayTimer); pos.decayTimer = undefined; }
     this.positions.delete(mint);
 
     const exitTimestampMs = nowMs();
@@ -424,7 +444,7 @@ export class PositionManager extends EventEmitter {
   forceClosePosition(mint: string, reason: ExitReason | string): void {
     const pos = this.positions.get(mint);
     if (!pos) return;
-    const exitReason: ExitReason = (['take_profit', 'stop_loss', 'next_buyer', 'max_hold', 'intra_hold_trail'] as string[]).includes(reason)
+    const exitReason: ExitReason = (['take_profit', 'stop_loss', 'next_buyer', 'max_hold', 'intra_hold_trail', 'momentum_decay'] as string[]).includes(reason)
       ? (reason as ExitReason)
       : 'max_hold';
     this.closePosition(mint, pos.entryVSol, exitReason);
@@ -440,6 +460,7 @@ export class PositionManager extends EventEmitter {
   destroy(): void {
     for (const pos of this.positions.values()) {
       clearTimeout(pos.holdTimer);
+      if (pos.decayTimer) clearTimeout(pos.decayTimer);
     }
     this.positions.clear();
   }

@@ -1169,269 +1169,35 @@ All 12 must be ✅ before going live.
 
 ---
 
-## PHASE 2: Sandwich Attack Strategy
-
-### Overview
-
-Sandwich attacks on Pump.fun bonding curves via Jito bundles. Bundle atomicity means if the victim's tx reverts, our buy never lands — zero capital risk on failure.
-
-**EV summary:**
-- ~90 opportunities/day (trigger ≥ 0.75 SOL)
-- Adjusted realistic: **+0.076 SOL/day** (50 successful sandwiches after competition/timing losses)
-- Combined Phase 1 + Phase 2: **+0.126 SOL/day**
-- Tip headroom: 8.6× before breakeven (200k tip vs 1.72M breakeven)
-
-**Trigger tiers:**
-| Trigger | Position | Tip |
-|---|---|---|
-| 0.75–1.5 SOL | 0.10000 SOL | 200,000 lamports |
-| 1.5–3.0 SOL | 0.15000 SOL | 200,000 lamports |
-| >3.0 SOL | 0.20000 SOL | 500,000 lamports |
-
-**Build gate:** Do NOT enable `sandwich_enabled: true` until all 6 go/no-go items pass AND ShredStream whitelist is approved.
 
 ---
 
-### New Files
+## PHASE 2: Sandwich Attack Strategy — CANCELLED
 
-#### `src/state/CurveStateCache.ts` (135 lines)
+**Status: DO NOT BUILD. Code removed 2026-03-28.**
 
-Local cache of vSol/vTokens per mint. Updated from PumpPortal confirmed trade events. Prevents RPC calls during sandwich evaluation.
+### Reason
 
-Key methods:
-- `update(mint, vSolLamports, vTokens, slot)` — upsert with slot-order guard
-- `get(mint)` → `CurveState | null`
-- `isStale(mint, currentSlot, maxStalenessSlots)` → `boolean`
-- `applySpeculativeBuy(mint, solInLamports, sim)` → `CurveState | null` (no commit)
-- `evictStale()` — removes entries older than 60s, auto-called on every `update()`
-- `size()` → `number`
-- Singleton: `export const curveStateCache = new CurveStateCache()`
+Sandwich attacks via Jito bundles carry unacceptable platform risk:
 
-#### `src/strategies/SandwichDetector.ts` (227 lines)
+1. **Jito already killed their mempool feed** specifically because it enabled sandwich attacks. They act first, write ToS later.
+2. **Detection is trivial.** Bundle structure `[our_buy, victim_tx, our_sell, tip]` is unmistakable during block engine simulation.
+3. **Collateral damage is severe.** A ban on sandwich bundle auth keypair would also kill backrun operations. ShredStream whitelist could also be revoked — losing all detection infrastructure.
+4. **Pump.fun is maximum-visibility target.** Most-watched app on Solana for anti-sandwich enforcement.
+5. **Non-Jito fallback doesn't exist.** ~90% of validators run Jito-Solana. Atomic bundles don't work on vanilla Agave.
+6. **Risk/reward is terrible.** ~$342/month upside vs. losing the entire MEV bot.
 
-Evaluates ShredStream pre-confirmation trades for sandwich viability. 11-step pipeline.
+### What was built (removed)
+- `src/state/CurveStateCache.ts` — DELETED
+- `src/strategies/SandwichDetector.ts` — DELETED
+- `src/mev/sandwich-executor.ts` — DELETED
+- sandwich_* fields removed from `config.ts`, `schema.json`, `canary.json`
 
-Key interface:
-```typescript
-export interface SandwichSignal {
-  victimSignature: string;
-  victimTxBytes: Buffer;
-  mint: string;
-  bondingCurveKey: string;
-  victimSolAmount: number;
-  ourPositionSol: number;
-  ourPositionLamports: bigint;
-  estimatedGrossProfitSol: number;
-  estimatedNetProfitSol: number;
-  tipLamports: number;
-  curveVSolLamports: bigint;
-  curveVTokens: bigint;
-  tokensWeReceive: bigint;
-  newCurveAfterOurBuy: { vSol: bigint; vTokens: bigint };
-  newCurveAfterVictim: { vSol: bigint; vTokens: bigint };
-  ourSellProceedsLamports: bigint;
-  detectedAt: number;
-}
-```
-
-Minimum net profit gate: **0.00050 SOL** (500,000 lamports). Trades below this threshold are skipped.
-
-Stats: `evaluatedCount`, `signalsEmitted`, `skippedNoCache`, `skippedBelowThreshold`, `skippedUnprofitable`.
-
-#### `src/mev/sandwich-executor.ts` (266 lines)
-
-Builds and submits 3-tx Jito bundles: [our_buy, victim_tx AS-IS, our_sell, tip].
-
-Paper mode: logs bundle details, returns `sandwich-paper-{ts}` bundleId, no real txs.
-
-Live mode: wallet rotation → blockhash → buildBuyTx (1% slippage) → deserialize victim (no re-sign) → buildSellTx (2% slippage) → Jito bundle → gRPC submit.
-
-Stats: `totalAttempts`, `totalSuccess`, `totalFailed`.
-
----
-
-### BackrunEngine Diffs
-
-#### Block 1 — New imports (`src/mev/backrun-engine.ts`, add after existing imports)
-```typescript
-import { SandwichDetector } from '../strategies/SandwichDetector';
-import { SandwichExecutor, SandwichResult } from './sandwich-executor';
-import { curveStateCache } from '../state/CurveStateCache';
-import { Connection } from '@solana/web3.js';
-```
-
-#### Block 2 — New class properties (after `private shredClient`)
-```typescript
-  private sandwichDetector: SandwichDetector | null = null;
-  private sandwichExecutor: SandwichExecutor | null = null;
-  private connection: Connection;
-```
-
-#### Block 3 — Constructor additions (after `this.jitoGuard = new JitoGuard(cfg)`)
-```typescript
-    const rpcUrl = process.env.SOLANA_RPC_URL ?? 'https://api.mainnet-beta.solana.com';
-    this.connection = new Connection(rpcUrl, 'confirmed');
-
-    if (cfg.sandwich_enabled) {
-      const sim = new BondingCurveSimulator();
-      this.sandwichDetector = new SandwichDetector(cfg, sim);
-      this.sandwichExecutor = new SandwichExecutor(
-        cfg,
-        new PumpTxBuilder(this.connection),
-        this.jitoGuard,
-        this.walletRotator,
-      );
-      log.info('SandwichDetector + SandwichExecutor initialized');
-    }
-```
-
-#### Block 4 — Sandwich evaluation (append to end of `handleShredStreamTrade()`)
-```typescript
-    // Phase 2: sandwich evaluation
-    if (this.cfg.sandwich_enabled && this.sandwichDetector && this.sandwichExecutor && trade.victimTxBytes) {
-      const signal = this.sandwichDetector.evaluate(trade, trade.slot);
-      if (signal) {
-        const guardResult = this.jitoGuard.canSubmit(trade.tokenMint, signal.ourPositionSol, signal.tipLamports);
-        if (guardResult.allowed) {
-          this.sandwichExecutor.execute(signal, this.connection).then((result: SandwichResult) => {
-            this.jitoGuard.recordOutcome(result.bundleId ?? '', result.success);
-            if (result.success) {
-              this.jitoGuard.onGRPCSuccess();
-              log.info(`[sandwich] ✓ ${trade.tokenMint.slice(0, 8)} bundleId=${result.bundleId?.slice(0, 12)} net≈${signal.estimatedNetProfitSol.toFixed(5)} SOL latency=${result.latencyMs}ms`);
-            } else {
-              this.jitoGuard.onGRPCError();
-              log.debug(`[sandwich] ✗ ${trade.tokenMint.slice(0, 8)}: ${result.error}`);
-            }
-          }).catch((err: Error) => {
-            log.warn(`[sandwich] executor threw: ${err.message}`);
-            this.jitoGuard.onGRPCError();
-          });
-        } else {
-          log.debug(`[sandwich] guard blocked ${trade.tokenMint.slice(0, 8)}: ${guardResult.reason}`);
-        }
-      }
-    }
-```
-
-#### Block 5 — Curve state cache update (inside PumpPortal `onTokenTrade` handler)
-```typescript
-    // Update curve state cache for sandwich staleness tracking
-    if (event.vSolInBondingCurve > 0 && event.vTokensInBondingCurve > 0) {
-      curveStateCache.update(
-        event.mint,
-        BigInt(Math.floor(event.vSolInBondingCurve * 1_000_000_000)),
-        BigInt(Math.floor(event.vTokensInBondingCurve)),
-        0, // PumpPortal events don't carry slot; staleness uses time-based eviction
-      );
-    }
-```
-
-#### Block 6 — Extend `ShredStreamPumpTrade` interface (`src/feeds/shredstream.ts`)
-```typescript
-  victimTxBytes?: Buffer;  // raw serialized VersionedTransaction bytes from shred
-```
-
-#### Block 7 — Preserve raw victim bytes (`ShredStreamClient.processTransaction()`, after building trade object)
-```typescript
-  trade.victimTxBytes = buf;  // preserve raw bytes for sandwich bundle inclusion
-```
-
----
-
-### Config / Schema / Types
-
-#### `src/types/config.ts` — add after `momentum_decay_min_mfe_pct`
-```typescript
-  /** Phase 2: Enable sandwich attack strategy. Requires shredstream_enabled: true. */
-  sandwich_enabled?: boolean;
-  /** Minimum victim buy SOL to attempt sandwich (default: 0.75000) */
-  sandwich_min_trigger_sol?: number;
-  /** Base position size SOL for sandwich entry, overridden by trigger tiers (default: 0.10000) */
-  sandwich_position_size_sol?: number;
-  /** Jito tip lamports for standard sandwich bundles (default: 200000) */
-  sandwich_tip_lamports?: number;
-  /** Jito tip lamports for large-trigger sandwich bundles (default: 500000) */
-  sandwich_tip_large_lamports?: number;
-  /** Trigger SOL threshold above which large tip tier activates (default: 3.00000) */
-  sandwich_large_trigger_threshold?: number;
-  /** Max curve state age in slots before sandwich is skipped (default: 5) */
-  sandwich_max_staleness_slots?: number;
-```
-
-#### `config/schema.json` — add to `mev.properties`
-```json
-"sandwich_enabled":                  { "type": "boolean", "description": "Enable sandwich attack strategy (requires shredstream_enabled)" },
-"sandwich_min_trigger_sol":          { "type": "number",  "description": "Minimum victim buy SOL to attempt sandwich" },
-"sandwich_position_size_sol":        { "type": "number",  "description": "Base sandwich position size SOL (overridden by tiers)" },
-"sandwich_tip_lamports":             { "type": "number",  "description": "Jito tip lamports for standard sandwich bundles" },
-"sandwich_tip_large_lamports":       { "type": "number",  "description": "Jito tip lamports for large-trigger sandwich bundles" },
-"sandwich_large_trigger_threshold":  { "type": "number",  "description": "Trigger SOL threshold for large tip tier" },
-"sandwich_max_staleness_slots":      { "type": "number",  "description": "Max curve state staleness in slots before skipping" }
-```
-
-#### `config/canary.json` — add to `mev` object
-```json
-"sandwich_enabled": false,
-"sandwich_min_trigger_sol": 0.75000,
-"sandwich_position_size_sol": 0.10000,
-"sandwich_tip_lamports": 200000,
-"sandwich_tip_large_lamports": 500000,
-"sandwich_large_trigger_threshold": 3.00000,
-"sandwich_max_staleness_slots": 5
-```
-
----
-
-### Sandwich Go/No-Go Checklist
-
-All 6 must pass before setting `sandwich_enabled: true` in production.
-
-#### ☐ 1. ShredStream connected and receiving trades
-```bash
-journalctl -u pumpbot --since "5 min ago" --no-pager | grep -c '\[shredstream\] trade'
-```
-**Pass:** Count > 0
-
-#### ☐ 2. CurveStateCache has entries (not empty)
-```bash
-journalctl -u pumpbot --since "5 min ago" --no-pager | grep -c 'curveStateCache.update'
-```
-**Pass:** Count > 0 — PumpPortal events are populating the cache
-
-#### ☐ 3. `sandwich_enabled` = false in production config
-```bash
-cat config/canary.json | jq '.mev.sandwich_enabled'
-```
-**Pass:** Output is `false` or `null`. Must NOT be `true` before go/no-go clears.
-
-#### ☐ 4. SandwichDetector evaluations occurring (run with canary `sandwich_enabled: true`)
-```bash
-journalctl -u pumpbot --since "10 min ago" --no-pager | grep -cE '\[sandwich\] (guard blocked|✓|✗)'
-```
-**Pass:** Count > 0. If zero: check `victimTxBytes` is being set (Block 7) and trigger threshold.
-
-#### ☐ 5. Paper-mode profit estimates in expected range
-```bash
-journalctl -u pumpbot --since "30 min ago" --no-pager | grep '\[sandwich\]' | grep 'net≈' | head -20
-```
-**Pass:** At least 1 line with positive `net≈X.XXXXX SOL`. Expected range: 0.00100–0.05000 SOL. Outliers >0.1 SOL need manual review.
-
-#### ☐ 6. Bundle submission working in paper mode
-```bash
-journalctl -u pumpbot --since "60 min ago" --no-pager | grep '\[sandwich\] ✓' | grep 'bundleId=' | head -5
-```
-**Pass:** At least 1 line with non-empty `bundleId=` value (12+ chars).
-
-#### Go/No-Go Decision Matrix
-
-| # | Check | Status |
-|---|-------|--------|
-| 1 | ShredStream receiving trades | ☐ |
-| 2 | CurveStateCache populated | ☐ |
-| 3 | Production sandwich_enabled=false | ☐ |
-| 4 | Detector evaluations occurring | ☐ |
-| 5 | Paper-mode profit estimates in range | ☐ |
-| 6 | Bundle submission returning bundleIds | ☐ |
-
-**Rule:** All 6 ☑ required before enabling in production. Any single ☐ is a hard block.
+### What to build instead (future)
+**Backrun arbitrage** using the same ShredStream detection:
+- Wait for victim's tx to confirm (no frontrun)
+- Capture arb from price dislocation on bonding curve vs. downstream DEX
+- "Good MEV" — Jito explicitly supports this use case
+- Zero enforcement risk
+- Engineering effort nearly identical to sandwich
 

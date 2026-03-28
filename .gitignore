@@ -8,3 +8,4 @@ data/
 *.pid
 logs/
 .DS_Store
+config/keys/*.json

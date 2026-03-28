@@ -233,6 +233,26 @@ export class BackrunDetector extends EventEmitter {
       }
     }
 
+    // Gate 6e: Sell count gate — wins have MORE pre-trigger sells (3.1 vs 2.1 vs 1.3 for MH)
+    // Data: sellCt>=1 + TOD + vSolDelta cap → WR=57.9%, EV=+0.00079, net=+0.24995 SOL
+    if (this.cfg.pre_trigger_min_sell_count_5s !== undefined) {
+      const sellCt = preTriggerSignals.sellCount5s ?? 0;
+      if (sellCt < this.cfg.pre_trigger_min_sell_count_5s) {
+        log.debug(`[gate:sell-count] ${mint.slice(0,8)} sellCt5s=${sellCt} < min ${this.cfg.pre_trigger_min_sell_count_5s} — skip`);
+        return;
+      }
+    }
+
+    // Gate 6f: vSol delta cap — high vSolDelta3s correlates with max_hold (late entry into exhausted pump)
+    // Data: vSolDelta<=6.0 removes low-quality trades; compound filter net improves +0.47 SOL
+    if (this.cfg.pre_trigger_max_vsol_delta_3s !== undefined) {
+      const delta = preTriggerSignals.vSolDelta3s ?? 0;
+      if (delta > this.cfg.pre_trigger_max_vsol_delta_3s) {
+        log.debug(`[gate:vsol-delta-cap] ${mint.slice(0,8)} vSolDelta3s=${delta.toFixed(2)} > max ${this.cfg.pre_trigger_max_vsol_delta_3s} — skip`);
+        return;
+      }
+    }
+
     // Gate 6b: Creator sell gate — if creator sold this token within last 30s, reject
     // Data shows 0 creator sell fields across 3,093 trades = this signal was missing entirely.
     // Creator sells indicate dump bait — continuation probability drops to near-zero.
