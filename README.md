@@ -2,6 +2,97 @@
 
 A high-frequency trading bot for Solana bonding curve tokens. Regime-aware, risk-bounded, designed for autonomous operation in paper and live modes.
 
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        DATA FEEDS                           │
+│                                                             │
+│   ┌──────────────────┐        ┌──────────────────┐         │
+│   │  On-Chain Feed   │        │   Fast-Lane Feed  │         │
+│   │  (confirmed txs) │        │  (pre-confirm,    │         │
+│   │                  │        │   pending WL)     │         │
+│   └────────┬─────────┘        └────────┬──────────┘         │
+└────────────┼─────────────────────────┼───────────────────────┘
+             │                         │
+             ▼                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      SIGNAL ENGINE                          │
+│                                                             │
+│   ┌───────────────────────────────────────────────────┐    │
+│   │  Event Joiner — deduplicates across feeds         │    │
+│   └───────────────────────┬───────────────────────────┘    │
+│                           │                                  │
+│   ┌───────────────────────▼───────────────────────────┐    │
+│   │  Gate Stack                                        │    │
+│   │  • Score threshold        • Buy momentum gates    │    │
+│   │  • Volume gates           • Sell pressure gate    │    │
+│   │  • vSol curve position    • Time-of-day filter    │    │
+│   │  • Source allowlist       • Overheating guard     │    │
+│   └───────────────────────┬───────────────────────────┘    │
+└───────────────────────────┼──────────────────────────────────┘
+                            │  SIGNAL (pass/reject)
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    POSITION MANAGER                         │
+│                                                             │
+│   ┌──────────────┐   ┌──────────────┐   ┌───────────────┐  │
+│   │ Entry Logic  │   │ Hold Monitor │   │  Exit Logic   │  │
+│   │ size tiers   │   │ momentum     │   │  TP tiers     │  │
+│   │ concurrency  │   │ decay check  │   │  stop loss    │  │
+│   │ cap          │   │ (200ms)      │   │  next buyer   │  │
+│   └──────┬───────┘   └──────┬───────┘   └───────┬───────┘  │
+└──────────┼─────────────────┼───────────────────┼────────────┘
+           │                 │                   │
+           ▼                 ▼                   ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    EXECUTION LAYER                          │
+│                                                             │
+│   ┌──────────────────────────────────────────────────┐     │
+│   │  Route Policy                                    │     │
+│   │  paper mode → log only                          │     │
+│   │  live mode  → build tx → submit                 │     │
+│   └──────────────────┬───────────────────────────────┘     │
+│                      │                                      │
+│   ┌──────────────────▼───────────────────────────────┐     │
+│   │  Transaction Builder                             │     │
+│   │  buy tx / sell tx (VersionedTransaction)        │     │
+│   └──────────────────┬───────────────────────────────┘     │
+│                      │                                      │
+│          ┌───────────┴────────────┐                        │
+│          ▼                        ▼                         │
+│   ┌─────────────┐        ┌──────────────────┐              │
+│   │  Direct RPC │        │  Bundle Engine   │              │
+│   │  submission │        │  (atomic, tipped)│              │
+│   │             │        │  disabled in     │              │
+│   │             │        │  paper mode      │              │
+│   └─────────────┘        └──────────────────┘              │
+└────────────────────────────────┬────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      PERSISTENCE                            │
+│                                                             │
+│   SQLite (WAL mode)                                        │
+│   orders · positions · raw_events · config_versions        │
+└─────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   MONITORING & CONTROL                      │
+│                                                             │
+│   Local HTTP API (:9420)  ·  Structured logs (Winston)     │
+│   P&L scripts  ·  Health endpoint  ·  Paper trade logger   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Data flow summary:**
+1. Feeds deliver on-chain trade events (fast-lane feed pending infrastructure approval)
+2. Signal engine deduplicates, applies gate stack — most signals rejected here
+3. Position manager tracks open trades, monitors holds, triggers exits
+4. Execution layer routes to paper log or live transaction submission
+5. All state persisted to SQLite; metrics available via local API
+
 ## Overview
 
 - Subscribes to real-time on-chain events via WebSocket feeds
