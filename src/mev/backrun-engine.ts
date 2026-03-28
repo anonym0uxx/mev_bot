@@ -150,6 +150,10 @@ export class BackrunEngine extends EventEmitter {
     // Listen to all tokenTrade events for scoring
     this.onTokenTrade = (event: TokenTradeEvent) => {
       if (!this.running) return;
+      // Skip AMM (post-graduation Raydium) trades — MEV engine targets pre-graduation bonding curve only.
+      // AMM trades have vSol=0 which fail Gate 3 anyway, but they still pollute detector trade history
+      // and waste CPU cycles on score computation for tokens that have already graduated.
+      if ((event as any).isAmm) return;
       // Check existing positions BEFORE feeding to detector (so trigger event doesn't
       // immediately close a position opened in the same tick by the opportunity handler)
       const hadOpenPosition = this.posManager.hasPosition(event.mint);

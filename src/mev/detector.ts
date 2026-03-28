@@ -282,11 +282,12 @@ export class BackrunDetector extends EventEmitter {
     const adversarialPenalty = concentrationRatio > 0.6 ? 0.5 : 1.0;
 
     // Final weighted score with adversarial penalty
-    // v3: buyMomentumTrend replaces triggerIsolation at 40% weight
-    const rawScore = buyMomentumTrend * 0.40 + buyerScore * 0.25 + buyerDiversity * 0.20 + curveFillScore * 0.15;
+    // v4: rebalanced from 1,500-trade dataset — curveFill promoted (best delta +0.027),
+    // buyMomentumTrend demoted (anti-predictive -0.008), uniqueBuyers promoted (+0.016)
+    const rawScore = buyMomentumTrend * 0.20 + buyerScore * 0.30 + buyerDiversity * 0.20 + curveFillScore * 0.30;
     const score = rawScore * adversarialPenalty;
     this.lastComponents = { triggerIsolation, buyMomentumTrend, uniqueBuyersBanded: buyerScore, buyerDiversity, curveFill: curveFillScore };
-    log.debug(`[score-v3] ${event.mint.slice(0,8)} momentum=${buyMomentumTrend.toFixed(3)} isolation=${triggerIsolation.toFixed(3)} buyers=${buyerScore.toFixed(3)} diversity=${buyerDiversity.toFixed(3)} curve=${curveFillScore.toFixed(3)} adversarial=${adversarialPenalty} → ${score.toFixed(3)}`);
+    log.debug(`[score-v4] ${event.mint.slice(0,8)} momentum=${buyMomentumTrend.toFixed(3)} buyers=${buyerScore.toFixed(3)} diversity=${buyerDiversity.toFixed(3)} curve=${curveFillScore.toFixed(3)} adversarial=${adversarialPenalty} → ${score.toFixed(3)}`);
     return score;
   }
 

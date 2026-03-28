@@ -493,11 +493,16 @@ export class CoreCastV3Client extends EventEmitter {
       timestamp: nowMs(),
     };
 
+    // Tag AMM (post-graduation) trades — allows downstream consumers to filter/route differently
+    if (isAmm) {
+      (event as any).isAmm = true;
+    }
+
     this.emit('tokenTrade', event);
 
     // Log periodic progress
     if (this.messageCount % 100 === 0) {
-      log.info(`CoreCast v3 trades: ${this.messageCount} (latest: ${mintStr.slice(0, 8)} ${event.txType})`);
+      log.info(`CoreCast v3 trades: ${this.messageCount} (latest: ${mintStr.slice(0, 8)} ${event.txType}${isAmm ? ' [AMM]' : ''})`);
     }
   }
 
