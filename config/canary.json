@@ -121,8 +121,8 @@
   "execution": {
     "default_route_mode": "local",
     "default_slippage_bps": 100,
-    "default_priority_fee_sol": 0.00005,
-    "priority_fee_floor_sol": 0.00005,
+    "default_priority_fee_sol": 5e-05,
+    "priority_fee_floor_sol": 5e-05,
     "priority_fee_cap_sol": 0.0002,
     "dynamic_priority_fee": true,
     "dynamic_priority_fee_percentile": 75,
@@ -162,7 +162,7 @@
     "pump_fee_pct": 0.01,
     "pump_swap_fee_pct": 0.0025,
     "pump_portal_fee_pct": 0.005,
-    "solana_base_fee_sol": 0.000005,
+    "solana_base_fee_sol": 5e-06,
     "regime_fee_overrides": {
       "POST_MIGRATION": {
         "pump_fee_pct": 0,
@@ -381,6 +381,25 @@
       }
     ],
     "paper_daily_loss_cap_sol": 5,
-    "live_daily_loss_cap_sol": 0.18
+    "live_daily_loss_cap_sol": 0.18,
+    "tod_config": {
+      "blocked_hours_utc": [
+        0,
+        1
+      ],
+      "boosted_hours_utc": [
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "reduced_hours_utc": [
+        2,
+        3,
+        4,
+        5
+      ]
+    }
   }
 }

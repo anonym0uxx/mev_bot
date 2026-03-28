@@ -247,6 +247,15 @@ export class BackrunEngine extends EventEmitter {
       return;
     }
 
+    // Guard: time-of-day gate (config-driven)
+    if (this.cfg.tod_config?.blocked_hours_utc) {
+      const hourUtcNow = new Date().getUTCHours();
+      if (this.cfg.tod_config.blocked_hours_utc.includes(hourUtcNow)) {
+        log.debug(`[gate:tod] Skipping ${opp.mint.slice(0,8)}: UTC hour ${hourUtcNow} is blocked`);
+        return;
+      }
+    }
+
     // Guard: pool depth gate for graduated tokens
     // If this mint has migrated to Raydium but the pool is too shallow, skip entry.
     if (this.poolDepthCache?.hasMigrated(opp.mint)) {
@@ -296,12 +305,14 @@ export class BackrunEngine extends EventEmitter {
       }
     }
 
-    // Time-of-day position sizing (UTC20-21 = 28.3% WR, UTC15/06 = 12-15% WR)
+    // Time-of-day position sizing (config-driven)
     const hourUtc = new Date().getUTCHours();
     let todMultiplier = 1.0;
-    if (hourUtc >= 20 && hourUtc <= 21) todMultiplier = 1.25;
-    else if (hourUtc >= 16 && hourUtc <= 19) todMultiplier = 1.10;
-    else if (hourUtc === 15 || hourUtc === 6) todMultiplier = 0.75;
+    if (this.cfg.tod_config?.boosted_hours_utc?.includes(hourUtc)) {
+      todMultiplier = 1.25;
+    } else if (this.cfg.tod_config?.reduced_hours_utc?.includes(hourUtc)) {
+      todMultiplier = 0.75;
+    }
     dynamicBase = Math.min(dynamicBase * todMultiplier, this.cfg.max_entry_size_sol);
     log.debug(`[sizing] ToD multiplier=${todMultiplier} hour=${hourUtc}UTC base=${dynamicBase.toFixed(4)}`);
 

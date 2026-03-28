@@ -68,7 +68,7 @@ export interface PnLRecord {
   todMultiplier?: number;            // time-of-day size multiplier applied
 }
 
-export type ExitReason = 'take_profit' | 'stop_loss' | 'next_buyer' | 'max_hold';
+export type ExitReason = 'take_profit' | 'stop_loss' | 'next_buyer' | 'max_hold' | 'intra_hold_trail';
 
 interface OpenPosition {
   mint: string;
@@ -358,7 +358,7 @@ export class PositionManager extends EventEmitter {
   forceClosePosition(mint: string, reason: ExitReason | string): void {
     const pos = this.positions.get(mint);
     if (!pos) return;
-    const exitReason: ExitReason = (['take_profit', 'stop_loss', 'next_buyer', 'max_hold'] as string[]).includes(reason)
+    const exitReason: ExitReason = (['take_profit', 'stop_loss', 'next_buyer', 'max_hold', 'intra_hold_trail'] as string[]).includes(reason)
       ? (reason as ExitReason)
       : 'max_hold';
     this.closePosition(mint, pos.entryVSol, exitReason);

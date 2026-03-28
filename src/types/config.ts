@@ -380,6 +380,13 @@ export interface MevConfig {
   next_buyer_count_threshold?: number;
   next_buyer_single_buy_ratio?: number;   // single-buy threshold as fraction of trigger (default 0.25)
   next_buyer_profit_exit_pct?: number;    // early profit exit threshold (default 0.015 = 1.5%)
+  tod_config?: {
+    blocked_hours_utc?: number[];        // block trading entirely these hours
+    boosted_hours_utc?: number[];        // 1.25x sizing
+    reduced_hours_utc?: number[];        // 0.75x sizing
+  };
+  intra_hold_trailing_stop_pct?: number;          // trailing stop drop from peak (default 0.025)
+  intra_hold_trailing_stop_min_mfe_pct?: number;  // minimum MFE to activate trailing (default 0.01)
 }
 
 export interface PumpQuantConfig {
