@@ -1585,7 +1585,41 @@
           "minimum": 0,
           "maximum": 1,
           "description": "Minimum MFE above entry to activate trailing stop (default 0.01)"
-        }
+        },
+        "blocked_trigger_sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Block triggers from specific sources (e.g. [\"corecast\"] to reject CoreCast-sourced triggers)"
+        },
+        "pre_trigger_min_sell_count_5s": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum sell count in 5s before trigger. Wins avg 3.1 vs MH avg 1.3. Filters dead-flow entries."
+        },
+        "pre_trigger_max_vsol_delta_3s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Maximum vSol delta in 3s before trigger. Caps overheated entries where momentum already exhausted."
+        },
+        "momentum_decay_check_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Milliseconds after entry to check momentum progress. 0 or absent = disabled."
+        },
+        "momentum_decay_min_mfe_pct": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Minimum MFE fraction at decay check time. Below this triggers early exit."
+        },
+        "sandwich_enabled":                  { "type": "boolean", "description": "Enable sandwich attack strategy (requires shredstream_enabled)" },
+        "sandwich_min_trigger_sol":          { "type": "number",  "description": "Minimum victim buy SOL to attempt sandwich" },
+        "sandwich_position_size_sol":        { "type": "number",  "description": "Base sandwich position size SOL (overridden by tiers)" },
+        "sandwich_tip_lamports":             { "type": "number",  "description": "Jito tip lamports for standard sandwich bundles" },
+        "sandwich_tip_large_lamports":       { "type": "number",  "description": "Jito tip lamports for large-trigger sandwich bundles" },
+        "sandwich_large_trigger_threshold":  { "type": "number",  "description": "Trigger SOL threshold for large tip tier" },
+        "sandwich_max_staleness_slots":      { "type": "number",  "description": "Max curve state staleness in slots before skipping" }
       }
     },
     "scalper_enabled": {

@@ -390,6 +390,30 @@ export interface MevConfig {
   };
   intra_hold_trailing_stop_pct?: number;          // trailing stop drop from peak (default 0.025)
   intra_hold_trailing_stop_min_mfe_pct?: number;  // minimum MFE to activate trailing (default 0.01)
+  /** Block triggers from specific sources (e.g. ["corecast"] to reject CoreCast-sourced triggers) */
+  blocked_trigger_sources?: string[];
+  /** Minimum pre-trigger sell count in 5s window. Data: wins avg 3.1 sells vs MH avg 1.3. Default undefined (disabled). */
+  pre_trigger_min_sell_count_5s?: number;
+  /** Maximum vSol delta in 3s before trigger. Caps overheated entries. Default undefined (disabled). */
+  pre_trigger_max_vsol_delta_3s?: number;
+  /** Momentum decay check: ms after entry to verify MFE progress. 0/undefined = disabled. */
+  momentum_decay_check_ms?: number;
+  /** Minimum MFE % at decay check time. Below this → early exit. Default undefined (disabled). */
+  momentum_decay_min_mfe_pct?: number;
+  /** Phase 2: Enable sandwich attack strategy. Requires shredstream_enabled: true. */
+  sandwich_enabled?: boolean;
+  /** Minimum victim buy SOL to attempt sandwich (default: 0.75000) */
+  sandwich_min_trigger_sol?: number;
+  /** Base position size SOL for sandwich entry, overridden by trigger tiers (default: 0.10000) */
+  sandwich_position_size_sol?: number;
+  /** Jito tip lamports for standard sandwich bundles (default: 200000) */
+  sandwich_tip_lamports?: number;
+  /** Jito tip lamports for large-trigger sandwich bundles (default: 500000) */
+  sandwich_tip_large_lamports?: number;
+  /** Trigger SOL threshold above which large tip tier activates (default: 3.00000) */
+  sandwich_large_trigger_threshold?: number;
+  /** Max curve state age in slots before sandwich is skipped (default: 5) */
+  sandwich_max_staleness_slots?: number;
 }
 
 export interface PumpQuantConfig {
