@@ -141,7 +141,13 @@ async function main() {
     const fees  = trades.reduce((s, t) => s + (t.feesSol || 0), 0);
     const byExit = { take_profit: 0, next_buyer: 0, stop_loss: 0, max_hold: 0, momentum_decay_flat: 0, momentum_decay_fade: 0 };
     trades.forEach(t => { const r = t.exitReason || 'unknown'; byExit[r] = (byExit[r] || 0) + 1; });
-    return { n, wins, wr, gross, net, fees, byExit };
+    // max_hold % alert: >20% indicates entry filter regression
+    const totalExits = Object.values(byExit).reduce((a, b) => a + b, 0);
+    const maxHoldPct = totalExits > 0 ? (byExit.max_hold / totalExits * 100) : 0;
+    const flatPct = totalExits > 0 ? ((byExit.momentum_decay_flat || 0) / totalExits * 100) : 0;
+    // fee drag alert
+    const feeDragPct = gross > 0 ? (fees / gross * 100) : null;
+    return { n, wins, wr, gross, net, fees, byExit, maxHoldPct, flatPct, feeDragPct };
   }
 
   const ses = pnlStats(sessionTrades);
@@ -279,6 +285,26 @@ async function main() {
   if (ses.n >= 10 && ses.wr < 0.30)            alerts.push(`⚠️  Win rate critical: ${pct(ses.wr)} on ${ses.n} trades`);
   if (ses.net < -0.03)                          alerts.push(`⚠️  Session PnL: ${sol(ses.net)} SOL`);
   if (ses.fees > 0 && ses.gross > 0 && ses.fees/ses.gross > 0.05) alerts.push(`⚠️  Fee drag: ${(ses.fees/ses.gross*100).toFixed(1)}% (>5%)`);
+  if (ses.n >= 20 && ses.maxHoldPct > 20) alerts.push(`⚠️  max_hold exits: ${ses.maxHoldPct.toFixed(1)}% of session (>20% — entry filters may need tightening)`);
+  if (ses.n >= 20 && ses.flatPct > 15) alerts.push(`⚠️  momentum_decay_flat exits: ${ses.flatPct.toFixed(1)}% of session (>15% — weak entry quality)`);
+  if (ses.feeDragPct !== null && ses.feeDragPct > 80) alerts.push(`⚠️  Fee drag: ${ses.feeDragPct.toFixed(1)}% — fees consuming most of gross profit`);
+
+  // Gate reject histogram from health endpoint
+  const gateRejects = health?.gate_rejects;
+  if (gateRejects && gateRejects.total > 0) {
+    const maxCurve = gateRejects['MaxCurveProgress'] || 0;
+    const scoreLow = gateRejects['ScoreTooLow'] || 0;
+    const blockedHour = gateRejects['BlockedHour'] || 0;
+    if (maxCurve > 0 || scoreLow > 0) {
+      lines.push('');
+      lines.push('🚧 Gate Rejects (top):');
+      const topGates = Object.entries(gateRejects)
+        .filter(([k, v]) => k !== 'total' && v > 0)
+        .sort(([,a],[,b]) => b - a)
+        .slice(0, 5);
+      topGates.forEach(([name, count]) => lines.push(`  ${name}: ${count}`));
+    }
+  }
 
   if (alerts.length > 0) {
     lines.push('');

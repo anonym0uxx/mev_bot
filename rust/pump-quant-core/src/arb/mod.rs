@@ -1,4 +1,5 @@
 pub mod dedup;
+pub mod grad_dex_backrun;
 pub mod graduation;
 pub mod pool_resolver;
 

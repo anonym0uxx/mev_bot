@@ -36,12 +36,40 @@ pub struct GateConfig {
     pub blocked_hours_utc: Vec<u8>,
     /// UTC hours during which trading gets a boost (informational for scorer/position).
     pub boosted_hours_utc: Vec<u8>,
+    /// Precomputed bitmask: bit N set = hour N blocked. Eliminates Vec scan in hot path.
+    pub blocked_hours_bitmask: u32,
+    /// Precomputed bitmask: bit N set = hour N boosted. Eliminates Vec scan in hot path.
+    pub boosted_hours_bitmask: u32,
+    /// Minimum buy/sell count ratio in the 5s window (buy_count_5s / sell_count_5s).
+    /// Values below this indicate insufficient buy pressure for clean momentum entries.
+    /// Only checked when sell_count_5s > 0. Default: 0.0 (use existing gate 14).
+    /// Recommended: 2.5 (eliminates entries with weak follow-through).
+    pub min_buy_sell_ratio_5s: f64,
+    /// Precomputed: min_buy_sell_ratio_5s * 10 as integer (2.5 → 25). Eliminates f64 division.
+    pub min_buy_sell_ratio_x10: u16,
+
     /// Master toggle for the TOD gate. When false, blocked_hours_utc is ignored entirely.
     /// Use `false` to collect paper trade data 24/7 regardless of TOD config.
     pub tod_gate_enabled: bool,
     /// Regime classifier config. Used to exclude mayhem/tokenized agent tokens
     /// and tokens near graduation boundary.
     pub regime_config: super::regime::RegimeConfig,
+    /// Maximum bonding curve progress [0.0–1.0] before rejecting entry.
+    /// Tokens too far along the curve (curvePct > threshold) statistically exit
+    /// at max_hold with ~3.3% WR, burning fees with no alpha.
+    /// Default: 1.0 (disabled). Recommended: 0.80.
+    pub max_curve_progress: f64,
+    /// Precomputed vtoken threshold: tokens with vtoken_reserves < this are too far along.
+    /// Replaces float math in hot path. 0 = disabled.
+    pub max_vtoken_threshold: u64,
+    /// Minimum flow concentration: volume_5s_lamports / unique_buyers_30s.
+    /// Integer form: volume_sol_5s * 100 >= min_flow_concentration_x100 * unique_buyers_30s
+    /// Default: 0 (disabled). Recommended: 40 (= 0.40 SOL per buyer).
+    pub min_flow_concentration_x100: u16,
+    /// Maximum unique buyers in 30s window before rejecting.
+    /// Too many buyers = dispersed retail = momentum_decay_flat.
+    /// Default: 0 (disabled). Recommended: 27.
+    pub max_unique_buyers_30s: u16,
 }
 
 impl Default for GateConfig {
@@ -69,8 +97,16 @@ impl Default for GateConfig {
             large_trigger_min_unique_buyers: 5,
             blocked_hours_utc: Vec::new(),
             boosted_hours_utc: Vec::new(),
+            blocked_hours_bitmask: 0,
+            boosted_hours_bitmask: 0,
+            min_buy_sell_ratio_5s: 0.0,
+            min_buy_sell_ratio_x10: 0,
             tod_gate_enabled: true,
             regime_config: super::regime::RegimeConfig::default(),
+            max_curve_progress: 1.0,
+            max_vtoken_threshold: 0,
+            min_flow_concentration_x100: 0,
+            max_unique_buyers_30s: 0,
         }
     }
 }
@@ -108,12 +144,21 @@ pub enum GateRejectReason {
     RegimeExcluded,
     /// Token at graduation boundary (too close to migration)
     GraduationBoundary,
+    /// Token too far along bonding curve (> max_curve_progress)
+    MaxCurveProgress,
+    /// Flow concentration too low (volume_5s / unique_buyers < threshold)
+    LowFlowConcentration,
+    /// Too many unique buyers (dispersed retail noise)
+    TooManyBuyers,
 }
 
 impl std::fmt::Display for GateRejectReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ScoreTooLow(s) => write!(f, "ScoreTooLow({:.4})", s),
+            Self::MaxCurveProgress => write!(f, "MaxCurveProgress"),
+            Self::LowFlowConcentration => write!(f, "LowFlowConcentration"),
+            Self::TooManyBuyers => write!(f, "TooManyBuyers"),
             other => write!(f, "{:?}", other),
         }
     }
@@ -129,8 +174,25 @@ pub struct GateStack {
 }
 
 impl GateStack {
-    pub fn new(config: GateConfig) -> Self {
+    pub fn new(mut config: GateConfig) -> Self {
         let isolation_threshold_fp = (config.max_trigger_isolation * 1_000_000.0) as u64;
+
+        // Precompute hour bitmasks from Vec<u8> (eliminates Vec scan in hot path)
+        config.blocked_hours_bitmask = config.blocked_hours_utc.iter().fold(0u32, |acc, &h| acc | (1u32 << h));
+        config.boosted_hours_bitmask = config.boosted_hours_utc.iter().fold(0u32, |acc, &h| acc | (1u32 << h));
+
+        // Precompute integer buy/sell ratio (eliminates f64 division in hot path)
+        config.min_buy_sell_ratio_x10 = (config.min_buy_sell_ratio_5s * 10.0) as u16;
+
+        // Precompute vtoken threshold for MaxCurveProgress (eliminates float math in hot path)
+        // progress = (INITIAL - vtoken) / INITIAL > max_curve_progress
+        // ↔ vtoken < INITIAL * (1 - max_curve_progress)
+        config.max_vtoken_threshold = if config.max_curve_progress < 1.0 {
+            (crate::engine::regime::INITIAL_VIRTUAL_TOKENS as f64 * (1.0 - config.max_curve_progress)) as u64
+        } else {
+            0
+        };
+
         Self {
             config,
             isolation_threshold_fp,
@@ -171,11 +233,11 @@ impl GateStack {
         let c = &self.config;
 
         // ── Gate 0a: Time-of-day blocked ────────────────────────────
-        // Cheapest check — integer modular arithmetic + small vec scan.
+        // Single bitmask test (~1ns) replaces Vec<u8>::contains scan (~15ns).
         // Skipped entirely when tod_gate_enabled == false (paper data collection mode).
-        if c.tod_gate_enabled && !c.blocked_hours_utc.is_empty() {
-            let hour_utc = ((now_ms / 3_600_000) % 24) as u8;
-            if c.blocked_hours_utc.contains(&hour_utc) {
+        if c.tod_gate_enabled && c.blocked_hours_bitmask != 0 {
+            let hour_utc = ((now_ms / 3_600_000) % 24) as u32;
+            if (c.blocked_hours_bitmask >> hour_utc) & 1 == 1 {
                 return Err(GateRejectReason::BlockedHour);
             }
         }
@@ -199,6 +261,18 @@ impl GateStack {
             return Err(GateRejectReason::TriggerTooLarge);
         }
 
+        // ── Gate 2b: Curve progress cap (precomputed u64 threshold) ──
+        // Moved before VSolOutOfRange — rejects ~78% of late-curve tokens
+        // before more expensive checks. Zero float math: single u64 comparison.
+        // IMPORTANT: skip when vtoken_reserves == 0 — means the field was
+        // missing from the PumpPortal event (not all events include it).
+        if c.max_vtoken_threshold > 0
+            && event.vtoken_reserves > 0
+            && event.vtoken_reserves < c.max_vtoken_threshold
+        {
+            return Err(GateRejectReason::MaxCurveProgress);
+        }
+
         // ── Gate 3: vSol reserves in range ─────────────────────────
         if event.vsol_reserves < c.min_vsol_lamports || event.vsol_reserves > c.max_vsol_lamports {
             return Err(GateRejectReason::VSolOutOfRange);
@@ -212,6 +286,13 @@ impl GateStack {
         // ── Gate 5: Minimum unique buyers (30s) ────────────────────
         if unique_buyers_30s < c.min_unique_buyers {
             return Err(GateRejectReason::NotEnoughUniqueBuyers);
+        }
+
+        // ── Gate 5b: Too many unique buyers ────────────────────────
+        // Concentrated buying (few buyers, high volume) predicts take_profit.
+        // Dispersed retail (many buyers, low volume) predicts momentum_decay_flat.
+        if c.max_unique_buyers_30s > 0 && unique_buyers_30s > c.max_unique_buyers_30s {
+            return Err(GateRejectReason::TooManyBuyers);
         }
 
         // ── Gate 6: Large trigger needs more buyers ────────────────
@@ -272,6 +353,29 @@ impl GateStack {
                 if buy_4x < sell_6x {
                     return Err(GateRejectReason::SellPressure);
                 }
+            }
+        }
+
+        // ── Gate 14b: Buy/sell ratio floor (integer multiply — no f64 division) ──
+        // buy/sell >= ratio ↔ buy * 10 >= ratio_x10 * sell (no division)
+        // Precomputed min_buy_sell_ratio_x10 replaces f64 field in hot path.
+        if c.min_buy_sell_ratio_x10 > 0 && sell_count_5s > 0 {
+            if (buy_count_5s as u32) * 10 < (c.min_buy_sell_ratio_x10 as u32) * (sell_count_5s as u32) {
+                return Err(GateRejectReason::SellPressure);
+            }
+        }
+
+        // ── Gate 14c: Flow concentration — filters dispersed retail noise ──
+        // flow_concentration = volume_sol_5s / unique_buyers_30s
+        // High FC = concentrated buying = informed flow (Amihud-style)
+        // Integer: volume_5s * 100 >= min_fc_x100 * unique_buyers_30s
+        // No division — pure multiply+compare, ~2ns
+        if c.min_flow_concentration_x100 > 0 && unique_buyers_30s > 0 {
+            let fc_lhs = volume_sol_5s.saturating_mul(100);
+            let fc_rhs = (c.min_flow_concentration_x100 as u64)
+                .saturating_mul(unique_buyers_30s as u64);
+            if fc_lhs < fc_rhs {
+                return Err(GateRejectReason::LowFlowConcentration);
             }
         }
 

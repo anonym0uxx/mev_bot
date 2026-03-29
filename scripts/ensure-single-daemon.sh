@@ -77,6 +77,10 @@ if [ "${1:-}" = "--start" ]; then
   if [ -f "./rust/.env" ]; then
     set -a && source ./rust/.env && set +a
   fi
+  # Load build flags (target-cpu=native for SIMD/AVX2 in hot path)
+  if [ -f "./rust/.env.build" ]; then
+    set -a && source ./rust/.env.build && set +a
+  fi
   echo "[ensure-single-daemon] Starting Rust daemon..."
   PAPER_MODE=true RUST_LOG=info nohup "$BINARY" > "$LOG" 2>&1 &
   NEW_PID=$!

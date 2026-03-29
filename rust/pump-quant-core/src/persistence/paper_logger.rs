@@ -14,6 +14,17 @@ use crate::engine::positions::{ClosedPosition, ExitReason};
 /// Compile-time constant strategy tag — one backrunner, one tag, zero allocation.
 const STRATEGY_TAG: &str = "backrun";
 
+/// Convert ride_phase u8 to a human-readable string.
+fn ride_phase_name(phase: u8) -> &'static str {
+    match phase {
+        0 => "n/a",
+        1 => "early",
+        2 => "momentum",
+        3 => "tighten",
+        _ => "unknown",
+    }
+}
+
 /// Appends paper trade results as JSONL (one JSON object per line).
 /// Output schema matches the TS paper-trade-logger.ts exactly (camelCase keys).
 pub struct PaperTradeLogger {
@@ -60,6 +71,15 @@ impl PaperTradeLogger {
             ExitReason::IntraHoldTrail => "intra_hold_trail",
             ExitReason::MomentumDecayFlat => "momentum_decay_flat",
             ExitReason::MomentumDecayFade => "momentum_decay_fade",
+            ExitReason::TakeProfitScaled => "take_profit_scaled",
+            ExitReason::MomentumStall => "momentum_stall",
+            ExitReason::RideTrailingStop  => "ride_trailing_stop",
+            ExitReason::RideHardFloor     => "ride_hard_floor",
+            ExitReason::RideWhaleExit     => "ride_whale_exit",
+            ExitReason::RideBuyGapTimeout => "ride_buy_gap_timeout",
+            ExitReason::RideSellCascade   => "ride_sell_cascade",
+            ExitReason::RideCreatorSell   => "ride_creator_sell",
+            ExitReason::RideMaxHold       => "ride_max_hold",
         };
 
         // Convert lamports to SOL for human-readable output
@@ -153,6 +173,12 @@ impl PaperTradeLogger {
             "flowAfterEntrySol": pos.flow_after_entry as f64 / 1_000_000_000.0,
             // Sizing context
             "todMultiplier": pos.tod_multiplier,
+            // RIDE mode fields
+            "exitMode": pos.exit_mode_str,
+            "ridePhase": ride_phase_name(pos.ride_phase),
+            "ridePeakMvsol": pos.ride_peak_mvsol,
+            "rideHoldMs": pos.ride_hold_ms,
+            "rideUniqueWallets": pos.ride_unique_wallets,
             // Strategy classification — single backrunner, compile-time constant
             "strategyTag": STRATEGY_TAG,
             // Metadata

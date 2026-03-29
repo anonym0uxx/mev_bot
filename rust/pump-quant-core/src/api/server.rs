@@ -52,6 +52,10 @@ pub struct EngineStats {
     pub grad_arb_exits_sl: u64,
     pub grad_arb_exits_max_hold: u64,
     pub grad_arb_net_sol: f64,
+    // Gate rejection histogram — indexed by gate_reject_index() in hot_path.rs
+    // 32 slots covers all current GateRejectReason variants with headroom.
+    pub gate_reject_counts: [u64; 32],
+
     // Momentum engine stats
     pub momentum_enabled: bool,
     pub momentum_graduations_seen: u64,
@@ -166,6 +170,38 @@ async fn health(State(state): State<ApiState>) -> Json<serde_json::Value> {
 
         let overall = if paused { "degraded" } else { "healthy" };
 
+        // Build gate reject histogram from EngineStats
+        let gate_reject_histogram = {
+            let s = state.stats.lock().unwrap();
+            let names = [
+                "BlockedHour", "NotBuy", "TriggerTooSmall", "TriggerTooLarge",
+                "VSolOutOfRange", "TokenTooOld", "NotEnoughUniqueBuyers", "LargeTriggerLowBuyers",
+                "StaleGap", "InsufficientCrowd2s", "InsufficientCrowd5s", "InsufficientVSolAccel",
+                "StaleMomentum1s", "InsufficientSellCount", "VSolDeltaTooHigh", "CreatorSellRecent",
+                "SellPressure", "TriggerTooIsolated", "ScoreTooLow", "SourceBlocked",
+                "RegimeExcluded", "GraduationBoundary", "MaxCurveProgress",
+                "LowFlowConcentration", "TooManyBuyers",
+            ];
+            let mut map = serde_json::Map::new();
+            let mut total: u64 = 0;
+            for (i, &count) in s.gate_reject_counts.iter().enumerate() {
+                if count > 0 {
+                    let name = if i < names.len() { names[i] } else { "Unknown" };
+                    map.insert(name.to_string(), serde_json::Value::Number(count.into()));
+                    total += count;
+                }
+            }
+            map.insert("total".to_string(), serde_json::Value::Number(total.into()));
+            let trades_seen = s.trades_seen;
+            let gates_passed = s.gates_passed;
+            (serde_json::Value::Object(map), trades_seen, gates_passed)
+        };
+        let gate_pass_rate = if gate_reject_histogram.1 > 0 {
+            gate_reject_histogram.2 as f64 / gate_reject_histogram.1 as f64 * 100.0
+        } else {
+            0.0
+        };
+
         Json(serde_json::json!({
             "status": "ok",
             "data": {
@@ -175,6 +211,12 @@ async fn health(State(state): State<ApiState>) -> Json<serde_json::Value> {
                 "feeds": {
                     "pumpportal": { "status": pp_status, "age_s": pp_age_s },
                     "helius": { "status": hel_status, "age_s": hel_age_s }
+                },
+                "gate_rejects": gate_reject_histogram.0,
+                "hot_path": {
+                    "trades_seen": gate_reject_histogram.1,
+                    "gates_passed": gate_reject_histogram.2,
+                    "gate_pass_rate_pct": gate_pass_rate
                 }
             }
         }))
