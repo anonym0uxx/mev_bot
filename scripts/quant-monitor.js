@@ -76,7 +76,7 @@ const MEV_LIVE_GOAL_WR = 0.55;   // target WR before going live
 const MEV_LIVE_MIN_TRADES = 100; // minimum trades before live review
 let mevPostGate = { trades: 0, wins: 0, pnl: 0, exits: {} };
 try {
-  const mevLines = fs.readFileSync(path.join(__dirname, '../data/mev_paper_trades.jsonl'), 'utf8')
+  const mevLines = fs.readFileSync(path.join(__dirname, '../data/backrun_paper_trades.jsonl'), 'utf8')
     .trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
   const postGate = mevLines.filter(t => (t.exitTimestampMs || 0) >= MEV_GATE_CUTOFF_MS);
   mevPostGate.trades = postGate.length;
@@ -153,7 +153,7 @@ if (mevReadyForLive) {
 // Attach full MEV dataset summary for subagent consumption when review is needed
 if (report.mev_review_needed || report.recommendation_needed) {
   try {
-    const mevLines = fs.readFileSync(path.join(__dirname, '../data/mev_paper_trades.jsonl'), 'utf8')
+    const mevLines = fs.readFileSync(path.join(__dirname, '../data/backrun_paper_trades.jsonl'), 'utf8')
       .trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
     const postGateTrades = mevLines.filter(t => (t.exitTimestampMs || 0) >= MEV_GATE_CUTOFF_MS);
 

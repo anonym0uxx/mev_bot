@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 
 const DB_PATH = path.join(__dirname, '../data/pump-quant.db');
-const MEV_LOG = path.join(__dirname, '../data/mev_paper_trades.jsonl');
+const MEV_LOG = path.join(__dirname, '../data/backrun_paper_trades.jsonl');
 const ENGINE_STATE = path.join(__dirname, '../data/engine-state.json');
 const isPaper = process.env.PAPER_MODE === 'true' || process.env.PAPER_MODE === '1';
 const paperFlag = isPaper ? 1 : 0;

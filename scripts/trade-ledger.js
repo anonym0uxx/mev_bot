@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * trade-ledger.js — Historical P&L ledger across all paper and real trades.
- * Pulls from positions table (scalper) + mev_paper_trades.jsonl (MEV paper)
+ * Pulls from positions table (scalper) + backrun_paper_trades.jsonl (MEV paper)
  * and produces a full breakdown by mode, engine, day, and regime.
  *
  * Usage:
@@ -16,7 +16,7 @@ const fs = require('fs');
 const path = require('path');
 
 const DB_PATH = path.join(__dirname, '../data/pump-quant.db');
-const MEV_LOG = path.join(__dirname, '../data/mev_paper_trades.jsonl');
+const MEV_LOG = path.join(__dirname, '../data/backrun_paper_trades.jsonl');
 
 const args = process.argv.slice(2);
 const jsonMode = args.includes('--json');

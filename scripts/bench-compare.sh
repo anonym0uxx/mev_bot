@@ -5,7 +5,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-export PARITY_DATA="${PARITY_DATA:-$PROJECT_DIR/data/mev_paper_trades.jsonl}"
+export PARITY_DATA="${PARITY_DATA:-$PROJECT_DIR/data/backrun_paper_trades.jsonl}"
 
 echo "════════════════════════════════════════════════════════════"
 echo "  Parity Test: Rust GateStack+Scorer vs TS Paper Trades"

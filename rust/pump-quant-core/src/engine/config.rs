@@ -368,7 +368,7 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
     let paper_mode = mev.paper_mode.unwrap_or(true);
     let log_file = mev
         .log_file
-        .unwrap_or_else(|| "data/mev_paper_trades.jsonl".to_string());
+        .unwrap_or_else(|| "data/backrun_paper_trades.jsonl".to_string());
 
     // ── Safety / circuit breaker config ─────────────────────────────
     // Daily loss cap: paper mode uses paper_daily_loss_cap_sol, live uses live_daily_loss_cap_sol,

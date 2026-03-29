@@ -2,8 +2,8 @@
 //! comparing decisions side-by-side.
 //!
 //! Usage:
-//!   PARITY_DATA=path/to/mev_paper_trades.jsonl cargo run --bin parity-test
-//!   cargo run --bin parity-test -- path/to/mev_paper_trades.jsonl
+//!   PARITY_DATA=path/to/backrun_paper_trades.jsonl cargo run --bin parity-test
+//!   cargo run --bin parity-test -- path/to/backrun_paper_trades.jsonl
 
 use std::env;
 use std::fs::File;
@@ -255,7 +255,7 @@ fn main() -> anyhow::Result<()> {
         .or_else(|| env::args().nth(1))
         .unwrap_or_else(|| {
             eprintln!("Usage: PARITY_DATA=path cargo run --bin parity-test");
-            eprintln!("   or: cargo run --bin parity-test -- path/to/mev_paper_trades.jsonl");
+            eprintln!("   or: cargo run --bin parity-test -- path/to/backrun_paper_trades.jsonl");
             std::process::exit(1);
         });
 

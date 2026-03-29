@@ -16,7 +16,7 @@ const path = require('path');
 const BASE = path.join(__dirname, '..');
 const CONFIG_PATH = path.join(BASE, 'config/canary.json');
 const HISTORY_PATH = path.join(BASE, 'data/config-history.jsonl');
-const TRADES_PATH = path.join(BASE, 'data/mev_paper_trades.jsonl');
+const TRADES_PATH = path.join(BASE, 'data/backrun_paper_trades.jsonl');
 const HB_STATE = path.join(BASE, 'data/heartbeat-trade-state.json');
 
 const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));

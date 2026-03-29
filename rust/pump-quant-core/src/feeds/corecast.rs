@@ -8,11 +8,9 @@
 //!   ID "1" — pump.fun DEX trades (creator sell detection)
 //!   ID "2" — Raydium AMM trades (migration detection → force-exit)
 //!   ID "3" — Token supply updates (LP removal / rug detection → force-exit)
-//!   ID "4" — pump.fun create instructions (new token pre-warm)
 //!
 //! TASK-10: Uses a shared `Arc<RwLock<HashMap<[u8;32],[u8;32]>>>` (mint → creator)
-//! populated by PumpPortal on token creation events. Also written by stream 4
-//! (new token launches detected via Bitquery, often faster than PumpPortal).
+//! populated by PumpPortal on token creation events.
 //!
 //! Requires `BITQUERY_API_KEY` env var. If not set, gracefully disables.
 //!
@@ -28,11 +26,10 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async_with_config, tungstenite};
 use tracing::{debug, error, info, warn};
 
-use super::FeedEvent;
+use super::{FeedEvent, MigrationSource};
 
 /// Shared creator map type: mint → creator wallet pubkey.
 /// Written by PumpPortal on `create` events, read by CoreCast for signer matching.
-/// Also written by stream 4 (new token launches) for pre-warming.
 pub type CreatorMap = Arc<RwLock<HashMap<[u8; 32], [u8; 32]>>>;
 
 const BITQUERY_WS_URL: &str = "wss://streaming.bitquery.io/eap";
@@ -46,7 +43,6 @@ const MAX_BACKOFF_SECS: u64 = 30;
 const SUB_ID_BONDING_TRADES: &str = "1";
 const SUB_ID_AMM_MIGRATION: &str = "2";
 const SUB_ID_LP_REMOVAL: &str = "3";
-const SUB_ID_NEW_TOKEN: &str = "4";
 
 /// Stream 1: pump.fun DEX trades (creator sell detection).
 const GQL_BONDING_TRADES: &str = r#"subscription {
@@ -106,43 +102,19 @@ const GQL_LP_REMOVAL: &str = r#"subscription {
   }
 }"#;
 
-/// Stream 4: New token launches — pump.fun create instruction.
-/// Pre-warms creator_map before PumpPortal detects the token.
-const GQL_NEW_TOKEN: &str = r#"subscription {
-  Solana {
-    Instructions(
-      where: {
-        Instruction: {
-          Program: {
-            Address: { is: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" }
-            Name: { is: "create" }
-          }
-        }
-        Transaction: { Result: { Success: true } }
-      }
-    ) {
-      Instruction {
-        Accounts { Address }
-        Program { Name }
-      }
-      Transaction { Signature Signer }
-    }
-  }
-}"#;
+
 
 /// Run the CoreCast/Bitquery WebSocket feed loop. Never returns unless shutdown.
 /// If `BITQUERY_API_KEY` is not set, logs a warning and returns immediately.
 ///
-/// Sends 4 multiplexed subscriptions on a single WebSocket connection:
+/// Sends 3 multiplexed subscriptions on a single WebSocket connection:
 ///   ID "1" — pump.fun bonding trades (creator sell detection)
 ///   ID "2" — Raydium AMM trades (migration detection)
 ///   ID "3" — Token supply updates (LP removal / rug detection)
-///   ID "4" — pump.fun create instructions (new token pre-warm)
 ///
-/// All 4 use the same WS connection = 1 stream toward Bitquery's 5-stream cap.
+/// All 3 use the same WS connection = 1 stream toward Bitquery's 5-stream cap.
 ///
-/// `creator_map`: shared map of mint → creator wallet, populated by PumpPortal
-/// and enriched by stream 4 (new token launches via Bitquery).
+/// `creator_map`: shared map of mint → creator wallet, populated by PumpPortal.
 pub async fn run(
     tx: Sender<FeedEvent>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -244,7 +216,6 @@ pub async fn run(
                     (SUB_ID_BONDING_TRADES, GQL_BONDING_TRADES, "pump.fun DEX trades"),
                     (SUB_ID_AMM_MIGRATION, GQL_AMM_MIGRATION, "Raydium AMM migration"),
                     (SUB_ID_LP_REMOVAL, GQL_LP_REMOVAL, "LP removal / rug detection"),
-                    (SUB_ID_NEW_TOKEN, GQL_NEW_TOKEN, "new token launches"),
                 ];
 
                 let mut all_subscribed = true;
@@ -271,7 +242,7 @@ pub async fn run(
                 info!(
                     streams = subscriptions.len(),
                     endpoint = BITQUERY_WS_URL,
-                    stream_ids = "1=DEXTrades,2=AMMTrades,3=LPRemoval,4=NewTokens",
+                    stream_ids = "1=DEXTrades,2=AMMTrades,3=LPRemoval",
                     "CoreCast connected and subscribed"
                 );
 
@@ -353,24 +324,7 @@ pub async fn run(
                                                     }
                                                 }
                                             }
-                                            SUB_ID_NEW_TOKEN => {
-                                                stats.new_tokens += 1;
-                                                if let Some(event) = parse_new_token(payload, ts_ms, &creator_map) {
-                                                    if let FeedEvent::NewToken { ref mint, ref creator, .. } = event {
-                                                        debug!(
-                                                            stream_id = SUB_ID_NEW_TOKEN,
-                                                            event_type = "new_token",
-                                                            mint = %bs58::encode(mint).into_string(),
-                                                            creator = %bs58::encode(creator).into_string(),
-                                                            "CoreCast stream event"
-                                                        );
-                                                    }
-                                                    if tx.send(event).is_err() {
-                                                        info!("[corecast] engine channel closed");
-                                                        return;
-                                                    }
-                                                }
-                                            }
+
                                             _ => {
                                                 debug!("[corecast] unknown subscription id: {}", sub_id);
                                             }
@@ -380,9 +334,9 @@ pub async fn run(
                                         let total = stats.total();
                                         if total % 100 == 0 && total > 0 {
                                             debug!(
-                                                "[corecast] bonding={} amm={} lp={} new_token={} creator_match={} creator_miss={}",
+                                                "[corecast] bonding={} amm={} lp={} creator_match={} creator_miss={}",
                                                 stats.bonding_trades, stats.amm_migrations,
-                                                stats.lp_removals, stats.new_tokens,
+                                                stats.lp_removals,
                                                 stats.creator_matches, stats.creator_mismatches
                                             );
                                         }
@@ -441,14 +395,13 @@ struct StreamStats {
     bonding_trades: u64,
     amm_migrations: u64,
     lp_removals: u64,
-    new_tokens: u64,
     creator_matches: u64,
     creator_mismatches: u64,
 }
 
 impl StreamStats {
     fn total(&self) -> u64 {
-        self.bonding_trades + self.amm_migrations + self.lp_removals + self.new_tokens
+        self.bonding_trades + self.amm_migrations + self.lp_removals
     }
 }
 
@@ -535,6 +488,25 @@ fn parse_amm_migration(payload: &serde_json::Value, ts_ms: u64) -> Vec<FeedEvent
     };
 
     for trade in trades {
+        // Extract transaction signature for dedup (first 32 bytes, or zeros if unavailable)
+        let sig = trade
+            .pointer("/Transaction/Signature")
+            .and_then(|s| s.as_str())
+            .and_then(|s| {
+                // Bitquery returns base58-encoded signature (64 bytes decoded).
+                // We only need first 32 bytes as a dedup key.
+                let mut buf = [0u8; 64];
+                let n = bs58::decode(s).onto(&mut buf[..]).ok()?;
+                if n >= 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&buf[..32]);
+                    Some(arr)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or([0u8; 32]);
+
         // Extract both buy and sell mint addresses — the pump.fun token could be on either side
         let buy_mint = trade
             .pointer("/Trade/Buy/Currency/MintAddress")
@@ -547,12 +519,22 @@ fn parse_amm_migration(payload: &serde_json::Value, ts_ms: u64) -> Vec<FeedEvent
 
         // Emit migration for both sides — the engine will only act on mints it tracks
         if let Some(mint) = buy_mint {
-            events.push(FeedEvent::Migration { mint, ts_ms });
+            events.push(FeedEvent::Migration {
+                mint,
+                ts_ms,
+                source: MigrationSource::CoreCastStream2,
+                sig,
+            });
         }
         if let Some(mint) = sell_mint {
             // Avoid duplicate if buy and sell are the same mint (shouldn't happen but be safe)
             if buy_mint != sell_mint {
-                events.push(FeedEvent::Migration { mint, ts_ms });
+                events.push(FeedEvent::Migration {
+                    mint,
+                    ts_ms,
+                    source: MigrationSource::CoreCastStream2,
+                    sig,
+                });
             }
         }
     }
@@ -610,38 +592,4 @@ fn parse_lp_removal(payload: &serde_json::Value, ts_ms: u64) -> Vec<FeedEvent> {
     events
 }
 
-// ── Stream 4: New token launches ────────────────────────────────────
 
-/// Parse pump.fun create instructions from stream 4 payload.
-/// Returns `FeedEvent::NewToken` and pre-warms the creator_map.
-fn parse_new_token(
-    payload: &serde_json::Value,
-    ts_ms: u64,
-    creator_map: &CreatorMap,
-) -> Option<FeedEvent> {
-    let instructions = payload
-        .pointer("/data/Solana/Instructions")
-        .and_then(|t| t.as_array())?;
-
-    let instr = instructions.first()?;
-
-    // First account in the instruction is the mint address
-    let accounts = instr.pointer("/Instruction/Accounts")?.as_array()?;
-    let mint_str = accounts.first()?.get("Address")?.as_str()?;
-    let mint = decode_bs58_32(mint_str)?;
-
-    // Transaction signer is the creator
-    let signer_str = instr.pointer("/Transaction/Signer")?.as_str()?;
-    let creator = decode_bs58_32(signer_str)?;
-
-    // Pre-warm creator_map (may fire before PumpPortal)
-    if let Ok(mut map) = creator_map.write() {
-        map.insert(mint, creator);
-        debug!(
-            "[corecast] pre-warmed creator_map: mint={} creator={}",
-            mint_str, signer_str
-        );
-    }
-
-    Some(FeedEvent::NewToken { mint, creator, ts_ms })
-}

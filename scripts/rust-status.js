@@ -3,7 +3,7 @@
  * rust-status.js — Rust MEV daemon status report for heartbeat
  * Reads from:
  *   - Rust API at :9421 (stats, health, latency)
- *   - data/mev_paper_trades.jsonl (trade history)
+ *   - data/backrun_paper_trades.jsonl (trade history)
  *   - data/engine-state.json (session boundary)
  *   - data/heartbeat-trade-state.json (state tracking)
  */
@@ -13,7 +13,7 @@ const path = require('path');
 const http = require('http');
 
 const BASE = path.join(__dirname, '..');
-const JSONL_PATH = path.join(BASE, 'data/mev_paper_trades.jsonl');
+const JSONL_PATH = path.join(BASE, 'data/backrun_paper_trades.jsonl');
 const STATE_PATH = path.join(BASE, 'data/engine-state.json');
 const HB_STATE  = path.join(BASE, 'data/heartbeat-trade-state.json');
 

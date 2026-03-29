@@ -164,10 +164,6 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Build engine components ─────────────────────────────────────
     let min_score = engine_config.gate.trigger_min_score;
-    // Capture golden segment thresholds before gate moves engine_config.gate
-    let _golden_min_buys_1s = engine_config.gate.pre_trigger_min_buys_1s;
-    let _golden_min_vsol_sol = engine_config.gate.min_vsol_lamports as f64 / 1_000_000_000.0;
-    let _golden_max_vsol_sol = engine_config.gate.max_vsol_lamports as f64 / 1_000_000_000.0;
     let gate_stack = GateStack::new(engine_config.gate);
     let scorer = Scorer::new(
         engine_config.score,
@@ -225,17 +221,7 @@ async fn main() -> anyhow::Result<()> {
     let logger_started_at = daemon_started_at_ms;
     let logger_telegram = telegram_alerter.clone();
     let logger_config_version = config_version.clone();
-    // Golden segment thresholds for strategyTag computation in paper_logger
-    // Uses values captured before engine_config.gate was moved into GateStack.
-    let logger_golden_thresholds = (
-        _golden_min_buys_1s,  // min_buys_1s
-        13u8,                 // golden min hour UTC (SPEC 1)
-        21u8,                 // golden max hour UTC (SPEC 1)
-        _golden_min_vsol_sol, // min_vsol SOL
-        _golden_max_vsol_sol, // max_vsol SOL
-    );
-    let logger_scaled_entry_enabled = engine_config.scaled_entry_enabled;
-    let logger_scaled_entry_initial_pct = engine_config.scaled_entry_initial_pct;
+
     std::thread::Builder::new()
         .name("trade-logger".to_string())
         .spawn(move || {
@@ -258,9 +244,6 @@ async fn main() -> anyhow::Result<()> {
                 &log_file,
                 paper_mode,
                 logger_config_version,
-                logger_golden_thresholds,
-                logger_scaled_entry_enabled,
-                logger_scaled_entry_initial_pct,
             ) {
                 Ok(l) => l,
                 Err(e) => {
@@ -514,7 +497,6 @@ async fn main() -> anyhow::Result<()> {
                         ticks = s.ticks,
                         migrations = s.migrations,
                         lp_removals = s.lp_removals,
-                        new_tokens_prewarmed = s.new_tokens,
                         creator_sells = s.creator_sells,
                         helius_correlated = hot_path.helius_lead_count,
                         helius_avg_lead_ms = if hot_path.helius_lead_count > 0 {
@@ -578,7 +560,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(FeedEvent::CreatorSell { mint, ts_ms }) => {
                 hot_path.on_creator_sell(&mint, ts_ms);
             }
-            Ok(FeedEvent::Migration { mint, ts_ms }) => {
+            Ok(FeedEvent::Migration { mint, ts_ms, source: _source, sig: _sig }) => {
                 let mint_b58 = bs58::encode(&mint).into_string();
                 let open_before = hot_path.open_positions();
                 hot_path.on_migration(&mint, ts_ms);
@@ -590,35 +572,23 @@ async fn main() -> anyhow::Result<()> {
                 info!(
                     mint = %mint_b58,
                     ts_ms = ts_ms,
+                    source = _source.as_str(),
                     open_position_closed = had_open_position,
                     "[grad_arb] graduation migration detected"
                 );
 
                 // Graduation arb check (stub — disabled by default)
                 if engine_config.graduation_arb_enabled {
-                    // TODO: call grad_arb_engine.on_migration_event(mint, ts_ms, None)
+                    // TODO: call grad_arb_engine.on_migration_event(mint, ts_ms, _source, _sig)
                     // For now just log
-                    info!("[grad_arb] migration event — arb enabled but not yet implemented");
+                    info!(source = _source.as_str(), "[grad_arb] migration event — arb enabled but not yet implemented");
                 }
             }
             Ok(FeedEvent::LpRemoval { mint, ts_ms }) => {
                 hot_path.on_lp_removal(&mint, ts_ms);
                 drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
             }
-            Ok(FeedEvent::NewToken { mint, creator, ts_ms: _ }) => {
-                // Pre-warm creator map from Bitquery (often faster than PumpPortal).
-                // corecast.rs already writes to creator_map, but this ensures the
-                // main engine's shared_creator_map is also updated.
-                if let Ok(mut map) = shared_creator_map.write() {
-                    map.insert(mint, creator);
-                }
-                tracing::debug!(
-                    mint = %bs58::encode(&mint).into_string(),
-                    creator = %bs58::encode(&creator).into_string(),
-                    "new token pre-warmed from Bitquery (before PumpPortal)"
-                );
-                hot_path.on_new_token();
-            }
+
             Ok(FeedEvent::Shutdown) => {
                 info!("Shutdown signal received");
                 let now = now_ms_mono!();
@@ -650,7 +620,6 @@ async fn main() -> anyhow::Result<()> {
         creator_sells = s.creator_sells,
         migrations = s.migrations,
         lp_removals = s.lp_removals,
-        new_tokens = s.new_tokens,
         "pump-quant-core stopped"
     );
 
@@ -698,7 +667,7 @@ fn sync_stats_to_api(
         // Stream event counters
         api_stats.migrations_seen = s.migrations;
         api_stats.lp_removals_seen = s.lp_removals;
-        api_stats.new_tokens_seen = s.new_tokens;
+
         api_stats.creator_sells_seen = s.creator_sells;
         // Graduation arb stats — stub values (always 0 until arb is implemented)
         // graduation_arb_enabled is set once at startup via init_graduation_arb_stats

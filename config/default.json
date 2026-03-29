@@ -289,7 +289,7 @@
     "daily_loss_cap_sol": 0.50,
     "jito_tip_lamports": 10000,
     "conflict_policy": "skip",
-    "log_file": "data/mev_paper_trades.jsonl",
+    "log_file": "data/backrun_paper_trades.jsonl",
     "jitter_ms_min": 50,
     "jitter_ms_max": 200,
     "size_variance_pct": 0.20,

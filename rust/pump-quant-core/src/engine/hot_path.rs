@@ -32,7 +32,6 @@ pub struct HotPathStats {
     pub creator_sells: u64,
     pub migrations: u64,
     pub lp_removals: u64,
-    pub new_tokens: u64,
 }
 
 pub struct HotPath {
@@ -163,7 +162,6 @@ impl HotPath {
                 creator_sells: 0,
                 migrations: 0,
                 lp_removals: 0,
-                new_tokens: 0,
             },
             daily_loss_lamports: 0,
             daily_reset_day: 0,
@@ -563,12 +561,6 @@ impl HotPath {
         if let Some(history) = self.mint_map.get_mut(mint) {
             history.creator_sell_at_ms = ts_ms;
         }
-    }
-
-    /// Record a new token detected via Bitquery (pre-warm).
-    /// The actual creator_map write happens in corecast.rs; this just counts.
-    pub fn on_new_token(&mut self) {
-        self.stats.new_tokens += 1;
     }
 
     /// Number of currently open positions.

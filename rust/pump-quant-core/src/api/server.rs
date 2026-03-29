@@ -37,7 +37,6 @@ pub struct EngineStats {
     // Stream event counters (CoreCast/Bitquery)
     pub migrations_seen: u64,
     pub lp_removals_seen: u64,
-    pub new_tokens_seen: u64,
     pub creator_sells_seen: u64,
     // Graduation arb stats (SPEC 4)
     pub graduation_arb_enabled: bool,
@@ -205,7 +204,6 @@ async fn stats(State(state): State<ApiState>) -> Json<serde_json::Value> {
             "uptime_s": s.uptime_s,
             "migrations_seen": s.migrations_seen,
             "lp_removals_seen": s.lp_removals_seen,
-            "new_tokens_seen": s.new_tokens_seen,
             "creator_sells_seen": s.creator_sells_seen,
             "graduation_arb_enabled": s.graduation_arb_enabled,
             "graduation_arb_trades": s.graduation_arb_trades,

@@ -6,17 +6,43 @@ pub mod event_joiner;
 
 // ── Feed event types ────────────────────────────────────────────────
 
+/// Source of a graduation/migration detection event.
+/// Used by GraduationArbEngine for dedup and latency tracking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum MigrationSource {
+    /// Detected via Helius logsSubscribe (primary, fastest ~50ms)
+    HeliusLogs = 0,
+    /// Detected via CoreCast/Bitquery stream 2 Raydium AMM trades (fallback, ~80ms)
+    CoreCastStream2 = 1,
+}
+
+impl MigrationSource {
+    #[inline(always)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HeliusLogs => "helius",
+            Self::CoreCastStream2 => "corecast",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum FeedEvent {
     Trade(TradeEvent),
     PreWarm(PreWarmEvent), // Helius-only, no vSol
     CreatorSell { mint: [u8; 32], ts_ms: u64 },
     /// Token migrated to Raydium AMM — force-exit any open position.
-    Migration { mint: [u8; 32], ts_ms: u64 },
+    Migration {
+        mint: [u8; 32],
+        ts_ms: u64,
+        /// Source feed that detected this graduation event
+        source: MigrationSource,
+        /// Transaction signature (first 32 bytes as dedup key, or [0;32] if unavailable)
+        sig: [u8; 32],
+    },
     /// LP removal / rug detection — force-exit any open position.
     LpRemoval { mint: [u8; 32], ts_ms: u64 },
-    /// New token launch detected via Bitquery (pre-warms creator_map).
-    NewToken { mint: [u8; 32], creator: [u8; 32], ts_ms: u64 },
     /// New token created — carries regime exclusion flags.
     TokenCreated(TokenCreatedEvent),
     Tick { ts_ms: u64 }, // 50ms timer tick for dead-token decay check
