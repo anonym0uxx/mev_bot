@@ -55,6 +55,51 @@ function saveJson(filePath, obj) {
 function sol(n) { return (n || 0).toFixed(4); }
 function pct(n) { return ((n || 0) * 100).toFixed(1) + '%'; }
 
+// ── Strategy Breakdown ──────────────────────────────────────────────
+
+function strategyBreakdown(trades) {
+  const tags = [
+    'backrun_golden',
+    'backrun_standard',
+    'graduation_arb',
+    'scaled_entry_confirmed',
+    'scaled_entry_partial',
+  ];
+
+  const result = {};
+  for (const tag of tags) {
+    const subset = trades.filter(t => (t.strategyTag || 'backrun_standard') === tag);
+    const n = subset.length;
+    const wins = subset.filter(t => (t.pnlSol || 0) > 0).length;
+    const wr = n > 0 ? wins / n : null;
+    const net = subset.reduce((s, t) => s + (t.netPnlSol ?? t.pnlSol ?? 0), 0);
+    const avg = n > 0 ? net / n : 0;
+    result[tag] = { n, wins, wr, net, avg };
+  }
+  return result;
+}
+
+function formatStrategyLine(tag, stats) {
+  const icons = {
+    'backrun_golden': '🥇',
+    'backrun_standard': '📊',
+    'graduation_arb': '🎓',
+    'scaled_entry_confirmed': '✅',
+    'scaled_entry_partial': '⚠️',
+  };
+  const icon = icons[tag] || '•';
+  const label = tag.padEnd(24);
+  const nStr = `n=${String(stats.n).padEnd(4)}`;
+  const wrStr = stats.wr !== null
+    ? `WR=${(stats.wr * 100).toFixed(1).padStart(5)}%`
+    : 'WR=    —';
+  const netStr = `net=${stats.net >= 0 ? '+' : ''}${stats.net.toFixed(4)} SOL`;
+  const avgStr = stats.n > 0
+    ? `avg=${stats.avg >= 0 ? '+' : ''}${stats.avg.toFixed(6)}`
+    : '';
+  return `  ${icon} ${label} ${nStr} ${wrStr}  ${netStr}  ${avgStr}`;
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -141,6 +186,19 @@ async function main() {
     lines.push(`  WR ${pct(ses.wr)} | Gross ${ses.gross >= 0 ? '+' : ''}${sol(ses.gross)} | Net ${ses.net >= 0 ? '+' : ''}${sol(ses.net)} SOL`);
     lines.push(`  tp=${ses.byExit.take_profit||0} nb=${ses.byExit.next_buyer||0} sl=${ses.byExit.stop_loss||0} mh=${ses.byExit.max_hold||0} md=${(ses.byExit.momentum_decay_flat||0)+(ses.byExit.momentum_decay_fade||0)}`);
     if (ses.fees > 0) lines.push(`  Fees: ${sol(ses.fees)} SOL | Fee drag: ${ses.gross > 0 ? (ses.fees/ses.gross*100).toFixed(1)+'%' : 'n/a'}`);
+
+    // ── Strategy Breakdown (session) ──────────────────────────────────
+    const sesBySt = strategyBreakdown(sessionTrades);
+    const sesHasAnyTagged = Object.values(sesBySt).some(s => s.n > 0);
+    if (sesHasAnyTagged) {
+      lines.push('');
+      lines.push('📊 Strategy Breakdown (session):');
+      for (const tag of Object.keys(sesBySt)) {
+        if (sesBySt[tag].n > 0) {
+          lines.push(formatStrategyLine(tag, sesBySt[tag]));
+        }
+      }
+    }
   }
 
   lines.push('');
@@ -149,6 +207,21 @@ async function main() {
   if (all.n > 0) {
     const breakeven = all.fees > 0 && all.gross !== 0 ? (all.fees / (all.fees + all.gross) * 100).toFixed(1) : '~66.5';
     lines.push(`   (break-even WR: ~${breakeven}% gross)`);
+  }
+
+  // ── All-time Strategy Breakdown ───────────────────────────────────
+  if (all.n > 0) {
+    const allBySt = strategyBreakdown(allTrades);
+    const allHasAnyTagged = Object.values(allBySt).some(s => s.n > 0);
+    if (allHasAnyTagged) {
+      lines.push('');
+      lines.push('📊 All-time by Strategy:');
+      for (const tag of Object.keys(allBySt)) {
+        if (allBySt[tag].n > 0 || ['backrun_golden', 'backrun_standard', 'graduation_arb'].includes(tag)) {
+          lines.push(formatStrategyLine(tag, allBySt[tag]));
+        }
+      }
+    }
   }
 
   lines.push('');
