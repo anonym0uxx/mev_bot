@@ -667,6 +667,8 @@ pub struct GraduationArbEngine {
     closed_tx: crossbeam_channel::Sender<GradArbClosedPosition>,
     /// Helius RPC URL for pool reserve fetches.
     helius_rpc_url: String,
+    /// Shared reqwest client for pool resolution (reused across arb attempts).
+    rpc_client: reqwest::Client,
 }
 
 impl GraduationArbEngine {
@@ -684,6 +686,7 @@ impl GraduationArbEngine {
             dedup: MigrationDedup::new(dedup_ttl_ms),
             stats,
             closed_tx,
+            rpc_client: make_pool_resolution_client(),
             helius_rpc_url,
         }
     }
@@ -703,16 +706,16 @@ impl GraduationArbEngine {
         self.positions.len()
     }
 
-    /// Called when a migration event is detected from any feed source.
+    /// Called for every migration event. Async — designed to run in a tokio::spawn task.
+    /// Budget: 200ms total (pool resolution 180ms + decision 20ms).
     ///
-    /// Deduplicates across sources, then evaluates for arb opportunity.
-    /// Currently a stub — full implementation in Task 9.
+    /// Pipeline: dedup → pool resolution (RPC) → spread calc → paper entry or skip.
     pub async fn on_migration(
         &self,
         mint: [u8; 32],
         ts_ms: u64,
         source: MigrationSource,
-        _sig: [u8; 32],
+        sig: [u8; 64],
     ) {
         self.stats
             .migrations_detected
@@ -722,31 +725,222 @@ impl GraduationArbEngine {
             return;
         }
 
-        // Dedup: only process first detection within TTL window
-        let _dedup_entry = match self.dedup.try_insert(mint, ts_ms, source) {
+        // 1. Dedup check using first 32 bytes of sig as key (compact, sufficient)
+        let sig_key: [u8; 32] = sig[..32].try_into().unwrap();
+        let _dedup_entry = match self.dedup.try_insert(sig_key, ts_ms, source) {
             Some(entry) => entry,
-            None => return, // duplicate — already processing this migration
+            None => {
+                tracing::debug!("[grad_arb] dedup hit — skipping duplicate migration event");
+                return;
+            }
         };
 
-        // TODO: Task 9 — pool resolution + spread calc + paper entry
-        tracing::debug!(
-            mint = %bs58::encode(mint).into_string(),
+        // 2. Pool resolution with timeout
+        let resolution = tokio::time::timeout(
+            std::time::Duration::from_millis(self.config.rpc_timeout_ms),
+            resolve_pool_from_transaction(&self.rpc_client, &sig, &self.helius_rpc_url),
+        )
+        .await;
+
+        let pool = match resolution {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                self.stats.pool_not_found.fetch_add(1, Ordering::Relaxed);
+                self.log_no_entry(mint, ts_ms, source, GradArbExitReason::PoolNotFound);
+                return;
+            }
+            Err(_timeout) => {
+                self.stats.arb_timeouts.fetch_add(1, Ordering::Relaxed);
+                self.log_no_entry(mint, ts_ms, source, GradArbExitReason::RpcTimeout);
+                return;
+            }
+        };
+
+        // 3. Spread calculation
+        // ray_opening_price = reserve_sol_lamports / reserve_token_atoms
+        let ray_price = if pool.reserve_token_atoms > 0 {
+            pool.reserve_sol_lamports as f64 / pool.reserve_token_atoms as f64
+        } else {
+            0.0
+        };
+
+        // BC terminal price approximation:
+        // At ~85 SOL vSol, price = vSol / vTokens
+        // pump.fun virtual token reserves at graduation ≈ 206,900,000 tokens (fixed from bonding curve)
+        // bc_terminal_price ≈ 85e9 lamports / 206_900_000_000_000 atoms ≈ 4.11e-7 SOL/token
+        let bc_price = 85e9_f64 / 206_900_000_000_000_f64;
+
+        let spread_pct = if bc_price > 0.0 {
+            ((ray_price - bc_price) / bc_price * 100.0).abs()
+        } else {
+            0.0
+        };
+
+        // 4. Entry decision
+        if spread_pct < self.config.min_spread_pct || pool.pool_type == PoolType::Unknown {
+            self.stats.no_arb_spread.fetch_add(1, Ordering::Relaxed);
+            self.log_no_entry(pool.mint, ts_ms, source, GradArbExitReason::NoArbFound);
+            return;
+        }
+
+        // 5. Open paper position
+        let size_lamports = (self.config.max_sol * 1e9) as u64;
+
+        let position = GradArbPosition {
+            mint: pool.mint,
+            pool_address: pool.pool_address,
+            pool_type: pool.pool_type,
+            entry_price_lamports: (ray_price * 1e9) as u64,
+            entry_vsol_lamports: (85.0 * 1e9) as u64,
+            size_lamports,
+            bc_terminal_price: bc_price,
+            ray_opening_price: ray_price,
+            spread_pct,
+            detection_source: source,
+            detection_latency_ms: 80, // approximate — would need tx timestamp for precise measurement
+            entry_ts_ms: ts_ms,
+            peak_price_lamports: (ray_price * 1e9) as u64,
+            min_price_lamports: (ray_price * 1e9) as u64,
+        };
+
+        tracing::info!(
+            mint = %bs58::encode(pool.mint).into_string(),
+            spread_pct = %format!("{:.2}%", spread_pct),
+            pool_type = pool.pool_type.as_str(),
             source = source.as_str(),
-            "[grad_arb] migration received (engine not yet fully implemented)"
+            size_sol = self.config.max_sol,
+            "[grad_arb] paper position OPENED"
         );
+
+        self.stats.arb_entries.fetch_add(1, Ordering::Relaxed);
+        self.positions.insert(pool.mint, position);
     }
 
     /// Called every tick (50ms) for position management.
     ///
-    /// Checks all open positions for TP/SL/MaxHold exits.
-    /// Currently a stub — full implementation in Task 10.
-    #[inline(always)]
-    pub fn on_tick(&self, _now_ms: u64) {
-        // TODO: Task 10 — iterate positions, check MaxHold/TP/SL,
-        // close expired positions and send via closed_tx
+    /// Checks all open positions for MaxHold exits. Uses &self with DashMap
+    /// interior mutability — no Mutex needed.
+    /// TP/SL require live Raydium price feed (future task).
+    pub fn on_tick(&self, now_ms: u64) {
+        let mut to_close: Vec<([u8; 32], GradArbExitReason)> = Vec::new();
+
+        for entry in self.positions.iter() {
+            let mint = *entry.key();
+            let pos = entry.value();
+            let hold_ms = now_ms.saturating_sub(pos.entry_ts_ms);
+
+            if hold_ms >= self.config.max_hold_ms {
+                to_close.push((mint, GradArbExitReason::MaxHold));
+            }
+            // TODO: TP/SL require Raydium accountSubscribe price feed (future task)
+        }
+
+        for (mint, reason) in to_close {
+            if let Some((_, pos)) = self.positions.remove(&mint) {
+                self.close_position(pos, reason, now_ms);
+            }
+        }
     }
 
-    /// Get the Helius RPC URL (for pool reserve fetches in Task 9).
+    /// Close a position and send it to the logger channel.
+    fn close_position(&self, pos: GradArbPosition, reason: GradArbExitReason, exit_ts_ms: u64) {
+        let hold_ms = exit_ts_ms.saturating_sub(pos.entry_ts_ms);
+
+        // Paper mode: exit price = entry price (no live feed) = 0 pnl
+        // This is honest — we don't have a price feed yet
+        let exit_price = pos.entry_price_lamports;
+
+        // Fee simulation: 0.0015 SOL (Jito tip) + 0.0005 SOL (priority) = 0.002 SOL
+        let fee_lamports = 2_000_000u64;
+        let pnl = 0i64; // neutral in paper mode without price feed
+        let net_pnl = pnl - fee_lamports as i64;
+
+        // Update stats
+        match reason {
+            GradArbExitReason::TakeProfit => {
+                self.stats.exits_tp.fetch_add(1, Ordering::Relaxed);
+            }
+            GradArbExitReason::StopLoss => {
+                self.stats.exits_sl.fetch_add(1, Ordering::Relaxed);
+            }
+            GradArbExitReason::MaxHold => {
+                self.stats.exits_max_hold.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+
+        self.stats
+            .net_pnl_lamports
+            .fetch_add(net_pnl, Ordering::Relaxed);
+
+        let closed = GradArbClosedPosition {
+            mint: pos.mint,
+            pool_address: pos.pool_address,
+            pool_type: pos.pool_type,
+            entry_price_lamports: pos.entry_price_lamports,
+            exit_price_lamports: exit_price,
+            size_lamports: pos.size_lamports,
+            bc_terminal_price: pos.bc_terminal_price,
+            ray_opening_price: pos.ray_opening_price,
+            spread_pct: pos.spread_pct,
+            detection_source: pos.detection_source,
+            detection_latency_ms: pos.detection_latency_ms,
+            entry_ts_ms: pos.entry_ts_ms,
+            exit_ts_ms,
+            hold_ms,
+            exit_reason: reason,
+            pnl_lamports: pnl,
+            fee_lamports,
+            net_pnl_lamports: net_pnl,
+            mfe_lamports: pos.peak_price_lamports.saturating_sub(pos.entry_price_lamports),
+            mae_lamports: pos.entry_price_lamports.saturating_sub(pos.min_price_lamports),
+        };
+
+        tracing::info!(
+            mint = %bs58::encode(closed.mint).into_string(),
+            reason = closed.exit_reason.as_str(),
+            hold_ms = hold_ms,
+            "[grad_arb] paper position CLOSED"
+        );
+
+        let _ = self.closed_tx.send(closed);
+    }
+
+    /// Log a failed arb attempt (pool not found, timeout, spread too low) to JSONL.
+    /// These are valuable data points for understanding graduation event quality.
+    fn log_no_entry(
+        &self,
+        mint: [u8; 32],
+        ts_ms: u64,
+        source: MigrationSource,
+        reason: GradArbExitReason,
+    ) {
+        let closed = GradArbClosedPosition {
+            mint,
+            pool_address: [0u8; 32],
+            pool_type: PoolType::Unknown,
+            entry_price_lamports: 0,
+            exit_price_lamports: 0,
+            size_lamports: 0,
+            bc_terminal_price: 0.0,
+            ray_opening_price: 0.0,
+            spread_pct: 0.0,
+            detection_source: source,
+            detection_latency_ms: 0,
+            entry_ts_ms: ts_ms,
+            exit_ts_ms: ts_ms,
+            hold_ms: 0,
+            exit_reason: reason,
+            pnl_lamports: 0,
+            fee_lamports: 0,
+            net_pnl_lamports: 0,
+            mfe_lamports: 0,
+            mae_lamports: 0,
+        };
+        let _ = self.closed_tx.send(closed);
+    }
+
+    /// Get the Helius RPC URL (for pool reserve fetches).
     pub fn helius_rpc_url(&self) -> &str {
         &self.helius_rpc_url
     }
@@ -831,11 +1025,12 @@ mod tests {
 
         // Run on_migration synchronously via tokio runtime
         let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .unwrap();
         rt.block_on(async {
             engine
-                .on_migration([1u8; 32], 1000, MigrationSource::HeliusLogs, [0u8; 32])
+                .on_migration([1u8; 32], 1000, MigrationSource::HeliusLogs, [0u8; 64])
                 .await;
         });
 
@@ -903,10 +1098,157 @@ mod tests {
     }
 
     #[test]
-    fn test_on_tick_noop() {
+    fn test_on_tick_noop_no_positions() {
         let (engine, _rx) = make_test_engine();
-        // Should not panic — stub implementation
+        // Should not panic — no open positions
         engine.on_tick(1_700_000_000_000);
+        assert_eq!(engine.position_count(), 0);
+    }
+
+    #[test]
+    fn test_on_tick_closes_expired_position() {
+        let (engine, rx) = make_test_engine();
+
+        // Manually insert a position
+        let mint = [42u8; 32];
+        let pos = GradArbPosition {
+            mint,
+            pool_address: [0u8; 32],
+            pool_type: PoolType::RaydiumAmmV4,
+            entry_price_lamports: 1_000_000,
+            entry_vsol_lamports: 85_000_000_000,
+            size_lamports: 300_000_000,
+            bc_terminal_price: 0.000000411,
+            ray_opening_price: 0.000000450,
+            spread_pct: 9.5,
+            detection_source: MigrationSource::HeliusLogs,
+            detection_latency_ms: 80,
+            entry_ts_ms: 1_000_000,
+            peak_price_lamports: 1_000_000,
+            min_price_lamports: 1_000_000,
+        };
+        engine.positions.insert(mint, pos);
+        assert_eq!(engine.position_count(), 1);
+
+        // Tick at entry + max_hold_ms (5000ms) → should close
+        engine.on_tick(1_000_000 + 5_001);
+        assert_eq!(engine.position_count(), 0);
+
+        // Should have received the closed position
+        let closed = rx.try_recv().unwrap();
+        assert_eq!(closed.exit_reason, GradArbExitReason::MaxHold);
+        assert_eq!(closed.mint, mint);
+        assert_eq!(closed.hold_ms, 5001);
+    }
+
+    #[test]
+    fn test_on_tick_keeps_fresh_position() {
+        let (engine, _rx) = make_test_engine();
+
+        let mint = [43u8; 32];
+        let pos = GradArbPosition {
+            mint,
+            pool_address: [0u8; 32],
+            pool_type: PoolType::PumpSwap,
+            entry_price_lamports: 500_000,
+            entry_vsol_lamports: 85_000_000_000,
+            size_lamports: 300_000_000,
+            bc_terminal_price: 0.000000411,
+            ray_opening_price: 0.000000430,
+            spread_pct: 4.6,
+            detection_source: MigrationSource::CoreCastStream2,
+            detection_latency_ms: 120,
+            entry_ts_ms: 1_000_000,
+            peak_price_lamports: 500_000,
+            min_price_lamports: 500_000,
+        };
+        engine.positions.insert(mint, pos);
+
+        // Tick at entry + 2000ms (< max_hold_ms 5000ms) → should keep
+        engine.on_tick(1_000_000 + 2_000);
+        assert_eq!(engine.position_count(), 1);
+    }
+
+    #[test]
+    fn test_on_migration_dedup() {
+        let (engine, _rx) = make_test_engine();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let mut sig = [0u8; 64];
+        sig[0] = 1;
+
+        rt.block_on(async {
+            // First call should be processed
+            engine
+                .on_migration([1u8; 32], 1000, MigrationSource::HeliusLogs, sig)
+                .await;
+            // Second call with same sig should be deduped
+            engine
+                .on_migration([1u8; 32], 1100, MigrationSource::CoreCastStream2, sig)
+                .await;
+        });
+
+        // migrations_detected should be 2 (both calls increment), but dedup prevents double-processing
+        assert_eq!(
+            engine.stats().migrations_detected.load(Ordering::Relaxed),
+            2
+        );
+    }
+
+    #[test]
+    fn test_log_no_entry_sends_closed_position() {
+        let (engine, rx) = make_test_engine();
+
+        engine.log_no_entry(
+            [99u8; 32],
+            5000,
+            MigrationSource::HeliusLogs,
+            GradArbExitReason::RpcTimeout,
+        );
+
+        let closed = rx.try_recv().unwrap();
+        assert_eq!(closed.mint, [99u8; 32]);
+        assert_eq!(closed.exit_reason, GradArbExitReason::RpcTimeout);
+        assert_eq!(closed.hold_ms, 0);
+        assert_eq!(closed.pnl_lamports, 0);
+        assert_eq!(closed.pool_type, PoolType::Unknown);
+    }
+
+    #[test]
+    fn test_close_position_stats() {
+        let (engine, rx) = make_test_engine();
+
+        let pos = GradArbPosition {
+            mint: [50u8; 32],
+            pool_address: [0u8; 32],
+            pool_type: PoolType::RaydiumAmmV4,
+            entry_price_lamports: 1_000_000,
+            entry_vsol_lamports: 85_000_000_000,
+            size_lamports: 300_000_000,
+            bc_terminal_price: 0.000000411,
+            ray_opening_price: 0.000000450,
+            spread_pct: 9.5,
+            detection_source: MigrationSource::HeliusLogs,
+            detection_latency_ms: 80,
+            entry_ts_ms: 10_000,
+            peak_price_lamports: 1_050_000,
+            min_price_lamports: 990_000,
+        };
+
+        engine.close_position(pos, GradArbExitReason::MaxHold, 15_000);
+
+        assert_eq!(engine.stats().exits_max_hold.load(Ordering::Relaxed), 1);
+
+        let closed = rx.try_recv().unwrap();
+        assert_eq!(closed.hold_ms, 5000);
+        assert_eq!(closed.exit_reason, GradArbExitReason::MaxHold);
+        assert_eq!(closed.fee_lamports, 2_000_000);
+        assert_eq!(closed.net_pnl_lamports, -2_000_000); // 0 pnl - 2M fee
+        assert_eq!(closed.mfe_lamports, 50_000); // peak - entry
+        assert_eq!(closed.mae_lamports, 10_000); // entry - min
     }
 
     // ── Pool Resolution Tests ────────────────────────────────────────────

@@ -488,24 +488,22 @@ fn parse_amm_migration(payload: &serde_json::Value, ts_ms: u64) -> Vec<FeedEvent
     };
 
     for trade in trades {
-        // Extract transaction signature for dedup (first 32 bytes, or zeros if unavailable)
+        // Extract full 64-byte transaction signature (for getTransaction RPC + dedup)
         let sig = trade
             .pointer("/Transaction/Signature")
             .and_then(|s| s.as_str())
             .and_then(|s| {
                 // Bitquery returns base58-encoded signature (64 bytes decoded).
-                // We only need first 32 bytes as a dedup key.
                 let mut buf = [0u8; 64];
                 let n = bs58::decode(s).onto(&mut buf[..]).ok()?;
                 if n >= 32 {
-                    let mut arr = [0u8; 32];
-                    arr.copy_from_slice(&buf[..32]);
-                    Some(arr)
+                    // Zero-pad if base58 decodes to less than 64 bytes (rare edge case)
+                    Some(buf)
                 } else {
                     None
                 }
             })
-            .unwrap_or([0u8; 32]);
+            .unwrap_or([0u8; 64]);
 
         // Extract both buy and sell mint addresses — the pump.fun token could be on either side
         let buy_mint = trade

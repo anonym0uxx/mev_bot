@@ -20,6 +20,9 @@ use pump_quant_core::engine::hot_path::HotPath;
 use pump_quant_core::engine::positions::{ClosedPosition, ExitReason, PositionManager};
 use pump_quant_core::engine::scorer::Scorer;
 use pump_quant_core::api::{ApiState, EngineStats, start_server};
+use pump_quant_core::arb::graduation::{
+    GradArbConfig, GradArbClosedPosition, GradArbStats, GraduationArbEngine,
+};
 use pump_quant_core::feeds::{
     event_joiner::EventJoiner,
     helius::{HeliusConfig, HeliusWsClient},
@@ -28,6 +31,7 @@ use pump_quant_core::feeds::{
 };
 use pump_quant_core::persistence::sqlite::{SqliteLogger, TradeLogEntry};
 use pump_quant_core::persistence::paper_logger::PaperTradeLogger;
+use pump_quant_core::persistence::grad_arb_logger::GradArbPaperLogger;
 use pump_quant_core::persistence::engine_state::write_engine_state;
 
 const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -459,6 +463,80 @@ async fn main() -> anyhow::Result<()> {
         .spawn(move || joiner.run())?;
     info!("EventJoiner thread started");
 
+    // ── Graduation Arb Engine ───────────────────────────────────────
+    let grad_arb_stats = Arc::new(GradArbStats::default());
+    let (grad_closed_tx, grad_closed_rx) =
+        crossbeam_channel::unbounded::<GradArbClosedPosition>();
+
+    let helius_rpc_url = {
+        let key = std::env::var("HELIUS_API_KEY").unwrap_or_default();
+        if key.is_empty() {
+            String::new()
+        } else {
+            format!("https://mainnet.helius-rpc.com/?api-key={}", key)
+        }
+    };
+
+    let grad_arb_config = GradArbConfig {
+        enabled: engine_config.graduation_arb_enabled,
+        paper_mode: true, // always paper for now
+        max_sol: engine_config.graduation_arb_max_sol,
+        min_spread_pct: engine_config.graduation_arb_min_spread_pct,
+        tp_pct: engine_config.graduation_arb_tp_pct,
+        sl_pct: engine_config.graduation_arb_sl_pct,
+        max_hold_ms: engine_config.graduation_arb_max_hold_ms,
+        jito_tip_sol: engine_config.graduation_arb_jito_tip_sol,
+        dedup_ttl_ms: 10_000,
+        rpc_timeout_ms: 200,
+    };
+
+    let grad_arb_engine = Arc::new(GraduationArbEngine::new(
+        grad_arb_config,
+        grad_arb_stats.clone(),
+        grad_closed_tx,
+        helius_rpc_url,
+    ));
+
+    info!(
+        enabled = engine_config.graduation_arb_enabled,
+        paper_mode = true,
+        max_sol = engine_config.graduation_arb_max_sol,
+        min_spread_pct = engine_config.graduation_arb_min_spread_pct,
+        max_hold_ms = engine_config.graduation_arb_max_hold_ms,
+        "[grad_arb] engine initialized"
+    );
+
+    // ── Spawn graduation arb logger thread ──────────────────────────
+    {
+        let path = format!("{}/graduation_paper_trades.jsonl", data_dir);
+        let config_version = format!(
+            "grad-v{:.2}sol_{}ms",
+            engine_config.graduation_arb_max_sol, engine_config.graduation_arb_max_hold_ms
+        );
+        std::thread::Builder::new()
+            .name("grad-arb-logger".to_string())
+            .spawn(move || {
+                // Ensure data directory exists
+                if let Some(parent) = std::path::Path::new(&path).parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let mut logger = match GradArbPaperLogger::new(&path, config_version) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        tracing::error!("Failed to open graduation JSONL: {e}");
+                        return;
+                    }
+                };
+                for cp in grad_closed_rx {
+                    let mint_b58 = bs58::encode(&cp.mint).into_string();
+                    if let Err(e) = logger.log(&cp, &mint_b58) {
+                        tracing::error!("Grad arb JSONL write failed: {e}");
+                    }
+                }
+                info!("Grad arb logger thread exiting");
+            })?;
+    }
+
     // ── Engine hot-path loop ────────────────────────────────────────
     info!(paper_mode, "Engine hot-path running — full gate→score→position pipeline");
 
@@ -480,7 +558,7 @@ async fn main() -> anyhow::Result<()> {
                 // Update shared API stats every 100 trades (also at first trade)
                 let ts = hot_path.stats.trades_seen;
                 if ts == 1 || ts % 100 == 0 {
-                    sync_stats_to_api(&hot_path, &shared_stats);
+                    sync_stats_to_api(&hot_path, &shared_stats, &grad_arb_stats);
                 }
 
                 // Stats logging every 1000 trades
@@ -514,6 +592,9 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(FeedEvent::Tick { ts_ms }) => {
                 hot_path.on_tick(ts_ms);
+
+                // Graduation arb: check position exits (MaxHold)
+                grad_arb_engine.on_tick(ts_ms);
 
                 // Drain closed positions for safety tracking, then forward to logger
                 drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
@@ -551,7 +632,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // Sync API stats every 200 ticks (~10 seconds)
                 if hot_path.stats.ticks % 200 == 0 {
-                    sync_stats_to_api(&hot_path, &shared_stats);
+                    sync_stats_to_api(&hot_path, &shared_stats, &grad_arb_stats);
                 }
             }
             Ok(FeedEvent::TokenCreated(created)) => {
@@ -560,7 +641,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(FeedEvent::CreatorSell { mint, ts_ms }) => {
                 hot_path.on_creator_sell(&mint, ts_ms);
             }
-            Ok(FeedEvent::Migration { mint, ts_ms, source: _source, sig: _sig }) => {
+            Ok(FeedEvent::Migration { mint, ts_ms, source, sig }) => {
                 let mint_b58 = bs58::encode(&mint).into_string();
                 let open_before = hot_path.open_positions();
                 hot_path.on_migration(&mint, ts_ms);
@@ -572,16 +653,17 @@ async fn main() -> anyhow::Result<()> {
                 info!(
                     mint = %mint_b58,
                     ts_ms = ts_ms,
-                    source = _source.as_str(),
+                    source = source.as_str(),
                     open_position_closed = had_open_position,
                     "[grad_arb] graduation migration detected"
                 );
 
-                // Graduation arb check (stub — disabled by default)
+                // Graduation arb: evaluate entry opportunity (async, non-blocking)
                 if engine_config.graduation_arb_enabled {
-                    // TODO: call grad_arb_engine.on_migration_event(mint, ts_ms, _source, _sig)
-                    // For now just log
-                    info!(source = _source.as_str(), "[grad_arb] migration event — arb enabled but not yet implemented");
+                    let engine = Arc::clone(&grad_arb_engine);
+                    tokio::spawn(async move {
+                        engine.on_migration(mint, ts_ms, source, sig).await;
+                    });
                 }
             }
             Ok(FeedEvent::LpRemoval { mint, ts_ms }) => {
@@ -594,7 +676,7 @@ async fn main() -> anyhow::Result<()> {
                 let now = now_ms_mono!();
                 hot_path.close_all(now);
                 drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
-                sync_stats_to_api(&hot_path, &shared_stats);
+                sync_stats_to_api(&hot_path, &shared_stats, &grad_arb_stats);
                 let _ = shutdown_tx.send(true);
                 break;
             }
@@ -603,7 +685,7 @@ async fn main() -> anyhow::Result<()> {
                 let now = now_ms_mono!();
                 hot_path.close_all(now);
                 drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
-                sync_stats_to_api(&hot_path, &shared_stats);
+                sync_stats_to_api(&hot_path, &shared_stats, &grad_arb_stats);
                 break;
             }
         }
@@ -654,10 +736,11 @@ fn drain_closed_positions(
 /// Dummy clock fn for HotPath API compat — HotPath uses quanta internally.
 fn _now_ms_dummy() -> u64 { 0 }
 
-/// Sync HotPath stats into the shared API EngineStats.
+/// Sync HotPath stats + GradArb stats into the shared API EngineStats.
 fn sync_stats_to_api(
     hot_path: &HotPath,
     shared: &Arc<Mutex<EngineStats>>,
+    grad_arb_stats: &Arc<GradArbStats>,
 ) {
     if let Ok(mut api_stats) = shared.lock() {
         let s = &hot_path.stats;
@@ -667,10 +750,29 @@ fn sync_stats_to_api(
         // Stream event counters
         api_stats.migrations_seen = s.migrations;
         api_stats.lp_removals_seen = s.lp_removals;
-
         api_stats.creator_sells_seen = s.creator_sells;
-        // Graduation arb stats — stub values (always 0 until arb is implemented)
-        // graduation_arb_enabled is set once at startup via init_graduation_arb_stats
-        // arb_trades and arb_net_sol remain at 0 (Default) until live arb is implemented
+
+        // Graduation arb stats — read from atomic counters
+        api_stats.grad_arb_migrations =
+            grad_arb_stats.migrations_detected.load(std::sync::atomic::Ordering::Relaxed);
+        api_stats.grad_arb_entries =
+            grad_arb_stats.arb_entries.load(std::sync::atomic::Ordering::Relaxed);
+        api_stats.grad_arb_timeouts =
+            grad_arb_stats.arb_timeouts.load(std::sync::atomic::Ordering::Relaxed);
+        api_stats.grad_arb_pool_not_found =
+            grad_arb_stats.pool_not_found.load(std::sync::atomic::Ordering::Relaxed);
+        api_stats.grad_arb_no_spread =
+            grad_arb_stats.no_arb_spread.load(std::sync::atomic::Ordering::Relaxed);
+        api_stats.grad_arb_exits_tp =
+            grad_arb_stats.exits_tp.load(std::sync::atomic::Ordering::Relaxed);
+        api_stats.grad_arb_exits_sl =
+            grad_arb_stats.exits_sl.load(std::sync::atomic::Ordering::Relaxed);
+        api_stats.grad_arb_exits_max_hold =
+            grad_arb_stats.exits_max_hold.load(std::sync::atomic::Ordering::Relaxed);
+        api_stats.grad_arb_net_sol =
+            grad_arb_stats.net_pnl_lamports.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
+        // Keep backward-compat fields updated too
+        api_stats.graduation_arb_trades = api_stats.grad_arb_entries;
+        api_stats.graduation_arb_net_sol = api_stats.grad_arb_net_sol;
     }
 }

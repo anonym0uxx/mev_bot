@@ -279,10 +279,10 @@ fn check_graduation_logs(text: &str) -> Option<FeedEvent> {
         return None;
     }
 
-    // Extract and decode the transaction signature
+    // Extract and decode the full 64-byte transaction signature
     let sig_str = value.get("signature")?.as_str()?;
-    let mut sig_bytes = [0u8; 64];
-    match bs58::decode(sig_str).onto(&mut sig_bytes[..]) {
+    let mut sig = [0u8; 64];
+    match bs58::decode(sig_str).onto(&mut sig[..]) {
         Ok(64) => {}
         Ok(n) => {
             debug!("[helius] graduation sig unexpected length {}", n);
@@ -290,10 +290,6 @@ fn check_graduation_logs(text: &str) -> Option<FeedEvent> {
         }
         Err(_) => return None,
     }
-
-    // Use first 32 bytes as dedup key (same convention as FeedEvent::Migration.sig)
-    let mut sig = [0u8; 32];
-    sig.copy_from_slice(&sig_bytes[..32]);
 
     let ts_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -404,7 +400,7 @@ mod tests {
             FeedEvent::Migration { mint, source, sig, .. } => {
                 assert_eq!(mint, [0u8; 32], "mint should be unknown (zeros)");
                 assert_eq!(source, MigrationSource::HeliusLogs);
-                assert_ne!(sig, [0u8; 32], "sig should be populated from tx signature");
+                assert_ne!(sig, [0u8; 64], "sig should be populated from tx signature");
             }
             other => panic!("expected Migration event, got {:?}", other),
         }

@@ -38,8 +38,8 @@ pub enum FeedEvent {
         ts_ms: u64,
         /// Source feed that detected this graduation event
         source: MigrationSource,
-        /// Transaction signature (first 32 bytes as dedup key, or [0;32] if unavailable)
-        sig: [u8; 32],
+        /// Full 64-byte Solana transaction signature (for getTransaction RPC calls + dedup)
+        sig: [u8; 64],
     },
     /// LP removal / rug detection — force-exit any open position.
     LpRemoval { mint: [u8; 32], ts_ms: u64 },

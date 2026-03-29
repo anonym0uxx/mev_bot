@@ -42,6 +42,16 @@ pub struct EngineStats {
     pub graduation_arb_enabled: bool,
     pub graduation_arb_trades: u64,
     pub graduation_arb_net_sol: f64,
+    // Detailed graduation arb counters
+    pub grad_arb_migrations: u64,
+    pub grad_arb_entries: u64,
+    pub grad_arb_timeouts: u64,
+    pub grad_arb_pool_not_found: u64,
+    pub grad_arb_no_spread: u64,
+    pub grad_arb_exits_tp: u64,
+    pub grad_arb_exits_sl: u64,
+    pub grad_arb_exits_max_hold: u64,
+    pub grad_arb_net_sol: f64,
 }
 
 // ─── Open Position (for /api/positions) ────────────────────────────
@@ -205,9 +215,19 @@ async fn stats(State(state): State<ApiState>) -> Json<serde_json::Value> {
             "migrations_seen": s.migrations_seen,
             "lp_removals_seen": s.lp_removals_seen,
             "creator_sells_seen": s.creator_sells_seen,
-            "graduation_arb_enabled": s.graduation_arb_enabled,
-            "graduation_arb_trades": s.graduation_arb_trades,
-            "graduation_arb_net_sol": s.graduation_arb_net_sol
+            "graduation_arb": {
+                "enabled": s.graduation_arb_enabled,
+                "mode": "paper",
+                "migrations_detected": s.grad_arb_migrations,
+                "arb_entries": s.grad_arb_entries,
+                "arb_timeouts": s.grad_arb_timeouts,
+                "pool_not_found": s.grad_arb_pool_not_found,
+                "no_arb_spread": s.grad_arb_no_spread,
+                "exits_tp": s.grad_arb_exits_tp,
+                "exits_sl": s.grad_arb_exits_sl,
+                "exits_max_hold": s.grad_arb_exits_max_hold,
+                "net_sol": s.grad_arb_net_sol
+            }
         }
     }))
 }
