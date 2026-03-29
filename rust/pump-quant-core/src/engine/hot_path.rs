@@ -10,10 +10,10 @@
 
 use std::sync::Arc;
 
-use super::gates::GateStack;
+use super::entry_engine::{EntryEngine, EntryInput, EntryAction};
 use super::health::HealthMonitor;
 use super::positions::{ClosedPosition, ExitReason, PositionManager};
-use super::scorer::Scorer;
+
 use crate::core::mint_map::MintHistoryMap;
 use crate::core::trade_record::TradeRecord;
 use crate::feeds::{FeedSource, PreWarmEvent, TokenCreatedEvent, TradeEvent};
@@ -35,8 +35,10 @@ pub struct HotPathStats {
 }
 
 pub struct HotPath {
-    gate_stack: GateStack,
-    scorer: Scorer,
+    /// V2 entry engine — the ONLY entry path. Kelly-tiered sizing + magnitude prediction.
+    entry_engine: EntryEngine,
+    /// Risk manager — always active.
+    risk_manager: crate::engine::risk_manager::RiskManager,
     position_manager: PositionManager,
     mint_map: MintHistoryMap,
     /// LATENCY: quanta::Clock uses RDTSC (~3ns) instead of clock_gettime (~20ns).
@@ -47,7 +49,7 @@ pub struct HotPath {
     start_epoch_ms: u64,
     #[allow(dead_code)]
     paper_mode: bool,
-    min_score: f64,
+
     pub stats: HotPathStats,
 
     // ── Safety: daily loss cap ──────────────────────────────────────
@@ -77,6 +79,8 @@ pub struct HotPath {
     // ── ToD size multiplier ─────────────────────────────────────────
     /// UTC hours that get the ToD boost.
     boosted_hours_utc: Vec<u8>,
+    /// Precomputed bitmask: bit N set = hour N boosted. Eliminates Vec scan.
+    boosted_hours_bitmask: u32,
     /// Multiplier for boosted hours (default 1.25).
     tod_boost_multiplier: f64,
     /// Max entry size in lamports (for capping after ToD multiplier).
@@ -86,6 +90,8 @@ pub struct HotPath {
     // Mints flagged as excluded (mayhem, tokenized agent) on creation.
     // Checked before gate evaluation to short-circuit early.
     excluded_mints: hashbrown::HashSet<[u8; 32]>,
+
+    // (risk_manager moved to struct top — always present)
 
     // ── Entry randomizer ────────────────────────────────────────────
     pub entry_randomizer: super::entry_randomizer::EntryRandomizer,
@@ -115,12 +121,11 @@ pub struct HotPath {
 
 impl HotPath {
     pub fn new(
-        gate_stack: GateStack,
-        scorer: Scorer,
+        entry_engine: EntryEngine,
+        risk_manager: crate::engine::risk_manager::RiskManager,
         position_manager: PositionManager,
         _now_ms: fn() -> u64, // LATENCY: kept for API compat, replaced by quanta internally
         paper_mode: bool,
-        min_score: f64,
         daily_loss_cap_lamports: u64,
         consecutive_stop_pause_count: u32,
         consecutive_stop_pause_ms: u64,
@@ -141,16 +146,18 @@ impl HotPath {
             .unwrap_or_default()
             .as_millis() as u64;
 
+        // Precompute boosted hours bitmask (eliminates Vec scan in hot path)
+        let boosted_hours_bitmask = boosted_hours_utc.iter().fold(0u32, |acc, &h| acc | (1u32 << h));
+
         Self {
-            gate_stack,
-            scorer,
+            entry_engine,
+            risk_manager,
             position_manager,
             mint_map: MintHistoryMap::with_capacity(4096),
             clock,
             start_instant,
             start_epoch_ms,
             paper_mode,
-            min_score,
             stats: HotPathStats {
                 trades_seen: 0,
                 gates_passed: 0,
@@ -172,6 +179,7 @@ impl HotPath {
             consecutive_stop_pause_ms,
             health_monitor: None,
             boosted_hours_utc,
+            boosted_hours_bitmask,
             tod_boost_multiplier,
             max_entry_size_lamports,
             excluded_mints: hashbrown::HashSet::with_capacity(256),
@@ -190,6 +198,8 @@ impl HotPath {
         self.health_monitor = Some(monitor);
     }
 
+
+
     /// LATENCY: Fast epoch-ms via quanta RDTSC (~3-5ns) instead of
     /// clock_gettime syscall (~20ns). Calibrated once at construction.
     #[inline(always)]
@@ -199,9 +209,10 @@ impl HotPath {
     }
 
     /// Returns the time-of-day size multiplier for the given UTC hour.
-    #[inline]
+    /// Uses precomputed bitmask (~1ns) instead of Vec::contains scan (~15ns).
+    #[inline(always)]
     fn get_tod_multiplier(&self, hour_utc: u8) -> f64 {
-        if self.boosted_hours_utc.contains(&hour_utc) {
+        if (self.boosted_hours_bitmask >> hour_utc) & 1 == 1 {
             self.tod_boost_multiplier
         } else {
             1.0
@@ -253,10 +264,9 @@ impl HotPath {
                 trade.vtoken_reserves,
                 regime::INITIAL_VIRTUAL_TOKENS,
             );
-            let rc = &self.gate_stack.config.regime_config;
-            if progress >= 0.0
-                && progress >= rc.graduation_boundary_start
-                && progress <= rc.graduation_boundary_end
+            // Graduation boundary: reject tokens near graduation (>95% curve)
+            // Hardcoded thresholds from old regime_config (was 0.95..1.0)
+            if progress >= 0.95 && progress <= 1.0
             {
                 self.stats.gate_rejects += 1;
                 let idx = gate_reject_index(&GateRejectReason::GraduationBoundary);
@@ -295,89 +305,70 @@ impl HotPath {
             0
         };
 
-        // 5. Compute score first (needed by gate stack as last gate)
-        // TASK-8: Use real per-wallet concentration data from MintHistory
-        let max_wallet = history.max_wallet_buy_vol_30s();
-        let total_vol_30s = history.total_buy_vol_30s();
-        let score_components = self.scorer.compute(
-            trade.sol_amount,
-            trade.vsol_reserves,
-            unique_buyers_30s,
-            buy_count_1s,
-            buy_count_2s,
-            volume_sol_5s,
-            max_wallet,
-            total_vol_30s,
-        );
-        let score = score_components.final_score;
-
-        // 6. Run gate stack (score is last gate)
-        match self.gate_stack.evaluate(
-            trade,
-            history_age_ms,
-            unique_buyers_30s,
-            buy_count_1s,
-            buy_count_2s,
-            buy_count_5s,
-            sell_count_5s,
-            volume_sol_5s,
-            vsol_delta_3s,
-            time_since_last_buy_ms,
-            creator_sell_at_ms,
-            now,
-            score,
-        ) {
-            Ok(()) => {
-                self.stats.gates_passed += 1;
-            }
-            Err(reason) => {
+        // ═══ ENTRY ENGINE (V2 — Kelly + Magnitude) ═══
+        {
+            let engine = &self.entry_engine;
+            // Risk manager gate
+            if !self.risk_manager.allows_entry(now, false) {
                 self.stats.gate_rejects += 1;
-                let idx = gate_reject_index(&reason);
-                if idx < 32 {
-                    self.gate_reject_counts[idx] += 1;
-                }
-                // Log gate rejection breakdown every 100 rejects
-                if self.stats.gate_rejects % 100 == 0 {
-                    self.log_gate_rejections();
-                }
                 return;
             }
-        }
-
-        // 7. Score threshold check (redundant with gate 17, but explicit)
-        if score < self.min_score {
-            self.stats.score_rejects += 1;
-            return;
-        }
-
-        // 8. Safety: daily loss cap
-        self.check_and_reset_daily_loss(now);
-        if self.daily_loss_lamports as u64 >= self.daily_loss_cap_lamports {
-            return;
-        }
-
-        // 9. Safety: consecutive stop-loss circuit breaker
-        if now < self.stop_pause_until_ms {
-            return;
-        }
-
-        // 10. Open position
-        self.position_manager.open_position(trade, score, now);
-        self.stats.positions_opened += 1;
-
-        // 11. Enrich position with entry context for rich logging
-        if let Some(pos) = self.position_manager.get_position_mut(&trade.mint) {
-            pos.pre_trigger_buys_1s = buy_count_1s;
-            pos.pre_trigger_buys_2s = buy_count_2s;
-            pos.pre_trigger_buys_5s = buy_count_5s;
-            pos.unique_buyers = unique_buyers_30s;
-            pos.vsol_delta_3s = vsol_delta_3s;
-            pos.volume_5s = volume_sol_5s;
-            pos.sell_count_5s = sell_count_5s;
-            // ToD multiplier
-            let hour_utc = ((now / 3_600_000) % 24) as u8;
-            if self.boosted_hours_utc.contains(&hour_utc) {
-                pos.tod_multiplier = self.tod_boost_multiplier;
+            let max_wallet = history.max_wallet_buy_vol_30s();
+            let total_vol_30s = history.total_buy_vol_30s();
+            let input = EntryInput {
+                vsol_reserves: trade.vsol_reserves,
+                vtoken_reserves: trade.vtoken_reserves,
+                sol_amount: trade.sol_amount,
+                buy_count_1s,
+                buy_count_2s,
+                buy_count_5s,
+                sell_count_5s,
+                unique_buyers_30s,
+                _pad: 0,
+                volume_sol_5s,
+                vsol_delta_3s,
+                time_since_last_buy_ms,
+                history_age_ms,
+                creator_sell_at_ms,
+                now_ms: now,
+                max_wallet_vol_30s: max_wallet,
+                total_buy_vol_30s: total_vol_30s,
+            };
+            let decision = engine.evaluate(&input);
+            match decision.action {
+                EntryAction::Reject => {
+                    self.stats.gate_rejects += 1;
+                    return;
+                }
+                EntryAction::Scalp | EntryAction::Ride => {
+                    self.stats.gates_passed += 1;
+                    // Safety checks
+                    self.check_and_reset_daily_loss(now);
+                    if self.daily_loss_lamports as u64 >= self.daily_loss_cap_lamports {
+                        return;
+                    }
+                    if now < self.stop_pause_until_ms {
+                        return;
+                    }
+                    // Open position using V2 entry score + magnitude + Kelly size
+                    self.position_manager.open_position(trade, decision.entry_score, now, decision.magnitude_score, decision.size_lamports);
+                    self.stats.positions_opened += 1;
+                    // Enrich with entry context
+                    if let Some(pos) = self.position_manager.get_position_mut(&trade.mint) {
+                        pos.pre_trigger_buys_1s = buy_count_1s;
+                        pos.pre_trigger_buys_2s = buy_count_2s;
+                        pos.pre_trigger_buys_5s = buy_count_5s;
+                        pos.unique_buyers = unique_buyers_30s;
+                        pos.vsol_delta_3s = vsol_delta_3s;
+                        pos.volume_5s = volume_sol_5s;
+                        pos.sell_count_5s = sell_count_5s;
+                        let hour_utc = ((now / 3_600_000) % 24) as u8;
+                        if (self.boosted_hours_bitmask >> hour_utc) & 1 == 1 {
+                            pos.tod_multiplier = self.tod_boost_multiplier;
+                        }
+                    }
+                    return;
+                }
             }
         }
     }
@@ -485,7 +476,8 @@ impl HotPath {
             "StaleGap", "InsufficientCrowd2s", "InsufficientCrowd5s", "InsufficientVSolAccel",
             "StaleMomentum1s", "InsufficientSellCount", "VSolDeltaTooHigh", "CreatorSellRecent",
             "SellPressure", "TriggerTooIsolated", "ScoreTooLow", "SourceBlocked",
-            "RegimeExcluded", "GraduationBoundary",
+            "RegimeExcluded", "GraduationBoundary", "MaxCurveProgress",
+            "LowFlowConcentration", "TooManyBuyers",
         ];
         // Find top 5 rejection reasons
         let mut indexed: Vec<(u64, usize)> = self.gate_reject_counts.iter()
@@ -667,6 +659,9 @@ fn gate_reject_index(reason: &GateRejectReason) -> usize {
         GateRejectReason::SourceBlocked => 19,
         GateRejectReason::RegimeExcluded => 20,
         GateRejectReason::GraduationBoundary => 21,
+        GateRejectReason::MaxCurveProgress => 22,
+        GateRejectReason::LowFlowConcentration => 23,
+        GateRejectReason::TooManyBuyers => 24,
     }
 }
 

@@ -14,11 +14,11 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 use pump_quant_core::alerts::telegram::{self, TelegramAlerter};
 use pump_quant_core::engine::config::load_config;
-use pump_quant_core::engine::gates::GateStack;
+// Legacy GateStack removed — V2 EntryEngine is the only entry path.
 use pump_quant_core::engine::health::HealthMonitor;
 use pump_quant_core::engine::hot_path::HotPath;
 use pump_quant_core::engine::positions::{ClosedPosition, ExitReason, PositionManager};
-use pump_quant_core::engine::scorer::Scorer;
+// Legacy Scorer removed — V2 EntryEngine handles all scoring.
 use pump_quant_core::api::{ApiState, EngineStats, start_server};
 use pump_quant_core::arb::graduation::{
     GradArbConfig, GradArbClosedPosition, GradArbStats, GraduationArbEngine,
@@ -46,6 +46,15 @@ fn exit_reason_str(reason: ExitReason) -> &'static str {
         ExitReason::IntraHoldTrail => "intra_hold_trail",
         ExitReason::MomentumDecayFlat => "momentum_decay_flat",
         ExitReason::MomentumDecayFade => "momentum_decay_fade",
+        ExitReason::TakeProfitScaled => "take_profit_scaled",
+        ExitReason::MomentumStall => "momentum_stall",
+        ExitReason::RideTrailingStop => "ride_trailing_stop",
+        ExitReason::RideHardFloor => "ride_hard_floor",
+        ExitReason::RideWhaleExit => "ride_whale_exit",
+        ExitReason::RideBuyGapTimeout => "ride_buy_gap_timeout",
+        ExitReason::RideSellCascade => "ride_sell_cascade",
+        ExitReason::RideCreatorSell => "ride_creator_sell",
+        ExitReason::RideMaxHold => "ride_max_hold",
     }
 }
 
@@ -168,15 +177,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ── Build engine components ─────────────────────────────────────
-    let min_score = engine_config.gate.trigger_min_score;
-    let gate_stack = GateStack::new(engine_config.gate);
-    let scorer = Scorer::new(
-        engine_config.score,
-        engine_config.position.tp_tiers.first().map(|_| 0).unwrap_or(0)
-            .max(33_000_000_000), // use config min_vsol for scorer range
-        engine_config.position.tp_tiers.first().map(|_| 0).unwrap_or(0)
-            .max(43_000_000_000), // use config max_vsol for scorer range
-    );
+    // Legacy gate_stack and scorer removed — V2 EntryEngine is the only path.
+    // engine_config.gate and engine_config.score are parsed but unused.
 
     // ── Create Health Monitor ────────────────────────────────────────
     let health_monitor = HealthMonitor::new(&engine_config.health);
@@ -201,13 +203,29 @@ async fn main() -> anyhow::Result<()> {
 
     let max_entry_size_lamports = engine_config.position.max_entry_size_lamports;
     let position_manager = PositionManager::new(engine_config.position, closed_tx);
+
+    // ── Build V2 Entry Engine (ONLY entry path — no legacy fallback) ──
+    let ee_config = engine_config.entry_engine_config
+        .clone()
+        .unwrap_or_else(|| pump_quant_core::engine::entry_engine::EntryEngineConfig::default());
+    let entry_engine = pump_quant_core::engine::entry_engine::EntryEngine::new(&ee_config);
+    tracing::info!("EntryEngine: Kelly-tiered sizing + magnitude prediction");
+
+    // ── Build Risk Manager ──
+    let risk_manager = if let Some(ref risk_cfg) = engine_config.risk_config {
+        tracing::info!("RiskManager: config-driven");
+        pump_quant_core::engine::risk_manager::RiskManager::new(risk_cfg)
+    } else {
+        tracing::info!("RiskManager: defaults");
+        pump_quant_core::engine::risk_manager::RiskManager::new(&pump_quant_core::engine::risk_manager::RiskConfig::default())
+    };
+
     let mut hot_path = HotPath::new(
-        gate_stack,
-        scorer,
+        entry_engine,
+        risk_manager,
         position_manager,
         _now_ms_dummy, // LATENCY: HotPath uses quanta internally, not this fn
         paper_mode,
-        min_score,
         engine_config.daily_loss_cap_lamports,
         engine_config.consecutive_stop_pause_count,
         engine_config.consecutive_stop_pause_ms,
@@ -799,6 +817,7 @@ fn sync_stats_to_api(
         api_stats.trades_seen = s.trades_seen;
         api_stats.gates_passed = s.gates_passed;
         api_stats.positions_opened = s.positions_opened;
+        api_stats.gate_reject_counts = hot_path.gate_reject_counts;
         // Stream event counters
         api_stats.migrations_seen = s.migrations;
         api_stats.lp_removals_seen = s.lp_removals;
