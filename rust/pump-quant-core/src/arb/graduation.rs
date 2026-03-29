@@ -90,6 +90,8 @@ pub enum PoolType {
     RaydiumAmmV4,
     /// PumpSwap — Pump.fun's native DEX.
     PumpSwap,
+    /// Pool type could not be determined (RPC succeeded but parsing failed).
+    Unknown,
 }
 
 impl PoolType {
@@ -99,8 +101,378 @@ impl PoolType {
         match self {
             Self::RaydiumAmmV4 => "raydium_amm_v4",
             Self::PumpSwap => "pump_swap",
+            Self::Unknown => "unknown",
         }
     }
+}
+
+// ── Pool Resolution ──────────────────────────────────────────────────────────
+
+/// Raydium AMM V4 program ID (base58: 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8).
+const RAYDIUM_AMM_V4_PROGRAM: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
+
+/// PumpSwap AMM program ID (base58: pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA).
+const PUMPSWAP_AMM_PROGRAM: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
+
+/// Result of resolving a pool from a graduation transaction.
+#[derive(Debug, Clone)]
+pub struct PoolResolution {
+    /// Token mint address.
+    pub mint: [u8; 32],
+    /// DEX pool address ([0u8; 32] if extraction failed).
+    pub pool_address: [u8; 32],
+    /// Type of DEX pool.
+    pub pool_type: PoolType,
+    /// Initial SOL reserves in pool (lamports). 0 if unknown.
+    pub reserve_sol_lamports: u64,
+    /// Initial token reserves in pool (atoms). 0 if unknown.
+    pub reserve_token_atoms: u64,
+    /// Bonding curve vSol at graduation (~85 SOL). 0.0 if unknown.
+    pub bc_terminal_vsol: f64,
+}
+
+/// Decode a base58-encoded string into a 32-byte array.
+fn decode_bs58_32(s: &str) -> Option<[u8; 32]> {
+    let mut buf = [0u8; 32];
+    let n = bs58::decode(s).onto(&mut buf[..]).ok()?;
+    if n == 32 { Some(buf) } else { None }
+}
+
+/// Create a shared `reqwest::Client` with a 180ms timeout for pool resolution.
+///
+/// The 180ms limit leaves 20ms margin within the 200ms RPC budget.
+/// Callers should wrap this in `Arc` and reuse across arb attempts.
+pub fn make_pool_resolution_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(180))
+        .build()
+        .expect("reqwest client build should not fail")
+}
+
+/// Resolve pool address and initial reserves from a graduation transaction.
+///
+/// Called with a 200ms timeout budget. Uses Helius `getTransaction` RPC with
+/// `jsonParsed` encoding to extract pool creation from inner instructions.
+///
+/// Returns `None` if: RPC call fails, timeout, or tx doesn't contain pool creation.
+///
+/// # Arguments
+/// * `client` — shared reqwest client (use `make_pool_resolution_client()`)
+/// * `sig` — full 64-byte Solana transaction signature
+/// * `helius_rpc_url` — Helius RPC endpoint with API key
+#[inline(never)]
+pub async fn resolve_pool_from_transaction(
+    client: &reqwest::Client,
+    sig: &[u8; 64],
+    helius_rpc_url: &str,
+) -> Option<PoolResolution> {
+    match resolve_pool_inner(client, sig, helius_rpc_url).await {
+        Ok(resolution) => Some(resolution),
+        Err(e) => {
+            tracing::debug!("[grad_arb] pool resolution failed: {}", e);
+            None
+        }
+    }
+}
+
+/// Inner implementation — returns Result for clean error propagation.
+async fn resolve_pool_inner(
+    client: &reqwest::Client,
+    sig: &[u8; 64],
+    helius_rpc_url: &str,
+) -> Result<PoolResolution, String> {
+    let sig_b58 = bs58::encode(sig).into_string();
+
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTransaction",
+        "params": [
+            sig_b58,
+            {
+                "encoding": "jsonParsed",
+                "maxSupportedTransactionVersion": 0,
+                "commitment": "confirmed"
+            }
+        ]
+    });
+
+    let resp = client
+        .post(helius_rpc_url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("RPC request failed: {}", e))?;
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("RPC response parse failed: {}", e))?;
+
+    let tx = json
+        .get("result")
+        .ok_or_else(|| {
+            let err_msg = json
+                .pointer("/error/message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("null result");
+            format!("RPC returned no result: {}", err_msg)
+        })?;
+
+    // Try Raydium AMM v4 first (most common graduation path)
+    if let Some(resolution) = try_parse_raydium_v4(tx) {
+        tracing::debug!(
+            pool = %bs58::encode(&resolution.pool_address).into_string(),
+            mint = %bs58::encode(&resolution.mint).into_string(),
+            "[grad_arb] pool resolution: Raydium AMM v4 pool found"
+        );
+        return Ok(resolution);
+    }
+
+    // Try PumpSwap
+    if let Some(resolution) = try_parse_pumpswap(tx) {
+        tracing::debug!(
+            pool = %bs58::encode(&resolution.pool_address).into_string(),
+            mint = %bs58::encode(&resolution.mint).into_string(),
+            "[grad_arb] pool resolution: PumpSwap pool found"
+        );
+        return Ok(resolution);
+    }
+
+    // Fallback: tx parsed but no recognizable pool creation found.
+    // Return Unknown pool type so the arb engine can log the attempt.
+    tracing::debug!(
+        sig = %sig_b58,
+        "[grad_arb] pool resolution: tx parsed, pool address extraction failed — no Raydium/PumpSwap instruction found"
+    );
+
+    // Attempt to extract any mint from postTokenBalances as a best-effort fallback
+    let fallback_mint = extract_fallback_mint(tx).unwrap_or([0u8; 32]);
+
+    Ok(PoolResolution {
+        mint: fallback_mint,
+        pool_address: [0u8; 32],
+        pool_type: PoolType::Unknown,
+        reserve_sol_lamports: 0,
+        reserve_token_atoms: 0,
+        bc_terminal_vsol: 0.0,
+    })
+}
+
+/// Try to parse a Raydium AMM V4 `initialize2` instruction from inner instructions.
+///
+/// Account layout for Raydium AMM v4 initialize2:
+/// - accounts[3] = AMM ID (pool address)
+/// - accounts[7] = Coin Mint (base token = pump.fun token)
+/// - accounts[8] = PC Mint (quote token = SOL/WSOL)
+fn try_parse_raydium_v4(tx: &serde_json::Value) -> Option<PoolResolution> {
+    let inner_instructions = tx
+        .pointer("/meta/innerInstructions")?
+        .as_array()?;
+
+    for inner_group in inner_instructions {
+        let instructions = inner_group
+            .get("instructions")
+            .and_then(|i| i.as_array())?;
+
+        for ix in instructions {
+            let program_id = ix
+                .get("programId")
+                .and_then(|p| p.as_str())
+                .unwrap_or("");
+
+            if program_id == RAYDIUM_AMM_V4_PROGRAM {
+                let accounts = ix.get("accounts").and_then(|a| a.as_array())?;
+                if accounts.len() >= 9 {
+                    let pool_b58 = accounts[3].as_str()?;
+                    let mint_b58 = accounts[7].as_str()?;
+                    let pool_address = decode_bs58_32(pool_b58)?;
+                    let mint = decode_bs58_32(mint_b58)?;
+
+                    // Try to extract reserves from postTokenBalances / postBalances
+                    let (reserve_sol, reserve_token) =
+                        extract_reserves_from_balances(tx, &pool_address);
+
+                    return Some(PoolResolution {
+                        mint,
+                        pool_address,
+                        pool_type: PoolType::RaydiumAmmV4,
+                        reserve_sol_lamports: reserve_sol,
+                        reserve_token_atoms: reserve_token,
+                        bc_terminal_vsol: 0.0, // Populated by caller from bonding curve data
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Try to parse a PumpSwap `CreatePool` instruction from inner instructions.
+///
+/// PumpSwap pool address is in accounts[0] of the instruction.
+fn try_parse_pumpswap(tx: &serde_json::Value) -> Option<PoolResolution> {
+    let inner_instructions = tx
+        .pointer("/meta/innerInstructions")?
+        .as_array()?;
+
+    for inner_group in inner_instructions {
+        let instructions = inner_group
+            .get("instructions")
+            .and_then(|i| i.as_array())?;
+
+        for ix in instructions {
+            let program_id = ix
+                .get("programId")
+                .and_then(|p| p.as_str())
+                .unwrap_or("");
+
+            if program_id == PUMPSWAP_AMM_PROGRAM {
+                let accounts = ix.get("accounts").and_then(|a| a.as_array())?;
+                if !accounts.is_empty() {
+                    let pool_b58 = accounts[0].as_str()?;
+                    let pool_address = decode_bs58_32(pool_b58)?;
+
+                    // Extract mint from accounts — PumpSwap CreatePool typically
+                    // has the base mint in accounts[2] or [3]
+                    let mint = accounts.iter()
+                        .filter_map(|a| a.as_str())
+                        .filter_map(decode_bs58_32)
+                        .nth(2) // accounts[2] is often the base mint
+                        .unwrap_or([0u8; 32]);
+
+                    let (reserve_sol, reserve_token) =
+                        extract_reserves_from_balances(tx, &pool_address);
+
+                    return Some(PoolResolution {
+                        mint,
+                        pool_address,
+                        pool_type: PoolType::PumpSwap,
+                        reserve_sol_lamports: reserve_sol,
+                        reserve_token_atoms: reserve_token,
+                        bc_terminal_vsol: 0.0,
+                    });
+                }
+            }
+        }
+    }
+    // Also check top-level instructions (PumpSwap may not be inner)
+    let top_instructions = tx
+        .pointer("/transaction/message/instructions")?
+        .as_array()?;
+
+    for ix in top_instructions {
+        let program_id = ix
+            .get("programId")
+            .and_then(|p| p.as_str())
+            .unwrap_or("");
+
+        if program_id == PUMPSWAP_AMM_PROGRAM {
+            let accounts = ix.get("accounts").and_then(|a| a.as_array())?;
+            if !accounts.is_empty() {
+                let pool_b58 = accounts[0].as_str()?;
+                let pool_address = decode_bs58_32(pool_b58)?;
+
+                let mint = accounts.iter()
+                    .filter_map(|a| a.as_str())
+                    .filter_map(decode_bs58_32)
+                    .nth(2)
+                    .unwrap_or([0u8; 32]);
+
+                let (reserve_sol, reserve_token) =
+                    extract_reserves_from_balances(tx, &pool_address);
+
+                return Some(PoolResolution {
+                    mint,
+                    pool_address,
+                    pool_type: PoolType::PumpSwap,
+                    reserve_sol_lamports: reserve_sol,
+                    reserve_token_atoms: reserve_token,
+                    bc_terminal_vsol: 0.0,
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Extract SOL and token reserves from postBalances/postTokenBalances.
+///
+/// Looks for the pool address in the account keys and reads its post-tx balances.
+fn extract_reserves_from_balances(
+    tx: &serde_json::Value,
+    pool_address: &[u8; 32],
+) -> (u64, u64) {
+    let pool_b58 = bs58::encode(pool_address).into_string();
+
+    // Find pool's index in accountKeys
+    let account_keys = match tx
+        .pointer("/transaction/message/accountKeys")
+        .and_then(|a| a.as_array())
+    {
+        Some(keys) => keys,
+        None => return (0, 0),
+    };
+
+    let pool_index = account_keys.iter().position(|k| {
+        // accountKeys can be either a string or an object with a "pubkey" field
+        let key_str = k.as_str()
+            .or_else(|| k.get("pubkey").and_then(|p| p.as_str()));
+        key_str == Some(&pool_b58)
+    });
+
+    let pool_idx = match pool_index {
+        Some(idx) => idx,
+        None => return (0, 0),
+    };
+
+    // SOL balance from postBalances[pool_idx]
+    let reserve_sol = tx
+        .pointer("/meta/postBalances")
+        .and_then(|b| b.as_array())
+        .and_then(|b| b.get(pool_idx))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    // Token balance from postTokenBalances (find entry with accountIndex == pool_idx)
+    let reserve_token = tx
+        .pointer("/meta/postTokenBalances")
+        .and_then(|b| b.as_array())
+        .and_then(|balances| {
+            balances.iter().find_map(|entry| {
+                let idx = entry.get("accountIndex").and_then(|i| i.as_u64())?;
+                if idx as usize == pool_idx {
+                    entry
+                        .pointer("/uiTokenAmount/amount")
+                        .and_then(|a| a.as_str())
+                        .and_then(|s| s.parse::<u64>().ok())
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or(0);
+
+    (reserve_sol, reserve_token)
+}
+
+/// Best-effort mint extraction from postTokenBalances when pool parsing fails.
+fn extract_fallback_mint(tx: &serde_json::Value) -> Option<[u8; 32]> {
+    // WSOL mint to exclude
+    const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
+
+    let balances = tx
+        .pointer("/meta/postTokenBalances")?
+        .as_array()?;
+
+    // Find first non-WSOL mint
+    for entry in balances {
+        let mint_str = entry.get("mint").and_then(|m| m.as_str())?;
+        if mint_str != WSOL_MINT {
+            return decode_bs58_32(mint_str);
+        }
+    }
+    None
 }
 
 /// Reason the graduation arb position was closed.
@@ -475,6 +847,7 @@ mod tests {
     fn test_pool_type_as_str() {
         assert_eq!(PoolType::RaydiumAmmV4.as_str(), "raydium_amm_v4");
         assert_eq!(PoolType::PumpSwap.as_str(), "pump_swap");
+        assert_eq!(PoolType::Unknown.as_str(), "unknown");
     }
 
     #[test]
@@ -534,5 +907,351 @@ mod tests {
         let (engine, _rx) = make_test_engine();
         // Should not panic — stub implementation
         engine.on_tick(1_700_000_000_000);
+    }
+
+    // ── Pool Resolution Tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_decode_bs58_32_valid() {
+        // Raydium AMM v4 program ID as a known 32-byte pubkey
+        let result = decode_bs58_32("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8");
+        assert!(result.is_some());
+        let bytes = result.unwrap();
+        // Re-encode to verify round-trip
+        assert_eq!(bs58::encode(&bytes).into_string(), "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8");
+    }
+
+    #[test]
+    fn test_decode_bs58_32_invalid() {
+        assert!(decode_bs58_32("short").is_none());
+        assert!(decode_bs58_32("").is_none());
+        assert!(decode_bs58_32("!!!invalid!!!").is_none());
+    }
+
+    #[test]
+    fn test_pool_resolution_struct() {
+        let res = PoolResolution {
+            mint: [1u8; 32],
+            pool_address: [2u8; 32],
+            pool_type: PoolType::RaydiumAmmV4,
+            reserve_sol_lamports: 85_000_000_000, // ~85 SOL
+            reserve_token_atoms: 200_000_000_000_000,
+            bc_terminal_vsol: 85.0,
+        };
+        assert_eq!(res.pool_type, PoolType::RaydiumAmmV4);
+        assert_eq!(res.reserve_sol_lamports, 85_000_000_000);
+    }
+
+    #[test]
+    fn test_pool_resolution_unknown() {
+        let res = PoolResolution {
+            mint: [0u8; 32],
+            pool_address: [0u8; 32],
+            pool_type: PoolType::Unknown,
+            reserve_sol_lamports: 0,
+            reserve_token_atoms: 0,
+            bc_terminal_vsol: 0.0,
+        };
+        assert_eq!(res.pool_type, PoolType::Unknown);
+        assert_eq!(res.pool_type.as_str(), "unknown");
+    }
+
+    #[test]
+    fn test_make_pool_resolution_client() {
+        // Should not panic
+        let client = make_pool_resolution_client();
+        // Client exists — that's the test
+        drop(client);
+    }
+
+    #[test]
+    fn test_try_parse_raydium_v4_with_valid_tx() {
+        // Construct a minimal mock getTransaction response with Raydium AMM v4 inner instruction
+        let mint_b58 = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"; // SPL Token program as fake mint
+        let pool_b58 = "11111111111111111111111111111111"; // System program as fake pool
+        let mock_tx = serde_json::json!({
+            "meta": {
+                "innerInstructions": [{
+                    "index": 0,
+                    "instructions": [{
+                        "programId": "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+                        "accounts": [
+                            "acc0", "acc1", "acc2",
+                            pool_b58,   // accounts[3] = pool address
+                            "acc4", "acc5", "acc6",
+                            mint_b58,   // accounts[7] = coin mint
+                            "acc8"      // accounts[8] = PC mint
+                        ]
+                    }]
+                }],
+                "postBalances": [0, 0, 0],
+                "postTokenBalances": []
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": []
+                }
+            }
+        });
+
+        let result = try_parse_raydium_v4(&mock_tx);
+        assert!(result.is_some());
+        let res = result.unwrap();
+        assert_eq!(res.pool_type, PoolType::RaydiumAmmV4);
+        assert_eq!(bs58::encode(&res.pool_address).into_string(), pool_b58);
+        assert_eq!(bs58::encode(&res.mint).into_string(), mint_b58);
+    }
+
+    #[test]
+    fn test_try_parse_raydium_v4_no_raydium_instruction() {
+        let mock_tx = serde_json::json!({
+            "meta": {
+                "innerInstructions": [{
+                    "index": 0,
+                    "instructions": [{
+                        "programId": "SomeOtherProgram111111111111111111111111111",
+                        "accounts": ["a", "b", "c"]
+                    }]
+                }],
+                "postBalances": [],
+                "postTokenBalances": []
+            },
+            "transaction": {
+                "message": { "accountKeys": [] }
+            }
+        });
+
+        let result = try_parse_raydium_v4(&mock_tx);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_try_parse_raydium_v4_insufficient_accounts() {
+        let mock_tx = serde_json::json!({
+            "meta": {
+                "innerInstructions": [{
+                    "index": 0,
+                    "instructions": [{
+                        "programId": "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+                        "accounts": ["acc0", "acc1", "acc2"] // Only 3, need 9
+                    }]
+                }]
+            },
+            "transaction": {
+                "message": { "accountKeys": [] }
+            }
+        });
+
+        let result = try_parse_raydium_v4(&mock_tx);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_try_parse_pumpswap_with_valid_tx() {
+        let pool_b58 = "11111111111111111111111111111111";
+        let mock_tx = serde_json::json!({
+            "meta": {
+                "innerInstructions": [{
+                    "index": 0,
+                    "instructions": [{
+                        "programId": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+                        "accounts": [
+                            pool_b58,  // accounts[0] = pool
+                            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", // accounts[2] = mint
+                            "acc3"
+                        ]
+                    }]
+                }],
+                "postBalances": [],
+                "postTokenBalances": []
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": [],
+                    "instructions": []
+                }
+            }
+        });
+
+        let result = try_parse_pumpswap(&mock_tx);
+        assert!(result.is_some());
+        let res = result.unwrap();
+        assert_eq!(res.pool_type, PoolType::PumpSwap);
+        assert_eq!(bs58::encode(&res.pool_address).into_string(), pool_b58);
+    }
+
+    #[test]
+    fn test_try_parse_pumpswap_no_pumpswap_instruction() {
+        let mock_tx = serde_json::json!({
+            "meta": {
+                "innerInstructions": [{
+                    "index": 0,
+                    "instructions": [{
+                        "programId": "OtherProgram1111111111111111111111111111111",
+                        "accounts": []
+                    }]
+                }]
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": [],
+                    "instructions": []
+                }
+            }
+        });
+
+        let result = try_parse_pumpswap(&mock_tx);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_reserves_from_balances() {
+        let pool_b58 = "11111111111111111111111111111111";
+        let pool_bytes = decode_bs58_32(pool_b58).unwrap();
+
+        let mock_tx = serde_json::json!({
+            "meta": {
+                "postBalances": [1_000_000, 85_000_000_000u64, 500_000],
+                "postTokenBalances": [{
+                    "accountIndex": 1,
+                    "uiTokenAmount": {
+                        "amount": "200000000000000"
+                    }
+                }]
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        "SomeAccount1111111111111111111111111111111",
+                        pool_b58,
+                        "SomeAccount3333333333333333333333333333333"
+                    ]
+                }
+            }
+        });
+
+        let (sol, token) = extract_reserves_from_balances(&mock_tx, &pool_bytes);
+        assert_eq!(sol, 85_000_000_000);
+        assert_eq!(token, 200_000_000_000_000);
+    }
+
+    #[test]
+    fn test_extract_reserves_pool_not_in_accounts() {
+        let pool_bytes = [99u8; 32]; // Not in account keys
+        let mock_tx = serde_json::json!({
+            "meta": {
+                "postBalances": [1_000_000],
+                "postTokenBalances": []
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": ["11111111111111111111111111111111"]
+                }
+            }
+        });
+
+        let (sol, token) = extract_reserves_from_balances(&mock_tx, &pool_bytes);
+        assert_eq!(sol, 0);
+        assert_eq!(token, 0);
+    }
+
+    #[test]
+    fn test_extract_reserves_with_pubkey_object_keys() {
+        // Some RPC responses return accountKeys as objects with "pubkey" field
+        let pool_b58 = "11111111111111111111111111111111";
+        let pool_bytes = decode_bs58_32(pool_b58).unwrap();
+
+        let mock_tx = serde_json::json!({
+            "meta": {
+                "postBalances": [0, 42_000_000_000u64],
+                "postTokenBalances": []
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        {"pubkey": "SomeAccount1111111111111111111111111111111", "signer": true},
+                        {"pubkey": pool_b58, "signer": false}
+                    ]
+                }
+            }
+        });
+
+        let (sol, _token) = extract_reserves_from_balances(&mock_tx, &pool_bytes);
+        assert_eq!(sol, 42_000_000_000);
+    }
+
+    #[test]
+    fn test_extract_fallback_mint() {
+        let mock_tx = serde_json::json!({
+            "meta": {
+                "postTokenBalances": [
+                    {"mint": "So11111111111111111111111111111111111111112", "accountIndex": 0},
+                    {"mint": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "accountIndex": 1}
+                ]
+            }
+        });
+
+        let result = extract_fallback_mint(&mock_tx);
+        assert!(result.is_some());
+        // Should skip WSOL and return the second mint
+        assert_eq!(
+            bs58::encode(&result.unwrap()).into_string(),
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        );
+    }
+
+    #[test]
+    fn test_extract_fallback_mint_only_wsol() {
+        let mock_tx = serde_json::json!({
+            "meta": {
+                "postTokenBalances": [
+                    {"mint": "So11111111111111111111111111111111111111112", "accountIndex": 0}
+                ]
+            }
+        });
+
+        let result = extract_fallback_mint(&mock_tx);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_pool_inner_rpc_error_response() {
+        // Simulate an RPC error response (null result)
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            // Can't easily test actual HTTP without a server, but we can test
+            // that the function handles connection failure gracefully
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(50))
+                .build()
+                .unwrap();
+            let sig = [0u8; 64];
+            let result = resolve_pool_from_transaction(
+                &client,
+                &sig,
+                "http://127.0.0.1:1", // Non-existent endpoint
+            ).await;
+            assert!(result.is_none()); // Should return None, not panic
+        });
+    }
+
+    #[test]
+    fn test_pool_resolution_clone_debug() {
+        let res = PoolResolution {
+            mint: [1u8; 32],
+            pool_address: [2u8; 32],
+            pool_type: PoolType::Unknown,
+            reserve_sol_lamports: 0,
+            reserve_token_atoms: 0,
+            bc_terminal_vsol: 0.0,
+        };
+        let cloned = res.clone();
+        assert_eq!(cloned.pool_type, PoolType::Unknown);
+        let debug_str = format!("{:?}", res);
+        assert!(debug_str.contains("Unknown"));
     }
 }
