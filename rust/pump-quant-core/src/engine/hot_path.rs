@@ -3,6 +3,10 @@
 //! Runs on the main thread. Each method processes a single event
 //! and drives the full decision pipeline with zero heap allocation
 //! in the common (reject) path.
+//!
+//! LATENCY: Uses quanta::Clock for sub-nanosecond monotonic timestamps
+//! calibrated to epoch ms at startup. Avoids clock_gettime syscall (~20ns)
+//! on every trade — quanta uses RDTSC (~3-5ns) via TSC.
 
 use std::sync::Arc;
 
@@ -31,7 +35,12 @@ pub struct HotPath {
     scorer: Scorer,
     position_manager: PositionManager,
     mint_map: MintHistoryMap,
-    now_ms: fn() -> u64,
+    /// LATENCY: quanta::Clock uses RDTSC (~3ns) instead of clock_gettime (~20ns).
+    /// `start_instant` + `start_epoch_ms` are calibrated once at construction.
+    /// `now_ms()` = start_epoch_ms + elapsed_since(start_instant).as_millis()
+    clock: quanta::Clock,
+    start_instant: quanta::Instant,
+    start_epoch_ms: u64,
     #[allow(dead_code)]
     paper_mode: bool,
     min_score: f64,
@@ -75,7 +84,7 @@ impl HotPath {
         gate_stack: GateStack,
         scorer: Scorer,
         position_manager: PositionManager,
-        now_ms: fn() -> u64,
+        _now_ms: fn() -> u64, // LATENCY: kept for API compat, replaced by quanta internally
         paper_mode: bool,
         min_score: f64,
         daily_loss_cap_lamports: u64,
@@ -85,12 +94,26 @@ impl HotPath {
         tod_boost_multiplier: f64,
         max_entry_size_lamports: u64,
     ) -> Self {
+        // LATENCY: Calibrate quanta clock against SystemTime once at construction.
+        // quanta::Clock::now() returns a calibrated Instant (nanoseconds).
+        // We record start_instant + start_epoch_ms, then compute:
+        //   now_epoch_ms = start_epoch_ms + (clock.now() - start_instant).as_millis()
+        // This replaces clock_gettime (~20ns) with RDTSC (~3-5ns) on every trade.
+        let clock = quanta::Clock::new();
+        let start_instant = clock.now();
+        let start_epoch_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
         Self {
             gate_stack,
             scorer,
             position_manager,
             mint_map: MintHistoryMap::with_capacity(4096),
-            now_ms,
+            clock,
+            start_instant,
+            start_epoch_ms,
             paper_mode,
             min_score,
             stats: HotPathStats {
@@ -123,6 +146,14 @@ impl HotPath {
         self.health_monitor = Some(monitor);
     }
 
+    /// LATENCY: Fast epoch-ms via quanta RDTSC (~3-5ns) instead of
+    /// clock_gettime syscall (~20ns). Calibrated once at construction.
+    #[inline(always)]
+    fn now_ms(&self) -> u64 {
+        let elapsed = self.clock.now().duration_since(self.start_instant);
+        self.start_epoch_ms + elapsed.as_millis() as u64
+    }
+
     /// Returns the time-of-day size multiplier for the given UTC hour.
     #[inline]
     fn get_tod_multiplier(&self, hour_utc: u8) -> f64 {
@@ -137,7 +168,7 @@ impl HotPath {
     #[inline]
     pub fn on_trade(&mut self, trade: &TradeEvent) {
         self.stats.trades_seen += 1;
-        let now = (self.now_ms)();
+        let now = self.now_ms();
 
         // 1. Push into mint_map (updates cached aggregates)
         let record = trade_to_record(trade, now);
@@ -252,7 +283,7 @@ impl HotPath {
     /// triggering gate/score evaluation.
     pub fn on_prewarm(&mut self, prewarm: &PreWarmEvent) {
         self.stats.prewarms += 1;
-        let now = (self.now_ms)();
+        let now = self.now_ms();
 
         let record = TradeRecord {
             timestamp_ms: prewarm.timestamp_ms,
@@ -325,7 +356,7 @@ impl HotPath {
             ExitReason::StopLoss => {
                 self.consecutive_stops += 1;
                 if self.consecutive_stops >= self.consecutive_stop_pause_count {
-                    let now = (self.now_ms)();
+                    let now = self.now_ms();
                     self.stop_pause_until_ms = now + self.consecutive_stop_pause_ms;
                     let stops = self.consecutive_stops;
                     let pause_ms = self.consecutive_stop_pause_ms;

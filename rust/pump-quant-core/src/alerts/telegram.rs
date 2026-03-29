@@ -8,7 +8,19 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use serde::Serialize;
 use tracing::{debug, error, warn};
+
+/// LATENCY: Fixed-shape Telegram sendMessage body. Using a #[derive(Serialize)]
+/// struct avoids the serde_json::json!() macro which allocates a BTreeMap<String, Value>
+/// per invocation (~5 heap allocs). This serializes directly to JSON (~0 extra allocs).
+#[derive(Serialize)]
+struct TelegramBody<'a> {
+    chat_id: &'a str,
+    text: &'a str,
+    parse_mode: &'static str,
+    disable_web_page_preview: bool,
+}
 
 /// Rate limit: minimum interval between sends (ms).
 const RATE_LIMIT_MS: u64 = 1_100;
@@ -84,12 +96,13 @@ impl TelegramAlerter {
             self.bot_token
         );
 
-        let body = serde_json::json!({
-            "chat_id": self.chat_id,
-            "text": message,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": true,
-        });
+        // LATENCY: struct serialization — no intermediate Value tree allocation.
+        let body = TelegramBody {
+            chat_id: &self.chat_id,
+            text: message,
+            parse_mode: "HTML",
+            disable_web_page_preview: true,
+        };
 
         let resp = self.client.post(&url).json(&body).send().await?;
 
@@ -107,6 +120,10 @@ impl TelegramAlerter {
     /// Fire-and-forget send from a synchronous context (e.g. logger thread).
     /// Spawns an async task on the tokio runtime. If the runtime is gone
     /// or rate-limited, the message is silently dropped.
+    ///
+    /// LATENCY: Pre-serializes the JSON body on the calling thread to avoid
+    /// capturing borrowed references into the spawned future. Uses struct
+    /// serialization (no serde_json::json!() Value tree allocation).
     pub fn try_send_blocking(&self, message: &str) {
         if !self.check_rate_limit() {
             return;
@@ -117,16 +134,28 @@ impl TelegramAlerter {
             self.bot_token
         );
 
-        let body = serde_json::json!({
-            "chat_id": self.chat_id,
-            "text": message,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": true,
-        });
+        // LATENCY: Serialize the body eagerly so we can move an owned String
+        // into the spawned future instead of cloning chat_id/message.
+        let body = TelegramBody {
+            chat_id: &self.chat_id,
+            text: message,
+            parse_mode: "HTML",
+            disable_web_page_preview: true,
+        };
+        let body_json = match serde_json::to_string(&body) {
+            Ok(j) => j,
+            Err(_) => return,
+        };
 
         let client = self.client.clone();
         self.rt_handle.spawn(async move {
-            match client.post(&url).json(&body).send().await {
+            match client
+                .post(&url)
+                .header("content-type", "application/json")
+                .body(body_json)
+                .send()
+                .await
+            {
                 Ok(resp) if !resp.status().is_success() => {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();

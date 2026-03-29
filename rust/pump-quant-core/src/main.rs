@@ -396,8 +396,12 @@ async fn main() -> anyhow::Result<()> {
     loop {
         match engine_rx.recv() {
             Ok(FeedEvent::Trade(trade)) => {
-                // Record feed event for health monitoring
-                health_monitor.record_event(trade.source, now_ms_system());
+                // LATENCY: use trade's own timestamp for health monitoring instead
+                // of a redundant SystemTime::now() syscall. The trade timestamp comes
+                // from PumpPortal's "timestamp" field (epoch ms), or fallback to
+                // system time inside the feed parser. This eliminates one ~20ns
+                // clock_gettime syscall per trade on the hot path.
+                health_monitor.record_event(trade.source, trade.timestamp_ms);
 
                 hot_path.on_trade(&trade);
 
@@ -427,8 +431,8 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             Ok(FeedEvent::PreWarm(prewarm)) => {
-                // Record feed event for health monitoring
-                health_monitor.record_event(prewarm.source, now_ms_system());
+                // LATENCY: use prewarm's own timestamp (same rationale as Trade)
+                health_monitor.record_event(prewarm.source, prewarm.timestamp_ms);
 
                 hot_path.on_prewarm(&prewarm);
             }

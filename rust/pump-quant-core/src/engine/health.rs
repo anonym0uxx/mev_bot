@@ -9,6 +9,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
+use arrayvec::ArrayVec;
+
 use crate::feeds::FeedSource;
 
 /// Configuration for the health monitor, loaded from canary.json `health` section.
@@ -33,8 +35,9 @@ impl Default for HealthConfig {
 #[derive(Debug, Clone)]
 pub enum HealthStatus {
     Healthy,
-    // AUDIT: uses &'static str to avoid heap allocation on the ~5s check path.
-    Degraded { stale_feeds: Vec<&'static str> },
+    // LATENCY: ArrayVec<&'static str, 2> — zero heap allocation.
+    // Max 2 feeds tracked (PumpPortal + Helius), so capacity 2 is exact.
+    Degraded { stale_feeds: ArrayVec<&'static str, 2> },
 }
 
 impl HealthStatus {
@@ -93,16 +96,16 @@ impl HealthMonitor {
 
     /// Check health status. Called every ~5s (100 ticks).
     ///
-    /// Returns the current `HealthStatus` and a vec of feeds that just recovered
+    /// Returns the current `HealthStatus` and an ArrayVec of feeds that just recovered
     /// (transitioned from stale → fresh since last check).
     ///
-    /// AUDIT: uses &'static str and pre-sized Vecs to minimize allocation on this path.
-    pub fn check(&self, now_ms: u64) -> (HealthStatus, Vec<&'static str>) {
+    /// LATENCY: zero heap allocation — ArrayVec<_, 2> is fully stack-resident.
+    pub fn check(&self, now_ms: u64) -> (HealthStatus, ArrayVec<&'static str, 2>) {
         let pp_last = self.last_pp_event_ms.load(Ordering::Relaxed);
         let prev_stale = self.previously_stale.load(Ordering::Relaxed);
 
-        let mut stale_feeds: Vec<&'static str> = Vec::with_capacity(2);
-        let mut recovered_feeds: Vec<&'static str> = Vec::with_capacity(2);
+        let mut stale_feeds: ArrayVec<&'static str, 2> = ArrayVec::new();
+        let mut recovered_feeds: ArrayVec<&'static str, 2> = ArrayVec::new();
         let mut current_stale_bits: u64 = 0;
 
         // PumpPortal: required feed (always check if we've ever seen an event)

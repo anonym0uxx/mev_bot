@@ -295,25 +295,24 @@ fn parse_corecast_message(text: &str) -> Option<([u8; 32], Option<[u8; 32]>, u64
         .pointer("/Trade/Buy/Currency/MintAddress")?
         .as_str()?;
 
-    // Decode mint address from base58
-    let mint_bytes = bs58::decode(mint_address).into_vec().ok()?;
-    if mint_bytes.len() != 32 {
+    // LATENCY: Decode base58 into stack buffer — no heap allocation.
+    let mut mint = [0u8; 32];
+    let mint_len = bs58::decode(mint_address).onto(&mut mint[..]).ok()?;
+    if mint_len != 32 {
         return None;
     }
-    let mut mint = [0u8; 32];
-    mint.copy_from_slice(&mint_bytes);
 
     // Extract transaction signer for creator-sell verification
+    // LATENCY: stack-allocated decode, same as mint.
     let signer = trade
         .pointer("/Transaction/Signer")
         .and_then(|s| s.as_str())
         .and_then(|s| {
-            let bytes = bs58::decode(s).into_vec().ok()?;
-            if bytes.len() != 32 {
+            let mut arr = [0u8; 32];
+            let n = bs58::decode(s).onto(&mut arr[..]).ok()?;
+            if n != 32 {
                 return None;
             }
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&bytes);
             Some(arr)
         });
 
