@@ -357,6 +357,17 @@ async fn main() -> anyhow::Result<()> {
         info!("CoreCast feed spawned (will activate if BITQUERY_API_KEY is set)");
     }
 
+    // ── Spawn blockhash cache refresh task ─────────────────────────
+    // Refreshes every 25s so tx execution never pays a per-trade RPC round-trip.
+    // Gracefully degrades to direct fetch on cache miss — no impact on paper mode.
+    {
+        let rpc_url = std::env::var("SOLANA_RPC_URL")
+            .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
+        let bh_cache = pump_quant_core::tx::executor::BlockhashCache::new();
+        bh_cache.clone().spawn_refresh_task(rpc_url);
+        info!("Blockhash cache refresh task started (25s interval)");
+    }
+
     // ── Spawn API server with shared stats ──────────────────────────
     let api_state = ApiState::with_health(health_monitor.clone());
     let shared_stats = api_state.stats.clone();
