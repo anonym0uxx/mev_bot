@@ -28,6 +28,11 @@ use dashmap::DashMap;
 use super::dedup::MigrationDedup;
 use crate::feeds::MigrationSource;
 
+/// Bonding curve terminal price at graduation (~85 SOL vSol / 206.9T vTokens).
+/// Pre-computed constant: avoids runtime division on every migration event.
+/// = 85e9 lamports / 206_900_000_000_000 token atoms ≈ 4.107e-7 SOL per token atom.
+const BC_TERMINAL_PRICE: f64 = 85e9_f64 / 206_900_000_000_000_f64;
+
 // ── Config ───────────────────────────────────────────────────────────────────
 
 /// Configuration for the graduation arbitrage engine.
@@ -764,11 +769,8 @@ impl GraduationArbEngine {
             0.0
         };
 
-        // BC terminal price approximation:
-        // At ~85 SOL vSol, price = vSol / vTokens
-        // pump.fun virtual token reserves at graduation ≈ 206,900,000 tokens (fixed from bonding curve)
-        // bc_terminal_price ≈ 85e9 lamports / 206_900_000_000_000 atoms ≈ 4.11e-7 SOL/token
-        let bc_price = 85e9_f64 / 206_900_000_000_000_f64;
+        // BC terminal price: pre-computed constant (avoids runtime f64 division).
+        let bc_price = BC_TERMINAL_PRICE;
 
         let spread_pct = if bc_price > 0.0 {
             ((ray_price - bc_price) / bc_price * 100.0).abs()

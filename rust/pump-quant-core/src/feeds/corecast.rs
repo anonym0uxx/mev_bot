@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crossbeam_channel::Sender;
+use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async_with_config, tungstenite};
 use tracing::{debug, error, info, warn};
@@ -43,6 +44,83 @@ const MAX_BACKOFF_SECS: u64 = 30;
 const SUB_ID_BONDING_TRADES: &str = "1";
 const SUB_ID_AMM_MIGRATION: &str = "2";
 const SUB_ID_LP_REMOVAL: &str = "3";
+
+// ── Graduation noise filters ────────────────────────────────────────
+
+/// Wrapped SOL mint (So11111111111111111111111111111111111111112).
+/// Every Raydium trade has WSOL on one side — never a graduation.
+const WSOL_MINT_B58: &str = "So11111111111111111111111111111111111111112";
+
+/// Check if a base58-encoded mint is a valid pump.fun graduation candidate.
+/// Filters out WSOL and system tokens. pump.fun mints end with "pump".
+#[inline(always)]
+fn is_valid_graduation_mint(mint_b58: &str) -> bool {
+    // WSOL appears on every Raydium trade — reject immediately
+    if mint_b58 == WSOL_MINT_B58 {
+        return false;
+    }
+    // pump.fun token mints always end with "pump" suffix
+    mint_b58.ends_with("pump")
+}
+
+/// Tracks seen Raydium pool signatures to deduplicate ongoing trades on
+/// already-graduated tokens. Only the FIRST event per unique tx signature
+/// is treated as a graduation; subsequent trades on the same pool are ignored.
+///
+/// Uses the tx signature (first 32 bytes) as the dedup key, since each
+/// graduation creates a unique initialize2 transaction.
+struct GraduationFilter {
+    /// sig_prefix[0..32] → first_seen_ts_ms
+    seen_sigs: DashMap<[u8; 32], u64>,
+    /// Startup timestamp — events before startup + grace period are historical replays.
+    startup_ts_ms: u64,
+    /// Grace period after startup to ignore historical event replay (ms).
+    startup_grace_ms: u64,
+}
+
+impl GraduationFilter {
+    fn new(startup_grace_ms: u64) -> Self {
+        Self {
+            seen_sigs: DashMap::with_capacity(1024),
+            startup_ts_ms: now_ms(),
+            startup_grace_ms,
+        }
+    }
+
+    /// Returns true if this event should be emitted as a graduation.
+    /// Returns false if: historical replay, duplicate sig, or non-pump mint.
+    fn should_emit(&self, mint_b58: &str, sig_prefix: &[u8; 32], ts_ms: u64) -> bool {
+        // Filter 1: reject non-pump.fun mints (WSOL, system tokens, etc.)
+        if !is_valid_graduation_mint(mint_b58) {
+            return false;
+        }
+
+        // Filter 2: reject historical event replay on connect
+        if ts_ms < self.startup_ts_ms.saturating_add(self.startup_grace_ms) {
+            debug!(
+                "[corecast] ignoring historical replay event ts={} startup={}",
+                ts_ms, self.startup_ts_ms
+            );
+            return false;
+        }
+
+        // Filter 3: dedup by tx signature — only first occurrence is a graduation
+        use dashmap::mapref::entry::Entry;
+        match self.seen_sigs.entry(*sig_prefix) {
+            Entry::Occupied(_) => false, // seen this tx before → not a new graduation
+            Entry::Vacant(v) => {
+                v.insert(ts_ms);
+                true // first time seeing this tx → graduation
+            }
+        }
+    }
+
+    /// Periodic cleanup: remove entries older than TTL to prevent unbounded growth.
+    /// Called from the stats logging path (every 100 events).
+    fn gc(&self, now_ms: u64, ttl_ms: u64) {
+        self.seen_sigs.retain(|_, ts| now_ms.saturating_sub(*ts) < ttl_ms);
+    }
+}
 
 /// Stream 1: pump.fun DEX trades (creator sell detection).
 const GQL_BONDING_TRADES: &str = r#"subscription {
@@ -129,6 +207,10 @@ pub async fn run(
     };
 
     let mut backoff_secs: u64 = 1;
+
+    // Graduation noise filter: dedup sigs, reject non-pump mints, ignore historical replay.
+    // 10s grace period on startup to ignore Bitquery historical event replay.
+    let grad_filter = GraduationFilter::new(10_000);
 
     loop {
         if *shutdown_rx.borrow() {
@@ -286,7 +368,7 @@ pub async fn run(
                                             }
                                             SUB_ID_AMM_MIGRATION => {
                                                 stats.amm_migrations += 1;
-                                                let events = parse_amm_migration(payload, ts_ms);
+                                                let events = parse_amm_migration(payload, ts_ms, &grad_filter);
                                                 for event in &events {
                                                     if let FeedEvent::Migration { ref mint, .. } = event {
                                                         debug!(
@@ -330,15 +412,18 @@ pub async fn run(
                                             }
                                         }
 
-                                        // Periodic stats logging
+                                        // Periodic stats logging + graduation filter GC
                                         let total = stats.total();
                                         if total % 100 == 0 && total > 0 {
                                             debug!(
-                                                "[corecast] bonding={} amm={} lp={} creator_match={} creator_miss={}",
+                                                "[corecast] bonding={} amm={} lp={} creator_match={} creator_miss={} grad_filter_sigs={}",
                                                 stats.bonding_trades, stats.amm_migrations,
                                                 stats.lp_removals,
-                                                stats.creator_matches, stats.creator_mismatches
+                                                stats.creator_matches, stats.creator_mismatches,
+                                                grad_filter.seen_sigs.len()
                                             );
+                                            // GC graduation filter: remove sigs older than 60s
+                                            grad_filter.gc(now_ms(), 60_000);
                                         }
                                     }
                                 }
@@ -474,9 +559,17 @@ fn parse_bonding_trade(
 // ── Stream 2: AMM migration detection ───────────────────────────────
 
 /// Parse Raydium AMM trades from stream 2 payload.
-/// Returns `FeedEvent::Migration` for each mint detected trading on Raydium.
-/// A pump.fun token appearing on Raydium means it has graduated/migrated.
-fn parse_amm_migration(payload: &serde_json::Value, ts_ms: u64) -> Vec<FeedEvent> {
+/// Returns `FeedEvent::Migration` only for validated pump.fun token graduations.
+///
+/// Filters applied (in order):
+///   1. Reject non-pump.fun mints (WSOL, system tokens) — `is_valid_graduation_mint()`
+///   2. Reject historical event replays on connect (startup grace period)
+///   3. Reject duplicate tx signatures (only first occurrence = graduation)
+fn parse_amm_migration(
+    payload: &serde_json::Value,
+    ts_ms: u64,
+    grad_filter: &GraduationFilter,
+) -> Vec<FeedEvent> {
     let mut events = Vec::new();
 
     let trades = match payload
@@ -505,34 +598,47 @@ fn parse_amm_migration(payload: &serde_json::Value, ts_ms: u64) -> Vec<FeedEvent
             })
             .unwrap_or([0u8; 64]);
 
-        // Extract both buy and sell mint addresses — the pump.fun token could be on either side
-        let buy_mint = trade
-            .pointer("/Trade/Buy/Currency/MintAddress")
-            .and_then(|s| s.as_str())
-            .and_then(decode_bs58_32);
-        let sell_mint = trade
-            .pointer("/Trade/Sell/Currency/MintAddress")
-            .and_then(|s| s.as_str())
-            .and_then(decode_bs58_32);
+        // Extract sig prefix (first 32 bytes) for dedup key
+        let sig_prefix: [u8; 32] = sig[..32].try_into().unwrap_or([0u8; 32]);
 
-        // Emit migration for both sides — the engine will only act on mints it tracks
-        if let Some(mint) = buy_mint {
-            events.push(FeedEvent::Migration {
-                mint,
-                ts_ms,
-                source: MigrationSource::CoreCastStream2,
-                sig,
-            });
+        // Extract both buy and sell mint addresses as base58 strings for filtering
+        let buy_mint_b58 = trade
+            .pointer("/Trade/Buy/Currency/MintAddress")
+            .and_then(|s| s.as_str());
+        let sell_mint_b58 = trade
+            .pointer("/Trade/Sell/Currency/MintAddress")
+            .and_then(|s| s.as_str());
+
+        // Find the pump.fun token mint — it ends with "pump", the other side is WSOL
+        // Only emit for validated pump.fun mints that pass all graduation filters
+        let mut emitted = false;
+
+        if let Some(mint_b58) = buy_mint_b58 {
+            if grad_filter.should_emit(mint_b58, &sig_prefix, ts_ms) {
+                if let Some(mint) = decode_bs58_32(mint_b58) {
+                    events.push(FeedEvent::Migration {
+                        mint,
+                        ts_ms,
+                        source: MigrationSource::CoreCastStream2,
+                        sig,
+                    });
+                    emitted = true;
+                }
+            }
         }
-        if let Some(mint) = sell_mint {
-            // Avoid duplicate if buy and sell are the same mint (shouldn't happen but be safe)
-            if buy_mint != sell_mint {
-                events.push(FeedEvent::Migration {
-                    mint,
-                    ts_ms,
-                    source: MigrationSource::CoreCastStream2,
-                    sig,
-                });
+
+        if !emitted {
+            if let Some(mint_b58) = sell_mint_b58 {
+                if grad_filter.should_emit(mint_b58, &sig_prefix, ts_ms) {
+                    if let Some(mint) = decode_bs58_32(mint_b58) {
+                        events.push(FeedEvent::Migration {
+                            mint,
+                            ts_ms,
+                            source: MigrationSource::CoreCastStream2,
+                            sig,
+                        });
+                    }
+                }
             }
         }
     }

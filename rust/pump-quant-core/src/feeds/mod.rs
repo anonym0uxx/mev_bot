@@ -96,3 +96,41 @@ pub struct PreWarmEvent {
 }
 
 pub use event_joiner::EventJoiner;
+
+// ── Layout assertions: keep FeedEvent cache-friendly ──────────────
+// TradeEvent dominates FeedEvent size (~256 bytes). Boxing Trade would add
+// heap allocation on every trade (the critical hot path) — worse than the
+// extra enum padding. Migration.sig [u8;64] does NOT dominate; Trade does.
+// If FeedEvent ever grows beyond 264 bytes, investigate boxing cold variants.
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn feed_event_size_audit() {
+        let size = std::mem::size_of::<FeedEvent>();
+        // Document current size for regression detection.
+        // TradeEvent is ~256 bytes; FeedEvent adds discriminant + alignment.
+        assert!(
+            size <= 264,
+            "FeedEvent grew to {} bytes — audit for cache line pollution",
+            size
+        );
+        // Ensure TradeEvent is the dominant variant (not Migration.sig)
+        assert!(
+            std::mem::size_of::<TradeEvent>() > std::mem::size_of::<[u8; 64]>(),
+            "TradeEvent should be larger than Migration.sig"
+        );
+    }
+
+    #[test]
+    fn trade_event_size_audit() {
+        let size = std::mem::size_of::<TradeEvent>();
+        // 250 bytes payload + padding
+        assert!(
+            size <= 264,
+            "TradeEvent grew to {} bytes — check for unnecessary field additions",
+            size
+        );
+    }
+}
