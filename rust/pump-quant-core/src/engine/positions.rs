@@ -204,6 +204,17 @@ pub struct ClosedPosition {
     pub ride_hold_ms: u64,
     /// Unique confirming wallets at close. 0 for scalp exits.
     pub ride_unique_wallets: u8,
+    // ── V2 EntryEngine fields ──
+    /// Magnitude score from EntryEngine (0-100). Used for RIDE qualification.
+    pub magnitude_estimate: f64,
+    /// Kelly-computed size in lamports (what EntryEngine decided).
+    pub kelly_size_lamports: u64,
+    /// Entry action from EntryEngine: "scalp" or "ride".
+    pub entry_action: &'static str,
+    /// Confirming buy volume during hold (lamports). For RIDE analysis.
+    pub confirming_buy_sol: u64,
+    /// Number of sells during hold. 0 = pure buy pressure.
+    pub sells_during_hold: u16,
 }
 
 // ─── Config Structs ────────────────────────────────────────────────
@@ -736,6 +747,12 @@ impl PositionManager {
             ride_peak_mvsol,
             ride_hold_ms,
             ride_unique_wallets,
+            // V2 EntryEngine fields
+            magnitude_estimate: pos.magnitude_estimate,
+            kelly_size_lamports: pos.size_sol, // size_sol IS the Kelly size (or tier fallback)
+            entry_action: if pos.magnitude_estimate >= 40.0 { "ride" } else { "scalp" },
+            confirming_buy_sol: pos.confirming_buy_sol,
+            sells_during_hold: pos.sells_during_hold,
         };
 
         // Best-effort send — if the receiver is gone, we just drop it.

@@ -179,12 +179,18 @@ impl PaperTradeLogger {
             "ridePeakMvsol": pos.ride_peak_mvsol,
             "rideHoldMs": pos.ride_hold_ms,
             "rideUniqueWallets": pos.ride_unique_wallets,
+            // V2 EntryEngine fields (Kelly sizing + magnitude prediction)
+            "magnitudeScore": pos.magnitude_estimate,
+            "kellySizeLamports": pos.kelly_size_lamports,
+            "entryAction": pos.entry_action,
+            "confirmingBuySol": pos.confirming_buy_sol as f64 / 1_000_000_000.0,
+            "sellsDuringHold": pos.sells_during_hold,
             // Strategy classification — single backrunner, compile-time constant
             "strategyTag": STRATEGY_TAG,
             // Metadata
             "engineVersion": "v5-rust",
             "configVersion": self.config_version,
-            "dataVersion": 4,
+            "dataVersion": 5,
             "is_paper": self.paper_mode,
             "excludeFromAnalysis": exclude,
             "recordedAt": now_ms,
