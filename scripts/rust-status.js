@@ -161,8 +161,10 @@ async function main() {
   const feeds = health?.feeds || {};
   const ppAge  = feeds.pumpportal?.age_s ?? '?';
   const helAge = feeds.helius?.age_s ?? '?';
+  const ccAge  = feeds.corecast?.age_s ?? '?';
   const ppOk   = feeds.pumpportal?.status === 'healthy';
   const helOk  = feeds.helius?.status === 'healthy' || feeds.helius?.status === 'not_started';
+  const ccOk   = feeds.corecast?.status === 'healthy' || feeds.corecast?.status === 'not_started';
   const paused = stats?.paused || health?.trading_paused || false;
 
   // ── Latency stats ─────────────────────────────────────────────────
@@ -234,6 +236,7 @@ async function main() {
   lines.push('📡 Feeds & Latency');
   lines.push(`  PumpPortal: ${ppOk ? '✅' : '❌'} (${ppAge}s ago)`);
   lines.push(`  Helius:     ${helOk ? '✅' : '❌'} (${helAge}s ago)`);
+  lines.push(`  CoreCast:   ${ccOk ? '✅' : '❌'} (${ccAge}s ago)`);
   lines.push(`  Throughput: ${tps.toFixed(1)} events/s | Gate pass: ${gatePassRate}%`);
   lines.push(`  Positions open: ${stats?.positions_opened - stats?.positions_closed || 0} | Closed: ${stats?.positions_closed || 0}`);
 

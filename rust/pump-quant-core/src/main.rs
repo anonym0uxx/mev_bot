@@ -701,9 +701,15 @@ async fn main() -> anyhow::Result<()> {
                 hot_path.on_token_created(&created);
             }
             Ok(FeedEvent::CreatorSell { mint, ts_ms }) => {
+                // CoreCast is the primary source of creator sell events
+                health_monitor.record_event(FeedSource::CoreCast, ts_ms);
                 hot_path.on_creator_sell(&mint, ts_ms);
             }
             Ok(FeedEvent::Migration { mint, ts_ms, source, sig }) => {
+                // CoreCast migrations: track feed liveness
+                if matches!(source, pump_quant_core::feeds::MigrationSource::CoreCastStream2) {
+                    health_monitor.record_event(FeedSource::CoreCast, ts_ms);
+                }
                 let mint_b58 = bs58::encode(&mint).into_string();
                 let open_before = hot_path.open_positions();
                 hot_path.on_migration(&mint, ts_ms);

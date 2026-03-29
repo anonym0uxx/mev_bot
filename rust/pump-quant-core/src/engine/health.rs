@@ -52,6 +52,8 @@ pub struct HealthMonitor {
     last_pp_event_ms: AtomicU64,
     /// Last event timestamp from Helius (epoch ms).
     last_helius_event_ms: AtomicU64,
+    /// Last event timestamp from CoreCast/Bitquery (epoch ms).
+    last_corecast_event_ms: AtomicU64,
     /// Staleness threshold in milliseconds.
     stale_threshold_ms: u64,
     /// Whether to auto-pause when degraded.
@@ -69,6 +71,7 @@ impl HealthMonitor {
         Arc::new(Self {
             last_pp_event_ms: AtomicU64::new(0),
             last_helius_event_ms: AtomicU64::new(0),
+            last_corecast_event_ms: AtomicU64::new(0),
             stale_threshold_ms: config.market_feed_stale_ms,
             auto_pause_on_degraded: config.auto_pause_on_degraded,
             paused: AtomicBool::new(false),
@@ -86,6 +89,9 @@ impl HealthMonitor {
             }
             FeedSource::Helius => {
                 self.last_helius_event_ms.store(ts_ms, Ordering::Relaxed);
+            }
+            FeedSource::CoreCast => {
+                self.last_corecast_event_ms.store(ts_ms, Ordering::Relaxed);
             }
             FeedSource::ShredStream => {
                 // ShredStream is optional/bonus — not required for health.
@@ -156,6 +162,7 @@ impl HealthMonitor {
         match source {
             FeedSource::PumpPortal => self.last_pp_event_ms.load(Ordering::Relaxed),
             FeedSource::Helius => self.last_helius_event_ms.load(Ordering::Relaxed),
+            FeedSource::CoreCast => self.last_corecast_event_ms.load(Ordering::Relaxed),
             FeedSource::ShredStream => 0, // not tracked separately
         }
     }

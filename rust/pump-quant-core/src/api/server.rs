@@ -139,6 +139,7 @@ async fn health(State(state): State<ApiState>) -> Json<serde_json::Value> {
         let paused = !monitor.is_trading_allowed();
         let pp_last = monitor.last_event_ms(FeedSource::PumpPortal);
         let hel_last = monitor.last_event_ms(FeedSource::Helius);
+        let cc_last = monitor.last_event_ms(FeedSource::CoreCast);
         let stale_threshold = monitor.stale_threshold_ms();
 
         let pp_age_s = if pp_last > 0 {
@@ -148,6 +149,11 @@ async fn health(State(state): State<ApiState>) -> Json<serde_json::Value> {
         };
         let hel_age_s = if hel_last > 0 {
             now_ms.saturating_sub(hel_last) / 1000
+        } else {
+            0
+        };
+        let cc_age_s = if cc_last > 0 {
+            now_ms.saturating_sub(cc_last) / 1000
         } else {
             0
         };
@@ -163,6 +169,14 @@ async fn health(State(state): State<ApiState>) -> Json<serde_json::Value> {
         let hel_status = if hel_last == 0 {
             "not_started"
         } else if hel_age_s * 1000 > stale_threshold {
+            "stale"
+        } else {
+            "healthy"
+        };
+
+        let cc_status = if cc_last == 0 {
+            "not_started"
+        } else if cc_age_s * 1000 > stale_threshold {
             "stale"
         } else {
             "healthy"
@@ -210,7 +224,8 @@ async fn health(State(state): State<ApiState>) -> Json<serde_json::Value> {
                 "stale_threshold_s": stale_threshold / 1000,
                 "feeds": {
                     "pumpportal": { "status": pp_status, "age_s": pp_age_s },
-                    "helius": { "status": hel_status, "age_s": hel_age_s }
+                    "helius": { "status": hel_status, "age_s": hel_age_s },
+                    "corecast": { "status": cc_status, "age_s": cc_age_s }
                 },
                 "gate_rejects": gate_reject_histogram.0,
                 "hot_path": {

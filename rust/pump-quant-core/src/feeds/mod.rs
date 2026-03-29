@@ -82,6 +82,7 @@ pub enum FeedSource {
     PumpPortal,
     Helius,
     ShredStream,
+    CoreCast,
 }
 
 #[derive(Debug, Clone)]
