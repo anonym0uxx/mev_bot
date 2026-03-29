@@ -23,6 +23,17 @@ pub struct MintHistory {
     pub cached_sell_count_5s: u16,
     pub cached_volume_sol_5s: u64, // lamports
     pub cached_vsol_oldest_3s: u64, // oldest vSol in 3s window (for delta calc)
+
+    // ── Wallet concentration tracking (30s window) ──────────────────
+    // Fixed-size array to avoid heap alloc: up to 32 unique wallets tracked.
+    // Each entry: (wallet_prefix_u64, cumulative_buy_volume_lamports)
+    wallet_vol: [(u64, u64); 32],
+    wallet_vol_count: u8,
+    wallet_vol_window_start_ms: u64,
+    /// Cached: max single-wallet buy volume in 30s window (lamports).
+    pub cached_max_wallet_vol_30s: u64,
+    /// Cached: total buy volume across all wallets in 30s window (lamports).
+    pub cached_total_buy_vol_30s: u64,
 }
 
 impl MintHistory {
@@ -43,11 +54,21 @@ impl MintHistory {
             cached_sell_count_5s: 0,
             cached_volume_sol_5s: 0,
             cached_vsol_oldest_3s: 0,
+            wallet_vol: [(0u64, 0u64); 32],
+            wallet_vol_count: 0,
+            wallet_vol_window_start_ms: now_ms,
+            cached_max_wallet_vol_30s: 0,
+            cached_total_buy_vol_30s: 0,
         }
     }
 
     /// Push a trade into the ring buffer and recompute all cached aggregates.
     pub fn push(&mut self, trade: TradeRecord, now_ms: u64) {
+        // Update wallet concentration tracking for buy trades BEFORE write
+        // (we need the trade data before it's in the ring)
+        if trade.is_buy {
+            self.update_wallet_vol(&trade, now_ms);
+        }
         self.write_trade(trade, now_ms);
         self.recompute_aggregates(now_ms);
     }
@@ -132,6 +153,67 @@ impl MintHistory {
             }
             unique
         }
+    }
+
+    /// Max single-wallet buy volume in the 30s window.
+    #[inline]
+    pub fn max_wallet_buy_vol_30s(&self) -> u64 {
+        self.cached_max_wallet_vol_30s
+    }
+
+    /// Total buy volume across all wallets in the 30s window.
+    #[inline]
+    pub fn total_buy_vol_30s(&self) -> u64 {
+        self.cached_total_buy_vol_30s
+    }
+
+    /// Update wallet concentration tracking on a buy trade.
+    /// Uses a 30s sliding window with a fixed-size array of 32 wallet slots.
+    /// Wallet identity is the first 8 bytes of the trader pubkey (u64 LE prefix).
+    fn update_wallet_vol(&mut self, trade: &TradeRecord, now_ms: u64) {
+        // Window reset: if >30s since window start, clear everything
+        if now_ms.saturating_sub(self.wallet_vol_window_start_ms) > 30_000 {
+            self.wallet_vol = [(0u64, 0u64); 32];
+            self.wallet_vol_count = 0;
+            self.wallet_vol_window_start_ms = now_ms;
+        }
+
+        // Extract wallet prefix: first 8 bytes of trader as u64 LE
+        let wallet_prefix = u64::from_le_bytes([
+            trade.trader[0], trade.trader[1], trade.trader[2], trade.trader[3],
+            trade.trader[4], trade.trader[5], trade.trader[6], trade.trader[7],
+        ]);
+
+        // Look up existing entry
+        let count = self.wallet_vol_count as usize;
+        let mut found = false;
+        for i in 0..count {
+            if self.wallet_vol[i].0 == wallet_prefix {
+                self.wallet_vol[i].1 = self.wallet_vol[i].1.saturating_add(trade.sol_amount);
+                found = true;
+                break;
+            }
+        }
+
+        // Insert new entry if not found and we have room
+        if !found && count < 32 {
+            self.wallet_vol[count] = (wallet_prefix, trade.sol_amount);
+            self.wallet_vol_count += 1;
+        }
+
+        // Recompute cached max and total
+        let count = self.wallet_vol_count as usize;
+        let mut max_vol: u64 = 0;
+        let mut total_vol: u64 = 0;
+        for i in 0..count {
+            let vol = self.wallet_vol[i].1;
+            total_vol = total_vol.saturating_add(vol);
+            if vol > max_vol {
+                max_vol = vol;
+            }
+        }
+        self.cached_max_wallet_vol_30s = max_vol;
+        self.cached_total_buy_vol_30s = total_vol;
     }
 
     /// Recompute all cached_* aggregate fields by scanning the ring buffer.

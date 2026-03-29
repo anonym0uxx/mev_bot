@@ -1,7 +1,7 @@
 //! JSONL paper trade logger.
 //!
 //! Appends closed positions as single JSON lines to a file,
-//! matching the TypeScript `mev_paper_trades.jsonl` format.
+//! matching the TypeScript `mev_paper_trades.jsonl` camelCase schema exactly.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -12,6 +12,7 @@ use serde_json::json;
 use crate::engine::positions::{ClosedPosition, ExitReason};
 
 /// Appends paper trade results as JSONL (one JSON object per line).
+/// Output schema matches the TS paper-trade-logger.ts exactly (camelCase keys).
 pub struct PaperTradeLogger {
     file: std::fs::File,
     path: String,
@@ -34,7 +35,8 @@ impl PaperTradeLogger {
         })
     }
 
-    /// Append a closed position as one JSON line.
+    /// Append a closed position as one JSON line with camelCase keys
+    /// matching the TS `paper-trade-logger.ts` schema.
     ///
     /// `entry_mint_b58` is the base58-encoded mint address string.
     pub fn log(&mut self, pos: &ClosedPosition, entry_mint_b58: &str) -> Result<()> {
@@ -52,22 +54,41 @@ impl PaperTradeLogger {
         let size_sol = pos.size_sol as f64 / 1_000_000_000.0;
         let gross_pnl_sol = pos.gross_pnl_sol as f64 / 1_000_000_000.0;
         let net_pnl_sol = pos.net_pnl_sol as f64 / 1_000_000_000.0;
+        let fees_sol = pos.fees_sol as f64 / 1_000_000_000.0;
         let entry_vsol = pos.entry_vsol as f64 / 1_000_000_000.0;
         let exit_vsol = pos.exit_vsol as f64 / 1_000_000_000.0;
 
+        // pnlPct = gross PnL / size (same as TS: trade.pnlPct)
+        let pnl_pct = if size_sol > 0.0 {
+            gross_pnl_sol / size_sol
+        } else {
+            0.0
+        };
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
         let line = json!({
-            "ts": pos.exit_ts_ms,
             "mint": entry_mint_b58,
-            "side": "sell",
-            "exit": exit_str,
-            "hold_ms": pos.hold_ms,
-            "size_sol": size_sol,
-            "gross_pnl_sol": gross_pnl_sol,
-            "net_pnl_sol": net_pnl_sol,
-            "entry_vsol": entry_vsol,
-            "exit_vsol": exit_vsol,
+            "entryVSol": entry_vsol,
+            "exitVSol": exit_vsol,
+            "entryTimestampMs": pos.entry_ts_ms,
+            "exitTimestampMs": pos.exit_ts_ms,
+            "holdMs": pos.hold_ms,
+            "sizeSol": size_sol,
+            "pnlSol": gross_pnl_sol,
+            "pnlPct": pnl_pct,
+            "exitReason": exit_str,
             "score": pos.score,
+            "netPnlSol": net_pnl_sol,
+            "feesSol": fees_sol,
+            "engineVersion": "v5-rust",
+            "dataVersion": 2,
             "is_paper": true,
+            "excludeFromAnalysis": false,
+            "recordedAt": now_ms,
         });
 
         let mut line_str = serde_json::to_string(&line)

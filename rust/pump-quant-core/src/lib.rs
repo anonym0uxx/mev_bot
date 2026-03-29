@@ -1,3 +1,4 @@
+pub mod alerts;
 pub mod api;
 pub mod core;
 pub mod engine;

@@ -3,15 +3,18 @@
 //! Reads config from canary.json, wires feeds → joiner → engine hot-path.
 //! Paper mode: logs all closed positions to SQLite.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crossbeam_channel::bounded;
 use tracing::info;
 use tracing_subscriber::{fmt, EnvFilter};
 
+use pump_quant_core::alerts::telegram::{self, TelegramAlerter};
 use pump_quant_core::engine::config::load_config;
 use pump_quant_core::engine::gates::GateStack;
+use pump_quant_core::engine::health::HealthMonitor;
 use pump_quant_core::engine::hot_path::HotPath;
 use pump_quant_core::engine::positions::{ClosedPosition, ExitReason, PositionManager};
 use pump_quant_core::engine::scorer::Scorer;
@@ -20,9 +23,11 @@ use pump_quant_core::feeds::{
     event_joiner::EventJoiner,
     helius::{HeliusConfig, HeliusWsClient},
     shredstream::ShredStreamConfig,
-    FeedEvent,
+    FeedEvent, FeedSource,
 };
 use pump_quant_core::persistence::sqlite::{SqliteLogger, TradeLogEntry};
+use pump_quant_core::persistence::paper_logger::PaperTradeLogger;
+use pump_quant_core::persistence::engine_state::write_engine_state;
 
 const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -91,6 +96,18 @@ async fn main() -> anyhow::Result<()> {
         "pump-quant-core starting"
     );
 
+    // ── Write engine state on startup ─────────────────────────────────
+    let daemon_started_at_ms = now_ms_system();
+    let data_dir = std::path::Path::new(&engine_config.log_file)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "data".to_string());
+    if let Err(e) = write_engine_state(&data_dir, daemon_started_at_ms) {
+        tracing::warn!("Failed to write initial engine state: {e}");
+    } else {
+        info!("Wrote engine-state.json to {data_dir}");
+    }
+
     // ── Build engine components ─────────────────────────────────────
     let min_score = engine_config.gate.trigger_min_score;
     let gate_stack = GateStack::new(engine_config.gate);
@@ -102,11 +119,29 @@ async fn main() -> anyhow::Result<()> {
             .max(43_000_000_000), // use config max_vsol for scorer range
     );
 
-    // Channel for closed positions: position_manager → logger thread
+    // ── Create Health Monitor ────────────────────────────────────────
+    let health_monitor = HealthMonitor::new(&engine_config.health);
+    info!(
+        stale_threshold_ms = engine_config.health.market_feed_stale_ms,
+        auto_pause = engine_config.health.auto_pause_on_degraded,
+        "Health monitor created"
+    );
+
+    // ── Create Telegram Alerter (optional) ──────────────────────────
+    let telegram_alerter = TelegramAlerter::new();
+    if telegram_alerter.is_some() {
+        info!("Telegram alerter enabled");
+    } else {
+        info!("Telegram alerter disabled (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set)");
+    }
+
+    // Channel for closed positions: position_manager → main loop (safety tracking)
     let (closed_tx, closed_rx) = bounded::<ClosedPosition>(256);
+    // Second channel: main loop → logger thread (after safety processing)
+    let (logger_tx, logger_rx) = bounded::<ClosedPosition>(256);
 
+    let max_entry_size_lamports = engine_config.position.max_entry_size_lamports;
     let position_manager = PositionManager::new(engine_config.position, closed_tx);
-
     let mut hot_path = HotPath::new(
         gate_stack,
         scorer,
@@ -114,10 +149,22 @@ async fn main() -> anyhow::Result<()> {
         now_ms_system,
         paper_mode,
         min_score,
+        engine_config.daily_loss_cap_lamports,
+        engine_config.consecutive_stop_pause_count,
+        engine_config.consecutive_stop_pause_ms,
+        engine_config.boosted_hours_utc.clone(),
+        engine_config.tod_boost_multiplier,
+        max_entry_size_lamports,
     );
+
+    // Attach health monitor to hot path for entry gating
+    hot_path.set_health_monitor(health_monitor.clone());
 
     // ── Spawn logger thread ─────────────────────────────────────────
     let log_file = engine_config.log_file.clone();
+    let logger_data_dir = data_dir.clone();
+    let logger_started_at = daemon_started_at_ms;
+    let logger_telegram = telegram_alerter.clone();
     std::thread::Builder::new()
         .name("trade-logger".to_string())
         .spawn(move || {
@@ -127,7 +174,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let db_path = log_file.replace(".jsonl", ".sqlite");
-            let logger = match SqliteLogger::new(&db_path) {
+            let sqlite_logger = match SqliteLogger::new(&db_path) {
                 Ok(l) => l,
                 Err(e) => {
                     tracing::error!("Failed to open SQLite logger: {e}");
@@ -135,19 +182,31 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
+            // Also open the JSONL paper trade logger (camelCase schema)
+            let mut paper_logger = match PaperTradeLogger::new(&log_file) {
+                Ok(l) => l,
+                Err(e) => {
+                    tracing::error!("Failed to open PaperTradeLogger: {e}");
+                    return;
+                }
+            };
+
             let mut batch: Vec<TradeLogEntry> = Vec::with_capacity(32);
             let mut total_logged: u64 = 0;
             let mut cumulative_pnl: i64 = 0;
+            let mut last_engine_state_ms: u64 = 0;
 
             loop {
                 // Drain with a timeout to periodically flush
-                match closed_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                match logger_rx.recv_timeout(std::time::Duration::from_secs(5)) {
                     Ok(cp) => {
                         cumulative_pnl += cp.net_pnl_sol;
                         total_logged += 1;
 
+                        let mint_b58 = bs58::encode(&cp.mint).into_string();
+
                         info!(
-                            mint = %bs58::encode(&cp.mint).into_string(),
+                            mint = %mint_b58,
                             exit = exit_reason_str(cp.exit_reason),
                             hold_ms = cp.hold_ms,
                             gross_pnl = cp.gross_pnl_sol,
@@ -159,8 +218,24 @@ async fn main() -> anyhow::Result<()> {
                             "CLOSED"
                         );
 
+                        // Write JSONL (camelCase, TS-compatible)
+                        if let Err(e) = paper_logger.log(&cp, &mint_b58) {
+                            tracing::error!("JSONL write failed: {e}");
+                        }
+
+                        // Send Telegram alert for every closed position
+                        if let Some(ref tg) = logger_telegram {
+                            let msg = telegram::format_trade_alert(
+                                exit_reason_str(cp.exit_reason),
+                                &mint_b58,
+                                cp.hold_ms,
+                                cp.net_pnl_sol as f64 / 1e9,
+                            );
+                            tg.try_send_blocking(&msg);
+                        }
+
                         batch.push(TradeLogEntry {
-                            mint: bs58::encode(&cp.mint).into_string(),
+                            mint: mint_b58,
                             entry_vsol: cp.entry_vsol as f64 / 1e9,
                             exit_vsol: cp.exit_vsol as f64 / 1e9,
                             entry_ts_ms: cp.entry_ts_ms as i64,
@@ -178,25 +253,37 @@ async fn main() -> anyhow::Result<()> {
 
                         // Flush batch every 16 entries
                         if batch.len() >= 16 {
-                            if let Err(e) = logger.log_trades_batch(&batch) {
+                            if let Err(e) = sqlite_logger.log_trades_batch(&batch) {
                                 tracing::error!("SQLite batch write failed: {e}");
                             }
                             batch.clear();
                         }
                     }
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                        // Flush any pending
+                        // Flush any pending SQLite batch
                         if !batch.is_empty() {
-                            if let Err(e) = logger.log_trades_batch(&batch) {
+                            if let Err(e) = sqlite_logger.log_trades_batch(&batch) {
                                 tracing::error!("SQLite batch write failed: {e}");
                             }
                             batch.clear();
+                        }
+
+                        // Periodically refresh engine-state.json (every 60s)
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        if now - last_engine_state_ms >= 60_000 {
+                            if let Err(e) = write_engine_state(&logger_data_dir, logger_started_at) {
+                                tracing::warn!("Failed to refresh engine state: {e}");
+                            }
+                            last_engine_state_ms = now;
                         }
                     }
                     Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                         // Flush remaining
                         if !batch.is_empty() {
-                            let _ = logger.log_trades_batch(&batch);
+                            let _ = sqlite_logger.log_trades_batch(&batch);
                         }
                         info!(total_logged, "Logger thread: channel closed, exiting");
                         return;
@@ -212,11 +299,18 @@ async fn main() -> anyhow::Result<()> {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
+    // TASK-10: Shared creator map (mint → creator wallet) for signer matching.
+    // PumpPortal writes on create events; CoreCast reads for creator-sell verification.
+    // Uses std::sync::RwLock — perfectly fine for infrequent writes from async context.
+    let shared_creator_map: pump_quant_core::feeds::corecast::CreatorMap =
+        Arc::new(RwLock::new(HashMap::new()));
+
     // Spawn PumpPortal feed
     let pp_tx_clone = pp_tx.clone();
     let pp_shutdown_rx = shutdown_rx.clone();
+    let pp_creator_map = shared_creator_map.clone();
     tokio::spawn(async move {
-        pump_quant_core::feeds::pumpportal::run(pp_tx_clone, pp_shutdown_rx).await;
+        pump_quant_core::feeds::pumpportal::run(pp_tx_clone, pp_shutdown_rx, pp_creator_map).await;
     });
     info!("PumpPortal feed spawned");
 
@@ -256,14 +350,15 @@ async fn main() -> anyhow::Result<()> {
         // since they emit FeedEvent::CreatorSell, not Trade/PreWarm
         let corecast_tx = engine_tx.clone();
         let corecast_shutdown_rx = shutdown_rx.clone();
+        let creator_map: pump_quant_core::feeds::corecast::CreatorMap = shared_creator_map.clone();
         tokio::spawn(async move {
-            pump_quant_core::feeds::corecast::run(corecast_tx, corecast_shutdown_rx).await;
+            pump_quant_core::feeds::corecast::run(corecast_tx, corecast_shutdown_rx, creator_map).await;
         });
         info!("CoreCast feed spawned (will activate if BITQUERY_API_KEY is set)");
     }
 
     // ── Spawn API server with shared stats ──────────────────────────
-    let api_state = ApiState::new();
+    let api_state = ApiState::with_health(health_monitor.clone());
     let shared_stats = api_state.stats.clone();
     let api_state_clone = api_state.clone();
     tokio::spawn(async move {
@@ -284,7 +379,13 @@ async fn main() -> anyhow::Result<()> {
     loop {
         match engine_rx.recv() {
             Ok(FeedEvent::Trade(trade)) => {
+                // Record feed event for health monitoring
+                health_monitor.record_event(trade.source, now_ms_system());
+
                 hot_path.on_trade(&trade);
+
+                // Drain closed positions for safety tracking, then forward to logger
+                drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
 
                 // Update shared API stats every 100 trades (also at first trade)
                 let ts = hot_path.stats.trades_seen;
@@ -309,10 +410,42 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             Ok(FeedEvent::PreWarm(prewarm)) => {
+                // Record feed event for health monitoring
+                health_monitor.record_event(prewarm.source, now_ms_system());
+
                 hot_path.on_prewarm(&prewarm);
             }
             Ok(FeedEvent::Tick { ts_ms }) => {
                 hot_path.on_tick(ts_ms);
+
+                // Drain closed positions for safety tracking, then forward to logger
+                drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
+
+                // Health check every 100 ticks (~5 seconds)
+                if hot_path.stats.ticks % 100 == 0 {
+                    let (health_status, recovered_feeds) = health_monitor.check(ts_ms);
+
+                    // Alert on stale feeds
+                    if let pump_quant_core::engine::health::HealthStatus::Degraded { ref stale_feeds } = health_status {
+                        for feed in stale_feeds {
+                            let pp_last = health_monitor.last_event_ms(FeedSource::PumpPortal);
+                            let stale_s = if pp_last > 0 { ts_ms.saturating_sub(pp_last) / 1000 } else { 0 };
+                            tracing::warn!(feed = %feed, stale_s, "Feed stale — trading paused");
+                            if let Some(ref tg) = telegram_alerter {
+                                tg.try_send_blocking(&telegram::format_feed_stale_alert(feed, stale_s));
+                            }
+                        }
+                    }
+
+                    // Alert on recovered feeds
+                    for feed in &recovered_feeds {
+                        info!(feed = %feed, "Feed recovered — trading resumed");
+                        if let Some(ref tg) = telegram_alerter {
+                            tg.try_send_blocking(&telegram::format_feed_recovered_alert(feed));
+                        }
+                    }
+                }
+
                 // Sync API stats every 200 ticks (~10 seconds)
                 if hot_path.stats.ticks % 200 == 0 {
                     sync_stats_to_api(&hot_path, &shared_stats);
@@ -325,6 +458,7 @@ async fn main() -> anyhow::Result<()> {
                 info!("Shutdown signal received");
                 let now = now_ms_system();
                 hot_path.close_all(now);
+                drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
                 sync_stats_to_api(&hot_path, &shared_stats);
                 let _ = shutdown_tx.send(true);
                 break;
@@ -333,6 +467,7 @@ async fn main() -> anyhow::Result<()> {
                 info!("Engine channel closed — shutting down");
                 let now = now_ms_system();
                 hot_path.close_all(now);
+                drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
                 sync_stats_to_api(&hot_path, &shared_stats);
                 break;
             }
@@ -352,6 +487,31 @@ async fn main() -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+/// Drain all pending ClosedPositions from the position manager channel,
+/// update HotPath safety counters, then forward to the logger thread.
+fn drain_closed_positions(
+    closed_rx: &crossbeam_channel::Receiver<ClosedPosition>,
+    hot_path: &mut HotPath,
+    logger_tx: &crossbeam_channel::Sender<ClosedPosition>,
+    telegram_alerter: &Option<Arc<TelegramAlerter>>,
+) {
+    while let Ok(cp) = closed_rx.try_recv() {
+        // Track safety state — returns Some if circuit breaker just fired
+        if let Some((stops, pause_ms)) = hot_path.on_position_closed(&cp) {
+            tracing::warn!(
+                consecutive_stops = stops,
+                pause_ms,
+                "Circuit breaker fired"
+            );
+            if let Some(ref tg) = telegram_alerter {
+                tg.try_send_blocking(&telegram::format_circuit_breaker_alert(stops, pause_ms / 1000));
+            }
+        }
+        // Forward to logger thread (best-effort)
+        let _ = logger_tx.try_send(cp);
+    }
 }
 
 /// Sync HotPath stats into the shared API EngineStats.

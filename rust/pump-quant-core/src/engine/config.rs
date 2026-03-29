@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use super::gates::GateConfig;
+use super::health::HealthConfig;
 use super::positions::{PositionConfig, SizeTier, TpSlTier};
 use super::scorer::ScoreConfig;
 use crate::feeds::FeedSource;
@@ -80,6 +81,19 @@ pub struct MevJsonConfig {
 
     // Logging
     pub log_file: Option<String>,
+
+    // Safety / circuit breakers
+    pub daily_loss_cap_sol: Option<f64>,
+    pub paper_daily_loss_cap_sol: Option<f64>,
+    pub live_daily_loss_cap_sol: Option<f64>,
+    pub consecutive_stop_pause_count: Option<u32>,
+    pub consecutive_stop_pause_ms: Option<u64>,
+
+    // Min hold before NB exit (ms)
+    pub min_hold_before_exit_ms: Option<u64>,
+
+    // Creator sell TTL (ms)
+    pub creator_sell_ttl_ms: Option<u64>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -109,8 +123,32 @@ pub struct EngineConfig {
     pub gate: GateConfig,
     pub score: ScoreConfig,
     pub position: PositionConfig,
+    pub health: HealthConfig,
     pub paper_mode: bool,
     pub log_file: String,
+    /// Daily loss cap in lamports (mode-aware: paper vs live).
+    pub daily_loss_cap_lamports: u64,
+    /// Number of consecutive stop-loss exits before pausing.
+    pub consecutive_stop_pause_count: u32,
+    /// Duration (ms) to pause after consecutive stop breaker fires.
+    pub consecutive_stop_pause_ms: u64,
+    /// UTC hours that get ToD boost (loaded from config).
+    pub boosted_hours_utc: Vec<u8>,
+    /// ToD boost multiplier for boosted hours (default 1.25).
+    pub tod_boost_multiplier: f64,
+}
+
+impl EngineConfig {
+    /// Returns the time-of-day size multiplier for the given UTC hour.
+    /// Returns `tod_boost_multiplier` (e.g. 1.25) if the hour is in `boosted_hours_utc`,
+    /// otherwise returns 1.0.
+    pub fn get_tod_multiplier(&self, hour_utc: u8) -> f64 {
+        if self.boosted_hours_utc.contains(&hour_utc) {
+            self.tod_boost_multiplier
+        } else {
+            1.0
+        }
+    }
 }
 
 // ── Loader ───────────────────────────────────────────────────────────────────
@@ -170,7 +208,7 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
         pre_trigger_max_vsol_delta_3s: sol_to_lamports(
             mev.pre_trigger_max_vsol_delta_3s.unwrap_or(30.0),
         ),
-        creator_sell_ttl_ms: 60_000,
+        creator_sell_ttl_ms: mev.creator_sell_ttl_ms.unwrap_or(30_000),
         pre_trigger_min_volume_5s_lamports: sol_to_lamports(
             mev.pre_trigger_min_volume_5s.unwrap_or(0.5),
         ),
@@ -260,7 +298,7 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
         max_entry_size_lamports: sol_to_lamports(mev.max_entry_size_sol.unwrap_or(0.25)),
         size_variance_pct: mev.size_variance_pct.unwrap_or(0.2),
         jito_tip_lamports: mev.jito_tip_lamports.unwrap_or(50_000),
-        min_hold_before_exit_ms: 0,
+        min_hold_before_exit_ms: mev.min_hold_before_exit_ms.unwrap_or(500),
         tod_boost_multiplier: 1.25,
         boosted_hours_utc,
     };
@@ -270,11 +308,60 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
         .log_file
         .unwrap_or_else(|| "data/mev_paper_trades.jsonl".to_string());
 
+    // ── Safety / circuit breaker config ─────────────────────────────
+    // Daily loss cap: paper mode uses paper_daily_loss_cap_sol, live uses live_daily_loss_cap_sol,
+    // both fall back to daily_loss_cap_sol, then to 5.0 SOL.
+    let daily_loss_cap_sol = if paper_mode {
+        mev.paper_daily_loss_cap_sol
+            .or(mev.daily_loss_cap_sol)
+            .unwrap_or(5.0)
+    } else {
+        mev.live_daily_loss_cap_sol
+            .or(mev.daily_loss_cap_sol)
+            .unwrap_or(0.18)
+    };
+    let daily_loss_cap_lamports = sol_to_lamports(daily_loss_cap_sol);
+
+    let consecutive_stop_pause_count = mev.consecutive_stop_pause_count.unwrap_or(3);
+    let consecutive_stop_pause_ms = mev.consecutive_stop_pause_ms.unwrap_or(180_000);
+
+    // ── Build HealthConfig from top-level `health` section ──────────
+    let health = if let Some(health_val) = root.get("health") {
+        let market_feed_stale_s: u64 = health_val
+            .get("market_feed_stale_s")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(45);
+        let auto_pause_on_degraded: bool = health_val
+            .get("auto_pause_on_degraded")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        HealthConfig {
+            market_feed_stale_ms: market_feed_stale_s * 1000,
+            auto_pause_on_degraded,
+        }
+    } else {
+        HealthConfig::default()
+    };
+
+    // ── ToD multiplier config ──────────────────────────────────────
+    let tod_boosted_hours = mev
+        .tod_config
+        .as_ref()
+        .and_then(|tod| tod.boosted_hours_utc.clone())
+        .unwrap_or_default();
+    let tod_boost_multiplier = 1.25_f64; // hardcoded per spec; config override possible later
+
     Ok(EngineConfig {
         gate,
         score,
         position,
+        health,
         paper_mode,
         log_file,
+        daily_loss_cap_lamports,
+        consecutive_stop_pause_count,
+        consecutive_stop_pause_ms,
+        boosted_hours_utc: tod_boosted_hours,
+        tod_boost_multiplier,
     })
 }

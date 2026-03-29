@@ -13,6 +13,9 @@ use axum::{
 use serde::Serialize;
 use tracing::{error, info};
 
+use crate::engine::health::HealthMonitor;
+use crate::feeds::FeedSource;
+
 /// Default listen port for the Rust engine API.
 const DEFAULT_PORT: u16 = 9421;
 
@@ -54,6 +57,7 @@ pub struct OpenPositionInfo {
 pub struct ApiState {
     pub stats: Arc<Mutex<EngineStats>>,
     pub positions: Arc<Mutex<Vec<OpenPositionInfo>>>,
+    pub health_monitor: Option<Arc<HealthMonitor>>,
 }
 
 impl ApiState {
@@ -72,7 +76,15 @@ impl ApiState {
         Self {
             stats: Arc::new(Mutex::new(stats)),
             positions: Arc::new(Mutex::new(Vec::new())),
+            health_monitor: None,
         }
+    }
+
+    /// Create ApiState with an attached HealthMonitor.
+    pub fn with_health(health_monitor: Arc<HealthMonitor>) -> Self {
+        let mut state = Self::new();
+        state.health_monitor = Some(health_monitor);
+        state
     }
 }
 
@@ -84,13 +96,69 @@ impl Default for ApiState {
 
 // ─── Handlers ──────────────────────────────────────────────────────
 
-async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "status": "ok",
-        "data": {
-            "overall": "healthy"
-        }
-    }))
+async fn health(State(state): State<ApiState>) -> Json<serde_json::Value> {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    if let Some(ref monitor) = state.health_monitor {
+        let paused = !monitor.is_trading_allowed();
+        let pp_last = monitor.last_event_ms(FeedSource::PumpPortal);
+        let hel_last = monitor.last_event_ms(FeedSource::Helius);
+        let stale_threshold = monitor.stale_threshold_ms();
+
+        let pp_age_s = if pp_last > 0 {
+            now_ms.saturating_sub(pp_last) / 1000
+        } else {
+            0
+        };
+        let hel_age_s = if hel_last > 0 {
+            now_ms.saturating_sub(hel_last) / 1000
+        } else {
+            0
+        };
+
+        let pp_status = if pp_last == 0 {
+            "not_started"
+        } else if pp_age_s * 1000 > stale_threshold {
+            "stale"
+        } else {
+            "healthy"
+        };
+
+        let hel_status = if hel_last == 0 {
+            "not_started"
+        } else if hel_age_s * 1000 > stale_threshold {
+            "stale"
+        } else {
+            "healthy"
+        };
+
+        let overall = if paused { "degraded" } else { "healthy" };
+
+        Json(serde_json::json!({
+            "status": "ok",
+            "data": {
+                "overall": overall,
+                "trading_paused": paused,
+                "stale_threshold_s": stale_threshold / 1000,
+                "feeds": {
+                    "pumpportal": { "status": pp_status, "age_s": pp_age_s },
+                    "helius": { "status": hel_status, "age_s": hel_age_s }
+                }
+            }
+        }))
+    } else {
+        Json(serde_json::json!({
+            "status": "ok",
+            "data": {
+                "overall": "healthy",
+                "trading_paused": false,
+                "feeds": {}
+            }
+        }))
+    }
 }
 
 async fn stats(State(state): State<ApiState>) -> Json<serde_json::Value> {

@@ -4,8 +4,11 @@
 //! and drives the full decision pipeline with zero heap allocation
 //! in the common (reject) path.
 
+use std::sync::Arc;
+
 use super::gates::GateStack;
-use super::positions::PositionManager;
+use super::health::HealthMonitor;
+use super::positions::{ClosedPosition, ExitReason, PositionManager};
 use super::scorer::Scorer;
 use crate::core::mint_map::MintHistoryMap;
 use crate::core::trade_record::TradeRecord;
@@ -33,6 +36,38 @@ pub struct HotPath {
     paper_mode: bool,
     min_score: f64,
     pub stats: HotPathStats,
+
+    // ── Safety: daily loss cap ──────────────────────────────────────
+    /// Accumulated daily loss in lamports (positive value = total losses).
+    daily_loss_lamports: i64,
+    /// UTC day-of-month when `daily_loss_lamports` was last reset (1-31).
+    /// Initialized to 0 so the first trade always triggers a reset.
+    daily_reset_day: u32,
+    /// Daily loss cap in lamports. New entries are rejected when
+    /// `daily_loss_lamports >= daily_loss_cap_lamports`.
+    daily_loss_cap_lamports: u64,
+
+    // ── Safety: consecutive stop-loss circuit breaker ────────────────
+    /// Running count of consecutive stop-loss exits.
+    consecutive_stops: u32,
+    /// Epoch ms until which new entries are blocked after the breaker fires.
+    stop_pause_until_ms: u64,
+    /// Config: how many consecutive stops trigger the pause.
+    consecutive_stop_pause_count: u32,
+    /// Config: how long (ms) to pause after the breaker fires.
+    consecutive_stop_pause_ms: u64,
+
+    // ── Feed health monitor ─────────────────────────────────────────
+    /// Optional health monitor — checked before opening new positions.
+    health_monitor: Option<Arc<HealthMonitor>>,
+
+    // ── ToD size multiplier ─────────────────────────────────────────
+    /// UTC hours that get the ToD boost.
+    boosted_hours_utc: Vec<u8>,
+    /// Multiplier for boosted hours (default 1.25).
+    tod_boost_multiplier: f64,
+    /// Max entry size in lamports (for capping after ToD multiplier).
+    max_entry_size_lamports: u64,
 }
 
 impl HotPath {
@@ -43,6 +78,12 @@ impl HotPath {
         now_ms: fn() -> u64,
         paper_mode: bool,
         min_score: f64,
+        daily_loss_cap_lamports: u64,
+        consecutive_stop_pause_count: u32,
+        consecutive_stop_pause_ms: u64,
+        boosted_hours_utc: Vec<u8>,
+        tod_boost_multiplier: f64,
+        max_entry_size_lamports: u64,
     ) -> Self {
         Self {
             gate_stack,
@@ -62,6 +103,33 @@ impl HotPath {
                 ticks: 0,
                 creator_sells: 0,
             },
+            daily_loss_lamports: 0,
+            daily_reset_day: 0,
+            daily_loss_cap_lamports,
+            consecutive_stops: 0,
+            stop_pause_until_ms: 0,
+            consecutive_stop_pause_count,
+            consecutive_stop_pause_ms,
+            health_monitor: None,
+            boosted_hours_utc,
+            tod_boost_multiplier,
+            max_entry_size_lamports,
+        }
+    }
+
+    /// Attach a health monitor to the hot path. Must be called before
+    /// the engine loop starts processing events.
+    pub fn set_health_monitor(&mut self, monitor: Arc<HealthMonitor>) {
+        self.health_monitor = Some(monitor);
+    }
+
+    /// Returns the time-of-day size multiplier for the given UTC hour.
+    #[inline]
+    fn get_tod_multiplier(&self, hour_utc: u8) -> f64 {
+        if self.boosted_hours_utc.contains(&hour_utc) {
+            self.tod_boost_multiplier
+        } else {
+            1.0
         }
     }
 
@@ -85,6 +153,13 @@ impl HotPath {
         // 3. Only consider buys for new position entry
         if !trade.is_buy {
             return;
+        }
+
+        // 3b. Health check: block new entries if feeds are stale
+        if let Some(ref hm) = self.health_monitor {
+            if !hm.is_trading_allowed() {
+                return;
+            }
         }
 
         // 4. Extract cached aggregates from history
@@ -111,6 +186,9 @@ impl HotPath {
         };
 
         // 5. Compute score first (needed by gate stack as last gate)
+        // TASK-8: Use real per-wallet concentration data from MintHistory
+        let max_wallet = history.max_wallet_buy_vol_30s();
+        let total_vol_30s = history.total_buy_vol_30s();
         let score_components = self.scorer.compute(
             trade.sol_amount,
             trade.vsol_reserves,
@@ -118,8 +196,8 @@ impl HotPath {
             buy_count_1s,
             buy_count_2s,
             volume_sol_5s,
-            0, // max_wallet_volume_lamports — not tracked per-wallet in hot path
-            volume_sol_5s.saturating_mul(6), // estimate 30s vol from 5s window
+            max_wallet,
+            total_vol_30s,
         );
         let score = score_components.final_score;
 
@@ -154,7 +232,18 @@ impl HotPath {
             return;
         }
 
-        // 8. Open position
+        // 8. Safety: daily loss cap
+        self.check_and_reset_daily_loss(now);
+        if self.daily_loss_lamports as u64 >= self.daily_loss_cap_lamports {
+            return;
+        }
+
+        // 9. Safety: consecutive stop-loss circuit breaker
+        if now < self.stop_pause_until_ms {
+            return;
+        }
+
+        // 10. Open position
         self.position_manager.open_position(trade, score, now);
         self.stats.positions_opened += 1;
     }
@@ -217,6 +306,75 @@ impl HotPath {
     pub fn close_all(&mut self, now_ms: u64) {
         self.position_manager.close_all(now_ms);
     }
+
+    // ── Safety feedback: called by the main loop after draining closed positions ─
+
+    /// Process a closed position for safety tracking (daily loss + circuit breaker).
+    /// Called from the main event loop after receiving a `ClosedPosition` from the channel.
+    ///
+    /// Returns `Some((consecutive_stops, pause_ms))` if the circuit breaker just fired,
+    /// `None` otherwise.
+    pub fn on_position_closed(&mut self, cp: &ClosedPosition) -> Option<(u32, u64)> {
+        // Daily loss: accumulate absolute value of losses (only negative PnL trades)
+        if cp.net_pnl_sol < 0 {
+            self.daily_loss_lamports += cp.net_pnl_sol.abs();
+        }
+
+        // Consecutive stop-loss circuit breaker
+        match cp.exit_reason {
+            ExitReason::StopLoss => {
+                self.consecutive_stops += 1;
+                if self.consecutive_stops >= self.consecutive_stop_pause_count {
+                    let now = (self.now_ms)();
+                    self.stop_pause_until_ms = now + self.consecutive_stop_pause_ms;
+                    let stops = self.consecutive_stops;
+                    let pause_ms = self.consecutive_stop_pause_ms;
+                    // Reset counter after triggering pause (matches TS behavior)
+                    self.consecutive_stops = 0;
+                    return Some((stops, pause_ms));
+                }
+            }
+            // Any non-SL exit resets the consecutive counter
+            _ => {
+                self.consecutive_stops = 0;
+            }
+        }
+        None
+    }
+
+    /// Check if UTC day changed and reset daily loss counter.
+    /// TS uses `new Date().getUTCDate()` (day of month 1-31).
+    fn check_and_reset_daily_loss(&mut self, now_ms: u64) {
+        // UTC day of month: ms → seconds → divide by 86400 gives day count,
+        // but TS uses getUTCDate() which is day-of-month (1-31).
+        // We compute: seconds since epoch / 86400 gives a day index,
+        // then convert to day-of-month by getting the date.
+        // Simpler: (now_ms / 1000) → unix secs, derive UTC day of month.
+        let secs = now_ms / 1000;
+        // Days since epoch
+        let days_since_epoch = secs / 86_400;
+        // Convert to a rough UTC day-of-month. We use a well-known formula.
+        // For simplicity and correctness: extract UTC day-of-month.
+        let utc_day = utc_day_of_month(days_since_epoch);
+
+        if utc_day != self.daily_reset_day {
+            self.daily_loss_lamports = 0;
+            self.daily_reset_day = utc_day;
+        }
+    }
+}
+
+/// Compute UTC day-of-month (1-31) from days since Unix epoch.
+/// Uses civil_from_days algorithm (Howard Hinnant).
+fn utc_day_of_month(days_since_epoch: u64) -> u32 {
+    let z = days_since_epoch as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u32; // day of era [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    d
 }
 
 /// Convert a TradeEvent into a TradeRecord for the ring buffer.

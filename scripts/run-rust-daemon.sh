@@ -1,23 +1,34 @@
-#!/bin/bash
-# Run the Rust MEV daemon alongside the TypeScript daemon (paper mode)
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-RUST_DIR="$PROJECT_DIR/rust"
+BINARY="./rust/target/release/pump-quant"
+LOG="logs/rust-daemon.log"
+RESTART_DELAY=3
+MAX_RESTARTS=10
+restart_count=0
 
-export PATH="$HOME/.cargo/bin:$PATH"
-export OPENSSL_DIR="/home/linuxbrew/.linuxbrew/opt/openssl@3"
-export PKG_CONFIG_PATH="/home/linuxbrew/.linuxbrew/opt/openssl@3/lib/pkgconfig"
-export PAPER_MODE="${PAPER_MODE:-true}"
-export CANARY_CONFIG="$PROJECT_DIR/config/canary.json"
-export RUST_LOG="${RUST_LOG:-info}"
+mkdir -p logs
 
-# Build in release mode
-echo "Building Rust daemon (release)..."
-cd "$RUST_DIR"
-cargo build --release 2>&1
+while true; do
+  echo "[$(date -u)] Starting pump-quant Rust daemon (restart #$restart_count)" >> "$LOG"
 
-# Run
-echo "Starting Rust MEV daemon (paper_mode=$PAPER_MODE)..."
-exec "$RUST_DIR/target/release/pump-quant"
+  PAPER_MODE=true RUST_LOG=info RUST_BACKTRACE=1 \
+    "$BINARY" >> "$LOG" 2>&1
+
+  EXIT_CODE=$?
+  restart_count=$((restart_count + 1))
+
+  if [ $restart_count -ge $MAX_RESTARTS ]; then
+    echo "[$(date -u)] Too many restarts ($MAX_RESTARTS). Stopping supervisor." >> "$LOG"
+    # Alert via Telegram if configured
+    if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+      curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d "chat_id=${TELEGRAM_CHAT_ID}" \
+        -d "text=❌ pump-quant Rust daemon crashed $MAX_RESTARTS times — supervisor stopped" > /dev/null
+    fi
+    exit 1
+  fi
+
+  echo "[$(date -u)] Daemon exited with code $EXIT_CODE. Restarting in ${RESTART_DELAY}s..." >> "$LOG"
+  sleep "$RESTART_DELAY"
+done

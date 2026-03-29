@@ -41,7 +41,7 @@ impl SqliteLogger {
         Ok(logger)
     }
 
-    /// Create the mev_trades table and index if they don't exist.
+    /// Create the mev_trades table, compatibility VIEWs, and indexes.
     fn init_schema(&self) -> Result<()> {
         self.conn
             .execute_batch(
@@ -66,6 +66,61 @@ impl SqliteLogger {
                 CREATE INDEX IF NOT EXISTS idx_mev_trades_ts ON mev_trades(entry_ts_ms);",
             )
             .context("failed to initialize mev_trades schema")?;
+
+        // Compatibility VIEWs for monitoring scripts that query `positions` and `orders`.
+        // Drop-and-recreate to handle schema evolution cleanly.
+        self.conn
+            .execute_batch(
+                "DROP VIEW IF EXISTS positions;
+                CREATE VIEW positions AS
+                SELECT
+                    id,
+                    mint,
+                    entry_vsol,
+                    exit_vsol,
+                    entry_ts_ms AS opened_at,
+                    exit_ts_ms AS closed_at,
+                    hold_ms,
+                    size_sol,
+                    gross_pnl_sol AS realized_pnl_sol,
+                    net_pnl_sol,
+                    fees_sol AS fee_sol,
+                    exit_reason,
+                    score,
+                    is_paper,
+                    engine_version,
+                    'closed' AS status,
+                    NULL AS regime
+                FROM mev_trades;
+
+                DROP VIEW IF EXISTS orders;
+                CREATE VIEW orders AS
+                SELECT
+                    id,
+                    mint,
+                    entry_vsol,
+                    exit_vsol,
+                    entry_ts_ms AS opened_at,
+                    exit_ts_ms AS closed_at,
+                    exit_ts_ms AS confirmed_at,
+                    hold_ms,
+                    size_sol,
+                    size_sol AS realized_sol,
+                    gross_pnl_sol AS realized_pnl_sol,
+                    net_pnl_sol,
+                    fees_sol AS fee_sol,
+                    0.0 AS priority_fee_paid_sol,
+                    exit_reason,
+                    score,
+                    is_paper,
+                    engine_version,
+                    'confirmed' AS status,
+                    'sell' AS side,
+                    NULL AS tx_signature
+                FROM mev_trades;",
+            )
+            .context("failed to create compatibility VIEWs")?;
+
         Ok(())
     }
 

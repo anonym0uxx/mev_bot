@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
+use super::corecast::CreatorMap;
 use super::{FeedEvent, FeedSource, TradeEvent};
 
 const WS_URL: &str = "wss://pumpportal.fun/api/data";
@@ -37,7 +38,11 @@ const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 /// - On each new token creation (txType="create"), subscribes to that token's
 ///   trades via `subscribeTokenTrade` to ensure continued trade coverage
 /// - Trade events (txType="buy" or "sell") are emitted as `FeedEvent::Trade`
-pub async fn run(tx: Sender<FeedEvent>, mut shutdown_rx: tokio::sync::watch::Receiver<bool>) {
+pub async fn run(
+    tx: Sender<FeedEvent>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    creator_map: CreatorMap,
+) {
     let mut backoff_secs: u64 = 1;
 
     loop {
@@ -80,7 +85,7 @@ pub async fn run(tx: Sender<FeedEvent>, mut shutdown_rx: tokio::sync::watch::Rec
                         msg = read.next() => {
                             match msg {
                                 Some(Ok(Message::Text(text))) => {
-                                    match parse_message(text.to_string(), &write_tx) {
+                                    match parse_message(text.to_string(), &write_tx, &creator_map) {
                                         Ok(Some(event)) => {
                                             if tx.send(FeedEvent::Trade(event)).is_err() {
                                                 info!("PumpPortal feed: engine channel closed");
@@ -149,7 +154,7 @@ pub async fn run(tx: Sender<FeedEvent>, mut shutdown_rx: tokio::sync::watch::Rec
 ///   - new token creation events (txType="create") — triggers per-mint subscription
 ///   - migration events (pool field set)
 /// - `Err(msg)` for parse failures
-fn parse_message(mut text: String, write_tx: &mpsc::Sender<String>) -> Result<Option<TradeEvent>, String> {
+fn parse_message(mut text: String, write_tx: &mpsc::Sender<String>, creator_map: &CreatorMap) -> Result<Option<TradeEvent>, String> {
     let bytes = unsafe { text.as_bytes_mut() };
     let val: simd_json::BorrowedValue = simd_json::to_borrowed_value(bytes)
         .map_err(|e| format!("json: {}", e))?;
@@ -176,7 +181,8 @@ fn parse_message(mut text: String, write_tx: &mpsc::Sender<String>) -> Result<Op
     };
 
     // Handle creation events: txType="create"
-    // Subscribe to this token's trades for continued coverage, but don't emit a trade event
+    // Subscribe to this token's trades for continued coverage, but don't emit a trade event.
+    // TASK-10: Store mint → creator mapping for signer matching in CoreCast.
     if tx_type == "create" {
         let sub_msg = format!(
             r#"{{"method":"subscribeTokenTrade","keys":["{}"]}}"#,
@@ -184,6 +190,19 @@ fn parse_message(mut text: String, write_tx: &mpsc::Sender<String>) -> Result<Op
         );
         // Non-blocking — if the channel is full, skip (we'll catch it next token)
         let _ = write_tx.try_send(sub_msg);
+
+        // Extract creator wallet (traderPublicKey on create events = the creator)
+        let creator_b58 = val.get_str("traderPublicKey").unwrap_or("");
+        if !creator_b58.is_empty() {
+            if let Ok(mint_bytes) = decode_pubkey(mint_b58) {
+                if let Ok(creator_bytes) = decode_pubkey(creator_b58) {
+                    if let Ok(mut map) = creator_map.write() {
+                        map.insert(mint_bytes, creator_bytes);
+                    }
+                }
+            }
+        }
+
         debug!("PumpPortal feed: new token {} (create), subscribed to trades", &mint_b58[..8.min(mint_b58.len())]);
         return Ok(None);
     }

@@ -303,7 +303,7 @@
   "mev": {
     "enabled": true,
     "paper_mode": true,
-    "trigger_min_buy_sol": 0.35,
+    "trigger_min_buy_sol": 0.50,
     "trigger_max_buy_sol": 5,
     "trigger_min_score": 0.70000,
     "min_vsol_in_curve": 33,
@@ -422,6 +422,8 @@
     },
     "intra_hold_trailing_stop_pct": 1.0,
     "intra_hold_trailing_stop_min_mfe_pct": 1.0,
-    "blocked_trigger_sources": ["corecast"]
+    "blocked_trigger_sources": ["corecast"],
+    "min_hold_before_exit_ms": 500,
+    "creator_sell_ttl_ms": 30000
   }
 }

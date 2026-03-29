@@ -2,13 +2,20 @@
 //!
 //! Connects to the Bitquery streaming GraphQL endpoint and subscribes to
 //! pump.fun DEX trades. When a creator-sell is detected (the transaction
-//! signer matches the token creator pattern), emits `FeedEvent::CreatorSell`.
+//! signer matches the known token creator), emits `FeedEvent::CreatorSell`.
+//!
+//! TASK-10: Uses a shared `Arc<RwLock<HashMap<[u8;32],[u8;32]>>>` (mint → creator)
+//! populated by the PumpPortal feed on token creation events. Only emits
+//! CreatorSell when the Bitquery transaction signer matches the known creator.
 //!
 //! Requires `BITQUERY_API_KEY` env var. If not set, gracefully disables.
 //!
 //! Protocol: GraphQL over WebSocket (graphql-ws protocol).
 //! Endpoint: wss://streaming.bitquery.io/eap (or /graphql)
 //! Auth: Bearer token via connection_init payload.
+
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use crossbeam_channel::Sender;
 use futures_util::{SinkExt, StreamExt};
@@ -17,7 +24,12 @@ use tracing::{debug, error, info, warn};
 
 use super::FeedEvent;
 
+/// Shared creator map type: mint → creator wallet pubkey.
+/// Written by PumpPortal on `create` events, read by CoreCast for signer matching.
+pub type CreatorMap = Arc<RwLock<HashMap<[u8; 32], [u8; 32]>>>;
+
 const BITQUERY_WS_URL: &str = "wss://streaming.bitquery.io/eap";
+#[allow(dead_code)]
 const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 const MAX_BACKOFF_SECS: u64 = 30;
 
@@ -43,7 +55,15 @@ const GQL_SUBSCRIPTION: &str = r#"subscription {
 
 /// Run the CoreCast/Bitquery WebSocket feed loop. Never returns unless shutdown.
 /// If `BITQUERY_API_KEY` is not set, logs a warning and returns immediately.
-pub async fn run(tx: Sender<FeedEvent>, mut shutdown_rx: tokio::sync::watch::Receiver<bool>) {
+///
+/// `creator_map`: shared map of mint → creator wallet, populated by PumpPortal.
+/// Used to verify that the Bitquery transaction signer is actually the creator
+/// before emitting CreatorSell events.
+pub async fn run(
+    tx: Sender<FeedEvent>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    creator_map: CreatorMap,
+) {
     let api_key = match std::env::var("BITQUERY_API_KEY") {
         Ok(k) if !k.is_empty() => k,
         _ => {
@@ -151,19 +171,56 @@ pub async fn run(tx: Sender<FeedEvent>, mut shutdown_rx: tokio::sync::watch::Rec
 
                 // Step 4: Read loop — parse trade events for creator sells
                 let mut events_seen: u64 = 0;
+                let mut creator_matches: u64 = 0;
+                let mut creator_mismatches: u64 = 0;
                 loop {
                     tokio::select! {
                         msg = read.next() => {
                             match msg {
                                 Some(Ok(tungstenite::Message::Text(text))) => {
-                                    if let Some((mint, ts_ms)) = parse_corecast_message(&text) {
+                                    if let Some((mint, signer, ts_ms)) = parse_corecast_message(&text) {
                                         events_seen += 1;
                                         if events_seen % 100 == 0 {
-                                            debug!("[corecast] events_seen={}", events_seen);
+                                            debug!(
+                                                "[corecast] events_seen={} creator_matches={} mismatches={}",
+                                                events_seen, creator_matches, creator_mismatches
+                                            );
                                         }
-                                        if tx.send(FeedEvent::CreatorSell { mint, ts_ms }).is_err() {
-                                            info!("[corecast] engine channel closed");
-                                            return;
+
+                                        // Verify signer matches known creator for this mint
+                                        let is_creator_sell = if let Some(signer_bytes) = signer {
+                                            match creator_map.read() {
+                                                Ok(map) => {
+                                                    if let Some(creator) = map.get(&mint) {
+                                                        if *creator == signer_bytes {
+                                                            creator_matches += 1;
+                                                            true
+                                                        } else {
+                                                            creator_mismatches += 1;
+                                                            false
+                                                        }
+                                                    } else {
+                                                        // No creator known — emit conservatively
+                                                        creator_matches += 1;
+                                                        true
+                                                    }
+                                                }
+                                                Err(_) => {
+                                                    warn!("[corecast] creator_map lock poisoned");
+                                                    false
+                                                }
+                                            }
+                                        } else {
+                                            // No signer in message — emit conservatively
+                                            creator_matches += 1;
+                                            true
+                                        };
+
+                                        if is_creator_sell {
+                                            if tx.send(FeedEvent::CreatorSell { mint, ts_ms }).is_err() {
+                                                info!("[corecast] engine channel closed");
+                                                return;
+                                            }
                                         }
                                     }
                                 }
@@ -215,13 +272,10 @@ pub async fn run(tx: Sender<FeedEvent>, mut shutdown_rx: tokio::sync::watch::Rec
 
 /// Parse a CoreCast/Bitquery GraphQL subscription message.
 ///
-/// Looks for DEXTrades data containing a MintAddress.
-/// Since Bitquery doesn't directly flag "creator sells" in the DEXTrades stream,
-/// we emit all trades as potential creator-sell signals. The engine's gate stack
-/// will handle TTL-based filtering.
-///
-/// Returns `Some((mint_bytes, ts_ms))` if a valid trade with mint is found.
-fn parse_corecast_message(text: &str) -> Option<([u8; 32], u64)> {
+/// Looks for DEXTrades data containing a MintAddress and Transaction Signer.
+/// Returns `Some((mint_bytes, Option<signer_bytes>, ts_ms))` if a valid trade is found.
+/// The signer is used for creator-sell matching (TASK-10).
+fn parse_corecast_message(text: &str) -> Option<([u8; 32], Option<[u8; 32]>, u64)> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
 
     // Must be a "data" type message from graphql-ws
@@ -249,10 +303,24 @@ fn parse_corecast_message(text: &str) -> Option<([u8; 32], u64)> {
     let mut mint = [0u8; 32];
     mint.copy_from_slice(&mint_bytes);
 
+    // Extract transaction signer for creator-sell verification
+    let signer = trade
+        .pointer("/Transaction/Signer")
+        .and_then(|s| s.as_str())
+        .and_then(|s| {
+            let bytes = bs58::decode(s).into_vec().ok()?;
+            if bytes.len() != 32 {
+                return None;
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            Some(arr)
+        });
+
     let ts_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
 
-    Some((mint, ts_ms))
+    Some((mint, signer, ts_ms))
 }
