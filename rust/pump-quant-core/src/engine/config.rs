@@ -103,6 +103,29 @@ pub struct MevJsonConfig {
     pub jitter_ms_min: Option<u32>,
     pub jitter_ms_max: Option<u32>,
     // size_variance_pct already declared above (position management section)
+
+    // ── Scaled entry config (SPEC 3) ────────────────────────────────
+    // When enabled, golden segment entries use a two-phase scaled entry:
+    // Phase 1: enter at initial_pct of full size, wait for confirmation buy.
+    // Phase 2: on confirmation, scale up to full size; on timeout, keep partial.
+    // TODO: Full implementation deferred pending PositionManager API extension.
+    // Currently stub-only: config fields parsed, JSONL schema emitted, logic is no-op.
+    pub scaled_entry_enabled: Option<bool>,
+    pub scaled_entry_initial_pct: Option<f64>,
+    pub scaled_entry_confirmation_window_ms: Option<u64>,
+    pub scaled_entry_confirmation_min_sol: Option<f64>,
+
+    // ── Graduation arb config (SPEC 4) ──────────────────────────────
+    // Infrastructure for graduation arbitrage between bonding curve terminal
+    // price and Raydium AMM opening price. Disabled by default — requires
+    // ShredStream for competitive latency.
+    pub graduation_arb_enabled: Option<bool>,
+    pub graduation_arb_max_sol: Option<f64>,
+    pub graduation_arb_min_spread_pct: Option<f64>,
+    pub graduation_arb_tp_pct: Option<f64>,
+    pub graduation_arb_sl_pct: Option<f64>,
+    pub graduation_arb_max_hold_ms: Option<u64>,
+    pub graduation_arb_jito_tip_sol: Option<f64>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -147,6 +170,32 @@ pub struct EngineConfig {
     pub tod_boost_multiplier: f64,
     /// Entry randomizer config (anti-fingerprinting for live mode).
     pub randomizer: super::entry_randomizer::RandomizerConfig,
+
+    // ── Scaled entry (SPEC 3) — stub config, logic deferred ─────────
+    /// Master toggle for scaled entry on golden segment trades.
+    pub scaled_entry_enabled: bool,
+    /// Fraction of entry_size_sol for the initial (unconfirmed) position (0.0–1.0).
+    pub scaled_entry_initial_pct: f64,
+    /// Milliseconds to wait for a follow-on confirmation buy before keeping partial size.
+    pub scaled_entry_confirmation_window_ms: u64,
+    /// Minimum SOL of the follow-on buy to count as confirmation.
+    pub scaled_entry_confirmation_min_sol: f64,
+
+    // ── Graduation arb config (SPEC 4) ──────────────────────────────
+    /// Whether graduation arb is enabled (default: false).
+    pub graduation_arb_enabled: bool,
+    /// Max SOL per arb trade (default: 0.30).
+    pub graduation_arb_max_sol: f64,
+    /// Min spread % between BC terminal price and Raydium opening price (default: 3.0).
+    pub graduation_arb_min_spread_pct: f64,
+    /// Take-profit % for arb positions (default: 0.03).
+    pub graduation_arb_tp_pct: f64,
+    /// Stop-loss % for arb positions (default: 0.02).
+    pub graduation_arb_sl_pct: f64,
+    /// Max hold time in ms for arb positions (default: 5000).
+    pub graduation_arb_max_hold_ms: u64,
+    /// Jito tip in SOL for arb bundles (default: 0.003).
+    pub graduation_arb_jito_tip_sol: f64,
 }
 
 impl EngineConfig {
@@ -382,5 +431,18 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
             size_variance_pct: mev.size_variance_pct.unwrap_or(0.20),
             base_entry_lamports: sol_to_lamports(mev.entry_size_sol.unwrap_or(0.12)),
         },
+        // Scaled entry (SPEC 3) — config parsed, logic is stub-only for now
+        scaled_entry_enabled: mev.scaled_entry_enabled.unwrap_or(false),
+        scaled_entry_initial_pct: mev.scaled_entry_initial_pct.unwrap_or(0.40),
+        scaled_entry_confirmation_window_ms: mev.scaled_entry_confirmation_window_ms.unwrap_or(400),
+        scaled_entry_confirmation_min_sol: mev.scaled_entry_confirmation_min_sol.unwrap_or(0.10),
+        // Graduation arb (SPEC 4) — disabled by default, infrastructure only
+        graduation_arb_enabled: mev.graduation_arb_enabled.unwrap_or(false),
+        graduation_arb_max_sol: mev.graduation_arb_max_sol.unwrap_or(0.30),
+        graduation_arb_min_spread_pct: mev.graduation_arb_min_spread_pct.unwrap_or(3.0),
+        graduation_arb_tp_pct: mev.graduation_arb_tp_pct.unwrap_or(0.03),
+        graduation_arb_sl_pct: mev.graduation_arb_sl_pct.unwrap_or(0.02),
+        graduation_arb_max_hold_ms: mev.graduation_arb_max_hold_ms.unwrap_or(5000),
+        graduation_arb_jito_tip_sol: mev.graduation_arb_jito_tip_sol.unwrap_or(0.003),
     })
 }

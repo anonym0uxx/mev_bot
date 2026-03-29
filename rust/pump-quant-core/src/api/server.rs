@@ -39,6 +39,10 @@ pub struct EngineStats {
     pub lp_removals_seen: u64,
     pub new_tokens_seen: u64,
     pub creator_sells_seen: u64,
+    // Graduation arb stats (SPEC 4)
+    pub graduation_arb_enabled: bool,
+    pub graduation_arb_trades: u64,
+    pub graduation_arb_net_sol: f64,
 }
 
 // ─── Open Position (for /api/positions) ────────────────────────────
@@ -202,7 +206,10 @@ async fn stats(State(state): State<ApiState>) -> Json<serde_json::Value> {
             "migrations_seen": s.migrations_seen,
             "lp_removals_seen": s.lp_removals_seen,
             "new_tokens_seen": s.new_tokens_seen,
-            "creator_sells_seen": s.creator_sells_seen
+            "creator_sells_seen": s.creator_sells_seen,
+            "graduation_arb_enabled": s.graduation_arb_enabled,
+            "graduation_arb_trades": s.graduation_arb_trades,
+            "graduation_arb_net_sol": s.graduation_arb_net_sol
         }
     }))
 }
