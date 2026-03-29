@@ -391,6 +391,8 @@ export interface MevConfig {
   intra_hold_trailing_stop_min_mfe_pct?: number;  // minimum MFE to activate trailing (default 0.01)
   /** Block triggers from specific sources (e.g. ["corecast"] to reject CoreCast-sourced triggers) */
   blocked_trigger_sources?: string[];
+  /** Master toggle for TOD gate. When false, blocked_hours_utc is ignored. Paper mode 24/7 data collection. */
+  tod_gate_enabled?: boolean;
   /** Minimum pre-trigger sell count in 5s window. Data: wins avg 3.1 sells vs MH avg 1.3. Default undefined (disabled). */
   pre_trigger_min_sell_count_5s?: number;
   /** Maximum vSol delta in 3s before trigger. Caps overheated entries. Default undefined (disabled). */

@@ -36,6 +36,9 @@ pub struct GateConfig {
     pub blocked_hours_utc: Vec<u8>,
     /// UTC hours during which trading gets a boost (informational for scorer/position).
     pub boosted_hours_utc: Vec<u8>,
+    /// Master toggle for the TOD gate. When false, blocked_hours_utc is ignored entirely.
+    /// Use `false` to collect paper trade data 24/7 regardless of TOD config.
+    pub tod_gate_enabled: bool,
 }
 
 impl Default for GateConfig {
@@ -63,6 +66,7 @@ impl Default for GateConfig {
             large_trigger_min_unique_buyers: 5,
             blocked_hours_utc: Vec::new(),
             boosted_hours_utc: Vec::new(),
+            tod_gate_enabled: true,
         }
     }
 }
@@ -156,7 +160,8 @@ impl GateStack {
 
         // ── Gate 0a: Time-of-day blocked ────────────────────────────
         // Cheapest check — integer modular arithmetic + small vec scan.
-        if !c.blocked_hours_utc.is_empty() {
+        // Skipped entirely when tod_gate_enabled == false (paper data collection mode).
+        if c.tod_gate_enabled && !c.blocked_hours_utc.is_empty() {
             let hour_utc = ((now_ms / 3_600_000) % 24) as u8;
             if c.blocked_hours_utc.contains(&hour_utc) {
                 return Err(GateRejectReason::BlockedHour);

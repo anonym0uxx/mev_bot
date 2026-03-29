@@ -427,6 +427,7 @@
       "corecast"
     ],
     "min_hold_before_exit_ms": 500,
-    "creator_sell_ttl_ms": 30000
+    "creator_sell_ttl_ms": 30000,
+    "tod_gate_enabled": false
   }
 }

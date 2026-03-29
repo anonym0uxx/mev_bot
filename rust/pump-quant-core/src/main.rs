@@ -111,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
         tp_tiers = engine_config.position.tp_tiers.len(),
         size_tiers = engine_config.position.size_tiers.len(),
         blocked_hours = engine_config.gate.blocked_hours_utc.len(),
+        tod_gate_enabled = engine_config.gate.tod_gate_enabled,
         "pump-quant-core starting"
     );
 

@@ -1590,6 +1590,10 @@
           },
           "description": "Block triggers from specific sources (e.g. [\"corecast\"] to reject CoreCast-sourced triggers)"
         },
+        "tod_gate_enabled": {
+          "type": "boolean",
+          "description": "Master toggle for time-of-day gate. When false, blocked_hours_utc is ignored. Set false in paper mode for 24/7 data collection."
+        },
         "pre_trigger_min_sell_count_5s": {
           "type": "integer",
           "minimum": 0,

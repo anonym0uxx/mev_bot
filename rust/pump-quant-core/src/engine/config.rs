@@ -94,6 +94,10 @@ pub struct MevJsonConfig {
 
     // Creator sell TTL (ms)
     pub creator_sell_ttl_ms: Option<u64>,
+
+    // Master toggle for TOD gate. When false, blocked_hours_utc is ignored.
+    // Use false in paper mode to collect data 24/7.
+    pub tod_gate_enabled: Option<bool>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -227,6 +231,7 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
             .as_ref()
             .and_then(|tod| tod.boosted_hours_utc.clone())
             .unwrap_or_default(),
+        tod_gate_enabled: mev.tod_gate_enabled.unwrap_or(true),
     };
 
     // ── Build ScoreConfig (defaults — no JSON overrides yet) ────────

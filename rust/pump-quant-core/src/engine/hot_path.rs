@@ -17,6 +17,7 @@ use super::scorer::Scorer;
 use crate::core::mint_map::MintHistoryMap;
 use crate::core::trade_record::TradeRecord;
 use crate::feeds::{FeedSource, PreWarmEvent, TradeEvent};
+use super::gates::GateRejectReason;
 
 /// Statistics counters — exposed for periodic logging.
 pub struct HotPathStats {
@@ -94,6 +95,11 @@ pub struct HotPath {
     helius_sig_ring_head: u8, // wraps at 256
     pub helius_lead_sum_ms: u64,
     pub helius_lead_count: u64,
+
+    // ── Gate rejection histogram ────────────────────────────────────
+    // Fixed-size array indexed by GateRejectReason discriminant.
+    // 32 slots covers all current variants with headroom.
+    pub gate_reject_counts: [u64; 32],
 }
 
 impl HotPath {
@@ -158,6 +164,7 @@ impl HotPath {
             helius_sig_ring_head: 0,
             helius_lead_sum_ms: 0,
             helius_lead_count: 0,
+            gate_reject_counts: [0u64; 32],
         }
     }
 
@@ -277,8 +284,16 @@ impl HotPath {
             Ok(()) => {
                 self.stats.gates_passed += 1;
             }
-            Err(_reason) => {
+            Err(reason) => {
                 self.stats.gate_rejects += 1;
+                let idx = gate_reject_index(&reason);
+                if idx < 32 {
+                    self.gate_reject_counts[idx] += 1;
+                }
+                // Log gate rejection breakdown every 100 rejects
+                if self.stats.gate_rejects % 100 == 0 {
+                    self.log_gate_rejections();
+                }
                 return;
             }
         }
@@ -383,6 +398,32 @@ impl HotPath {
 
     /// 50ms tick: drive position manager time-based exits
     /// (max_hold, momentum decay).
+    /// Log gate rejection histogram. Called every 500 rejects.
+    fn log_gate_rejections(&self) {
+        let names = [
+            "BlockedHour", "NotBuy", "TriggerTooSmall", "TriggerTooLarge",
+            "VSolOutOfRange", "TokenTooOld", "NotEnoughUniqueBuyers", "LargeTriggerLowBuyers",
+            "StaleGap", "InsufficientCrowd2s", "InsufficientCrowd5s", "InsufficientVSolAccel",
+            "StaleMomentum1s", "InsufficientSellCount", "VSolDeltaTooHigh", "CreatorSellRecent",
+            "SellPressure", "TriggerTooIsolated", "ScoreTooLow", "SourceBlocked",
+        ];
+        // Find top 5 rejection reasons
+        let mut indexed: Vec<(u64, usize)> = self.gate_reject_counts.iter()
+            .enumerate()
+            .map(|(i, &c)| (c, i))
+            .filter(|(c, _)| *c > 0)
+            .collect();
+        indexed.sort_by(|a, b| b.0.cmp(&a.0));
+        let top: Vec<String> = indexed.iter().take(5).map(|(count, idx)| {
+            let name = if *idx < names.len() { names[*idx] } else { "Unknown" };
+            format!("{}={}", name, count)
+        }).collect();
+        tracing::info!(
+            total_rejects = self.stats.gate_rejects,
+            "gate rejections: {}", top.join(", ")
+        );
+    }
+
     pub fn on_tick(&mut self, ts_ms: u64) {
         self.stats.ticks += 1;
         self.position_manager.on_tick(ts_ms);
@@ -465,6 +506,32 @@ impl HotPath {
             self.daily_loss_lamports = 0;
             self.daily_reset_day = utc_day;
         }
+    }
+}
+
+/// Map GateRejectReason to a stable index for the rejection histogram.
+fn gate_reject_index(reason: &GateRejectReason) -> usize {
+    match reason {
+        GateRejectReason::BlockedHour => 0,
+        GateRejectReason::NotBuy => 1,
+        GateRejectReason::TriggerTooSmall => 2,
+        GateRejectReason::TriggerTooLarge => 3,
+        GateRejectReason::VSolOutOfRange => 4,
+        GateRejectReason::TokenTooOld => 5,
+        GateRejectReason::NotEnoughUniqueBuyers => 6,
+        GateRejectReason::LargeTriggerLowBuyers => 7,
+        GateRejectReason::StaleGap => 8,
+        GateRejectReason::InsufficientCrowd2s => 9,
+        GateRejectReason::InsufficientCrowd5s => 10,
+        GateRejectReason::InsufficientVSolAccel => 11,
+        GateRejectReason::StaleMomentum1s => 12,
+        GateRejectReason::InsufficientSellCount => 13,
+        GateRejectReason::VSolDeltaTooHigh => 14,
+        GateRejectReason::CreatorSellRecent => 15,
+        GateRejectReason::SellPressure => 16,
+        GateRejectReason::TriggerTooIsolated => 17,
+        GateRejectReason::ScoreTooLow(_) => 18,
+        GateRejectReason::SourceBlocked => 19,
     }
 }
 
