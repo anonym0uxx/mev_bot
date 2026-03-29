@@ -45,6 +45,7 @@ pub struct MevJsonConfig {
 
     // Position management
     pub max_hold_ms: Option<u64>,
+    pub ride_max_hold_ms: Option<u64>,
     pub max_concurrent_positions: Option<usize>,
     pub entry_size_sol: Option<f64>,
     pub max_entry_size_sol: Option<f64>,
@@ -848,6 +849,7 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
 
     let position = PositionConfig {
         max_hold_ms: mev.max_hold_ms.unwrap_or(1200),
+        ride_max_hold_ms: mev.ride_max_hold_ms.unwrap_or(60_000), // 60s default for RIDE
         momentum_decay_check_ms: mev.momentum_decay_check_ms.unwrap_or(50),
         momentum_decay_min_mfe_pct: mev.momentum_decay_min_mfe_pct.unwrap_or(0.001),
         momentum_decay_max_drawdown_pct: mev.momentum_decay_max_drawdown_pct.unwrap_or(0.003),

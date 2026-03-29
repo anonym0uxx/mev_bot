@@ -238,8 +238,11 @@ pub struct SizeTier {
 /// Full position manager configuration.
 #[derive(Debug, Clone)]
 pub struct PositionConfig {
-    /// Max hold time before forced exit (ms).
+    /// Max hold time before forced exit (ms) — applies to SCALP positions.
     pub max_hold_ms: u64,
+    /// Max hold time for RIDE positions (ms). Longer to let winners run.
+    /// Falls back to max_hold_ms if 0.
+    pub ride_max_hold_ms: u64,
     /// Momentum decay check interval (ms). Drives on_tick frequency.
     pub momentum_decay_check_ms: u64,
     /// Gate 1: if MFE% < this, exit as MomentumDecayFlat.
@@ -619,9 +622,17 @@ impl PositionManager {
         for (mint, pos) in self.positions.iter_mut() {
             let hold_ms = now_ms.saturating_sub(pos.entry_ts_ms);
 
-            // Max hold safety check (5000ms backstop)
-            if hold_ms >= self.config.max_hold_ms {
-                to_close.push((*mint, ExitReason::MaxHold));
+            // Max hold safety check — RIDE gets longer leash
+            let max_hold = match pos.exit_mode {
+                ExitMode::Ride(_) if self.config.ride_max_hold_ms > 0 => self.config.ride_max_hold_ms,
+                _ => self.config.max_hold_ms,
+            };
+            if hold_ms >= max_hold {
+                let reason = match pos.exit_mode {
+                    ExitMode::Ride(_) => ExitReason::RideMaxHold,
+                    _ => ExitReason::MaxHold,
+                };
+                to_close.push((*mint, reason));
                 continue;
             }
 
@@ -782,6 +793,7 @@ mod tests {
     fn test_config() -> PositionConfig {
         PositionConfig {
             max_hold_ms: 500,
+            ride_max_hold_ms: 60_000,
             momentum_decay_check_ms: 50,
             momentum_decay_min_mfe_pct: 0.001,
             momentum_decay_max_drawdown_pct: 0.003,

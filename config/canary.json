@@ -317,6 +317,7 @@
         "take_profit_pct": 0.04,
         "stop_loss_pct": 0.015,
         "max_hold_ms": 1500,
+        "ride_max_hold_ms": 60000,
         "next_buyer_exit": true,
         "daily_loss_cap_sol": 5,
         "jito_tip_lamports": 50000,
