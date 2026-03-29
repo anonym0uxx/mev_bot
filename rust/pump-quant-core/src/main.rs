@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Instant;
 
 use crossbeam_channel::bounded;
 use tracing::info;
@@ -31,13 +32,6 @@ use pump_quant_core::persistence::engine_state::write_engine_state;
 
 const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-fn now_ms_system() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
 fn exit_reason_str(reason: ExitReason) -> &'static str {
     match reason {
         ExitReason::TakeProfit => "take_profit",
@@ -62,6 +56,26 @@ async fn main() -> anyhow::Result<()> {
         .with(fmt::layer().with_target(true).compact())
         .with(EnvFilter::from_default_env().add_directive("info".parse()?))
         .init();
+
+    // ── LATENCY: Anchor a monotonic clock to epoch time once at startup ──
+    // All subsequent now_ms calls use Instant::elapsed() (~3ns) instead of
+    // SystemTime::now() (~20ns syscall). One syscall at startup, zero in the loop.
+    let epoch_offset_ms: u64 = {
+        let sys = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        sys
+    };
+    let mono_start = Instant::now();
+
+    // Inline helper: epoch ms from monotonic clock (no syscall).
+    // Defined as a fn-like macro so it can be used anywhere without closure capture issues.
+    macro_rules! now_ms_mono {
+        () => {
+            epoch_offset_ms + mono_start.elapsed().as_millis() as u64
+        };
+    }
 
     // ── Load config ─────────────────────────────────────────────────
     let config_path = std::env::var("CANARY_CONFIG")
@@ -97,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // ── Write engine state on startup ─────────────────────────────────
-    let daemon_started_at_ms = now_ms_system();
+    let daemon_started_at_ms = now_ms_mono!();
     let data_dir = std::path::Path::new(&engine_config.log_file)
         .parent()
         .map(|p| p.to_string_lossy().to_string())
@@ -146,7 +160,7 @@ async fn main() -> anyhow::Result<()> {
         gate_stack,
         scorer,
         position_manager,
-        now_ms_system,
+        _now_ms_dummy, // LATENCY: HotPath uses quanta internally, not this fn
         paper_mode,
         min_score,
         engine_config.daily_loss_cap_lamports,
@@ -426,6 +440,10 @@ async fn main() -> anyhow::Result<()> {
                         open = hot_path.open_positions(),
                         prewarms = s.prewarms,
                         ticks = s.ticks,
+                        helius_correlated = hot_path.helius_lead_count,
+                        helius_avg_lead_ms = if hot_path.helius_lead_count > 0 {
+                            hot_path.helius_lead_sum_ms / hot_path.helius_lead_count
+                        } else { 0 },
                         "engine stats"
                     );
                 }
@@ -483,7 +501,7 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(FeedEvent::Shutdown) => {
                 info!("Shutdown signal received");
-                let now = now_ms_system();
+                let now = now_ms_mono!();
                 hot_path.close_all(now);
                 drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
                 sync_stats_to_api(&hot_path, &shared_stats);
@@ -492,7 +510,7 @@ async fn main() -> anyhow::Result<()> {
             }
             Err(_) => {
                 info!("Engine channel closed — shutting down");
-                let now = now_ms_system();
+                let now = now_ms_mono!();
                 hot_path.close_all(now);
                 drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
                 sync_stats_to_api(&hot_path, &shared_stats);
@@ -540,6 +558,9 @@ fn drain_closed_positions(
         let _ = logger_tx.try_send(cp);
     }
 }
+
+/// Dummy clock fn for HotPath API compat — HotPath uses quanta internally.
+fn _now_ms_dummy() -> u64 { 0 }
 
 /// Sync HotPath stats into the shared API EngineStats.
 fn sync_stats_to_api(hot_path: &HotPath, shared: &Arc<Mutex<EngineStats>>) {

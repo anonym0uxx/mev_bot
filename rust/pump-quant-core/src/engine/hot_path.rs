@@ -16,7 +16,7 @@ use super::positions::{ClosedPosition, ExitReason, PositionManager};
 use super::scorer::Scorer;
 use crate::core::mint_map::MintHistoryMap;
 use crate::core::trade_record::TradeRecord;
-use crate::feeds::{PreWarmEvent, TradeEvent};
+use crate::feeds::{FeedSource, PreWarmEvent, TradeEvent};
 
 /// Statistics counters — exposed for periodic logging.
 pub struct HotPathStats {
@@ -77,6 +77,23 @@ pub struct HotPath {
     tod_boost_multiplier: f64,
     /// Max entry size in lamports (for capping after ToD multiplier).
     max_entry_size_lamports: u64,
+
+    // ── Helius lead-time tracking ───────────────────────────────────
+    // Fixed-size ring buffer of (sig_prefix, helius_timestamp_ms) from PreWarm events.
+    // When a PumpPortal trade arrives, we check if Helius already saw the same sig_prefix.
+    // This measures Helius lead time and enables future Helius-as-primary-trigger.
+    //
+    // ARCHITECTURE NOTE: Helius `logsSubscribe` does NOT provide accountKeys (mint address).
+    // PreWarm events arrive with mint=[0u8;32], so we CANNOT use them for entry triggers.
+    // To enable Helius-as-primary-trigger, we need one of:
+    //   1. accountSubscribe on pump.fun bonding curves → full account data with reserves
+    //   2. LaserStream Preprocessed Transactions → full decoded tx with all accounts
+    //   3. Helius Enhanced Transactions API → adds HTTP latency, defeats purpose
+    // Until then, Helius stays as pre-warmer + lead-time measurement only.
+    helius_sig_ring: [(u64, u64); 256], // (sig_prefix_u64, timestamp_ms) ring buffer
+    helius_sig_ring_head: u8, // wraps at 256
+    pub helius_lead_sum_ms: u64,
+    pub helius_lead_count: u64,
 }
 
 impl HotPath {
@@ -137,6 +154,10 @@ impl HotPath {
             boosted_hours_utc,
             tod_boost_multiplier,
             max_entry_size_lamports,
+            helius_sig_ring: [(0u64, 0u64); 256],
+            helius_sig_ring_head: 0,
+            helius_lead_sum_ms: 0,
+            helius_lead_count: 0,
         }
     }
 
@@ -169,6 +190,11 @@ impl HotPath {
     pub fn on_trade(&mut self, trade: &TradeEvent) {
         self.stats.trades_seen += 1;
         let now = self.now_ms();
+
+        // Helius lead-time measurement: check if Helius pre-warmed this sig
+        if trade.source == FeedSource::PumpPortal {
+            self.check_helius_lead(trade);
+        }
 
         // 1. Push into mint_map (updates cached aggregates)
         let record = trade_to_record(trade, now);
@@ -279,11 +305,38 @@ impl HotPath {
         self.stats.positions_opened += 1;
     }
 
-    /// Process a pre-warm event (Helius). Adds to mint history without
-    /// triggering gate/score evaluation.
+    /// Process a pre-warm event (Helius/ShredStream). Adds to mint history
+    /// without triggering gate/score evaluation.
+    ///
+    /// When source is Helius, also records the sig_prefix + timestamp in a
+    /// ring buffer for lead-time measurement. When PumpPortal confirms the
+    /// same sig, we can measure how much earlier Helius saw it.
+    ///
+    /// HELIUS TRIGGER STATUS: BLOCKED — Helius logsSubscribe does not provide
+    /// accountKeys (mint address). PreWarm events arrive with mint=[0u8;32].
+    /// Cannot look up MintHistory, cannot run gates, cannot open positions.
+    /// See helius_sig_ring doc comment for what's needed to unblock.
     pub fn on_prewarm(&mut self, prewarm: &PreWarmEvent) {
         self.stats.prewarms += 1;
         let now = self.now_ms();
+
+        // ── Helius lead-time tracking: store sig_prefix for correlation ──
+        if prewarm.source == FeedSource::Helius {
+            let sig_prefix_u64 = u64::from_le_bytes({
+                let mut buf = [0u8; 8];
+                buf.copy_from_slice(&prewarm.sig[..8]);
+                buf
+            });
+            let idx = self.helius_sig_ring_head as usize;
+            self.helius_sig_ring[idx] = (sig_prefix_u64, prewarm.timestamp_ms);
+            self.helius_sig_ring_head = self.helius_sig_ring_head.wrapping_add(1);
+        }
+
+        // If mint is zero (Helius — no accountKeys in logsSubscribe), skip MintMap insert.
+        // We still recorded the sig_prefix above for correlation measurement.
+        if prewarm.mint == [0u8; 32] {
+            return;
+        }
 
         let record = TradeRecord {
             timestamp_ms: prewarm.timestamp_ms,
@@ -306,6 +359,26 @@ impl HotPath {
 
         let history = self.mint_map.get_or_insert(&prewarm.mint, now);
         history.add_trade_to_history(record, now);
+    }
+
+    /// Check if a PumpPortal trade's sig was already seen by Helius.
+    /// Returns `Some(lead_ms)` if Helius saw it first, `None` otherwise.
+    /// Scans the 256-entry ring buffer (trivial cost — fits in 4KB, 1 cache line per 4 entries).
+    #[inline]
+    fn check_helius_lead(&mut self, trade: &TradeEvent) -> Option<u64> {
+        let trade_sig_u64 = u64::from_le_bytes(trade.sig_prefix);
+        for &(sig_u64, helius_ts) in &self.helius_sig_ring {
+            if sig_u64 == trade_sig_u64 && helius_ts > 0 {
+                let lead_ms = trade.timestamp_ms.saturating_sub(helius_ts);
+                // Only count if Helius was actually earlier and within reasonable window
+                if lead_ms > 0 && lead_ms < 5_000 {
+                    self.helius_lead_sum_ms += lead_ms;
+                    self.helius_lead_count += 1;
+                    return Some(lead_ms);
+                }
+            }
+        }
+        None
     }
 
     /// 50ms tick: drive position manager time-based exits
