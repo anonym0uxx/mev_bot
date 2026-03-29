@@ -11,6 +11,7 @@ EnvironmentFile=/data/.openclaw/workspace/projects/pump-quant/rust/.env
 Environment=PAPER_MODE=true
 Environment=RUST_LOG=info
 Environment=RUST_BACKTRACE=1
+ExecStartPre=/bin/bash /data/.openclaw/workspace/projects/pump-quant/scripts/ensure-single-daemon.sh
 ExecStart=/data/.openclaw/workspace/projects/pump-quant/rust/target/release/pump-quant
 Restart=always
 RestartSec=3

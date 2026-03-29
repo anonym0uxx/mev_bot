@@ -7,6 +7,10 @@ set -euo pipefail
 echo "=== pump-quant cutover: TS → Rust ==="
 echo ""
 
+# 0. Kill ALL daemons first — no duplicates ever
+bash "$(dirname "$0")/ensure-single-daemon.sh"
+echo ""
+
 # 1. Verify Rust daemon health
 RUST_HEALTH=$(curl -s http://127.0.0.1:9421/api/health 2>/dev/null | jq -r '.status' 2>/dev/null || echo "unreachable")
 if [ "$RUST_HEALTH" != "ok" ]; then
