@@ -357,6 +357,22 @@ impl HotPath {
         // 10. Open position
         self.position_manager.open_position(trade, score, now);
         self.stats.positions_opened += 1;
+
+        // 11. Enrich position with entry context for rich logging
+        if let Some(pos) = self.position_manager.get_position_mut(&trade.mint) {
+            pos.pre_trigger_buys_1s = buy_count_1s;
+            pos.pre_trigger_buys_2s = buy_count_2s;
+            pos.pre_trigger_buys_5s = buy_count_5s;
+            pos.unique_buyers = unique_buyers_30s;
+            pos.vsol_delta_3s = vsol_delta_3s;
+            pos.volume_5s = volume_sol_5s;
+            pos.sell_count_5s = sell_count_5s;
+            // ToD multiplier
+            let hour_utc = ((now / 3_600_000) % 24) as u8;
+            if self.boosted_hours_utc.contains(&hour_utc) {
+                pos.tod_multiplier = self.tod_boost_multiplier;
+            }
+        }
     }
 
     /// Process a token creation event. Checks regime exclusion flags and

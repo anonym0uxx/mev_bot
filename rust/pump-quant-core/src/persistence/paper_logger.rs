@@ -70,6 +70,40 @@ impl PaperTradeLogger {
             .unwrap_or_default()
             .as_millis() as u64;
 
+        // MFE/MAE computation (from peak/trough vSol vs entry vSol)
+        let mfe_sol = if pos.peak_vsol > pos.entry_vsol {
+            (pos.peak_vsol - pos.entry_vsol) as f64 / 1_000_000_000.0
+        } else {
+            0.0
+        };
+        let mae_sol = if pos.entry_vsol > pos.trough_vsol {
+            (pos.entry_vsol - pos.trough_vsol) as f64 / 1_000_000_000.0
+        } else {
+            0.0
+        };
+        let mfe_pct = if entry_vsol > 0.0 { mfe_sol / entry_vsol } else { 0.0 };
+        let mae_pct = if entry_vsol > 0.0 { mae_sol / entry_vsol } else { 0.0 };
+
+        let trigger_buy_sol = pos.trigger_sol as f64 / 1_000_000_000.0;
+        let vsol_delta_3s_sol = pos.vsol_delta_3s as f64 / 1_000_000_000.0;
+        let volume_5s_sol = pos.volume_5s as f64 / 1_000_000_000.0;
+
+        // Trigger hour UTC (from entry timestamp)
+        let trigger_hour_utc = ((pos.entry_ts_ms / 3_600_000) % 24) as u8;
+
+        // Bonding curve progress at entry
+        let curve_pct = if pos.current_vtokens > 0 {
+            crate::engine::regime::compute_bonding_curve_progress(
+                pos.current_vtokens,
+                crate::engine::regime::INITIAL_VIRTUAL_TOKENS,
+            )
+        } else {
+            0.0
+        };
+
+        // Auto-flag anomalous trades (>90% loss = data bug)
+        let exclude = gross_pnl_sol < -0.9 * size_sol;
+
         let line = json!({
             "mint": entry_mint_b58,
             "entryVSol": entry_vsol,
@@ -84,10 +118,34 @@ impl PaperTradeLogger {
             "score": pos.score,
             "netPnlSol": net_pnl_sol,
             "feesSol": fees_sol,
+            // MFE/MAE — essential for TP/SL calibration
+            "mfeSol": mfe_sol,
+            "maeSol": mae_sol,
+            "mfePct": mfe_pct,
+            "maePct": mae_pct,
+            // Trigger context
+            "triggerBuySol": trigger_buy_sol,
+            "triggerHourUtc": trigger_hour_utc,
+            "curvePct": curve_pct,
+            "uniqueBuyerCount": pos.unique_buyers,
+            // Pre-trigger gate signals
+            "preTriggerBuys1s": pos.pre_trigger_buys_1s,
+            "preTriggerBuys2s": pos.pre_trigger_buys_2s,
+            "preTriggerBuys5s": pos.pre_trigger_buys_5s,
+            "preTriggerVSolDelta3s": vsol_delta_3s_sol,
+            "preTriggerVolume5s": volume_5s_sol,
+            "preTriggerSellCount5s": pos.sell_count_5s,
+            // Next-buyer flow data
+            "tradesAfterEntry": pos.trades_after_entry,
+            "buysAfterEntry": pos.buys_after_entry,
+            "flowAfterEntrySol": pos.flow_after_entry as f64 / 1_000_000_000.0,
+            // Sizing context
+            "todMultiplier": pos.tod_multiplier,
+            // Metadata
             "engineVersion": "v5-rust",
-            "dataVersion": 2,
+            "dataVersion": 3,
             "is_paper": true,
-            "excludeFromAnalysis": false,
+            "excludeFromAnalysis": exclude,
             "recordedAt": now_ms,
         });
 

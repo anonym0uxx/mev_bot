@@ -47,6 +47,14 @@ pub struct OpenPosition {
     pub trigger_sig: [u8; 64],
     /// Time-of-day multiplier (1.0 normal, 1.25 during boosted hours).
     pub tod_multiplier: f64,
+    // ── Entry context (for rich logging / ML training data) ──
+    pub pre_trigger_buys_1s: u16,
+    pub pre_trigger_buys_2s: u16,
+    pub pre_trigger_buys_5s: u16,
+    pub unique_buyers: u16,
+    pub vsol_delta_3s: u64,
+    pub volume_5s: u64,
+    pub sell_count_5s: u16,
 }
 
 /// Why a position was closed.
@@ -84,6 +92,33 @@ pub struct ClosedPosition {
     pub current_vsol: u64,
     pub bonding_curve: [u8; 32],
     pub assoc_bonding_curve: [u8; 32],
+    // ── Rich logging fields (training data for gate/scorer tuning) ──
+    /// Max vSol during hold (MFE - max favorable excursion).
+    pub peak_vsol: u64,
+    /// Min vSol during hold (MAE - max adverse excursion).
+    pub trough_vsol: u64,
+    /// Trigger trade size (lamports).
+    pub trigger_sol: u64,
+    /// Trades seen after entry (next-buyer flow data).
+    pub trades_after_entry: u32,
+    /// Buy events after entry.
+    pub buys_after_entry: u32,
+    /// Total buy flow since entry (lamports).
+    pub flow_after_entry: u64,
+    /// Pre-trigger buy counts at entry.
+    pub pre_trigger_buys_1s: u16,
+    pub pre_trigger_buys_2s: u16,
+    pub pre_trigger_buys_5s: u16,
+    /// Unique buyers at entry time.
+    pub unique_buyers: u16,
+    /// vSol delta 3s at entry.
+    pub vsol_delta_3s: u64,
+    /// Volume 5s at entry (lamports).
+    pub volume_5s: u64,
+    /// Sell count 5s at entry.
+    pub sell_count_5s: u16,
+    /// ToD multiplier applied.
+    pub tod_multiplier: f64,
 }
 
 // ─── Config Structs ────────────────────────────────────────────────
@@ -176,6 +211,11 @@ impl PositionManager {
         self.positions.contains_key(mint)
     }
 
+    /// Get a mutable reference to an open position (for enriching entry context).
+    pub fn get_position_mut(&mut self, mint: &[u8; 32]) -> Option<&mut OpenPosition> {
+        self.positions.get_mut(mint)
+    }
+
     /// Look up position size for a given trigger trade size.
     /// Returns the size from the first matching tier, capped at max_entry_size_lamports.
     fn lookup_size(&self, trigger_sol: u64) -> u64 {
@@ -255,6 +295,14 @@ impl PositionManager {
             buys_since_entry: 0,
             trigger_sig: event.sig,
             tod_multiplier: 1.0, // caller can update if needed
+            // Entry context — populated by caller (hot_path) from MintHistory
+            pre_trigger_buys_1s: 0,
+            pre_trigger_buys_2s: 0,
+            pre_trigger_buys_5s: 0,
+            unique_buyers: 0,
+            vsol_delta_3s: 0,
+            volume_5s: 0,
+            sell_count_5s: 0,
         };
 
         self.positions.insert(event.mint, pos);
@@ -516,6 +564,22 @@ impl PositionManager {
             current_vsol: pos.current_vsol,
             bonding_curve: pos.bonding_curve,
             assoc_bonding_curve: pos.assoc_bonding_curve,
+            // Rich logging fields from OpenPosition
+            peak_vsol: pos.peak_vsol,
+            trough_vsol: pos.trough_vsol,
+            trigger_sol: pos.trigger_sol,
+            trades_after_entry: pos.trades_seen_after_entry,
+            buys_after_entry: pos.buys_since_entry,
+            flow_after_entry: pos.flow_since_entry,
+            // These will be populated from entry context (passed via open_position)
+            pre_trigger_buys_1s: pos.pre_trigger_buys_1s,
+            pre_trigger_buys_2s: pos.pre_trigger_buys_2s,
+            pre_trigger_buys_5s: pos.pre_trigger_buys_5s,
+            unique_buyers: pos.unique_buyers,
+            vsol_delta_3s: pos.vsol_delta_3s,
+            volume_5s: pos.volume_5s,
+            sell_count_5s: pos.sell_count_5s,
+            tod_multiplier: pos.tod_multiplier,
         };
 
         // Best-effort send — if the receiver is gone, we just drop it.
