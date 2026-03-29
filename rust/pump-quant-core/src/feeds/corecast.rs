@@ -1,12 +1,18 @@
-//! CoreCast / Bitquery WebSocket feed — creator sell detection.
+//! CoreCast / Bitquery WebSocket feed — multi-stream subscriptions.
 //!
 //! Connects to the Bitquery streaming GraphQL endpoint and subscribes to
-//! pump.fun DEX trades. When a creator-sell is detected (the transaction
-//! signer matches the known token creator), emits `FeedEvent::CreatorSell`.
+//! multiple streams on a single WebSocket connection using the graphql-ws
+//! protocol's multiplexed subscription IDs.
+//!
+//! Streams (all on 1 WS connection = 1 stream toward Bitquery's 5-stream cap):
+//!   ID "1" — pump.fun DEX trades (creator sell detection)
+//!   ID "2" — Raydium AMM trades (migration detection → force-exit)
+//!   ID "3" — Token supply updates (LP removal / rug detection → force-exit)
+//!   ID "4" — pump.fun create instructions (new token pre-warm)
 //!
 //! TASK-10: Uses a shared `Arc<RwLock<HashMap<[u8;32],[u8;32]>>>` (mint → creator)
-//! populated by the PumpPortal feed on token creation events. Only emits
-//! CreatorSell when the Bitquery transaction signer matches the known creator.
+//! populated by PumpPortal on token creation events. Also written by stream 4
+//! (new token launches detected via Bitquery, often faster than PumpPortal).
 //!
 //! Requires `BITQUERY_API_KEY` env var. If not set, gracefully disables.
 //!
@@ -26,15 +32,24 @@ use super::FeedEvent;
 
 /// Shared creator map type: mint → creator wallet pubkey.
 /// Written by PumpPortal on `create` events, read by CoreCast for signer matching.
+/// Also written by stream 4 (new token launches) for pre-warming.
 pub type CreatorMap = Arc<RwLock<HashMap<[u8; 32], [u8; 32]>>>;
 
 const BITQUERY_WS_URL: &str = "wss://streaming.bitquery.io/eap";
-#[allow(dead_code)]
+#[allow(dead_code)] // Referenced in GraphQL subscription strings as string literals.
 const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+#[allow(dead_code)] // Referenced in GraphQL subscription strings as string literals.
+const RAYDIUM_AMM_PROGRAM_ID: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
 const MAX_BACKOFF_SECS: u64 = 30;
 
-/// GraphQL subscription query for pump.fun DEX trades.
-const GQL_SUBSCRIPTION: &str = r#"subscription {
+// ── Subscription ID constants ───────────────────────────────────────
+const SUB_ID_BONDING_TRADES: &str = "1";
+const SUB_ID_AMM_MIGRATION: &str = "2";
+const SUB_ID_LP_REMOVAL: &str = "3";
+const SUB_ID_NEW_TOKEN: &str = "4";
+
+/// Stream 1: pump.fun DEX trades (creator sell detection).
+const GQL_BONDING_TRADES: &str = r#"subscription {
   Solana {
     DEXTrades(
       where: {Trade: {Dex: {ProgramAddress: {is: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"}}}}
@@ -53,12 +68,81 @@ const GQL_SUBSCRIPTION: &str = r#"subscription {
   }
 }"#;
 
+/// Stream 2: Raydium AMM trades — detects pump.fun token migration to Raydium.
+/// When a token migrates, any open position in that mint must be force-exited.
+const GQL_AMM_MIGRATION: &str = r#"subscription {
+  Solana {
+    DEXTrades(
+      where: {Trade: {Dex: {ProgramAddress: {in: ["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"]}}}}
+    ) {
+      Trade {
+        Buy { Currency { MintAddress } }
+        Sell { Currency { MintAddress } }
+        Dex { ProgramAddress }
+      }
+      Transaction { Signature }
+      Block { Time }
+    }
+  }
+}"#;
+
+/// Stream 3: Token supply updates — LP removal / rug detection.
+/// If PostBalance < PreBalance by >50%, it signals LP removal.
+const GQL_LP_REMOVAL: &str = r#"subscription {
+  Solana {
+    TokenSupplyUpdates(
+      where: {
+        TokenSupplyUpdate: { Currency: { Native: false } }
+        Transaction: { Result: { Success: true } }
+      }
+    ) {
+      TokenSupplyUpdate {
+        Currency { MintAddress }
+        PostBalance
+        PreBalance
+      }
+      Transaction { Signer Signature }
+    }
+  }
+}"#;
+
+/// Stream 4: New token launches — pump.fun create instruction.
+/// Pre-warms creator_map before PumpPortal detects the token.
+const GQL_NEW_TOKEN: &str = r#"subscription {
+  Solana {
+    Instructions(
+      where: {
+        Instruction: {
+          Program: {
+            Address: { is: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" }
+            Name: { is: "create" }
+          }
+        }
+        Transaction: { Result: { Success: true } }
+      }
+    ) {
+      Instruction {
+        Accounts { Address }
+        Program { Name }
+      }
+      Transaction { Signature Signer }
+    }
+  }
+}"#;
+
 /// Run the CoreCast/Bitquery WebSocket feed loop. Never returns unless shutdown.
 /// If `BITQUERY_API_KEY` is not set, logs a warning and returns immediately.
 ///
-/// `creator_map`: shared map of mint → creator wallet, populated by PumpPortal.
-/// Used to verify that the Bitquery transaction signer is actually the creator
-/// before emitting CreatorSell events.
+/// Sends 4 multiplexed subscriptions on a single WebSocket connection:
+///   ID "1" — pump.fun bonding trades (creator sell detection)
+///   ID "2" — Raydium AMM trades (migration detection)
+///   ID "3" — Token supply updates (LP removal / rug detection)
+///   ID "4" — pump.fun create instructions (new token pre-warm)
+///
+/// All 4 use the same WS connection = 1 stream toward Bitquery's 5-stream cap.
+///
+/// `creator_map`: shared map of mint → creator wallet, populated by PumpPortal
+/// and enriched by stream 4 (new token launches via Bitquery).
 pub async fn run(
     tx: Sender<FeedEvent>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -155,72 +239,111 @@ pub async fn run(
                     continue;
                 }
 
-                // Step 3: Send subscription (subscribe message)
-                let sub_msg = serde_json::json!({
-                    "type": "start",
-                    "id": "1",
-                    "payload": {
-                        "query": GQL_SUBSCRIPTION
+                // Step 3: Send ALL subscriptions (multiplexed on same WS connection)
+                let subscriptions: &[(&str, &str, &str)] = &[
+                    (SUB_ID_BONDING_TRADES, GQL_BONDING_TRADES, "pump.fun DEX trades"),
+                    (SUB_ID_AMM_MIGRATION, GQL_AMM_MIGRATION, "Raydium AMM migration"),
+                    (SUB_ID_LP_REMOVAL, GQL_LP_REMOVAL, "LP removal / rug detection"),
+                    (SUB_ID_NEW_TOKEN, GQL_NEW_TOKEN, "new token launches"),
+                ];
+
+                let mut all_subscribed = true;
+                for (id, query, label) in subscriptions {
+                    let sub_msg = serde_json::json!({
+                        "type": "start",
+                        "id": id,
+                        "payload": {
+                            "query": query
+                        }
+                    });
+                    if let Err(e) = write.send(tungstenite::Message::Text(sub_msg.to_string().into())).await {
+                        error!("[corecast] failed to send subscription {} ({}): {}", id, label, e);
+                        all_subscribed = false;
+                        break;
                     }
-                });
-                if let Err(e) = write.send(tungstenite::Message::Text(sub_msg.to_string().into())).await {
-                    error!("[corecast] failed to send subscription: {}", e);
+                    info!("[corecast] subscribed id={} — {}", id, label);
+                }
+
+                if !all_subscribed {
                     continue;
                 }
-                info!("[corecast] subscribed to pump.fun DEX trades");
 
-                // Step 4: Read loop — parse trade events for creator sells
-                let mut events_seen: u64 = 0;
-                let mut creator_matches: u64 = 0;
-                let mut creator_mismatches: u64 = 0;
+                info!(
+                    "[corecast] all {} subscriptions active on 1 WS connection",
+                    subscriptions.len()
+                );
+
+                // Step 4: Read loop — route messages by subscription ID
+                let mut stats = StreamStats::default();
                 loop {
                     tokio::select! {
                         msg = read.next() => {
                             match msg {
                                 Some(Ok(tungstenite::Message::Text(text))) => {
-                                    if let Some((mint, signer, ts_ms)) = parse_corecast_message(&text) {
-                                        events_seen += 1;
-                                        if events_seen % 100 == 0 {
-                                            debug!(
-                                                "[corecast] events_seen={} creator_matches={} mismatches={}",
-                                                events_seen, creator_matches, creator_mismatches
-                                            );
+                                    let ts_ms = now_ms();
+                                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&*text) {
+                                        let msg_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                                        if msg_type != "data" {
+                                            continue;
                                         }
 
-                                        // Verify signer matches known creator for this mint
-                                        let is_creator_sell = if let Some(signer_bytes) = signer {
-                                            match creator_map.read() {
-                                                Ok(map) => {
-                                                    if let Some(creator) = map.get(&mint) {
-                                                        if *creator == signer_bytes {
-                                                            creator_matches += 1;
-                                                            true
-                                                        } else {
-                                                            creator_mismatches += 1;
-                                                            false
-                                                        }
-                                                    } else {
-                                                        // No creator known — emit conservatively
-                                                        creator_matches += 1;
-                                                        true
-                                                    }
-                                                }
-                                                Err(_) => {
-                                                    warn!("[corecast] creator_map lock poisoned");
-                                                    false
-                                                }
-                                            }
-                                        } else {
-                                            // No signer in message — emit conservatively
-                                            creator_matches += 1;
-                                            true
+                                        let sub_id = v.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                                        let payload = match v.get("payload") {
+                                            Some(p) => p,
+                                            None => continue,
                                         };
 
-                                        if is_creator_sell {
-                                            if tx.send(FeedEvent::CreatorSell { mint, ts_ms }).is_err() {
-                                                info!("[corecast] engine channel closed");
-                                                return;
+                                        match sub_id {
+                                            SUB_ID_BONDING_TRADES => {
+                                                stats.bonding_trades += 1;
+                                                if let Some(event) = parse_bonding_trade(payload, ts_ms, &creator_map) {
+                                                    if tx.send(event).is_err() {
+                                                        info!("[corecast] engine channel closed");
+                                                        return;
+                                                    }
+                                                }
                                             }
+                                            SUB_ID_AMM_MIGRATION => {
+                                                stats.amm_migrations += 1;
+                                                for event in parse_amm_migration(payload, ts_ms) {
+                                                    if tx.send(event).is_err() {
+                                                        info!("[corecast] engine channel closed");
+                                                        return;
+                                                    }
+                                                }
+                                            }
+                                            SUB_ID_LP_REMOVAL => {
+                                                stats.lp_removals += 1;
+                                                for event in parse_lp_removal(payload, ts_ms) {
+                                                    if tx.send(event).is_err() {
+                                                        info!("[corecast] engine channel closed");
+                                                        return;
+                                                    }
+                                                }
+                                            }
+                                            SUB_ID_NEW_TOKEN => {
+                                                stats.new_tokens += 1;
+                                                if let Some(event) = parse_new_token(payload, ts_ms, &creator_map) {
+                                                    if tx.send(event).is_err() {
+                                                        info!("[corecast] engine channel closed");
+                                                        return;
+                                                    }
+                                                }
+                                            }
+                                            _ => {
+                                                debug!("[corecast] unknown subscription id: {}", sub_id);
+                                            }
+                                        }
+
+                                        // Periodic stats logging
+                                        let total = stats.total();
+                                        if total % 100 == 0 && total > 0 {
+                                            debug!(
+                                                "[corecast] bonding={} amm={} lp={} new_token={} creator_match={} creator_miss={}",
+                                                stats.bonding_trades, stats.amm_migrations,
+                                                stats.lp_removals, stats.new_tokens,
+                                                stats.creator_matches, stats.creator_mismatches
+                                            );
                                         }
                                     }
                                 }
@@ -270,56 +393,214 @@ pub async fn run(
     }
 }
 
-/// Parse a CoreCast/Bitquery GraphQL subscription message.
-///
-/// Looks for DEXTrades data containing a MintAddress and Transaction Signer.
-/// Returns `Some((mint_bytes, Option<signer_bytes>, ts_ms))` if a valid trade is found.
-/// The signer is used for creator-sell matching (TASK-10).
-fn parse_corecast_message(text: &str) -> Option<([u8; 32], Option<[u8; 32]>, u64)> {
-    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+// ── Per-stream statistics ───────────────────────────────────────────
 
-    // Must be a "data" type message from graphql-ws
-    let msg_type = v.get("type")?.as_str()?;
-    if msg_type != "data" {
-        return None;
+#[derive(Default)]
+struct StreamStats {
+    bonding_trades: u64,
+    amm_migrations: u64,
+    lp_removals: u64,
+    new_tokens: u64,
+    creator_matches: u64,
+    creator_mismatches: u64,
+}
+
+impl StreamStats {
+    fn total(&self) -> u64 {
+        self.bonding_trades + self.amm_migrations + self.lp_removals + self.new_tokens
     }
+}
 
-    let payload = v.get("payload")?;
+/// Current epoch ms (used as fallback timestamp for events without Block.Time).
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Decode a base58 string into a 32-byte array on the stack (no heap allocation).
+fn decode_bs58_32(s: &str) -> Option<[u8; 32]> {
+    let mut arr = [0u8; 32];
+    let n = bs58::decode(s).onto(&mut arr[..]).ok()?;
+    if n != 32 { return None; }
+    Some(arr)
+}
+
+// ── Stream 1: Bonding trades (creator sell detection) ───────────────
+
+/// Parse a pump.fun DEX trade from stream 1 payload.
+/// Returns `FeedEvent::CreatorSell` if the signer matches the known creator.
+fn parse_bonding_trade(
+    payload: &serde_json::Value,
+    ts_ms: u64,
+    creator_map: &CreatorMap,
+) -> Option<FeedEvent> {
     let data = payload.get("data")?;
     let solana = data.get("Solana")?;
     let dex_trades = solana.get("DEXTrades")?.as_array()?;
 
-    // Process the first trade in the batch
     let trade = dex_trades.first()?;
-    let mint_address = trade
-        .pointer("/Trade/Buy/Currency/MintAddress")?
-        .as_str()?;
+    let mint_address = trade.pointer("/Trade/Buy/Currency/MintAddress")?.as_str()?;
+    let mint = decode_bs58_32(mint_address)?;
 
-    // LATENCY: Decode base58 into stack buffer — no heap allocation.
-    let mut mint = [0u8; 32];
-    let mint_len = bs58::decode(mint_address).onto(&mut mint[..]).ok()?;
-    if mint_len != 32 {
-        return None;
-    }
-
-    // Extract transaction signer for creator-sell verification
-    // LATENCY: stack-allocated decode, same as mint.
     let signer = trade
         .pointer("/Transaction/Signer")
         .and_then(|s| s.as_str())
-        .and_then(|s| {
-            let mut arr = [0u8; 32];
-            let n = bs58::decode(s).onto(&mut arr[..]).ok()?;
-            if n != 32 {
-                return None;
+        .and_then(decode_bs58_32);
+
+    // Verify signer matches known creator for this mint
+    let is_creator_sell = if let Some(signer_bytes) = signer {
+        match creator_map.read() {
+            Ok(map) => {
+                if let Some(creator) = map.get(&mint) {
+                    *creator == signer_bytes
+                } else {
+                    // No creator known — emit conservatively
+                    true
+                }
             }
-            Some(arr)
-        });
+            Err(_) => {
+                warn!("[corecast] creator_map lock poisoned");
+                false
+            }
+        }
+    } else {
+        // No signer in message — emit conservatively
+        true
+    };
 
-    let ts_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
+    if is_creator_sell {
+        Some(FeedEvent::CreatorSell { mint, ts_ms })
+    } else {
+        None
+    }
+}
 
-    Some((mint, signer, ts_ms))
+// ── Stream 2: AMM migration detection ───────────────────────────────
+
+/// Parse Raydium AMM trades from stream 2 payload.
+/// Returns `FeedEvent::Migration` for each mint detected trading on Raydium.
+/// A pump.fun token appearing on Raydium means it has graduated/migrated.
+fn parse_amm_migration(payload: &serde_json::Value, ts_ms: u64) -> Vec<FeedEvent> {
+    let mut events = Vec::new();
+
+    let trades = match payload
+        .pointer("/data/Solana/DEXTrades")
+        .and_then(|t| t.as_array())
+    {
+        Some(t) => t,
+        None => return events,
+    };
+
+    for trade in trades {
+        // Extract both buy and sell mint addresses — the pump.fun token could be on either side
+        let buy_mint = trade
+            .pointer("/Trade/Buy/Currency/MintAddress")
+            .and_then(|s| s.as_str())
+            .and_then(decode_bs58_32);
+        let sell_mint = trade
+            .pointer("/Trade/Sell/Currency/MintAddress")
+            .and_then(|s| s.as_str())
+            .and_then(decode_bs58_32);
+
+        // Emit migration for both sides — the engine will only act on mints it tracks
+        if let Some(mint) = buy_mint {
+            events.push(FeedEvent::Migration { mint, ts_ms });
+        }
+        if let Some(mint) = sell_mint {
+            // Avoid duplicate if buy and sell are the same mint (shouldn't happen but be safe)
+            if buy_mint != sell_mint {
+                events.push(FeedEvent::Migration { mint, ts_ms });
+            }
+        }
+    }
+
+    events
+}
+
+// ── Stream 3: LP removal / rug detection ────────────────────────────
+
+/// Parse token supply updates from stream 3 payload.
+/// Returns `FeedEvent::LpRemoval` if PostBalance < PreBalance by >50%.
+fn parse_lp_removal(payload: &serde_json::Value, ts_ms: u64) -> Vec<FeedEvent> {
+    let mut events = Vec::new();
+
+    let updates = match payload
+        .pointer("/data/Solana/TokenSupplyUpdates")
+        .and_then(|t| t.as_array())
+    {
+        Some(t) => t,
+        None => return events,
+    };
+
+    for update in updates {
+        let mint_str = match update
+            .pointer("/TokenSupplyUpdate/Currency/MintAddress")
+            .and_then(|s| s.as_str())
+        {
+            Some(s) => s,
+            None => continue,
+        };
+
+        let pre_balance = update
+            .pointer("/TokenSupplyUpdate/PreBalance")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+
+        let post_balance = update
+            .pointer("/TokenSupplyUpdate/PostBalance")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+
+        // LP removal: supply dropped by >50%
+        if pre_balance > 0.0 && post_balance < pre_balance * 0.5 {
+            if let Some(mint) = decode_bs58_32(mint_str) {
+                info!(
+                    "[corecast] LP removal detected: mint={} pre={:.2} post={:.2} drop={:.1}%",
+                    mint_str, pre_balance, post_balance,
+                    (1.0 - post_balance / pre_balance) * 100.0
+                );
+                events.push(FeedEvent::LpRemoval { mint, ts_ms });
+            }
+        }
+    }
+
+    events
+}
+
+// ── Stream 4: New token launches ────────────────────────────────────
+
+/// Parse pump.fun create instructions from stream 4 payload.
+/// Returns `FeedEvent::NewToken` and pre-warms the creator_map.
+fn parse_new_token(
+    payload: &serde_json::Value,
+    ts_ms: u64,
+    creator_map: &CreatorMap,
+) -> Option<FeedEvent> {
+    let instructions = payload
+        .pointer("/data/Solana/Instructions")
+        .and_then(|t| t.as_array())?;
+
+    let instr = instructions.first()?;
+
+    // First account in the instruction is the mint address
+    let accounts = instr.pointer("/Instruction/Accounts")?.as_array()?;
+    let mint_str = accounts.first()?.get("Address")?.as_str()?;
+    let mint = decode_bs58_32(mint_str)?;
+
+    // Transaction signer is the creator
+    let signer_str = instr.pointer("/Transaction/Signer")?.as_str()?;
+    let creator = decode_bs58_32(signer_str)?;
+
+    // Pre-warm creator_map (may fire before PumpPortal)
+    if let Ok(mut map) = creator_map.write() {
+        map.insert(mint, creator);
+        debug!(
+            "[corecast] pre-warmed creator_map: mint={} creator={}",
+            mint_str, signer_str
+        );
+    }
+
+    Some(FeedEvent::NewToken { mint, creator, ts_ms })
 }

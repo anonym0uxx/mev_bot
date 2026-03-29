@@ -508,6 +508,23 @@ async fn main() -> anyhow::Result<()> {
             Ok(FeedEvent::CreatorSell { mint, ts_ms }) => {
                 hot_path.on_creator_sell(&mint, ts_ms);
             }
+            Ok(FeedEvent::Migration { mint, ts_ms }) => {
+                hot_path.on_migration(&mint, ts_ms);
+                drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
+            }
+            Ok(FeedEvent::LpRemoval { mint, ts_ms }) => {
+                hot_path.on_lp_removal(&mint, ts_ms);
+                drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
+            }
+            Ok(FeedEvent::NewToken { mint, creator, ts_ms: _ }) => {
+                // Pre-warm creator map from Bitquery (often faster than PumpPortal).
+                // corecast.rs already writes to creator_map, but this ensures the
+                // main engine's shared_creator_map is also updated.
+                if let Ok(mut map) = shared_creator_map.write() {
+                    map.insert(mint, creator);
+                }
+                hot_path.on_new_token();
+            }
             Ok(FeedEvent::Shutdown) => {
                 info!("Shutdown signal received");
                 let now = now_ms_mono!();
@@ -537,6 +554,9 @@ async fn main() -> anyhow::Result<()> {
         score_rejects = s.score_rejects,
         prewarms = s.prewarms,
         creator_sells = s.creator_sells,
+        migrations = s.migrations,
+        lp_removals = s.lp_removals,
+        new_tokens = s.new_tokens,
         "pump-quant-core stopped"
     );
 

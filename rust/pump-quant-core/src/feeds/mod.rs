@@ -11,6 +11,12 @@ pub enum FeedEvent {
     Trade(TradeEvent),
     PreWarm(PreWarmEvent), // Helius-only, no vSol
     CreatorSell { mint: [u8; 32], ts_ms: u64 },
+    /// Token migrated to Raydium AMM — force-exit any open position.
+    Migration { mint: [u8; 32], ts_ms: u64 },
+    /// LP removal / rug detection — force-exit any open position.
+    LpRemoval { mint: [u8; 32], ts_ms: u64 },
+    /// New token launch detected via Bitquery (pre-warms creator_map).
+    NewToken { mint: [u8; 32], creator: [u8; 32], ts_ms: u64 },
     /// New token created — carries regime exclusion flags.
     TokenCreated(TokenCreatedEvent),
     Tick { ts_ms: u64 }, // 50ms timer tick for dead-token decay check

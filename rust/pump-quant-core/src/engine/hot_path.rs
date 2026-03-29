@@ -30,6 +30,9 @@ pub struct HotPathStats {
     pub prewarms: u64,
     pub ticks: u64,
     pub creator_sells: u64,
+    pub migrations: u64,
+    pub lp_removals: u64,
+    pub new_tokens: u64,
 }
 
 pub struct HotPath {
@@ -158,6 +161,9 @@ impl HotPath {
                 prewarms: 0,
                 ticks: 0,
                 creator_sells: 0,
+                migrations: 0,
+                lp_removals: 0,
+                new_tokens: 0,
             },
             daily_loss_lamports: 0,
             daily_reset_day: 0,
@@ -510,6 +516,47 @@ impl HotPath {
         if let Some(history) = self.mint_map.get_mut(mint) {
             history.creator_sell_at_ms = ts_ms;
         }
+    }
+
+    /// Force-exit any open position for a migrated token.
+    /// Token migrated to Raydium AMM — bonding curve positions are invalidated.
+    /// Uses `ExitReason::MaxHold` as the closest semantic match (positions.rs is read-only).
+    pub fn on_migration(&mut self, mint: &[u8; 32], ts_ms: u64) {
+        self.stats.migrations += 1;
+        if self.position_manager.has_position(mint) {
+            tracing::info!(
+                mint = %bs58::encode(mint).into_string(),
+                "migration detected — force-closing position"
+            );
+            self.position_manager.force_close(mint, ExitReason::MaxHold, ts_ms);
+        }
+        // Also mark creator_sell_at_ms so the gate rejects future entries for this mint
+        if let Some(history) = self.mint_map.get_mut(mint) {
+            history.creator_sell_at_ms = ts_ms;
+        }
+    }
+
+    /// Force-exit any open position on LP removal (rug detection).
+    /// Delegates to `on_migration` — same force-exit logic.
+    pub fn on_lp_removal(&mut self, mint: &[u8; 32], ts_ms: u64) {
+        self.stats.lp_removals += 1;
+        if self.position_manager.has_position(mint) {
+            tracing::info!(
+                mint = %bs58::encode(mint).into_string(),
+                "LP removal detected — force-closing position"
+            );
+            self.position_manager.force_close(mint, ExitReason::MaxHold, ts_ms);
+        }
+        // Also mark creator_sell so gates reject
+        if let Some(history) = self.mint_map.get_mut(mint) {
+            history.creator_sell_at_ms = ts_ms;
+        }
+    }
+
+    /// Record a new token detected via Bitquery (pre-warm).
+    /// The actual creator_map write happens in corecast.rs; this just counts.
+    pub fn on_new_token(&mut self) {
+        self.stats.new_tokens += 1;
     }
 
     /// Number of currently open positions.
