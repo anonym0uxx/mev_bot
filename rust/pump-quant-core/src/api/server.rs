@@ -52,6 +52,17 @@ pub struct EngineStats {
     pub grad_arb_exits_sl: u64,
     pub grad_arb_exits_max_hold: u64,
     pub grad_arb_net_sol: f64,
+    // Momentum engine stats
+    pub momentum_enabled: bool,
+    pub momentum_graduations_seen: u64,
+    pub momentum_entries: u64,
+    pub momentum_tp1_exits: u64,
+    pub momentum_tp2_exits: u64,
+    pub momentum_tp3_exits: u64,
+    pub momentum_sl_exits: u64,
+    pub momentum_timeout_exits: u64,
+    pub momentum_active_positions: u64,
+    pub momentum_daily_pnl_sol: f64,
 }
 
 // ─── Open Position (for /api/positions) ────────────────────────────

@@ -23,6 +23,7 @@ use pump_quant_core::api::{ApiState, EngineStats, start_server};
 use pump_quant_core::arb::graduation::{
     GradArbConfig, GradArbClosedPosition, GradArbStats, GraduationArbEngine,
 };
+use pump_quant_core::momentum::MomentumEngine;
 use pump_quant_core::feeds::{
     event_joiner::EventJoiner,
     helius::{HeliusConfig, HeliusWsClient},
@@ -538,6 +539,45 @@ async fn main() -> anyhow::Result<()> {
             })?;
     }
 
+    // ── Momentum Engine ──────────────────────────────────────────────
+    let momentum_config = Arc::new(engine_config.momentum.clone());
+    let momentum_rpc_url = Arc::new(
+        std::env::var("HELIUS_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
+            .map(|k| format!("https://mainnet.helius-rpc.com/?api-key={}", k))
+            .unwrap_or_default(),
+    );
+    let momentum_wss_url = std::env::var("HELIUS_API_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
+        .map(|k| format!("wss://mainnet.helius-rpc.com/?api-key={}", k))
+        .unwrap_or_else(|| "wss://invalid.example.com".to_string());
+    let momentum_log_path = format!("{}/momentum_paper_trades.jsonl", data_dir);
+
+    let (momentum_engine, _momentum_ws_handle, _momentum_logger_handle) = MomentumEngine::new(
+        momentum_config.clone(),
+        momentum_rpc_url,
+        momentum_wss_url,
+        &momentum_log_path,
+    );
+    let momentum_engine = Arc::new(momentum_engine);
+
+    info!(
+        enabled = engine_config.momentum.enabled,
+        paper_mode = engine_config.momentum.paper_mode,
+        entry_delay_ms = engine_config.momentum.entry_delay_ms,
+        min_grad_score = engine_config.momentum.min_grad_score,
+        position_size_sol = engine_config.momentum.position_size_sol,
+        "[momentum] engine initialized"
+    );
+
+    // Set momentum enabled flag in API stats at startup
+    {
+        let mut stats = api_state.stats.lock().unwrap();
+        stats.momentum_enabled = engine_config.momentum.enabled;
+    }
+
     // ── Engine hot-path loop ────────────────────────────────────────
     info!(paper_mode, "Engine hot-path running — full gate→score→position pipeline");
 
@@ -596,6 +636,9 @@ async fn main() -> anyhow::Result<()> {
 
                 // Graduation arb: check position exits (MaxHold)
                 grad_arb_engine.on_tick(ts_ms);
+
+                // Momentum engine: check pending entries + active positions
+                momentum_engine.on_tick(ts_ms).await;
 
                 // Drain closed positions for safety tracking, then forward to logger
                 drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
@@ -664,6 +707,14 @@ async fn main() -> anyhow::Result<()> {
                     let engine = Arc::clone(&grad_arb_engine);
                     tokio::spawn(async move {
                         engine.on_migration(mint, ts_ms, source, sig).await;
+                    });
+                }
+
+                // Momentum engine: post-graduation directional trade (async, non-blocking)
+                if engine_config.momentum.enabled {
+                    let momentum = Arc::clone(&momentum_engine);
+                    tokio::spawn(async move {
+                        momentum.on_migration(mint, ts_ms, sig).await;
                     });
                 }
             }

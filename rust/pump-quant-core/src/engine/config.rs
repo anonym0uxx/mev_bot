@@ -196,6 +196,10 @@ pub struct EngineConfig {
     pub graduation_arb_max_hold_ms: u64,
     /// Jito tip in SOL for arb bundles (default: 0.003).
     pub graduation_arb_jito_tip_sol: f64,
+
+    // ── Momentum engine config (SPEC 5) ─────────────────────────────
+    /// Post-graduation momentum engine configuration.
+    pub momentum: crate::momentum::MomentumConfig,
 }
 
 impl EngineConfig {
@@ -444,5 +448,11 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
         graduation_arb_sl_pct: mev.graduation_arb_sl_pct.unwrap_or(0.02),
         graduation_arb_max_hold_ms: mev.graduation_arb_max_hold_ms.unwrap_or(5000),
         graduation_arb_jito_tip_sol: mev.graduation_arb_jito_tip_sol.unwrap_or(0.003),
+        // Momentum engine config — loaded from top-level "momentum" section
+        // Falls back to MomentumConfig::default() if section is missing.
+        momentum: root
+            .get("momentum")
+            .and_then(|v| serde_json::from_value::<crate::momentum::MomentumConfig>(v.clone()).ok())
+            .unwrap_or_default(),
     })
 }
