@@ -72,6 +72,14 @@ impl GradArbPaperLogger {
         let mfe_sol = cp.mfe_lamports as f64 / LAMPORTS_PER_SOL;
         let mae_sol = cp.mae_lamports as f64 / LAMPORTS_PER_SOL;
 
+        // Cap spread at 50% in output — values above this are bad price data.
+        // Use -1.0 to signal "invalid/uncalculable" for downstream analysis.
+        let spread_pct_capped = if !cp.spread_pct.is_finite() || cp.spread_pct > 50.0 {
+            -1.0
+        } else {
+            cp.spread_pct
+        };
+
         let line = json!({
             "mint": mint_b58,
             "engineVersion": ENGINE_VERSION,
@@ -79,7 +87,7 @@ impl GradArbPaperLogger {
             "poolType": pool_type_str,
             "detectionSource": detection_source_str,
             "detectionLatencyMs": cp.detection_latency_ms,
-            "spreadPct": cp.spread_pct,
+            "spreadPct": spread_pct_capped,
             "bcTerminalPrice": cp.bc_terminal_price,
             "rayOpeningPrice": cp.ray_opening_price,
             "entrySizeSol": entry_size_sol,

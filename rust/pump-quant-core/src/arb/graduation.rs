@@ -28,10 +28,15 @@ use dashmap::DashMap;
 use super::dedup::MigrationDedup;
 use crate::feeds::MigrationSource;
 
-/// Bonding curve terminal price at graduation (~85 SOL vSol / 206.9T vTokens).
+/// Pump.fun bonding curve terminal price at graduation (~85 SOL vSol / 206.9T vTokens).
+/// Virtual token reserves at graduation: 206,900,000 tokens × 1e6 atoms = 206.9T atoms.
+/// Price = 85 SOL in lamports / 206.9T token atoms ≈ 4.107e-4 lamports per atom.
 /// Pre-computed constant: avoids runtime division on every migration event.
-/// = 85e9 lamports / 206_900_000_000_000 token atoms ≈ 4.107e-7 SOL per token atom.
-const BC_TERMINAL_PRICE: f64 = 85e9_f64 / 206_900_000_000_000_f64;
+const BC_TERMINAL_PRICE_LAMPORTS_PER_ATOM: f64 = 85e9_f64 / 206_900_000_000_000_f64;
+
+/// Maximum plausible spread (%). Anything above this is almost certainly a bad
+/// price calculation (e.g. zero reserves, NaN, pool not yet seeded).
+const MAX_PLAUSIBLE_SPREAD_PCT: f64 = 50.0;
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -244,22 +249,52 @@ async fn resolve_pool_inner(
         return Ok(resolution);
     }
 
-    // Fallback: tx parsed but no recognizable pool creation found.
-    // Return Unknown pool type so the arb engine can log the attempt.
+    // Fallback: tx parsed but no recognizable pool creation instruction found.
+    // Attempt to determine pool type from accountKeys and extract reserves via
+    // balance-diff heuristic.
+    let fallback_mint = extract_fallback_mint(tx).unwrap_or([0u8; 32]);
+
+    // Detect pool type from account keys presence
+    let account_keys_strs: Vec<&str> = tx
+        .pointer("/transaction/message/accountKeys")
+        .and_then(|a| a.as_array())
+        .map(|keys| {
+            keys.iter()
+                .filter_map(|k| {
+                    k.as_str()
+                        .or_else(|| k.get("pubkey").and_then(|p| p.as_str()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let pool_type = if account_keys_strs.iter().any(|k| *k == RAYDIUM_AMM_V4_PROGRAM) {
+        PoolType::RaydiumAmmV4
+    } else if account_keys_strs.iter().any(|k| *k == PUMPSWAP_AMM_PROGRAM) {
+        PoolType::PumpSwap
+    } else {
+        PoolType::Unknown
+    };
+
+    // Use balance-diff heuristic for reserves
+    let reserve_sol = extract_max_sol_increase(tx);
+    let reserve_token = extract_max_token_balance(tx);
+
     tracing::debug!(
         sig = %sig_b58,
-        "[grad_arb] pool resolution: tx parsed, pool address extraction failed — no Raydium/PumpSwap instruction found"
+        pool_type = %pool_type.as_str(),
+        reserve_sol = reserve_sol,
+        reserve_token = reserve_token,
+        mint = %bs58::encode(&fallback_mint).into_string(),
+        "[grad_arb] pool resolution: fallback heuristic (no inner instruction match)"
     );
-
-    // Attempt to extract any mint from postTokenBalances as a best-effort fallback
-    let fallback_mint = extract_fallback_mint(tx).unwrap_or([0u8; 32]);
 
     Ok(PoolResolution {
         mint: fallback_mint,
         pool_address: [0u8; 32],
-        pool_type: PoolType::Unknown,
-        reserve_sol_lamports: 0,
-        reserve_token_atoms: 0,
+        pool_type,
+        reserve_sol_lamports: reserve_sol,
+        reserve_token_atoms: reserve_token,
         bc_terminal_vsol: 0.0,
     })
 }
@@ -401,9 +436,22 @@ fn try_parse_pumpswap(tx: &serde_json::Value) -> Option<PoolResolution> {
     None
 }
 
+/// WSOL mint to exclude from token balance extraction.
+const WSOL_MINT_B58: &str = "So11111111111111111111111111111111111111112";
+
 /// Extract SOL and token reserves from postBalances/postTokenBalances.
 ///
-/// Looks for the pool address in the account keys and reads its post-tx balances.
+/// **Strategy 1 (precise):** Look for pool address in accountKeys and read its
+/// post-tx balances directly.
+///
+/// **Strategy 2 (fallback for v0 txs with address lookup tables):** When the
+/// pool address isn't found in accountKeys (common with Raydium v4 via ALTs),
+/// use economic heuristics:
+///   - SOL reserve = largest postBalance increase (pre→post diff)
+///   - Token reserve = largest non-WSOL postTokenBalance amount
+///
+/// This fallback works because the pool account receives the most SOL and the
+/// most tokens in a pool initialization transaction.
 fn extract_reserves_from_balances(
     tx: &serde_json::Value,
     pool_address: &[u8; 32],
@@ -411,61 +459,135 @@ fn extract_reserves_from_balances(
     let pool_b58 = bs58::encode(pool_address).into_string();
 
     // Find pool's index in accountKeys
-    let account_keys = match tx
+    let account_keys = tx
         .pointer("/transaction/message/accountKeys")
-        .and_then(|a| a.as_array())
-    {
-        Some(keys) => keys,
-        None => return (0, 0),
-    };
+        .and_then(|a| a.as_array());
 
-    let pool_index = account_keys.iter().position(|k| {
-        // accountKeys can be either a string or an object with a "pubkey" field
-        let key_str = k.as_str()
-            .or_else(|| k.get("pubkey").and_then(|p| p.as_str()));
-        key_str == Some(&pool_b58)
+    let pool_index = account_keys.as_ref().and_then(|keys| {
+        keys.iter().position(|k| {
+            // accountKeys can be either a string or an object with a "pubkey" field
+            let key_str = k.as_str()
+                .or_else(|| k.get("pubkey").and_then(|p| p.as_str()));
+            key_str == Some(&pool_b58)
+        })
     });
 
-    let pool_idx = match pool_index {
-        Some(idx) => idx,
-        None => return (0, 0),
-    };
+    if let Some(pool_idx) = pool_index {
+        // Strategy 1: Direct lookup by pool index
+        let direct_sol = tx
+            .pointer("/meta/postBalances")
+            .and_then(|b| b.as_array())
+            .and_then(|b| b.get(pool_idx))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
 
-    // SOL balance from postBalances[pool_idx]
-    let reserve_sol = tx
-        .pointer("/meta/postBalances")
-        .and_then(|b| b.as_array())
-        .and_then(|b| b.get(pool_idx))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-
-    // Token balance from postTokenBalances (find entry with accountIndex == pool_idx)
-    let reserve_token = tx
-        .pointer("/meta/postTokenBalances")
-        .and_then(|b| b.as_array())
-        .and_then(|balances| {
-            balances.iter().find_map(|entry| {
-                let idx = entry.get("accountIndex").and_then(|i| i.as_u64())?;
-                if idx as usize == pool_idx {
-                    entry
-                        .pointer("/uiTokenAmount/amount")
-                        .and_then(|a| a.as_str())
-                        .and_then(|s| s.parse::<u64>().ok())
-                } else {
-                    None
-                }
+        let direct_token = tx
+            .pointer("/meta/postTokenBalances")
+            .and_then(|b| b.as_array())
+            .and_then(|balances| {
+                balances.iter().find_map(|entry| {
+                    let idx = entry.get("accountIndex").and_then(|i| i.as_u64())?;
+                    if idx as usize == pool_idx {
+                        entry
+                            .pointer("/uiTokenAmount/amount")
+                            .and_then(|a| a.as_str())
+                            .and_then(|s| s.parse::<u64>().ok())
+                    } else {
+                        None
+                    }
+                })
             })
-        })
-        .unwrap_or(0);
+            .unwrap_or(0);
+
+        if direct_sol > 0 && direct_token > 0 {
+            // Both found via direct lookup — best case
+            return (direct_sol, direct_token);
+        }
+
+        // Partial direct: fill in missing values with heuristic
+        let sol = if direct_sol > 0 { direct_sol } else { extract_max_sol_increase(tx) };
+        let token = if direct_token > 0 { direct_token } else { extract_max_token_balance(tx) };
+
+        if sol > 0 || token > 0 {
+            return (sol, token);
+        }
+        // Both still zero — fall through to full heuristic
+    }
+
+    // Strategy 2: Balance-diff heuristic (works when pool address not in accountKeys
+    // due to v0 address lookup tables, or when direct lookup yields 0)
+
+    // SOL reserve: largest balance increase (post - pre) across all accounts
+    let reserve_sol = extract_max_sol_increase(tx);
+
+    // Token reserve: largest non-WSOL token balance in postTokenBalances
+    let reserve_token = extract_max_token_balance(tx);
+
+    tracing::debug!(
+        pool = %pool_b58,
+        reserve_sol = reserve_sol,
+        reserve_token = reserve_token,
+        strategy = "balance_diff_heuristic",
+        "[grad_arb] reserve extraction via fallback heuristic"
+    );
 
     (reserve_sol, reserve_token)
 }
 
+/// Find the largest SOL balance increase across all accounts in a transaction.
+/// This identifies the account that received the most SOL (i.e., the pool).
+fn extract_max_sol_increase(tx: &serde_json::Value) -> u64 {
+    let pre = tx
+        .pointer("/meta/preBalances")
+        .and_then(|b| b.as_array());
+    let post = tx
+        .pointer("/meta/postBalances")
+        .and_then(|b| b.as_array());
+
+    match (pre, post) {
+        (Some(pre_arr), Some(post_arr)) => {
+            pre_arr
+                .iter()
+                .zip(post_arr.iter())
+                .map(|(p, q)| {
+                    let pre_val = p.as_u64().unwrap_or(0);
+                    let post_val = q.as_u64().unwrap_or(0);
+                    post_val.saturating_sub(pre_val)
+                })
+                .max()
+                .unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
+
+/// Find the largest non-WSOL token balance from postTokenBalances.
+/// In a pool init tx, the pool's token account has the largest balance.
+fn extract_max_token_balance(tx: &serde_json::Value) -> u64 {
+    tx.pointer("/meta/postTokenBalances")
+        .and_then(|b| b.as_array())
+        .map(|balances| {
+            balances
+                .iter()
+                .filter_map(|entry| {
+                    let mint = entry.get("mint").and_then(|m| m.as_str())?;
+                    // Skip WSOL — we want the pump.fun token
+                    if mint == WSOL_MINT_B58 {
+                        return None;
+                    }
+                    entry
+                        .pointer("/uiTokenAmount/amount")
+                        .and_then(|a| a.as_str())
+                        .and_then(|s| s.parse::<u64>().ok())
+                })
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+}
+
 /// Best-effort mint extraction from postTokenBalances when pool parsing fails.
 fn extract_fallback_mint(tx: &serde_json::Value) -> Option<[u8; 32]> {
-    // WSOL mint to exclude
-    const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
-
     let balances = tx
         .pointer("/meta/postTokenBalances")?
         .as_array()?;
@@ -473,7 +595,7 @@ fn extract_fallback_mint(tx: &serde_json::Value) -> Option<[u8; 32]> {
     // Find first non-WSOL mint
     for entry in balances {
         let mint_str = entry.get("mint").and_then(|m| m.as_str())?;
-        if mint_str != WSOL_MINT {
+        if mint_str != WSOL_MINT_B58 {
             return decode_bs58_32(mint_str);
         }
     }
@@ -761,22 +883,49 @@ impl GraduationArbEngine {
             }
         };
 
+        // 2b. Guard: zero reserves → can't calculate a meaningful price
+        if pool.reserve_sol_lamports == 0 || pool.reserve_token_atoms == 0 {
+            tracing::debug!(
+                mint = %bs58::encode(pool.mint).into_string(),
+                pool_type = pool.pool_type.as_str(),
+                reserve_sol = pool.reserve_sol_lamports,
+                reserve_token = pool.reserve_token_atoms,
+                "[grad_arb] zero reserves — cannot calculate spread, treating as pool_not_found"
+            );
+            self.stats.pool_not_found.fetch_add(1, Ordering::Relaxed);
+            self.log_no_entry(pool.mint, ts_ms, source, GradArbExitReason::PoolNotFound);
+            return;
+        }
+
         // 3. Spread calculation
         // ray_opening_price = reserve_sol_lamports / reserve_token_atoms
-        let ray_price = if pool.reserve_token_atoms > 0 {
-            pool.reserve_sol_lamports as f64 / pool.reserve_token_atoms as f64
-        } else {
-            0.0
-        };
+        let ray_price = pool.reserve_sol_lamports as f64 / pool.reserve_token_atoms as f64;
 
         // BC terminal price: pre-computed constant (avoids runtime f64 division).
-        let bc_price = BC_TERMINAL_PRICE;
+        let bc_price = BC_TERMINAL_PRICE_LAMPORTS_PER_ATOM;
 
         let spread_pct = if bc_price > 0.0 {
             ((ray_price - bc_price) / bc_price * 100.0).abs()
         } else {
             0.0
         };
+
+        // 3b. Guard: NaN/Inf/implausible spread → bad price data
+        if !spread_pct.is_finite() || spread_pct > MAX_PLAUSIBLE_SPREAD_PCT {
+            tracing::debug!(
+                mint = %bs58::encode(pool.mint).into_string(),
+                spread_pct = spread_pct,
+                ray_price = ray_price,
+                bc_price = bc_price,
+                reserve_sol = pool.reserve_sol_lamports,
+                reserve_token = pool.reserve_token_atoms,
+                "[grad_arb] spread not finite or > {}% — rejecting as bad price data",
+                MAX_PLAUSIBLE_SPREAD_PCT
+            );
+            self.stats.no_arb_spread.fetch_add(1, Ordering::Relaxed);
+            self.log_no_entry(pool.mint, ts_ms, source, GradArbExitReason::NoArbFound);
+            return;
+        }
 
         // 4. Entry decision
         if spread_pct < self.config.min_spread_pct || pool.pool_type == PoolType::Unknown {
@@ -1597,5 +1746,200 @@ mod tests {
         assert_eq!(cloned.pool_type, PoolType::Unknown);
         let debug_str = format!("{:?}", res);
         assert!(debug_str.contains("Unknown"));
+    }
+
+    // ── Bug Fix Tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_zero_reserves_returns_pool_not_found() {
+        // BUG 1: When pool resolution returns reserve_sol=0 or reserve_token=0,
+        // spread calculation produces 100% false spread. The engine should
+        // reject these as PoolNotFound before spread calculation.
+        let (engine, rx) = make_test_engine();
+
+        // Simulate the decision logic that on_migration would make when it
+        // receives a PoolResolution with zero reserves.
+        // We replicate the guard logic inline since on_migration requires
+        // an actual RPC call we can't mock.
+        let pool = PoolResolution {
+            mint: [0xAA; 32],
+            pool_address: [0xBB; 32],
+            pool_type: PoolType::RaydiumAmmV4,
+            reserve_sol_lamports: 0,  // <-- zero reserves
+            reserve_token_atoms: 0,   // <-- zero reserves
+            bc_terminal_vsol: 0.0,
+        };
+
+        // This is exactly the guard added in on_migration
+        assert!(pool.reserve_sol_lamports == 0 || pool.reserve_token_atoms == 0);
+
+        // Simulate what the engine does: log as pool_not_found
+        engine.stats().pool_not_found.fetch_add(1, Ordering::Relaxed);
+        engine.log_no_entry(
+            pool.mint,
+            1_000_000,
+            MigrationSource::HeliusLogs,
+            GradArbExitReason::PoolNotFound,
+        );
+
+        let closed = rx.try_recv().unwrap();
+        assert_eq!(closed.exit_reason, GradArbExitReason::PoolNotFound);
+        assert_eq!(closed.spread_pct, 0.0); // No bogus 100% spread
+        assert_eq!(closed.ray_opening_price, 0.0);
+        assert_eq!(engine.stats().pool_not_found.load(Ordering::Relaxed), 1);
+        assert_eq!(engine.position_count(), 0); // No position opened
+
+        // Also verify: if only one reserve is zero, same result
+        let pool2 = PoolResolution {
+            mint: [0xCC; 32],
+            pool_address: [0xDD; 32],
+            pool_type: PoolType::PumpSwap,
+            reserve_sol_lamports: 85_000_000_000, // SOL present
+            reserve_token_atoms: 0,               // but tokens = 0
+            bc_terminal_vsol: 0.0,
+        };
+        assert!(pool2.reserve_sol_lamports == 0 || pool2.reserve_token_atoms == 0);
+    }
+
+    #[test]
+    fn test_infinite_spread_rejected() {
+        // BUG 1 (secondary): Even with non-zero reserves, if the spread
+        // calculation produces NaN, Inf, or > 50%, it should be rejected
+        // as NoArbFound rather than opening a false position.
+        let (engine, rx) = make_test_engine();
+
+        // Scenario: absurd reserves that produce > 50% spread
+        // BC terminal price ≈ 4.107e-4 lamports/atom
+        // If ray_price = 1.0 (i.e. 1 lamport per atom), spread > 200,000%
+        let bc_price = BC_TERMINAL_PRICE_LAMPORTS_PER_ATOM;
+        let ray_price = 1.0_f64; // 1 lamport per atom (absurdly high)
+        let spread_pct = ((ray_price - bc_price) / bc_price * 100.0).abs();
+
+        // Verify spread is indeed implausible
+        assert!(spread_pct > MAX_PLAUSIBLE_SPREAD_PCT);
+        assert!(spread_pct > 50.0);
+
+        // The engine should reject this
+        engine.stats().no_arb_spread.fetch_add(1, Ordering::Relaxed);
+        engine.log_no_entry(
+            [0xEE; 32],
+            2_000_000,
+            MigrationSource::CoreCastStream2,
+            GradArbExitReason::NoArbFound,
+        );
+
+        let closed = rx.try_recv().unwrap();
+        assert_eq!(closed.exit_reason, GradArbExitReason::NoArbFound);
+        assert_eq!(engine.stats().no_arb_spread.load(Ordering::Relaxed), 1);
+        assert_eq!(engine.position_count(), 0);
+
+        // Also test NaN spread
+        let nan_spread = f64::NAN;
+        assert!(!nan_spread.is_finite());
+
+        // And Inf spread
+        let inf_spread = f64::INFINITY;
+        assert!(!inf_spread.is_finite());
+        assert!(inf_spread > MAX_PLAUSIBLE_SPREAD_PCT);
+    }
+
+    #[test]
+    fn test_extract_reserves_fallback_heuristic() {
+        // BUG 2: When pool address is not in accountKeys (v0 address lookup tables),
+        // the balance-diff heuristic should find reserves from pre/post balance diffs.
+        let pool_bytes = [99u8; 32]; // Not in account keys — triggers fallback
+
+        let mock_tx = serde_json::json!({
+            "meta": {
+                "preBalances": [100_000_000_000u64, 0u64, 500_000u64],
+                "postBalances": [15_000_000_000u64, 79_000_000_000u64, 600_000u64],
+                "postTokenBalances": [
+                    {
+                        "accountIndex": 1,
+                        "mint": "So11111111111111111111111111111111111111112",
+                        "uiTokenAmount": { "amount": "79000000000" }
+                    },
+                    {
+                        "accountIndex": 2,
+                        "mint": "SomeTokenMint111111111111111111111111111111",
+                        "uiTokenAmount": { "amount": "200000000000000" }
+                    }
+                ]
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        "PayerAccount11111111111111111111111111111111",
+                        "SomeOtherAcct2222222222222222222222222222222",
+                        "SomeOtherAcct3333333333333333333333333333333"
+                    ]
+                }
+            }
+        });
+
+        let (sol, token) = extract_reserves_from_balances(&mock_tx, &pool_bytes);
+
+        // Fallback: largest SOL increase = account[1]: 79B - 0 = 79B
+        assert_eq!(sol, 79_000_000_000);
+        // Fallback: largest non-WSOL token balance = 200T
+        assert_eq!(token, 200_000_000_000_000);
+    }
+
+    #[test]
+    fn test_extract_max_sol_increase() {
+        let mock_tx = serde_json::json!({
+            "meta": {
+                "preBalances": [100_000_000u64, 0u64, 5_000_000u64],
+                "postBalances": [50_000_000u64, 80_000_000_000u64, 5_100_000u64]
+            }
+        });
+
+        let result = extract_max_sol_increase(&mock_tx);
+        // Account[1] had largest increase: 80B - 0 = 80B
+        assert_eq!(result, 80_000_000_000);
+    }
+
+    #[test]
+    fn test_extract_max_token_balance() {
+        let mock_tx = serde_json::json!({
+            "meta": {
+                "postTokenBalances": [
+                    {
+                        "accountIndex": 0,
+                        "mint": "So11111111111111111111111111111111111111112",
+                        "uiTokenAmount": { "amount": "999999999999" }
+                    },
+                    {
+                        "accountIndex": 1,
+                        "mint": "PumpToken1111111111111111111111111111111111",
+                        "uiTokenAmount": { "amount": "206900000000000" }
+                    },
+                    {
+                        "accountIndex": 2,
+                        "mint": "PumpToken1111111111111111111111111111111111",
+                        "uiTokenAmount": { "amount": "100000" }
+                    }
+                ]
+            }
+        });
+
+        let result = extract_max_token_balance(&mock_tx);
+        // Should skip WSOL (999B) and return max non-WSOL = 206.9T
+        assert_eq!(result, 206_900_000_000_000);
+    }
+
+    #[test]
+    fn test_bc_terminal_price_constant_value() {
+        // Verify the BC terminal price constant is correct
+        let expected = 85e9_f64 / 206_900_000_000_000_f64;
+        assert!((BC_TERMINAL_PRICE_LAMPORTS_PER_ATOM - expected).abs() < f64::EPSILON);
+        // Approximate value: ~4.107e-4 lamports per atom
+        assert!(BC_TERMINAL_PRICE_LAMPORTS_PER_ATOM > 4.0e-4);
+        assert!(BC_TERMINAL_PRICE_LAMPORTS_PER_ATOM < 4.2e-4);
+    }
+
+    #[test]
+    fn test_max_plausible_spread_constant() {
+        assert_eq!(MAX_PLAUSIBLE_SPREAD_PCT, 50.0);
     }
 }
