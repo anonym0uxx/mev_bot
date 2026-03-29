@@ -126,6 +126,42 @@ pub struct MevJsonConfig {
     pub graduation_arb_sl_pct: Option<f64>,
     pub graduation_arb_max_hold_ms: Option<u64>,
     pub graduation_arb_jito_tip_sol: Option<f64>,
+
+    // ── Entry curve progress cap ─────────────────────────────────────
+    // Rejects entries when bonding curve progress exceeds threshold.
+    // Tokens near graduation produce max_hold exits with ~3.3% WR.
+    pub max_curve_progress: Option<f64>,
+
+    // ── Buy/sell ratio floor (anti-flat filter) ──────────────────────
+    // Minimum buy/sell count ratio to qualify for entry.
+    // Eliminates momentum_decay_flat exits caused by weak follow-through.
+    pub min_buy_sell_ratio_5s: Option<f64>,
+
+    // ── Flow concentration gate (Amihud-style) ──────────────────────
+    // Minimum flow concentration: volume_5s / unique_buyers_30s.
+    // High FC = concentrated informed flow. Low FC = dispersed retail noise.
+    pub min_flow_concentration: Option<f64>,
+
+    // ── Max unique buyers gate ──────────────────────────────────────
+    // Maximum unique buyers in 30s window. Too many = dispersed retail.
+    pub max_unique_buyers_30s: Option<u16>,
+
+    // ── Exit state machine config (signal-based exits) ──────────────
+    pub confirmation_window_ms: Option<u64>,
+    pub stall_no_buy_ms: Option<u64>,
+    pub stall_fade_pct: Option<f64>,
+    pub stall_conviction_no_buy_ms: Option<u64>,
+    pub stall_conviction_fade_pct: Option<f64>,
+    pub max_hold_safety_ms: Option<u64>,
+    pub trail_min_conviction: Option<u8>,
+    pub trail_activation_pct_of_base_tp: Option<u8>,
+    pub trail_distance_pct: Option<f64>,
+    pub tp_sl_tiers_v2: Option<Vec<TpSlTierJsonV2>>,
+
+    // ── Entry engine / ride / risk (v2 pipeline) ────────────────────
+    pub entry_engine: Option<EntryEngineJsonConfig>,
+    pub ride: Option<RideJsonConfig>,
+    pub risk: Option<RiskJsonConfig>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -133,6 +169,15 @@ pub struct TpSlTierJson {
     pub trigger_max_sol: f64,
     pub tp_pct: f64,
     pub sl_pct: f64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct TpSlTierJsonV2 {
+    pub trigger_max_sol: f64,
+    pub unconfirmed_tp_pct: f64,
+    pub unconfirmed_sl_pct: f64,
+    pub confirmed_tp_pct: f64,
+    pub confirmed_sl_pct: f64,
 }
 
 #[derive(Deserialize, Debug)]
@@ -146,6 +191,200 @@ pub struct TodConfigJson {
     pub blocked_hours_utc: Option<Vec<u8>>,
     pub boosted_hours_utc: Option<Vec<u8>>,
     pub reduced_hours_utc: Option<Vec<u8>>,
+}
+
+// ── Entry engine JSON config (v2 pipeline) ───────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EntryEngineJsonConfig {
+    pub hard_gate: Option<HardGateJsonConfig>,
+    pub scoring: Option<ScoringJsonConfig>,
+    pub magnitude: Option<MagnitudeJsonConfig>,
+    pub position_sizing: Option<SizingJsonConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HardGateJsonConfig {
+    pub min_buy_count_1s: Option<u16>,            // default: 5
+    pub min_volume_sol_5s: Option<f64>,            // default: 5.0 (SOL, converted to lamports)
+    pub max_time_since_last_buy_ms: Option<u64>,   // default: 500
+    pub curve_pct_min: Option<f64>,                // default: 20.0
+    pub curve_pct_max: Option<f64>,                // default: 60.0
+    pub max_unique_buyers_30s: Option<u16>,         // default: 30
+    pub max_sell_ratio_x100: Option<u16>,           // default: 50 (= 0.50)
+    pub min_history_age_ms: Option<u64>,            // default: 2000
+    pub creator_sell_cooldown_ms: Option<u64>,      // default: 30000
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScoringJsonConfig {
+    // Entry feature weights (sum to 1.0)
+    pub w_buy_burst: Option<f64>,        // default: 0.30
+    pub w_volume: Option<f64>,           // default: 0.20
+    pub w_curve: Option<f64>,            // default: 0.15
+    pub w_concentration: Option<f64>,    // default: 0.10
+    pub w_acceleration: Option<f64>,     // default: 0.10
+    pub w_avg_size: Option<f64>,         // default: 0.05
+    pub w_sell_absence: Option<f64>,     // default: 0.05
+    pub w_recency: Option<f64>,          // default: 0.05
+    // Sigmoid params
+    pub buy_burst_center: Option<f64>,   // default: 7.0
+    pub buy_burst_steep: Option<f64>,    // default: 0.8
+    pub volume_norm_sol: Option<f64>,    // default: 10.0
+    pub curve_mean: Option<f64>,         // default: 43.0
+    pub curve_sigma: Option<f64>,        // default: 12.0
+    pub accel_center: Option<f64>,       // default: 10.0
+    pub accel_steep: Option<f64>,        // default: 0.15
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MagnitudeJsonConfig {
+    pub w_fill_rate: Option<f64>,        // default: 0.20
+    pub w_accel: Option<f64>,            // default: 0.20
+    pub w_wallet_quality: Option<f64>,   // default: 0.15
+    pub w_curve_remaining: Option<f64>,  // default: 0.15
+    pub w_volume_intensity: Option<f64>, // default: 0.15
+    pub w_sell_vacuum: Option<f64>,      // default: 0.10
+    pub w_token_age: Option<f64>,        // default: 0.05
+    pub fill_rate_center: Option<f64>,   // default: 15.0 (in LUT index scale)
+    pub fill_rate_steep: Option<f64>,    // default: 0.25
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SizingJsonConfig {
+    pub min_entry_score: Option<f64>,        // default: 50.0
+    pub min_magnitude_for_ride: Option<f64>, // default: 40.0
+    pub scalp_size_low_sol: Option<f64>,     // default: 0.10
+    pub scalp_size_mid_sol: Option<f64>,     // default: 0.12
+    pub scalp_size_high_sol: Option<f64>,    // default: 0.15
+    pub scalp_tier_mid: Option<f64>,         // default: 60.0
+    pub scalp_tier_high: Option<f64>,        // default: 70.0
+    pub ride_size_min_sol: Option<f64>,      // default: 0.10
+    pub ride_size_max_sol: Option<f64>,      // default: 0.15
+}
+
+// ── Ride JSON config (v2 pipeline) ───────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RideJsonConfig {
+    pub min_confirming_buys: Option<u16>,        // default: 2
+    pub min_confirming_sol: Option<f64>,          // default: 0.3
+    pub min_gain_pct: Option<f64>,               // default: 1.5
+    pub max_curve_pct: Option<f64>,              // default: 80.0
+    pub early_trail_pct: Option<f64>,            // default: 8.0 (price space, converted to vSOL bp)
+    pub momentum_trail_pct: Option<f64>,         // default: 6.0
+    pub tighten_trail_pct: Option<f64>,          // default: 4.0
+    pub emergency_trail_pct: Option<f64>,        // default: 2.0
+    pub early_to_momentum_ms: Option<u64>,       // default: 15000
+    pub momentum_to_tighten_ms: Option<u64>,     // default: 60000
+    pub max_hold_ms: Option<u64>,                // default: 300000
+    pub gain_momentum_pct: Option<f64>,          // default: 15.0
+    pub gain_tighten_pct: Option<f64>,           // default: 50.0
+    pub hard_floor_gain_pct: Option<f64>,        // default: 1.0
+    pub whale_exit_sol: Option<f64>,             // default: 1.0
+    pub buy_gap_tighten_ms: Option<u64>,         // default: 5000
+    pub buy_gap_exit_ms: Option<u64>,            // default: 10000
+    pub sell_cascade_count: Option<u8>,          // default: 3
+    pub sell_pressure_tighten_pct: Option<f64>,  // default: 2.0
+}
+
+// ── Risk JSON config (v2 pipeline) ───────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RiskJsonConfig {
+    pub daily_loss_limit_sol: Option<f64>,     // default: 1.5
+    pub consecutive_loss_limit: Option<u8>,    // default: 5
+    pub pause_duration_ms: Option<u64>,        // default: 300000
+    pub daily_trade_limit: Option<u32>,        // default: 60
+    pub loss_cooldown_ms: Option<u64>,         // default: 5000
+    pub max_concurrent_scalp: Option<u8>,      // default: 5
+    pub max_concurrent_ride: Option<u8>,       // default: 3
+    pub max_concurrent_total: Option<u8>,      // default: 8
+}
+
+// ── Ride runtime config (v2 pipeline) ────────────────────────────────────────
+
+/// Runtime ride config with vSOL-space basis points and lamports.
+/// All price-space percentages from JSON are converted at build time.
+#[derive(Debug, Clone, Copy)]
+pub struct RideConfig {
+    pub min_confirming_buys: u16,
+    pub min_confirming_lamports: u64,
+    pub min_gain_vsol_fp: u16,           // vSOL fixed-point (×10000)
+    pub max_curve_pct_x100: u16,         // 80.0 → 8000
+    pub early_trail_bp: u16,             // vSOL basis points
+    pub momentum_trail_bp: u16,
+    pub tighten_trail_bp: u16,
+    pub emergency_trail_bp: u16,
+    pub early_to_momentum_ms: u64,
+    pub momentum_to_tighten_ms: u64,
+    pub max_hold_ms: u64,
+    pub gain_momentum_vsol_fp: u16,      // vSOL fixed-point (×10000)
+    pub gain_tighten_vsol_fp: u16,
+    pub hard_floor_vsol_fp: u16,
+    pub whale_exit_lamports: u64,
+    pub buy_gap_tighten_ms: u64,
+    pub buy_gap_exit_ms: u64,
+    pub sell_cascade_count: u8,
+    pub sell_pressure_tighten_bp: u16,   // vSOL basis points
+}
+
+// ── Risk runtime config (v2 pipeline) ────────────────────────────────────────
+
+/// Runtime risk config with lamports and integer thresholds.
+#[derive(Debug, Clone, Copy)]
+pub struct RiskConfig {
+    pub daily_loss_limit_lamports: u64,
+    pub consecutive_loss_limit: u8,
+    pub pause_duration_ms: u64,
+    pub daily_trade_limit: u32,
+    pub loss_cooldown_ms: u64,
+    pub max_concurrent_scalp: u8,
+    pub max_concurrent_ride: u8,
+    pub max_concurrent_total: u8,
+}
+
+// ── Exit state machine config (runtime structs) ──────────────────────────────
+
+#[derive(Debug, Clone, Copy)]
+pub struct TpSlTierV2 {
+    pub trigger_max_lamports: u64,
+    pub unconfirmed_tp_fp: u32, // fixed-point: actual_pct = value / 100_000
+    pub unconfirmed_sl_fp: u32,
+    pub confirmed_tp_fp: u32,
+    pub confirmed_sl_fp: u32,
+}
+
+impl Default for TpSlTierV2 {
+    fn default() -> Self {
+        Self {
+            trigger_max_lamports: 0,
+            unconfirmed_tp_fp: 2000,
+            unconfirmed_sl_fp: 1000,
+            confirmed_tp_fp: 3000,
+            confirmed_sl_fp: 1500,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExitConfig {
+    pub confirmation_window_ms: u64,
+    pub stall_no_buy_ms: u64,
+    pub stall_fade_fp: u32,
+    pub stall_conviction_no_buy_ms: u64,
+    pub stall_conviction_fade_fp: u32,
+    pub max_hold_safety_ms: u64,
+    pub conviction_tp_multipliers: [u16; 5], // [100, 100, 140, 180, 220]
+    pub trail_min_conviction: u8,
+    pub trail_activation_pct_of_base_tp: u8,
+    pub trail_distance_fp: u32,
+    /// Precomputed: 1.0 - (trail_distance_fp / 100_000.0) — eliminates hot-path division
+    pub trail_keep_mult: f64,
+    /// Precomputed: trail_activation_pct_of_base_tp as f64 / 100.0
+    pub trail_activation_mult: f64,
+    pub tp_sl_tiers: [TpSlTierV2; 8],
+    pub tp_sl_tier_count: u8,
 }
 
 // ── Parsed engine config ─────────────────────────────────────────────────────
@@ -200,6 +439,15 @@ pub struct EngineConfig {
     // ── Momentum engine config (SPEC 5) ─────────────────────────────
     /// Post-graduation momentum engine configuration.
     pub momentum: crate::momentum::MomentumConfig,
+
+    // ── V2 pipeline configs ────────────────────────────────────────
+    /// Entry engine config, built from `mev.entry_engine` JSON section.
+    /// Always populated (defaults used when JSON section is absent).
+    pub entry_engine_config: Option<crate::engine::entry_engine::EntryEngineConfig>,
+    /// Ride exit state machine config, built from `mev.ride` JSON section.
+    pub ride_config: Option<crate::engine::ride_state::RideConfig>,
+    /// Risk manager config, built from `mev.risk` JSON section.
+    pub risk_config: Option<crate::engine::risk_manager::RiskConfig>,
 }
 
 impl EngineConfig {
@@ -219,6 +467,250 @@ impl EngineConfig {
 
 fn sol_to_lamports(sol: f64) -> u64 {
     (sol * 1_000_000_000.0) as u64
+}
+
+// ── vSOL conversion helpers (bonding curve math) ─────────────────────────────
+
+/// Convert a price-space trail percentage to vSOL-space basis points.
+/// A price drop of X% corresponds to a vSOL drop of (1 - sqrt(1 - X/100)).
+fn price_pct_to_vsol_bp(price_pct: f64) -> u16 {
+    let vsol_trail = 1.0 - (1.0 - price_pct / 100.0).sqrt();
+    (vsol_trail * 10_000.0).round() as u16
+}
+
+/// Convert a price-space gain percentage to vSOL fixed-point (×10000).
+/// A price gain of X% corresponds to vSOL ratio sqrt(1 + X/100).
+fn gain_pct_to_vsol_fp(gain_pct: f64) -> u16 {
+    ((1.0 + gain_pct / 100.0).sqrt() * 10_000.0).round() as u16
+}
+
+/// Build the ride runtime config from JSON, converting price-space %
+/// to vSOL-space basis points / fixed-point.
+pub fn build_ride_config(json: &RideJsonConfig) -> RideConfig {
+    RideConfig {
+        min_confirming_buys: json.min_confirming_buys.unwrap_or(2),
+        min_confirming_lamports: sol_to_lamports(json.min_confirming_sol.unwrap_or(0.3)),
+        min_gain_vsol_fp: gain_pct_to_vsol_fp(json.min_gain_pct.unwrap_or(1.5)),
+        max_curve_pct_x100: (json.max_curve_pct.unwrap_or(80.0) * 100.0).round() as u16,
+        early_trail_bp: price_pct_to_vsol_bp(json.early_trail_pct.unwrap_or(8.0)),
+        momentum_trail_bp: price_pct_to_vsol_bp(json.momentum_trail_pct.unwrap_or(6.0)),
+        tighten_trail_bp: price_pct_to_vsol_bp(json.tighten_trail_pct.unwrap_or(4.0)),
+        emergency_trail_bp: price_pct_to_vsol_bp(json.emergency_trail_pct.unwrap_or(2.0)),
+        early_to_momentum_ms: json.early_to_momentum_ms.unwrap_or(15_000),
+        momentum_to_tighten_ms: json.momentum_to_tighten_ms.unwrap_or(60_000),
+        max_hold_ms: json.max_hold_ms.unwrap_or(300_000),
+        gain_momentum_vsol_fp: gain_pct_to_vsol_fp(json.gain_momentum_pct.unwrap_or(15.0)),
+        gain_tighten_vsol_fp: gain_pct_to_vsol_fp(json.gain_tighten_pct.unwrap_or(50.0)),
+        hard_floor_vsol_fp: gain_pct_to_vsol_fp(json.hard_floor_gain_pct.unwrap_or(1.0)),
+        whale_exit_lamports: sol_to_lamports(json.whale_exit_sol.unwrap_or(1.0)),
+        buy_gap_tighten_ms: json.buy_gap_tighten_ms.unwrap_or(5_000),
+        buy_gap_exit_ms: json.buy_gap_exit_ms.unwrap_or(10_000),
+        sell_cascade_count: json.sell_cascade_count.unwrap_or(3),
+        sell_pressure_tighten_bp: price_pct_to_vsol_bp(
+            json.sell_pressure_tighten_pct.unwrap_or(2.0),
+        ),
+    }
+}
+
+/// Build the risk runtime config from JSON, converting SOL to lamports.
+pub fn build_risk_config(json: &RiskJsonConfig) -> RiskConfig {
+    RiskConfig {
+        daily_loss_limit_lamports: sol_to_lamports(json.daily_loss_limit_sol.unwrap_or(1.5)),
+        consecutive_loss_limit: json.consecutive_loss_limit.unwrap_or(5),
+        pause_duration_ms: json.pause_duration_ms.unwrap_or(300_000),
+        daily_trade_limit: json.daily_trade_limit.unwrap_or(60),
+        loss_cooldown_ms: json.loss_cooldown_ms.unwrap_or(5_000),
+        max_concurrent_scalp: json.max_concurrent_scalp.unwrap_or(5),
+        max_concurrent_ride: json.max_concurrent_ride.unwrap_or(3),
+        max_concurrent_total: json.max_concurrent_total.unwrap_or(8),
+    }
+}
+
+/// Build the ride_state::RideConfig from the JSON ride section,
+/// converting price-space percentages to vSOL basis points / mSOL.
+pub fn build_ride_state_config(json: &RideJsonConfig) -> crate::engine::ride_state::RideConfig {
+    use crate::engine::ride_state::RideConfig as RideStateCfg;
+    let mut cfg = RideStateCfg::default();
+
+    if let Some(v) = json.early_to_momentum_ms {
+        cfg.early_to_momentum_ms = v;
+    }
+    if let Some(v) = json.momentum_to_tighten_ms {
+        cfg.momentum_to_tighten_ms = v;
+    }
+    if let Some(v) = json.max_hold_ms {
+        cfg.max_hold_ride_ms = v;
+    }
+    if let Some(v) = json.early_trail_pct {
+        cfg.early_trail_bp = price_pct_to_vsol_bp(v);
+    }
+    if let Some(v) = json.momentum_trail_pct {
+        cfg.momentum_trail_bp = price_pct_to_vsol_bp(v);
+    }
+    if let Some(v) = json.tighten_trail_pct {
+        cfg.tighten_trail_bp = price_pct_to_vsol_bp(v);
+    }
+    if let Some(v) = json.emergency_trail_pct {
+        cfg.emergency_trail_bp = price_pct_to_vsol_bp(v);
+    }
+    if let Some(v) = json.whale_exit_sol {
+        cfg.whale_exit_msol = (v * 1000.0) as u32;
+    }
+    // whale_dump_exit_msol: no direct JSON field, keep default
+    if let Some(v) = json.sell_cascade_count {
+        cfg.sell_cascade_count = v;
+    }
+    if let Some(v) = json.sell_pressure_tighten_pct {
+        cfg.sell_pressure_tighten_bp = price_pct_to_vsol_bp(v);
+    }
+    if let Some(v) = json.buy_gap_tighten_ms {
+        cfg.buy_gap_tighten_ms = v;
+    }
+    if let Some(v) = json.buy_gap_exit_ms {
+        cfg.buy_gap_exit_ms = v;
+    }
+    // Gain thresholds: convert price % to vSOL ratio FP
+    if let Some(v) = json.gain_momentum_pct {
+        cfg.gain_momentum_vsol_fp = gain_pct_to_vsol_fp(v);
+    }
+    if let Some(v) = json.gain_tighten_pct {
+        cfg.gain_tighten_vsol_fp = gain_pct_to_vsol_fp(v);
+    }
+
+    cfg
+}
+
+/// Build the risk_manager::RiskConfig from the JSON risk section,
+/// converting SOL to lamports (signed i64 for daily loss limit).
+pub fn build_risk_manager_config(json: &RiskJsonConfig) -> crate::engine::risk_manager::RiskConfig {
+    crate::engine::risk_manager::RiskConfig {
+        daily_loss_limit_lamports: -(sol_to_lamports(
+            json.daily_loss_limit_sol.unwrap_or(1.5),
+        ) as i64),
+        consecutive_loss_limit: json.consecutive_loss_limit.unwrap_or(5),
+        pause_duration_ms: json.pause_duration_ms.unwrap_or(300_000),
+        daily_trade_limit: json.daily_trade_limit.unwrap_or(60),
+        loss_cooldown_ms: json.loss_cooldown_ms.unwrap_or(5_000),
+        max_concurrent_scalp: json.max_concurrent_scalp.unwrap_or(5),
+        max_concurrent_ride: json.max_concurrent_ride.unwrap_or(3),
+        max_concurrent_total: json.max_concurrent_total.unwrap_or(8),
+    }
+}
+
+/// Build the exit state machine config from JSON fields.
+/// Prefers `tp_sl_tiers_v2` when present; falls back to legacy `tp_tiers`
+/// with unconfirmed == confirmed for backward compatibility.
+pub fn build_exit_config(mev: &MevJsonConfig) -> ExitConfig {
+    let tiers: Vec<TpSlTierV2> = if let Some(tiers_v2) = &mev.tp_sl_tiers_v2 {
+        tiers_v2
+            .iter()
+            .map(|t| TpSlTierV2 {
+                trigger_max_lamports: (t.trigger_max_sol * 1_000_000_000.0) as u64,
+                unconfirmed_tp_fp: (t.unconfirmed_tp_pct * 100_000.0) as u32,
+                unconfirmed_sl_fp: (t.unconfirmed_sl_pct * 100_000.0) as u32,
+                confirmed_tp_fp: (t.confirmed_tp_pct * 100_000.0) as u32,
+                confirmed_sl_fp: (t.confirmed_sl_pct * 100_000.0) as u32,
+            })
+            .collect()
+    } else {
+        // Fallback: use existing tp_tiers mapped to both confirmed and unconfirmed
+        mev.tp_tiers
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|t| TpSlTierV2 {
+                trigger_max_lamports: (t.trigger_max_sol * 1_000_000_000.0) as u64,
+                unconfirmed_tp_fp: (t.tp_pct * 100_000.0) as u32,
+                unconfirmed_sl_fp: (t.sl_pct * 100_000.0) as u32,
+                confirmed_tp_fp: (t.tp_pct * 100_000.0) as u32,
+                confirmed_sl_fp: (t.sl_pct * 100_000.0) as u32,
+            })
+            .collect()
+    };
+
+    let count = tiers.len().min(8);
+    let mut arr = [TpSlTierV2::default(); 8];
+    arr[..count].copy_from_slice(&tiers[..count]);
+
+    ExitConfig {
+        confirmation_window_ms: mev.confirmation_window_ms.unwrap_or(200),
+        stall_no_buy_ms: mev.stall_no_buy_ms.unwrap_or(500),
+        stall_fade_fp: (mev.stall_fade_pct.unwrap_or(0.01) * 100_000.0) as u32,
+        stall_conviction_no_buy_ms: mev.stall_conviction_no_buy_ms.unwrap_or(800),
+        stall_conviction_fade_fp: (mev.stall_conviction_fade_pct.unwrap_or(0.015) * 100_000.0)
+            as u32,
+        max_hold_safety_ms: mev.max_hold_safety_ms.unwrap_or(5000),
+        conviction_tp_multipliers: [100, 100, 140, 180, 220],
+        trail_min_conviction: mev.trail_min_conviction.unwrap_or(2),
+        trail_activation_pct_of_base_tp: mev.trail_activation_pct_of_base_tp.unwrap_or(60),
+        trail_distance_fp: (mev.trail_distance_pct.unwrap_or(0.015) * 100_000.0) as u32,
+        trail_keep_mult: 1.0 - mev.trail_distance_pct.unwrap_or(0.015),
+        trail_activation_mult: mev.trail_activation_pct_of_base_tp.unwrap_or(60) as f64 / 100.0,
+        tp_sl_tiers: arr,
+        tp_sl_tier_count: count as u8,
+    }
+}
+
+/// Build an EntryEngineConfig from the JSON entry_engine section.
+/// Falls back to defaults for any missing fields.
+pub fn build_entry_engine_config(json: &EntryEngineJsonConfig) -> crate::engine::entry_engine::EntryEngineConfig {
+    let mut cfg = crate::engine::entry_engine::EntryEngineConfig::default();
+
+    // Hard gate overrides
+    if let Some(ref hg) = json.hard_gate {
+        if let Some(v) = hg.min_buy_count_1s { cfg.min_buy_count_1s = v; }
+        if let Some(v) = hg.min_volume_sol_5s { cfg.min_volume_sol_5s = v; }
+        if let Some(v) = hg.max_time_since_last_buy_ms { cfg.max_time_since_last_buy_ms = v; }
+        if let Some(v) = hg.curve_pct_min {
+            cfg.curve_pct_min = v;
+            cfg.min_vsol_reserves_lamports = ((30.0 + v / 100.0 * 85.0) * 1e9) as u64;
+        }
+        if let Some(v) = hg.curve_pct_max {
+            cfg.curve_pct_max = v;
+            cfg.max_vsol_reserves_lamports = ((30.0 + v / 100.0 * 85.0) * 1e9) as u64;
+        }
+        if let Some(v) = hg.max_unique_buyers_30s { cfg.max_unique_buyers_30s = v; }
+        if let Some(v) = hg.min_history_age_ms { cfg.min_history_age_ms = v; }
+        if let Some(v) = hg.creator_sell_cooldown_ms { cfg.creator_sell_cooldown_ms = v; }
+    }
+
+    // Scoring weight overrides
+    if let Some(ref sc) = json.scoring {
+        if let Some(v) = sc.w_buy_burst { cfg.weights.w_buy_burst = v; }
+        if let Some(v) = sc.w_volume { cfg.weights.w_volume = v; }
+        if let Some(v) = sc.w_curve { cfg.weights.w_curve_position = v; }
+        if let Some(v) = sc.w_concentration { cfg.weights.w_buyer_concentration = v; }
+        if let Some(v) = sc.w_acceleration { cfg.weights.w_buy_acceleration = v; }
+        if let Some(v) = sc.w_avg_size { cfg.weights.w_avg_buy_size = v; }
+        if let Some(v) = sc.w_sell_absence { cfg.weights.w_sell_absence = v; }
+        if let Some(v) = sc.w_recency { cfg.weights.w_recency = v; }
+    }
+
+    // Magnitude weight overrides
+    if let Some(ref mag) = json.magnitude {
+        if let Some(v) = mag.w_fill_rate { cfg.weights.w_fill_rate = v; }
+        if let Some(v) = mag.w_accel { cfg.weights.w_buy_velocity_accel = v; }
+        if let Some(v) = mag.w_wallet_quality { cfg.weights.w_wallet_quality = v; }
+        if let Some(v) = mag.w_curve_remaining { cfg.weights.w_curve_remaining = v; }
+        if let Some(v) = mag.w_volume_intensity { cfg.weights.w_volume_intensity = v; }
+        if let Some(v) = mag.w_sell_vacuum { cfg.weights.w_sell_vacuum = v; }
+        if let Some(v) = mag.w_token_age { cfg.weights.w_token_age = v; }
+    }
+
+    // Decision threshold overrides
+    if let Some(ref sizing) = json.position_sizing {
+        if let Some(v) = sizing.min_entry_score { cfg.decision.min_entry_score = v; }
+        if let Some(v) = sizing.min_magnitude_for_ride { cfg.decision.min_magnitude_for_ride = v; }
+        if let Some(v) = sizing.scalp_size_low_sol { cfg.decision.scalp_size_low = sol_to_lamports(v); }
+        if let Some(v) = sizing.scalp_size_mid_sol { cfg.decision.scalp_size_mid = sol_to_lamports(v); }
+        if let Some(v) = sizing.scalp_size_high_sol { cfg.decision.scalp_size_high = sol_to_lamports(v); }
+        if let Some(v) = sizing.scalp_tier_mid { cfg.decision.scalp_tier_mid = v; }
+        if let Some(v) = sizing.scalp_tier_high { cfg.decision.scalp_tier_high = v; }
+        if let Some(v) = sizing.ride_size_min_sol { cfg.decision.ride_size_min = sol_to_lamports(v); }
+        if let Some(v) = sizing.ride_size_max_sol { cfg.decision.ride_size_max = sol_to_lamports(v); }
+    }
+
+    cfg
 }
 
 /// Load canary.json from the given path, parse the `mev` section,
@@ -260,7 +752,7 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
         min_vsol_lamports: sol_to_lamports(mev.min_vsol_in_curve.unwrap_or(3.0)),
         max_vsol_lamports: sol_to_lamports(mev.max_vsol_in_curve.unwrap_or(85.0)),
         max_token_age_ms: mev.max_token_age_s.unwrap_or(120) * 1000,
-        min_unique_buyers: mev.min_unique_buyers.unwrap_or(3),
+        min_unique_buyers: mev.min_unique_buyers.unwrap_or(4),
         pre_trigger_min_buys_1s: mev.pre_trigger_min_buys_1s.unwrap_or(1),
         pre_trigger_min_buys_2s: mev.pre_trigger_min_buys_2s.unwrap_or(2),
         pre_trigger_min_buys_5s: mev.pre_trigger_min_buys_5s.unwrap_or(3),
@@ -277,7 +769,7 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
             mev.pre_trigger_min_volume_5s.unwrap_or(0.5),
         ),
         max_trigger_isolation: mev.max_trigger_isolation.unwrap_or(0.5),
-        trigger_min_score: mev.trigger_min_score.unwrap_or(0.35),
+        trigger_min_score: mev.trigger_min_score.unwrap_or(0.65),
         blocked_sources,
         large_trigger_lamports: 1_500_000_000,
         large_trigger_min_unique_buyers: 5,
@@ -293,6 +785,15 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
             .unwrap_or_default(),
         tod_gate_enabled: mev.tod_gate_enabled.unwrap_or(true),
         regime_config: super::regime::RegimeConfig::default(),
+        max_curve_progress: mev.max_curve_progress.unwrap_or(1.0),
+        min_buy_sell_ratio_5s: mev.min_buy_sell_ratio_5s.unwrap_or(0.0),
+        // Precomputed fields — set to 0 here, GateStack::new() recomputes from Vec/f64 fields.
+        blocked_hours_bitmask: 0,
+        boosted_hours_bitmask: 0,
+        min_buy_sell_ratio_x10: 0,
+        max_vtoken_threshold: 0,
+        min_flow_concentration_x100: (mev.min_flow_concentration.unwrap_or(0.0) * 100.0) as u16,
+        max_unique_buyers_30s: mev.max_unique_buyers_30s.unwrap_or(0),
     };
 
     // ── Build ScoreConfig (defaults — no JSON overrides yet) ────────
@@ -367,6 +868,10 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
         min_hold_before_exit_ms: mev.min_hold_before_exit_ms.unwrap_or(300),
         tod_boost_multiplier: 1.25,
         boosted_hours_utc,
+        exit_config: build_exit_config(&mev),
+        ride_config: mev.ride.as_ref()
+            .map(build_ride_state_config)
+            .unwrap_or_else(crate::engine::ride_state::RideConfig::default),
     };
 
     let paper_mode = mev.paper_mode.unwrap_or(true);
@@ -454,5 +959,160 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
             .get("momentum")
             .and_then(|v| serde_json::from_value::<crate::momentum::MomentumConfig>(v.clone()).ok())
             .unwrap_or_default(),
+
+        // V2 pipeline configs — entry engine always populated (defaults when absent)
+        entry_engine_config: Some(
+            mev.entry_engine.as_ref()
+                .map(build_entry_engine_config)
+                .unwrap_or_else(crate::engine::entry_engine::EntryEngineConfig::default)
+        ),
+        // Ride / Risk runtime configs — built from mev.ride / mev.risk sections
+        ride_config: mev.ride.as_ref().map(build_ride_state_config),
+        risk_config: mev.risk.as_ref().map(build_risk_manager_config),
     })
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: build a minimal MevJsonConfig with all fields None.
+    fn minimal_mev() -> MevJsonConfig {
+        serde_json::from_str::<MevJsonConfig>("{}").unwrap()
+    }
+
+    // Test 1: tp_sl_tiers_v2 deserializes correctly from JSON
+    #[test]
+    fn test_tp_sl_tiers_v2_deserializes() {
+        let json = r#"{
+            "tp_sl_tiers_v2": [
+                {
+                    "trigger_max_sol": 0.6,
+                    "unconfirmed_tp_pct": 0.020,
+                    "unconfirmed_sl_pct": 0.010,
+                    "confirmed_tp_pct": 0.030,
+                    "confirmed_sl_pct": 0.015
+                },
+                {
+                    "trigger_max_sol": 5.0,
+                    "unconfirmed_tp_pct": 0.050,
+                    "unconfirmed_sl_pct": 0.012,
+                    "confirmed_tp_pct": 0.070,
+                    "confirmed_sl_pct": 0.015
+                }
+            ]
+        }"#;
+        let mev: MevJsonConfig = serde_json::from_str(json).unwrap();
+        let exit = build_exit_config(&mev);
+
+        assert_eq!(exit.tp_sl_tier_count, 2);
+        // Tier 0: 0.6 SOL = 600_000_000 lamports
+        assert_eq!(exit.tp_sl_tiers[0].trigger_max_lamports, 600_000_000);
+        // 0.020 * 100_000 = 2000
+        assert_eq!(exit.tp_sl_tiers[0].unconfirmed_tp_fp, 2000);
+        assert_eq!(exit.tp_sl_tiers[0].unconfirmed_sl_fp, 1000);
+        assert_eq!(exit.tp_sl_tiers[0].confirmed_tp_fp, 3000);
+        assert_eq!(exit.tp_sl_tiers[0].confirmed_sl_fp, 1500);
+        // Tier 1: 5.0 SOL
+        assert_eq!(exit.tp_sl_tiers[1].trigger_max_lamports, 5_000_000_000);
+        assert_eq!(exit.tp_sl_tiers[1].unconfirmed_tp_fp, 5000);
+        assert_eq!(exit.tp_sl_tiers[1].confirmed_tp_fp, 7000);
+    }
+
+    // Test 2: Missing optional fields use correct defaults
+    #[test]
+    fn test_missing_fields_use_defaults() {
+        let mev = minimal_mev();
+        let exit = build_exit_config(&mev);
+
+        assert_eq!(exit.confirmation_window_ms, 200);
+        assert_eq!(exit.stall_no_buy_ms, 500);
+        assert_eq!(exit.stall_fade_fp, (0.01_f64 * 100_000.0) as u32); // 1000
+        assert_eq!(exit.stall_conviction_no_buy_ms, 800);
+        assert_eq!(exit.stall_conviction_fade_fp, (0.015_f64 * 100_000.0) as u32); // 1500
+        assert_eq!(exit.max_hold_safety_ms, 5000);
+        assert_eq!(exit.trail_min_conviction, 2);
+        assert_eq!(exit.trail_activation_pct_of_base_tp, 60);
+        assert_eq!(exit.trail_distance_fp, (0.015_f64 * 100_000.0) as u32); // 1500
+        assert_eq!(exit.tp_sl_tier_count, 0); // No tiers when both v2 and legacy absent
+    }
+
+    // Test 3: conviction_tp_multipliers always = [100,100,140,180,220]
+    #[test]
+    fn test_conviction_tp_multipliers_hardcoded() {
+        let mev = minimal_mev();
+        let exit = build_exit_config(&mev);
+        assert_eq!(exit.conviction_tp_multipliers, [100, 100, 140, 180, 220]);
+
+        // Also verify with populated config — still hardcoded
+        let json = r#"{ "confirmation_window_ms": 999 }"#;
+        let mev2: MevJsonConfig = serde_json::from_str(json).unwrap();
+        let exit2 = build_exit_config(&mev2);
+        assert_eq!(exit2.conviction_tp_multipliers, [100, 100, 140, 180, 220]);
+    }
+
+    // Test 4: Backward compat — old tp_tiers JSON still loads (mapped to confirmed fields)
+    #[test]
+    fn test_backward_compat_legacy_tp_tiers() {
+        let json = r#"{
+            "tp_tiers": [
+                { "trigger_max_sol": 1.0, "tp_pct": 0.025, "sl_pct": 0.015 }
+            ]
+        }"#;
+        let mev: MevJsonConfig = serde_json::from_str(json).unwrap();
+        let exit = build_exit_config(&mev);
+
+        assert_eq!(exit.tp_sl_tier_count, 1);
+        assert_eq!(exit.tp_sl_tiers[0].trigger_max_lamports, 1_000_000_000);
+        // Legacy: unconfirmed == confirmed (both mapped from tp_pct/sl_pct)
+        assert_eq!(exit.tp_sl_tiers[0].unconfirmed_tp_fp, 2500);
+        assert_eq!(exit.tp_sl_tiers[0].confirmed_tp_fp, 2500);
+        assert_eq!(exit.tp_sl_tiers[0].unconfirmed_sl_fp, 1500);
+        assert_eq!(exit.tp_sl_tiers[0].confirmed_sl_fp, 1500);
+    }
+
+    // Test: price_pct_to_vsol_bp conversion accuracy
+    #[test]
+    fn test_price_pct_to_vsol_bp() {
+        assert_eq!(price_pct_to_vsol_bp(8.0), 408);
+        assert_eq!(price_pct_to_vsol_bp(6.0), 305);
+        assert_eq!(price_pct_to_vsol_bp(4.0), 202);
+        assert_eq!(price_pct_to_vsol_bp(2.0), 101);
+    }
+
+    // Test 5: Deprecated fields don't cause parse errors if present
+    #[test]
+    fn test_deprecated_fields_no_parse_error() {
+        let json = r#"{
+            "max_hold_ms": 1500,
+            "next_buyer_exit": true,
+            "next_buyer_aggregate_flow_ratio": 0.35,
+            "next_buyer_count_threshold": 3,
+            "next_buyer_single_buy_ratio": 0.25,
+            "next_buyer_profit_exit_pct": 0.01,
+            "momentum_decay_check_ms": 150,
+            "momentum_decay_min_mfe_pct": 0.005,
+            "momentum_decay_max_drawdown_pct": 0.008,
+            "intra_hold_trailing_stop_pct": 1.0,
+            "intra_hold_trailing_stop_min_mfe_pct": 1.0,
+            "confirmation_window_ms": 300,
+            "tp_sl_tiers_v2": [
+                {
+                    "trigger_max_sol": 0.6,
+                    "unconfirmed_tp_pct": 0.020,
+                    "unconfirmed_sl_pct": 0.010,
+                    "confirmed_tp_pct": 0.030,
+                    "confirmed_sl_pct": 0.015
+                }
+            ]
+        }"#;
+        // Must not panic — deprecated fields coexist with new ones
+        let mev: MevJsonConfig = serde_json::from_str(json).unwrap();
+        let exit = build_exit_config(&mev);
+        // Verify the new field was picked up
+        assert_eq!(exit.confirmation_window_ms, 300);
+        assert_eq!(exit.tp_sl_tier_count, 1);
+    }
 }
