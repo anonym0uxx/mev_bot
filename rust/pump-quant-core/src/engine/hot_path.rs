@@ -308,8 +308,8 @@ impl HotPath {
         // ═══ ENTRY ENGINE (V2 — Kelly + Magnitude) ═══
         {
             let engine = &self.entry_engine;
-            // Risk manager gate
-            if !self.risk_manager.allows_entry(now, false) {
+            // Risk manager gate (bypassed in paper mode for full data collection)
+            if !self.paper_mode && !self.risk_manager.allows_entry(now, false) {
                 self.stats.gate_rejects += 1;
                 return;
             }
@@ -342,13 +342,15 @@ impl HotPath {
                 }
                 EntryAction::Scalp | EntryAction::Ride => {
                     self.stats.gates_passed += 1;
-                    // Safety checks
-                    self.check_and_reset_daily_loss(now);
-                    if self.daily_loss_lamports as u64 >= self.daily_loss_cap_lamports {
-                        return;
-                    }
-                    if now < self.stop_pause_until_ms {
-                        return;
+                    // Safety checks (skipped in paper mode — we want full data)
+                    if !self.paper_mode {
+                        self.check_and_reset_daily_loss(now);
+                        if self.daily_loss_lamports as u64 >= self.daily_loss_cap_lamports {
+                            return;
+                        }
+                        if now < self.stop_pause_until_ms {
+                            return;
+                        }
                     }
                     // Open position using V2 entry score + magnitude + Kelly size
                     self.position_manager.open_position(trade, decision.entry_score, now, decision.magnitude_score, decision.size_lamports);
@@ -588,7 +590,10 @@ impl HotPath {
             self.daily_loss_lamports += cp.net_pnl_sol.abs();
         }
 
-        // Consecutive stop-loss circuit breaker
+        // Consecutive stop-loss circuit breaker (disabled in paper mode)
+        if self.paper_mode {
+            return None;
+        }
         match cp.exit_reason {
             ExitReason::StopLoss => {
                 self.consecutive_stops += 1;
@@ -597,12 +602,10 @@ impl HotPath {
                     self.stop_pause_until_ms = now + self.consecutive_stop_pause_ms;
                     let stops = self.consecutive_stops;
                     let pause_ms = self.consecutive_stop_pause_ms;
-                    // Reset counter after triggering pause (matches TS behavior)
                     self.consecutive_stops = 0;
                     return Some((stops, pause_ms));
                 }
             }
-            // Any non-SL exit resets the consecutive counter
             _ => {
                 self.consecutive_stops = 0;
             }
