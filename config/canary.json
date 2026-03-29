@@ -121,8 +121,8 @@
   "execution": {
     "default_route_mode": "local",
     "default_slippage_bps": 100,
-    "default_priority_fee_sol": 5e-05,
-    "priority_fee_floor_sol": 5e-05,
+    "default_priority_fee_sol": 0.00005,
+    "priority_fee_floor_sol": 0.00005,
     "priority_fee_cap_sol": 0.0002,
     "dynamic_priority_fee": true,
     "dynamic_priority_fee_percentile": 75,
@@ -163,7 +163,7 @@
     "pump_fee_pct": 0.01,
     "pump_swap_fee_pct": 0.0025,
     "pump_portal_fee_pct": 0.005,
-    "solana_base_fee_sol": 5e-06,
+    "solana_base_fee_sol": 0.000005,
     "regime_fee_overrides": {
       "POST_MIGRATION": {
         "pump_fee_pct": 0,
@@ -361,7 +361,7 @@
         "sl_pct": 0.015
       },
       {
-        "trigger_max_sol": 5.0,
+        "trigger_max_sol": 5,
         "tp_pct": 0.07,
         "sl_pct": 0.015
       }
@@ -380,49 +380,24 @@
         "size_sol": 0.09
       },
       {
-        "trigger_max_sol": 5.0,
+        "trigger_max_sol": 5,
         "size_sol": 0.07
       }
     ],
     "paper_daily_loss_cap_sol": 5,
     "live_daily_loss_cap_sol": 0.18,
     "pre_trigger_min_sell_count_5s": 1,
-    "pre_trigger_max_vsol_delta_3s": 6.0,
+    "pre_trigger_max_vsol_delta_3s": 6,
     "momentum_decay_check_ms": 50,
     "momentum_decay_min_mfe_pct": 0.001,
     "momentum_decay_max_drawdown_pct": 0.003,
     "tod_config": {
-      "blocked_hours_utc": [
-        0,
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7,
-        8,
-        9,
-        10,
-        11,
-        12,
-        16,
-        17,
-        18,
-        19,
-        20,
-        21,
-        22,
-        23
-      ],
-      "boosted_hours_utc": [
-        14,
-        15
-      ],
+      "blocked_hours_utc": [],
+      "boosted_hours_utc": [],
       "reduced_hours_utc": []
     },
-    "intra_hold_trailing_stop_pct": 1.0,
-    "intra_hold_trailing_stop_min_mfe_pct": 1.0,
+    "intra_hold_trailing_stop_pct": 1,
+    "intra_hold_trailing_stop_min_mfe_pct": 1,
     "blocked_trigger_sources": [
       "corecast"
     ],
