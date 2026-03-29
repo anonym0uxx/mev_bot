@@ -121,8 +121,8 @@
   "execution": {
     "default_route_mode": "local",
     "default_slippage_bps": 100,
-    "default_priority_fee_sol": 0.00005,
-    "priority_fee_floor_sol": 0.00005,
+    "default_priority_fee_sol": 5e-05,
+    "priority_fee_floor_sol": 5e-05,
     "priority_fee_cap_sol": 0.0002,
     "dynamic_priority_fee": true,
     "dynamic_priority_fee_percentile": 75,
@@ -163,7 +163,7 @@
     "pump_fee_pct": 0.01,
     "pump_swap_fee_pct": 0.0025,
     "pump_portal_fee_pct": 0.005,
-    "solana_base_fee_sol": 0.000005,
+    "solana_base_fee_sol": 5e-06,
     "regime_fee_overrides": {
       "POST_MIGRATION": {
         "pump_fee_pct": 0,
@@ -316,7 +316,7 @@
     "max_concurrent_positions": 10,
     "take_profit_pct": 0.04,
     "stop_loss_pct": 0.015,
-    "max_hold_ms": 500,
+    "max_hold_ms": 1200,
     "next_buyer_exit": true,
     "daily_loss_cap_sol": 5,
     "jito_tip_lamports": 50000,
@@ -401,7 +401,7 @@
     "blocked_trigger_sources": [
       "corecast"
     ],
-    "min_hold_before_exit_ms": 200,
+    "min_hold_before_exit_ms": 300,
     "creator_sell_ttl_ms": 30000,
     "tod_gate_enabled": false
   }
