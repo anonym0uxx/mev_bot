@@ -32,6 +32,10 @@ pub struct GateConfig {
     pub large_trigger_lamports: u64,
     /// Minimum unique buyers when trigger exceeds large_trigger_lamports.
     pub large_trigger_min_unique_buyers: u16,
+    /// UTC hours during which trading is completely blocked.
+    pub blocked_hours_utc: Vec<u8>,
+    /// UTC hours during which trading gets a boost (informational for scorer/position).
+    pub boosted_hours_utc: Vec<u8>,
 }
 
 impl Default for GateConfig {
@@ -57,6 +61,8 @@ impl Default for GateConfig {
             blocked_sources: Vec::new(),
             large_trigger_lamports: 1_500_000_000,          // 1.5 SOL
             large_trigger_min_unique_buyers: 5,
+            blocked_hours_utc: Vec::new(),
+            boosted_hours_utc: Vec::new(),
         }
     }
 }
@@ -65,6 +71,7 @@ impl Default for GateConfig {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum GateRejectReason {
+    BlockedHour,
     NotBuy,
     TriggerTooSmall,
     TriggerTooLarge,
@@ -147,7 +154,16 @@ impl GateStack {
     ) -> Result<(), GateRejectReason> {
         let c = &self.config;
 
-        // ── Gate 0: Source blocked ──────────────────────────────────
+        // ── Gate 0a: Time-of-day blocked ────────────────────────────
+        // Cheapest check — integer modular arithmetic + small vec scan.
+        if !c.blocked_hours_utc.is_empty() {
+            let hour_utc = ((now_ms / 3_600_000) % 24) as u8;
+            if c.blocked_hours_utc.contains(&hour_utc) {
+                return Err(GateRejectReason::BlockedHour);
+            }
+        }
+
+        // ── Gate 0b: Source blocked ─────────────────────────────────
         // Cheapest check — single byte compare + small vec scan.
         if c.blocked_sources.contains(&event.source) {
             return Err(GateRejectReason::SourceBlocked);

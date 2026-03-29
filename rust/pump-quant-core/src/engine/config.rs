@@ -179,6 +179,16 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
         blocked_sources,
         large_trigger_lamports: 1_500_000_000,
         large_trigger_min_unique_buyers: 5,
+        blocked_hours_utc: mev
+            .tod_config
+            .as_ref()
+            .and_then(|tod| tod.blocked_hours_utc.clone())
+            .unwrap_or_default(),
+        boosted_hours_utc: mev
+            .tod_config
+            .as_ref()
+            .and_then(|tod| tod.boosted_hours_utc.clone())
+            .unwrap_or_default(),
     };
 
     // ── Build ScoreConfig (defaults — no JSON overrides yet) ────────

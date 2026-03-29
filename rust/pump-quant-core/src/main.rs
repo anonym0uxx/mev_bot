@@ -4,6 +4,7 @@
 //! Paper mode: logs all closed positions to SQLite.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::bounded;
 use tracing::info;
@@ -14,7 +15,7 @@ use pump_quant_core::engine::gates::GateStack;
 use pump_quant_core::engine::hot_path::HotPath;
 use pump_quant_core::engine::positions::{ClosedPosition, ExitReason, PositionManager};
 use pump_quant_core::engine::scorer::Scorer;
-use pump_quant_core::api::{ApiState, start_server};
+use pump_quant_core::api::{ApiState, EngineStats, start_server};
 use pump_quant_core::feeds::{
     event_joiner::EventJoiner,
     helius::{HeliusConfig, HeliusWsClient},
@@ -86,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
         max_hold_ms = engine_config.position.max_hold_ms,
         tp_tiers = engine_config.position.tp_tiers.len(),
         size_tiers = engine_config.position.size_tiers.len(),
+        blocked_hours = engine_config.gate.blocked_hours_utc.len(),
         "pump-quant-core starting"
     );
 
@@ -94,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
     let gate_stack = GateStack::new(engine_config.gate);
     let scorer = Scorer::new(
         engine_config.score,
-        engine_config.position.tp_tiers.first().map(|_| 0).unwrap_or(0) // placeholder
+        engine_config.position.tp_tiers.first().map(|_| 0).unwrap_or(0)
             .max(33_000_000_000), // use config min_vsol for scorer range
         engine_config.position.tp_tiers.first().map(|_| 0).unwrap_or(0)
             .max(43_000_000_000), // use config max_vsol for scorer range
@@ -248,8 +250,21 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    // Spawn API server
+    // Spawn CoreCast/Bitquery feed (optional)
+    {
+        // CoreCast events go directly to the engine channel (not through joiner)
+        // since they emit FeedEvent::CreatorSell, not Trade/PreWarm
+        let corecast_tx = engine_tx.clone();
+        let corecast_shutdown_rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            pump_quant_core::feeds::corecast::run(corecast_tx, corecast_shutdown_rx).await;
+        });
+        info!("CoreCast feed spawned (will activate if BITQUERY_API_KEY is set)");
+    }
+
+    // ── Spawn API server with shared stats ──────────────────────────
     let api_state = ApiState::new();
+    let shared_stats = api_state.stats.clone();
     let api_state_clone = api_state.clone();
     tokio::spawn(async move {
         start_server(api_state_clone).await;
@@ -270,6 +285,12 @@ async fn main() -> anyhow::Result<()> {
         match engine_rx.recv() {
             Ok(FeedEvent::Trade(trade)) => {
                 hot_path.on_trade(&trade);
+
+                // Update shared API stats every 100 trades (also at first trade)
+                let ts = hot_path.stats.trades_seen;
+                if ts == 1 || ts % 100 == 0 {
+                    sync_stats_to_api(&hot_path, &shared_stats);
+                }
 
                 // Stats logging every 1000 trades
                 if hot_path.stats.trades_seen % 1000 == 0 {
@@ -292,6 +313,10 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(FeedEvent::Tick { ts_ms }) => {
                 hot_path.on_tick(ts_ms);
+                // Sync API stats every 200 ticks (~10 seconds)
+                if hot_path.stats.ticks % 200 == 0 {
+                    sync_stats_to_api(&hot_path, &shared_stats);
+                }
             }
             Ok(FeedEvent::CreatorSell { mint, ts_ms }) => {
                 hot_path.on_creator_sell(&mint, ts_ms);
@@ -300,6 +325,7 @@ async fn main() -> anyhow::Result<()> {
                 info!("Shutdown signal received");
                 let now = now_ms_system();
                 hot_path.close_all(now);
+                sync_stats_to_api(&hot_path, &shared_stats);
                 let _ = shutdown_tx.send(true);
                 break;
             }
@@ -307,6 +333,7 @@ async fn main() -> anyhow::Result<()> {
                 info!("Engine channel closed — shutting down");
                 let now = now_ms_system();
                 hot_path.close_all(now);
+                sync_stats_to_api(&hot_path, &shared_stats);
                 break;
             }
         }
@@ -325,4 +352,17 @@ async fn main() -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+/// Sync HotPath stats into the shared API EngineStats.
+fn sync_stats_to_api(hot_path: &HotPath, shared: &Arc<Mutex<EngineStats>>) {
+    if let Ok(mut api_stats) = shared.lock() {
+        let s = &hot_path.stats;
+        api_stats.trades_seen = s.trades_seen;
+        api_stats.gates_passed = s.gates_passed;
+        api_stats.positions_opened = s.positions_opened;
+        // gate_rejects isn't directly in EngineStats schema, but we can track it:
+        // positions_closed, wins, losses are tracked separately by the logger.
+        // For now, we at least sync the primary counters.
+    }
 }

@@ -2,10 +2,18 @@
 //!
 //! Protocol flow:
 //! 1. Connect to wss://pumpportal.fun/api/data
-//! 2. Send `{"method":"subscribeNewToken"}` → receives new token creation events
-//! 3. On each new token, immediately send `{"method":"subscribeTokenTrade","keys":["<mint>"]}` 
-//!    → starts receiving buy/sell trade events for that mint
-//! 4. Parse trade events → emit FeedEvent::Trade
+//! 2. Send `{"method":"subscribeNewToken"}` → receives ALL events:
+//!    - creation events (txType="create") — new token created
+//!    - trade events (txType="buy"/"sell") — trades on newly created tokens
+//! 3. On each new token, also send `{"method":"subscribeTokenTrade","keys":["<mint>"]}`
+//!    to ensure we keep getting trades even after the new-token window closes.
+//! 4. Parse trade events (buy/sell) → emit FeedEvent::Trade
+//!
+//! Key insight from the TypeScript client: `subscribeNewToken` delivers BOTH
+//! creation events AND trade events (buy/sell). The `txType` field distinguishes:
+//!   - txType="create" → new token creation (emit nothing, just subscribe to trades)
+//!   - txType="buy"/"sell" → actual trade → emit TradeEvent
+//!   - no txType → subscription ack message (ignore)
 
 use crossbeam_channel::Sender;
 use futures_util::{SinkExt, StreamExt};
@@ -24,9 +32,11 @@ const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 /// Reconnects with exponential backoff on failure.
 ///
 /// Protocol:
-/// - Subscribes to `subscribeNewToken` for new token creation events
-/// - On each new token creation, subscribes to that token's trades via `subscribeTokenTrade`
-/// - Trade events are emitted as `FeedEvent::Trade`
+/// - Subscribes to `subscribeNewToken` which delivers BOTH creation events AND
+///   buy/sell trade events for newly created tokens
+/// - On each new token creation (txType="create"), subscribes to that token's
+///   trades via `subscribeTokenTrade` to ensure continued trade coverage
+/// - Trade events (txType="buy" or "sell") are emitted as `FeedEvent::Trade`
 pub async fn run(tx: Sender<FeedEvent>, mut shutdown_rx: tokio::sync::watch::Receiver<bool>) {
     let mut backoff_secs: u64 = 1;
 
@@ -45,15 +55,15 @@ pub async fn run(tx: Sender<FeedEvent>, mut shutdown_rx: tokio::sync::watch::Rec
 
                 let (mut write, mut read) = ws_stream.split();
 
-                // Step 1: Subscribe to new token creation events
+                // Step 1: Subscribe to new token stream (delivers creates + trades)
                 let sub_msg = r#"{"method":"subscribeNewToken"}"#;
                 if let Err(e) = write.send(Message::Text(sub_msg.into())).await {
                     error!("PumpPortal feed: failed to subscribe to new tokens: {}", e);
                     continue;
                 }
-                info!("PumpPortal feed: subscribed to new token creations");
+                info!("PumpPortal feed: subscribed to new token stream (creates + trades)");
 
-                // Internal channel for write-side messages (subscribe to trades)
+                // Internal channel for write-side messages (subscribe to trades per-mint)
                 let (write_tx, mut write_rx) = mpsc::channel::<String>(256);
 
                 // Read loop
@@ -133,18 +143,21 @@ pub async fn run(tx: Sender<FeedEvent>, mut shutdown_rx: tokio::sync::watch::Rec
 /// Parse an incoming PumpPortal message.
 ///
 /// Returns:
-/// - `Ok(Some(TradeEvent))` for buy/sell trade events
-/// - `Ok(None)` for new token creation events, acks, or migrations (handled internally)
-/// - `Err(msg)` for parse failures on what looked like a trade
+/// - `Ok(Some(TradeEvent))` for buy/sell trade events (txType="buy" or "sell")
+/// - `Ok(None)` for:
+///   - subscription ack messages (no signature field)
+///   - new token creation events (txType="create") — triggers per-mint subscription
+///   - migration events (pool field set)
+/// - `Err(msg)` for parse failures
 fn parse_message(mut text: String, write_tx: &mpsc::Sender<String>) -> Result<Option<TradeEvent>, String> {
     let bytes = unsafe { text.as_bytes_mut() };
     let val: simd_json::BorrowedValue = simd_json::to_borrowed_value(bytes)
         .map_err(|e| format!("json: {}", e))?;
 
-    // Check what kind of message this is
+    // Check for subscription ack (no signature → it's a control message)
     let sig_b58 = match val.get_str("signature") {
         Some(s) => s,
-        None => return Ok(None), // subscription ack ({"message":"Successfully subscribed..."})
+        None => return Ok(None),
     };
 
     let mint_b58 = match val.get_str("mint") {
@@ -152,22 +165,37 @@ fn parse_message(mut text: String, write_tx: &mpsc::Sender<String>) -> Result<Op
         None => return Ok(None),
     };
 
-    // Detect new token creation event (has "name"/"symbol" but no txType)
-    // → subscribe to this token's trades immediately
-    if val.get_str("txType").is_none() {
-        // New token creation event — subscribe to its trades
+    // Check txType to determine message kind
+    let tx_type = match val.get_str("txType") {
+        Some(t) => t,
+        None => {
+            // No txType at all — this is an unusual message, skip it.
+            // (Normal ack messages were caught above by missing signature.)
+            return Ok(None);
+        }
+    };
+
+    // Handle creation events: txType="create"
+    // Subscribe to this token's trades for continued coverage, but don't emit a trade event
+    if tx_type == "create" {
         let sub_msg = format!(
             r#"{{"method":"subscribeTokenTrade","keys":["{}"]}}"#,
             mint_b58
         );
         // Non-blocking — if the channel is full, skip (we'll catch it next token)
         let _ = write_tx.try_send(sub_msg);
-        debug!("PumpPortal feed: new token {}, subscribed to trades", &mint_b58[..8.min(mint_b58.len())]);
+        debug!("PumpPortal feed: new token {} (create), subscribed to trades", &mint_b58[..8.min(mint_b58.len())]);
         return Ok(None);
     }
 
-    // Trade event — parse fully
-    let tx_type = val.get_str("txType").unwrap(); // safe — checked above
+    // Handle migration events
+    if tx_type != "buy" && tx_type != "sell" {
+        // Could be migration or other event types — ignore
+        debug!("PumpPortal feed: unknown txType '{}' for mint {}", tx_type, &mint_b58[..8.min(mint_b58.len())]);
+        return Ok(None);
+    }
+
+    // ── Trade event: txType="buy" or "sell" ─────────────────────────
     let is_buy = tx_type == "buy";
 
     let sol_amount_f = val.get_f64("solAmount").unwrap_or(0.0);
