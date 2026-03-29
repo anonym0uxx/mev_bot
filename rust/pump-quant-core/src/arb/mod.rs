@@ -1,3 +1,5 @@
+pub mod dedup;
 pub mod graduation;
 
-pub use graduation::GraduationArbEngine;
+pub use dedup::MigrationDedup;
+pub use graduation::{GraduationArbEngine, GradArbConfig, GradArbStats, GradArbClosedPosition};
