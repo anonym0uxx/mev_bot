@@ -446,6 +446,10 @@ async fn main() -> anyhow::Result<()> {
                         open = hot_path.open_positions(),
                         prewarms = s.prewarms,
                         ticks = s.ticks,
+                        migrations = s.migrations,
+                        lp_removals = s.lp_removals,
+                        new_tokens_prewarmed = s.new_tokens,
+                        creator_sells = s.creator_sells,
                         helius_correlated = hot_path.helius_lead_count,
                         helius_avg_lead_ms = if hot_path.helius_lead_count > 0 {
                             hot_path.helius_lead_sum_ms / hot_path.helius_lead_count
@@ -523,6 +527,11 @@ async fn main() -> anyhow::Result<()> {
                 if let Ok(mut map) = shared_creator_map.write() {
                     map.insert(mint, creator);
                 }
+                tracing::debug!(
+                    mint = %bs58::encode(&mint).into_string(),
+                    creator = %bs58::encode(&creator).into_string(),
+                    "new token pre-warmed from Bitquery (before PumpPortal)"
+                );
                 hot_path.on_new_token();
             }
             Ok(FeedEvent::Shutdown) => {
@@ -598,8 +607,10 @@ fn sync_stats_to_api(hot_path: &HotPath, shared: &Arc<Mutex<EngineStats>>) {
         api_stats.trades_seen = s.trades_seen;
         api_stats.gates_passed = s.gates_passed;
         api_stats.positions_opened = s.positions_opened;
-        // gate_rejects isn't directly in EngineStats schema, but we can track it:
-        // positions_closed, wins, losses are tracked separately by the logger.
-        // For now, we at least sync the primary counters.
+        // Stream event counters
+        api_stats.migrations_seen = s.migrations;
+        api_stats.lp_removals_seen = s.lp_removals;
+        api_stats.new_tokens_seen = s.new_tokens;
+        api_stats.creator_sells_seen = s.creator_sells;
     }
 }

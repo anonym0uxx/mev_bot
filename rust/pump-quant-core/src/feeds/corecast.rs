@@ -269,8 +269,10 @@ pub async fn run(
                 }
 
                 info!(
-                    "[corecast] all {} subscriptions active on 1 WS connection",
-                    subscriptions.len()
+                    streams = subscriptions.len(),
+                    endpoint = BITQUERY_WS_URL,
+                    stream_ids = "1=DEXTrades,2=AMMTrades,3=LPRemoval,4=NewTokens",
+                    "CoreCast connected and subscribed"
                 );
 
                 // Step 4: Read loop — route messages by subscription ID
@@ -297,6 +299,14 @@ pub async fn run(
                                             SUB_ID_BONDING_TRADES => {
                                                 stats.bonding_trades += 1;
                                                 if let Some(event) = parse_bonding_trade(payload, ts_ms, &creator_map) {
+                                                    if let FeedEvent::CreatorSell { ref mint, .. } = event {
+                                                        debug!(
+                                                            stream_id = SUB_ID_BONDING_TRADES,
+                                                            event_type = "creator_sell",
+                                                            mint = %bs58::encode(mint).into_string(),
+                                                            "CoreCast stream event"
+                                                        );
+                                                    }
                                                     if tx.send(event).is_err() {
                                                         info!("[corecast] engine channel closed");
                                                         return;
@@ -305,7 +315,18 @@ pub async fn run(
                                             }
                                             SUB_ID_AMM_MIGRATION => {
                                                 stats.amm_migrations += 1;
-                                                for event in parse_amm_migration(payload, ts_ms) {
+                                                let events = parse_amm_migration(payload, ts_ms);
+                                                for event in &events {
+                                                    if let FeedEvent::Migration { ref mint, .. } = event {
+                                                        debug!(
+                                                            stream_id = SUB_ID_AMM_MIGRATION,
+                                                            event_type = "migration",
+                                                            mint = %bs58::encode(mint).into_string(),
+                                                            "CoreCast stream event"
+                                                        );
+                                                    }
+                                                }
+                                                for event in events {
                                                     if tx.send(event).is_err() {
                                                         info!("[corecast] engine channel closed");
                                                         return;
@@ -314,7 +335,18 @@ pub async fn run(
                                             }
                                             SUB_ID_LP_REMOVAL => {
                                                 stats.lp_removals += 1;
-                                                for event in parse_lp_removal(payload, ts_ms) {
+                                                let events = parse_lp_removal(payload, ts_ms);
+                                                for event in &events {
+                                                    if let FeedEvent::LpRemoval { ref mint, .. } = event {
+                                                        debug!(
+                                                            stream_id = SUB_ID_LP_REMOVAL,
+                                                            event_type = "lp_removal",
+                                                            mint = %bs58::encode(mint).into_string(),
+                                                            "CoreCast stream event"
+                                                        );
+                                                    }
+                                                }
+                                                for event in events {
                                                     if tx.send(event).is_err() {
                                                         info!("[corecast] engine channel closed");
                                                         return;
@@ -324,6 +356,15 @@ pub async fn run(
                                             SUB_ID_NEW_TOKEN => {
                                                 stats.new_tokens += 1;
                                                 if let Some(event) = parse_new_token(payload, ts_ms, &creator_map) {
+                                                    if let FeedEvent::NewToken { ref mint, ref creator, .. } = event {
+                                                        debug!(
+                                                            stream_id = SUB_ID_NEW_TOKEN,
+                                                            event_type = "new_token",
+                                                            mint = %bs58::encode(mint).into_string(),
+                                                            creator = %bs58::encode(creator).into_string(),
+                                                            "CoreCast stream event"
+                                                        );
+                                                    }
                                                     if tx.send(event).is_err() {
                                                         info!("[corecast] engine channel closed");
                                                         return;

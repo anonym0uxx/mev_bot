@@ -526,9 +526,15 @@ impl HotPath {
         if self.position_manager.has_position(mint) {
             tracing::info!(
                 mint = %bs58::encode(mint).into_string(),
+                ts_ms,
                 "migration detected — force-closing position"
             );
             self.position_manager.force_close(mint, ExitReason::MaxHold, ts_ms);
+        } else {
+            tracing::debug!(
+                mint = %bs58::encode(mint).into_string(),
+                "migration: no open position"
+            );
         }
         // Also mark creator_sell_at_ms so the gate rejects future entries for this mint
         if let Some(history) = self.mint_map.get_mut(mint) {
@@ -543,9 +549,15 @@ impl HotPath {
         if self.position_manager.has_position(mint) {
             tracing::info!(
                 mint = %bs58::encode(mint).into_string(),
+                ts_ms,
                 "LP removal detected — force-closing position"
             );
             self.position_manager.force_close(mint, ExitReason::MaxHold, ts_ms);
+        } else {
+            tracing::debug!(
+                mint = %bs58::encode(mint).into_string(),
+                "LP removal: no open position"
+            );
         }
         // Also mark creator_sell so gates reject
         if let Some(history) = self.mint_map.get_mut(mint) {

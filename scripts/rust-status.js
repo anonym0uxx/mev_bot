@@ -158,6 +158,44 @@ async function main() {
   lines.push(`  Throughput: ${tps.toFixed(1)} events/s | Gate pass: ${gatePassRate}%`);
   lines.push(`  Positions open: ${stats?.positions_opened - stats?.positions_closed || 0} | Closed: ${stats?.positions_closed || 0}`);
 
+  // Stream event counters (from API or fallback to log parsing)
+  const migrations = stats?.migrations_seen;
+  const lpRemovals = stats?.lp_removals_seen;
+  const newTokens  = stats?.new_tokens_seen;
+  const creatorSells = stats?.creator_sells_seen;
+
+  if (migrations != null || lpRemovals != null || newTokens != null || creatorSells != null) {
+    lines.push('');
+    lines.push('📡 Stream Events (session)');
+    lines.push(`  Migrations detected: ${migrations ?? 0}`);
+    lines.push(`  LP removals: ${lpRemovals ?? 0}`);
+    lines.push(`  New tokens pre-warmed: ${newTokens ?? 0}`);
+    lines.push(`  Creator sells: ${creatorSells ?? 0}`);
+  } else {
+    // Fallback: parse from log file
+    const { execSync } = require('child_process');
+    try {
+      const lastStats = execSync(
+        'grep "engine stats" /data/.openclaw/workspace/projects/pump-quant/logs/rust-daemon.log | tail -1',
+        { timeout: 2000 }
+      ).toString().trim();
+      if (lastStats) {
+        const mig = lastStats.match(/migrations=(\d+)/);
+        const lpr = lastStats.match(/lp_removals=(\d+)/);
+        const ntk = lastStats.match(/new_tokens_prewarmed=(\d+)/);
+        const crs = lastStats.match(/creator_sells=(\d+)/);
+        if (mig || lpr || ntk || crs) {
+          lines.push('');
+          lines.push('📡 Stream Events (session, from log)');
+          lines.push(`  Migrations detected: ${mig ? mig[1] : 0}`);
+          lines.push(`  LP removals: ${lpr ? lpr[1] : 0}`);
+          lines.push(`  New tokens pre-warmed: ${ntk ? ntk[1] : 0}`);
+          lines.push(`  Creator sells: ${crs ? crs[1] : 0}`);
+        }
+      }
+    } catch {}
+  }
+
   if (paused) lines.push('  ⚠️  TRADING PAUSED');
   if (newHigh) lines.push(`\n🏆 NEW HIGH WATER: ${sol(all.net)} SOL net!`);
 

@@ -34,6 +34,11 @@ pub struct EngineStats {
     pub paused: bool,
     pub uptime_s: u64,
     pub started_at: u64,
+    // Stream event counters (CoreCast/Bitquery)
+    pub migrations_seen: u64,
+    pub lp_removals_seen: u64,
+    pub new_tokens_seen: u64,
+    pub creator_sells_seen: u64,
 }
 
 // ─── Open Position (for /api/positions) ────────────────────────────
@@ -193,7 +198,11 @@ async fn stats(State(state): State<ApiState>) -> Json<serde_json::Value> {
             "pnl_sol": pnl_sol,
             "total_pnl_lamports": s.total_pnl_lamports,
             "paused": s.paused,
-            "uptime_s": s.uptime_s
+            "uptime_s": s.uptime_s,
+            "migrations_seen": s.migrations_seen,
+            "lp_removals_seen": s.lp_removals_seen,
+            "new_tokens_seen": s.new_tokens_seen,
+            "creator_sells_seen": s.creator_sells_seen
         }
     }))
 }
