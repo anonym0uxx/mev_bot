@@ -147,7 +147,11 @@ impl GateStack {
     ///
     /// All pre-computed signals come from `MintHistory` cached fields —
     /// no recomputation here.
-    #[inline]
+    ///
+    /// PERF: #[inline(always)] — called on every buy trade that passes
+    /// the excluded_mints and graduation boundary pre-checks. ~18 branch
+    /// instructions, all integer comparisons. Must stay in icache.
+    #[inline(always)]
     pub fn evaluate(
         &self,
         event: &TradeEvent,

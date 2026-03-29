@@ -145,6 +145,12 @@ impl HeliusWsClient {
 
 /// Parse a Helius `logsNotification` message.
 ///
+/// TODO(perf): Swap serde_json → simd_json for SIMD-accelerated parsing.
+/// simd_json is already in Cargo.toml. Requires `&mut [u8]` input (in-place
+/// parsing). The ws message is owned String — use `unsafe { text.as_bytes_mut() }`
+/// or pass ownership. Estimated savings: ~1-3µs per message. Not critical since
+/// Helius is a secondary pre-warmer (PumpPortal is primary and already uses simd_json).
+///
 /// Extracts signature + slot. Attempts to extract mint from program log lines
 /// (Pump.fun emits `Program log: <base58_mint>` in buy/sell instruction logs).
 /// If mint extraction fails, emits PreWarmEvent with mint=[0u8;32] — the engine

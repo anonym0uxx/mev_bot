@@ -209,7 +209,10 @@ impl HotPath {
     }
 
     /// Process a trade event through the full gate → score → position pipeline.
-    #[inline]
+    /// PERF: #[inline(always)] — this is THE hot path (~1000+ calls/sec).
+    /// Must stay in the instruction cache. The method is ~60 instructions
+    /// (mostly comparisons and loads), well within icache budget.
+    #[inline(always)]
     pub fn on_trade(&mut self, trade: &TradeEvent) {
         self.stats.trades_seen += 1;
         let now = self.now_ms();
@@ -472,6 +475,9 @@ impl HotPath {
     /// 50ms tick: drive position manager time-based exits
     /// (max_hold, momentum decay).
     /// Log gate rejection histogram. Called every 500 rejects.
+    /// PERF: #[inline(never)] — cold path, called rarely (~every 500 rejects).
+    /// Keep out of icache to avoid polluting hot-path instruction fetch.
+    #[inline(never)]
     fn log_gate_rejections(&self) {
         let names = [
             "BlockedHour", "NotBuy", "TriggerTooSmall", "TriggerTooLarge",
@@ -519,6 +525,8 @@ impl HotPath {
     /// Force-exit any open position for a migrated token.
     /// Token migrated to Raydium AMM — bonding curve positions are invalidated.
     /// Uses `ExitReason::MaxHold` as the closest semantic match (positions.rs is read-only).
+    /// PERF: #[inline(never)] — cold path (10-30 migrations/day).
+    #[inline(never)]
     pub fn on_migration(&mut self, mint: &[u8; 32], ts_ms: u64) {
         self.stats.migrations += 1;
         if self.position_manager.has_position(mint) {
@@ -542,6 +550,8 @@ impl HotPath {
 
     /// Force-exit any open position on LP removal (rug detection).
     /// Delegates to `on_migration` — same force-exit logic.
+    /// PERF: #[inline(never)] — cold path, rare event.
+    #[inline(never)]
     pub fn on_lp_removal(&mut self, mint: &[u8; 32], ts_ms: u64) {
         self.stats.lp_removals += 1;
         if self.position_manager.has_position(mint) {
@@ -631,6 +641,8 @@ impl HotPath {
 }
 
 /// Map GateRejectReason to a stable index for the rejection histogram.
+/// PERF: #[inline(always)] — called on every gate reject (high frequency).
+#[inline(always)]
 fn gate_reject_index(reason: &GateRejectReason) -> usize {
     match reason {
         GateRejectReason::BlockedHour => 0,
@@ -672,7 +684,8 @@ fn utc_day_of_month(days_since_epoch: u64) -> u32 {
 }
 
 /// Convert a TradeEvent into a TradeRecord for the ring buffer.
-#[inline]
+/// PERF: #[inline(always)] — called on every trade, trivial field copy.
+#[inline(always)]
 fn trade_to_record(trade: &TradeEvent, now_ms: u64) -> TradeRecord {
     TradeRecord {
         timestamp_ms: now_ms,

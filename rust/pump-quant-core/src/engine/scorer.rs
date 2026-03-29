@@ -85,7 +85,9 @@ impl Scorer {
     /// Compute all score components and the final weighted score.
     ///
     /// Zero allocation. All f64 arithmetic.
-    #[inline]
+    /// PERF: #[inline(always)] — called on every buy trade that passes
+    /// pre-gate checks. ~20 FP instructions, all register-resident.
+    #[inline(always)]
     pub fn compute(
         &self,
         _trigger_sol_lamports: u64,

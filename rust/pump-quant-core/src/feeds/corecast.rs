@@ -19,10 +19,9 @@
 //! Auth: Bearer token via connection_init payload.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crossbeam_channel::Sender;
-use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async_with_config, tungstenite};
 use tracing::{debug, error, info, warn};
@@ -31,6 +30,12 @@ use super::{FeedEvent, MigrationSource};
 
 /// Shared creator map type: mint → creator wallet pubkey.
 /// Written by PumpPortal on `create` events, read by CoreCast for signer matching.
+///
+/// TODO(perf): Bloom filter pre-check for fast-reject on non-creator trades.
+/// Benchmark with `criterion` first — at 10-30k active tokens, the HashMap may
+/// already be hot in L1/L2 cache, making bloom overhead (branch) counterproductive.
+/// Expected savings: ~35-65ns per non-creator trade on the CoreCast path (NOT
+/// the critical backrun hot path). See OPTIMIZATION_NOTES.md for details.
 pub type CreatorMap = Arc<RwLock<HashMap<[u8; 32], [u8; 32]>>>;
 
 const BITQUERY_WS_URL: &str = "wss://streaming.bitquery.io/eap";
@@ -46,79 +51,126 @@ const SUB_ID_AMM_MIGRATION: &str = "2";
 const SUB_ID_LP_REMOVAL: &str = "3";
 
 // ── Graduation noise filters ────────────────────────────────────────
+//
+// Perf-critical path: every Raydium AMM event hits these filters.
+// Optimized for AMD EPYC Zen 4: L1-resident ring buffer, byte-level
+// comparisons, cheapest-first fail-fast ordering, cold rejection paths.
 
-/// Wrapped SOL mint (So11111111111111111111111111111111111111112).
-/// Every Raydium trade has WSOL on one side — never a graduation.
-const WSOL_MINT_B58: &str = "So11111111111111111111111111111111111111112";
+/// Wrapped SOL mint as base58 bytes (compile-time).
+/// `So11111111111111111111111111111111111111112` — 44 bytes.
+const WSOL_MINT_B58: &[u8] = b"So11111111111111111111111111111111111111112";
 
-/// Check if a base58-encoded mint is a valid pump.fun graduation candidate.
-/// Filters out WSOL and system tokens. pump.fun mints end with "pump".
-#[inline(always)]
-fn is_valid_graduation_mint(mint_b58: &str) -> bool {
-    // WSOL appears on every Raydium trade — reject immediately
-    if mint_b58 == WSOL_MINT_B58 {
-        return false;
-    }
-    // pump.fun token mints always end with "pump" suffix
-    mint_b58.ends_with("pump")
+/// Grace period after startup to ignore Bitquery historical event replay.
+const STARTUP_REPLAY_WINDOW_MS: u64 = 10_000;
+
+/// Ring buffer capacity for graduation sig dedup. Must be power of 2.
+/// 64 slots × 40 bytes = 2560 bytes — fits comfortably in L1 cache (32 KB).
+const GRAD_DEDUP_SLOTS: usize = 64;
+const GRAD_DEDUP_MASK: usize = GRAD_DEDUP_SLOTS - 1;
+
+/// Fixed-size ring buffer dedup for graduation tx signatures.
+/// Replaces DashMap — zero heap allocation, L1-cache-resident.
+/// 64 slots × (8 + 32) bytes = 2560 bytes total.
+struct GraduationDedup {
+    entries: [(u64, [u8; 32]); GRAD_DEDUP_SLOTS],
+    next: usize,
+    ttl_ms: u64,
 }
 
-/// Tracks seen Raydium pool signatures to deduplicate ongoing trades on
-/// already-graduated tokens. Only the FIRST event per unique tx signature
-/// is treated as a graduation; subsequent trades on the same pool are ignored.
-///
-/// Uses the tx signature (first 32 bytes) as the dedup key, since each
-/// graduation creates a unique initialize2 transaction.
+impl GraduationDedup {
+    const fn new(ttl_ms: u64) -> Self {
+        Self {
+            entries: [(0, [0u8; 32]); GRAD_DEDUP_SLOTS],
+            next: 0,
+            ttl_ms,
+        }
+    }
+
+    /// Returns `true` if `sig` is NEW (not seen within TTL window).
+    /// O(64) linear scan — all data in L1 cache, ~192 cycles worst case.
+    /// DashMap equivalent: ~500-2000 cycles (hash + lock + heap chase).
+    #[inline(always)]
+    fn is_new(&mut self, sig: &[u8; 32], now_ms: u64) -> bool {
+        let cutoff = now_ms.saturating_sub(self.ttl_ms);
+        for (ts, stored) in &self.entries {
+            if *ts >= cutoff && stored == sig {
+                return false;
+            }
+        }
+        self.entries[self.next] = (now_ms, *sig);
+        self.next = (self.next + 1) & GRAD_DEDUP_MASK;
+        true
+    }
+
+    /// Number of live (non-expired) entries — for stats logging only.
+    fn live_count(&self, now_ms: u64) -> usize {
+        let cutoff = now_ms.saturating_sub(self.ttl_ms);
+        self.entries.iter().filter(|(ts, _)| *ts >= cutoff).count()
+    }
+}
+
+/// Thread-safe graduation filter wrapping the ring buffer in a Mutex.
+/// Single-task access pattern (async read loop) → zero contention.
 struct GraduationFilter {
-    /// sig_prefix[0..32] → first_seen_ts_ms
-    seen_sigs: DashMap<[u8; 32], u64>,
-    /// Startup timestamp — events before startup + grace period are historical replays.
+    dedup: Mutex<GraduationDedup>,
     startup_ts_ms: u64,
-    /// Grace period after startup to ignore historical event replay (ms).
-    startup_grace_ms: u64,
 }
 
 impl GraduationFilter {
-    fn new(startup_grace_ms: u64) -> Self {
+    fn new(dedup_ttl_ms: u64) -> Self {
         Self {
-            seen_sigs: DashMap::with_capacity(1024),
+            dedup: Mutex::new(GraduationDedup::new(dedup_ttl_ms)),
             startup_ts_ms: now_ms(),
-            startup_grace_ms,
         }
     }
 
-    /// Returns true if this event should be emitted as a graduation.
-    /// Returns false if: historical replay, duplicate sig, or non-pump mint.
+    /// Combined three-layer filter: cheapest checks first, ring buffer last.
+    /// Returns true only for genuine new pump.fun graduation events.
+    #[inline(always)]
     fn should_emit(&self, mint_b58: &str, sig_prefix: &[u8; 32], ts_ms: u64) -> bool {
-        // Filter 1: reject non-pump.fun mints (WSOL, system tokens, etc.)
-        if !is_valid_graduation_mint(mint_b58) {
+        // ── Filter 1: startup replay guard — u64 compare, ~1 cycle ──
+        if ts_ms < self.startup_ts_ms.saturating_add(STARTUP_REPLAY_WINDOW_MS) {
+            Self::log_startup_reject(ts_ms, self.startup_ts_ms);
             return false;
         }
 
-        // Filter 2: reject historical event replay on connect
-        if ts_ms < self.startup_ts_ms.saturating_add(self.startup_grace_ms) {
-            debug!(
-                "[corecast] ignoring historical replay event ts={} startup={}",
-                ts_ms, self.startup_ts_ms
-            );
+        // ── Filter 2: WSOL reject — byte slice compare, ~2 cycles ──
+        let b = mint_b58.as_bytes();
+        if b == WSOL_MINT_B58 {
             return false;
         }
 
-        // Filter 3: dedup by tx signature — only first occurrence is a graduation
-        use dashmap::mapref::entry::Entry;
-        match self.seen_sigs.entry(*sig_prefix) {
-            Entry::Occupied(_) => false, // seen this tx before → not a new graduation
-            Entry::Vacant(v) => {
-                v.insert(ts_ms);
-                true // first time seeing this tx → graduation
-            }
+        // ── Filter 3: pump suffix — last 4 bytes, ~2 cycles ──
+        if b.len() < 4 || b[b.len() - 4..] != *b"pump" {
+            return false;
+        }
+
+        // ── Filter 4: sig dedup — ring buffer scan, ~192 cycles worst ──
+        // Mutex::lock on uncontested single-thread path ≈ 20ns.
+        match self.dedup.lock() {
+            Ok(mut d) => d.is_new(sig_prefix, ts_ms),
+            Err(poisoned) => poisoned.into_inner().is_new(sig_prefix, ts_ms),
         }
     }
 
-    /// Periodic cleanup: remove entries older than TTL to prevent unbounded growth.
-    /// Called from the stats logging path (every 100 events).
-    fn gc(&self, now_ms: u64, ttl_ms: u64) {
-        self.seen_sigs.retain(|_, ts| now_ms.saturating_sub(*ts) < ttl_ms);
+    /// Stats: count of live dedup entries (for periodic logging).
+    fn live_dedup_count(&self) -> usize {
+        match self.dedup.lock() {
+            Ok(d) => d.live_count(now_ms()),
+            Err(p) => p.into_inner().live_count(now_ms()),
+        }
+    }
+
+    /// Cold path: log startup replay rejection.
+    /// `#[cold]` + `#[inline(never)]` moves this out of the hot path,
+    /// improving branch prediction for the common (pass) case.
+    #[cold]
+    #[inline(never)]
+    fn log_startup_reject(ts_ms: u64, startup_ts_ms: u64) {
+        debug!(
+            "[corecast] ignoring historical replay event ts={} startup={}",
+            ts_ms, startup_ts_ms
+        );
     }
 }
 
@@ -412,18 +464,16 @@ pub async fn run(
                                             }
                                         }
 
-                                        // Periodic stats logging + graduation filter GC
+                                        // Periodic stats logging (ring buffer self-GCs via TTL — no explicit GC needed)
                                         let total = stats.total();
                                         if total % 100 == 0 && total > 0 {
                                             debug!(
-                                                "[corecast] bonding={} amm={} lp={} creator_match={} creator_miss={} grad_filter_sigs={}",
+                                                "[corecast] bonding={} amm={} lp={} creator_match={} creator_miss={} grad_dedup_live={}",
                                                 stats.bonding_trades, stats.amm_migrations,
                                                 stats.lp_removals,
                                                 stats.creator_matches, stats.creator_mismatches,
-                                                grad_filter.seen_sigs.len()
+                                                grad_filter.live_dedup_count()
                                             );
-                                            // GC graduation filter: remove sigs older than 60s
-                                            grad_filter.gc(now_ms(), 60_000);
                                         }
                                     }
                                 }

@@ -325,6 +325,9 @@ impl PositionManager {
     /// 5. Next-buyer exits (requires min hold + min trades)
     ///
     /// Returns `true` if the position was closed.
+    /// PERF: #[inline] — called for every trade on held mints. Not #[inline(always)]
+    /// because the method body is large (exit logic branches); let the compiler decide.
+    #[inline]
     pub fn on_subsequent_trade(&mut self, event: &TradeEvent, now_ms: u64) -> bool {
         // Skip events with zero reserves (Helius pre-warm)
         if event.vsol_reserves == 0 {
