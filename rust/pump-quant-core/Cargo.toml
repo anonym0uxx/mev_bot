@@ -38,7 +38,7 @@ anyhow = "1.0"
 solana-sdk = "=2.1.16"
 
 # Jito bundle submission (REST)
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "http2"] }
 
 # Persistence
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -48,6 +48,9 @@ axum = "0.7"
 
 # .env file loading
 dotenvy = "0.15"
+
+# System tuning (CPU pinning, mlockall, setsockopt)
+libc = "0.2"
 
 # Serialization
 base64 = "0.22"
@@ -66,3 +69,4 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+overflow-checks = false

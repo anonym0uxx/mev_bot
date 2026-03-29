@@ -2057,6 +2057,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "hashbrown 0.15.2",
+ "libc",
  "memchr",
  "quanta",
  "reqwest",
