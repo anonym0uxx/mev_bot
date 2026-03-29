@@ -16,11 +16,12 @@ use crate::engine::positions::{ClosedPosition, ExitReason};
 pub struct PaperTradeLogger {
     file: std::fs::File,
     path: String,
+    paper_mode: bool,
 }
 
 impl PaperTradeLogger {
     /// Create a new logger, opening (or creating) the file at `path` in append mode.
-    pub fn new(path: &str) -> Result<Self> {
+    pub fn new(path: &str, paper_mode: bool) -> Result<Self> {
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -32,6 +33,7 @@ impl PaperTradeLogger {
         Ok(Self {
             file,
             path: path.to_string(),
+            paper_mode,
         })
     }
 
@@ -144,7 +146,7 @@ impl PaperTradeLogger {
             // Metadata
             "engineVersion": "v5-rust",
             "dataVersion": 3,
-            "is_paper": true,
+            "is_paper": self.paper_mode,
             "excludeFromAnalysis": exclude,
             "recordedAt": now_ms,
         });

@@ -203,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
             };
 
             // Also open the JSONL paper trade logger (camelCase schema)
-            let mut paper_logger = match PaperTradeLogger::new(&log_file) {
+            let mut paper_logger = match PaperTradeLogger::new(&log_file, paper_mode) {
                 Ok(l) => l,
                 Err(e) => {
                     tracing::error!("Failed to open PaperTradeLogger: {e}");
