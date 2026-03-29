@@ -192,6 +192,12 @@ pub struct PositionManager {
 
 impl PositionManager {
     pub fn new(config: PositionConfig, closed_tx: Sender<ClosedPosition>) -> Self {
+        assert!(
+            config.min_hold_before_exit_ms < config.max_hold_ms,
+            "CONFIG ERROR: min_hold_before_exit_ms ({}) must be < max_hold_ms ({}). \
+             Next-buyer exits can never fire when the min-hold gate exceeds max hold time.",
+            config.min_hold_before_exit_ms, config.max_hold_ms
+        );
         Self {
             positions: HashMap::with_capacity(config.max_concurrent_positions),
             config,
@@ -594,7 +600,7 @@ mod tests {
 
     fn test_config() -> PositionConfig {
         PositionConfig {
-            max_hold_ms: 400,
+            max_hold_ms: 500,
             momentum_decay_check_ms: 50,
             momentum_decay_min_mfe_pct: 0.001,
             momentum_decay_max_drawdown_pct: 0.003,
@@ -618,7 +624,7 @@ mod tests {
             max_entry_size_lamports: 500_000_000,
             size_variance_pct: 0.20,
             jito_tip_lamports: 1_000_000, // 0.001 SOL
-            min_hold_before_exit_ms: 500,
+            min_hold_before_exit_ms: 200,
             tod_boost_multiplier: 1.25,
             boosted_hours_utc: vec![14, 15],
         }
@@ -894,12 +900,12 @@ mod tests {
         let event = make_trade_event(mint, sig, 50_000_000, entry_vsol, 1_000_000_000_000_000, true);
         pm.open_position(&event, 0.85, 1000);
 
-        // Large buy that would trigger NB exit, but only 1 trade and < 500ms
+        // Large buy that would trigger NB exit, but only 1 trade and < 200ms min_hold
         let up_vsol = (entry_vsol as f64 * 1.02) as u64; // in profit
         let big_buy = make_trade_event(mint, [0xCCu8; 64], 50_000_000, up_vsol, 1_000_000_000_000_000, true);
-        let closed = pm.on_subsequent_trade(&big_buy, 1100); // only 100ms hold
+        let closed = pm.on_subsequent_trade(&big_buy, 1100); // only 100ms hold, < 200ms gate
 
-        // Should NOT close — not enough trades or hold time
+        // Should NOT close — not enough trades or hold time (need >= 2 trades AND >= 200ms)
         assert!(!closed);
         assert!(rx.try_recv().is_err());
     }

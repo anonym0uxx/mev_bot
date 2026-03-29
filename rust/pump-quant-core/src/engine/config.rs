@@ -293,7 +293,7 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
         .unwrap_or_else(|| vec![14, 15]);
 
     let position = PositionConfig {
-        max_hold_ms: mev.max_hold_ms.unwrap_or(400),
+        max_hold_ms: mev.max_hold_ms.unwrap_or(500),
         momentum_decay_check_ms: mev.momentum_decay_check_ms.unwrap_or(50),
         momentum_decay_min_mfe_pct: mev.momentum_decay_min_mfe_pct.unwrap_or(0.001),
         momentum_decay_max_drawdown_pct: mev.momentum_decay_max_drawdown_pct.unwrap_or(0.003),
@@ -311,7 +311,7 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
         max_entry_size_lamports: sol_to_lamports(mev.max_entry_size_sol.unwrap_or(0.25)),
         size_variance_pct: mev.size_variance_pct.unwrap_or(0.2),
         jito_tip_lamports: mev.jito_tip_lamports.unwrap_or(50_000),
-        min_hold_before_exit_ms: mev.min_hold_before_exit_ms.unwrap_or(500),
+        min_hold_before_exit_ms: mev.min_hold_before_exit_ms.unwrap_or(200),
         tod_boost_multiplier: 1.25,
         boosted_hours_utc,
     };

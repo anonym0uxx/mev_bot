@@ -316,7 +316,7 @@
     "max_concurrent_positions": 10,
     "take_profit_pct": 0.04,
     "stop_loss_pct": 0.015,
-    "max_hold_ms": 400,
+    "max_hold_ms": 500,
     "next_buyer_exit": true,
     "daily_loss_cap_sol": 5,
     "jito_tip_lamports": 50000,
@@ -401,7 +401,7 @@
     "blocked_trigger_sources": [
       "corecast"
     ],
-    "min_hold_before_exit_ms": 500,
+    "min_hold_before_exit_ms": 200,
     "creator_sell_ttl_ms": 30000,
     "tod_gate_enabled": false
   }
