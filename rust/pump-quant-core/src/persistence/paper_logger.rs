@@ -18,11 +18,30 @@ pub struct PaperTradeLogger {
     path: String,
     paper_mode: bool,
     config_version: String,
+    // ── Golden segment thresholds (for strategyTag computation at log time) ──
+    golden_min_buys_1s: u16,
+    golden_min_hour_utc: u8,
+    golden_max_hour_utc: u8,
+    golden_min_vsol: f64,
+    golden_max_vsol: f64,
+    // ── Scaled entry config (SPEC 3 stub) ───────────────────────────
+    scaled_entry_enabled: bool,
+    scaled_entry_initial_pct: f64,
 }
 
 impl PaperTradeLogger {
     /// Create a new logger, opening (or creating) the file at `path` in append mode.
-    pub fn new(path: &str, paper_mode: bool, config_version: String) -> Result<Self> {
+    ///
+    /// `golden_thresholds`: (min_buys_1s, min_hour_utc, max_hour_utc, min_vsol_sol, max_vsol_sol)
+    /// Used to compute `strategyTag` at log time without modifying ClosedPosition.
+    pub fn new(
+        path: &str,
+        paper_mode: bool,
+        config_version: String,
+        golden_thresholds: (u16, u8, u8, f64, f64),
+        scaled_entry_enabled: bool,
+        scaled_entry_initial_pct: f64,
+    ) -> Result<Self> {
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -36,6 +55,13 @@ impl PaperTradeLogger {
             path: path.to_string(),
             paper_mode,
             config_version,
+            golden_min_buys_1s: golden_thresholds.0,
+            golden_min_hour_utc: golden_thresholds.1,
+            golden_max_hour_utc: golden_thresholds.2,
+            golden_min_vsol: golden_thresholds.3,
+            golden_max_vsol: golden_thresholds.4,
+            scaled_entry_enabled,
+            scaled_entry_initial_pct,
         })
     }
 
@@ -108,6 +134,31 @@ impl PaperTradeLogger {
         // Auto-flag anomalous trades (>90% loss = data bug)
         let exclude = gross_pnl_sol < -0.9 * size_sol;
 
+        // ── Compute strategyTag (SPEC 1/5) ──────────────────────────
+        // Derived at log time from entry context fields on ClosedPosition.
+        // This avoids modifying ClosedPosition struct (positions.rs is read-only).
+        let strategy_tag = {
+            let golden_buys = pos.pre_trigger_buys_1s >= self.golden_min_buys_1s;
+            let golden_hours = trigger_hour_utc >= self.golden_min_hour_utc
+                && trigger_hour_utc <= self.golden_max_hour_utc;
+            let golden_vsol = entry_vsol >= self.golden_min_vsol
+                && entry_vsol <= self.golden_max_vsol;
+
+            if golden_buys && golden_hours && golden_vsol {
+                "backrun_golden"
+            } else {
+                "backrun_standard"
+            }
+        };
+
+        // ── Scaled entry fields (SPEC 3 — stub) ────────────────────
+        // TODO: scaled entry logic — full impl requires PositionManager API extension.
+        // Currently always false/0.40 since actual scaled entry is not yet wired.
+        // When PositionManager carries scaled_confirmed, these will reflect real state.
+        let scaled_entry = false; // stub: no trades use scaled entry yet
+        let scaled_confirmed = false; // stub: no confirmations possible yet
+        let scaled_initial_pct = self.scaled_entry_initial_pct;
+
         let line = json!({
             "mint": entry_mint_b58,
             "entryVSol": entry_vsol,
@@ -145,10 +196,16 @@ impl PaperTradeLogger {
             "flowAfterEntrySol": pos.flow_after_entry as f64 / 1_000_000_000.0,
             // Sizing context
             "todMultiplier": pos.tod_multiplier,
+            // Strategy classification (SPEC 1/5)
+            "strategyTag": strategy_tag,
+            // Scaled entry fields (SPEC 3 — stub, always false/defaults until full impl)
+            "scaledEntry": scaled_entry,
+            "scaledConfirmed": scaled_confirmed,
+            "scaledInitialPct": scaled_initial_pct,
             // Metadata
             "engineVersion": "v5-rust",
             "configVersion": self.config_version,
-            "dataVersion": 3,
+            "dataVersion": 4,
             "is_paper": self.paper_mode,
             "excludeFromAnalysis": exclude,
             "recordedAt": now_ms,
