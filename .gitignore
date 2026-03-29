@@ -9,4 +9,5 @@ data/
 logs/
 .DS_Store
 config/keys/*.json
+config/keys/README.md
 rust/target/

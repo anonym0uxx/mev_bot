@@ -31,8 +31,7 @@ docker run -d \
   jitolabs/jito-shredstream-proxy
 ```
 
-**Base58 private key:**
-`45TUbwXd5nTEfHHUDf7a11waipZ62AZvYWyvztydZVPkMGj1sFoXC49BBxkhsWDEFo8RUox2YzqKnd4bqTV2iruf`
+**Base58 private key:** (REDACTED — see .env or password manager)
 
 ---
 

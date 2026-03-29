@@ -33,7 +33,8 @@ impl Default for HealthConfig {
 #[derive(Debug, Clone)]
 pub enum HealthStatus {
     Healthy,
-    Degraded { stale_feeds: Vec<String> },
+    // AUDIT: uses &'static str to avoid heap allocation on the ~5s check path.
+    Degraded { stale_feeds: Vec<&'static str> },
 }
 
 impl HealthStatus {
@@ -90,34 +91,36 @@ impl HealthMonitor {
         }
     }
 
-    /// Check health status. Call on every tick (every ~50ms).
+    /// Check health status. Called every ~5s (100 ticks).
     ///
     /// Returns the current `HealthStatus` and a vec of feeds that just recovered
     /// (transitioned from stale → fresh since last check).
-    pub fn check(&self, now_ms: u64) -> (HealthStatus, Vec<String>) {
+    ///
+    /// AUDIT: uses &'static str and pre-sized Vecs to minimize allocation on this path.
+    pub fn check(&self, now_ms: u64) -> (HealthStatus, Vec<&'static str>) {
         let pp_last = self.last_pp_event_ms.load(Ordering::Relaxed);
         let prev_stale = self.previously_stale.load(Ordering::Relaxed);
 
-        let mut stale_feeds = Vec::new();
-        let mut recovered_feeds = Vec::new();
+        let mut stale_feeds: Vec<&'static str> = Vec::with_capacity(2);
+        let mut recovered_feeds: Vec<&'static str> = Vec::with_capacity(2);
         let mut current_stale_bits: u64 = 0;
 
         // PumpPortal: required feed (always check if we've ever seen an event)
         if pp_last > 0 && now_ms.saturating_sub(pp_last) > self.stale_threshold_ms {
-            stale_feeds.push("PumpPortal".to_string());
+            stale_feeds.push("PumpPortal");
             current_stale_bits |= 1;
         } else if pp_last > 0 && (prev_stale & 1) != 0 {
             // Was stale, now recovered
-            recovered_feeds.push("PumpPortal".to_string());
+            recovered_feeds.push("PumpPortal");
         }
 
         // Helius: optional but tracked
         let hel_last = self.last_helius_event_ms.load(Ordering::Relaxed);
         if hel_last > 0 && now_ms.saturating_sub(hel_last) > self.stale_threshold_ms {
-            stale_feeds.push("Helius".to_string());
+            stale_feeds.push("Helius");
             current_stale_bits |= 2;
         } else if hel_last > 0 && (prev_stale & 2) != 0 {
-            recovered_feeds.push("Helius".to_string());
+            recovered_feeds.push("Helius");
         }
 
         self.previously_stale.store(current_stale_bits, Ordering::Relaxed);
@@ -219,7 +222,7 @@ mod tests {
         let (status, recovered) = monitor.check(new_now + 1_000);
         assert!(status.is_healthy());
         assert!(monitor.is_trading_allowed());
-        assert!(recovered.contains(&"PumpPortal".to_string()));
+        assert!(recovered.contains(&"PumpPortal"));
     }
 
     #[test]

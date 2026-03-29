@@ -301,7 +301,10 @@ async fn main() -> anyhow::Result<()> {
 
     // TASK-10: Shared creator map (mint → creator wallet) for signer matching.
     // PumpPortal writes on create events; CoreCast reads for creator-sell verification.
-    // Uses std::sync::RwLock — perfectly fine for infrequent writes from async context.
+    // Uses std::sync::RwLock — writes are infrequent (new token creation only, ~1/min).
+    // NOTE: std::sync::RwLock::write() will briefly block the tokio thread (~50ns),
+    // which is acceptable given write frequency. tokio::sync::RwLock is not needed here
+    // because the critical section is trivially short (HashMap insert, no I/O).
     let shared_creator_map: pump_quant_core::feeds::corecast::CreatorMap =
         Arc::new(RwLock::new(HashMap::new()));
 
@@ -359,11 +362,14 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Spawn blockhash cache refresh task ─────────────────────────
     // Refreshes every 25s so tx execution never pays a per-trade RPC round-trip.
-    // Gracefully degrades to direct fetch on cache miss — no impact on paper mode.
+    // In paper mode: the cache is warmed but no TxExecutor consumes it — this
+    // validates that the RPC endpoint is reachable (canary) at ~zero cost.
+    // In live mode: pass `bh_cache` to TxExecutor::new() before this scope closes.
     {
         let rpc_url = std::env::var("SOLANA_RPC_URL")
             .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
         let bh_cache = pump_quant_core::tx::executor::BlockhashCache::new();
+        // Arc is captured by the spawned task — stays alive even after this scope exits.
         bh_cache.clone().spawn_refresh_task(rpc_url);
         info!("Blockhash cache refresh task started (25s interval)");
     }
@@ -439,8 +445,14 @@ async fn main() -> anyhow::Result<()> {
                     // Alert on stale feeds
                     if let pump_quant_core::engine::health::HealthStatus::Degraded { ref stale_feeds } = health_status {
                         for feed in stale_feeds {
-                            let pp_last = health_monitor.last_event_ms(FeedSource::PumpPortal);
-                            let stale_s = if pp_last > 0 { ts_ms.saturating_sub(pp_last) / 1000 } else { 0 };
+                            // AUDIT FIX: resolve the correct FeedSource per feed name,
+                            // not always PumpPortal (was a manual-patch bug).
+                            let source = match *feed {
+                                "Helius" => FeedSource::Helius,
+                                _ => FeedSource::PumpPortal,
+                            };
+                            let last_ms = health_monitor.last_event_ms(source);
+                            let stale_s = if last_ms > 0 { ts_ms.saturating_sub(last_ms) / 1000 } else { 0 };
                             tracing::warn!(feed = %feed, stale_s, "Feed stale — trading paused");
                             if let Some(ref tg) = telegram_alerter {
                                 tg.try_send_blocking(&telegram::format_feed_stale_alert(feed, stale_s));
