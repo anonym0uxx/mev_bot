@@ -124,8 +124,13 @@ impl GraduationFilter {
         }
     }
 
-    /// Combined three-layer filter: cheapest checks first, ring buffer last.
-    /// Returns true only for genuine new pump.fun graduation events.
+    /// Combined filter: cheapest checks first, ring buffer last.
+    /// Returns true for new graduation events that pass WSOL reject, startup
+    /// guard, and sig dedup.
+    ///
+    /// NOTE: pump suffix filter removed — pool type filtering now happens
+    /// in the graduation arb engine, not at the feed level. Raydium events
+    /// can involve any token, not just pump.fun mints ending in "pump".
     #[inline(always)]
     fn should_emit(&self, mint_b58: &str, sig_prefix: &[u8; 32], ts_ms: u64) -> bool {
         // ── Filter 1: startup replay guard — u64 compare, ~1 cycle ──
@@ -140,12 +145,7 @@ impl GraduationFilter {
             return false;
         }
 
-        // ── Filter 3: pump suffix — last 4 bytes, ~2 cycles ──
-        if b.len() < 4 || b[b.len() - 4..] != *b"pump" {
-            return false;
-        }
-
-        // ── Filter 4: sig dedup — ring buffer scan, ~192 cycles worst ──
+        // ── Filter 3: sig dedup — ring buffer scan, ~192 cycles worst ──
         // Mutex::lock on uncontested single-thread path ≈ 20ns.
         match self.dedup.lock() {
             Ok(mut d) => d.is_new(sig_prefix, ts_ms),

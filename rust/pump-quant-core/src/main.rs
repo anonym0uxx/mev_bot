@@ -488,6 +488,7 @@ async fn main() -> anyhow::Result<()> {
         jito_tip_sol: engine_config.graduation_arb_jito_tip_sol,
         dedup_ttl_ms: 10_000,
         rpc_timeout_ms: 200,
+        skip_pump_swap: true, // PumpSwap has no structural arb — skip by default
     };
 
     let grad_arb_engine = Arc::new(GraduationArbEngine::new(
