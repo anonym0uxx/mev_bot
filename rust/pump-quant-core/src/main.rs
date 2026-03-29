@@ -279,15 +279,18 @@ async fn main() -> anyhow::Result<()> {
                             tracing::error!("JSONL write failed: {e}");
                         }
 
-                        // Send Telegram alert for every closed position
-                        if let Some(ref tg) = logger_telegram {
-                            let msg = telegram::format_trade_alert(
-                                exit_reason_str(cp.exit_reason),
-                                &mint_b58,
-                                cp.hold_ms,
-                                cp.net_pnl_sol as f64 / 1e9,
-                            );
-                            tg.try_send_blocking(&msg);
+                        // Send Telegram alert for closed positions — LIVE MODE ONLY
+                        // In paper mode, trade alerts are suppressed (too noisy at data collection volume)
+                        if !paper_mode {
+                            if let Some(ref tg) = logger_telegram {
+                                let msg = telegram::format_trade_alert(
+                                    exit_reason_str(cp.exit_reason),
+                                    &mint_b58,
+                                    cp.hold_ms,
+                                    cp.net_pnl_sol as f64 / 1e9,
+                                );
+                                tg.try_send_blocking(&msg);
+                            }
                         }
 
                         batch.push(TradeLogEntry {
