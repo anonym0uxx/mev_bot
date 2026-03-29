@@ -145,18 +145,19 @@
       "freshness_max_s": 60
     },
     "private_route": {
-      "enabled": false,
+      "enabled": true,
       "jito_block_engine_url": "https://ny.mainnet.block-engine.jito.wtf",
-      "jito_tip_lamports": 10000,
+      "jito_tip_lamports": 50000,
       "min_edge_for_private": 0.05,
       "max_tip_pct": 0.01,
       "exit_slippage_trigger_pct": 0.1
     },
     "bundle_route": {
-      "enabled": false,
+      "enabled": true,
       "max_bundle_size": 3,
       "min_edge_for_bundle": 0.1
-    }
+    },
+    "jito_enabled": true
   },
   "fees": {
     "pump_fee_pct": 0.01,
@@ -303,9 +304,9 @@
   "mev": {
     "enabled": true,
     "paper_mode": true,
-    "trigger_min_buy_sol": 0.50,
+    "trigger_min_buy_sol": 0.5,
     "trigger_max_buy_sol": 5,
-    "trigger_min_score": 0.70000,
+    "trigger_min_score": 0.7,
     "min_vsol_in_curve": 33,
     "max_vsol_in_curve": 43,
     "max_token_age_s": 300,
@@ -335,61 +336,61 @@
     "pre_trigger_min_buys_5s": 8,
     "pre_trigger_max_gap_ms": 1000,
     "pre_trigger_min_vsol_accel": 0.8,
-    "pre_trigger_min_volume_5s": 2.50000,
+    "pre_trigger_min_volume_5s": 2.5,
     "max_trigger_isolation": 0.35,
     "consecutive_stop_pause_count": 3,
     "consecutive_stop_pause_ms": 180000,
     "next_buyer_aggregate_flow_ratio": 0.35,
     "next_buyer_count_threshold": 3,
     "next_buyer_single_buy_ratio": 0.25,
-    "next_buyer_profit_exit_pct": 0.01000,
+    "next_buyer_profit_exit_pct": 0.01,
     "tp_tiers": [
       {
-        "trigger_max_sol": 0.60000,
-        "tp_pct": 0.02500,
-        "sl_pct": 0.01500
+        "trigger_max_sol": 0.6,
+        "tp_pct": 0.025,
+        "sl_pct": 0.015
       },
       {
-        "trigger_max_sol": 0.80000,
-        "tp_pct": 0.03500,
-        "sl_pct": 0.01500
+        "trigger_max_sol": 0.8,
+        "tp_pct": 0.035,
+        "sl_pct": 0.015
       },
       {
-        "trigger_max_sol": 1.50000,
-        "tp_pct": 0.03500,
-        "sl_pct": 0.01500
+        "trigger_max_sol": 1.5,
+        "tp_pct": 0.035,
+        "sl_pct": 0.015
       },
       {
-        "trigger_max_sol": 5.00000,
-        "tp_pct": 0.07000,
-        "sl_pct": 0.01500
+        "trigger_max_sol": 5.0,
+        "tp_pct": 0.07,
+        "sl_pct": 0.015
       }
     ],
     "size_tiers": [
       {
-        "trigger_max_sol": 0.60000,
-        "size_sol": 0.10000
+        "trigger_max_sol": 0.6,
+        "size_sol": 0.1
       },
       {
-        "trigger_max_sol": 0.80000,
-        "size_sol": 0.12000
+        "trigger_max_sol": 0.8,
+        "size_sol": 0.12
       },
       {
-        "trigger_max_sol": 1.50000,
-        "size_sol": 0.09000
+        "trigger_max_sol": 1.5,
+        "size_sol": 0.09
       },
       {
-        "trigger_max_sol": 5.00000,
-        "size_sol": 0.07000
+        "trigger_max_sol": 5.0,
+        "size_sol": 0.07
       }
     ],
     "paper_daily_loss_cap_sol": 5,
     "live_daily_loss_cap_sol": 0.18,
     "pre_trigger_min_sell_count_5s": 1,
-    "pre_trigger_max_vsol_delta_3s": 6.00000,
+    "pre_trigger_max_vsol_delta_3s": 6.0,
     "momentum_decay_check_ms": 50,
-    "momentum_decay_min_mfe_pct": 0.00100,
-    "momentum_decay_max_drawdown_pct": 0.00300,
+    "momentum_decay_min_mfe_pct": 0.001,
+    "momentum_decay_max_drawdown_pct": 0.003,
     "tod_config": {
       "blocked_hours_utc": [
         0,
@@ -422,7 +423,9 @@
     },
     "intra_hold_trailing_stop_pct": 1.0,
     "intra_hold_trailing_stop_min_mfe_pct": 1.0,
-    "blocked_trigger_sources": ["corecast"],
+    "blocked_trigger_sources": [
+      "corecast"
+    ],
     "min_hold_before_exit_ms": 500,
     "creator_sell_ttl_ms": 30000
   }

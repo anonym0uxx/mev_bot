@@ -46,6 +46,10 @@ fn exit_reason_str(reason: ExitReason) -> &'static str {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load .env file (relative to CWD, i.e. project root)
+    // Silently ignore if .env doesn't exist — env vars may be set externally.
+    let _ = dotenvy::dotenv();
+
     // Install rustls crypto provider (required before any TLS connections)
     let _ = rustls::crypto::ring::default_provider().install_default();
 

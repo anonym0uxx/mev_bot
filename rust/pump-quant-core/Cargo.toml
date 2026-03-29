@@ -44,6 +44,9 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # HTTP API
 axum = "0.7"
 
+# .env file loading
+dotenvy = "0.15"
+
 # Serialization
 base64 = "0.22"
 bincode = "1.3"
