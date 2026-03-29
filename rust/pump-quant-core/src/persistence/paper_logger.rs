@@ -17,23 +17,25 @@ pub struct PaperTradeLogger {
     file: std::fs::File,
     path: String,
     paper_mode: bool,
+    config_version: String,
 }
 
 impl PaperTradeLogger {
     /// Create a new logger, opening (or creating) the file at `path` in append mode.
-    pub fn new(path: &str, paper_mode: bool) -> Result<Self> {
+    pub fn new(path: &str, paper_mode: bool, config_version: String) -> Result<Self> {
         let file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
             .with_context(|| format!("failed to open paper trade log: {path}"))?;
 
-        tracing::info!("PaperTradeLogger writing to: {path}");
+        tracing::info!(config_version = %config_version, "PaperTradeLogger writing to: {path}");
 
         Ok(Self {
             file,
             path: path.to_string(),
             paper_mode,
+            config_version,
         })
     }
 
@@ -145,6 +147,7 @@ impl PaperTradeLogger {
             "todMultiplier": pos.tod_multiplier,
             // Metadata
             "engineVersion": "v5-rust",
+            "configVersion": self.config_version,
             "dataVersion": 3,
             "is_paper": self.paper_mode,
             "excludeFromAnalysis": exclude,

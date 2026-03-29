@@ -100,6 +100,41 @@ async fn main() -> anyhow::Result<()> {
         .map(|v| v == "true" || v == "1")
         .unwrap_or(engine_config.paper_mode);
 
+    // ── Compute config version string for trade attribution ─────────
+    let config_version = format!(
+        "v{:.2}sol_{}ms_{}vsol",
+        engine_config.gate.trigger_min_buy_lamports as f64 / 1_000_000_000.0,
+        engine_config.position.max_hold_ms,
+        engine_config.gate.min_vsol_lamports / 1_000_000_000
+    );
+
+    // ── Active config dump (single source of truth verification) ────
+    info!(
+        trigger_min_buy_sol = engine_config.gate.trigger_min_buy_lamports as f64 / 1e9,
+        trigger_max_buy_sol = engine_config.gate.trigger_max_buy_lamports as f64 / 1e9,
+        min_vsol = engine_config.gate.min_vsol_lamports as f64 / 1e9,
+        max_vsol = engine_config.gate.max_vsol_lamports as f64 / 1e9,
+        max_hold_ms = engine_config.position.max_hold_ms,
+        min_hold_ms = engine_config.position.min_hold_before_exit_ms,
+        trigger_min_score = engine_config.gate.trigger_min_score,
+        pre_trigger_min_buys_1s = engine_config.gate.pre_trigger_min_buys_1s,
+        pre_trigger_min_buys_2s = engine_config.gate.pre_trigger_min_buys_2s,
+        pre_trigger_min_buys_5s = engine_config.gate.pre_trigger_min_buys_5s,
+        pre_trigger_min_vsol_accel = engine_config.gate.pre_trigger_min_vsol_accel as f64 / 1e9,
+        pre_trigger_min_volume_5s = engine_config.gate.pre_trigger_min_volume_5s_lamports as f64 / 1e9,
+        max_trigger_isolation = engine_config.gate.max_trigger_isolation,
+        max_token_age_ms = engine_config.gate.max_token_age_ms,
+        max_concurrent_positions = engine_config.position.max_concurrent_positions,
+        tp_tiers = engine_config.position.tp_tiers.len(),
+        size_tiers = engine_config.position.size_tiers.len(),
+        daily_loss_cap_sol = engine_config.daily_loss_cap_lamports as f64 / 1e9,
+        consecutive_stop_pause_count = engine_config.consecutive_stop_pause_count,
+        tod_gate_enabled = engine_config.gate.tod_gate_enabled,
+        paper_mode = paper_mode,
+        config_version = %config_version,
+        "active config"
+    );
+
     info!(
         paper_mode,
         gate_min_buy_lam = engine_config.gate.trigger_min_buy_lamports,
@@ -185,6 +220,7 @@ async fn main() -> anyhow::Result<()> {
     let logger_data_dir = data_dir.clone();
     let logger_started_at = daemon_started_at_ms;
     let logger_telegram = telegram_alerter.clone();
+    let logger_config_version = config_version.clone();
     std::thread::Builder::new()
         .name("trade-logger".to_string())
         .spawn(move || {
@@ -203,7 +239,7 @@ async fn main() -> anyhow::Result<()> {
             };
 
             // Also open the JSONL paper trade logger (camelCase schema)
-            let mut paper_logger = match PaperTradeLogger::new(&log_file, paper_mode) {
+            let mut paper_logger = match PaperTradeLogger::new(&log_file, paper_mode, logger_config_version) {
                 Ok(l) => l,
                 Err(e) => {
                     tracing::error!("Failed to open PaperTradeLogger: {e}");
