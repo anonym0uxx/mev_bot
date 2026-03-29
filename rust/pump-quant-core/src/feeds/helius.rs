@@ -2,17 +2,26 @@
 //! pump.fun program (`6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`).
 //!
 //! Pre-warms mint trade history BEFORE PumpPortal confirms.
-//! Emits `PreWarmEvent` only — no vSol, no reserves, no trigger logic.
+//! Emits `PreWarmEvent` for buy/sell trades, and `FeedEvent::Migration`
+//! when a token graduation (Raydium/PumpSwap pool creation) is detected.
 
 use crossbeam_channel::Sender;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
-use crate::feeds::{FeedEvent, FeedSource, PreWarmEvent};
+use crate::feeds::{FeedEvent, FeedSource, MigrationSource, PreWarmEvent};
 
 const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 const MAX_BACKOFF_MS: u64 = 30_000;
+
+// ── Graduation detection markers ────────────────────────────────────
+// Raydium AMM v4 program invocation — primary graduation signal (pre-March 2025)
+#[allow(dead_code)]
+const RAYDIUM_AMM_PROGRAM: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
+const GRADUATION_LOG_MARKER: &[u8] = b"Program 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8 invoke";
+// PumpSwap migration — newer pump.fun behavior (post-March 2025)
+const PUMPSWAP_LOG_MARKER: &[u8] = b"Instruction: MigrateFunds";
 
 pub struct HeliusConfig {
     pub api_key: String,
@@ -88,7 +97,16 @@ impl HeliusWsClient {
                     loop {
                         match read.next().await {
                             Some(Ok(Message::Text(text))) => {
-                                if let Some(event) = parse_helius_log(&text) {
+                                // Check for graduation (Migration) FIRST — it's
+                                // higher-priority and mutually exclusive with
+                                // buy/sell trades (graduation tx won't parse as
+                                // a normal pump trade).
+                                if let Some(migration_event) = check_graduation_logs(&text) {
+                                    if self.engine_tx.send(migration_event).is_err() {
+                                        info!("[helius] engine channel closed — exiting");
+                                        return;
+                                    }
+                                } else if let Some(event) = parse_helius_log(&text) {
                                     if self.engine_tx.send(FeedEvent::PreWarm(event)).is_err() {
                                         info!("[helius] engine channel closed — exiting");
                                         return;
@@ -228,4 +246,272 @@ fn parse_helius_log(text: &str) -> Option<PreWarmEvent> {
         timestamp_ms: now_ms,
         source: FeedSource::Helius,
     })
+}
+
+/// Check if a Helius logsNotification contains a graduation event
+/// (Raydium AMM pool creation or PumpSwap MigrateFunds instruction).
+///
+/// Returns `Some(FeedEvent::Migration)` if graduation detected, `None` otherwise.
+/// The mint is set to `[0u8; 32]` because logsSubscribe doesn't provide account keys —
+/// the GraduationArbEngine resolves the mint via `getTransaction` using the signature.
+///
+/// Called on every Helius ws message — must be allocation-free on the scan path.
+fn check_graduation_logs(text: &str) -> Option<FeedEvent> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+
+    if v.get("method")?.as_str()? != "logsNotification" {
+        return None;
+    }
+
+    let value = v.pointer("/params/result/value")?;
+
+    // Skip failed transactions
+    let err = value.get("err")?;
+    if !err.is_null() {
+        return None;
+    }
+
+    let logs = value.get("logs")?.as_array()?;
+
+    // LATENCY: byte-level contains() — no regex, no heap allocation.
+    // Scan all log lines for graduation markers.
+    if !logs_contain_graduation_marker(logs) {
+        return None;
+    }
+
+    // Extract and decode the transaction signature
+    let sig_str = value.get("signature")?.as_str()?;
+    let mut sig_bytes = [0u8; 64];
+    match bs58::decode(sig_str).onto(&mut sig_bytes[..]) {
+        Ok(64) => {}
+        Ok(n) => {
+            debug!("[helius] graduation sig unexpected length {}", n);
+            return None;
+        }
+        Err(_) => return None,
+    }
+
+    // Use first 32 bytes as dedup key (same convention as FeedEvent::Migration.sig)
+    let mut sig = [0u8; 32];
+    sig.copy_from_slice(&sig_bytes[..32]);
+
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    info!(
+        sig = %sig_str,
+        source = "helius",
+        "[helius] graduation detected — dispatching Migration event for pool resolution"
+    );
+
+    Some(FeedEvent::Migration {
+        mint: [0u8; 32],
+        ts_ms,
+        source: MigrationSource::HeliusLogs,
+        sig,
+    })
+}
+
+/// Byte-level scan of Helius log lines for graduation markers.
+/// Returns `true` if any log line contains `GRADUATION_LOG_MARKER` or `PUMPSWAP_LOG_MARKER`.
+///
+/// # Performance
+/// Uses `[u8]::windows().any()` pattern — zero-allocation, branch-predictor-friendly.
+/// Called on every Helius logsNotification (~100-500/sec during high activity).
+#[inline(always)]
+fn logs_contain_graduation_marker(logs: &[serde_json::Value]) -> bool {
+    for entry in logs {
+        if let Some(s) = entry.as_str() {
+            let bytes = s.as_bytes();
+            if bytes_contains(bytes, GRADUATION_LOG_MARKER)
+                || bytes_contains(bytes, PUMPSWAP_LOG_MARKER)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Byte-level substring search — no allocations, no regex.
+#[inline(always)]
+fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
+// ── Tests ───────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: build a mock Helius logsNotification JSON string.
+    fn mock_logs_notification(sig: &str, logs: &[&str], err: Option<&str>) -> String {
+        let logs_json: Vec<String> = logs.iter().map(|l| format!("\"{}\"", l)).collect();
+        let err_value = err.unwrap_or("null");
+        format!(
+            r#"{{
+                "jsonrpc": "2.0",
+                "method": "logsNotification",
+                "params": {{
+                    "result": {{
+                        "context": {{ "slot": 12345 }},
+                        "value": {{
+                            "signature": "{}",
+                            "err": {},
+                            "logs": [{}]
+                        }}
+                    }},
+                    "subscription": 1
+                }}
+            }}"#,
+            sig,
+            err_value,
+            logs_json.join(", ")
+        )
+    }
+
+    // A valid base58-encoded 64-byte signature for testing
+    const TEST_SIG: &str = "5VERv8NMhDGLVpFpJxGjkWNyVSz9idJAqKb3iV1Bv7epMqNXhP5GhipY9VGPYdRJ6jT6E1rxJKoYjKoJe3xUwz1";
+
+    #[test]
+    fn test_helius_detects_raydium_graduation() {
+        let text = mock_logs_notification(
+            TEST_SIG,
+            &[
+                "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P invoke [1]",
+                "Program log: Instruction: Buy",
+                "Program 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8 invoke [2]",
+                "Program 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8 consumed 12345 of 200000 compute units",
+                "Program 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8 success",
+                "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P consumed 100000 of 200000 compute units",
+                "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P success",
+            ],
+            None,
+        );
+
+        let event = check_graduation_logs(&text);
+        assert!(event.is_some(), "should detect Raydium graduation");
+
+        match event.unwrap() {
+            FeedEvent::Migration { mint, source, sig, .. } => {
+                assert_eq!(mint, [0u8; 32], "mint should be unknown (zeros)");
+                assert_eq!(source, MigrationSource::HeliusLogs);
+                assert_ne!(sig, [0u8; 32], "sig should be populated from tx signature");
+            }
+            other => panic!("expected Migration event, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_helius_detects_pumpswap_graduation() {
+        let text = mock_logs_notification(
+            TEST_SIG,
+            &[
+                "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P invoke [1]",
+                "Program log: Instruction: MigrateFunds",
+                "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P consumed 150000 of 200000 compute units",
+                "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P success",
+            ],
+            None,
+        );
+
+        let event = check_graduation_logs(&text);
+        assert!(event.is_some(), "should detect PumpSwap graduation");
+
+        match event.unwrap() {
+            FeedEvent::Migration { source, .. } => {
+                assert_eq!(source, MigrationSource::HeliusLogs);
+            }
+            other => panic!("expected Migration event, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_helius_no_false_positive_on_regular_buy() {
+        let text = mock_logs_notification(
+            TEST_SIG,
+            &[
+                "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P invoke [1]",
+                "Program log: Instruction: Buy",
+                "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+                "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 3000 of 200000 compute units",
+                "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+                "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P consumed 50000 of 200000 compute units",
+                "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P success",
+            ],
+            None,
+        );
+
+        let event = check_graduation_logs(&text);
+        assert!(event.is_none(), "regular buy should NOT trigger graduation detection");
+    }
+
+    #[test]
+    fn test_helius_no_graduation_on_failed_tx() {
+        let text = mock_logs_notification(
+            TEST_SIG,
+            &[
+                "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P invoke [1]",
+                "Program 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8 invoke [2]",
+            ],
+            Some(r#"{"InstructionError":[0,"Custom"]}"#),
+        );
+
+        let event = check_graduation_logs(&text);
+        assert!(event.is_none(), "failed tx should NOT trigger graduation");
+    }
+
+    #[test]
+    fn test_helius_no_graduation_on_sell() {
+        let text = mock_logs_notification(
+            TEST_SIG,
+            &[
+                "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P invoke [1]",
+                "Program log: Instruction: Sell",
+                "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P consumed 50000 of 200000 compute units",
+                "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P success",
+            ],
+            None,
+        );
+
+        let event = check_graduation_logs(&text);
+        assert!(event.is_none(), "regular sell should NOT trigger graduation");
+    }
+
+    #[test]
+    fn test_bytes_contains_basic() {
+        assert!(bytes_contains(b"hello world", b"world"));
+        assert!(bytes_contains(b"hello world", b"hello"));
+        assert!(!bytes_contains(b"hello world", b"xyz"));
+        assert!(!bytes_contains(b"hi", b"hello")); // needle longer than haystack
+    }
+
+    #[test]
+    fn test_existing_prewarm_still_works() {
+        // Verify the existing parse_helius_log still returns PreWarmEvent for buy trades
+        let text = mock_logs_notification(
+            TEST_SIG,
+            &[
+                "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P invoke [1]",
+                "Program log: Instruction: Buy",
+                "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P consumed 50000 of 200000 compute units",
+                "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P success",
+            ],
+            None,
+        );
+
+        let event = parse_helius_log(&text);
+        assert!(event.is_some(), "existing buy parse should still work");
+        let pw = event.unwrap();
+        assert!(pw.is_buy, "should detect Buy direction");
+        assert_eq!(pw.source, FeedSource::Helius);
+    }
 }
