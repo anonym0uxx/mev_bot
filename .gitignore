@@ -11,3 +11,4 @@ logs/
 config/keys/*.json
 config/keys/README.md
 rust/target/
+rust/.env

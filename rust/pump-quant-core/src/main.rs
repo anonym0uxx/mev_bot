@@ -174,6 +174,7 @@ async fn main() -> anyhow::Result<()> {
         engine_config.boosted_hours_utc.clone(),
         engine_config.tod_boost_multiplier,
         max_entry_size_lamports,
+        engine_config.randomizer.clone(),
     );
 
     // Attach health monitor to hot path for entry gating
@@ -500,6 +501,9 @@ async fn main() -> anyhow::Result<()> {
                 if hot_path.stats.ticks % 200 == 0 {
                     sync_stats_to_api(&hot_path, &shared_stats);
                 }
+            }
+            Ok(FeedEvent::TokenCreated(created)) => {
+                hot_path.on_token_created(&created);
             }
             Ok(FeedEvent::CreatorSell { mint, ts_ms }) => {
                 hot_path.on_creator_sell(&mint, ts_ms);

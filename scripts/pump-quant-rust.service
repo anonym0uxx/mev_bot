@@ -7,7 +7,7 @@ StartLimitIntervalSec=0
 Type=simple
 User=node
 WorkingDirectory=/data/.openclaw/workspace/projects/pump-quant
-EnvironmentFile=/data/.openclaw/workspace/projects/pump-quant/.env
+EnvironmentFile=/data/.openclaw/workspace/projects/pump-quant/rust/.env
 Environment=PAPER_MODE=true
 Environment=RUST_LOG=info
 Environment=RUST_BACKTRACE=1

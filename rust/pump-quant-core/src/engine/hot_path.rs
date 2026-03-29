@@ -16,8 +16,9 @@ use super::positions::{ClosedPosition, ExitReason, PositionManager};
 use super::scorer::Scorer;
 use crate::core::mint_map::MintHistoryMap;
 use crate::core::trade_record::TradeRecord;
-use crate::feeds::{FeedSource, PreWarmEvent, TradeEvent};
+use crate::feeds::{FeedSource, PreWarmEvent, TokenCreatedEvent, TradeEvent};
 use super::gates::GateRejectReason;
+use super::regime;
 
 /// Statistics counters — exposed for periodic logging.
 pub struct HotPathStats {
@@ -79,6 +80,14 @@ pub struct HotPath {
     /// Max entry size in lamports (for capping after ToD multiplier).
     max_entry_size_lamports: u64,
 
+    // ── Regime exclusion set ──────────────────────────────────────────
+    // Mints flagged as excluded (mayhem, tokenized agent) on creation.
+    // Checked before gate evaluation to short-circuit early.
+    excluded_mints: hashbrown::HashSet<[u8; 32]>,
+
+    // ── Entry randomizer ────────────────────────────────────────────
+    pub entry_randomizer: super::entry_randomizer::EntryRandomizer,
+
     // ── Helius lead-time tracking ───────────────────────────────────
     // Fixed-size ring buffer of (sig_prefix, helius_timestamp_ms) from PreWarm events.
     // When a PumpPortal trade arrives, we check if Helius already saw the same sig_prefix.
@@ -116,6 +125,7 @@ impl HotPath {
         boosted_hours_utc: Vec<u8>,
         tod_boost_multiplier: f64,
         max_entry_size_lamports: u64,
+        randomizer_config: super::entry_randomizer::RandomizerConfig,
     ) -> Self {
         // LATENCY: Calibrate quanta clock against SystemTime once at construction.
         // quanta::Clock::now() returns a calibrated Instant (nanoseconds).
@@ -160,6 +170,8 @@ impl HotPath {
             boosted_hours_utc,
             tod_boost_multiplier,
             max_entry_size_lamports,
+            excluded_mints: hashbrown::HashSet::with_capacity(256),
+            entry_randomizer: super::entry_randomizer::EntryRandomizer::new(randomizer_config),
             helius_sig_ring: [(0u64, 0u64); 256],
             helius_sig_ring_head: 0,
             helius_lead_sum_ms: 0,
@@ -219,7 +231,34 @@ impl HotPath {
             return;
         }
 
-        // 3b. Health check: block new entries if feeds are stale
+        // 3a. Regime exclusion: skip mints flagged as mayhem/tokenized agent
+        if self.excluded_mints.contains(&trade.mint) {
+            self.stats.gate_rejects += 1;
+            let idx = gate_reject_index(&GateRejectReason::RegimeExcluded);
+            if idx < 32 { self.gate_reject_counts[idx] += 1; }
+            return;
+        }
+
+        // 3b. Regime: graduation boundary check (vToken-based)
+        // Compute bonding curve progress from vToken reserves
+        if trade.vtoken_reserves > 0 {
+            let progress = regime::compute_bonding_curve_progress(
+                trade.vtoken_reserves,
+                regime::INITIAL_VIRTUAL_TOKENS,
+            );
+            let rc = &self.gate_stack.config.regime_config;
+            if progress >= 0.0
+                && progress >= rc.graduation_boundary_start
+                && progress <= rc.graduation_boundary_end
+            {
+                self.stats.gate_rejects += 1;
+                let idx = gate_reject_index(&GateRejectReason::GraduationBoundary);
+                if idx < 32 { self.gate_reject_counts[idx] += 1; }
+                return;
+            }
+        }
+
+        // 3c. Health check: block new entries if feeds are stale
         if let Some(ref hm) = self.health_monitor {
             if !hm.is_trading_allowed() {
                 return;
@@ -320,6 +359,20 @@ impl HotPath {
         self.stats.positions_opened += 1;
     }
 
+    /// Process a token creation event. Checks regime exclusion flags and
+    /// stores excluded mints for fast rejection in on_trade().
+    pub fn on_token_created(&mut self, event: &TokenCreatedEvent) {
+        if event.is_mayhem || event.is_tokenized_agent {
+            self.excluded_mints.insert(event.mint);
+            tracing::debug!(
+                mint = %bs58::encode(&event.mint).into_string(),
+                mayhem = event.is_mayhem,
+                agent = event.is_tokenized_agent,
+                "Token excluded by regime classifier"
+            );
+        }
+    }
+
     /// Process a pre-warm event (Helius/ShredStream). Adds to mint history
     /// without triggering gate/score evaluation.
     ///
@@ -406,6 +459,7 @@ impl HotPath {
             "StaleGap", "InsufficientCrowd2s", "InsufficientCrowd5s", "InsufficientVSolAccel",
             "StaleMomentum1s", "InsufficientSellCount", "VSolDeltaTooHigh", "CreatorSellRecent",
             "SellPressure", "TriggerTooIsolated", "ScoreTooLow", "SourceBlocked",
+            "RegimeExcluded", "GraduationBoundary",
         ];
         // Find top 5 rejection reasons
         let mut indexed: Vec<(u64, usize)> = self.gate_reject_counts.iter()
@@ -532,6 +586,8 @@ fn gate_reject_index(reason: &GateRejectReason) -> usize {
         GateRejectReason::TriggerTooIsolated => 17,
         GateRejectReason::ScoreTooLow(_) => 18,
         GateRejectReason::SourceBlocked => 19,
+        GateRejectReason::RegimeExcluded => 20,
+        GateRejectReason::GraduationBoundary => 21,
     }
 }
 

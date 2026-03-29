@@ -98,6 +98,11 @@ pub struct MevJsonConfig {
     // Master toggle for TOD gate. When false, blocked_hours_utc is ignored.
     // Use false in paper mode to collect data 24/7.
     pub tod_gate_enabled: Option<bool>,
+
+    // Entry randomizer config (anti-fingerprinting)
+    pub jitter_ms_min: Option<u32>,
+    pub jitter_ms_max: Option<u32>,
+    // size_variance_pct already declared above (position management section)
 }
 
 #[derive(Deserialize, Debug)]
@@ -140,6 +145,8 @@ pub struct EngineConfig {
     pub boosted_hours_utc: Vec<u8>,
     /// ToD boost multiplier for boosted hours (default 1.25).
     pub tod_boost_multiplier: f64,
+    /// Entry randomizer config (anti-fingerprinting for live mode).
+    pub randomizer: super::entry_randomizer::RandomizerConfig,
 }
 
 impl EngineConfig {
@@ -232,6 +239,7 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
             .and_then(|tod| tod.boosted_hours_utc.clone())
             .unwrap_or_default(),
         tod_gate_enabled: mev.tod_gate_enabled.unwrap_or(true),
+        regime_config: super::regime::RegimeConfig::default(),
     };
 
     // ── Build ScoreConfig (defaults — no JSON overrides yet) ────────
@@ -368,5 +376,11 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
         consecutive_stop_pause_ms,
         boosted_hours_utc: tod_boosted_hours,
         tod_boost_multiplier,
+        randomizer: super::entry_randomizer::RandomizerConfig {
+            jitter_ms_min: mev.jitter_ms_min.unwrap_or(50),
+            jitter_ms_max: mev.jitter_ms_max.unwrap_or(200),
+            size_variance_pct: mev.size_variance_pct.unwrap_or(0.20),
+            base_entry_lamports: sol_to_lamports(mev.entry_size_sol.unwrap_or(0.12)),
+        },
     })
 }

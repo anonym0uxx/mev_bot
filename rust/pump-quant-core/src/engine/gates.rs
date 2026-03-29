@@ -39,6 +39,9 @@ pub struct GateConfig {
     /// Master toggle for the TOD gate. When false, blocked_hours_utc is ignored entirely.
     /// Use `false` to collect paper trade data 24/7 regardless of TOD config.
     pub tod_gate_enabled: bool,
+    /// Regime classifier config. Used to exclude mayhem/tokenized agent tokens
+    /// and tokens near graduation boundary.
+    pub regime_config: super::regime::RegimeConfig,
 }
 
 impl Default for GateConfig {
@@ -67,6 +70,7 @@ impl Default for GateConfig {
             blocked_hours_utc: Vec::new(),
             boosted_hours_utc: Vec::new(),
             tod_gate_enabled: true,
+            regime_config: super::regime::RegimeConfig::default(),
         }
     }
 }
@@ -100,6 +104,10 @@ pub enum GateRejectReason {
     TriggerTooIsolated,
     ScoreTooLow(f64),
     SourceBlocked,
+    /// Token flagged as mayhem or tokenized agent
+    RegimeExcluded,
+    /// Token at graduation boundary (too close to migration)
+    GraduationBoundary,
 }
 
 impl std::fmt::Display for GateRejectReason {
@@ -114,7 +122,7 @@ impl std::fmt::Display for GateRejectReason {
 // ── Gate stack ──────────────────────────────────────────────────────
 
 pub struct GateStack {
-    config: GateConfig,
+    pub config: GateConfig,
     /// Pre-computed: max_trigger_isolation scaled to millionths for integer comparison.
     /// trigger * 1_000_000 / (vol5s + trigger) <= isolation_threshold_fp
     isolation_threshold_fp: u64,

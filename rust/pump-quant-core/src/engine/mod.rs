@@ -1,8 +1,10 @@
 pub mod bonding_curve;
 pub mod config;
+pub mod entry_randomizer;
 pub mod gates;
 pub mod health;
 pub mod hot_path;
 pub mod latency;
 pub mod positions;
+pub mod regime;
 pub mod scorer;

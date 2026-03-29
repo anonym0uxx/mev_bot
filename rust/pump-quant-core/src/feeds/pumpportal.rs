@@ -85,7 +85,7 @@ pub async fn run(
                         msg = read.next() => {
                             match msg {
                                 Some(Ok(Message::Text(text))) => {
-                                    match parse_message(text.to_string(), &write_tx, &creator_map) {
+                                    match parse_message(text.to_string(), &write_tx, &creator_map, &tx) {
                                         Ok(Some(event)) => {
                                             if tx.send(FeedEvent::Trade(event)).is_err() {
                                                 info!("PumpPortal feed: engine channel closed");
@@ -154,7 +154,7 @@ pub async fn run(
 ///   - new token creation events (txType="create") — triggers per-mint subscription
 ///   - migration events (pool field set)
 /// - `Err(msg)` for parse failures
-fn parse_message(mut text: String, write_tx: &mpsc::Sender<String>, creator_map: &CreatorMap) -> Result<Option<TradeEvent>, String> {
+fn parse_message(mut text: String, write_tx: &mpsc::Sender<String>, creator_map: &CreatorMap, feed_tx: &crossbeam_channel::Sender<super::FeedEvent>) -> Result<Option<TradeEvent>, String> {
     let bytes = unsafe { text.as_bytes_mut() };
     let val: simd_json::BorrowedValue = simd_json::to_borrowed_value(bytes)
         .map_err(|e| format!("json: {}", e))?;
@@ -203,7 +203,22 @@ fn parse_message(mut text: String, write_tx: &mpsc::Sender<String>, creator_map:
             }
         }
 
-        debug!("PumpPortal feed: new token {} (create), subscribed to trades", &mint_b58[..8.min(mint_b58.len())]);
+        // Detect mayhem / tokenized agent from token metadata
+        let name = val.get_str("name").unwrap_or("");
+        let symbol = val.get_str("symbol").unwrap_or("");
+        let is_mayhem = crate::engine::regime::detect_mayhem(name, symbol);
+        let is_tokenized_agent = crate::engine::regime::detect_tokenized_agent(name, symbol);
+
+        // Emit TokenCreated event with regime flags
+        if let Ok(mint_bytes) = decode_pubkey(mint_b58) {
+            let _ = feed_tx.try_send(super::FeedEvent::TokenCreated(super::TokenCreatedEvent {
+                mint: mint_bytes,
+                is_mayhem,
+                is_tokenized_agent,
+            }));
+        }
+
+        debug!("PumpPortal feed: new token {} (create), subscribed to trades, mayhem={}, agent={}", &mint_b58[..8.min(mint_b58.len())], is_mayhem, is_tokenized_agent);
         return Ok(None);
     }
 

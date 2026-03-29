@@ -3,6 +3,11 @@ set -euo pipefail
 
 BINARY="./rust/target/release/pump-quant"
 LOG="logs/rust-daemon.log"
+
+# Load Rust-specific env (keys, API tokens, RPC URLs)
+if [ -f "./rust/.env" ]; then
+  set -a && source ./rust/.env && set +a
+fi
 RESTART_DELAY=3
 MAX_RESTARTS=10
 restart_count=0

@@ -11,8 +11,19 @@ pub enum FeedEvent {
     Trade(TradeEvent),
     PreWarm(PreWarmEvent), // Helius-only, no vSol
     CreatorSell { mint: [u8; 32], ts_ms: u64 },
+    /// New token created — carries regime exclusion flags.
+    TokenCreated(TokenCreatedEvent),
     Tick { ts_ms: u64 }, // 50ms timer tick for dead-token decay check
     Shutdown,
+}
+
+/// Token creation event from PumpPortal.
+/// Carries metadata needed for regime classification (mayhem/agent detection).
+#[derive(Debug, Clone)]
+pub struct TokenCreatedEvent {
+    pub mint: [u8; 32],
+    pub is_mayhem: bool,
+    pub is_tokenized_agent: bool,
 }
 
 #[derive(Debug, Clone)]
