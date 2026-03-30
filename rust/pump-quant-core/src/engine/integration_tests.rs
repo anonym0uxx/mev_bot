@@ -20,8 +20,8 @@ mod tests {
         );
 
         // Feed buy events (price rising)
-        rs.on_buy_event(500, 1100);  // 0.5 SOL buy
-        rs.on_buy_event(300, 1200);  // 0.3 SOL buy
+        rs.on_buy_event(500, 1100, 0xDEADBEEF);  // 0.5 SOL buy
+        rs.on_buy_event(300, 1200, 0xDEADBEEF);  // 0.3 SOL buy
 
         // Price rises to 72 SOL vSOL (peak)
         let d = rs.on_tick(72_000, 1300, &config);
@@ -53,7 +53,7 @@ mod tests {
         let config = RideConfig::default();
         let mut rs = RideState::new(66_000, 66_000, 1000, 5, &config);
 
-        rs.on_buy_event(500, 1100);
+        rs.on_buy_event(500, 1100, 0xDEADBEEF);
 
         // No buys for 11 seconds (buy_gap_exit_ms = 10000)
         // Price must be above hard floor (entry * 1.01 = 66660) to reach buy gap check
@@ -68,7 +68,7 @@ mod tests {
         let config = RideConfig::default();
         let mut rs = RideState::new(66_000, 66_000, 1000, 5, &config);
 
-        assert_eq!(rs.phase, 0, "should start in Early phase");
+        assert_eq!(rs.phase as u8, 0, "should start in Early phase");
 
         // After 15s → Momentum (need price above floor to avoid HardFloor exit)
         // floor_mvsol = 66000 * 10100 / 10000 = 66660
@@ -78,12 +78,12 @@ mod tests {
             "tick should return a decision");
         // If the tick didn't exit, check phase
         if matches!(d1, RideDecision::Hold) {
-            assert_eq!(rs.phase, 1, "should transition to Momentum after 15s");
+            assert_eq!(rs.phase as u8, 1, "should transition to Momentum after 15s");
 
             // After 60s → Tighten
             let d2 = rs.on_tick(68_000, 61_100, &config);
             if matches!(d2, RideDecision::Hold) {
-                assert_eq!(rs.phase, 2, "should transition to Tighten after 60s");
+                assert_eq!(rs.phase as u8, 2, "should transition to Tighten after 60s");
             }
         }
     }

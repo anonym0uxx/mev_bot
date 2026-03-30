@@ -606,6 +606,12 @@ impl HotPath {
                     return Some((stops, pause_ms));
                 }
             }
+            // Signal-driven exit: treat like a controlled exit (reset consecutive stops).
+            // RideSignalExit fires when the composite signal score degrades through
+            // the exit threshold — it's a deliberate exit, not a stop-loss.
+            ExitReason::RideSignalExit => {
+                self.consecutive_stops = 0;
+            }
             _ => {
                 self.consecutive_stops = 0;
             }

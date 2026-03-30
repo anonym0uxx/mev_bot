@@ -80,6 +80,7 @@ impl PaperTradeLogger {
             ExitReason::RideSellCascade   => "ride_sell_cascade",
             ExitReason::RideCreatorSell   => "ride_creator_sell",
             ExitReason::RideMaxHold       => "ride_max_hold",
+            ExitReason::RideSignalExit    => "ride_signal_exit",
         };
 
         // Convert lamports to SOL for human-readable output
@@ -185,12 +186,17 @@ impl PaperTradeLogger {
             "entryAction": pos.entry_action,
             "confirmingBuySol": pos.confirming_buy_sol as f64 / 1_000_000_000.0,
             "sellsDuringHold": pos.sells_during_hold,
+            // Signal v2 fields (RideState composite scoring)
+            "signalScoreAtExit": pos.signal_score_at_exit,
+            "signalStateAtExit": pos.signal_state_at_exit,
+            "peakSignalScore": pos.peak_signal_score,
+            "uniqueWalletsSeen": pos.unique_wallets_seen,
             // Strategy classification — single backrunner, compile-time constant
             "strategyTag": STRATEGY_TAG,
             // Metadata
             "engineVersion": "v5-rust",
             "configVersion": self.config_version,
-            "dataVersion": 5,
+            "dataVersion": 6,
             "is_paper": self.paper_mode,
             "excludeFromAnalysis": exclude,
             "recordedAt": now_ms,

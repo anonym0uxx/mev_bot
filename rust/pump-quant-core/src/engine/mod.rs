@@ -14,6 +14,7 @@ pub mod ride_state;
 pub mod risk_manager;
 pub mod scorer;
 pub mod scoring;
+pub mod signal_engine;
 
 #[cfg(test)]
 #[cfg(test)]

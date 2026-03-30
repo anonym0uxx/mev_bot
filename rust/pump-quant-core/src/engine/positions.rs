@@ -31,6 +31,7 @@ fn map_ride_exit_reason(r: RideExitReason) -> ExitReason {
         RideExitReason::SellCascade    => ExitReason::RideSellCascade,
         RideExitReason::CreatorSell    => ExitReason::RideCreatorSell,
         RideExitReason::MaxHold        => ExitReason::RideMaxHold,
+        RideExitReason::SignalExit     => ExitReason::RideSignalExit,
     }
 }
 
@@ -91,6 +92,8 @@ pub struct OpenPosition {
     pub confirming_unique_wallets: u8,
     /// Number of sell events observed while we hold this position.
     pub sells_during_hold: u16,
+    /// SignalState::* value at time of exit (populated on close path).
+    pub signal_state_at_exit: u8,
     // ── Entry context (for rich logging / ML training data) ──
     pub pre_trigger_buys_1s: u16,
     pub pre_trigger_buys_2s: u16,
@@ -123,6 +126,7 @@ pub enum ExitReason {
     RideSellCascade,
     RideCreatorSell,
     RideMaxHold,
+    RideSignalExit,
 }
 
 /// A closed position with full PnL accounting.
@@ -176,27 +180,36 @@ pub struct ClosedPosition {
     /// ToD multiplier applied.
     pub tod_multiplier: f64,
     // ── RIDE mode fields ──
-    /// "scalp" or "ride" — which exit strategy was active at close.
+    /// Exit strategy identifier at close (always "ride").
     pub exit_mode_str: &'static str,
-    /// RIDE phase at close: 0=n/a (scalp), 1=early, 2=momentum, 3=tighten.
+    /// RIDE phase at close: 0=early, 1=momentum, 2=tighten.
     pub ride_phase: u8,
-    /// Peak milli-vSOL seen during RIDE. 0 for scalp exits.
+    /// Peak milli-vSOL seen during RIDE.
     pub ride_peak_mvsol: u32,
-    /// Duration of RIDE mode in milliseconds. 0 for scalp exits.
+    /// Duration of RIDE mode in milliseconds.
     pub ride_hold_ms: u64,
-    /// Unique confirming wallets at close. 0 for scalp exits.
+    /// Unique confirming wallets at close.
     pub ride_unique_wallets: u8,
     // ── V2 EntryEngine fields ──
     /// Magnitude score from EntryEngine (0-100). Used for RIDE qualification.
     pub magnitude_estimate: f64,
     /// Kelly-computed size in lamports (what EntryEngine decided).
     pub kelly_size_lamports: u64,
-    /// Entry action from EntryEngine: "scalp" or "ride".
+    /// Entry action from EntryEngine (always "ride").
     pub entry_action: &'static str,
     /// Confirming buy volume during hold (lamports). For RIDE analysis.
     pub confirming_buy_sol: u64,
     /// Number of sells during hold. 0 = pure buy pressure.
     pub sells_during_hold: u16,
+    // ── Signal v2 fields ──
+    /// Composite signal score at exit (from RideState v2).
+    pub signal_score_at_exit: u16,
+    /// SignalState::* value at exit (0=StrongPump, 1=Sustained, 2=Weakening, 3=Exit).
+    pub signal_state_at_exit: u8,
+    /// Peak composite signal score observed during hold.
+    pub peak_signal_score: u16,
+    /// Unique wallets seen via bloom filter during hold.
+    pub unique_wallets_seen: u8,
 }
 
 // ─── Config Structs ────────────────────────────────────────────────
@@ -220,7 +233,7 @@ pub struct SizeTier {
 /// Full position manager configuration.
 #[derive(Debug, Clone)]
 pub struct PositionConfig {
-    /// Max hold time before forced exit (ms) — applies to SCALP positions.
+    /// Max hold time before forced exit (ms).
     pub max_hold_ms: u64,
     /// Max hold time for RIDE positions (ms). Longer to let winners run.
     /// Falls back to max_hold_ms if 0.
@@ -402,6 +415,7 @@ impl PositionManager {
             confirming_buy_sol: 0,
             confirming_unique_wallets: 0,
             sells_during_hold: 0,
+            signal_state_at_exit: 0,
             // Entry context — populated by caller (hot_path) from MintHistory
             pre_trigger_buys_1s: 0,
             pre_trigger_buys_2s: 0,
@@ -418,11 +432,8 @@ impl PositionManager {
     /// Called on every subsequent trade event for held mints.
     ///
     /// Updates position state (reserves, peak/trough, flow tracking),
-    /// then delegates exit decisions to the active exit strategy:
-    /// - Scalp: ExitStateMachine (on_buy_event / on_price_tick)
-    /// - Ride: RideState (on_buy_event / on_sell_event / on_tick)
-    ///
-    /// Buy events also check for RIDE promotion (Scalp → Ride).
+    /// then delegates exit decisions to the RIDE exit strategy:
+    /// RideState (on_buy_event / on_sell_event / on_tick).
     ///
     /// Returns `true` if the position was closed.
     #[inline]
@@ -472,7 +483,16 @@ impl PositionManager {
             match &mut pos.exit_mode {
                 ExitMode::Ride(ref mut rs) => {
                     let buy_mvsol = lamports_to_mvsol(event.sol_amount);
-                    rs.on_buy_event(buy_mvsol, now_ms);
+                    // Branchless wallet hash from first 8 bytes of event signature
+                    #[inline(always)]
+                    fn wallet_hash_from_sig(sig: &[u8; 64]) -> u64 {
+                        u64::from_le_bytes([
+                            sig[0], sig[1], sig[2], sig[3],
+                            sig[4], sig[5], sig[6], sig[7],
+                        ])
+                    }
+                    let wallet_hash = wallet_hash_from_sig(&event.sig);
+                    rs.on_buy_event(buy_mvsol, now_ms, wallet_hash);
                 }
             }
 
@@ -621,12 +641,22 @@ impl PositionManager {
             match &pos.exit_mode {
                 ExitMode::Ride(rs) => (
                     "ride",
-                    rs.phase,
+                    rs.phase as u8,
                     rs.peak_mvsol,
                     now_ms.saturating_sub(rs.ride_start_ms),
                     pos.confirming_unique_wallets,
                 ),
             };
+
+        // Extract signal v2 fields from RideState before moving pos into ClosedPosition
+        let (sig_score, sig_state, peak_sig, uniq_wallets) = match &pos.exit_mode {
+            ExitMode::Ride(rs) => (
+                rs.composite_score,
+                rs.state as u8,
+                rs.peak_composite_score(),
+                rs.unique_wallets,
+            ),
+        };
 
         let closed = ClosedPosition {
             mint: pos.mint,
@@ -673,6 +703,11 @@ impl PositionManager {
             entry_action: "ride",
             confirming_buy_sol: pos.confirming_buy_sol,
             sells_during_hold: pos.sells_during_hold,
+            // Signal v2 fields from RideState
+            signal_score_at_exit: sig_score,
+            signal_state_at_exit: sig_state,
+            peak_signal_score: peak_sig,
+            unique_wallets_seen: uniq_wallets,
         };
 
         // Best-effort send — if the receiver is gone, we just drop it.
@@ -972,7 +1007,7 @@ mod tests {
 
     // ── RIDE mode tests ─────────────────────────────────────────────
 
-    /// Test: All positions start in RIDE mode (no SCALP).
+    /// Test: All positions start in RIDE mode.
     /// Open a position, feed a confirming buy, verify still in Ride mode.
     #[test]
     fn test_all_positions_start_as_ride() {
@@ -1027,22 +1062,22 @@ mod tests {
                 true,
             );
             let closed = pm.on_subsequent_trade(&buy, 1000 + i * 1000);
-            if closed { break; } // position may have been closed by scalp exit
+            if closed { break; } // position may have been closed by exit strategy
         }
 
-        // If still open, should still be Scalp
+        // If still open, should still be Ride (all positions are RIDE now)
         if let Some(pos) = pm.positions.get(&mint) {
             assert!(
                 matches!(pos.exit_mode, ExitMode::Ride(_)),
-                "Should remain Scalp — magnitude too low for RIDE"
+                "Should remain in RIDE mode"
             );
         }
     }
 
-    /// Test: Position transitions from SCALP to RIDE after qualifying buys.
+    /// Test: Position stays in RIDE mode with qualifying buys (legacy transition test).
     #[test]
-    fn test_scalp_to_ride_transition() {
-        // Use a config with very wide TP/SL so scalp doesn't exit early
+    fn test_ride_mode_with_qualifying_buys() {
+        // Use a config with very wide TP/SL so position doesn't exit early
         let mut config = test_config();
         config.exit_config.tp_sl_tiers[0].unconfirmed_tp_fp = 50000; // very wide
         config.exit_config.tp_sl_tiers[0].unconfirmed_sl_fp = 50000;
@@ -1071,7 +1106,7 @@ mod tests {
         );
         pm.on_subsequent_trade(&buy1, 2000);
 
-        // Still Scalp — only 1 buy
+        // Should still be in RIDE mode after 1 buy
         let pos = pm.positions.get(&mint).unwrap();
         assert!(matches!(pos.exit_mode, ExitMode::Ride(_)));
 
@@ -1082,19 +1117,18 @@ mod tests {
         );
         pm.on_subsequent_trade(&buy2, 3000);
 
-        // Now should be RIDE: buys>=2, confirming_buy_sol=0.4 SOL>=0.3,
-        // unique_wallets>=2, sells=0, price up 3.3%>1.5%, magnitude 60>=40
+        // Should remain in RIDE mode with confirming buys
         let pos = pm.positions.get(&mint).unwrap();
         assert!(
             matches!(pos.exit_mode, ExitMode::Ride(_)),
-            "Should have transitioned to Ride mode, but got {:?}",
+            "Should remain in RIDE mode, but got {:?}",
             std::mem::discriminant(&pos.exit_mode)
         );
     }
 
-    /// Test: Low magnitude prevents RIDE transition even with qualifying buys.
+    /// Test: Low magnitude positions still use RIDE mode (legacy gate test).
     #[test]
-    fn test_ride_no_transition_low_magnitude() {
+    fn test_ride_with_low_magnitude() {
         let mut config = test_config();
         config.exit_config.tp_sl_tiers[0].unconfirmed_tp_fp = 50000;
         config.exit_config.tp_sl_tiers[0].unconfirmed_sl_fp = 50000;

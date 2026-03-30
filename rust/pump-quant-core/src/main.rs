@@ -55,6 +55,7 @@ fn exit_reason_str(reason: ExitReason) -> &'static str {
         ExitReason::RideSellCascade => "ride_sell_cascade",
         ExitReason::RideCreatorSell => "ride_creator_sell",
         ExitReason::RideMaxHold => "ride_max_hold",
+        ExitReason::RideSignalExit => "ride_signal_exit",
     }
 }
 

@@ -260,6 +260,61 @@ pub struct SizingJsonConfig {
     pub ride_size_max_sol: Option<f64>,      // default: 0.15
 }
 
+// ── Signal weights JSON config (v2 pipeline — RideState v2) ──────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SignalWeightsJson {
+    #[serde(default = "default_w_buy_rate_1s")]
+    pub w_buy_rate_1s: i8,
+    #[serde(default = "default_w_buy_rate_5s")]
+    pub w_buy_rate_5s: i8,
+    #[serde(default = "default_w_sell_rate_5s")]
+    pub w_sell_rate_5s: i8,
+    #[serde(default = "default_w_vol_accel_shift")]
+    pub w_vol_accel_shift: u8,
+    #[serde(default = "default_w_buy_gap_divisor")]
+    pub w_buy_gap_divisor: u16,
+    #[serde(default = "default_w_sell_pressure_shift")]
+    pub w_sell_pressure_shift: u8,
+    #[serde(default = "default_w_pnl_shift")]
+    pub w_pnl_shift: u8,
+    #[serde(default = "default_w_time_since_peak_divisor")]
+    pub w_time_since_peak_divisor: u16,
+    #[serde(default = "default_w_unique_wallets")]
+    pub w_unique_wallets: i8,
+    #[serde(default = "default_w_confirm_vol_shift")]
+    pub w_confirm_vol_shift: u8,
+}
+
+impl Default for SignalWeightsJson {
+    fn default() -> Self {
+        Self {
+            w_buy_rate_1s: 24,
+            w_buy_rate_5s: 16,
+            w_sell_rate_5s: -20,
+            w_vol_accel_shift: 6,
+            w_buy_gap_divisor: 150,
+            w_sell_pressure_shift: 2,
+            w_pnl_shift: 3,
+            w_time_since_peak_divisor: 200,
+            w_unique_wallets: 14,
+            w_confirm_vol_shift: 8,
+        }
+    }
+}
+
+fn default_w_buy_rate_1s() -> i8 { 24 }
+fn default_w_buy_rate_5s() -> i8 { 16 }
+fn default_w_sell_rate_5s() -> i8 { -20 }
+fn default_w_vol_accel_shift() -> u8 { 6 }
+fn default_w_buy_gap_divisor() -> u16 { 150 }
+fn default_w_sell_pressure_shift() -> u8 { 2 }
+fn default_w_pnl_shift() -> u8 { 3 }
+fn default_w_time_since_peak_divisor() -> u16 { 200 }
+fn default_w_unique_wallets() -> i8 { 14 }
+fn default_w_confirm_vol_shift() -> u8 { 8 }
+fn default_signal_weights() -> SignalWeightsJson { SignalWeightsJson::default() }
+
 // ── Ride JSON config (v2 pipeline) ───────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
@@ -283,6 +338,44 @@ pub struct RideJsonConfig {
     pub buy_gap_exit_ms: Option<u64>,            // default: 10000
     pub sell_cascade_count: Option<u8>,          // default: 3
     pub sell_pressure_tighten_pct: Option<f64>,  // default: 2.0
+
+    // ── Signal-driven exit thresholds (RideState v2) ────────────────
+    #[serde(default = "default_signal_strong_pump")]
+    pub signal_strong_pump_threshold: u16,
+    #[serde(default = "default_signal_sustained")]
+    pub signal_sustained_threshold: u16,
+    #[serde(default = "default_signal_weakening")]
+    pub signal_weakening_threshold: u16,
+
+    // Signal weights (integer scoring)
+    #[serde(default = "default_signal_weights")]
+    pub signal_weights: SignalWeightsJson,
+
+    // Kelly parameters
+    #[serde(default = "default_kelly_baseline_f")]
+    pub kelly_baseline_f_permille: u16,
+    #[serde(default = "default_kelly_min_trail_bp")]
+    pub kelly_min_trail_bp: u16,
+    #[serde(default = "default_kelly_max_trail_bp")]
+    pub kelly_max_trail_bp: u16,
+
+    // Lifecycle phase thresholds
+    #[serde(default = "default_lifecycle_accel_buys")]
+    pub lifecycle_accel_min_buys: u16,
+    #[serde(default = "default_lifecycle_accel_sol_msol")]
+    pub lifecycle_accel_min_sol_msol: u32,
+    #[serde(default = "default_lifecycle_momentum_buys")]
+    pub lifecycle_momentum_min_buys: u16,
+    #[serde(default = "default_lifecycle_momentum_sol_msol")]
+    pub lifecycle_momentum_min_sol_msol: u32,
+
+    // Dynamic trail base distances per signal state (vSOL bp)
+    #[serde(default = "default_trail_strong_bp")]
+    pub trail_strong_pump_bp: u16,
+    #[serde(default = "default_trail_sustained_bp")]
+    pub trail_sustained_bp: u16,
+    #[serde(default = "default_trail_weakening_bp")]
+    pub trail_weakening_bp: u16,
 }
 
 // ── Risk JSON config (v2 pipeline) ───────────────────────────────────────────
@@ -298,6 +391,22 @@ pub struct RiskJsonConfig {
     pub max_concurrent_ride: Option<u8>,       // default: 3
     pub max_concurrent_total: Option<u8>,      // default: 8
 }
+
+// ── Serde default functions for RideJsonConfig v2 fields ─────────────────────
+
+fn default_signal_strong_pump() -> u16 { 700 }
+fn default_signal_sustained() -> u16 { 400 }
+fn default_signal_weakening() -> u16 { 200 }
+fn default_kelly_baseline_f() -> u16 { 671 }
+fn default_kelly_min_trail_bp() -> u16 { 50 }
+fn default_kelly_max_trail_bp() -> u16 { 800 }
+fn default_lifecycle_accel_buys() -> u16 { 5 }
+fn default_lifecycle_accel_sol_msol() -> u32 { 2000 }
+fn default_lifecycle_momentum_buys() -> u16 { 15 }
+fn default_lifecycle_momentum_sol_msol() -> u32 { 10000 }
+fn default_trail_strong_bp() -> u16 { 500 }
+fn default_trail_sustained_bp() -> u16 { 350 }
+fn default_trail_weakening_bp() -> u16 { 200 }
 
 // ── Ride runtime config (v2 pipeline) ────────────────────────────────────────
 
@@ -324,6 +433,89 @@ pub struct RideConfig {
     pub buy_gap_exit_ms: u64,
     pub sell_cascade_count: u8,
     pub sell_pressure_tighten_bp: u16,   // vSOL basis points
+
+    // ── Signal-driven fields (RideState v2) ─────────────────────────
+    pub signal_strong_threshold: u16,
+    pub signal_sustained_threshold: u16,
+    pub signal_weakening_threshold: u16,
+
+    // Signal weights (flattened for L1 residency)
+    pub w_buy_rate_1s: i8,
+    pub w_buy_rate_5s: i8,
+    pub w_sell_rate_5s: i8,
+    pub w_vol_accel_shift: u8,
+    pub w_buy_gap_divisor: u16,
+    pub w_sell_pressure_shift: u8,
+    pub w_pnl_shift: u8,
+    pub w_time_since_peak_divisor: u16,
+    pub w_unique_wallets: i8,
+    pub w_confirm_vol_shift: u8,
+
+    // Kelly parameters
+    pub kelly_baseline_f_permille: u16,
+    pub kelly_min_trail_bp: u16,
+    pub kelly_max_trail_bp: u16,
+
+    // Lifecycle thresholds
+    pub lifecycle_accel_min_buys: u16,
+    pub lifecycle_accel_min_sol_msol: u32,
+    pub lifecycle_momentum_min_buys: u16,
+    pub lifecycle_momentum_min_sol_msol: u32,
+
+    // Trail distances per signal state (vSOL bp)
+    pub trail_strong_pump_bp: u16,
+    pub trail_sustained_bp: u16,
+    pub trail_weakening_bp: u16,
+}
+
+impl Default for RideConfig {
+    fn default() -> Self {
+        Self {
+            min_confirming_buys: 2,
+            min_confirming_lamports: 500_000_000,
+            min_gain_vsol_fp: 10200,
+            max_curve_pct_x100: 8000,
+            early_trail_bp: 408,
+            momentum_trail_bp: 305,
+            tighten_trail_bp: 202,
+            emergency_trail_bp: 101,
+            early_to_momentum_ms: 15_000,
+            momentum_to_tighten_ms: 60_000,
+            max_hold_ms: 300_000,
+            gain_momentum_vsol_fp: 10724,
+            gain_tighten_vsol_fp: 12247,
+            hard_floor_vsol_fp: 9800,
+            whale_exit_lamports: 2_000_000_000,
+            buy_gap_tighten_ms: 5_000,
+            buy_gap_exit_ms: 10_000,
+            sell_cascade_count: 3,
+            sell_pressure_tighten_bp: 100,
+            // Signal v2
+            signal_strong_threshold: 700,
+            signal_sustained_threshold: 400,
+            signal_weakening_threshold: 200,
+            w_buy_rate_1s: 24,
+            w_buy_rate_5s: 16,
+            w_sell_rate_5s: -20,
+            w_vol_accel_shift: 6,
+            w_buy_gap_divisor: 150,
+            w_sell_pressure_shift: 2,
+            w_pnl_shift: 3,
+            w_time_since_peak_divisor: 200,
+            w_unique_wallets: 14,
+            w_confirm_vol_shift: 8,
+            kelly_baseline_f_permille: 671,
+            kelly_min_trail_bp: 50,
+            kelly_max_trail_bp: 800,
+            lifecycle_accel_min_buys: 5,
+            lifecycle_accel_min_sol_msol: 2000,
+            lifecycle_momentum_min_buys: 15,
+            lifecycle_momentum_min_sol_msol: 10000,
+            trail_strong_pump_bp: 500,
+            trail_sustained_bp: 350,
+            trail_weakening_bp: 200,
+        }
+    }
 }
 
 // ── Risk runtime config (v2 pipeline) ────────────────────────────────────────
@@ -506,6 +698,35 @@ pub fn build_ride_config(json: &RideJsonConfig) -> RideConfig {
         sell_pressure_tighten_bp: price_pct_to_vsol_bp(
             json.sell_pressure_tighten_pct.unwrap_or(2.0),
         ),
+
+        // Signal-driven fields (v2) — already integer, pass through directly
+        signal_strong_threshold: json.signal_strong_pump_threshold,
+        signal_sustained_threshold: json.signal_sustained_threshold,
+        signal_weakening_threshold: json.signal_weakening_threshold,
+
+        w_buy_rate_1s: json.signal_weights.w_buy_rate_1s,
+        w_buy_rate_5s: json.signal_weights.w_buy_rate_5s,
+        w_sell_rate_5s: json.signal_weights.w_sell_rate_5s,
+        w_vol_accel_shift: json.signal_weights.w_vol_accel_shift,
+        w_buy_gap_divisor: json.signal_weights.w_buy_gap_divisor,
+        w_sell_pressure_shift: json.signal_weights.w_sell_pressure_shift,
+        w_pnl_shift: json.signal_weights.w_pnl_shift,
+        w_time_since_peak_divisor: json.signal_weights.w_time_since_peak_divisor,
+        w_unique_wallets: json.signal_weights.w_unique_wallets,
+        w_confirm_vol_shift: json.signal_weights.w_confirm_vol_shift,
+
+        kelly_baseline_f_permille: json.kelly_baseline_f_permille,
+        kelly_min_trail_bp: json.kelly_min_trail_bp,
+        kelly_max_trail_bp: json.kelly_max_trail_bp,
+
+        lifecycle_accel_min_buys: json.lifecycle_accel_min_buys,
+        lifecycle_accel_min_sol_msol: json.lifecycle_accel_min_sol_msol,
+        lifecycle_momentum_min_buys: json.lifecycle_momentum_min_buys,
+        lifecycle_momentum_min_sol_msol: json.lifecycle_momentum_min_sol_msol,
+
+        trail_strong_pump_bp: json.trail_strong_pump_bp,
+        trail_sustained_bp: json.trail_sustained_bp,
+        trail_weakening_bp: json.trail_weakening_bp,
     }
 }
 
@@ -536,7 +757,7 @@ pub fn build_ride_state_config(json: &RideJsonConfig) -> crate::engine::ride_sta
         cfg.momentum_to_tighten_ms = v;
     }
     if let Some(v) = json.max_hold_ms {
-        cfg.max_hold_ride_ms = v;
+        cfg.max_hold_ms = v;
     }
     if let Some(v) = json.early_trail_pct {
         cfg.early_trail_bp = price_pct_to_vsol_bp(v);
@@ -551,7 +772,7 @@ pub fn build_ride_state_config(json: &RideJsonConfig) -> crate::engine::ride_sta
         cfg.emergency_trail_bp = price_pct_to_vsol_bp(v);
     }
     if let Some(v) = json.whale_exit_sol {
-        cfg.whale_exit_msol = (v * 1000.0) as u32;
+        cfg.whale_exit_lamports = (v * 1_000_000_000.0) as u64;
     }
     // whale_dump_exit_msol: no direct JSON field, keep default
     if let Some(v) = json.sell_cascade_count {

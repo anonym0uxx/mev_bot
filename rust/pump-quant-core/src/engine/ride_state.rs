@@ -1,50 +1,77 @@
-// engine/ride_state.rs — RIDE mode trailing-stop exit engine.
+// engine/ride_state.rs — RIDE mode signal-driven exit engine v2.
 //
-// Zero heap allocation. All fields Copy. 64 bytes exactly (1 cache line).
-// All price comparisons use integer mvsol (milli-SOL vSOL, u32) — zero f64.
+// 128 bytes (2 cache lines). Zero heap. Zero f64. All integer arithmetic.
+// Signal-driven 4-state machine replaces time-based 3-phase system.
+//
+// State machine: StrongPump ↔ Sustained ↔ Weakening → Exit
+//   Transitions are bidirectional (can recover) except Exit (terminal).
+//   Trail width computed dynamically every event from:
+//     trail_bp = (base_trail × kelly_mult × phase_mult) >> 16
 //
 // References:
-//   QUANT_RIDE_C.md  — trailing stop math (vSOL-space basis points)
-//   ARCH_RIDE.md      — architecture and integration spec
-//   UNIFIED_BUILD_SPEC.md Part 3 — canonical struct layout + thresholds
+//   QUANT_UNIFIED_RIDE.md  — architecture spec
+//   QUANT_HOLD_SIGNAL.md   — composite signal design
+//   QUANT_KELLY_SL.md      — Kelly-derived dynamic trail
+//   QUANT_PUMP_LIFECYCLE.md — pump phase detection
+
+use crate::engine::signal_engine::{
+    self, KellyConfig, LifecycleConfig, SignalWeights,
+};
 
 // ---------------------------------------------------------------------------
-// Constants — vSOL-space basis points (from QUANT_RIDE_C §3.3 / §7.1)
+// Constants
 // ---------------------------------------------------------------------------
 
-/// 8% price trail = 4.081% vSOL trail → 408 vSOL bp
-pub const TRAIL_EARLY_BP: u16 = 408;
-/// 6% price trail = 3.045% vSOL trail → 305 vSOL bp
-pub const TRAIL_MOMENTUM_BP: u16 = 305;
-/// 4% price trail = 2.020% vSOL trail → 202 vSOL bp
-pub const TRAIL_TIGHTEN_BP: u16 = 202;
-/// 2% price trail = 1.005% vSOL trail → 101 vSOL bp
-pub const TRAIL_EMERGENCY_BP: u16 = 101;
-
-/// EARLY→MOMENTUM time threshold (ms)
-pub const PHASE_MOMENTUM_MS: u64 = 15_000;
-/// MOMENTUM→TIGHTEN time threshold (ms)
-pub const PHASE_TIGHTEN_MS: u64 = 60_000;
-
-/// 15% price gain = vSOL ratio √1.15 = 1.07238 → FP 10724
-pub const GAIN_MOMENTUM_VSOL_FP: u16 = 10724;
-/// 50% price gain = vSOL ratio √1.50 = 1.22474 → FP 12247
-pub const GAIN_TIGHTEN_VSOL_FP: u16 = 12247;
-
-/// Max hold safety backstop (ms)
+/// Max hold safety backstop — only fires if signals somehow never trigger exit.
 pub const MAX_HOLD_RIDE_MS: u64 = 300_000;
+
+/// Hard floor: any price below entry → immediate exit.
+pub const HARD_FLOOR_ENABLED: bool = true;
+
+/// Buy gap immediate exit threshold (ms).
+pub const BUY_GAP_EXIT_MS: u16 = 10_000;
+
+/// Sell cascade: N sells in SELL_CASCADE_WINDOW_MS → exit.
+pub const SELL_CASCADE_COUNT: u8 = 3;
+pub const SELL_CASCADE_WINDOW_MS: u16 = 3_000;
+
+// Ring buffer sizes
+pub const BUY_RING_LEN: usize = 8;
+pub const SELL_RING_LEN: usize = 4;
 
 // ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
 
-/// RIDE phase. One-way progression: Early → Momentum → Tighten.
+/// Signal-driven state. Replaces time-based RidePhase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SignalState {
+    StrongPump = 0,
+    Sustained  = 1,
+    Weakening  = 2,
+    Exit       = 3,
+}
+
+impl SignalState {
+    #[inline(always)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StrongPump => "strong_pump",
+            Self::Sustained  => "sustained",
+            Self::Weakening  => "weakening",
+            Self::Exit       => "exit",
+        }
+    }
+}
+
+// Keep old RidePhase for backward compat with ClosedPosition logging
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum RidePhase {
-    Early = 0,
+    Early    = 0,
     Momentum = 1,
-    Tighten = 2,
+    Tighten  = 2,
 }
 
 impl RidePhase {
@@ -53,23 +80,20 @@ impl RidePhase {
         match v {
             0 => Self::Early,
             1 => Self::Momentum,
-            2 => Self::Tighten,
-            _ => Self::Tighten, // saturate
+            _ => Self::Tighten,
         }
     }
 }
 
-/// Bitflags for `RideState::flags`.
+/// Bitflags for emergency conditions.
 pub mod ride_flags {
-    pub const SELL_PRESSURE_SPIKE: u16 = 1 << 0;
-    pub const BUY_DECELERATION: u16 = 1 << 1; // reserved, not used in v1
-    pub const WHALE_EXIT_SEEN: u16 = 1 << 2;
-    pub const BUY_GAP_5S: u16 = 1 << 3;
-    pub const EMERGENCY_EXIT: u16 = 1 << 4;
-    pub const CREATOR_SELL: u16 = 1 << 5;
+    pub const CREATOR_SELL:       u8 = 1 << 0;
+    pub const EMERGENCY_EXIT:     u8 = 1 << 1;
+    pub const SELL_CASCADE_SEEN:  u8 = 1 << 2;
+    pub const WHALE_EXIT_SEEN:    u8 = 1 << 3;
 }
 
-/// Decision returned from `on_tick` and `on_sell_event`.
+/// Decision returned from on_tick / on_sell_event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RideDecision {
     Hold,
@@ -86,244 +110,444 @@ pub enum RideExitReason {
     SellCascade,
     CreatorSell,
     MaxHold,
+    SignalExit,
 }
 
 // ---------------------------------------------------------------------------
-// RideConfig — passed by reference on the hot path
+// RideConfig — loaded from config.rs, passed by reference on hot path
 // ---------------------------------------------------------------------------
+// RideConfig is defined in config.rs. We re-export what we need via
+// crate::engine::config::RideConfig. Here we define helper methods to
+// extract signal sub-configs.
 
-/// Runtime configuration for the RIDE engine. Expected to live in L1 cache.
-#[derive(Debug, Clone)]
-pub struct RideConfig {
-    // Phase timing
-    pub early_to_momentum_ms: u64,
-    pub momentum_to_tighten_ms: u64,
-    pub max_hold_ride_ms: u64,
+impl super::config::RideConfig {
+    /// Extract SignalWeights for signal_engine calls.
+    #[inline(always)]
+    pub fn signal_weights(&self) -> SignalWeights {
+        SignalWeights {
+            w_buy_rate_1s: self.w_buy_rate_1s,
+            w_buy_rate_5s: self.w_buy_rate_5s,
+            w_sell_rate_5s: self.w_sell_rate_5s,
+            w_vol_accel_shift: self.w_vol_accel_shift,
+            w_buy_gap_divisor: self.w_buy_gap_divisor,
+            w_sell_pressure_shift: self.w_sell_pressure_shift,
+            w_pnl_shift: self.w_pnl_shift,
+            w_time_since_peak_divisor: self.w_time_since_peak_divisor,
+            w_unique_wallets: self.w_unique_wallets,
+            w_confirm_vol_shift: self.w_confirm_vol_shift,
+        }
+    }
 
-    // Phase gain thresholds (vSOL ratio × 10000)
-    pub gain_momentum_vsol_fp: u16,
-    pub gain_tighten_vsol_fp: u16,
+    /// Extract KellyConfig.
+    #[inline(always)]
+    pub fn kelly_config(&self) -> KellyConfig {
+        KellyConfig {
+            baseline_f_permille: self.kelly_baseline_f_permille,
+            sqrt_lut: signal_engine::KELLY_SQRT_LUT,
+        }
+    }
 
-    // Trail distances per phase (vSOL basis points)
-    pub early_trail_bp: u16,
-    pub momentum_trail_bp: u16,
-    pub tighten_trail_bp: u16,
-    pub emergency_trail_bp: u16,
-
-    // Adaptive tightening
-    pub sell_pressure_tighten_bp: u16, // tighten by this many bp on sell pressure
-    pub buy_gap_tighten_ms: u64,       // 5000ms → tighten
-    pub buy_gap_tighten_bp: u16,       // tighten amount for 5s gap
-    pub buy_gap_exit_ms: u64,          // 10000ms → EXIT immediately
-
-    // Whale / cascade thresholds
-    pub whale_exit_msol: u32,           // single sell > this → tighten to emergency (1000 = 1 SOL)
-    pub whale_dump_exit_msol: u32,      // single sell > this → immediate exit (2000 = 2 SOL)
-    pub sell_cascade_count: u8,         // 3 sells in 3s window → exit
-    pub sell_cascade_window_ms: u64,    // 3000ms window for cascade detection
-}
-
-impl Default for RideConfig {
-    fn default() -> Self {
-        Self {
-            early_to_momentum_ms: PHASE_MOMENTUM_MS,
-            momentum_to_tighten_ms: PHASE_TIGHTEN_MS,
-            max_hold_ride_ms: MAX_HOLD_RIDE_MS,
-            gain_momentum_vsol_fp: GAIN_MOMENTUM_VSOL_FP,
-            gain_tighten_vsol_fp: GAIN_TIGHTEN_VSOL_FP,
-            early_trail_bp: TRAIL_EARLY_BP,
-            momentum_trail_bp: TRAIL_MOMENTUM_BP,
-            tighten_trail_bp: TRAIL_TIGHTEN_BP,
-            emergency_trail_bp: TRAIL_EMERGENCY_BP,
-            sell_pressure_tighten_bp: 200,
-            buy_gap_tighten_ms: 5_000,
-            buy_gap_tighten_bp: 200,
-            buy_gap_exit_ms: 10_000,
-            whale_exit_msol: 1_000,       // 1 SOL
-            whale_dump_exit_msol: 2_000,  // 2 SOL
-            sell_cascade_count: 3,
-            sell_cascade_window_ms: 3_000,
+    /// Extract LifecycleConfig.
+    #[inline(always)]
+    pub fn lifecycle_config(&self) -> LifecycleConfig {
+        LifecycleConfig {
+            accel_min_buys: self.lifecycle_accel_min_buys,
+            accel_min_sol_msol: self.lifecycle_accel_min_sol_msol,
+            momentum_min_buys: self.lifecycle_momentum_min_buys,
+            momentum_min_sol_msol: self.lifecycle_momentum_min_sol_msol,
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// RideState — 64 bytes exactly, #[repr(C)]
-// ---------------------------------------------------------------------------
-
-/// The RIDE exit state machine. Exactly 64 bytes, 1 cache line.
-///
-/// All prices stored as "milli-SOL vSOL" — u32 representing vSOL in units
-/// of 0.001 SOL (1_000_000 lamports). Range: 0 to 4,294,967 SOL.
-///
-/// `trail_distance_bp` is in **vSOL-space** basis points (408 = 4.08% vSOL
-/// trail = 8% price trail). See QUANT_RIDE_C §3 for the conversion math.
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct RideState {
-    // ── Byte 0-3: Phase + counters ──
-    pub phase: u8,               // 0=Early, 1=Momentum, 2=Tighten
-    pub unique_wallets: u8,
-    pub sells_during_ride: u16,
-
-    // ── Byte 4-19: Price levels (mvsol) ──
-    pub entry_mvsol: u32,        // milli-SOL vSOL (1 mvsol = 0.001 SOL = 1M lamports)
-    pub peak_mvsol: u32,
-    pub floor_mvsol: u32,        // entry × 1.01
-    pub trail_stop_mvsol: u32,
-
-    // ── Byte 20-35: Timestamps ──
-    pub ride_start_ms: u64,
-    pub last_buy_ms: u64,
-
-    // ── Byte 36-43: Rate + trail ──
-    pub buy_rate_at_start: u16,
-    pub trail_distance_bp: u16,  // vSOL-space basis points (408=8% price trail)
-    pub flags: u16,
-    pub _reserved: u16,
-
-    // ── Byte 44-51: Volume tracking ──
-    pub total_buy_msol: u32,
-    pub total_sell_msol: u32,
-
-    // ── Byte 52-59: Cascade + recent sell ──
-    pub recent_sell_count_3s: u8,
-    pub _pad1: [u8; 3],         // _pad1[0] = sell_window_start offset (seconds from ride_start)
-    pub last_sell_msol: u32,
-
-    // ── Byte 60-63: Entry context ──
-    pub entry_gain_bp: u16,
-    pub _pad2: [u8; 2],
-}
-
-// ── SIZE ASSERTION — must be exactly 64 bytes ──
-// Temporarily relaxed — struct may be >64 bytes due to alignment padding.
-// TODO: Pack to exactly 64 bytes once layout is finalized.
-const _RIDE_STATE_SIZE: usize = std::mem::size_of::<RideState>();
+// Re-export RideConfig from config module for positions.rs compatibility
+pub use super::config::RideConfig;
 
 // ---------------------------------------------------------------------------
-// Free functions — unit conversion & trail math
+// Conversion helpers
 // ---------------------------------------------------------------------------
 
-/// Convert lamports to milli-SOL vSOL (rounded).
-/// 1 mvsol = 0.001 SOL = 1_000_000 lamports.
+/// Convert lamports (1 SOL = 1_000_000_000) to milli-vSOL (1 SOL = 1000 mvsol).
 #[inline(always)]
 pub fn lamports_to_mvsol(lamports: u64) -> u32 {
-    ((lamports + 500_000) / 1_000_000) as u32
+    (lamports / 1_000_000) as u32
 }
 
-/// Convert milli-SOL vSOL back to lamports.
+/// Convert milli-vSOL back to lamports.
 #[inline(always)]
 pub fn mvsol_to_lamports(mvsol: u32) -> u64 {
     mvsol as u64 * 1_000_000
 }
 
-/// Compute trail stop from peak vSOL and trail width in vSOL basis points.
-///
-/// `trail_stop = peak × (10000 - trail_bp) / 10000`
-///
-/// All integer. u64 intermediate prevents overflow.
-///
-/// Example: peak=50_000 mvsol (50 SOL), trail=408 bp (8% price / 4.08% vSOL)
-///   trail_stop = 50_000 × 9592 / 10_000 = 47_960 mvsol (47.96 SOL)
-///   Price at peak: 50² = 2500. Price at stop: 47.96² = 2300.2.
-///   Price trail: 1 - 2300.2/2500 = 7.99% ≈ 8% ✓
+/// Compute trail stop level: peak - (peak * trail_bp / 10000).
+/// Trail can only ratchet UP (tighter = higher stop).
 #[inline(always)]
 pub fn compute_trail_stop(peak_mvsol: u32, trail_bp: u16) -> u32 {
-    let keep_bp = 10_000u32.saturating_sub(trail_bp as u32);
-    ((peak_mvsol as u64 * keep_bp as u64) / 10_000) as u32
-}
-
-/// Check if gain threshold is met using integer vSOL comparison.
-///
-/// `(current / entry)² >= (1 + price_pct)` in vSOL space becomes:
-/// `current × 10000 >= entry × threshold_ratio` where threshold_ratio = √(1+pct) × 10000.
-///
-/// Example: 15% price gain → threshold_ratio = 10724 (√1.15 × 10000)
-///   entry=40_000, current=42_896 → 42896 × 10000 = 428_960_000
-///   40000 × 10724 = 428_960_000 → exactly +15% ✓
-#[inline(always)]
-fn gain_meets_threshold(current_mvsol: u32, entry_mvsol: u32, threshold_fp: u16) -> bool {
-    (current_mvsol as u64) * 10_000 >= (entry_mvsol as u64) * (threshold_fp as u64)
+    let drop = (peak_mvsol as u64 * trail_bp as u64) / 10_000;
+    peak_mvsol.saturating_sub(drop as u32)
 }
 
 // ---------------------------------------------------------------------------
-// RideState implementation
+// RideState v2 — 128 bytes, 2 cache lines
 // ---------------------------------------------------------------------------
+
+/// Signal-driven RIDE exit state. 128 bytes exactly.
+///
+/// Cache line 0 (bytes 0-63): HOT — accessed every event.
+/// Cache line 1 (bytes 64-127): WARM — ring buffers + bloom.
+#[derive(Clone, Copy)]
+#[repr(C, align(64))]
+pub struct RideState {
+    // ── Cache line 0: trail + timing + counters + signal ──────────
+
+    // Trail state (16 bytes)
+    pub peak_mvsol: u32,           // highest vSOL seen
+    pub trail_stop_mvsol: u32,     // current trail stop (ratchets up)
+    pub entry_mvsol: u32,          // vSOL at entry
+    pub current_trail_bp: u16,     // active trail distance in vSOL bp
+    pub state: SignalState,        // u8: signal-driven state
+    pub flags: u8,                 // bitflags
+
+    // Timing (16 bytes)
+    pub ride_start_ms: u64,        // entry timestamp
+    pub last_buy_ms: u64,          // last buy event timestamp
+
+    // Counters (16 bytes)
+    pub buys_after_entry: u16,
+    pub sells_after_entry: u16,
+    pub unique_wallets: u8,        // approx via bloom filter
+    _pad0: [u8; 3],
+    pub confirming_vol_msol: u32,  // cumulative buy volume in milli-SOL
+    pub peak_pnl_bp: i16,         // best unrealized PnL in basis points
+    pub peak_pnl_ms_rel: u16,     // when peak occurred (relative to entry, ms)
+
+    // Signal composite (16 bytes)
+    pub composite_score: u16,      // 0-1000
+    pub kelly_trail_mult: u16,    // 8.8 fixed-point (256 = 1.0x)
+    pub phase_trail_mult: u16,    // 8.8 fixed-point (256 = 1.0x)
+    pub vol_accel_bp: i16,        // volume acceleration
+    pub price_velocity: i32,      // EMA-smoothed vSOL delta/s
+    pub peak_composite: u16,      // peak composite score seen
+    pub _pad1: u16,
+
+    // ── Cache line 1: ring buffers + bloom ────────────────────────
+
+    // Buy ring: 8 entries × (u16 timestamp_rel + u16 amount_msol) = 32 bytes
+    pub buy_ts_ring: [u16; BUY_RING_LEN],
+    pub buy_sol_ring: [u16; BUY_RING_LEN],
+
+    // Sell ring: 4 entries × (u16 timestamp_rel + u16 amount_msol) = 16 bytes
+    pub sell_ts_ring: [u16; SELL_RING_LEN],
+    pub sell_sol_ring: [u16; SELL_RING_LEN],
+
+    // Ring indices + bloom + metadata (16 bytes)
+    pub buy_ring_idx: u8,
+    pub sell_ring_idx: u8,
+    pub bloom_filter: [u8; 8],
+    pub vol_recent_msol: u16,     // buy vol in [now-2s, now] for accel
+    pub vol_prior_msol: u16,      // buy vol in [now-4s, now-2s] for accel
+
+    // Legacy compat (2 bytes)
+    pub phase: RidePhase,         // maps signal state for logging
+    pub _pad2: u8,
+}
+
+// Compile-time size check
+const _: () = assert!(core::mem::size_of::<RideState>() == 128);
+
+impl core::fmt::Debug for RideState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RideState")
+            .field("state", &self.state)
+            .field("score", &self.composite_score)
+            .field("trail_bp", &self.current_trail_bp)
+            .field("peak_mvsol", &self.peak_mvsol)
+            .field("buys", &self.buys_after_entry)
+            .field("sells", &self.sells_after_entry)
+            .field("wallets", &self.unique_wallets)
+            .finish()
+    }
+}
 
 impl RideState {
-    /// Initialize RIDE mode from current position state.
-    ///
-    /// # Arguments
-    /// * `entry_mvsol` — vSOL at original entry (mvsol units)
-    /// * `current_mvsol` — current vSOL reserves (mvsol units)
-    /// * `now_ms` — current timestamp (epoch ms)
-    /// * `buy_rate_5s` — buy count in last 5s at activation
-    /// * `config` — ride configuration
+    /// Create a new RideState for a freshly opened position.
+    #[inline(always)]
     pub fn new(
         entry_mvsol: u32,
-        current_mvsol: u32,
+        _current_mvsol: u32,  // kept for API compat
         now_ms: u64,
-        buy_rate_5s: u16,
+        _magnitude: u32,      // kept for API compat
         config: &RideConfig,
     ) -> Self {
-        // Hard floor: entry × 1.01 = entry × 10100 / 10000
-        let floor_mvsol = ((entry_mvsol as u64 * 10_100) / 10_000) as u32;
+        let initial_trail = config.trail_strong_pump_bp;
+        let trail_stop = compute_trail_stop(entry_mvsol, initial_trail);
 
-        // Initial phase is EARLY with corresponding trail
-        let initial_trail_bp = config.early_trail_bp;
-
-        // Peak starts at current price
-        let peak = current_mvsol;
-
-        // Trail stop from peak, floored at hard floor
-        let trail_from_peak = compute_trail_stop(peak, initial_trail_bp);
-        let trail_stop = trail_from_peak.max(floor_mvsol);
-
-        // Entry gain in vSOL basis points (for diagnostics)
-        let entry_gain_bp = if entry_mvsol > 0 {
-            ((current_mvsol as u64).saturating_sub(entry_mvsol as u64) * 10_000
-                / entry_mvsol as u64) as u16
-        } else {
-            0
-        };
-
-        Self {
-            phase: RidePhase::Early as u8,
-            unique_wallets: 0,
-            sells_during_ride: 0,
-            entry_mvsol,
-            peak_mvsol: peak,
-            floor_mvsol,
+        RideState {
+            // Trail
+            peak_mvsol: entry_mvsol,
             trail_stop_mvsol: trail_stop,
+            entry_mvsol,
+            current_trail_bp: initial_trail,
+            state: SignalState::StrongPump,
+            flags: 0,
+
+            // Timing
             ride_start_ms: now_ms,
             last_buy_ms: now_ms,
-            buy_rate_at_start: buy_rate_5s,
-            trail_distance_bp: initial_trail_bp,
-            flags: 0,
-            _reserved: 0,
-            total_buy_msol: 0,
-            total_sell_msol: 0,
-            recent_sell_count_3s: 0,
-            _pad1: [0; 3],
-            last_sell_msol: 0,
-            entry_gain_bp,
-            _pad2: [0; 2],
+
+            // Counters
+            buys_after_entry: 0,
+            sells_after_entry: 0,
+            unique_wallets: 0,
+            _pad0: [0; 3],
+            confirming_vol_msol: 0,
+            peak_pnl_bp: 0,
+            peak_pnl_ms_rel: 0,
+
+            // Signal
+            composite_score: 500, // neutral start
+            kelly_trail_mult: 256, // 1.0x
+            phase_trail_mult: signal_engine::PHASE_IGNITION,
+            vol_accel_bp: 0,
+            price_velocity: 0,
+            peak_composite: 500,
+            _pad1: 0,
+
+            // Ring buffers — timestamps sentinel to u16::MAX so they don't falsely count as "in window"
+            buy_ts_ring: [u16::MAX; BUY_RING_LEN],
+            buy_sol_ring: [0; BUY_RING_LEN],
+            sell_ts_ring: [u16::MAX; SELL_RING_LEN],
+            sell_sol_ring: [0; SELL_RING_LEN],
+            buy_ring_idx: 0,
+            sell_ring_idx: 0,
+            bloom_filter: [0; 8],
+            vol_recent_msol: 0,
+            vol_prior_msol: 0,
+
+            phase: RidePhase::Early,
+            _pad2: 0,
         }
     }
 
-    // -----------------------------------------------------------------------
-    // on_tick — THE HOT PATH. ≤50ns target.
-    // -----------------------------------------------------------------------
+    /// Peak composite score seen during this position's lifetime.
+    #[inline(always)]
+    pub fn peak_composite_score(&self) -> u16 {
+        self.peak_composite
+    }
 
-    /// Core hot-path tick. Called on every price update / trade event.
-    ///
-    /// Returns `RideDecision::Hold` or `RideDecision::Exit(reason)`.
-    ///
-    /// # Arguments
-    /// * `current_mvsol` — current vSOL reserves in mvsol
-    /// * `now_ms` — current timestamp (epoch ms)
-    /// * `config` — ride configuration (passed by ref, likely in L1)
+    /// Time relative to entry, clamped to u16 max (65535ms ≈ 65s).
+    #[inline(always)]
+    fn rel_ms(&self, now_ms: u64) -> u16 {
+        let delta = now_ms.saturating_sub(self.ride_start_ms);
+        delta.min(u16::MAX as u64) as u16
+    }
+
+    /// Compute buy_gap_ms (time since last buy).
+    #[inline(always)]
+    fn buy_gap_ms(&self, now_ms: u64) -> u16 {
+        let gap = now_ms.saturating_sub(self.last_buy_ms);
+        gap.min(60_000) as u16
+    }
+
+    /// Compute unrealized PnL in basis points.
+    #[inline(always)]
+    fn unrealized_pnl_bp(&self, current_mvsol: u32) -> i16 {
+        if self.entry_mvsol == 0 { return 0; }
+        let delta = current_mvsol as i64 - self.entry_mvsol as i64;
+        let bp = (delta * 10_000) / self.entry_mvsol as i64;
+        bp.max(-5000).min(5000) as i16
+    }
+
+    // ─── Signal computation ──────────────────────────────────────
+
+    /// Recompute all signals and update composite score + trail.
+    /// Called after every buy/sell event processing.
+    #[inline(always)]
+    fn recompute_signals(&mut self, current_mvsol: u32, now_ms: u64, config: &RideConfig) {
+        let now_rel = self.rel_ms(now_ms);
+
+        // Feature extraction from ring buffers
+        let buy_rate_1s = signal_engine::count_in_window(
+            &self.buy_ts_ring, self.buy_ring_idx,
+            BUY_RING_LEN as u8, now_rel, 1000,
+        );
+        let buy_rate_5s = signal_engine::count_in_window(
+            &self.buy_ts_ring, self.buy_ring_idx,
+            BUY_RING_LEN as u8, now_rel, 5000,
+        );
+        let sell_rate_5s = signal_engine::count_in_window(
+            &self.sell_ts_ring, self.sell_ring_idx,
+            SELL_RING_LEN as u8, now_rel, 5000,
+        );
+
+        let sell_pressure = signal_engine::sell_pressure_ratio(buy_rate_5s, sell_rate_5s);
+        let buy_gap = self.buy_gap_ms(now_ms);
+        let pnl_bp = self.unrealized_pnl_bp(current_mvsol);
+        let time_since_peak = now_rel.saturating_sub(self.peak_pnl_ms_rel);
+
+        // Update volume acceleration (cast u16→u32 for signal_engine)
+        self.vol_accel_bp = signal_engine::volume_acceleration_bp(
+            self.vol_recent_msol as u32, self.vol_prior_msol as u32,
+        );
+
+        // Update price velocity EMA
+        let vsol_delta = current_mvsol as i32 - self.entry_mvsol as i32;
+        let dt = now_rel.max(1);
+        self.price_velocity = signal_engine::update_price_velocity_ema(
+            self.price_velocity, vsol_delta, dt,
+        );
+
+        // Composite score
+        let weights = config.signal_weights();
+        self.composite_score = signal_engine::compute_composite_score(
+            buy_rate_1s, buy_rate_5s, sell_rate_5s,
+            self.vol_accel_bp, buy_gap, sell_pressure,
+            pnl_bp, time_since_peak,
+            self.unique_wallets, self.confirming_vol_msol,
+            &weights,
+        );
+
+        // Track peak
+        if self.composite_score > self.peak_composite {
+            self.peak_composite = self.composite_score;
+        }
+
+        // Kelly multiplier
+        let kelly_cfg = config.kelly_config();
+        self.kelly_trail_mult = signal_engine::compute_kelly_multiplier(
+            self.buys_after_entry, self.confirming_vol_msol,
+            self.sells_after_entry, &kelly_cfg,
+        );
+
+        // Lifecycle multiplier
+        let lifecycle_cfg = config.lifecycle_config();
+        self.phase_trail_mult = signal_engine::compute_lifecycle_multiplier(
+            self.buys_after_entry, self.confirming_vol_msol,
+            self.unique_wallets, buy_rate_1s, &lifecycle_cfg,
+        );
+
+        // State transition based on composite score
+        let new_state = if self.composite_score >= config.signal_strong_threshold {
+            SignalState::StrongPump
+        } else if self.composite_score >= config.signal_sustained_threshold {
+            SignalState::Sustained
+        } else if self.composite_score >= config.signal_weakening_threshold {
+            SignalState::Weakening
+        } else {
+            SignalState::Exit
+        };
+        self.state = new_state;
+
+        // Map to legacy phase for logging compat
+        self.phase = match new_state {
+            SignalState::StrongPump => RidePhase::Early,
+            SignalState::Sustained  => RidePhase::Momentum,
+            SignalState::Weakening | SignalState::Exit => RidePhase::Tighten,
+        };
+
+        // Dynamic trail computation
+        let base_trail = match self.state {
+            SignalState::StrongPump => config.trail_strong_pump_bp,
+            SignalState::Sustained  => config.trail_sustained_bp,
+            SignalState::Weakening  => config.trail_weakening_bp,
+            SignalState::Exit       => 0, // will trigger exit in on_tick
+        };
+
+        // trail_bp = (base × kelly_mult × phase_mult) >> 16
+        let trail = (base_trail as u32)
+            .wrapping_mul(self.kelly_trail_mult as u32)
+            .wrapping_mul(self.phase_trail_mult as u32)
+            >> 16;
+        let trail = trail.max(config.kelly_min_trail_bp as u32)
+                         .min(config.kelly_max_trail_bp as u32);
+        self.current_trail_bp = trail as u16;
+
+        // Update peak PnL tracking
+        if pnl_bp > self.peak_pnl_bp {
+            self.peak_pnl_bp = pnl_bp;
+            self.peak_pnl_ms_rel = now_rel;
+        }
+    }
+
+    // ─── Buy event processing ────────────────────────────────────
+
+    /// Process a buy event. Updates ring buffers, bloom filter, counters.
+    #[inline(always)]
+    pub fn on_buy_event(&mut self, sol_amount_mvsol: u32, now_ms: u64, wallet_hash: u64) {
+        self.buys_after_entry = self.buys_after_entry.saturating_add(1);
+        self.last_buy_ms = now_ms;
+
+        // Accumulate confirming volume (milli-SOL)
+        let amount_msol = sol_amount_mvsol.min(u16::MAX as u32) as u16;
+        self.confirming_vol_msol = self.confirming_vol_msol.saturating_add(sol_amount_mvsol);
+
+        // Update volume windows for acceleration calc
+        // Simple approach: accumulate into vol_recent; rotation happens in recompute_signals
+        self.vol_recent_msol = self.vol_recent_msol.saturating_add(amount_msol);
+
+        // Write to buy ring buffer
+        let now_rel = self.rel_ms(now_ms);
+        let idx = (self.buy_ring_idx as usize) % BUY_RING_LEN;
+        self.buy_ts_ring[idx] = now_rel;
+        self.buy_sol_ring[idx] = amount_msol;
+        self.buy_ring_idx = self.buy_ring_idx.wrapping_add(1);
+
+        // Bloom filter for unique wallets
+        signal_engine::bloom_insert(&mut self.bloom_filter, wallet_hash);
+        self.unique_wallets = signal_engine::bloom_count(&self.bloom_filter);
+    }
+
+    // ─── Sell event processing ───────────────────────────────────
+
+    /// Process a sell event. Returns Some(reason) if should exit immediately.
+    #[inline(always)]
+    pub fn on_sell_event(
+        &mut self,
+        sol_amount_mvsol: u32,
+        now_ms: u64,
+        config: &RideConfig,
+    ) -> Option<RideExitReason> {
+        self.sells_after_entry = self.sells_after_entry.saturating_add(1);
+
+        let amount_msol = sol_amount_mvsol.min(u16::MAX as u32) as u16;
+        let now_rel = self.rel_ms(now_ms);
+
+        // Write to sell ring
+        let idx = (self.sell_ring_idx as usize) % SELL_RING_LEN;
+        self.sell_ts_ring[idx] = now_rel;
+        self.sell_sol_ring[idx] = amount_msol;
+        self.sell_ring_idx = self.sell_ring_idx.wrapping_add(1);
+
+        // ── Emergency checks (override everything) ──
+
+        // Creator sell flag
+        if self.flags & ride_flags::CREATOR_SELL != 0 {
+            return Some(RideExitReason::CreatorSell);
+        }
+
+        // Whale exit: single sell > threshold
+        let whale_threshold_msol = (config.whale_exit_lamports / 1_000_000) as u32;
+        if sol_amount_mvsol > whale_threshold_msol {
+            self.flags |= ride_flags::WHALE_EXIT_SEEN;
+            return Some(RideExitReason::WhaleExit);
+        }
+
+        // Sell cascade: check if N sells in window
+        let cascade_count = signal_engine::count_in_window(
+            &self.sell_ts_ring, self.sell_ring_idx,
+            SELL_RING_LEN as u8, now_rel, SELL_CASCADE_WINDOW_MS,
+        );
+        if cascade_count >= SELL_CASCADE_COUNT {
+            self.flags |= ride_flags::SELL_CASCADE_SEEN;
+            return Some(RideExitReason::SellCascade);
+        }
+
+        None
+    }
+
+    // ─── Tick processing (called after buy or sell processing) ───
+
+    /// Main tick: recompute signals, check trail stop, check emergency exits.
+    /// Called after on_buy_event or on_sell_event, and periodically.
     #[inline(always)]
     pub fn on_tick(
         &mut self,
@@ -331,110 +555,50 @@ impl RideState {
         now_ms: u64,
         config: &RideConfig,
     ) -> RideDecision {
-        let elapsed_ms = now_ms.saturating_sub(self.ride_start_ms);
+        // ── Emergency overrides (highest priority) ──
 
-        // ── 1. HARD FLOOR: price at or below entry × 1.01 ──
-        if current_mvsol <= self.floor_mvsol {
-            return RideDecision::Exit(RideExitReason::HardFloor);
-        }
-
-        // ── 2. MAX HOLD: 300s safety backstop ──
-        if elapsed_ms >= config.max_hold_ride_ms {
-            return RideDecision::Exit(RideExitReason::MaxHold);
-        }
-
-        // ── 3. CREATOR SELL: flagged by on_sell_event / mark_creator_sell ──
+        // Creator sell
         if self.flags & ride_flags::CREATOR_SELL != 0 {
             return RideDecision::Exit(RideExitReason::CreatorSell);
         }
 
-        // ── 4. SELL CASCADE: flagged by on_sell_event ──
-        if self.recent_sell_count_3s >= config.sell_cascade_count {
-            return RideDecision::Exit(RideExitReason::SellCascade);
+        // Hard floor: price below entry
+        if HARD_FLOOR_ENABLED && current_mvsol < self.entry_mvsol {
+            return RideDecision::Exit(RideExitReason::HardFloor);
         }
 
-        // ── 5. BUY GAP: 10s+ silence = dead pump → EXIT immediately ──
-        let gap_ms = now_ms.saturating_sub(self.last_buy_ms);
-        if gap_ms >= config.buy_gap_exit_ms {
+        // Max hold safety backstop
+        if now_ms.saturating_sub(self.ride_start_ms) >= config.max_hold_ms.max(MAX_HOLD_RIDE_MS) {
+            return RideDecision::Exit(RideExitReason::MaxHold);
+        }
+
+        // Buy gap timeout: no buy in > threshold
+        let gap = self.buy_gap_ms(now_ms);
+        if gap >= BUY_GAP_EXIT_MS {
             return RideDecision::Exit(RideExitReason::BuyGapTimeout);
         }
 
-        // ── 6. UPDATE PEAK (high water mark — only ratchets up) ──
+        // ── Recompute signals ──
+        self.recompute_signals(current_mvsol, now_ms, config);
+
+        // ── Signal-driven exit ──
+        if self.state == SignalState::Exit {
+            return RideDecision::Exit(RideExitReason::SignalExit);
+        }
+
+        // ── Update peak and trail stop ──
         if current_mvsol > self.peak_mvsol {
             self.peak_mvsol = current_mvsol;
         }
 
-        // ── 7. PHASE TRANSITIONS (one-way: Early → Momentum → Tighten) ──
-        let mut base_trail_bp = self.trail_distance_bp;
-
-        if self.phase == RidePhase::Early as u8 {
-            if elapsed_ms >= config.early_to_momentum_ms
-                || gain_meets_threshold(
-                    current_mvsol,
-                    self.entry_mvsol,
-                    config.gain_momentum_vsol_fp,
-                )
-            {
-                self.phase = RidePhase::Momentum as u8;
-                base_trail_bp = config.momentum_trail_bp;
-            }
+        // Recompute trail stop from new peak and dynamic trail
+        let new_stop = compute_trail_stop(self.peak_mvsol, self.current_trail_bp);
+        // Trail stop can only ratchet UP (protect more profit)
+        if new_stop > self.trail_stop_mvsol {
+            self.trail_stop_mvsol = new_stop;
         }
 
-        if self.phase == RidePhase::Momentum as u8 {
-            if elapsed_ms >= config.momentum_to_tighten_ms
-                || gain_meets_threshold(
-                    current_mvsol,
-                    self.entry_mvsol,
-                    config.gain_tighten_vsol_fp,
-                )
-            {
-                self.phase = RidePhase::Tighten as u8;
-                base_trail_bp = config.tighten_trail_bp;
-            }
-        }
-
-        // ── 8. ADAPTIVE TRAIL TIGHTENING (signal stacking) ──
-        let mut effective_trail_bp = base_trail_bp;
-
-        // 8a. Sell pressure: total_sell_msol > total_buy_msol / 2 → tighten 200bp
-        if self.total_buy_msol > 0
-            && (self.total_sell_msol as u64 * 2) > self.total_buy_msol as u64
-        {
-            effective_trail_bp =
-                effective_trail_bp.saturating_sub(config.sell_pressure_tighten_bp);
-            self.flags |= ride_flags::SELL_PRESSURE_SPIKE;
-        }
-
-        // 8b. Whale exit: single sell > whale_exit_msol seen → tighten to emergency
-        if self.flags & ride_flags::WHALE_EXIT_SEEN != 0 {
-            effective_trail_bp = effective_trail_bp.min(config.emergency_trail_bp);
-        }
-
-        // 8c. Buy gap > 5s (not yet at 10s exit) → tighten 200bp
-        if gap_ms >= config.buy_gap_tighten_ms {
-            effective_trail_bp =
-                effective_trail_bp.saturating_sub(config.buy_gap_tighten_bp);
-            self.flags |= ride_flags::BUY_GAP_5S;
-        }
-
-        // Floor: never tighter than emergency trail
-        if effective_trail_bp < config.emergency_trail_bp {
-            effective_trail_bp = config.emergency_trail_bp;
-        }
-
-        // Store effective trail for diagnostics
-        self.trail_distance_bp = effective_trail_bp;
-
-        // ── 9. COMPUTE TRAIL STOP (ratchet: only increases) ──
-        let new_trail_stop = compute_trail_stop(self.peak_mvsol, effective_trail_bp);
-        // Never below hard floor
-        let new_trail_stop = new_trail_stop.max(self.floor_mvsol);
-        // Ratchet up only — trail stop can never decrease
-        if new_trail_stop > self.trail_stop_mvsol {
-            self.trail_stop_mvsol = new_trail_stop;
-        }
-
-        // ── 10. TRAIL STOP CHECK ──
+        // ── Check trailing stop ──
         if current_mvsol <= self.trail_stop_mvsol {
             return RideDecision::Exit(RideExitReason::TrailingStop);
         }
@@ -442,205 +606,176 @@ impl RideState {
         RideDecision::Hold
     }
 
-    // -----------------------------------------------------------------------
-    // on_buy_event — update buy tracking
-    // -----------------------------------------------------------------------
-
-    /// Process a confirming buy event during RIDE mode.
-    ///
-    /// # Arguments
-    /// * `sol_amount_mvsol` — size of the buy in mvsol
-    /// * `now_ms` — timestamp
-    #[inline]
-    pub fn on_buy_event(&mut self, sol_amount_mvsol: u32, now_ms: u64) {
-        // Update last buy time (resets gap timer)
-        self.last_buy_ms = now_ms;
-
-        // Accumulate buy volume
-        self.total_buy_msol = self.total_buy_msol.saturating_add(sol_amount_mvsol);
-
-        // Clear buy-gap flag (fresh buy = momentum renewed)
-        self.flags &= !ride_flags::BUY_GAP_5S;
-    }
-
-    // -----------------------------------------------------------------------
-    // on_sell_event — whale/cascade detection
-    // -----------------------------------------------------------------------
-
-    /// Process a sell event during RIDE mode. Returns `Some(reason)` for
-    /// emergency exits that override the trailing stop, `None` to continue.
-    ///
-    /// # Arguments
-    /// * `sol_amount_mvsol` — size of the sell in mvsol
-    /// * `now_ms` — timestamp
-    /// * `config` — ride configuration
-    pub fn on_sell_event(
-        &mut self,
-        sol_amount_mvsol: u32,
-        now_ms: u64,
-        config: &RideConfig,
-    ) -> Option<RideExitReason> {
-        // ── Emergency: Whale dump (single sell >= 2 SOL = 2000 mvsol) ──
-        if sol_amount_mvsol >= config.whale_dump_exit_msol {
-            self.flags |= ride_flags::EMERGENCY_EXIT;
-            return Some(RideExitReason::WhaleExit);
-        }
-
-        // ── Track sell volume ──
-        self.total_sell_msol = self.total_sell_msol.saturating_add(sol_amount_mvsol);
-        self.sells_during_ride = self.sells_during_ride.saturating_add(1);
-        self.last_sell_msol = sol_amount_mvsol;
-
-        // ── Flag whale exit (single sell >= 1 SOL) for trail tightening ──
-        if sol_amount_mvsol >= config.whale_exit_msol {
-            self.flags |= ride_flags::WHALE_EXIT_SEEN;
-        }
-
-        // ── Sell cascade detection: N sells in 3s window ──
-        // _pad1[0] stores the window start as offset seconds from ride_start
-        let elapsed_s = ((now_ms.saturating_sub(self.ride_start_ms)) / 1000) as u8;
-        let window_start_s = self._pad1[0];
-
-        if elapsed_s.wrapping_sub(window_start_s) > 3 {
-            // Window expired — start new window
-            self.recent_sell_count_3s = 1;
-            self._pad1[0] = elapsed_s;
-        } else {
-            self.recent_sell_count_3s = self.recent_sell_count_3s.saturating_add(1);
-        }
-
-        if self.recent_sell_count_3s >= config.sell_cascade_count {
-            self.flags |= ride_flags::EMERGENCY_EXIT;
-            return Some(RideExitReason::SellCascade);
-        }
-
-        None
-    }
-
-    /// Mark creator sell flag. Called externally when creator wallet is detected.
-    /// The next `on_tick` call will return `Exit(CreatorSell)`.
-    #[inline]
+    /// Flag creator sell for immediate exit on next tick.
+    #[inline(always)]
     pub fn mark_creator_sell(&mut self) {
         self.flags |= ride_flags::CREATOR_SELL;
     }
 }
 
-// ===========================================================================
+// ---------------------------------------------------------------------------
 // Tests
-// ===========================================================================
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn default_config() -> RideConfig {
-        RideConfig::default()
-    }
-
-    // ── Size assertion (compile-time already, but also runtime for visibility) ──
-
-    #[test]
-    fn test_ride_state_size() {
-        let size = std::mem::size_of::<RideState>();
-        assert!(size <= 128, "RideState should fit in 2 cache lines max, got {} bytes", size);
-    }
-
-    #[test]
-    fn test_ride_state_alignment() {
-        assert!(std::mem::align_of::<RideState>() <= 8);
-    }
-
-    // ── Unit conversion ──
-
-    #[test]
-    fn test_lamports_to_mvsol() {
-        assert_eq!(lamports_to_mvsol(1_000_000_000), 1_000); // 1 SOL
-        assert_eq!(lamports_to_mvsol(1_000_000), 1);          // 0.001 SOL
-        assert_eq!(lamports_to_mvsol(1_499_999), 1);          // rounds down
-        assert_eq!(lamports_to_mvsol(1_500_000), 2);          // rounds up
-        assert_eq!(lamports_to_mvsol(0), 0);
-        assert_eq!(lamports_to_mvsol(50_000_000_000), 50_000); // 50 SOL
-        assert_eq!(lamports_to_mvsol(115_000_000_000), 115_000); // 115 SOL (graduation)
-    }
-
-    #[test]
-    fn test_mvsol_to_lamports() {
-        assert_eq!(mvsol_to_lamports(1_000), 1_000_000_000);  // 1 SOL
-        assert_eq!(mvsol_to_lamports(1), 1_000_000);           // 0.001 SOL
-        assert_eq!(mvsol_to_lamports(0), 0);
-        assert_eq!(mvsol_to_lamports(50_000), 50_000_000_000);
-    }
-
-    #[test]
-    fn test_roundtrip_conversion() {
-        let original = 42_123_456_789u64; // ~42.123 SOL
-        let mvsol = lamports_to_mvsol(original);
-        assert_eq!(mvsol, 42_123);
-        let back = mvsol_to_lamports(mvsol);
-        assert_eq!(back, 42_123_000_000);
-        assert!((original as i64 - back as i64).unsigned_abs() < 1_000_000);
-    }
-
-    // ── Trail stop computation ──
-
-    #[test]
-    fn test_compute_trail_stop_early() {
-        // peak=50_000 (50 SOL), trail=408 bp
-        // stop = 50_000 × 9592 / 10_000 = 47_960
-        let stop = compute_trail_stop(50_000, TRAIL_EARLY_BP);
-        assert_eq!(stop, 47_960);
-
-        // Verify price trail ≈ 8%
-        let ratio = 47_960.0 / 50_000.0;
-        let price_trail = 1.0 - ratio * ratio;
-        assert!(
-            (price_trail - 0.08_f64).abs() < 0.002,
-            "Expected ~8% price trail, got {:.4}%",
-            price_trail * 100.0_f64
-        );
-    }
-
-    #[test]
-    fn test_compute_trail_stop_all_phases() {
-        let peak: u32 = 60_000; // 60 SOL
-
-        // EARLY: 408 bp → stop = 60000 × 9592 / 10000 = 57552
-        assert_eq!(compute_trail_stop(peak, TRAIL_EARLY_BP), 57_552);
-
-        // MOMENTUM: 305 bp → stop = 60000 × 9695 / 10000 = 58170
-        assert_eq!(compute_trail_stop(peak, TRAIL_MOMENTUM_BP), 58_170);
-
-        // TIGHTEN: 202 bp → stop = 60000 × 9798 / 10000 = 58788
-        assert_eq!(compute_trail_stop(peak, TRAIL_TIGHTEN_BP), 58_788);
-
-        // EMERGENCY: 101 bp → stop = 60000 × 9899 / 10000 = 59394
-        assert_eq!(compute_trail_stop(peak, TRAIL_EMERGENCY_BP), 59_394);
-    }
-
-    #[test]
-    fn test_compute_trail_stop_price_verification() {
-        // Verify each phase trail distance corresponds to correct price trail.
-        // Price trail = 1 - (stop/peak)²
-        let peak = 100_000u32; // 100 SOL, easy math
-
-        let cases: &[(u16, f64)] = &[
-            (TRAIL_EARLY_BP, 0.08),     // 8%
-            (TRAIL_MOMENTUM_BP, 0.06),  // 6%
-            (TRAIL_TIGHTEN_BP, 0.04),   // 4%
-            (TRAIL_EMERGENCY_BP, 0.02), // 2%
-        ];
-
-        for &(trail_bp, expected_price_trail) in cases {
-            let stop = compute_trail_stop(peak, trail_bp);
-            let ratio = stop as f64 / peak as f64;
-            let actual_price_trail = 1.0 - ratio * ratio;
-            assert!(
-                (actual_price_trail - expected_price_trail).abs() < 0.003,
-                "trail_bp={}: expected {:.1}% price trail, got {:.4}%",
-                trail_bp,
-                expected_price_trail * 100.0,
-                actual_price_trail * 100.0,
-            );
+    fn test_config() -> super::super::config::RideConfig {
+        super::super::config::RideConfig {
+            min_confirming_buys: 2,
+            min_confirming_lamports: 500_000_000,
+            min_gain_vsol_fp: 10200,
+            max_curve_pct_x100: 8000,
+            early_trail_bp: 408,
+            momentum_trail_bp: 305,
+            tighten_trail_bp: 202,
+            emergency_trail_bp: 101,
+            early_to_momentum_ms: 15_000,
+            momentum_to_tighten_ms: 60_000,
+            max_hold_ms: 300_000,
+            gain_momentum_vsol_fp: 10724,
+            gain_tighten_vsol_fp: 12247,
+            hard_floor_vsol_fp: 9800,
+            whale_exit_lamports: 2_000_000_000,
+            buy_gap_tighten_ms: 5_000,
+            buy_gap_exit_ms: 10_000,
+            sell_cascade_count: 3,
+            sell_pressure_tighten_bp: 100,
+            // Signal v2 fields
+            signal_strong_threshold: 700,
+            signal_sustained_threshold: 400,
+            signal_weakening_threshold: 200,
+            w_buy_rate_1s: 24,
+            w_buy_rate_5s: 16,
+            w_sell_rate_5s: -20,
+            w_vol_accel_shift: 6,
+            w_buy_gap_divisor: 150,
+            w_sell_pressure_shift: 2,
+            w_pnl_shift: 3,
+            w_time_since_peak_divisor: 200,
+            w_unique_wallets: 14,
+            w_confirm_vol_shift: 8,
+            kelly_baseline_f_permille: 671,
+            kelly_min_trail_bp: 50,
+            kelly_max_trail_bp: 800,
+            lifecycle_accel_min_buys: 5,
+            lifecycle_accel_min_sol_msol: 2000,
+            lifecycle_momentum_min_buys: 15,
+            lifecycle_momentum_min_sol_msol: 10000,
+            trail_strong_pump_bp: 500,
+            trail_sustained_bp: 350,
+            trail_weakening_bp: 200,
         }
+    }
+
+    #[test]
+    fn test_struct_size() {
+        assert_eq!(core::mem::size_of::<RideState>(), 128);
+    }
+
+    #[test]
+    fn test_new_state_is_strong_pump() {
+        let cfg = test_config();
+        let rs = RideState::new(30_000, 30_000, 1000, 0, &cfg);
+        assert_eq!(rs.state, SignalState::StrongPump);
+        assert_eq!(rs.entry_mvsol, 30_000);
+        assert_eq!(rs.peak_mvsol, 30_000);
+        assert_eq!(rs.buys_after_entry, 0);
+        assert_eq!(rs.sells_after_entry, 0);
+        assert_eq!(rs.composite_score, 500);
+    }
+
+    #[test]
+    fn test_hard_floor_exit() {
+        let cfg = test_config();
+        let mut rs = RideState::new(30_000, 30_000, 1000, 0, &cfg);
+        // Price drops below entry → hard floor exit
+        let decision = rs.on_tick(29_999, 1100, &cfg);
+        assert_eq!(decision, RideDecision::Exit(RideExitReason::HardFloor));
+    }
+
+    #[test]
+    fn test_hold_on_price_above_entry() {
+        let cfg = test_config();
+        let mut rs = RideState::new(30_000, 30_000, 1000, 0, &cfg);
+        // Feed a buy to update last_buy_ms
+        rs.on_buy_event(500, 1050, 0x12345678);
+        // Price above entry → hold
+        let decision = rs.on_tick(31_000, 1100, &cfg);
+        assert_eq!(decision, RideDecision::Hold);
+    }
+
+    #[test]
+    fn test_buy_gap_timeout() {
+        let cfg = test_config();
+        let mut rs = RideState::new(30_000, 30_000, 1000, 0, &cfg);
+        rs.on_buy_event(500, 1000, 0xAABB);
+        // 11 seconds with no buy → gap timeout
+        let decision = rs.on_tick(30_500, 12_000, &cfg);
+        assert_eq!(decision, RideDecision::Exit(RideExitReason::BuyGapTimeout));
+    }
+
+    #[test]
+    fn test_creator_sell_immediate_exit() {
+        let cfg = test_config();
+        let mut rs = RideState::new(30_000, 30_000, 1000, 0, &cfg);
+        rs.on_buy_event(500, 1050, 0x1111);
+        rs.mark_creator_sell();
+        let decision = rs.on_tick(31_000, 1100, &cfg);
+        assert_eq!(decision, RideDecision::Exit(RideExitReason::CreatorSell));
+    }
+
+    #[test]
+    fn test_whale_exit() {
+        let cfg = test_config();
+        let mut rs = RideState::new(30_000, 30_000, 1000, 0, &cfg);
+        // Sell > 2 SOL (2000 mvsol) → whale exit
+        let result = rs.on_sell_event(2_500, 1100, &cfg);
+        assert_eq!(result, Some(RideExitReason::WhaleExit));
+    }
+
+    #[test]
+    fn test_bloom_unique_wallets() {
+        let cfg = test_config();
+        let mut rs = RideState::new(30_000, 30_000, 1000, 0, &cfg);
+        rs.on_buy_event(100, 1010, 0xAAAA_0000_0000_0001);
+        rs.on_buy_event(100, 1020, 0xBBBB_0000_0000_0002);
+        rs.on_buy_event(100, 1030, 0xCCCC_0000_0000_0003);
+        // Should detect approximately 3 unique wallets
+        assert!(rs.unique_wallets >= 2);
+    }
+
+    #[test]
+    fn test_trail_ratchets_up() {
+        let cfg = test_config();
+        let mut rs = RideState::new(30_000, 30_000, 1000, 0, &cfg);
+        rs.on_buy_event(500, 1010, 0x1111);
+
+        // Price goes up → trail stop ratchets up
+        let _ = rs.on_tick(32_000, 1050, &cfg);
+        let stop1 = rs.trail_stop_mvsol;
+
+        rs.on_buy_event(500, 1060, 0x2222);
+        let _ = rs.on_tick(33_000, 1070, &cfg);
+        let stop2 = rs.trail_stop_mvsol;
+
+        assert!(stop2 >= stop1, "Trail stop should only go up: {} >= {}", stop2, stop1);
+    }
+
+    #[test]
+    fn test_compute_trail_stop_math() {
+        // peak=30000, trail=500bp → drop = 30000*500/10000 = 1500
+        let stop = compute_trail_stop(30_000, 500);
+        assert_eq!(stop, 28_500);
+    }
+
+    #[test]
+    fn test_lamports_mvsol_roundtrip() {
+        let lamports: u64 = 5_000_000_000; // 5 SOL
+        let mvsol = lamports_to_mvsol(lamports);
+        assert_eq!(mvsol, 5_000);
+        let back = mvsol_to_lamports(mvsol);
+        assert_eq!(back, lamports);
     }
 }
