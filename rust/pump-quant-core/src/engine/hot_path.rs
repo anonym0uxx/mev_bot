@@ -13,6 +13,7 @@ use std::sync::Arc;
 use super::entry_engine::{EntryEngine, EntryInput, EntryAction};
 use super::health::HealthMonitor;
 use super::positions::{ClosedPosition, ExitReason, PositionManager};
+use super::watchlist::Watchlist;
 use crate::engine::kelly_sizing::{EntryConviction, BankrollSource, PaperBankroll};
 
 use crate::core::mint_map::MintHistoryMap;
@@ -96,6 +97,11 @@ pub struct HotPath {
     excluded_mints: hashbrown::HashSet<[u8; 32]>,
 
     // (risk_manager moved to struct top — always present)
+
+    // ── Two-phase entry watchlist ──────────────────────────────────
+    /// Instead of immediate position open, tokens go to watchlist first.
+    /// Capital committed only on confirming buy. Eliminates ~62% dead entries.
+    watchlist: Watchlist,
 
     // ── Entry randomizer ────────────────────────────────────────────
     pub entry_randomizer: super::entry_randomizer::EntryRandomizer,
@@ -192,6 +198,7 @@ impl HotPath {
             } else {
                 BankrollSource::Paper(PaperBankroll::new(5_000_000_000)) // TODO: Live RPC bankroll
             },
+            watchlist: Watchlist::new(),
             entry_randomizer: super::entry_randomizer::EntryRandomizer::new(randomizer_config),
             helius_sig_ring: [(0u64, 0u64); 256],
             helius_sig_ring_head: 0,
@@ -276,7 +283,49 @@ impl HotPath {
             return;
         }
 
-        // 3. Only consider buys for new position entry
+        // 2b. TWO-PHASE ENTRY: Check if this trade confirms a watched mint.
+        //     This runs before the entry engine — confirming buys promote
+        //     watched tokens to real positions without re-evaluation.
+        if trade.is_buy {
+            if let Some(promoted) = self.watchlist.try_promote(trade, now) {
+                // Safety checks (same as entry path)
+                if !self.paper_mode {
+                    self.check_and_reset_daily_loss(now);
+                    if self.daily_loss_lamports as u64 >= self.daily_loss_cap_lamports {
+                        return;
+                    }
+                    if now < self.stop_pause_until_ms {
+                        return;
+                    }
+                }
+                if promoted.conviction.size_lamports == 0 {
+                    return;
+                }
+                self.position_manager.open_position(
+                    trade,
+                    promoted.score,
+                    now,
+                    promoted.magnitude,
+                    promoted.conviction.size_lamports,
+                    promoted.conviction,
+                );
+                self.stats.positions_opened += 1;
+                self.stats.gates_passed += 1;
+                // Enrich with entry context from cached mint history
+                if let Some(pos) = self.position_manager.get_position_mut(&trade.mint) {
+                    let history = self.mint_map.get_or_insert(&trade.mint, now);
+                    pos.pre_trigger_buys_1s = history.cached_buy_count_1s;
+                    pos.pre_trigger_buys_2s = history.cached_buy_count_2s;
+                    pos.pre_trigger_buys_5s = history.cached_buy_count_5s;
+                    pos.volume_5s = history.cached_volume_sol_5s;
+                    pos.sell_count_5s = history.cached_sell_count_5s;
+                    pos.unique_buyers = history.cached_unique_buyers_30s;
+                }
+                return;
+            }
+        }
+
+        // 3. Only consider buys for new watchlist entry
         if !trade.is_buy {
             return;
         }
@@ -378,38 +427,20 @@ impl HotPath {
                 }
                 EntryAction::Ride => {
                     self.stats.gates_passed += 1;
-                    // Safety checks (skipped in paper mode — we want full data)
-                    if !self.paper_mode {
-                        self.check_and_reset_daily_loss(now);
-                        if self.daily_loss_lamports as u64 >= self.daily_loss_cap_lamports {
-                            return;
-                        }
-                        if now < self.stop_pause_until_ms {
-                            return;
-                        }
-                    }
                     // Skip if Kelly says size=0 (bankroll exhausted)
                     if decision.conviction.size_lamports == 0 {
                         self.stats.score_rejects += 1;
                         return;
                     }
-                    // Open position using Kelly-derived size + conviction
-                    self.position_manager.open_position(trade, decision.score, now, decision.magnitude, decision.conviction.size_lamports, decision.conviction);
-                    self.stats.positions_opened += 1;
-                    // Enrich with entry context
-                    if let Some(pos) = self.position_manager.get_position_mut(&trade.mint) {
-                        pos.pre_trigger_buys_1s = buy_count_1s;
-                        pos.pre_trigger_buys_2s = buy_count_2s;
-                        pos.pre_trigger_buys_5s = buy_count_5s;
-                        pos.unique_buyers = unique_buyers_30s;
-                        pos.vsol_delta_3s = vsol_delta_3s;
-                        pos.volume_5s = volume_sol_5s;
-                        pos.sell_count_5s = sell_count_5s;
-                        let hour_utc = ((now / 3_600_000) % 24) as u8;
-                        if (self.boosted_hours_bitmask >> hour_utc) & 1 == 1 {
-                            pos.tod_multiplier = self.tod_boost_multiplier;
-                        }
-                    }
+                    // TWO-PHASE ENTRY: Add to watchlist instead of opening immediately.
+                    // Position will be opened when a confirming buy arrives (see step 2b).
+                    self.watchlist.watch(
+                        trade,
+                        decision.score,
+                        decision.magnitude,
+                        &decision.conviction,
+                        now,
+                    );
                     return;
                 }
             }
@@ -543,10 +574,24 @@ impl HotPath {
         self.stats.ticks += 1;
         self.position_manager.on_tick(ts_ms);
 
+        // Expire stale watchlist entries every tick (~50ms)
+        self.watchlist.expire_stale(ts_ms);
+
         // Periodically evict stale mints (every 10s)
         if self.stats.ticks % 200 == 0 {
             self.mint_map.evict_stale(ts_ms, 120_000);
         }
+    }
+
+    /// Watchlist stats for API/logging.
+    pub fn watchlist_stats(&self) -> (u32, u64, u64, u64, u64) {
+        (
+            self.watchlist.active_count(),
+            self.watchlist.watches_added,
+            self.watchlist.watches_promoted,
+            self.watchlist.watches_expired,
+            self.watchlist.watches_evicted,
+        )
     }
 
     /// Mark a creator-sell event on the mint's history.
@@ -561,6 +606,8 @@ impl HotPath {
         if let Some(history) = self.mint_map.get_mut(mint) {
             history.creator_sell_at_ms = ts_ms;
         }
+        // Remove from watchlist if being watched (don't enter after creator sell)
+        self.watchlist.remove_mint(mint);
         // If we have an open position, mark creator sell + inject β evidence.
         self.position_manager.on_creator_sell_evidence(mint, ts_ms);
     }

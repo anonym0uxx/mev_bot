@@ -14,6 +14,7 @@ pub mod positions;
 pub mod regime;
 pub mod ride_state;
 pub mod risk_manager;
+pub mod watchlist;
 pub mod scorer;
 pub mod scoring;
 pub mod signal_engine;
