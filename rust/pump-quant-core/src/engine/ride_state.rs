@@ -591,7 +591,10 @@ impl RideState {
         self.recompute_signals(current_mvsol, now_ms, config);
 
         // ── Signal-driven exit ──
-        if self.state == SignalState::Exit {
+        // Grace period: don't signal-exit until at least 1 confirming buy.
+        // On entry, ring buffers are empty → score=100 (below Exit threshold).
+        // Without this guard, EVERY position would instant-exit on first tick.
+        if self.state == SignalState::Exit && self.buys_after_entry >= 1 {
             return RideDecision::Exit(RideExitReason::SignalExit);
         }
 
