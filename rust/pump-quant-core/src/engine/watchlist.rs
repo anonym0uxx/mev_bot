@@ -26,9 +26,10 @@ use crate::feeds::TradeEvent;
 /// Maximum watchlist capacity. 64 slots × 64 bytes = 4KB = fits L1.
 const WATCHLIST_CAPACITY: usize = 64;
 
-/// Default expiry: 2000ms. Token must receive a confirming buy within this
-/// window or the watchlist slot is recycled.
-const DEFAULT_EXPIRY_MS: u64 = 2_000;
+/// Default expiry: 1500ms. Token must receive 2 confirming buys within this
+/// window or the watchlist slot is recycled. Reduced from 2000ms — memecoins
+/// that don't confirm in 1.5s are statistically dead-on-arrival.
+const DEFAULT_EXPIRY_MS: u64 = 1_500;
 
 /// Minimum SOL amount for a confirming buy to trigger promotion (mvsol).
 /// Filters out dust buys that don't represent real interest.
@@ -340,6 +341,14 @@ impl Watchlist {
             }
         }
 
+        // ── vSOL Velocity Check ───────────────────────────────────
+        // Reject if price has FALLEN since watch time (falling-knife protection).
+        // current_vsol_mvsol < entry_vsol means the bonding curve has less SOL now
+        // than when we first spotted it — sellers are dominating.
+        if entry_vsol > 0 && current_vsol_mvsol < entry_vsol {
+            return None;
+        }
+
         // ── 2-Buy State Machine ────────────────────────────────────
         if slot.state == 1 {
             // State 1 (watching) → first confirming buy
@@ -570,6 +579,28 @@ mod tests {
     }
 
     #[test]
+    fn test_falling_knife_rejected() {
+        let mut wl = Watchlist::new();
+        let mint = [0xAAu8; 32];
+
+        // Watch at 30 SOL vSOL reserves
+        let trade1 = make_trade(mint, [0xBBu8; 64], 100_000_000, 30_000_000_000, true);
+        wl.watch(&trade1, 0.75, 60.0, &default_conviction(), 1000);
+
+        // Confirming buy but vSOL has FALLEN (29.5 SOL < 30 SOL = price dropped)
+        let trade2 = make_trade(mint, [0xCCu8; 64], 50_000_000, 29_500_000_000, true);
+        assert!(wl.try_promote(&trade2, 1100).is_none(), "falling-knife should be rejected");
+
+        // But a buy where vSOL has risen should still work (state 1 → 3)
+        let trade3 = make_trade(mint, [0xDDu8; 64], 50_000_000, 30_500_000_000, true);
+        assert!(wl.try_promote(&trade3, 1200).is_none(), "first buy goes to partial_confirm");
+
+        // Second buy with rising vSOL → promote
+        let trade4 = make_trade(mint, [0xEEu8; 64], 50_000_000, 31_000_000_000, true);
+        assert!(wl.try_promote(&trade4, 1300).is_some(), "second buy should promote");
+    }
+
+    #[test]
     fn test_partial_confirm_expires() {
         let mut wl = Watchlist::new();
         let mint = [0xAAu8; 32];
@@ -622,9 +653,9 @@ mod tests {
         let trade = make_trade(mint, [0xBBu8; 64], 100_000_000, 30_000_000_000, true);
         wl.watch(&trade, 0.75, 60.0, &default_conviction(), 1000);
 
-        // After expiry (2000ms), should not promote
+        // After expiry (1500ms), should not promote
         let trade2 = make_trade(mint, [0xCCu8; 64], 50_000_000, 30_500_000_000, true);
-        assert!(wl.try_promote(&trade2, 3100).is_none()); // 1000 + 2100 > expiry
+        assert!(wl.try_promote(&trade2, 2600).is_none()); // 1000 + 1600 > 1500ms expiry
 
         // Expire stale
         let expired = wl.expire_stale(3100);

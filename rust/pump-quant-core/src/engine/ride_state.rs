@@ -401,6 +401,9 @@ impl RideState {
             return RideDecision::Exit(RideExitReason::CreatorSell);
         }
 
+        // Compute hold_ms once — used by multiple checks below.
+        let hold_ms = now_ms.saturating_sub(self.ride_start_ms);
+
         // Fee-aware hard floor: breakeven = entry × (10000 + fee_bp) / 10000
         // Below breakeven we're guaranteed net-negative, exit immediately.
         if HARD_FLOOR_ENABLED {
@@ -411,12 +414,15 @@ impl RideState {
             }
         }
 
-        if now_ms.saturating_sub(self.ride_start_ms) >= config.max_hold_ms.max(MAX_HOLD_RIDE_MS) {
+        if hold_ms >= config.max_hold_ms.max(MAX_HOLD_RIDE_MS) {
             return RideDecision::Exit(RideExitReason::MaxHold);
         }
 
+        // Buy gap timeout — only fire after minimum hold period (500ms).
+        // In the first 500ms the model has insufficient evidence; premature
+        // BuyGapTimeout at 0ms hold time is why 57% of trades exit as flat.
         let gap = self.buy_gap_ms(now_ms);
-        if gap >= BUY_GAP_EXIT_MS {
+        if gap >= BUY_GAP_EXIT_MS && hold_ms >= 500 {
             return RideDecision::Exit(RideExitReason::BuyGapTimeout);
         }
 
@@ -444,8 +450,12 @@ impl RideState {
             SignalState::Weakening | SignalState::Exit => RidePhase::Tighten as u8,
         };
 
-        // ── Grace period: no Bayesian exit until buys_after_entry >= 1 ──
-        if new_state == SignalState::Exit && self.buys_after_entry >= 1 {
+        // ── Grace period: no Bayesian exit until buys_after_entry >= 1 AND held >= 500ms ──
+        // The 500ms floor ensures the Bayesian model has received enough evidence
+        // (at least 1-2 trade events) before making an exit call. Without this,
+        // decay ticks in the first 100ms can push f̂ negative before any confirming
+        // buy arrives — causing premature momentum_decay_flat exits.
+        if new_state == SignalState::Exit && self.buys_after_entry >= 1 && hold_ms >= 500 {
             return RideDecision::Exit(RideExitReason::SignalExit);
         }
 

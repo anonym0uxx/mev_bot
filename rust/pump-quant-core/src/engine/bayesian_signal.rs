@@ -40,10 +40,13 @@ pub const WHALE_SELL_WEIGHT: u8 = 30;
 pub const UNIQUE_BUYER_BONUS: u8 = 5;
 
 /// Prior pseudo-observation count by conviction tier.
-/// LOW (tier=0):  6 total → weak prior, easily swayed by 3-4 events
-/// MED (tier=1):  9 total → moderate prior, needs ~5-6 events to shift
-/// HIGH (tier=2): 13 total → strong prior, needs ~8-10 events to override
-const PRIOR_STRENGTH: [u16; 3] = [6, 9, 13];
+/// Strengthened from [6, 9, 13] to reduce premature exits.
+/// With weaker priors, 57% of trades were exiting as momentum_decay_flat in <100ms
+/// because the model reached Exit state before any confirming evidence arrived.
+/// LOW (tier=0):  8 total → weak prior, needs ~4-5 events to shift
+/// MED (tier=1):  12 total → moderate prior, needs ~7-8 events to shift
+/// HIGH (tier=2): 18 total → strong prior, needs ~10-12 events to override
+const PRIOR_STRENGTH: [u16; 3] = [8, 12, 18];
 
 /// Decay multiplier numerator: 240/256 ≈ 0.9375 per tick.
 /// Half-life: ln(2) / ln(256/240) ≈ 10.4 ticks × 500ms ≈ 5.2 seconds.
@@ -374,20 +377,20 @@ mod tests {
     fn test_fresh_init_strong_pump() {
         let sig = BayesianSignal::from_conviction(560, 1100, 248, 1);
 
-        // MED tier: total=9, alpha_raw = (560*9+500)/1000 = 5540/1000 = 5
-        assert_eq!(sig.alpha_x16, 80);  // 5 << 4
-        assert_eq!(sig.beta_x16, 64);   // 4 << 4
+        // MED tier: total=12, alpha_raw = (560*12+500)/1000 = 7220/1000 = 7
+        assert_eq!(sig.alpha_x16, 112);  // 7 << 4
+        assert_eq!(sig.beta_x16, 80);    // 5 << 4
 
         let f = sig.current_f_permille();
-        // a=80, b=64, ab=144
-        // p_x1000 = 80000/144 = 555
-        // numerator = 555*1200 - 100000 = 566000
-        // f = 566000/2200 = 257
-        assert_eq!(f, 257);
+        // a=112, b=80, ab=192
+        // p_x1000 = 112000/192 = 583
+        // numerator = 583*1100 - 417*100 = 641300 - 41700 = 599600
+        // f = 599600/2200 = 272
+        assert_eq!(f, 272);
 
         let state = sig.signal_state();
         // strong_thresh = 248*179>>8 = 44392>>8 = 173
-        // 257 > 173 → StrongPump
+        // 272 > 173 → StrongPump
         assert_eq!(state, SignalState::StrongPump);
     }
 
@@ -403,20 +406,19 @@ mod tests {
         }
 
         // base=10, size_factor=1+1000/500=3, w=10*3*10/10=30 per sell
-        // beta_x16 = 64 + 5*30 = 214
-        assert_eq!(sig.alpha_x16, 80);
-        assert_eq!(sig.beta_x16, 214);
+        // beta_x16 = 80 + 5*30 = 230
+        assert_eq!(sig.alpha_x16, 112);
+        assert_eq!(sig.beta_x16, 230);
 
         let f = sig.current_f_permille();
-        // a=80, b=214, ab=294
-        // p_x1000 = 80000/294 = 272
-        // numerator = 272*1200 - 100000 = 226400
-        // f = 226400/2200 = 102
-        assert_eq!(f, 102);
+        // a=112, b=230, ab=342
+        // p_x1000 = 112000/342 = 327
+        // f = (327*1100 - 673*100) / 2200 = (359700 - 67300) / 2200 = 292400/2200 = 132
+        assert_eq!(f, 132);
 
         let state = sig.signal_state();
-        // strong_thresh=173, sustain_thresh=87
-        // 173 > 102 > 87 → Sustained
+        // strong_thresh=173, sustain_thresh=86
+        // 173 > 132 > 86 → Sustained
         assert_eq!(state, SignalState::Sustained);
     }
 
@@ -443,15 +445,15 @@ mod tests {
             sig.update_evidence(false, 2000, FeedSource::PumpPortal, 10);
         }
 
-        assert_eq!(sig.alpha_x16, 80);
-        assert_eq!(sig.beta_x16, 1564);
+        assert_eq!(sig.alpha_x16, 112);
+        assert_eq!(sig.beta_x16, 1580);
 
         let f = sig.current_f_permille();
-        // a=80, b=1564, ab=1644
-        // p_x1000 = 80000/1644 = 48
-        // numerator = 48*1200 - 100000 = -42400
-        // f = -42400/2200 = -19
-        assert_eq!(f, -19);
+        // a=112, b=1580, ab=1692
+        // p_x1000 = 112000/1692 = 66
+        // numer = 66*1100 - 934*100 = -20800
+        // Rust i32 division truncates toward zero: -20800/2200 = -9
+        assert_eq!(f, -9);
 
         assert_eq!(sig.signal_state(), SignalState::Exit);
     }
@@ -468,17 +470,16 @@ mod tests {
         // base = EVIDENCE_WEIGHTS[1][3] = 25 (CoreCast is index 3)
         // size_factor = 1 + 2000/500 = 5
         // w = 25*5*50/10 = 625
-        assert_eq!(sig.alpha_x16, 80);
-        assert_eq!(sig.beta_x16, 64 + 625);
+        assert_eq!(sig.alpha_x16, 112);
+        assert_eq!(sig.beta_x16, 80 + 625);
 
         let f = sig.current_f_permille();
-        // a=80, b=689, ab=769
-        // p_x1000 = 80000/769 = 104
-        // numerator = 104*1200 - 100000 = 24800
-        // f = 24800/2200 = 11
-        assert_eq!(f, 11);
+        // a=112, b=705, ab=817
+        // p_x1000 = 112000/817 = 137
+        // f = (137*1100 - 863*100) / 2200 = (150700 - 86300) / 2200 = 64400/2200 = 29
+        assert_eq!(f, 29);
 
-        // sustain_thresh=87, 87>11>0 → Weakening
+        // sustain_thresh=86, 86>29>0 → Weakening
         assert_eq!(sig.signal_state(), SignalState::Weakening);
     }
 
@@ -498,15 +499,14 @@ mod tests {
         // base=10, size_factor=1+300/500=1, w=10
         sig.update_evidence(false, 300, FeedSource::PumpPortal, 10);
 
-        assert_eq!(sig.alpha_x16, 80 + 8 * 20);  // 240
-        assert_eq!(sig.beta_x16, 64 + 10);        // 74
+        assert_eq!(sig.alpha_x16, 112 + 8 * 20);  // 272
+        assert_eq!(sig.beta_x16, 80 + 10);         // 90
 
         let f = sig.current_f_permille();
-        // a=240, b=74, ab=314
-        // p_x1000 = 240000/314 = 764
-        // numerator = 764*1200 - 100000 = 816800
-        // f = 816800/2200 = 371
-        assert_eq!(f, 371);
+        // a=272, b=90, ab=362
+        // p_x1000 = 272000/362 = 751
+        // f = (751*1100 - 249*100) / 2200 = (826100 - 24900) / 2200 = 801200/2200 = 364
+        assert_eq!(f, 364);
 
         assert_eq!(sig.signal_state(), SignalState::StrongPump);
     }
@@ -522,14 +522,14 @@ mod tests {
             sig.decay_tick();
         }
 
-        // After 10 ticks: α≈39, β≈30 (see spec trace)
+        // After 10 ticks: α≈56, β≈39 (with stronger priors, starts higher)
         // The exact values depend on integer truncation each step.
         // Verify ratio is approximately preserved and state stays StrongPump.
         let f = sig.current_f_permille();
-        // p̂ ≈ 39/69 = 0.565 → f ≈ 262
+        // p̂ ≈ 56/95 = 0.589 → f ≈ 275
         // Allow a small range for integer truncation drift.
         assert!(
-            f >= 250 && f <= 275,
+            f >= 260 && f <= 290,
             "Decay should preserve ratio approximately, got f={f}"
         );
         assert_eq!(sig.signal_state(), SignalState::StrongPump);
@@ -541,15 +541,14 @@ mod tests {
     fn test_low_tier_faster_transitions() {
         let sig = BayesianSignal::from_conviction(560, 1100, 248, 0);
 
-        // LOW: total=6, alpha_raw=(560*6+500)/1000=3860/1000=3
-        assert_eq!(sig.alpha_x16, 48);
-        assert_eq!(sig.beta_x16, 48);
+        // LOW: total=8, alpha_raw=(560*8+500)/1000=4980/1000=4
+        assert_eq!(sig.alpha_x16, 64);   // 4 << 4
+        assert_eq!(sig.beta_x16, 64);    // 4 << 4
 
         let f = sig.current_f_permille();
-        // a=48, b=48, ab=96
+        // a=64, b=64, ab=128
         // p_x1000 = 500
-        // numerator = 500*1200-100000 = 500000
-        // f = 500000/2200 = 227
+        // f = (500*1100 - 500*100) / 2200 = (550000 - 50000) / 2200 = 500000/2200 = 227
         assert_eq!(f, 227);
         assert_eq!(sig.signal_state(), SignalState::StrongPump);
 
@@ -559,17 +558,16 @@ mod tests {
             sig2.update_evidence(false, 1000, FeedSource::PumpPortal, 10);
         }
 
-        assert_eq!(sig2.beta_x16, 48 + 90); // 138
+        assert_eq!(sig2.beta_x16, 64 + 90); // 154
 
         let f2 = sig2.current_f_permille();
-        // a=48, b=138, ab=186
-        // p_x1000 = 48000/186 = 258
-        // numerator = 258*1200-100000 = 209600
-        // f = 209600/2200 = 95
-        assert_eq!(f2, 95);
+        // a=64, b=154, ab=218
+        // p_x1000 = 64000/218 = 293
+        // f = (293*1100 - 707*100) / 2200 = (322300 - 70700) / 2200 = 251600/2200 = 114
+        assert_eq!(f2, 114);
 
-        // strong_thresh=173, sustain_thresh=87
-        // 173 > 95 > 87 → Sustained
+        // strong_thresh=173, sustain_thresh=86
+        // 173 > 114 > 86 → Sustained
         assert_eq!(sig2.signal_state(), SignalState::Sustained);
         // LOW tier drops to Sustained after just 3 sells (vs 5 for MED).
     }
@@ -580,16 +578,15 @@ mod tests {
     fn test_high_tier_init() {
         let sig = BayesianSignal::from_conviction(560, 1100, 248, 2);
 
-        // HIGH: total=13, alpha_raw=(560*13+500)/1000=7780/1000=7
-        assert_eq!(sig.alpha_x16, 112); // 7 << 4
-        assert_eq!(sig.beta_x16, 96);   // 6 << 4
+        // HIGH: total=18, alpha_raw=(560*18+500)/1000=10580/1000=10
+        assert_eq!(sig.alpha_x16, 160); // 10 << 4
+        assert_eq!(sig.beta_x16, 128);  // 8 << 4
 
         let f = sig.current_f_permille();
-        // a=112, b=96, ab=208
-        // p_x1000 = 112000/208 = 538
-        // numerator = 538*1200-100000 = 545600
-        // f = 545600/2200 = 248
-        assert_eq!(f, 248);
+        // a=160, b=128, ab=288
+        // p_x1000 = 160000/288 = 555
+        // f = (555*1100 - 445*100) / 2200 = (610500 - 44500) / 2200 = 566000/2200 = 257
+        assert_eq!(f, 257);
         assert_eq!(sig.signal_state(), SignalState::StrongPump);
     }
 
@@ -727,12 +724,12 @@ mod tests {
         let mut sig = BayesianSignal::from_conviction(560, 1100, 248, 1);
         sig.update_evidence(true, 1000, FeedSource::ShredStream, 10);
         // ShredStream buy: base=12, size_factor=3, w=36
-        assert_eq!(sig.alpha_x16, 80 + 36);
+        assert_eq!(sig.alpha_x16, 112 + 36);
 
         let mut sig2 = BayesianSignal::from_conviction(560, 1100, 248, 1);
         sig2.update_evidence(true, 1000, FeedSource::PumpPortal, 10);
         // PumpPortal buy: base=10, size_factor=3, w=30
-        assert_eq!(sig2.alpha_x16, 80 + 30);
+        assert_eq!(sig2.alpha_x16, 112 + 30);
 
         assert!(sig.alpha_x16 > sig2.alpha_x16);
     }

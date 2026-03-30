@@ -44,14 +44,19 @@ const R_LUT: [[u16; 4]; 4] = [
     [700, 1000, 750, 520],    // mag 70+
 ];
 
-/// Magnitude bucket boundaries (lower bounds).
-/// Bucket i covers [MAG_BOUNDS[i], MAG_BOUNDS[i+1]).
-/// Below MAG_BOUNDS[0] → clamp to bucket 0. At/above last bound → bucket 3.
-const MAG_BOUNDS: [f64; 4] = [40.0, 50.0, 60.0, 70.0];
-/// Score bucket boundaries.
-const SCORE_BOUNDS: [f64; 4] = [50.0, 60.0, 70.0, 80.0];
-/// Bucket width (uniform for both dimensions).
-const BUCKET_WIDTH: f64 = 10.0;
+/// Magnitude bucket boundaries (lower bounds) × 100 for integer math.
+/// Bucket i covers [MAG_BOUNDS_X100[i], MAG_BOUNDS_X100[i+1]).
+/// Below MAG_BOUNDS_X100[0] → clamp to bucket 0. At/above last bound → bucket 3.
+const MAG_BOUNDS_X100: [u32; 4] = [4000, 5000, 6000, 7000];
+/// Score bucket boundaries × 100.
+const SCORE_BOUNDS_X100: [u32; 4] = [5000, 6000, 7000, 8000];
+/// Bucket width × 100 (uniform for both dimensions).
+const BUCKET_WIDTH_X100: u32 = 1000;
+
+/// Fixed-point fractional bits for bilinear interpolation.
+/// 1024 = 1.0. Gives ~0.1% precision on u16 LUT values.
+const FRAC_BITS: u32 = 10;
+const FRAC_ONE: u32 = 1 << FRAC_BITS; // 1024
 
 // ─── Entry Conviction Struct ────────────────────────────────────────────────
 
@@ -90,47 +95,64 @@ impl Default for EntryConviction {
 // ─── Bucket Assignment ──────────────────────────────────────────────────────
 
 /// Map a continuous score to (bucket_index, fractional_position).
-/// `bounds` must be sorted ascending with uniform width `BUCKET_WIDTH`.
-/// Returns (bucket 0..3, frac 0.0..1.0 within that bucket).
+/// Input: `value_x100` = score × 100 (e.g., 55.0 → 5500).
+/// `bounds_x100`: bucket lower bounds × 100.
+/// Returns (bucket 0..3, frac as fixed-point 0..FRAC_ONE where FRAC_ONE = 1.0).
+/// Pure integer arithmetic — zero f64.
 #[inline]
-fn bucket_frac(value: f64, bounds: &[f64; 4]) -> (usize, f64) {
-    if value <= bounds[0] {
-        return (0, 0.0);
+fn bucket_frac_int(value_x100: u32, bounds_x100: &[u32; 4]) -> (usize, u32) {
+    if value_x100 <= bounds_x100[0] {
+        return (0, 0);
     }
-    // Continuous index: how many bucket-widths above the first bound
-    let ci = (value - bounds[0]) / BUCKET_WIDTH;
-    let bucket = (ci.floor() as usize).min(3);
+    // Distance above first bound, in x100 units
+    let offset = value_x100 - bounds_x100[0];
+    // Bucket index = offset / width (integer division)
+    let bucket = (offset / BUCKET_WIDTH_X100) as usize;
+    let bucket = bucket.min(3);
+    // Fractional position within bucket: (offset % width) * FRAC_ONE / width
     let frac = if bucket >= 3 {
-        // In the last bucket or beyond: clamp frac to [0, 1]
-        ((value - bounds[3]) / BUCKET_WIDTH).clamp(0.0, 1.0)
+        let past_last = value_x100.saturating_sub(bounds_x100[3]);
+        // Clamp frac to [0, FRAC_ONE]
+        (past_last * FRAC_ONE / BUCKET_WIDTH_X100).min(FRAC_ONE)
     } else {
-        ci - bucket as f64
+        let remainder = offset - (bucket as u32 * BUCKET_WIDTH_X100);
+        remainder * FRAC_ONE / BUCKET_WIDTH_X100
     };
     (bucket, frac)
 }
 
 // ─── Bilinear Interpolation ─────────────────────────────────────────────────
 
-/// Bilinear interpolation on a 4×4 u16 LUT.
+/// Integer bilinear interpolation on a 4×4 u16 LUT.
 /// `bm`, `bs`: bucket indices (0..3).
-/// `fm`, `fs`: fractional positions within bucket (0.0..1.0).
+/// `fm`, `fs`: fractional positions as fixed-point (0..FRAC_ONE).
 /// Returns interpolated value in the same units as the LUT.
+/// Pure integer arithmetic — zero f64. Uses u32 intermediates (no overflow:
+/// max value = 4300 × 1024 × 1024 = ~4.5B, fits in u32).
 #[inline]
-fn bilerp(lut: &[[u16; 4]; 4], bm: usize, bs: usize, fm: f64, fs: f64) -> u16 {
+fn bilerp_int(lut: &[[u16; 4]; 4], bm: usize, bs: usize, fm: u32, fs: u32) -> u16 {
     let bm1 = (bm + 1).min(3);
     let bs1 = (bs + 1).min(3);
 
-    let v00 = lut[bm][bs] as f64;
-    let v10 = lut[bm1][bs] as f64;
-    let v01 = lut[bm][bs1] as f64;
-    let v11 = lut[bm1][bs1] as f64;
+    let v00 = lut[bm][bs] as u32;
+    let v10 = lut[bm1][bs] as u32;
+    let v01 = lut[bm][bs1] as u32;
+    let v11 = lut[bm1][bs1] as u32;
 
-    let ifm = 1.0 - fm;
-    let ifs = 1.0 - fs;
+    let ifm = FRAC_ONE - fm;
+    let ifs = FRAC_ONE - fs;
 
-    let result = ifm * ifs * v00 + fm * ifs * v10 + ifm * fs * v01 + fm * fs * v11;
+    // result = (ifm*ifs*v00 + fm*ifs*v10 + ifm*fs*v01 + fm*fs*v11) / FRAC_ONE^2
+    // Each term fits in u32: max = 1024 * 1024 * 4300 = 4,505,600,000 < u32::MAX
+    // Sum of 4 terms can overflow u32 (max ~18B), so use u64 for accumulator.
+    let result = (ifm as u64 * ifs as u64 * v00 as u64
+        + fm as u64 * ifs as u64 * v10 as u64
+        + ifm as u64 * fs as u64 * v01 as u64
+        + fm as u64 * fs as u64 * v11 as u64
+        + (FRAC_ONE as u64 * FRAC_ONE as u64 / 2)) // rounding
+        / (FRAC_ONE as u64 * FRAC_ONE as u64);
 
-    (result + 0.5) as u16
+    result as u16
 }
 
 // ─── Fee-Adjusted Reward Ratio ──────────────────────────────────────────────
@@ -248,13 +270,17 @@ pub fn compute_conviction_with_fees(
     fee_bp: u16,
     avg_loss_bp: u16,
 ) -> EntryConviction {
-    // Step 1: Bucket assignment with interpolation fractions
-    let (bm, fm) = bucket_frac(mag_score, &MAG_BOUNDS);
-    let (bs, fs) = bucket_frac(entry_score, &SCORE_BOUNDS);
+    // Step 1: Convert f64 scores to integer ×100 (single f64→u32 conversion, then pure integer)
+    let mag_x100 = (mag_score * 100.0).max(0.0).min(10000.0) as u32;
+    let score_x100 = (entry_score * 100.0).max(0.0).min(10000.0) as u32;
 
-    // Step 2: Bilinear interpolation on both LUTs
-    let p_permille = bilerp(&P_LUT, bm, bs, fm, fs);
-    let r_x100_raw = bilerp(&R_LUT, bm, bs, fm, fs);
+    // Step 1b: Bucket assignment with integer interpolation fractions
+    let (bm, fm) = bucket_frac_int(mag_x100, &MAG_BOUNDS_X100);
+    let (bs, fs) = bucket_frac_int(score_x100, &SCORE_BOUNDS_X100);
+
+    // Step 2: Integer bilinear interpolation on both LUTs
+    let p_permille = bilerp_int(&P_LUT, bm, bs, fm, fs);
+    let r_x100_raw = bilerp_int(&R_LUT, bm, bs, fm, fs);
 
     // Step 2b: Fee-adjust R before Kelly computation
     let r_x100 = if fee_bp > 0 {
@@ -611,21 +637,49 @@ mod tests {
 
     #[test]
     fn test_bilerp_at_cell_origin() {
-        assert_eq!(bilerp(&P_LUT, 0, 0, 0.0, 0.0), 440);
-        assert_eq!(bilerp(&R_LUT, 0, 0, 0.0, 0.0), 4300);
+        assert_eq!(bilerp_int(&P_LUT, 0, 0, 0, 0), 440);
+        assert_eq!(bilerp_int(&R_LUT, 0, 0, 0, 0), 4300);
     }
 
     #[test]
     fn test_bilerp_at_last_cell() {
-        assert_eq!(bilerp(&P_LUT, 3, 3, 1.0, 1.0), 520);
-        assert_eq!(bilerp(&R_LUT, 3, 3, 1.0, 1.0), 520);
+        assert_eq!(bilerp_int(&P_LUT, 3, 3, FRAC_ONE, FRAC_ONE), 520);
+        assert_eq!(bilerp_int(&R_LUT, 3, 3, FRAC_ONE, FRAC_ONE), 520);
     }
 
     #[test]
     fn test_bilerp_midpoint() {
         // Midpoint between cells (0,0) and (1,0): (440 + 600) / 2 = 520
-        let result = bilerp(&P_LUT, 0, 0, 0.5, 0.0);
+        let result = bilerp_int(&P_LUT, 0, 0, FRAC_ONE / 2, 0);
         assert!((result as i32 - 520).abs() <= 1, "midpoint p: got {result}");
+    }
+
+    #[test]
+    fn test_bucket_frac_int_basics() {
+        // Below first bound → bucket 0, frac 0
+        let (b, f) = bucket_frac_int(3000, &MAG_BOUNDS_X100);
+        assert_eq!(b, 0);
+        assert_eq!(f, 0);
+
+        // At first bound → bucket 0, frac 0
+        let (b, f) = bucket_frac_int(4000, &MAG_BOUNDS_X100);
+        assert_eq!(b, 0);
+        assert_eq!(f, 0);
+
+        // Midpoint of first bucket (45.0 → 4500)
+        let (b, f) = bucket_frac_int(4500, &MAG_BOUNDS_X100);
+        assert_eq!(b, 0);
+        assert_eq!(f, FRAC_ONE / 2); // 512
+
+        // At second bound (50.0 → 5000)
+        let (b, f) = bucket_frac_int(5000, &MAG_BOUNDS_X100);
+        assert_eq!(b, 1);
+        assert_eq!(f, 0);
+
+        // Beyond last bound (80.0 → 8000)
+        let (b, f) = bucket_frac_int(8000, &MAG_BOUNDS_X100);
+        assert_eq!(b, 3);
+        assert_eq!(f, FRAC_ONE); // clamped to 1.0
     }
 
     // ── Bankroll source abstraction ─────────────────────────────────────
