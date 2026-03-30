@@ -985,3 +985,61 @@ RESULT: size = 0.20 SOL
 10. Initial trail:
     trail_bps = 100 + 189 × 200 / 500 = 100 + 75 = 175 bps (1.75% off HWM)
 ```
+
+---
+
+## Addendum: Paper Mode Bankroll
+
+### Requirement
+The Kelly sizing engine must support TWO bankroll sources:
+
+1. **Live mode:** `bankroll = wallet_balance_lamports` via Solana RPC (cached 2s)
+2. **Paper mode:** `bankroll = paper_bankroll_lamports` — a simulated balance that starts at a configured value (default 5 SOL = 5_000_000_000 lamports) and adjusts with every paper trade's net PnL
+
+### Paper Bankroll Tracking
+
+```rust
+pub struct PaperBankroll {
+    balance_lamports: AtomicU64,  // thread-safe, lock-free
+    initial_lamports: u64,        // for reset / drawdown calc
+    hwm_lamports: u64,            // high-water mark
+}
+
+impl PaperBankroll {
+    pub fn new(initial: u64) -> Self { ... }
+    
+    /// Called after each paper trade closes.
+    /// net_pnl_lamports is signed (positive = win, negative = loss).
+    pub fn apply_pnl(&self, net_pnl_lamports: i64) {
+        let old = self.balance_lamports.load(Ordering::Relaxed);
+        let new = (old as i64 + net_pnl_lamports).max(0) as u64;
+        self.balance_lamports.store(new, Ordering::Relaxed);
+    }
+    
+    pub fn balance(&self) -> u64 {
+        self.balance_lamports.load(Ordering::Relaxed)
+    }
+}
+```
+
+### Config
+
+```json
+{
+  "paper_bankroll_sol": 5.0
+}
+```
+
+### Integration
+
+The entry engine's sizing function takes `bankroll_lamports: u64` as input.
+The caller provides either:
+- `rpc_client.get_balance(wallet)` in live mode
+- `paper_bankroll.balance()` in paper mode
+
+The Kelly math is IDENTICAL in both modes. Only the bankroll source differs.
+
+### Drawdown behavior in paper mode
+- Paper bankroll can go to 0 (all lost) — trading pauses via circuit breaker
+- Paper bankroll increases on wins — Kelly sizes up proportionally
+- This accurately simulates live behavior for data collection
