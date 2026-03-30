@@ -77,13 +77,36 @@ pub struct TradeEvent {
     pub assoc_bonding_curve: [u8; 32],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeedSource {
     PumpPortal,
     Helius,
     ShredStream,
     CoreCast,
 }
+
+impl FeedSource {
+    /// Convert to u8 index for evidence weight LUT lookup.
+    /// PumpPortal=0, Helius=1, CoreCast=2, ShredStream=3.
+    #[inline(always)]
+    pub fn as_u8(self) -> u8 {
+        match self {
+            FeedSource::PumpPortal  => 0,
+            FeedSource::Helius      => 1,
+            FeedSource::CoreCast    => 2,
+            FeedSource::ShredStream => 3,
+        }
+    }
+
+    /// Convert to usize index (alias for array indexing).
+    #[inline(always)]
+    pub fn as_index(self) -> usize {
+        self.as_u8() as usize
+    }
+}
+
+// FeedSource must be u8-sized for efficient LUT indexing
+const _: () = assert!(core::mem::size_of::<FeedSource>() == 1);
 
 #[derive(Debug, Clone)]
 pub struct PreWarmEvent {

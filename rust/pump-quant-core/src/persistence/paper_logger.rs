@@ -191,18 +191,22 @@ impl PaperTradeLogger {
             "signalStateAtExit": pos.signal_state_at_exit,
             "peakSignalScore": pos.peak_signal_score,
             "uniqueWalletsSeen": pos.unique_wallets_seen,
-            // Kelly conviction at entry (v7) — wire from ClosedPosition once positions.rs adds fields
-            // TODO: replace 0 defaults with closed.entry_p_permille, etc. when positions.rs is updated
-            "entryPPermille": 0u16,
-            "entryRx100": 0u16,
-            "entryFPermille": 0u16,
-            "convictionTier": 0u8,
+            // Kelly conviction at entry (dv8 — wired from ClosedPosition)
+            "entryPPermille": pos.entry_p_permille,
+            "entryRx100": pos.entry_r_x100,
+            "entryFPermille": pos.entry_f_permille,
+            "convictionTier": pos.conviction_tier,
+            // Bayesian exit state (dv8)
+            "bayesianFAtExit": pos.bayesian_f_at_exit,
+            "alphaAtExit": pos.alpha_at_exit,
+            "betaAtExit": pos.beta_at_exit,
+            "rEstAtExit": pos.r_est_at_exit,
             // Strategy classification — single backrunner, compile-time constant
             "strategyTag": STRATEGY_TAG,
             // Metadata
             "engineVersion": "v5-rust",
             "configVersion": self.config_version,
-            "dataVersion": 7,
+            "dataVersion": 8,
             "is_paper": self.paper_mode,
             "excludeFromAnalysis": exclude,
             "recordedAt": now_ms,

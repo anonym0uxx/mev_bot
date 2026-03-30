@@ -69,11 +69,11 @@ pub struct EntryConviction {
 impl Default for EntryConviction {
     fn default() -> Self {
         Self {
-            p_permille: 0,
-            r_x100: 0,
-            f_permille: 0,
-            size_lamports: 0,
-            conviction_tier: 0,
+            p_permille: 542,
+            r_x100: 4300,
+            f_permille: 248,
+            size_lamports: 50_000_000,
+            conviction_tier: 1,
             _pad: [0; 5],
         }
     }

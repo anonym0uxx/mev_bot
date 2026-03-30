@@ -6,7 +6,7 @@
 //!
 //! Thread-safe: all state is atomic. Shared via `Arc<HealthMonitor>`.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use arrayvec::ArrayVec;
@@ -29,6 +29,82 @@ impl Default for HealthConfig {
             auto_pause_on_degraded: true,
         }
     }
+}
+
+// ── Divergence tracker (dual signal mode) ────────────────────────────────────
+
+/// Tracks divergence between Bayesian and composite signal systems.
+/// Ring buffer of last 50 positions' divergence status, stored as bits
+/// in a u64 (bottom 50 bits). Zero heap allocation.
+pub struct DivergenceTracker {
+    /// Ring buffer: bit set = divergent exit for that position slot.
+    ring: u64,
+    /// Next write index (0–49).
+    head: u8,
+    /// Lifetime divergence count (saturates at u16::MAX).
+    count: u16,
+    /// Alert threshold from config.
+    alert_threshold: u8,
+}
+
+impl DivergenceTracker {
+    pub fn new(alert_threshold: u8) -> Self {
+        Self {
+            ring: 0,
+            head: 0,
+            count: 0,
+            alert_threshold,
+        }
+    }
+
+    /// Record a position close. `diverged` = bayesian and composite
+    /// disagree on exit (one says Exit while other says ≥Sustained).
+    #[inline]
+    pub fn record(&mut self, diverged: bool) {
+        let bit = 1u64 << self.head;
+        if diverged {
+            self.ring |= bit;
+            self.count = self.count.saturating_add(1);
+        } else {
+            self.ring &= !bit;
+        }
+        self.head = (self.head + 1) % 50;
+    }
+
+    /// Count divergences in the last 50 positions.
+    #[inline]
+    pub fn recent_count(&self) -> u16 {
+        // Mask to bottom 50 bits
+        (self.ring & ((1u64 << 50) - 1)).count_ones() as u16
+    }
+
+    /// Whether we've breached the alert threshold.
+    #[inline]
+    pub fn is_alert(&self) -> bool {
+        self.recent_count() > self.alert_threshold as u16
+    }
+
+    /// Lifetime divergence count.
+    #[inline]
+    pub fn lifetime_count(&self) -> u16 {
+        self.count
+    }
+}
+
+// ── Signal stats (dual signal mode API response) ─────────────────────────────
+
+/// Signal mode + divergence stats for the `/api/stats` response.
+/// Computed from atomic accumulators in `HealthMonitor` + `DivergenceTracker`.
+#[derive(Debug, Clone)]
+pub struct SignalStats {
+    /// Current signal mode: "bayesian" or "composite".
+    pub signal_mode: &'static str,
+    /// Rolling average of Bayesian f̂*(t) at exit (permille, signed).
+    pub bayesian_avg_f_at_exit: i16,
+    /// Rolling average of composite score at exit (0–1000).
+    pub composite_avg_score_at_exit: u16,
+    /// Divergence count in last 50 positions.
+    pub divergence_count: u16,
 }
 
 /// Overall health status returned by `HealthMonitor::check()`.
@@ -63,6 +139,16 @@ pub struct HealthMonitor {
     /// Track which feeds were previously stale (for recovery detection).
     /// Bit 0 = PumpPortal, Bit 1 = Helius
     previously_stale: AtomicU64,
+
+    // ── Dual signal mode accumulators (cold path — API reads only) ───
+    /// Sum of Bayesian f̂*(t) at exit across closed positions (signed).
+    pub bayesian_f_sum: AtomicI64,
+    /// Count of closed positions with Bayesian f̂ recorded.
+    pub bayesian_f_count: AtomicU64,
+    /// Sum of composite scores at exit across closed positions.
+    pub composite_score_sum: AtomicU64,
+    /// Count of closed positions with composite score recorded.
+    pub composite_score_count: AtomicU64,
 }
 
 impl HealthMonitor {
@@ -76,6 +162,10 @@ impl HealthMonitor {
             auto_pause_on_degraded: config.auto_pause_on_degraded,
             paused: AtomicBool::new(false),
             previously_stale: AtomicU64::new(0),
+            bayesian_f_sum: AtomicI64::new(0),
+            bayesian_f_count: AtomicU64::new(0),
+            composite_score_sum: AtomicU64::new(0),
+            composite_score_count: AtomicU64::new(0),
         })
     }
 
@@ -171,6 +261,55 @@ impl HealthMonitor {
     pub fn stale_threshold_ms(&self) -> u64 {
         self.stale_threshold_ms
     }
+
+    // ── Dual signal mode methods ────────────────────────────────────
+
+    /// Record a closed position's Bayesian f̂*(t) at exit.
+    /// Called from HotPath::on_position_closed().
+    #[inline]
+    pub fn record_bayesian_f_at_exit(&self, f_permille: i16) {
+        self.bayesian_f_sum.fetch_add(f_permille as i64, Ordering::Relaxed);
+        self.bayesian_f_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a closed position's composite score at exit.
+    /// Called from HotPath::on_position_closed().
+    #[inline]
+    pub fn record_composite_score_at_exit(&self, score: u16) {
+        self.composite_score_sum.fetch_add(score as u64, Ordering::Relaxed);
+        self.composite_score_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Compute signal stats for API response.
+    /// `signal_mode` = current mode string, `divergence_tracker` = shared tracker.
+    pub fn signal_stats(
+        &self,
+        signal_mode: &'static str,
+        divergence_tracker: &DivergenceTracker,
+    ) -> SignalStats {
+        let b_count = self.bayesian_f_count.load(Ordering::Relaxed);
+        let b_sum = self.bayesian_f_sum.load(Ordering::Relaxed);
+        let bayesian_avg = if b_count > 0 {
+            (b_sum / b_count as i64) as i16
+        } else {
+            0
+        };
+
+        let c_count = self.composite_score_count.load(Ordering::Relaxed);
+        let c_sum = self.composite_score_sum.load(Ordering::Relaxed);
+        let composite_avg = if c_count > 0 {
+            (c_sum / c_count) as u16
+        } else {
+            0
+        };
+
+        SignalStats {
+            signal_mode,
+            bayesian_avg_f_at_exit: bayesian_avg,
+            composite_avg_score_at_exit: composite_avg,
+            divergence_count: divergence_tracker.recent_count(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -262,5 +401,163 @@ mod tests {
         let (status, _) = monitor.check(100_000);
         assert!(status.is_healthy());
         assert!(monitor.is_trading_allowed());
+    }
+
+    // ── DivergenceTracker tests ─────────────────────────────────────
+
+    #[test]
+    fn test_divergence_tracker_empty() {
+        let tracker = DivergenceTracker::new(10);
+        assert_eq!(tracker.recent_count(), 0);
+        assert_eq!(tracker.lifetime_count(), 0);
+        assert!(!tracker.is_alert());
+    }
+
+    #[test]
+    fn test_divergence_tracker_counts_correctly() {
+        let mut tracker = DivergenceTracker::new(10);
+
+        // 5 non-divergent, 0 divergences
+        for _ in 0..5 {
+            tracker.record(false);
+        }
+        assert_eq!(tracker.recent_count(), 0);
+        assert_eq!(tracker.lifetime_count(), 0);
+
+        // 3 divergent
+        for _ in 0..3 {
+            tracker.record(true);
+        }
+        assert_eq!(tracker.recent_count(), 3);
+        assert_eq!(tracker.lifetime_count(), 3);
+    }
+
+    #[test]
+    fn test_divergence_tracker_alert_threshold() {
+        let mut tracker = DivergenceTracker::new(10);
+
+        // 10 divergences — at threshold, not above
+        for _ in 0..10 {
+            tracker.record(true);
+        }
+        assert_eq!(tracker.recent_count(), 10);
+        assert!(!tracker.is_alert()); // 10 is NOT > 10
+
+        // 11th divergence — now above threshold
+        tracker.record(true);
+        assert_eq!(tracker.recent_count(), 11);
+        assert!(tracker.is_alert());
+    }
+
+    #[test]
+    fn test_divergence_tracker_ring_wraps() {
+        let mut tracker = DivergenceTracker::new(10);
+
+        // Fill all 50 slots with divergences
+        for _ in 0..50 {
+            tracker.record(true);
+        }
+        assert_eq!(tracker.recent_count(), 50);
+        assert_eq!(tracker.lifetime_count(), 50);
+
+        // Now write 50 non-divergent — overwrites all divergent bits
+        for _ in 0..50 {
+            tracker.record(false);
+        }
+        assert_eq!(tracker.recent_count(), 0);
+        // Lifetime count stays at 50 (it only increments)
+        assert_eq!(tracker.lifetime_count(), 50);
+    }
+
+    #[test]
+    fn test_divergence_tracker_partial_ring_overwrite() {
+        let mut tracker = DivergenceTracker::new(5);
+
+        // Write 10 divergences
+        for _ in 0..10 {
+            tracker.record(true);
+        }
+        assert_eq!(tracker.recent_count(), 10);
+
+        // Overwrite 5 of the 10 divergent slots with non-divergent
+        for _ in 0..5 {
+            tracker.record(false);
+        }
+        // 15 total records, ring is 50-wide. First 10 set bits 0-9, next 5 clear bits 10-14.
+        // Recent count = bits set in bottom 50 = 10 (old divergences) - 0 + 0 (new non-divergent)
+        // Actually ring wraps: head goes 0..15, bits 0-9 are set, 10-14 are cleared.
+        // recent_count uses .count_ones() on the full mask, so 10 divergent bits remain.
+        assert_eq!(tracker.recent_count(), 10);
+        assert!(tracker.is_alert()); // 10 > 5
+    }
+
+    // ── Signal stats accumulator tests ──────────────────────────────
+
+    #[test]
+    fn test_signal_stats_empty() {
+        let config = HealthConfig::default();
+        let monitor = HealthMonitor::new(&config);
+        let tracker = DivergenceTracker::new(10);
+
+        let stats = monitor.signal_stats("composite", &tracker);
+        assert_eq!(stats.signal_mode, "composite");
+        assert_eq!(stats.bayesian_avg_f_at_exit, 0);
+        assert_eq!(stats.composite_avg_score_at_exit, 0);
+        assert_eq!(stats.divergence_count, 0);
+    }
+
+    #[test]
+    fn test_signal_stats_bayesian_avg() {
+        let config = HealthConfig::default();
+        let monitor = HealthMonitor::new(&config);
+        let tracker = DivergenceTracker::new(10);
+
+        // Record 3 Bayesian exits: 100, -50, 250 → avg = 100
+        monitor.record_bayesian_f_at_exit(100);
+        monitor.record_bayesian_f_at_exit(-50);
+        monitor.record_bayesian_f_at_exit(250);
+
+        let stats = monitor.signal_stats("bayesian", &tracker);
+        assert_eq!(stats.signal_mode, "bayesian");
+        assert_eq!(stats.bayesian_avg_f_at_exit, 100); // 300 / 3 = 100
+    }
+
+    #[test]
+    fn test_signal_stats_composite_avg() {
+        let config = HealthConfig::default();
+        let monitor = HealthMonitor::new(&config);
+        let tracker = DivergenceTracker::new(10);
+
+        // Record 4 composite exits: 500, 300, 700, 400 → avg = 475
+        monitor.record_composite_score_at_exit(500);
+        monitor.record_composite_score_at_exit(300);
+        monitor.record_composite_score_at_exit(700);
+        monitor.record_composite_score_at_exit(400);
+
+        let stats = monitor.signal_stats("composite", &tracker);
+        assert_eq!(stats.composite_avg_score_at_exit, 475); // 1900 / 4 = 475
+    }
+
+    #[test]
+    fn test_signal_stats_with_divergence() {
+        let config = HealthConfig::default();
+        let monitor = HealthMonitor::new(&config);
+        let mut tracker = DivergenceTracker::new(10);
+
+        // Record some divergences
+        for _ in 0..7 {
+            tracker.record(true);
+        }
+        for _ in 0..3 {
+            tracker.record(false);
+        }
+
+        monitor.record_bayesian_f_at_exit(200);
+        monitor.record_composite_score_at_exit(600);
+
+        let stats = monitor.signal_stats("bayesian", &tracker);
+        assert_eq!(stats.divergence_count, 7);
+        assert_eq!(stats.bayesian_avg_f_at_exit, 200);
+        assert_eq!(stats.composite_avg_score_at_exit, 600);
     }
 }

@@ -167,6 +167,9 @@ pub struct MevJsonConfig {
     pub entry_engine: Option<EntryEngineJsonConfig>,
     pub ride: Option<RideJsonConfig>,
     pub risk: Option<RiskJsonConfig>,
+
+    // ── Dual signal mode (Bayesian + shadow composite) ──────────────
+    pub signal: Option<SignalConfigJson>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -319,6 +322,172 @@ fn default_w_unique_wallets() -> i8 { 14 }
 fn default_w_confirm_vol_shift() -> u8 { 8 }
 fn default_signal_weights() -> SignalWeightsJson { SignalWeightsJson::default() }
 
+// ── Dual signal mode JSON config (Bayesian + shadow composite) ───────────────
+
+/// JSON deserialization struct for the `signal` section of `mev` config.
+/// All fields are optional — defaults produce a system that behaves identically
+/// to pre-Bayesian (composite-only) operation.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SignalConfigJson {
+    /// Use Bayesian signal for exit decisions on NEW positions. Default: false.
+    #[serde(default, rename = "useBayesianSignal")]
+    pub use_bayesian_signal: bool,
+
+    /// Compute composite score as shadow (for comparison logging).
+    /// Default: true. Disable in live mode for ~30ns/tick savings.
+    #[serde(default = "default_shadow_composite_enabled", rename = "shadowCompositeEnabled")]
+    pub shadow_composite_enabled: bool,
+
+    /// Bayesian time-decay rate (0–65535). 240 = half-life ≈ 5s.
+    /// Applied as: α,β *= decay_rate/256 per tick.
+    #[serde(default = "default_bayesian_decay_rate", rename = "bayesianDecayRate")]
+    pub bayesian_decay_rate: u16,
+
+    /// Beta prior strengths for [LOW, MED, HIGH] conviction tiers.
+    /// Sum of α₀+β₀ (in units, before ×16 scaling).
+    #[serde(default = "default_bayesian_prior_strength", rename = "bayesianPriorStrength")]
+    pub bayesian_prior_strength: [u8; 3],
+
+    /// Alert threshold: log warning if divergence_count exceeds this
+    /// in the last 50 positions. Default: 10.
+    #[serde(default = "default_divergence_alert_threshold", rename = "divergenceAlertThreshold")]
+    pub divergence_alert_threshold: u8,
+}
+
+fn default_shadow_composite_enabled() -> bool { true }
+fn default_bayesian_decay_rate() -> u16 { 240 }
+fn default_bayesian_prior_strength() -> [u8; 3] { [6, 9, 13] }
+fn default_divergence_alert_threshold() -> u8 { 10 }
+
+impl Default for SignalConfigJson {
+    fn default() -> Self {
+        Self {
+            use_bayesian_signal: false,
+            shadow_composite_enabled: true,
+            bayesian_decay_rate: 240,
+            bayesian_prior_strength: [6, 9, 13],
+            divergence_alert_threshold: 10,
+        }
+    }
+}
+
+// ── Signal runtime config ────────────────────────────────────────────────────
+
+/// Runtime signal config built from `SignalConfigJson`.
+/// Passed by value (Copy) on the hot path.
+#[derive(Debug, Clone, Copy)]
+pub struct SignalConfig {
+    /// When true, Bayesian f̂*(t) drives exit decisions for new positions.
+    pub use_bayesian_signal: bool,
+    /// When true, compute composite score as a shadow signal alongside primary.
+    pub shadow_composite_enabled: bool,
+    /// Time-decay rate: α,β *= decay_rate/256 per tick. 240 → half-life ≈ 5s.
+    pub bayesian_decay_rate: u16,
+    /// Prior strengths for [LOW, MED, HIGH] conviction tiers.
+    pub bayesian_prior_strength: [u8; 3],
+    /// Divergence alert threshold (last 50 positions).
+    pub divergence_alert_threshold: u8,
+}
+
+impl Default for SignalConfig {
+    fn default() -> Self {
+        Self {
+            use_bayesian_signal: false,
+            shadow_composite_enabled: true,
+            bayesian_decay_rate: 240,
+            bayesian_prior_strength: [6, 9, 13],
+            divergence_alert_threshold: 10,
+        }
+    }
+}
+
+impl From<&SignalConfigJson> for SignalConfig {
+    fn from(json: &SignalConfigJson) -> Self {
+        Self {
+            use_bayesian_signal: json.use_bayesian_signal,
+            shadow_composite_enabled: json.shadow_composite_enabled,
+            bayesian_decay_rate: json.bayesian_decay_rate,
+            bayesian_prior_strength: json.bayesian_prior_strength,
+            divergence_alert_threshold: json.divergence_alert_threshold,
+        }
+    }
+}
+
+// ── SignalMode enum ──────────────────────────────────────────────────────────
+
+/// Which signal system drives exit decisions for a position.
+/// Stored per-position at open time — not affected by runtime flag changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SignalMode {
+    Composite = 0,
+    Bayesian  = 1,
+}
+
+impl SignalMode {
+    #[inline(always)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Composite => "composite",
+            Self::Bayesian  => "bayesian",
+        }
+    }
+}
+
+// ── Bayesian auto-revert tracker ─────────────────────────────────────────────
+
+/// Tracks Bayesian signal performance for auto-revert safety.
+/// Lives in HotPath (session-scoped, not persisted).
+///
+/// When WR drops below 20% on ≥20 trades, `check_revert()` returns true
+/// once — the caller should flip `use_bayesian_signal` to false at runtime.
+pub struct BayesianRevertTracker {
+    pub bayesian_trades: u16,
+    pub bayesian_wins: u16,
+    pub reverted: bool,
+}
+
+impl Default for BayesianRevertTracker {
+    fn default() -> Self {
+        Self {
+            bayesian_trades: 0,
+            bayesian_wins: 0,
+            reverted: false,
+        }
+    }
+}
+
+impl BayesianRevertTracker {
+    /// Record a closed Bayesian-mode position.
+    #[inline]
+    pub fn record(&mut self, win: bool) {
+        self.bayesian_trades = self.bayesian_trades.saturating_add(1);
+        if win {
+            self.bayesian_wins = self.bayesian_wins.saturating_add(1);
+        }
+    }
+
+    /// Check if auto-revert should fire.
+    /// Returns true exactly once: when WR < 20% on ≥ 20 trades.
+    /// After firing, `reverted` is set — subsequent calls return false.
+    #[inline]
+    pub fn check_revert(&mut self) -> bool {
+        if self.reverted {
+            return false;
+        }
+        if self.bayesian_trades < 20 {
+            return false;
+        }
+        // Integer WR: wins * 100 / trades — avoid fp
+        let wr_pct = (self.bayesian_wins as u32 * 100) / self.bayesian_trades as u32;
+        if wr_pct < 20 {
+            self.reverted = true;
+            return true;
+        }
+        false
+    }
+}
+
 // ── Ride JSON config (v2 pipeline) ───────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
@@ -433,6 +602,8 @@ pub struct RideConfig {
     pub gain_tighten_vsol_fp: u16,
     pub hard_floor_vsol_fp: u16,
     pub whale_exit_lamports: u64,
+    /// Average historical loss in basis points (for Bayesian R̂ update).
+    pub avg_loss_bp: u16,
     pub buy_gap_tighten_ms: u64,
     pub buy_gap_exit_ms: u64,
     pub sell_cascade_count: u8,
@@ -490,6 +661,7 @@ impl Default for RideConfig {
             gain_tighten_vsol_fp: 12247,
             hard_floor_vsol_fp: 9800,
             whale_exit_lamports: 2_000_000_000,
+            avg_loss_bp: 200,
             buy_gap_tighten_ms: 5_000,
             buy_gap_exit_ms: 10_000,
             sell_cascade_count: 3,
@@ -645,6 +817,11 @@ pub struct EngineConfig {
     pub ride_config: Option<crate::engine::ride_state::RideConfig>,
     /// Risk manager config, built from `mev.risk` JSON section.
     pub risk_config: Option<crate::engine::risk_manager::RiskConfig>,
+
+    // ── Dual signal mode config ────────────────────────────────────
+    /// Signal engine configuration (Bayesian + shadow composite).
+    /// Built from `mev.signal` JSON section; defaults when absent.
+    pub signal: SignalConfig,
 }
 
 impl EngineConfig {
@@ -700,6 +877,7 @@ pub fn build_ride_config(json: &RideJsonConfig) -> RideConfig {
         gain_tighten_vsol_fp: gain_pct_to_vsol_fp(json.gain_tighten_pct.unwrap_or(50.0)),
         hard_floor_vsol_fp: gain_pct_to_vsol_fp(json.hard_floor_gain_pct.unwrap_or(1.0)),
         whale_exit_lamports: sol_to_lamports(json.whale_exit_sol.unwrap_or(1.0)),
+        avg_loss_bp: 200,
         buy_gap_tighten_ms: json.buy_gap_tighten_ms.unwrap_or(5_000),
         buy_gap_exit_ms: json.buy_gap_exit_ms.unwrap_or(10_000),
         sell_cascade_count: json.sell_cascade_count.unwrap_or(3),
@@ -1196,6 +1374,11 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
         // Ride / Risk runtime configs — built from mev.ride / mev.risk sections
         ride_config: mev.ride.as_ref().map(build_ride_state_config),
         risk_config: mev.risk.as_ref().map(build_risk_manager_config),
+
+        // Dual signal mode — defaults when mev.signal is absent
+        signal: mev.signal.as_ref()
+            .map(SignalConfig::from)
+            .unwrap_or_default(),
     })
 }
 
@@ -1307,6 +1490,126 @@ mod tests {
         assert_eq!(price_pct_to_vsol_bp(6.0), 305);
         assert_eq!(price_pct_to_vsol_bp(4.0), 202);
         assert_eq!(price_pct_to_vsol_bp(2.0), 101);
+    }
+
+    // ── Signal config tests ────────────────────────────────────────
+
+    // Test: SignalConfigJson defaults when signal section is absent
+    #[test]
+    fn test_signal_config_absent_uses_defaults() {
+        let json = r#"{}"#;
+        let mev: MevJsonConfig = serde_json::from_str(json).unwrap();
+        assert!(mev.signal.is_none());
+
+        let signal = mev.signal.as_ref()
+            .map(SignalConfig::from)
+            .unwrap_or_default();
+        assert!(!signal.use_bayesian_signal);
+        assert!(signal.shadow_composite_enabled);
+        assert_eq!(signal.bayesian_decay_rate, 240);
+        assert_eq!(signal.bayesian_prior_strength, [6, 9, 13]);
+        assert_eq!(signal.divergence_alert_threshold, 10);
+    }
+
+    // Test: SignalConfigJson parses with all fields present
+    #[test]
+    fn test_signal_config_full_parse() {
+        let json = r#"{
+            "signal": {
+                "useBayesianSignal": true,
+                "shadowCompositeEnabled": false,
+                "bayesianDecayRate": 200,
+                "bayesianPriorStrength": [4, 7, 11],
+                "divergenceAlertThreshold": 5
+            }
+        }"#;
+        let mev: MevJsonConfig = serde_json::from_str(json).unwrap();
+        let signal_json = mev.signal.unwrap();
+        assert!(signal_json.use_bayesian_signal);
+        assert!(!signal_json.shadow_composite_enabled);
+        assert_eq!(signal_json.bayesian_decay_rate, 200);
+        assert_eq!(signal_json.bayesian_prior_strength, [4, 7, 11]);
+        assert_eq!(signal_json.divergence_alert_threshold, 5);
+    }
+
+    // Test: SignalConfigJson partial parse — missing fields get defaults
+    #[test]
+    fn test_signal_config_partial_parse() {
+        let json = r#"{
+            "signal": {
+                "useBayesianSignal": true
+            }
+        }"#;
+        let mev: MevJsonConfig = serde_json::from_str(json).unwrap();
+        let signal_json = mev.signal.unwrap();
+        assert!(signal_json.use_bayesian_signal);
+        // All others should be defaults
+        assert!(signal_json.shadow_composite_enabled);
+        assert_eq!(signal_json.bayesian_decay_rate, 240);
+        assert_eq!(signal_json.bayesian_prior_strength, [6, 9, 13]);
+        assert_eq!(signal_json.divergence_alert_threshold, 10);
+    }
+
+    // Test: SignalMode enum
+    #[test]
+    fn test_signal_mode_enum() {
+        assert_eq!(SignalMode::Composite as u8, 0);
+        assert_eq!(SignalMode::Bayesian as u8, 1);
+        assert_eq!(SignalMode::Composite.as_str(), "composite");
+        assert_eq!(SignalMode::Bayesian.as_str(), "bayesian");
+    }
+
+    // ── BayesianRevertTracker tests ─────────────────────────────────
+
+    // Test: Revert fires when WR < 20% on ≥ 20 trades
+    #[test]
+    fn test_revert_tracker_fires_on_low_wr() {
+        let mut tracker = BayesianRevertTracker::default();
+
+        // 21 trades: 3 wins, 18 losses → WR = 14.2%
+        for _ in 0..3 { tracker.record(true); }
+        for _ in 0..18 { tracker.record(false); }
+
+        assert_eq!(tracker.bayesian_trades, 21);
+        assert_eq!(tracker.bayesian_wins, 3);
+        assert!(tracker.check_revert());
+        // Second call should NOT fire again
+        assert!(!tracker.check_revert());
+        assert!(tracker.reverted);
+    }
+
+    // Test: Revert does NOT fire when WR ≥ 20%
+    #[test]
+    fn test_revert_tracker_no_fire_good_wr() {
+        let mut tracker = BayesianRevertTracker::default();
+
+        // 20 trades: 4 wins, 16 losses → WR = 20% (exactly at threshold)
+        for _ in 0..4 { tracker.record(true); }
+        for _ in 0..16 { tracker.record(false); }
+
+        assert_eq!(tracker.bayesian_trades, 20);
+        assert!(!tracker.check_revert()); // 20% is NOT < 20%, so no revert
+    }
+
+    // Test: Revert does NOT fire with < 20 trades
+    #[test]
+    fn test_revert_tracker_no_fire_few_trades() {
+        let mut tracker = BayesianRevertTracker::default();
+
+        // 19 trades, all losses — but under the 20-trade minimum
+        for _ in 0..19 { tracker.record(false); }
+
+        assert_eq!(tracker.bayesian_trades, 19);
+        assert!(!tracker.check_revert());
+    }
+
+    // Test: Revert tracker default state
+    #[test]
+    fn test_revert_tracker_default() {
+        let tracker = BayesianRevertTracker::default();
+        assert_eq!(tracker.bayesian_trades, 0);
+        assert_eq!(tracker.bayesian_wins, 0);
+        assert!(!tracker.reverted);
     }
 
     // Test 5: Deprecated fields don't cause parse errors if present

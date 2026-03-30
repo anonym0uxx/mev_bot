@@ -209,6 +209,26 @@ impl HotPath {
 
 
 
+    /// Check if a PumpPortal trade's sig was already seen by Helius.
+    /// Returns true if Helius already delivered this trade (dedup: skip α/β update).
+    ///
+    /// Only runs for PumpPortal-source trades (Helius typically leads by <1s).
+    /// Linear scan of 256-entry ring (4KB, fits L1, ~128 entries avg scan).
+    /// PERF: ~200ns worst-case, only for PP trades with existing positions.
+    #[inline(always)]
+    fn is_deduped_trade(&self, trade: &TradeEvent) -> bool {
+        if trade.source != FeedSource::PumpPortal {
+            return false;
+        }
+        let sig_u64 = u64::from_le_bytes(trade.sig_prefix);
+        for &(stored_sig, stored_ts) in &self.helius_sig_ring {
+            if stored_sig == sig_u64 && stored_ts > 0 {
+                return true;
+            }
+        }
+        false
+    }
+
     /// LATENCY: Fast epoch-ms via quanta RDTSC (~3-5ns) instead of
     /// clock_gettime syscall (~20ns). Calibrated once at construction.
     #[inline(always)]
@@ -249,7 +269,10 @@ impl HotPath {
 
         // 2. If we already have a position for this mint → on_subsequent_trade for exit logic
         if self.position_manager.has_position(&trade.mint) {
-            self.position_manager.on_subsequent_trade(trade, now);
+            // Helius dedup: if Helius already delivered this sig, PumpPortal
+            // confirmation skips α/β update but still enriches reserves.
+            let deduped = self.is_deduped_trade(trade);
+            self.position_manager.on_subsequent_trade(trade, now, deduped);
             return;
         }
 
@@ -527,11 +550,19 @@ impl HotPath {
     }
 
     /// Mark a creator-sell event on the mint's history.
+    ///
+    /// If we hold a position for this mint, also:
+    ///   1. Flag RideState for immediate exit (CREATOR_SELL flag)
+    ///   2. Inject heavy β evidence via on_sell_event (CREATOR_SELL_WEIGHT=50)
+    ///
+    /// Called from CoreCast feed — cold path (~rare event), not hot path.
     pub fn on_creator_sell(&mut self, mint: &[u8; 32], ts_ms: u64) {
         self.stats.creator_sells += 1;
         if let Some(history) = self.mint_map.get_mut(mint) {
             history.creator_sell_at_ms = ts_ms;
         }
+        // If we have an open position, mark creator sell + inject β evidence.
+        self.position_manager.on_creator_sell_evidence(mint, ts_ms);
     }
 
     /// Force-exit any open position for a migrated token.

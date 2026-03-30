@@ -1,3 +1,4 @@
+pub mod bayesian_signal;
 pub mod bonding_curve;
 pub mod config;
 pub mod entry_engine;

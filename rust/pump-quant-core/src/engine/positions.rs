@@ -7,7 +7,8 @@
 use crossbeam_channel::Sender;
 use hashbrown::HashMap;
 
-use crate::feeds::TradeEvent;
+use crate::feeds::{FeedSource, TradeEvent};
+use super::bayesian_signal;
 use super::bonding_curve;
 
 // RIDE imports
@@ -22,6 +23,10 @@ use crate::engine::kelly_sizing::EntryConviction;
 fn lamports_to_mvsol(lamports: u64) -> u32 {
     ((lamports + 500_000) / 1_000_000) as u32
 }
+
+/// Whale sell threshold: 2 SOL in lamports.
+/// Sells above this get amplified evidence weight (WHALE_SELL_WEIGHT).
+const WHALE_SELL_THRESHOLD_LAMPORTS: u64 = 2_000_000_000;
 
 /// Map a RideExitReason from ride_state into our ExitReason enum.
 fn map_ride_exit_reason(r: RideExitReason) -> ExitReason {
@@ -223,6 +228,16 @@ pub struct ClosedPosition {
     pub entry_f_permille: u16,
     /// Conviction tier (0=LOW, 1=MED, 2=HIGH).
     pub conviction_tier: u8,
+    // ── Bayesian exit state fields (dv8) ──
+    /// Bayesian half-Kelly fraction at exit × 1000.
+    /// Positive = positive EV remaining. Negative = EV gone negative.
+    pub bayesian_f_at_exit: i16,
+    /// Beta α parameter × 16 at exit.
+    pub alpha_at_exit: u16,
+    /// Beta β parameter × 16 at exit.
+    pub beta_at_exit: u16,
+    /// Bayesian R estimate × 100 at exit.
+    pub r_est_at_exit: u16,
 }
 
 // ─── Config Structs ────────────────────────────────────────────────
@@ -402,7 +417,15 @@ impl PositionManager {
 
         // Initialize RIDE state directly — all positions start as RIDE.
         let entry_mvsol = lamports_to_mvsol(event.vsol_reserves);
-        let ride_state = RideState::new(entry_mvsol, entry_mvsol, now_ms, conviction.f_permille as u32, &self.config.ride_config);
+        let ride_state = RideState::new(
+            entry_mvsol, entry_mvsol, now_ms,
+            conviction.f_permille,
+            conviction.p_permille,
+            conviction.r_x100,
+            conviction.conviction_tier,
+            self.config.ride_config.avg_loss_bp,
+            &self.config.ride_config,
+        );
 
         let pos = OpenPosition {
             mint: event.mint,
@@ -449,9 +472,14 @@ impl PositionManager {
     /// then delegates exit decisions to the RIDE exit strategy:
     /// RideState (on_buy_event / on_sell_event / on_tick).
     ///
+    /// `deduped`: when true, this trade's sig was already processed by another
+    /// feed (Helius → PumpPortal dedup). Position state (reserves, counters)
+    /// is still updated, but RideState α/β evidence update is skipped to
+    /// prevent double-counting the same trade.
+    ///
     /// Returns `true` if the position was closed.
     #[inline]
-    pub fn on_subsequent_trade(&mut self, event: &TradeEvent, now_ms: u64) -> bool {
+    pub fn on_subsequent_trade(&mut self, event: &TradeEvent, now_ms: u64, deduped: bool) -> bool {
         // Skip events with zero reserves (Helius pre-warm)
         if event.vsol_reserves == 0 {
             return false;
@@ -468,7 +496,7 @@ impl PositionManager {
             return false;
         }
 
-        // ── Update position state ───────────────────────────────────
+        // ── Update position state (always, even when deduped) ───────
         pos.trades_seen_after_entry += 1;
         pos.current_vsol = event.vsol_reserves;
         pos.current_vtokens = event.vtoken_reserves;
@@ -479,6 +507,33 @@ impl PositionManager {
         if event.vsol_reserves < pos.trough_vsol {
             pos.trough_vsol = event.vsol_reserves;
         }
+
+        // ── Compute evidence weight (feed-source-aware) ─────────────
+        // Weight is computed regardless of dedup for logging/diagnostics.
+        // When deduped, RideState ring/bloom/counter updates are skipped.
+        //
+        // Evidence weight = EVIDENCE_WEIGHTS[is_sell][source_idx], with
+        // special overrides for creator sell (CoreCast) and whale sell (>2 SOL).
+        let _weight_mult: u8 = {
+            let source_idx = event.source.as_u8() as usize;
+            let src_clamped = if source_idx < 4 { source_idx } else { 3 };
+            if !event.is_buy {
+                // Sell-side overrides (highest priority first):
+                // CoreCast creator sell handled via on_creator_sell_evidence path,
+                // NOT here — is_creator_sell is only known from FeedEvent::CreatorSell.
+                if event.sol_amount > WHALE_SELL_THRESHOLD_LAMPORTS {
+                    bayesian_signal::WHALE_SELL_WEIGHT
+                } else {
+                    bayesian_signal::EVIDENCE_WEIGHTS[1][src_clamped]
+                }
+            } else {
+                bayesian_signal::EVIDENCE_WEIGHTS[0][src_clamped]
+            }
+        };
+        // TODO(eng2): Pass weight_mult to RideState on_buy_event / on_sell_event
+        // when Engineer 2 updates the RideState signatures to accept it.
+        // Currently computed and ready; will be wired through once RideState v3
+        // accepts the parameter.
 
         if event.is_buy {
             // Track buy flow (kept for JSONL logging / training data)
@@ -493,24 +548,26 @@ impl PositionManager {
                 pos.confirming_unique_wallets = pos.confirming_unique_wallets.saturating_add(1);
             }
 
-            // Feed the RIDE exit strategy
-            match &mut pos.exit_mode {
-                ExitMode::Ride(ref mut rs) => {
-                    let buy_mvsol = lamports_to_mvsol(event.sol_amount);
-                    // Branchless wallet hash from first 8 bytes of event signature
-                    #[inline(always)]
-                    fn wallet_hash_from_sig(sig: &[u8; 64]) -> u64 {
-                        u64::from_le_bytes([
-                            sig[0], sig[1], sig[2], sig[3],
-                            sig[4], sig[5], sig[6], sig[7],
-                        ])
+            // Feed the RIDE exit strategy (skip ring/bloom/counter updates when deduped)
+            if !deduped {
+                match &mut pos.exit_mode {
+                    ExitMode::Ride(ref mut rs) => {
+                        let buy_mvsol = lamports_to_mvsol(event.sol_amount);
+                        // Branchless wallet hash from first 8 bytes of trader pubkey
+                        #[inline(always)]
+                        fn wallet_hash_from_sig(sig: &[u8; 64]) -> u64 {
+                            u64::from_le_bytes([
+                                sig[0], sig[1], sig[2], sig[3],
+                                sig[4], sig[5], sig[6], sig[7],
+                            ])
+                        }
+                        let wallet_hash = wallet_hash_from_sig(&event.sig);
+                        rs.on_buy_event(buy_mvsol, now_ms, wallet_hash, event.source, 10);
                     }
-                    let wallet_hash = wallet_hash_from_sig(&event.sig);
-                    rs.on_buy_event(buy_mvsol, now_ms, wallet_hash);
                 }
             }
 
-            // Post-buy tick for RIDE mode
+            // Post-buy tick for RIDE mode (always runs — drives trail/exit evaluation)
             let mint = event.mint;
             let pos = match self.positions.get_mut(&mint) {
                 Some(p) => p,
@@ -533,19 +590,22 @@ impl PositionManager {
             // ── SELL event ──
             pos.sells_during_hold = pos.sells_during_hold.saturating_add(1);
 
-            match &mut pos.exit_mode {
-                ExitMode::Ride(ref mut rs) => {
-                    let sell_mvsol = lamports_to_mvsol(event.sol_amount);
-                    if let Some(reason) = rs.on_sell_event(sell_mvsol, now_ms, &self.config.ride_config) {
-                        let exit_reason = map_ride_exit_reason(reason);
-                        let mint = event.mint;
-                        self.close_position_inner(&mint, exit_reason, now_ms);
-                        return true;
+            // Feed the RIDE exit strategy (skip ring updates when deduped)
+            if !deduped {
+                match &mut pos.exit_mode {
+                    ExitMode::Ride(ref mut rs) => {
+                        let sell_mvsol = lamports_to_mvsol(event.sol_amount);
+                        if let Some(reason) = rs.on_sell_event(sell_mvsol, now_ms, &self.config.ride_config, event.source, 10) {
+                            let exit_reason = map_ride_exit_reason(reason);
+                            let mint = event.mint;
+                            self.close_position_inner(&mint, exit_reason, now_ms);
+                            return true;
+                        }
                     }
                 }
             }
 
-            // Post-sell tick
+            // Post-sell tick (always runs)
             let mint = event.mint;
             let pos = match self.positions.get_mut(&mint) {
                 Some(p) => p,
@@ -567,6 +627,34 @@ impl PositionManager {
         }
 
         false
+    }
+
+    /// Handle creator sell evidence injection for open positions.
+    ///
+    /// Called from HotPath::on_creator_sell() when CoreCast detects a
+    /// signer-verified creator sell. Two effects:
+    ///   1. RideState.flags |= CREATOR_SELL (emergency exit on next tick)
+    ///   2. Inject heavy β via on_sell_event for Bayesian logging
+    ///      (even though emergency exit fires first, β captures the evidence)
+    ///
+    /// PERF: #[inline(never)] — cold path, ~rare event.
+    #[inline(never)]
+    pub fn on_creator_sell_evidence(&mut self, mint: &[u8; 32], ts_ms: u64) {
+        let pos = match self.positions.get_mut(mint) {
+            Some(p) => p,
+            None => return,
+        };
+        match &mut pos.exit_mode {
+            ExitMode::Ride(ref mut rs) => {
+                rs.mark_creator_sell();
+                // Inject β evidence: estimate 1 SOL creator sell.
+                // source=2 (CoreCast), evidence weight = CREATOR_SELL_WEIGHT (50).
+                // RideState::on_sell_event handles emergency exit on next tick
+                // via the CREATOR_SELL flag we just set.
+                let sell_mvsol = 1000u32; // 1 SOL estimate
+                let _ = rs.on_sell_event(sell_mvsol, ts_ms, &self.config.ride_config, FeedSource::CoreCast, 50);
+            }
+        }
     }
 
     /// Called by the 50ms tick timer.
@@ -665,12 +753,23 @@ impl PositionManager {
         // Extract signal v2 fields from RideState before moving pos into ClosedPosition
         let (sig_score, sig_state, peak_sig, uniq_wallets) = match &pos.exit_mode {
             ExitMode::Ride(rs) => (
-                rs.composite_score,
-                rs.state as u8,
-                rs.peak_composite_score(),
+                rs.f_hat_permille().max(0) as u16, // shadow: f̂* as "score" for dv7 compat
+                rs.state,
+                rs.peak_f_permille,
                 rs.unique_wallets,
             ),
         };
+
+        // Extract Bayesian exit state from RideState v3 fields.
+        let (bayesian_f_at_exit, alpha_at_exit, beta_at_exit, r_est_at_exit): (i16, u16, u16, u16) =
+            match &pos.exit_mode {
+                ExitMode::Ride(rs) => (
+                    rs.f_hat_permille(),
+                    rs.alpha_x16,
+                    rs.beta_x16,
+                    rs.r_est_x100,
+                ),
+            };
 
         let closed = ClosedPosition {
             mint: pos.mint,
@@ -727,6 +826,11 @@ impl PositionManager {
             entry_r_x100: pos.conviction.r_x100,
             entry_f_permille: pos.conviction.f_permille,
             conviction_tier: pos.conviction.conviction_tier,
+            // Bayesian exit state (dv8)
+            bayesian_f_at_exit,
+            alpha_at_exit,
+            beta_at_exit,
+            r_est_at_exit,
         };
 
         // Best-effort send — if the receiver is gone, we just drop it.
@@ -859,7 +963,7 @@ mod tests {
         pm.open_position(&event, 0.85, 1000, 0.0, 0, EntryConviction::default());
 
         // Same sig as trigger — should be skipped
-        let closed = pm.on_subsequent_trade(&event, 1010);
+        let closed = pm.on_subsequent_trade(&event, 1010, false);
         assert!(!closed);
         assert_eq!(pm.open_count(), 1);
     }
@@ -876,7 +980,7 @@ mod tests {
 
         // Zero reserves event — should be skipped
         let zero_event = make_trade_event(mint, [0xCCu8; 64], 10_000_000, 0, 0, true);
-        let closed = pm.on_subsequent_trade(&zero_event, 1010);
+        let closed = pm.on_subsequent_trade(&zero_event, 1010, false);
         assert!(!closed);
     }
 
@@ -911,7 +1015,7 @@ mod tests {
         // Price drops significantly — should trigger RIDE hard floor
         let drop_vsol = (entry_vsol as f64 * 0.90) as u64;
         let drop_event = make_trade_event(mint, [0xCCu8; 64], 10_000_000, drop_vsol, 1_000_000_000_000_000, false);
-        let closed = pm.on_subsequent_trade(&drop_event, 1050);
+        let closed = pm.on_subsequent_trade(&drop_event, 1050, false);
 
         assert!(closed);
         let cp = rx.try_recv().unwrap();
@@ -1018,7 +1122,7 @@ mod tests {
         // Small buy with price increase above entry — RIDE should hold
         let up_vsol = (entry_vsol as f64 * 1.02) as u64; // 2% up — well within trail
         let small_buy = make_trade_event(mint, [0xCCu8; 64], 150_000_000, up_vsol, 1_000_000_000_000_000, true);
-        let closed = pm.on_subsequent_trade(&small_buy, 1100);
+        let closed = pm.on_subsequent_trade(&small_buy, 1100, false);
 
         assert!(!closed, "RIDE should hold on confirming buy above entry");
         assert!(rx.try_recv().is_err());
@@ -1043,7 +1147,7 @@ mod tests {
         // Feed a confirming buy with price increase
         let up_vsol = (entry_vsol as f64 * 1.03) as u64; // 3% up
         let buy1 = make_trade_event(mint, [0x12u8; 64], 200_000_000, up_vsol, 1_000_000_000_000_000, true);
-        pm.on_subsequent_trade(&buy1, 1100);
+        pm.on_subsequent_trade(&buy1, 1100, false);
 
         let pos = pm.positions.get(&mint).expect("position should exist");
         assert!(
@@ -1080,7 +1184,7 @@ mod tests {
                 1_000_000_000_000_000,
                 true,
             );
-            let closed = pm.on_subsequent_trade(&buy, 1000 + i * 1000);
+            let closed = pm.on_subsequent_trade(&buy, 1000 + i * 1000, false);
             if closed { break; } // position may have been closed by exit strategy
         }
 
@@ -1123,7 +1227,7 @@ mod tests {
             mint, [0x32u8; 64], 200_000_000,
             30_600_000_000, 1_000_000_000_000_000, true,
         );
-        pm.on_subsequent_trade(&buy1, 2000);
+        pm.on_subsequent_trade(&buy1, 2000, false);
 
         // Should still be in RIDE mode after 1 buy
         let pos = pm.positions.get(&mint).unwrap();
@@ -1134,7 +1238,7 @@ mod tests {
             mint, [0x33u8; 64], 200_000_000,
             31_000_000_000, 1_000_000_000_000_000, true,
         );
-        pm.on_subsequent_trade(&buy2, 3000);
+        pm.on_subsequent_trade(&buy2, 3000, false);
 
         // Should remain in RIDE mode with confirming buys
         let pos = pm.positions.get(&mint).unwrap();
