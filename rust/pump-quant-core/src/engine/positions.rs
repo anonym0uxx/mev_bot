@@ -12,6 +12,8 @@ use super::bonding_curve;
 
 // RIDE imports
 use crate::engine::ride_state::{RideState, RideConfig, RideDecision, RideExitReason};
+// Kelly imports
+use crate::engine::kelly_sizing::EntryConviction;
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
@@ -94,6 +96,8 @@ pub struct OpenPosition {
     pub sells_during_hold: u16,
     /// SignalState::* value at time of exit (populated on close path).
     pub signal_state_at_exit: u8,
+    /// Kelly entry conviction (win-prob, reward-risk, Kelly fraction, tier).
+    pub conviction: EntryConviction,
     // ── Entry context (for rich logging / ML training data) ──
     pub pre_trigger_buys_1s: u16,
     pub pre_trigger_buys_2s: u16,
@@ -210,6 +214,15 @@ pub struct ClosedPosition {
     pub peak_signal_score: u16,
     /// Unique wallets seen via bloom filter during hold.
     pub unique_wallets_seen: u8,
+    // ── Kelly conviction fields ──
+    /// Entry win probability × 1000.
+    pub entry_p_permille: u16,
+    /// Entry win/loss ratio × 100.
+    pub entry_r_x100: u16,
+    /// Entry Kelly fraction × 1000.
+    pub entry_f_permille: u16,
+    /// Conviction tier (0=LOW, 1=MED, 2=HIGH).
+    pub conviction_tier: u8,
 }
 
 // ─── Config Structs ────────────────────────────────────────────────
@@ -361,7 +374,7 @@ impl PositionManager {
     /// `magnitude_estimate` is the magnitude score (0.0–100.0) for RIDE qualification.
     /// Open a new position.
     /// `size_override_lamports`: if > 0, use this Kelly-computed size instead of tier lookup.
-    pub fn open_position(&mut self, event: &TradeEvent, score: f64, now_ms: u64, magnitude_estimate: f64, size_override_lamports: u64) {
+    pub fn open_position(&mut self, event: &TradeEvent, score: f64, now_ms: u64, magnitude_estimate: f64, size_override_lamports: u64, conviction: EntryConviction) {
         if self.positions.len() >= self.config.max_concurrent_positions {
             return;
         }
@@ -389,7 +402,7 @@ impl PositionManager {
 
         // Initialize RIDE state directly — all positions start as RIDE.
         let entry_mvsol = lamports_to_mvsol(event.vsol_reserves);
-        let ride_state = RideState::new(entry_mvsol, entry_mvsol, now_ms, 0, &self.config.ride_config);
+        let ride_state = RideState::new(entry_mvsol, entry_mvsol, now_ms, conviction.f_permille as u32, &self.config.ride_config);
 
         let pos = OpenPosition {
             mint: event.mint,
@@ -416,6 +429,7 @@ impl PositionManager {
             confirming_unique_wallets: 0,
             sells_during_hold: 0,
             signal_state_at_exit: 0,
+            conviction,
             // Entry context — populated by caller (hot_path) from MintHistory
             pre_trigger_buys_1s: 0,
             pre_trigger_buys_2s: 0,
@@ -708,6 +722,11 @@ impl PositionManager {
             signal_state_at_exit: sig_state,
             peak_signal_score: peak_sig,
             unique_wallets_seen: uniq_wallets,
+            // Kelly conviction fields
+            entry_p_permille: pos.conviction.p_permille,
+            entry_r_x100: pos.conviction.r_x100,
+            entry_f_permille: pos.conviction.f_permille,
+            conviction_tier: pos.conviction.conviction_tier,
         };
 
         // Best-effort send — if the receiver is gone, we just drop it.
@@ -821,7 +840,7 @@ mod tests {
         let sig = [0xBBu8; 64];
         let event = make_trade_event(mint, sig, 50_000_000, 30_000_000_000, 1_000_000_000_000_000, true);
 
-        pm.open_position(&event, 0.85, 1000, 0.0, 0);
+        pm.open_position(&event, 0.85, 1000, 0.0, 0, EntryConviction::default());
 
         assert_eq!(pm.open_count(), 1);
         assert!(pm.has_position(&mint));
@@ -837,7 +856,7 @@ mod tests {
         let sig = [0xBBu8; 64];
         let event = make_trade_event(mint, sig, 50_000_000, 30_000_000_000, 1_000_000_000_000_000, true);
 
-        pm.open_position(&event, 0.85, 1000, 0.0, 0);
+        pm.open_position(&event, 0.85, 1000, 0.0, 0, EntryConviction::default());
 
         // Same sig as trigger — should be skipped
         let closed = pm.on_subsequent_trade(&event, 1010);
@@ -853,7 +872,7 @@ mod tests {
         let mint = [0xAAu8; 32];
         let sig = [0xBBu8; 64];
         let event = make_trade_event(mint, sig, 50_000_000, 30_000_000_000, 1_000_000_000_000_000, true);
-        pm.open_position(&event, 0.85, 1000, 0.0, 0);
+        pm.open_position(&event, 0.85, 1000, 0.0, 0, EntryConviction::default());
 
         // Zero reserves event — should be skipped
         let zero_event = make_trade_event(mint, [0xCCu8; 64], 10_000_000, 0, 0, true);
@@ -869,7 +888,7 @@ mod tests {
         let mint = [0xAAu8; 32];
         let sig = [0xBBu8; 64];
         let event = make_trade_event(mint, sig, 50_000_000, 30_000_000_000, 1_000_000_000_000_000, true);
-        pm.open_position(&event, 0.85, 1000, 0.0, 0);
+        pm.open_position(&event, 0.85, 1000, 0.0, 0, EntryConviction::default());
 
         pm.force_close(&mint, ExitReason::MaxHold, 6001);
 
@@ -887,7 +906,7 @@ mod tests {
         let sig = [0xBBu8; 64];
         let entry_vsol = 30_000_000_000u64;
         let event = make_trade_event(mint, sig, 50_000_000, entry_vsol, 1_000_000_000_000_000, true);
-        pm.open_position(&event, 0.85, 1000, 0.0, 0);
+        pm.open_position(&event, 0.85, 1000, 0.0, 0, EntryConviction::default());
 
         // Price drops significantly — should trigger RIDE hard floor
         let drop_vsol = (entry_vsol as f64 * 0.90) as u64;
@@ -912,7 +931,7 @@ mod tests {
         let sig = [0xBBu8; 64];
         let entry_vsol = 30_000_000_000u64;
         let event = make_trade_event(mint, sig, 50_000_000, entry_vsol, 1_000_000_000_000_000, true);
-        pm.open_position(&event, 0.85, 1000, 0.0, 0);
+        pm.open_position(&event, 0.85, 1000, 0.0, 0, EntryConviction::default());
 
         // Tick far into the future with no buys — should trigger buy gap timeout or max hold
         pm.on_tick(70_000);
@@ -934,7 +953,7 @@ mod tests {
             let mint = [i + 1; 32];
             let sig = [i + 10; 64];
             let event = make_trade_event(mint, sig, 50_000_000, 30_000_000_000, 1_000_000_000_000_000, true);
-            pm.open_position(&event, 0.85, 1000, 0.0, 0);
+            pm.open_position(&event, 0.85, 1000, 0.0, 0, EntryConviction::default());
         }
 
         assert_eq!(pm.open_count(), 3);
@@ -959,7 +978,7 @@ mod tests {
             let mint = [i + 1; 32];
             let sig = [i + 10; 64];
             let event = make_trade_event(mint, sig, 50_000_000, 30_000_000_000, 1_000_000_000_000_000, true);
-            pm.open_position(&event, 0.85, 1000, 0.0, 0);
+            pm.open_position(&event, 0.85, 1000, 0.0, 0, EntryConviction::default());
         }
 
         assert_eq!(pm.open_count(), 2);
@@ -974,7 +993,7 @@ mod tests {
         let sig = [0xBBu8; 64];
         let entry_vsol = 30_000_000_000u64;
         let event = make_trade_event(mint, sig, 50_000_000, entry_vsol, 1_000_000_000_000_000, true);
-        pm.open_position(&event, 0.85, 1000, 0.0, 0);
+        pm.open_position(&event, 0.85, 1000, 0.0, 0, EntryConviction::default());
 
         pm.force_close(&mint, ExitReason::MaxHold, 1500);
 
@@ -994,7 +1013,7 @@ mod tests {
         let sig = [0xBBu8; 64];
         let entry_vsol = 30_000_000_000u64;
         let event = make_trade_event(mint, sig, 50_000_000, entry_vsol, 1_000_000_000_000_000, true);
-        pm.open_position(&event, 0.85, 1000, 60.0, 0); // magnitude 60 = RIDE-worthy
+        pm.open_position(&event, 0.85, 1000, 60.0, 0, EntryConviction::default()); // magnitude 60 = RIDE-worthy
 
         // Small buy with price increase above entry — RIDE should hold
         let up_vsol = (entry_vsol as f64 * 1.02) as u64; // 2% up — well within trail
@@ -1019,7 +1038,7 @@ mod tests {
         let entry_vsol = 30_000_000_000u64;
         let event = make_trade_event(mint, sig, 50_000_000, entry_vsol, 1_000_000_000_000_000, true);
 
-        pm.open_position(&event, 75.0, 1000, 60.0, 0); // magnitude 60
+        pm.open_position(&event, 75.0, 1000, 60.0, 0, EntryConviction::default()); // magnitude 60
 
         // Feed a confirming buy with price increase
         let up_vsol = (entry_vsol as f64 * 1.03) as u64; // 3% up
@@ -1049,7 +1068,7 @@ mod tests {
         let event = make_trade_event(mint, sig, 200_000_000, entry_vsol, 1_000_000_000_000_000, true);
 
         // magnitude 30 < 40 threshold — should never qualify
-        pm.open_position(&event, 80.0, 1000, 30.0, 0);
+        pm.open_position(&event, 80.0, 1000, 30.0, 0, EntryConviction::default());
 
         // Feed 3 large qualifying buys with big price movement
         for i in 1u64..=3 {
@@ -1097,7 +1116,7 @@ mod tests {
         let entry_vsol = 30_000_000_000u64;
         let event = make_trade_event(mint, sig, 200_000_000, entry_vsol, 1_000_000_000_000_000, true);
 
-        pm.open_position(&event, 80.0, 1000, 60.0, 0); // magnitude 60 >= 40
+        pm.open_position(&event, 80.0, 1000, 60.0, 0, EntryConviction::default()); // magnitude 60 >= 40
 
         // First qualifying buy: 0.2 SOL, price moves up ~2%
         let buy1 = make_trade_event(

@@ -159,6 +159,10 @@ pub struct MevJsonConfig {
     pub trail_distance_pct: Option<f64>,
     pub tp_sl_tiers_v2: Option<Vec<TpSlTierJsonV2>>,
 
+    // ── Kelly bankroll config ───────────────────────────────────────
+    /// Paper bankroll starting balance in SOL (default: 5.0).
+    pub paper_bankroll_sol: Option<f64>,
+
     // ── Entry engine / ride / risk (v2 pipeline) ────────────────────
     pub entry_engine: Option<EntryEngineJsonConfig>,
     pub ride: Option<RideJsonConfig>,
@@ -629,6 +633,10 @@ pub struct EngineConfig {
     /// Post-graduation momentum engine configuration.
     pub momentum: crate::momentum::MomentumConfig,
 
+    // ── Kelly bankroll ────────────────────────────────────────────
+    /// Paper bankroll initial balance in lamports (default: 5 SOL).
+    pub paper_bankroll_lamports: u64,
+
     // ── V2 pipeline configs ────────────────────────────────────────
     /// Entry engine config, built from `mev.entry_engine` JSON section.
     /// Always populated (defaults used when JSON section is absent).
@@ -919,8 +927,9 @@ pub fn build_entry_engine_config(json: &EntryEngineJsonConfig) -> crate::engine:
     if let Some(ref sizing) = json.position_sizing {
         if let Some(v) = sizing.min_entry_score { cfg.decision.min_entry_score = v; }
         if let Some(v) = sizing.min_magnitude_for_ride { cfg.decision.min_magnitude_for_ride = v; }
-        if let Some(v) = sizing.ride_size_min_sol { cfg.decision.ride_size_min = sol_to_lamports(v); }
-        if let Some(v) = sizing.ride_size_max_sol { cfg.decision.ride_size_max = sol_to_lamports(v); }
+        // ride_size_min/max removed — sizing is now Kelly-derived from wallet balance
+        let _ = sizing.ride_size_min_sol; // kept in JSON for backward compat, ignored
+        let _ = sizing.ride_size_max_sol;
     }
 
     cfg
@@ -1174,6 +1183,9 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
             .get("momentum")
             .and_then(|v| serde_json::from_value::<crate::momentum::MomentumConfig>(v.clone()).ok())
             .unwrap_or_default(),
+
+        // Kelly bankroll
+        paper_bankroll_lamports: sol_to_lamports(mev.paper_bankroll_sol.unwrap_or(5.0)),
 
         // V2 pipeline configs — entry engine always populated (defaults when absent)
         entry_engine_config: Some(

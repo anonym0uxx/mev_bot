@@ -794,6 +794,9 @@ fn drain_closed_positions(
     telegram_alerter: &Option<Arc<TelegramAlerter>>,
 ) {
     while let Ok(cp) = closed_rx.try_recv() {
+        // Update paper bankroll with realized PnL
+        hot_path.bankroll.apply_paper_pnl(cp.net_pnl_sol);
+
         // Track safety state — returns Some if circuit breaker just fired
         if let Some((stops, pause_ms)) = hot_path.on_position_closed(&cp) {
             tracing::warn!(

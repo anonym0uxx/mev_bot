@@ -227,7 +227,7 @@ pub struct RideState {
     pub vol_accel_bp: i16,        // volume acceleration
     pub price_velocity: i32,      // EMA-smoothed vSOL delta/s
     pub peak_composite: u16,      // peak composite score seen
-    pub _pad1: u16,
+    pub entry_f_permille: u16,    // Kelly f* at entry (conviction prior for exit trail)
 
     // ── Cache line 1: ring buffers + bloom ────────────────────────
 
@@ -264,6 +264,7 @@ impl core::fmt::Debug for RideState {
             .field("buys", &self.buys_after_entry)
             .field("sells", &self.sells_after_entry)
             .field("wallets", &self.unique_wallets)
+            .field("entry_f_permille", &self.entry_f_permille)
             .finish()
     }
 }
@@ -275,7 +276,7 @@ impl RideState {
         entry_mvsol: u32,
         _current_mvsol: u32,  // kept for API compat
         now_ms: u64,
-        _magnitude: u32,      // kept for API compat
+        entry_f_permille: u32, // Kelly f* conviction from entry engine
         config: &RideConfig,
     ) -> Self {
         let initial_trail = config.trail_strong_pump_bp;
@@ -310,7 +311,7 @@ impl RideState {
             vol_accel_bp: 0,
             price_velocity: 0,
             peak_composite: 500,
-            _pad1: 0,
+            entry_f_permille: entry_f_permille.min(u16::MAX as u32) as u16,
 
             // Ring buffers — timestamps sentinel to u16::MAX so they don't falsely count as "in window"
             buy_ts_ring: [u16::MAX; BUY_RING_LEN],
@@ -417,6 +418,14 @@ impl RideState {
             self.buys_after_entry, self.confirming_vol_msol,
             self.sells_after_entry, &kelly_cfg,
         );
+
+        // Blend with entry conviction: if entry f* was high, start with wider trail
+        // When entry_f_permille == 0 (not set), skip boost (neutral 1.0x)
+        if self.entry_f_permille > 0 {
+            let entry_boost = (self.entry_f_permille as u32 * 256) / 671; // 671 = baseline f_permille
+            self.kelly_trail_mult = ((self.kelly_trail_mult as u32 * entry_boost) >> 8)
+                .min(400).max(128) as u16;
+        }
 
         // Lifecycle multiplier
         let lifecycle_cfg = config.lifecycle_config();

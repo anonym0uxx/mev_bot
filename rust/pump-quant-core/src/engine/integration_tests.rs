@@ -114,13 +114,13 @@ mod tests {
             max_wallet_vol_30s: 2_000_000_000,
             total_buy_vol_30s: 15_000_000_000,
         };
-        let decision = engine.evaluate(&input);
+        let decision = engine.evaluate(&input, 5_000_000_000, 0, 0);
         assert!(decision.size_lamports > 0, "should not reject strong input");
-        assert!(decision.entry_score > 0.0);
-        assert!(decision.magnitude_score > 0.0);
+        assert!(decision.score > 0.0);
+        assert!(decision.magnitude > 0.0);
         // The action depends on magnitude_score vs threshold
         println!("Entry: {:.1}, Magnitude: {:.1}, Action: {:?}",
-            decision.entry_score, decision.magnitude_score, decision.action);
+            decision.score, decision.magnitude, decision.action);
     }
 
     // Test 6: ExitStateMachine still works for SCALP path

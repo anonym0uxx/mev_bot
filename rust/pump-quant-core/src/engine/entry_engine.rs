@@ -6,11 +6,13 @@
 //!
 //! Stage 1: `hard_gate()` — 8 integer checks, <50ns, rejects ~65%
 //! Stage 2: `score()` — 8 entry + 7 magnitude features, LUT-backed, ~150ns
-//! Stage 3: `size()` — RIDE-only position sizing, ~10ns
+//! Stage 3: `size()` — Kelly criterion position sizing via kelly_sizing module
 //!
 //! Total hot data: ~3,144 bytes. Fits in L1D cache (50 cache lines, 9.8% of 32KB).
 //! Zero heap allocation on hot path. Zero f64 division (precomputed reciprocals).
 //! All monetary thresholds as u64 lamports.
+
+use crate::engine::kelly_sizing::{self, EntryConviction};
 
 // ─── Type Aliases for LUTs ──────────────────────────────────────────────────
 
@@ -140,15 +142,12 @@ pub struct Reciprocals {
 // ─── Decision Thresholds ────────────────────────────────────────────────────
 
 /// Decision thresholds for Stage 3.
+/// Position sizing is now handled by Kelly criterion (kelly_sizing module).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct DecisionThresholds {
     pub min_entry_score: f64,           // 50.0
     pub min_magnitude_for_ride: f64,    // 40.0
-
-    // Position sizes in lamports
-    pub ride_size_min: u64,             // 0.10 SOL = 100_000_000
-    pub ride_size_max: u64,             // 0.15 SOL = 150_000_000
 }
 
 impl Default for DecisionThresholds {
@@ -156,8 +155,6 @@ impl Default for DecisionThresholds {
         Self {
             min_entry_score: 50.0,
             min_magnitude_for_ride: 40.0,
-            ride_size_min: 100_000_000,
-            ride_size_max: 150_000_000,
         }
     }
 }
@@ -268,19 +265,21 @@ pub enum EntryAction {
 #[derive(Debug, Clone, Copy)]
 pub struct EntryDecision {
     pub action: EntryAction,
-    pub entry_score: f64,       // 0-100 (0 if rejected at gate)
-    pub magnitude_score: f64,   // 0-100 (0 if rejected at gate)
-    pub size_lamports: u64,     // 0 if Reject
+    pub size_lamports: u64,
+    pub score: f64,
+    pub magnitude: f64,
+    pub conviction: EntryConviction,
 }
 
 impl EntryDecision {
     #[inline(always)]
-    pub const fn reject() -> Self {
+    pub fn reject() -> Self {
         Self {
             action: EntryAction::Reject,
-            entry_score: 0.0,
-            magnitude_score: 0.0,
             size_lamports: 0,
+            score: 0.0,
+            magnitude: 0.0,
+            conviction: EntryConviction::default(),
         }
     }
 }
@@ -298,7 +297,7 @@ impl EntryDecision {
 ///   fill_rate_lut       512B   (8 cache lines)
 ///   ScoringWeights      120B   (2 cache lines)
 ///   Reciprocals          48B   (1 cache line)
-///   DecisionThresholds   72B   (2 cache lines)
+///   DecisionThresholds   16B   (shared cache line)
 #[repr(C)]
 pub struct EntryEngine {
     // ── Stage 1: Hard Gate (accessed first on every call) ──
@@ -315,7 +314,7 @@ pub struct EntryEngine {
     pub reciprocals: Reciprocals,         //   48 bytes
 
     // ── Stage 3: Decision thresholds ──
-    pub decision: DecisionThresholds,     //   72 bytes
+    pub decision: DecisionThresholds,     //   16 bytes
 }
 
 // ─── Helper: clamp to [0.0, 1.0] ───────────────────────────────────────────
@@ -457,56 +456,71 @@ impl EntryEngine {
     ///
     /// Stage 1 (hard gate): ~30-40ns. Rejects ~65% of inputs.
     /// Stage 2 (scoring):   ~150-180ns. Only runs on ~35% of inputs.
-    /// Stage 3 (sizing):    ~10-20ns. Only runs on scored candidates.
+    /// Stage 3 (sizing):    Kelly criterion sizing via kelly_sizing module.
     ///
     /// PERF: NOT #[inline(always)] — this is the outer orchestrator.
     /// The individual stages are inlined; keeping the orchestrator as
     /// a regular function call prevents icache bloat at the call site.
     #[inline]
-    pub fn evaluate(&self, input: &EntryInput) -> EntryDecision {
+    pub fn evaluate(
+        &self,
+        input: &EntryInput,
+        wallet_balance: u64,
+        n_open: u8,
+        drawdown_pct: u8,
+    ) -> EntryDecision {
         // Stage 1: Hard Gate (<50ns)
         if !self.hard_gate(input) {
             return EntryDecision::reject();
         }
 
         // Stage 2: Composite Scoring (~150-180ns)
-        let (entry_score, magnitude_score) = self.score(input);
+        let (score, magnitude) = self.score(input);
 
-        // Stage 3: Decision + Sizing (~10-20ns)
-        let (action, size_lamports) = self.size(entry_score, magnitude_score);
+        // Stage 3: Kelly Criterion Sizing
+        let (action, conviction) =
+            self.size(score, magnitude, wallet_balance, n_open, drawdown_pct);
 
         EntryDecision {
             action,
-            entry_score,
-            magnitude_score,
-            size_lamports,
+            size_lamports: conviction.size_lamports,
+            score,
+            magnitude,
+            conviction,
         }
     }
 
-    // ── Stage 3: Position Sizing ──────────────────────────────────────
+    // ── Stage 3: Position Sizing (Kelly Criterion) ────────────────────
 
-    /// Position sizing from entry + magnitude scores. RIDE-only.
+    /// Kelly criterion position sizing from entry + magnitude scores.
+    /// Delegates to kelly_sizing::compute_conviction() for bankroll-aware sizing.
     #[inline(always)]
-    fn size(&self, entry_score: f64, magnitude_score: f64) -> (EntryAction, u64) {
+    fn size(
+        &self,
+        entry_score: f64,
+        magnitude_score: f64,
+        wallet_balance: u64,
+        n_open: u8,
+        drawdown_pct: u8,
+    ) -> (EntryAction, EntryConviction) {
         let d = &self.decision;
         if entry_score < d.min_entry_score {
-            return (EntryAction::Reject, 0);
+            return (EntryAction::Reject, EntryConviction::default());
         }
 
         if magnitude_score < d.min_magnitude_for_ride {
-            return (EntryAction::Reject, 0); // Was Scalp, now Reject
+            return (EntryAction::Reject, EntryConviction::default());
         }
 
-        // RIDE: linear interpolation by magnitude
-        let range = 100.0 - d.min_magnitude_for_ride;
-        let t = if range > 0.0 {
-            ((magnitude_score - d.min_magnitude_for_ride) / range).min(1.0)
-        } else {
-            1.0
-        };
-        let size = d.ride_size_min
-            + ((d.ride_size_max - d.ride_size_min) as f64 * t) as u64;
-        (EntryAction::Ride, size)
+        let conviction = kelly_sizing::compute_conviction(
+            magnitude_score,
+            entry_score,
+            wallet_balance,
+            n_open,
+            drawdown_pct,
+        );
+
+        (EntryAction::Ride, conviction)
     }
 
     // ── Stage 1: Hard Gate ──────────────────────────────────────────
@@ -729,6 +743,11 @@ mod tests {
         }
     }
 
+    // Default bankroll params for tests: 5 SOL wallet, 0 open positions, 0% drawdown
+    const TEST_WALLET: u64 = 5_000_000_000;
+    const TEST_N_OPEN: u8 = 0;
+    const TEST_DRAWDOWN: u8 = 0;
+
     #[test]
     fn test_hard_gate_passes_good_input() {
         let engine = EntryEngine::new(&default_config());
@@ -781,9 +800,9 @@ mod tests {
     fn test_evaluate_produces_scores() {
         let engine = EntryEngine::new(&default_config());
         let input = passing_input();
-        let decision = engine.evaluate(&input);
-        assert!(decision.entry_score > 0.0, "entry_score should be positive");
-        assert!(decision.magnitude_score > 0.0, "magnitude_score should be positive");
+        let decision = engine.evaluate(&input, TEST_WALLET, TEST_N_OPEN, TEST_DRAWDOWN);
+        assert!(decision.score > 0.0, "score should be positive");
+        assert!(decision.magnitude > 0.0, "magnitude should be positive");
         assert!(decision.size_lamports > 0, "should not reject good input");
     }
 
@@ -792,7 +811,7 @@ mod tests {
         let engine = EntryEngine::new(&default_config());
         let mut input = passing_input();
         input.buy_count_1s = 1; // fails hard gate
-        let decision = engine.evaluate(&input);
+        let decision = engine.evaluate(&input, TEST_WALLET, TEST_N_OPEN, TEST_DRAWDOWN);
         assert_eq!(decision.size_lamports, 0);
         assert!(matches!(decision.action, EntryAction::Reject));
     }
@@ -803,13 +822,13 @@ mod tests {
         // At curve sweet spot (43%), should get high curve score
         let mut input = passing_input();
         input.vsol_reserves = 66_550_000_000; // ~43% curve
-        let d1 = engine.evaluate(&input);
+        let d1 = engine.evaluate(&input, TEST_WALLET, TEST_N_OPEN, TEST_DRAWDOWN);
 
         // At curve extreme (5%), should get lower curve score
         input.vsol_reserves = 34_250_000_000; // ~5% curve — but this fails hard gate
         input.vsol_reserves = 55_000_000_000; // ~29% curve (passes gate, suboptimal)
-        let d2 = engine.evaluate(&input);
+        let d2 = engine.evaluate(&input, TEST_WALLET, TEST_N_OPEN, TEST_DRAWDOWN);
 
-        assert!(d1.entry_score >= d2.entry_score, "sweet spot should score higher");
+        assert!(d1.score >= d2.score, "sweet spot should score higher");
     }
 }

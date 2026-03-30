@@ -13,6 +13,7 @@ use std::sync::Arc;
 use super::entry_engine::{EntryEngine, EntryInput, EntryAction};
 use super::health::HealthMonitor;
 use super::positions::{ClosedPosition, ExitReason, PositionManager};
+use crate::engine::kelly_sizing::{EntryConviction, BankrollSource, PaperBankroll};
 
 use crate::core::mint_map::MintHistoryMap;
 use crate::core::trade_record::TradeRecord;
@@ -51,6 +52,9 @@ pub struct HotPath {
     paper_mode: bool,
 
     pub stats: HotPathStats,
+
+    // ── Bankroll management (Kelly sizing) ──────────────────────────
+    pub bankroll: BankrollSource,
 
     // ── Safety: daily loss cap ──────────────────────────────────────
     /// Accumulated daily loss in lamports (positive value = total losses).
@@ -183,6 +187,11 @@ impl HotPath {
             tod_boost_multiplier,
             max_entry_size_lamports,
             excluded_mints: hashbrown::HashSet::with_capacity(256),
+            bankroll: if paper_mode {
+                BankrollSource::Paper(PaperBankroll::new(5_000_000_000)) // 5 SOL default
+            } else {
+                BankrollSource::Paper(PaperBankroll::new(5_000_000_000)) // TODO: Live RPC bankroll
+            },
             entry_randomizer: super::entry_randomizer::EntryRandomizer::new(randomizer_config),
             helius_sig_ring: [(0u64, 0u64); 256],
             helius_sig_ring_head: 0,
@@ -334,7 +343,11 @@ impl HotPath {
                 max_wallet_vol_30s: max_wallet,
                 total_buy_vol_30s: total_vol_30s,
             };
-            let decision = engine.evaluate(&input);
+            // Kelly bankroll params
+            let wallet_balance = self.bankroll.balance();
+            let n_open = self.position_manager.open_count() as u8;
+            let drawdown_pct = self.bankroll.drawdown_pct();
+            let decision = engine.evaluate(&input, wallet_balance, n_open, drawdown_pct);
             match decision.action {
                 EntryAction::Reject => {
                     self.stats.gate_rejects += 1;
@@ -352,8 +365,13 @@ impl HotPath {
                             return;
                         }
                     }
-                    // Open position using V2 entry score + magnitude + Kelly size
-                    self.position_manager.open_position(trade, decision.entry_score, now, decision.magnitude_score, decision.size_lamports);
+                    // Skip if Kelly says size=0 (bankroll exhausted)
+                    if decision.conviction.size_lamports == 0 {
+                        self.stats.score_rejects += 1;
+                        return;
+                    }
+                    // Open position using Kelly-derived size + conviction
+                    self.position_manager.open_position(trade, decision.score, now, decision.magnitude, decision.conviction.size_lamports, decision.conviction);
                     self.stats.positions_opened += 1;
                     // Enrich with entry context
                     if let Some(pos) = self.position_manager.get_position_mut(&trade.mint) {

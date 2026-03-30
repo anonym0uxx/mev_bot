@@ -1,6 +1,7 @@
 pub mod bonding_curve;
 pub mod config;
 pub mod entry_engine;
+pub mod kelly_sizing;
 pub mod entry_randomizer;
 // RIDE-only engine: exit_machine is dead code, kept until positions.rs is cleaned up
 pub mod exit_machine;

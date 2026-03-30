@@ -1,0 +1,632 @@
+//! Unified Kelly Position Sizing Engine
+//!
+//! Computes position size from wallet balance + entry features using a 2D LUT
+//! with bilinear interpolation for win probability (p) and reward ratio (R),
+//! then applies half-Kelly, correlation adjustment, and drawdown scaling.
+//!
+//! Called once per entry decision (~100-500/day). NOT on the hot path.
+//! Output struct is integer-only for zero-cost reads by the hot-path exit engine.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+/// Minimum position size: 0.05 SOL
+const MIN_SIZE_LAMPORTS: u64 = 50_000_000;
+/// Maximum position size: 0.20 SOL
+const MAX_SIZE_LAMPORTS: u64 = 200_000_000;
+
+/// 4×4 win-probability LUT (permille, i.e. p × 1000).
+/// Rows: magnitude buckets [40-50, 50-60, 60-70, 70+]
+/// Cols: entry_score buckets [50-60, 60-70, 70-80, 80+]
+/// Precomputed from 392 historical trades.
+const P_LUT: [[u16; 4]; 4] = [
+    [440, 420, 450, 430], // mag 40-50
+    [600, 560, 580, 550], // mag 50-60
+    [640, 590, 620, 580], // mag 60-70
+    [540, 510, 540, 520], // mag 70+
+];
+
+/// 4×4 reward-ratio LUT (R × 100).
+/// Same bucket layout as P_LUT.
+const R_LUT: [[u16; 4]; 4] = [
+    [4300, 4800, 4000, 3500], // mag 40-50 (high R, low p — lottery tickets)
+    [1100, 1400, 1200, 900],  // mag 50-60
+    [800, 1200, 900, 700],    // mag 60-70
+    [700, 1000, 750, 520],    // mag 70+
+];
+
+/// Magnitude bucket boundaries (lower bounds).
+/// Bucket i covers [MAG_BOUNDS[i], MAG_BOUNDS[i+1]).
+/// Below MAG_BOUNDS[0] → clamp to bucket 0. At/above last bound → bucket 3.
+const MAG_BOUNDS: [f64; 4] = [40.0, 50.0, 60.0, 70.0];
+/// Score bucket boundaries.
+const SCORE_BOUNDS: [f64; 4] = [50.0, 60.0, 70.0, 80.0];
+/// Bucket width (uniform for both dimensions).
+const BUCKET_WIDTH: f64 = 10.0;
+
+// ─── Entry Conviction Struct ────────────────────────────────────────────────
+
+/// Entry conviction computed at decision time, stored on OpenPosition.
+/// Integer-only for zero-cost reads on the hot-path exit engine.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct EntryConviction {
+    /// Win probability × 1000 (0–1000)
+    pub p_permille: u16,
+    /// Win/loss ratio × 100
+    pub r_x100: u16,
+    /// Optimal Kelly fraction × 1000 (after half-Kelly + adjustments)
+    pub f_permille: u16,
+    /// Kelly-derived position size in lamports
+    pub size_lamports: u64,
+    /// Conviction tier: 0=LOW, 1=MED, 2=HIGH
+    pub conviction_tier: u8,
+    /// Padding for repr(C) alignment
+    pub _pad: [u8; 5],
+}
+
+impl Default for EntryConviction {
+    fn default() -> Self {
+        Self {
+            p_permille: 0,
+            r_x100: 0,
+            f_permille: 0,
+            size_lamports: 0,
+            conviction_tier: 0,
+            _pad: [0; 5],
+        }
+    }
+}
+
+// ─── Bucket Assignment ──────────────────────────────────────────────────────
+
+/// Map a continuous score to (bucket_index, fractional_position).
+/// `bounds` must be sorted ascending with uniform width `BUCKET_WIDTH`.
+/// Returns (bucket 0..3, frac 0.0..1.0 within that bucket).
+#[inline]
+fn bucket_frac(value: f64, bounds: &[f64; 4]) -> (usize, f64) {
+    if value <= bounds[0] {
+        return (0, 0.0);
+    }
+    // Continuous index: how many bucket-widths above the first bound
+    let ci = (value - bounds[0]) / BUCKET_WIDTH;
+    let bucket = (ci.floor() as usize).min(3);
+    let frac = if bucket >= 3 {
+        // In the last bucket or beyond: clamp frac to [0, 1]
+        ((value - bounds[3]) / BUCKET_WIDTH).clamp(0.0, 1.0)
+    } else {
+        ci - bucket as f64
+    };
+    (bucket, frac)
+}
+
+// ─── Bilinear Interpolation ─────────────────────────────────────────────────
+
+/// Bilinear interpolation on a 4×4 u16 LUT.
+/// `bm`, `bs`: bucket indices (0..3).
+/// `fm`, `fs`: fractional positions within bucket (0.0..1.0).
+/// Returns interpolated value in the same units as the LUT.
+#[inline]
+fn bilerp(lut: &[[u16; 4]; 4], bm: usize, bs: usize, fm: f64, fs: f64) -> u16 {
+    let bm1 = (bm + 1).min(3);
+    let bs1 = (bs + 1).min(3);
+
+    let v00 = lut[bm][bs] as f64;
+    let v10 = lut[bm1][bs] as f64;
+    let v01 = lut[bm][bs1] as f64;
+    let v11 = lut[bm1][bs1] as f64;
+
+    let ifm = 1.0 - fm;
+    let ifs = 1.0 - fs;
+
+    let result = ifm * ifs * v00 + fm * ifs * v10 + ifm * fs * v01 + fm * fs * v11;
+
+    (result + 0.5) as u16
+}
+
+// ─── Kelly Fraction ─────────────────────────────────────────────────────────
+
+/// Compute raw Kelly fraction in permille.
+/// f* = p - (1-p)/R
+/// Integer form: f_permille = p_permille - (1000 - p_permille) * 100 / r_x100
+/// Returns 0 if there is no edge (f* ≤ 0).
+#[inline]
+fn kelly_permille(p_permille: u16, r_x100: u16) -> u16 {
+    if r_x100 == 0 {
+        return 0;
+    }
+    let loss_permille = 1000u32.saturating_sub(p_permille as u32);
+    let penalty = loss_permille * 100 / r_x100 as u32;
+    let p = p_permille as u32;
+    if p <= penalty {
+        return 0;
+    }
+    (p - penalty).min(1000) as u16
+}
+
+// ─── Conviction Tier ────────────────────────────────────────────────────────
+
+/// Map adjusted f_permille to conviction tier.
+/// 0=LOW, 1=MED, 2=HIGH
+#[inline]
+fn conviction_tier(f_permille: u16) -> u8 {
+    if f_permille >= 550 {
+        2 // HIGH
+    } else if f_permille >= 450 {
+        1 // MED
+    } else {
+        0 // LOW
+    }
+}
+
+// ─── Core Entry Point ───────────────────────────────────────────────────────
+
+/// Compute entry conviction from features and wallet state.
+///
+/// # Arguments
+/// * `mag_score`  – magnitude score (f64, typically 0–100)
+/// * `entry_score` – entry quality score (f64, typically 0–100)
+/// * `wallet_balance_lamports` – effective bankroll in lamports
+/// * `n_open` – number of currently open positions (0–255)
+/// * `drawdown_pct` – current drawdown from HWM as integer percent (0–100)
+///
+/// # Sizing pipeline
+/// 1. 2D LUT lookup with bilinear interpolation → p, R
+/// 2. Raw Kelly: f* = p - (1-p)/R
+/// 3. Half-Kelly: f_half = f* / 2
+/// 4. Correlation adjustment (Thorp approx, ρ≈0.25):
+///      f_adj = f_half × 256 / (256 + (n_open - 1) × 64)
+/// 5. Drawdown scaling (if drawdown_pct > 10):
+///      f_adj *= (100 - drawdown_pct) / 100
+/// 6. size = f_adj × wallet_balance / 1_000
+/// 7. Clamp to [MIN_SIZE_LAMPORTS, MAX_SIZE_LAMPORTS]
+pub fn compute_conviction(
+    mag_score: f64,
+    entry_score: f64,
+    wallet_balance_lamports: u64,
+    n_open: u8,
+    drawdown_pct: u8,
+) -> EntryConviction {
+    // Step 1: Bucket assignment with interpolation fractions
+    let (bm, fm) = bucket_frac(mag_score, &MAG_BOUNDS);
+    let (bs, fs) = bucket_frac(entry_score, &SCORE_BOUNDS);
+
+    // Step 2: Bilinear interpolation on both LUTs
+    let p_permille = bilerp(&P_LUT, bm, bs, fm, fs);
+    let r_x100 = bilerp(&R_LUT, bm, bs, fm, fs);
+
+    // Step 3: Raw Kelly fraction
+    let f_raw = kelly_permille(p_permille, r_x100);
+
+    // Step 4: Half-Kelly
+    let f_half = f_raw / 2;
+
+    // Step 5: Correlation adjustment — Thorp approximation with ρ=0.25
+    // f_adj = f_half * 256 / (256 + max(0, n_open - 1) * 64)
+    let k = n_open.saturating_sub(1) as u32;
+    let denom = 256u32 + k * 64;
+    let f_adj_corr = (f_half as u32 * 256 + denom / 2) / denom; // rounded
+
+    // Step 6: Drawdown scaling
+    let f_adj = if drawdown_pct > 10 {
+        let scale = (100u32).saturating_sub(drawdown_pct as u32);
+        (f_adj_corr * scale + 50) / 100 // rounded
+    } else {
+        f_adj_corr
+    };
+
+    let f_final = (f_adj as u16).min(1000);
+
+    // Step 7: Position sizing
+    // size = f_final * wallet_balance / 1000
+    let size_raw = if wallet_balance_lamports > 0 && f_final > 0 {
+        (wallet_balance_lamports as u128 * f_final as u128 / 1000) as u64
+    } else {
+        0
+    };
+
+    // Step 8: Clamp
+    let size_lamports = if size_raw == 0 {
+        0
+    } else {
+        size_raw.clamp(MIN_SIZE_LAMPORTS, MAX_SIZE_LAMPORTS)
+    };
+
+    let tier = conviction_tier(f_final);
+
+    EntryConviction {
+        p_permille,
+        r_x100,
+        f_permille: f_final,
+        size_lamports,
+        conviction_tier: tier,
+        _pad: [0u8; 5],
+    }
+}
+
+// ─── Paper Bankroll ─────────────────────────────────────────────────────────
+
+/// Atomic paper-trading bankroll tracker.
+/// Thread-safe for concurrent reads; `apply_pnl` uses CAS loop.
+pub struct PaperBankroll {
+    balance: AtomicU64,
+    initial: u64,
+}
+
+impl PaperBankroll {
+    /// Create a new paper bankroll with the given initial balance (lamports).
+    pub fn new(initial_lamports: u64) -> Self {
+        Self {
+            balance: AtomicU64::new(initial_lamports),
+            initial: initial_lamports,
+        }
+    }
+
+    /// Current balance in lamports.
+    #[inline]
+    pub fn balance(&self) -> u64 {
+        self.balance.load(Ordering::Relaxed)
+    }
+
+    /// Initial balance (for drawdown calculation).
+    #[inline]
+    pub fn initial(&self) -> u64 {
+        self.initial
+    }
+
+    /// Apply a PnL delta. `net_pnl_lamports` can be negative (loss).
+    /// Uses CAS loop for lock-free thread safety.
+    /// Balance saturates at 0 on the low end.
+    pub fn apply_pnl(&self, net_pnl_lamports: i64) {
+        loop {
+            let current = self.balance.load(Ordering::Relaxed);
+            let new_val = if net_pnl_lamports >= 0 {
+                current.saturating_add(net_pnl_lamports as u64)
+            } else {
+                current.saturating_sub((-net_pnl_lamports) as u64)
+            };
+            if self
+                .balance
+                .compare_exchange_weak(current, new_val, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
+    }
+
+    /// Current drawdown as integer percent (0–100) relative to initial balance.
+    /// Returns 0 if current balance >= initial.
+    pub fn drawdown_pct(&self) -> u8 {
+        let bal = self.balance();
+        if bal >= self.initial {
+            return 0;
+        }
+        let dd = self.initial - bal;
+        let pct = (dd as u128 * 100 / self.initial as u128) as u64;
+        pct.min(100) as u8
+    }
+}
+
+// ─── Bankroll Source Abstraction ────────────────────────────────────────────
+
+/// Abstraction over paper vs. live bankroll sources.
+pub enum BankrollSource {
+    /// Paper trading: fully simulated balance.
+    Paper(PaperBankroll),
+    /// Live trading: cached balance from RPC, updated externally.
+    Live { cached_balance: AtomicU64 },
+}
+
+impl BankrollSource {
+    /// Current balance in lamports.
+    pub fn balance(&self) -> u64 {
+        match self {
+            BankrollSource::Paper(pb) => pb.balance(),
+            BankrollSource::Live { cached_balance } => cached_balance.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Apply PnL to paper bankroll. No-op for live.
+    pub fn apply_paper_pnl(&self, pnl: i64) {
+        if let BankrollSource::Paper(pb) = self {
+            pb.apply_pnl(pnl);
+        }
+    }
+
+    /// Drawdown percent (0–100). For live, returns 0 (tracked externally).
+    pub fn drawdown_pct(&self) -> u8 {
+        match self {
+            BankrollSource::Paper(pb) => pb.drawdown_pct(),
+            BankrollSource::Live { .. } => 0,
+        }
+    }
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── LUT bucket sanity ───────────────────────────────────────────────
+
+    #[test]
+    fn test_lut_buckets_produce_sensible_values() {
+        let mag_centers = [45.0, 55.0, 65.0, 75.0];
+        let score_centers = [55.0, 65.0, 75.0, 85.0];
+
+        for (mi, &mag) in mag_centers.iter().enumerate() {
+            for (si, &score) in score_centers.iter().enumerate() {
+                let c = compute_conviction(mag, score, 1_000_000_000, 0, 0);
+
+                let expected_p = P_LUT[mi][si];
+                let expected_r = R_LUT[mi][si];
+
+                assert!(
+                    (c.p_permille as i32 - expected_p as i32).unsigned_abs() <= 150,
+                    "p mismatch at mag={mag}, score={score}: got {} expected ~{expected_p}",
+                    c.p_permille
+                );
+                assert!(
+                    (c.r_x100 as i32 - expected_r as i32).unsigned_abs() <= 2000,
+                    "R mismatch at mag={mag}, score={score}: got {} expected ~{expected_r}",
+                    c.r_x100
+                );
+                assert!(c.f_permille > 0, "f should be positive at mag={mag}, score={score}");
+                assert!(c.conviction_tier <= 2);
+            }
+        }
+    }
+
+    #[test]
+    fn test_kelly_permille_known_values() {
+        // mag 60-70: p=640, R_x100=800 → f = 640 - 360*100/800 = 640-45 = 595
+        assert_eq!(kelly_permille(640, 800), 595);
+
+        // mag 40-50: p=440, R_x100=4300 → f = 440 - 560*100/4300 = 440-13 = 427
+        assert_eq!(kelly_permille(440, 4300), 427);
+
+        // No edge
+        assert_eq!(kelly_permille(200, 100), 0);
+
+        // Zero R
+        assert_eq!(kelly_permille(500, 0), 0);
+    }
+
+    // ── Size scales with wallet balance ─────────────────────────────────
+
+    #[test]
+    fn test_size_scales_with_wallet_balance() {
+        let c1 = compute_conviction(55.0, 55.0, 1_000_000_000, 0, 0);
+        let c2 = compute_conviction(55.0, 55.0, 2_000_000_000, 0, 0);
+        let c3 = compute_conviction(55.0, 55.0, 4_000_000_000, 0, 0);
+
+        assert_eq!(c1.f_permille, c2.f_permille);
+        assert_eq!(c2.f_permille, c3.f_permille);
+
+        assert!(c1.size_lamports <= c2.size_lamports);
+        assert!(c2.size_lamports <= c3.size_lamports);
+    }
+
+    #[test]
+    fn test_size_scales_with_smaller_wallets() {
+        let c_small = compute_conviction(55.0, 55.0, 200_000_000, 0, 0);
+        let c_medium = compute_conviction(55.0, 55.0, 500_000_000, 0, 0);
+
+        assert!(
+            c_small.size_lamports < c_medium.size_lamports,
+            "larger wallet should produce larger size: {} vs {}",
+            c_small.size_lamports,
+            c_medium.size_lamports
+        );
+    }
+
+    // ── Size decreases with more concurrent positions ───────────────────
+
+    #[test]
+    fn test_size_decreases_with_more_open_positions() {
+        let wallet = 2_000_000_000u64;
+        let c0 = compute_conviction(55.0, 55.0, wallet, 0, 0);
+        let c1 = compute_conviction(55.0, 55.0, wallet, 1, 0);
+        let c2 = compute_conviction(55.0, 55.0, wallet, 2, 0);
+        let c3 = compute_conviction(55.0, 55.0, wallet, 3, 0);
+        let c5 = compute_conviction(55.0, 55.0, wallet, 5, 0);
+
+        // n_open=0,1 → same (k=0 for both)
+        assert_eq!(c0.f_permille, c1.f_permille);
+
+        assert!(c1.f_permille >= c2.f_permille, "2 open: {} vs {}", c1.f_permille, c2.f_permille);
+        assert!(c2.f_permille >= c3.f_permille, "3 open: {} vs {}", c2.f_permille, c3.f_permille);
+        assert!(c3.f_permille >= c5.f_permille, "5 open: {} vs {}", c3.f_permille, c5.f_permille);
+        assert!(c1.size_lamports >= c5.size_lamports);
+    }
+
+    // ── Drawdown scaling reduces size ───────────────────────────────────
+
+    #[test]
+    fn test_drawdown_scaling_reduces_size() {
+        let wallet = 2_000_000_000u64;
+        let c_no_dd = compute_conviction(55.0, 55.0, wallet, 0, 0);
+        let c_5_dd = compute_conviction(55.0, 55.0, wallet, 0, 5);
+        let c_15_dd = compute_conviction(55.0, 55.0, wallet, 0, 15);
+        let c_30_dd = compute_conviction(55.0, 55.0, wallet, 0, 30);
+        let c_50_dd = compute_conviction(55.0, 55.0, wallet, 0, 50);
+
+        // ≤10% → no scaling
+        assert_eq!(c_no_dd.f_permille, c_5_dd.f_permille);
+        assert_eq!(c_no_dd.size_lamports, c_5_dd.size_lamports);
+
+        assert!(c_no_dd.f_permille > c_15_dd.f_permille, "15% dd: {} vs {}", c_no_dd.f_permille, c_15_dd.f_permille);
+        assert!(c_15_dd.f_permille > c_30_dd.f_permille, "30% dd: {} vs {}", c_15_dd.f_permille, c_30_dd.f_permille);
+        assert!(c_30_dd.f_permille > c_50_dd.f_permille, "50% dd: {} vs {}", c_30_dd.f_permille, c_50_dd.f_permille);
+    }
+
+    #[test]
+    fn test_drawdown_at_100_pct_produces_zero() {
+        let c = compute_conviction(55.0, 55.0, 2_000_000_000, 0, 100);
+        assert_eq!(c.f_permille, 0);
+        assert_eq!(c.size_lamports, 0);
+    }
+
+    // ── Paper bankroll tracking ─────────────────────────────────────────
+
+    #[test]
+    fn test_paper_bankroll_basic() {
+        let pb = PaperBankroll::new(1_000_000_000);
+        assert_eq!(pb.balance(), 1_000_000_000);
+        assert_eq!(pb.drawdown_pct(), 0);
+
+        pb.apply_pnl(100_000_000);
+        assert_eq!(pb.balance(), 1_100_000_000);
+        assert_eq!(pb.drawdown_pct(), 0);
+
+        pb.apply_pnl(-300_000_000);
+        assert_eq!(pb.balance(), 800_000_000);
+        assert_eq!(pb.drawdown_pct(), 20);
+    }
+
+    #[test]
+    fn test_paper_bankroll_saturates_at_zero() {
+        let pb = PaperBankroll::new(100_000_000);
+        pb.apply_pnl(-200_000_000);
+        assert_eq!(pb.balance(), 0);
+        assert_eq!(pb.drawdown_pct(), 100);
+    }
+
+    #[test]
+    fn test_paper_bankroll_drawdown_partial() {
+        let pb = PaperBankroll::new(2_000_000_000);
+        pb.apply_pnl(-500_000_000);
+        assert_eq!(pb.balance(), 1_500_000_000);
+        assert_eq!(pb.drawdown_pct(), 25);
+    }
+
+    // ── Size clamping ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_size_clamped_to_min() {
+        let c = compute_conviction(55.0, 55.0, 100_000_000, 0, 0);
+        assert_eq!(c.size_lamports, MIN_SIZE_LAMPORTS, "should clamp to min: {}", c.size_lamports);
+    }
+
+    #[test]
+    fn test_size_clamped_to_max() {
+        let c = compute_conviction(55.0, 55.0, 10_000_000_000, 0, 0);
+        assert_eq!(c.size_lamports, MAX_SIZE_LAMPORTS, "should clamp to max: {}", c.size_lamports);
+    }
+
+    #[test]
+    fn test_zero_wallet_produces_zero_size() {
+        let c = compute_conviction(55.0, 55.0, 0, 0, 0);
+        assert_eq!(c.size_lamports, 0);
+    }
+
+    // ── Conviction tier assignment ──────────────────────────────────────
+
+    #[test]
+    fn test_conviction_tiers() {
+        assert_eq!(conviction_tier(0), 0);
+        assert_eq!(conviction_tier(100), 0);
+        assert_eq!(conviction_tier(449), 0);
+        assert_eq!(conviction_tier(450), 1);
+        assert_eq!(conviction_tier(500), 1);
+        assert_eq!(conviction_tier(549), 1);
+        assert_eq!(conviction_tier(550), 2);
+        assert_eq!(conviction_tier(700), 2);
+        assert_eq!(conviction_tier(1000), 2);
+    }
+
+    // ── Bilinear interpolation ──────────────────────────────────────────
+
+    #[test]
+    fn test_bilerp_at_cell_origin() {
+        assert_eq!(bilerp(&P_LUT, 0, 0, 0.0, 0.0), 440);
+        assert_eq!(bilerp(&R_LUT, 0, 0, 0.0, 0.0), 4300);
+    }
+
+    #[test]
+    fn test_bilerp_at_last_cell() {
+        assert_eq!(bilerp(&P_LUT, 3, 3, 1.0, 1.0), 520);
+        assert_eq!(bilerp(&R_LUT, 3, 3, 1.0, 1.0), 520);
+    }
+
+    #[test]
+    fn test_bilerp_midpoint() {
+        // Midpoint between cells (0,0) and (1,0): (440 + 600) / 2 = 520
+        let result = bilerp(&P_LUT, 0, 0, 0.5, 0.0);
+        assert!((result as i32 - 520).abs() <= 1, "midpoint p: got {result}");
+    }
+
+    // ── Bankroll source abstraction ─────────────────────────────────────
+
+    #[test]
+    fn test_bankroll_source_paper() {
+        let src = BankrollSource::Paper(PaperBankroll::new(1_000_000_000));
+        assert_eq!(src.balance(), 1_000_000_000);
+        src.apply_paper_pnl(-200_000_000);
+        assert_eq!(src.balance(), 800_000_000);
+        assert_eq!(src.drawdown_pct(), 20);
+    }
+
+    #[test]
+    fn test_bankroll_source_live() {
+        let src = BankrollSource::Live {
+            cached_balance: AtomicU64::new(5_000_000_000),
+        };
+        assert_eq!(src.balance(), 5_000_000_000);
+        src.apply_paper_pnl(-1_000_000_000); // no-op for Live
+        assert_eq!(src.balance(), 5_000_000_000);
+        assert_eq!(src.drawdown_pct(), 0);
+    }
+
+    // ── Edge cases ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_extreme_mag_and_score_clamped() {
+        let c_low = compute_conviction(0.0, 0.0, 1_000_000_000, 0, 0);
+        let c_high = compute_conviction(100.0, 100.0, 1_000_000_000, 0, 0);
+        assert!(c_low.p_permille > 0);
+        assert!(c_high.p_permille > 0);
+    }
+
+    #[test]
+    fn test_many_open_positions_still_works() {
+        let c = compute_conviction(55.0, 55.0, 1_000_000_000, 255, 0);
+        assert!(c.f_permille < 50, "255 open should crush f: {}", c.f_permille);
+    }
+
+    // ── Integration: full pipeline numeric check ────────────────────────
+
+    #[test]
+    fn test_full_pipeline_numeric() {
+        // mag=55, score=55, 1 SOL, no open, no drawdown
+        let c = compute_conviction(55.0, 55.0, 1_000_000_000, 0, 0);
+
+        // p near P_LUT[1][0] = 600
+        assert!(c.p_permille >= 550 && c.p_permille <= 650, "p: {}", c.p_permille);
+
+        // R near R_LUT[1][0] = 1100
+        assert!(c.r_x100 >= 900 && c.r_x100 <= 1300, "R: {}", c.r_x100);
+
+        // f_raw ≈ 600 - 400*100/1100 ≈ 564; f_half ≈ 282
+        assert!(c.f_permille >= 250 && c.f_permille <= 320, "f: {}", c.f_permille);
+
+        // size = 282 * 1B / 1000 = 282M → clamped to max 200M
+        assert_eq!(c.size_lamports, MAX_SIZE_LAMPORTS);
+
+        // tier: f ~282 < 450 → LOW
+        assert_eq!(c.conviction_tier, 0);
+    }
+
+    #[test]
+    fn test_repr_c_size() {
+        // Verify EntryConviction has predictable size for FFI/storage.
+        // u16+u16+u16 = 6 bytes, then 2 pad to align u64,
+        // u64 = 8 bytes, u8 = 1 byte, [u8;5] = 5 bytes → total 22,
+        // but repr(C) aligns to u64 boundary → 24 bytes.
+        let size = std::mem::size_of::<EntryConviction>();
+        assert!(size <= 24, "EntryConviction too large: {size}");
+    }
+}
