@@ -340,7 +340,7 @@ impl HotPath {
                     self.stats.gate_rejects += 1;
                     return;
                 }
-                EntryAction::Scalp | EntryAction::Ride => {
+                EntryAction::Ride => {
                     self.stats.gates_passed += 1;
                     // Safety checks (skipped in paper mode — we want full data)
                     if !self.paper_mode {

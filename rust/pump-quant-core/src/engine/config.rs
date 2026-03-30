@@ -255,11 +255,7 @@ pub struct MagnitudeJsonConfig {
 pub struct SizingJsonConfig {
     pub min_entry_score: Option<f64>,        // default: 50.0
     pub min_magnitude_for_ride: Option<f64>, // default: 40.0
-    pub scalp_size_low_sol: Option<f64>,     // default: 0.10
-    pub scalp_size_mid_sol: Option<f64>,     // default: 0.12
-    pub scalp_size_high_sol: Option<f64>,    // default: 0.15
-    pub scalp_tier_mid: Option<f64>,         // default: 60.0
-    pub scalp_tier_high: Option<f64>,        // default: 70.0
+    // SCALP fields removed — all positions are RIDE
     pub ride_size_min_sol: Option<f64>,      // default: 0.10
     pub ride_size_max_sol: Option<f64>,      // default: 0.15
 }
@@ -698,15 +694,10 @@ pub fn build_entry_engine_config(json: &EntryEngineJsonConfig) -> crate::engine:
         if let Some(v) = mag.w_token_age { cfg.weights.w_token_age = v; }
     }
 
-    // Decision threshold overrides
+    // Decision threshold overrides (SCALP fields removed — all positions are RIDE)
     if let Some(ref sizing) = json.position_sizing {
         if let Some(v) = sizing.min_entry_score { cfg.decision.min_entry_score = v; }
         if let Some(v) = sizing.min_magnitude_for_ride { cfg.decision.min_magnitude_for_ride = v; }
-        if let Some(v) = sizing.scalp_size_low_sol { cfg.decision.scalp_size_low = sol_to_lamports(v); }
-        if let Some(v) = sizing.scalp_size_mid_sol { cfg.decision.scalp_size_mid = sol_to_lamports(v); }
-        if let Some(v) = sizing.scalp_size_high_sol { cfg.decision.scalp_size_high = sol_to_lamports(v); }
-        if let Some(v) = sizing.scalp_tier_mid { cfg.decision.scalp_tier_mid = v; }
-        if let Some(v) = sizing.scalp_tier_high { cfg.decision.scalp_tier_high = v; }
         if let Some(v) = sizing.ride_size_min_sol { cfg.decision.ride_size_min = sol_to_lamports(v); }
         if let Some(v) = sizing.ride_size_max_sol { cfg.decision.ride_size_max = sol_to_lamports(v); }
     }
@@ -848,7 +839,8 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
         .unwrap_or_else(|| vec![14, 15]);
 
     let position = PositionConfig {
-        max_hold_ms: mev.max_hold_ms.unwrap_or(1200),
+        // All positions are RIDE — max_hold_ms kept for struct compat, defaults to ride value
+        max_hold_ms: mev.max_hold_ms.unwrap_or(60_000),
         ride_max_hold_ms: mev.ride_max_hold_ms.unwrap_or(60_000), // 60s default for RIDE
         momentum_decay_check_ms: mev.momentum_decay_check_ms.unwrap_or(50),
         momentum_decay_min_mfe_pct: mev.momentum_decay_min_mfe_pct.unwrap_or(0.001),

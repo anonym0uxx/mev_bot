@@ -12,7 +12,6 @@ use super::bonding_curve;
 
 // RIDE imports
 use crate::engine::ride_state::{RideState, RideConfig, RideDecision, RideExitReason};
-use crate::engine::exit_machine::ExitReasonNew;
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
@@ -35,32 +34,15 @@ fn map_ride_exit_reason(r: RideExitReason) -> ExitReason {
     }
 }
 
-/// Check if an open position qualifies for promotion from SCALP to RIDE.
-/// All conditions must be met simultaneously.
-fn ride_qualified(pos: &OpenPosition) -> bool {
-    // At least 2 buy events after our entry
-    pos.buys_since_entry >= 2
-    // At least 0.3 SOL cumulative confirming buy volume
-    && pos.confirming_buy_sol >= 300_000_000
-    // At least 2 distinct wallet-sized buyers
-    && pos.confirming_unique_wallets >= 2
-    // Zero sells during our hold (pure buy pressure)
-    && pos.sells_during_hold == 0
-    // Price has moved up at least ~1.5% from entry
-    && pos.current_vsol > pos.entry_vsol + pos.entry_vsol / 66
-    // Magnitude estimate from entry model is >= 40
-    && pos.magnitude_estimate >= 40.0
-}
+
 
 // ─── Position Structs ──────────────────────────────────────────────
 
 /// Determines the active exit strategy for an open position.
-/// All positions start as Scalp. Qualified positions promote to Ride.
+/// RIDE-only engine: all positions use trailing-stop ride exits.
 #[derive(Debug)]
 pub enum ExitMode {
-    /// Fast scalp exit via the existing ExitStateMachine.
-    Scalp(crate::engine::exit_machine::ExitStateMachine),
-    /// Trailing-stop ride exit for confirmed pumps.
+    /// Trailing-stop ride exit for all positions.
     Ride(crate::engine::ride_state::RideState),
 }
 
@@ -99,7 +81,7 @@ pub struct OpenPosition {
     pub trigger_sig: [u8; 64],
     /// Time-of-day multiplier (1.0 normal, 1.25 during boosted hours).
     pub tod_multiplier: f64,
-    /// Active exit strategy — Scalp or Ride.
+    /// Active exit strategy — RIDE only.
     pub exit_mode: ExitMode,
     /// Magnitude estimate from EntryDecision (0.0–100.0). Used for RIDE qualification.
     pub magnitude_estimate: f64,
@@ -392,13 +374,9 @@ impl PositionManager {
             0, // no slippage calc needed for position tracking
         );
 
-        // Initialize exit state machine for this position.
-        let exit_sm = crate::engine::exit_machine::ExitStateMachine::on_entry(
-            &self.config.exit_config,
-            trigger_sol,              // trigger lamports (u64)
-            event.vsol_reserves as f64, // entry vsol
-            now_ms,                   // current time as u64 ms
-        );
+        // Initialize RIDE state directly — all positions start as RIDE.
+        let entry_mvsol = lamports_to_mvsol(event.vsol_reserves);
+        let ride_state = RideState::new(entry_mvsol, entry_mvsol, now_ms, 0, &self.config.ride_config);
 
         let pos = OpenPosition {
             mint: event.mint,
@@ -419,7 +397,7 @@ impl PositionManager {
             buys_since_entry: 0,
             trigger_sig: event.sig,
             tod_multiplier: 1.0, // caller can update if needed
-            exit_mode: ExitMode::Scalp(exit_sm),
+            exit_mode: ExitMode::Ride(ride_state),
             magnitude_estimate,
             confirming_buy_sol: 0,
             confirming_unique_wallets: 0,
@@ -490,39 +468,12 @@ impl PositionManager {
                 pos.confirming_unique_wallets = pos.confirming_unique_wallets.saturating_add(1);
             }
 
-            // Calculate qualification BEFORE borrowing exit_mode mutably
-            let should_promote = matches!(pos.exit_mode, ExitMode::Scalp(_)) && ride_qualified(pos);
-
-            // Feed the active exit strategy
+            // Feed the RIDE exit strategy
             match &mut pos.exit_mode {
-                ExitMode::Scalp(ref mut sm) => {
-                    // Feed buy event to scalp exit state machine
-                    let exit_decision = sm.on_buy_event(&self.config.exit_config, event.vsol_reserves as f64, now_ms);
-                    if let crate::engine::exit_machine::ExitDecision::Exit(reason) = exit_decision {
-                        let exit_reason = map_exit_reason_new(reason);
-                        // Need to drop borrow before close
-                        let mint = event.mint;
-                        self.close_position_inner(&mint, exit_reason, now_ms);
-                        return true;
-                    }
-                }
                 ExitMode::Ride(ref mut rs) => {
-                    // on_buy_event returns nothing — just updates state
                     let buy_mvsol = lamports_to_mvsol(event.sol_amount);
                     rs.on_buy_event(buy_mvsol, now_ms);
                 }
-            }
-
-            // Promote to RIDE if qualified (must re-borrow)
-            if should_promote {
-                let pos = self.positions.get_mut(&event.mint).unwrap();
-                let entry_mvsol = lamports_to_mvsol(pos.entry_vsol);
-                let current_mvsol = lamports_to_mvsol(pos.current_vsol);
-                let peak_mvsol = current_mvsol.max(entry_mvsol);
-                // buy_rate_5s: use buys_since_entry as a proxy (capped to u16)
-                let buy_rate_5s = pos.buys_since_entry.min(u16::MAX as u32) as u16;
-                let ride_state = RideState::new(entry_mvsol, peak_mvsol, now_ms, buy_rate_5s, &self.config.ride_config);
-                pos.exit_mode = ExitMode::Ride(ride_state);
             }
 
             // Post-buy tick for RIDE mode
@@ -532,19 +483,6 @@ impl PositionManager {
                 None => return true, // was closed above
             };
             match &mut pos.exit_mode {
-                ExitMode::Scalp(ref mut sm) => {
-                    // Feed price tick to scalp exit state machine
-                    let exit_decision = sm.on_price_tick(
-                        &self.config.exit_config,
-                        event.vsol_reserves as f64,
-                        now_ms,
-                    );
-                    if let crate::engine::exit_machine::ExitDecision::Exit(reason) = exit_decision {
-                        let exit_reason = map_exit_reason_new(reason);
-                        self.close_position_inner(&mint, exit_reason, now_ms);
-                        return true;
-                    }
-                }
                 ExitMode::Ride(ref mut rs) => {
                     let current_mvsol = lamports_to_mvsol(pos.current_vsol);
                     match rs.on_tick(current_mvsol, now_ms, &self.config.ride_config) {
@@ -562,9 +500,6 @@ impl PositionManager {
             pos.sells_during_hold = pos.sells_during_hold.saturating_add(1);
 
             match &mut pos.exit_mode {
-                ExitMode::Scalp(_) => {
-                    // Scalp ExitStateMachine doesn't handle sells specially — no-op for sell events.
-                }
                 ExitMode::Ride(ref mut rs) => {
                     let sell_mvsol = lamports_to_mvsol(event.sol_amount);
                     if let Some(reason) = rs.on_sell_event(sell_mvsol, now_ms, &self.config.ride_config) {
@@ -583,18 +518,6 @@ impl PositionManager {
                 None => return true,
             };
             match &mut pos.exit_mode {
-                ExitMode::Scalp(ref mut sm) => {
-                    let exit_decision = sm.on_price_tick(
-                        &self.config.exit_config,
-                        event.vsol_reserves as f64,
-                        now_ms,
-                    );
-                    if let crate::engine::exit_machine::ExitDecision::Exit(reason) = exit_decision {
-                        let exit_reason = map_exit_reason_new(reason);
-                        self.close_position_inner(&mint, exit_reason, now_ms);
-                        return true;
-                    }
-                }
                 ExitMode::Ride(ref mut rs) => {
                     let current_mvsol = lamports_to_mvsol(pos.current_vsol);
                     match rs.on_tick(current_mvsol, now_ms, &self.config.ride_config) {
@@ -622,32 +545,19 @@ impl PositionManager {
         for (mint, pos) in self.positions.iter_mut() {
             let hold_ms = now_ms.saturating_sub(pos.entry_ts_ms);
 
-            // Max hold safety check — RIDE gets longer leash
-            let max_hold = match pos.exit_mode {
-                ExitMode::Ride(_) if self.config.ride_max_hold_ms > 0 => self.config.ride_max_hold_ms,
-                _ => self.config.max_hold_ms,
+            // Max hold safety check
+            let max_hold = if self.config.ride_max_hold_ms > 0 {
+                self.config.ride_max_hold_ms
+            } else {
+                self.config.max_hold_ms
             };
             if hold_ms >= max_hold {
-                let reason = match pos.exit_mode {
-                    ExitMode::Ride(_) => ExitReason::RideMaxHold,
-                    _ => ExitReason::MaxHold,
-                };
-                to_close.push((*mint, reason));
+                to_close.push((*mint, ExitReason::RideMaxHold));
                 continue;
             }
 
-            // Tick the active exit strategy
+            // Tick the RIDE exit strategy
             match &mut pos.exit_mode {
-                ExitMode::Scalp(ref mut sm) => {
-                    let decision = sm.on_price_tick(
-                        &self.config.exit_config,
-                        pos.current_vsol as f64,
-                        now_ms,
-                    );
-                    if let crate::engine::exit_machine::ExitDecision::Exit(reason) = decision {
-                        to_close.push((*mint, map_exit_reason_new(reason)));
-                    }
-                }
                 ExitMode::Ride(ref mut rs) => {
                     let current_mvsol = lamports_to_mvsol(pos.current_vsol);
                     match rs.on_tick(current_mvsol, now_ms, &self.config.ride_config) {
@@ -706,10 +616,9 @@ impl PositionManager {
 
         let net_pnl_sol = gross_pnl_sol - total_fees as i64;
 
-        // Determine RIDE metadata
+        // Determine RIDE metadata — all positions are RIDE now
         let (exit_mode_str, ride_phase, ride_peak_mvsol, ride_hold_ms, ride_unique_wallets) =
             match &pos.exit_mode {
-                ExitMode::Scalp(_) => ("scalp", 0u8, 0u32, 0u64, 0u8),
                 ExitMode::Ride(rs) => (
                     "ride",
                     rs.phase,
@@ -761,7 +670,7 @@ impl PositionManager {
             // V2 EntryEngine fields
             magnitude_estimate: pos.magnitude_estimate,
             kelly_size_lamports: pos.size_sol, // size_sol IS the Kelly size (or tier fallback)
-            entry_action: if pos.magnitude_estimate >= 40.0 { "ride" } else { "scalp" },
+            entry_action: "ride",
             confirming_buy_sol: pos.confirming_buy_sol,
             sells_during_hold: pos.sells_during_hold,
         };
@@ -771,19 +680,7 @@ impl PositionManager {
     }
 }
 
-/// Map exit_machine::ExitReasonNew → positions::ExitReason.
-fn map_exit_reason_new(r: crate::engine::exit_machine::ExitReasonNew) -> ExitReason {
-    use crate::engine::exit_machine::ExitReasonNew;
-    match r {
-        ExitReasonNew::TakeProfit => ExitReason::TakeProfit,
-        ExitReasonNew::TakeProfitScaled => ExitReason::TakeProfitScaled,
-        ExitReasonNew::StopLoss => ExitReason::StopLoss,
-        ExitReasonNew::MomentumDecayFlat => ExitReason::MomentumDecayFlat,
-        ExitReasonNew::MomentumStall => ExitReason::MomentumStall,
-        ExitReasonNew::TrailingStop => ExitReason::IntraHoldTrail,
-        ExitReasonNew::MaxHoldSafety => ExitReason::MaxHold,
-    }
-}
+
 
 #[cfg(test)]
 mod tests {
@@ -947,7 +844,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stop_loss_exit() {
+    fn test_ride_hard_floor_exit() {
         let (tx, rx) = crossbeam_channel::unbounded();
         let mut pm = PositionManager::new(test_config(), tx);
 
@@ -957,19 +854,22 @@ mod tests {
         let event = make_trade_event(mint, sig, 50_000_000, entry_vsol, 1_000_000_000_000_000, true);
         pm.open_position(&event, 0.85, 1000, 0.0, 0);
 
-        // Price drops 2% (sl_pct is 0.015 = 1.5% for this tier)
-        let drop_vsol = (entry_vsol as f64 * 0.98) as u64;
+        // Price drops significantly — should trigger RIDE hard floor
+        let drop_vsol = (entry_vsol as f64 * 0.90) as u64;
         let drop_event = make_trade_event(mint, [0xCCu8; 64], 10_000_000, drop_vsol, 1_000_000_000_000_000, false);
         let closed = pm.on_subsequent_trade(&drop_event, 1050);
 
         assert!(closed);
         let cp = rx.try_recv().unwrap();
-        assert_eq!(cp.exit_reason, ExitReason::StopLoss);
+        assert!(matches!(
+            cp.exit_reason,
+            ExitReason::RideHardFloor | ExitReason::RideTrailingStop
+        ), "unexpected exit: {:?}", cp.exit_reason);
         assert!(cp.net_pnl_sol < 0);
     }
 
     #[test]
-    fn test_take_profit_exit() {
+    fn test_ride_buy_gap_timeout() {
         let (tx, rx) = crossbeam_channel::unbounded();
         let mut pm = PositionManager::new(test_config(), tx);
 
@@ -979,65 +879,14 @@ mod tests {
         let event = make_trade_event(mint, sig, 50_000_000, entry_vsol, 1_000_000_000_000_000, true);
         pm.open_position(&event, 0.85, 1000, 0.0, 0);
 
-        // Price rises 3% (tp_pct is 0.025 = 2.5% for this tier)
-        let up_vsol = (entry_vsol as f64 * 1.03) as u64;
-        let up_event = make_trade_event(mint, [0xCCu8; 64], 10_000_000, up_vsol, 1_000_000_000_000_000, true);
-        let closed = pm.on_subsequent_trade(&up_event, 1050);
-
-        assert!(closed);
-        let cp = rx.try_recv().unwrap();
-        assert_eq!(cp.exit_reason, ExitReason::TakeProfit);
-    }
-
-    #[test]
-    fn test_momentum_decay_flat() {
-        let (tx, rx) = crossbeam_channel::unbounded();
-        let mut pm = PositionManager::new(test_config(), tx);
-
-        let mint = [0xAAu8; 32];
-        let sig = [0xBBu8; 64];
-        let entry_vsol = 30_000_000_000u64;
-        let event = make_trade_event(mint, sig, 50_000_000, entry_vsol, 1_000_000_000_000_000, true);
-        pm.open_position(&event, 0.85, 1000, 0.0, 0);
-
-        // No price movement, no buys — tick after confirmation_window_ms (200ms)
-        pm.on_tick(1210);
-
-        assert_eq!(pm.open_count(), 0);
-        let cp = rx.try_recv().unwrap();
-        assert_eq!(cp.exit_reason, ExitReason::MomentumDecayFlat);
-    }
-
-    #[test]
-    fn test_momentum_decay_fade() {
-        let (tx, rx) = crossbeam_channel::unbounded();
-        let mut pm = PositionManager::new(test_config(), tx);
-
-        let mint = [0xAAu8; 32];
-        let sig = [0xBBu8; 64];
-        let entry_vsol = 30_000_000_000u64;
-        let event = make_trade_event(mint, sig, 50_000_000, entry_vsol, 1_000_000_000_000_000, true);
-        pm.open_position(&event, 0.85, 1000, 0.0, 0);
-
-        let up_vsol = (entry_vsol as f64 * 1.015) as u64;
-        let confirm_event = make_trade_event(mint, [0xCCu8; 64], 10_000_000, up_vsol, 1_000_000_000_000_000, true);
-        pm.on_subsequent_trade(&confirm_event, 1020);
-
-        let fade_vsol = (up_vsol as f64 * 0.985) as u64;
-        let fade_event = make_trade_event(mint, [0xDDu8; 64], 10_000_000, fade_vsol, 1_000_000_000_000_000, false);
-        pm.on_subsequent_trade(&fade_event, 1030);
-
-        pm.on_tick(1530);
+        // Tick far into the future with no buys — should trigger buy gap timeout or max hold
+        pm.on_tick(70_000);
 
         assert_eq!(pm.open_count(), 0);
         let cp = rx.try_recv().unwrap();
         assert!(matches!(
             cp.exit_reason,
-            ExitReason::MomentumStall
-                | ExitReason::MomentumDecayFade
-                | ExitReason::MomentumDecayFlat
-                | ExitReason::MaxHold
-                | ExitReason::StopLoss
+            ExitReason::RideBuyGapTimeout | ExitReason::RideMaxHold | ExitReason::RideTrailingStop
         ), "unexpected exit: {:?}", cp.exit_reason);
     }
 
@@ -1102,7 +951,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nb_exit_requires_min_hold_and_trades() {
+    fn test_ride_holds_on_small_buy() {
         let (tx, rx) = crossbeam_channel::unbounded();
         let mut pm = PositionManager::new(test_config(), tx);
 
@@ -1110,39 +959,42 @@ mod tests {
         let sig = [0xBBu8; 64];
         let entry_vsol = 30_000_000_000u64;
         let event = make_trade_event(mint, sig, 50_000_000, entry_vsol, 1_000_000_000_000_000, true);
-        pm.open_position(&event, 0.85, 1000, 0.0, 0);
+        pm.open_position(&event, 0.85, 1000, 60.0, 0); // magnitude 60 = RIDE-worthy
 
-        let up_vsol = (entry_vsol as f64 * 1.02) as u64;
-        let big_buy = make_trade_event(mint, [0xCCu8; 64], 50_000_000, up_vsol, 1_000_000_000_000_000, true);
-        let closed = pm.on_subsequent_trade(&big_buy, 1100);
+        // Small buy with price increase above entry — RIDE should hold
+        let up_vsol = (entry_vsol as f64 * 1.02) as u64; // 2% up — well within trail
+        let small_buy = make_trade_event(mint, [0xCCu8; 64], 150_000_000, up_vsol, 1_000_000_000_000_000, true);
+        let closed = pm.on_subsequent_trade(&small_buy, 1100);
 
-        assert!(!closed);
+        assert!(!closed, "RIDE should hold on confirming buy above entry");
         assert!(rx.try_recv().is_err());
     }
 
     // ── RIDE mode tests ─────────────────────────────────────────────
 
-    /// Test: Existing SCALP behavior is unchanged with new ExitMode enum.
-    /// Open a position, feed a buy that doesn't qualify for RIDE, verify still Scalp.
+    /// Test: All positions start in RIDE mode (no SCALP).
+    /// Open a position, feed a confirming buy, verify still in Ride mode.
     #[test]
-    fn test_scalp_mode_unchanged() {
+    fn test_all_positions_start_as_ride() {
         let (tx, _rx) = crossbeam_channel::unbounded();
         let mut pm = PositionManager::new(test_config(), tx);
 
         let mint = [0x10u8; 32];
         let sig = [0x11u8; 64];
-        let event = make_trade_event(mint, sig, 50_000_000, 30_000_000_000, 1_000_000_000_000_000, true);
+        let entry_vsol = 30_000_000_000u64;
+        let event = make_trade_event(mint, sig, 50_000_000, entry_vsol, 1_000_000_000_000_000, true);
 
-        pm.open_position(&event, 75.0, 1000, 20.0, 0); // magnitude < 40
+        pm.open_position(&event, 75.0, 1000, 60.0, 0); // magnitude 60
 
-        // Feed one small buy — not enough to qualify
-        let buy1 = make_trade_event(mint, [0x12u8; 64], 50_000_000, 30_100_000_000, 1_000_000_000_000_000, true);
-        pm.on_subsequent_trade(&buy1, 2000);
+        // Feed a confirming buy with price increase
+        let up_vsol = (entry_vsol as f64 * 1.03) as u64; // 3% up
+        let buy1 = make_trade_event(mint, [0x12u8; 64], 200_000_000, up_vsol, 1_000_000_000_000_000, true);
+        pm.on_subsequent_trade(&buy1, 1100);
 
         let pos = pm.positions.get(&mint).expect("position should exist");
         assert!(
-            matches!(pos.exit_mode, ExitMode::Scalp(_)),
-            "Should remain in Scalp mode"
+            matches!(pos.exit_mode, ExitMode::Ride(_)),
+            "Should be in Ride mode"
         );
     }
 
@@ -1181,7 +1033,7 @@ mod tests {
         // If still open, should still be Scalp
         if let Some(pos) = pm.positions.get(&mint) {
             assert!(
-                matches!(pos.exit_mode, ExitMode::Scalp(_)),
+                matches!(pos.exit_mode, ExitMode::Ride(_)),
                 "Should remain Scalp — magnitude too low for RIDE"
             );
         }
@@ -1221,7 +1073,7 @@ mod tests {
 
         // Still Scalp — only 1 buy
         let pos = pm.positions.get(&mint).unwrap();
-        assert!(matches!(pos.exit_mode, ExitMode::Scalp(_)));
+        assert!(matches!(pos.exit_mode, ExitMode::Ride(_)));
 
         // Second qualifying buy: another 0.2 SOL, price up ~3.3%
         let buy2 = make_trade_event(

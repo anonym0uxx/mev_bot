@@ -6,7 +6,7 @@
 //!
 //! Stage 1: `hard_gate()` — 8 integer checks, <50ns, rejects ~65%
 //! Stage 2: `score()` — 8 entry + 7 magnitude features, LUT-backed, ~150ns
-//! Stage 3: `size()` — Kelly-tiered position sizing, ~10ns
+//! Stage 3: `size()` — RIDE-only position sizing, ~10ns
 //!
 //! Total hot data: ~3,144 bytes. Fits in L1D cache (50 cache lines, 9.8% of 32KB).
 //! Zero heap allocation on hot path. Zero f64 division (precomputed reciprocals).
@@ -147,15 +147,8 @@ pub struct DecisionThresholds {
     pub min_magnitude_for_ride: f64,    // 40.0
 
     // Position sizes in lamports
-    pub scalp_size_low: u64,            // 0.10 SOL = 100_000_000
-    pub scalp_size_mid: u64,            // 0.12 SOL = 120_000_000
-    pub scalp_size_high: u64,           // 0.15 SOL = 150_000_000
     pub ride_size_min: u64,             // 0.10 SOL = 100_000_000
     pub ride_size_max: u64,             // 0.15 SOL = 150_000_000
-
-    // Scalp entry_score tier boundaries
-    pub scalp_tier_mid: f64,            // 60.0
-    pub scalp_tier_high: f64,           // 70.0
 }
 
 impl Default for DecisionThresholds {
@@ -163,13 +156,8 @@ impl Default for DecisionThresholds {
         Self {
             min_entry_score: 50.0,
             min_magnitude_for_ride: 40.0,
-            scalp_size_low: 100_000_000,
-            scalp_size_mid: 120_000_000,
-            scalp_size_high: 150_000_000,
             ride_size_min: 100_000_000,
             ride_size_max: 150_000_000,
-            scalp_tier_mid: 60.0,
-            scalp_tier_high: 70.0,
         }
     }
 }
@@ -273,8 +261,6 @@ pub struct EntryInput {
 pub enum EntryAction {
     /// Reject — do not enter. Score below threshold or gate failed.
     Reject,
-    /// SCALP mode — quick in/out, tight TP/SL.
-    Scalp,
     /// RIDE mode — hold for sustained momentum, wider TP/trailing SL.
     Ride,
 }
@@ -499,7 +485,7 @@ impl EntryEngine {
 
     // ── Stage 3: Position Sizing ──────────────────────────────────────
 
-    /// Kelly-tiered position sizing from entry + magnitude scores.
+    /// Position sizing from entry + magnitude scores. RIDE-only.
     #[inline(always)]
     fn size(&self, entry_score: f64, magnitude_score: f64) -> (EntryAction, u64) {
         let d = &self.decision;
@@ -508,27 +494,19 @@ impl EntryEngine {
         }
 
         if magnitude_score < d.min_magnitude_for_ride {
-            // SCALP: tiered by entry_score
-            let size = if entry_score >= d.scalp_tier_high {
-                d.scalp_size_high
-            } else if entry_score >= d.scalp_tier_mid {
-                d.scalp_size_mid
-            } else {
-                d.scalp_size_low
-            };
-            (EntryAction::Scalp, size)
-        } else {
-            // RIDE candidate: linear interpolation by magnitude
-            let range = 100.0 - d.min_magnitude_for_ride;
-            let t = if range > 0.0 {
-                ((magnitude_score - d.min_magnitude_for_ride) / range).min(1.0)
-            } else {
-                0.0
-            };
-            let size = d.ride_size_min
-                + ((d.ride_size_max - d.ride_size_min) as f64 * t) as u64;
-            (EntryAction::Ride, size)
+            return (EntryAction::Reject, 0); // Was Scalp, now Reject
         }
+
+        // RIDE: linear interpolation by magnitude
+        let range = 100.0 - d.min_magnitude_for_ride;
+        let t = if range > 0.0 {
+            ((magnitude_score - d.min_magnitude_for_ride) / range).min(1.0)
+        } else {
+            1.0
+        };
+        let size = d.ride_size_min
+            + ((d.ride_size_max - d.ride_size_min) as f64 * t) as u64;
+        (EntryAction::Ride, size)
     }
 
     // ── Stage 1: Hard Gate ──────────────────────────────────────────
