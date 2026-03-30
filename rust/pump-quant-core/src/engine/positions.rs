@@ -306,6 +306,9 @@ pub struct PositionConfig {
     pub exit_config: crate::engine::config::ExitConfig,
     /// Configuration for RIDE trailing-stop exits.
     pub ride_config: RideConfig,
+    /// Round-trip fee in basis points (pump 1%+1% + Jito ≈ 210bp).
+    /// Used for fee-aware Kelly sizing and breakeven hard floor.
+    pub round_trip_fee_bp: u16,
 }
 
 // ─── Position Manager ──────────────────────────────────────────────
@@ -730,11 +733,10 @@ impl PositionManager {
             0
         };
 
-        // Fees: 1% buy + 1% sell = 2% of position size
-        let pump_fees = pos.size_sol * 2 / 100;
-        // Jito tips: entry bundle + exit bundle
-        let jito_fees = self.config.jito_tip_lamports * 2;
-        let total_fees = pump_fees + jito_fees;
+        // Fees: round_trip_fee_bp of position size (default 210bp = 2.1%)
+        // Includes pump.fun 1% buy + 1% sell + Jito tips.
+        let fee_bp = self.config.round_trip_fee_bp as u64;
+        let total_fees = (pos.size_sol * fee_bp + 5_000) / 10_000; // rounded
 
         let net_pnl_sol = gross_pnl_sol - total_fees as i64;
 
@@ -901,6 +903,7 @@ mod tests {
                 }
             },
             ride_config: RideConfig::default(),
+            round_trip_fee_bp: 210,
         }
     }
 
@@ -1104,7 +1107,8 @@ mod tests {
         let cp = rx.try_recv().unwrap();
         assert_eq!(cp.gross_pnl_sol, 0);
         assert!(cp.net_pnl_sol < 0);
-        let expected_fees = cp.size_sol * 2 / 100 + 1_000_000 * 2;
+        // Fee = size × round_trip_fee_bp / 10000 (default 210bp = 2.1%)
+        let expected_fees = (cp.size_sol * 210 + 5_000) / 10_000;
         assert_eq!(cp.fees_sol, expected_fees);
     }
 
@@ -1119,8 +1123,8 @@ mod tests {
         let event = make_trade_event(mint, sig, 50_000_000, entry_vsol, 1_000_000_000_000_000, true);
         pm.open_position(&event, 0.85, 1000, 60.0, 0, EntryConviction::default()); // magnitude 60 = RIDE-worthy
 
-        // Small buy with price increase above entry — RIDE should hold
-        let up_vsol = (entry_vsol as f64 * 1.02) as u64; // 2% up — well within trail
+        // Small buy with price increase above fee-adjusted breakeven (2.1%) — RIDE should hold
+        let up_vsol = (entry_vsol as f64 * 1.03) as u64; // 3% up — above 2.1% breakeven
         let small_buy = make_trade_event(mint, [0xCCu8; 64], 150_000_000, up_vsol, 1_000_000_000_000_000, true);
         let closed = pm.on_subsequent_trade(&small_buy, 1100, false);
 
@@ -1222,10 +1226,10 @@ mod tests {
 
         pm.open_position(&event, 80.0, 1000, 60.0, 0, EntryConviction::default()); // magnitude 60 >= 40
 
-        // First qualifying buy: 0.2 SOL, price moves up ~2%
+        // First qualifying buy: 0.2 SOL, price moves up ~3% (above 2.1% fee breakeven)
         let buy1 = make_trade_event(
             mint, [0x32u8; 64], 200_000_000,
-            30_600_000_000, 1_000_000_000_000_000, true,
+            30_900_000_000, 1_000_000_000_000_000, true,
         );
         pm.on_subsequent_trade(&buy1, 2000, false);
 
@@ -1233,10 +1237,10 @@ mod tests {
         let pos = pm.positions.get(&mint).unwrap();
         assert!(matches!(pos.exit_mode, ExitMode::Ride(_)));
 
-        // Second qualifying buy: another 0.2 SOL, price up ~3.3%
+        // Second qualifying buy: another 0.2 SOL, price up ~5%
         let buy2 = make_trade_event(
             mint, [0x33u8; 64], 200_000_000,
-            31_000_000_000, 1_000_000_000_000_000, true,
+            31_500_000_000, 1_000_000_000_000_000, true,
         );
         pm.on_subsequent_trade(&buy2, 3000, false);
 

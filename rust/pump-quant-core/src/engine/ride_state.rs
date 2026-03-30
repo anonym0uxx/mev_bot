@@ -10,6 +10,7 @@
 
 use crate::feeds::FeedSource;
 use super::bayesian_signal::{self, BayesianSignal, bloom_count, bloom_insert, count_in_window};
+use super::kelly_sizing::{fee_adjust_r, DEFAULT_ROUND_TRIP_FEE_BP, DEFAULT_AVG_LOSS_BP};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -400,8 +401,14 @@ impl RideState {
             return RideDecision::Exit(RideExitReason::CreatorSell);
         }
 
-        if HARD_FLOOR_ENABLED && current_mvsol < self.entry_mvsol {
-            return RideDecision::Exit(RideExitReason::HardFloor);
+        // Fee-aware hard floor: breakeven = entry × (10000 + fee_bp) / 10000
+        // Below breakeven we're guaranteed net-negative, exit immediately.
+        if HARD_FLOOR_ENABLED {
+            let fee_bp = DEFAULT_ROUND_TRIP_FEE_BP as u64;
+            let breakeven = self.entry_mvsol as u64 * (10_000 + fee_bp) / 10_000;
+            if (current_mvsol as u64) < breakeven {
+                return RideDecision::Exit(RideExitReason::HardFloor);
+            }
         }
 
         if now_ms.saturating_sub(self.ride_start_ms) >= config.max_hold_ms.max(MAX_HOLD_RIDE_MS) {
@@ -509,6 +516,13 @@ impl RideState {
         self.beta_x16 = ((self.beta_x16 as u32 * DECAY_NUMER) >> 8).max(MIN_AB_X16 as u32) as u16;
     }
 
+    /// Compute fee-adjusted Bayesian half-Kelly fraction.
+    ///
+    /// Uses fee_adjust_r() to convert raw R_est to R_adj, then:
+    ///   f̂* = [p(R_adj+1) - 1] / (2 × R_adj)
+    ///
+    /// This ensures the exit engine never holds a position whose real-time
+    /// Bayesian edge is negative after accounting for round-trip fees.
     #[inline(always)]
     fn bayesian_current_f_permille(&self) -> i16 {
         let a = self.alpha_x16 as u32;
@@ -516,7 +530,10 @@ impl RideState {
         let ab = a + b;
         if ab == 0 { return 0; }
         let p_x1000 = (a * 1000) / ab;
-        let r = self.r_est_x100.max(1) as u32;
+        // Fee-adjust R before computing half-Kelly
+        let r_raw = self.r_est_x100;
+        let r = fee_adjust_r(r_raw, DEFAULT_ROUND_TRIP_FEE_BP, self.avg_loss_bp)
+            .max(1) as u32;
         let numerator = (p_x1000 * (r + 100)) as i32 - 100_000;
         (numerator / (2 * r as i32)).clamp(-1000, 1000) as i16
     }
@@ -644,8 +661,9 @@ mod tests {
         for i in 0..5 {
             rs.on_sell_event(500, 10_100 + i * 100, &config, FeedSource::PumpPortal, 10);
         }
-        // on_tick should NOT exit because buys_after_entry == 0
-        let decision = rs.on_tick(1000, 10_600, &config);
+        // Tick at price above fee-adjusted breakeven (entry=1000, fee=210bp → breakeven=1021)
+        // buys_after_entry == 0, so grace period should prevent Bayesian exit
+        let decision = rs.on_tick(1025, 10_600, &config);
         assert_eq!(decision, RideDecision::Hold);
     }
 
@@ -683,8 +701,9 @@ mod tests {
         let config = default_config();
         let rs_entry = 1000u32;
         let mut rs = RideState::new(rs_entry, rs_entry, 10_000, 248, 542, 4300, 1, 200, &config);
-        // Price drops below entry — should exit immediately even with 0 buys
-        let decision = rs.on_tick(rs_entry - 1, 10_100, &config);
+        // Price drops below fee-adjusted breakeven (entry × 1.021 = 1021)
+        // At entry price (1000), we're already below breakeven → HardFloor
+        let decision = rs.on_tick(rs_entry, 10_100, &config);
         assert_eq!(decision, RideDecision::Exit(RideExitReason::HardFloor));
     }
 

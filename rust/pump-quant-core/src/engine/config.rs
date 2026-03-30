@@ -53,6 +53,8 @@ pub struct MevJsonConfig {
     pub stop_loss_pct: Option<f64>,
     pub size_variance_pct: Option<f64>,
     pub jito_tip_lamports: Option<u64>,
+    /// Round-trip fee in basis points (default 210 = 2.1%). Includes pump.fun 1%+1% + Jito.
+    pub round_trip_fee_bp: Option<u16>,
 
     // Next-buyer exit
     pub next_buyer_exit: Option<bool>,
@@ -1274,6 +1276,7 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
         ride_config: mev.ride.as_ref()
             .map(build_ride_state_config)
             .unwrap_or_else(crate::engine::ride_state::RideConfig::default),
+        round_trip_fee_bp: mev.round_trip_fee_bp.unwrap_or(210),
     };
 
     let paper_mode = mev.paper_mode.unwrap_or(true);

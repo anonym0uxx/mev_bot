@@ -16,6 +16,14 @@ const MIN_SIZE_LAMPORTS: u64 = 50_000_000;
 /// Maximum position size: 0.20 SOL
 const MAX_SIZE_LAMPORTS: u64 = 200_000_000;
 
+/// Default round-trip fee in basis points (1% buy + 1% sell + ~0.11% Jito).
+/// Used to adjust Kelly R before sizing. Override via config.
+pub const DEFAULT_ROUND_TRIP_FEE_BP: u16 = 210;
+
+/// Default average loss in basis points (used to convert R ratio to absolute bp).
+/// R_raw = avg_win_bp / avg_loss_bp, so avg_win_bp = R × avg_loss_bp.
+pub const DEFAULT_AVG_LOSS_BP: u16 = 200;
+
 /// 4×4 win-probability LUT (permille, i.e. p × 1000).
 /// Rows: magnitude buckets [40-50, 50-60, 60-70, 70+]
 /// Cols: entry_score buckets [50-60, 60-70, 70-80, 80+]
@@ -125,6 +133,39 @@ fn bilerp(lut: &[[u16; 4]; 4], bm: usize, bs: usize, fm: f64, fs: f64) -> u16 {
     (result + 0.5) as u16
 }
 
+// ─── Fee-Adjusted Reward Ratio ──────────────────────────────────────────────
+
+/// Adjust R for round-trip fees.
+///
+/// Raw R = avg_win_bp / avg_loss_bp (stored as r_x100 = R × 100).
+/// Fee-adjusted:
+///   R_adj = (avg_win_bp - fee_bp) / (avg_loss_bp + fee_bp)
+///         = (r_x100 × avg_loss_bp / 100 - fee_bp) / (avg_loss_bp + fee_bp)
+///
+/// Returns r_adj_x100 (R_adj × 100). Returns 0 if edge is negative.
+///
+/// All integer arithmetic, no f64.
+#[inline]
+pub fn fee_adjust_r(r_x100: u16, fee_bp: u16, avg_loss_bp: u16) -> u16 {
+    let avg_loss = avg_loss_bp.max(1) as u32;
+    let fee = fee_bp as u32;
+
+    // avg_win_bp = r_x100 * avg_loss / 100
+    let avg_win_bp = (r_x100 as u32 * avg_loss + 50) / 100;
+
+    // Net win must exceed fee
+    if avg_win_bp <= fee {
+        return 0;
+    }
+
+    let net_win = avg_win_bp - fee;         // avg_win_bp - fee_bp
+    let net_loss = avg_loss + fee;           // avg_loss_bp + fee_bp
+
+    // R_adj × 100 = net_win × 100 / net_loss
+    let r_adj = (net_win * 100 + net_loss / 2) / net_loss; // rounded
+    r_adj as u16
+}
+
 // ─── Kelly Fraction ─────────────────────────────────────────────────────────
 
 /// Compute raw Kelly fraction in permille.
@@ -188,15 +229,41 @@ pub fn compute_conviction(
     n_open: u8,
     drawdown_pct: u8,
 ) -> EntryConviction {
+    compute_conviction_with_fees(
+        mag_score, entry_score, wallet_balance_lamports,
+        n_open, drawdown_pct,
+        DEFAULT_ROUND_TRIP_FEE_BP, DEFAULT_AVG_LOSS_BP,
+    )
+}
+
+/// Fee-aware conviction computation. Adjusts R for round-trip trading friction
+/// before computing Kelly fraction, so entries with insufficient edge after
+/// fees are correctly rejected.
+pub fn compute_conviction_with_fees(
+    mag_score: f64,
+    entry_score: f64,
+    wallet_balance_lamports: u64,
+    n_open: u8,
+    drawdown_pct: u8,
+    fee_bp: u16,
+    avg_loss_bp: u16,
+) -> EntryConviction {
     // Step 1: Bucket assignment with interpolation fractions
     let (bm, fm) = bucket_frac(mag_score, &MAG_BOUNDS);
     let (bs, fs) = bucket_frac(entry_score, &SCORE_BOUNDS);
 
     // Step 2: Bilinear interpolation on both LUTs
     let p_permille = bilerp(&P_LUT, bm, bs, fm, fs);
-    let r_x100 = bilerp(&R_LUT, bm, bs, fm, fs);
+    let r_x100_raw = bilerp(&R_LUT, bm, bs, fm, fs);
 
-    // Step 3: Raw Kelly fraction
+    // Step 2b: Fee-adjust R before Kelly computation
+    let r_x100 = if fee_bp > 0 {
+        fee_adjust_r(r_x100_raw, fee_bp, avg_loss_bp)
+    } else {
+        r_x100_raw
+    };
+
+    // Step 3: Raw Kelly fraction (now fee-aware)
     let f_raw = kelly_permille(p_permille, r_x100);
 
     // Step 4: Half-Kelly
@@ -362,7 +429,9 @@ mod tests {
                 let c = compute_conviction(mag, score, 1_000_000_000, 0, 0);
 
                 let expected_p = P_LUT[mi][si];
-                let expected_r = R_LUT[mi][si];
+                let expected_r_raw = R_LUT[mi][si];
+                // Test against fee-adjusted R (compute_conviction now applies fee_adjust_r)
+                let expected_r_adj = fee_adjust_r(expected_r_raw, DEFAULT_ROUND_TRIP_FEE_BP, DEFAULT_AVG_LOSS_BP);
 
                 assert!(
                     (c.p_permille as i32 - expected_p as i32).unsigned_abs() <= 150,
@@ -370,8 +439,8 @@ mod tests {
                     c.p_permille
                 );
                 assert!(
-                    (c.r_x100 as i32 - expected_r as i32).unsigned_abs() <= 2000,
-                    "R mismatch at mag={mag}, score={score}: got {} expected ~{expected_r}",
+                    (c.r_x100 as i32 - expected_r_adj as i32).unsigned_abs() <= 1000,
+                    "R mismatch at mag={mag}, score={score}: got {} expected ~{expected_r_adj} (raw {expected_r_raw})",
                     c.r_x100
                 );
                 assert!(c.f_permille > 0, "f should be positive at mag={mag}, score={score}");
@@ -607,11 +676,11 @@ mod tests {
         // p near P_LUT[1][0] = 600
         assert!(c.p_permille >= 550 && c.p_permille <= 650, "p: {}", c.p_permille);
 
-        // R near R_LUT[1][0] = 1100
-        assert!(c.r_x100 >= 900 && c.r_x100 <= 1300, "R: {}", c.r_x100);
+        // R_raw near R_LUT[1][0]=1100. Fee-adjusted: (1100×200/100 - 210)/(200+210) ≈ 485
+        assert!(c.r_x100 >= 400 && c.r_x100 <= 600, "R(fee-adj): {}", c.r_x100);
 
-        // f_raw ≈ 600 - 400*100/1100 ≈ 564; f_half ≈ 282
-        assert!(c.f_permille >= 250 && c.f_permille <= 320, "f: {}", c.f_permille);
+        // f_raw ≈ 600 - 400*100/485 ≈ 518; f_half ≈ 259
+        assert!(c.f_permille >= 220 && c.f_permille <= 300, "f: {}", c.f_permille);
 
         // size = 282 * 1B / 1000 = 282M → clamped to max 200M
         assert_eq!(c.size_lamports, MAX_SIZE_LAMPORTS);

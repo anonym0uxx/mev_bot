@@ -54,8 +54,8 @@ mod tests {
         rs.on_buy_event(500, 1100, 0xDEADBEEF, FeedSource::PumpPortal, 10);
 
         // No buys for 11 seconds (buy_gap_exit_ms = 10000)
-        // Price must be above hard floor (entry * 1.01 = 66660) to reach buy gap check
-        let d = rs.on_tick(67_000, 12_200, &config);
+        // Price must be above fee-adjusted breakeven (entry × 1.021 = 67386) to reach buy gap check
+        let d = rs.on_tick(68_000, 12_200, &config);
         assert!(matches!(d, RideDecision::Exit(RideExitReason::BuyGapTimeout)),
             "should exit on buy gap timeout, got {:?}", d);
     }
