@@ -359,12 +359,191 @@ The Bayesian update is 3 integer multiplications + 1 division per event. The SPR
 - Once Bayesian outperforms, remove the 12-feature weighted sum
 - Simplify RideState (fewer fields, same 128 bytes)
 
+## Feed-Aware Evidence Architecture
+
+The Bayesian-SPRT model must be designed around our **actual data feeds**, leveraging each feed's unique latency profile and data richness.
+
+### Feed Inventory
+
+| Feed | Protocol | Latency vs Chain | Unique Data | Evidence Value |
+|---|---|---|---|---|
+| **PumpPortal** | WebSocket (JSON) | ~200-400ms post-confirm | Buy/sell trades, reserves, market cap, trader wallet, token creation events, creator wallet mapping | **Primary trade flow** — highest event throughput |
+| **Helius** | WebSocket (logsSubscribe) | ~100-200ms post-confirm | Raw transaction logs, signatures, slot numbers, PumpSwap/Raydium graduation detection | **Fastest confirmation** — leads PumpPortal by avg helius_lead_ms; graduation/migration detection |
+| **CoreCast (Bitquery)** | WebSocket (GraphQL) | ~300-800ms (streaming, variable) | Creator sell detection (signer-verified), Raydium AMM migration, LP removal/rug events, token supply changes | **Structural signals** — events PumpPortal can't see (creator identity, LP manipulation) |
+| **ShredStream (Jito)** | WebSocket (raw shreds) | ~80ms pre-confirm (pending WL) | Raw shred data decoded to trades BEFORE block confirmation | **Latency king** — 80-120ms ahead of all other feeds. Not yet active (pending Jito WL). |
+
+### Feed → Evidence Mapping for Bayesian Update
+
+Each feed contributes different *types* of evidence to the Beta posterior:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    BAYESIAN EVIDENCE SOURCES                     │
+├──────────────┬──────────────────────────────────────────────────┤
+│ PumpPortal   │ Primary α/β updates:                             │
+│ (trade flow) │  • Buy event → α += weight(sol_amount)           │
+│              │  • Sell event → β += weight(sol_amount)           │
+│              │  • Market cap trajectory → R̂(t) update           │
+│              │  • Unique trader diversity → confidence scaling   │
+├──────────────┼──────────────────────────────────────────────────┤
+│ Helius       │ Timing evidence + structural events:             │
+│ (logs, fast) │  • Helius-leads-PumpPortal → confirms tx is real │
+│              │    (dedup prevents double-counting α/β)           │
+│              │  • PumpSwap graduation detected → BINARY EXIT     │
+│              │    (not Bayesian — force-close all bonding curve  │
+│              │     positions for this mint immediately)          │
+│              │  • Slot number → ordering evidence when events    │
+│              │    arrive out-of-order                            │
+├──────────────┼──────────────────────────────────────────────────┤
+│ CoreCast     │ Structural (high-weight) evidence:               │
+│ (Bitquery)   │  • Creator sell verified → β += HEAVY_WEIGHT     │
+│              │    (creator dumping is 5-10× stronger evidence    │
+│              │     than anonymous sell — they have inside info)  │
+│              │  • LP removal → BINARY EXIT (rug detected)       │
+│              │  • Raydium migration → triggers grad-arb logic   │
+│              │  • Token supply anomaly → β += HEAVY_WEIGHT      │
+├──────────────┼──────────────────────────────────────────────────┤
+│ ShredStream  │ Latency-alpha evidence (future):                 │
+│ (Jito, ~80ms)│  • Pre-confirm trade → α/β update 80-120ms      │
+│              │    BEFORE other feeds see it                     │
+│              │  • Enables "early exit" before confirm: if       │
+│              │    ShredStream shows sell cascade, we can submit  │
+│              │    exit TX while it's still in the shred stage   │
+│              │  • Key advantage: our exit TX competes in the    │
+│              │    SAME slot as the sell cascade, not next slot   │
+└──────────────┴──────────────────────────────────────────────────┘
+```
+
+### Evidence Weighting by Source
+
+Not all events are equal evidence. The Bayesian update should weight by **information value**:
+
+```rust
+/// Evidence weight multipliers by source × event type.
+/// Higher weight = faster posterior update = faster state transitions.
+const EVIDENCE_WEIGHTS: [[u8; 4]; 2] = [
+    //           PumpPortal  Helius  CoreCast  ShredStream
+    /* buy  */ [    10,        10,      10,       12     ],  // buys are buys everywhere
+    /* sell */ [    10,        10,      25,       15     ],  // CoreCast creator-sell = 2.5× weight
+];
+
+/// Special evidence events (not buy/sell flow):
+const CREATOR_SELL_WEIGHT: u16 = 50;   // Worth 5 normal sells (insider info)
+const WHALE_SELL_WEIGHT: u16 = 30;     // >2 SOL sell = 3× normal
+const UNIQUE_NEW_BUYER_BONUS: u16 = 5; // New unique wallet buying = extra α
+```
+
+### Asymmetric Evidence from Feed Characteristics
+
+**PumpPortal** sees every trade but can't verify *who* is trading. A 2 SOL sell from an anonymous wallet is concerning but might be a whale taking profit on a position that started at 0.1 SOL.
+
+**CoreCast** can verify **signer identity against the creator map**. When CoreCast confirms a sell is FROM THE CREATOR, this is categorically different information:
+
+```
+Anonymous sell (PumpPortal): β += 10 × (sol_amount / avg_trade_size)
+Creator sell  (CoreCast):    β += 50 × (sol_amount / avg_trade_size)
+                             + flags |= CREATOR_SELL → emergency exit override
+```
+
+**Helius** provides the fastest confirmation and slot ordering, making it ideal for the **dedup + ordering layer**:
+
+```
+Event arrives from Helius first:
+  1. Record in sig_ring with Helius timestamp
+  2. Apply α/β update immediately (fastest evidence incorporation)
+  
+Same event arrives from PumpPortal later:
+  1. Match via sig_prefix dedup
+  2. Skip α/β update (already counted)
+  3. But enrich with PumpPortal's richer data (market_cap, reserves)
+  
+This means: Bayesian state reacts at HELIUS SPEED (100-200ms)
+            even though full data arrives at PumpPortal speed (200-400ms)
+```
+
+### ShredStream Integration (Future — Pending Jito WL)
+
+ShredStream fundamentally changes the game because it gives us **pre-confirmation evidence**:
+
+```
+Timeline:
+  t=0ms     Sell TX enters leader's shred pipeline
+  t=80ms    ShredStream delivers raw shred data → we decode sell event
+  t=200ms   Block confirmed → Helius logsSubscribe fires
+  t=400ms   PumpPortal processes and broadcasts trade
+
+With ShredStream:
+  β update at t=80ms (120ms advantage over Helius, 320ms over PumpPortal)
+  Exit TX submitted at t=85ms → competes in SAME block
+  
+Without ShredStream:
+  β update at t=200ms (Helius) or t=400ms (PumpPortal)
+  Exit TX submitted at t=205ms → lands in NEXT block (400ms+ later)
+```
+
+For the Bayesian model, ShredStream evidence should get a **slight confidence boost** because it's pre-confirmation (the TX might still fail):
+
+```rust
+// ShredStream events are pre-confirmation — high confidence but not 100%
+const SHRED_CONFIDENCE: u8 = 230; // 90% confidence (230/256)
+// If confirmed by Helius/PumpPortal later → bump to 100%
+// If NOT confirmed within 2 slots → retract the evidence (rare)
+```
+
+### Multi-Feed Fusion Timeline
+
+```
+Entry trigger (PumpPortal buy event):
+  t=0ms   → Open position, initialize Beta(α₀, β₀) from EntryConviction
+  
+First 500ms (CRITICAL — most positions decided here):
+  t=80ms  → ShredStream: pre-confirm next trade (if available)
+            β update if sell, α update if buy — FASTEST evidence
+  t=200ms → Helius: confirm trade, dedup with ShredStream
+            Update only if new evidence (not already counted)
+  t=400ms → PumpPortal: full trade data arrives
+            Enrich with market cap, exact reserves
+            α/β already updated; just enrich context
+  t=500ms → CoreCast: structural data arrives (creator identity check)
+            If creator sell → massive β boost + emergency flag
+            
+After 500ms:
+  Each subsequent trade event → incremental α/β update
+  Every 500ms tick → time decay on α and β (forgetting factor)
+  Recompute f̂*(t) on every update → map to signal state
+```
+
+### R̂(t) Update from Multi-Feed Data
+
+The reward ratio R can be tracked more accurately using PumpPortal's reserve data:
+
+```rust
+// PumpPortal provides vsol_reserves on every trade
+// This lets us compute realized MFE more accurately than from price alone
+fn update_r_estimate(&mut self, current_vsol: u64, entry_vsol: u64) {
+    let current_pnl_bp = ((current_vsol as i64 - entry_vsol as i64) * 10000 
+                          / entry_vsol as i64) as i16;
+    // Update peak MFE
+    if current_pnl_bp > self.peak_mfe_bp {
+        self.peak_mfe_bp = current_pnl_bp;
+    }
+    // EMA update of R estimate: R̂(t) = 0.875 × R̂(t-1) + 0.125 × (peak_mfe / avg_loss)
+    // Only update R̂ upward (evidence of larger reward), never downward from a single trade
+    let implied_r = (self.peak_mfe_bp as u32 * 100) / self.avg_loss_bp.max(1) as u32;
+    if implied_r > self.r_est_x100 as u32 {
+        self.r_est_x100 = ((self.r_est_x100 as u32 * 7 + implied_r) / 8) as u16;
+    }
+}
+```
+
 ## Open Questions
 
-1. **Should R̂(t) update online?** The reward ratio could be tracked via realized MFE, but this adds complexity. Initial approach: keep R fixed at entry estimate.
+1. **Should R̂(t) update online?** Yes — PumpPortal's reserve data makes this cheap. Update R̂ upward only (peak MFE evidence), never downward from single events. ✅ Resolved above.
 
-2. **Multi-scale decay?** Current: single 500ms decay. Could use 2 timescales (1s for immediate flow, 5s for trend). Adds 4 bytes to state.
+2. **Multi-scale decay?** Yes — use 2 timescales: fast decay (half-life 2s) for immediate flow assessment, slow decay (half-life 8s) for trend. Costs 4 extra bytes.
 
-3. **Asymmetric evidence weighting?** A sell is stronger evidence than a missing buy (active liquidation vs. lull). Weight sells at 2× buys in the Beta update?
+3. **Asymmetric evidence weighting?** Yes — CoreCast creator-sell = 5× normal sell weight. ShredStream pre-confirm = 90% confidence. Anonymous sell = 1× baseline. ✅ Resolved above.
 
-4. **Correlation between signal and Kelly sizing?** When we hold 5 positions and all are in Weakening state, that's a stronger signal than 1 in Weakening. Portfolio-level signal aggregation?
+4. **Correlation between signal and Kelly sizing?** When we hold 5 positions and all are in Weakening state, that's a stronger signal than 1 in Weakening. Portfolio-level signal aggregation could inform drawdown tier adjustments.
+
+5. **ShredStream pre-confirmation retraction?** If ShredStream evidence isn't confirmed within 2 slots (~800ms), retract the α/β update. Requires a small pending-evidence buffer (2-3 entries, 24 bytes).
