@@ -466,6 +466,12 @@
             "sell_cascade_count": 3,
             "sell_pressure_tighten_pct": 2.0
         },
+        "entry_engine": {
+            "position_sizing": {
+                "min_entry_score": 70.0,
+                "min_magnitude_for_ride": 55.0
+            }
+        },
         "risk": {
             "daily_loss_limit_sol": 1.5,
             "consecutive_loss_limit": 5,

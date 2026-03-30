@@ -58,7 +58,7 @@ pub struct WatchSlot {
     r_x100: u16,                    // 30-31
     f_permille: u16,                // 32-33
     conviction_tier: u8,            // 34
-    /// State: 0 = empty, 1 = watching, 2 = promoted (consumed).
+    /// State: 0 = empty, 1 = watching, 2 = promoted (consumed), 3 = partial_confirm (awaiting 2nd buy).
     state: u8,                      // 35
     /// vSOL reserves at watch time (for slippage check on promote).
     entry_vsol_reserves: u32,       // 36-39  (mvsol = lamports / 1e6)
@@ -66,8 +66,8 @@ pub struct WatchSlot {
     expiry_ms: u64,                 // 40-47
     /// Original trade signature prefix (dedup).
     sig_prefix: u64,                // 48-55
-    /// Padding to 64 bytes.
-    _pad: [u8; 8],                  // 56-63
+    /// First confirming buy sig prefix (for 2-buy dedup). Reuses padding.
+    confirm1_sig_prefix: [u8; 8],   // 56-63
 }
 
 const _: () = assert!(core::mem::size_of::<WatchSlot>() == 64);
@@ -87,7 +87,7 @@ impl WatchSlot {
         entry_vsol_reserves: 0,
         expiry_ms: 0,
         sig_prefix: 0,
-        _pad: [0; 8],
+        confirm1_sig_prefix: [0; 8],
     };
 
     #[inline(always)]
@@ -97,7 +97,12 @@ impl WatchSlot {
 
     #[inline(always)]
     fn is_watching(&self) -> bool {
-        self.state == 1
+        self.state == 1 || self.state == 3
+    }
+
+    #[inline(always)]
+    fn is_partial_confirm(&self) -> bool {
+        self.state == 3
     }
 
     #[inline(always)]
@@ -272,21 +277,28 @@ impl Watchlist {
             entry_vsol_reserves: vsol_mvsol,
             expiry_ms: now_ms + self.expiry_ms,
             sig_prefix: sig_pfx,
-            _pad: [0; 8],
+            confirm1_sig_prefix: [0; 8],
         };
         self.mints.mints[idx] = trade.mint;
         self.watches_added += 1;
     }
 
+    /// Strong-interest threshold: a single buy ≥ 0.10 SOL skips straight to promotion.
+    const STRONG_INTEREST_MVSOL: u32 = 100; // 0.10 SOL in mvsol
+
     /// Try to promote a watched mint on a confirming buy.
     /// Returns PromoteResult if the mint is watched and the buy qualifies.
     ///
-    /// Qualification:
+    /// Two-buy confirmation state machine:
+    ///   state 1 (watching) + buy → state 3 (partial_confirm) [stores first confirm sig]
+    ///   state 3 (partial_confirm) + different buy → promote (state 2)
+    ///   Strong-interest shortcut: single buy ≥ 0.10 SOL → immediate promote
+    ///
+    /// Qualification (both buys):
     /// 1. Mint is in watchlist and not expired
-    /// 2. Buy is from a DIFFERENT transaction (sig_prefix differs)
+    /// 2. Buy is from a DIFFERENT transaction (sig_prefix differs from entry AND confirm1)
     /// 3. Buy amount >= MIN_CONFIRM_MVSOL
     /// 4. vSOL reserves haven't moved more than 10% from watch time
-    ///    (excessive slippage = someone front-ran us)
     #[inline]
     pub fn try_promote(
         &mut self,
@@ -328,8 +340,41 @@ impl Watchlist {
             }
         }
 
+        // ── 2-Buy State Machine ────────────────────────────────────
+        if slot.state == 1 {
+            // State 1 (watching) → first confirming buy
+            if buy_mvsol >= Self::STRONG_INTEREST_MVSOL {
+                // Strong-interest shortcut: ≥0.10 SOL → immediate promotion
+                return self.finalize_promote(idx, now_ms);
+            }
+            // Normal path: transition to partial_confirm (state 3)
+            let sig_bytes = trade.sig[..8].try_into().unwrap_or([0u8; 8]);
+            self.slots[idx].confirm1_sig_prefix = sig_bytes;
+            self.slots[idx].state = 3; // partial_confirm
+            return None;
+        }
+
+        if slot.state == 3 {
+            // State 3 (partial_confirm) → second confirming buy
+            // Must differ from BOTH entry sig AND first confirm sig
+            let confirm1_pfx = u64::from_le_bytes(slot.confirm1_sig_prefix);
+            if sig_pfx == confirm1_pfx {
+                return None; // same as first confirm — dedup
+            }
+            // Second distinct confirming buy → promote
+            return self.finalize_promote(idx, now_ms);
+        }
+
+        None
+    }
+
+    /// Internal helper: finalize promotion from any state.
+    #[inline(always)]
+    fn finalize_promote(&mut self, idx: usize, now_ms: u64) -> Option<PromoteResult> {
+        let slot = &self.slots[idx];
         let watch_duration = now_ms.saturating_sub(slot.watch_start_ms);
         let mint = self.mints.mints[idx];
+        let entry_vsol = slot.entry_vsol_reserves;
 
         let result = PromoteResult {
             mint,
@@ -355,12 +400,13 @@ impl Watchlist {
     }
 
     /// Bulk-expire stale entries. Called periodically (e.g., every 100ms).
-    /// Returns number of expired entries.
+    /// Returns number of expired entries. Handles both state 1 (watching) and state 3 (partial_confirm).
     #[inline]
     pub fn expire_stale(&mut self, now_ms: u64) -> u32 {
         let mut expired = 0u32;
         for i in 0..WATCHLIST_CAPACITY {
             let slot = &mut self.slots[i];
+            // is_watching() returns true for state 1 AND state 3
             if slot.is_watching() && slot.is_expired(now_ms) {
                 slot.state = 0; // mark empty
                 expired += 1;
@@ -383,10 +429,12 @@ impl Watchlist {
     }
 
     /// Remove a specific mint from the watchlist (e.g., on creator sell).
+    /// Handles state 1 (watching) and state 3 (partial_confirm).
     #[inline]
     pub fn remove_mint(&mut self, mint: &[u8; 32]) {
         let hash = Self::mint_hash(mint);
         for i in 0..WATCHLIST_CAPACITY {
+            // is_watching() covers both state 1 and state 3
             if self.slots[i].mint_hash == hash && self.slots[i].is_watching() {
                 self.slots[i].state = 0;
                 return;
@@ -446,11 +494,12 @@ mod tests {
     }
 
     #[test]
-    fn test_watch_and_promote() {
+    fn test_watch_and_promote_two_buy() {
         let mut wl = Watchlist::new();
         let mint = [0xAAu8; 32];
-        let sig1 = [0xBBu8; 64];
-        let sig2 = [0xCCu8; 64]; // different sig for confirming buy
+        let sig1 = [0xBBu8; 64]; // entry
+        let sig2 = [0xCCu8; 64]; // first confirm
+        let sig3 = [0xDDu8; 64]; // second confirm
 
         let trade1 = make_trade(mint, sig1, 100_000_000, 30_000_000_000, true);
         let conv = default_conviction();
@@ -460,18 +509,82 @@ mod tests {
         assert_eq!(wl.active_count(), 1);
         assert_eq!(wl.watches_added, 1);
 
-        // Confirming buy from different sig
+        // First confirming buy (0.05 SOL < 0.10 SOL threshold) → partial_confirm
         let trade2 = make_trade(mint, sig2, 50_000_000, 30_500_000_000, true);
         let result = wl.try_promote(&trade2, 1200);
-        assert!(result.is_some());
+        assert!(result.is_none(), "first small buy should NOT promote");
+        assert_eq!(wl.active_count(), 1); // still active (state 3)
+
+        // Second confirming buy from different sig → promote
+        let trade3 = make_trade(mint, sig3, 50_000_000, 30_500_000_000, true);
+        let result = wl.try_promote(&trade3, 1300);
+        assert!(result.is_some(), "second distinct buy SHOULD promote");
         let r = result.unwrap();
         assert_eq!(r.mint, mint);
-        assert_eq!(r.watch_duration_ms, 200);
+        assert_eq!(r.watch_duration_ms, 300);
         assert_eq!(wl.watches_promoted, 1);
 
         // Should not promote again (state = promoted)
-        let trade3 = make_trade(mint, [0xDDu8; 64], 50_000_000, 30_500_000_000, true);
-        assert!(wl.try_promote(&trade3, 1300).is_none());
+        let trade4 = make_trade(mint, [0xEEu8; 64], 50_000_000, 30_500_000_000, true);
+        assert!(wl.try_promote(&trade4, 1400).is_none());
+    }
+
+    #[test]
+    fn test_strong_interest_immediate_promote() {
+        let mut wl = Watchlist::new();
+        let mint = [0xAAu8; 32];
+        let sig1 = [0xBBu8; 64];
+        let sig2 = [0xCCu8; 64];
+
+        let trade1 = make_trade(mint, sig1, 100_000_000, 30_000_000_000, true);
+        wl.watch(&trade1, 0.75, 60.0, &default_conviction(), 1000);
+
+        // Single large buy ≥ 0.10 SOL → immediate promotion (no 2nd buy needed)
+        let trade2 = make_trade(mint, sig2, 100_000_000, 30_500_000_000, true);
+        let result = wl.try_promote(&trade2, 1100);
+        assert!(result.is_some(), "0.10 SOL buy should promote immediately");
+        assert_eq!(wl.watches_promoted, 1);
+    }
+
+    #[test]
+    fn test_second_buy_same_as_first_confirm_rejected() {
+        let mut wl = Watchlist::new();
+        let mint = [0xAAu8; 32];
+        let sig1 = [0xBBu8; 64];
+        let sig2 = [0xCCu8; 64];
+
+        let trade1 = make_trade(mint, sig1, 100_000_000, 30_000_000_000, true);
+        wl.watch(&trade1, 0.75, 60.0, &default_conviction(), 1000);
+
+        // First confirm → state 3
+        let trade2 = make_trade(mint, sig2, 50_000_000, 30_500_000_000, true);
+        assert!(wl.try_promote(&trade2, 1100).is_none());
+
+        // Same sig as first confirm → dedup rejection
+        let trade3 = make_trade(mint, sig2, 50_000_000, 30_500_000_000, true);
+        assert!(wl.try_promote(&trade3, 1200).is_none(), "duplicate sig should be rejected");
+
+        // But a different sig should promote
+        let trade4 = make_trade(mint, [0xDDu8; 64], 50_000_000, 30_500_000_000, true);
+        assert!(wl.try_promote(&trade4, 1300).is_some(), "different sig should promote");
+    }
+
+    #[test]
+    fn test_partial_confirm_expires() {
+        let mut wl = Watchlist::new();
+        let mint = [0xAAu8; 32];
+
+        let trade1 = make_trade(mint, [0xBBu8; 64], 100_000_000, 30_000_000_000, true);
+        wl.watch(&trade1, 0.75, 60.0, &default_conviction(), 1000);
+
+        // First confirm → state 3
+        let trade2 = make_trade(mint, [0xCCu8; 64], 50_000_000, 30_500_000_000, true);
+        assert!(wl.try_promote(&trade2, 1100).is_none());
+
+        // Expire after expiry window
+        let expired = wl.expire_stale(4000); // well past 1000 + 2000ms expiry
+        assert_eq!(expired, 1, "partial_confirm should expire");
+        assert_eq!(wl.active_count(), 0);
     }
 
     #[test]

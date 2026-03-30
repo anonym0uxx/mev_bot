@@ -351,6 +351,40 @@ impl PositionManager {
         self.positions.get_mut(mint)
     }
 
+    /// Feed the confirming buy event into a newly opened position's RideState.
+    ///
+    /// Called immediately after `open_position()` in the watchlist promotion path.
+    /// The confirming buy trade that triggered promotion is used as the trigger event
+    /// in open_position (trigger_sig = event.sig), which means on_subsequent_trade
+    /// will skip it. This method injects the buy evidence directly into RideState
+    /// so the Bayesian model starts with correct positive evidence.
+    ///
+    /// PERF: #[inline] — called once per promotion (~rare), not hot path.
+    #[inline]
+    pub fn feed_initial_buy(&mut self, mint: &[u8; 32], sol_amount: u64, now_ms: u64, sig: &[u8; 64]) {
+        let pos = match self.positions.get_mut(mint) {
+            Some(p) => p,
+            None => return,
+        };
+        match &mut pos.exit_mode {
+            ExitMode::Ride(ref mut rs) => {
+                let buy_mvsol = lamports_to_mvsol(sol_amount);
+                let wallet_hash = u64::from_le_bytes([
+                    sig[0], sig[1], sig[2], sig[3],
+                    sig[4], sig[5], sig[6], sig[7],
+                ]);
+                // source = PumpPortal (confirming buys come from PumpPortal watchlist flow)
+                // weight_mult = 10 (standard buy weight)
+                rs.on_buy_event(buy_mvsol, now_ms, wallet_hash, FeedSource::PumpPortal, 10);
+            }
+        }
+        // Also update position-level counters (these are used in JSONL logging)
+        pos.confirming_buy_sol = pos.confirming_buy_sol.saturating_add(sol_amount);
+        if sol_amount >= 50_000_000 {
+            pos.confirming_unique_wallets = pos.confirming_unique_wallets.saturating_add(1);
+        }
+    }
+
     /// Look up position size for a given trigger trade size.
     /// Returns the size from the first matching tier, capped at max_entry_size_lamports.
     fn lookup_size(&self, trigger_sol: u64) -> u64 {

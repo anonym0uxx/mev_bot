@@ -311,6 +311,10 @@ impl HotPath {
                 );
                 self.stats.positions_opened += 1;
                 self.stats.gates_passed += 1;
+                // Feed the confirming buy into RideState's Bayesian model.
+                // open_position sets trigger_sig = this trade's sig, so
+                // on_subsequent_trade would skip it. Inject evidence directly.
+                self.position_manager.feed_initial_buy(&trade.mint, trade.sol_amount, now, &trade.sig);
                 // Enrich with entry context from cached mint history
                 if let Some(pos) = self.position_manager.get_position_mut(&trade.mint) {
                     let history = self.mint_map.get_or_insert(&trade.mint, now);

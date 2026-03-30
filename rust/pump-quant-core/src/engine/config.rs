@@ -262,11 +262,14 @@ pub struct MagnitudeJsonConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SizingJsonConfig {
-    pub min_entry_score: Option<f64>,        // default: 50.0
-    pub min_magnitude_for_ride: Option<f64>, // default: 40.0
+    pub min_entry_score: Option<f64>,        // default: 70.0 (0-100 scale)
+    pub min_magnitude_for_ride: Option<f64>, // default: 55.0 (0-100 scale)
     // SCALP fields removed — all positions are RIDE
     pub ride_size_min_sol: Option<f64>,      // default: 0.10
     pub ride_size_max_sol: Option<f64>,      // default: 0.15
+    /// Fee gate multiplier × 100. Default 200 = require 2× fee coverage.
+    /// Set to 0 to disable fee gate. Reject if expected_edge < multiplier × fees.
+    pub fee_gate_multiplier_x100: Option<u32>,
 }
 
 // ── Signal weights JSON config (v2 pipeline — RideState v2) ──────────────────
@@ -1107,6 +1110,7 @@ pub fn build_entry_engine_config(json: &EntryEngineJsonConfig) -> crate::engine:
     if let Some(ref sizing) = json.position_sizing {
         if let Some(v) = sizing.min_entry_score { cfg.decision.min_entry_score = v; }
         if let Some(v) = sizing.min_magnitude_for_ride { cfg.decision.min_magnitude_for_ride = v; }
+        if let Some(v) = sizing.fee_gate_multiplier_x100 { cfg.decision.fee_gate_multiplier_x100 = v; }
         // ride_size_min/max removed — sizing is now Kelly-derived from wallet balance
         let _ = sizing.ride_size_min_sol; // kept in JSON for backward compat, ignored
         let _ = sizing.ride_size_max_sol;

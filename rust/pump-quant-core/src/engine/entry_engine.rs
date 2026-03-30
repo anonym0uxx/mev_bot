@@ -146,15 +146,20 @@ pub struct Reciprocals {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct DecisionThresholds {
-    pub min_entry_score: f64,           // 50.0
-    pub min_magnitude_for_ride: f64,    // 40.0
+    pub min_entry_score: f64,           // 70.0 (0-100 scale, raised from 50.0)
+    pub min_magnitude_for_ride: f64,    // 55.0 (0-100 scale, raised from 40.0)
+    /// Fee gate multiplier × 100. Reject trade if expected_edge_lamports
+    /// < (fee_gate_multiplier_x100 / 100) × fee_lamports.
+    /// Default: 200 (require 2× fee coverage). Set to 0 to disable gate.
+    pub fee_gate_multiplier_x100: u32,
 }
 
 impl Default for DecisionThresholds {
     fn default() -> Self {
         Self {
-            min_entry_score: 50.0,
-            min_magnitude_for_ride: 40.0,
+            min_entry_score: 70.0,
+            min_magnitude_for_ride: 55.0,
+            fee_gate_multiplier_x100: 200,
         }
     }
 }
@@ -519,6 +524,45 @@ impl EntryEngine {
             n_open,
             drawdown_pct,
         );
+
+        // ── Fee-Aware Edge Gate ─────────────────────────────────────
+        // Reject if expected edge per trade doesn't cover fees by the
+        // configured multiplier. All integer math, zero allocation.
+        //
+        // expected_edge_lamports = p × avg_win_lamports - (1-p) × avg_loss_lamports
+        //   where avg_win  = r_x100 × avg_loss / 100  (r_x100 is fee-adjusted)
+        //         avg_loss = size × DEFAULT_AVG_LOSS_BP / 10000
+        //
+        // fee_lamports = size × DEFAULT_ROUND_TRIP_FEE_BP / 10000
+        //
+        // Gate: expected_edge_lamports × 100 >= fee_lamports × fee_gate_multiplier_x100
+        if d.fee_gate_multiplier_x100 > 0 && conviction.size_lamports > 0 {
+            let size = conviction.size_lamports as u128;
+            let p = conviction.p_permille as u128;       // 0..1000
+            let r = conviction.r_x100 as u128;           // R_adj × 100
+            let q = 1000u128.saturating_sub(p);           // (1-p) × 1000
+
+            // avg_loss_lamports = size × DEFAULT_AVG_LOSS_BP / 10000
+            let avg_loss_lam = size * kelly_sizing::DEFAULT_AVG_LOSS_BP as u128 / 10_000;
+
+            // avg_win_lamports = avg_loss_lam × r_x100 / 100
+            let avg_win_lam = avg_loss_lam * r / 100;
+
+            // expected_edge × 1000 = p × avg_win - q × avg_loss
+            // (keeping ×1000 factor from p_permille to avoid premature truncation)
+            let edge_x1000 = (p * avg_win_lam).saturating_sub(q * avg_loss_lam);
+
+            // fee_lamports = size × DEFAULT_ROUND_TRIP_FEE_BP / 10000
+            let fee_lam = size * kelly_sizing::DEFAULT_ROUND_TRIP_FEE_BP as u128 / 10_000;
+
+            // Gate: edge_x1000 >= fee_lam × multiplier_x100 × 1000 / 100
+            //      = fee_lam × multiplier_x100 × 10
+            let threshold = fee_lam * d.fee_gate_multiplier_x100 as u128 * 10;
+
+            if edge_x1000 < threshold {
+                return (EntryAction::Reject, EntryConviction::default());
+            }
+        }
 
         (EntryAction::Ride, conviction)
     }
