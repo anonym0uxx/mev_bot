@@ -26,8 +26,9 @@ use tracing::{debug, error, info, warn};
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /// Jito block engine gRPC/HTTP endpoints (also serve JSON-RPC on /api/v1/bundles)
+// VPS is US East (Boston/NY) — use NY as primary, Frankfurt as secondary
+const JITO_NY: &str = "https://ny.mainnet.block-engine.jito.wtf";
 const JITO_FRANKFURT: &str = "https://frankfurt.mainnet.block-engine.jito.wtf";
-const JITO_AMSTERDAM: &str = "https://amsterdam.mainnet.block-engine.jito.wtf";
 
 /// Maximum idle connections per host in the pool
 const POOL_MAX_IDLE_PER_HOST: usize = 4;
@@ -57,8 +58,8 @@ pub struct JitoGrpcConfig {
 impl Default for JitoGrpcConfig {
     fn default() -> Self {
         Self {
-            primary_url: JITO_FRANKFURT.to_string(),
-            secondary_url: JITO_AMSTERDAM.to_string(),
+            primary_url: JITO_NY.to_string(),
+            secondary_url: JITO_FRANKFURT.to_string(),
             timeout_ms: 5000,
             keepalive_ms: 10_000,
             max_bundle_size: 5,
