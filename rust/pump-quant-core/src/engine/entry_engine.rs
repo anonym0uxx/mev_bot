@@ -596,7 +596,11 @@ impl EntryEngine {
         }
 
         // Check 4: vsol_reserves in [min..max] (curve position 20-60%, ~35% rejection)
-        if input.vsol_reserves < g.min_vsol_reserves || input.vsol_reserves > g.max_vsol_reserves {
+        // Skip when vsol_reserves == 0 (ShredStream: decoded tx doesn't include account state).
+        // These entries rely on PumpPortal enrichment or cached MintHistory data.
+        if input.vsol_reserves > 0
+            && (input.vsol_reserves < g.min_vsol_reserves || input.vsol_reserves > g.max_vsol_reserves)
+        {
             return false;
         }
 

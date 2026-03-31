@@ -300,13 +300,9 @@ impl HotPath {
             }
         }
 
-        // Record ShredStream trade sig for future dedup
-        if trade.source == FeedSource::ShredStream {
-            let sig_u64 = u64::from_le_bytes(trade.sig_prefix);
-            let idx = (self.shred_sig_ring_head as usize) % 128;
-            self.shred_sig_ring[idx] = (sig_u64, now);
-            self.shred_sig_ring_head = self.shred_sig_ring_head.wrapping_add(1);
-        }
+        // NOTE: ShredStream sig dedup recording moved to AFTER watchlist.watch()
+        // so that ShredStream trades that fail hard_gate (e.g. vsol=0) don't
+        // block PumpPortal from getting its chance to trigger entry.
 
         // Helius lead-time measurement: check if Helius pre-warmed this sig
         if trade.source == FeedSource::PumpPortal {
@@ -489,6 +485,15 @@ impl HotPath {
                         &decision.conviction,
                         now,
                     );
+                    // Record ShredStream sig for dedup ONLY after entry engine accepted.
+                    // This ensures ShredStream trades that fail hard_gate (e.g. vsol=0)
+                    // don't block PumpPortal from triggering the same trade.
+                    if trade.source == FeedSource::ShredStream {
+                        let sig_u64 = u64::from_le_bytes(trade.sig_prefix);
+                        let idx = (self.shred_sig_ring_head as usize) % 128;
+                        self.shred_sig_ring[idx] = (sig_u64, now);
+                        self.shred_sig_ring_head = self.shred_sig_ring_head.wrapping_add(1);
+                    }
                     return;
                 }
             }
