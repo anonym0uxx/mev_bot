@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * rust-status.js — Rust MEV daemon status report for heartbeat
+ * rust-status.js — Rust daemon status report for heartbeat
  * Reads from:
- *   - Rust API at :9421 (stats, health, latency)
- *   - data/backrun_paper_trades.jsonl (trade history)
+ *   - Rust API at :9421 (stats, health)
+ *   - data/momentum_paper_trades.jsonl (momentum trades — primary engine)
+ *   - data/backrun_paper_trades.jsonl (backrun trades — disabled, historical only)
  *   - data/engine-state.json (session boundary)
  *   - data/heartbeat-trade-state.json (state tracking)
  */
@@ -13,18 +14,19 @@ const path = require('path');
 const http = require('http');
 
 const BASE = path.join(__dirname, '..');
-const JSONL_PATH = path.join(BASE, 'data/backrun_paper_trades.jsonl');
+const MOMENTUM_JSONL = path.join(BASE, 'data/momentum_paper_trades.jsonl');
+const BACKRUN_JSONL  = path.join(BASE, 'data/backrun_paper_trades.jsonl');
 const STATE_PATH = path.join(BASE, 'data/engine-state.json');
-const HB_STATE  = path.join(BASE, 'data/heartbeat-trade-state.json');
+const HB_STATE   = path.join(BASE, 'data/heartbeat-trade-state.json');
 
 const isPaper = process.env.PAPER_MODE !== 'false';
 const modeFlag = isPaper ? '📄 PAPER' : '🔴 LIVE';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function fetchJson(port, path) {
+function fetchJson(port, urlPath) {
   return new Promise((resolve) => {
-    const req = http.get({ host: '127.0.0.1', port, path, timeout: 2000 }, (res) => {
+    const req = http.get({ host: '127.0.0.1', port, path: urlPath, timeout: 2000 }, (res) => {
       let data = '';
       res.on('data', d => data += d);
       res.on('end', () => {
@@ -55,55 +57,29 @@ function saveJson(filePath, obj) {
 function sol(n) { return (n || 0).toFixed(4); }
 function pct(n) { return ((n || 0) * 100).toFixed(1) + '%'; }
 
-// ── Strategy Breakdown ──────────────────────────────────────────────
+// ── Momentum P&L ────────────────────────────────────────────────────────────
 
-function strategyBreakdown(trades) {
-  const tags = [
-    'backrun_golden',
-    'backrun_standard',
-    'graduation_arb',
-    'scaled_entry_confirmed',
-    'scaled_entry_partial',
-  ];
-
-  const result = {};
-  for (const tag of tags) {
-    const subset = trades.filter(t => (t.strategyTag || 'backrun_standard') === tag);
-    const n = subset.length;
-    const wins = subset.filter(t => (t.pnlSol || 0) > 0).length;
-    const wr = n > 0 ? wins / n : null;
-    const net = subset.reduce((s, t) => s + (t.netPnlSol ?? t.pnlSol ?? 0), 0);
-    const avg = n > 0 ? net / n : 0;
-    result[tag] = { n, wins, wr, net, avg };
-  }
-  return result;
-}
-
-function formatStrategyLine(tag, stats) {
-  const icons = {
-    'backrun_golden': '🥇',
-    'backrun_standard': '📊',
-    'graduation_arb': '🎓',
-    'scaled_entry_confirmed': '✅',
-    'scaled_entry_partial': '⚠️',
-  };
-  const icon = icons[tag] || '•';
-  const label = tag.padEnd(24);
-  const nStr = `n=${String(stats.n).padEnd(4)}`;
-  const wrStr = stats.wr !== null
-    ? `WR=${(stats.wr * 100).toFixed(1).padStart(5)}%`
-    : 'WR=    —';
-  const netStr = `net=${stats.net >= 0 ? '+' : ''}${stats.net.toFixed(4)} SOL`;
-  const avgStr = stats.n > 0
-    ? `avg=${stats.avg >= 0 ? '+' : ''}${stats.avg.toFixed(6)}`
-    : '';
-  return `  ${icon} ${label} ${nStr} ${wrStr}  ${netStr}  ${avgStr}`;
+function momentumStats(trades) {
+  const n = trades.length;
+  if (n === 0) return { n: 0, wins: 0, wr: 0, gross: 0, net: 0, fees: 0, byExit: {}, avgHoldMs: 0 };
+  const wins = trades.filter(t => (t.net_pnl_sol || 0) > 0).length;
+  const wr = wins / n;
+  const gross = trades.reduce((s, t) => s + (t.gross_pnl_sol || 0), 0);
+  const net = trades.reduce((s, t) => s + (t.net_pnl_sol || 0), 0);
+  const fees = trades.reduce((s, t) => s + (t.fee_sol || 0), 0);
+  const totalHold = trades.reduce((s, t) => s + (t.hold_ms || 0), 0);
+  const avgHoldMs = totalHold / n;
+  const byExit = {};
+  trades.forEach(t => {
+    const r = t.exit_reason || 'unknown';
+    byExit[r] = (byExit[r] || 0) + 1;
+  });
+  return { n, wins, wr, gross, net, fees, byExit, avgHoldMs };
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  // Load state files
   const engineState = loadJson(STATE_PATH);
   const hbState = loadJson(HB_STATE);
   const sessionStartMs = engineState.daemonStartedAt || (Date.now() - 24 * 3600 * 1000);
@@ -118,196 +94,109 @@ async function main() {
   const health = healthResp?.data || null;
   const alive  = !!stats;
 
-  // ── Daemon alive check ────────────────────────────────────────────
   if (!alive) {
     console.log('❌ RUST DAEMON DOWN — port 9421 not responding');
-    console.log('Restart: cd /data/.openclaw/workspace/projects/pump-quant && source rust/.env && PAPER_MODE=true RUST_LOG=info nohup ./rust/target/release/pump-quant > logs/rust-daemon.log 2>&1 &');
     process.exit(1);
   }
 
-  // ── Trade history ─────────────────────────────────────────────────
-  const allTrades = loadJsonl(JSONL_PATH);
-  const sessionTrades = allTrades.filter(t => (t.exitTimestampMs || t.recordedAt || 0) >= sessionStartMs);
-  const lastHbCount = hbState.last_trade_count || 0;
-  const newTrades = allTrades.length - lastHbCount;
+  // ── Load momentum trades (primary engine) ─────────────────────────
+  const allMomentum = loadJsonl(MOMENTUM_JSONL);
+  // New build trades have size_sol field; filter out phantom PnL (>10x position size)
+  const cleanMomentum = allMomentum.filter(t =>
+    t.size_sol != null && t.size_sol > 0 &&
+    Math.abs(t.net_pnl_sol || 0) <= t.size_sol * 10
+  );
+  const sessionMomentum = cleanMomentum.filter(t => (t.exit_timestamp_ms || 0) >= sessionStartMs);
 
-  // P&L calculations
-  function pnlStats(trades) {
-    const n = trades.length;
-    const wins = trades.filter(t => (t.pnlSol || 0) > 0).length;
-    const wr = n > 0 ? wins / n : 0;
-    const gross = trades.reduce((s, t) => s + (t.pnlSol || 0), 0);
-    const net   = trades.reduce((s, t) => s + (t.netPnlSol ?? t.pnlSol ?? 0), 0);
-    const fees  = trades.reduce((s, t) => s + (t.feesSol || 0), 0);
-    const byExit = { take_profit: 0, next_buyer: 0, stop_loss: 0, max_hold: 0, momentum_decay_flat: 0, momentum_decay_fade: 0 };
-    trades.forEach(t => { const r = t.exitReason || 'unknown'; byExit[r] = (byExit[r] || 0) + 1; });
-    // max_hold % alert: >20% indicates entry filter regression
-    const totalExits = Object.values(byExit).reduce((a, b) => a + b, 0);
-    const maxHoldPct = totalExits > 0 ? (byExit.max_hold / totalExits * 100) : 0;
-    const flatPct = totalExits > 0 ? ((byExit.momentum_decay_flat || 0) / totalExits * 100) : 0;
-    // fee drag alert
-    const feeDragPct = gross > 0 ? (fees / gross * 100) : null;
-    return { n, wins, wr, gross, net, fees, byExit, maxHoldPct, flatPct, feeDragPct };
-  }
+  // Track new trades since last heartbeat
+  const lastMomCount = hbState.last_momentum_count || 0;
+  const newMomTrades = cleanMomentum.length - lastMomCount;
 
-  const ses = pnlStats(sessionTrades);
-  const all = pnlStats(allTrades);
+  const ses = momentumStats(sessionMomentum);
+  const all = momentumStats(cleanMomentum);
 
-  // High-water mark tracking
-  const prevHigh = hbState.mev_pnl_high_water || -Infinity;
-  const newHigh  = all.net > prevHigh;
+  // High-water mark
+  const prevHigh = hbState.momentum_pnl_high_water || -Infinity;
+  const newHigh = all.net > prevHigh;
 
   // ── Feed health ───────────────────────────────────────────────────
   const feeds = health?.feeds || {};
-  const ppAge  = feeds.pumpportal?.age_s ?? '?';
+  const ppOk  = feeds.pumpportal?.status === 'healthy';
+  const helOk = feeds.helius?.status === 'healthy' || feeds.helius?.status === 'not_started';
+  const ccOk  = feeds.corecast?.status === 'healthy' || feeds.corecast?.status === 'not_started';
+  const ppAge = feeds.pumpportal?.age_s ?? '?';
   const helAge = feeds.helius?.age_s ?? '?';
-  const ccAge  = feeds.corecast?.age_s ?? '?';
-  const ppOk   = feeds.pumpportal?.status === 'healthy';
-  const helOk  = feeds.helius?.status === 'healthy' || feeds.helius?.status === 'not_started';
-  const ccOk   = feeds.corecast?.status === 'healthy' || feeds.corecast?.status === 'not_started';
+  const ccAge = feeds.corecast?.age_s ?? '?';
   const paused = stats?.paused || health?.trading_paused || false;
 
-  // ── Latency stats ─────────────────────────────────────────────────
-  // Derived from API stats (uptime vs trades_seen = throughput proxy)
-  const uptime   = stats?.uptime_s || 1;
-  const tps      = (stats?.trades_seen || 0) / uptime;
-  // Gate pass rate
-  const gatePassRate = stats?.trades_seen > 0
-    ? ((stats.gates_passed || 0) / stats.trades_seen * 100).toFixed(1)
-    : '0.0';
-
-  // ── Build report ──────────────────────────────────────────────────
+  const uptime = stats?.uptime_s || 1;
+  const tps = (stats?.trades_seen || 0) / uptime;
   const uptimeMin = Math.floor(uptime / 60);
   const uptimeStr = uptimeMin >= 60
     ? `${Math.floor(uptimeMin/60)}h${uptimeMin%60}m`
     : `${uptimeMin}m`;
 
+  // ── Build report ──────────────────────────────────────────────────
   let lines = [];
   lines.push(`⚙️ Engine v5-rust | ${modeFlag} | Up ${uptimeStr}`);
   lines.push('');
 
-  // Session block
+  // ── Momentum (primary engine) ─────────────────────────────────────
   if (ses.n === 0) {
-    lines.push('Session: no trades yet');
+    lines.push('🚀 Momentum session: no trades yet');
   } else {
-    lines.push(`Session (${ses.n} trades):`);
+    lines.push(`🚀 Momentum session (${ses.n} trades):`);
     lines.push(`  WR ${pct(ses.wr)} | Gross ${ses.gross >= 0 ? '+' : ''}${sol(ses.gross)} | Net ${ses.net >= 0 ? '+' : ''}${sol(ses.net)} SOL`);
-    lines.push(`  tp=${ses.byExit.take_profit||0} nb=${ses.byExit.next_buyer||0} sl=${ses.byExit.stop_loss||0} mh=${ses.byExit.max_hold||0} md=${(ses.byExit.momentum_decay_flat||0)+(ses.byExit.momentum_decay_fade||0)}`);
-    if (ses.fees > 0) lines.push(`  Fees: ${sol(ses.fees)} SOL | Fee drag: ${ses.gross > 0 ? (ses.fees/ses.gross*100).toFixed(1)+'%' : 'n/a'}`);
-
-    // ── Strategy Breakdown (session) ──────────────────────────────────
-    const sesBySt = strategyBreakdown(sessionTrades);
-    const sesHasAnyTagged = Object.values(sesBySt).some(s => s.n > 0);
-    if (sesHasAnyTagged) {
-      lines.push('');
-      lines.push('📊 Strategy Breakdown (session):');
-      for (const tag of Object.keys(sesBySt)) {
-        if (sesBySt[tag].n > 0) {
-          lines.push(formatStrategyLine(tag, sesBySt[tag]));
-        }
-      }
+    const exitStr = Object.entries(ses.byExit)
+      .sort(([,a],[,b]) => b - a)
+      .map(([r, c]) => `${r}=${c}`)
+      .join(' ');
+    lines.push(`  ${exitStr}`);
+    lines.push(`  Avg hold: ${(ses.avgHoldMs / 1000).toFixed(1)}s | Fees: ${sol(ses.fees)} SOL`);
+    if (ses.wins > 0) {
+      const avgWin = sessionMomentum.filter(t => t.net_pnl_sol > 0).reduce((s, t) => s + t.net_pnl_sol, 0) / ses.wins;
+      const avgLoss = ses.n - ses.wins > 0
+        ? sessionMomentum.filter(t => t.net_pnl_sol <= 0).reduce((s, t) => s + t.net_pnl_sol, 0) / (ses.n - ses.wins)
+        : 0;
+      lines.push(`  Avg win: ${sol(avgWin)} | Avg loss: ${sol(avgLoss)} SOL`);
     }
   }
 
-  lines.push('');
-  lines.push('📊 Overall P&L');
-  lines.push(`🎯 MEV: ${all.n} trades | WR ${pct(all.wr)} | Gross ${all.gross >= 0 ? '+' : ''}${sol(all.gross)} | Net ${all.net >= 0 ? '+' : ''}${sol(all.net)} SOL`);
-  if (all.n > 0) {
-    const breakeven = all.fees > 0 && all.gross !== 0 ? (all.fees / (all.fees + all.gross) * 100).toFixed(1) : '~66.5';
-    lines.push(`   (break-even WR: ~${breakeven}% gross)`);
+  if (newMomTrades > 0) {
+    lines.push(`  📈 +${newMomTrades} trades since last heartbeat`);
   }
 
-  // ── All-time Strategy Breakdown ───────────────────────────────────
+  // ── Momentum all-time (clean build only) ──────────────────────────
+  lines.push('');
   if (all.n > 0) {
-    const allBySt = strategyBreakdown(allTrades);
-    const allHasAnyTagged = Object.values(allBySt).some(s => s.n > 0);
-    if (allHasAnyTagged) {
-      lines.push('');
-      lines.push('📊 All-time by Strategy:');
-      for (const tag of Object.keys(allBySt)) {
-        if (allBySt[tag].n > 0 || ['backrun_golden', 'backrun_standard', 'graduation_arb'].includes(tag)) {
-          lines.push(formatStrategyLine(tag, allBySt[tag]));
-        }
-      }
+    lines.push(`📊 Momentum overall (clean build): ${all.n} trades`);
+    lines.push(`  WR ${pct(all.wr)} | Net ${all.net >= 0 ? '+' : ''}${sol(all.net)} SOL`);
+    if (all.wins > 0) {
+      const bestWin = Math.max(...cleanMomentum.map(t => t.net_pnl_sol || 0));
+      const worstLoss = Math.min(...cleanMomentum.map(t => t.net_pnl_sol || 0));
+      lines.push(`  Best: ${sol(bestWin)} | Worst: ${sol(worstLoss)} SOL`);
     }
-  }
-
-  lines.push('');
-  lines.push('📡 Feeds & Latency');
-  lines.push(`  PumpPortal: ${ppOk ? '✅' : '❌'} (${ppAge}s ago)`);
-  lines.push(`  Helius:     ${helOk ? '✅' : '❌'} (${helAge}s ago)`);
-  lines.push(`  CoreCast:   ${ccOk ? '✅' : '❌'} (${ccAge}s ago)`);
-  lines.push(`  Throughput: ${tps.toFixed(1)} events/s | Gate pass: ${gatePassRate}%`);
-  lines.push(`  Positions open: ${stats?.positions_opened - stats?.positions_closed || 0} | Closed: ${stats?.positions_closed || 0}`);
-
-  // Stream event counters (from API or fallback to log parsing)
-  const migrations = stats?.migrations_seen;
-  const lpRemovals = stats?.lp_removals_seen;
-  const newTokens  = stats?.new_tokens_seen;
-  const creatorSells = stats?.creator_sells_seen;
-
-  if (migrations != null || lpRemovals != null || newTokens != null || creatorSells != null) {
-    lines.push('');
-    lines.push('📡 Stream Events (session)');
-    lines.push(`  Migrations detected: ${migrations ?? 0}`);
-    lines.push(`  LP removals: ${lpRemovals ?? 0}`);
-    lines.push(`  New tokens pre-warmed: ${newTokens ?? 0}`);
-    lines.push(`  Creator sells: ${creatorSells ?? 0}`);
   } else {
-    // Fallback: parse from log file
-    const { execSync } = require('child_process');
-    try {
-      const lastStats = execSync(
-        'grep "engine stats" /data/.openclaw/workspace/projects/pump-quant/logs/rust-daemon.log | tail -1',
-        { timeout: 2000 }
-      ).toString().trim();
-      if (lastStats) {
-        const mig = lastStats.match(/migrations=(\d+)/);
-        const lpr = lastStats.match(/lp_removals=(\d+)/);
-        const ntk = lastStats.match(/new_tokens_prewarmed=(\d+)/);
-        const crs = lastStats.match(/creator_sells=(\d+)/);
-        if (mig || lpr || ntk || crs) {
-          lines.push('');
-          lines.push('📡 Stream Events (session, from log)');
-          lines.push(`  Migrations detected: ${mig ? mig[1] : 0}`);
-          lines.push(`  LP removals: ${lpr ? lpr[1] : 0}`);
-          lines.push(`  New tokens pre-warmed: ${ntk ? ntk[1] : 0}`);
-          lines.push(`  Creator sells: ${crs ? crs[1] : 0}`);
-        }
-      }
-    } catch {}
+    lines.push('📊 Momentum overall: no clean-build trades yet');
   }
 
-  if (paused) lines.push('  ⚠️  TRADING PAUSED');
-  if (newHigh) lines.push(`\n🏆 NEW HIGH WATER: ${sol(all.net)} SOL net!`);
+  // ── Feeds ─────────────────────────────────────────────────────────
+  lines.push('');
+  lines.push('📡 Feeds');
+  lines.push(`  PumpPortal: ${ppOk ? '✅' : '❌'} (${ppAge}s) | Helius: ${helOk ? '✅' : '❌'} (${helAge}s) | CoreCast: ${ccOk ? '✅' : '❌'} (${ccAge}s)`);
+  lines.push(`  Throughput: ${tps.toFixed(1)} evt/s | Migrations: ${stats?.migrations_seen ?? 0}`);
 
-  // Alerts
+  if (paused) lines.push('  ⚠️ TRADING PAUSED');
+  if (newHigh && all.net > 0) lines.push(`\n🏆 NEW HIGH WATER: ${sol(all.net)} SOL net!`);
+
+  // ── Alerts ────────────────────────────────────────────────────────
   const alerts = [];
-  if (!ppOk)                                    alerts.push('🔴 PumpPortal feed stale/down');
-  if (typeof ppAge === 'number' && ppAge > 60)  alerts.push(`🔴 PumpPortal last seen ${ppAge}s ago`);
-  if (ses.n >= 10 && ses.wr < 0.30)            alerts.push(`⚠️  Win rate critical: ${pct(ses.wr)} on ${ses.n} trades`);
-  if (ses.net < -0.03)                          alerts.push(`⚠️  Session PnL: ${sol(ses.net)} SOL`);
-  if (ses.fees > 0 && ses.gross > 0 && ses.fees/ses.gross > 0.05) alerts.push(`⚠️  Fee drag: ${(ses.fees/ses.gross*100).toFixed(1)}% (>5%)`);
-  if (ses.n >= 20 && ses.maxHoldPct > 20) alerts.push(`⚠️  max_hold exits: ${ses.maxHoldPct.toFixed(1)}% of session (>20% — entry filters may need tightening)`);
-  if (ses.n >= 20 && ses.flatPct > 15) alerts.push(`⚠️  momentum_decay_flat exits: ${ses.flatPct.toFixed(1)}% of session (>15% — weak entry quality)`);
-  if (ses.feeDragPct !== null && ses.feeDragPct > 80) alerts.push(`⚠️  Fee drag: ${ses.feeDragPct.toFixed(1)}% — fees consuming most of gross profit`);
-
-  // Gate reject histogram from health endpoint
-  const gateRejects = health?.gate_rejects;
-  if (gateRejects && gateRejects.total > 0) {
-    const maxCurve = gateRejects['MaxCurveProgress'] || 0;
-    const scoreLow = gateRejects['ScoreTooLow'] || 0;
-    const blockedHour = gateRejects['BlockedHour'] || 0;
-    if (maxCurve > 0 || scoreLow > 0) {
-      lines.push('');
-      lines.push('🚧 Gate Rejects (top):');
-      const topGates = Object.entries(gateRejects)
-        .filter(([k, v]) => k !== 'total' && v > 0)
-        .sort(([,a],[,b]) => b - a)
-        .slice(0, 5);
-      topGates.forEach(([name, count]) => lines.push(`  ${name}: ${count}`));
-    }
-  }
+  if (!ppOk) alerts.push('🔴 PumpPortal feed down');
+  if (!helOk) alerts.push('🔴 Helius feed down');
+  if (!ccOk) alerts.push('🔴 CoreCast feed down');
+  if (ses.n >= 10 && ses.wr < 0.30) alerts.push(`⚠️ WR critical: ${pct(ses.wr)} on ${ses.n} trades`);
+  if (ses.net < -0.30) alerts.push(`⚠️ Session PnL: ${sol(ses.net)} SOL`);
+  if (all.net < -2.0) alerts.push(`⚠️ Overall PnL: ${sol(all.net)} SOL`);
 
   if (alerts.length > 0) {
     lines.push('');
@@ -317,16 +206,16 @@ async function main() {
 
   console.log(lines.join('\n'));
 
-  // Save updated state
+  // Save state
   saveJson(HB_STATE, {
-    last_trade_count: allTrades.length,
+    last_momentum_count: cleanMomentum.length,
+    last_trade_count: cleanMomentum.length,  // backward compat
     last_check_ts: Date.now(),
     last_win_rate: all.wr,
-    mev_pnl_high_water: Math.max(all.net, prevHigh),
-    new_trades_this_hb: newTrades,
+    momentum_pnl_high_water: Math.max(all.net, prevHigh),
+    new_trades_this_hb: newMomTrades,
   });
 
-  // Exit code 1 if critical alert (for heartbeat to notice)
   if (alerts.some(a => a.startsWith('🔴'))) process.exit(2);
 }
 
