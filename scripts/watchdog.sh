@@ -83,10 +83,19 @@ check_proxy() {
 }
 
 start_proxy() {
-  # Kill any existing proxy processes first
+  # Kill any existing proxy processes and wait for port 20000 to be released
   pkill -f "jito-shredstream-proxy" 2>/dev/null || true
-  sleep 1
-  
+  # Wait up to 5s for port 20000 to be fully released (OS socket TIME_WAIT)
+  local port_wait=0
+  while [ $port_wait -lt 5 ]; do
+    if ! fuser 20000/udp 2>/dev/null | grep -q '[0-9]'; then
+      break
+    fi
+    sleep 1
+    port_wait=$((port_wait + 1))
+  done
+  sleep 1  # extra buffer
+
   if [ ! -f "$PROXY_BINARY" ]; then
     log "❌ CRITICAL: Proxy binary not found at $PROXY_BINARY"
     return 2
