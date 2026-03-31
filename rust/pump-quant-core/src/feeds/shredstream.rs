@@ -1,17 +1,21 @@
 //! ShredStream feed — lowest-latency trade detection.
 //!
 //! Connects to Jito ShredStream (or compatible endpoint) for raw shred data,
-//! ~80ms faster than PumpPortal/Helius websocket feeds.
+//! ~80-200ms faster than PumpPortal/Helius websocket feeds.
 //!
 //! Architecture:
 //! - `ShredStreamFeed` is the primary struct, holding config + channel sender + stats.
 //! - `start()` spawns a tokio task that runs the connection loop with reconnect.
-//! - `parse_trade()` decodes raw shred/transaction bytes for Pump.fun buy/sell.
-//! - Falls back to UDP listener when WebSocket endpoint is not available.
+//! - **gRPC mode (PRIMARY):** Subscribes to local shredstream-proxy gRPC, deserializes
+//!   `Entry` objects into full `VersionedTransaction`s, parses Pump.fun buy/sell
+//!   instructions, and emits `FeedEvent::Trade` with complete fields.
+//! - **WebSocket mode:** Processes raw binary shred data via `parse_trade()`.
+//! - **UDP mode:** Listens for raw shred datagrams, fallback for legacy setups.
 //!
 //! Integration:
-//! - Sends `FeedEvent::PreWarm` into the event joiner channel.
-//! - EventJoiner already has `shredstream_rx: Option<Receiver<FeedEvent>>` wired up.
+//! - gRPC mode sends `FeedEvent::Trade` (full TradeEvent with sig, mint, trader, etc.)
+//! - WS/UDP modes send `FeedEvent::PreWarm` (partial, discriminator-scanned)
+//! - EventJoiner has `shredstream_rx: Option<Receiver<FeedEvent>>` wired up.
 //!
 //! Compatibility:
 //! - `ShredStreamConfig::from_env()` and `run()` are kept for backward compat with main.rs.
@@ -20,10 +24,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crossbeam_channel::Sender;
+use solana_sdk::pubkey::Pubkey;
 use tokio::net::UdpSocket;
 use tracing::{debug, error, info, warn};
 
-use crate::feeds::{FeedEvent, FeedSource, PreWarmEvent};
+use crate::feeds::{FeedEvent, FeedSource, PreWarmEvent, TradeEvent};
 
 // ── Pump.fun Anchor discriminators ──────────────────────────────────
 
@@ -48,14 +53,92 @@ const PUMP_PROGRAM_ID: [u8; 32] = [
     0x65, 0x5d, 0x2b, 0xb6, 0xfd, 0x6d, 0x18, 0xb0,
 ];
 
+/// Pump.fun program ID as a `Pubkey` for comparison in parsed transactions.
+const PUMP_PROGRAM_PUBKEY: Pubkey = Pubkey::new_from_array(PUMP_PROGRAM_ID);
+
+/// Minimum instruction data length for a Pump.fun buy/sell:
+/// 8 (discriminator) + 8 (token_amount) + 8 (max_sol_cost / min_sol_output) = 24.
+const MIN_PUMP_IX_DATA_LEN: usize = 24;
+
+/// Minimum number of accounts in a Pump.fun buy/sell instruction.
+/// accounts[0..6] required: global, feeRecipient, mint, bondingCurve,
+/// associatedBondingCurve, associatedUser, user.
+const MIN_PUMP_IX_ACCOUNTS: usize = 7;
+
+// ── Minimal gRPC proto types (hand-coded) ───────────────────────────
+//
+// We hand-code the minimal proto types for the ShredstreamProxy service
+// rather than depending on the jito-protos crate (which lives in a separate
+// workspace with incompatible tonic/solana version pins).
+//
+// Proto source: shredstream-proxy/jito_protos/protos/shredstream.proto
+
+mod grpc_proto {
+    /// `message SubscribeEntriesRequest {}` — empty request.
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct SubscribeEntriesRequest {}
+
+    /// `message Entry { uint64 slot = 1; bytes entries = 2; }`
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct Entry {
+        #[prost(uint64, tag = "1")]
+        pub slot: u64,
+        #[prost(bytes = "vec", tag = "2")]
+        pub entries: ::prost::alloc::vec::Vec<u8>,
+    }
+
+    /// Generated tonic client for `service ShredstreamProxy`.
+    pub mod shredstream_proxy_client {
+        use super::{Entry, SubscribeEntriesRequest};
+
+        #[derive(Debug, Clone)]
+        pub struct ShredstreamProxyClient<T> {
+            inner: tonic::client::Grpc<T>,
+        }
+
+        impl ShredstreamProxyClient<tonic::transport::Channel> {
+            pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
+            where
+                D: TryInto<tonic::transport::Endpoint>,
+                D::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+            {
+                let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
+                Ok(Self { inner: tonic::client::Grpc::new(conn) })
+            }
+
+            pub async fn subscribe_entries(
+                &mut self,
+                request: impl tonic::IntoRequest<SubscribeEntriesRequest>,
+            ) -> Result<tonic::Response<tonic::Streaming<Entry>>, tonic::Status> {
+                self.inner.ready().await.map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e),
+                    )
+                })?;
+                let codec = tonic::codec::ProstCodec::default();
+                let path = http::uri::PathAndQuery::from_static(
+                    "/shredstream.ShredstreamProxy/SubscribeEntries",
+                );
+                let mut req = request.into_request();
+                req.extensions_mut().insert(tonic::GrpcMethod::new(
+                    "shredstream.ShredstreamProxy",
+                    "SubscribeEntries",
+                ));
+                self.inner.server_streaming(req, path, codec).await
+            }
+        }
+    }
+}
+
 // ── ShredStreamConfig ───────────────────────────────────────────────
 
 /// Configuration for the ShredStream feed.
 pub struct ShredStreamConfig {
-    /// WebSocket or UDP endpoint URL.
-    /// - `wss://...` or `ws://...` → WebSocket mode (Jito ShredStream / compatible relay)
-    /// - `udp://host:port` → UDP listener mode
-    /// - Any other value → falls back to UDP on DEFAULT_UDP_PORT
+    /// Endpoint URL. Scheme determines mode:
+    /// - `grpc://host:port` or `http://host:port` -> gRPC mode (PRIMARY)
+    /// - `wss://...` or `ws://...` -> WebSocket mode
+    /// - anything else -> UDP on DEFAULT_UDP_PORT
     pub endpoint: Option<String>,
     /// Whether the feed is enabled at all.
     pub enabled: bool,
@@ -81,10 +164,6 @@ impl Default for ShredStreamConfig {
 
 impl ShredStreamConfig {
     /// Build config from environment variables.
-    ///
-    /// - `SHREDSTREAM_ENDPOINT` → endpoint URL (presence enables the feed)
-    /// - `SHREDSTREAM_RECONNECT_MS` → initial reconnect delay (default 100)
-    /// - `SHREDSTREAM_MAX_RECONNECT_MS` → max reconnect delay (default 5000)
     pub fn from_env() -> Self {
         let endpoint = std::env::var("SHREDSTREAM_ENDPOINT").ok();
         let enabled = endpoint.is_some();
@@ -110,19 +189,6 @@ impl ShredStreamConfig {
 // ── ShredStreamFeed ─────────────────────────────────────────────────
 
 /// ShredStream feed client.
-///
-/// Connects to a Jito ShredStream-compatible endpoint for lowest-latency
-/// Pump.fun trade detection. Emits `FeedEvent::PreWarm` events into the
-/// event joiner channel.
-///
-/// # Usage
-/// ```ignore
-/// let (tx, rx) = crossbeam_channel::bounded(256);
-/// let config = ShredStreamConfig::from_env();
-/// let feed = Arc::new(ShredStreamFeed::new(config, tx));
-/// let handle = feed.start();
-/// // rx is wired into EventJoiner as shredstream_rx
-/// ```
 pub struct ShredStreamFeed {
     config: ShredStreamConfig,
     tx: Sender<FeedEvent>,
@@ -132,10 +198,13 @@ pub struct ShredStreamFeed {
     pub reconnections: AtomicU64,
     /// Total raw datagrams/messages received (including non-trade).
     pub messages_received: AtomicU64,
+    /// Total gRPC entries received (slot-level).
+    pub grpc_entries_received: AtomicU64,
+    /// Total transactions scanned in gRPC mode.
+    pub grpc_txns_scanned: AtomicU64,
 }
 
 impl ShredStreamFeed {
-    /// Create a new ShredStream feed with the given config and output channel.
     pub fn new(config: ShredStreamConfig, tx: Sender<FeedEvent>) -> Self {
         Self {
             config,
@@ -143,16 +212,11 @@ impl ShredStreamFeed {
             events_received: AtomicU64::new(0),
             reconnections: AtomicU64::new(0),
             messages_received: AtomicU64::new(0),
+            grpc_entries_received: AtomicU64::new(0),
+            grpc_txns_scanned: AtomicU64::new(0),
         }
     }
 
-    /// Start the feed in a background tokio task.
-    ///
-    /// Returns a `JoinHandle` for lifecycle management. The task runs until:
-    /// - The engine channel (`tx`) is closed (receiver dropped)
-    /// - The feed is not enabled (returns immediately after logging)
-    ///
-    /// Reconnects automatically with exponential backoff on connection failure.
     pub fn start(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             self.run_loop().await;
@@ -174,31 +238,156 @@ impl ShredStreamFeed {
             }
         };
 
-        if endpoint.starts_with("wss://") || endpoint.starts_with("ws://") {
+        if endpoint.starts_with("grpc://") || endpoint.starts_with("http://") {
+            self.run_grpc_loop(&endpoint).await;
+        } else if endpoint.starts_with("wss://") || endpoint.starts_with("ws://") {
             self.run_websocket_loop(&endpoint).await;
         } else {
-            // gRPC, HTTP, or any other scheme → fall back to UDP listener
-            if endpoint.starts_with("grpc://") || endpoint.starts_with("http://") {
-                warn!(
-                    "[shredstream] gRPC/HTTP not available in this build, falling back to UDP on port {}",
-                    DEFAULT_UDP_PORT
-                );
-            }
             self.run_udp_loop().await;
         }
     }
 
+    // ── gRPC mode (PRIMARY) ─────────────────────────────────────────
+
+    async fn run_grpc_loop(&self, endpoint: &str) {
+        use grpc_proto::shredstream_proxy_client::ShredstreamProxyClient;
+        use grpc_proto::SubscribeEntriesRequest;
+
+        // Normalize: grpc:// -> http:// for tonic transport
+        let grpc_url = if let Some(rest) = endpoint.strip_prefix("grpc://") {
+            format!("http://{}", rest)
+        } else {
+            endpoint.to_string()
+        };
+
+        let mut backoff_ms = self.config.reconnect_delay_ms;
+
+        info!(
+            "[shredstream] gRPC mode — connecting to {} (decoded entries, full tx parsing)",
+            grpc_url
+        );
+
+        loop {
+            match ShredstreamProxyClient::connect(grpc_url.clone()).await {
+                Ok(mut client) => {
+                    info!("[shredstream] gRPC connected to {}", grpc_url);
+                    backoff_ms = self.config.reconnect_delay_ms;
+
+                    match client
+                        .subscribe_entries(SubscribeEntriesRequest {})
+                        .await
+                    {
+                        Ok(response) => {
+                            let mut stream = response.into_inner();
+
+                            loop {
+                                match stream.message().await {
+                                    Ok(Some(slot_entry)) => {
+                                        self.grpc_entries_received
+                                            .fetch_add(1, Ordering::Relaxed);
+
+                                        let now_ms = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_millis()
+                                            as u64;
+
+                                        if self.process_grpc_entry(
+                                            slot_entry.slot,
+                                            &slot_entry.entries,
+                                            now_ms,
+                                        ) {
+                                            return; // channel closed
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        warn!(
+                                            "[shredstream] gRPC stream ended (server closed)"
+                                        );
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        error!("[shredstream] gRPC stream error: {}", e);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!(
+                                "[shredstream] gRPC subscribe_entries failed: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    let reconnects = self.reconnections.fetch_add(1, Ordering::Relaxed);
+                    if reconnects == 0 {
+                        warn!(
+                            "[shredstream] gRPC connection failed: {} — will retry \
+                             (initial {}ms, max {}ms backoff)",
+                            e, backoff_ms, self.config.max_reconnect_delay_ms
+                        );
+                    } else {
+                        debug!(
+                            "[shredstream] gRPC reconnect attempt {} failed: {}",
+                            reconnects + 1,
+                            e
+                        );
+                    }
+                }
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+            backoff_ms = (backoff_ms * 2).min(self.config.max_reconnect_delay_ms);
+        }
+    }
+
+    /// Process a single gRPC Entry. Returns `true` if the channel is closed
+    /// (caller should exit).
+    #[inline]
+    fn process_grpc_entry(&self, slot: u64, entries_bytes: &[u8], now_ms: u64) -> bool {
+        let entries: Vec<solana_entry::entry::Entry> = match bincode::deserialize(entries_bytes) {
+            Ok(e) => e,
+            Err(e) => {
+                debug!(
+                    "[shredstream] bincode deserialize failed slot {}: {}",
+                    slot, e
+                );
+                return false;
+            }
+        };
+
+        let entry_count = self.grpc_entries_received.load(Ordering::Relaxed);
+        if entry_count % 5000 == 0 && entry_count > 0 {
+            info!(
+                "[shredstream] gRPC stats: entries={} txns={} trades={}",
+                entry_count,
+                self.grpc_txns_scanned.load(Ordering::Relaxed),
+                self.events_received.load(Ordering::Relaxed),
+            );
+        }
+
+        for entry in &entries {
+            for tx in &entry.transactions {
+                self.grpc_txns_scanned.fetch_add(1, Ordering::Relaxed);
+
+                if let Some(trade) = parse_pump_transaction(tx, slot, now_ms) {
+                    self.events_received.fetch_add(1, Ordering::Relaxed);
+                    if self.tx.send(FeedEvent::Trade(trade)).is_err() {
+                        info!("[shredstream] engine channel closed — exiting gRPC loop");
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
     // ── WebSocket mode ──────────────────────────────────────────────
 
-    /// Connect to a WebSocket ShredStream endpoint and process messages.
-    ///
-    /// NOTE: Jito ShredStream requires their SDK/gRPC proto and a whitelist.
-    /// This implementation is structured to work with any WebSocket-based
-    /// shred relay that forwards raw transaction/shred bytes as binary messages.
-    ///
-    /// When Jito WL is not available, this logs a warning and waits for
-    /// connection, retrying with exponential backoff. Once the actual
-    /// ShredStream relay is available, the parsing logic is ready to go.
     async fn run_websocket_loop(&self, endpoint: &str) {
         use futures_util::StreamExt;
         use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -206,7 +395,7 @@ impl ShredStreamFeed {
         let mut backoff_ms = self.config.reconnect_delay_ms;
 
         info!(
-            "[shredstream] WebSocket mode — connecting to {} (Jito ShredStream / compatible relay)",
+            "[shredstream] WebSocket mode — connecting to {}",
             endpoint
         );
 
@@ -214,7 +403,7 @@ impl ShredStreamFeed {
             match connect_async(endpoint).await {
                 Ok((ws_stream, _response)) => {
                     info!("[shredstream] WebSocket connected to {}", endpoint);
-                    backoff_ms = self.config.reconnect_delay_ms; // reset on success
+                    backoff_ms = self.config.reconnect_delay_ms;
 
                     let (_write, mut read) = ws_stream.split();
 
@@ -225,32 +414,29 @@ impl ShredStreamFeed {
                                 if let Some(event) = Self::parse_trade(&data) {
                                     self.events_received.fetch_add(1, Ordering::Relaxed);
                                     if self.tx.send(FeedEvent::PreWarm(event)).is_err() {
-                                        info!("[shredstream] engine channel closed — exiting");
+                                        info!("[shredstream] channel closed — exiting");
                                         return;
                                     }
                                 }
                             }
                             Some(Ok(Message::Text(text))) => {
-                                // Some relays send JSON-wrapped shred data
                                 self.messages_received.fetch_add(1, Ordering::Relaxed);
                                 if let Some(event) = Self::parse_trade(text.as_bytes()) {
                                     self.events_received.fetch_add(1, Ordering::Relaxed);
                                     if self.tx.send(FeedEvent::PreWarm(event)).is_err() {
-                                        info!("[shredstream] engine channel closed — exiting");
+                                        info!("[shredstream] channel closed — exiting");
                                         return;
                                     }
                                 }
                             }
                             Some(Ok(Message::Ping(data))) => {
-                                // Auto-respond with pong (tungstenite handles this by default
-                                // but we log for diagnostics)
-                                debug!("[shredstream] ping received ({} bytes)", data.len());
+                                debug!("[shredstream] ping ({} bytes)", data.len());
                             }
                             Some(Ok(Message::Close(frame))) => {
-                                warn!("[shredstream] server closed WebSocket: {:?}", frame);
+                                warn!("[shredstream] server closed WS: {:?}", frame);
                                 break;
                             }
-                            Some(Ok(_)) => {} // Pong, Frame — ignore
+                            Some(Ok(_)) => {}
                             Some(Err(e)) => {
                                 error!("[shredstream] WebSocket error: {}", e);
                                 break;
@@ -263,21 +449,18 @@ impl ShredStreamFeed {
                     }
                 }
                 Err(e) => {
-                    // Connection failed — this is expected if Jito WL isn't granted yet.
-                    // Log at warn (not error) since this is a known optional feed.
                     let reconnects = self.reconnections.fetch_add(1, Ordering::Relaxed);
                     if reconnects == 0 {
                         warn!(
-                            "[shredstream] WebSocket connection failed: {} — \
-                             ShredStream not yet connected (waiting for Jito WL). \
-                             Will retry every {:.1}s (max {:.1}s backoff)",
+                            "[shredstream] WS connection failed: {} — retrying \
+                             ({:.1}s init, {:.1}s max)",
                             e,
                             backoff_ms as f64 / 1000.0,
                             self.config.max_reconnect_delay_ms as f64 / 1000.0,
                         );
                     } else {
                         debug!(
-                            "[shredstream] WebSocket reconnect attempt {} failed: {}",
+                            "[shredstream] WS reconnect {} failed: {}",
                             reconnects + 1,
                             e
                         );
@@ -285,18 +468,13 @@ impl ShredStreamFeed {
                 }
             }
 
-            // Exponential backoff before reconnect
             tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
             backoff_ms = (backoff_ms * 2).min(self.config.max_reconnect_delay_ms);
         }
     }
 
-    // ── UDP mode (original behavior) ────────────────────────────────
+    // ── UDP mode ────────────────────────────────────────────────────
 
-    /// Listen for raw shred datagrams on UDP.
-    ///
-    /// This is the original ShredStream integration mode — a local shred relay
-    /// forwards Jito shreds as UDP datagrams to our listen port.
     async fn run_udp_loop(&self) {
         let bind_addr = format!("0.0.0.0:{}", DEFAULT_UDP_PORT);
         let socket = match UdpSocket::bind(&bind_addr).await {
@@ -310,7 +488,7 @@ impl ShredStreamFeed {
             }
         };
 
-        let mut buf = [0u8; 65536]; // max UDP datagram size
+        let mut buf = [0u8; 65536];
 
         loop {
             match socket.recv_from(&mut buf).await {
@@ -328,7 +506,7 @@ impl ShredStreamFeed {
                     if let Some(event) = Self::parse_trade(&buf[..len]) {
                         self.events_received.fetch_add(1, Ordering::Relaxed);
                         if self.tx.send(FeedEvent::PreWarm(event)).is_err() {
-                            info!("[shredstream] engine channel closed — exiting");
+                            info!("[shredstream] channel closed — exiting UDP");
                             return;
                         }
                     }
@@ -340,28 +518,15 @@ impl ShredStreamFeed {
         }
     }
 
-    // ── Trade parsing ───────────────────────────────────────────────
+    // ── Legacy raw shred parser ─────────────────────────────────────
 
     /// Parse raw shred/transaction bytes for a Pump.fun buy/sell trade.
-    ///
-    /// Scans the payload for Anchor instruction discriminators (buy/sell) and
-    /// extracts trade fields from the expected layout:
-    ///
-    /// ```text
-    /// [offset+0..8]   discriminator (buy: 660x3d1201daebea, sell: 33e685a4017f83ad)
-    /// [offset+8..40]  mint pubkey (32 bytes)
-    /// [offset+40..48] sol_amount (u64 LE, lamports)
-    /// ```
-    ///
-    /// Returns `None` if no Pump.fun trade discriminator is found, or if the
-    /// extracted values fail sanity checks.
+    /// Scans for Anchor discriminators at any offset.
     pub fn parse_trade(raw: &[u8]) -> Option<PreWarmEvent> {
         if raw.len() < MIN_PAYLOAD_SIZE {
             return None;
         }
 
-        // Scan for discriminator at any offset — shreds contain serialized
-        // transaction data at variable offsets within the datagram.
         let max_start = raw.len().saturating_sub(MIN_PAYLOAD_SIZE);
         for offset in 0..=max_start {
             let disc = &raw[offset..offset + 8];
@@ -374,7 +539,6 @@ impl ShredStreamFeed {
                 continue;
             };
 
-            // Found a discriminator — extract fields
             let mint_start = offset + 8;
             let mint_end = mint_start + 32;
             let sol_start = mint_end;
@@ -387,11 +551,10 @@ impl ShredStreamFeed {
             let mut mint = [0u8; 32];
             mint.copy_from_slice(&raw[mint_start..mint_end]);
 
-            let sol_amount = u64::from_le_bytes(
-                raw[sol_start..sol_end].try_into().unwrap(),
-            );
+            let sol_amount =
+                u64::from_le_bytes(raw[sol_start..sol_end].try_into().unwrap());
 
-            // Sanity: skip obviously invalid amounts (0 or > 10k SOL)
+            // Sanity: skip 0 or > 10k SOL
             if sol_amount == 0 || sol_amount > 10_000_000_000_000 {
                 continue;
             }
@@ -403,8 +566,8 @@ impl ShredStreamFeed {
 
             return Some(PreWarmEvent {
                 mint,
-                trader: [0u8; 32], // not available from raw shred data
-                sig: [0u8; 64],    // not available from raw shred data
+                trader: [0u8; 32],
+                sig: [0u8; 64],
                 sol_amount,
                 is_buy,
                 timestamp_ms: now_ms,
@@ -418,22 +581,147 @@ impl ShredStreamFeed {
 
 // ── Backward-compatible free function (used by main.rs) ─────────────
 
-/// Run the ShredStream feed loop. Backward-compatible wrapper around `ShredStreamFeed`.
-///
-/// Used by main.rs:
-/// ```ignore
-/// let (shred_tx, shred_rx) = bounded::<FeedEvent>(256);
-/// let shred_shutdown_rx = shutdown_rx.clone();
-/// tokio::spawn(async move {
-///     pump_quant_core::feeds::shredstream::run(shred_tx, shred_shutdown_rx).await;
-/// });
-/// ```
 pub async fn run(tx: Sender<FeedEvent>, _shutdown_rx: tokio::sync::watch::Receiver<bool>) {
     let config = ShredStreamConfig::from_env();
     let feed = Arc::new(ShredStreamFeed::new(config, tx));
-    // Run directly in this task (not spawning another) since main.rs already
-    // wraps the call in tokio::spawn.
     feed.run_loop().await;
+}
+
+// ── Pump.fun transaction parser (gRPC mode) ─────────────────────────
+
+/// Parse a Pump.fun buy/sell from a decoded Solana `VersionedTransaction`.
+/// Returns `None` if not a Pump.fun trade.
+///
+/// # Performance
+/// - `#[inline(always)]` — per-transaction in the gRPC hot loop
+/// - Zero heap allocation — stack-only byte arrays
+/// - No f64 anywhere
+///
+/// # Pump.fun account layout (buy instruction):
+/// ```text
+/// ix.accounts[0]  = global config
+/// ix.accounts[1]  = feeRecipient
+/// ix.accounts[2]  = mint
+/// ix.accounts[3]  = bondingCurve
+/// ix.accounts[4]  = associatedBondingCurve
+/// ix.accounts[5]  = associatedUser (trader ATA)
+/// ix.accounts[6]  = user (signer/trader)
+/// ix.accounts[7+] = system, token, rent, eventAuth, program
+/// ```
+///
+/// Instruction data: `[0..8]` discriminator, `[8..16]` token_amount (u64 LE),
+/// `[16..24]` max_sol_cost (buy) or min_sol_output (sell) (u64 LE).
+#[inline(always)]
+fn parse_pump_transaction(
+    tx: &solana_sdk::transaction::VersionedTransaction,
+    slot: u64,
+    now_ms: u64,
+) -> Option<TradeEvent> {
+    // Get static account keys from the message
+    let account_keys = tx.message.static_account_keys();
+
+    // Find the Pump.fun program instruction
+    let instructions = tx.message.instructions();
+
+    for ix in instructions {
+        let program_id_index = ix.program_id_index as usize;
+        if program_id_index >= account_keys.len() {
+            continue;
+        }
+
+        // Fast-path: compare program ID
+        if account_keys[program_id_index] != PUMP_PROGRAM_PUBKEY {
+            continue;
+        }
+
+        // Check minimum data length
+        if ix.data.len() < MIN_PUMP_IX_DATA_LEN {
+            continue;
+        }
+
+        // Check discriminator
+        let disc: &[u8] = &ix.data[..8];
+        let is_buy = if disc == BUY_DISCRIMINATOR {
+            true
+        } else if disc == SELL_DISCRIMINATOR {
+            false
+        } else {
+            continue;
+        };
+
+        // Check minimum accounts
+        if ix.accounts.len() < MIN_PUMP_IX_ACCOUNTS {
+            continue;
+        }
+
+        // Extract account indices -> resolve to pubkeys
+        let mint_idx = ix.accounts[2] as usize;
+        let bonding_curve_idx = ix.accounts[3] as usize;
+        let assoc_bonding_curve_idx = ix.accounts[4] as usize;
+        let trader_idx = ix.accounts[6] as usize;
+
+        // Bounds check all indices
+        let max_idx = account_keys.len();
+        if mint_idx >= max_idx
+            || bonding_curve_idx >= max_idx
+            || assoc_bonding_curve_idx >= max_idx
+            || trader_idx >= max_idx
+        {
+            continue;
+        }
+
+        let mint_key = &account_keys[mint_idx];
+        let bonding_curve_key = &account_keys[bonding_curve_idx];
+        let assoc_bonding_curve_key = &account_keys[assoc_bonding_curve_idx];
+        let trader_key = &account_keys[trader_idx];
+
+        // Extract amounts from instruction data: [8..16] = token_amount, [16..24] = sol param
+        let token_amount = u64::from_le_bytes(
+            ix.data[8..16].try_into().ok()?,
+        );
+        let sol_amount = u64::from_le_bytes(
+            ix.data[16..24].try_into().ok()?,
+        );
+
+        // Sanity: skip zero amounts or absurdly large (> 10k SOL)
+        if sol_amount == 0 || sol_amount > 10_000_000_000_000 {
+            continue;
+        }
+        if token_amount == 0 {
+            continue;
+        }
+
+        // Extract signature (first signature is always the fee payer's)
+        let sig_bytes: [u8; 64] = if !tx.signatures.is_empty() {
+            tx.signatures[0].into()
+        } else {
+            continue; // no signatures = invalid tx
+        };
+
+        // Build sig_prefix (first 8 bytes for dedup)
+        let mut sig_prefix = [0u8; 8];
+        sig_prefix.copy_from_slice(&sig_bytes[..8]);
+
+        return Some(TradeEvent {
+            mint: mint_key.to_bytes(),
+            trader: trader_key.to_bytes(),
+            sig: sig_bytes,
+            sig_prefix,
+            sol_amount,
+            token_amount,
+            vsol_reserves: 0,   // not available from instruction data
+            vtoken_reserves: 0,  // not available from instruction data
+            market_cap_sol: 0,   // not available from instruction data
+            slot,
+            timestamp_ms: now_ms,
+            is_buy,
+            source: FeedSource::ShredStream,
+            bonding_curve: bonding_curve_key.to_bytes(),
+            assoc_bonding_curve: assoc_bonding_curve_key.to_bytes(),
+        });
+    }
+
+    None
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -441,8 +729,14 @@ pub async fn run(tx: Sender<FeedEvent>, _shutdown_rx: tokio::sync::watch::Receiv
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_sdk::hash::Hash;
+    use solana_sdk::instruction::CompiledInstruction;
+    use solana_sdk::message::{self, Message, MessageHeader};
+    use solana_sdk::pubkey::Pubkey;
+    use solana_sdk::signature::Signature;
+    use solana_sdk::transaction::VersionedTransaction;
 
-    // ── Helper: build a test datagram with discriminator + mint + sol_amount ─
+    // ── Helpers ─────────────────────────────────────────────────────
 
     fn make_test_datagram(discriminator: &[u8; 8], mint: &[u8; 32], sol_lamports: u64) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -452,7 +746,336 @@ mod tests {
         buf
     }
 
-    // ── Requested tests ─────────────────────────────────────────────
+    /// Build a mock VersionedTransaction with a single Pump.fun instruction.
+    ///
+    /// Account layout follows the Pump.fun buy/sell pattern:
+    /// [0]=global, [1]=feeRecipient, [2]=mint, [3]=bondingCurve,
+    /// [4]=assocBondingCurve, [5]=assocUser(traderATA), [6]=user(trader),
+    /// [7]=systemProgram, [8]=tokenProgram, [9]=rent, [10]=eventAuth,
+    /// [11]=pumpProgram
+    fn make_pump_tx(
+        discriminator: &[u8; 8],
+        mint: Pubkey,
+        bonding_curve: Pubkey,
+        assoc_bonding_curve: Pubkey,
+        trader: Pubkey,
+        token_amount: u64,
+        sol_amount: u64,
+        signature: Signature,
+    ) -> VersionedTransaction {
+        let global = Pubkey::new_unique();
+        let fee_recipient = Pubkey::new_unique();
+        let assoc_user = Pubkey::new_unique(); // trader ATA
+        let system_program = solana_sdk::system_program::id();
+        let token_program = Pubkey::new_unique();
+        let rent = solana_sdk::sysvar::rent::id();
+        let event_authority = Pubkey::new_unique();
+        let pump_program = PUMP_PROGRAM_PUBKEY;
+
+        // account_keys: indices 0..11
+        let account_keys = vec![
+            global,               // 0
+            fee_recipient,        // 1
+            mint,                 // 2
+            bonding_curve,        // 3
+            assoc_bonding_curve,  // 4
+            assoc_user,           // 5
+            trader,               // 6
+            system_program,       // 7
+            token_program,        // 8
+            rent,                 // 9
+            event_authority,      // 10
+            pump_program,         // 11 (program_id_index)
+        ];
+
+        // Build instruction data: discriminator + token_amount + sol_amount
+        let mut ix_data = Vec::with_capacity(24);
+        ix_data.extend_from_slice(discriminator);
+        ix_data.extend_from_slice(&token_amount.to_le_bytes());
+        ix_data.extend_from_slice(&sol_amount.to_le_bytes());
+
+        let ix = CompiledInstruction {
+            program_id_index: 11, // pump_program
+            accounts: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+            data: ix_data,
+        };
+
+        let header = MessageHeader {
+            num_required_signatures: 1,
+            num_readonly_signed_accounts: 0,
+            num_readonly_unsigned_accounts: 5,
+        };
+
+        let message = Message {
+            header,
+            account_keys,
+            recent_blockhash: Hash::default(),
+            instructions: vec![ix],
+        };
+
+        VersionedTransaction {
+            signatures: vec![signature],
+            message: message::VersionedMessage::Legacy(message),
+        }
+    }
+
+    // ── gRPC transaction parser tests ───────────────────────────────
+
+    #[test]
+    fn test_parse_pump_buy_transaction() {
+        let mint = Pubkey::new_unique();
+        let bonding_curve = Pubkey::new_unique();
+        let assoc_bonding_curve = Pubkey::new_unique();
+        let trader = Pubkey::new_unique();
+        let token_amount: u64 = 1_000_000_000; // 1B tokens
+        let sol_amount: u64 = 500_000_000; // 0.5 SOL
+        let sig = Signature::new_unique();
+
+        let tx = make_pump_tx(
+            &BUY_DISCRIMINATOR,
+            mint,
+            bonding_curve,
+            assoc_bonding_curve,
+            trader,
+            token_amount,
+            sol_amount,
+            sig,
+        );
+
+        let result = parse_pump_transaction(&tx, 42, 1234567890);
+        let trade = result.expect("should parse pump buy");
+
+        assert!(trade.is_buy);
+        assert_eq!(trade.mint, mint.to_bytes());
+        assert_eq!(trade.trader, trader.to_bytes());
+        assert_eq!(trade.bonding_curve, bonding_curve.to_bytes());
+        assert_eq!(trade.assoc_bonding_curve, assoc_bonding_curve.to_bytes());
+        assert_eq!(trade.token_amount, token_amount);
+        assert_eq!(trade.sol_amount, sol_amount);
+        assert_eq!(trade.slot, 42);
+        assert_eq!(trade.timestamp_ms, 1234567890);
+        assert_eq!(trade.source, FeedSource::ShredStream);
+        assert_eq!(trade.vsol_reserves, 0);
+        assert_eq!(trade.vtoken_reserves, 0);
+        assert_eq!(trade.market_cap_sol, 0);
+        // Verify signature
+        let sig_bytes: [u8; 64] = sig.into();
+        assert_eq!(trade.sig, sig_bytes);
+        assert_eq!(trade.sig_prefix, sig_bytes[..8]);
+    }
+
+    #[test]
+    fn test_parse_pump_sell_transaction() {
+        let mint = Pubkey::new_unique();
+        let bonding_curve = Pubkey::new_unique();
+        let assoc_bonding_curve = Pubkey::new_unique();
+        let trader = Pubkey::new_unique();
+        let token_amount: u64 = 2_000_000_000;
+        let sol_amount: u64 = 300_000_000; // min_sol_output
+        let sig = Signature::new_unique();
+
+        let tx = make_pump_tx(
+            &SELL_DISCRIMINATOR,
+            mint,
+            bonding_curve,
+            assoc_bonding_curve,
+            trader,
+            token_amount,
+            sol_amount,
+            sig,
+        );
+
+        let result = parse_pump_transaction(&tx, 100, 9999999);
+        let trade = result.expect("should parse pump sell");
+
+        assert!(!trade.is_buy);
+        assert_eq!(trade.mint, mint.to_bytes());
+        assert_eq!(trade.trader, trader.to_bytes());
+        assert_eq!(trade.token_amount, token_amount);
+        assert_eq!(trade.sol_amount, sol_amount);
+        assert_eq!(trade.slot, 100);
+    }
+
+    #[test]
+    fn test_parse_non_pump_transaction_returns_none() {
+        // Transaction with a non-Pump.fun program
+        let random_program = Pubkey::new_unique();
+
+        let account_keys = vec![
+            Pubkey::new_unique(), // 0
+            random_program,       // 1 (program)
+        ];
+
+        let ix = CompiledInstruction {
+            program_id_index: 1,
+            accounts: vec![0],
+            data: vec![0u8; 32],
+        };
+
+        let header = MessageHeader {
+            num_required_signatures: 1,
+            num_readonly_signed_accounts: 0,
+            num_readonly_unsigned_accounts: 1,
+        };
+
+        let message = Message {
+            header,
+            account_keys,
+            recent_blockhash: Hash::default(),
+            instructions: vec![ix],
+        };
+
+        let tx = VersionedTransaction {
+            signatures: vec![Signature::new_unique()],
+            message: message::VersionedMessage::Legacy(message),
+        };
+
+        assert!(parse_pump_transaction(&tx, 1, 1000).is_none());
+    }
+
+    #[test]
+    fn test_parse_empty_transaction_returns_none() {
+        // Transaction with no instructions
+        let account_keys = vec![Pubkey::new_unique()];
+
+        let header = MessageHeader {
+            num_required_signatures: 1,
+            num_readonly_signed_accounts: 0,
+            num_readonly_unsigned_accounts: 0,
+        };
+
+        let message = Message {
+            header,
+            account_keys,
+            recent_blockhash: Hash::default(),
+            instructions: vec![],
+        };
+
+        let tx = VersionedTransaction {
+            signatures: vec![Signature::new_unique()],
+            message: message::VersionedMessage::Legacy(message),
+        };
+
+        assert!(parse_pump_transaction(&tx, 1, 1000).is_none());
+    }
+
+    #[test]
+    fn test_parse_pump_tx_too_few_accounts() {
+        // Pump program instruction but only 3 accounts (need >= 7)
+        let account_keys = vec![
+            Pubkey::new_unique(),  // 0
+            Pubkey::new_unique(),  // 1
+            Pubkey::new_unique(),  // 2
+            PUMP_PROGRAM_PUBKEY,   // 3 (program)
+        ];
+
+        let mut ix_data = Vec::with_capacity(24);
+        ix_data.extend_from_slice(&BUY_DISCRIMINATOR);
+        ix_data.extend_from_slice(&1000u64.to_le_bytes());
+        ix_data.extend_from_slice(&2000u64.to_le_bytes());
+
+        let ix = CompiledInstruction {
+            program_id_index: 3,
+            accounts: vec![0, 1, 2], // only 3 accounts
+            data: ix_data,
+        };
+
+        let header = MessageHeader {
+            num_required_signatures: 1,
+            num_readonly_signed_accounts: 0,
+            num_readonly_unsigned_accounts: 3,
+        };
+
+        let message = Message {
+            header,
+            account_keys,
+            recent_blockhash: Hash::default(),
+            instructions: vec![ix],
+        };
+
+        let tx = VersionedTransaction {
+            signatures: vec![Signature::new_unique()],
+            message: message::VersionedMessage::Legacy(message),
+        };
+
+        assert!(parse_pump_transaction(&tx, 1, 1000).is_none());
+    }
+
+    #[test]
+    fn test_parse_pump_tx_zero_sol_rejected() {
+        let tx = make_pump_tx(
+            &BUY_DISCRIMINATOR,
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            1_000_000, // token_amount
+            0,         // sol_amount = 0 → rejected
+            Signature::new_unique(),
+        );
+
+        assert!(parse_pump_transaction(&tx, 1, 1000).is_none());
+    }
+
+    #[test]
+    fn test_parse_pump_tx_absurd_sol_rejected() {
+        let tx = make_pump_tx(
+            &BUY_DISCRIMINATOR,
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            1_000_000,
+            100_000_000_000_000, // > 10k SOL → rejected
+            Signature::new_unique(),
+        );
+
+        assert!(parse_pump_transaction(&tx, 1, 1000).is_none());
+    }
+
+    #[test]
+    fn test_parse_pump_tx_wrong_discriminator() {
+        // Pump program instruction but with unknown discriminator
+        let account_keys = vec![
+            Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique(),
+            Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique(),
+            Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique(),
+            Pubkey::new_unique(), Pubkey::new_unique(), PUMP_PROGRAM_PUBKEY,
+        ];
+
+        let mut ix_data = Vec::with_capacity(24);
+        ix_data.extend_from_slice(&[0xFF; 8]); // bogus discriminator
+        ix_data.extend_from_slice(&1000u64.to_le_bytes());
+        ix_data.extend_from_slice(&2000u64.to_le_bytes());
+
+        let ix = CompiledInstruction {
+            program_id_index: 11,
+            accounts: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+            data: ix_data,
+        };
+
+        let header = MessageHeader {
+            num_required_signatures: 1,
+            num_readonly_signed_accounts: 0,
+            num_readonly_unsigned_accounts: 5,
+        };
+
+        let message = Message {
+            header,
+            account_keys,
+            recent_blockhash: Hash::default(),
+            instructions: vec![ix],
+        };
+
+        let tx = VersionedTransaction {
+            signatures: vec![Signature::new_unique()],
+            message: message::VersionedMessage::Legacy(message),
+        };
+
+        assert!(parse_pump_transaction(&tx, 1, 1000).is_none());
+    }
+
+    // ── Legacy raw shred parser tests (preserved) ───────────────────
 
     #[test]
     fn test_config_defaults() {
@@ -466,17 +1089,11 @@ mod tests {
 
     #[test]
     fn test_parse_trade_non_pump_returns_none() {
-        // Random bytes with no valid discriminator → None
         let random_bytes: Vec<u8> = (0..128).map(|i| (i * 37 + 13) as u8).collect();
         assert!(ShredStreamFeed::parse_trade(&random_bytes).is_none());
-
-        // Empty bytes
         assert!(ShredStreamFeed::parse_trade(&[]).is_none());
-
-        // Too small
         assert!(ShredStreamFeed::parse_trade(&[0u8; 10]).is_none());
 
-        // Wrong discriminator but correct size
         let mut wrong_disc = vec![0u8; 48];
         wrong_disc[0..8].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
         assert!(ShredStreamFeed::parse_trade(&wrong_disc).is_none());
@@ -505,12 +1122,10 @@ mod tests {
         );
     }
 
-    // ── Original tests (preserved) ──────────────────────────────────
-
     #[test]
     fn test_parse_buy_discriminator() {
         let mint = [0xAA; 32];
-        let sol = 1_000_000_000u64; // 1 SOL
+        let sol = 1_000_000_000u64;
         let data = make_test_datagram(&BUY_DISCRIMINATOR, &mint, sol);
 
         let event = ShredStreamFeed::parse_trade(&data).expect("should parse buy");
@@ -523,7 +1138,7 @@ mod tests {
     #[test]
     fn test_parse_sell_discriminator() {
         let mint = [0xBB; 32];
-        let sol = 500_000_000u64; // 0.5 SOL
+        let sol = 500_000_000u64;
         let data = make_test_datagram(&SELL_DISCRIMINATOR, &mint, sol);
 
         let event = ShredStreamFeed::parse_trade(&data).expect("should parse sell");
@@ -534,10 +1149,9 @@ mod tests {
 
     #[test]
     fn test_parse_with_prefix_bytes() {
-        // Discriminator not at offset 0 — simulate shred framing
         let mint = [0xCC; 32];
         let sol = 2_000_000_000u64;
-        let mut data = vec![0xFF; 16]; // 16 bytes of junk prefix
+        let mut data = vec![0xFF; 16];
         data.extend_from_slice(&BUY_DISCRIMINATOR);
         data.extend_from_slice(&mint);
         data.extend_from_slice(&sol.to_le_bytes());
@@ -570,7 +1184,6 @@ mod tests {
 
     #[test]
     fn test_pump_program_id_bytes() {
-        // Verify PUMP_PROGRAM_ID matches the base58 string
         let decoded = bs58::decode("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
             .into_vec()
             .expect("valid b58");

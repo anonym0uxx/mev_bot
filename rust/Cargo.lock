@@ -2552,6 +2552,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "hashbrown 0.15.2",
+ "http 1.4.0",
  "libc",
  "memchr",
  "prost",
