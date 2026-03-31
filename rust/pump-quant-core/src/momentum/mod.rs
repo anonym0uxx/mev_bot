@@ -377,14 +377,22 @@ impl MomentumEngine {
             let mint = *entry.key();
             let pos = entry.value_mut();
 
-            // Get current price
+            let elapsed_ms = now_ms.saturating_sub(pos.entry_ts_ms);
+
+            // 0. Max hold — checked BEFORE price to ensure timeout even without price feed.
+            if elapsed_ms >= self.config.max_hold_ms {
+                let exit_price = self.price_feed.current_price(&mint).unwrap_or(pos.entry_price_fp);
+                to_close.push((mint, MomentumExitReason::MaxHold, exit_price));
+                continue;
+            }
+
+            // Get current price (required for TP/SL evaluation)
             let current_price_fp = match self.price_feed.current_price(&mint) {
                 Some(p) if p > 0 => p,
                 _ => continue,
             };
 
             // Record price sample (every ~10s = every ~67 ticks at 150ms)
-            let elapsed_ms = now_ms.saturating_sub(pos.entry_ts_ms);
             let ticks_elapsed = elapsed_ms / self.config.check_ms.max(1);
             if ticks_elapsed > 0 && ticks_elapsed % 67 == 0 {
                 pos.record_sample(current_price_fp);
@@ -397,12 +405,6 @@ impl MomentumEngine {
 
             let hold_ms = elapsed_ms;
             let entry_fp = pos.entry_price_fp;
-
-            // 1. Max hold
-            if hold_ms >= self.config.max_hold_ms {
-                to_close.push((mint, MomentumExitReason::MaxHold, current_price_fp));
-                continue;
-            }
 
             // 2. Hard SL
             let hard_sl_bps = (self.config.hard_sl_pct * 100.0) as u32;
