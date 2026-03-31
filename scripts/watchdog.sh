@@ -57,13 +57,22 @@ check_proxy() {
   fi
   
   # Verify gRPC port is reachable (ss doesn't always show gRPC listeners)
+  # Extended grace window: proxy takes 10-15s to bind gRPC after launch
   if ! timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/20100' 2>/dev/null; then
-    sleep 3
+    log "  Port 20100 not yet bound — waiting up to 15s for proxy startup..."
+    local waited=0
+    while [ $waited -lt 15 ]; do
+      sleep 1
+      waited=$((waited + 1))
+      if timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/20100' 2>/dev/null; then
+        log "  ✅ Port 20100 bound after ${waited}s"
+        break
+      fi
+    done
     if ! timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/20100' 2>/dev/null; then
-      log "⚠️  ShredStream proxy running (PID $pid) but port 20100 unreachable — restarting"
-      kill "$pid" 2>/dev/null || true
+      log "⚠️  ShredStream proxy running (PID $pid) but port 20100 unreachable after 15s — restarting"
+      pkill -f "jito-shredstream-proxy" 2>/dev/null || true
       sleep 2
-      kill -9 "$pid" 2>/dev/null || true
       start_proxy
       return 1
     fi
