@@ -17,16 +17,18 @@ use super::ride_state::SignalState;
 ///   source_index: PumpPortal=0, Helius=1, ShredStream=2, CoreCast=3.
 ///
 /// CoreCast sells get 2.5× weight (can verify creator identity).
-/// ShredStream gets slight boost (pre-confirmation speed advantage).
+/// ShredStream gets significant boost — pre-confirmation data from Jito WL
+/// represents genuine market activity ~80-200ms before any websocket feed.
+/// Higher signal quality justifies stronger evidence weighting.
 ///
 /// ```text
 ///                    PumpPortal  Helius  ShredStream  CoreCast
-///  buy  row (0):     [10,       10,     12,          10      ]
-///  sell row (1):     [10,       10,     15,          25      ]
+///  buy  row (0):     [10,       10,     15,          10      ]
+///  sell row (1):     [10,       10,     20,          25      ]
 /// ```
 pub const EVIDENCE_WEIGHTS: [[u8; 4]; 2] = [
-    [10, 10, 12, 10], // buy
-    [10, 10, 15, 25], // sell
+    [10, 10, 15, 10], // buy  (ShredStream: 1.5× base — pre-confirmation buy = strong signal)
+    [10, 10, 20, 25], // sell (ShredStream: 2.0× base — pre-confirmation sell = early warning)
 ];
 
 /// Creator sell — worth 5× a normal sell (insider information).
@@ -723,12 +725,12 @@ mod tests {
     fn test_shredstream_buy_boost() {
         let mut sig = BayesianSignal::from_conviction(560, 1100, 248, 1);
         sig.update_evidence(true, 1000, FeedSource::ShredStream, 10);
-        // ShredStream buy: base=12, size_factor=3, w=36
-        assert_eq!(sig.alpha_x16, 112 + 36);
+        // ShredStream buy: base=15, size_factor=1+1000/500=3, w=15*3*10/10=45
+        assert_eq!(sig.alpha_x16, 112 + 45);
 
         let mut sig2 = BayesianSignal::from_conviction(560, 1100, 248, 1);
         sig2.update_evidence(true, 1000, FeedSource::PumpPortal, 10);
-        // PumpPortal buy: base=10, size_factor=3, w=30
+        // PumpPortal buy: base=10, size_factor=3, w=10*3*10/10=30
         assert_eq!(sig2.alpha_x16, 112 + 30);
 
         assert!(sig.alpha_x16 > sig2.alpha_x16);

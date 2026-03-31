@@ -123,6 +123,14 @@ pub struct HotPath {
     pub helius_lead_sum_ms: u64,
     pub helius_lead_count: u64,
 
+    // ── ShredStream dedup ring ──────────────────────────────────────
+    // When ShredStream emits a Trade event that triggers an entry, we record
+    // the sig_prefix here. When PumpPortal later confirms the same trade,
+    // we skip re-triggering and instead enrich the existing position with
+    // PumpPortal's vSOL data.
+    shred_sig_ring: [(u64, u64); 128], // (sig_prefix_u64, timestamp_ms)
+    shred_sig_ring_head: u8,           // wraps at 128
+
     // ── Gate rejection histogram ────────────────────────────────────
     // Fixed-size array indexed by GateRejectReason discriminant.
     // 32 slots covers all current variants with headroom.
@@ -204,6 +212,8 @@ impl HotPath {
             helius_sig_ring_head: 0,
             helius_lead_sum_ms: 0,
             helius_lead_count: 0,
+            shred_sig_ring: [(0u64, 0u64); 128],
+            shred_sig_ring_head: 0,
             gate_reject_counts: [0u64; 32],
         }
     }
@@ -263,6 +273,40 @@ impl HotPath {
     pub fn on_trade(&mut self, trade: &TradeEvent) {
         self.stats.trades_seen += 1;
         let now = self.now_ms();
+
+        // ── ShredStream→PumpPortal dedup ────────────────────────────
+        // If ShredStream already triggered this trade (sig_prefix match within 200ms),
+        // don't re-trigger entry. Instead, enrich existing position with PumpPortal's
+        // vSOL reserves data (which ShredStream doesn't provide).
+        if trade.source == FeedSource::PumpPortal {
+            let sig_u64 = u64::from_le_bytes(trade.sig_prefix);
+            for &(stored_sig, stored_ts) in &self.shred_sig_ring {
+                if stored_sig == sig_u64 && stored_ts > 0
+                    && now.saturating_sub(stored_ts) < 200
+                {
+                    // ShredStream already processed this trade.
+                    // Enrich existing position's vSOL if we have one open.
+                    if trade.vsol_reserves > 0 {
+                        if let Some(pos) = self.position_manager.get_position_mut(&trade.mint) {
+                            // Update cached vSOL reserves for accurate trail stop tracking
+                            pos.current_vsol = trade.vsol_reserves;
+                            if trade.vsol_reserves > pos.peak_vsol {
+                                pos.peak_vsol = trade.vsol_reserves;
+                            }
+                        }
+                    }
+                    return; // Skip re-triggering — ShredStream already handled it
+                }
+            }
+        }
+
+        // Record ShredStream trade sig for future dedup
+        if trade.source == FeedSource::ShredStream {
+            let sig_u64 = u64::from_le_bytes(trade.sig_prefix);
+            let idx = (self.shred_sig_ring_head as usize) % 128;
+            self.shred_sig_ring[idx] = (sig_u64, now);
+            self.shred_sig_ring_head = self.shred_sig_ring_head.wrapping_add(1);
+        }
 
         // Helius lead-time measurement: check if Helius pre-warmed this sig
         if trade.source == FeedSource::PumpPortal {

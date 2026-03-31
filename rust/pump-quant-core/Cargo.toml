@@ -56,6 +56,13 @@ libc = "0.2"
 base64 = "0.22"
 bincode = "1.3"
 
+# gRPC (ShredStream proxy client)
+tonic = "0.12"
+prost = "0.13"
+
+# Solana Entry deserialization (ShredStream gRPC entries)
+solana-entry = "=2.1.16"
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 

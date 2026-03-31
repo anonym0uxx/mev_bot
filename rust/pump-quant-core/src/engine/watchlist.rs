@@ -326,30 +326,29 @@ impl Watchlist {
             return None;
         }
 
-        // Slippage check: vSOL shouldn't have moved >10% from watch time
+        // Slippage + velocity checks — SKIP when vSOL data is absent (ShredStream entries).
+        // ShredStream trades arrive with vsol_reserves=0 because decoded shred transactions
+        // don't include account state. PumpPortal will enrich later via dedup.
         let current_vsol_mvsol = (trade.vsol_reserves / 1_000_000) as u32;
         let entry_vsol = slot.entry_vsol_reserves;
-        if entry_vsol > 0 {
+        if entry_vsol > 0 && current_vsol_mvsol > 0 {
+            // Slippage check: vSOL shouldn't have moved >10% from watch time
             let delta = if current_vsol_mvsol > entry_vsol {
                 current_vsol_mvsol - entry_vsol
             } else {
                 entry_vsol - current_vsol_mvsol
             };
-            // > 10% slippage from watch point — price moved too much
             if delta * 10 > entry_vsol {
                 return None;
             }
-        }
 
-        // ── vSOL Velocity Check ───────────────────────────────────
-        // Reject if price has FALLEN significantly since watch time.
-        // Allow small dips (≤3%) — vSOL naturally oscillates between buys on pump.fun.
-        // Only reject if the drop is >3%, indicating sustained selling pressure.
-        if entry_vsol > 0 && current_vsol_mvsol < entry_vsol {
-            let drop_bp = ((entry_vsol - current_vsol_mvsol) as u64 * 10_000) / entry_vsol as u64;
-            if drop_bp > 300 {
-                // >3% drop — falling knife, reject
-                return None;
+            // vSOL Velocity Check: reject if price has FALLEN >3% since watch time.
+            // Allow small dips — vSOL naturally oscillates between buys on pump.fun.
+            if current_vsol_mvsol < entry_vsol {
+                let drop_bp = ((entry_vsol - current_vsol_mvsol) as u64 * 10_000) / entry_vsol as u64;
+                if drop_bp > 300 {
+                    return None;
+                }
             }
         }
 
