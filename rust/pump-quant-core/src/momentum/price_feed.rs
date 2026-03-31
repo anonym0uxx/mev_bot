@@ -155,8 +155,7 @@ impl PriceFeedManager {
     /// Unsubscribe from a token's vault accounts (sync).
     pub fn unsubscribe_sync(&self, mint: &[u8; 32]) {
         self.active_subs.remove(mint);
-        // Keep price in map briefly for any in-flight tick evaluations
-        // It will be cleaned up next time prices DashMap is pruned
+        self.prices.remove(mint);
     }
 
     /// Request graceful shutdown (no-op for polling loop, kept for API compat).
@@ -233,88 +232,100 @@ async fn price_feed_poll_loop(
             continue;
         }
 
-        // Build JSON-RPC batch: 2 getAccountInfo calls per mint (coin_vault + pc_vault)
-        let mut batch = Vec::with_capacity(subs.len() * 2);
-        for (i, (_mint, coin_vault, pc_vault)) in subs.iter().enumerate() {
-            batch.push(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": i * 2,
-                "method": "getAccountInfo",
-                "params": [coin_vault, {"encoding": "base64", "commitment": "confirmed"}]
-            }));
-            batch.push(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": i * 2 + 1,
-                "method": "getAccountInfo",
-                "params": [pc_vault, {"encoding": "base64", "commitment": "confirmed"}]
-            }));
+        let sub_count = subs.len();
+        if sub_count > 50 {
+            tracing::warn!(
+                sub_count,
+                "[price_feed] large active_subs — possible unsubscribe leak"
+            );
         }
 
-        let resp = match http_client.post(&rpc_url).json(&batch).send().await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(error = %e, "[price_feed] RPC batch request failed");
-                continue;
+        // Process in chunks of 10 mints (20 getAccountInfo calls) to stay within
+        // Helius batch-size limits. Poll each chunk sequentially within the interval.
+        const CHUNK_SIZE: usize = 10;
+        for chunk in subs.chunks(CHUNK_SIZE) {
+            let mut batch = Vec::with_capacity(chunk.len() * 2);
+            for (i, (_mint, coin_vault, pc_vault)) in chunk.iter().enumerate() {
+                batch.push(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": i * 2,
+                    "method": "getAccountInfo",
+                    "params": [coin_vault, {"encoding": "base64", "commitment": "confirmed"}]
+                }));
+                batch.push(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": i * 2 + 1,
+                    "method": "getAccountInfo",
+                    "params": [pc_vault, {"encoding": "base64", "commitment": "confirmed"}]
+                }));
             }
-        };
 
-        let results: Vec<serde_json::Value> = match resp.json().await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(error = %e, "[price_feed] RPC batch response parse failed");
-                continue;
-            }
-        };
-
-        // Process pairwise: results[i*2] = coin_vault, results[i*2+1] = pc_vault
-        for (i, (mint, _, _)) in subs.iter().enumerate() {
-            let coin_data = extract_account_data(&results, i * 2);
-            let pc_data = extract_account_data(&results, i * 2 + 1);
-
-            let (sol_reserve, token_reserve) = match (coin_data, pc_data) {
-                (Some(coin), Some(pc)) => {
-                    // Raydium vault layout:
-                    // coin_vault = base token (pump.fun token) — token reserve
-                    // pc_vault = quote token (WSOL) — SOL reserve
-                    // SPL Token account: bytes 64..72 = amount (u64 LE)
-                    let token_reserve = parse_spl_amount(&coin);
-                    let sol_reserve = parse_spl_amount(&pc);
-                    match (sol_reserve, token_reserve) {
-                        (Some(s), Some(t)) => (s, t),
-                        _ => continue,
-                    }
+            let resp = match http_client.post(&rpc_url).json(&batch).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(error = %e, "[price_feed] RPC batch request failed");
+                    continue;
                 }
-                _ => continue,
             };
 
-            if sol_reserve == 0 || token_reserve == 0 {
-                continue;
-            }
+            let results: Vec<serde_json::Value> = match resp.json().await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(error = %e, "[price_feed] RPC batch response parse failed");
+                    continue;
+                }
+            };
 
-            let price_fp = price_from_reserves(sol_reserve, token_reserve);
-            if price_fp == 0 {
-                continue;
-            }
+            // Process pairwise: results[i*2] = coin_vault, results[i*2+1] = pc_vault
+            for (i, (mint, _, _)) in chunk.iter().enumerate() {
+                let coin_data = extract_account_data(&results, i * 2);
+                let pc_data = extract_account_data(&results, i * 2 + 1);
 
-            if let Some(state) = prices.get(mint) {
-                let prev = state.price_fp.swap(price_fp, Ordering::Release);
-                state.reserve_sol.store(sol_reserve, Ordering::Relaxed);
-                state.reserve_token.store(token_reserve, Ordering::Relaxed);
-                state.last_update_ms.store(
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64,
-                    Ordering::Relaxed,
-                );
-                if prev == 0 {
-                    tracing::info!(
-                        mint = %bs58::encode(mint).into_string(),
-                        price_fp,
-                        sol_reserve,
-                        token_reserve,
-                        "[price_feed] first price received for mint"
+                let (sol_reserve, token_reserve) = match (coin_data, pc_data) {
+                    (Some(coin), Some(pc)) => {
+                        // Raydium vault layout:
+                        // coin_vault = base token (pump.fun token) — token reserve
+                        // pc_vault = quote token (WSOL) — SOL reserve
+                        // SPL Token account: bytes 64..72 = amount (u64 LE)
+                        let token_reserve = parse_spl_amount(&coin);
+                        let sol_reserve = parse_spl_amount(&pc);
+                        match (sol_reserve, token_reserve) {
+                            (Some(s), Some(t)) => (s, t),
+                            _ => continue,
+                        }
+                    }
+                    _ => continue,
+                };
+
+                if sol_reserve == 0 || token_reserve == 0 {
+                    continue;
+                }
+
+                let price_fp = price_from_reserves(sol_reserve, token_reserve);
+                if price_fp == 0 {
+                    continue;
+                }
+
+                if let Some(state) = prices.get(mint) {
+                    let prev = state.price_fp.swap(price_fp, Ordering::Release);
+                    state.reserve_sol.store(sol_reserve, Ordering::Relaxed);
+                    state.reserve_token.store(token_reserve, Ordering::Relaxed);
+                    state.last_update_ms.store(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64,
+                        Ordering::Relaxed,
                     );
+                    if prev == 0 {
+                        tracing::info!(
+                            mint = %bs58::encode(mint).into_string(),
+                            price_fp,
+                            sol_reserve,
+                            token_reserve,
+                            "[price_feed] first price received for mint"
+                        );
+                    }
                 }
             }
         }
