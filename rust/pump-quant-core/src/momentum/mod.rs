@@ -169,9 +169,28 @@ impl MomentumEngine {
 
         // Score the graduation (no recovery score at this point — use 0)
         let score = score_graduation(grad_speed_s, grad_volume_sol_x100, pre_grad_buys_5s, 0);
-        if score.total() < self.config.min_grad_score {
+        let effective_min = if self.config.paper_mode { 0 } else { self.config.min_grad_score };
+        if score.total() < effective_min {
+            tracing::info!(
+                score = score.total(),
+                min = effective_min,
+                grad_speed_s,
+                volume_sol_x100 = grad_volume_sol_x100,
+                buys_5s = pre_grad_buys_5s,
+                "[momentum] graduation score below threshold — skipping"
+            );
             return;
         }
+        let mint_b58 = bs58::encode(&pool_info.mint).into_string();
+        tracing::info!(
+            mint = %mint_b58,
+            score = score.total(),
+            grad_speed_s,
+            volume_sol_x100 = grad_volume_sol_x100,
+            buys_5s = pre_grad_buys_5s,
+            kelly_scored = self.scored_tokens.contains_key(&pool_info.mint),
+            "[momentum] graduation score PASSED — opening position"
+        );
 
         // Start price feed subscription immediately (before entry delay)
         let coin_vault_b58 = bs58::encode(&pool_info.coin_vault).into_string();
@@ -561,23 +580,47 @@ impl MomentumEngine {
     /// Resolves the pool via getTransaction and calls on_graduation() if successful.
     /// Cold path — graduation is rare (~10-20 Raydium/day).
     #[inline(never)]
-    pub async fn on_migration(&self, _mint: [u8; 32], ts_ms: u64, sig: [u8; 64]) {
+    pub async fn on_migration(
+        &self,
+        _mint: [u8; 32],
+        ts_ms: u64,
+        sig: [u8; 64],
+        enrichment: crate::engine::hot_path::GradEnrichment,
+    ) {
         if !self.config.enabled { return; }
         match resolve_pool_from_transaction(&self.http_client, &sig, &self.rpc_url).await {
             Some(resolution) => {
-                // Convert PoolResolution → PoolInfo
+                let mint_b58 = bs58::encode(&resolution.mint).into_string();
+                tracing::info!(
+                    mint = %mint_b58,
+                    pool_type = ?resolution.pool_type,
+                    reserve_sol = resolution.reserve_sol_lamports,
+                    grad_speed_s = enrichment.grad_speed_s,
+                    volume_sol_x100 = enrichment.volume_sol_x100,
+                    buys_5s = enrichment.buys_5s,
+                    "[momentum] pool resolved — entering on_graduation"
+                );
                 let pool_info = PoolInfo {
-                    coin_vault: resolution.pool_address, // pool address used as vault proxy
+                    coin_vault: resolution.pool_address,
                     pc_vault: [0u8; 32],
                     reserve_token: resolution.reserve_token_atoms,
                     reserve_sol: resolution.reserve_sol_lamports,
                     pool_type: resolution.pool_type,
                     mint: resolution.mint,
                 };
-                // grad_speed_s / volume / buys unknown at this point — enriched in future pass
-                self.on_graduation(&pool_info, ts_ms, 300, 8700, 5).await;
+                // Use REAL enrichment data from hot_path's mint_map.
+                self.on_graduation(
+                    &pool_info,
+                    ts_ms,
+                    enrichment.grad_speed_s,
+                    enrichment.volume_sol_x100,
+                    enrichment.buys_5s as u32,
+                ).await;
             }
-            None => {} // Pool resolution failed — skip
+            None => {
+                let sig_b58 = bs58::encode(&sig).into_string();
+                tracing::warn!(sig = %sig_b58, "[momentum] pool resolution FAILED");
+            }
         }
     }
 

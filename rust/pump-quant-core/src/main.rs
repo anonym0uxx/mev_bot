@@ -637,7 +637,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 let mint_b58 = bs58::encode(&mint).into_string();
                 let open_before = hot_path.open_positions();
-                hot_path.on_migration(&mint, ts_ms);
+                let enrichment = hot_path.on_migration(&mint, ts_ms);
                 let open_after = hot_path.open_positions();
                 let had_open_position = open_after < open_before;
                 drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
@@ -647,6 +647,9 @@ async fn main() -> anyhow::Result<()> {
                     ts_ms = ts_ms,
                     source = source.as_str(),
                     open_position_closed = had_open_position,
+                    grad_speed_s = enrichment.grad_speed_s,
+                    volume_sol_x100 = enrichment.volume_sol_x100,
+                    buys_5s = enrichment.buys_5s,
                     "[momentum] graduation migration detected"
                 );
 
@@ -654,7 +657,7 @@ async fn main() -> anyhow::Result<()> {
                 if engine_config.momentum.enabled {
                     let momentum = Arc::clone(&momentum_engine);
                     tokio::spawn(async move {
-                        momentum.on_migration(mint, ts_ms, sig).await;
+                        momentum.on_migration(mint, ts_ms, sig, enrichment).await;
                     });
                 }
             }

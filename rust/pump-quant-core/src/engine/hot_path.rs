@@ -48,6 +48,32 @@ pub struct ScoredToken {
     pub timestamp_ms: u64,
 }
 
+/// Graduation enrichment data extracted from mint_map at migration time.
+/// Zero-copy, all Copy fields. Passed to momentum engine for real scoring.
+#[derive(Debug, Clone, Copy)]
+pub struct GradEnrichment {
+    /// Seconds from first_seen to migration. 0 if unknown.
+    pub grad_speed_s: u32,
+    /// Total buy volume in the last 30s before migration, in centisol (sol × 100).
+    pub volume_sol_x100: u32,
+    /// Buy count in the 5s window before migration.
+    pub buys_5s: u16,
+    /// Unique buyers in 30s window.
+    pub unique_buyers: u16,
+    /// Sell count in 5s window (dump pressure signal).
+    pub sells_5s: u16,
+}
+
+impl GradEnrichment {
+    pub const UNKNOWN: Self = Self {
+        grad_speed_s: 0,
+        volume_sol_x100: 0,
+        buys_5s: 0,
+        unique_buyers: 0,
+        sells_5s: 0,
+    };
+}
+
 /// Statistics counters — exposed for periodic logging.
 pub struct HotPathStats {
     pub trades_seen: u64,
@@ -566,7 +592,33 @@ impl HotPath {
                         self.stats.score_rejects += 1;
                         return;
                     }
-                    // TWO-PHASE ENTRY: Add to watchlist instead of opening immediately.
+
+                    // ── Momentum path: publish ScoredToken IMMEDIATELY ──
+                    // No watchlist confirmation needed for graduation trading.
+                    // Kelly already scored this token — publish it now so the
+                    // momentum engine has it when the token graduates (could be
+                    // minutes to hours later). Watchlist 2-buy confirmation is
+                    // only meaningful for sub-second BC entries, not graduation.
+                    if !self.bonding_curve_enabled {
+                        if let Some(ref tx) = self.scored_token_tx {
+                            let scored = ScoredToken {
+                                mint: trade.mint,
+                                score: decision.score,
+                                magnitude: decision.magnitude,
+                                kelly_size_lamports: decision.conviction.size_lamports,
+                                p_permille: decision.conviction.p_permille,
+                                r_x100: decision.conviction.r_x100,
+                                f_permille: decision.conviction.f_permille,
+                                conviction_tier: decision.conviction.conviction_tier,
+                                vsol_reserves: trade.vsol_reserves,
+                                timestamp_ms: now,
+                            };
+                            let _ = tx.try_send(scored);
+                        }
+                        return;
+                    }
+
+                    // ── BC path: two-phase watchlist entry ──────────
                     // Position will be opened when a confirming buy arrives (see step 2b).
                     self.watchlist.watch(
                         trade,
@@ -576,8 +628,6 @@ impl HotPath {
                         now,
                     );
                     // Record ShredStream sig for dedup ONLY after entry engine accepted.
-                    // This ensures ShredStream trades that fail hard_gate (e.g. vsol=0)
-                    // don't block PumpPortal from triggering the same trade.
                     if trade.source == FeedSource::ShredStream {
                         let sig_u64 = u64::from_le_bytes(trade.sig_prefix);
                         let idx = (self.shred_sig_ring_head as usize) % 128;
@@ -761,7 +811,7 @@ impl HotPath {
     /// Uses `ExitReason::MaxHold` as the closest semantic match (positions.rs is read-only).
     /// PERF: #[inline(never)] — cold path (10-30 migrations/day).
     #[inline(never)]
-    pub fn on_migration(&mut self, mint: &[u8; 32], ts_ms: u64) {
+    pub fn on_migration(&mut self, mint: &[u8; 32], ts_ms: u64) -> GradEnrichment {
         self.stats.migrations += 1;
         if self.position_manager.has_position(mint) {
             tracing::info!(
@@ -770,16 +820,32 @@ impl HotPath {
                 "migration detected — force-closing position"
             );
             self.position_manager.force_close(mint, ExitReason::MaxHold, ts_ms);
-        } else {
-            tracing::debug!(
-                mint = %bs58::encode(mint).into_string(),
-                "migration: no open position"
-            );
         }
-        // Also mark creator_sell_at_ms so the gate rejects future entries for this mint
+
+        // Extract graduation enrichment from mint_map BEFORE marking creator_sell.
+        let enrichment = if let Some(history) = self.mint_map.get(mint) {
+            let age_ms = ts_ms.saturating_sub(history.first_seen_ms);
+            let grad_speed_s = (age_ms / 1000).min(u32::MAX as u64) as u32;
+            // volume in centisol: lamports / 10_000_000 (1 SOL = 1e9 lamports, /1e7 = centisol)
+            let volume_sol_x100 = (history.cached_total_buy_vol_30s / 10_000_000)
+                .min(u32::MAX as u64) as u32;
+            GradEnrichment {
+                grad_speed_s,
+                volume_sol_x100,
+                buys_5s: history.cached_buy_count_5s,
+                unique_buyers: history.cached_unique_buyers_30s,
+                sells_5s: history.cached_sell_count_5s,
+            }
+        } else {
+            GradEnrichment::UNKNOWN
+        };
+
+        // Mark creator_sell_at_ms so the gate rejects future entries for this mint
         if let Some(history) = self.mint_map.get_mut(mint) {
             history.creator_sell_at_ms = ts_ms;
         }
+
+        enrichment
     }
 
     /// Force-exit any open position on LP removal (rug detection).
