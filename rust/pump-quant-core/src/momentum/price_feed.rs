@@ -156,6 +156,11 @@ impl PriceFeedManager {
     pub fn unsubscribe_sync(&self, mint: &[u8; 32]) {
         self.active_subs.remove(mint);
         self.prices.remove(mint);
+        tracing::debug!(
+            mint = %bs58::encode(mint).into_string(),
+            remaining_subs = self.active_subs.len(),
+            "[price_feed] unsubscribed mint"
+        );
     }
 
     /// Request graceful shutdown (no-op for polling loop, kept for API compat).
