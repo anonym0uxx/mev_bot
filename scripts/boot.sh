@@ -30,7 +30,15 @@ pkill -f "node dist/daemon" 2>/dev/null || true
 # Don't kill existing healthy processes — check first
 
 # ── 2. Start Jito ShredStream proxy (if not running) ──────────────────────
+PROXY_COUNT=$(pgrep -f "jito-shredstream-proxy" 2>/dev/null | wc -l || echo 0)
 PROXY_PID=$(pgrep -f "jito-shredstream-proxy" 2>/dev/null | head -1 || true)
+# Kill duplicates: if more than 1 proxy, kill all and restart clean
+if [ "$PROXY_COUNT" -gt 1 ]; then
+  log "Step 2: ⚠️  Duplicate proxies detected ($PROXY_COUNT) — killing all and restarting"
+  pkill -f "jito-shredstream-proxy" 2>/dev/null || true
+  sleep 2
+  PROXY_PID=""
+fi
 if [ -n "$PROXY_PID" ] && timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/20100' 2>/dev/null; then
   log "Step 2: ShredStream proxy already running (PID $PROXY_PID, port 20100 up) — skipping"
 else
