@@ -20,20 +20,22 @@
 
 pub mod config;
 pub mod logger;
+pub mod pool;
 pub mod position;
 pub mod price_feed;
 pub mod scorer;
 
 pub use config::MomentumConfig;
 pub use logger::{MomentumClosedPosition, MomentumPaperLogger};
+pub use pool::{PoolType, PoolInfo, PoolResolution, BC_TERMINAL_PRICE_LAMPORTS_PER_ATOM};
 
-use crate::arb::graduation::{PoolType, resolve_pool_from_transaction};
-use crate::arb::pool_resolver::{PoolInfo, BC_TERMINAL_PRICE_LAMPORTS_PER_ATOM};
+use crate::momentum::pool::resolve_pool_from_transaction;
 use crate::momentum::position::{
     MomentumExitReason, MomentumPosition, PendingEntry, PendingEntryRing, price_to_bps_offset,
 };
 use crate::momentum::price_feed::{price_from_reserves, PriceFeedManager, VaultSubscription};
 use crate::momentum::scorer::score_graduation;
+use crate::engine::hot_path::ScoredToken;
 
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -62,6 +64,14 @@ pub struct MomentumEngine {
     // ── Logger ──────────────────────────────────────────────────────
     logger: MomentumPaperLogger,
 
+    // ── Kelly-scored tokens from hot_path ────────────────────────────
+    // Tokens that passed full Kelly/Bayesian scoring + watchlist promotion.
+    // Key = mint. Populated by drain_scored_tokens() each tick.
+    // TTL: entries older than 10 minutes are evicted.
+    scored_tokens: DashMap<[u8; 32], ScoredToken>,
+    /// Receiver for scored tokens from hot_path (crossbeam channel).
+    scored_token_rx: crossbeam_channel::Receiver<ScoredToken>,
+
     // ── Stats (atomic, lock-free) ───────────────────────────────────
     graduations_seen: AtomicU64,
     entries_opened: AtomicU64,
@@ -78,15 +88,19 @@ impl MomentumEngine {
     /// Create a new momentum engine with the given config and RPC URL.
     ///
     /// Spawns a Helius WSS price feed task and a JSONL logger thread.
-    /// The returned `JoinHandle`s can be used for graceful shutdown.
+    /// Returns `(engine, scored_token_sender, ws_handle, logger_handle)`.
+    /// The caller passes `scored_token_sender` to `HotPath::set_scored_token_tx()`.
     pub fn new(
         config: Arc<MomentumConfig>,
         rpc_url: Arc<String>,
         helius_wss_url: String,
         log_path: &str,
-    ) -> (Self, tokio::task::JoinHandle<()>, std::thread::JoinHandle<()>) {
+    ) -> (Self, crossbeam_channel::Sender<ScoredToken>, tokio::task::JoinHandle<()>, std::thread::JoinHandle<()>) {
         let (price_feed, ws_handle) = PriceFeedManager::new(helius_wss_url);
         let (logger, logger_handle) = MomentumPaperLogger::new(log_path);
+
+        // Channel for Kelly-scored tokens from hot_path → momentum engine
+        let (scored_tx, scored_rx) = crossbeam_channel::bounded::<ScoredToken>(512);
 
         let engine = Self {
             config,
@@ -99,6 +113,8 @@ impl MomentumEngine {
             pending: std::sync::Mutex::new(PendingEntryRing::new()),
             price_feed,
             logger,
+            scored_tokens: DashMap::new(),
+            scored_token_rx: scored_rx,
             graduations_seen: AtomicU64::new(0),
             entries_opened: AtomicU64::new(0),
             tp1_exits: AtomicU64::new(0),
@@ -110,7 +126,7 @@ impl MomentumEngine {
             last_tick_ms: AtomicU64::new(0),
         };
 
-        (engine, ws_handle, logger_handle)
+        (engine, scored_tx, ws_handle, logger_handle)
     }
 
     /// Called on every graduation event. Scores and schedules entry.
@@ -195,12 +211,60 @@ impl MomentumEngine {
             ring.push(entry);
         }
 
+        let kelly_scored = self.scored_tokens.contains_key(&pool_info.mint);
         tracing::debug!(
             mint = %bs58::encode(&pool_info.mint).into_string(),
             score = score.total(),
+            kelly_scored,
             entry_delay_ms = self.config.entry_delay_ms,
             "[momentum] graduation scored, entry scheduled"
         );
+    }
+
+    /// Drain scored tokens from the hot_path channel into the local DashMap.
+    /// Also evict entries older than 10 minutes. Called each tick.
+    /// PERF: #[inline(never)] — cold path, runs every 150ms but does no alloc.
+    #[inline(never)]
+    fn drain_scored_tokens(&self, now_ms: u64) {
+        // Drain all pending scored tokens (non-blocking)
+        while let Ok(st) = self.scored_token_rx.try_recv() {
+            self.scored_tokens.insert(st.mint, st);
+        }
+        // Evict entries older than 10 minutes (600_000ms)
+        // Only run eviction every ~10s to avoid scanning DashMap each tick.
+        let last_tick = self.last_tick_ms.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last_tick) >= 10_000 || last_tick == 0 {
+            self.scored_tokens.retain(|_mint, st| {
+                now_ms.saturating_sub(st.timestamp_ms) < 600_000
+            });
+        }
+    }
+
+    /// Compute position size in lamports for a graduation entry.
+    ///
+    /// Priority:
+    /// 1. Kelly-scored (from hot_path Bayesian pipeline) → use Kelly's size_lamports
+    /// 2. Fallback tiered sizing based on grad_score:
+    ///    - score >= 80: 0.50 SOL
+    ///    - score >= 60: 0.30 SOL
+    ///    - score >= 40: 0.15 SOL
+    ///    - below 40:    rejected at gate (shouldn't reach here)
+    #[inline(always)]
+    fn compute_size_lamports(&self, mint: &[u8; 32], grad_score: u32) -> u64 {
+        // Check if Kelly scored this token
+        if let Some(st) = self.scored_tokens.get(mint) {
+            if st.kelly_size_lamports > 0 {
+                return st.kelly_size_lamports;
+            }
+        }
+        // Fallback: tiered sizing from grad_score
+        if grad_score >= 80 {
+            500_000_000 // 0.50 SOL
+        } else if grad_score >= 60 {
+            300_000_000 // 0.30 SOL
+        } else {
+            150_000_000 // 0.15 SOL
+        }
     }
 
     /// Called every `check_ms`. Manages active positions.
@@ -219,6 +283,9 @@ impl MomentumEngine {
             return;
         }
         self.last_tick_ms.store(now_ms, Ordering::Relaxed);
+
+        // Drain Kelly-scored tokens from hot_path channel
+        self.drain_scored_tokens(now_ms);
 
         // Process pending entries that are ready
         self.process_pending_entries(now_ms).await;
@@ -251,8 +318,8 @@ impl MomentumEngine {
                 }
             };
 
-            // Open position
-            let size_lamports = (self.config.position_size_sol * 1e9) as u64;
+            // Open position — Kelly size if available, else tiered from grad_score
+            let size_lamports = self.compute_size_lamports(&entry.mint, entry.grad_score as u32);
             let pos = MomentumPosition::new(
                 entry.mint,
                 now_ms,
@@ -270,10 +337,12 @@ impl MomentumEngine {
             self.active.insert(entry.mint, pos);
             self.entries_opened.fetch_add(1, Ordering::Relaxed);
 
+            let kelly_scored = self.scored_tokens.contains_key(&entry.mint);
             tracing::info!(
                 mint = %bs58::encode(&entry.mint).into_string(),
                 entry_price_fp = current_price_fp,
-                size_sol = self.config.position_size_sol,
+                size_sol = size_lamports as f64 / 1e9,
+                kelly_scored,
                 "[momentum] paper position OPENED"
             );
         }
@@ -550,7 +619,7 @@ pub struct MomentumStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arb::graduation::PoolType;
+    use crate::momentum::pool::PoolType;
 
     /// Helper: create a test engine (price feed connects to invalid URL, that's fine).
     fn make_test_engine(enabled: bool) -> MomentumEngine {
@@ -565,7 +634,7 @@ mod tests {
             std::process::id()
         );
 
-        let (engine, ws_handle, _logger_handle) = MomentumEngine::new(
+        let (engine, _scored_tx, ws_handle, _logger_handle) = MomentumEngine::new(
             config,
             rpc_url,
             "wss://invalid.example.com".to_string(),

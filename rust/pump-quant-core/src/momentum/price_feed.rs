@@ -222,7 +222,7 @@ async fn price_feed_ws_loop(
                 return;
             }
             LoopExit::Error(e) => {
-                error!(error = %e, backoff_ms, "price_feed: WS connection error, reconnecting");
+                error!(error = %e, backoff_ms, "price_feed: WS error, reconnecting");
                 tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                 backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
             }
@@ -256,7 +256,10 @@ async fn connect_and_run(
     };
 
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
-    info!("price_feed: WS connected");
+    info!(
+        active_subs = active_subs.len(),
+        "price_feed: WS connected, resubscribing"
+    );
 
     // Track subscription_id → SubInfo for parsing notifications
     let mut sub_id_map: HashMap<u64, SubInfo> = HashMap::new();
@@ -267,6 +270,10 @@ async fn connect_and_run(
     let mut next_rpc_id: u64 = 1;
 
     // Reset backoff on successful connect (caller handles this implicitly)
+
+    // 30-second keepalive ping interval — prevents Helius from closing idle connections
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
+    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     // Resubscribe all active subscriptions after reconnect
     for (mint, sub) in active_subs.iter() {
@@ -304,6 +311,13 @@ async fn connect_and_run(
 
     loop {
         tokio::select! {
+            // 30s keepalive ping — prevents Helius from closing idle connections
+            _ = ping_interval.tick() => {
+                if let Err(e) = ws_tx.send(Message::Ping(vec![].into())).await {
+                    return LoopExit::Error(format!("ping send error: {e}"));
+                }
+            }
+
             // Handle commands from the engine
             cmd = cmd_rx.recv() => {
                 match cmd {

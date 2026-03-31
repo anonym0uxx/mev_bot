@@ -14,15 +14,10 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 use pump_quant_core::alerts::telegram::{self, TelegramAlerter};
 use pump_quant_core::engine::config::load_config;
-// Legacy GateStack removed — V2 EntryEngine is the only entry path.
 use pump_quant_core::engine::health::HealthMonitor;
 use pump_quant_core::engine::hot_path::HotPath;
 use pump_quant_core::engine::positions::{ClosedPosition, ExitReason, PositionManager};
-// Legacy Scorer removed — V2 EntryEngine handles all scoring.
 use pump_quant_core::api::{ApiState, EngineStats, start_server};
-use pump_quant_core::arb::graduation::{
-    GradArbConfig, GradArbClosedPosition, GradArbStats, GraduationArbEngine,
-};
 use pump_quant_core::momentum::MomentumEngine;
 use pump_quant_core::feeds::{
     event_joiner::EventJoiner,
@@ -32,9 +27,7 @@ use pump_quant_core::feeds::{
 };
 use pump_quant_core::persistence::sqlite::{SqliteLogger, TradeLogEntry};
 use pump_quant_core::persistence::paper_logger::PaperTradeLogger;
-use pump_quant_core::persistence::grad_arb_logger::GradArbPaperLogger;
 use pump_quant_core::persistence::engine_state::write_engine_state;
-use pump_quant_core::arb::blockhash_manager;
 
 const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -470,10 +463,9 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Spawn API server with shared stats ──────────────────────────
     let api_state = ApiState::with_health(health_monitor.clone());
-    // Set graduation arb flag in API stats at startup
     {
         let mut stats = api_state.stats.lock().unwrap();
-        stats.graduation_arb_enabled = engine_config.graduation_arb_enabled;
+        stats.graduation_arb_enabled = false; // graduation arb removed
     }
     let shared_stats = api_state.stats.clone();
     let api_state_clone = api_state.clone();
@@ -488,104 +480,6 @@ async fn main() -> anyhow::Result<()> {
         .name("event-joiner".to_string())
         .spawn(move || joiner.run())?;
     info!("EventJoiner thread started");
-
-    // ── Graduation Arb Engine ───────────────────────────────────────
-    let grad_arb_stats = Arc::new(GradArbStats::default());
-    let (grad_closed_tx, grad_closed_rx) =
-        crossbeam_channel::unbounded::<GradArbClosedPosition>();
-
-    let helius_rpc_url = {
-        let key = std::env::var("HELIUS_API_KEY").unwrap_or_default();
-        if key.is_empty() {
-            String::new()
-        } else {
-            format!("https://mainnet.helius-rpc.com/?api-key={}", key)
-        }
-    };
-
-    let grad_arb_config = GradArbConfig {
-        enabled: engine_config.graduation_arb_enabled,
-        paper_mode: true, // always paper for now
-        max_sol: engine_config.graduation_arb_max_sol,
-        min_spread_pct: engine_config.graduation_arb_min_spread_pct,
-        tp_pct: engine_config.graduation_arb_tp_pct,
-        sl_pct: engine_config.graduation_arb_sl_pct,
-        max_hold_ms: engine_config.graduation_arb_max_hold_ms,
-        jito_tip_sol: engine_config.graduation_arb_jito_tip_sol,
-        dedup_ttl_ms: 10_000,
-        rpc_timeout_ms: 200,
-        skip_pump_swap: true, // PumpSwap has no structural arb — skip by default
-    };
-
-    // ── Blockhash Manager — warm cache for Jito bundle submission ────
-    let blockhash_cache = blockhash_manager::new_cache();
-    {
-        let rpc_url = std::env::var("SOLANA_RPC_URL")
-            .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
-        let bh_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(300))
-            .build()
-            .expect("blockhash reqwest client");
-        let _bh_handle = blockhash_manager::spawn_poller(
-            blockhash_cache.clone(),
-            rpc_url,
-            bh_client,
-            400, // poll every 400ms
-        );
-        info!("[blockhash] background poller started (400ms interval)");
-    }
-
-    let helius_ws_url = std::env::var("SOLANA_WS_URL")
-        .unwrap_or_else(|_| String::new());
-
-    let grad_arb_engine = Arc::new(GraduationArbEngine::new(
-        grad_arb_config,
-        grad_arb_stats.clone(),
-        grad_closed_tx,
-        helius_rpc_url,
-        helius_ws_url,
-        blockhash_cache.clone(),
-    ));
-
-    info!(
-        enabled = engine_config.graduation_arb_enabled,
-        paper_mode = true,
-        max_sol = engine_config.graduation_arb_max_sol,
-        min_spread_pct = engine_config.graduation_arb_min_spread_pct,
-        max_hold_ms = engine_config.graduation_arb_max_hold_ms,
-        "[grad_arb] engine initialized"
-    );
-
-    // ── Spawn graduation arb logger thread ──────────────────────────
-    {
-        let path = format!("{}/graduation_paper_trades.jsonl", data_dir);
-        let config_version = format!(
-            "grad-v{:.2}sol_{}ms",
-            engine_config.graduation_arb_max_sol, engine_config.graduation_arb_max_hold_ms
-        );
-        std::thread::Builder::new()
-            .name("grad-arb-logger".to_string())
-            .spawn(move || {
-                // Ensure data directory exists
-                if let Some(parent) = std::path::Path::new(&path).parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let mut logger = match GradArbPaperLogger::new(&path, config_version) {
-                    Ok(l) => l,
-                    Err(e) => {
-                        tracing::error!("Failed to open graduation JSONL: {e}");
-                        return;
-                    }
-                };
-                for cp in grad_closed_rx {
-                    let mint_b58 = bs58::encode(&cp.mint).into_string();
-                    if let Err(e) = logger.log(&cp, &mint_b58) {
-                        tracing::error!("Grad arb JSONL write failed: {e}");
-                    }
-                }
-                info!("Grad arb logger thread exiting");
-            })?;
-    }
 
     // ── Momentum Engine ──────────────────────────────────────────────
     let momentum_config = Arc::new(engine_config.momentum.clone());
@@ -603,7 +497,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| "wss://invalid.example.com".to_string());
     let momentum_log_path = format!("{}/momentum_paper_trades.jsonl", data_dir);
 
-    let (momentum_engine, _momentum_ws_handle, _momentum_logger_handle) = MomentumEngine::new(
+    let (momentum_engine, scored_token_tx, _momentum_ws_handle, _momentum_logger_handle) = MomentumEngine::new(
         momentum_config.clone(),
         momentum_rpc_url,
         momentum_wss_url,
@@ -611,13 +505,17 @@ async fn main() -> anyhow::Result<()> {
     );
     let momentum_engine = Arc::new(momentum_engine);
 
+    // Wire Kelly→Momentum channel: hot_path publishes scored tokens,
+    // momentum engine consumes them for Kelly-sized post-grad entries.
+    hot_path.set_scored_token_tx(scored_token_tx);
+
     info!(
         enabled = engine_config.momentum.enabled,
         paper_mode = engine_config.momentum.paper_mode,
         entry_delay_ms = engine_config.momentum.entry_delay_ms,
         min_grad_score = engine_config.momentum.min_grad_score,
         position_size_sol = engine_config.momentum.position_size_sol,
-        "[momentum] engine initialized"
+        "[momentum] engine initialized (Kelly-scored channel wired)"
     );
 
     // Set momentum enabled flag in API stats at startup
@@ -647,7 +545,7 @@ async fn main() -> anyhow::Result<()> {
                 // Update shared API stats every 100 trades (also at first trade)
                 let ts = hot_path.stats.trades_seen;
                 if ts == 1 || ts % 100 == 0 {
-                    sync_stats_to_api(&hot_path, &shared_stats, &grad_arb_stats);
+                    sync_stats_to_api(&hot_path, &shared_stats);
                 }
 
                 // Stats logging every 1000 trades
@@ -681,9 +579,6 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(FeedEvent::Tick { ts_ms }) => {
                 hot_path.on_tick(ts_ms);
-
-                // Graduation arb: check position exits (MaxHold)
-                grad_arb_engine.on_tick(ts_ms);
 
                 // Momentum engine: check pending entries + active positions
                 momentum_engine.on_tick(ts_ms).await;
@@ -724,7 +619,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // Sync API stats every 200 ticks (~10 seconds)
                 if hot_path.stats.ticks % 200 == 0 {
-                    sync_stats_to_api(&hot_path, &shared_stats, &grad_arb_stats);
+                    sync_stats_to_api(&hot_path, &shared_stats);
                 }
             }
             Ok(FeedEvent::TokenCreated(created)) => {
@@ -747,22 +642,13 @@ async fn main() -> anyhow::Result<()> {
                 let had_open_position = open_after < open_before;
                 drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
 
-                // Enhanced migration logging for graduation arb analysis
                 info!(
                     mint = %mint_b58,
                     ts_ms = ts_ms,
                     source = source.as_str(),
                     open_position_closed = had_open_position,
-                    "[grad_arb] graduation migration detected"
+                    "[momentum] graduation migration detected"
                 );
-
-                // Graduation arb: evaluate entry opportunity (async, non-blocking)
-                if engine_config.graduation_arb_enabled {
-                    let engine = Arc::clone(&grad_arb_engine);
-                    tokio::spawn(async move {
-                        engine.on_migration(mint, ts_ms, source, sig).await;
-                    });
-                }
 
                 // Momentum engine: post-graduation directional trade (async, non-blocking)
                 if engine_config.momentum.enabled {
@@ -782,7 +668,7 @@ async fn main() -> anyhow::Result<()> {
                 let now = now_ms_mono!();
                 hot_path.close_all(now);
                 drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
-                sync_stats_to_api(&hot_path, &shared_stats, &grad_arb_stats);
+                sync_stats_to_api(&hot_path, &shared_stats);
                 let _ = shutdown_tx.send(true);
                 break;
             }
@@ -791,7 +677,7 @@ async fn main() -> anyhow::Result<()> {
                 let now = now_ms_mono!();
                 hot_path.close_all(now);
                 drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
-                sync_stats_to_api(&hot_path, &shared_stats, &grad_arb_stats);
+                sync_stats_to_api(&hot_path, &shared_stats);
                 break;
             }
         }
@@ -845,11 +731,10 @@ fn drain_closed_positions(
 /// Dummy clock fn for HotPath API compat — HotPath uses quanta internally.
 fn _now_ms_dummy() -> u64 { 0 }
 
-/// Sync HotPath stats + GradArb stats into the shared API EngineStats.
+/// Sync HotPath stats into the shared API EngineStats.
 fn sync_stats_to_api(
     hot_path: &HotPath,
     shared: &Arc<Mutex<EngineStats>>,
-    grad_arb_stats: &Arc<GradArbStats>,
 ) {
     if let Ok(mut api_stats) = shared.lock() {
         let s = &hot_path.stats;
@@ -862,27 +747,17 @@ fn sync_stats_to_api(
         api_stats.lp_removals_seen = s.lp_removals;
         api_stats.creator_sells_seen = s.creator_sells;
 
-        // Graduation arb stats — read from atomic counters
-        api_stats.grad_arb_migrations =
-            grad_arb_stats.migrations_detected.load(std::sync::atomic::Ordering::Relaxed);
-        api_stats.grad_arb_entries =
-            grad_arb_stats.arb_entries.load(std::sync::atomic::Ordering::Relaxed);
-        api_stats.grad_arb_timeouts =
-            grad_arb_stats.arb_timeouts.load(std::sync::atomic::Ordering::Relaxed);
-        api_stats.grad_arb_pool_not_found =
-            grad_arb_stats.pool_not_found.load(std::sync::atomic::Ordering::Relaxed);
-        api_stats.grad_arb_no_spread =
-            grad_arb_stats.no_arb_spread.load(std::sync::atomic::Ordering::Relaxed);
-        api_stats.grad_arb_exits_tp =
-            grad_arb_stats.exits_tp.load(std::sync::atomic::Ordering::Relaxed);
-        api_stats.grad_arb_exits_sl =
-            grad_arb_stats.exits_sl.load(std::sync::atomic::Ordering::Relaxed);
-        api_stats.grad_arb_exits_max_hold =
-            grad_arb_stats.exits_max_hold.load(std::sync::atomic::Ordering::Relaxed);
-        api_stats.grad_arb_net_sol =
-            grad_arb_stats.net_pnl_lamports.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
-        // Keep backward-compat fields updated too
-        api_stats.graduation_arb_trades = api_stats.grad_arb_entries;
-        api_stats.graduation_arb_net_sol = api_stats.grad_arb_net_sol;
+        // Graduation arb removed — zero all counters
+        api_stats.grad_arb_migrations = 0;
+        api_stats.grad_arb_entries = 0;
+        api_stats.grad_arb_timeouts = 0;
+        api_stats.grad_arb_pool_not_found = 0;
+        api_stats.grad_arb_no_spread = 0;
+        api_stats.grad_arb_exits_tp = 0;
+        api_stats.grad_arb_exits_sl = 0;
+        api_stats.grad_arb_exits_max_hold = 0;
+        api_stats.grad_arb_net_sol = 0.0;
+        api_stats.graduation_arb_trades = 0;
+        api_stats.graduation_arb_net_sol = 0.0;
     }
 }

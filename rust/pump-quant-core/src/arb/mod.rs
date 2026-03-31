@@ -1,17 +1,4 @@
-pub mod blockhash_manager;
-pub mod brent_sizing;
-pub mod dedup;
-pub mod grad_dex_backrun;
-pub mod graduation;
-pub mod jito_bundle;
-pub mod pool_resolver;
-pub mod price_feed;
-pub mod raydium_math;
-pub mod raydium_swap_ix;
-
-pub use dedup::MigrationDedup;
-pub use graduation::{
-    GraduationArbEngine, GradArbConfig, GradArbStats, GradArbClosedPosition,
-    PoolResolution, PoolType, make_pool_resolution_client, resolve_pool_from_transaction,
-};
-pub use pool_resolver::{PoolInfo, BC_TERMINAL_PRICE_LAMPORTS_PER_ATOM, WSOL_MINT};
+// arb/ module — graduation arb engine removed.
+// All pool resolution types moved to momentum/pool.rs.
+// This module is kept as an empty placeholder to avoid breaking `pub mod arb;` in lib.rs.
+// TODO: Remove `pub mod arb;` from lib.rs once all references are cleaned.

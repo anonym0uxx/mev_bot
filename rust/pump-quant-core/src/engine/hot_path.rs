@@ -22,6 +22,32 @@ use crate::feeds::{FeedSource, PreWarmEvent, TokenCreatedEvent, TradeEvent};
 use super::gates::GateRejectReason;
 use super::regime;
 
+/// A token that passed the full Kelly/Bayesian scoring pipeline and watchlist
+/// promotion. Published to momentum engine when bonding_curve_enabled=false.
+/// Zero-copy: all fields are Copy, no heap.
+#[derive(Debug, Clone, Copy)]
+pub struct ScoredToken {
+    pub mint: [u8; 32],
+    /// Entry engine composite score (0–100).
+    pub score: f64,
+    /// Magnitude estimate from EntryEngine (0–100).
+    pub magnitude: f64,
+    /// Kelly-computed position size in lamports.
+    pub kelly_size_lamports: u64,
+    /// Win probability × 1000 (0–1000) from Kelly.
+    pub p_permille: u16,
+    /// Win/loss ratio × 100 from Kelly.
+    pub r_x100: u16,
+    /// Kelly fraction × 1000 (after half-Kelly + adjustments).
+    pub f_permille: u16,
+    /// Conviction tier: 0=LOW, 1=MED, 2=HIGH.
+    pub conviction_tier: u8,
+    /// Current bonding curve vSOL reserves at scoring time.
+    pub vsol_reserves: u64,
+    /// Epoch ms when scoring happened.
+    pub timestamp_ms: u64,
+}
+
 /// Statistics counters — exposed for periodic logging.
 pub struct HotPathStats {
     pub trades_seen: u64,
@@ -142,6 +168,12 @@ pub struct HotPath {
     // Fixed-size array indexed by GateRejectReason discriminant.
     // 32 slots covers all current variants with headroom.
     pub gate_reject_counts: [u64; 32],
+
+    // ── Kelly → Momentum channel ────────────────────────────────────
+    // When bonding_curve_enabled=false, scored tokens that pass the full
+    // Kelly/Bayesian pipeline + watchlist promotion are published here.
+    // The momentum engine reads these to use Kelly sizing for post-grad trades.
+    scored_token_tx: Option<crossbeam_channel::Sender<ScoredToken>>,
 }
 
 impl HotPath {
@@ -223,7 +255,15 @@ impl HotPath {
             shred_sig_ring_head: 0,
             gate_reject_counts: [0u64; 32],
             bonding_curve_enabled: true, // default on, disabled via set_bonding_curve_enabled(false)
+            scored_token_tx: None,
         }
+    }
+
+    /// Set the channel for publishing scored tokens to the momentum engine.
+    /// When bonding_curve_enabled=false, watchlist promotions publish here
+    /// instead of opening bonding curve positions.
+    pub fn set_scored_token_tx(&mut self, tx: crossbeam_channel::Sender<ScoredToken>) {
+        self.scored_token_tx = Some(tx);
     }
 
     /// Attach a health monitor to the hot path. Must be called before
@@ -294,13 +334,11 @@ impl HotPath {
     pub fn on_trade(&mut self, trade: &TradeEvent) {
         self.stats.trades_seen += 1;
 
-        // ── Bonding curve engine kill switch ────────────────────────
-        // When disabled: skip ALL gate/score/position/Kelly/Bayesian logic.
-        // Saves ~100% of per-trade CPU. Graduation arb is unaffected
-        // (runs on FeedEvent::Migration, not FeedEvent::Trade).
-        if !self.bonding_curve_enabled {
-            return;
-        }
+        // ── Bonding curve execution flag ─────────────────────────────
+        // When disabled: full scoring pipeline STILL runs (gates, Kelly,
+        // Bayesian, watchlist). Only position opening is gated. Scored
+        // tokens are published to momentum engine for post-grad trading.
+        let bc_execution_enabled = self.bonding_curve_enabled;
 
         let now = self.now_ms();
 
@@ -358,42 +396,64 @@ impl HotPath {
         //     watched tokens to real positions without re-evaluation.
         if trade.is_buy {
             if let Some(promoted) = self.watchlist.try_promote(trade, now) {
-                // Safety checks (same as entry path)
-                if !self.paper_mode {
-                    self.check_and_reset_daily_loss(now);
-                    if self.daily_loss_lamports as u64 >= self.daily_loss_cap_lamports {
-                        return;
-                    }
-                    if now < self.stop_pause_until_ms {
-                        return;
-                    }
-                }
                 if promoted.conviction.size_lamports == 0 {
                     return;
                 }
-                self.position_manager.open_position(
-                    trade,
-                    promoted.score,
-                    now,
-                    promoted.magnitude,
-                    promoted.conviction.size_lamports,
-                    promoted.conviction,
-                );
-                self.stats.positions_opened += 1;
-                self.stats.gates_passed += 1;
-                // Feed the confirming buy into RideState's Bayesian model.
-                // open_position sets trigger_sig = this trade's sig, so
-                // on_subsequent_trade would skip it. Inject evidence directly.
-                self.position_manager.feed_initial_buy(&trade.mint, trade.sol_amount, now, &trade.sig);
-                // Enrich with entry context from cached mint history
-                if let Some(pos) = self.position_manager.get_position_mut(&trade.mint) {
-                    let history = self.mint_map.get_or_insert(&trade.mint, now);
-                    pos.pre_trigger_buys_1s = history.cached_buy_count_1s;
-                    pos.pre_trigger_buys_2s = history.cached_buy_count_2s;
-                    pos.pre_trigger_buys_5s = history.cached_buy_count_5s;
-                    pos.volume_5s = history.cached_volume_sol_5s;
-                    pos.sell_count_5s = history.cached_sell_count_5s;
-                    pos.unique_buyers = history.cached_unique_buyers_30s;
+
+                if bc_execution_enabled {
+                    // ── Bonding curve position opening (original path) ──
+                    // Safety checks
+                    if !self.paper_mode {
+                        self.check_and_reset_daily_loss(now);
+                        if self.daily_loss_lamports as u64 >= self.daily_loss_cap_lamports {
+                            return;
+                        }
+                        if now < self.stop_pause_until_ms {
+                            return;
+                        }
+                    }
+                    self.position_manager.open_position(
+                        trade,
+                        promoted.score,
+                        now,
+                        promoted.magnitude,
+                        promoted.conviction.size_lamports,
+                        promoted.conviction,
+                    );
+                    self.stats.positions_opened += 1;
+                    self.stats.gates_passed += 1;
+                    // Feed the confirming buy into RideState's Bayesian model.
+                    self.position_manager.feed_initial_buy(&trade.mint, trade.sol_amount, now, &trade.sig);
+                    // Enrich with entry context from cached mint history
+                    if let Some(pos) = self.position_manager.get_position_mut(&trade.mint) {
+                        let history = self.mint_map.get_or_insert(&trade.mint, now);
+                        pos.pre_trigger_buys_1s = history.cached_buy_count_1s;
+                        pos.pre_trigger_buys_2s = history.cached_buy_count_2s;
+                        pos.pre_trigger_buys_5s = history.cached_buy_count_5s;
+                        pos.volume_5s = history.cached_volume_sol_5s;
+                        pos.sell_count_5s = history.cached_sell_count_5s;
+                        pos.unique_buyers = history.cached_unique_buyers_30s;
+                    }
+                } else {
+                    // ── Publish scored token to momentum engine ──────
+                    // Full Kelly/Bayesian scoring passed. Publish for
+                    // post-graduation trading instead of BC position.
+                    self.stats.gates_passed += 1;
+                    if let Some(ref tx) = self.scored_token_tx {
+                        let scored = ScoredToken {
+                            mint: trade.mint,
+                            score: promoted.score,
+                            magnitude: promoted.magnitude,
+                            kelly_size_lamports: promoted.conviction.size_lamports,
+                            p_permille: promoted.conviction.p_permille,
+                            r_x100: promoted.conviction.r_x100,
+                            f_permille: promoted.conviction.f_permille,
+                            conviction_tier: promoted.conviction.conviction_tier,
+                            vsol_reserves: trade.vsol_reserves,
+                            timestamp_ms: now,
+                        };
+                        let _ = tx.try_send(scored);
+                    }
                 }
                 return;
             }
