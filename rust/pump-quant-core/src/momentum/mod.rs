@@ -539,7 +539,19 @@ impl MomentumEngine {
 
         // Calculate P&L
         let size_sol = pos.size_lamports as f64 / 1e9;
-        let gain_bps = price_to_bps_offset(pos.entry_price_fp, exit_price_fp);
+        let raw_gain_bps = price_to_bps_offset(pos.entry_price_fp, exit_price_fp);
+        // Sanity clamp: no real trade gains >1000% or loses >100% — bad price feed data
+        let gain_bps = raw_gain_bps.clamp(-10_000, 100_000);
+        if raw_gain_bps != gain_bps {
+            tracing::warn!(
+                mint = %bs58::encode(&mint).into_string(),
+                raw_gain_bps,
+                clamped_gain_bps = gain_bps,
+                entry_price = pos.entry_price_fp,
+                exit_price = exit_price_fp,
+                "[momentum] PnL sanity clamp — bad price data"
+            );
+        }
         let gross_pnl_sol = size_sol * gain_bps as f64 / 10_000.0;
 
         // Fees: use config-specified bps per pool type
