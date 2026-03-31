@@ -342,11 +342,15 @@ impl Watchlist {
         }
 
         // ── vSOL Velocity Check ───────────────────────────────────
-        // Reject if price has FALLEN since watch time (falling-knife protection).
-        // current_vsol_mvsol < entry_vsol means the bonding curve has less SOL now
-        // than when we first spotted it — sellers are dominating.
+        // Reject if price has FALLEN significantly since watch time.
+        // Allow small dips (≤3%) — vSOL naturally oscillates between buys on pump.fun.
+        // Only reject if the drop is >3%, indicating sustained selling pressure.
         if entry_vsol > 0 && current_vsol_mvsol < entry_vsol {
-            return None;
+            let drop_bp = ((entry_vsol - current_vsol_mvsol) as u64 * 10_000) / entry_vsol as u64;
+            if drop_bp > 300 {
+                // >3% drop — falling knife, reject
+                return None;
+            }
         }
 
         // ── 2-Buy State Machine ────────────────────────────────────
@@ -579,6 +583,7 @@ mod tests {
     }
 
     #[test]
+    #[test]
     fn test_falling_knife_rejected() {
         let mut wl = Watchlist::new();
         let mint = [0xAAu8; 32];
@@ -587,13 +592,13 @@ mod tests {
         let trade1 = make_trade(mint, [0xBBu8; 64], 100_000_000, 30_000_000_000, true);
         wl.watch(&trade1, 0.75, 60.0, &default_conviction(), 1000);
 
-        // Confirming buy but vSOL has FALLEN (29.5 SOL < 30 SOL = price dropped)
-        let trade2 = make_trade(mint, [0xCCu8; 64], 50_000_000, 29_500_000_000, true);
-        assert!(wl.try_promote(&trade2, 1100).is_none(), "falling-knife should be rejected");
+        // Confirming buy but vSOL has FALLEN >3% (28 SOL = -6.7%)
+        let trade2 = make_trade(mint, [0xCCu8; 64], 50_000_000, 28_000_000_000, true);
+        assert!(wl.try_promote(&trade2, 1100).is_none(), ">3% drop should be rejected");
 
-        // But a buy where vSOL has risen should still work (state 1 → 3)
-        let trade3 = make_trade(mint, [0xDDu8; 64], 50_000_000, 30_500_000_000, true);
-        assert!(wl.try_promote(&trade3, 1200).is_none(), "first buy goes to partial_confirm");
+        // Small dip ≤3% should still work (29.5 SOL = -1.7%)
+        let trade3 = make_trade(mint, [0xDDu8; 64], 50_000_000, 29_500_000_000, true);
+        assert!(wl.try_promote(&trade3, 1200).is_none(), "first buy goes to partial_confirm (small dip OK)");
 
         // Second buy with rising vSOL → promote
         let trade4 = make_trade(mint, [0xEEu8; 64], 50_000_000, 31_000_000_000, true);
