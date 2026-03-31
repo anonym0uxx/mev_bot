@@ -216,6 +216,14 @@ impl MintHistory {
         self.cached_total_buy_vol_30s = total_vol;
     }
 
+    /// Public wrapper for recompute_aggregates.
+    /// Called from on_migration() to refresh stale cached window values
+    /// before extracting graduation enrichment data.
+    #[inline(always)]
+    pub fn recompute_aggregates_public(&mut self, now_ms: u64) {
+        self.recompute_aggregates(now_ms);
+    }
+
     /// Recompute all cached_* aggregate fields by scanning the ring buffer.
     fn recompute_aggregates(&mut self, now_ms: u64) {
         #[cfg(debug_assertions)]

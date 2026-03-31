@@ -41,6 +41,39 @@ use dashmap::DashMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
+// ── Blocked mint list: known SPL tokens that should never pass as graduations ──
+// Pre-decoded base58 → [u8; 32] for zero-cost runtime comparison.
+const BLOCKED_MINTS: [[u8; 32]; 6] = [
+    // USDC: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+    [0xc6, 0xfa, 0x7a, 0xf3, 0xbe, 0xdb, 0xad, 0x3a, 0x3d, 0x65, 0xf3, 0x6a, 0xab, 0xc9, 0x74, 0x31, 0xb1, 0xbb, 0xe4, 0xc2, 0xd2, 0xf6, 0xe0, 0xe4, 0x7c, 0xa6, 0x02, 0x03, 0x45, 0x2f, 0x5d, 0x61],
+    // USDT: Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB
+    [0xce, 0x01, 0x0e, 0x60, 0xaf, 0xed, 0xb2, 0x27, 0x17, 0xbd, 0x63, 0x19, 0x2f, 0x54, 0x14, 0x5a, 0x3f, 0x96, 0x5a, 0x33, 0xbb, 0x82, 0xd2, 0xc7, 0x02, 0x9e, 0xb2, 0xce, 0x1e, 0x20, 0x82, 0x64],
+    // WSOL: So11111111111111111111111111111111111111112
+    [0x06, 0x9b, 0x88, 0x57, 0xfe, 0xab, 0x81, 0x84, 0xfb, 0x68, 0x7f, 0x63, 0x46, 0x18, 0xc0, 0x35, 0xda, 0xc4, 0x39, 0xdc, 0x1a, 0xeb, 0x3b, 0x55, 0x98, 0xa0, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x01],
+    // BONK: DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263
+    [0xbc, 0x07, 0xc5, 0x6e, 0x60, 0xad, 0x3d, 0x3f, 0x17, 0x73, 0x82, 0xea, 0xc6, 0x54, 0x8f, 0xba, 0x1f, 0xd3, 0x2c, 0xfd, 0x90, 0xca, 0x02, 0xb3, 0xe7, 0xcf, 0xa1, 0x85, 0xfd, 0xce, 0x73, 0x98],
+    // JUP: JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN
+    [0x04, 0x79, 0xd9, 0xc7, 0xcc, 0x10, 0x35, 0xde, 0x72, 0x11, 0xf9, 0x9e, 0xb4, 0x8c, 0x09, 0xd7, 0x0b, 0x2b, 0xdf, 0x5b, 0xdf, 0x9e, 0x2e, 0x56, 0xb8, 0xa1, 0xfb, 0xb5, 0xa2, 0xea, 0x33, 0x27],
+    // RAY: 4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R
+    [0x37, 0x99, 0x8c, 0xcb, 0xf2, 0xd0, 0x45, 0x8b, 0x61, 0x5c, 0xbc, 0xc6, 0xb1, 0xa3, 0x67, 0xc4, 0x74, 0x9e, 0x9f, 0xef, 0x73, 0x06, 0x62, 0x2e, 0x1b, 0x1b, 0x58, 0x91, 0x01, 0x20, 0xbc, 0x9a],
+];
+
+/// Check if a mint is in the blocklist (known SPL tokens or all-zero mint).
+#[inline(always)]
+fn is_blocked_mint(mint: &[u8; 32]) -> bool {
+    // Reject all-zero mint
+    if mint == &[0u8; 32] {
+        return true;
+    }
+    // Check against known blocked mints
+    for blocked in &BLOCKED_MINTS {
+        if mint == blocked {
+            return true;
+        }
+    }
+    false
+}
+
 /// Post-graduation momentum trading engine.
 ///
 /// Receives graduation events, scores them, delays entry, and manages
@@ -148,6 +181,15 @@ impl MomentumEngine {
             return;
         }
 
+        // ── Blocklist: reject known SPL token mints ─────────────────────
+        if is_blocked_mint(&pool_info.mint) {
+            tracing::debug!(
+                mint = %bs58::encode(&pool_info.mint).into_string(),
+                "[momentum] blocked mint — skipping fake graduation"
+            );
+            return;
+        }
+
         self.graduations_seen.fetch_add(1, Ordering::Relaxed);
 
         // Check daily loss cap
@@ -169,7 +211,7 @@ impl MomentumEngine {
 
         // Score the graduation (no recovery score at this point — use 0)
         let score = score_graduation(grad_speed_s, grad_volume_sol_x100, pre_grad_buys_5s, 0);
-        let effective_min = if self.config.paper_mode { 0 } else { self.config.min_grad_score };
+        let effective_min = if self.config.paper_mode { 20 } else { self.config.min_grad_score };
         if score.total() < effective_min {
             tracing::info!(
                 score = score.total(),
@@ -348,6 +390,16 @@ impl MomentumEngine {
                     entry.opening_price_fp
                 }
             };
+
+            // Validate entry price — reject zero or impossibly high values
+            if current_price_fp == 0 || current_price_fp > 1_000_000_000_000_000 {
+                tracing::warn!(
+                    mint = %bs58::encode(&entry.mint).into_string(),
+                    price = current_price_fp,
+                    "[momentum] invalid entry price — skipping"
+                );
+                continue;
+            }
 
             // Open position — Kelly size if available, else tiered from grad_score
             let size_lamports = self.compute_size_lamports(&entry.mint, entry.grad_score as u32);
@@ -573,6 +625,8 @@ impl MomentumEngine {
             grad_speed_s: pos.grad_speed_s as u64,
             grad_volume_sol: grad_vol_sol,
             pre_grad_buys_5s: pos.pre_grad_buys_5s,
+            size_sol,
+            size_lamports: pos.size_lamports,
             entry_delay_ms: pos.entry_delay_ms as u64,
             entry_price_lamports: pos.entry_price_fp,
             bc_terminal_price_lamports: bc_price_f64,

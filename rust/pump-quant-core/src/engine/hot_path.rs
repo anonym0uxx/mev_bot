@@ -823,12 +823,18 @@ impl HotPath {
         }
 
         // Extract graduation enrichment from mint_map BEFORE marking creator_sell.
-        let enrichment = if let Some(history) = self.mint_map.get(mint) {
+        // Use get_mut so we can recompute aggregates with the migration timestamp —
+        // cached window values (buy_count_5s, etc.) may be stale if no trade arrived
+        // since the bonding curve filled. Recomputing ensures windows are current.
+        let enrichment = if let Some(history) = self.mint_map.get_mut(mint) {
+            history.recompute_aggregates_public(ts_ms);
             let age_ms = ts_ms.saturating_sub(history.first_seen_ms);
             let grad_speed_s = (age_ms / 1000).min(u32::MAX as u64) as u32;
             // volume in centisol: lamports / 10_000_000 (1 SOL = 1e9 lamports, /1e7 = centisol)
             let volume_sol_x100 = (history.cached_total_buy_vol_30s / 10_000_000)
                 .min(u32::MAX as u64) as u32;
+            // Also mark creator_sell here to avoid a second lookup
+            history.creator_sell_at_ms = ts_ms;
             GradEnrichment {
                 grad_speed_s,
                 volume_sol_x100,
@@ -839,11 +845,6 @@ impl HotPath {
         } else {
             GradEnrichment::UNKNOWN
         };
-
-        // Mark creator_sell_at_ms so the gate rejects future entries for this mint
-        if let Some(history) = self.mint_map.get_mut(mint) {
-            history.creator_sell_at_ms = ts_ms;
-        }
 
         enrichment
     }

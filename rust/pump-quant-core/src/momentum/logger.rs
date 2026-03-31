@@ -25,6 +25,10 @@ pub struct MomentumClosedPosition {
     pub grad_volume_sol: f64,
     /// Number of buys in the 5 seconds before graduation.
     pub pre_grad_buys_5s: u32,
+    /// Position size in SOL.
+    pub size_sol: f64,
+    /// Position size in lamports.
+    pub size_lamports: u64,
     /// Delay between graduation and entry (ms).
     pub entry_delay_ms: u64,
     /// Entry price in lamports.
@@ -141,6 +145,8 @@ mod tests {
             grad_speed_s: 45,
             grad_volume_sol: 87.3,
             pre_grad_buys_5s: 12,
+            size_sol: 0.3,
+            size_lamports: 300_000_000,
             entry_delay_ms: 15000,
             entry_price_lamports: 381_900,
             bc_terminal_price_lamports: 410_880.0,
