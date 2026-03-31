@@ -527,6 +527,8 @@
     "hard_sl_pct": 12.0,
     "time_sl_ms": 60000,
     "max_hold_ms": 300000,
+    "max_hold_trail_activation_ms": 200000,
+    "max_hold_trail_pct": 3.0,
     "check_ms": 150,
     "daily_loss_cap_sol": 2.0,
     "raydium_fee_bps": 25,
@@ -534,6 +536,7 @@
     "sample_interval_ticks": 7,
     "micro_sl_pct": 8.0,
     "micro_sl_ticks": 20,
-    "no_price_timeout_ms": 2000
+    "no_price_timeout_ms": 2000,
+    "tier0_size_sol": 0.1
   }
 }

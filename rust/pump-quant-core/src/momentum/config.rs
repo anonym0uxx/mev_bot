@@ -45,6 +45,13 @@ pub struct MomentumConfig {
     pub time_sl_ms: u64,
     /// Maximum hold time before forced exit (ms).
     pub max_hold_ms: u64,
+    /// After this many ms, activate a tight trailing stop instead of holding blindly.
+    /// Set to 0 to disable (use original max_hold behavior). Default: 200_000ms (200s).
+    pub max_hold_trail_activation_ms: u64,
+    /// Trailing stop percentage applied after max_hold_trail_activation_ms.
+    /// Tighter than the regular trailing_stop_pct to take profits aggressively near maturity.
+    /// Default: 3.0% — exit if price drops 3% from peak after 200s.
+    pub max_hold_trail_pct: f64,
     /// Tick interval: check positions every this many ms.
     pub check_ms: u64,
     /// Daily loss cap in SOL — circuit breaker.
@@ -66,6 +73,10 @@ pub struct MomentumConfig {
     /// rather than entering at the stale graduation reserve price.
     /// Default: 2000ms (gives Helius WSS ~2s to deliver live price).
     pub no_price_timeout_ms: u64,
+    /// Position size in SOL for tier-0 entries (first price reading, no momentum signal yet).
+    /// Set to 0.0 to disable tier-0 sizing (use regular grad_score tiers).
+    /// Default: 0.10 SOL — reduces blind entry exposure by 2/3.
+    pub tier0_size_sol: f64,
 }
 
 impl Default for MomentumConfig {
@@ -87,6 +98,8 @@ impl Default for MomentumConfig {
             hard_sl_pct: 12.0,
             time_sl_ms: 60_000,
             max_hold_ms: 300_000,
+            max_hold_trail_activation_ms: 200_000,
+            max_hold_trail_pct: 3.0,
             check_ms: 150,
             daily_loss_cap_sol: 2.0,
             raydium_fee_bps: 25,
@@ -95,6 +108,7 @@ impl Default for MomentumConfig {
             micro_sl_pct: 8.0,
             micro_sl_ticks: 20,
             no_price_timeout_ms: 2_000,
+            tier0_size_sol: 0.10,
         }
     }
 }
@@ -133,6 +147,8 @@ mod tests {
         assert!((config.hard_sl_pct - 12.0).abs() < f64::EPSILON);
         assert_eq!(config.time_sl_ms, 60_000);
         assert_eq!(config.max_hold_ms, 300_000);
+        assert_eq!(config.max_hold_trail_activation_ms, 200_000);
+        assert!((config.max_hold_trail_pct - 3.0).abs() < f64::EPSILON);
         assert_eq!(config.check_ms, 150);
         assert!((config.daily_loss_cap_sol - 2.0).abs() < f64::EPSILON);
         assert_eq!(config.raydium_fee_bps, 25);
@@ -141,6 +157,7 @@ mod tests {
         assert!((config.micro_sl_pct - 8.0).abs() < f64::EPSILON);
         assert_eq!(config.micro_sl_ticks, 20);
         assert_eq!(config.no_price_timeout_ms, 2_000);
+        assert!((config.tier0_size_sol - 0.10).abs() < f64::EPSILON);
     }
 
     #[test]

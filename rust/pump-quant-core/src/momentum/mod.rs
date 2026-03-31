@@ -428,8 +428,27 @@ impl MomentumEngine {
                 continue;
             }
 
-            // Open position — Kelly size if available, else tiered from grad_score
-            let size_lamports = self.compute_size_lamports(&entry.mint, entry.grad_score as u32);
+            // Tier-0 sizing: if price feed just delivered its first reading (< 500ms old),
+            // enter at reduced size — we have no momentum signal yet.
+            // Once we have sample history, regular grad_score tiers apply.
+            let price_feed_age_ms = self
+                .price_feed
+                .price_state(&entry.mint)
+                .map(|s| {
+                    now_ms.saturating_sub(
+                        s.last_update_ms
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                    )
+                })
+                .unwrap_or(u64::MAX);
+
+            let size_lamports =
+                if self.config.tier0_size_sol > 0.0 && price_feed_age_ms < 500 {
+                    // Price feed < 500ms old — no momentum signal. Enter at tier-0 size.
+                    (self.config.tier0_size_sol * 1_000_000_000.0) as u64
+                } else {
+                    self.compute_size_lamports(&entry.mint, entry.grad_score as u32)
+                };
             let pos = MomentumPosition::new(
                 entry.mint,
                 now_ms,
@@ -482,11 +501,28 @@ impl MomentumEngine {
 
             let elapsed_ms = now_ms.saturating_sub(pos.entry_ts_ms);
 
-            // 0. Max hold — checked BEFORE price to ensure timeout even without price feed.
+            // 0. Max hold handling.
+            // After max_hold_trail_activation_ms, switch from blind hold to tight trailing stop.
+            // This prevents "held to death" losses on crashing tokens while still capturing
+            // late-breaking momentum on meandering winners.
             if elapsed_ms >= self.config.max_hold_ms {
+                // Hard ceiling: force exit at max_hold regardless.
                 let exit_price = self.price_feed.current_price(&mint).unwrap_or(pos.entry_price_fp);
                 to_close.push((mint, MomentumExitReason::MaxHold, exit_price));
                 continue;
+            }
+            // Trailing-stop-at-maturity: once past activation threshold, apply tight trailing stop.
+            // Only runs if activation is enabled (> 0) and price feed has data.
+            if self.config.max_hold_trail_activation_ms > 0
+                && elapsed_ms >= self.config.max_hold_trail_activation_ms
+            {
+                if let Some(current_fp) = self.price_feed.current_price(&mint).filter(|&p| p > 0) {
+                    let trail_bps = (self.config.max_hold_trail_pct * 100.0) as u32;
+                    if pos.trailing_stop_hit(current_fp, trail_bps) {
+                        to_close.push((mint, MomentumExitReason::MaxHold, current_fp));
+                        continue;
+                    }
+                }
             }
 
             // Get current price (required for TP/SL evaluation)
