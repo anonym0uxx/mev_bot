@@ -596,20 +596,22 @@ impl MomentumEngine {
             let entry_fp = pos.entry_price_fp;
 
             // Top detection — quant spec: fire 75% exit when 2+ of 5 signals trigger.
+            // Guards: (1) TP1 must be hit (position proved profitability at +5%)
+            //         (2) current price must be above entry (no top to detect in a loss)
             // TopDetector state is stored serialized in pos._pad2[0..17].
             // Only evaluates when we have at least 2 samples (derivative requires prev sample).
-            if pos.sample_count >= 2 {
-                let prev_bps = pos.price_samples_bps[pos.sample_count as usize - 2];
+            if pos.sample_count >= 2 && pos.tp_flags & 0x1 != 0 {
                 let curr_bps = price_to_bps_offset(entry_fp, current_price_fp);
-                let mut td = pos.top_detector();
-                let signal_count = td.evaluate(curr_bps, prev_bps);
-                pos.set_top_detector(&td);
+                if curr_bps > 0 {
+                    let prev_bps = pos.price_samples_bps[pos.sample_count as usize - 2];
+                    let mut td = pos.top_detector();
+                    let signal_count = td.evaluate(curr_bps, prev_bps);
+                    pos.set_top_detector(&td);
 
-                if signal_count >= self.config.top_detection_strong_signals as u8 {
-                    // Strong top signal — exit (paper mode: close entire position at current price)
-                    // In production this would be a partial exit; in paper we simplify to full exit
-                    to_close.push((mint, MomentumExitReason::TrailingStop, current_price_fp));
-                    continue;
+                    if signal_count >= self.config.top_detection_strong_signals as u8 {
+                        to_close.push((mint, MomentumExitReason::TrailingStop, current_price_fp));
+                        continue;
+                    }
                 }
             }
 
@@ -713,7 +715,23 @@ impl MomentumEngine {
             // TP2 (default 15%): logged milestone (bit 1) — no exit
             // TP3 (default 999%): safety ceiling only — top detection handles real exits
             // Quant spec: tp1_exit_pct=0.0 and tp2_exit_pct=0.0 means NO partial exits at TP1/TP2.
-            let gain_bps = price_to_bps_offset(entry_fp, current_price_fp);
+            let raw_gain_bps = price_to_bps_offset(entry_fp, current_price_fp);
+            // Sanity clamp: reject implausible gains (>500%) as transient price feed artifacts.
+            // Batch RPC getAccountInfo has no cross-account atomicity — slot-mismatched vault
+            // reads can produce 1000x spikes for one poll cycle on low-price tokens.
+            // 50,000 bps (+500%) is well above any real 10s post-graduation move.
+            let gain_bps = raw_gain_bps.min(50_000);
+            if raw_gain_bps > 50_000 {
+                tracing::warn!(
+                    mint = %bs58::encode(&mint).into_string(),
+                    raw_gain_bps,
+                    clamped = 50_000,
+                    entry_price = entry_fp,
+                    current_price = current_price_fp,
+                    hold_ms,
+                    "[momentum] implausible gain clamped — likely stale vault data"
+                );
+            }
             let tp3_bps = (self.config.tp3_pct * 100.0) as i32;
             let tp2_bps = (self.config.tp2_pct * 100.0) as i32;
             let tp1_bps = (self.config.tp1_pct * 100.0) as i32;
