@@ -232,9 +232,90 @@ impl MomentumPosition {
     pub fn hold_ms(&self, now_ms: u64) -> u64 {
         now_ms.saturating_sub(self.entry_ts_ms)
     }
+
+    /// Compute current momentum state from price sample derivatives.
+    /// Requires at least 2 samples. Returns Unknown if insufficient data.
+    #[inline]
+    pub fn momentum_state(
+        &self,
+        accel_threshold: i32,
+        decel_threshold: i32,
+        reversal_threshold: i32,
+    ) -> MomentumState {
+        let n = self.sample_count as usize;
+        if n < 2 {
+            return MomentumState::Unknown;
+        }
+        // Most recent derivative: s[n-1] - s[n-2]
+        let d = self.price_samples_bps[n - 1] - self.price_samples_bps[n - 2];
+
+        if d <= reversal_threshold {
+            return MomentumState::Reversing;
+        }
+
+        // Check for 2-consecutive deceleration (need n >= 3)
+        if n >= 3 {
+            let d_prev = self.price_samples_bps[n - 2] - self.price_samples_bps[n - 3];
+            if d < decel_threshold && d_prev < decel_threshold {
+                return MomentumState::Decelerating;
+            }
+        } else if d < decel_threshold {
+            return MomentumState::Decelerating;
+        }
+
+        if d > accel_threshold {
+            MomentumState::Accelerating
+        } else {
+            MomentumState::Sustaining
+        }
+    }
+
+    /// Whether position has been scaled in (probe → full size).
+    /// Uses _pad2[17] (byte 17, after TopDetector's 0..17).
+    #[inline(always)]
+    pub fn is_scaled_in(&self) -> bool {
+        self._pad2[17] != 0
+    }
+
+    /// Mark position as scaled in (probe → full size).
+    /// Prevents double-scaling.
+    #[inline(always)]
+    pub fn set_scaled_in(&mut self) {
+        self._pad2[17] = 1;
+    }
+
+    /// Get TopDetector state from _pad2 storage (bytes 0..17).
+    #[inline]
+    pub fn top_detector(&self) -> TopDetector {
+        TopDetector::from_bytes(self._pad2[0..17].try_into().unwrap())
+    }
+
+    /// Save TopDetector state to _pad2 storage (bytes 0..17).
+    #[inline]
+    pub fn set_top_detector(&mut self, td: &TopDetector) {
+        let bytes = td.to_bytes();
+        self._pad2[0..17].copy_from_slice(&bytes);
+    }
 }
 
 // ── Exit reason enum ─────────────────────────────────────────────────────────
+
+/// Momentum state derived from price sample derivatives.
+/// Used to select trailing stop width and inform exit decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum MomentumState {
+    /// d(bps/s) > +100: strongly accelerating. Hold, widen trail to 15%.
+    Accelerating = 0,
+    /// d(bps/s) between -100 and +100: steady. Standard 8% trail.
+    Sustaining = 1,
+    /// d(bps/s) < -100 for 2+ consecutive: momentum fading. Tighten to 5%.
+    Decelerating = 2,
+    /// d(bps/s) < -500 or bps goes negative: reversal. Exit imminent, 3% trail.
+    Reversing = 3,
+    /// Insufficient samples to classify. Treat as Sustaining.
+    Unknown = 4,
+}
 
 /// Exit reason for momentum positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -482,6 +563,75 @@ pub fn price_to_bps_offset(entry_fp: u64, current_fp: u64) -> i32 {
     let ratio_bps =
         (current_fp as i64 - entry_fp as i64).saturating_mul(10_000) / entry_fp as i64;
     ratio_bps.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+}
+
+/// Top detection state — stored serialized in MomentumPosition._pad2[0..17].
+/// 17 bytes for TopDetector + remaining bytes free for future use.
+/// Total: 17 bytes, well within _pad2's 39 bytes.
+pub struct TopDetector {
+    /// Last 3 momentum derivatives in bps/s (newest first)
+    pub last_3_d: [i32; 3],
+    /// Count of consecutive up-ticks
+    pub consecutive_up: u8,
+    /// Highest bps seen from entry (for rollback detection)
+    pub peak_bps: i32,
+}
+
+impl TopDetector {
+    pub fn new() -> Self {
+        Self { last_3_d: [0; 3], consecutive_up: 0, peak_bps: 0 }
+    }
+
+    /// Evaluate top detection signals. Returns count of active signals (0-5).
+    /// Caller triggers exit if signal_count >= config.top_detection_strong_signals (default: 2).
+    pub fn evaluate(&mut self, current_bps: i32, prev_bps: i32) -> u8 {
+        let d = current_bps - prev_bps;
+        self.last_3_d[2] = self.last_3_d[1];
+        self.last_3_d[1] = self.last_3_d[0];
+        self.last_3_d[0] = d;
+        if current_bps > self.peak_bps { self.peak_bps = current_bps; }
+
+        let mut signals = 0u8;
+        // Signal 1: Momentum cliff — lost 300+ bps/s in one tick
+        if d < self.last_3_d[1] - 300 { signals += 1; }
+        // Signal 2: First negative after 3+ consecutive up ticks
+        if d < 0 && self.consecutive_up >= 3 { signals += 1; }
+        // Signal 3: Momentum halved (current d < 40% of previous, prev was significant)
+        if self.last_3_d[1] > 100 && d < (self.last_3_d[1] as f64 * 0.4) as i32 { signals += 1; }
+        // Signal 4: Plateau — all 3 recent derivatives within ±50 bps/s
+        if self.last_3_d[0].abs() < 50 && self.last_3_d[1].abs() < 50 && self.last_3_d[2].abs() < 50 { signals += 1; }
+        // Signal 5: Rollback from peak — gave back 15%+ of gains (only above 1000 bps)
+        if self.peak_bps > 1000 && current_bps < (self.peak_bps as f64 * 0.85) as i32 { signals += 1; }
+
+        if d > 0 { self.consecutive_up = self.consecutive_up.saturating_add(1); }
+        else { self.consecutive_up = 0; }
+
+        signals
+    }
+
+    /// Serialize into 17-byte buffer for storage in MomentumPosition._pad2
+    pub fn to_bytes(&self) -> [u8; 17] {
+        let mut buf = [0u8; 17];
+        buf[0..4].copy_from_slice(&self.last_3_d[0].to_le_bytes());
+        buf[4..8].copy_from_slice(&self.last_3_d[1].to_le_bytes());
+        buf[8..12].copy_from_slice(&self.last_3_d[2].to_le_bytes());
+        buf[12] = self.consecutive_up;
+        buf[13..17].copy_from_slice(&self.peak_bps.to_le_bytes());
+        buf
+    }
+
+    /// Deserialize from 17-byte buffer
+    pub fn from_bytes(buf: &[u8; 17]) -> Self {
+        Self {
+            last_3_d: [
+                i32::from_le_bytes(buf[0..4].try_into().unwrap()),
+                i32::from_le_bytes(buf[4..8].try_into().unwrap()),
+                i32::from_le_bytes(buf[8..12].try_into().unwrap()),
+            ],
+            consecutive_up: buf[12],
+            peak_bps: i32::from_le_bytes(buf[13..17].try_into().unwrap()),
+        }
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

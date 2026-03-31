@@ -77,6 +77,81 @@ pub struct MomentumConfig {
     /// Set to 0.0 to disable tier-0 sizing (use regular grad_score tiers).
     /// Default: 0.10 SOL — reduces blind entry exposure by 2/3.
     pub tier0_size_sol: f64,
+    /// Cooldown period before a mint can be re-entered after close.
+    /// Prevents CoreCast duplicate graduation events from causing phantom re-entries.
+    /// Default: 300_000ms (5 minutes).
+    pub reentry_cooldown_ms: u64,
+
+    // ══════════════════════════════════════════════════════════
+    // MOMENTUM STATE CLASSIFICATION
+    // ══════════════════════════════════════════════════════════
+
+    /// d(bps/s) above which state = ACCELERATING. Default: 100.
+    pub momentum_accel_threshold_bps: i32,
+    /// d(bps/s) below which state = DECELERATING (requires 2 consecutive). Default: -100.
+    pub momentum_decel_threshold_bps: i32,
+    /// d(bps/s) below which state = REVERSING (single sample). Default: -500.
+    pub momentum_reversal_threshold_bps: i32,
+
+    // ══════════════════════════════════════════════════════════
+    // DYNAMIC TRAILING STOP (state-aware widths)
+    // ══════════════════════════════════════════════════════════
+
+    /// Trail width when ACCELERATING — wide to avoid shakeouts. Default: 15.0%.
+    pub trailing_stop_accel_pct: f64,
+    /// Trail width when DECELERATING — tighter to protect gains. Default: 5.0%.
+    pub trailing_stop_decel_pct: f64,
+    /// Trail width when REVERSING — near-immediate exit. Default: 3.0%.
+    pub trailing_stop_reversal_pct: f64,
+
+    // ══════════════════════════════════════════════════════════
+    // TOP DETECTION
+    // ══════════════════════════════════════════════════════════
+
+    /// Number of concurrent top signals needed to trigger exit (of 5 possible). Default: 2.
+    pub top_detection_strong_signals: u8,
+    /// Percentage of position to exit on strong top signal. Default: 75.
+    pub top_detection_exit_pct: u8,
+    /// Trail width for remaining position after top exit. Default: 3.0%.
+    pub top_detection_trail_pct: f64,
+
+    // ══════════════════════════════════════════════════════════
+    // DEAD ZONE DETECTION
+    // ══════════════════════════════════════════════════════════
+
+    /// Time window for Phase 1 dead zone check (ms). Default: 10_000 (10s).
+    pub dead_zone_early_ms: u64,
+    /// Minimum cumulative bps to survive Phase 1. Default: 50.
+    pub dead_zone_early_bps: i32,
+    /// Time window for Phase 2 dead zone check (ms). Default: 60_000 (60s).
+    pub dead_zone_confirmed_ms: u64,
+    /// Minimum cumulative bps to survive Phase 2. Default: 200.
+    pub dead_zone_confirmed_bps: i32,
+    /// Rolling window bps threshold for stagnation. Default: 300.
+    pub dead_zone_stagnant_bps: i32,
+    /// Rolling window size for stagnation check (ms). Default: 30_000.
+    pub dead_zone_stagnant_window_ms: u64,
+
+    // ══════════════════════════════════════════════════════════
+    // SCALE-IN ENTRY
+    // ══════════════════════════════════════════════════════════
+
+    /// Initial probe entry size. Default: 0.10 SOL.
+    pub probe_size_sol: f64,
+    /// s[0] bps threshold for strong conviction scale-in. Default: 300.
+    pub scale_in_s0_strong_bps: i32,
+    /// SOL to add when s[0] shows strong momentum (≥300 bps). Default: 0.40.
+    pub scale_in_s0_strong_sol: f64,
+    /// s[0] bps threshold for moderate conviction. Default: 100.
+    pub scale_in_s0_moderate_bps: i32,
+    /// SOL to add when s[0] shows moderate momentum (100-299 bps). Default: 0.20.
+    pub scale_in_s0_moderate_sol: f64,
+    /// s[1] bps threshold for second confirmation. Default: 200.
+    pub scale_in_s1_moderate_bps: i32,
+    /// SOL to add on s[1] confirmation. Default: 0.15.
+    pub scale_in_s1_sol: f64,
+    /// Absolute max position size (probe + all scale-ins). Default: 0.50 SOL.
+    pub max_total_size_sol: f64,
 }
 
 impl Default for MomentumConfig {
@@ -87,19 +162,19 @@ impl Default for MomentumConfig {
             entry_delay_ms: 15_000,
             min_grad_score: 40,
             position_size_sol: 0.3,
-            max_concurrent: 3,
+            max_concurrent: 5,
             tp1_pct: 5.0,
-            tp1_exit_pct: 0.30,
+            tp1_exit_pct: 0.0,
             tp2_pct: 15.0,
-            tp2_exit_pct: 0.30,
-            tp3_pct: 50.0,
+            tp2_exit_pct: 0.0,
+            tp3_pct: 999.0,
             tp3_exit_pct: 0.40,
             trailing_stop_pct: 8.0,
             hard_sl_pct: 12.0,
             time_sl_ms: 60_000,
-            max_hold_ms: 300_000,
+            max_hold_ms: 600_000,
             max_hold_trail_activation_ms: 200_000,
-            max_hold_trail_pct: 3.0,
+            max_hold_trail_pct: 5.0,
             check_ms: 150,
             daily_loss_cap_sol: 2.0,
             raydium_fee_bps: 25,
@@ -109,6 +184,40 @@ impl Default for MomentumConfig {
             micro_sl_ticks: 20,
             no_price_timeout_ms: 2_000,
             tier0_size_sol: 0.10,
+            reentry_cooldown_ms: 300_000,
+
+            // Momentum state classification
+            momentum_accel_threshold_bps: 100,
+            momentum_decel_threshold_bps: -100,
+            momentum_reversal_threshold_bps: -500,
+
+            // Dynamic trailing stop
+            trailing_stop_accel_pct: 15.0,
+            trailing_stop_decel_pct: 5.0,
+            trailing_stop_reversal_pct: 3.0,
+
+            // Top detection
+            top_detection_strong_signals: 2,
+            top_detection_exit_pct: 75,
+            top_detection_trail_pct: 3.0,
+
+            // Dead zone detection
+            dead_zone_early_ms: 10_000,
+            dead_zone_early_bps: 50,
+            dead_zone_confirmed_ms: 60_000,
+            dead_zone_confirmed_bps: 200,
+            dead_zone_stagnant_bps: 300,
+            dead_zone_stagnant_window_ms: 30_000,
+
+            // Scale-in entry
+            probe_size_sol: 0.10,
+            scale_in_s0_strong_bps: 300,
+            scale_in_s0_strong_sol: 0.40,
+            scale_in_s0_moderate_bps: 100,
+            scale_in_s0_moderate_sol: 0.20,
+            scale_in_s1_moderate_bps: 200,
+            scale_in_s1_sol: 0.15,
+            max_total_size_sol: 0.50,
         }
     }
 }
@@ -136,19 +245,19 @@ mod tests {
         assert_eq!(config.entry_delay_ms, 15_000);
         assert_eq!(config.min_grad_score, 40);
         assert!((config.position_size_sol - 0.3).abs() < f64::EPSILON);
-        assert_eq!(config.max_concurrent, 3);
+        assert_eq!(config.max_concurrent, 5);
         assert!((config.tp1_pct - 5.0).abs() < f64::EPSILON);
-        assert!((config.tp1_exit_pct - 0.30).abs() < f64::EPSILON);
+        assert!((config.tp1_exit_pct - 0.0).abs() < f64::EPSILON);
         assert!((config.tp2_pct - 15.0).abs() < f64::EPSILON);
-        assert!((config.tp2_exit_pct - 0.30).abs() < f64::EPSILON);
-        assert!((config.tp3_pct - 50.0).abs() < f64::EPSILON);
+        assert!((config.tp2_exit_pct - 0.0).abs() < f64::EPSILON);
+        assert!((config.tp3_pct - 999.0).abs() < f64::EPSILON);
         assert!((config.tp3_exit_pct - 0.40).abs() < f64::EPSILON);
         assert!((config.trailing_stop_pct - 8.0).abs() < f64::EPSILON);
         assert!((config.hard_sl_pct - 12.0).abs() < f64::EPSILON);
         assert_eq!(config.time_sl_ms, 60_000);
-        assert_eq!(config.max_hold_ms, 300_000);
+        assert_eq!(config.max_hold_ms, 600_000);
         assert_eq!(config.max_hold_trail_activation_ms, 200_000);
-        assert!((config.max_hold_trail_pct - 3.0).abs() < f64::EPSILON);
+        assert!((config.max_hold_trail_pct - 5.0).abs() < f64::EPSILON);
         assert_eq!(config.check_ms, 150);
         assert!((config.daily_loss_cap_sol - 2.0).abs() < f64::EPSILON);
         assert_eq!(config.raydium_fee_bps, 25);

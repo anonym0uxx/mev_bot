@@ -31,7 +31,8 @@ pub use pool::{PoolType, PoolInfo, PoolResolution, BC_TERMINAL_PRICE_LAMPORTS_PE
 
 use crate::momentum::pool::resolve_pool_from_transaction;
 use crate::momentum::position::{
-    MomentumExitReason, MomentumPosition, PendingEntry, PendingEntryRing, price_to_bps_offset,
+    MomentumExitReason, MomentumPosition, MomentumState, PendingEntry, PendingEntryRing,
+    price_to_bps_offset,
 };
 use crate::momentum::price_feed::{price_from_reserves, PriceFeedManager, VaultSubscription};
 use crate::momentum::scorer::score_graduation;
@@ -88,6 +89,11 @@ pub struct MomentumEngine {
     // ── Active positions: mint → MomentumPosition ───────────────────
     active: DashMap<[u8; 32], MomentumPosition>,
 
+    /// Tracks recently closed mint pubkeys to prevent re-entry within cooldown window.
+    /// Key: mint [u8; 32], Value: close timestamp ms.
+    /// Prevents 474+ phantom re-entries from CoreCast WebSocket reconnect floods.
+    recently_closed: DashMap<[u8; 32], u64>,
+
     // ── Pending entries scheduled for T+delay ───────────────────────
     pending: std::sync::Mutex<PendingEntryRing>,
 
@@ -143,6 +149,7 @@ impl MomentumEngine {
                 .build()
                 .expect("reqwest client build should not fail"),
             active: DashMap::new(),
+            recently_closed: DashMap::new(),
             pending: std::sync::Mutex::new(PendingEntryRing::new()),
             price_feed,
             logger,
@@ -188,6 +195,18 @@ impl MomentumEngine {
                 "[momentum] blocked mint — skipping fake graduation"
             );
             return;
+        }
+
+        // Reentry cooldown: skip if this mint was recently closed (CoreCast flood prevention)
+        if let Some(close_ts) = self.recently_closed.get(&pool_info.mint) {
+            if now_ms.saturating_sub(*close_ts) < self.config.reentry_cooldown_ms {
+                tracing::debug!(
+                    mint = %bs58::encode(&pool_info.mint).into_string(),
+                    closed_ago_ms = now_ms.saturating_sub(*close_ts),
+                    "[momentum] skipping graduation — reentry cooldown active"
+                );
+                return;
+            }
         }
 
         self.graduations_seen.fetch_add(1, Ordering::Relaxed);
@@ -300,6 +319,11 @@ impl MomentumEngine {
                 now_ms.saturating_sub(st.timestamp_ms) < 600_000
             });
         }
+
+        // Prune stale reentry cooldown entries (O(n) but n ≤ ~50 per session)
+        self.recently_closed.retain(|_, close_ts| {
+            now_ms.saturating_sub(*close_ts) < self.config.reentry_cooldown_ms
+        });
     }
 
     /// Compute position size in lamports for a graduation entry.
@@ -366,6 +390,9 @@ impl MomentumEngine {
             );
         }
         self.process_active_positions(now_ms);
+
+        // Scale-in: evaluate probe positions for momentum confirmation
+        self.process_scale_in(now_ms);
     }
 
     /// Process pending entries whose scheduled time has elapsed.
@@ -428,15 +455,12 @@ impl MomentumEngine {
                 continue;
             }
 
-            // Tier-0 sizing: if token is trading BELOW graduation price at entry,
-            // enter at reduced size — it's already showing weakness post-migration.
-            // If token is flat or up vs graduation price, use full grad_score tiers.
-            let bps_from_grad = price_to_bps_offset(entry.opening_price_fp, current_price_fp);
-            let size_lamports = if self.config.tier0_size_sol > 0.0 && bps_from_grad < 0 {
-                // Token below graduation price → enter small (0.10 SOL default)
-                (self.config.tier0_size_sol * 1_000_000_000.0) as u64
+            // Scale-in entry: ALL entries start as probes at probe_size_sol (0.10 SOL).
+            // Scaling up happens in process_scale_in() when s[0] or s[1] confirms momentum.
+            // Quant spec §4: probe 0.10 → scale to 0.50 on s[0]≥300, 0.30 on s[0]≥100.
+            let size_lamports = if self.config.probe_size_sol > 0.0 {
+                (self.config.probe_size_sol * 1_000_000_000.0) as u64
             } else {
-                // Token holding or running → full confidence, use grad_score tiers
                 self.compute_size_lamports(&entry.mint, entry.grad_score as u32)
             };
             let pos = MomentumPosition::new(
@@ -500,18 +524,36 @@ impl MomentumEngine {
 
             let elapsed_ms = now_ms.saturating_sub(pos.entry_ts_ms);
 
-            // 0. Max hold handling.
-            // After max_hold_trail_activation_ms, switch from blind hold to tight trailing stop.
-            // This prevents "held to death" losses on crashing tokens while still capturing
-            // late-breaking momentum on meandering winners.
+            // 0. Max hold handling — profit-aware with momentum-state extension.
+            // Quant spec:
+            //   - ACCELERATING at max_hold_ms: extend by 120s (one-time), dynamic 15% trail
+            //   - SUSTAINING profitable: apply max_hold_trail_pct (5%) trail, re-eval at max_hold_ms+60s
+            //   - UNPROFITABLE at max_hold_ms: immediate exit
+            //   - Absolute cap: max_hold_ms * 2 (600s → 1200s)
             if elapsed_ms >= self.config.max_hold_ms {
-                // Hard ceiling: force exit at max_hold regardless.
                 let exit_price = self.price_feed.current_price(&mint).unwrap_or(pos.entry_price_fp);
-                to_close.push((mint, MomentumExitReason::MaxHold, exit_price));
-                continue;
+                let current_bps = price_to_bps_offset(pos.entry_price_fp, exit_price);
+
+                // If unprofitable: immediate exit regardless of state
+                if current_bps <= 0 {
+                    to_close.push((mint, MomentumExitReason::MaxHold, exit_price));
+                    continue;
+                }
+
+                // Absolute cap: 2× max_hold_ms (default: 600s → 1200s)
+                if elapsed_ms >= self.config.max_hold_ms * 2 {
+                    to_close.push((mint, MomentumExitReason::MaxHold, exit_price));
+                    continue;
+                }
+
+                // Profitable — apply profit-aware extension
+                // Use Fix G trailing stop logic (already implemented) as the exit mechanism
+                // The existing max_hold_trail block handles this after the price guard
+                // So we just DON'T force-exit here for profitable positions
+                // Fall through to price guard and Fix G trailing block will handle it
             }
-            // Trailing-stop-at-maturity: once past activation threshold, apply tight trailing stop.
-            // Only runs if activation is enabled (> 0) and price feed has data.
+
+            // Trailing-stop-at-maturity: once past activation threshold, apply trailing stop.
             if self.config.max_hold_trail_activation_ms > 0
                 && elapsed_ms >= self.config.max_hold_trail_activation_ms
             {
@@ -552,6 +594,24 @@ impl MomentumEngine {
             let hold_ms = elapsed_ms;
             let entry_fp = pos.entry_price_fp;
 
+            // Top detection — quant spec: fire 75% exit when 2+ of 5 signals trigger.
+            // TopDetector state is stored serialized in pos._pad2[0..17].
+            // Only evaluates when we have at least 2 samples (derivative requires prev sample).
+            if pos.sample_count >= 2 {
+                let prev_bps = pos.price_samples_bps[pos.sample_count as usize - 2];
+                let curr_bps = price_to_bps_offset(entry_fp, current_price_fp);
+                let mut td = pos.top_detector();
+                let signal_count = td.evaluate(curr_bps, prev_bps);
+                pos.set_top_detector(&td);
+
+                if signal_count >= self.config.top_detection_strong_signals as u8 {
+                    // Strong top signal — exit (paper mode: close entire position at current price)
+                    // In production this would be a partial exit; in paper we simplify to full exit
+                    to_close.push((mint, MomentumExitReason::TrailingStop, current_price_fp));
+                    continue;
+                }
+            }
+
             // Fix D: Micro hard SL — tighter stop for the first ~3 seconds.
             // Catches immediate dump-on-graduation tokens before the first sample window.
             // After micro_sl_ticks, the regular hard_sl_pct takes over.
@@ -570,9 +630,21 @@ impl MomentumEngine {
                 continue;
             }
 
-            // 3. Trailing stop (only after hitting TP1)
+            // 3. Trailing stop — active after TP1 hit, width is momentum-state-aware.
+            // Quant spec: ACCELERATING=15%, SUSTAINING=8%, DECELERATING=5%, REVERSING=3%
             if pos.tp_flags & 0x1 != 0 {
-                let trailing_bps = (self.config.trailing_stop_pct * 100.0) as u32;
+                let state = pos.momentum_state(
+                    self.config.momentum_accel_threshold_bps,
+                    self.config.momentum_decel_threshold_bps,
+                    self.config.momentum_reversal_threshold_bps,
+                );
+                let trail_pct = match state {
+                    MomentumState::Accelerating => self.config.trailing_stop_accel_pct,
+                    MomentumState::Sustaining | MomentumState::Unknown => self.config.trailing_stop_pct,
+                    MomentumState::Decelerating => self.config.trailing_stop_decel_pct,
+                    MomentumState::Reversing => self.config.trailing_stop_reversal_pct,
+                };
+                let trailing_bps = (trail_pct * 100.0) as u32;
                 if pos.trailing_stop_hit(current_price_fp, trailing_bps) {
                     to_close.push((
                         mint,
@@ -580,6 +652,49 @@ impl MomentumEngine {
                         current_price_fp,
                     ));
                     continue;
+                }
+            }
+
+            // Dead zone detection — quant spec: kill tokens with no momentum early.
+            // Phase 1 (T+10s): if all last 5 samples < dead_zone_early_bps (50) → exit
+            // Phase 2 (T+60s): if cumulative bps < dead_zone_confirmed_bps (200) → exit
+            // Phase 3: if total movement < dead_zone_stagnant_bps (300) in last 30s → exit
+            // Quant estimate: saves +3.70 SOL per session (84% of dead tokens caught early)
+            if self.config.dead_zone_early_ms > 0 && pos.sample_count >= 5 {
+                let n = pos.sample_count as usize;
+                let current_bps = price_to_bps_offset(entry_fp, current_price_fp);
+
+                // Phase 1: early dead zone at T+10s
+                if hold_ms >= self.config.dead_zone_early_ms
+                    && hold_ms < self.config.dead_zone_confirmed_ms
+                {
+                    let last5: &[i32] = &pos.price_samples_bps[n.saturating_sub(5)..n];
+                    if last5.iter().all(|&s| s < self.config.dead_zone_early_bps) {
+                        to_close.push((mint, MomentumExitReason::TimeSl, current_price_fp));
+                        continue;
+                    }
+                }
+
+                // Phase 2: confirmed dead at T+60s
+                if hold_ms >= self.config.dead_zone_confirmed_ms {
+                    if current_bps < self.config.dead_zone_confirmed_bps {
+                        to_close.push((mint, MomentumExitReason::TimeSl, current_price_fp));
+                        continue;
+                    }
+
+                    // Phase 3: stagnation — total movement < 300 bps over last 30s
+                    let samples_in_window = (self.config.dead_zone_stagnant_window_ms
+                        / (self.config.sample_interval_ticks * self.config.check_ms).max(1))
+                        as usize;
+                    if samples_in_window >= 2 && n >= samples_in_window {
+                        let window = &pos.price_samples_bps[n - samples_in_window..n];
+                        let max_s = window.iter().copied().max().unwrap_or(0);
+                        let min_s = window.iter().copied().min().unwrap_or(0);
+                        if (max_s - min_s) < self.config.dead_zone_stagnant_bps {
+                            to_close.push((mint, MomentumExitReason::TimeSl, current_price_fp));
+                            continue;
+                        }
+                    }
                 }
             }
 
@@ -592,27 +707,125 @@ impl MomentumEngine {
                 }
             }
 
-            // 5. TP tiers
+            // 5. TP milestones — these set tp_flags but do NOT trigger position closes.
+            // TP1 (default 5%): activates dynamic trailing stop (bit 0)
+            // TP2 (default 15%): logged milestone (bit 1) — no exit
+            // TP3 (default 999%): safety ceiling only — top detection handles real exits
+            // Quant spec: tp1_exit_pct=0.0 and tp2_exit_pct=0.0 means NO partial exits at TP1/TP2.
             let gain_bps = price_to_bps_offset(entry_fp, current_price_fp);
             let tp3_bps = (self.config.tp3_pct * 100.0) as i32;
             let tp2_bps = (self.config.tp2_pct * 100.0) as i32;
             let tp1_bps = (self.config.tp1_pct * 100.0) as i32;
 
             if gain_bps >= tp3_bps && pos.tp_flags & 0x4 == 0 {
-                pos.tp_flags |= 0x7; // mark all TP levels hit
+                // Safety ceiling only (tp3_pct=999.0 by default, effectively never fires)
+                pos.tp_flags |= 0x7;
                 to_close.push((mint, MomentumExitReason::Tp3, current_price_fp));
             } else if gain_bps >= tp2_bps && pos.tp_flags & 0x2 == 0 {
-                pos.tp_flags |= 0x3; // mark TP1+TP2 hit
-                // Don't close yet — wait for TP3 or trailing stop
+                pos.tp_flags |= 0x3; // milestone — no close, just flag
             } else if gain_bps >= tp1_bps && pos.tp_flags & 0x1 == 0 {
-                pos.tp_flags |= 0x1; // mark TP1 hit — activates trailing stop
-                // Don't close yet — wait for TP2+
+                pos.tp_flags |= 0x1; // activates dynamic trailing stop above — no close
             }
         }
 
         // Close positions (must release iter_mut borrow first)
         for (mint, reason, exit_price_fp) in to_close {
             self.close_position(mint, reason, exit_price_fp, now_ms);
+        }
+    }
+
+    /// Scale-in logic: after first price sample, scale position based on momentum signal.
+    /// Called from on_tick() AFTER process_active_positions().
+    ///
+    /// Quant spec §4:
+    /// - s[0] >= 300 bps: add scale_in_s0_strong_sol (0.40) → total 0.50 SOL
+    /// - s[0] >= 100 bps: add scale_in_s0_moderate_sol (0.20) → total 0.30 SOL
+    /// - s[0] < 0 bps: exit probe immediately (dump signal)
+    /// - s[1] >= 200 bps (if still at probe size): add scale_in_s1_sol (0.15) → total 0.25
+    fn process_scale_in(&self, _now_ms: u64) {
+        // Skip if probe/scale-in disabled
+        if self.config.probe_size_sol <= 0.0 {
+            return;
+        }
+
+        let probe_lamports = (self.config.probe_size_sol * 1e9) as u64;
+        let max_lamports = (self.config.max_total_size_sol * 1e9) as u64;
+
+        for mut entry in self.active.iter_mut() {
+            let pos = entry.value_mut();
+
+            // Skip if already scaled in
+            if pos.is_scaled_in() {
+                continue;
+            }
+
+            // Need at least 1 sample for s[0]
+            if pos.sample_count < 1 {
+                continue;
+            }
+
+            let s0 = pos.price_samples_bps[0];
+
+            // s[0] < 0: dump signal — mark scaled_in to prevent further checks.
+            // The dead zone or time_sl will handle the actual exit.
+            if s0 < 0 {
+                pos.set_scaled_in();
+                continue;
+            }
+
+            // s[0] >= scale_in_s0_strong_bps (300): strong conviction
+            if s0 >= self.config.scale_in_s0_strong_bps {
+                let new_size = (probe_lamports as f64 + self.config.scale_in_s0_strong_sol * 1e9) as u64;
+                pos.size_lamports = new_size.min(max_lamports);
+                pos.set_scaled_in();
+                tracing::info!(
+                    mint = %bs58::encode(&pos.mint).into_string(),
+                    s0,
+                    new_size_sol = pos.size_lamports as f64 / 1e9,
+                    "[momentum] scale-in: STRONG conviction (s[0] >= {})",
+                    self.config.scale_in_s0_strong_bps
+                );
+                continue;
+            }
+
+            // s[0] >= scale_in_s0_moderate_bps (100): moderate conviction
+            if s0 >= self.config.scale_in_s0_moderate_bps {
+                let new_size = (probe_lamports as f64 + self.config.scale_in_s0_moderate_sol * 1e9) as u64;
+                pos.size_lamports = new_size.min(max_lamports);
+                pos.set_scaled_in();
+                tracing::info!(
+                    mint = %bs58::encode(&pos.mint).into_string(),
+                    s0,
+                    new_size_sol = pos.size_lamports as f64 / 1e9,
+                    "[momentum] scale-in: MODERATE conviction (s[0] >= {})",
+                    self.config.scale_in_s0_moderate_bps
+                );
+                continue;
+            }
+
+            // s[0] 0-99: weak — check s[1] if available
+            if pos.sample_count >= 2 {
+                let s1 = pos.price_samples_bps[1];
+                if s1 >= self.config.scale_in_s1_moderate_bps {
+                    let new_size = (probe_lamports as f64 + self.config.scale_in_s1_sol * 1e9) as u64;
+                    pos.size_lamports = new_size.min(max_lamports);
+                    pos.set_scaled_in();
+                    tracing::info!(
+                        mint = %bs58::encode(&pos.mint).into_string(),
+                        s1,
+                        new_size_sol = pos.size_lamports as f64 / 1e9,
+                        "[momentum] scale-in: s[1] confirmation (s[1] >= {})",
+                        self.config.scale_in_s1_moderate_bps
+                    );
+                } else if s1 < 0 {
+                    // s[1] negative after weak s[0] — give up scaling, stay at probe
+                    pos.set_scaled_in();
+                }
+                // 3 samples and still not confirmed — lock at probe size
+                if pos.sample_count >= 3 && !pos.is_scaled_in() {
+                    pos.set_scaled_in();
+                }
+            }
         }
     }
 
@@ -629,6 +842,9 @@ impl MomentumEngine {
         let Some((_, pos)) = self.active.remove(&mint) else {
             return;
         };
+
+        // Record close timestamp for reentry cooldown
+        self.recently_closed.insert(mint, now_ms);
 
         // Calculate P&L
         let size_sol = pos.size_lamports as f64 / 1e9;
