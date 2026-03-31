@@ -404,6 +404,7 @@ impl PositionManager {
 
     /// Look up TP/SL percentages for a given trigger trade size.
     /// Returns (tp_pct, sl_pct) from the first matching tier.
+    #[allow(dead_code)]
     fn lookup_tp_sl(&self, trigger_sol: u64) -> (f64, f64) {
         for tier in &self.config.tp_tiers {
             if trigger_sol <= tier.trigger_max_lamports {

@@ -27,9 +27,8 @@ pub mod scorer;
 pub use config::MomentumConfig;
 pub use logger::{MomentumClosedPosition, MomentumPaperLogger};
 
-use crate::arb::graduation::{PoolType, PoolResolution, resolve_pool_from_transaction};
+use crate::arb::graduation::{PoolType, resolve_pool_from_transaction};
 use crate::arb::pool_resolver::{PoolInfo, BC_TERMINAL_PRICE_LAMPORTS_PER_ATOM};
-use crate::feeds::MigrationSource;
 use crate::momentum::position::{
     MomentumExitReason, MomentumPosition, PendingEntry, PendingEntryRing, price_to_bps_offset,
 };
@@ -493,7 +492,7 @@ impl MomentumEngine {
     /// Resolves the pool via getTransaction and calls on_graduation() if successful.
     /// Cold path — graduation is rare (~10-20 Raydium/day).
     #[inline(never)]
-    pub async fn on_migration(&self, mint: [u8; 32], ts_ms: u64, sig: [u8; 64]) {
+    pub async fn on_migration(&self, _mint: [u8; 32], ts_ms: u64, sig: [u8; 64]) {
         if !self.config.enabled { return; }
         match resolve_pool_from_transaction(&self.http_client, &sig, &self.rpc_url).await {
             Some(resolution) => {

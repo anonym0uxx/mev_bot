@@ -464,6 +464,7 @@ async fn fetch_vault_reserves(
 }
 
 /// Best-effort mint extraction from postTokenBalances when pool parsing fails.
+#[allow(dead_code)]
 fn extract_fallback_mint(tx: &serde_json::Value) -> Option<[u8; 32]> {
     let balances = tx
         .pointer("/meta/postTokenBalances")?

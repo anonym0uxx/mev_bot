@@ -753,7 +753,7 @@ fn parse_pump_transaction(
 #[inline(always)]
 fn parse_pump_migration(
     tx: &solana_sdk::transaction::VersionedTransaction,
-    slot: u64,
+    _slot: u64,
     now_ms: u64,
 ) -> Option<FeedEvent> {
     let account_keys = tx.message.static_account_keys();

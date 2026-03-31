@@ -15,7 +15,7 @@
 //!
 //! LATENCY BUDGET: <30ns lookup, <20ns insert, <10ns expire check
 
-use super::entry_engine::EntryInput;
+
 use super::kelly_sizing::EntryConviction;
 use crate::feeds::TradeEvent;
 
@@ -102,6 +102,7 @@ impl WatchSlot {
     }
 
     #[inline(always)]
+    #[allow(dead_code)]
     fn is_partial_confirm(&self) -> bool {
         self.state == 3
     }

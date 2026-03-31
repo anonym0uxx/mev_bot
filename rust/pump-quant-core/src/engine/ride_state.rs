@@ -10,7 +10,7 @@
 
 use crate::feeds::FeedSource;
 use super::bayesian_signal::{self, BayesianSignal, bloom_count, bloom_insert, count_in_window};
-use super::kelly_sizing::{fee_adjust_r, DEFAULT_ROUND_TRIP_FEE_BP, DEFAULT_AVG_LOSS_BP};
+use super::kelly_sizing::{fee_adjust_r, DEFAULT_ROUND_TRIP_FEE_BP};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -106,6 +106,7 @@ pub use super::config::RideConfig;
 
 /// Convert lamports to milli-vSOL (rounds to nearest).
 #[inline(always)]
+#[allow(dead_code)]
 fn lamports_to_mvsol(lamports: u64) -> u32 {
     (lamports / 1_000_000) as u32
 }

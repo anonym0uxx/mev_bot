@@ -44,6 +44,7 @@ struct RingSlot {
     /// Timestamp when this entry was inserted (epoch ms).
     ts_ms: u64,
     /// Source that first detected this migration.
+    #[allow(dead_code)]
     source: MigrationSource,
 }
 

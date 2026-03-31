@@ -14,7 +14,7 @@ use super::entry_engine::{EntryEngine, EntryInput, EntryAction};
 use super::health::HealthMonitor;
 use super::positions::{ClosedPosition, ExitReason, PositionManager};
 use super::watchlist::Watchlist;
-use crate::engine::kelly_sizing::{EntryConviction, BankrollSource, PaperBankroll};
+use crate::engine::kelly_sizing::{BankrollSource, PaperBankroll};
 
 use crate::core::mint_map::MintHistoryMap;
 use crate::core::trade_record::TradeRecord;
@@ -83,12 +83,16 @@ pub struct HotPath {
 
     // ── ToD size multiplier ─────────────────────────────────────────
     /// UTC hours that get the ToD boost.
+    #[allow(dead_code)]
     boosted_hours_utc: Vec<u8>,
     /// Precomputed bitmask: bit N set = hour N boosted. Eliminates Vec scan.
+    #[allow(dead_code)]
     boosted_hours_bitmask: u32,
     /// Multiplier for boosted hours (default 1.25).
+    #[allow(dead_code)]
     tod_boost_multiplier: f64,
     /// Max entry size in lamports (for capping after ToD multiplier).
+    #[allow(dead_code)]
     max_entry_size_lamports: u64,
 
     // ── Regime exclusion set ──────────────────────────────────────────
@@ -257,6 +261,7 @@ impl HotPath {
     /// Returns the time-of-day size multiplier for the given UTC hour.
     /// Uses precomputed bitmask (~1ns) instead of Vec::contains scan (~15ns).
     #[inline(always)]
+    #[allow(dead_code)]
     fn get_tod_multiplier(&self, hour_utc: u8) -> f64 {
         if (self.boosted_hours_bitmask >> hour_utc) & 1 == 1 {
             self.tod_boost_multiplier
@@ -596,6 +601,7 @@ impl HotPath {
     /// PERF: #[inline(never)] — cold path, called rarely (~every 500 rejects).
     /// Keep out of icache to avoid polluting hot-path instruction fetch.
     #[inline(never)]
+    #[allow(dead_code)]
     fn log_gate_rejections(&self) {
         let names = [
             "BlockedHour", "NotBuy", "TriggerTooSmall", "TriggerTooLarge",

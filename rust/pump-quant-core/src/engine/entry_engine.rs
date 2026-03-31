@@ -44,9 +44,11 @@ type FillRateLut = [f64; 64];
 const FILL_RATE_SCALE: u64 = 1_328_125_000;
 
 /// Pump.fun initial vSOL reserves (30 SOL in lamports).
+#[allow(dead_code)]
 const INITIAL_VSOL_LAMPORTS: u64 = 30_000_000_000;
 
 /// Pump.fun bonding curve range (graduation vSOL - initial vSOL = 85 SOL in lamports).
+#[allow(dead_code)]
 const VSOL_RANGE_LAMPORTS: u64 = 85_000_000_000;
 
 // ─── Hard Gate Thresholds ───────────────────────────────────────────────────

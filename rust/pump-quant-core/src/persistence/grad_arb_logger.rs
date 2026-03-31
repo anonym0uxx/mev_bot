@@ -10,8 +10,7 @@ use std::io::{BufWriter, Write};
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use crate::arb::graduation::{GradArbClosedPosition, GradArbExitReason, PoolType};
-use crate::feeds::MigrationSource;
+use crate::arb::graduation::GradArbClosedPosition;
 
 /// Compile-time constant strategy tag for graduation arb trades.
 const STRATEGY_TAG: &str = "graduation_arb";
