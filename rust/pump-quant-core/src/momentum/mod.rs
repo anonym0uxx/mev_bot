@@ -310,6 +310,18 @@ impl MomentumEngine {
         self.process_pending_entries(now_ms).await;
 
         // Process active positions
+        let active_count = self.active.len();
+        let pending_count = self.pending.lock().map(|r| r.len()).unwrap_or(0);
+        // Log every ~10s (check_ms=150ms, 10000/150≈67)
+        let tick_num = self.last_tick_ms.load(Ordering::Relaxed) / self.config.check_ms.max(1);
+        if tick_num % 67 == 0 && (active_count > 0 || pending_count > 0) {
+            tracing::info!(
+                active = active_count,
+                pending = pending_count,
+                scored = self.scored_tokens.len(),
+                "[momentum] tick status"
+            );
+        }
         self.process_active_positions(now_ms);
     }
 
