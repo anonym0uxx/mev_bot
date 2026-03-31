@@ -192,9 +192,11 @@ impl TxExecutor {
         }
     }
 
-    /// Compute dynamic Jito tip based on position size, gain, and exit urgency.
-    /// Ensures tip is always profitable: tip < 8% of expected gross PnL when winning.
-    /// For losses: urgency drives the tip to maximize landing probability.
+    /// Compute the Jito bundle tip for an exit transaction.
+    ///
+    /// Uses absolute per-tier floors calibrated to Solana MEV market (2026-Q1),
+    /// plus a size-proportional component so larger positions pay more.
+    /// PnL cap is tiered by gain magnitude to protect small wins.
     pub fn compute_exit_tip(
         size_lamports: u64,
         gain_bps: i64,
@@ -203,41 +205,77 @@ impl TxExecutor {
         is_time_sl: bool,
         is_max_hold: bool,
     ) -> u64 {
-        const TIP_FLOOR: u64   = 10_000;     // 0.00001 SOL minimum
-        const TIP_CEILING: u64 = 5_000_000;  // 0.005 SOL maximum
-        const BASE_RATE: u64   = 25;         // 0.0025% of position size
+        // ── Absolute floors per urgency tier (min competitive Jito tip) ──
+        const FLOOR_HARD_SL: u64      = 500_000;   // 0.0005  SOL — must land NOW
+        const FLOOR_TRAIL_LOSS: u64   = 300_000;   // 0.0003  SOL — trailing stop underwater
+        const FLOOR_TRAIL_WIN: u64    = 100_000;   // 0.0001  SOL — trailing stop in profit
+        const FLOOR_TP: u64           =  80_000;   // 0.00008 SOL — take profit
+        const FLOOR_TIME_SL: u64      =  50_000;   // 0.00005 SOL — dead zone kill
+        const FLOOR_MAX_HOLD: u64     =  50_000;   // 0.00005 SOL — timeout
 
-        // Urgency multiplier (basis points, 10000 = 1.0x)
-        let urgency_bp: u64 = if is_hard_sl {
-            50_000 // 5.0x — price collapsing
+        // ── Size-proportional rates (bps of position size) ──
+        const RATE_HARD_SL: u64     = 20;  // 0.20% of position
+        const RATE_TRAIL_LOSS: u64  = 12;  // 0.12%
+        const RATE_TRAIL_WIN: u64   =  6;  // 0.06%
+        const RATE_TP: u64          =  5;  // 0.05%
+        const RATE_TIME_SL: u64     =  3;  // 0.03%
+        const RATE_MAX_HOLD: u64    =  3;  // 0.03%
+
+        // ── Ceilings ──
+        const CEILING_NORMAL: u64   =  5_000_000;  // 0.005 SOL
+        const CEILING_HARD_SL: u64  = 20_000_000;  // 0.020 SOL
+
+        let (floor, rate_bps, ceiling) = if is_hard_sl {
+            (FLOOR_HARD_SL, RATE_HARD_SL, CEILING_HARD_SL)
         } else if is_trailing_stop && gain_bps < 0 {
-            40_000 // 4.0x — losing trailing stop
+            (FLOOR_TRAIL_LOSS, RATE_TRAIL_LOSS, CEILING_NORMAL)
         } else if is_trailing_stop {
-            20_000 // 2.0x — profitable trailing stop
+            (FLOOR_TRAIL_WIN, RATE_TRAIL_WIN, CEILING_NORMAL)
         } else if is_time_sl {
-            3_000  // 0.3x — dead zone kill, no urgency
+            (FLOOR_TIME_SL, RATE_TIME_SL, CEILING_NORMAL)
         } else if is_max_hold {
-            5_000  // 0.5x — timeout
+            (FLOOR_MAX_HOLD, RATE_MAX_HOLD, CEILING_NORMAL)
         } else {
-            15_000 // 1.5x — TP exits
+            (FLOOR_TP, RATE_TP, CEILING_NORMAL)
         };
 
-        // Base tip proportional to position size
-        let base_tip = (size_lamports * BASE_RATE) / 1_000_000;
+        // Single division — no precision loss from chained integer ops
+        let proportional_tip = size_lamports * rate_bps / 10_000;
+        let tip = proportional_tip.max(floor);
 
-        // Apply urgency
-        let urgency_tip = (base_tip * urgency_bp) / 10_000;
-
-        // PnL cap: tip ≤ 8% of expected gross PnL (when profitable)
-        let capped = if gain_bps > 0 {
-            let expected_gross_lamports = (size_lamports as i64 * gain_bps / 10_000) as u64;
-            let pnl_cap = (expected_gross_lamports * 8) / 100;
-            urgency_tip.min(pnl_cap.max(TIP_FLOOR)) // never go below floor even when capping
+        // PnL cap: only on winning, non-hard-SL exits
+        // Tiered by gain size to protect small wins from excessive tip cost
+        let tip = if gain_bps > 0 && !is_hard_sl {
+            let gross_lamports = (size_lamports as u128 * gain_bps as u128 / 10_000) as u64;
+            let cap_pct: u64 = if gain_bps < 2_000 { 15 }
+                               else if gain_bps < 10_000 { 10 }
+                               else { 5 };
+            let pnl_cap = gross_lamports * cap_pct / 100;
+            tip.min(pnl_cap.max(floor))
         } else {
-            urgency_tip
+            tip
         };
 
-        capped.clamp(TIP_FLOOR, TIP_CEILING)
+        tip.min(ceiling)
+    }
+
+    /// Compute the Jito bundle tip for an entry (buy) transaction.
+    ///
+    /// Higher-scored graduations get more aggressive entry tips to land
+    /// before price moves away from the graduation level.
+    pub fn compute_buy_tip(grad_score: f64, size_lamports: u64) -> u64 {
+        const BUY_FLOOR: u64   = 100_000;    // 0.0001 SOL minimum
+        const BUY_CEILING: u64 = 5_000_000;  // 0.005 SOL maximum
+
+        // 0.05% of position size as base
+        let base = size_lamports * 5 / 10_000;
+
+        // Score multiplier: score 50→1.0x, 100→3.0x linear
+        let score_clamped = (grad_score as u64).clamp(50, 100);
+        let multiplier_pct = 100 + (score_clamped - 50) * 4; // 100–300%
+
+        let tip = base * multiplier_pct / 100;
+        tip.clamp(BUY_FLOOR, BUY_CEILING)
     }
 
     /// Execute a buy transaction.
@@ -277,7 +315,8 @@ impl TxExecutor {
             size_lamports,
             slippage_bps: self.config.slippage_bps,
             priority_fee_microlamports: self.config.priority_fee_lamports,
-            jito_tip_lamports: self.config.jito_tip_lamports,
+            // TODO: pass grad_score through to use score-adaptive buy tip
+            jito_tip_lamports: Self::compute_buy_tip(0.0, size_lamports), // TODO: pass grad_score when available
             recent_blockhash: blockhash.to_bytes(),
         };
 
