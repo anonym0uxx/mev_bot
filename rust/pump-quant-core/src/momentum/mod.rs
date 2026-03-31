@@ -428,27 +428,17 @@ impl MomentumEngine {
                 continue;
             }
 
-            // Tier-0 sizing: if price feed just delivered its first reading (< 500ms old),
-            // enter at reduced size — we have no momentum signal yet.
-            // Once we have sample history, regular grad_score tiers apply.
-            let price_feed_age_ms = self
-                .price_feed
-                .price_state(&entry.mint)
-                .map(|s| {
-                    now_ms.saturating_sub(
-                        s.last_update_ms
-                            .load(std::sync::atomic::Ordering::Relaxed),
-                    )
-                })
-                .unwrap_or(u64::MAX);
-
-            let size_lamports =
-                if self.config.tier0_size_sol > 0.0 && price_feed_age_ms < 500 {
-                    // Price feed < 500ms old — no momentum signal. Enter at tier-0 size.
-                    (self.config.tier0_size_sol * 1_000_000_000.0) as u64
-                } else {
-                    self.compute_size_lamports(&entry.mint, entry.grad_score as u32)
-                };
+            // Tier-0 sizing: if token is trading BELOW graduation price at entry,
+            // enter at reduced size — it's already showing weakness post-migration.
+            // If token is flat or up vs graduation price, use full grad_score tiers.
+            let bps_from_grad = price_to_bps_offset(entry.opening_price_fp, current_price_fp);
+            let size_lamports = if self.config.tier0_size_sol > 0.0 && bps_from_grad < 0 {
+                // Token below graduation price → enter small (0.10 SOL default)
+                (self.config.tier0_size_sol * 1_000_000_000.0) as u64
+            } else {
+                // Token holding or running → full confidence, use grad_score tiers
+                self.compute_size_lamports(&entry.mint, entry.grad_score as u32)
+            };
             let pos = MomentumPosition::new(
                 entry.mint,
                 now_ms,
@@ -462,6 +452,15 @@ impl MomentumEngine {
                 entry.pre_grad_buys_5s,
                 self.config.entry_delay_ms as u32,
             );
+
+            // Guard: skip if position already active for this mint (late duplicate slipped through ring buffer).
+            if self.active.contains_key(&entry.mint) {
+                tracing::debug!(
+                    mint = %bs58::encode(&entry.mint).into_string(),
+                    "[momentum] skipping duplicate entry — mint already active"
+                );
+                continue;
+            }
 
             self.active.insert(entry.mint, pos);
             self.entries_opened.fetch_add(1, Ordering::Relaxed);

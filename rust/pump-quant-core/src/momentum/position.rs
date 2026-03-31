@@ -373,11 +373,22 @@ impl PendingEntryRing {
         }
     }
 
-    /// Push a new pending entry. Returns false if ring is full (all 64 active).
+    /// Push a new pending entry. Returns false if ring is full (all 64 active)
+    /// or if a duplicate mint is already queued.
     ///
     /// If the slot at head is inactive (already drained), it will be overwritten.
     /// If the ring has wrapped and the slot is still active, returns false.
     pub fn push(&mut self, entry: PendingEntry) -> bool {
+        // Dedup: reject if this mint is already pending in an active slot.
+        // Multiple feeds fire on_graduation for the same mint — only keep the first.
+        let count = self.count.min(64);
+        for i in 0..count {
+            let idx = (self.head + i) % 64;
+            if self.slots[idx].active && self.slots[idx].mint == entry.mint {
+                return false; // already queued, discard duplicate
+            }
+        }
+
         if self.count >= 64 {
             // Ring full — check if head slot is inactive (can reclaim)
             if self.slots[self.head].active {
