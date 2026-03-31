@@ -61,6 +61,11 @@ pub struct MomentumConfig {
     pub micro_sl_pct: f64,
     /// Number of ticks during which micro_sl_pct applies (default: 20 ≈ 3s at 150ms).
     pub micro_sl_ticks: u64,
+    /// Max ms to wait for live price feed before skipping an entry.
+    /// If price hasn't arrived within this window, the entry is abandoned
+    /// rather than entering at the stale graduation reserve price.
+    /// Default: 2000ms (gives Helius WSS ~2s to deliver live price).
+    pub no_price_timeout_ms: u64,
 }
 
 impl Default for MomentumConfig {
@@ -89,6 +94,7 @@ impl Default for MomentumConfig {
             sample_interval_ticks: 7,
             micro_sl_pct: 8.0,
             micro_sl_ticks: 20,
+            no_price_timeout_ms: 2_000,
         }
     }
 }
@@ -134,6 +140,7 @@ mod tests {
         assert_eq!(config.sample_interval_ticks, 7);
         assert!((config.micro_sl_pct - 8.0).abs() < f64::EPSILON);
         assert_eq!(config.micro_sl_ticks, 20);
+        assert_eq!(config.no_price_timeout_ms, 2_000);
     }
 
     #[test]

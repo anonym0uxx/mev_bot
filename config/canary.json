@@ -533,6 +533,7 @@
     "pumpswap_fee_bps": 100,
     "sample_interval_ticks": 7,
     "micro_sl_pct": 8.0,
-    "micro_sl_ticks": 20
+    "micro_sl_ticks": 20,
+    "no_price_timeout_ms": 2000
   }
 }

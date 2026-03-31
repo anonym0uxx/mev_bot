@@ -321,6 +321,10 @@ pub struct PendingEntry {
     pub opening_price_fp: u64,
     /// Bonding curve terminal price.
     pub bc_price_fp: u64,
+    /// Timestamp when this entry was first scheduled (graduation_ts + entry_delay_ms).
+    /// Used to detect price feed timeout — if now_ms - first_scheduled_ts_ms > no_price_timeout_ms,
+    /// skip entry rather than use stale opening_price_fp.
+    pub first_scheduled_ts_ms: u64,
     /// Whether this slot is active.
     pub active: bool,
 }
@@ -337,6 +341,7 @@ impl Default for PendingEntry {
             scheduled_ts_ms: 0,
             opening_price_fp: 0,
             bc_price_fp: 0,
+            first_scheduled_ts_ms: 0,
             active: false,
         }
     }

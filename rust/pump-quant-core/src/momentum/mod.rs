@@ -265,6 +265,7 @@ impl MomentumEngine {
             scheduled_ts_ms: now_ms + self.config.entry_delay_ms,
             opening_price_fp: entry_price_fp,
             bc_price_fp,
+            first_scheduled_ts_ms: now_ms,
             active: true,
         };
 
@@ -368,6 +369,11 @@ impl MomentumEngine {
     }
 
     /// Process pending entries whose scheduled time has elapsed.
+    ///
+    /// If the price feed hasn't delivered live data yet, entries are re-queued
+    /// for the next tick rather than entering at the stale graduation-time price.
+    /// Entries are abandoned (skipped) once `no_price_timeout_ms` elapses without
+    /// a live price, preventing ghost-price entries that trigger false stop-losses.
     #[inline(never)]
     async fn process_pending_entries(&self, now_ms: u64) {
         let ready: Vec<PendingEntry> = if let Ok(mut ring) = self.pending.lock() {
@@ -376,18 +382,39 @@ impl MomentumEngine {
             return;
         };
 
+        // Entries deferred because price feed isn't ready yet
+        let mut requeue: Vec<PendingEntry> = Vec::new();
+
         for entry in ready {
-            // Check limits again at entry time
+            // Check limits again at entry time — drop excess entries
             if self.active.len() >= self.config.max_concurrent as usize {
                 break;
             }
 
-            // Get current price from price feed
+            // Get current live price from price feed
             let current_price_fp = match self.price_feed.current_price(&entry.mint) {
                 Some(p) if p > 0 => p,
                 _ => {
-                    // Price feed not ready yet — use opening price
-                    entry.opening_price_fp
+                    // Price feed not ready yet. Check if we've waited long enough.
+                    let waited_ms = now_ms.saturating_sub(entry.first_scheduled_ts_ms);
+                    if waited_ms < self.config.no_price_timeout_ms {
+                        // Re-queue: try again next tick
+                        tracing::debug!(
+                            mint = %bs58::encode(&entry.mint).into_string(),
+                            waited_ms,
+                            "[momentum] price feed not ready, re-queuing entry"
+                        );
+                        requeue.push(entry);
+                    } else {
+                        // Timeout: abandon this entry to avoid stale price entry
+                        tracing::warn!(
+                            mint = %bs58::encode(&entry.mint).into_string(),
+                            waited_ms,
+                            "[momentum] price feed timeout — abandoning entry (no_price_timeout_ms={})",
+                            self.config.no_price_timeout_ms
+                        );
+                    }
+                    continue;
                 }
             };
 
@@ -428,6 +455,18 @@ impl MomentumEngine {
                 kelly_scored,
                 "[momentum] paper position OPENED"
             );
+        }
+
+        // Re-push deferred entries back into the pending ring
+        if !requeue.is_empty() {
+            if let Ok(mut ring) = self.pending.lock() {
+                for mut entry in requeue {
+                    // Re-schedule for next tick
+                    entry.scheduled_ts_ms = now_ms + self.config.check_ms;
+                    entry.active = true;
+                    ring.push(entry);
+                }
+            }
         }
     }
 
@@ -913,8 +952,16 @@ mod tests {
                 scheduled_ts_ms: 1_000, // already past
                 opening_price_fp: 381,
                 bc_price_fp: 411,
+                first_scheduled_ts_ms: 1_000,
                 active: true,
             });
+        }
+
+        // Insert a live price so Fix F doesn't re-queue/abandon the entry
+        {
+            let state = crate::momentum::price_feed::PriceState::new();
+            state.price_fp.store(381, Ordering::Relaxed);
+            engine.price_feed.prices.insert([0xDD; 32], state);
         }
 
         // Tick at T=2000 — entry should happen (delay elapsed)
