@@ -39,6 +39,8 @@ fn map_ride_exit_reason(r: RideExitReason) -> ExitReason {
         RideExitReason::CreatorSell    => ExitReason::RideCreatorSell,
         RideExitReason::MaxHold        => ExitReason::RideMaxHold,
         RideExitReason::SignalExit     => ExitReason::RideSignalExit,
+        RideExitReason::UrgencyPartial => ExitReason::RideUrgencyPartial,
+        RideExitReason::UrgencyFull    => ExitReason::RideUrgencyFull,
     }
 }
 
@@ -136,6 +138,10 @@ pub enum ExitReason {
     RideCreatorSell,
     RideMaxHold,
     RideSignalExit,
+    /// V4: urgency-driven partial exit.
+    RideUrgencyPartial,
+    /// V4: urgency-driven full exit.
+    RideUrgencyFull,
 }
 
 /// A closed position with full PnL accounting.
@@ -455,7 +461,7 @@ impl PositionManager {
 
         // Initialize RIDE state directly — all positions start as RIDE.
         let entry_mvsol = lamports_to_mvsol(event.vsol_reserves);
-        let ride_state = RideState::new(
+        let mut ride_state = RideState::new(
             entry_mvsol, entry_mvsol, now_ms,
             conviction.f_permille,
             conviction.p_permille,
@@ -464,6 +470,8 @@ impl PositionManager {
             self.config.ride_config.avg_loss_bp,
             &self.config.ride_config,
         );
+        // V4: set position size for liquidity urgency computation
+        ride_state.position_size_lamports = size_sol;
 
         let pos = OpenPosition {
             mint: event.mint,
@@ -620,6 +628,11 @@ impl PositionManager {
                             self.close_position_inner(&mint, exit_reason, now_ms);
                             return true;
                         }
+                        RideDecision::PartialExit { permille: _ } => {
+                            // V4: partial exit — for now, treat as full exit with UrgencyPartial
+                            self.close_position_inner(&mint, ExitReason::RideUrgencyPartial, now_ms);
+                            return true;
+                        }
                         RideDecision::Hold => {}
                     }
                 }
@@ -656,6 +669,10 @@ impl PositionManager {
                         RideDecision::Exit(reason) => {
                             let exit_reason = map_ride_exit_reason(reason);
                             self.close_position_inner(&mint, exit_reason, now_ms);
+                            return true;
+                        }
+                        RideDecision::PartialExit { permille: _ } => {
+                            self.close_position_inner(&mint, ExitReason::RideUrgencyPartial, now_ms);
                             return true;
                         }
                         RideDecision::Hold => {}
@@ -723,6 +740,9 @@ impl PositionManager {
                     match rs.on_tick(current_mvsol, now_ms, &self.config.ride_config) {
                         RideDecision::Exit(reason) => {
                             to_close.push((*mint, map_ride_exit_reason(reason)));
+                        }
+                        RideDecision::PartialExit { permille: _ } => {
+                            to_close.push((*mint, ExitReason::RideUrgencyPartial));
                         }
                         RideDecision::Hold => {}
                     }

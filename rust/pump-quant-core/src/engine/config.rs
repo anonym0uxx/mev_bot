@@ -560,6 +560,33 @@ pub struct RideJsonConfig {
     pub trail_sustained_bp: u16,
     #[serde(default = "default_trail_weakening_bp")]
     pub trail_weakening_bp: u16,
+
+    // ── V4 exit engine config ──────────────────────────────────────
+    pub exit_v4: Option<ExitV4JsonConfig>,
+}
+
+/// JSON deserialization struct for V4 exit engine config.
+/// All fields optional — defaults produce shadow mode (disabled).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExitV4JsonConfig {
+    /// Master toggle. false = shadow mode (default).
+    pub enabled: Option<bool>,
+
+    // Urgency weights (sum to 256)
+    pub w_kelly: Option<u8>,
+    pub w_momentum: Option<u8>,
+    pub w_vol: Option<u8>,
+    pub w_liq: Option<u8>,
+
+    // Urgency thresholds
+    pub threshold_tighten: Option<u16>,
+    pub threshold_partial: Option<u16>,
+    pub threshold_majority: Option<u16>,
+    pub threshold_full_exit: Option<u16>,
+
+    // Partial exit fractions (permille)
+    pub partial_sell_permille: Option<u16>,
+    pub majority_sell_permille: Option<u16>,
 }
 
 // ── Risk JSON config (v2 pipeline) ───────────────────────────────────────────
@@ -652,6 +679,9 @@ pub struct RideConfig {
     pub trail_strong_pump_bp: u16,
     pub trail_sustained_bp: u16,
     pub trail_weakening_bp: u16,
+
+    // ── V4 exit engine config ──────────────────────────────────────
+    pub exit_v4: super::exit_v4::ExitV4Config,
 }
 
 impl Default for RideConfig {
@@ -701,6 +731,7 @@ impl Default for RideConfig {
             trail_strong_pump_bp: 500,
             trail_sustained_bp: 350,
             trail_weakening_bp: 200,
+            exit_v4: super::exit_v4::ExitV4Config::default(),
         }
     }
 }
@@ -927,6 +958,8 @@ pub fn build_ride_config(json: &RideJsonConfig) -> RideConfig {
         trail_strong_pump_bp: json.trail_strong_pump_bp,
         trail_sustained_bp: json.trail_sustained_bp,
         trail_weakening_bp: json.trail_weakening_bp,
+
+        exit_v4: super::exit_v4::ExitV4Config::default(),
     }
 }
 
@@ -993,6 +1026,23 @@ pub fn build_ride_state_config(json: &RideJsonConfig) -> crate::engine::ride_sta
     }
     if let Some(v) = json.gain_tighten_pct {
         cfg.gain_tighten_vsol_fp = gain_pct_to_vsol_fp(v);
+    }
+
+    // V4 exit engine config
+    if let Some(ref v4) = json.exit_v4 {
+        let mut ev4 = super::exit_v4::ExitV4Config::default();
+        if let Some(v) = v4.enabled { ev4.enabled = v; }
+        if let Some(v) = v4.w_kelly { ev4.w_kelly = v; }
+        if let Some(v) = v4.w_momentum { ev4.w_momentum = v; }
+        if let Some(v) = v4.w_vol { ev4.w_vol = v; }
+        if let Some(v) = v4.w_liq { ev4.w_liq = v; }
+        if let Some(v) = v4.threshold_tighten { ev4.threshold_tighten = v; }
+        if let Some(v) = v4.threshold_partial { ev4.threshold_partial = v; }
+        if let Some(v) = v4.threshold_majority { ev4.threshold_majority = v; }
+        if let Some(v) = v4.threshold_full_exit { ev4.threshold_full_exit = v; }
+        if let Some(v) = v4.partial_sell_permille { ev4.partial_sell_permille = v; }
+        if let Some(v) = v4.majority_sell_permille { ev4.majority_sell_permille = v; }
+        cfg.exit_v4 = ev4;
     }
 
     cfg

@@ -10,6 +10,10 @@
 
 use crate::feeds::FeedSource;
 use super::bayesian_signal::{self, BayesianSignal, bloom_count, bloom_insert, count_in_window};
+use super::exit_v4::{
+    MomentumDivergence, VolatilityEstimator, UrgencyState, ExitFraction, ExitV4Config,
+    u_kelly, u_vol_trail, u_liquidity, composite_urgency, compute_adaptive_trail_stop,
+};
 use super::kelly_sizing::{fee_adjust_r, DEFAULT_ROUND_TRIP_FEE_BP};
 
 // ---------------------------------------------------------------------------
@@ -84,6 +88,8 @@ pub mod ride_flags {
 pub enum RideDecision {
     Hold,
     Exit(RideExitReason),
+    /// V4 partial exit: sell `permille` of remaining position (0–1000).
+    PartialExit { permille: u16 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +102,10 @@ pub enum RideExitReason {
     CreatorSell,
     MaxHold,
     SignalExit,
+    /// V4: urgency-driven partial exit.
+    UrgencyPartial,
+    /// V4: urgency-driven full exit.
+    UrgencyFull,
 }
 
 pub use super::config::RideConfig;
@@ -176,9 +186,26 @@ pub struct RideState {
     pub vol_prior_msol: u16,                  // 124-125
     pub phase: u8,                            // 126 (RidePhase as u8)
     pub _pad2: u8,                            // 127
+
+    // ── Cache line 2: V4 exit engine state (bytes 128-191) ────────
+
+    /// V4 momentum divergence tracker. 16 bytes.
+    pub momentum: MomentumDivergence,         // 128-143
+    /// V4 volatility estimator for adaptive trail. 16 bytes.
+    pub volatility: VolatilityEstimator,      // 144-159
+    /// V4 urgency state: floor, remaining, partials. 8 bytes.
+    pub urgency: UrgencyState,                // 160-167
+    /// V4 last urgency component breakdown for JSONL logging.
+    pub v4_u_kelly: u16,                      // 168-169
+    pub v4_u_momentum: u16,                   // 170-171
+    pub v4_u_vol_trail: u16,                  // 172-173
+    pub v4_u_liquidity: u16,                  // 174-175
+    /// Position size in lamports (for liquidity urgency calculation).
+    pub position_size_lamports: u64,          // 176-183
+    pub _pad3: [u8; 8],                       // 184-191 (pad to 192)
 }
 
-const _: () = assert!(core::mem::size_of::<RideState>() == 128);
+const _: () = assert!(core::mem::size_of::<RideState>() == 192);
 
 // ---------------------------------------------------------------------------
 // Implementation
@@ -245,6 +272,17 @@ impl RideState {
             vol_prior_msol: 0,
             phase: RidePhase::Early as u8,
             _pad2: 0,
+
+            // V4 exit engine state — initialized unconditionally
+            momentum: MomentumDivergence::new(),
+            volatility: VolatilityEstimator::new(entry_mvsol),
+            urgency: UrgencyState::new(),
+            v4_u_kelly: 0,
+            v4_u_momentum: 0,
+            v4_u_vol_trail: 0,
+            v4_u_liquidity: 0,
+            position_size_lamports: 0,
+            _pad3: [0; 8],
         }
     }
 
@@ -338,6 +376,9 @@ impl RideState {
         if self.unique_wallets > old_wallets {
             self.alpha_x16 = self.alpha_x16.saturating_add(UNIQUE_BUYER_BONUS as u16);
         }
+
+        // V4: Record event in momentum divergence tracker
+        self.momentum.record_event(true, amount_msol);
     }
 
     /// Process a sell event. Returns Some(reason) for emergency exit.
@@ -384,6 +425,9 @@ impl RideState {
 
         // Bayesian update
         self.bayesian_update_evidence(false, amount_msol, source, weight_mult);
+
+        // V4: Record event in momentum divergence tracker
+        self.momentum.record_event(false, amount_msol);
 
         None
     }
@@ -495,6 +539,59 @@ impl RideState {
         // ── Trailing stop ──
         if current_mvsol <= self.trail_stop_mvsol {
             return RideDecision::Exit(RideExitReason::TrailingStop);
+        }
+
+        // ── V4 urgency computation (always runs — shadow mode logs, active mode acts) ──
+        self.volatility.record(current_mvsol);
+
+        // Compute urgency components
+        let uk = u_kelly(f_hat, self.entry_f_permille);
+        let um = self.momentum.urgency();
+
+        // Adaptive trail stop for vol-trail urgency
+        let vol_mult = self.volatility.trail_multiplier_x256();
+        let adaptive_stop = compute_adaptive_trail_stop(self.peak_mvsol, self.current_trail_bp, vol_mult);
+        let uv = u_vol_trail(current_mvsol, adaptive_stop);
+
+        // Liquidity urgency from position size vs curve liquidity
+        // current_mvsol is in milli-SOL, convert to lamports for comparison
+        let liquidity_lamports = current_mvsol as u64 * 1_000_000;
+        let ul = u_liquidity(self.position_size_lamports, liquidity_lamports);
+
+        let composite = composite_urgency(uk, um, uv, ul);
+
+        // Store breakdown for JSONL logging (always, even in shadow mode)
+        self.v4_u_kelly = uk;
+        self.v4_u_momentum = um;
+        self.v4_u_vol_trail = uv;
+        self.v4_u_liquidity = ul;
+
+        // Apply monotonic floor
+        let effective = self.urgency.effective_urgency(composite);
+
+        // ── V4 exit decision (only when enabled; otherwise shadow-only) ──
+        if config.exit_v4.enabled {
+            match self.urgency.decide(effective) {
+                ExitFraction::Hold => {}
+                ExitFraction::Tighten => {
+                    // Tighten the trail stop by 25% (reduce trail width)
+                    let tighter_trail = (self.current_trail_bp as u32 * 3 / 4) as u16;
+                    self.current_trail_bp = tighter_trail.max(config.kelly_min_trail_bp);
+                    let new_stop = compute_trail_stop(self.peak_mvsol, self.current_trail_bp);
+                    if new_stop > self.trail_stop_mvsol {
+                        self.trail_stop_mvsol = new_stop;
+                    }
+                }
+                ExitFraction::Partial(permille) => {
+                    return RideDecision::PartialExit { permille };
+                }
+                ExitFraction::Exit(_) => {
+                    return RideDecision::Exit(RideExitReason::UrgencyFull);
+                }
+            }
+        } else {
+            // Shadow mode: update urgency state for logging, but don't act
+            self.urgency.last_urgency = effective;
         }
 
         RideDecision::Hold
@@ -623,7 +720,7 @@ mod tests {
 
     #[test]
     fn test_size_assert() {
-        assert_eq!(core::mem::size_of::<RideState>(), 128);
+        assert_eq!(core::mem::size_of::<RideState>(), 192);
     }
 
     #[test]
@@ -703,6 +800,7 @@ mod tests {
         // Should be Exit (buys_after_entry >= 1 and f̂ ≤ 0)
         match decision {
             RideDecision::Exit(_) => {} // expected — could be SignalExit or BuyGapTimeout
+            RideDecision::PartialExit { .. } => {} // acceptable — v4 urgency partial
             RideDecision::Hold => panic!("Expected exit, got Hold. f_hat={}, alpha={}, beta={}", f, rs.alpha_x16, rs.beta_x16),
         }
     }

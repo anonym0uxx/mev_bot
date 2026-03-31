@@ -50,6 +50,8 @@ fn exit_reason_str(reason: ExitReason) -> &'static str {
         ExitReason::RideCreatorSell => "ride_creator_sell",
         ExitReason::RideMaxHold => "ride_max_hold",
         ExitReason::RideSignalExit => "ride_signal_exit",
+        ExitReason::RideUrgencyPartial => "ride_urgency_partial",
+        ExitReason::RideUrgencyFull => "ride_urgency_full",
     }
 }
 
