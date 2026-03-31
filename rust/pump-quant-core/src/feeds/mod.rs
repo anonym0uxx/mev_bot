@@ -11,10 +11,12 @@ pub mod event_joiner;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum MigrationSource {
-    /// Detected via Helius logsSubscribe (primary, fastest ~50ms)
+    /// Detected via Helius logsSubscribe (primary, ~50ms)
     HeliusLogs = 0,
     /// Detected via CoreCast/Bitquery stream 2 Raydium AMM trades (fallback, ~80ms)
     CoreCastStream2 = 1,
+    /// Detected via Jito ShredStream gRPC — FASTEST (~0ms from shred decode)
+    ShredStream = 2,
 }
 
 impl MigrationSource {
@@ -23,6 +25,7 @@ impl MigrationSource {
         match self {
             Self::HeliusLogs => "helius",
             Self::CoreCastStream2 => "corecast",
+            Self::ShredStream => "shredstream",
         }
     }
 }

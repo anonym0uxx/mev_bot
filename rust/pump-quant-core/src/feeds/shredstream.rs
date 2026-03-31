@@ -28,7 +28,7 @@ use solana_sdk::pubkey::Pubkey;
 use tokio::net::UdpSocket;
 use tracing::{debug, error, info, warn};
 
-use crate::feeds::{FeedEvent, FeedSource, PreWarmEvent, TradeEvent};
+use crate::feeds::{FeedEvent, FeedSource, MigrationSource, PreWarmEvent, TradeEvent};
 
 // ── Pump.fun Anchor discriminators ──────────────────────────────────
 
@@ -37,6 +37,12 @@ const BUY_DISCRIMINATOR: [u8; 8] = [102, 6, 61, 18, 1, 218, 235, 234];
 
 /// 8-byte Anchor discriminator for pump.fun `sell` instruction.
 const SELL_DISCRIMINATOR: [u8; 8] = [51, 230, 133, 164, 1, 127, 131, 173];
+
+/// 8-byte Anchor discriminator for pump.fun `migrate` instruction.
+/// This fires when a token reaches ~85 SOL on the bonding curve and
+/// graduates to Raydium AMM. Detecting this in ShredStream gives us
+/// 80-200ms advantage over websocket-based graduation detection.
+const MIGRATE_DISCRIMINATOR: [u8; 8] = [155, 234, 231, 146, 236, 158, 162, 30];
 
 /// Minimum datagram size: 8 (discriminator) + 32 (mint) + 8 (sol_amount) = 48 bytes.
 const MIN_PAYLOAD_SIZE: usize = 48;
@@ -379,6 +385,12 @@ impl ShredStreamFeed {
                         info!("[shredstream] engine channel closed — exiting gRPC loop");
                         return true;
                     }
+                } else if let Some(migration) = parse_pump_migration(tx, slot, now_ms) {
+                    self.events_received.fetch_add(1, Ordering::Relaxed);
+                    if self.tx.send(migration).is_err() {
+                        info!("[shredstream] engine channel closed — exiting gRPC loop");
+                        return true;
+                    }
                 }
             }
         }
@@ -718,6 +730,76 @@ fn parse_pump_transaction(
             source: FeedSource::ShredStream,
             bonding_curve: bonding_curve_key.to_bytes(),
             assoc_bonding_curve: assoc_bonding_curve_key.to_bytes(),
+        });
+    }
+
+    None
+}
+
+/// Parse a pump.fun MIGRATE instruction from a decoded Solana transaction.
+///
+/// The migrate instruction fires when a token reaches ~85 SOL on the bonding
+/// curve and graduates to Raydium AMM. Detecting this in ShredStream gives us
+/// 80-200ms advantage over websocket-based graduation detection (Helius, CoreCast).
+///
+/// Migrate instruction account layout:
+/// ```text
+/// accounts[0] = mint
+/// accounts[1] = bonding curve
+/// accounts[2..] = migration-specific accounts (Raydium pool creation, etc.)
+/// ```
+///
+/// Returns `FeedEvent::Migration` with mint + full signature for pool resolution.
+#[inline(always)]
+fn parse_pump_migration(
+    tx: &solana_sdk::transaction::VersionedTransaction,
+    slot: u64,
+    now_ms: u64,
+) -> Option<FeedEvent> {
+    let account_keys = tx.message.static_account_keys();
+    let instructions = tx.message.instructions();
+
+    for ix in instructions {
+        let program_id_index = ix.program_id_index as usize;
+        if program_id_index >= account_keys.len() {
+            continue;
+        }
+
+        // Fast-path: must be pump.fun program
+        if account_keys[program_id_index] != PUMP_PROGRAM_PUBKEY {
+            continue;
+        }
+
+        // Check discriminator — must be exactly MIGRATE
+        if ix.data.len() < 8 {
+            continue;
+        }
+        if ix.data[..8] != MIGRATE_DISCRIMINATOR {
+            continue;
+        }
+
+        // Extract mint from accounts[0] (first account in migrate instruction)
+        if ix.accounts.is_empty() {
+            continue;
+        }
+        let mint_idx = ix.accounts[0] as usize;
+        if mint_idx >= account_keys.len() {
+            continue;
+        }
+        let mint = account_keys[mint_idx].to_bytes();
+
+        // Extract full signature for pool resolution RPC calls
+        let sig: [u8; 64] = if !tx.signatures.is_empty() {
+            tx.signatures[0].into()
+        } else {
+            continue;
+        };
+
+        return Some(FeedEvent::Migration {
+            mint,
+            ts_ms: now_ms,
+            source: MigrationSource::ShredStream,
+            sig,
         });
     }
 
