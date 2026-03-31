@@ -110,6 +110,10 @@ pub struct PoolResolution {
     pub mint: [u8; 32],
     /// DEX pool address ([0u8; 32] if extraction failed).
     pub pool_address: [u8; 32],
+    /// Token vault (SPL token account).
+    pub coin_vault: [u8; 32],
+    /// SOL/WSOL vault (SPL token account).
+    pub pc_vault: [u8; 32],
     /// Type of DEX pool.
     pub pool_type: PoolType,
     /// Initial SOL reserves in pool (lamports). 0 if unknown.
@@ -276,6 +280,8 @@ async fn resolve_pool_inner(
     Ok(PoolResolution {
         mint,
         pool_address: [0u8; 32],
+        coin_vault,
+        pc_vault,
         pool_type,
         reserve_sol_lamports: reserve_sol,
         reserve_token_atoms: reserve_token,

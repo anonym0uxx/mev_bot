@@ -615,8 +615,8 @@ impl MomentumEngine {
                     "[momentum] pool resolved — entering on_graduation"
                 );
                 let pool_info = PoolInfo {
-                    coin_vault: resolution.pool_address,
-                    pc_vault: [0u8; 32],
+                    coin_vault: resolution.coin_vault,
+                    pc_vault: resolution.pc_vault,
                     reserve_token: resolution.reserve_token_atoms,
                     reserve_sol: resolution.reserve_sol_lamports,
                     pool_type: resolution.pool_type,
