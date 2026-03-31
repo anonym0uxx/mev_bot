@@ -1,93 +1,141 @@
 # pump-quant
 
-> Three-engine Solana MEV bot — backrunner + graduation arb + post-graduation momentum  
-> Built in Rust for AMD EPYC Zen 4 | Paper mode default | Helius + CoreCast + PumpPortal feeds
+> High-frequency Solana MEV bot — backrunner + graduation arb + post-graduation momentum  
+> Single Rust binary | 5-feed architecture | Bayesian signal engine | Paper mode default
 
 ---
 
 ## Architecture
 
 ```
-┌────────────────────────────────────────────────────────────────────────────────┐
-│                          pump-quant  (single Rust binary)                      │
-│                                                                                │
-│  DATA FEEDS (WebSocket)           EVENT ROUTING            TRADING ENGINES     │
-│  ─────────────────────            ─────────────            ───────────────     │
-│                                                                                │
-│  ┌──────────────────┐             ┌─────────────┐         ┌────────────────┐  │
-│  │  PumpPortal WS   │──trade──►   │             │─────►   │ BackrunEngine  │  │
-│  │  BC buy/sell      │             │   HotPath   │         │ momentum backrun│  │
-│  │  events           │             │             │         │ 4-tier TP/SL   │  │
-│  └──────────────────┘             │  on_trade() │         │ 1500ms max hold│  │
-│                                    │  gate stack │         └───────┬────────┘  │
-│  ┌──────────────────┐             │  scorer     │                 │            │
-│  │  Helius WS       │──grad──►    └─────────────┘                 │            │
-│  │  logsSubscribe   │                                             │            │
-│  │  (~50ms lead)    │             ┌─────────────┐         ┌───────┴────────┐  │
-│  └──────────────────┘      ┌──►   │  GradArb    │         │                │  │
-│                             │     │  Engine      │         │  Position      │  │
-│  ┌──────────────────┐      │     │  spread≥3%   │         │  Manager       │  │
-│  │  CoreCast WS     │──────┤     │  Raydium only│         │  (per-engine)  │  │
-│  │  3 subscriptions │      │     └──────────────┘         │                │  │
-│  │  • DEX trades    │      │                              │  150ms tick    │  │
-│  │  • AMM migration │      │     ┌──────────────┐         │  loop          │  │
-│  │  • LP removal    │      └──►  │  Momentum    │         │                │  │
-│  └──────────────────┘             │  Engine      │         └───────┬────────┘  │
-│                                   │  score≥40    │                 │            │
-│              ┌─────────────┐      │  T+0 entry   │                 │            │
-│              │ GradFilter  │──►   └──────────────┘                 │            │
-│              │ should_emit │                                       │            │
-│              │ • startup   │                                       │            │
-│              │   guard     │                                       │            │
-│              │ • WSOL      │                                       │            │
-│              │   reject    │                                       │            │
-│              │ • ring buf  │                                       │            │
-│              │   dedup     │                                       │            │
-│              └─────────────┘                                       │            │
-│                                                                    ▼            │
-│  SHARED INFRA                                              ┌──────────────┐    │
-│  ─────────────                                             │   OUTPUT     │    │
-│  • RingBuffer dedup (64 slots, L1 resident)                │              │    │
-│  • PriceFeedManager (Helius accountSubscribe)              │  JSONL logs  │    │
-│  • AtomicU64 price storage (lock-free)                     │  SQLite WAL  │    │
-│  • HealthMonitor (per-feed staleness)                      │  REST :9421  │    │
-│  • BlockhashCache (30s TTL, 25s refresh)                   │  Telegram    │    │
-│                                                             └──────────────┘    │
-└────────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          pump-quant  (single Rust binary)                       │
+│                                                                                 │
+│  DATA FEEDS (5 live)              EVENT ROUTING            TRADING ENGINES      │
+│  ───────────────────              ─────────────            ───────────────      │
+│                                                                                 │
+│  ┌──────────────────┐             ┌─────────────┐         ┌────────────────┐   │
+│  │ Jito ShredStream │──gRPC──►    │             │─────►   │ BackrunEngine  │   │
+│  │ (~0ms from shred)│             │  EventJoiner│         │ Bayesian α/β   │   │
+│  └──────────────────┘             │  (dedup +   │         │ Kelly sizing   │   │
+│                                    │   fan-in)   │         │ V4 urgency exit│   │
+│  ┌──────────────────┐             │             │         └───────┬────────┘   │
+│  │  PumpPortal WS   │──trade──►   │  sig-based  │                 │             │
+│  │  BC buy/sell      │             │  dedup      │                 │             │
+│  └──────────────────┘             │  (per-feed  │         ┌───────┴────────┐   │
+│                                    │   evidence  │         │  RideState     │   │
+│  ┌──────────────────┐             │   weights)  │         │  composite     │   │
+│  │  Helius WS       │──trade/──►  └─────────────┘         │  signal engine │   │
+│  │  logsSubscribe   │  grad                               │  • Bayesian f̂* │   │
+│  │  (~50ms lead)    │                                     │  • momentum    │   │
+│  └──────────────────┘             ┌─────────────┐         │  • vol trail   │   │
+│                            ┌──►   │  GradArb    │         │  • liquidity   │   │
+│  ┌──────────────────┐      │     │  Engine      │         └───────┬────────┘   │
+│  │  CoreCast WS     │──────┤     │  spread≥3%   │                 │             │
+│  │  3 subscriptions │      │     │  Raydium only│                 │             │
+│  │  • DEX trades    │      │     └──────────────┘                 │             │
+│  │  • AMM migration │      │                              ┌───────┴────────┐   │
+│  │  • LP removal    │      └──►  ┌──────────────┐         │  Position      │   │
+│  └──────────────────┘             │  Momentum    │         │  Manager       │   │
+│                                   │  Engine      │         │  50ms tick     │   │
+│  ┌──────────────────┐             │  score≥40    │         └───────┬────────┘   │
+│  │  Social Signals  │             └──────────────┘                 │             │
+│  │  (Phase 0 - log) │                                             ▼             │
+│  │  Twitter/TG/etc  │                                     ┌──────────────┐     │
+│  └──────────────────┘                                     │   OUTPUT     │     │
+│                                                            │              │     │
+│  SHARED INFRA                                             │  JSONL dv10  │     │
+│  ─────────────                                             │  SQLite WAL  │     │
+│  • HealthMonitor (PumpPortal + Helius + CoreCast)         │  REST :9421  │     │
+│  • ShredStream gRPC (Jito proxy on :20100)                │  Telegram    │     │
+│  • BlockhashCache (30s TTL)                                └──────────────┘     │
+│  • TipEngine (conviction-aware Jito tips)                                       │
+│  • Jito HTTP/2 bundle submission (dual block-engine)                            │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## From Binary Start to First Trade Exit
+## Exit Engine Pipeline (V4 — Live)
 
-The binary loads `config/canary.json` and spins up three independent trading engines on a single tokio runtime. Three WebSocket feeds connect immediately: PumpPortal for raw bonding curve trades, Helius for Solana log subscriptions (graduation detection), and CoreCast for AMM trades and migration confirmations. Each feed runs as a spawned tokio task, funneling events through crossbeam channels into the main engine loop.
+The exit engine uses a unified urgency score U ∈ [0, 10000] computed from four signals:
 
-When a pump.fun trade arrives from PumpPortal, it hits `hot_path.on_trade()` — the backrun engine's synchronous, zero-alloc critical path. Eight gates fire in sequence: trigger size, vSol range (30–52 SOL), pre-trigger buy count (≥7 in the last second), buy momentum ratio, sell pressure, vSol delta, wallet concentration, and time-of-day (UTC 13–21). If all pass, the scorer computes a composite signal. A passing score opens a backrun position, which the 150ms tick loop monitors for 4-tier take-profit, stop-loss, momentum decay, or the 1500ms max hold timeout.
+```
+U = w_kelly × u_kelly + w_momentum × u_momentum + w_vol × u_vol_trail + w_liq × u_liquidity
+    (45%)              (30%)                  (15%)               (10%)
 
-When Helius detects a graduation (Raydium `initialize2` CPI in a pump.fun transaction), the `GraduationFilter` deduplicates it through a 64-slot ring buffer and rejects WSOL noise. Two tokio tasks then spawn in parallel. The first runs `GraduationArbEngine.on_migration()` — it resolves the Raydium pool via `getTransaction` → `postTokenBalances` vault extraction → `getMultipleAccountsInfo`, computes the spread against the BC terminal price (~4.11e-4 lamports/atom), and enters only if spread ≥ 3%. PumpSwap graduations are skipped (no structural arb at 1.8%). The second task runs `MomentumEngine.on_migration()` — it scores the graduation across four dimensions (speed, volume, pre-grad buy velocity, price recovery) and enters immediately at pool opening price if the score hits 40/100. Both engines feed their tick loops, and both log exits to their respective JSONL files.
+Thresholds:
+  U < 3000   → HOLD (edge intact)
+  3000-5000  → TIGHTEN (narrow trail width)
+  5000-7000  → PARTIAL EXIT (sell 35% of remaining)
+  7000-9000  → MAJORITY EXIT (sell 60% of remaining)
+  U ≥ 9000   → FULL EXIT (sell everything)
+```
 
-The REST API on port 9421 exposes health, stats, and control endpoints. A heartbeat script checks health and pushes P&L summaries to Telegram every 5 minutes.
+**Key features:**
+- Bayesian Kelly edge decay (α/β posterior → half-Kelly fraction)
+- Momentum divergence detection (20-event ring buffer, buy/sell ratio divergence)
+- Volatility-adaptive trailing stop (EMA-8 of absolute price deltas)
+- Liquidity-aware slippage urgency (position size vs curve reserves)
+- Monotonic urgency floor (ratchet up, never down — can't re-accumulate after partial)
+
+---
+
+## Feed Architecture
+
+| Feed | Transport | Reconnect | Latency | Role |
+|---|---|---|---|---|
+| **Jito ShredStream** | gRPC (via local proxy) | 100ms→5s backoff | ~0ms (shred decode) | Fastest trade detection, graduation via shreds |
+| **PumpPortal** | WSS | 1s→60s backoff | ~120ms | Primary BC trade stream, token creation events |
+| **Helius** | WSS | 1s→30s backoff | ~50ms | logsSubscribe (graduation), accountSubscribe (prices) |
+| **CoreCast/Bitquery** | WSS (3 muxed streams) | 1s→60s backoff | ~80ms | Creator sells, AMM migrations, LP removal/rug |
+| **Social** | Phase 0 (logging only) | — | — | Twitter/Telegram/Discord signal aggregation |
+
+**Self-healing:** HealthMonitor tracks per-feed staleness via atomics. Any feed >45s stale → auto-pause trading → auto-resume on recovery. Each feed has independent reconnect with exponential backoff.
+
+**Evidence dedup:** EventJoiner deduplicates trades by signature across feeds. Each feed has calibrated evidence weights for the Bayesian model (PumpPortal=10, Helius=12, CoreCast=8, ShredStream=15). Deduped events update position state but skip α/β evidence to prevent double-counting.
+
+---
+
+## Fee Model
+
+| Component | Cost | Basis Points |
+|---|---|---|
+| Pump.fun buy fee | 1% | 100 bp |
+| Pump.fun sell fee | 1% | 100 bp |
+| Jito tip (default) | 50,000 lamports | ~10 bp @ 0.05 SOL |
+| **Total round-trip** | | **210 bp** |
+
+**Dynamic tip engine:** Context-aware tip sizing — SCALP (500μSOL), RIDE early (1mSOL), momentum (2mSOL), tighten (3mSOL), emergency (5mSOL). 5% of profit fraction, congestion multiplier at <80% landing rate. Capped at 5mSOL.
+
+**Jito bundle submission:** Persistent HTTP/2 to dual block engines (Frankfurt + Amsterdam) with automatic failover. <10ms from bundle-ready to wire.
 
 ---
 
 ## Engines
 
-| Engine | Trigger | Entry Signal | Exit Strategy | JSONL |
+| Engine | Trigger | Entry Signal | Exit Strategy | Max Hold |
 |---|---|---|---|---|
-| **BackrunEngine** | BC trade event (PumpPortal) | `preTriggerBuys1s ≥ 7`, vSol 30–52, UTC 13–21 | 4-tier TP / SL / momentum decay / 1500ms max hold | `backrun_paper_trades.jsonl` |
-| **GradArbEngine** | Graduation (Helius logs) | Spread ≥ 3% vs BC terminal price, Raydium only | Spread close / timeout / 5000ms max hold | `graduation_paper_trades.jsonl` |
-| **MomentumEngine** | Graduation (Helius logs) | Score ≥ 40/100, T+0 immediate entry | 3-tier TP (5%/15%/50%) / 8% trailing / 12% SL / 60s time SL / 300s max hold | `momentum_paper_trades.jsonl` |
+| **Backrun** | BC trade (PumpPortal/ShredStream) | Gate stack + Bayesian Kelly sizing | V4 urgency (partial→full) + RIDE trail | 60s ride / 1.5s scalp |
+| **GradArb** | Graduation (Helius/ShredStream) | Spread ≥ 3% vs BC terminal price | Spread close / timeout | 5s |
+| **Momentum** | Graduation (Helius/CoreCast) | Score ≥ 40/100 | 3-tier TP + trailing + time SL | 300s |
 
-### Momentum Scoring Breakdown
+---
 
-| Factor | Weight | What It Measures |
-|---|---|---|
-| Speed | 0–25 | How fast the graduation completed |
-| Volume | 0–25 | Total SOL volume during bonding curve phase |
-| Pre-grad buy velocity | 0–25 | Buy pressure in final seconds before graduation |
-| Price recovery | 0–25 | Post-dip recovery signal near curve completion |
+## Social Signal Infrastructure (Phase 0)
 
-Minimum composite score: **40/100** to enter.
+Logging-only infrastructure for social signal data collection:
+
+```rust
+SocialAggregator  ←  SocialSignal { mint, source, type, followers, engagement, is_bot }
+    │
+    ├── MintSocialProfile (per-token: mentions, sources, followers, bot/organic split)
+    │
+    └── social_score() → 0-10000
+          weights: sources(30%) + organic(25%) + reach(20%) + recency(15%) + diversity(10%)
+```
+
+**JSONL fields (dataVersion 10):** `socialScore`, `socialMentions`, `socialUniqueSources`, `socialHasTwitter`, `socialHasTelegram`, `socialHasWebsite`, `socialBotMentionPct`, `socialMaxFollowers`
 
 ---
 
@@ -99,49 +147,45 @@ cd rust && cargo build --release
 
 # Configure
 cp config/canary.json.example config/canary.json
-# Edit: set HELIUS_API_KEY, RPC_URL, BITQUERY_API_KEY, etc.
+# Edit: set HELIUS_API_KEY, RPC_URL, BITQUERY_API_KEY in rust/.env
 
-# Run (single-daemon enforced)
+# Start Jito ShredStream proxy (required for fastest feed)
+cd shredstream-proxy && ./target/release/jito-shredstream-proxy shredstream \
+  --block-engine-url https://mainnet.block-engine.jito.wtf \
+  --auth-keypair ../config/keys/shredstream-keypair.json \
+  --desired-regions ny --dest-ip-ports 127.0.0.1:20000 \
+  --grpc-service-port 20100 &
+
+# Run (single-daemon enforced, kills duplicates)
 bash scripts/ensure-single-daemon.sh --start
 
-# Check health
+# Check health (all feeds)
 curl http://127.0.0.1:9421/api/health | jq
 
+# Check stats
+curl http://127.0.0.1:9421/api/stats | jq
+
 # View P&L
-PAPER_MODE=true node scripts/pnl-summary.js
+PAPER_MODE=true node scripts/rust-status.js
 ```
 
 ---
 
 ## Configuration
 
-Key parameters in `config/canary.json`:
+Key parameters in `config/canary.json` → `mev` section:
 
 | Parameter | Default | Purpose |
 |---|---|---|
-| `paper_mode` | `true` | No live trades — paper logging only |
-| `pre_trigger_min_buys_1s` | `7` | Minimum buy events in last 1s for backrun entry |
-| `min_vsol` / `max_vsol` | `30` / `52` | Bonding curve position range gate |
-| `graduation_arb_enabled` | `true` | Enable graduation arb engine |
-| `graduation_arb.min_spread_pct` | `3.0` | Minimum spread to enter arb |
-| `momentum.enabled` | `true` | Enable momentum engine |
-| `momentum.entry_delay_ms` | `0` | Immediate entry (paper data collection) |
-| `momentum.min_score` | `40` | Minimum graduation score to enter |
-| `momentum.paper_mode` | `true` | Momentum-specific paper mode |
-
----
-
-## Machine-Level Optimizations
-
-This binary is tuned for low-latency event processing on AMD EPYC Zen 4:
-
-- **Ring buffer dedup** — 64-slot circular buffer replacing DashMap for graduation deduplication. Fits entirely in L1 cache. O(1) insert, O(n) scan with n=64.
-- **Cache-line aligned positions** — `#[repr(C, align(64))]` on `MomentumPosition` (256 bytes exact). No false sharing between tick thread and entry path.
-- **Hot/cold path annotations** — `#[inline(always)]` on `on_trade()`, `on_tick()`, gate checks. `#[cold] #[inline(never)]` on error paths, logging, and JSONL flush.
-- **Lock-free price reads** — `AtomicU64` for price storage. Tick thread reads prices with `Ordering::Relaxed` — no locks, no contention with the Helius feed writer.
-- **SIMD-ready byte comparisons** — Graduation detection uses fixed-size byte arrays for mint comparison, enabling auto-vectorization.
-- **Fixed-point arithmetic** — Price calculations on the hot path use integer lamports/atoms to avoid f64 precision loss and FPU stalls.
-- **Zero-alloc hot path** — Stack-allocated bs58 decode, monotonic clock (no syscall per event), no heap allocation in the backrun critical path.
+| `paper_mode` | `true` | No real trades — paper logging only |
+| `exit_v4.enabled` | `true` | V4 urgency-based exit engine (live) |
+| `trigger_min_buy_sol` | `0.15` | Minimum trigger buy for backrun |
+| `min_vsol_in_curve` | `15` | Minimum vSOL for entry |
+| `max_vsol_in_curve` | `70` | Maximum vSOL for entry |
+| `jito_tip_lamports` | `50000` | Default Jito bundle tip |
+| `round_trip_fee_bp` | `210` | Fee model (pump 200bp + jito ~10bp) |
+| `max_concurrent_positions` | `5` | Simultaneous open positions |
+| `consecutive_stop_pause_count` | `3` | Circuit breaker: 3 SL → pause |
 
 ---
 
@@ -150,99 +194,74 @@ This binary is tuned for low-latency event processing on AMD EPYC Zen 4:
 ```
 pump-quant/
 ├── rust/pump-quant-core/src/
-│   ├── arb/              # graduation.rs — GraduationArbEngine
-│   │                     # dedup.rs — ring buffer dedup (64 slots)
-│   │                     # pool_resolver.rs — Raydium pool resolution
-│   ├── engine/           # hot_path.rs — BackrunEngine critical path
-│   │                     # gates.rs — 8-gate entry filter stack
-│   │                     # scorer.rs — multi-factor signal scorer
-│   │                     # positions.rs — position lifecycle
-│   │                     # config.rs — runtime config loader
-│   │                     # health.rs — feed staleness monitor
-│   ├── feeds/            # helius.rs — logsSubscribe + accountSubscribe
-│   │                     # corecast.rs — 3 Bitquery WS subscriptions
-│   │                     # pumpportal.rs — pump.fun trade stream
-│   │                     # event_joiner.rs — crossbeam fan-in
-│   ├── momentum/         # mod.rs — MomentumEngine orchestration
-│   │                     # position.rs — 256-byte aligned position struct
-│   │                     # scorer.rs — 4-factor graduation scorer
-│   │                     # price_feed.rs — Helius vault accountSubscribe
-│   │                     # logger.rs — JSONL paper trade logger
-│   │                     # config.rs — momentum-specific config
-│   ├── persistence/      # JSONL loggers, SQLite WAL
-│   ├── api/              # axum REST server on :9421
-│   ├── alerts/           # Telegram alerter (rate-limited)
-│   ├── tx/               # Transaction builder, BlockhashCache
-│   └── core/             # Shared types, bonding curve math
-├── config/
-│   ├── canary.json       # Active runtime config
-│   └── canary.json.example
+│   ├── engine/
+│   │   ├── hot_path.rs         # Gate stack → scorer → position open
+│   │   ├── positions.rs        # Position lifecycle + ClosedPosition
+│   │   ├── ride_state.rs       # RideState: Bayesian + V4 urgency + trail
+│   │   ├── exit_v4.rs          # V4 urgency engine (momentum/vol/kelly/liq)
+│   │   ├── exit_machine.rs     # Legacy exit state machine (conviction scaling)
+│   │   ├── bayesian_signal.rs  # Alpha/beta evidence + Kelly fraction
+│   │   ├── kelly_sizing.rs     # Fee-adjusted Kelly optimal sizing
+│   │   ├── health.rs           # Feed staleness + auto-pause/resume
+│   │   ├── risk_manager.rs     # Daily loss cap + circuit breaker
+│   │   ├── gates.rs            # 8-gate entry filter
+│   │   ├── scorer.rs           # Multi-factor composite scorer
+│   │   ├── config.rs           # Runtime config from canary.json
+│   │   └── regime.rs           # Bonding curve regime classification
+│   ├── feeds/
+│   │   ├── shredstream.rs      # Jito ShredStream gRPC client
+│   │   ├── pumpportal.rs       # PumpPortal WSS client
+│   │   ├── helius.rs           # Helius WSS (logs + accounts)
+│   │   ├── corecast.rs         # CoreCast/Bitquery WSS (3 streams)
+│   │   ├── social.rs           # Social signal aggregator (Phase 0)
+│   │   └── event_joiner.rs     # Sig-based dedup + crossbeam fan-in
+│   ├── tx/
+│   │   ├── jito.rs             # Jito REST bundle submission
+│   │   ├── jito_grpc.rs        # Persistent HTTP/2 dual block-engine
+│   │   ├── tip_engine.rs       # Conviction-aware dynamic tip sizing
+│   │   ├── builder.rs          # Transaction construction
+│   │   ├── executor.rs         # Buy/sell bundle orchestration
+│   │   └── wallet.rs           # Keypair management
+│   ├── momentum/               # Post-graduation momentum engine
+│   ├── persistence/
+│   │   ├── paper_logger.rs     # JSONL trade logger (dataVersion 10)
+│   │   └── sqlite.rs           # SQLite WAL persistence
+│   ├── api/server.rs           # axum REST on :9421
+│   ├── alerts/telegram.rs      # Rate-limited Telegram alerts
+│   └── main.rs                 # Binary entry point
+├── shredstream-proxy/          # Jito ShredStream proxy binary
+├── config/canary.json          # Active runtime config
 ├── scripts/
-│   ├── ensure-single-daemon.sh   # PID-enforced single instance
-│   ├── pnl-summary.js            # P&L report (all engines)
-│   └── analyze-losses.js         # Loss pattern analysis
-├── data/                          # JSONL + SQLite (gitignored)
-│   ├── backrun_paper_trades.jsonl
-│   ├── graduation_paper_trades.jsonl
-│   └── momentum_paper_trades.jsonl
-└── docs/
-    ├── ARCHITECTURE_V2.md
-    └── MOMENTUM_ENGINE_SPEC.md
+│   ├── ensure-single-daemon.sh # PID-enforced single instance
+│   └── rust-status.js          # P&L report + heartbeat state
+└── data/                       # JSONL + SQLite (gitignored)
+    └── backrun_paper_trades.jsonl
 ```
 
 ---
 
-## Environment
+## JSONL Trade Record (dataVersion 10)
 
-Required in `rust/.env` (never committed):
+Every closed position logs 60+ fields including:
 
-```
-HELIUS_API_KEY=...
-BITQUERY_API_KEY=...
-WALLET_PRIVATE_KEY=...
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHAT_ID=...
-SOLANA_RPC_URL=...
-SOLANA_WS_URL=...
-PAPER_MODE=true
-```
-
----
-
-## Tech Stack
-
-| Component | Crate / Tool |
-|---|---|
-| Async runtime | `tokio` (multi-thread) |
-| WebSocket feeds | `tokio-tungstenite` |
-| HTTP API | `axum` |
-| Database | `rusqlite` (SQLite, WAL mode) |
-| Solana SDK | `solana-sdk =2.1.16` |
-| Serialization | `serde` + `serde_json` |
-| Logging | `tracing` (structured) |
-| Channel | `crossbeam-channel` |
-
----
-
-## Feed Architecture
-
-| Feed | Transport | Latency | Role |
-|---|---|---|---|
-| Helius `logsSubscribe` | WebSocket | ~50ms | Primary graduation trigger, ~50ms ahead of PumpPortal |
-| PumpPortal | WebSocket | ~120ms | Bonding curve trade stream (backrun trigger), state sync |
-| CoreCast (stream 1) | WebSocket | ~80ms | Creator sell detection → force-exit |
-| CoreCast (stream 2) | WebSocket | ~80ms | Raydium AMM migration confirmation |
-| CoreCast (stream 3) | WebSocket | ~80ms | LP removal / rug → force-exit |
-| Helius `accountSubscribe` | WebSocket | ~50ms | Real-time vault balance for momentum price feed |
+- **Entry context:** triggerBuySol, curvePct, uniqueBuyerCount, preTriggerBuys{1,2,5}s
+- **Exit context:** exitReason, holdMs, signalScoreAtExit, signalStateAtExit
+- **PnL:** sizeSol, pnlSol, netPnlSol, feesSol, pnlPct
+- **MFE/MAE:** mfeSol, mfePct, maeSol, maePct
+- **Bayesian state:** bayesianFAtExit, alphaAtExit, betaAtExit, rEstAtExit
+- **Kelly conviction:** entryPPermille, entryRx100, entryFPermille, convictionTier
+- **V4 urgency:** v4UrgencyAtExit, v4UKelly, v4UMomentum, v4UVolTrail, v4ULiquidity
+- **Social (Phase 0):** socialScore, socialMentions, socialUniqueSources, socialHas{Twitter,Telegram,Website}
 
 ---
 
 ## Status
 
-**Paper mode active 24/7.** All three engines are collecting data. The momentum engine is in data-collection phase to build a post-graduation price trajectory dataset before any live trading decisions.
+**Paper mode active 24/7.** V4 urgency exits enabled (live). All 5 feeds connected with self-healing reconnect.
 
-**Not yet live.** Prerequisites:
-- [ ] 200+ momentum paper trades with trajectory data
-- [ ] Backrun win rate ≥ 50% on 500+ Rust paper trades
-- [ ] Circuit breaker verified (3 consecutive SL → 180s pause)
-- [ ] Feed health auto-pause verified (45s stale → engine pause)
+**Prerequisites for live trading:**
+- [ ] Win rate ≥ 50% on 100+ paper trades (Rust V4 engine)
+- [ ] 48h continuous uptime with stable feeds
+- [ ] Circuit breaker verified (3 SL → pause confirmed in logs)
+- [ ] Feed health auto-pause verified (stale → pause → resume)
+- [ ] V4 urgency calibration on 200+ trades
