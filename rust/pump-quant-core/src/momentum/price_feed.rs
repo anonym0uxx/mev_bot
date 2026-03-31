@@ -260,19 +260,35 @@ async fn price_feed_poll_loop(
                 }));
             }
 
-            let resp = match http_client.post(&rpc_url).json(&batch).send().await {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!(error = %e, "[price_feed] RPC batch request failed");
-                    continue;
-                }
-            };
+            // Single-retry on HTTP 429: sleep 100ms, retry once, then skip chunk
+            let results: Vec<serde_json::Value> = {
+                let maybe = async {
+                    let resp = http_client.post(&rpc_url).json(&batch).send().await
+                        .map_err(|e| { tracing::warn!(error = %e, "[price_feed] RPC batch request failed"); })?;
 
-            let results: Vec<serde_json::Value> = match resp.json().await {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!(error = %e, "[price_feed] RPC batch response parse failed");
-                    continue;
+                    if resp.status().as_u16() == 429 {
+                        tracing::warn!("[price_feed] HTTP 429 rate-limited — retry in 100ms");
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                        let resp2 = http_client.post(&rpc_url).json(&batch).send().await
+                            .map_err(|e| { tracing::warn!(error = %e, "[price_feed] RPC retry request failed"); })?;
+
+                        if resp2.status().as_u16() == 429 {
+                            tracing::warn!("[price_feed] HTTP 429 on retry — skipping chunk");
+                            return Err(());
+                        }
+
+                        return resp2.json::<Vec<serde_json::Value>>().await
+                            .map_err(|e| { tracing::warn!(error = %e, "[price_feed] RPC retry response parse failed"); });
+                    }
+
+                    resp.json::<Vec<serde_json::Value>>().await
+                        .map_err(|e| { tracing::warn!(error = %e, "[price_feed] RPC batch response parse failed"); })
+                }.await;
+
+                match maybe {
+                    Ok(r) => r,
+                    Err(()) => continue,
                 }
             };
 

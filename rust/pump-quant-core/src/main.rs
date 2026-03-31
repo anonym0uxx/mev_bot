@@ -486,11 +486,17 @@ async fn main() -> anyhow::Result<()> {
     // ── Momentum Engine ──────────────────────────────────────────────
     let momentum_config = Arc::new(engine_config.momentum.clone());
     let momentum_rpc_url = Arc::new(
-        std::env::var("HELIUS_API_KEY")
+        std::env::var("HELIUS_STAKED_URL")
             .ok()
-            .filter(|k| !k.is_empty())
-            .map(|k| format!("https://mainnet.helius-rpc.com/?api-key={}", k))
-            .unwrap_or_default(),
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| {
+                // Fallback: construct standard URL from API key
+                std::env::var("HELIUS_API_KEY")
+                    .ok()
+                    .filter(|k| !k.is_empty())
+                    .map(|k| format!("https://mainnet.helius-rpc.com/?api-key={}", k))
+                    .unwrap_or_default()
+            }),
     );
     let momentum_wss_url = std::env::var("HELIUS_API_KEY")
         .ok()
