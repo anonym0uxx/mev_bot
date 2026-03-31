@@ -1,6 +1,6 @@
 # pump-quant
 
-> High-frequency Solana MEV bot — backrunner + graduation arb + post-graduation momentum  
+> High-frequency Solana MEV bot — backrunner + post-graduation momentum  
 > Single Rust binary | 5-feed architecture | Bayesian signal engine | Paper mode default
 
 ---
@@ -117,8 +117,9 @@ Thresholds:
 | Engine | Trigger | Entry Signal | Exit Strategy | Max Hold |
 |---|---|---|---|---|
 | **Backrun** | BC trade (PumpPortal/ShredStream) | Gate stack + Bayesian Kelly sizing | V4 urgency (partial→full) + RIDE trail | 60s ride / 1.5s scalp |
-| **GradArb** | Graduation (Helius/ShredStream) | Spread ≥ 3% vs BC terminal price | Spread close / timeout | 5s |
 | **Momentum** | Graduation (Helius/CoreCast) | Score ≥ 40/100 | 3-tier TP + trailing + time SL | 300s |
+
+> **Note:** GradArb engine (BC→Raydium spread arbitrage) exists in code but is **disabled** — PumpSwap migration killed the structural arb spread.
 
 ---
 
