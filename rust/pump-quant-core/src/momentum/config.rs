@@ -81,6 +81,8 @@ pub struct MomentumConfig {
     /// Prevents CoreCast duplicate graduation events from causing phantom re-entries.
     /// Default: 300_000ms (5 minutes).
     pub reentry_cooldown_ms: u64,
+    /// How often to poll Helius RPC for vault account prices (ms). Default: 500.
+    pub price_poll_interval_ms: u64,
 
     // ══════════════════════════════════════════════════════════
     // MOMENTUM STATE CLASSIFICATION
@@ -185,6 +187,7 @@ impl Default for MomentumConfig {
             no_price_timeout_ms: 2_000,
             tier0_size_sol: 0.10,
             reentry_cooldown_ms: 300_000,
+            price_poll_interval_ms: 500,
 
             // Momentum state classification
             momentum_accel_threshold_bps: 100,

@@ -126,16 +126,17 @@ pub struct MomentumEngine {
 impl MomentumEngine {
     /// Create a new momentum engine with the given config and RPC URL.
     ///
-    /// Spawns a Helius WSS price feed task and a JSONL logger thread.
-    /// Returns `(engine, scored_token_sender, ws_handle, logger_handle)`.
+    /// Spawns an RPC polling price feed task and a JSONL logger thread.
+    /// Returns `(engine, scored_token_sender, poll_handle, logger_handle)`.
     /// The caller passes `scored_token_sender` to `HotPath::set_scored_token_tx()`.
     pub fn new(
         config: Arc<MomentumConfig>,
         rpc_url: Arc<String>,
-        helius_wss_url: String,
+        _helius_wss_url: String,
         log_path: &str,
     ) -> (Self, crossbeam_channel::Sender<ScoredToken>, tokio::task::JoinHandle<()>, std::thread::JoinHandle<()>) {
-        let (price_feed, ws_handle) = PriceFeedManager::new(helius_wss_url);
+        let poll_interval_ms = config.price_poll_interval_ms;
+        let (price_feed, ws_handle) = PriceFeedManager::new(rpc_url.to_string(), poll_interval_ms);
         let (logger, logger_handle) = MomentumPaperLogger::new(log_path);
 
         // Channel for Kelly-scored tokens from hot_path → momentum engine
@@ -897,21 +898,8 @@ impl MomentumEngine {
             }
         }
 
-        // Unsubscribe from price feed (fire and forget)
-        let price_feed = &self.price_feed;
-        let mint_copy = mint;
-        // Use try_send pattern — we can't .await here since close_position is sync
-        // The price feed manager will clean up on next command processing
-        tokio::spawn({
-            let cmd_tx = price_feed.cmd_sender();
-            async move {
-                let _ = cmd_tx
-                    .send(crate::momentum::price_feed::PriceFeedCommand::Unsubscribe(
-                        mint_copy,
-                    ))
-                    .await;
-            }
-        });
+        // Unsubscribe from price feed (direct DashMap remove — no async needed)
+        self.price_feed.unsubscribe_sync(&mint);
 
         // Log to JSONL
         let grad_vol_sol = pos.grad_volume_sol_x100 as f64 / 100.0;

@@ -1,33 +1,28 @@
-//! WebSocket accountSubscribe price feed for Raydium vault accounts.
+//! RPC polling price feed for Raydium vault accounts.
 //!
-//! Maintains a persistent Helius WSS connection that subscribes to SPL token
-//! vault accounts and streams real-time reserves via AtomicU64. The tick loop
-//! reads prices with zero allocation via `PriceFeedManager::current_price()`.
+//! Polls vault SPL token accounts via HTTP RPC `getAccountInfo` batch requests
+//! and streams real-time reserves via AtomicU64. The tick loop reads prices with
+//! zero allocation via `PriceFeedManager::current_price()`.
 //!
 //! ## Architecture
 //!
 //! ```text
-//! Helius WSS ──accountSubscribe──▶ price_feed_ws_loop ──AtomicU64──▶ on_tick()
-//!   (persistent)                   (dedicated tokio task)           (main loop)
+//! HTTP RPC ──getAccountInfo batch──▶ price_feed_poll_loop ──AtomicU64──▶ on_tick()
+//!   (500ms poll interval)            (dedicated tokio task)              (main loop)
 //! ```
 //!
 //! ## Performance
 //!
 //! - Zero-allocation hot path: `current_price()` does DashMap::get + AtomicU64::load
 //! - SPL token amount parsed as `u64::from_le_bytes(data[64..72])` — no serde
-//! - Reconnect with exponential backoff: 100ms → 200ms → ... cap 30s
+//! - Batch RPC: one HTTP request per poll cycle for all active subscriptions
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
-use base64::Engine as _;
 use dashmap::DashMap;
-use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
-use tracing::{debug, error, info, warn};
+use tracing;
 
 // ── Fixed-point price type ───────────────────────────────────────────────────
 
@@ -67,7 +62,7 @@ pub struct VaultSubscription {
     pub pc_vault: String,
 }
 
-/// Commands sent to the WS loop via mpsc channel.
+/// Commands sent via mpsc channel (kept for API compatibility).
 pub enum PriceFeedCommand {
     /// Subscribe to a token's vault accounts.
     Subscribe(VaultSubscription),
@@ -79,7 +74,7 @@ pub enum PriceFeedCommand {
 
 // ── Shared price state ───────────────────────────────────────────────────────
 
-/// Shared price state for a single token. Written atomically by WS task,
+/// Shared price state for a single token. Written atomically by poll task,
 /// read lock-free by tick loop. All fields are AtomicU64 for zero-contention
 /// reads on the hot path.
 pub struct PriceState {
@@ -105,65 +100,66 @@ impl PriceState {
     }
 }
 
-// ── Vault type tracking ──────────────────────────────────────────────────────
-
-/// Which vault this subscription tracks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VaultType {
-    /// Coin vault = base token reserve.
-    Coin,
-    /// PC vault = SOL (WSOL) reserve.
-    Pc,
-}
-
-/// Tracks a WS subscription ID → (mint, vault_type).
-#[derive(Debug, Clone)]
-struct SubInfo {
-    mint: [u8; 32],
-    vault_type: VaultType,
-}
-
 // ── PriceFeedManager ─────────────────────────────────────────────────────────
 
-/// Manages WebSocket price feed subscriptions.
+/// Manages RPC polling price feed subscriptions.
 ///
-/// Owns a command channel to the WS loop task and a shared DashMap of
-/// per-mint price states readable by the tick loop.
+/// Owns a DashMap of active subscriptions polled by the background task,
+/// and a shared DashMap of per-mint price states readable by the tick loop.
 pub struct PriceFeedManager {
-    /// Command sender to the WS loop task.
-    cmd_tx: mpsc::Sender<PriceFeedCommand>,
-    /// mint → PriceState. Arc for zero-copy read from tick thread.
+    /// mint → PriceState. Read lock-free by tick thread via AtomicU64.
     pub prices: Arc<DashMap<[u8; 32], Arc<PriceState>>>,
+    /// mint → VaultSubscription (coin_vault + pc_vault pubkeys for polling).
+    active_subs: Arc<DashMap<[u8; 32], VaultSubscription>>,
+    /// Command sender — kept for API compatibility (used by close_position fire-and-forget).
+    cmd_tx: mpsc::Sender<PriceFeedCommand>,
 }
 
 impl PriceFeedManager {
-    /// Create a new PriceFeedManager and spawn the WS loop task.
+    /// Create a new PriceFeedManager and spawn the RPC polling loop task.
     ///
     /// Returns `(manager, join_handle)`. The join handle can be used to
-    /// await graceful shutdown of the WS task.
-    pub fn new(helius_wss_url: String) -> (Self, tokio::task::JoinHandle<()>) {
+    /// await graceful shutdown of the polling task.
+    pub fn new(rpc_url: String, poll_interval_ms: u64) -> (Self, tokio::task::JoinHandle<()>) {
         let prices: Arc<DashMap<[u8; 32], Arc<PriceState>>> = Arc::new(DashMap::new());
-        let (cmd_tx, cmd_rx) = mpsc::channel(256);
-        let prices_clone = Arc::clone(&prices);
+        let active_subs: Arc<DashMap<[u8; 32], VaultSubscription>> = Arc::new(DashMap::new());
+        let (cmd_tx, _cmd_rx) = mpsc::channel(64); // keep for API compat
+
+        let prices_clone = prices.clone();
+        let subs_clone = active_subs.clone();
 
         let handle = tokio::spawn(async move {
-            price_feed_ws_loop(helius_wss_url, cmd_rx, prices_clone).await;
+            price_feed_poll_loop(rpc_url, subs_clone, prices_clone, poll_interval_ms).await;
         });
 
-        (Self { cmd_tx, prices }, handle)
+        (Self { prices, active_subs, cmd_tx }, handle)
     }
 
     /// Subscribe to a token's vault accounts for price tracking.
     pub async fn subscribe(&self, sub: VaultSubscription) {
-        let _ = self.cmd_tx.send(PriceFeedCommand::Subscribe(sub)).await;
+        tracing::info!(
+            mint = %bs58::encode(&sub.mint).into_string(),
+            coin_vault = %sub.coin_vault,
+            pc_vault = %sub.pc_vault,
+            "[price_feed] subscribing to vaults for polling"
+        );
+        self.prices.entry(sub.mint).or_insert_with(PriceState::new);
+        self.active_subs.insert(sub.mint, sub);
     }
 
-    /// Unsubscribe from a token's vault accounts.
+    /// Unsubscribe from a token's vault accounts (async, for API compat).
     pub async fn unsubscribe(&self, mint: [u8; 32]) {
-        let _ = self.cmd_tx.send(PriceFeedCommand::Unsubscribe(mint)).await;
+        self.unsubscribe_sync(&mint);
     }
 
-    /// Request graceful shutdown of the WS loop.
+    /// Unsubscribe from a token's vault accounts (sync).
+    pub fn unsubscribe_sync(&self, mint: &[u8; 32]) {
+        self.active_subs.remove(mint);
+        // Keep price in map briefly for any in-flight tick evaluations
+        // It will be cleaned up next time prices DashMap is pruned
+    }
+
+    /// Request graceful shutdown (no-op for polling loop, kept for API compat).
     pub async fn shutdown(&self) {
         let _ = self.cmd_tx.send(PriceFeedCommand::Shutdown).await;
     }
@@ -171,8 +167,15 @@ impl PriceFeedManager {
     /// Get a clone of the command sender for fire-and-forget operations.
     ///
     /// Used by `MomentumEngine::close_position()` to unsubscribe without awaiting.
+    /// NOTE: With the polling architecture, unsubscribe is handled via active_subs
+    /// DashMap directly. This method is kept for API compatibility.
     pub fn cmd_sender(&self) -> mpsc::Sender<PriceFeedCommand> {
         self.cmd_tx.clone()
+    }
+
+    /// Get a reference to active_subs for direct unsubscribe from sync context.
+    pub fn active_subs(&self) -> &Arc<DashMap<[u8; 32], VaultSubscription>> {
+        &self.active_subs
     }
 
     /// Hot path: read current fixed-point price for a mint. Zero allocation.
@@ -192,362 +195,149 @@ impl PriceFeedManager {
     }
 }
 
-// ── WebSocket loop ───────────────────────────────────────────────────────────
+// ── RPC Polling Loop ─────────────────────────────────────────────────────────
 
-/// Persistent WebSocket loop with automatic reconnection.
-///
-/// Handles:
-/// - `Subscribe`: sends `accountSubscribe` JSON-RPC for both vaults
-/// - `Unsubscribe`: sends `accountUnsubscribe`, removes from DashMap
-/// - `accountNotification`: parses SPL token account data, updates atomics
-/// - Reconnect with exponential backoff on error (100ms → 30s cap)
-async fn price_feed_ws_loop(
-    url: String,
-    mut cmd_rx: mpsc::Receiver<PriceFeedCommand>,
+/// RPC polling loop — replaces broken accountSubscribe WS loop.
+/// Polls all active vault subscriptions via getAccountInfo batch RPC every poll_interval_ms.
+async fn price_feed_poll_loop(
+    rpc_url: String,
+    active_subs: Arc<DashMap<[u8; 32], VaultSubscription>>,
     prices: Arc<DashMap<[u8; 32], Arc<PriceState>>>,
+    poll_interval_ms: u64,
 ) {
-    let mut backoff_ms: u64 = 100;
-    const MAX_BACKOFF_MS: u64 = 30_000;
-
-    // Persistent state across reconnections:
-    // Track pending subscriptions so we can resubscribe on reconnect.
-    let mut active_subs: HashMap<[u8; 32], VaultSubscription> = HashMap::new();
-
-    loop {
-        info!(url = %url, "price_feed: connecting to Helius WSS");
-
-        match connect_and_run(&url, &mut cmd_rx, &prices, &mut active_subs).await {
-            LoopExit::Shutdown => {
-                info!("price_feed: shutdown requested, exiting WS loop");
-                return;
-            }
-            LoopExit::Error(e) => {
-                error!(error = %e, backoff_ms, "price_feed: WS error, reconnecting");
-                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
-            }
-            LoopExit::Disconnected => {
-                warn!(backoff_ms, "price_feed: WS disconnected, reconnecting");
-                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
-            }
-        }
-    }
-}
-
-/// Result of a single WS connection session.
-enum LoopExit {
-    Shutdown,
-    Error(String),
-    Disconnected,
-}
-
-/// Connect to WS and run until error or shutdown.
-async fn connect_and_run(
-    url: &str,
-    cmd_rx: &mut mpsc::Receiver<PriceFeedCommand>,
-    prices: &Arc<DashMap<[u8; 32], Arc<PriceState>>>,
-    active_subs: &mut HashMap<[u8; 32], VaultSubscription>,
-) -> LoopExit {
-    // Connect
-    let ws_stream = match tokio_tungstenite::connect_async(url).await {
-        Ok((stream, _response)) => stream,
-        Err(e) => return LoopExit::Error(format!("connect failed: {e}")),
-    };
-
-    let (mut ws_tx, mut ws_rx) = ws_stream.split();
-    info!(
-        active_subs = active_subs.len(),
-        "price_feed: WS connected, resubscribing"
-    );
-
-    // Track subscription_id → SubInfo for parsing notifications
-    let mut sub_id_map: HashMap<u64, SubInfo> = HashMap::new();
-    // Track mint → (coin_sub_id, pc_sub_id) for unsubscribe
-    let mut mint_sub_ids: HashMap<[u8; 32], (Option<u64>, Option<u64>)> = HashMap::new();
-    // Track JSON-RPC request id → (mint, vault_type) for matching subscribe responses
-    let mut pending_requests: HashMap<u64, SubInfo> = HashMap::new();
-    let mut next_rpc_id: u64 = 1;
-
-    // Reset backoff on successful connect (caller handles this implicitly)
-
-    // 30-second keepalive ping interval — prevents Helius from closing idle connections
-    let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
-    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    // Resubscribe all active subscriptions after reconnect
-    for (mint, sub) in active_subs.iter() {
-        // Subscribe coin vault
-        let coin_id = next_rpc_id;
-        next_rpc_id += 1;
-        let coin_msg = format!(
-            r#"{{"jsonrpc":"2.0","id":{},"method":"accountSubscribe","params":["{}",{{"encoding":"base64","commitment":"confirmed"}}]}}"#,
-            coin_id, sub.coin_vault
-        );
-        if let Err(e) = ws_tx.send(Message::Text(coin_msg.into())).await {
-            return LoopExit::Error(format!("resubscribe coin send error: {e}"));
-        }
-        pending_requests.insert(coin_id, SubInfo { mint: *mint, vault_type: VaultType::Coin });
-
-        // Subscribe pc vault
-        let pc_id = next_rpc_id;
-        next_rpc_id += 1;
-        let pc_msg = format!(
-            r#"{{"jsonrpc":"2.0","id":{},"method":"accountSubscribe","params":["{}",{{"encoding":"base64","commitment":"confirmed"}}]}}"#,
-            pc_id, sub.pc_vault
-        );
-        if let Err(e) = ws_tx.send(Message::Text(pc_msg.into())).await {
-            return LoopExit::Error(format!("resubscribe pc send error: {e}"));
-        }
-        pending_requests.insert(pc_id, SubInfo { mint: *mint, vault_type: VaultType::Pc });
-
-        // Ensure price state exists
-        if !prices.contains_key(mint) {
-            prices.insert(*mint, PriceState::new());
-        }
-
-        debug!(mint = ?hex::encode(mint), "price_feed: resubscribed vaults after reconnect");
-    }
-
-    loop {
-        tokio::select! {
-            // 30s keepalive ping — prevents Helius from closing idle connections
-            _ = ping_interval.tick() => {
-                if let Err(e) = ws_tx.send(Message::Ping(vec![].into())).await {
-                    return LoopExit::Error(format!("ping send error: {e}"));
-                }
-            }
-
-            // Handle commands from the engine
-            cmd = cmd_rx.recv() => {
-                match cmd {
-                    Some(PriceFeedCommand::Subscribe(sub)) => {
-                        let mint = sub.mint;
-
-                        // Ensure PriceState exists
-                        if !prices.contains_key(&mint) {
-                            prices.insert(mint, PriceState::new());
-                        }
-
-                        // Subscribe coin vault
-                        let coin_id = next_rpc_id;
-                        next_rpc_id += 1;
-                        let coin_msg = format!(
-                            r#"{{"jsonrpc":"2.0","id":{},"method":"accountSubscribe","params":["{}",{{"encoding":"base64","commitment":"confirmed"}}]}}"#,
-                            coin_id, sub.coin_vault
-                        );
-                        if let Err(e) = ws_tx.send(Message::Text(coin_msg.into())).await {
-                            return LoopExit::Error(format!("subscribe coin send error: {e}"));
-                        }
-                        pending_requests.insert(coin_id, SubInfo { mint, vault_type: VaultType::Coin });
-
-                        // Subscribe pc vault
-                        let pc_id = next_rpc_id;
-                        next_rpc_id += 1;
-                        let pc_msg = format!(
-                            r#"{{"jsonrpc":"2.0","id":{},"method":"accountSubscribe","params":["{}",{{"encoding":"base64","commitment":"confirmed"}}]}}"#,
-                            pc_id, sub.pc_vault
-                        );
-                        if let Err(e) = ws_tx.send(Message::Text(pc_msg.into())).await {
-                            return LoopExit::Error(format!("subscribe pc send error: {e}"));
-                        }
-                        pending_requests.insert(pc_id, SubInfo { mint, vault_type: VaultType::Pc });
-
-                        // Track for reconnection
-                        active_subs.insert(mint, sub);
-
-                        debug!(mint_hex = %hex_mint(&mint), "price_feed: subscribing to vaults");
-                    }
-                    Some(PriceFeedCommand::Unsubscribe(mint)) => {
-                        // Send accountUnsubscribe for both vaults
-                        if let Some((coin_sub, pc_sub)) = mint_sub_ids.remove(&mint) {
-                            for sub_id in [coin_sub, pc_sub].iter().flatten() {
-                                let unsub_id = next_rpc_id;
-                                next_rpc_id += 1;
-                                let msg = format!(
-                                    r#"{{"jsonrpc":"2.0","id":{},"method":"accountUnsubscribe","params":[{}]}}"#,
-                                    unsub_id, sub_id
-                                );
-                                let _ = ws_tx.send(Message::Text(msg.into())).await;
-                                sub_id_map.remove(sub_id);
-                            }
-                        }
-
-                        // Remove from persistent tracking
-                        active_subs.remove(&mint);
-                        prices.remove(&mint);
-
-                        debug!(mint_hex = %hex_mint(&mint), "price_feed: unsubscribed");
-                    }
-                    Some(PriceFeedCommand::Shutdown) | None => {
-                        // Send unsubscribe for all, then exit
-                        return LoopExit::Shutdown;
-                    }
-                }
-            }
-
-            // Handle WS messages
-            msg = ws_rx.next() => {
-                match msg {
-                    Some(Ok(Message::Text(text))) => {
-                        handle_ws_message(
-                            &text,
-                            &mut sub_id_map,
-                            &mut mint_sub_ids,
-                            &mut pending_requests,
-                            prices,
-                        );
-                    }
-                    Some(Ok(Message::Ping(data))) => {
-                        let _ = ws_tx.send(Message::Pong(data)).await;
-                    }
-                    Some(Ok(Message::Close(_))) => {
-                        return LoopExit::Disconnected;
-                    }
-                    Some(Err(e)) => {
-                        return LoopExit::Error(format!("ws recv error: {e}"));
-                    }
-                    None => {
-                        return LoopExit::Disconnected;
-                    }
-                    _ => {} // Binary, Pong — ignore
-                }
-            }
-        }
-    }
-}
-
-/// Parse a WS message: either a subscription confirmation or an account notification.
-fn handle_ws_message(
-    text: &str,
-    sub_id_map: &mut HashMap<u64, SubInfo>,
-    mint_sub_ids: &mut HashMap<[u8; 32], (Option<u64>, Option<u64>)>,
-    pending_requests: &mut HashMap<u64, SubInfo>,
-    prices: &Arc<DashMap<[u8; 32], Arc<PriceState>>>,
-) {
-    // Fast path: try to parse as JSON
-    let parsed: serde_json::Value = match serde_json::from_str(text) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-
-    // Case 1: Subscription confirmation response
-    // {"jsonrpc":"2.0","result":12345,"id":1}
-    if let (Some(id), Some(result)) = (
-        parsed.get("id").and_then(|v| v.as_u64()),
-        parsed.get("result").and_then(|v| v.as_u64()),
-    ) {
-        if let Some(info) = pending_requests.remove(&id) {
-            let subscription_id = result;
-            sub_id_map.insert(subscription_id, info.clone());
-
-            // Track mint → sub IDs for unsubscribe
-            let entry = mint_sub_ids.entry(info.mint).or_insert((None, None));
-            match info.vault_type {
-                VaultType::Coin => entry.0 = Some(subscription_id),
-                VaultType::Pc => entry.1 = Some(subscription_id),
-            }
-
-            debug!(
-                subscription_id,
-                vault_type = ?info.vault_type,
-                "price_feed: subscription confirmed"
-            );
-        }
+    if rpc_url.is_empty() {
+        tracing::warn!("[price_feed] RPC URL not configured — price polling disabled");
         return;
     }
 
-    // Case 2: Account notification
-    // {"jsonrpc":"2.0","method":"accountNotification","params":{
-    //   "result":{"context":{"slot":123},"value":{"data":["<base64>","base64"]}},
-    //   "subscription":12345
-    // }}
-    if parsed.get("method").and_then(|v| v.as_str()) == Some("accountNotification") {
-        let params = match parsed.get("params") {
-            Some(p) => p,
-            None => return,
-        };
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
 
-        let subscription_id = match params.get("subscription").and_then(|v| v.as_u64()) {
-            Some(id) => id,
-            None => return,
-        };
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(poll_interval_ms));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        let info = match sub_id_map.get(&subscription_id) {
-            Some(i) => i,
-            None => return,
-        };
+    tracing::info!(poll_interval_ms, url = %rpc_url, "[price_feed] RPC polling loop started");
 
-        // Extract base64 data
-        let data_b64 = match params
-            .get("result")
-            .and_then(|r| r.get("value"))
-            .and_then(|v| v.get("data"))
-            .and_then(|d| d.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|v| v.as_str())
-        {
-            Some(s) => s,
-            None => return,
-        };
+    loop {
+        interval.tick().await;
 
-        // Decode base64 → bytes
-        let bytes = match base64::engine::general_purpose::STANDARD.decode(data_b64) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
+        // Snapshot current subscriptions
+        let subs: Vec<([u8; 32], String, String)> = active_subs
+            .iter()
+            .map(|e| (*e.key(), e.value().coin_vault.clone(), e.value().pc_vault.clone()))
+            .collect();
 
-        // Parse SPL token account: amount is at bytes[64..72] as LE u64
-        if bytes.len() < 72 {
-            return;
+        if subs.is_empty() {
+            continue;
         }
-        let amount = u64::from_le_bytes([
-            bytes[64], bytes[65], bytes[66], bytes[67],
-            bytes[68], bytes[69], bytes[70], bytes[71],
-        ]);
 
-        // Update the appropriate reserve in PriceState
-        if let Some(state) = prices.get(&info.mint) {
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
+        // Build JSON-RPC batch: 2 getAccountInfo calls per mint (coin_vault + pc_vault)
+        let mut batch = Vec::with_capacity(subs.len() * 2);
+        for (i, (_mint, coin_vault, pc_vault)) in subs.iter().enumerate() {
+            batch.push(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": i * 2,
+                "method": "getAccountInfo",
+                "params": [coin_vault, {"encoding": "base64", "commitment": "confirmed"}]
+            }));
+            batch.push(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": i * 2 + 1,
+                "method": "getAccountInfo",
+                "params": [pc_vault, {"encoding": "base64", "commitment": "confirmed"}]
+            }));
+        }
 
-            match info.vault_type {
-                VaultType::Coin => {
-                    state.reserve_token.store(amount, Ordering::Relaxed);
+        let resp = match http_client.post(&rpc_url).json(&batch).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "[price_feed] RPC batch request failed");
+                continue;
+            }
+        };
+
+        let results: Vec<serde_json::Value> = match resp.json().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "[price_feed] RPC batch response parse failed");
+                continue;
+            }
+        };
+
+        // Process pairwise: results[i*2] = coin_vault, results[i*2+1] = pc_vault
+        for (i, (mint, _, _)) in subs.iter().enumerate() {
+            let coin_data = extract_account_data(&results, i * 2);
+            let pc_data = extract_account_data(&results, i * 2 + 1);
+
+            let (sol_reserve, token_reserve) = match (coin_data, pc_data) {
+                (Some(coin), Some(pc)) => {
+                    // Raydium vault layout:
+                    // coin_vault = base token (pump.fun token) — token reserve
+                    // pc_vault = quote token (WSOL) — SOL reserve
+                    // SPL Token account: bytes 64..72 = amount (u64 LE)
+                    let token_reserve = parse_spl_amount(&coin);
+                    let sol_reserve = parse_spl_amount(&pc);
+                    match (sol_reserve, token_reserve) {
+                        (Some(s), Some(t)) => (s, t),
+                        _ => continue,
+                    }
                 }
-                VaultType::Pc => {
-                    state.reserve_sol.store(amount, Ordering::Relaxed);
-                }
+                _ => continue,
+            };
+
+            if sol_reserve == 0 || token_reserve == 0 {
+                continue;
             }
 
-            // Recompute price from both reserves
-            let sol = state.reserve_sol.load(Ordering::Relaxed);
-            let token = state.reserve_token.load(Ordering::Relaxed);
-            if sol > 0 && token > 0 {
-                let price = price_from_reserves(sol, token);
-                state.price_fp.store(price, Ordering::Relaxed);
-                state.last_update_ms.store(now_ms, Ordering::Relaxed);
+            let price_fp = price_from_reserves(sol_reserve, token_reserve);
+            if price_fp == 0 {
+                continue;
+            }
+
+            if let Some(state) = prices.get(mint) {
+                let prev = state.price_fp.swap(price_fp, Ordering::Release);
+                state.reserve_sol.store(sol_reserve, Ordering::Relaxed);
+                state.reserve_token.store(token_reserve, Ordering::Relaxed);
+                state.last_update_ms.store(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64,
+                    Ordering::Relaxed,
+                );
+                if prev == 0 {
+                    tracing::info!(
+                        mint = %bs58::encode(mint).into_string(),
+                        price_fp,
+                        sol_reserve,
+                        token_reserve,
+                        "[price_feed] first price received for mint"
+                    );
+                }
             }
         }
     }
 }
 
-/// Helper: hex-encode a 32-byte mint for logging (first 8 bytes).
-fn hex_mint(mint: &[u8; 32]) -> String {
-    // Show first 8 bytes as hex for compact logging
-    mint.iter()
-        .take(8)
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>()
+/// Extract and base64-decode account data from a JSON-RPC batch response by request id.
+fn extract_account_data(results: &[serde_json::Value], id: usize) -> Option<Vec<u8>> {
+    let entry = results.iter().find(|r| r.get("id").and_then(|i| i.as_u64()) == Some(id as u64))?;
+    let data_arr = entry.pointer("/result/value/data")?.as_array()?;
+    let b64 = data_arr.first()?.as_str()?;
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(b64).ok()
 }
 
-// Minimal hex module since the `hex` crate isn't in Cargo.toml
-mod hex {
-    pub fn encode(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
+/// Parse SPL token account amount from raw account data.
+/// SPL Token account layout: [mint(32), owner(32), amount(8), ...]
+/// amount is at bytes 64..72, little-endian u64.
+fn parse_spl_amount(data: &[u8]) -> Option<u64> {
+    if data.len() < 72 {
+        return None;
     }
+    Some(u64::from_le_bytes(data[64..72].try_into().ok()?))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -597,12 +387,27 @@ mod tests {
         assert_eq!(price, 10_000);
     }
 
+    #[test]
+    fn test_parse_spl_amount_valid() {
+        // Create a minimal 72-byte SPL token account
+        let mut data = vec![0u8; 165]; // standard SPL token account size
+        // Set amount at bytes 64..72
+        let amount: u64 = 1_234_567_890;
+        data[64..72].copy_from_slice(&amount.to_le_bytes());
+        assert_eq!(parse_spl_amount(&data), Some(amount));
+    }
+
+    #[test]
+    fn test_parse_spl_amount_too_short() {
+        let data = vec![0u8; 71]; // too short
+        assert_eq!(parse_spl_amount(&data), None);
+    }
+
     #[tokio::test]
     async fn test_price_feed_manager_creates() {
         // PriceFeedManager::new() should return without panic.
-        // WS loop will fail to connect (invalid URL) but that's fine —
-        // it runs in a background task with reconnection.
-        let (manager, handle) = PriceFeedManager::new("wss://invalid.example.com".to_string());
+        // Poll loop will fail to reach RPC (invalid URL) but that's fine.
+        let (manager, handle) = PriceFeedManager::new("https://invalid.example.com".to_string(), 500);
 
         // Verify prices map is empty initially
         assert_eq!(manager.prices.len(), 0);
@@ -611,10 +416,7 @@ mod tests {
         let unknown_mint = [0u8; 32];
         assert!(manager.current_price(&unknown_mint).is_none());
 
-        // Shutdown the WS loop
-        manager.shutdown().await;
-        // Give it a moment to process shutdown (the WS loop will fail to connect
-        // and loop, but shutdown command via channel should be picked up)
+        // Shutdown the poll loop
         handle.abort();
     }
 }

@@ -539,6 +539,7 @@
     "no_price_timeout_ms": 2000,
     "tier0_size_sol": 0.1,
     "reentry_cooldown_ms": 300000,
+    "price_poll_interval_ms": 500,
     "momentum_accel_threshold_bps": 100,
     "momentum_decel_threshold_bps": -100,
     "momentum_reversal_threshold_bps": -500,
