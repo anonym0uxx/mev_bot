@@ -34,6 +34,7 @@ use pump_quant_core::persistence::sqlite::{SqliteLogger, TradeLogEntry};
 use pump_quant_core::persistence::paper_logger::PaperTradeLogger;
 use pump_quant_core::persistence::grad_arb_logger::GradArbPaperLogger;
 use pump_quant_core::persistence::engine_state::write_engine_state;
+use pump_quant_core::arb::blockhash_manager;
 
 const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -516,11 +517,34 @@ async fn main() -> anyhow::Result<()> {
         skip_pump_swap: true, // PumpSwap has no structural arb — skip by default
     };
 
+    // ── Blockhash Manager — warm cache for Jito bundle submission ────
+    let blockhash_cache = blockhash_manager::new_cache();
+    {
+        let rpc_url = std::env::var("SOLANA_RPC_URL")
+            .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
+        let bh_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(300))
+            .build()
+            .expect("blockhash reqwest client");
+        let _bh_handle = blockhash_manager::spawn_poller(
+            blockhash_cache.clone(),
+            rpc_url,
+            bh_client,
+            400, // poll every 400ms
+        );
+        info!("[blockhash] background poller started (400ms interval)");
+    }
+
+    let helius_ws_url = std::env::var("SOLANA_WS_URL")
+        .unwrap_or_else(|_| String::new());
+
     let grad_arb_engine = Arc::new(GraduationArbEngine::new(
         grad_arb_config,
         grad_arb_stats.clone(),
         grad_closed_tx,
         helius_rpc_url,
+        helius_ws_url,
+        blockhash_cache.clone(),
     ));
 
     info!(

@@ -675,8 +675,17 @@ pub struct GraduationArbEngine {
     closed_tx: crossbeam_channel::Sender<GradArbClosedPosition>,
     /// Helius RPC URL for pool reserve fetches.
     helius_rpc_url: String,
+    /// Helius WebSocket URL for accountSubscribe price feed.
+    helius_ws_url: String,
     /// Shared reqwest client for pool resolution (reused across arb attempts).
     rpc_client: reqwest::Client,
+    /// Cached recent blockhash for Jito bundle construction (used in live mode).
+    #[allow(dead_code)]
+    blockhash_cache: super::blockhash_manager::BlockhashCache,
+    /// Price update channel sender — vault monitors send updates here.
+    price_update_tx: tokio::sync::mpsc::UnboundedSender<super::price_feed::VaultPriceUpdate>,
+    /// Price update channel receiver — polled in on_tick for TP/SL checks.
+    price_update_rx: std::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<super::price_feed::VaultPriceUpdate>>,
 }
 
 impl GraduationArbEngine {
@@ -686,8 +695,11 @@ impl GraduationArbEngine {
         stats: Arc<GradArbStats>,
         closed_tx: crossbeam_channel::Sender<GradArbClosedPosition>,
         helius_rpc_url: String,
+        helius_ws_url: String,
+        blockhash_cache: super::blockhash_manager::BlockhashCache,
     ) -> Self {
         let dedup_ttl_ms = config.dedup_ttl_ms;
+        let (price_tx, price_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             config,
             positions: DashMap::with_capacity(16),
@@ -696,6 +708,10 @@ impl GraduationArbEngine {
             closed_tx,
             rpc_client: make_pool_resolution_client(),
             helius_rpc_url,
+            helius_ws_url,
+            blockhash_cache,
+            price_update_tx: price_tx,
+            price_update_rx: std::sync::Mutex::new(price_rx),
         }
     }
 
@@ -856,14 +872,53 @@ impl GraduationArbEngine {
 
         self.stats.arb_entries.fetch_add(1, Ordering::Relaxed);
         self.positions.insert(pool.mint, position);
+
+        // Spawn vault price monitor — live TP/SL via accountSubscribe
+        if !self.helius_ws_url.is_empty() && pool.reserve_sol_lamports > 0 {
+            let pc_vault_b58 = bs58::encode(&pool.pool_address).into_string();
+            let monitor = Arc::new(super::price_feed::VaultMonitor::new(
+                pool.mint,
+                pool.reserve_sol_lamports,
+                pool.reserve_token_atoms,
+            ));
+            super::price_feed::spawn_vault_subscriber(
+                self.helius_ws_url.clone(),
+                pc_vault_b58,
+                monitor,
+                self.price_update_tx.clone(),
+            );
+            tracing::debug!(
+                mint = %bs58::encode(pool.mint).into_string(),
+                "[grad_arb] vault price monitor spawned"
+            );
+        }
     }
 
     /// Called every tick (50ms) for position management.
     ///
-    /// Checks all open positions for MaxHold exits. Uses &self with DashMap
-    /// interior mutability — no Mutex needed.
-    /// TP/SL require live Raydium price feed (future task).
+    /// Checks all open positions for MaxHold exits and processes price updates
+    /// from vault monitors for TP/SL decisions.
     pub fn on_tick(&self, now_ms: u64) {
+        // Process price updates from vault monitors → update peak/min prices
+        if let Ok(mut rx) = self.price_update_rx.try_lock() {
+            while let Ok(update) = rx.try_recv() {
+                if let Some(mut pos) = self.positions.get_mut(&update.mint) {
+                    // Update price from vault reserves
+                    if update.reserve_token_atoms > 0 {
+                        let current_price_lamports = (update.reserve_sol_lamports as f64
+                            / update.reserve_token_atoms as f64
+                            * 1e9) as u64;
+                        if current_price_lamports > pos.peak_price_lamports {
+                            pos.peak_price_lamports = current_price_lamports;
+                        }
+                        if current_price_lamports < pos.min_price_lamports {
+                            pos.min_price_lamports = current_price_lamports;
+                        }
+                    }
+                }
+            }
+        }
+
         let mut to_close: Vec<([u8; 32], GradArbExitReason)> = Vec::new();
 
         for entry in self.positions.iter() {
@@ -871,10 +926,28 @@ impl GraduationArbEngine {
             let pos = entry.value();
             let hold_ms = now_ms.saturating_sub(pos.entry_ts_ms);
 
+            // MaxHold exit
             if hold_ms >= self.config.max_hold_ms {
                 to_close.push((mint, GradArbExitReason::MaxHold));
+                continue;
             }
-            // TODO: TP/SL require Raydium accountSubscribe price feed (future task)
+
+            // TP/SL from live price feed
+            if pos.entry_price_lamports > 0 {
+                let peak_pnl = (pos.peak_price_lamports as f64 - pos.entry_price_lamports as f64)
+                    / pos.entry_price_lamports as f64;
+                let current_min_pnl = (pos.min_price_lamports as f64 - pos.entry_price_lamports as f64)
+                    / pos.entry_price_lamports as f64;
+
+                if peak_pnl >= self.config.tp_pct {
+                    to_close.push((mint, GradArbExitReason::TakeProfit));
+                    continue;
+                }
+                if current_min_pnl <= -(self.config.sl_pct) {
+                    to_close.push((mint, GradArbExitReason::StopLoss));
+                    continue;
+                }
+            }
         }
 
         for (mint, reason) in to_close {
@@ -1022,6 +1095,8 @@ mod tests {
             stats,
             tx,
             "https://rpc.example.com".to_string(),
+            String::new(), // no WS in tests
+            crate::arb::blockhash_manager::new_cache(),
         );
         (engine, rx)
     }
@@ -1064,7 +1139,10 @@ mod tests {
         config.enabled = false;
         let stats = Arc::new(GradArbStats::new());
         let (tx, _rx) = crossbeam_channel::unbounded();
-        let engine = GraduationArbEngine::new(config, stats.clone(), tx, String::new());
+        let engine = GraduationArbEngine::new(
+            config, stats.clone(), tx, String::new(), String::new(),
+            crate::arb::blockhash_manager::new_cache(),
+        );
 
         // Run on_migration synchronously via tokio runtime
         let rt = tokio::runtime::Builder::new_current_thread()
