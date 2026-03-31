@@ -193,7 +193,7 @@ impl MomentumEngine {
     pub fn new(
         config: Arc<MomentumConfig>,
         rpc_url: Arc<String>,
-        _helius_wss_url: String,
+        helius_wss_url: String,
         log_path: &str,
         jito_grpc: Option<Arc<crate::tx::jito_grpc::JitoGrpcClient>>,
         nozomi_client: Option<Arc<crate::tx::nozomi::NozomiClient>>,
@@ -201,7 +201,11 @@ impl MomentumEngine {
         blockhash_cache: Arc<crate::tx::executor::BlockhashCache>,
     ) -> (Self, crossbeam_channel::Sender<ScoredToken>, tokio::task::JoinHandle<()>, std::thread::JoinHandle<()>) {
         let poll_interval_ms = config.price_poll_interval_ms;
-        let (price_feed, ws_handle) = PriceFeedManager::new(rpc_url.to_string(), poll_interval_ms);
+        let (price_feed, ws_handle) = PriceFeedManager::new(
+            rpc_url.to_string(),
+            helius_wss_url,
+            poll_interval_ms,
+        );
         let (logger, logger_handle) = MomentumPaperLogger::new(log_path);
 
         // Channel for Kelly-scored tokens from hot_path → momentum engine

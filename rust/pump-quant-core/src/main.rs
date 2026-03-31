@@ -501,11 +501,16 @@ async fn main() -> anyhow::Result<()> {
                     .unwrap_or_default()
             }),
     );
-    let momentum_wss_url = std::env::var("HELIUS_API_KEY")
+    let momentum_wss_url = std::env::var("SOLANA_WS_URL")
         .ok()
-        .filter(|k| !k.is_empty())
-        .map(|k| format!("wss://mainnet.helius-rpc.com/?api-key={}", k))
-        .unwrap_or_else(|| "wss://invalid.example.com".to_string());
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| {
+            std::env::var("HELIUS_API_KEY")
+                .ok()
+                .filter(|k| !k.is_empty())
+                .map(|k| format!("wss://mainnet.helius-rpc.com/?api-key={}", k))
+                .unwrap_or_else(|| "wss://invalid.example.com".to_string())
+        });
     let momentum_log_path = format!("{}/momentum_paper_trades.jsonl", data_dir);
 
     // ── Live mode tx infrastructure (conditional on paper_mode) ─────

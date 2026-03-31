@@ -1,21 +1,12 @@
-//! RPC polling price feed for Raydium vault accounts.
+//! Hybrid price feed for Raydium/PumpSwap vault accounts.
 //!
-//! Polls vault SPL token accounts via HTTP RPC `getAccountInfo` batch requests
-//! and streams real-time reserves via AtomicU64. The tick loop reads prices with
-//! zero allocation via `PriceFeedManager::current_price()`.
+//! Two parallel paths update the same `PriceState` atomics:
+//! 1. **WebSocket accountSubscribe** (primary, ~50-100ms) — Helius WSS
+//! 2. **HTTP RPC getAccountInfo polling** (fallback/correction, 500ms)
 //!
-//! ## Architecture
-//!
-//! ```text
-//! HTTP RPC ──getAccountInfo batch──▶ price_feed_poll_loop ──AtomicU64──▶ on_tick()
-//!   (500ms poll interval)            (dedicated tokio task)              (main loop)
-//! ```
-//!
-//! ## Performance
-//!
-//! - Zero-allocation hot path: `current_price()` does DashMap::get + AtomicU64::load
-//! - SPL token amount parsed as `u64::from_le_bytes(data[64..72])` — no serde
-//! - Batch RPC: one HTTP request per poll cycle for all active subscriptions
+//! Previous attempt used `wss://mainnet.helius-rpc.com/?api-key=...` with
+//! commitment=confirmed — silently delivered zero accountNotifications.
+//! Fix: use dedicated endpoint (SOLANA_WS_URL) with commitment=processed.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -26,70 +17,42 @@ use tracing;
 
 // ── Fixed-point price type ───────────────────────────────────────────────────
 
-/// Fixed-point price: lamports per 1,000,000 token atoms.
-///
-/// Example: if 1 token atom costs 0.000381 lamports,
-/// `price_fp = 381` (i.e., 381 lamports per 1M atoms).
-///
-/// This fits u64 for any realistic Pump.fun token price.
 pub type PriceFp = u64;
 
-/// Compute fixed-point price from raw reserves.
-///
 /// `price_fp = (reserve_sol * 1_000_000) / reserve_token`
-///
-/// Uses u128 intermediate to prevent overflow when reserve_sol > 18.4B lamports
-/// (which is ~18.4 SOL — very common).
 #[inline(always)]
 pub fn price_from_reserves(reserve_sol: u64, reserve_token: u64) -> PriceFp {
     if reserve_token == 0 {
         return 0;
     }
-    // u128 intermediate prevents overflow for reserve_sol up to u64::MAX
     ((reserve_sol as u128).saturating_mul(1_000_000) / reserve_token as u128) as u64
 }
 
 // ── Subscription types ───────────────────────────────────────────────────────
 
-/// Request to subscribe to a token's vault accounts.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VaultSubscription {
-    /// Token mint address (32 bytes).
     pub mint: [u8; 32],
-    /// Coin vault (base token) SPL account address, base58-encoded.
     pub coin_vault: String,
-    /// PC vault (WSOL) SPL account address, base58-encoded.
     pub pc_vault: String,
 }
 
-/// Commands sent via mpsc channel (kept for API compatibility).
 pub enum PriceFeedCommand {
-    /// Subscribe to a token's vault accounts.
     Subscribe(VaultSubscription),
-    /// Unsubscribe from a token's vault accounts by mint.
     Unsubscribe([u8; 32]),
-    /// Graceful shutdown.
     Shutdown,
 }
 
 // ── Shared price state ───────────────────────────────────────────────────────
 
-/// Shared price state for a single token. Written atomically by poll task,
-/// read lock-free by tick loop. All fields are AtomicU64 for zero-contention
-/// reads on the hot path.
 pub struct PriceState {
-    /// Fixed-point price: lamports per 1M token atoms.
     pub price_fp: AtomicU64,
-    /// Last update timestamp (epoch ms).
     pub last_update_ms: AtomicU64,
-    /// Raw SOL reserve (lamports) for debugging/logging.
     pub reserve_sol: AtomicU64,
-    /// Raw token reserve (atoms) for debugging/logging.
     pub reserve_token: AtomicU64,
 }
 
 impl PriceState {
-    /// Create a new zeroed PriceState wrapped in Arc.
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             price_fp: AtomicU64::new(0),
@@ -100,62 +63,67 @@ impl PriceState {
     }
 }
 
+// ── Vault type tracking ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VaultType { Coin, Pc }
+
 // ── PriceFeedManager ─────────────────────────────────────────────────────────
 
-/// Manages RPC polling price feed subscriptions.
-///
-/// Owns a DashMap of active subscriptions polled by the background task,
-/// and a shared DashMap of per-mint price states readable by the tick loop.
 pub struct PriceFeedManager {
-    /// mint → PriceState. Read lock-free by tick thread via AtomicU64.
     pub prices: Arc<DashMap<[u8; 32], Arc<PriceState>>>,
-    /// mint → VaultSubscription (coin_vault + pc_vault pubkeys for polling).
     active_subs: Arc<DashMap<[u8; 32], VaultSubscription>>,
-    /// Command sender — kept for API compatibility (used by close_position fire-and-forget).
     cmd_tx: mpsc::Sender<PriceFeedCommand>,
 }
 
 impl PriceFeedManager {
-    /// Create a new PriceFeedManager and spawn the RPC polling loop task.
+    /// Create manager and spawn WS + RPC polling tasks.
     ///
-    /// Returns `(manager, join_handle)`. The join handle can be used to
-    /// await graceful shutdown of the polling task.
-    pub fn new(rpc_url: String, poll_interval_ms: u64) -> (Self, tokio::task::JoinHandle<()>) {
+    /// `ws_url`: Helius WSS for accountSubscribe (primary). Empty = disable.
+    pub fn new(rpc_url: String, ws_url: String, poll_interval_ms: u64) -> (Self, tokio::task::JoinHandle<()>) {
         let prices: Arc<DashMap<[u8; 32], Arc<PriceState>>> = Arc::new(DashMap::new());
         let active_subs: Arc<DashMap<[u8; 32], VaultSubscription>> = Arc::new(DashMap::new());
-        let (cmd_tx, _cmd_rx) = mpsc::channel(64); // keep for API compat
+        let (cmd_tx, cmd_rx) = mpsc::channel(256);
 
-        let prices_clone = prices.clone();
-        let subs_clone = active_subs.clone();
+        if !ws_url.is_empty() {
+            let p = prices.clone();
+            let s = active_subs.clone();
+            tokio::spawn(async move {
+                ws_price_loop(ws_url, cmd_rx, p, s).await;
+            });
+        } else {
+            tracing::warn!("[price_feed] WS URL empty — accountSubscribe disabled");
+        }
 
-        let handle = tokio::spawn(async move {
-            price_feed_poll_loop(rpc_url, subs_clone, prices_clone, poll_interval_ms).await;
+        let p2 = prices.clone();
+        let s2 = active_subs.clone();
+        let poll_handle = tokio::spawn(async move {
+            price_feed_poll_loop(rpc_url, s2, p2, poll_interval_ms).await;
         });
 
-        (Self { prices, active_subs, cmd_tx }, handle)
+        (Self { prices, active_subs, cmd_tx }, poll_handle)
     }
 
-    /// Subscribe to a token's vault accounts for price tracking.
     pub async fn subscribe(&self, sub: VaultSubscription) {
         tracing::info!(
             mint = %bs58::encode(&sub.mint).into_string(),
             coin_vault = %sub.coin_vault,
             pc_vault = %sub.pc_vault,
-            "[price_feed] subscribing to vaults for polling"
+            "[price_feed] subscribing to vaults"
         );
         self.prices.entry(sub.mint).or_insert_with(PriceState::new);
-        self.active_subs.insert(sub.mint, sub);
+        self.active_subs.insert(sub.mint, sub.clone());
+        let _ = self.cmd_tx.send(PriceFeedCommand::Subscribe(sub)).await;
     }
 
-    /// Unsubscribe from a token's vault accounts (async, for API compat).
     pub async fn unsubscribe(&self, mint: [u8; 32]) {
         self.unsubscribe_sync(&mint);
     }
 
-    /// Unsubscribe from a token's vault accounts (sync).
     pub fn unsubscribe_sync(&self, mint: &[u8; 32]) {
         self.active_subs.remove(mint);
         self.prices.remove(mint);
+        let _ = self.cmd_tx.try_send(PriceFeedCommand::Unsubscribe(*mint));
         tracing::debug!(
             mint = %bs58::encode(mint).into_string(),
             remaining_subs = self.active_subs.len(),
@@ -163,28 +131,18 @@ impl PriceFeedManager {
         );
     }
 
-    /// Request graceful shutdown (no-op for polling loop, kept for API compat).
     pub async fn shutdown(&self) {
         let _ = self.cmd_tx.send(PriceFeedCommand::Shutdown).await;
     }
 
-    /// Get a clone of the command sender for fire-and-forget operations.
-    ///
-    /// Used by `MomentumEngine::close_position()` to unsubscribe without awaiting.
-    /// NOTE: With the polling architecture, unsubscribe is handled via active_subs
-    /// DashMap directly. This method is kept for API compatibility.
     pub fn cmd_sender(&self) -> mpsc::Sender<PriceFeedCommand> {
         self.cmd_tx.clone()
     }
 
-    /// Get a reference to active_subs for direct unsubscribe from sync context.
     pub fn active_subs(&self) -> &Arc<DashMap<[u8; 32], VaultSubscription>> {
         &self.active_subs
     }
 
-    /// Hot path: read current fixed-point price for a mint. Zero allocation.
-    ///
-    /// Returns `None` if mint is not subscribed or no price update received yet.
     #[inline(always)]
     pub fn current_price(&self, mint: &[u8; 32]) -> Option<u64> {
         self.prices
@@ -192,17 +150,254 @@ impl PriceFeedManager {
             .map(|s| s.price_fp.load(Ordering::Relaxed))
     }
 
-    /// Read full price state for a mint (for logging/debugging).
     #[inline(always)]
     pub fn price_state(&self, mint: &[u8; 32]) -> Option<Arc<PriceState>> {
         self.prices.get(mint).map(|s| Arc::clone(s.value()))
     }
 }
 
-// ── RPC Polling Loop ─────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// WebSocket accountSubscribe loop (primary, low-latency)
+// ═══════════════════════════════════════════════════════════════════════════════
 
-/// RPC polling loop — replaces broken accountSubscribe WS loop.
-/// Polls all active vault subscriptions via getAccountInfo batch RPC every poll_interval_ms.
+async fn ws_price_loop(
+    url: String,
+    mut cmd_rx: mpsc::Receiver<PriceFeedCommand>,
+    prices: Arc<DashMap<[u8; 32], Arc<PriceState>>>,
+    active_subs: Arc<DashMap<[u8; 32], VaultSubscription>>,
+) {
+    use futures_util::{SinkExt, StreamExt};
+    use std::collections::HashMap;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let mut backoff_ms: u64 = 500;
+    const MAX_BACKOFF: u64 = 30_000;
+
+    loop {
+        tracing::info!(url = %url, "[price_feed_ws] connecting");
+
+        let ws_stream = match tokio_tungstenite::connect_async(&url).await {
+            Ok((s, _)) => { backoff_ms = 500; s }
+            Err(e) => {
+                tracing::warn!(error = %e, backoff_ms, "[price_feed_ws] connect failed");
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF);
+                continue;
+            }
+        };
+
+        let (mut ws_tx, mut ws_rx) = ws_stream.split();
+        let mut sub_id_map: HashMap<u64, ([u8; 32], VaultType)> = HashMap::new();
+        let mut mint_sub_ids: HashMap<[u8; 32], (Option<u64>, Option<u64>)> = HashMap::new();
+        let mut pending_rpc: HashMap<u64, ([u8; 32], VaultType)> = HashMap::new();
+        let mut next_rpc_id: u64 = 1;
+        let mut notif_count: u64 = 0;
+        let t0 = std::time::Instant::now();
+
+        // Resubscribe all active vaults on reconnect
+        let subs: Vec<VaultSubscription> = active_subs.iter().map(|e| e.value().clone()).collect();
+        let n = subs.len();
+        let mut ok = true;
+        for sub in subs {
+            if ws_send_sub(&mut ws_tx, &mut next_rpc_id, &mut pending_rpc, &sub).await.is_err() {
+                ok = false;
+                break;
+            }
+        }
+        if !ok {
+            tracing::warn!("[price_feed_ws] resubscribe failed");
+            tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+            backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF);
+            continue;
+        }
+        if n > 0 {
+            tracing::info!(count = n, "[price_feed_ws] resubscribed active vaults");
+        }
+
+        let mut ping_iv = tokio::time::interval(std::time::Duration::from_secs(30));
+        ping_iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        ping_iv.tick().await;
+
+        let mut disc = false;
+
+        loop {
+            tokio::select! {
+                biased;
+
+                msg = ws_rx.next() => {
+                    match msg {
+                        Some(Ok(Message::Text(text))) => {
+                            if let Some((mint, vt, amt)) = ws_parse_notif(&text, &sub_id_map) {
+                                notif_count += 1;
+                                ws_update_price(&prices, &mint, vt, amt);
+                            } else {
+                                ws_handle_confirm(&text, &mut pending_rpc, &mut sub_id_map, &mut mint_sub_ids);
+                            }
+                        }
+                        Some(Ok(Message::Ping(d))) => { let _ = ws_tx.send(Message::Pong(d)).await; }
+                        Some(Ok(Message::Close(_))) => { tracing::warn!("[price_feed_ws] close frame"); disc = true; break; }
+                        Some(Err(e)) => { tracing::warn!(error = %e, "[price_feed_ws] error"); disc = true; break; }
+                        None => { tracing::warn!("[price_feed_ws] stream ended"); disc = true; break; }
+                        _ => {}
+                    }
+                }
+
+                cmd = cmd_rx.recv() => {
+                    match cmd {
+                        Some(PriceFeedCommand::Subscribe(sub)) => {
+                            if ws_send_sub(&mut ws_tx, &mut next_rpc_id, &mut pending_rpc, &sub).await.is_err() {
+                                disc = true; break;
+                            }
+                        }
+                        Some(PriceFeedCommand::Unsubscribe(mint)) => {
+                            if let Some((c, p)) = mint_sub_ids.remove(&mint) {
+                                for sid in [c, p].into_iter().flatten() {
+                                    let uid = next_rpc_id; next_rpc_id += 1;
+                                    let m = format!(r#"{{"jsonrpc":"2.0","id":{},"method":"accountUnsubscribe","params":[{}]}}"#, uid, sid);
+                                    let _ = ws_tx.send(Message::Text(m.into())).await;
+                                    sub_id_map.remove(&sid);
+                                }
+                            }
+                        }
+                        Some(PriceFeedCommand::Shutdown) | None => { tracing::info!("[price_feed_ws] shutdown"); return; }
+                    }
+                }
+
+                _ = ping_iv.tick() => {
+                    if ws_tx.send(Message::Ping(vec![].into())).await.is_err() { disc = true; break; }
+                    let ac = active_subs.len();
+                    let el = t0.elapsed().as_secs();
+                    if ac > 0 && notif_count == 0 && el >= 30 {
+                        tracing::warn!(active_subs = ac, elapsed_s = el, "[price_feed_ws] WATCHDOG: 0 notifications");
+                    }
+                }
+            }
+        }
+
+        if disc {
+            tracing::warn!(backoff_ms, notifications = notif_count, "[price_feed_ws] disconnected");
+            tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+            backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF);
+        }
+    }
+}
+
+async fn ws_send_sub<S>(
+    ws_tx: &mut futures_util::stream::SplitSink<S, tokio_tungstenite::tungstenite::Message>,
+    next_id: &mut u64,
+    pending: &mut std::collections::HashMap<u64, ([u8; 32], VaultType)>,
+    sub: &VaultSubscription,
+) -> Result<(), ()>
+where S: futures_util::Sink<tokio_tungstenite::tungstenite::Message> + Unpin,
+{
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let cid = *next_id; *next_id += 1;
+    let cm = format!(
+        r#"{{"jsonrpc":"2.0","id":{},"method":"accountSubscribe","params":["{}",{{"encoding":"base64","commitment":"processed"}}]}}"#,
+        cid, sub.coin_vault
+    );
+    if ws_tx.send(Message::Text(cm.into())).await.is_err() { return Err(()); }
+    pending.insert(cid, (sub.mint, VaultType::Coin));
+
+    let pid = *next_id; *next_id += 1;
+    let pm = format!(
+        r#"{{"jsonrpc":"2.0","id":{},"method":"accountSubscribe","params":["{}",{{"encoding":"base64","commitment":"processed"}}]}}"#,
+        pid, sub.pc_vault
+    );
+    if ws_tx.send(Message::Text(pm.into())).await.is_err() { return Err(()); }
+    pending.insert(pid, (sub.mint, VaultType::Pc));
+
+    tracing::debug!(mint = %bs58::encode(&sub.mint).into_string(), "[price_feed_ws] sent accountSubscribe");
+    Ok(())
+}
+
+fn ws_parse_notif(
+    text: &str,
+    map: &std::collections::HashMap<u64, ([u8; 32], VaultType)>,
+) -> Option<([u8; 32], VaultType, u64)> {
+    if !text.contains("accountNotification") { return None; }
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    if v.get("method")?.as_str()? != "accountNotification" { return None; }
+    let p = v.get("params")?;
+    let sid = p.get("subscription")?.as_u64()?;
+    let (mint, vt) = map.get(&sid)?;
+    let b64 = p.pointer("/result/value/data")?.as_array()?.first()?.as_str()?;
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    let amt = parse_spl_amount(&bytes)?;
+    Some((*mint, *vt, amt))
+}
+
+fn ws_handle_confirm(
+    text: &str,
+    pending: &mut std::collections::HashMap<u64, ([u8; 32], VaultType)>,
+    map: &mut std::collections::HashMap<u64, ([u8; 32], VaultType)>,
+    mints: &mut std::collections::HashMap<[u8; 32], (Option<u64>, Option<u64>)>,
+) {
+    if !text.contains("\"result\"") || text.contains("\"method\"") { return; }
+    let v: serde_json::Value = match serde_json::from_str(text) { Ok(v) => v, Err(_) => return };
+    let rid = match v.get("id").and_then(|x| x.as_u64()) { Some(x) => x, None => return };
+    let sid = match v.get("result").and_then(|x| x.as_u64()) { Some(x) => x, None => return };
+    if let Some((mint, vt)) = pending.remove(&rid) {
+        map.insert(sid, (mint, vt));
+        let e = mints.entry(mint).or_insert((None, None));
+        match vt { VaultType::Coin => e.0 = Some(sid), VaultType::Pc => e.1 = Some(sid) }
+        tracing::debug!(subscription_id = sid, vault = ?vt, mint = %bs58::encode(&mint).into_string(), "[price_feed_ws] confirmed");
+    }
+}
+
+fn ws_update_price(
+    prices: &DashMap<[u8; 32], Arc<PriceState>>,
+    mint: &[u8; 32],
+    vt: VaultType,
+    amount: u64,
+) {
+    if let Some(state) = prices.get(mint) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default().as_millis() as u64;
+        match vt {
+            VaultType::Coin => state.reserve_token.store(amount, Ordering::Relaxed),
+            VaultType::Pc => state.reserve_sol.store(amount, Ordering::Relaxed),
+        }
+        let sol = state.reserve_sol.load(Ordering::Relaxed);
+        let tok = state.reserve_token.load(Ordering::Relaxed);
+        if sol > 0 && tok > 0 {
+            let price = price_from_reserves(sol, tok);
+            if price > 0 {
+                let prev = state.price_fp.load(Ordering::Relaxed);
+                if prev > 0 {
+                    let hi = price.max(prev);
+                    let lo = price.min(prev);
+                    if lo > 0 && hi / lo > 100 {
+                        tracing::warn!(
+                            mint = %bs58::encode(mint).into_string(),
+                            prev = prev, new = price,
+                            "[price_feed_ws] spike rejected >100x"
+                        );
+                        return;
+                    }
+                }
+                let was_zero = state.price_fp.swap(price, Ordering::Release) == 0;
+                state.last_update_ms.store(now, Ordering::Relaxed);
+                if was_zero {
+                    tracing::info!(
+                        mint = %bs58::encode(mint).into_string(),
+                        price_fp = price, sol = sol, token = tok,
+                        "[price_feed_ws] first price from accountSubscribe"
+                    );
+                }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RPC Polling Loop (fallback/correction)
+// ═══════════════════════════════════════════════════════════════════════════════
+
 async fn price_feed_poll_loop(
     rpc_url: String,
     active_subs: Arc<DashMap<[u8; 32], VaultSubscription>>,
@@ -210,160 +405,108 @@ async fn price_feed_poll_loop(
     poll_interval_ms: u64,
 ) {
     if rpc_url.is_empty() {
-        tracing::warn!("[price_feed] RPC URL not configured — price polling disabled");
+        tracing::warn!("[price_feed] RPC URL not configured — polling disabled");
         return;
     }
 
-    let http_client = reqwest::Client::builder()
+    let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap_or_default();
 
-    let mut interval = tokio::time::interval(std::time::Duration::from_millis(poll_interval_ms));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut iv = tokio::time::interval(std::time::Duration::from_millis(poll_interval_ms));
+    iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    tracing::info!(poll_interval_ms, url = %rpc_url, "[price_feed] RPC polling loop started");
+    tracing::info!(poll_interval_ms, url = %rpc_url, "[price_feed] RPC polling started");
 
     loop {
-        interval.tick().await;
+        iv.tick().await;
 
-        // Snapshot current subscriptions
         let subs: Vec<([u8; 32], String, String)> = active_subs
             .iter()
             .map(|e| (*e.key(), e.value().coin_vault.clone(), e.value().pc_vault.clone()))
             .collect();
 
-        if subs.is_empty() {
-            continue;
+        if subs.is_empty() { continue; }
+        if subs.len() > 50 {
+            tracing::warn!(n = subs.len(), "[price_feed] large active_subs — leak?");
         }
 
-        let sub_count = subs.len();
-        if sub_count > 50 {
-            tracing::warn!(
-                sub_count,
-                "[price_feed] large active_subs — possible unsubscribe leak"
-            );
-        }
-
-        // Process in chunks of 10 mints (20 getAccountInfo calls) to stay within
-        // Helius batch-size limits. Poll each chunk sequentially within the interval.
-        const CHUNK_SIZE: usize = 10;
-        for chunk in subs.chunks(CHUNK_SIZE) {
+        const CHUNK: usize = 10;
+        for chunk in subs.chunks(CHUNK) {
             let mut batch = Vec::with_capacity(chunk.len() * 2);
-            for (i, (_mint, coin_vault, pc_vault)) in chunk.iter().enumerate() {
+            for (i, (_, cv, pv)) in chunk.iter().enumerate() {
                 batch.push(serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": i * 2,
+                    "jsonrpc": "2.0", "id": i * 2,
                     "method": "getAccountInfo",
-                    "params": [coin_vault, {"encoding": "base64", "commitment": "confirmed"}]
+                    "params": [cv, {"encoding": "base64", "commitment": "confirmed"}]
                 }));
                 batch.push(serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": i * 2 + 1,
+                    "jsonrpc": "2.0", "id": i * 2 + 1,
                     "method": "getAccountInfo",
-                    "params": [pc_vault, {"encoding": "base64", "commitment": "confirmed"}]
+                    "params": [pv, {"encoding": "base64", "commitment": "confirmed"}]
                 }));
             }
 
-            // Single-retry on HTTP 429: sleep 100ms, retry once, then skip chunk
             let results: Vec<serde_json::Value> = {
                 let maybe = async {
-                    let resp = http_client.post(&rpc_url).json(&batch).send().await
-                        .map_err(|e| { tracing::warn!(error = %e, "[price_feed] RPC batch request failed"); })?;
-
+                    let resp = http.post(&rpc_url).json(&batch).send().await
+                        .map_err(|e| { tracing::warn!(error = %e, "[price_feed] RPC batch failed"); })?;
                     if resp.status().as_u16() == 429 {
-                        tracing::warn!("[price_feed] HTTP 429 rate-limited — retry in 100ms");
+                        tracing::warn!("[price_feed] HTTP 429 — retry 100ms");
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-                        let resp2 = http_client.post(&rpc_url).json(&batch).send().await
-                            .map_err(|e| { tracing::warn!(error = %e, "[price_feed] RPC retry request failed"); })?;
-
-                        if resp2.status().as_u16() == 429 {
-                            tracing::warn!("[price_feed] HTTP 429 on retry — skipping chunk");
-                            return Err(());
-                        }
-
-                        return resp2.json::<Vec<serde_json::Value>>().await
-                            .map_err(|e| { tracing::warn!(error = %e, "[price_feed] RPC retry response parse failed"); });
+                        let r2 = http.post(&rpc_url).json(&batch).send().await
+                            .map_err(|e| { tracing::warn!(error = %e, "[price_feed] retry failed"); })?;
+                        if r2.status().as_u16() == 429 { return Err(()); }
+                        return r2.json().await.map_err(|e| { tracing::warn!(error = %e, "[price_feed] retry parse"); });
                     }
-
-                    resp.json::<Vec<serde_json::Value>>().await
-                        .map_err(|e| { tracing::warn!(error = %e, "[price_feed] RPC batch response parse failed"); })
+                    resp.json().await.map_err(|e| { tracing::warn!(error = %e, "[price_feed] parse failed"); })
                 }.await;
-
-                match maybe {
-                    Ok(r) => r,
-                    Err(()) => continue,
-                }
+                match maybe { Ok(r) => r, Err(()) => continue }
             };
 
-            // Process pairwise: results[i*2] = coin_vault, results[i*2+1] = pc_vault
             for (i, (mint, _, _)) in chunk.iter().enumerate() {
-                let coin_data = extract_account_data(&results, i * 2);
-                let pc_data = extract_account_data(&results, i * 2 + 1);
-
-                let (sol_reserve, token_reserve) = match (coin_data, pc_data) {
-                    (Some(coin), Some(pc)) => {
-                        // Raydium vault layout:
-                        // coin_vault = base token (pump.fun token) — token reserve
-                        // pc_vault = quote token (WSOL) — SOL reserve
-                        // SPL Token account: bytes 64..72 = amount (u64 LE)
-                        let token_reserve = parse_spl_amount(&coin);
-                        let sol_reserve = parse_spl_amount(&pc);
-                        match (sol_reserve, token_reserve) {
-                            (Some(s), Some(t)) => (s, t),
-                            _ => continue,
-                        }
-                    }
+                let cd = extract_account_data(&results, i * 2);
+                let pd = extract_account_data(&results, i * 2 + 1);
+                let (sr, tr) = match (cd, pd) {
+                    (Some(c), Some(p)) => match (parse_spl_amount(&p), parse_spl_amount(&c)) {
+                        (Some(s), Some(t)) => (s, t),
+                        _ => continue,
+                    },
                     _ => continue,
                 };
-
-                if sol_reserve == 0 || token_reserve == 0 {
-                    continue;
-                }
-
-                let price_fp = price_from_reserves(sol_reserve, token_reserve);
-                if price_fp == 0 {
-                    continue;
-                }
+                if sr == 0 || tr == 0 { continue; }
+                let fp = price_from_reserves(sr, tr);
+                if fp == 0 { continue; }
 
                 if let Some(state) = prices.get(mint) {
-                    // Spike rejection: reject single-poll price moves >10x.
-                    // Batch RPC getAccountInfo has no cross-account atomicity — slot-mismatched
-                    // vault reads produce 1000x spikes for one poll cycle on micro-price tokens.
-                    let prev_price = state.price_fp.load(Ordering::Acquire);
-                    if prev_price > 0 {
-                        let ratio_num = price_fp.max(prev_price);
-                        let ratio_den = price_fp.min(prev_price);
-                        if ratio_den > 0 && ratio_num / ratio_den > 100 {
+                    let prev = state.price_fp.load(Ordering::Acquire);
+                    if prev > 0 {
+                        let hi = fp.max(prev);
+                        let lo = fp.min(prev);
+                        if lo > 0 && hi / lo > 100 {
                             tracing::warn!(
                                 mint = %bs58::encode(mint).into_string(),
-                                prev_price_fp = prev_price,
-                                new_price_fp = price_fp,
-                                ratio = ratio_num / ratio_den,
-                                "[price_feed] spike rejected — price moved >100x in single poll"
+                                prev = prev, new = fp, ratio = hi / lo,
+                                "[price_feed] spike rejected >100x"
                             );
-                            continue; // skip this update, keep previous price
+                            continue;
                         }
                     }
-
-                    let prev = state.price_fp.swap(price_fp, Ordering::Release);
-                    state.reserve_sol.store(sol_reserve, Ordering::Relaxed);
-                    state.reserve_token.store(token_reserve, Ordering::Relaxed);
+                    let was_zero = state.price_fp.swap(fp, Ordering::Release) == 0;
+                    state.reserve_sol.store(sr, Ordering::Relaxed);
+                    state.reserve_token.store(tr, Ordering::Relaxed);
                     state.last_update_ms.store(
                         std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64,
+                            .unwrap_or_default().as_millis() as u64,
                         Ordering::Relaxed,
                     );
-                    if prev == 0 {
+                    if was_zero {
                         tracing::info!(
                             mint = %bs58::encode(mint).into_string(),
-                            price_fp,
-                            sol_reserve,
-                            token_reserve,
-                            "[price_feed] first price received for mint"
+                            price_fp = fp, sol = sr, token = tr,
+                            "[price_feed] first price from RPC poll"
                         );
                     }
                 }
@@ -372,22 +515,16 @@ async fn price_feed_poll_loop(
     }
 }
 
-/// Extract and base64-decode account data from a JSON-RPC batch response by request id.
 fn extract_account_data(results: &[serde_json::Value], id: usize) -> Option<Vec<u8>> {
     let entry = results.iter().find(|r| r.get("id").and_then(|i| i.as_u64()) == Some(id as u64))?;
-    let data_arr = entry.pointer("/result/value/data")?.as_array()?;
-    let b64 = data_arr.first()?.as_str()?;
+    let arr = entry.pointer("/result/value/data")?.as_array()?;
+    let b64 = arr.first()?.as_str()?;
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.decode(b64).ok()
 }
 
-/// Parse SPL token account amount from raw account data.
-/// SPL Token account layout: [mint(32), owner(32), amount(8), ...]
-/// amount is at bytes 64..72, little-endian u64.
 fn parse_spl_amount(data: &[u8]) -> Option<u64> {
-    if data.len() < 72 {
-        return None;
-    }
+    if data.len() < 72 { return None; }
     Some(u64::from_le_bytes(data[64..72].try_into().ok()?))
 }
 
@@ -399,50 +536,29 @@ mod tests {
 
     #[test]
     fn test_price_from_reserves_basic() {
-        // 79 SOL (79e9 lamports) / 206.9T token atoms → ~381 lamports per 1M atoms
-        let reserve_sol: u64 = 79_000_000_000; // 79 SOL in lamports
-        let reserve_token: u64 = 206_900_000_000_000; // 206.9T atoms
-
-        let price = price_from_reserves(reserve_sol, reserve_token);
-
-        // Expected: 79e9 * 1e6 / 206.9e12 = 79e15 / 206.9e12 = ~381.8
-        // Integer division: 79_000_000_000_000_000 / 206_900_000_000_000 = 381
-        assert!(
-            price >= 380 && price <= 383,
-            "expected ~381, got {price}"
-        );
+        let price = price_from_reserves(79_000_000_000, 206_900_000_000_000);
+        assert!(price >= 380 && price <= 383, "expected ~381, got {price}");
     }
 
     #[test]
     fn test_price_from_reserves_zero_token() {
-        // Zero token reserve should return 0, not panic
-        let price = price_from_reserves(79_000_000_000, 0);
-        assert_eq!(price, 0);
+        assert_eq!(price_from_reserves(79_000_000_000, 0), 0);
     }
 
     #[test]
     fn test_price_from_reserves_zero_sol() {
-        // Zero SOL reserve → price is 0
-        let price = price_from_reserves(0, 206_900_000_000_000);
-        assert_eq!(price, 0);
+        assert_eq!(price_from_reserves(0, 206_900_000_000_000), 0);
     }
 
     #[test]
     fn test_price_from_reserves_overflow_safety() {
-        // Large reserves that would overflow u64 multiplication
-        // u128 intermediate should handle this
-        let reserve_sol: u64 = 10_000_000_000_000; // 10,000 SOL
-        let reserve_token: u64 = 1_000_000_000_000_000; // 1 quadrillion atoms
-        let price = price_from_reserves(reserve_sol, reserve_token);
-        // 10e12 * 1e6 / 1e15 = 10e18 / 1e15 = 10_000
+        let price = price_from_reserves(10_000_000_000_000, 1_000_000_000_000_000);
         assert_eq!(price, 10_000);
     }
 
     #[test]
     fn test_parse_spl_amount_valid() {
-        // Create a minimal 72-byte SPL token account
-        let mut data = vec![0u8; 165]; // standard SPL token account size
-        // Set amount at bytes 64..72
+        let mut data = vec![0u8; 165];
         let amount: u64 = 1_234_567_890;
         data[64..72].copy_from_slice(&amount.to_le_bytes());
         assert_eq!(parse_spl_amount(&data), Some(amount));
@@ -450,24 +566,18 @@ mod tests {
 
     #[test]
     fn test_parse_spl_amount_too_short() {
-        let data = vec![0u8; 71]; // too short
-        assert_eq!(parse_spl_amount(&data), None);
+        assert_eq!(parse_spl_amount(&vec![0u8; 71]), None);
     }
 
     #[tokio::test]
     async fn test_price_feed_manager_creates() {
-        // PriceFeedManager::new() should return without panic.
-        // Poll loop will fail to reach RPC (invalid URL) but that's fine.
-        let (manager, handle) = PriceFeedManager::new("https://invalid.example.com".to_string(), 500);
-
-        // Verify prices map is empty initially
+        let (manager, handle) = PriceFeedManager::new(
+            "https://invalid.example.com".to_string(),
+            String::new(),
+            500,
+        );
         assert_eq!(manager.prices.len(), 0);
-
-        // Verify current_price returns None for unknown mint
-        let unknown_mint = [0u8; 32];
-        assert!(manager.current_price(&unknown_mint).is_none());
-
-        // Shutdown the poll loop
+        assert!(manager.current_price(&[0u8; 32]).is_none());
         handle.abort();
     }
 }
