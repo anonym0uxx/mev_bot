@@ -21,6 +21,12 @@ pub struct MevJsonConfig {
     pub enabled: Option<bool>,
     pub paper_mode: Option<bool>,
 
+    /// Kill switch for the bonding curve MEV engine (Kelly/Bayesian/gates/scoring).
+    /// When false, `on_trade()` returns immediately after health monitoring.
+    /// Graduation arb, migration handling, and feed health all remain active.
+    /// Default: true (enabled) for backward compatibility.
+    pub bonding_curve_enabled: Option<bool>,
+
     // Gate thresholds (SOL floats → lamports)
     pub trigger_min_buy_sol: Option<f64>,
     pub trigger_max_buy_sol: Option<f64>,
@@ -766,6 +772,9 @@ pub struct EngineConfig {
     pub position: PositionConfig,
     pub health: HealthConfig,
     pub paper_mode: bool,
+    /// Kill switch for bonding curve MEV engine. When false, on_trade() skips all
+    /// gate/score/position logic. Graduation arb + feed health remain active.
+    pub bonding_curve_enabled: bool,
     pub log_file: String,
     /// Daily loss cap in lamports (mode-aware: paper vs live).
     pub daily_loss_cap_lamports: u64,
@@ -1337,6 +1346,7 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
         position,
         health,
         paper_mode,
+        bonding_curve_enabled: mev.bonding_curve_enabled.unwrap_or(true),
         log_file,
         daily_loss_cap_lamports,
         consecutive_stop_pause_count,

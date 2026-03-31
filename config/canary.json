@@ -511,7 +511,8 @@
         "confirmed_tp_pct": 0.07,
         "confirmed_sl_pct": 0.015
       }
-    ]
+    ],
+    "bonding_curve_enabled": false
   },
   "momentum": {
     "enabled": true,

@@ -1,10 +1,13 @@
+pub mod blockhash_manager;
 pub mod brent_sizing;
 pub mod dedup;
 pub mod grad_dex_backrun;
 pub mod graduation;
 pub mod jito_bundle;
 pub mod pool_resolver;
+pub mod price_feed;
 pub mod raydium_math;
+pub mod raydium_swap_ix;
 
 pub use dedup::MigrationDedup;
 pub use graduation::{

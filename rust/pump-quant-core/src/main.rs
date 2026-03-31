@@ -239,6 +239,11 @@ async fn main() -> anyhow::Result<()> {
     // Attach health monitor to hot path for entry gating
     hot_path.set_health_monitor(health_monitor.clone());
 
+    // Kill switch: disable bonding curve engine when graduation arb is the focus
+    if !engine_config.bonding_curve_enabled {
+        hot_path.set_bonding_curve_enabled(false);
+    }
+
     // ── Spawn logger thread ─────────────────────────────────────────
     let log_file = engine_config.log_file.clone();
     let logger_data_dir = data_dir.clone();

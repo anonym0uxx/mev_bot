@@ -51,6 +51,9 @@ pub struct HotPath {
     start_epoch_ms: u64,
     #[allow(dead_code)]
     paper_mode: bool,
+    /// Kill switch: when false, on_trade() returns after incrementing trades_seen.
+    /// All bonding curve gates/scoring/positions/Kelly/Bayesian = zero CPU.
+    bonding_curve_enabled: bool,
 
     pub stats: HotPathStats,
 
@@ -219,6 +222,7 @@ impl HotPath {
             shred_sig_ring: [(0u64, 0u64); 128],
             shred_sig_ring_head: 0,
             gate_reject_counts: [0u64; 32],
+            bonding_curve_enabled: true, // default on, disabled via set_bonding_curve_enabled(false)
         }
     }
 
@@ -226,6 +230,18 @@ impl HotPath {
     /// the engine loop starts processing events.
     pub fn set_health_monitor(&mut self, monitor: Arc<HealthMonitor>) {
         self.health_monitor = Some(monitor);
+    }
+
+    /// Kill switch for the bonding curve MEV engine (Kelly/Bayesian/gates/scoring).
+    /// When disabled, `on_trade()` returns immediately after incrementing trades_seen.
+    /// Feed health, migration handling, and graduation arb all remain fully active.
+    pub fn set_bonding_curve_enabled(&mut self, enabled: bool) {
+        self.bonding_curve_enabled = enabled;
+        tracing::info!(
+            enabled,
+            "[hot_path] bonding curve engine {}",
+            if enabled { "ENABLED" } else { "DISABLED — zero CPU on trades" }
+        );
     }
 
 
@@ -277,6 +293,15 @@ impl HotPath {
     #[inline(always)]
     pub fn on_trade(&mut self, trade: &TradeEvent) {
         self.stats.trades_seen += 1;
+
+        // ── Bonding curve engine kill switch ────────────────────────
+        // When disabled: skip ALL gate/score/position/Kelly/Bayesian logic.
+        // Saves ~100% of per-trade CPU. Graduation arb is unaffected
+        // (runs on FeedEvent::Migration, not FeedEvent::Trade).
+        if !self.bonding_curve_enabled {
+            return;
+        }
+
         let now = self.now_ms();
 
         // ── ShredStream→PumpPortal dedup ────────────────────────────
