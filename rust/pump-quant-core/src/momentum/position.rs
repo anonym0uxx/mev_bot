@@ -151,12 +151,32 @@ impl MomentumPosition {
 
     /// Record a price sample (bps offset from entry).
     ///
-    /// Called every 10 seconds from the tick loop. Updates peak_price_fp
+    /// Called every ~1s from the tick loop. Updates peak_price_fp
     /// for trailing stop tracking.
+    ///
+    /// Spike guard: rejects samples where current_price_fp is >10x or <0.1x
+    /// the previous recorded price (peak_price_fp or entry_price_fp).
+    /// This prevents garbage RPC reads from corrupting price_samples_bps
+    /// and inflating peak_price_fp, which was the root cause of ghost +0.9995 trades.
     #[inline(always)]
     pub fn record_sample(&mut self, current_price_fp: u64) {
         if self.sample_count as usize >= PRICE_SAMPLES {
             return;
+        }
+        // Spike rejection: compare against the last known good price.
+        // Use peak_price_fp if nonzero (always >= entry_price_fp), else entry_price_fp.
+        let ref_price = if self.peak_price_fp > 0 {
+            self.peak_price_fp
+        } else {
+            self.entry_price_fp
+        };
+        if ref_price > 0 && current_price_fp > 0 {
+            let ratio_num = current_price_fp.max(ref_price);
+            let ratio_den = current_price_fp.min(ref_price);
+            if ratio_den > 0 && ratio_num / ratio_den > 10 {
+                // Skip this sample — bad data, don't corrupt peak or samples array
+                return;
+            }
         }
         let bps = price_to_bps_offset(self.entry_price_fp, current_price_fp);
         self.price_samples_bps[self.sample_count as usize] = bps;

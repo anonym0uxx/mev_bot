@@ -587,9 +587,15 @@ impl MomentumEngine {
                 pos.record_sample(current_price_fp);
             }
 
-            // Update peak for trailing stop
+            // Update peak for trailing stop — with spike guard.
+            // Reject price updates >10x the current peak (same guard as price_feed and record_sample).
             if current_price_fp > pos.peak_price_fp {
-                pos.peak_price_fp = current_price_fp;
+                let ref_price = pos.peak_price_fp.max(pos.entry_price_fp);
+                let ratio = if ref_price > 0 { current_price_fp / ref_price } else { 0 };
+                if ratio <= 10 {
+                    pos.peak_price_fp = current_price_fp;
+                }
+                // else: spike — don't update peak, price_feed should have caught this
             }
 
             let hold_ms = elapsed_ms;
@@ -868,8 +874,10 @@ impl MomentumEngine {
         // Calculate P&L
         let size_sol = pos.size_lamports as f64 / 1e9;
         let raw_gain_bps = price_to_bps_offset(pos.entry_price_fp, exit_price_fp);
-        // Sanity clamp: no real trade gains >1000% or loses >100% — bad price feed data
-        let gain_bps = raw_gain_bps.clamp(-10_000, 100_000);
+        // Sanity clamp: no real trade gains >500% or loses >100% — bad price feed data.
+        // Tightened from 100,000 (10x) to 50,000 (5x): real tokens don't 5x in one poll cycle.
+        // Ghost trades from residual spikes now cap at +0.4995 SOL, distinguishable from real exits.
+        let gain_bps = raw_gain_bps.clamp(-10_000, 50_000);
         if raw_gain_bps != gain_bps {
             tracing::warn!(
                 mint = %bs58::encode(&mint).into_string(),

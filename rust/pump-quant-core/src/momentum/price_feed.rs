@@ -328,6 +328,25 @@ async fn price_feed_poll_loop(
                 }
 
                 if let Some(state) = prices.get(mint) {
+                    // Spike rejection: reject single-poll price moves >10x.
+                    // Batch RPC getAccountInfo has no cross-account atomicity — slot-mismatched
+                    // vault reads produce 1000x spikes for one poll cycle on micro-price tokens.
+                    let prev_price = state.price_fp.load(Ordering::Acquire);
+                    if prev_price > 0 {
+                        let ratio_num = price_fp.max(prev_price);
+                        let ratio_den = price_fp.min(prev_price);
+                        if ratio_den > 0 && ratio_num / ratio_den > 10 {
+                            tracing::warn!(
+                                mint = %bs58::encode(mint).into_string(),
+                                prev_price_fp = prev_price,
+                                new_price_fp = price_fp,
+                                ratio = ratio_num / ratio_den,
+                                "[price_feed] spike rejected — price moved >10x in single poll"
+                            );
+                            continue; // skip this update, keep previous price
+                        }
+                    }
+
                     let prev = state.price_fp.swap(price_fp, Ordering::Release);
                     state.reserve_sol.store(sol_reserve, Ordering::Relaxed);
                     state.reserve_token.store(token_reserve, Ordering::Relaxed);
