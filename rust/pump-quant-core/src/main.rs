@@ -486,7 +486,10 @@ async fn main() -> anyhow::Result<()> {
     // ── Momentum Engine ──────────────────────────────────────────────
     let momentum_config = Arc::new(engine_config.momentum.clone());
     let momentum_rpc_url = Arc::new(
-        std::env::var("HELIUS_STAKED_URL")
+        // Use the dedicated fast mainnet endpoint (SOLANA_RPC_URL) for price feed reads.
+        // staked.helius-rpc.com is for sendTransaction priority and requires staking SOL —
+        // not appropriate for getAccountInfo polling.
+        std::env::var("SOLANA_RPC_URL")
             .ok()
             .filter(|u| !u.is_empty())
             .unwrap_or_else(|| {
