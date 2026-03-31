@@ -420,7 +420,7 @@
     ],
     "min_hold_before_exit_ms": 200,
     "creator_sell_ttl_ms": 30000,
-    "tod_gate_enabled": true,
+    "tod_gate_enabled": false,
     "scaled_entry_enabled": true,
     "scaled_entry_initial_pct": 0.4,
     "scaled_entry_confirmation_window_ms": 400,

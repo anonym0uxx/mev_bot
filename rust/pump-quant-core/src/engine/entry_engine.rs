@@ -511,14 +511,9 @@ impl EntryEngine {
         drawdown_pct: u8,
     ) -> (EntryAction, EntryConviction) {
         let d = &self.decision;
-        if entry_score < d.min_entry_score {
-            return (EntryAction::Reject, EntryConviction::default());
-        }
-
-        if magnitude_score < d.min_magnitude_for_ride {
-            return (EntryAction::Reject, EntryConviction::default());
-        }
-
+        // No hard score cutoffs — let Kelly decide everything.
+        // Low scores → Kelly computes tiny size → natural rejection via size=0.
+        // This replaces the old static min_entry_score / min_magnitude cliffs.
         let conviction = kelly_sizing::compute_conviction(
             magnitude_score,
             entry_score,
