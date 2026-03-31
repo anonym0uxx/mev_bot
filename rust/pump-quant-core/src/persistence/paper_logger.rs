@@ -203,12 +203,21 @@ impl PaperTradeLogger {
             "alphaAtExit": pos.alpha_at_exit,
             "betaAtExit": pos.beta_at_exit,
             "rEstAtExit": pos.r_est_at_exit,
+            // V4 exit urgency (shadow logging for calibration)
+            "v4UrgencyAtExit": pos.v4_urgency_at_exit,
+            "v4UKelly": pos.v4_u_kelly,
+            "v4UMomentum": pos.v4_u_momentum,
+            "v4UVolTrail": pos.v4_u_vol_trail,
+            "v4ULiquidity": pos.v4_u_liquidity,
+            "v4UrgencyFloor": pos.v4_urgency_floor,
+            "v4PartialCount": pos.v4_partial_count,
+            "v4RemainingPermille": pos.v4_remaining_permille,
             // Strategy classification — single backrunner, compile-time constant
             "strategyTag": STRATEGY_TAG,
             // Metadata
             "engineVersion": "v5-rust",
             "configVersion": self.config_version,
-            "dataVersion": 8,
+            "dataVersion": 9,
             "is_paper": self.paper_mode,
             "excludeFromAnalysis": exclude,
             "recordedAt": now_ms,

@@ -244,6 +244,23 @@ pub struct ClosedPosition {
     pub beta_at_exit: u16,
     /// Bayesian R estimate × 100 at exit.
     pub r_est_at_exit: u16,
+    // ── V4 exit urgency fields (shadow logging) ──
+    /// V4 composite urgency at exit (0–10000).
+    pub v4_urgency_at_exit: u16,
+    /// V4 Kelly urgency component at exit (0–10000).
+    pub v4_u_kelly: u16,
+    /// V4 momentum divergence urgency component at exit (0–10000).
+    pub v4_u_momentum: u16,
+    /// V4 volatility-trail urgency component at exit (0–10000).
+    pub v4_u_vol_trail: u16,
+    /// V4 liquidity urgency component at exit (0–10000).
+    pub v4_u_liquidity: u16,
+    /// V4 urgency floor at exit (monotonic ratchet).
+    pub v4_urgency_floor: u16,
+    /// V4 partial exit count at exit.
+    pub v4_partial_count: u8,
+    /// V4 remaining position permille at exit (1000 = 100%).
+    pub v4_remaining_permille: u16,
 }
 
 // ─── Config Structs ────────────────────────────────────────────────
@@ -888,6 +905,31 @@ impl PositionManager {
             alpha_at_exit,
             beta_at_exit,
             r_est_at_exit,
+            // V4 exit urgency (shadow logging)
+            v4_urgency_at_exit: match &pos.exit_mode {
+                ExitMode::Ride(rs) => rs.urgency.last_urgency,
+            },
+            v4_u_kelly: match &pos.exit_mode {
+                ExitMode::Ride(rs) => rs.v4_u_kelly,
+            },
+            v4_u_momentum: match &pos.exit_mode {
+                ExitMode::Ride(rs) => rs.v4_u_momentum,
+            },
+            v4_u_vol_trail: match &pos.exit_mode {
+                ExitMode::Ride(rs) => rs.v4_u_vol_trail,
+            },
+            v4_u_liquidity: match &pos.exit_mode {
+                ExitMode::Ride(rs) => rs.v4_u_liquidity,
+            },
+            v4_urgency_floor: match &pos.exit_mode {
+                ExitMode::Ride(rs) => rs.urgency.urgency_floor,
+            },
+            v4_partial_count: match &pos.exit_mode {
+                ExitMode::Ride(rs) => rs.urgency.partial_count,
+            },
+            v4_remaining_permille: match &pos.exit_mode {
+                ExitMode::Ride(rs) => rs.urgency.remaining_permille,
+            },
         };
 
         // Best-effort send — if the receiver is gone, we just drop it.
