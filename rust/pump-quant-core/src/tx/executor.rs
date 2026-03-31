@@ -5,7 +5,7 @@
 //! RPC round-trips (~200ms saved per trade).
 
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use parking_lot::RwLock;
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -91,7 +91,7 @@ impl BlockhashCache {
             .unwrap_or_default()
             .as_millis() as u64;
 
-        let mut guard = self.inner.write().await;
+        let mut guard = self.inner.write();
         *guard = Some((blockhash_str, now_ms));
         Ok(())
     }
@@ -99,7 +99,7 @@ impl BlockhashCache {
     /// Get the cached blockhash if it's still fresh (within TTL).
     /// Returns `None` if the cache is empty or stale.
     pub async fn get(&self) -> Option<String> {
-        let guard = self.inner.read().await;
+        let guard = self.inner.read();
         if let Some((ref hash, cached_at)) = *guard {
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -107,6 +107,28 @@ impl BlockhashCache {
                 .as_millis() as u64;
             if now_ms.saturating_sub(cached_at) <= self.ttl_ms {
                 return Some(hash.clone());
+            }
+        }
+        None
+    }
+
+    /// Get the cached blockhash as raw bytes synchronously (no async).
+    /// Used by the momentum engine's sell path to avoid async in the tick loop.
+    pub fn get_sync(&self) -> Option<[u8; 32]> {
+        let guard = self.inner.read();
+        if let Some((ref hash_str, cached_at)) = *guard {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            if now_ms.saturating_sub(cached_at) <= self.ttl_ms {
+                if let Ok(bytes) = bs58::decode(hash_str).into_vec() {
+                    if bytes.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&bytes);
+                        return Some(arr);
+                    }
+                }
             }
         }
         None
@@ -517,7 +539,7 @@ mod tests {
     async fn test_blockhash_cache_stores_and_returns() {
         let cache = BlockhashCache::new();
         {
-            let mut guard = cache.inner.write().await;
+            let mut guard = cache.inner.write();
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -532,7 +554,7 @@ mod tests {
     async fn test_blockhash_cache_stale_returns_none() {
         let cache = BlockhashCache::with_ttl_ms(100); // 100ms TTL
         {
-            let mut guard = cache.inner.write().await;
+            let mut guard = cache.inner.write();
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

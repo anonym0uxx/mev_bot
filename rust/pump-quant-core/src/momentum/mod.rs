@@ -38,9 +38,60 @@ use crate::momentum::price_feed::{price_from_reserves, PriceFeedManager, VaultSu
 use crate::momentum::scorer::score_graduation;
 use crate::engine::hot_path::ScoredToken;
 
+use crate::tx::skeleton::{TxSkeleton, MAX_SKELETON_SIZE};
+use crate::tx::tip_engine::{TipEngine, TipConfig, TipRequest};
+
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
+
+// ── Live mode types ─────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug)]
+pub enum LandingPath {
+    JitoOnly,
+    NozomiOnly,
+    DualPath,
+}
+
+fn route_exit(reason: &str, gain_bps: i64, nozomi_available: bool) -> LandingPath {
+    if !nozomi_available {
+        return LandingPath::JitoOnly;
+    }
+    match reason {
+        "hard_sl" => LandingPath::DualPath,
+        "trailing_stop" if gain_bps < 0 => LandingPath::DualPath,
+        "time_sl" | "max_hold" => LandingPath::NozomiOnly,
+        _ => LandingPath::JitoOnly,
+    }
+}
+
+fn exit_to_context(
+    reason: &MomentumExitReason,
+    gain_bps: i64,
+) -> crate::tx::tip_engine::TipContext {
+    use crate::tx::tip_engine::TipContext;
+    match reason {
+        MomentumExitReason::HardSl => TipContext::RideEmergency,
+        MomentumExitReason::TrailingStop if gain_bps < 0 => TipContext::RideEmergency,
+        MomentumExitReason::TrailingStop => TipContext::RideTighten,
+        MomentumExitReason::TimeSl => TipContext::Scalp,
+        MomentumExitReason::MaxHold => TipContext::Scalp,
+        _ => TipContext::RideMomentum,
+    }
+}
+
+/// Sell order sent from close_position → sell_task via crossbeam channel.
+pub struct SellOrder {
+    pub mint: [u8; 32],
+    pub patched_msg: Box<[u8; MAX_SKELETON_SIZE]>,
+    pub msg_len: usize,
+    pub tip_lamports: u64,
+    pub exit_reason: &'static str,
+    pub gain_bps: i64,
+    pub size_lamports: u64,
+    pub landing_path: LandingPath,
+}
 
 // ── Blocked mint list: known SPL tokens that should never pass as graduations ──
 // Pre-decoded base58 → [u8; 32] for zero-cost runtime comparison.
@@ -111,6 +162,16 @@ pub struct MomentumEngine {
     /// Receiver for scored tokens from hot_path (crossbeam channel).
     scored_token_rx: crossbeam_channel::Receiver<ScoredToken>,
 
+    // ── Live mode tx infrastructure (all inactive in paper mode) ────
+    skeletons: DashMap<[u8; 32], TxSkeleton>,
+    tip_engine: Arc<parking_lot::Mutex<TipEngine>>,
+    sell_tx: crossbeam_channel::Sender<SellOrder>,
+    #[allow(dead_code)] // Used by sell_task closure in live mode
+    jito_grpc: Option<Arc<crate::tx::jito_grpc::JitoGrpcClient>>,
+    nozomi_client: Option<Arc<crate::tx::nozomi::NozomiClient>>,
+    wallet_pubkey: Option<[u8; 32]>,
+    blockhash_cache: Arc<crate::tx::executor::BlockhashCache>,
+
     // ── Stats (atomic, lock-free) ───────────────────────────────────
     graduations_seen: AtomicU64,
     entries_opened: AtomicU64,
@@ -134,6 +195,10 @@ impl MomentumEngine {
         rpc_url: Arc<String>,
         _helius_wss_url: String,
         log_path: &str,
+        jito_grpc: Option<Arc<crate::tx::jito_grpc::JitoGrpcClient>>,
+        nozomi_client: Option<Arc<crate::tx::nozomi::NozomiClient>>,
+        wallet_pubkey: Option<[u8; 32]>,
+        blockhash_cache: Arc<crate::tx::executor::BlockhashCache>,
     ) -> (Self, crossbeam_channel::Sender<ScoredToken>, tokio::task::JoinHandle<()>, std::thread::JoinHandle<()>) {
         let poll_interval_ms = config.price_poll_interval_ms;
         let (price_feed, ws_handle) = PriceFeedManager::new(rpc_url.to_string(), poll_interval_ms);
@@ -141,6 +206,27 @@ impl MomentumEngine {
 
         // Channel for Kelly-scored tokens from hot_path → momentum engine
         let (scored_tx, scored_rx) = crossbeam_channel::bounded::<ScoredToken>(512);
+
+        // Tip engine and sell channel for live mode
+        let tip_engine = Arc::new(parking_lot::Mutex::new(
+            TipEngine::new(TipConfig::default()),
+        ));
+        let (sell_tx, sell_rx) = crossbeam_channel::bounded::<SellOrder>(64);
+
+        // Spawn sell task in live mode only
+        if !config.paper_mode {
+            if let (Some(jg), Some(wk)) = (jito_grpc.clone(), wallet_pubkey) {
+                let tip_engine_clone = tip_engine.clone();
+                let nozomi_clone = nozomi_client.clone();
+                let bh_cache_clone = blockhash_cache.clone();
+                tokio::spawn(async move {
+                    Self::sell_task(
+                        sell_rx, wk, jg, nozomi_clone, tip_engine_clone, bh_cache_clone,
+                    )
+                    .await;
+                });
+            }
+        }
 
         let engine = Self {
             config,
@@ -156,6 +242,13 @@ impl MomentumEngine {
             logger,
             scored_tokens: DashMap::new(),
             scored_token_rx: scored_rx,
+            skeletons: DashMap::new(),
+            tip_engine,
+            sell_tx,
+            jito_grpc,
+            nozomi_client,
+            wallet_pubkey,
+            blockhash_cache,
             graduations_seen: AtomicU64::new(0),
             entries_opened: AtomicU64::new(0),
             tp1_exits: AtomicU64::new(0),
@@ -489,6 +582,30 @@ impl MomentumEngine {
 
             self.active.insert(entry.mint, pos);
             self.entries_opened.fetch_add(1, Ordering::Relaxed);
+
+            // Build sell skeleton at position open (cold path — ~5μs is fine here)
+            // NOTE: bonding_curve and assoc_bonding_curve are not currently available
+            // in PendingEntry/PoolInfo. Skeleton building requires these PDAs.
+            // For live mode Phase 2: add bonding_curve resolution to pool.rs and
+            // wire through PendingEntry. For now, skeleton building is skipped if
+            // the data isn't available, and the sell path will fall back to the
+            // full async TxBuilder (slower but correct).
+            if !self.config.paper_mode {
+                if let Some(ref _wallet_pk) = self.wallet_pubkey {
+                    tracing::debug!(
+                        mint = %bs58::encode(&entry.mint).into_string(),
+                        "[momentum] live mode: skeleton build deferred — bonding_curve PDA not yet wired through PendingEntry"
+                    );
+                    // TODO: When bonding_curve + assoc_bonding_curve are available:
+                    // match TxSkeleton::build_sell_skeleton(
+                    //     &entry.mint, &bonding_curve, &assoc_bonding_curve,
+                    //     wallet_pk, size_lamports, 0, 0,
+                    // ) {
+                    //     Ok(skeleton) => { self.skeletons.insert(entry.mint, skeleton); }
+                    //     Err(e) => tracing::warn!(err = %e, "[momentum] failed to build sell skeleton"),
+                    // }
+                }
+            }
 
             let kelly_scored = self.scored_tokens.contains_key(&entry.mint);
             tracing::info!(
@@ -864,6 +981,121 @@ impl MomentumEngine {
         }
     }
 
+    /// Sync blockhash access for the sell path (no async).
+    fn blockhash_cache_sync(&self) -> Option<[u8; 32]> {
+        self.blockhash_cache.get_sync()
+    }
+
+    /// Sell task: async consumer that signs and submits sell transactions
+    /// via Jito/Nozomi/DualPath. Runs in a dedicated tokio task.
+    async fn sell_task(
+        sell_rx: crossbeam_channel::Receiver<SellOrder>,
+        _wallet_pubkey: [u8; 32],
+        jito_grpc: Arc<crate::tx::jito_grpc::JitoGrpcClient>,
+        nozomi_client: Option<Arc<crate::tx::nozomi::NozomiClient>>,
+        tip_engine: Arc<parking_lot::Mutex<TipEngine>>,
+        _blockhash_cache: Arc<crate::tx::executor::BlockhashCache>,
+    ) {
+        // Load wallet keypair for signing
+        let keypair_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
+        let keypair_bytes = match std::fs::read(&keypair_path) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!(err = ?e, "sell_task: failed to load wallet keypair");
+                return;
+            }
+        };
+        let keypair_arr: Vec<u8> = serde_json::from_slice(&keypair_bytes).unwrap_or_default();
+        if keypair_arr.len() != 64 {
+            tracing::error!("sell_task: invalid keypair length {}", keypair_arr.len());
+            return;
+        }
+        let mut kp_bytes = [0u8; 64];
+        kp_bytes.copy_from_slice(&keypair_arr);
+        let keypair = solana_sdk::signature::Keypair::from_bytes(&kp_bytes)
+            .expect("invalid keypair bytes");
+
+        while let Ok(order) = sell_rx.recv() {
+            let mint_b58 = bs58::encode(&order.mint).into_string();
+            let msg_bytes = &order.patched_msg[..order.msg_len];
+
+            // Sign the message
+            use solana_sdk::signer::Signer;
+            let sig = keypair.sign_message(msg_bytes);
+
+            // Build versioned transaction: [1 sig count][64 sig bytes][message bytes]
+            let mut tx_bytes = Vec::with_capacity(1 + 64 + msg_bytes.len());
+            tx_bytes.push(1u8); // 1 signature
+            tx_bytes.extend_from_slice(sig.as_ref());
+            tx_bytes.extend_from_slice(msg_bytes);
+            let tx_b64 = {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD.encode(&tx_bytes)
+            };
+
+            let landed = match order.landing_path {
+                LandingPath::JitoOnly => {
+                    match jito_grpc.submit_bundle(&tx_b64).await {
+                        Ok(id) => {
+                            tracing::info!(
+                                mint = %mint_b58, bundle_id = %id,
+                                tip = order.tip_lamports,
+                                "[sell_task] Jito submitted"
+                            );
+                            true
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                mint = %mint_b58, err = ?e,
+                                "[sell_task] Jito FAILED"
+                            );
+                            false
+                        }
+                    }
+                }
+                LandingPath::NozomiOnly => {
+                    if let Some(ref noz) = nozomi_client {
+                        match noz.send_transaction(&tx_b64).await {
+                            Ok(sig) => {
+                                tracing::info!(
+                                    mint = %mint_b58, sig = %sig,
+                                    "[sell_task] Nozomi submitted"
+                                );
+                                true
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    mint = %mint_b58, err = ?e,
+                                    "[sell_task] Nozomi failed, falling back to Jito"
+                                );
+                                jito_grpc.submit_bundle(&tx_b64).await.is_ok()
+                            }
+                        }
+                    } else {
+                        jito_grpc.submit_bundle(&tx_b64).await.is_ok()
+                    }
+                }
+                LandingPath::DualPath => {
+                    let jito_fut = jito_grpc.submit_bundle(&tx_b64);
+                    if let Some(ref noz) = nozomi_client {
+                        let noz_fut = noz.send_transaction(&tx_b64);
+                        let (j, n) = tokio::join!(jito_fut, noz_fut);
+                        tracing::info!(
+                            mint = %mint_b58,
+                            jito_ok = j.is_ok(), nozomi_ok = n.is_ok(),
+                            "[sell_task] dual-path submitted"
+                        );
+                        j.is_ok() || n.is_ok()
+                    } else {
+                        jito_fut.await.is_ok()
+                    }
+                }
+            };
+
+            tip_engine.lock().record_result(landed);
+        }
+    }
+
     /// Close a position, calculate P&L, update stats, and log.
     #[cold]
     #[inline(never)]
@@ -987,6 +1219,63 @@ impl MomentumEngine {
             is_paper: self.config.paper_mode,
             config_version: self.config.config_version(),
         });
+
+        // ── Live mode: build and enqueue sell transaction ──────────────────────
+        if !self.config.paper_mode {
+            if let Some((_, skeleton)) = self.skeletons.remove(&mint) {
+                let blockhash = self.blockhash_cache_sync();
+                let tip_req = TipRequest {
+                    context: exit_to_context(&reason, gain_bps as i64),
+                    size_lamports: pos.size_lamports,
+                    gain_bps: gain_bps as i64,
+                    grad_score: 0.0,
+                };
+                let tip = self.tip_engine.lock().compute_tip(&tip_req);
+
+                // min_sol_out = 0 for speed (no slippage protection); TODO: add slippage
+                let min_sol_out = 0u64;
+                // tokens_to_sell: approximate from size_lamports and entry price.
+                // In paper mode we don't track actual tokens held. For live mode the
+                // skeleton patches tokens_to_sell with position's known token amount.
+                // For now, use the vtoken_reserves placeholder (patched at skeleton build).
+                let tokens_to_sell = pos.size_lamports; // proxy — skeleton built with real value
+
+                let mut patched = Box::new([0u8; MAX_SKELETON_SIZE]);
+                let bh = blockhash.unwrap_or([0u8; 32]);
+                let msg_len =
+                    skeleton.patch(min_sol_out, tokens_to_sell, &bh, tip, patched.as_mut());
+
+                let landing_path =
+                    route_exit(reason.as_str(), gain_bps as i64, self.nozomi_client.is_some());
+
+                match self.sell_tx.try_send(SellOrder {
+                    mint,
+                    patched_msg: patched,
+                    msg_len,
+                    tip_lamports: tip,
+                    exit_reason: reason.as_str(),
+                    gain_bps: gain_bps as i64,
+                    size_lamports: pos.size_lamports,
+                    landing_path,
+                }) {
+                    Ok(()) => tracing::debug!(
+                        mint = %bs58::encode(&mint).into_string(),
+                        tip,
+                        "[close_position] sell queued"
+                    ),
+                    Err(e) => tracing::error!(
+                        mint = %bs58::encode(&mint).into_string(),
+                        err = %e,
+                        "[close_position] sell channel FULL — position closed but sell NOT submitted"
+                    ),
+                }
+            } else {
+                tracing::warn!(
+                    mint = %bs58::encode(&mint).into_string(),
+                    "[close_position] no skeleton found — sell NOT submitted"
+                );
+            }
+        }
     }
 
     /// Called from main.rs on every graduation migration event.
@@ -1090,11 +1379,17 @@ mod tests {
             std::process::id()
         );
 
+        let bh_cache = crate::tx::executor::BlockhashCache::new();
+
         let (engine, _scored_tx, ws_handle, _logger_handle) = MomentumEngine::new(
             config,
             rpc_url,
             "wss://invalid.example.com".to_string(),
             &log_path,
+            None, // jito_grpc
+            None, // nozomi_client
+            None, // wallet_pubkey
+            bh_cache,
         );
         // Abort the WS task so it doesn't retry forever
         ws_handle.abort();

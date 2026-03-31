@@ -2555,6 +2555,7 @@ dependencies = [
  "http 1.4.0",
  "libc",
  "memchr",
+ "parking_lot",
  "prost",
  "quanta",
  "reqwest 0.12.28",

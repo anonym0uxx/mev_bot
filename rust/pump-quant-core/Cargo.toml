@@ -52,6 +52,9 @@ dotenvy = "0.15"
 # System tuning (CPU pinning, mlockall, setsockopt)
 libc = "0.2"
 
+# Sync RwLock / Mutex (no-poison, faster than std)
+parking_lot = "0.12"
+
 # Serialization
 base64 = "0.22"
 bincode = "1.3"

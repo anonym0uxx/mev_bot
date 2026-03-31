@@ -14,6 +14,22 @@ pub enum TipContext {
     RideTighten,
     /// Emergency exit (whale dump, sell cascade) — must land THIS slot
     RideEmergency,
+    /// Entry (buy) — NEW: used for buy-path tip computation
+    Entry,
+}
+
+/// Request to compute a tip — used by both buy and sell paths.
+pub struct TipRequest {
+    pub context: TipContext,
+    pub size_lamports: u64,
+    pub gain_bps: i64,
+    pub grad_score: f64,
+}
+
+impl TipRequest {
+    pub fn is_emergency(&self) -> bool {
+        matches!(self.context, TipContext::RideEmergency)
+    }
 }
 
 /// Configuration for dynamic tip computation.
@@ -28,14 +44,24 @@ pub struct TipConfig {
     pub ride_tighten_tip: u64,
     /// Base tip for emergency exits (lamports)
     pub ride_emergency_tip: u64,
-    /// Fraction of gross profit to tip (basis points, e.g., 500 = 5%)
-    pub profit_fraction_bp: u32,
-    /// Absolute maximum tip (lamports)
-    pub max_tip: u64,
-    /// Absolute minimum tip (lamports) — Jito floor
-    pub min_tip: u64,
+    /// Base tip for entry (buy) transactions (lamports)
+    pub entry_tip: u64,
+    /// Size-proportional rate for emergency exits (bps of position)
+    pub rate_emergency_bps: u64,
+    /// Size-proportional rate for ride exits (bps of position)
+    pub rate_ride_bps: u64,
+    /// Size-proportional rate for scalp exits (bps of position)
+    pub rate_scalp_bps: u64,
+    /// Size-proportional rate for entry (buy) transactions (bps of position)
+    pub rate_entry_bps: u64,
+    /// Normal ceiling (lamports)
+    pub ceiling_normal: u64,
+    /// Emergency ceiling (lamports) — higher to ensure landing
+    pub ceiling_emergency: u64,
     /// Congestion multiplier applied when landing rate < 80% (basis points, e.g., 15000 = 1.5x)
     pub congestion_multiplier_bp: u32,
+    /// Absolute minimum tip (lamports) — Jito floor
+    pub min_tip: u64,
 }
 
 impl Default for TipConfig {
@@ -46,10 +72,15 @@ impl Default for TipConfig {
             ride_momentum_tip: 2_000_000,    // 2 mSOL
             ride_tighten_tip: 3_000_000,     // 3 mSOL
             ride_emergency_tip: 5_000_000,   // 5 mSOL
-            profit_fraction_bp: 500,         // 5% of profit
-            max_tip: 5_000_000,              // 5 mSOL
-            min_tip: 200_000,                // 200 μSOL
+            entry_tip: 100_000,              // 100 μSOL
+            rate_emergency_bps: 20,          // 0.20%
+            rate_ride_bps: 6,                // 0.06%
+            rate_scalp_bps: 5,               // 0.05%
+            rate_entry_bps: 5,               // 0.05%
+            ceiling_normal: 5_000_000,       // 5 mSOL
+            ceiling_emergency: 20_000_000,   // 20 mSOL
             congestion_multiplier_bp: 15_000, // 1.5x
+            min_tip: 200_000,                // 200 μSOL
         }
     }
 }
@@ -80,42 +111,74 @@ impl TipEngine {
         }
     }
 
-    /// Compute optimal tip for this exit.
-    ///
-    /// `gross_profit_lamports`: expected gross PnL (can be 0 or negative for SL exits).
-    /// `context`: what kind of exit this is.
-    ///
-    /// All integer arithmetic — zero f64 on the hot path.
-    #[inline(always)]
-    pub fn compute_tip(&self, gross_profit_lamports: i64, context: TipContext) -> u64 {
-        // 1. Base tip from context
-        let base = match context {
+    /// Base tip for the given context tier.
+    fn base_tip(&self, ctx: TipContext) -> u64 {
+        match ctx {
             TipContext::Scalp => self.config.scalp_tip,
             TipContext::RideEarly => self.config.ride_early_tip,
             TipContext::RideMomentum => self.config.ride_momentum_tip,
             TipContext::RideTighten => self.config.ride_tighten_tip,
             TipContext::RideEmergency => self.config.ride_emergency_tip,
-        };
+            TipContext::Entry => self.config.entry_tip,
+        }
+    }
 
-        // 2. Profit-proportional tip (only if profit > 0)
-        let profit_tip = if gross_profit_lamports > 0 {
-            (gross_profit_lamports as u64 * self.config.profit_fraction_bp as u64) / 10_000
-        } else {
-            0
-        };
+    /// Size-proportional rate (bps) for the given context.
+    fn rate_bps(&self, ctx: TipContext) -> u64 {
+        match ctx {
+            TipContext::RideEmergency => self.config.rate_emergency_bps,
+            TipContext::Entry => self.config.rate_entry_bps,
+            TipContext::Scalp => self.config.rate_scalp_bps,
+            _ => self.config.rate_ride_bps,
+        }
+    }
 
-        // 3. Take the larger of base and profit-proportional
-        let tip = base.max(profit_tip);
+    /// Compute optimal tip for this exit/entry.
+    ///
+    /// Merged logic from TipEngine + compute_exit_tip:
+    /// 1. Base tier floor
+    /// 2. Size-proportional component
+    /// 3. Congestion multiplier
+    /// 4. PnL cap (winning non-emergency exits only)
+    /// 5. Clamp to [min, ceiling]
+    ///
+    /// All integer arithmetic — zero f64 on the hot path.
+    #[inline(always)]
+    pub fn compute_tip(&self, req: &TipRequest) -> u64 {
+        let base = self.base_tip(req.context);
+        let proportional = req.size_lamports * self.rate_bps(req.context) / 10_000;
+        let tip = base.max(proportional);
 
-        // 4. Apply congestion multiplier if landing rate < 80%
+        // Congestion multiplier if landing rate < 80%
         let tip = if self.landing_rate_pct() < 80 {
-            (tip * self.config.congestion_multiplier_bp as u64) / 10_000
+            tip * self.config.congestion_multiplier_bp as u64 / 10_000
         } else {
             tip
         };
 
-        // 5. Clamp to [min, max]
-        tip.max(self.config.min_tip).min(self.config.max_tip)
+        // PnL cap — only on winning, non-emergency exits
+        let tip = if req.gain_bps > 0 && !req.is_emergency() {
+            let gross = (req.size_lamports as u128 * req.gain_bps.unsigned_abs() as u128 / 10_000) as u64;
+            let cap_pct: u64 = if req.gain_bps < 2_000 {
+                15
+            } else if req.gain_bps < 10_000 {
+                10
+            } else {
+                5
+            };
+            let pnl_cap = gross * cap_pct / 100;
+            tip.min(pnl_cap.max(base))
+        } else {
+            tip
+        };
+
+        let ceiling = if req.is_emergency() {
+            self.config.ceiling_emergency
+        } else {
+            self.config.ceiling_normal
+        };
+
+        tip.max(self.config.min_tip).min(ceiling)
     }
 
     /// Record a bundle result (landed or not).
@@ -134,7 +197,7 @@ impl TipEngine {
     ///
     /// Returns 100 when no results have been recorded (assume healthy until
     /// proven otherwise — avoids inflating tips on cold start).
-    fn landing_rate_pct(&self) -> u8 {
+    pub fn landing_rate_pct(&self) -> u8 {
         if self.results_count == 0 {
             return 100; // optimistic default
         }
@@ -154,72 +217,46 @@ mod tests {
         TipEngine::new(TipConfig::default())
     }
 
-    /// Helper: fill engine with specific landing rate.
-    fn engine_with_landing_rate(rate_pct: u8) -> TipEngine {
-        let mut engine = default_engine();
-        let landed_count = (32u8 * rate_pct) / 100;
-        for i in 0..32u8 {
-            engine.record_result(i < landed_count);
+    /// Helper: create a TipRequest with common defaults.
+    fn make_req(context: TipContext, size_lamports: u64, gain_bps: i64) -> TipRequest {
+        TipRequest {
+            context,
+            size_lamports,
+            gain_bps,
+            grad_score: 0.0,
         }
-        engine
     }
 
     #[test]
     fn test_scalp_tip_minimum() {
-        // Scalp with zero profit should return base scalp tip (500k),
+        // Scalp with zero size should return base scalp tip (500k),
         // which is above min_tip (200k). No congestion (fresh engine = 100% rate).
         let engine = default_engine();
-        let tip = engine.compute_tip(0, TipContext::Scalp);
-        assert_eq!(tip, 500_000, "Scalp with 0 profit should use base scalp tip");
+        let tip = engine.compute_tip(&make_req(TipContext::Scalp, 0, 0));
+        assert_eq!(tip, 500_000, "Scalp with 0 size should use base scalp tip");
     }
 
     #[test]
-    fn test_ride_tighten_profit_proportional() {
-        // 100 SOL gross profit = 100_000_000_000 lamports.
-        // profit_fraction_bp = 500 → 5% = 5_000_000_000 lamports.
-        // That's way above base (3 mSOL) AND above max_tip (5 mSOL),
-        // so it gets clamped to max_tip.
-        //
-        // Use a smaller profit: 0.5 SOL = 500_000_000 lamports.
-        // 5% of 500M = 25_000_000 → still above max.
-        //
-        // Use 0.05 SOL = 50_000_000 lamports.
-        // 5% of 50M = 2_500_000. Base ride_tighten = 3_000_000.
-        // max(3M, 2.5M) = 3M. No congestion. Clamp → 3M.
+    fn test_ride_tighten_size_proportional() {
         let engine = default_engine();
-        let tip = engine.compute_tip(50_000_000, TipContext::RideTighten);
-        assert_eq!(tip, 3_000_000, "Base ride_tighten should win over small profit fraction");
-
-        // Now with larger profit where profit_tip wins:
-        // 0.8 SOL = 800_000_000 lamports. 5% = 40_000_000 → clamped to 5M max.
-        let tip2 = engine.compute_tip(800_000_000, TipContext::RideTighten);
-        assert_eq!(tip2, 5_000_000, "Large profit tip should be clamped to max_tip");
-
-        // Sweet spot: profit where profit_tip > base but < max.
-        // Need: profit_tip > 3M and < 5M.
-        // profit_tip = profit * 500 / 10000 = profit / 20.
-        // 3M < profit/20 < 5M → 60M < profit < 100M.
-        // Use 80M lamports (0.08 SOL). profit_tip = 80M/20 = 4M.
-        let tip3 = engine.compute_tip(80_000_000, TipContext::RideTighten);
-        assert_eq!(tip3, 4_000_000, "Profit-proportional tip should win when it exceeds base");
+        // 10 SOL position: proportional = 10_000_000_000 * 6 / 10_000 = 6_000_000
+        // base = 3_000_000. max(3M, 6M) = 6M. ceiling_normal = 5M. Result = 5M.
+        let tip = engine.compute_tip(&make_req(TipContext::RideTighten, 10_000_000_000, 0));
+        assert_eq!(tip, 5_000_000, "Large position tip should be clamped to ceiling_normal");
     }
 
     #[test]
-    fn test_emergency_tip_max() {
-        // Emergency with negative profit (stop-loss).
-        // Base = 5M = max_tip. Profit_tip = 0. Result = 5M.
+    fn test_emergency_tip_ceiling() {
         let engine = default_engine();
-        let tip = engine.compute_tip(-50_000_000, TipContext::RideEmergency);
-        assert_eq!(tip, 5_000_000, "Emergency SL should use full emergency base tip");
-
-        // Emergency with high profit — still clamped to max.
-        let tip2 = engine.compute_tip(1_000_000_000, TipContext::RideEmergency);
-        assert_eq!(tip2, 5_000_000, "Emergency tip should be clamped to max");
+        // Emergency with negative profit (stop-loss), large position.
+        // base = 5M, proportional = 10B * 20 / 10000 = 20M.
+        // max(5M, 20M) = 20M. ceiling_emergency = 20M. Result = 20M.
+        let tip = engine.compute_tip(&make_req(TipContext::RideEmergency, 10_000_000_000, -5000));
+        assert_eq!(tip, 20_000_000, "Emergency should use emergency ceiling");
     }
 
     #[test]
     fn test_congestion_increases_tip() {
-        // Set landing rate to ~50% (below 80% threshold).
         let mut engine = default_engine();
         // Record 16 landed, 16 failed → 50% rate.
         for i in 0..32 {
@@ -227,63 +264,66 @@ mod tests {
         }
         assert!(engine.landing_rate_pct() < 80, "Landing rate should be below 80%");
 
-        // Scalp with 0 profit: base = 500k.
+        // Scalp with 0 size: base = 500k.
         // Congestion multiplier: 500k * 15000 / 10000 = 750k.
-        // Clamp: max(200k, 750k) = 750k, min(750k, 5M) = 750k.
-        let tip = engine.compute_tip(0, TipContext::Scalp);
+        let tip = engine.compute_tip(&make_req(TipContext::Scalp, 0, 0));
         assert_eq!(tip, 750_000, "Congestion should apply 1.5x multiplier");
-
-        // Compare with a healthy engine (100% landing rate, no congestion).
-        let healthy_engine = default_engine();
-        let healthy_tip = healthy_engine.compute_tip(0, TipContext::Scalp);
-        assert_eq!(healthy_tip, 500_000);
-
-        assert!(tip > healthy_tip, "Congested tip must exceed healthy tip");
     }
 
     #[test]
-    fn test_clamp_to_max() {
-        // Create config with a low max to test clamping.
-        let config = TipConfig {
-            max_tip: 1_000_000, // 1 mSOL max
-            ..TipConfig::default()
-        };
-        let engine = TipEngine::new(config);
+    fn test_pnl_cap_limits_tip() {
+        let engine = default_engine();
+        // RideMomentum, 1 SOL position, 500 bps gain (5%)
+        // base = 2M, proportional = 1B * 6 / 10000 = 600k. max(2M, 600k) = 2M.
+        // PnL cap: gross = 1B * 500 / 10000 = 50M lamports. cap_pct=15%.
+        // pnl_cap = 50M * 15 / 100 = 7.5M. min(2M, max(7.5M, 2M)) = 2M.
+        let tip = engine.compute_tip(&make_req(TipContext::RideMomentum, 1_000_000_000, 500));
+        assert_eq!(tip, 2_000_000, "Small gain: base tip wins");
 
-        // RideMomentum base = 2M, but max = 1M → clamp down.
-        let tip = engine.compute_tip(0, TipContext::RideMomentum);
-        assert_eq!(tip, 1_000_000, "Tip should be clamped to max_tip");
+        // Large gain: 5000 bps (50%), 1 SOL position.
+        // base = 2M, proportional = 1B * 6 / 10000 = 600k. max(2M, 600k) = 2M.
+        // gross = 1B * 5000 / 10000 = 500M lamports. cap_pct=10%.
+        // pnl_cap = 500M * 10 / 100 = 50M. min(2M, max(50M, 2M)) = 2M.
+        let tip2 = engine.compute_tip(&make_req(TipContext::RideMomentum, 1_000_000_000, 5000));
+        assert_eq!(tip2, 2_000_000, "Base tip wins when PnL cap is generous");
+    }
 
-        // Emergency base = 5M → also clamped to 1M.
-        let tip2 = engine.compute_tip(0, TipContext::RideEmergency);
-        assert_eq!(tip2, 1_000_000, "Emergency tip should also be clamped to max_tip");
+    #[test]
+    fn test_entry_tip() {
+        let engine = default_engine();
+        // Entry, 0.5 SOL position: proportional = 500M * 5 / 10000 = 250k.
+        // base = 100k. max(100k, 250k) = 250k. min_tip = 200k. ceiling_normal = 5M.
+        let tip = engine.compute_tip(&make_req(TipContext::Entry, 500_000_000, 0));
+        assert_eq!(tip, 250_000, "Entry tip should use proportional when it exceeds base");
+
+        // Small position: 0.01 SOL
+        let tip2 = engine.compute_tip(&make_req(TipContext::Entry, 10_000_000, 0));
+        // proportional = 10M * 5 / 10000 = 5000. base = 100k. max(100k, 5k) = 100k.
+        // < min_tip 200k → clamp to 200k.
+        assert_eq!(tip2, 200_000, "Small entry should clamp to min_tip");
     }
 
     #[test]
     fn test_clamp_to_min() {
-        // Config with very low base tips.
         let config = TipConfig {
             scalp_tip: 100_000, // Below min_tip of 200k
             min_tip: 200_000,
             ..TipConfig::default()
         };
         let engine = TipEngine::new(config);
-
-        let tip = engine.compute_tip(0, TipContext::Scalp);
+        let tip = engine.compute_tip(&make_req(TipContext::Scalp, 0, 0));
         assert_eq!(tip, 200_000, "Tip below min should be raised to min_tip");
     }
 
     #[test]
-    fn test_negative_profit_uses_base() {
+    fn test_negative_gain_uses_base() {
         let engine = default_engine();
-        // Negative profit → profit_tip = 0, falls back to base.
-        let tip = engine.compute_tip(-100_000_000, TipContext::RideEarly);
-        assert_eq!(tip, 1_000_000, "Negative profit should use base tip");
+        let tip = engine.compute_tip(&make_req(TipContext::RideEarly, 1_000_000_000, -500));
+        assert_eq!(tip, 1_000_000, "Negative gain should use base tip");
     }
 
     #[test]
     fn test_landing_rate_cold_start() {
-        // Fresh engine with no results should assume 100% (optimistic).
         let engine = default_engine();
         assert_eq!(engine.landing_rate_pct(), 100);
     }
@@ -291,17 +331,14 @@ mod tests {
     #[test]
     fn test_landing_rate_circular_buffer() {
         let mut engine = default_engine();
-        // Fill buffer with all successes.
         for _ in 0..32 {
             engine.record_result(true);
         }
         assert_eq!(engine.landing_rate_pct(), 100);
 
-        // Now record 8 failures — overwrites 8 successes.
         for _ in 0..8 {
             engine.record_result(false);
         }
-        // 24 landed out of 32 = 75%.
         assert_eq!(engine.landing_rate_pct(), 75);
     }
 

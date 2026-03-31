@@ -508,11 +508,78 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| "wss://invalid.example.com".to_string());
     let momentum_log_path = format!("{}/momentum_paper_trades.jsonl", data_dir);
 
+    // ── Live mode tx infrastructure (conditional on paper_mode) ─────
+    // Create a dedicated BlockhashCache for momentum engine. The original one
+    // spawned above is scoped to the original block. In a future refactor these
+    // should share a single Arc<BlockhashCache>.
+    let momentum_bh_cache = pump_quant_core::tx::executor::BlockhashCache::new();
+    {
+        let rpc_for_bh = std::env::var("SOLANA_RPC_URL")
+            .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
+        momentum_bh_cache.clone().spawn_refresh_task(rpc_for_bh);
+    }
+
+    let jito_grpc_client: Option<std::sync::Arc<pump_quant_core::tx::jito_grpc::JitoGrpcClient>> =
+        if !engine_config.momentum.paper_mode {
+            let cfg = pump_quant_core::tx::jito_grpc::JitoGrpcConfig::default();
+            match pump_quant_core::tx::jito_grpc::JitoGrpcClient::new(cfg).await {
+                Ok(client) => {
+                    let _ = client.warmup().await;
+                    Some(std::sync::Arc::new(client))
+                }
+                Err(e) => {
+                    tracing::warn!(err = ?e, "JitoGrpcClient init failed — live sells disabled");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+    let nozomi_client: Option<std::sync::Arc<pump_quant_core::tx::nozomi::NozomiClient>> =
+        if !engine_config.momentum.paper_mode {
+            std::env::var("NOZOMI_API_KEY")
+                .ok()
+                .filter(|k| !k.is_empty())
+                .map(|key| {
+                    std::sync::Arc::new(pump_quant_core::tx::nozomi::NozomiClient::new(
+                        std::env::var("NOZOMI_ENDPOINT").unwrap_or_else(|_| {
+                            "https://ewr1.nozomi.temporal.xyz".to_string()
+                        }),
+                        key,
+                    ))
+                })
+        } else {
+            None
+        };
+
+    let wallet_pubkey: Option<[u8; 32]> = if !engine_config.momentum.paper_mode {
+        std::env::var("WALLET_KEYPAIR_PATH")
+            .ok()
+            .and_then(|path| {
+                let bytes = std::fs::read(&path).ok()?;
+                let arr: Vec<u8> = serde_json::from_slice(&bytes).ok()?;
+                if arr.len() >= 64 {
+                    let mut pk = [0u8; 32];
+                    pk.copy_from_slice(&arr[32..64]); // public key is second 32 bytes
+                    Some(pk)
+                } else {
+                    None
+                }
+            })
+    } else {
+        None
+    };
+
     let (momentum_engine, scored_token_tx, _momentum_ws_handle, _momentum_logger_handle) = MomentumEngine::new(
         momentum_config.clone(),
         momentum_rpc_url,
         momentum_wss_url,
         &momentum_log_path,
+        jito_grpc_client,
+        nozomi_client,
+        wallet_pubkey,
+        momentum_bh_cache,
     );
     let momentum_engine = Arc::new(momentum_engine);
 
