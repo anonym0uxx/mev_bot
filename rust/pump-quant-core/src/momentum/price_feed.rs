@@ -335,13 +335,13 @@ async fn price_feed_poll_loop(
                     if prev_price > 0 {
                         let ratio_num = price_fp.max(prev_price);
                         let ratio_den = price_fp.min(prev_price);
-                        if ratio_den > 0 && ratio_num / ratio_den > 10 {
+                        if ratio_den > 0 && ratio_num / ratio_den > 100 {
                             tracing::warn!(
                                 mint = %bs58::encode(mint).into_string(),
                                 prev_price_fp = prev_price,
                                 new_price_fp = price_fp,
                                 ratio = ratio_num / ratio_den,
-                                "[price_feed] spike rejected — price moved >10x in single poll"
+                                "[price_feed] spike rejected — price moved >100x in single poll"
                             );
                             continue; // skip this update, keep previous price
                         }

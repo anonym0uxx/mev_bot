@@ -192,6 +192,54 @@ impl TxExecutor {
         }
     }
 
+    /// Compute dynamic Jito tip based on position size, gain, and exit urgency.
+    /// Ensures tip is always profitable: tip < 8% of expected gross PnL when winning.
+    /// For losses: urgency drives the tip to maximize landing probability.
+    pub fn compute_exit_tip(
+        size_lamports: u64,
+        gain_bps: i64,
+        is_hard_sl: bool,
+        is_trailing_stop: bool,
+        is_time_sl: bool,
+        is_max_hold: bool,
+    ) -> u64 {
+        const TIP_FLOOR: u64   = 10_000;     // 0.00001 SOL minimum
+        const TIP_CEILING: u64 = 5_000_000;  // 0.005 SOL maximum
+        const BASE_RATE: u64   = 25;         // 0.0025% of position size
+
+        // Urgency multiplier (basis points, 10000 = 1.0x)
+        let urgency_bp: u64 = if is_hard_sl {
+            50_000 // 5.0x — price collapsing
+        } else if is_trailing_stop && gain_bps < 0 {
+            40_000 // 4.0x — losing trailing stop
+        } else if is_trailing_stop {
+            20_000 // 2.0x — profitable trailing stop
+        } else if is_time_sl {
+            3_000  // 0.3x — dead zone kill, no urgency
+        } else if is_max_hold {
+            5_000  // 0.5x — timeout
+        } else {
+            15_000 // 1.5x — TP exits
+        };
+
+        // Base tip proportional to position size
+        let base_tip = (size_lamports * BASE_RATE) / 1_000_000;
+
+        // Apply urgency
+        let urgency_tip = (base_tip * urgency_bp) / 10_000;
+
+        // PnL cap: tip ≤ 8% of expected gross PnL (when profitable)
+        let capped = if gain_bps > 0 {
+            let expected_gross_lamports = (size_lamports as i64 * gain_bps / 10_000) as u64;
+            let pnl_cap = (expected_gross_lamports * 8) / 100;
+            urgency_tip.min(pnl_cap.max(TIP_FLOOR)) // never go below floor even when capping
+        } else {
+            urgency_tip
+        };
+
+        capped.clamp(TIP_FLOOR, TIP_CEILING)
+    }
+
     /// Execute a buy transaction.
     ///
     /// In paper mode: returns a zeroed `[u8; 64]` signature immediately.
@@ -251,20 +299,45 @@ impl TxExecutor {
 
     /// Execute a sell transaction for a closed position.
     ///
-    /// In paper mode: returns a zeroed `[u8; 64]` signature immediately.
-    /// In live mode: gets blockhash (cache-first), builds the sell tx, submits via Jito.
+    /// In paper mode: logs what the dynamic tip WOULD have been and returns a zeroed signature.
+    /// In live mode: computes dynamic tip, builds the sell tx, submits via Jito.
     pub async fn execute_sell(
         &self,
         pos: &ClosedPosition,
         vtokens_current: u64,
+        gain_bps: i64,
+        exit_reason_str: &str,
     ) -> Result<[u8; 64]> {
+        let is_hard_sl = exit_reason_str == "hard_sl";
+        let is_trailing_stop = exit_reason_str == "trailing_stop";
+        let is_time_sl = exit_reason_str == "time_sl";
+        let is_max_hold = exit_reason_str == "max_hold";
+
         if self.config.paper_mode {
+            let would_tip = Self::compute_exit_tip(
+                pos.size_sol, gain_bps, is_hard_sl, is_trailing_stop, is_time_sl, is_max_hold,
+            );
             tracing::debug!(
-                "paper mode: simulated sell for mint {}",
+                would_tip_lamports = would_tip,
+                exit_reason = exit_reason_str,
+                gain_bps,
+                size_lamports = pos.size_sol,
+                "[executor] paper mode: simulated sell for mint {}",
                 bs58::encode(&pos.mint).into_string()
             );
             return Ok([0u8; 64]);
         }
+
+        let dynamic_tip = Self::compute_exit_tip(
+            pos.size_sol, gain_bps, is_hard_sl, is_trailing_stop, is_time_sl, is_max_hold,
+        );
+
+        tracing::debug!(
+            dynamic_tip_lamports = dynamic_tip,
+            exit_reason = exit_reason_str,
+            gain_bps,
+            "[executor] computed dynamic exit tip"
+        );
 
         // Get blockhash: cache-first, fall back to fresh RPC fetch
         let blockhash = self.get_blockhash().await?;
@@ -297,7 +370,7 @@ impl TxExecutor {
             vtokens: vtokens_current,
             min_sol_out_lamports: min_sol_out,
             priority_fee_microlamports: self.config.priority_fee_lamports,
-            jito_tip_lamports: self.config.jito_tip_lamports,
+            jito_tip_lamports: dynamic_tip,
             recent_blockhash: blockhash.to_bytes(),
         };
 
@@ -308,9 +381,10 @@ impl TxExecutor {
             .context("failed to submit sell bundle to Jito")?;
 
         tracing::info!(
-            "sell bundle submitted: {}, mint: {}",
+            "sell bundle submitted: {}, mint: {}, tip: {}",
             bundle_id,
-            bs58::encode(&pos.mint).into_string()
+            bs58::encode(&pos.mint).into_string(),
+            dynamic_tip,
         );
 
         // Return the transaction signature

@@ -32,7 +32,7 @@ pub use pool::{PoolType, PoolInfo, PoolResolution, BC_TERMINAL_PRICE_LAMPORTS_PE
 use crate::momentum::pool::resolve_pool_from_transaction;
 use crate::momentum::position::{
     MomentumExitReason, MomentumPosition, MomentumState, PendingEntry, PendingEntryRing,
-    price_to_bps_offset,
+    price_to_bps_offset, PRICE_SAMPLES,
 };
 use crate::momentum::price_feed::{price_from_reserves, PriceFeedManager, VaultSubscription};
 use crate::momentum::scorer::score_graduation;
@@ -577,7 +577,17 @@ impl MomentumEngine {
             // Eliminates the structural blind spot where trades exiting in < 10s have zero samples.
             if !pos.first_price_recorded {
                 pos.first_price_recorded = true;
-                pos.record_sample(current_price_fp);
+                // First sample: bypass spike guard — price feed already filters catastrophic spikes.
+                // Peak and reference haven't been set yet (peak==entry), so ratio check is meaningless.
+                // Micro-price tokens legitimately 5-12x between entry and first poll delivery.
+                if (pos.sample_count as usize) < PRICE_SAMPLES {
+                    pos.price_samples_bps[pos.sample_count as usize] =
+                        price_to_bps_offset(pos.entry_price_fp, current_price_fp);
+                    pos.sample_count += 1;
+                    if current_price_fp > pos.peak_price_fp {
+                        pos.peak_price_fp = current_price_fp;
+                    }
+                }
             }
 
             // Fix A: Configurable sample interval (default: every ~1s instead of every ~10s).
@@ -588,11 +598,11 @@ impl MomentumEngine {
             }
 
             // Update peak for trailing stop — with spike guard.
-            // Reject price updates >10x the current peak (same guard as price_feed and record_sample).
+            // Reject price updates >50x the current peak (same guard as price_feed and record_sample).
             if current_price_fp > pos.peak_price_fp {
                 let ref_price = pos.peak_price_fp.max(pos.entry_price_fp);
                 let ratio = if ref_price > 0 { current_price_fp / ref_price } else { 0 };
-                if ratio <= 10 {
+                if ratio <= 50 {
                     pos.peak_price_fp = current_price_fp;
                 }
                 // else: spike — don't update peak, price_feed should have caught this

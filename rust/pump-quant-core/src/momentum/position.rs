@@ -173,7 +173,7 @@ impl MomentumPosition {
         if ref_price > 0 && current_price_fp > 0 {
             let ratio_num = current_price_fp.max(ref_price);
             let ratio_den = current_price_fp.min(ref_price);
-            if ratio_den > 0 && ratio_num / ratio_den > 10 {
+            if ratio_den > 0 && ratio_num / ratio_den > 50 {
                 // Skip this sample — bad data, don't corrupt peak or samples array
                 return;
             }
