@@ -795,25 +795,60 @@ impl MomentumEngine {
                 }
             }
 
+            // ── Adaptive dead zone Phase 1: WS activity silence ──────────────────────
+            // ShredStream cannot see post-graduation Raydium/PumpSwap trades.
+            // Helius WS accountSubscribe notifications proxy swap activity.
+            // Each notification = vault balance changed = a swap occurred on-chain.
+            {
+                let (ws_count, ws_last_ms) = self.price_feed.ws_notif_info(&mint);
+                pos.set_ws_notif_count(ws_count);
+                if ws_last_ms > 0 {
+                    pos.set_ws_notif_last_ms(ws_last_ms);
+                }
+
+                let timeout_ms = if ws_last_ms == 0 {
+                    self.config.dead_zone_ws_fallback_ms
+                } else if ws_count == 0 {
+                    self.config.dead_zone_ws_zero_ms
+                } else if ws_count <= self.config.dead_zone_ws_sparse_n as u64 {
+                    self.config.dead_zone_ws_sparse_ms
+                } else {
+                    self.config.dead_zone_ws_active_ms
+                };
+
+                let ref_ts = if ws_last_ms > 0 { ws_last_ms } else { pos.entry_ts_ms };
+                let silence_ms = now_ms.saturating_sub(ref_ts);
+
+                // Require BOTH WS silence AND price staleness when price samples exist.
+                // Prevents false exits when RPC poll delivers but WS hasn't notified yet.
+                let price_stale = if pos.sample_count >= 2 {
+                    let sample_period_ms = (self.config.check_ms * self.config.sample_interval_ticks).max(1);
+                    let last_sample_ts = pos.entry_ts_ms + (pos.sample_count as u64 * sample_period_ms);
+                    now_ms.saturating_sub(last_sample_ts) > timeout_ms
+                } else {
+                    true
+                };
+
+                if silence_ms > timeout_ms && price_stale {
+                    tracing::debug!(
+                        mint = %bs58::encode(&mint).into_string(),
+                        ws_count,
+                        silence_ms,
+                        timeout_ms,
+                        "[momentum] adaptive dead zone exit"
+                    );
+                    to_close.push((mint, MomentumExitReason::TimeSl, current_price_fp));
+                    continue;
+                }
+            }
+            // ── End adaptive dead zone Phase 1 ───────────────────────────────────────
+
             // Dead zone detection — quant spec: kill tokens with no momentum early.
-            // Phase 1 (T+10s): if all last 5 samples < dead_zone_early_bps (50) → exit
             // Phase 2 (T+60s): if cumulative bps < dead_zone_confirmed_bps (200) → exit
             // Phase 3: if total movement < dead_zone_stagnant_bps (300) in last 30s → exit
-            // Quant estimate: saves +3.70 SOL per session (84% of dead tokens caught early)
             if self.config.dead_zone_early_ms > 0 && pos.sample_count >= 5 {
                 let n = pos.sample_count as usize;
                 let current_bps = price_to_bps_offset(entry_fp, current_price_fp);
-
-                // Phase 1: early dead zone at T+10s
-                if hold_ms >= self.config.dead_zone_early_ms
-                    && hold_ms < self.config.dead_zone_confirmed_ms
-                {
-                    let last5: &[i32] = &pos.price_samples_bps[n.saturating_sub(5)..n];
-                    if last5.iter().all(|&s| s < self.config.dead_zone_early_bps) {
-                        to_close.push((mint, MomentumExitReason::TimeSl, current_price_fp));
-                        continue;
-                    }
-                }
 
                 // Phase 2: confirmed dead at T+60s
                 if hold_ms >= self.config.dead_zone_confirmed_ms {

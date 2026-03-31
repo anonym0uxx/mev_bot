@@ -50,6 +50,11 @@ pub struct PriceState {
     pub last_update_ms: AtomicU64,
     pub reserve_sol: AtomicU64,
     pub reserve_token: AtomicU64,
+    /// Count of WS accountSubscribe notifications received for this mint's vaults.
+    /// Each notification = a Raydium/PumpSwap swap occurred. Saturates at u64::MAX.
+    pub ws_notif_count: AtomicU64,
+    /// Timestamp of last WS accountSubscribe notification (epoch ms). 0 if none received.
+    pub ws_notif_last_ms: AtomicU64,
 }
 
 impl PriceState {
@@ -59,6 +64,8 @@ impl PriceState {
             last_update_ms: AtomicU64::new(0),
             reserve_sol: AtomicU64::new(0),
             reserve_token: AtomicU64::new(0),
+            ws_notif_count: AtomicU64::new(0),
+            ws_notif_last_ms: AtomicU64::new(0),
         })
     }
 }
@@ -153,6 +160,15 @@ impl PriceFeedManager {
     #[inline(always)]
     pub fn price_state(&self, mint: &[u8; 32]) -> Option<Arc<PriceState>> {
         self.prices.get(mint).map(|s| Arc::clone(s.value()))
+    }
+
+    /// Returns (ws_notif_count, ws_notif_last_ms) for the given mint's price state.
+    /// Returns (0, 0) if no price state exists yet.
+    pub fn ws_notif_info(&self, mint: &[u8; 32]) -> (u64, u64) {
+        self.prices.get(mint).map(|s| (
+            s.ws_notif_count.load(Ordering::Relaxed),
+            s.ws_notif_last_ms.load(Ordering::Relaxed),
+        )).unwrap_or((0, 0))
     }
 }
 
@@ -348,6 +364,15 @@ fn ws_handle_confirm(
     }
 }
 
+/// Current epoch time in milliseconds.
+#[inline(always)]
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 fn ws_update_price(
     prices: &DashMap<[u8; 32], Arc<PriceState>>,
     mint: &[u8; 32],
@@ -355,9 +380,10 @@ fn ws_update_price(
     amount: u64,
 ) {
     if let Some(state) = prices.get(mint) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default().as_millis() as u64;
+        let now = epoch_ms();
+        // Track WS notification activity for adaptive dead zone
+        state.ws_notif_count.fetch_add(1, Ordering::Relaxed);
+        state.ws_notif_last_ms.store(now, Ordering::Relaxed);
         match vt {
             VaultType::Coin => state.reserve_token.store(amount, Ordering::Relaxed),
             VaultType::Pc => state.reserve_sol.store(amount, Ordering::Relaxed),

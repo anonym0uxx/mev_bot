@@ -304,6 +304,27 @@ impl MomentumPosition {
         self._pad2[17] = 1;
     }
 
+    #[inline(always)]
+    pub fn ws_notif_count(&self) -> u16 {
+        u16::from_le_bytes(self._pad2[18..20].try_into().unwrap())
+    }
+
+    #[inline(always)]
+    pub fn set_ws_notif_count(&mut self, v: u64) {
+        let clamped = v.min(u16::MAX as u64) as u16;
+        self._pad2[18..20].copy_from_slice(&clamped.to_le_bytes());
+    }
+
+    #[inline(always)]
+    pub fn ws_notif_last_ms(&self) -> u64 {
+        u64::from_le_bytes(self._pad2[20..28].try_into().unwrap())
+    }
+
+    #[inline(always)]
+    pub fn set_ws_notif_last_ms(&mut self, v: u64) {
+        self._pad2[20..28].copy_from_slice(&v.to_le_bytes());
+    }
+
     /// Get TopDetector state from _pad2 storage (bytes 0..17).
     #[inline]
     pub fn top_detector(&self) -> TopDetector {
@@ -911,5 +932,34 @@ mod tests {
         assert_eq!(pos.hold_ms(1000), 0);
         // Saturating: now < entry
         assert_eq!(pos.hold_ms(500), 0);
+    }
+
+    #[test]
+    fn test_ws_notif_count_roundtrip() {
+        let mut pos = MomentumPosition::new([0u8;32],0,1000,411,50_000_000,0,50,60,0,0,0);
+        assert_eq!(pos.ws_notif_count(), 0);
+        pos.set_ws_notif_count(42);
+        assert_eq!(pos.ws_notif_count(), 42);
+        pos.set_ws_notif_count(u64::MAX);
+        assert_eq!(pos.ws_notif_count(), u16::MAX);
+    }
+
+    #[test]
+    fn test_ws_notif_last_ms_roundtrip() {
+        let mut pos = MomentumPosition::new([0u8;32],0,1000,411,50_000_000,0,50,60,0,0,0);
+        assert_eq!(pos.ws_notif_last_ms(), 0);
+        pos.set_ws_notif_last_ms(1_700_000_000_000);
+        assert_eq!(pos.ws_notif_last_ms(), 1_700_000_000_000);
+    }
+
+    #[test]
+    fn test_ws_notif_does_not_corrupt_scaled_in() {
+        let mut pos = MomentumPosition::new([0u8;32],0,1000,411,50_000_000,0,50,60,0,0,0);
+        pos.set_scaled_in();
+        pos.set_ws_notif_count(7);
+        pos.set_ws_notif_last_ms(12345678);
+        assert!(pos.is_scaled_in());
+        assert_eq!(pos.ws_notif_count(), 7);
+        assert_eq!(pos.ws_notif_last_ms(), 12345678);
     }
 }

@@ -121,6 +121,17 @@ pub struct MomentumConfig {
     // DEAD ZONE DETECTION
     // ══════════════════════════════════════════════════════════
 
+    /// Adaptive dead zone: ms of WS silence before exit when 0 WS notifications received.
+    pub dead_zone_ws_zero_ms: u64,
+    /// Adaptive dead zone: ms of WS silence before exit when 1..=sparse_n notifications received.
+    pub dead_zone_ws_sparse_ms: u64,
+    /// Adaptive dead zone: ms of WS silence before exit when > sparse_n notifications received.
+    pub dead_zone_ws_active_ms: u64,
+    /// Boundary between sparse and active notification tiers.
+    pub dead_zone_ws_sparse_n: u16,
+    /// Fallback dead zone ms when no WS data exists (ws_notif_last_ms == 0).
+    pub dead_zone_ws_fallback_ms: u64,
+
     /// Time window for Phase 1 dead zone check (ms). Default: 10_000 (10s).
     pub dead_zone_early_ms: u64,
     /// Minimum cumulative bps to survive Phase 1. Default: 50.
@@ -203,6 +214,13 @@ impl Default for MomentumConfig {
             top_detection_strong_signals: 2,
             top_detection_exit_pct: 75,
             top_detection_trail_pct: 3.0,
+
+            // Adaptive dead zone (WS-based)
+            dead_zone_ws_zero_ms: 3_000,
+            dead_zone_ws_sparse_ms: 8_000,
+            dead_zone_ws_active_ms: 15_000,
+            dead_zone_ws_sparse_n: 3,
+            dead_zone_ws_fallback_ms: 8_000,
 
             // Dead zone detection
             dead_zone_early_ms: 10_000,
