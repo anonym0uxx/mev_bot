@@ -1469,8 +1469,13 @@ mod tests {
 
     /// Helper: create a test engine (price feed connects to invalid URL, that's fine).
     fn make_test_engine(enabled: bool) -> MomentumEngine {
+        make_test_engine_with(enabled, |_| {})
+    }
+
+    fn make_test_engine_with(enabled: bool, f: impl FnOnce(&mut MomentumConfig)) -> MomentumEngine {
         let mut cfg = MomentumConfig::default();
         cfg.enabled = enabled;
+        f(&mut cfg);
         let config = Arc::new(cfg);
         let rpc_url = Arc::new("https://example.com".to_string());
 
@@ -1712,7 +1717,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_momentum_tp3_exit() {
-        let engine = make_test_engine(true);
+        let engine = make_test_engine_with(true, |cfg| { cfg.tp3_pct = 50.0; });
 
         // Position entered at price 1000
         let pos = MomentumPosition::new(
