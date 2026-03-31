@@ -675,6 +675,52 @@ impl TopDetector {
     }
 }
 
+// ── ATR computation ──────────────────────────────────────────────────────────
+
+/// Compute Average True Range from price_samples_bps.
+/// Returns average absolute per-tick change in bps over last `window` samples.
+/// Pure integer arithmetic. Returns 0 if fewer than 2 samples.
+#[inline]
+pub fn compute_atr_bps(samples: &[i32], window: usize) -> u32 {
+    let n = samples.len();
+    if n < 2 { return 0; }
+    let start = if n > window { n - window } else { 0 };
+    let slice = &samples[start..n];
+    let sum: i64 = slice.windows(2)
+        .map(|w| (w[1] as i64 - w[0] as i64).abs())
+        .sum();
+    let count = (slice.len() - 1) as i64;
+    if count == 0 { return 0; }
+    (sum / count) as u32
+}
+
+// ── Momentum score ───────────────────────────────────────────────────────────
+
+/// Exponentially weighted sum of recent per-tick price deltas.
+/// Returns positive for upward momentum, negative for decay/reversal.
+/// decay=0.5: each older tick has half the weight of the next newer tick.
+/// Returns f64::MAX when fewer than 4 samples (insufficient data — never exit).
+#[inline]
+pub fn compute_momentum_score(samples: &[i32], window: usize) -> f64 {
+    let n = samples.len();
+    if n < 4 {
+        return f64::MAX; // not enough data — don't exit
+    }
+    // Per-tick deltas (cumulative → first-difference)
+    let changes_len = n - 1;
+    let start = if changes_len > window { changes_len - window } else { 0 };
+
+    let mut score = 0.0f64;
+    let mut weight = 1.0f64;
+    // Iterate from most recent delta backward (rev order = most recent first)
+    for i in (start..changes_len).rev() {
+        let delta = (samples[i + 1] - samples[i]) as f64;
+        score += delta * weight;
+        weight *= 0.5;
+    }
+    score
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -961,5 +1007,71 @@ mod tests {
         assert!(pos.is_scaled_in());
         assert_eq!(pos.ws_notif_count(), 7);
         assert_eq!(pos.ws_notif_last_ms(), 12345678);
+    }
+
+    // ── Momentum score tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_momentum_score_reversing() {
+        // Token peaked at 1000bps, now falling rapidly
+        let samples: &[i32] = &[0, 200, 500, 800, 1000, 900, 750, 580, 420];
+        let score = compute_momentum_score(samples, 8);
+        assert!(score < -150.0, "reversing token should score below threshold: {score}");
+    }
+
+    #[test]
+    fn test_momentum_score_stalling_at_peak() {
+        // Token pumped to +1000bps, now flat — trailing stop should handle
+        let samples: &[i32] = &[0, 200, 500, 1000, 1000, 1000, 1000, 1000, 1000];
+        let score = compute_momentum_score(samples, 8);
+        assert!(score > -150.0, "stalling token should NOT trigger decay exit: {score}");
+    }
+
+    #[test]
+    fn test_momentum_score_slow_bleed() {
+        // Slow bleed: -5bps/tick — time_sl should handle, not decay
+        let samples: &[i32] = &[50, 45, 40, 35, 30, 25, 20, 15, 10];
+        let score = compute_momentum_score(samples, 8);
+        assert!(score > -150.0, "slow bleed should not trigger decay exit: {score}");
+    }
+
+    #[test]
+    fn test_momentum_score_insufficient_samples() {
+        // Fewer than 4 samples → return f64::MAX (never exit)
+        assert_eq!(compute_momentum_score(&[0i32, 100], 8), f64::MAX);
+        assert_eq!(compute_momentum_score(&[0i32, 50, 100], 8), f64::MAX);
+    }
+
+    // ── ATR tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_compute_atr_bps_normal_pump() {
+        // samples pump to +500 bps then stabilize — ATR should be ~56
+        let samples: &[i32] = &[0, 50, 100, 200, 350, 500, 480, 460, 450, 445, 440];
+        let atr = compute_atr_bps(samples, 10);
+        assert!(atr >= 40 && atr <= 80, "expected ATR ~56, got {atr}");
+    }
+
+    #[test]
+    fn test_compute_atr_bps_flat() {
+        let samples: &[i32] = &[10, -5, 8, -3, 12, 5, -8, 4, 6, -2, 3];
+        let atr = compute_atr_bps(samples, 10);
+        assert!(atr <= 20, "flat token ATR should be low, got {atr}");
+    }
+
+    #[test]
+    fn test_compute_atr_bps_window_clamp() {
+        // 15 samples, window=10 → should only use last 10
+        let samples: &[i32] = &[0, 1000, 2000, 3000, 4000, 5000, 5100, 5050, 5000, 4950, 4900, 4880, 4860, 4850, 4840];
+        let atr_full = compute_atr_bps(samples, 15);
+        let atr_window = compute_atr_bps(samples, 10);
+        // Window version should reflect only recent low-volatility ticks
+        assert!(atr_window < atr_full, "window ATR should be lower than full ATR for this series");
+    }
+
+    #[test]
+    fn test_compute_atr_bps_too_few_samples() {
+        assert_eq!(compute_atr_bps(&[500i32], 10), 0);
+        assert_eq!(compute_atr_bps(&[], 10), 0);
     }
 }

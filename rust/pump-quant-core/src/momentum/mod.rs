@@ -32,7 +32,7 @@ pub use pool::{PoolType, PoolInfo, PoolResolution, BC_TERMINAL_PRICE_LAMPORTS_PE
 use crate::momentum::pool::resolve_pool_from_transaction;
 use crate::momentum::position::{
     MomentumExitReason, MomentumPosition, MomentumState, PendingEntry, PendingEntryRing,
-    price_to_bps_offset, PRICE_SAMPLES,
+    price_to_bps_offset, compute_atr_bps, compute_momentum_score, PRICE_SAMPLES,
 };
 use crate::momentum::price_feed::{price_from_reserves, PriceFeedManager, VaultSubscription};
 use crate::momentum::scorer::score_graduation;
@@ -752,14 +752,29 @@ impl MomentumEngine {
                 }
             }
 
-            // Fix D: Micro hard SL — tighter stop for the first ~3 seconds.
-            // Catches immediate dump-on-graduation tokens before the first sample window.
-            // After micro_sl_ticks, the regular hard_sl_pct takes over.
-            if ticks_elapsed <= self.config.micro_sl_ticks {
-                let micro_sl_bps = (self.config.micro_sl_pct * 100.0) as u32;
-                if pos.hard_sl_hit(current_price_fp, micro_sl_bps) {
-                    to_close.push((mint, MomentumExitReason::HardSl, current_price_fp));
-                    continue;
+            // Phase 2: Velocity-based micro exit — fires only in first micro_exit_window_ms.
+            // Requires N consecutive ticks of strong negative velocity (not a single bad tick).
+            // Threshold: -200 bps/tick at 1050ms cadence = -1.9%/s sustained dump.
+            if hold_ms <= self.config.micro_exit_window_ms {
+                let n = pos.sample_count as usize;
+                let n_consec = self.config.micro_exit_n_consecutive as usize;
+                if n >= n_consec + 1 {
+                    let threshold = self.config.micro_exit_velocity_bps;
+                    let all_below = (0..n_consec).all(|i| {
+                        let a = pos.price_samples_bps[n - 1 - i] as i32;
+                        let b = pos.price_samples_bps[n - 2 - i] as i32;
+                        (a - b) < threshold
+                    });
+                    if all_below {
+                        tracing::debug!(
+                            mint = %bs58::encode(&mint).into_string(),
+                            n_samples = n,
+                            hold_ms,
+                            "[momentum] velocity micro exit"
+                        );
+                        to_close.push((mint, MomentumExitReason::HardSl, current_price_fp));
+                        continue;
+                    }
                 }
             }
 
@@ -778,11 +793,32 @@ impl MomentumEngine {
                     self.config.momentum_decel_threshold_bps,
                     self.config.momentum_reversal_threshold_bps,
                 );
-                let trail_pct = match state {
+                let base_trail = match state {
                     MomentumState::Accelerating => self.config.trailing_stop_accel_pct,
                     MomentumState::Sustaining | MomentumState::Unknown => self.config.trailing_stop_pct,
                     MomentumState::Decelerating => self.config.trailing_stop_decel_pct,
                     MomentumState::Reversing => self.config.trailing_stop_reversal_pct,
+                };
+
+                // Phase 3: ATR-adaptive trail width.
+                // trail = max(base, k * ATR_bps / 100), clamped per phase.
+                let trail_pct = if pos.sample_count >= self.config.trail_min_samples_for_atr {
+                    let n = pos.sample_count as usize;
+                    let atr = compute_atr_bps(
+                        &pos.price_samples_bps[..n],
+                        self.config.trail_atr_window,
+                    );
+                    let vol_trail = self.config.trail_atr_multiplier * atr as f64 / 100.0;
+                    let raw = base_trail.max(vol_trail);
+                    let (min_c, max_c) = match state {
+                        MomentumState::Accelerating                        => (5.0f64, 30.0),
+                        MomentumState::Sustaining | MomentumState::Unknown => (3.0, 20.0),
+                        MomentumState::Decelerating                        => (2.0, 12.0),
+                        MomentumState::Reversing                           => (1.0,  5.0),
+                    };
+                    raw.clamp(min_c, max_c)
+                } else {
+                    base_trail
                 };
                 let trailing_bps = (trail_pct * 100.0) as u32;
                 if pos.trailing_stop_hit(current_price_fp, trailing_bps) {
@@ -842,6 +878,32 @@ impl MomentumEngine {
                 }
             }
             // ── End adaptive dead zone Phase 1 ───────────────────────────────────────
+
+            // ── Phase 4: Momentum decay exit — replaces blunt max_hold wall ──────────
+            // Fires when exponentially-weighted momentum score drops below threshold.
+            // Only activates after min_hold_ms (first 30s is price discovery noise).
+            // Does NOT fire if trailing stop is armed (TP1 hit) — trail handles those.
+            if hold_ms >= self.config.momentum_decay_min_hold_ms {
+                let trailing_armed = pos.tp_flags & 0x1 != 0;
+                if !trailing_armed {
+                    let n = pos.sample_count as usize;
+                    let score = compute_momentum_score(
+                        &pos.price_samples_bps[..n],
+                        self.config.momentum_decay_window,
+                    );
+                    if score < self.config.momentum_decay_threshold {
+                        tracing::debug!(
+                            mint = %bs58::encode(&mint).into_string(),
+                            score,
+                            hold_ms,
+                            "[momentum] momentum decay exit"
+                        );
+                        to_close.push((mint, MomentumExitReason::MaxHold, current_price_fp));
+                        continue;
+                    }
+                }
+            }
+            // ── End momentum decay ────────────────────────────────────────────────────
 
             // Dead zone detection — quant spec: kill tokens with no momentum early.
             // Phase 2 (T+60s): if cumulative bps < dead_zone_confirmed_bps (200) → exit
@@ -1796,5 +1858,38 @@ mod tests {
         assert_eq!(stats.tp1_exits, 1);
         assert_eq!(stats.sl_exits, 1);
         assert!((stats.daily_pnl_sol - 0.5).abs() < 0.001);
+    }
+
+    // ── Phase 2: Velocity micro exit tests ──────────────────────────────
+
+    #[test]
+    fn test_velocity_micro_exit_two_consecutive() {
+        // 3 samples: [0, -220, -450] → vel_1 = -230, vel_2 = -220 → both < -200 → should fire
+        // This is a unit test of the logic — verify the (a-b) < threshold condition
+        let samples: [i32; 3] = [0, -220, -450];
+        let n = 3usize;
+        let threshold = -200i32;
+        let n_consec = 2usize;
+        let all_below = (0..n_consec).all(|i| {
+            let a = samples[n - 1 - i];
+            let b = samples[n - 2 - i];
+            (a - b) < threshold
+        });
+        assert!(all_below, "should detect dump: vel_1={} vel_2={}", samples[2]-samples[1], samples[1]-samples[0]);
+    }
+
+    #[test]
+    fn test_velocity_micro_exit_single_bad_tick_no_fire() {
+        // samples: [0, 100, -50, 80] → vel_1=130, vel_2=-150 → NOT both < -200
+        let samples: [i32; 4] = [0, 100, -50, 80];
+        let n = 4usize;
+        let threshold = -200i32;
+        let n_consec = 2usize;
+        let all_below = (0..n_consec).all(|i| {
+            let a = samples[n - 1 - i];
+            let b = samples[n - 2 - i];
+            (a - b) < threshold
+        });
+        assert!(!all_below, "single bad tick should not trigger micro exit");
     }
 }

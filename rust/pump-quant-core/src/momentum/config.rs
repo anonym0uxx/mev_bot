@@ -45,6 +45,14 @@ pub struct MomentumConfig {
     pub time_sl_ms: u64,
     /// Maximum hold time before forced exit (ms).
     pub max_hold_ms: u64,
+    /// Momentum decay exit: minimum hold time before decay exit can trigger. Default: 30000ms.
+    /// Before this, early noise would give false signals.
+    pub momentum_decay_min_hold_ms: u64,
+    /// Momentum decay exit: score threshold. Exit when score drops below this. Default: -150.0.
+    /// Score = exponentially weighted sum of recent bps deltas (decay=0.5 per tick).
+    pub momentum_decay_threshold: f64,
+    /// Momentum decay exit: window of recent ticks to consider. Default: 8 (~8.4s).
+    pub momentum_decay_window: usize,
     /// After this many ms, activate a tight trailing stop instead of holding blindly.
     /// Set to 0 to disable (use original max_hold behavior). Default: 200_000ms (200s).
     pub max_hold_trail_activation_ms: u64,
@@ -68,6 +76,13 @@ pub struct MomentumConfig {
     pub micro_sl_pct: f64,
     /// Number of ticks during which micro_sl_pct applies (default: 20 ≈ 3s at 150ms).
     pub micro_sl_ticks: u64,
+    /// Micro exit: only active for this many ms after entry. Default: 4500ms (4 samples at 1050ms cadence).
+    pub micro_exit_window_ms: u64,
+    /// Micro exit: per-sample-tick velocity threshold in bps. Default: -200.
+    /// Exit if 2 consecutive ticks both have delta < this value.
+    pub micro_exit_velocity_bps: i32,
+    /// Micro exit: number of consecutive below-threshold ticks required. Default: 2.
+    pub micro_exit_n_consecutive: u8,
     /// Max ms to wait for live price feed before skipping an entry.
     /// If price hasn't arrived within this window, the entry is abandoned
     /// rather than entering at the stale graduation reserve price.
@@ -105,6 +120,13 @@ pub struct MomentumConfig {
     pub trailing_stop_decel_pct: f64,
     /// Trail width when REVERSING — near-immediate exit. Default: 3.0%.
     pub trailing_stop_reversal_pct: f64,
+    /// ATR multiplier for adaptive trail width. trail_pct = max(base, k * ATR / 100).
+    /// Default: 2.5 — trail = 2.5× average tick volatility.
+    pub trail_atr_multiplier: f64,
+    /// ATR window: number of samples to compute ATR over. Default: 10 (~10.5s lookback).
+    pub trail_atr_window: usize,
+    /// Minimum sample count before ATR adaptive trail activates. Default: 4.
+    pub trail_min_samples_for_atr: u8,
 
     // ══════════════════════════════════════════════════════════
     // TOP DETECTION
@@ -186,6 +208,9 @@ impl Default for MomentumConfig {
             hard_sl_pct: 12.0,
             time_sl_ms: 60_000,
             max_hold_ms: 600_000,
+            momentum_decay_min_hold_ms: 30_000,
+            momentum_decay_threshold: -150.0,
+            momentum_decay_window: 8,
             max_hold_trail_activation_ms: 200_000,
             max_hold_trail_pct: 5.0,
             check_ms: 150,
@@ -195,6 +220,9 @@ impl Default for MomentumConfig {
             sample_interval_ticks: 7,
             micro_sl_pct: 8.0,
             micro_sl_ticks: 20,
+            micro_exit_window_ms: 4_500,
+            micro_exit_velocity_bps: -200,
+            micro_exit_n_consecutive: 2,
             no_price_timeout_ms: 2_000,
             tier0_size_sol: 0.10,
             reentry_cooldown_ms: 300_000,
@@ -209,6 +237,9 @@ impl Default for MomentumConfig {
             trailing_stop_accel_pct: 15.0,
             trailing_stop_decel_pct: 5.0,
             trailing_stop_reversal_pct: 3.0,
+            trail_atr_multiplier: 2.5,
+            trail_atr_window: 10,
+            trail_min_samples_for_atr: 4,
 
             // Top detection
             top_detection_strong_signals: 2,
