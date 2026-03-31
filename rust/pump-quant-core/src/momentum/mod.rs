@@ -456,9 +456,17 @@ impl MomentumEngine {
                 _ => continue,
             };
 
-            // Record price sample (every ~10s = every ~67 ticks at 150ms)
+            // Fix E: Record first-tick sample when price feed delivers its first reading.
+            // Eliminates the structural blind spot where trades exiting in < 10s have zero samples.
+            if !pos.first_price_recorded {
+                pos.first_price_recorded = true;
+                pos.record_sample(current_price_fp);
+            }
+
+            // Fix A: Configurable sample interval (default: every ~1s instead of every ~10s).
             let ticks_elapsed = elapsed_ms / self.config.check_ms.max(1);
-            if ticks_elapsed > 0 && ticks_elapsed % 67 == 0 {
+            let sample_interval = self.config.sample_interval_ticks.max(1);
+            if ticks_elapsed > 0 && ticks_elapsed % sample_interval == 0 {
                 pos.record_sample(current_price_fp);
             }
 
@@ -469,6 +477,17 @@ impl MomentumEngine {
 
             let hold_ms = elapsed_ms;
             let entry_fp = pos.entry_price_fp;
+
+            // Fix D: Micro hard SL — tighter stop for the first ~3 seconds.
+            // Catches immediate dump-on-graduation tokens before the first sample window.
+            // After micro_sl_ticks, the regular hard_sl_pct takes over.
+            if ticks_elapsed <= self.config.micro_sl_ticks {
+                let micro_sl_bps = (self.config.micro_sl_pct * 100.0) as u32;
+                if pos.hard_sl_hit(current_price_fp, micro_sl_bps) {
+                    to_close.push((mint, MomentumExitReason::HardSl, current_price_fp));
+                    continue;
+                }
+            }
 
             // 2. Hard SL
             let hard_sl_bps = (self.config.hard_sl_pct * 100.0) as u32;

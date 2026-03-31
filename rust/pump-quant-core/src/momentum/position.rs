@@ -23,7 +23,8 @@
 //! 204       4   grad_volume_sol_x100: u32
 //! 208       4   pre_grad_buys_5s: u32
 //! 212       4   entry_delay_ms: u32
-//! 216      40   _pad2: [u8; 40]     — pad to 256
+//! 216       1   first_price_recorded: bool
+//! 217      39   _pad2: [u8; 39]     — pad to 256
 //! ------  ----
 //! TOTAL:  256
 //! ```
@@ -35,7 +36,8 @@
 //! - No heap allocation in PendingEntryRing (64 fixed slots)
 //! - Integer-only price tracking (fixed-point bps offsets)
 
-/// Number of price sample slots. At 10s intervals, 30 slots = 300s max hold.
+/// Number of price sample slots. At ~1s intervals (sample_interval_ticks=7),
+/// 30 slots ≈ 30s coverage. At 10s intervals, 30 slots = 300s max hold.
 pub const PRICE_SAMPLES: usize = 30;
 
 /// A single momentum position. Sized for cache efficiency.
@@ -95,8 +97,11 @@ pub struct MomentumPosition {
     /// Entry delay from graduation in ms.
     pub entry_delay_ms: u32,
 
-    // ── Padding to 256 bytes ─────────────────────────────
-    pub _pad2: [u8; 40],
+    // ── First-tick tracking + padding to 256 bytes ────────
+    /// Set to true after the first price sample has been recorded.
+    /// Ensures we always capture a sample on the first tick with live price data.
+    pub first_price_recorded: bool,
+    pub _pad2: [u8; 39],
 }
 
 // Compile-time size and alignment assertions.
@@ -139,7 +144,8 @@ impl MomentumPosition {
             grad_volume_sol_x100,
             pre_grad_buys_5s,
             entry_delay_ms,
-            _pad2: [0u8; 40],
+            first_price_recorded: false,
+            _pad2: [0u8; 39],
         }
     }
 

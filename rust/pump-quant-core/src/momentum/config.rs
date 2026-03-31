@@ -53,6 +53,14 @@ pub struct MomentumConfig {
     pub raydium_fee_bps: u32,
     /// PumpSwap fee in basis points.
     pub pumpswap_fee_bps: u32,
+    /// How many ticks between price samples (default 7 ≈ 1.05s at 150ms tick).
+    /// Lower = more samples captured per trade. PRICE_SAMPLES cap is 30 slots.
+    pub sample_interval_ticks: u64,
+    /// Tighter stop-loss applied during the first `micro_sl_ticks` ticks.
+    /// Catches immediate dump-on-graduation tokens early. Default: 8.0%.
+    pub micro_sl_pct: f64,
+    /// Number of ticks during which micro_sl_pct applies (default: 20 ≈ 3s at 150ms).
+    pub micro_sl_ticks: u64,
 }
 
 impl Default for MomentumConfig {
@@ -78,6 +86,9 @@ impl Default for MomentumConfig {
             daily_loss_cap_sol: 2.0,
             raydium_fee_bps: 25,
             pumpswap_fee_bps: 100,
+            sample_interval_ticks: 7,
+            micro_sl_pct: 8.0,
+            micro_sl_ticks: 20,
         }
     }
 }
@@ -120,6 +131,9 @@ mod tests {
         assert!((config.daily_loss_cap_sol - 2.0).abs() < f64::EPSILON);
         assert_eq!(config.raydium_fee_bps, 25);
         assert_eq!(config.pumpswap_fee_bps, 100);
+        assert_eq!(config.sample_interval_ticks, 7);
+        assert!((config.micro_sl_pct - 8.0).abs() < f64::EPSILON);
+        assert_eq!(config.micro_sl_ticks, 20);
     }
 
     #[test]

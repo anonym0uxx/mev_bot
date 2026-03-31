@@ -530,6 +530,9 @@
     "check_ms": 150,
     "daily_loss_cap_sol": 2.0,
     "raydium_fee_bps": 25,
-    "pumpswap_fee_bps": 100
+    "pumpswap_fee_bps": 100,
+    "sample_interval_ticks": 7,
+    "micro_sl_pct": 8.0,
+    "micro_sl_ticks": 20
   }
 }
