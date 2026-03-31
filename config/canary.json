@@ -505,7 +505,10 @@
         "confirmed_sl_pct": 0.015
       }
     ],
-    "bonding_curve_enabled": false
+    "bonding_curve_enabled": false,
+    "exit_v4": {
+      "enabled": true
+    }
   },
   "momentum": {
     "enabled": true,

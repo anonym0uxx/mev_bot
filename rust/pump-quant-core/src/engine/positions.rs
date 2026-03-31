@@ -245,6 +245,24 @@ pub struct ClosedPosition {
     /// Bayesian R estimate × 100 at exit.
     pub r_est_at_exit: u16,
     // ── V4 exit urgency fields (shadow logging) ──
+    // ── Social signal fields (dv10) ──
+    /// Composite social score at exit (0–10000).
+    pub social_score: u16,
+    /// Total social mention count at exit.
+    pub social_mentions: u16,
+    /// Unique social source count (0–5).
+    pub social_unique_sources: u8,
+    /// Whether Twitter mentions were observed.
+    pub social_has_twitter: bool,
+    /// Whether Telegram mentions were observed.
+    pub social_has_telegram: bool,
+    /// Whether website mentions were observed.
+    pub social_has_website: bool,
+    /// Bot mentions as percentage of total (0–100).
+    pub social_bot_mention_pct: u8,
+    /// Max follower count seen across all social signals.
+    pub social_max_followers: u32,
+    // ── V4 exit urgency fields (shadow logging) ──
     /// V4 composite urgency at exit (0–10000).
     pub v4_urgency_at_exit: u16,
     /// V4 Kelly urgency component at exit (0–10000).
@@ -905,6 +923,15 @@ impl PositionManager {
             alpha_at_exit,
             beta_at_exit,
             r_est_at_exit,
+            // Social signal fields (dv10 — zeroed until feeds wired)
+            social_score: 0,
+            social_mentions: 0,
+            social_unique_sources: 0,
+            social_has_twitter: false,
+            social_has_telegram: false,
+            social_has_website: false,
+            social_bot_mention_pct: 0,
+            social_max_followers: 0,
             // V4 exit urgency (shadow logging)
             v4_urgency_at_exit: match &pos.exit_mode {
                 ExitMode::Ride(rs) => rs.urgency.last_urgency,

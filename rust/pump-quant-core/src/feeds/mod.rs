@@ -3,6 +3,7 @@ pub mod helius;
 pub mod shredstream;
 pub mod corecast;
 pub mod event_joiner;
+pub mod social;
 
 // ── Feed event types ────────────────────────────────────────────────
 

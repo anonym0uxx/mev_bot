@@ -212,12 +212,21 @@ impl PaperTradeLogger {
             "v4UrgencyFloor": pos.v4_urgency_floor,
             "v4PartialCount": pos.v4_partial_count,
             "v4RemainingPermille": pos.v4_remaining_permille,
+            // Social signal fields (dv10 — zeroed until feeds wired)
+            "socialScore": pos.social_score,
+            "socialMentions": pos.social_mentions,
+            "socialUniqueSources": pos.social_unique_sources,
+            "socialHasTwitter": pos.social_has_twitter,
+            "socialHasTelegram": pos.social_has_telegram,
+            "socialHasWebsite": pos.social_has_website,
+            "socialBotMentionPct": pos.social_bot_mention_pct,
+            "socialMaxFollowers": pos.social_max_followers,
             // Strategy classification — single backrunner, compile-time constant
             "strategyTag": STRATEGY_TAG,
             // Metadata
             "engineVersion": "v5-rust",
             "configVersion": self.config_version,
-            "dataVersion": 9,
+            "dataVersion": 10,
             "is_paper": self.paper_mode,
             "excludeFromAnalysis": exclude,
             "recordedAt": now_ms,
