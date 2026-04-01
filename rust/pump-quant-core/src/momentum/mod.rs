@@ -133,6 +133,12 @@ pub struct MomentumEngine {
     /// Prevents 474+ phantom re-entries from CoreCast WebSocket reconnect floods.
     recently_closed: DashMap<[u8; 32], u64>,
 
+    /// Dedup: tracks graduation sigs already being resolved (or already resolved).
+    /// Key: sig [u8; 64], Value: first-seen timestamp ms.
+    /// Prevents 3 feeds from each triggering separate Helius getTransaction lookups
+    /// for the same graduation event. Grows slowly (~100-200 entries/day).
+    resolving_sigs: DashMap<[u8; 64], u64>,
+
     // ── Pending entries scheduled for T+delay ───────────────────────
     pending: std::sync::Mutex<PendingEntryRing>,
 
@@ -212,6 +218,7 @@ impl MomentumEngine {
                 .expect("reqwest client build should not fail"),
             active: DashMap::new(),
             recently_closed: DashMap::new(),
+            resolving_sigs: DashMap::new(),
             pending: std::sync::Mutex::new(PendingEntryRing::new()),
             price_feed,
             logger,
@@ -1687,6 +1694,26 @@ impl MomentumEngine {
         enrichment: crate::engine::hot_path::GradEnrichment,
     ) {
         if !self.config.enabled { return; }
+
+        // Dedup: prevent 3 feeds from triggering separate Helius lookups for the same graduation.
+        // First-seen wins; duplicates are skipped. Map grows slowly (~100-200 entries/day).
+        if self.resolving_sigs.contains_key(&sig) {
+            tracing::debug!(
+                sig = %&bs58::encode(&sig).into_string()[..8],
+                "[momentum] pool resolution already in progress — skipping duplicate"
+            );
+            return;
+        }
+        self.resolving_sigs.insert(sig, ts_ms);
+
+        tracing::debug!(
+            grad_speed_s = enrichment.grad_speed_s,
+            volume_sol_x100 = enrichment.volume_sol_x100,
+            buys_5s = enrichment.buys_5s,
+            sig = %&bs58::encode(&sig).into_string()[..8],
+            "[momentum] on_migration: enrichment values at entry"
+        );
+
         match resolve_pool_from_transaction(&self.http_client, &sig, &self.rpc_url).await {
             Some(resolution) => {
                 let mint_b58 = bs58::encode(&resolution.mint).into_string();
@@ -1961,9 +1988,10 @@ mod tests {
             mint: [0xCC; 32],
         };
 
-        // Low-scoring: slow graduation (3600s, score 0), low volume, no velocity
+        // Low-scoring: speed=91 (passes hard gate, speed_score=5 in v3),
+        // tiny volume (10 SOL → 0), no buys → total=5 < paper_mode threshold 20
         engine
-            .on_graduation(&pool_info, 1_000_000, 3600, 1_000, 0, 0)
+            .on_graduation(&pool_info, 1_000_000, 91, 1_000, 0, 0)
             .await;
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
         assert_eq!(engine.pending.lock().unwrap().active_count(), 0);

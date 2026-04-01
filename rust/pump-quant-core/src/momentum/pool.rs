@@ -154,13 +154,13 @@ fn decode_bs58_32(s: &str) -> Option<[u8; 32]> {
     if n == 32 { Some(buf) } else { None }
 }
 
-/// Create a shared `reqwest::Client` with a 180ms timeout for pool resolution.
+/// Create a shared `reqwest::Client` for pool resolution.
 ///
-/// The 180ms limit leaves 20ms margin within the 200ms RPC budget.
-/// Callers should wrap this in `Arc` and reuse across arb attempts.
+/// 8s timeout — graduation txs often take 500ms-5s to be indexed by Helius.
+/// The old 180ms limit was an arb latency budget, not appropriate for momentum.
 pub fn make_pool_resolution_client() -> reqwest::Client {
     reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(180))
+        .timeout(std::time::Duration::from_millis(8_000))
         .build()
         .expect("reqwest client build should not fail")
 }
@@ -176,8 +176,8 @@ const TX_NOT_FOUND_ERR: &str = "transaction not found (not yet indexed)";
 ///   Phase B: `getMultipleAccountsInfo` on vault addresses, parse SPL token
 ///            account amount at bytes [64..72] LE u64.
 ///
-/// Retries up to 3 times with exponential backoff (200ms, 500ms) when the RPC
-/// returns `result: null` — this means Helius hasn't indexed the tx yet.
+/// Retries up to 5 times with exponential backoff when the RPC returns
+/// `result: null` — this means Helius hasn't indexed the tx yet.
 /// Non-retriable errors (parse failures, vault extraction) fail immediately.
 ///
 /// Returns `None` if: all retries exhausted, non-retriable error, or tx doesn't
@@ -188,8 +188,8 @@ pub async fn resolve_pool_from_transaction(
     sig: &[u8; 64],
     helius_rpc_url: &str,
 ) -> Option<PoolResolution> {
-    const MAX_ATTEMPTS: u32 = 4;
-    const BACKOFF_MS: [u64; 3] = [500, 1000, 2000];
+    const MAX_ATTEMPTS: u32 = 5;
+    const BACKOFF_MS: [u64; 4] = [1_000, 2_000, 4_000, 8_000];
 
     let sig_b58_short = &bs58::encode(sig).into_string()[..8];
 
