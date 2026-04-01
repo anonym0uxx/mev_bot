@@ -24,6 +24,7 @@ pub mod pool;
 pub mod position;
 pub mod price_feed;
 pub mod scorer;
+pub mod tod;
 
 pub use config::MomentumConfig;
 pub use logger::{MomentumClosedPosition, MomentumPaperLogger};
@@ -250,6 +251,7 @@ impl MomentumEngine {
         grad_speed_s: u32,
         grad_volume_sol_x100: u32,
         pre_grad_buys_5s: u32,
+        sells_5s: u32,
     ) {
         if !self.config.enabled {
             return;
@@ -295,8 +297,18 @@ impl MomentumEngine {
             return;
         }
 
-        // Score the graduation (no recovery score at this point — use 0)
-        let score = score_graduation(grad_speed_s, grad_volume_sol_x100, pre_grad_buys_5s, 0);
+        // Score the graduation (v2: 5 components including entry discount).
+        // Compute entry_price_fp from pool reserves for the entry discount scorer.
+        let pre_score_entry_fp = price_from_reserves(pool_info.reserve_sol, pool_info.reserve_token);
+        let bc_price_fp = (BC_TERMINAL_PRICE_LAMPORTS_PER_ATOM * 1_000_000.0) as u64;
+        let score = score_graduation(
+            grad_speed_s,
+            grad_volume_sol_x100,
+            pre_grad_buys_5s,
+            sells_5s,
+            pre_score_entry_fp,
+            bc_price_fp,
+        );
         let effective_min = if self.config.paper_mode { 20 } else { self.config.min_grad_score };
         if score.total() < effective_min {
             tracing::info!(
@@ -305,10 +317,26 @@ impl MomentumEngine {
                 grad_speed_s,
                 volume_sol_x100 = grad_volume_sol_x100,
                 buys_5s = pre_grad_buys_5s,
+                sells_5s,
                 "[momentum] graduation score below threshold — skipping"
             );
             return;
         }
+
+        // ── ToD gating: reduce or block entry during dead hours ─────────
+        let tod_multiplier = crate::momentum::tod::entry_size_multiplier(
+            &self.config.tod_config,
+            now_ms,
+        );
+        if tod_multiplier <= 0.0 {
+            tracing::info!(
+                mint = %bs58::encode(&pool_info.mint).into_string(),
+                score = score.total(),
+                "[momentum] ToD gating: blocked hour — skipping entry"
+            );
+            return;
+        }
+
         let mint_b58 = bs58::encode(&pool_info.mint).into_string();
         tracing::info!(
             mint = %mint_b58,
@@ -316,6 +344,8 @@ impl MomentumEngine {
             grad_speed_s,
             volume_sol_x100 = grad_volume_sol_x100,
             buys_5s = pre_grad_buys_5s,
+            sells_5s,
+            tod_multiplier,
             kelly_scored = self.scored_tokens.contains_key(&pool_info.mint),
             "[momentum] graduation score PASSED — opening position"
         );
@@ -332,8 +362,8 @@ impl MomentumEngine {
             .await;
 
         // Schedule entry at T+entry_delay_ms
-        let entry_price_fp = price_from_reserves(pool_info.reserve_sol, pool_info.reserve_token);
-        let bc_price_fp = (BC_TERMINAL_PRICE_LAMPORTS_PER_ATOM * 1_000_000.0) as u64;
+        // Reuse pre_score_entry_fp and bc_price_fp computed above for the scorer.
+        let entry_price_fp = pre_score_entry_fp;
 
         let pool_type_u8 = match pool_info.pool_type {
             PoolType::RaydiumAmmV4 => 0u8,
@@ -460,8 +490,77 @@ impl MomentumEngine {
         }
         self.process_active_positions(now_ms);
 
+        // Probe evaluation: check positions in probe phase and transition
+        self.process_probe_evaluation(now_ms);
+
         // Scale-in: evaluate probe positions for momentum confirmation
         self.process_scale_in(now_ms);
+    }
+
+    /// Evaluate probe-phase positions for dump detection and scale-in readiness.
+    ///
+    /// Called from on_tick() BEFORE process_scale_in(). Transitions probe phases
+    /// based on elapsed time and current price. Positions that fail probe are
+    /// marked for immediate exit (tp_flags |= 0x8).
+    fn process_probe_evaluation(&self, now_ms: u64) {
+        if !self.config.probe_entry_enabled {
+            return;
+        }
+
+        for mut entry in self.active.iter_mut() {
+            let mint = *entry.key();
+            let pos = entry.value_mut();
+
+            // Only evaluate positions still in Probing phase
+            if pos.probe_phase() != crate::momentum::position::ProbePhase::Probing {
+                continue;
+            }
+
+            let current_price_fp = match self.price_feed.current_price(&mint) {
+                Some(p) if p > 0 => p,
+                _ => continue, // No price yet, keep probing
+            };
+
+            let new_phase = pos.evaluate_probe(
+                now_ms,
+                current_price_fp,
+                self.config.probe_hold_ms,
+                self.config.probe_dump_threshold_bps,
+                self.config.probe_scale_min_bps,
+                self.config.probe_scale_require_price,
+            );
+
+            if new_phase != pos.probe_phase() {
+                pos.set_probe_phase(new_phase);
+
+                match new_phase {
+                    crate::momentum::position::ProbePhase::Failed => {
+                        // Dump detected during probe — mark for immediate exit
+                        pos.tp_flags |= 0x8;
+                        tracing::debug!(
+                            mint = %bs58::encode(&mint).into_string(),
+                            hold_ms = pos.hold_ms(now_ms),
+                            "[momentum] probe FAILED — dump detected, marking for exit"
+                        );
+                    }
+                    crate::momentum::position::ProbePhase::Scaled => {
+                        tracing::debug!(
+                            mint = %bs58::encode(&mint).into_string(),
+                            hold_ms = pos.hold_ms(now_ms),
+                            "[momentum] probe PASSED — ready for scale-in"
+                        );
+                    }
+                    crate::momentum::position::ProbePhase::HeldTight => {
+                        tracing::debug!(
+                            mint = %bs58::encode(&mint).into_string(),
+                            hold_ms = pos.hold_ms(now_ms),
+                            "[momentum] probe HELD TIGHT — moderate dip, staying at probe size"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     /// Process pending entries whose scheduled time has elapsed.
@@ -524,22 +623,37 @@ impl MomentumEngine {
                 continue;
             }
 
-            // Compute recovery score from live price vs BC terminal price.
-            let recovery = crate::momentum::scorer::recovery_score_from_prices(
-                current_price_fp,
-                entry.bc_price_fp,
-            );
-            let final_score = entry.grad_score.saturating_add(recovery);
+            // v2 scorer: entry_discount is already computed inside score_graduation()
+            // called in on_graduation(). No separate recovery enrichment needed.
+            let final_score = entry.grad_score;
 
             // Scale-in entry: ALL entries start as probes at probe_size_sol (0.10 SOL).
             // Scaling up happens in process_scale_in() when s[0] or s[1] confirms momentum.
             // Quant spec §4: probe 0.10 → scale to 0.50 on s[0]≥300, 0.30 on s[0]≥100.
-            let size_lamports = if self.config.probe_size_sol > 0.0 {
+            let raw_size = if self.config.probe_size_sol > 0.0 {
                 (self.config.probe_size_sol * 1_000_000_000.0) as u64
             } else {
                 self.compute_size_lamports(&entry.mint, final_score as u32)
             };
-            let pos = MomentumPosition::new(
+            // Apply ToD multiplier to entry size (computed in on_graduation, recompute here
+            // since pending entries may execute hours after scheduling).
+            let tod_mult = crate::momentum::tod::entry_size_multiplier(
+                &self.config.tod_config,
+                now_ms,
+            );
+            let size_lamports = if tod_mult >= 1.0 {
+                raw_size
+            } else if tod_mult <= 0.0 {
+                // Blocked hour — skip this entry entirely
+                tracing::info!(
+                    mint = %bs58::encode(&entry.mint).into_string(),
+                    "[momentum] ToD gating at entry time: blocked hour — skipping"
+                );
+                continue;
+            } else {
+                ((raw_size as f64) * tod_mult) as u64
+            };
+            let mut pos = MomentumPosition::new(
                 entry.mint,
                 now_ms,
                 current_price_fp,
@@ -552,6 +666,10 @@ impl MomentumEngine {
                 entry.pre_grad_buys_5s,
                 self.config.entry_delay_ms as u32,
             );
+            // Set initial probe phase if probe entry is enabled
+            if self.config.probe_entry_enabled && self.config.probe_size_sol > 0.0 {
+                pos.set_probe_phase(crate::momentum::position::ProbePhase::Probing);
+            }
 
             // Guard: skip if position already active for this mint (late duplicate slipped through ring buffer).
             if self.active.contains_key(&entry.mint) {
@@ -1018,6 +1136,50 @@ impl MomentumEngine {
                 }
             }
             // ── End Phase 6 ─────────────────────────────────────────────────
+
+            // ── Stagnation exit (TASK 5): zero-movement tokens ──────────────
+            // If ALL price samples are exactly 0 bps after stagnation_exit_ms,
+            // the token is dead — exit immediately instead of holding for max_hold.
+            if self.config.stagnation_exit_ms > 0
+                && pos.is_stagnant(hold_ms, self.config.stagnation_exit_ms)
+            {
+                tracing::debug!(
+                    mint = %bs58::encode(&mint).into_string(),
+                    hold_ms,
+                    samples = pos.sample_count,
+                    "[momentum] stagnation exit: zero movement after {}ms",
+                    self.config.stagnation_exit_ms
+                );
+                to_close.push((mint, MomentumExitReason::TimeSl, current_price_fp));
+                continue;
+            }
+            // ── End stagnation exit ─────────────────────────────────────────
+
+            // ── Time-decay trailing stop (TASK 5) ───────────────────────────
+            // Progressively tightens trailing stop as position ages.
+            // Replaces the blunt max_hold wall: losers get stopped earlier,
+            // winners protected by normal trailing stop until it tightens.
+            if self.config.time_decay_trailing_enabled
+                && !self.config.time_decay_stages_ms.is_empty()
+                && self.config.time_decay_stages_ms.len() == self.config.time_decay_trail_bps.len()
+            {
+                let _trail = pos.time_decay_trail_bps(
+                    hold_ms,
+                    &self.config.time_decay_stages_ms,
+                    &self.config.time_decay_trail_bps,
+                );
+                if pos.time_decay_trailing_stop_hit(current_price_fp) {
+                    tracing::debug!(
+                        mint = %bs58::encode(&mint).into_string(),
+                        hold_ms,
+                        effective_trail = pos.effective_trail_bps(),
+                        "[momentum] time-decay trailing stop hit"
+                    );
+                    to_close.push((mint, MomentumExitReason::TrailingStop, current_price_fp));
+                    continue;
+                }
+            }
+            // ── End time-decay trailing stop ────────────────────────────────
 
             // Dead zone detection — quant spec: kill tokens with no momentum early.
             // Phase 2 (T+60s): if cumulative bps < dead_zone_confirmed_bps (200) → exit
@@ -1564,12 +1726,19 @@ impl MomentumEngine {
                     );
                 }
 
+                let effective_sells_5s = if enrichment.sells_5s == 0 {
+                    1u32 // Default: assume at least 1 sell (conservative for buy/sell ratio)
+                } else {
+                    enrichment.sells_5s as u32
+                };
+
                 self.on_graduation(
                     &pool_info,
                     ts_ms,
                     effective_speed_s,
                     effective_volume_sol_x100,
                     effective_buys_5s,
+                    effective_sells_5s,
                 ).await;
             }
             None => {
@@ -1684,7 +1853,7 @@ mod tests {
         };
 
         engine
-            .on_graduation(&pool_info, 1_000_000, 60, 50_000, 15)
+            .on_graduation(&pool_info, 1_000_000, 60, 50_000, 15, 2)
             .await;
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 0);
     }
@@ -1704,7 +1873,7 @@ mod tests {
 
         // High-scoring graduation: speed=60 (score 20), volume=50k (score 25), velocity=15
         engine
-            .on_graduation(&pool_info, 1_000_000, 60, 50_000, 15)
+            .on_graduation(&pool_info, 1_000_000, 60, 50_000, 15, 2)
             .await;
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
 
@@ -1727,7 +1896,7 @@ mod tests {
         };
 
         engine
-            .on_graduation(&pool_info, 1_000_000, 60, 50_000, 15)
+            .on_graduation(&pool_info, 1_000_000, 60, 50_000, 15, 2)
             .await;
         // Counter incremented but no pending entry (PumpSwap skip)
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
@@ -1749,7 +1918,7 @@ mod tests {
 
         // Low-scoring: slow graduation (3600s, score 0), low volume, no velocity
         engine
-            .on_graduation(&pool_info, 1_000_000, 3600, 1_000, 0)
+            .on_graduation(&pool_info, 1_000_000, 3600, 1_000, 0, 0)
             .await;
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
         assert_eq!(engine.pending.lock().unwrap().active_count(), 0);
@@ -1990,7 +2159,7 @@ mod tests {
         };
 
         engine
-            .on_graduation(&pool_info, 1_000_000, 60, 50_000, 15)
+            .on_graduation(&pool_info, 1_000_000, 60, 50_000, 15, 2)
             .await;
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
         // But no pending entry because daily cap hit

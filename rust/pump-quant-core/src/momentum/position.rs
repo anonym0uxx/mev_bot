@@ -351,6 +351,207 @@ impl MomentumPosition {
         let bytes = td.to_bytes();
         self._pad2[0..17].copy_from_slice(&bytes);
     }
+
+    // ── Probe-then-scale methods (TASK 2) ───────────────────
+
+    /// Get current probe phase. Stored in _pad2[36].
+    #[inline(always)]
+    pub fn probe_phase(&self) -> ProbePhase {
+        ProbePhase::from_u8(self._pad2[36])
+    }
+
+    /// Set probe phase. Stored in _pad2[36].
+    #[inline(always)]
+    pub fn set_probe_phase(&mut self, phase: ProbePhase) {
+        self._pad2[36] = phase as u8;
+    }
+
+    /// Evaluate probe phase transition based on current price and elapsed time.
+    ///
+    /// Called from `on_tick()` in mod.rs during the probe window.
+    /// Returns the new phase after evaluation. Does NOT mutate the position —
+    /// caller is responsible for calling `set_probe_phase()` and adjusting size.
+    ///
+    /// # Decision tree
+    ///
+    /// ```text
+    /// if hold_ms < probe_hold_ms:
+    ///   if current_bps <= probe_dump_threshold_bps (-500): → Failed (immediate exit)
+    ///   else: → Probing (keep waiting)
+    /// if hold_ms >= probe_hold_ms:
+    ///   if sample_count == 0 && require_price: → HeldTight (no data, don't scale blind)
+    ///   if current_bps >= 0: → Scaled (price flat/up, scale to full size)
+    ///   if current_bps >= probe_scale_min_bps (-300): → HeldTight (moderate dip, tight SL)
+    ///   else: → Failed (too much loss, exit or stay tight)
+    /// ```
+    #[inline]
+    pub fn evaluate_probe(
+        &self,
+        now_ms: u64,
+        current_price_fp: u64,
+        probe_hold_ms: u64,
+        probe_dump_threshold_bps: i32,
+        probe_scale_min_bps: i32,
+        probe_scale_require_price: bool,
+    ) -> ProbePhase {
+        // Only evaluate if currently probing
+        if self.probe_phase() != ProbePhase::Probing {
+            return self.probe_phase();
+        }
+
+        let elapsed = self.hold_ms(now_ms);
+        let current_bps = if self.entry_price_fp > 0 && current_price_fp > 0 {
+            price_to_bps_offset(self.entry_price_fp, current_price_fp)
+        } else {
+            0
+        };
+
+        // Phase 1: Still within probe hold window
+        if elapsed < probe_hold_ms {
+            // Immediate dump detection — exit probe at minimal loss
+            if current_bps <= probe_dump_threshold_bps {
+                return ProbePhase::Failed;
+            }
+            return ProbePhase::Probing;
+        }
+
+        // Phase 2: Probe hold window elapsed — evaluate for scale-in
+
+        // No price data and require_price is set → don't scale blind
+        if probe_scale_require_price && self.sample_count == 0 {
+            return ProbePhase::HeldTight;
+        }
+
+        // Price flat or rising → scale up
+        if current_bps >= 0 {
+            return ProbePhase::Scaled;
+        }
+
+        // Moderate dip (between scale_min and dump threshold) → hold tight
+        if current_bps >= probe_scale_min_bps {
+            return ProbePhase::HeldTight;
+        }
+
+        // Larger drop → failed
+        ProbePhase::Failed
+    }
+
+    /// Whether the position is in an active probe phase (not yet resolved).
+    #[inline(always)]
+    pub fn is_probe_active(&self) -> bool {
+        self.probe_phase().is_probing()
+    }
+
+    /// Whether probe succeeded and position should scale to full size.
+    #[inline(always)]
+    pub fn probe_should_scale(&self) -> bool {
+        self.probe_phase() == ProbePhase::Scaled
+    }
+
+    // ── Time-decay trailing stop methods (TASK 5) ───────────
+
+    /// Get the current effective trailing stop in bps.
+    /// Stored in `_pad2[37..39]` as u16 (little-endian).
+    /// Returns 0 if no time-decay trail has been ratcheted yet.
+    #[inline(always)]
+    pub fn effective_trail_bps(&self) -> u16 {
+        u16::from_le_bytes(self._pad2[37..39].try_into().unwrap())
+    }
+
+    /// Ratchet (tighten) the effective trailing stop.
+    /// Only updates if `new_bps > 0` AND either no trail is set yet (stored == 0)
+    /// or `new_bps` is strictly tighter (lower) than the current value.
+    /// This ensures the trail only ever tightens over the position lifetime.
+    #[inline(always)]
+    pub fn ratchet_trail_bps(&mut self, new_bps: u16) {
+        if new_bps == 0 {
+            return;
+        }
+        let current = self.effective_trail_bps();
+        if current == 0 || new_bps < current {
+            self._pad2[37..39].copy_from_slice(&new_bps.to_le_bytes());
+        }
+    }
+
+    /// Compute the time-decay trailing stop for the current hold duration
+    /// and ratchet it into storage. Returns the effective trail in bps.
+    ///
+    /// `stages_ms` and `trail_bps` must be the same length and sorted ascending.
+    /// Each stage activates when `hold_ms >= stages_ms[i]`, setting trail to
+    /// `trail_bps[i]`. Later stages have tighter (lower) trail values.
+    ///
+    /// Example stages from spec:
+    /// ```text
+    /// stages_ms:  [30000, 60000, 120000, 180000, 240000]
+    /// trail_bps:  [  800,   500,    300,    200,    100]
+    /// ```
+    ///
+    /// After 30s → 800 bps (8%), after 120s → 300 bps (3%), etc.
+    #[inline]
+    pub fn time_decay_trail_bps(&mut self, hold_ms: u64, stages_ms: &[u64], trail_bps: &[u16]) -> u16 {
+        debug_assert_eq!(stages_ms.len(), trail_bps.len());
+
+        // Walk stages in reverse to find the tightest applicable stage.
+        // Stages are ascending in time and descending in trail width,
+        // so the last matching stage is the tightest.
+        let mut candidate: u16 = 0;
+        for i in (0..stages_ms.len()).rev() {
+            if hold_ms >= stages_ms[i] {
+                candidate = trail_bps[i];
+                break;
+            }
+        }
+
+        if candidate > 0 {
+            self.ratchet_trail_bps(candidate);
+        }
+
+        self.effective_trail_bps()
+    }
+
+    /// Check if the time-decay trailing stop has been triggered.
+    ///
+    /// Uses `effective_trail_bps` (from `_pad2[37..39]`) as the drawdown
+    /// threshold from `peak_price_fp`. Returns false if no trail is active
+    /// (effective == 0) or peak is zero.
+    #[inline(always)]
+    pub fn time_decay_trailing_stop_hit(&self, current_price_fp: u64) -> bool {
+        let trail = self.effective_trail_bps();
+        if trail == 0 || self.peak_price_fp == 0 {
+            return false;
+        }
+        let drawdown_bps = self
+            .peak_price_fp
+            .saturating_sub(current_price_fp)
+            .saturating_mul(10_000)
+            / self.peak_price_fp;
+        drawdown_bps as u16 >= trail
+    }
+
+    /// Check if the position is stagnant (dead token — no price movement).
+    ///
+    /// Returns true when:
+    /// 1. `hold_ms >= threshold_ms` (position has been held long enough), AND
+    /// 2. ALL recorded `price_samples_bps` are exactly 0.
+    ///
+    /// A token with zero movement after 60s is dead — exit immediately rather
+    /// than holding for the full max_hold window.
+    ///
+    /// Note: requires `sample_count > 0` — if no samples recorded at all,
+    /// returns false (we have no data, not proven stagnant).
+    #[inline]
+    pub fn is_stagnant(&self, hold_ms: u64, threshold_ms: u64) -> bool {
+        if hold_ms < threshold_ms || self.sample_count == 0 {
+            return false;
+        }
+        let n = self.sample_count as usize;
+        for i in 0..n {
+            if self.price_samples_bps[i] != 0 {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 // ── Exit reason enum ─────────────────────────────────────────────────────────
@@ -370,6 +571,72 @@ pub enum MomentumState {
     Reversing = 3,
     /// Insufficient samples to classify. Treat as Sustaining.
     Unknown = 4,
+}
+
+// ── Probe phase enum (TASK 2: Hard SL Reduction) ─────────────────────────────
+
+/// Probe-then-scale entry phase.
+///
+/// Trades start at `probe_size_sol` (0.05 SOL) and only scale up after
+/// `probe_hold_ms` (2s) if price is stable. This reduces hard_sl losses
+/// from -49.9 mSOL avg to ~-2.5 mSOL for the 60 trades that dump <1s.
+///
+/// Stored in `MomentumPosition._pad2[36]` (1 byte).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ProbePhase {
+    /// Not using probe entry (legacy behavior or probe disabled).
+    Disabled = 0,
+    /// In probe phase: holding at probe_size_sol, monitoring for dump.
+    /// Will evaluate scale-in after probe_hold_ms elapses.
+    Probing = 1,
+    /// Probe passed: price was stable, position scaled up to full size.
+    Scaled = 2,
+    /// Probe failed: dump detected during probe, position exiting or
+    /// staying at probe size with tight SL (price dropped >3% but <5%).
+    Failed = 3,
+    /// Probe held: price dropped moderately (-3% to -5% range).
+    /// Stay at probe size with tight 3% SL — don't scale up.
+    HeldTight = 4,
+}
+
+impl ProbePhase {
+    /// Convert from u8 discriminant (stored in _pad2[36]).
+    #[inline(always)]
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Disabled,
+            1 => Self::Probing,
+            2 => Self::Scaled,
+            3 => Self::Failed,
+            4 => Self::HeldTight,
+            _ => Self::Disabled,
+        }
+    }
+
+    /// Whether the probe phase allows scaling up (still evaluating).
+    #[inline(always)]
+    pub fn is_probing(self) -> bool {
+        self == Self::Probing
+    }
+
+    /// Whether probe evaluation is complete (any terminal state).
+    #[inline(always)]
+    pub fn is_resolved(self) -> bool {
+        matches!(self, Self::Disabled | Self::Scaled | Self::Failed | Self::HeldTight)
+    }
+
+    /// String representation for JSONL logging.
+    #[inline(always)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Probing => "probing",
+            Self::Scaled => "scaled",
+            Self::Failed => "failed",
+            Self::HeldTight => "held_tight",
+        }
+    }
 }
 
 /// Exit reason for momentum positions.
@@ -1090,5 +1357,522 @@ mod tests {
     fn test_compute_atr_bps_too_few_samples() {
         assert_eq!(compute_atr_bps(&[500i32], 10), 0);
         assert_eq!(compute_atr_bps(&[], 10), 0);
+    }
+
+    // ── Probe phase tests (TASK 2) ─────────────────────────────────────────
+
+    #[test]
+    fn test_probe_phase_roundtrip() {
+        for i in 0..=4u8 {
+            let phase = ProbePhase::from_u8(i);
+            assert_eq!(phase as u8, i);
+        }
+        // Unknown values default to Disabled
+        assert_eq!(ProbePhase::from_u8(255), ProbePhase::Disabled);
+    }
+
+    #[test]
+    fn test_probe_phase_storage_in_pad2() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 1000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        assert_eq!(pos.probe_phase(), ProbePhase::Disabled);
+
+        pos.set_probe_phase(ProbePhase::Probing);
+        assert_eq!(pos.probe_phase(), ProbePhase::Probing);
+        assert!(pos.is_probe_active());
+
+        pos.set_probe_phase(ProbePhase::Scaled);
+        assert_eq!(pos.probe_phase(), ProbePhase::Scaled);
+        assert!(!pos.is_probe_active());
+        assert!(pos.probe_should_scale());
+
+        pos.set_probe_phase(ProbePhase::Failed);
+        assert_eq!(pos.probe_phase(), ProbePhase::Failed);
+        assert!(!pos.probe_should_scale());
+
+        pos.set_probe_phase(ProbePhase::HeldTight);
+        assert_eq!(pos.probe_phase(), ProbePhase::HeldTight);
+    }
+
+    #[test]
+    fn test_probe_phase_does_not_corrupt_other_pad2_fields() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 1000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        // Set other _pad2 fields first
+        pos.set_scaled_in();
+        pos.set_ws_notif_count(42);
+        pos.set_ws_notif_last_ms(9999999);
+        pos.set_tokens_held(1_000_000);
+
+        // Now set probe phase
+        pos.set_probe_phase(ProbePhase::Probing);
+
+        // Verify no corruption
+        assert!(pos.is_scaled_in());
+        assert_eq!(pos.ws_notif_count(), 42);
+        assert_eq!(pos.ws_notif_last_ms(), 9999999);
+        assert_eq!(pos.tokens_held(), 1_000_000);
+        assert_eq!(pos.probe_phase(), ProbePhase::Probing);
+    }
+
+    #[test]
+    fn test_evaluate_probe_immediate_dump() {
+        // Token dumps 6% within 500ms of entry — should fail immediately
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_probe_phase(ProbePhase::Probing);
+
+        // Price dropped 6% (entry=10000, current=9400, bps=-600)
+        let phase = pos.evaluate_probe(
+            1500,     // 500ms after entry
+            9400,     // -6% price
+            2000,     // probe_hold_ms
+            -500,     // dump threshold
+            -300,     // scale min
+            true,     // require price
+        );
+        assert_eq!(phase, ProbePhase::Failed, "should fail on -6% dump within probe window");
+    }
+
+    #[test]
+    fn test_evaluate_probe_still_probing() {
+        // Token down 3% at 1s — within threshold, keep probing
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_probe_phase(ProbePhase::Probing);
+
+        let phase = pos.evaluate_probe(
+            2000,     // 1s after entry
+            9700,     // -3% price
+            2000,     // probe_hold_ms
+            -500,     // dump threshold
+            -300,     // scale min
+            true,
+        );
+        assert_eq!(phase, ProbePhase::Probing, "should keep probing at -3% within window");
+    }
+
+    #[test]
+    fn test_evaluate_probe_scale_up_price_rising() {
+        // After 2s, price is +2% — scale up
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_probe_phase(ProbePhase::Probing);
+        pos.record_sample(10200); // one price sample
+
+        let phase = pos.evaluate_probe(
+            3000,     // 2s after entry
+            10200,    // +2% price
+            2000,     // probe_hold_ms
+            -500,
+            -300,
+            true,
+        );
+        assert_eq!(phase, ProbePhase::Scaled, "should scale up when price is rising after 2s");
+    }
+
+    #[test]
+    fn test_evaluate_probe_no_price_data() {
+        // After 2s, zero price samples, require_price=true → HeldTight
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_probe_phase(ProbePhase::Probing);
+        // No samples recorded
+
+        let phase = pos.evaluate_probe(
+            3000,     // 2s after entry
+            10000,    // entry price (no real data)
+            2000,
+            -500,
+            -300,
+            true,     // require price
+        );
+        assert_eq!(phase, ProbePhase::HeldTight, "should hold tight when no price samples");
+    }
+
+    #[test]
+    fn test_evaluate_probe_moderate_dip_held_tight() {
+        // After 2s, price down 2% — between 0% and -3% → HeldTight
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_probe_phase(ProbePhase::Probing);
+        pos.record_sample(9800); // one sample
+
+        let phase = pos.evaluate_probe(
+            3000,     // 2s after entry
+            9800,     // -2% price (bps = -200)
+            2000,
+            -500,     // dump threshold
+            -300,     // scale min (-3%)
+            true,
+        );
+        assert_eq!(phase, ProbePhase::HeldTight, "should hold tight at -2% (between 0% and -3%)");
+
+        // Also verify that -4% (below scale_min) → Failed
+        let mut pos2 = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos2.set_probe_phase(ProbePhase::Probing);
+        pos2.record_sample(9600);
+
+        let phase2 = pos2.evaluate_probe(
+            3000,     // 2s after entry
+            9600,     // -4% price (bps = -400, below -300 scale_min)
+            2000,
+            -500,
+            -300,
+            true,
+        );
+        assert_eq!(phase2, ProbePhase::Failed, "-4% exceeds scale_min_bps of -3%");
+    }
+
+    #[test]
+    fn test_evaluate_probe_large_drop_after_hold() {
+        // After 2s, price down 6% → Failed (below scale_min_bps)
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_probe_phase(ProbePhase::Probing);
+        pos.record_sample(9400);
+
+        let phase = pos.evaluate_probe(
+            3000,
+            9400,     // -6% price
+            2000,
+            -500,
+            -300,
+            true,
+        );
+        assert_eq!(phase, ProbePhase::Failed, "should fail at -6% after probe window");
+    }
+
+    #[test]
+    fn test_evaluate_probe_not_probing_returns_current() {
+        // If already Scaled, evaluate should return Scaled (no-op)
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_probe_phase(ProbePhase::Scaled);
+
+        let phase = pos.evaluate_probe(3000, 5000, 2000, -500, -300, true);
+        assert_eq!(phase, ProbePhase::Scaled, "already-resolved probe should stay resolved");
+    }
+
+    #[test]
+    fn test_evaluate_probe_exact_boundary_flat() {
+        // After 2s, price exactly at entry (0 bps) — should scale
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_probe_phase(ProbePhase::Probing);
+        pos.record_sample(10000);
+
+        let phase = pos.evaluate_probe(
+            3000,
+            10000,    // exactly flat
+            2000,
+            -500,
+            -300,
+            true,
+        );
+        assert_eq!(phase, ProbePhase::Scaled, "exactly flat price should scale up");
+    }
+
+    #[test]
+    fn test_probe_phase_as_str() {
+        assert_eq!(ProbePhase::Disabled.as_str(), "disabled");
+        assert_eq!(ProbePhase::Probing.as_str(), "probing");
+        assert_eq!(ProbePhase::Scaled.as_str(), "scaled");
+        assert_eq!(ProbePhase::Failed.as_str(), "failed");
+        assert_eq!(ProbePhase::HeldTight.as_str(), "held_tight");
+    }
+
+    // ── Time-decay trailing stop tests (TASK 5) ─────────────────────────
+
+    #[test]
+    fn test_effective_trail_bps_default_zero() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        assert_eq!(pos.effective_trail_bps(), 0, "fresh position should have no trail");
+    }
+
+    #[test]
+    fn test_ratchet_trail_bps_initial_set() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // First ratchet: 0 → 800
+        pos.ratchet_trail_bps(800);
+        assert_eq!(pos.effective_trail_bps(), 800);
+    }
+
+    #[test]
+    fn test_ratchet_trail_bps_only_tightens() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.ratchet_trail_bps(800);
+        assert_eq!(pos.effective_trail_bps(), 800);
+
+        // Tighten: 800 → 500
+        pos.ratchet_trail_bps(500);
+        assert_eq!(pos.effective_trail_bps(), 500);
+
+        // Attempt to widen: 500 should NOT become 1000
+        pos.ratchet_trail_bps(1000);
+        assert_eq!(pos.effective_trail_bps(), 500, "ratchet must not widen");
+
+        // Tighten further: 500 → 100
+        pos.ratchet_trail_bps(100);
+        assert_eq!(pos.effective_trail_bps(), 100);
+    }
+
+    #[test]
+    fn test_ratchet_trail_bps_ignores_zero() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.ratchet_trail_bps(500);
+        pos.ratchet_trail_bps(0);
+        assert_eq!(pos.effective_trail_bps(), 500, "zero should be ignored");
+    }
+
+    #[test]
+    fn test_time_decay_trail_bps_stage_progression() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        let stages_ms: &[u64] = &[30_000, 60_000, 120_000, 180_000, 240_000];
+        let trail_bps: &[u16] = &[800, 500, 300, 200, 100];
+
+        // Before any stage: no trail set
+        let eff = pos.time_decay_trail_bps(15_000, stages_ms, trail_bps);
+        assert_eq!(eff, 0, "before 30s no stage active");
+
+        // At 30s: stage 0 → 800 bps
+        let eff = pos.time_decay_trail_bps(30_000, stages_ms, trail_bps);
+        assert_eq!(eff, 800);
+
+        // At 45s: still in stage 0 range, ratchet stays at 800
+        let eff = pos.time_decay_trail_bps(45_000, stages_ms, trail_bps);
+        assert_eq!(eff, 800);
+
+        // At 60s: stage 1 → tighten to 500
+        let eff = pos.time_decay_trail_bps(60_000, stages_ms, trail_bps);
+        assert_eq!(eff, 500);
+
+        // At 120s: stage 2 → tighten to 300
+        let eff = pos.time_decay_trail_bps(120_000, stages_ms, trail_bps);
+        assert_eq!(eff, 300);
+
+        // At 180s: stage 3 → tighten to 200
+        let eff = pos.time_decay_trail_bps(180_000, stages_ms, trail_bps);
+        assert_eq!(eff, 200);
+
+        // At 240s: stage 4 → tighten to 100
+        let eff = pos.time_decay_trail_bps(240_000, stages_ms, trail_bps);
+        assert_eq!(eff, 100);
+
+        // Way past 240s: still 100 (last stage, ratchet holds)
+        let eff = pos.time_decay_trail_bps(500_000, stages_ms, trail_bps);
+        assert_eq!(eff, 100);
+    }
+
+    #[test]
+    fn test_time_decay_trail_bps_ratchet_prevents_widening() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        let stages_ms: &[u64] = &[30_000, 60_000, 120_000];
+        let trail_bps: &[u16] = &[800, 500, 300];
+
+        // Jump to stage 2 directly (120s) → ratchets to 300
+        let eff = pos.time_decay_trail_bps(120_000, stages_ms, trail_bps);
+        assert_eq!(eff, 300);
+
+        // Now call with 30s (stage 0 = 800) — ratchet should prevent widening
+        let eff = pos.time_decay_trail_bps(30_000, stages_ms, trail_bps);
+        assert_eq!(eff, 300, "ratchet must prevent widening back to 800");
+    }
+
+    #[test]
+    fn test_time_decay_trailing_stop_hit_no_trail() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.peak_price_fp = 12_000;
+        // No trail ratcheted → should never trigger
+        assert!(!pos.time_decay_trailing_stop_hit(8_000));
+    }
+
+    #[test]
+    fn test_time_decay_trailing_stop_hit_basic() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.peak_price_fp = 10_000;
+        pos.ratchet_trail_bps(500); // 5% trail
+
+        // 5% drawdown from peak of 10000 → threshold is 9500
+        // At 9600: 4% drawdown → NOT hit
+        assert!(!pos.time_decay_trailing_stop_hit(9_600));
+        // At 9500: exactly 5% → HIT
+        assert!(pos.time_decay_trailing_stop_hit(9_500));
+        // At 9000: 10% drawdown → HIT
+        assert!(pos.time_decay_trailing_stop_hit(9_000));
+    }
+
+    #[test]
+    fn test_time_decay_trailing_stop_tight_trail() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.peak_price_fp = 20_000;
+        pos.ratchet_trail_bps(100); // 1% trail (very tight, late stage)
+
+        // 1% of 20000 = 200. So threshold is 19800.
+        assert!(!pos.time_decay_trailing_stop_hit(19_900)); // 0.5% → NOT hit
+        assert!(pos.time_decay_trailing_stop_hit(19_800));  // exactly 1% → HIT
+        assert!(pos.time_decay_trailing_stop_hit(15_000));  // 25% → HIT
+    }
+
+    #[test]
+    fn test_time_decay_trailing_stop_zero_peak() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.peak_price_fp = 0;
+        pos.ratchet_trail_bps(500);
+        // Zero peak → never triggers
+        assert!(!pos.time_decay_trailing_stop_hit(5_000));
+    }
+
+    // ── Stagnation detection tests (TASK 5) ──────────────────────────────
+
+    #[test]
+    fn test_is_stagnant_all_zeros() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // Record 5 samples, all at entry price (0 bps offset)
+        for _ in 0..5 {
+            pos.record_sample(10_000);
+        }
+        assert_eq!(pos.sample_count, 5);
+
+        // Before threshold: not stagnant
+        assert!(!pos.is_stagnant(30_000, 60_000));
+        // After threshold with all zero samples: stagnant
+        assert!(pos.is_stagnant(60_000, 60_000));
+        assert!(pos.is_stagnant(120_000, 60_000));
+    }
+
+    #[test]
+    fn test_is_stagnant_with_movement() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // 4 zero samples + 1 with movement
+        for _ in 0..4 {
+            pos.record_sample(10_000);
+        }
+        pos.record_sample(10_100); // +100 bps
+
+        // Has movement → NOT stagnant even past threshold
+        assert!(!pos.is_stagnant(120_000, 60_000));
+    }
+
+    #[test]
+    fn test_is_stagnant_no_samples() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // No samples recorded → not stagnant (no data ≠ proven stagnant)
+        assert!(!pos.is_stagnant(120_000, 60_000));
+    }
+
+    #[test]
+    fn test_is_stagnant_exact_threshold() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.record_sample(10_000);
+        pos.record_sample(10_000);
+        pos.record_sample(10_000);
+
+        // Exactly at threshold: should be stagnant
+        assert!(pos.is_stagnant(60_000, 60_000));
+        // 1ms before threshold: not stagnant
+        assert!(!pos.is_stagnant(59_999, 60_000));
+    }
+
+    #[test]
+    fn test_trail_does_not_corrupt_probe_phase() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // Set probe phase first
+        pos.set_probe_phase(ProbePhase::Scaled);
+        assert_eq!(pos.probe_phase(), ProbePhase::Scaled);
+
+        // Now ratchet trail bps (adjacent byte 37..39)
+        pos.ratchet_trail_bps(500);
+        assert_eq!(pos.effective_trail_bps(), 500);
+
+        // Probe phase should be untouched
+        assert_eq!(pos.probe_phase(), ProbePhase::Scaled, "trail must not corrupt probe_phase at _pad2[36]");
+    }
+
+    #[test]
+    fn test_trail_does_not_corrupt_tokens_held() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // Set tokens held (bytes 28..36)
+        pos.set_tokens_held(999_888_777);
+        assert_eq!(pos.tokens_held(), 999_888_777);
+
+        // Ratchet trail (bytes 37..39)
+        pos.ratchet_trail_bps(300);
+        assert_eq!(pos.effective_trail_bps(), 300);
+
+        // tokens_held should be untouched
+        assert_eq!(pos.tokens_held(), 999_888_777, "trail must not corrupt tokens_held at _pad2[28..36]");
+    }
+
+    #[test]
+    fn test_full_time_decay_scenario() {
+        // Simulate a real max_hold trade: token pumps 20%, then slowly bleeds
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        let stages_ms: &[u64] = &[30_000, 60_000, 120_000, 180_000, 240_000];
+        let trail_bps: &[u16] = &[800, 500, 300, 200, 100];
+
+        // Token peaks at 12000 (20% gain)
+        pos.peak_price_fp = 12_000;
+
+        // At 30s: trail = 800 bps (8%). Price at 11500 → 4.2% drawdown → hold
+        pos.time_decay_trail_bps(30_000, stages_ms, trail_bps);
+        assert!(!pos.time_decay_trailing_stop_hit(11_500));
+
+        // At 60s: trail tightens to 500 bps (5%). Price still 11500 → 4.2% → hold
+        pos.time_decay_trail_bps(60_000, stages_ms, trail_bps);
+        assert!(!pos.time_decay_trailing_stop_hit(11_500));
+
+        // At 120s: trail tightens to 300 bps (3%). Price at 11500 → 4.2% > 3% → EXIT
+        pos.time_decay_trail_bps(120_000, stages_ms, trail_bps);
+        assert!(pos.time_decay_trailing_stop_hit(11_500), "4.2% drawdown should trigger 3% trail");
+
+        // Verify the effective trail is 300 (not 800 or 500)
+        assert_eq!(pos.effective_trail_bps(), 300);
     }
 }

@@ -4,6 +4,7 @@
 //! omitted entirely from canary.json (engine defaults to disabled).
 
 use serde::{Deserialize, Serialize};
+use super::tod::MomentumTodConfig;
 
 /// Configuration for the momentum trading engine.
 ///
@@ -196,6 +197,30 @@ pub struct MomentumConfig {
     pub early_abort_min_hold_ms: u64,
 
     // ══════════════════════════════════════════════════════════
+    // PROBE-THEN-SCALE ENTRY (TASK 2: Hard SL Reduction)
+    // ══════════════════════════════════════════════════════════
+
+    /// Master toggle for probe-then-scale entry. When enabled, entries start
+    /// at probe_size_sol and only scale up after probe_hold_ms if price is stable.
+    /// Targets 60 trades that dump <1s of entry (avg -55.85 mSOL → ~-2.5 mSOL).
+    pub probe_entry_enabled: bool,
+    /// How long to hold the probe position before evaluating scale-in (ms).
+    /// Default: 2000ms (2s). Trades dumping <1s exit at probe size.
+    pub probe_hold_ms: u64,
+    /// Bps threshold for immediate probe exit (dump detection).
+    /// If price drops more than this during probe phase, exit immediately.
+    /// Default: -500 bps (-5%). At 0.05 SOL probe, max loss = ~2.5 mSOL.
+    pub probe_dump_threshold_bps: i32,
+    /// Minimum bps gain required to scale up after probe_hold_ms.
+    /// If gain < this value, stay at probe size with tight SL.
+    /// Default: -300 bps (-3%). Between -3% and -5% = stay at probe.
+    pub probe_scale_min_bps: i32,
+    /// Whether to require at least one price sample before scaling up.
+    /// If true and 0 samples after probe_hold_ms, stay at probe size.
+    /// Default: true (don't scale blind).
+    pub probe_scale_require_price: bool,
+
+    // ══════════════════════════════════════════════════════════
     // SCALE-IN ENTRY
     // ══════════════════════════════════════════════════════════
 
@@ -228,6 +253,32 @@ pub struct MomentumConfig {
     pub scale_in_low_score_threshold: u8,
     /// s[0] bps required for strong scale-in when grad_score < low threshold. Default: 400.
     pub scale_in_low_score_s0_bps: i32,
+
+    // ══════════════════════════════════════════════════════════
+    // TIME-OF-DAY GATING (TASK 4)
+    // ══════════════════════════════════════════════════════════
+
+    /// Time-of-day configuration for entry sizing.
+    pub tod_config: MomentumTodConfig,
+
+    // ══════════════════════════════════════════════════════════
+    // TIME-DECAY TRAILING STOP (TASK 5)
+    // ══════════════════════════════════════════════════════════
+
+    /// Enable time-decay trailing stop. Default: true.
+    pub time_decay_trailing_enabled: bool,
+    /// Hold durations (ms) at which trailing stop tightens. Must be ascending.
+    pub time_decay_stages_ms: Vec<u64>,
+    /// Trail widths (bps) corresponding to each stage. Must be descending (tighter over time).
+    pub time_decay_trail_bps: Vec<u16>,
+
+    // ══════════════════════════════════════════════════════════
+    // STAGNATION EXIT (TASK 5)
+    // ══════════════════════════════════════════════════════════
+
+    /// Hold time (ms) after which a stagnant position is exited. Default: 60_000 (60s).
+    /// A position is stagnant if ALL price_samples_bps are zero after this time.
+    pub stagnation_exit_ms: u64,
 }
 
 impl Default for MomentumConfig {
@@ -313,6 +364,13 @@ impl Default for MomentumConfig {
             early_abort_min_samples: 3,
             early_abort_min_hold_ms: 3_000,
 
+            // Probe-then-scale entry (TASK 2)
+            probe_entry_enabled: true,
+            probe_hold_ms: 2_000,
+            probe_dump_threshold_bps: -500,
+            probe_scale_min_bps: -300,
+            probe_scale_require_price: true,
+
             // Scale-in entry
             probe_size_sol: 0.10,
             scale_in_s0_strong_bps: 300,
@@ -328,6 +386,17 @@ impl Default for MomentumConfig {
             scale_in_high_score_s0_bps: 200,
             scale_in_low_score_threshold: 35,
             scale_in_low_score_s0_bps: 400,
+
+            // Time-of-day gating (TASK 4)
+            tod_config: MomentumTodConfig::default(),
+
+            // Time-decay trailing stop (TASK 5)
+            time_decay_trailing_enabled: true,
+            time_decay_stages_ms: vec![30_000, 60_000, 120_000, 180_000, 240_000],
+            time_decay_trail_bps: vec![800, 500, 300, 200, 100],
+
+            // Stagnation exit (TASK 5)
+            stagnation_exit_ms: 60_000,
         }
     }
 }
