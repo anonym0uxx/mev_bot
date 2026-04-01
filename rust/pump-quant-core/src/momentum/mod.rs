@@ -476,8 +476,18 @@ impl MomentumEngine {
         // Cold miss neutral defaults: when enrichment data was unavailable,
         // use neutral buys/sells instead of 0 (which would score 0 on velocity/BSR).
         // These represent "we don't know" not "there were no buys".
+        // In live mode, skip cold-miss tokens entirely (zero enrichment = dead pool risk).
+        // In paper mode, allow them for data collection.
+        if is_cold_miss && !self.config.paper_mode {
+            tracing::debug!(
+                mint = %bs58::encode(&pool_info.mint).into_string(),
+                "[momentum] cold miss entry blocked (live mode) — no enrichment data"
+            );
+            return;
+        }
+
         let (effective_buys_5s, effective_sells_5s) = if is_cold_miss {
-            (3u32, 1u32) // 3:1 buy/sell ratio as neutral assumption
+            (3u32, 1u32) // 3:1 buy/sell ratio as neutral assumption (paper mode only)
         } else {
             (pre_grad_buys_5s, sells_5s)
         };
