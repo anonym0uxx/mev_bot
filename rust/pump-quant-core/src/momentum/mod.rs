@@ -703,6 +703,19 @@ impl MomentumEngine {
                 continue;
             }
 
+            // Reject degenerate prices — fixed-point precision lost (token supply too large)
+            // Tokens with trillion-unit supply produce price_fp=1..99 where no meaningful
+            // bps movement can be computed, causing time_sl to fire at 15s every time.
+            if current_price_fp < 100 {
+                tracing::warn!(
+                    mint = %bs58::encode(&entry.mint).into_string(),
+                    entry_price_fp = current_price_fp,
+                    "[momentum] skipping entry — degenerate price (entry_price_fp < 100, token supply too large)"
+                );
+                self.price_feed.unsubscribe_sync(&entry.mint);
+                continue;
+            }
+
             // v2 scorer: entry_discount is already computed inside score_graduation()
             // called in on_graduation(). No separate recovery enrichment needed.
             let final_score = entry.grad_score;

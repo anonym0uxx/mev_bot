@@ -397,7 +397,7 @@ fn ws_update_price(
             let price = price_from_reserves(sol, tok);
             if price > 0 {
                 let prev = state.price_fp.load(Ordering::Relaxed);
-                if prev > 0 {
+                if prev >= 100 {
                     let hi = price.max(prev);
                     let lo = price.min(prev);
                     if lo > 0 && hi / lo > 100 {
@@ -564,7 +564,7 @@ async fn price_feed_poll_loop(
 
                 if let Some(state) = prices.get(mint) {
                     let prev = state.price_fp.load(Ordering::Acquire);
-                    if prev > 0 {
+                    if prev >= 100 {
                         let hi = fp.max(prev);
                         let lo = fp.min(prev);
                         if lo > 0 && hi / lo > 100 {
