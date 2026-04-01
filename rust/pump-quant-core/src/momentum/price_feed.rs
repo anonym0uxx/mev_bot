@@ -173,6 +173,13 @@ impl PriceFeedManager {
             s.ws_notif_last_ms.load(Ordering::Relaxed),
         )).unwrap_or((0, 0))
     }
+
+    /// Returns the most recently observed `reserve_sol` (lamports) for a mint.
+    /// Used for entry-time liquidity gating — pool may have drained since resolution.
+    #[inline(always)]
+    pub fn get_reserve_sol(&self, mint: &[u8; 32]) -> Option<u64> {
+        self.prices.get(mint).map(|s| s.reserve_sol.load(Ordering::Relaxed))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

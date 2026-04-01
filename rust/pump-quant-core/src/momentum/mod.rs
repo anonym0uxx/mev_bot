@@ -33,6 +33,7 @@ pub use pool::{PoolType, PoolInfo, PoolResolution, BC_TERMINAL_PRICE_LAMPORTS_PE
 use crate::momentum::pool::resolve_pool_from_transaction;
 use crate::momentum::position::{
     MomentumExitReason, MomentumPosition, MomentumState, PendingEntry, PendingEntryRing,
+    ReserveSolContext, liquidity_quality_score,
     price_to_bps_offset, compute_atr_bps, compute_momentum_score, PRICE_SAMPLES,
 };
 use crate::momentum::price_feed::{price_from_reserves, PriceFeedManager, VaultSubscription};
@@ -59,7 +60,7 @@ fn route_exit(reason: &str, gain_bps: i64, nozomi_available: bool) -> LandingPat
         return LandingPath::JitoOnly;
     }
     match reason {
-        "hard_sl" => LandingPath::DualPath,
+        "drain_detected" | "hard_sl" => LandingPath::DualPath,
         "trailing_stop" if gain_bps < 0 => LandingPath::DualPath,
         "time_sl" | "max_hold" => LandingPath::NozomiOnly,
         _ => LandingPath::JitoOnly,
@@ -72,6 +73,7 @@ fn exit_to_context(
 ) -> crate::tx::tip_engine::TipContext {
     use crate::tx::tip_engine::TipContext;
     match reason {
+        MomentumExitReason::DrainDetected => TipContext::RideEmergency,
         MomentumExitReason::HardSl => TipContext::RideEmergency,
         MomentumExitReason::TrailingStop if gain_bps < 0 => TipContext::RideEmergency,
         MomentumExitReason::TrailingStop => TipContext::RideTighten,
@@ -141,6 +143,22 @@ pub struct MomentumEngine {
     /// Prevents 3 feeds from each triggering separate Helius getTransaction lookups
     /// for the same graduation event. Grows slowly (~100-200 entries/day).
     resolving_sigs: DashMap<[u8; 64], u64>,
+
+    // ── Drain detection: reserve_sol samples per active position ───
+    // Key = mint, Value = ring of (timestamp_ms, reserve_lamports), max 20 entries.
+    // Stored outside MomentumPosition because the 256-byte struct has no free bytes.
+    drain_samples: DashMap<[u8; 32], Vec<(u64, u64)>>,
+
+    // ── LQS: reserve SOL context for liquidity-adjusted scale-in sizing ───
+    // Key = mint, Value = entry + peak reserve lamports.
+    // Stored outside MomentumPosition (no free bytes in 256-byte struct).
+    reserve_sol_ctx: DashMap<[u8; 32], ReserveSolContext>,
+
+    // ── Momentum zone trackers: reserve-based liquidity gate for scale-in ──
+    // Tracks reserve trajectory per active position. Gates scale-in on
+    // MomentumConfirmed/Neutral phase + reserve >= 85% of entry.
+    // Stored outside MomentumPosition (no free bytes in 256-byte struct).
+    momentum_zones: DashMap<[u8; 32], crate::momentum::position::MomentumZoneTracker>,
 
     // ── Pending entries scheduled for T+delay ───────────────────────
     pending: std::sync::Mutex<PendingEntryRing>,
@@ -240,6 +258,9 @@ impl MomentumEngine {
             active: DashMap::new(),
             recently_closed: DashMap::new(),
             resolving_sigs: DashMap::new(),
+            drain_samples: DashMap::new(),
+            reserve_sol_ctx: DashMap::new(),
+            momentum_zones: DashMap::new(),
             pending: std::sync::Mutex::new(PendingEntryRing::new()),
             price_feed,
             logger,
@@ -716,6 +737,20 @@ impl MomentumEngine {
                 continue;
             }
 
+            // Second liquidity check at actual entry time — pool may have drained since resolution
+            const MIN_ENTRY_RESERVE_LAMPORTS: u64 = 40_000_000_000; // 40 SOL
+            if let Some(current_reserve_sol) = self.price_feed.get_reserve_sol(&entry.mint) {
+                if current_reserve_sol < MIN_ENTRY_RESERVE_LAMPORTS {
+                    tracing::warn!(
+                        mint = %bs58::encode(&entry.mint).into_string(),
+                        reserve_sol_lamports = current_reserve_sol,
+                        "[momentum] skipping entry — pool drained since resolution (reserve < 40 SOL)"
+                    );
+                    self.price_feed.unsubscribe_sync(&entry.mint);
+                    continue;
+                }
+            }
+
             // v2 scorer: entry_discount is already computed inside score_graduation()
             // called in on_graduation(). No separate recovery enrichment needed.
             let final_score = entry.grad_score;
@@ -776,7 +811,20 @@ impl MomentumEngine {
             }
 
             self.active.insert(entry.mint, pos);
+
+            // LQS: record reserve SOL at entry time for liquidity quality scoring
+            if let Some(entry_reserve) = self.price_feed.get_reserve_sol(&entry.mint) {
+                self.reserve_sol_ctx.insert(entry.mint, ReserveSolContext::new(entry_reserve));
+            }
+
             self.entries_opened.fetch_add(1, Ordering::Relaxed);
+
+            // Initialize momentum zone tracker with entry-time reserve
+            let entry_reserve = self.price_feed.get_reserve_sol(&entry.mint).unwrap_or(0);
+            self.momentum_zones.insert(
+                entry.mint,
+                crate::momentum::position::MomentumZoneTracker::new(entry_reserve),
+            );
 
             tracing::info!(
                 mint = %bs58::encode(&entry.mint).into_string(),
@@ -799,6 +847,7 @@ impl MomentumEngine {
                         None => {
                             tracing::warn!(mint=%bs58::encode(&mint).into_string(), "[buy_task] no jito client");
                             self.active.remove(&mint);
+                            self.momentum_zones.remove(&mint);
                             continue;
                         }
                     };
@@ -986,6 +1035,77 @@ impl MomentumEngine {
                 }
                 // else: spike — don't update peak, price_feed should have caught this
             }
+
+            // ── Drain Detection (highest priority exit) ────────────────────
+            // Detect rug pulls by monitoring pool SOL reserve depletion.
+            // Fires before all other exit checks — speed is everything on a drain.
+            if let Some(current_reserve) = self.price_feed.get_reserve_sol(&mint).filter(|&r| r > 0) {
+                let now_drain = now_ms;
+                let mut samples = self.drain_samples.entry(mint).or_insert_with(Vec::new);
+                samples.push((now_drain, current_reserve));
+                // Keep last 20 samples (ring-style, remove oldest)
+                if samples.len() > 20 {
+                    samples.remove(0);
+                }
+
+                // ── Momentum Zone Update ─────────────────────────────────
+                // Update reserve trajectory tracker each tick for scale-in gating.
+                if let Some(mut zone) = self.momentum_zones.get_mut(&mint) {
+                    zone.update(current_reserve, elapsed_ms);
+                }
+
+                let mint_b58 = bs58::encode(&mint).into_string();
+                let mut drain_exit = false;
+
+                // Hard floor: absolute drain — reserve < 10 SOL
+                const DRAIN_FLOOR_LAMPORTS: u64 = 10_000_000_000;
+                if current_reserve < DRAIN_FLOOR_LAMPORTS {
+                    tracing::warn!(
+                        mint = %mint_b58,
+                        reserve_lamports = current_reserve,
+                        "[momentum] DRAIN DETECTED — reserve < 10 SOL, exiting immediately"
+                    );
+                    drain_exit = true;
+                }
+
+                // Fast drain: >30% drop in 3s
+                if !drain_exit {
+                    let cutoff_3s = now_drain.saturating_sub(3000);
+                    if let Some(&(_, r_3s_ago)) = samples.iter().find(|(ts, _)| *ts <= cutoff_3s) {
+                        if r_3s_ago > 0 && current_reserve < r_3s_ago * 70 / 100 {
+                            tracing::warn!(
+                                mint = %mint_b58,
+                                reserve_3s_ago = r_3s_ago,
+                                current_reserve,
+                                "[momentum] DRAIN DETECTED — >30% drop in 3s, exiting"
+                            );
+                            drain_exit = true;
+                        }
+                    }
+                }
+
+                // Slower drain: >50% drop in 10s
+                if !drain_exit {
+                    let cutoff_10s = now_drain.saturating_sub(10000);
+                    if let Some(&(_, r_10s_ago)) = samples.iter().find(|(ts, _)| *ts <= cutoff_10s) {
+                        if r_10s_ago > 0 && current_reserve < r_10s_ago * 50 / 100 {
+                            tracing::warn!(
+                                mint = %mint_b58,
+                                reserve_10s_ago = r_10s_ago,
+                                current_reserve,
+                                "[momentum] DRAIN DETECTED — >50% drop in 10s, exiting"
+                            );
+                            drain_exit = true;
+                        }
+                    }
+                }
+
+                if drain_exit {
+                    to_close.push((mint, MomentumExitReason::DrainDetected, current_price_fp));
+                    continue;
+                }
+            }
+            // ── End Drain Detection ──────────────────────────────────────────
 
             let hold_ms = elapsed_ms;
             let entry_fp = pos.entry_price_fp;
@@ -1195,6 +1315,52 @@ impl MomentumEngine {
                 }
             }
             // ── End Phase 5 ──────────────────────────────────────────────────────
+
+            // ── Phase 5B: Reserve flatness dead zone ─────────────────────────
+            // If the pool's SOL reserve hasn't changed across recent samples,
+            // zero trades are happening. Combined with flat/low price → dead token.
+            // Uses drain_samples (already populated by drain detection above).
+            if self.config.dead_zone_reserve_flat_min_samples > 0
+                && hold_ms >= self.config.dead_zone_reserve_flat_min_hold_ms
+            {
+                let min_n = self.config.dead_zone_reserve_flat_min_samples;
+                let reserve_flat = self.drain_samples.get(&mint).map_or(false, |samples| {
+                    if samples.len() < min_n {
+                        return false;
+                    }
+                    // Check last N samples for flatness
+                    let recent = &samples[samples.len().saturating_sub(min_n)..];
+                    let max_r = recent.iter().map(|(_, r)| *r).max().unwrap_or(0);
+                    let min_r = recent.iter().map(|(_, r)| *r).min().unwrap_or(0);
+                    max_r.saturating_sub(min_r) < self.config.dead_zone_reserve_flat_tolerance_lamports
+                });
+
+                if reserve_flat {
+                    // Reserve is flat — check if price is also weak/flat.
+                    // Only exit when price confirms the dead signal:
+                    //   price_flat_bps threshold (200 bps default) — same as Phase 5.
+                    let n = pos.sample_count as usize;
+                    let price_weak = if n == 0 {
+                        // No samples at all → treat as dead (no data = no movement)
+                        true
+                    } else {
+                        let max_gain = pos.price_samples_bps[..n].iter().copied().max().unwrap_or(0);
+                        max_gain < self.config.dead_zone_price_flat_bps
+                    };
+
+                    if price_weak {
+                        tracing::debug!(
+                            mint = %bs58::encode(&mint).into_string(),
+                            hold_ms,
+                            samples = pos.sample_count,
+                            "[momentum] dead zone: reserve flat + price weak — no trades in pool"
+                        );
+                        to_close.push((mint, MomentumExitReason::TimeSl, current_price_fp));
+                        continue;
+                    }
+                }
+            }
+            // ── End Phase 5B ─────────────────────────────────────────────────
 
             // ── Phase 6: Early abort — kill dead tokens fast ────────────────
             // Data shows 80.8% of trades are near-zero gross. Most flat tokens
@@ -1407,6 +1573,33 @@ impl MomentumEngine {
                 continue;
             }
 
+            // ── Liquidity gate: momentum zone must allow scale-in ─────────
+            // Only scale in when reserves are stable (Neutral) or confirmed
+            // growing (MomentumConfirmed) AND reserve >= 85% of entry level.
+            // During InitialChurn (<10s), Shakeout, or MomentumCandidate,
+            // defer scale-in — keep at probe size, re-evaluate next tick.
+            {
+                let mint = pos.mint;
+                if let Some(zone) = self.momentum_zones.get(&mint) {
+                    let current_reserve = self.price_feed.get_reserve_sol(&mint).unwrap_or(0);
+                    if !zone.allows_scale_in(current_reserve) {
+                        tracing::trace!(
+                            mint = %bs58::encode(&mint).into_string(),
+                            phase = zone.phase_str(),
+                            reserve_entry = zone.reserve_sol_entry,
+                            reserve_now = current_reserve,
+                            "[momentum] scale-in deferred — liquidity gate (phase={}, reserve={}%)",
+                            zone.phase_str(),
+                            if zone.reserve_sol_entry > 0 {
+                                current_reserve * 100 / zone.reserve_sol_entry
+                            } else { 0 }
+                        );
+                        continue;
+                    }
+                }
+                // If no zone tracker exists (edge case), allow scale-in (backward compat)
+            }
+
             // Score-aware strong conviction threshold:
             // High-score tokens (grad_score >= 65) need less price confirmation (200 bps).
             // Low-score tokens (grad_score < 35) need more proof (400 bps).
@@ -1518,6 +1711,13 @@ impl MomentumEngine {
         // Record close timestamp for reentry cooldown
         self.recently_closed.insert(mint, now_ms);
 
+        // Clean up reserve samples (drain detection + reserve flatness)
+        self.drain_samples.remove(&mint);
+        // Clean up momentum zone tracker
+        self.momentum_zones.remove(&mint);
+        // Clean up LQS reserve context
+        self.reserve_sol_ctx.remove(&mint);
+
         // Calculate P&L
         let size_sol = pos.size_lamports as f64 / 1e9;
         let raw_gain_bps = price_to_bps_offset(pos.entry_price_fp, exit_price_fp);
@@ -1563,7 +1763,7 @@ impl MomentumEngine {
             MomentumExitReason::Tp3 => {
                 self.tp3_exits.fetch_add(1, Ordering::Relaxed);
             }
-            MomentumExitReason::TrailingStop | MomentumExitReason::HardSl => {
+            MomentumExitReason::TrailingStop | MomentumExitReason::HardSl | MomentumExitReason::DrainDetected => {
                 self.sl_exits.fetch_add(1, Ordering::Relaxed);
             }
             _ => {
@@ -1573,6 +1773,10 @@ impl MomentumEngine {
 
         // Capture WS notif info BEFORE unsubscribe removes the price state
         let ws_notif_count_at_close = self.price_feed.ws_notif_info(&mint).0;
+
+        // Clean up drain detection samples and momentum zone tracker
+        self.drain_samples.remove(&mint);
+        self.momentum_zones.remove(&mint);
 
         // Unsubscribe from price feed (direct DashMap remove — no async needed)
         self.price_feed.unsubscribe_sync(&mint);
@@ -2183,6 +2387,7 @@ mod tests {
         {
             let state = crate::momentum::price_feed::PriceState::new();
             state.price_fp.store(381, Ordering::Relaxed);
+            state.reserve_sol.store(80_000_000_000, Ordering::Relaxed); // 80 SOL — passes entry gate
             engine.price_feed.prices.insert([0xDD; 32], state);
         }
 

@@ -760,6 +760,152 @@ impl ProbePhase {
     }
 }
 
+// ── Momentum Zone State Machine (reserve-based liquidity gate) ────────────────
+
+/// Reserve trajectory phase — tracks whether real buying pressure is present.
+///
+/// Used to gate scale-in: only allow adding to a position when reserves
+/// are stable or growing (MomentumConfirmed/Neutral), NOT when reserves
+/// are dropping (Shakeout = distribution/selling).
+///
+/// Lives outside MomentumPosition (no free bytes in the 256-byte struct).
+/// Stored per-mint in MomentumEngine::momentum_zones DashMap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MomentumPhase {
+    /// First 10s after entry — observing reserve trajectory, no signal yet.
+    InitialChurn,
+    /// Reserve dipped significantly from peak — waiting for recovery.
+    Shakeout,
+    /// Reserve recovering from trough — potential momentum building.
+    MomentumCandidate,
+    /// Reserve broke above entry level — confirmed real buying pressure.
+    MomentumConfirmed,
+    /// Stable reserves, no clear directional signal.
+    Neutral,
+}
+
+/// Per-position reserve trajectory tracker.
+///
+/// Created when a position is opened. Updated each tick with current
+/// reserve_sol from PriceState. Consulted by scale-in logic to gate
+/// position sizing increases.
+///
+/// Stored in `MomentumEngine::momentum_zones` DashMap, keyed by mint.
+pub struct MomentumZoneTracker {
+    /// Reserve SOL (lamports) at entry time — set once.
+    pub reserve_sol_entry: u64,
+    /// Highest reserve SOL seen since entry (rolling max).
+    pub reserve_sol_peak: u64,
+    /// Lowest reserve SOL seen after peak (rolling min, reset on new peak).
+    pub reserve_sol_trough: u64,
+    /// Current phase in the momentum state machine.
+    pub phase: MomentumPhase,
+}
+
+impl MomentumZoneTracker {
+    /// Create a new tracker at entry time.
+    #[inline]
+    pub fn new(reserve_sol_at_entry: u64) -> Self {
+        Self {
+            reserve_sol_entry: reserve_sol_at_entry,
+            reserve_sol_peak: reserve_sol_at_entry,
+            reserve_sol_trough: reserve_sol_at_entry,
+            phase: MomentumPhase::InitialChurn,
+        }
+    }
+
+    /// Update the momentum phase based on current reserve and hold duration.
+    ///
+    /// Called once per tick from the main evaluation loop. All arithmetic
+    /// is integer-only (no floating point) for determinism.
+    #[inline]
+    pub fn update(&mut self, current_reserve: u64, hold_ms: u64) {
+        // Update rolling peak/trough
+        if current_reserve > self.reserve_sol_peak {
+            self.reserve_sol_peak = current_reserve;
+        }
+        if current_reserve < self.reserve_sol_trough || self.reserve_sol_trough == 0 {
+            self.reserve_sol_trough = current_reserve;
+        }
+
+        self.phase = match self.phase {
+            MomentumPhase::InitialChurn => {
+                if hold_ms > 10_000 {
+                    // After 10s observation: classify based on reserve trajectory
+                    if current_reserve < self.reserve_sol_peak * 90 / 100 {
+                        MomentumPhase::Shakeout
+                    } else {
+                        MomentumPhase::Neutral
+                    }
+                } else {
+                    MomentumPhase::InitialChurn
+                }
+            }
+            MomentumPhase::Shakeout => {
+                // 10% recovery from trough → candidate for momentum
+                if current_reserve > self.reserve_sol_trough * 110 / 100 {
+                    MomentumPhase::MomentumCandidate
+                } else {
+                    MomentumPhase::Shakeout
+                }
+            }
+            MomentumPhase::MomentumCandidate => {
+                // Broke 5% above entry → confirmed real momentum
+                if current_reserve > self.reserve_sol_entry * 105 / 100 {
+                    MomentumPhase::MomentumConfirmed
+                } else if current_reserve < self.reserve_sol_trough * 95 / 100 {
+                    // Failed recovery — back to shakeout
+                    MomentumPhase::Shakeout
+                } else {
+                    MomentumPhase::MomentumCandidate
+                }
+            }
+            MomentumPhase::MomentumConfirmed => {
+                // Stay confirmed unless reserve collapses (>30% below entry)
+                if current_reserve < self.reserve_sol_entry * 70 / 100 {
+                    MomentumPhase::Shakeout
+                } else {
+                    MomentumPhase::MomentumConfirmed
+                }
+            }
+            MomentumPhase::Neutral => {
+                if current_reserve > self.reserve_sol_entry * 105 / 100 {
+                    MomentumPhase::MomentumConfirmed
+                } else if current_reserve < self.reserve_sol_peak * 85 / 100 {
+                    MomentumPhase::Shakeout
+                } else {
+                    MomentumPhase::Neutral
+                }
+            }
+        };
+    }
+
+    /// Whether current phase + reserve level allows scale-in.
+    ///
+    /// Returns true only when:
+    /// 1. Phase is MomentumConfirmed or Neutral (stable/growing reserves)
+    /// 2. Current reserve is at least 85% of entry reserve (not drained)
+    #[inline(always)]
+    pub fn allows_scale_in(&self, current_reserve: u64) -> bool {
+        matches!(
+            self.phase,
+            MomentumPhase::MomentumConfirmed | MomentumPhase::Neutral
+        ) && current_reserve >= self.reserve_sol_entry * 85 / 100
+    }
+
+    /// String representation of current phase for logging.
+    #[inline(always)]
+    pub fn phase_str(&self) -> &'static str {
+        match self.phase {
+            MomentumPhase::InitialChurn => "initial_churn",
+            MomentumPhase::Shakeout => "shakeout",
+            MomentumPhase::MomentumCandidate => "momentum_candidate",
+            MomentumPhase::MomentumConfirmed => "momentum_confirmed",
+            MomentumPhase::Neutral => "neutral",
+        }
+    }
+}
+
 /// Exit reason for momentum positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -782,6 +928,9 @@ pub enum MomentumExitReason {
     MaxHold = 7,
     /// Daily loss cap reached.
     DailyCapHit = 8,
+    /// Pool SOL reserve drain detected (rug pull).
+    /// Triggers on: reserve < 10 SOL floor, >30% drop in 3s, or >50% drop in 10s.
+    DrainDetected = 9,
 }
 
 impl MomentumExitReason {
@@ -798,6 +947,7 @@ impl MomentumExitReason {
             Self::TimeSl => "time_sl",
             Self::MaxHold => "max_hold",
             Self::DailyCapHit => "daily_cap",
+            Self::DrainDetected => "drain_detected",
         }
     }
 
@@ -814,6 +964,7 @@ impl MomentumExitReason {
             6 => Self::TimeSl,
             7 => Self::MaxHold,
             8 => Self::DailyCapHit,
+            9 => Self::DrainDetected,
             _ => Self::Open,
         }
     }
@@ -1078,6 +1229,79 @@ impl TopDetector {
             peak_bps: i32::from_le_bytes(buf[13..17].try_into().unwrap()),
         }
     }
+}
+
+// ── Liquidity Quality Score (LQS) ────────────────────────────────────────────
+
+/// Reserve SOL context stored outside MomentumPosition (no free bytes in 256-byte struct).
+/// Keyed by mint in a DashMap on MomentumEngine.
+#[derive(Debug, Clone, Copy)]
+pub struct ReserveSolContext {
+    /// Reserve SOL (lamports) at position entry time.
+    pub entry_lamports: u64,
+    /// Peak reserve SOL (lamports) observed during position lifetime.
+    pub peak_lamports: u64,
+}
+
+impl ReserveSolContext {
+    /// Create a new context at entry time. Peak starts at entry value.
+    #[inline]
+    pub fn new(entry_lamports: u64) -> Self {
+        Self {
+            entry_lamports,
+            peak_lamports: entry_lamports,
+        }
+    }
+
+    /// Update peak if current reserve exceeds it. Returns the (possibly updated) peak.
+    #[inline]
+    pub fn update_peak(&mut self, current_lamports: u64) -> u64 {
+        if current_lamports > self.peak_lamports {
+            self.peak_lamports = current_lamports;
+        }
+        self.peak_lamports
+    }
+}
+
+/// Liquidity Quality Score: 0.0 (dangerous) to 1.0 (excellent).
+///
+/// Used to scale Kelly-derived scale-in sizing based on current pool depth.
+/// Combines three components:
+/// - Absolute depth (40%): full score at 80+ SOL, linear decay below
+/// - Trend vs entry (30%): positive if reserve grew since entry, negative if drained
+/// - Drawdown from peak (30%): how much reserve has dropped from its peak
+///
+/// Called once per scale-in decision (~few hundred/day). NOT on the hot path.
+pub fn liquidity_quality_score(
+    reserve_sol_lamports: u64,
+    reserve_sol_entry_lamports: u64,
+    reserve_sol_peak_lamports: u64,
+) -> f64 {
+    let r_current = reserve_sol_lamports as f64 / 1e9;
+    let r_entry = reserve_sol_entry_lamports as f64 / 1e9;
+    let r_peak = reserve_sol_peak_lamports as f64 / 1e9;
+
+    // Component 1: Absolute depth (40% weight)
+    // Full score at 80+ SOL, linear decay below 80, zero at 0
+    let depth_score = (r_current / 80.0).min(1.0_f64).max(0.0_f64);
+
+    // Component 2: Trend vs entry (30% weight)
+    // +1.0 if reserve doubled, -1.0 if fully drained, 0.0 if unchanged
+    let trend_score = if r_entry > 0.0 {
+        ((r_current - r_entry) / r_entry).max(-1.0_f64).min(1.0_f64)
+    } else {
+        -1.0
+    };
+    let trend_normalized = (trend_score + 1.0) / 2.0; // map to 0..1
+
+    // Component 3: Drawdown from peak (30% weight)
+    let peak_ratio = if r_peak > 0.0 {
+        (r_current / r_peak).min(1.0_f64).max(0.0_f64)
+    } else {
+        0.0
+    };
+
+    0.40 * depth_score + 0.30 * trend_normalized + 0.30 * peak_ratio
 }
 
 // ── ATR computation ──────────────────────────────────────────────────────────
@@ -1365,12 +1589,15 @@ mod tests {
 
     #[test]
     fn test_exit_reason_roundtrip() {
-        for i in 0..=8u8 {
+        for i in 0..=9u8 {
             let reason = MomentumExitReason::from_u8(i);
             assert_eq!(reason as u8, i);
         }
         // Unknown values default to Open
         assert_eq!(MomentumExitReason::from_u8(255), MomentumExitReason::Open);
+        // DrainDetected variant
+        assert_eq!(MomentumExitReason::DrainDetected.as_str(), "drain_detected");
+        assert_eq!(MomentumExitReason::from_u8(9), MomentumExitReason::DrainDetected);
     }
 
     #[test]
@@ -2265,4 +2492,82 @@ mod tests {
     }
 
     // ── End Task 5B tests ────────────────────────────────────────────────
+
+    // ── Liquidity Quality Score (LQS) tests ─────────────────────────────
+
+    #[test]
+    fn test_lqs_excellent_liquidity() {
+        // 100 SOL current, 80 SOL at entry, 100 SOL peak → excellent
+        let lqs = liquidity_quality_score(100_000_000_000, 80_000_000_000, 100_000_000_000);
+        assert!(lqs >= 0.85, "excellent liquidity should score >= 0.85, got {lqs}");
+    }
+
+    #[test]
+    fn test_lqs_low_liquidity() {
+        // 10 SOL current, 80 SOL at entry, 100 SOL peak → poor
+        let lqs = liquidity_quality_score(10_000_000_000, 80_000_000_000, 100_000_000_000);
+        assert!(lqs < 0.30, "drained pool should score < 0.30, got {lqs}");
+    }
+
+    #[test]
+    fn test_lqs_moderate_liquidity() {
+        // 50 SOL current, 50 SOL at entry, 60 SOL peak → moderate
+        let lqs = liquidity_quality_score(50_000_000_000, 50_000_000_000, 60_000_000_000);
+        assert!(lqs >= 0.50 && lqs < 0.85, "moderate liquidity should be 0.50-0.85, got {lqs}");
+    }
+
+    #[test]
+    fn test_lqs_zero_reserve() {
+        // 0 SOL current → should be near 0
+        let lqs = liquidity_quality_score(0, 80_000_000_000, 100_000_000_000);
+        assert!(lqs < 0.15, "zero reserve should score very low, got {lqs}");
+    }
+
+    #[test]
+    fn test_lqs_growing_reserve() {
+        // Reserve doubled from entry: 160 SOL current, 80 entry, 160 peak
+        let lqs = liquidity_quality_score(160_000_000_000, 80_000_000_000, 160_000_000_000);
+        assert!(lqs >= 0.90, "doubled reserve should score very high, got {lqs}");
+    }
+
+    #[test]
+    fn test_lqs_zero_entry_reserve() {
+        // Edge case: entry reserve was 0 (shouldn't happen, but handle gracefully)
+        let lqs = liquidity_quality_score(50_000_000_000, 0, 50_000_000_000);
+        // trend_score = -1.0 → trend_normalized = 0.0
+        // depth = 50/80 = 0.625, peak_ratio = 1.0
+        // = 0.40*0.625 + 0.30*0.0 + 0.30*1.0 = 0.25 + 0 + 0.30 = 0.55
+        assert!(lqs >= 0.50 && lqs <= 0.60, "zero entry should still compute, got {lqs}");
+    }
+
+    #[test]
+    fn test_lqs_range_bounded() {
+        // LQS should always be in [0.0, 1.0]
+        let cases: Vec<(u64, u64, u64)> = vec![
+            (0, 0, 0),
+            (u64::MAX, u64::MAX, u64::MAX),
+            (1, 1_000_000_000_000, 1_000_000_000_000),
+            (500_000_000_000, 1, 500_000_000_000),
+        ];
+        for (cur, entry, peak) in cases {
+            let lqs = liquidity_quality_score(cur, entry, peak);
+            assert!(lqs >= 0.0 && lqs <= 1.0, "LQS out of range: {lqs} for ({cur}, {entry}, {peak})");
+        }
+    }
+
+    #[test]
+    fn test_reserve_sol_context_update_peak() {
+        let mut ctx = ReserveSolContext::new(80_000_000_000);
+        assert_eq!(ctx.entry_lamports, 80_000_000_000);
+        assert_eq!(ctx.peak_lamports, 80_000_000_000);
+
+        ctx.update_peak(100_000_000_000);
+        assert_eq!(ctx.peak_lamports, 100_000_000_000);
+
+        // Lower value should not decrease peak
+        ctx.update_peak(50_000_000_000);
+        assert_eq!(ctx.peak_lamports, 100_000_000_000);
+    }
+
+    // ── End LQS tests ────────────────────────────────────────────────────
 }

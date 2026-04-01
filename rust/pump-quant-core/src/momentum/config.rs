@@ -182,6 +182,19 @@ pub struct MomentumConfig {
     pub dead_zone_price_always_down_bps: i32,
 
     // ══════════════════════════════════════════════════════════
+    // RESERVE FLATNESS DEAD ZONE (Phase 5B)
+    // ══════════════════════════════════════════════════════════
+
+    /// Minimum drain_samples entries required to evaluate reserve flatness. Default: 5.
+    /// Set to 0 to disable reserve flatness detection entirely.
+    pub dead_zone_reserve_flat_min_samples: usize,
+    /// Maximum allowed spread (lamports) between min and max reserve across recent samples.
+    /// If spread < this, reserve is considered flat (no trades happening). Default: 100_000 (0.0001 SOL).
+    pub dead_zone_reserve_flat_tolerance_lamports: u64,
+    /// Minimum hold time (ms) before reserve flatness can fire. Default: 3_000 (3s).
+    pub dead_zone_reserve_flat_min_hold_ms: u64,
+
+    // ══════════════════════════════════════════════════════════
     // EARLY ABORT (Phase 6)
     // ══════════════════════════════════════════════════════════
 
@@ -415,6 +428,11 @@ impl Default for MomentumConfig {
             dead_zone_price_flat_min_samples: 3,
             dead_zone_price_flat_min_hold_ms: 8_000,
             dead_zone_price_always_down_bps: -100,
+
+            // Reserve flatness dead zone (Phase 5B)
+            dead_zone_reserve_flat_min_samples: 5,
+            dead_zone_reserve_flat_tolerance_lamports: 100_000, // 0.0001 SOL
+            dead_zone_reserve_flat_min_hold_ms: 3_000,
 
             // Early abort (Phase 6)
             early_abort_max_bps: 30,
