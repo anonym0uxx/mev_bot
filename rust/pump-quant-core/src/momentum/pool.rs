@@ -188,8 +188,8 @@ pub async fn resolve_pool_from_transaction(
     sig: &[u8; 64],
     helius_rpc_url: &str,
 ) -> Option<PoolResolution> {
-    const MAX_ATTEMPTS: u32 = 3;
-    const BACKOFF_MS: [u64; 2] = [200, 500];
+    const MAX_ATTEMPTS: u32 = 4;
+    const BACKOFF_MS: [u64; 3] = [500, 1000, 2000];
 
     let sig_b58_short = &bs58::encode(sig).into_string()[..8];
 
