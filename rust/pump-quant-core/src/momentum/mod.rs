@@ -175,6 +175,9 @@ pub struct MomentumEngine {
     timeout_exits: AtomicU64,
     daily_pnl_lamports: AtomicI64,
     last_tick_ms: AtomicU64,
+    /// Graduation events where mint_map had no history (enrichment cold miss).
+    /// High value = mint_map not being populated before graduation.
+    grad_enrichment_cold_misses: AtomicU64,
 }
 
 impl MomentumEngine {
@@ -212,10 +215,7 @@ impl MomentumEngine {
         let engine = Self {
             config,
             rpc_url,
-            http_client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_millis(2000))
-                .build()
-                .expect("reqwest client build should not fail"),
+            http_client: crate::momentum::pool::make_pool_resolution_client(),
             active: DashMap::new(),
             recently_closed: DashMap::new(),
             resolving_sigs: DashMap::new(),
@@ -239,6 +239,7 @@ impl MomentumEngine {
             timeout_exits: AtomicU64::new(0),
             daily_pnl_lamports: AtomicI64::new(0),
             last_tick_ms: AtomicU64::new(0),
+            grad_enrichment_cold_misses: AtomicU64::new(0),
         };
 
         (engine, scored_tx, ws_handle, logger_handle)
@@ -1741,8 +1742,18 @@ impl MomentumEngine {
                     enrichment.volume_sol_x100
                 };
                 let effective_speed_s = if enrichment.grad_speed_s == 0 {
+                    // mint_map cold miss — estimate speed from LP SOL reserves.
+                    // BC deposits ~85 SOL at graduation; extra = immediate LP adds post-grad.
+                    // Conservative: assume organic unless LP is very high (≥250 SOL = clear whale/bot pump).
                     let sol = resolution.reserve_sol_lamports / 1_000_000_000;
-                    if sol >= 150 { 60u32 } else if sol >= 100 { 120u32 } else { 240u32 }
+                    self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
+                    tracing::info!(
+                        mint = %bs58::encode(&resolution.mint).into_string(),
+                        reserve_sol = sol,
+                        "[momentum] enrichment cold miss — estimating speed from LP reserves"
+                    );
+                    if sol >= 250 { 60u32 }  // Very aggressive LP add → likely whale, apply hard gate
+                    else { 120u32 }          // Unknown → assume organic minimum (passes hard gate at 90s)
                 } else {
                     enrichment.grad_speed_s
                 };
@@ -1835,6 +1846,7 @@ impl MomentumEngine {
             timeout_exits: self.timeout_exits.load(Ordering::Relaxed),
             daily_pnl_sol: self.daily_pnl_lamports.load(Ordering::Relaxed) as f64
                 / 1_000_000_000.0,
+            grad_enrichment_cold_misses: self.grad_enrichment_cold_misses.load(Ordering::Relaxed),
         }
     }
 }
@@ -1853,6 +1865,8 @@ pub struct MomentumStats {
     pub sl_exits: u64,
     pub timeout_exits: u64,
     pub daily_pnl_sol: f64,
+    /// Graduation events where mint_map had no history (enrichment cold miss).
+    pub grad_enrichment_cold_misses: u64,
 }
 
 #[cfg(test)]
