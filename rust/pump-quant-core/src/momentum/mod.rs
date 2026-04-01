@@ -38,7 +38,6 @@ use crate::momentum::price_feed::{price_from_reserves, PriceFeedManager, VaultSu
 use crate::momentum::scorer::score_graduation;
 use crate::engine::hot_path::ScoredToken;
 
-use crate::tx::skeleton::{TxSkeleton, MAX_SKELETON_SIZE};
 use crate::tx::tip_engine::{TipEngine, TipConfig, TipRequest};
 
 use dashmap::DashMap;
@@ -79,18 +78,6 @@ fn exit_to_context(
         MomentumExitReason::MaxHold => TipContext::Scalp,
         _ => TipContext::RideMomentum,
     }
-}
-
-/// Sell order sent from close_position → sell_task via crossbeam channel.
-pub struct SellOrder {
-    pub mint: [u8; 32],
-    pub patched_msg: Box<[u8; MAX_SKELETON_SIZE]>,
-    pub msg_len: usize,
-    pub tip_lamports: u64,
-    pub exit_reason: &'static str,
-    pub gain_bps: i64,
-    pub size_lamports: u64,
-    pub landing_path: LandingPath,
 }
 
 // ── Blocked mint list: known SPL tokens that should never pass as graduations ──
@@ -163,10 +150,9 @@ pub struct MomentumEngine {
     scored_token_rx: crossbeam_channel::Receiver<ScoredToken>,
 
     // ── Live mode tx infrastructure (all inactive in paper mode) ────
-    skeletons: DashMap<[u8; 32], TxSkeleton>,
+    /// Raydium pool accounts keyed by mint, populated at graduation, consumed at close.
+    raydium_pools: DashMap<[u8; 32], crate::tx::raydium::RaydiumPoolAccounts>,
     tip_engine: Arc<parking_lot::Mutex<TipEngine>>,
-    sell_tx: crossbeam_channel::Sender<SellOrder>,
-    #[allow(dead_code)] // Used by sell_task closure in live mode
     jito_grpc: Option<Arc<crate::tx::jito_grpc::JitoGrpcClient>>,
     nozomi_client: Option<Arc<crate::tx::nozomi::NozomiClient>>,
     wallet_pubkey: Option<[u8; 32]>,
@@ -211,26 +197,10 @@ impl MomentumEngine {
         // Channel for Kelly-scored tokens from hot_path → momentum engine
         let (scored_tx, scored_rx) = crossbeam_channel::bounded::<ScoredToken>(512);
 
-        // Tip engine and sell channel for live mode
+        // Tip engine for live mode
         let tip_engine = Arc::new(parking_lot::Mutex::new(
             TipEngine::new(TipConfig::default()),
         ));
-        let (sell_tx, sell_rx) = crossbeam_channel::bounded::<SellOrder>(64);
-
-        // Spawn sell task in live mode only
-        if !config.paper_mode {
-            if let (Some(jg), Some(wk)) = (jito_grpc.clone(), wallet_pubkey) {
-                let tip_engine_clone = tip_engine.clone();
-                let nozomi_clone = nozomi_client.clone();
-                let bh_cache_clone = blockhash_cache.clone();
-                tokio::spawn(async move {
-                    Self::sell_task(
-                        sell_rx, wk, jg, nozomi_clone, tip_engine_clone, bh_cache_clone,
-                    )
-                    .await;
-                });
-            }
-        }
 
         let engine = Self {
             config,
@@ -246,9 +216,8 @@ impl MomentumEngine {
             logger,
             scored_tokens: DashMap::new(),
             scored_token_rx: scored_rx,
-            skeletons: DashMap::new(),
+            raydium_pools: DashMap::new(),
             tip_engine,
-            sell_tx,
             jito_grpc,
             nozomi_client,
             wallet_pubkey,
@@ -606,27 +575,84 @@ impl MomentumEngine {
                 "[momentum] entry opened"
             );
 
-            // Build sell skeleton at position open (cold path — ~5μs is fine here)
-            // NOTE: bonding_curve and assoc_bonding_curve are not currently available
-            // in PendingEntry/PoolInfo. Skeleton building requires these PDAs.
-            // For live mode Phase 2: add bonding_curve resolution to pool.rs and
-            // wire through PendingEntry. For now, skeleton building is skipped if
-            // the data isn't available, and the sell path will fall back to the
-            // full async TxBuilder (slower but correct).
+            // Live mode: submit buy tx via Raydium AMM V4 + Jito
             if !self.config.paper_mode {
-                if let Some(ref _wallet_pk) = self.wallet_pubkey {
-                    tracing::debug!(
-                        mint = %bs58::encode(&entry.mint).into_string(),
-                        "[momentum] live mode: skeleton build deferred — bonding_curve PDA not yet wired through PendingEntry"
+                if let Some(pool) = self.raydium_pools.get(&entry.mint).map(|r| r.clone()) {
+                    let mint = entry.mint;
+                    let size = size_lamports;
+                    let kp_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
+                    let jg = match self.jito_grpc.clone() {
+                        Some(j) => j,
+                        None => {
+                            tracing::warn!(mint=%bs58::encode(&mint).into_string(), "[buy_task] no jito client");
+                            self.active.remove(&mint);
+                            continue;
+                        }
+                    };
+                    let bh = self.blockhash_cache_sync().unwrap_or([0u8; 32]);
+                    let tip_req = crate::tx::tip_engine::TipRequest {
+                        context: crate::tx::tip_engine::TipContext::Entry,
+                        size_lamports: size,
+                        gain_bps: 0,
+                        grad_score: entry.grad_score as f64,
+                    };
+                    let tip = self.tip_engine.lock().compute_tip(&tip_req);
+                    // Estimate tokens from entry price: tokens ≈ sol_in / price_fp * 1_000_000
+                    // price_fp = lamports per 1M token atoms, so tokens = sol_in * 1_000_000 / price_fp
+                    let tokens_estimate = if current_price_fp > 0 {
+                        (size as u128 * 1_000_000 / current_price_fp as u128) as u64
+                    } else { 0u64 };
+                    // Store tokens estimate in position immediately (before async buy confirms)
+                    if let Some(mut pos) = self.active.get_mut(&entry.mint) {
+                        pos.set_tokens_held(tokens_estimate);
+                    }
+                    // Capture mint for move into async block
+                    let mint_buy = mint;
+                    let tokens_est = tokens_estimate;
+                    tokio::spawn(async move {
+                        let kp_bytes = match std::fs::read(&kp_path) {
+                            Ok(b) => b,
+                            Err(e) => { tracing::error!(err=?e, "[buy_task] keypair load failed"); return; }
+                        };
+                        let kp_arr: Vec<u8> = match serde_json::from_slice(&kp_bytes) {
+                            Ok(v) => v,
+                            Err(e) => { tracing::error!(err=?e, "[buy_task] keypair parse failed"); return; }
+                        };
+                        if kp_arr.len() != 64 { tracing::error!("[buy_task] invalid keypair len"); return; }
+                        let mut kb = [0u8; 64];
+                        kb.copy_from_slice(&kp_arr);
+                        let keypair = match solana_sdk::signature::Keypair::from_bytes(&kb) {
+                            Ok(k) => k,
+                            Err(e) => { tracing::error!(err=?e, "[buy_task] keypair err"); return; }
+                        };
+                        use std::str::FromStr as _;
+                        let tip_account = solana_sdk::pubkey::Pubkey::from_str(
+                            crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
+                        ).unwrap();
+                        let tx_bytes = match crate::tx::raydium::build_raydium_buy_tx(
+                            &pool, &mint_buy, &keypair, size, 0, tip, tip_account, bh,
+                        ) {
+                            Ok(b) => b,
+                            Err(e) => { tracing::error!(mint=%bs58::encode(&mint_buy).into_string(), err=?e, "[buy_task] build failed"); return; }
+                        };
+                        use base64::Engine as _;
+                        let tx_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
+                        match jg.submit_bundle(&tx_b64).await {
+                            Ok(id) => {
+                                tracing::info!(mint=%bs58::encode(&mint_buy).into_string(), bundle_id=%id, tip, size_sol=size as f64/1e9, tokens_est, "[buy_task] Jito submitted");
+                                // tokens_held stored at position open — buy confirmed
+                                // Note: tokens_est is the AMM formula estimate; actual tokens may differ slightly
+                            }
+                            Err(e) => {
+                                tracing::error!(mint=%bs58::encode(&mint_buy).into_string(), err=?e, "[buy_task] Jito FAILED");
+                            }
+                        }
+                    });
+                } else {
+                    tracing::warn!(
+                        mint=%bs58::encode(&entry.mint).into_string(),
+                        "[momentum] live mode: no raydium pool accounts — position is accounting-only"
                     );
-                    // TODO: When bonding_curve + assoc_bonding_curve are available:
-                    // match TxSkeleton::build_sell_skeleton(
-                    //     &entry.mint, &bonding_curve, &assoc_bonding_curve,
-                    //     wallet_pk, size_lamports, 0, 0,
-                    // ) {
-                    //     Ok(skeleton) => { self.skeletons.insert(entry.mint, skeleton); }
-                    //     Err(e) => tracing::warn!(err = %e, "[momentum] failed to build sell skeleton"),
-                    // }
                 }
             }
 
@@ -1164,116 +1190,6 @@ impl MomentumEngine {
         self.blockhash_cache.get_sync()
     }
 
-    /// Sell task: async consumer that signs and submits sell transactions
-    /// via Jito/Nozomi/DualPath. Runs in a dedicated tokio task.
-    async fn sell_task(
-        sell_rx: crossbeam_channel::Receiver<SellOrder>,
-        _wallet_pubkey: [u8; 32],
-        jito_grpc: Arc<crate::tx::jito_grpc::JitoGrpcClient>,
-        nozomi_client: Option<Arc<crate::tx::nozomi::NozomiClient>>,
-        tip_engine: Arc<parking_lot::Mutex<TipEngine>>,
-        _blockhash_cache: Arc<crate::tx::executor::BlockhashCache>,
-    ) {
-        // Load wallet keypair for signing
-        let keypair_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
-        let keypair_bytes = match std::fs::read(&keypair_path) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::error!(err = ?e, "sell_task: failed to load wallet keypair");
-                return;
-            }
-        };
-        let keypair_arr: Vec<u8> = serde_json::from_slice(&keypair_bytes).unwrap_or_default();
-        if keypair_arr.len() != 64 {
-            tracing::error!("sell_task: invalid keypair length {}", keypair_arr.len());
-            return;
-        }
-        let mut kp_bytes = [0u8; 64];
-        kp_bytes.copy_from_slice(&keypair_arr);
-        let keypair = solana_sdk::signature::Keypair::from_bytes(&kp_bytes)
-            .expect("invalid keypair bytes");
-
-        while let Ok(order) = sell_rx.recv() {
-            let mint_b58 = bs58::encode(&order.mint).into_string();
-            let msg_bytes = &order.patched_msg[..order.msg_len];
-
-            // Sign the message
-            use solana_sdk::signer::Signer;
-            let sig = keypair.sign_message(msg_bytes);
-
-            // Build versioned transaction: [1 sig count][64 sig bytes][message bytes]
-            let mut tx_bytes = Vec::with_capacity(1 + 64 + msg_bytes.len());
-            tx_bytes.push(1u8); // 1 signature
-            tx_bytes.extend_from_slice(sig.as_ref());
-            tx_bytes.extend_from_slice(msg_bytes);
-            let tx_b64 = {
-                use base64::Engine;
-                base64::engine::general_purpose::STANDARD.encode(&tx_bytes)
-            };
-
-            let landed = match order.landing_path {
-                LandingPath::JitoOnly => {
-                    match jito_grpc.submit_bundle(&tx_b64).await {
-                        Ok(id) => {
-                            tracing::info!(
-                                mint = %mint_b58, bundle_id = %id,
-                                tip = order.tip_lamports,
-                                "[sell_task] Jito submitted"
-                            );
-                            true
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                mint = %mint_b58, err = ?e,
-                                "[sell_task] Jito FAILED"
-                            );
-                            false
-                        }
-                    }
-                }
-                LandingPath::NozomiOnly => {
-                    if let Some(ref noz) = nozomi_client {
-                        match noz.send_transaction(&tx_b64).await {
-                            Ok(sig) => {
-                                tracing::info!(
-                                    mint = %mint_b58, sig = %sig,
-                                    "[sell_task] Nozomi submitted"
-                                );
-                                true
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    mint = %mint_b58, err = ?e,
-                                    "[sell_task] Nozomi failed, falling back to Jito"
-                                );
-                                jito_grpc.submit_bundle(&tx_b64).await.is_ok()
-                            }
-                        }
-                    } else {
-                        jito_grpc.submit_bundle(&tx_b64).await.is_ok()
-                    }
-                }
-                LandingPath::DualPath => {
-                    let jito_fut = jito_grpc.submit_bundle(&tx_b64);
-                    if let Some(ref noz) = nozomi_client {
-                        let noz_fut = noz.send_transaction(&tx_b64);
-                        let (j, n) = tokio::join!(jito_fut, noz_fut);
-                        tracing::info!(
-                            mint = %mint_b58,
-                            jito_ok = j.is_ok(), nozomi_ok = n.is_ok(),
-                            "[sell_task] dual-path submitted"
-                        );
-                        j.is_ok() || n.is_ok()
-                    } else {
-                        jito_fut.await.is_ok()
-                    }
-                }
-            };
-
-            tip_engine.lock().record_result(landed);
-        }
-    }
-
     /// Close a position, calculate P&L, update stats, and log.
     #[cold]
     #[inline(never)]
@@ -1420,59 +1336,90 @@ impl MomentumEngine {
             config_version: self.config.config_version(),
         });
 
-        // ── Live mode: build and enqueue sell transaction ──────────────────────
+        // ── Live mode: Raydium AMM V4 sell via Jito ────────────────────────────
         if !self.config.paper_mode {
-            if let Some((_, skeleton)) = self.skeletons.remove(&mint) {
-                let blockhash = self.blockhash_cache_sync();
-                let tip_req = TipRequest {
-                    context: exit_to_context(&reason, gain_bps as i64),
-                    size_lamports: pos.size_lamports,
-                    gain_bps: gain_bps as i64,
-                    grad_score: 0.0,
-                };
-                let tip = self.tip_engine.lock().compute_tip(&tip_req);
-
-                // min_sol_out = 0 for speed (no slippage protection); TODO: add slippage
-                let min_sol_out = 0u64;
-                // tokens_to_sell: approximate from size_lamports and entry price.
-                // In paper mode we don't track actual tokens held. For live mode the
-                // skeleton patches tokens_to_sell with position's known token amount.
-                // For now, use the vtoken_reserves placeholder (patched at skeleton build).
-                let tokens_to_sell = pos.size_lamports; // proxy — skeleton built with real value
-
-                let mut patched = Box::new([0u8; MAX_SKELETON_SIZE]);
-                let bh = blockhash.unwrap_or([0u8; 32]);
-                let msg_len =
-                    skeleton.patch(min_sol_out, tokens_to_sell, &bh, tip, patched.as_mut());
-
-                let landing_path =
-                    route_exit(reason.as_str(), gain_bps as i64, self.nozomi_client.is_some());
-
-                match self.sell_tx.try_send(SellOrder {
-                    mint,
-                    patched_msg: patched,
-                    msg_len,
-                    tip_lamports: tip,
-                    exit_reason: reason.as_str(),
-                    gain_bps: gain_bps as i64,
-                    size_lamports: pos.size_lamports,
-                    landing_path,
-                }) {
-                    Ok(()) => tracing::debug!(
-                        mint = %bs58::encode(&mint).into_string(),
-                        tip,
-                        "[close_position] sell queued"
-                    ),
-                    Err(e) => tracing::error!(
-                        mint = %bs58::encode(&mint).into_string(),
-                        err = %e,
-                        "[close_position] sell channel FULL — position closed but sell NOT submitted"
-                    ),
+            if let Some((_, pool)) = self.raydium_pools.remove(&mint) {
+                let tokens = pos.tokens_held();
+                if tokens == 0 {
+                    tracing::warn!(
+                        mint=%bs58::encode(&mint).into_string(),
+                        "[close_position] tokens_held=0 — buy tx likely failed, skipping sell"
+                    );
+                } else {
+                    let kp_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
+                    let jg = match self.jito_grpc.clone() {
+                        Some(j) => j,
+                        None => { tracing::error!("[close_position] no jito client"); return; }
+                    };
+                    let bh = self.blockhash_cache_sync().unwrap_or([0u8; 32]);
+                    let tip_req = TipRequest {
+                        context: exit_to_context(&reason, gain_bps as i64),
+                        size_lamports: pos.size_lamports,
+                        gain_bps: gain_bps as i64,
+                        grad_score: 0.0,
+                    };
+                    let tip = self.tip_engine.lock().compute_tip(&tip_req);
+                    // 1% slippage on profitable exits, 0 on losses (speed > price)
+                    let min_sol_out = if gain_bps > 0 {
+                        let expected = (pos.entry_price_fp as u128 * tokens as u128 / 1_000_000) as u64;
+                        (expected as u128 * 9900 / 10000) as u64
+                    } else { 0u64 };
+                    let noz = self.nozomi_client.clone();
+                    let reason_str = reason.as_str().to_string();
+                    let gain = gain_bps as i64;
+                    let noz_ok = noz.is_some();
+                    let mint_copy = mint;
+                    tokio::spawn(async move {
+                        let kp_bytes = match std::fs::read(&kp_path) {
+                            Ok(b) => b,
+                            Err(e) => { tracing::error!(err=?e, "[sell_raydium] keypair load failed"); return; }
+                        };
+                        let kp_arr: Vec<u8> = match serde_json::from_slice(&kp_bytes) {
+                            Ok(v) => v,
+                            Err(e) => { tracing::error!(err=?e, "[sell_raydium] keypair parse failed"); return; }
+                        };
+                        if kp_arr.len() != 64 { tracing::error!("[sell_raydium] bad keypair len"); return; }
+                        let mut kb = [0u8; 64];
+                        kb.copy_from_slice(&kp_arr);
+                        let keypair = match solana_sdk::signature::Keypair::from_bytes(&kb) {
+                            Ok(k) => k,
+                            Err(e) => { tracing::error!(err=?e, "[sell_raydium] keypair from_bytes"); return; }
+                        };
+                        use std::str::FromStr as _;
+                        let tip_account = solana_sdk::pubkey::Pubkey::from_str(
+                            crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
+                        ).unwrap();
+                        let tx_bytes = match crate::tx::raydium::build_raydium_sell_tx(
+                            &pool, &mint_copy, &keypair, tokens, min_sol_out, tip, tip_account, bh,
+                        ) {
+                            Ok(b) => b,
+                            Err(e) => { tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] build failed"); return; }
+                        };
+                        use base64::Engine as _;
+                        let tx_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
+                        let landing = route_exit(&reason_str, gain, noz_ok);
+                        match landing {
+                            LandingPath::JitoOnly => {
+                                match jg.submit_bundle(&tx_b64).await {
+                                    Ok(id) => tracing::info!(mint=%bs58::encode(&mint_copy).into_string(), bundle_id=%id, "[sell_raydium] Jito submitted"),
+                                    Err(e) => tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] Jito FAILED"),
+                                }
+                            }
+                            LandingPath::NozomiOnly | LandingPath::DualPath => {
+                                if let Some(ref n) = noz {
+                                    match n.send_transaction(&tx_b64).await {
+                                        Ok(_) => tracing::info!(mint=%bs58::encode(&mint_copy).into_string(), "[sell_raydium] Nozomi OK"),
+                                        Err(e) => { tracing::warn!(err=?e, "[sell_raydium] Nozomi failed → Jito"); let _ = jg.submit_bundle(&tx_b64).await; }
+                                    }
+                                }
+                            }
+                        }
+                    });
                 }
             } else {
                 tracing::warn!(
-                    mint = %bs58::encode(&mint).into_string(),
-                    "[close_position] no skeleton found — sell NOT submitted"
+                    mint=%bs58::encode(&mint).into_string(),
+                    "[close_position] no raydium pool — sell NOT submitted"
                 );
             }
         }
@@ -1527,6 +1474,53 @@ impl MomentumEngine {
                 } else {
                     enrichment.buys_5s as u32
                 };
+                // Store Raydium pool accounts for live-mode buy/sell tx building.
+                // Keyed by mint — consumed when position closes.
+                if !self.config.paper_mode && resolution.pool_type == PoolType::RaydiumAmmV4
+                    && resolution.amm_id != [0u8; 32]
+                {
+                    use crate::tx::raydium::RaydiumPoolAccounts;
+                    // amm_authority is a global PDA — same for all Raydium AMM V4 pools
+                    let amm_authority = {
+                        use std::str::FromStr;
+                        let prog = solana_sdk::pubkey::Pubkey::from_str(
+                            crate::tx::raydium::RAYDIUM_AMM_V4_PROGRAM
+                        ).unwrap_or_default();
+                        let (pda, _) = solana_sdk::pubkey::Pubkey::find_program_address(
+                            &[b"amm authority"], &prog
+                        );
+                        pda.to_bytes()
+                    };
+                    // serum_program_id: standard Serum v3 DEX
+                    let serum_program_id = {
+                        use std::str::FromStr;
+                        solana_sdk::pubkey::Pubkey::from_str(
+                            crate::tx::raydium::SERUM_DEX_PROGRAM
+                        ).unwrap_or_default().to_bytes()
+                    };
+                    let pool_accts = RaydiumPoolAccounts {
+                        amm_id: resolution.amm_id,
+                        amm_authority,
+                        amm_open_orders: resolution.amm_open_orders,
+                        amm_target_orders: resolution.amm_target_orders,
+                        serum_program_id,
+                        serum_market: resolution.serum_market,
+                        serum_bids: resolution.serum_bids,
+                        serum_asks: resolution.serum_asks,
+                        serum_event_queue: resolution.serum_event_queue,
+                        serum_coin_vault: resolution.serum_coin_vault,
+                        serum_pc_vault: resolution.serum_pc_vault,
+                        serum_vault_signer: resolution.serum_vault_signer,
+                        coin_vault: resolution.coin_vault,
+                        pc_vault: resolution.pc_vault,
+                    };
+                    self.raydium_pools.insert(resolution.mint, pool_accts);
+                    tracing::debug!(
+                        mint = %bs58::encode(&resolution.mint).into_string(),
+                        "[momentum] raydium pool accounts stored for live execution"
+                    );
+                }
+
                 self.on_graduation(
                     &pool_info,
                     ts_ms,

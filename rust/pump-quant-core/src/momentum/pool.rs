@@ -108,7 +108,7 @@ const PUMPSWAP_AMM_PROGRAM: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
 pub struct PoolResolution {
     /// Token mint address.
     pub mint: [u8; 32],
-    /// DEX pool address ([0u8; 32] if extraction failed).
+    /// DEX pool address. For Raydium, this is amm_id. ([0u8; 32] if extraction failed.)
     pub pool_address: [u8; 32],
     /// Token vault (SPL token account).
     pub coin_vault: [u8; 32],
@@ -122,6 +122,28 @@ pub struct PoolResolution {
     pub reserve_token_atoms: u64,
     /// Bonding curve vSol at graduation (~85 SOL). 0.0 if unknown.
     pub bc_terminal_vsol: f64,
+
+    // ── Raydium AMM V4 pool accounts (zero for PumpSwap/Unknown) ─────────
+    /// Raydium AMM pool state account. Same as pool_address for Raydium.
+    pub amm_id: [u8; 32],
+    /// AMM open orders account (Serum/OpenBook order book state).
+    pub amm_open_orders: [u8; 32],
+    /// AMM target orders account.
+    pub amm_target_orders: [u8; 32],
+    /// Serum/OpenBook market account.
+    pub serum_market: [u8; 32],
+    /// Serum market bids slab.
+    pub serum_bids: [u8; 32],
+    /// Serum market asks slab.
+    pub serum_asks: [u8; 32],
+    /// Serum event queue.
+    pub serum_event_queue: [u8; 32],
+    /// Serum coin vault (token side).
+    pub serum_coin_vault: [u8; 32],
+    /// Serum pc vault (WSOL side).
+    pub serum_pc_vault: [u8; 32],
+    /// Serum vault signer (PDA).
+    pub serum_vault_signer: [u8; 32],
 }
 
 /// Decode a base58-encoded string into a 32-byte array.
@@ -277,16 +299,172 @@ async fn resolve_pool_inner(
         "[momentum] v2 vault reserves fetched"
     );
 
+    // ── Phase C: Raydium pool account resolution ─────────────────────────
+    // For Raydium AMM V4 pools, extract amm_id from accountKeys and fetch
+    // full pool accounts (open_orders, target_orders, serum market, etc.).
+    // For PumpSwap/Unknown, all Raydium fields are zero.
+
+    let mut amm_id = [0u8; 32];
+    let mut amm_open_orders = [0u8; 32];
+    let mut amm_target_orders = [0u8; 32];
+    let mut serum_market = [0u8; 32];
+    let mut serum_bids = [0u8; 32];
+    let mut serum_asks = [0u8; 32];
+    let mut serum_event_queue = [0u8; 32];
+    let mut serum_coin_vault = [0u8; 32];
+    let mut serum_pc_vault = [0u8; 32];
+    let mut serum_vault_signer = [0u8; 32];
+
+    if pool_type == PoolType::RaydiumAmmV4 {
+        // Extract amm_id from the graduation tx accountKeys.
+        // amm_id is the writable account that is NOT a known program,
+        // NOT coin_vault, NOT pc_vault, NOT WSOL mint, NOT the token mint.
+        let known_programs: &[&str] = &[
+            RAYDIUM_AMM_V4_PROGRAM,
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+            "11111111111111111111111111111111",
+            "SysvarRent111111111111111111111111111111111",
+            "SysvarC1ock11111111111111111111111111111111",
+            "ComputeBudget111111111111111111111111111111",
+            "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+            "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
+            WSOL_MINT,
+            PUMPSWAP_AMM_PROGRAM,
+            // Pump.fun programs
+            "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+            "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp18C",
+        ];
+
+        let extracted_amm_id = extract_amm_id_from_account_keys(
+            &account_keys_strs,
+            &coin_vault_b58,
+            &pc_vault_b58,
+            &graduation_mint_b58,
+            known_programs,
+        );
+
+        match extracted_amm_id {
+            Some(id) => {
+                amm_id = id;
+                let amm_id_b58 = bs58::encode(&amm_id).into_string();
+                tracing::debug!(
+                    amm_id = %amm_id_b58,
+                    "[momentum] extracted amm_id from accountKeys"
+                );
+
+                // Fetch full Raydium pool accounts (2 RPC calls)
+                match crate::tx::raydium::fetch_raydium_pool_accounts(
+                    client,
+                    helius_rpc_url,
+                    &amm_id,
+                    coin_vault,
+                    pc_vault,
+                )
+                .await
+                {
+                    Ok(pool_accounts) => {
+                        amm_open_orders = pool_accounts.amm_open_orders;
+                        amm_target_orders = pool_accounts.amm_target_orders;
+                        serum_market = pool_accounts.serum_market;
+                        serum_bids = pool_accounts.serum_bids;
+                        serum_asks = pool_accounts.serum_asks;
+                        serum_event_queue = pool_accounts.serum_event_queue;
+                        serum_coin_vault = pool_accounts.serum_coin_vault;
+                        serum_pc_vault = pool_accounts.serum_pc_vault;
+                        serum_vault_signer = pool_accounts.serum_vault_signer;
+                        tracing::info!(
+                            amm_id = %amm_id_b58,
+                            serum_market = %bs58::encode(&serum_market).into_string(),
+                            "[momentum] Raydium pool accounts resolved successfully"
+                        );
+                    }
+                    Err(e) => {
+                        // Fetch failed — log warning, leave all Raydium fields as zeros.
+                        // Don't block graduation — position will be paper-mode fallback.
+                        tracing::warn!(
+                            amm_id = %amm_id_b58,
+                            err = %e,
+                            "[momentum] fetch_raydium_pool_accounts FAILED — Raydium fields zeroed"
+                        );
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(
+                    "[momentum] could not extract amm_id from accountKeys — Raydium fields zeroed"
+                );
+            }
+        }
+    }
+
     Ok(PoolResolution {
         mint,
-        pool_address: [0u8; 32],
+        pool_address: amm_id, // For Raydium, pool_address = amm_id
         coin_vault,
         pc_vault,
         pool_type,
         reserve_sol_lamports: reserve_sol,
         reserve_token_atoms: reserve_token,
         bc_terminal_vsol: 0.0,
+        amm_id,
+        amm_open_orders,
+        amm_target_orders,
+        serum_market,
+        serum_bids,
+        serum_asks,
+        serum_event_queue,
+        serum_coin_vault,
+        serum_pc_vault,
+        serum_vault_signer,
     })
+}
+
+/// Extract the Raydium AMM pool ID (amm_id) from graduation tx accountKeys.
+///
+/// The amm_id is the unknown writable account that is NOT:
+/// - Any known program address
+/// - coin_vault or pc_vault
+/// - WSOL mint or the token mint
+///
+/// Returns `None` if no suitable candidate is found.
+fn extract_amm_id_from_account_keys(
+    account_keys: &[&str],
+    coin_vault_b58: &str,
+    pc_vault_b58: &str,
+    graduation_mint_b58: &str,
+    known_programs: &[&str],
+) -> Option<[u8; 32]> {
+    // Collect all accounts that are NOT known programs, NOT vaults, NOT mints
+    let mut candidates: Vec<[u8; 32]> = Vec::new();
+
+    for key_str in account_keys {
+        // Skip known programs
+        if known_programs.contains(key_str) {
+            continue;
+        }
+        // Skip vaults (already identified)
+        if *key_str == coin_vault_b58 || *key_str == pc_vault_b58 {
+            continue;
+        }
+        // Skip the token mint
+        if *key_str == graduation_mint_b58 {
+            continue;
+        }
+        // Skip WSOL mint
+        if *key_str == WSOL_MINT {
+            continue;
+        }
+
+        if let Some(decoded) = decode_bs58_32(key_str) {
+            candidates.push(decoded);
+        }
+    }
+
+    // The amm_id is typically the first unknown writable account.
+    // In Raydium graduation txs, the amm_id appears early in the account list
+    // (usually index 1-5). We take the first candidate.
+    candidates.into_iter().next()
 }
 
 /// Extract vault addresses from getTransaction jsonParsed response.

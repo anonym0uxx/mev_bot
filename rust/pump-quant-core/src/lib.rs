@@ -2,7 +2,6 @@
 
 pub mod alerts;
 pub mod api;
-pub mod arb;
 pub mod core;
 pub mod engine;
 pub mod feeds;

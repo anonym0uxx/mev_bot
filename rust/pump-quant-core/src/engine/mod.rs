@@ -5,8 +5,7 @@ pub mod entry_engine;
 pub mod exit_v4;
 pub mod kelly_sizing;
 pub mod entry_randomizer;
-// RIDE-only engine: exit_machine is dead code, kept until positions.rs is cleaned up
-pub mod exit_machine;
+
 pub mod gates;
 pub mod health;
 pub mod hot_path;
@@ -18,7 +17,7 @@ pub mod risk_manager;
 pub mod watchlist;
 pub mod scorer;
 pub mod scoring;
-pub mod signal_engine;
+
 
 #[cfg(test)]
 #[cfg(test)]

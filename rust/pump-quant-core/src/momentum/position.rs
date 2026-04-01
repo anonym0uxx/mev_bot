@@ -304,6 +304,20 @@ impl MomentumPosition {
         self._pad2[17] = 1;
     }
 
+    /// Get the number of tokens held in this position (for live sell tx).
+    /// Stored in _pad2[28..36].
+    #[inline(always)]
+    pub fn tokens_held(&self) -> u64 {
+        u64::from_le_bytes(self._pad2[28..36].try_into().unwrap())
+    }
+
+    /// Set the number of tokens held in this position (for live sell tx).
+    /// Stored in _pad2[28..36].
+    #[inline(always)]
+    pub fn set_tokens_held(&mut self, v: u64) {
+        self._pad2[28..36].copy_from_slice(&v.to_le_bytes());
+    }
+
     #[inline(always)]
     pub fn ws_notif_count(&self) -> u16 {
         u16::from_le_bytes(self._pad2[18..20].try_into().unwrap())

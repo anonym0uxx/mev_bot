@@ -1,11 +1,10 @@
 //! Integration tests for the SCALP → RIDE lifecycle.
-//! Tests the interaction between entry_engine, positions, ride_state, and exit_machine.
+//! Tests the interaction between entry_engine, positions, and ride_state.
 
 #[cfg(test)]
 mod tests {
     use crate::engine::ride_state::{RideState, RideConfig, RideDecision, RideExitReason};
     use crate::feeds::FeedSource;
-    use crate::engine::exit_machine::{ExitStateMachine, ExitConfig, ExitDecision, ExitReasonNew, TpSlTierV2};
     use crate::engine::entry_engine::{EntryEngine, EntryEngineConfig, EntryInput, EntryAction};
 
     // Test 1: RideState full lifecycle — create, buy events, trail stop exit
@@ -121,36 +120,4 @@ mod tests {
             decision.score, decision.magnitude, decision.action);
     }
 
-    // Test 6: ExitStateMachine still works for SCALP path
-    #[test]
-    fn test_scalp_exit_machine_unchanged() {
-        let mut tiers = [TpSlTierV2::default(); 8];
-        tiers[0] = TpSlTierV2 {
-            trigger_max_lamports: 600_000_000,
-            unconfirmed_tp_fp: 2000,
-            unconfirmed_sl_fp: 1000,
-            confirmed_tp_fp: 3000,
-            confirmed_sl_fp: 1500,
-        };
-        let config = ExitConfig {
-            confirmation_window_ms: 200,
-            stall_no_buy_ms: 500,
-            stall_fade_fp: 1000,
-            stall_conviction_no_buy_ms: 800,
-            stall_conviction_fade_fp: 1500,
-            max_hold_safety_ms: 5000,
-            conviction_tp_multipliers: [100, 100, 140, 180, 220],
-            trail_min_conviction: 2,
-            trail_activation_pct_of_base_tp: 60,
-            trail_distance_fp: 1500,
-            trail_keep_mult: 1.0 - 0.015,
-            trail_activation_mult: 0.6,
-            tp_sl_tiers: tiers,
-            tp_sl_tier_count: 1,
-        };
-        let mut sm = ExitStateMachine::on_entry(&config, 500_000_000, 100.0, 1000);
-        // TP at 102.0 (2% unconfirmed)
-        let d = sm.on_price_tick(&config, 102.1, 1050);
-        assert_eq!(d, ExitDecision::Exit(ExitReasonNew::TakeProfit));
-    }
 }
