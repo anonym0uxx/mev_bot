@@ -823,6 +823,12 @@ impl MomentumEngine {
                 }
             }
 
+            // ── Dump signal: s[0] < 0, instant exit ──────────────────────
+            if pos.tp_flags & 0x8 != 0 {
+                to_close.push((mint, MomentumExitReason::HardSl, current_price_fp));
+                continue;
+            }
+
             // 2. Hard SL
             let hard_sl_bps = (self.config.hard_sl_pct * 100.0) as u32;
             if pos.hard_sl_hit(current_price_fp, hard_sl_bps) {
@@ -977,6 +983,42 @@ impl MomentumEngine {
             }
             // ── End Phase 5 ──────────────────────────────────────────────────────
 
+            // ── Phase 6: Early abort — kill dead tokens fast ────────────────
+            // Data shows 80.8% of trades are near-zero gross. Most flat tokens
+            // are identifiable by sample 3 (3-5s in). Exit early to reduce
+            // fee drag — don't hold a dead token for 30-60s.
+            if self.config.early_abort_max_bps > 0
+                && pos.sample_count >= self.config.early_abort_min_samples
+                && elapsed_ms >= self.config.early_abort_min_hold_ms
+            {
+                let n = pos.sample_count as usize;
+                let nonzero: Vec<i32> = pos.price_samples_bps[..n]
+                    .iter()
+                    .filter(|&&s| s != 0)
+                    .copied()
+                    .collect();
+                if !nonzero.is_empty() {
+                    let max_sample = *nonzero.iter().max().unwrap();
+                    if max_sample < self.config.early_abort_max_bps {
+                        // Don't abort if trailing stop is already armed (TP1 hit)
+                        let trailing_armed = pos.tp_flags & 0x1 != 0;
+                        if !trailing_armed {
+                            tracing::debug!(
+                                mint = %bs58::encode(&mint).into_string(),
+                                max_sample,
+                                samples = pos.sample_count,
+                                "[momentum] early abort: max_sample {} < {} bps",
+                                max_sample,
+                                self.config.early_abort_max_bps
+                            );
+                            to_close.push((mint, MomentumExitReason::TimeSl, current_price_fp));
+                            continue;
+                        }
+                    }
+                }
+            }
+            // ── End Phase 6 ─────────────────────────────────────────────────
+
             // Dead zone detection — quant spec: kill tokens with no momentum early.
             // Phase 2 (T+60s): if cumulative bps < dead_zone_confirmed_bps (200) → exit
             // Phase 3: if total movement < dead_zone_stagnant_bps (300) in last 30s → exit
@@ -1094,8 +1136,9 @@ impl MomentumEngine {
             let s0 = pos.price_samples_bps[0];
 
             // s[0] < 0: dump signal — mark scaled_in to prevent further checks.
-            // The dead zone or time_sl will handle the actual exit.
+            // Bit 3 (0x8) flags instant exit in process_active_positions().
             if s0 < 0 {
+                pos.tp_flags |= 0x8;
                 pos.set_scaled_in();
                 continue;
             }

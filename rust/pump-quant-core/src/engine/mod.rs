@@ -5,7 +5,6 @@ pub mod entry_engine;
 pub mod exit_v4;
 pub mod kelly_sizing;
 pub mod entry_randomizer;
-
 pub mod gates;
 pub mod health;
 pub mod hot_path;
@@ -18,7 +17,5 @@ pub mod watchlist;
 pub mod scorer;
 pub mod scoring;
 
-
-#[cfg(test)]
 #[cfg(test)]
 mod integration_tests;

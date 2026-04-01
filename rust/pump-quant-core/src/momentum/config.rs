@@ -181,6 +181,21 @@ pub struct MomentumConfig {
     pub dead_zone_price_always_down_bps: i32,
 
     // ══════════════════════════════════════════════════════════
+    // EARLY ABORT (Phase 6)
+    // ══════════════════════════════════════════════════════════
+
+    /// Phase 6: Early abort. If max(nonzero_samples) < this threshold after
+    /// early_abort_min_samples samples AND hold >= early_abort_min_hold_ms → exit.
+    /// Default: 30 bps. Set to 0 to disable.
+    pub early_abort_max_bps: i32,
+
+    /// Minimum samples before early abort fires. Default: 3.
+    pub early_abort_min_samples: u8,
+
+    /// Minimum hold time (ms) before early abort fires. Default: 3_000.
+    pub early_abort_min_hold_ms: u64,
+
+    // ══════════════════════════════════════════════════════════
     // SCALE-IN ENTRY
     // ══════════════════════════════════════════════════════════
 
@@ -292,6 +307,11 @@ impl Default for MomentumConfig {
             dead_zone_price_flat_min_samples: 3,
             dead_zone_price_flat_min_hold_ms: 8_000,
             dead_zone_price_always_down_bps: -100,
+
+            // Early abort (Phase 6)
+            early_abort_max_bps: 30,
+            early_abort_min_samples: 3,
+            early_abort_min_hold_ms: 3_000,
 
             // Scale-in entry
             probe_size_sol: 0.10,
