@@ -451,18 +451,34 @@ async fn price_feed_poll_loop(
     loop {
         iv.tick().await;
 
-        let subs: Vec<([u8; 32], String, String)> = active_subs
+        let mut subs: Vec<([u8; 32], String, String)> = active_subs
             .iter()
             .map(|e| (*e.key(), e.value().coin_vault.clone(), e.value().pc_vault.clone()))
             .collect();
 
         if subs.is_empty() { continue; }
         if subs.len() > 50 {
-            tracing::warn!(n = subs.len(), "[price_feed] large active_subs — leak?");
+            tracing::warn!(n = subs.len(), "[price_feed] large active_subs — capping at 50 for this tick");
+            subs.truncate(50);
         }
 
         const CHUNK: usize = 10;
+        let num_chunks = (subs.len() + CHUNK - 1) / CHUNK;
+        let chunk_delay_ms = if num_chunks > 1 { poll_interval_ms / num_chunks as u64 } else { 0 };
+        let mut consecutive_429s: u32 = 0;
+
         for chunk in subs.chunks(CHUNK) {
+            let chunk_start = std::time::Instant::now();
+
+            // If we've hit 3+ consecutive 429s this tick, skip remaining chunks
+            if consecutive_429s >= 3 {
+                tracing::warn!(
+                    consecutive_429s,
+                    "[price_feed] 3+ consecutive 429s — skipping remaining chunks this tick"
+                );
+                break;
+            }
+
             let mut batch = Vec::with_capacity(chunk.len() * 2);
             for (i, (_, cv, pv)) in chunk.iter().enumerate() {
                 batch.push(serde_json::json!({
@@ -479,19 +495,57 @@ async fn price_feed_poll_loop(
 
             let results: Vec<serde_json::Value> = {
                 let maybe = async {
-                    let resp = http.post(&rpc_url).json(&batch).send().await
-                        .map_err(|e| { tracing::warn!(error = %e, "[price_feed] RPC batch failed"); })?;
-                    if resp.status().as_u16() == 429 {
-                        tracing::warn!("[price_feed] HTTP 429 — retry 100ms");
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                        let r2 = http.post(&rpc_url).json(&batch).send().await
-                            .map_err(|e| { tracing::warn!(error = %e, "[price_feed] retry failed"); })?;
-                        if r2.status().as_u16() == 429 { return Err(()); }
-                        return r2.json().await.map_err(|e| { tracing::warn!(error = %e, "[price_feed] retry parse"); });
+                    let mut backoff_ms: u64 = 500;
+                    const MAX_BACKOFF_MS: u64 = 30_000;
+                    const MAX_RETRIES: u32 = 5;
+
+                    for attempt in 0..=MAX_RETRIES {
+                        let resp = http.post(&rpc_url).json(&batch).send().await
+                            .map_err(|e| { tracing::warn!(error = %e, "[price_feed] RPC batch failed"); })?;
+
+                        if resp.status().as_u16() == 429 {
+                            if attempt == MAX_RETRIES {
+                                tracing::warn!(
+                                    attempts = MAX_RETRIES + 1,
+                                    "[price_feed] HTTP 429 — max retries exhausted"
+                                );
+                                return Err(());
+                            }
+                            tracing::warn!(
+                                attempt = attempt + 1,
+                                backoff_ms,
+                                "[price_feed] HTTP 429 — backing off"
+                            );
+                            tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                            backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
+                            continue;
+                        }
+
+                        return resp.json().await.map_err(|e| {
+                            tracing::warn!(error = %e, "[price_feed] parse failed");
+                        });
                     }
-                    resp.json().await.map_err(|e| { tracing::warn!(error = %e, "[price_feed] parse failed"); })
+                    Err(())
                 }.await;
-                match maybe { Ok(r) => r, Err(()) => continue }
+                match maybe {
+                    Ok(r) => {
+                        consecutive_429s = 0; // Reset on successful response
+                        r
+                    }
+                    Err(()) => {
+                        consecutive_429s += 1;
+                        // Rate-limit even on failure: sleep remaining chunk delay
+                        if chunk_delay_ms > 0 {
+                            let elapsed = chunk_start.elapsed().as_millis() as u64;
+                            if elapsed < chunk_delay_ms {
+                                tokio::time::sleep(tokio::time::Duration::from_millis(
+                                    chunk_delay_ms - elapsed,
+                                )).await;
+                            }
+                        }
+                        continue;
+                    }
+                }
             };
 
             for (i, (mint, _, _)) in chunk.iter().enumerate() {
@@ -538,6 +592,16 @@ async fn price_feed_poll_loop(
                             "[price_feed] first price from RPC poll"
                         );
                     }
+                }
+            }
+
+            // Spread chunks evenly across the poll interval to avoid request bursts
+            if chunk_delay_ms > 0 {
+                let elapsed = chunk_start.elapsed().as_millis() as u64;
+                if elapsed < chunk_delay_ms {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(
+                        chunk_delay_ms - elapsed,
+                    )).await;
                 }
             }
         }

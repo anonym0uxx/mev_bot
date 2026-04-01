@@ -647,7 +647,11 @@ impl MomentumEngine {
         for entry in ready {
             // Check limits again at entry time — drop excess entries
             if self.active.len() >= self.config.max_concurrent as usize {
-                break;
+                // Unsubscribe any remaining entries that won't become positions
+                self.price_feed.unsubscribe_sync(&entry.mint);
+                // Also unsubscribe the rest (we're about to break)
+                // Remaining entries in the iterator won't be processed
+                continue;  // continue instead of break so we unsubscribe all remaining
             }
 
             // Get current live price from price feed
@@ -672,6 +676,8 @@ impl MomentumEngine {
                             "[momentum] price feed timeout — abandoning entry (no_price_timeout_ms={})",
                             self.config.no_price_timeout_ms
                         );
+                        // Clean up subscription — entry will never become a position
+                        self.price_feed.unsubscribe_sync(&entry.mint);
                     }
                     continue;
                 }
@@ -684,6 +690,8 @@ impl MomentumEngine {
                     price = current_price_fp,
                     "[momentum] invalid entry price — skipping"
                 );
+                // Clean up subscription — entry will never become a position
+                self.price_feed.unsubscribe_sync(&entry.mint);
                 continue;
             }
 
@@ -713,6 +721,8 @@ impl MomentumEngine {
                     mint = %bs58::encode(&entry.mint).into_string(),
                     "[momentum] ToD gating at entry time: blocked hour — skipping"
                 );
+                // Clean up subscription — entry will never become a position
+                self.price_feed.unsubscribe_sync(&entry.mint);
                 continue;
             } else {
                 ((raw_size as f64) * tod_mult) as u64
