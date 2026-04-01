@@ -197,7 +197,11 @@ pub async fn resolve_pool_from_transaction(
         match resolve_pool_inner(client, sig, helius_rpc_url).await {
             Ok(resolution) => return Some(resolution),
             Err(e) => {
-                let is_retriable = e == TX_NOT_FOUND_ERR;
+                let is_retriable = e == TX_NOT_FOUND_ERR
+                    || e.contains("missing result field")
+                    || e.contains("not yet indexed")
+                    || e.contains("getMultipleAccountsInfo failed")
+                    || e.contains("RPC request failed");
 
                 if !is_retriable || attempt == MAX_ATTEMPTS {
                     tracing::debug!(
