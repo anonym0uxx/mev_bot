@@ -183,6 +183,7 @@ pub struct MomentumEngine {
     // ── Live mode tx infrastructure (all inactive in paper mode) ────
     /// Raydium pool accounts keyed by mint, populated at graduation, consumed at close.
     raydium_pools: DashMap<[u8; 32], crate::tx::raydium::RaydiumPoolAccounts>,
+    pumpswap_pools: DashMap<[u8; 32], crate::tx::pumpswap::PumpSwapPoolAccounts>,
     tip_engine: Arc<parking_lot::Mutex<TipEngine>>,
     jito_grpc: Option<Arc<crate::tx::jito_grpc::JitoGrpcClient>>,
     nozomi_client: Option<Arc<crate::tx::nozomi::NozomiClient>>,
@@ -274,6 +275,7 @@ impl MomentumEngine {
             scored_tokens: DashMap::new(),
             scored_token_rx: scored_rx,
             raydium_pools: DashMap::new(),
+            pumpswap_pools: DashMap::new(),
             tip_engine,
             jito_grpc,
             nozomi_client,
@@ -1094,10 +1096,86 @@ impl MomentumEngine {
                             }
                         }
                     });
+                } else if let Some(ps_pool) = self.pumpswap_pools.get(&entry.mint).map(|r| r.clone()) {
+                    // PumpSwap live buy path
+                    let mint = entry.mint;
+                    let size = size_lamports;
+                    let kp_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
+                    let jg = match self.jito_grpc.clone() {
+                        Some(j) => j,
+                        None => {
+                            tracing::warn!(mint=%bs58::encode(&mint).into_string(), "[buy_pumpswap] no jito client");
+                            self.active.remove(&mint);
+                            self.momentum_zones.remove(&mint);
+                            continue;
+                        }
+                    };
+                    let bh = self.blockhash_cache_sync().unwrap_or([0u8; 32]);
+                    let tip_req = crate::tx::tip_engine::TipRequest {
+                        context: crate::tx::tip_engine::TipContext::Entry,
+                        size_lamports: size,
+                        gain_bps: 0,
+                        grad_score: entry.grad_score as f64,
+                    };
+                    let tip = self.tip_engine.lock().compute_tip(&tip_req);
+                    let tokens_estimate = if current_price_fp > 0 {
+                        (size as u128 * 1_000_000 / current_price_fp as u128) as u64
+                    } else { 0u64 };
+                    if let Some(mut pos) = self.active.get_mut(&entry.mint) {
+                        pos.set_tokens_held(tokens_estimate);
+                    }
+                    let mint_buy = mint;
+                    let fee_idx = (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() % 8) as usize;
+                    tokio::spawn(async move {
+                        let kp_bytes = match std::fs::read(&kp_path) {
+                            Ok(b) => b,
+                            Err(e) => { tracing::error!(err=?e, "[buy_pumpswap] keypair load failed"); return; }
+                        };
+                        let kp_arr: Vec<u8> = match serde_json::from_slice(&kp_bytes) {
+                            Ok(v) => v,
+                            Err(e) => { tracing::error!(err=?e, "[buy_pumpswap] keypair parse failed"); return; }
+                        };
+                        if kp_arr.len() != 64 { tracing::error!("[buy_pumpswap] invalid keypair len"); return; }
+                        let mut kb = [0u8; 64];
+                        kb.copy_from_slice(&kp_arr);
+                        let keypair = match solana_sdk::signature::Keypair::from_bytes(&kb) {
+                            Ok(k) => k,
+                            Err(e) => { tracing::error!(err=?e, "[buy_pumpswap] keypair err"); return; }
+                        };
+                        use std::str::FromStr as _;
+                        let tip_account = solana_sdk::pubkey::Pubkey::from_str(
+                            crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
+                        ).unwrap();
+                        let tx_bytes = match crate::tx::pumpswap::build_pumpswap_buy_tx(
+                            &ps_pool, &keypair, size, 1, tip, tip_account, bh, fee_idx,
+                        ) {
+                            Ok(b) => b,
+                            Err(e) => { tracing::error!(mint=%bs58::encode(&mint_buy).into_string(), err=?e, "[buy_pumpswap] build failed"); return; }
+                        };
+                        use base64::Engine as _;
+                        let tx_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
+                        match jg.submit_bundle(&tx_b64).await {
+                            Ok(id) => tracing::info!(
+                                mint=%bs58::encode(&mint_buy).into_string(),
+                                bundle_id=%id,
+                                tip,
+                                size_sol=size as f64/1e9,
+                                "[buy_pumpswap] Jito submitted"
+                            ),
+                            Err(e) => tracing::error!(
+                                mint=%bs58::encode(&mint_buy).into_string(),
+                                err=?e,
+                                "[buy_pumpswap] Jito FAILED"
+                            ),
+                        }
+                    });
                 } else {
                     tracing::warn!(
                         mint=%bs58::encode(&entry.mint).into_string(),
-                        "[momentum] live mode: no raydium pool accounts — position is accounting-only"
+                        "[momentum] live mode: no pool accounts (Raydium or PumpSwap) — position is accounting-only"
                     );
                 }
             }
@@ -2175,12 +2253,95 @@ impl MomentumEngine {
                         }
                     });
                 }
+            } else if let Some((_, ps_pool)) = self.pumpswap_pools.remove(&mint) {
+                let tokens = pos.tokens_held();
+                if tokens == 0 {
+                    tracing::warn!(
+                        mint=%bs58::encode(&mint).into_string(),
+                        "[close_pumpswap] tokens_held=0 — buy tx likely failed, skipping sell"
+                    );
+                } else {
+                    let kp_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
+                    let jg = match self.jito_grpc.clone() {
+                        Some(j) => j,
+                        None => { tracing::error!("[close_pumpswap] no jito client"); return; }
+                    };
+                    let noz = self.nozomi_client.clone();
+                    let bh = self.blockhash_cache_sync().unwrap_or([0u8; 32]);
+                    let tip_req = TipRequest {
+                        context: exit_to_context(&reason, gain_bps as i64),
+                        size_lamports: pos.size_lamports,
+                        gain_bps: gain_bps as i64,
+                        grad_score: 0.0,
+                    };
+                    let tip = self.tip_engine.lock().compute_tip(&tip_req);
+                    let min_sol_out = if gain_bps > 0 {
+                        let expected = (pos.entry_price_fp as u128 * tokens as u128 / 1_000_000) as u64;
+                        (expected as u128 * 9900 / 10000) as u64
+                    } else { 0u64 };
+                    let noz_ok = noz.is_some();
+                    let reason_str = reason.as_str().to_string();
+                    let gain = gain_bps as i64;
+                    let mint_copy = mint;
+                    let fee_idx = (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() % 8) as usize;
+                    tokio::spawn(async move {
+                        let kp_bytes = match std::fs::read(&kp_path) {
+                            Ok(b) => b,
+                            Err(e) => { tracing::error!(err=?e, "[sell_pumpswap] keypair load failed"); return; }
+                        };
+                        let kp_arr: Vec<u8> = match serde_json::from_slice(&kp_bytes) {
+                            Ok(v) => v,
+                            Err(e) => { tracing::error!(err=?e, "[sell_pumpswap] keypair parse failed"); return; }
+                        };
+                        if kp_arr.len() != 64 { tracing::error!("[sell_pumpswap] bad keypair len"); return; }
+                        let mut kb = [0u8; 64];
+                        kb.copy_from_slice(&kp_arr);
+                        let keypair = match solana_sdk::signature::Keypair::from_bytes(&kb) {
+                            Ok(k) => k,
+                            Err(e) => { tracing::error!(err=?e, "[sell_pumpswap] keypair from_bytes"); return; }
+                        };
+                        use std::str::FromStr as _;
+                        let tip_account = solana_sdk::pubkey::Pubkey::from_str(
+                            crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
+                        ).unwrap();
+                        let tx_bytes = match crate::tx::pumpswap::build_pumpswap_sell_tx(
+                            &ps_pool, &keypair, tokens, min_sol_out, tip, tip_account, bh, fee_idx,
+                        ) {
+                            Ok(b) => b,
+                            Err(e) => { tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] build failed"); return; }
+                        };
+                        use base64::Engine as _;
+                        let tx_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
+                        let landing = route_exit(&reason_str, gain, noz_ok);
+                        match landing {
+                            LandingPath::JitoOnly => {
+                                match jg.submit_bundle(&tx_b64).await {
+                                    Ok(id) => tracing::info!(mint=%bs58::encode(&mint_copy).into_string(), bundle_id=%id, "[sell_pumpswap] Jito submitted"),
+                                    Err(e) => tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] Jito FAILED"),
+                                }
+                            }
+                            LandingPath::NozomiOnly | LandingPath::DualPath => {
+                                if let Some(ref n) = noz {
+                                    match n.send_transaction(&tx_b64).await {
+                                        Ok(_) => tracing::info!(mint=%bs58::encode(&mint_copy).into_string(), "[sell_pumpswap] Nozomi OK"),
+                                        Err(e) => { tracing::warn!(err=?e, "[sell_pumpswap] Nozomi failed → Jito"); let _ = jg.submit_bundle(&tx_b64).await; }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
             } else {
                 tracing::warn!(
                     mint=%bs58::encode(&mint).into_string(),
-                    "[close_position] no raydium pool — sell NOT submitted"
+                    "[close_position] no pool accounts (Raydium or PumpSwap) — sell NOT submitted"
                 );
             }
+            // Idempotent cleanup — safe if already removed in sell branch above
+            self.pumpswap_pools.remove(&mint);
         }
     }
 
@@ -2326,6 +2487,16 @@ impl MomentumEngine {
                     );
                 }
 
+                // PumpSwap pool accounts (zeroed for Raydium tokens, populated for PumpSwap)
+                if let Some(ps_pool) = crate::momentum::pool::extract_pumpswap_pool_accounts(&resolution) {
+                    let ps_accts: crate::tx::pumpswap::PumpSwapPoolAccounts = ps_pool.into();
+                    self.pumpswap_pools.insert(resolution.mint, ps_accts);
+                    tracing::debug!(
+                        mint = %bs58::encode(&resolution.mint).into_string(),
+                        "[momentum] pumpswap pool accounts stored for live execution"
+                    );
+                }
+
                 let effective_sells_5s = if enrichment.sells_5s == 0 {
                     1u32 // Default: assume at least 1 sell (conservative for buy/sell ratio)
                 } else {
@@ -2412,6 +2583,17 @@ impl MomentumEngine {
                         };
                         let effective_buys_5s = if enrichment.buys_5s == 0 { 3u32 } else { enrichment.buys_5s as u32 };
                         let effective_sells_5s = if enrichment.sells_5s == 0 { 1u32 } else { enrichment.sells_5s as u32 };
+
+                        // Store PumpSwap pool accounts for live execution
+                        if let Some(ps_pool) = crate::momentum::pool::extract_pumpswap_pool_accounts(&resolution) {
+                            let ps_accts: crate::tx::pumpswap::PumpSwapPoolAccounts = ps_pool.into();
+                            self.pumpswap_pools.insert(resolution.mint, ps_accts);
+                            tracing::debug!(
+                                mint = %bs58::encode(&resolution.mint).into_string(),
+                                "[momentum] pumpswap pool accounts stored (mint lookup path)"
+                            );
+                        }
+
                         self.on_graduation(
                             &pool_info,
                             ts_ms,

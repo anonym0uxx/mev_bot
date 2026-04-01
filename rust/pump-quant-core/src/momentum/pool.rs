@@ -896,6 +896,52 @@ pub async fn resolve_pool_from_mint(
     })
 }
 
+// ── PumpSwap Pool Accounts ───────────────────────────────────────────────────
+
+/// Lightweight pool accounts for PumpSwap live execution.
+/// Extracted from PoolResolution at graduation time.
+/// Stored in MomentumEngine.pumpswap_pools DashMap.
+#[derive(Debug, Clone)]
+pub struct PumpSwapPoolAccounts {
+    /// Pool PDA (from PoolResolution.pool_address)
+    pub pool: [u8; 32],
+    /// Token mint (from PoolResolution.mint) — base_mint in PumpSwap terms
+    pub base_mint: [u8; 32],
+    /// Pool token vault (from PoolResolution.coin_vault) = pool_base_token_account in PumpSwap
+    pub pool_base_token_account: [u8; 32],
+    /// Pool WSOL vault (from PoolResolution.pc_vault) = pool_quote_token_account in PumpSwap
+    pub pool_quote_token_account: [u8; 32],
+    /// Coin creator vault ATA ([0u8;32] if unknown — program handles gracefully)
+    pub coin_creator_vault_ata: [u8; 32],
+    /// Coin creator vault authority ([0u8;32] if unknown)
+    pub coin_creator_vault_authority: [u8; 32],
+}
+
+/// Extract PumpSwapPoolAccounts from a PoolResolution.
+///
+/// Returns None if:
+/// - pool_type != PoolType::PumpSwap
+/// - pool_address is all-zeros (resolution failed to capture pool PDA)
+///
+/// coin_creator_vault_ata and coin_creator_vault_authority are zeroed by default.
+/// The PumpSwap program handles zero-address accounts gracefully for creator fee.
+pub fn extract_pumpswap_pool_accounts(res: &PoolResolution) -> Option<PumpSwapPoolAccounts> {
+    if res.pool_type != PoolType::PumpSwap {
+        return None;
+    }
+    if res.pool_address == [0u8; 32] {
+        return None;
+    }
+    Some(PumpSwapPoolAccounts {
+        pool: res.pool_address,
+        base_mint: res.mint,
+        pool_base_token_account: res.coin_vault,
+        pool_quote_token_account: res.pc_vault,
+        coin_creator_vault_ata: [0u8; 32],
+        coin_creator_vault_authority: [0u8; 32],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -944,5 +990,82 @@ mod tests {
         assert_eq!(PoolType::RaydiumAmmV4.as_str(), "raydium_amm_v4");
         assert_eq!(PoolType::PumpSwap.as_str(), "pump_swap");
         assert_eq!(PoolType::Unknown.as_str(), "unknown");
+    }
+
+    // ── PumpSwap pool accounts extraction tests ──────────────────────────
+
+    /// Helper: build a default PumpSwap PoolResolution for tests.
+    fn make_pumpswap_resolution() -> PoolResolution {
+        PoolResolution {
+            mint: [1u8; 32],
+            pool_address: [2u8; 32],
+            coin_vault: [3u8; 32],
+            pc_vault: [4u8; 32],
+            pool_type: PoolType::PumpSwap,
+            reserve_sol_lamports: 100_000_000_000,
+            reserve_token_atoms: 1_000_000_000,
+            bc_terminal_vsol: 0.0,
+            amm_id: [0u8; 32],
+            amm_open_orders: [0u8; 32],
+            amm_target_orders: [0u8; 32],
+            serum_market: [0u8; 32],
+            serum_bids: [0u8; 32],
+            serum_asks: [0u8; 32],
+            serum_event_queue: [0u8; 32],
+            serum_coin_vault: [0u8; 32],
+            serum_pc_vault: [0u8; 32],
+            serum_vault_signer: [0u8; 32],
+        }
+    }
+
+    #[test]
+    fn test_extract_pumpswap_pool_accounts_basic() {
+        let res = make_pumpswap_resolution();
+        let accts = extract_pumpswap_pool_accounts(&res).expect("should extract");
+        assert_eq!(accts.pool, [2u8; 32]);
+        assert_eq!(accts.base_mint, [1u8; 32]);
+        assert_eq!(accts.pool_base_token_account, [3u8; 32]);
+        assert_eq!(accts.pool_quote_token_account, [4u8; 32]);
+    }
+
+    #[test]
+    fn test_extract_pumpswap_returns_none_for_raydium() {
+        let mut res = make_pumpswap_resolution();
+        res.pool_type = PoolType::RaydiumAmmV4;
+        assert!(extract_pumpswap_pool_accounts(&res).is_none());
+    }
+
+    #[test]
+    fn test_extract_pumpswap_returns_none_for_zero_pool_address() {
+        let mut res = make_pumpswap_resolution();
+        res.pool_address = [0u8; 32];
+        assert!(extract_pumpswap_pool_accounts(&res).is_none());
+    }
+
+    #[test]
+    fn test_extract_pumpswap_vault_field_mapping() {
+        let mut res = make_pumpswap_resolution();
+        res.coin_vault = [0xAA; 32];
+        res.pc_vault = [0xBB; 32];
+        let accts = extract_pumpswap_pool_accounts(&res).unwrap();
+        // coin_vault → pool_base_token_account
+        assert_eq!(accts.pool_base_token_account, [0xAA; 32]);
+        // pc_vault → pool_quote_token_account
+        assert_eq!(accts.pool_quote_token_account, [0xBB; 32]);
+    }
+
+    #[test]
+    fn test_extract_pumpswap_creator_vaults_zeroed() {
+        let res = make_pumpswap_resolution();
+        let accts = extract_pumpswap_pool_accounts(&res).unwrap();
+        assert_eq!(accts.coin_creator_vault_ata, [0u8; 32]);
+        assert_eq!(accts.coin_creator_vault_authority, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_extract_pumpswap_returns_none_for_unknown_pool_type() {
+        let mut res = make_pumpswap_resolution();
+        res.pool_type = PoolType::Unknown;
+        assert!(extract_pumpswap_pool_accounts(&res).is_none());
     }
 }
