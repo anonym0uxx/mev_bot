@@ -242,6 +242,23 @@ pub struct MomentumConfig {
     pub max_total_size_sol: f64,
 
     // ══════════════════════════════════════════════════════════
+    // SCALE-IN GATES (TASK 3 + TASK 4)
+    // ══════════════════════════════════════════════════════════
+
+    /// Minimum WebSocket notification count required before scale-in is allowed.
+    /// ws_notif measures realized trading activity on the Raydium/PumpSwap pool.
+    /// ws_notif=0 → 0.0% WR (165 trades). ws_notif≥10 → 27.2% WR (371 trades).
+    /// Set to 0 to disable. Default: 10.
+    pub min_ws_notif_for_scale_in: u16,
+
+    /// Minimum bps at price_samples_bps[1] (second sample, ~2s after entry)
+    /// required before scale-in is allowed.
+    /// s[1]=0: WR=6.8% (676 trades). s[1]>0: WR=50.9% (118 trades).
+    /// s[0] is always 0 (entry baseline), so s[1] is the first informative sample.
+    /// Set to i32::MIN to disable. Default: 1 (any positive movement).
+    pub scale_in_min_s1_bps: i32,
+
+    // ══════════════════════════════════════════════════════════
     // SCORE-AWARE SCALE-IN
     // ══════════════════════════════════════════════════════════
 
@@ -420,6 +437,10 @@ impl Default for MomentumConfig {
             scale_in_s1_moderate_bps: 200,
             scale_in_s1_sol: 0.15,
             max_total_size_sol: 0.50,
+
+            // Scale-in gates (Task 3 + Task 4)
+            min_ws_notif_for_scale_in: 10,
+            scale_in_min_s1_bps: 1,
 
             // Score-aware scale-in
             scale_in_high_score_threshold: 65,
