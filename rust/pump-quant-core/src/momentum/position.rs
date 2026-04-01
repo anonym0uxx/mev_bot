@@ -18,7 +18,7 @@
 //! 196       1   grad_score: u8
 //! 197       1   tp_flags: u8
 //! 198       1   exit_reason: u8
-//! 199       1   _pad: u8
+//! 199       1   trail_stop_below_floor_count: u8
 //! 200       4   grad_speed_s: u32
 //! 204       4   grad_volume_sol_x100: u32
 //! 208       4   pre_grad_buys_5s: u32
@@ -84,8 +84,10 @@ pub struct MomentumPosition {
     pub tp_flags: u8,
     /// Exit reason (maps to MomentumExitReason discriminant).
     pub exit_reason: u8,
-    /// Padding for alignment to next u32 field.
-    pub _pad: u8,
+    /// Consecutive samples where trailing stop condition was met but not yet confirmed.
+    /// Reset to 0 when price recovers above the trail floor.
+    /// Used by trailing_stop_confirm_samples gate.
+    pub trail_stop_below_floor_count: u8,
 
     // ── Grad context (16 bytes) ──────────────────────────
     /// Seconds from token creation to graduation.
@@ -139,7 +141,7 @@ impl MomentumPosition {
             grad_score,
             tp_flags: 0,
             exit_reason: 0,
-            _pad: 0,
+            trail_stop_below_floor_count: 0,
             grad_speed_s,
             grad_volume_sol_x100,
             pre_grad_buys_5s,

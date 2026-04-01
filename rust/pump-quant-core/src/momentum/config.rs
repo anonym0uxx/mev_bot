@@ -121,6 +121,17 @@ pub struct MomentumConfig {
     pub trailing_stop_decel_pct: f64,
     /// Trail width when REVERSING — near-immediate exit. Default: 3.0%.
     pub trailing_stop_reversal_pct: f64,
+    /// Minimum price samples before trailing stop evaluation begins.
+    /// Prevents premature exits on explosive tokens where the first few samples
+    /// show discontinuous price action (gap-downs of 70%+ in one poll).
+    /// Default: 5. Set to 0 to disable (evaluate from first sample).
+    pub trailing_stop_min_samples: u8,
+    /// Number of consecutive below-floor readings required before trailing stop fires.
+    /// Eliminates single-poll noise exits — price must stay below trail floor
+    /// for N consecutive samples before triggering exit.
+    /// Default: 2. Set to 1 for legacy behavior (fire immediately).
+    pub trailing_stop_confirm_samples: u8,
+
     /// ATR multiplier for adaptive trail width. trail_pct = max(base, k * ATR / 100).
     /// Default: 2.5 — trail = 2.5× average tick volatility.
     pub trail_atr_multiplier: f64,
@@ -396,6 +407,8 @@ impl Default for MomentumConfig {
             momentum_reversal_threshold_bps: -500,
 
             // Dynamic trailing stop
+            trailing_stop_min_samples: 5,
+            trailing_stop_confirm_samples: 2,
             trailing_stop_accel_pct: 15.0,
             trailing_stop_decel_pct: 5.0,
             trailing_stop_reversal_pct: 3.0,

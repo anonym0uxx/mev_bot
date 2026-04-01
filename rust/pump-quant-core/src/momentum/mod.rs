@@ -983,14 +983,22 @@ impl MomentumEngine {
             }
 
             // Trailing-stop-at-maturity: once past activation threshold, apply trailing stop.
+            // Guard: skip until min_samples reached (same gate as dynamic trailing stop).
             if self.config.max_hold_trail_activation_ms > 0
                 && elapsed_ms >= self.config.max_hold_trail_activation_ms
+                && pos.sample_count >= self.config.trailing_stop_min_samples
             {
                 if let Some(current_fp) = self.price_feed.current_price(&mint).filter(|&p| p > 0) {
                     let trail_bps = (self.config.max_hold_trail_pct * 100.0) as u32;
                     if pos.trailing_stop_hit(current_fp, trail_bps) {
-                        to_close.push((mint, MomentumExitReason::MaxHold, current_fp));
-                        continue;
+                        // Max-hold trail uses confirm_samples gate too
+                        pos.trail_stop_below_floor_count = pos.trail_stop_below_floor_count.saturating_add(1);
+                        if pos.trail_stop_below_floor_count >= self.config.trailing_stop_confirm_samples {
+                            to_close.push((mint, MomentumExitReason::MaxHold, current_fp));
+                            continue;
+                        }
+                    } else {
+                        pos.trail_stop_below_floor_count = 0;
                     }
                 }
             }
@@ -1171,7 +1179,10 @@ impl MomentumEngine {
 
             // 3. Trailing stop — active after TP1 hit, width is momentum-state-aware.
             // Quant spec: ACCELERATING=15%, SUSTAINING=8%, DECELERATING=5%, REVERSING=3%
-            if pos.tp_flags & 0x1 != 0 {
+            // Guard: skip trailing stop until we have enough samples (trailing_stop_min_samples).
+            if pos.tp_flags & 0x1 != 0
+                && pos.sample_count >= self.config.trailing_stop_min_samples
+            {
                 let state = pos.momentum_state(
                     self.config.momentum_accel_threshold_bps,
                     self.config.momentum_decel_threshold_bps,
@@ -1205,13 +1216,19 @@ impl MomentumEngine {
                     base_trail
                 };
                 let trailing_bps = (trail_pct * 100.0) as u32;
+                // Confirm samples gate: require N consecutive below-floor readings
                 if pos.trailing_stop_hit(current_price_fp, trailing_bps) {
-                    to_close.push((
-                        mint,
-                        MomentumExitReason::TrailingStop,
-                        current_price_fp,
-                    ));
-                    continue;
+                    pos.trail_stop_below_floor_count = pos.trail_stop_below_floor_count.saturating_add(1);
+                    if pos.trail_stop_below_floor_count >= self.config.trailing_stop_confirm_samples {
+                        to_close.push((
+                            mint,
+                            MomentumExitReason::TrailingStop,
+                            current_price_fp,
+                        ));
+                        continue;
+                    }
+                } else {
+                    pos.trail_stop_below_floor_count = 0; // reset on any above-floor reading
                 }
             }
 
@@ -1420,9 +1437,11 @@ impl MomentumEngine {
             // Progressively tightens trailing stop as position ages.
             // Replaces the blunt max_hold wall: losers get stopped earlier,
             // winners protected by normal trailing stop until it tightens.
+            // Guard: skip until min_samples reached.
             if self.config.time_decay_trailing_enabled
                 && !self.config.time_decay_stages_ms.is_empty()
                 && self.config.time_decay_stages_ms.len() == self.config.time_decay_trail_bps.len()
+                && pos.sample_count >= self.config.trailing_stop_min_samples
             {
                 let _trail = pos.time_decay_trail_bps(
                     hold_ms,
@@ -1430,14 +1449,20 @@ impl MomentumEngine {
                     &self.config.time_decay_trail_bps,
                 );
                 if pos.time_decay_trailing_stop_hit(current_price_fp) {
-                    tracing::debug!(
-                        mint = %bs58::encode(&mint).into_string(),
-                        hold_ms,
-                        effective_trail = pos.effective_trail_bps(),
-                        "[momentum] time-decay trailing stop hit"
-                    );
-                    to_close.push((mint, MomentumExitReason::TrailingStop, current_price_fp));
-                    continue;
+                    // Confirm samples gate for time-decay trail too
+                    pos.trail_stop_below_floor_count = pos.trail_stop_below_floor_count.saturating_add(1);
+                    if pos.trail_stop_below_floor_count >= self.config.trailing_stop_confirm_samples {
+                        tracing::debug!(
+                            mint = %bs58::encode(&mint).into_string(),
+                            hold_ms,
+                            effective_trail = pos.effective_trail_bps(),
+                            "[momentum] time-decay trailing stop hit"
+                        );
+                        to_close.push((mint, MomentumExitReason::TrailingStop, current_price_fp));
+                        continue;
+                    }
+                } else {
+                    pos.trail_stop_below_floor_count = 0;
                 }
             }
             // ── End time-decay trailing stop ────────────────────────────────
@@ -2501,7 +2526,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_momentum_trailing_stop_after_tp1() {
-        let engine = make_test_engine(true);
+        // Use legacy trailing stop behavior (min_samples=0, confirm=1) to test basic trigger
+        let engine = make_test_engine_with(true, |cfg| {
+            cfg.trailing_stop_min_samples = 0;
+            cfg.trailing_stop_confirm_samples = 1;
+        });
 
         // Position entered at price 1000, TP1 already hit
         let mut pos = MomentumPosition::new(
