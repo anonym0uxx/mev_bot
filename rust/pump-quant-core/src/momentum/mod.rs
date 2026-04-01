@@ -122,6 +122,9 @@ pub struct MomentumEngine {
     config: Arc<MomentumConfig>,
     #[allow(dead_code)]
     rpc_url: Arc<String>,
+    /// Helius HTTPS RPC URL — used for getProgramAccounts (not supported on SOLANA_RPC_URL).
+    /// Constructed from HELIUS_API_KEY env var at startup.
+    helius_rpc_url: Arc<String>,
     #[allow(dead_code)]
     http_client: reqwest::Client,
 
@@ -212,9 +215,19 @@ impl MomentumEngine {
             TipEngine::new(TipConfig::default()),
         ));
 
+        // Build a dedicated Helius HTTPS URL for getProgramAccounts (SOLANA_RPC_URL may not support it)
+        let helius_rpc_url = Arc::new(
+            std::env::var("HELIUS_API_KEY")
+                .ok()
+                .filter(|k| !k.is_empty())
+                .map(|k| format!("https://mainnet.helius-rpc.com/?api-key={}", k))
+                .unwrap_or_else(|| rpc_url.to_string()),
+        );
+
         let engine = Self {
             config,
             rpc_url,
+            helius_rpc_url,
             http_client: crate::momentum::pool::make_pool_resolution_client(),
             active: DashMap::new(),
             recently_closed: DashMap::new(),
@@ -300,10 +313,8 @@ impl MomentumEngine {
             return;
         }
 
-        // Skip PumpSwap (no structural arb, and momentum unproven)
-        if pool_info.pool_type == PoolType::PumpSwap {
-            return;
-        }
+        // NOTE: PumpSwap is now the primary graduation target (100% of pump.fun tokens as of Apr 2026).
+        // Momentum trading on PumpSwap is fully supported — vault reserves work the same as Raydium.
 
         let cfg = &self.config;
 
@@ -1830,9 +1841,24 @@ impl MomentumEngine {
                 // mint-based getProgramAccounts on Raydium AMM V4.
                 tracing::info!(
                     mint = %bs58::encode(&mint).into_string(),
-                    "[momentum] sig resolution failed — trying mint-based pool lookup"
+                    "[momentum] sig resolution failed — trying PumpSwap then Raydium mint lookup"
                 );
-                match crate::momentum::pool::resolve_pool_from_mint(&self.http_client, &mint, &self.rpc_url).await {
+                // Try PumpSwap first (100% of current pump.fun graduations go to PumpSwap),
+                // then fall back to Raydium AMM V4 mint-based lookup.
+                let fallback_resolution = {
+                    // Use helius_rpc_url — SOLANA_RPC_URL doesn't support getProgramAccounts
+                    let ps = crate::momentum::pool::resolve_pumpswap_pool_from_mint(
+                        &self.http_client, &mint, &self.helius_rpc_url
+                    ).await;
+                    if ps.is_some() {
+                        ps
+                    } else {
+                        crate::momentum::pool::resolve_pool_from_mint(
+                            &self.http_client, &mint, &self.helius_rpc_url
+                        ).await
+                    }
+                };
+                match fallback_resolution {
                     Some(resolution) => {
                         let mint_b58 = bs58::encode(&resolution.mint).into_string();
                         tracing::info!(
@@ -1880,7 +1906,7 @@ impl MomentumEngine {
                     None => {
                         tracing::warn!(
                             mint = %bs58::encode(&mint).into_string(),
-                            "[momentum] pool resolution FAILED (sig + mint lookup both failed — likely PumpSwap)"
+                            "[momentum] pool resolution FAILED (sig + PumpSwap + Raydium all failed)"
                         );
                     }
                 }
