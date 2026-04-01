@@ -526,7 +526,7 @@
     "trailing_stop_pct": 8.0,
     "hard_sl_pct": 10.0,
     "time_sl_ms": 60000,
-    "max_hold_ms": 120000,
+    "max_hold_ms": 600000,
     "max_hold_trail_activation_ms": 60000,
     "max_hold_trail_pct": 3.0,
     "check_ms": 150,
