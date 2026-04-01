@@ -154,13 +154,13 @@ fn decode_bs58_32(s: &str) -> Option<[u8; 32]> {
     if n == 32 { Some(buf) } else { None }
 }
 
-/// Create a shared `reqwest::Client` with a 180ms timeout for pool resolution.
+/// Create a shared `reqwest::Client` for pool resolution.
 ///
-/// The 180ms limit leaves 20ms margin within the 200ms RPC budget.
-/// Callers should wrap this in `Arc` and reuse across arb attempts.
+/// 8s timeout — graduation txs often take 500ms-5s to be indexed by Helius.
+/// The old 180ms limit was an arb latency budget, not appropriate for momentum.
 pub fn make_pool_resolution_client() -> reqwest::Client {
     reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(180))
+        .timeout(std::time::Duration::from_millis(8_000))
         .build()
         .expect("reqwest client build should not fail")
 }
@@ -176,8 +176,8 @@ const TX_NOT_FOUND_ERR: &str = "transaction not found (not yet indexed)";
 ///   Phase B: `getMultipleAccountsInfo` on vault addresses, parse SPL token
 ///            account amount at bytes [64..72] LE u64.
 ///
-/// Retries up to 3 times with exponential backoff (200ms, 500ms) when the RPC
-/// returns `result: null` — this means Helius hasn't indexed the tx yet.
+/// Retries up to 5 times with exponential backoff when the RPC returns
+/// `result: null` — this means Helius hasn't indexed the tx yet.
 /// Non-retriable errors (parse failures, vault extraction) fail immediately.
 ///
 /// Returns `None` if: all retries exhausted, non-retriable error, or tx doesn't
@@ -188,8 +188,8 @@ pub async fn resolve_pool_from_transaction(
     sig: &[u8; 64],
     helius_rpc_url: &str,
 ) -> Option<PoolResolution> {
-    const MAX_ATTEMPTS: u32 = 4;
-    const BACKOFF_MS: [u64; 3] = [500, 1000, 2000];
+    const MAX_ATTEMPTS: u32 = 5;
+    const BACKOFF_MS: [u64; 4] = [1_000, 2_000, 4_000, 8_000];
 
     let sig_b58_short = &bs58::encode(sig).into_string()[..8];
 
@@ -632,6 +632,226 @@ pub fn parse_spl_token_amount(data_b64: &str) -> Option<u64> {
     Some(u64::from_le_bytes(
         bytes[64..72].try_into().ok()?,
     ))
+}
+
+/// Resolve a PumpSwap AMM pool from the token mint using getProgramAccounts.
+///
+/// PumpSwap Pool account layout (301 bytes, Anchor, empirically derived Apr 2026):
+///   [0..8]    discriminator (f19a6d0411b16dbc)
+///   [8]       pool_bump (u8)
+///   [9..11]   index (u16)
+///   [11..43]  creator (pubkey)
+///   [43..75]  base_mint  ← WSOL (pump.fun graduated pools have WSOL as base)
+///   [75..107] quote_mint ← token mint (filter here at offset 75)
+///   [107..139] lp_mint
+///   [139..171] pool_base_token_account ← WSOL vault (SOL reserves)
+///   [171..203] pool_quote_token_account ← token vault (coin reserves)
+///   [203..235] (additional field — coin_creator or fee config pubkey)
+///   [235..]   zeroed / padding
+///
+/// NOTE: PumpSwap pools have WSOL as base and the graduated token as quote.
+/// So pool_base_token_account = SOL vault, pool_quote_token_account = token vault.
+/// This is inverted vs Raydium where coin_vault = token, pc_vault = SOL.
+pub async fn resolve_pumpswap_pool_from_mint(
+    client: &reqwest::Client,
+    mint: &[u8; 32],
+    helius_rpc_url: &str,
+) -> Option<PoolResolution> {
+    let mint_b58 = bs58::encode(mint).into_string();
+
+    // PumpSwap pools have the token as quote_mint (offset 75), WSOL as base_mint (offset 43).
+    // Use no dataSize filter — pool size may vary across versions (211 or 301 bytes seen).
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getProgramAccounts",
+        "params": [
+            PUMPSWAP_AMM_PROGRAM,
+            {
+                "encoding": "base64",
+                "commitment": "confirmed",
+                "filters": [
+                    {"memcmp": {"offset": 75, "bytes": mint_b58}}
+                ]
+            }
+        ]
+    });
+
+    let resp = client
+        .post(helius_rpc_url)
+        .json(&body)
+        .send()
+        .await
+        .ok()?;
+
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let accounts = json.pointer("/result")?.as_array()?;
+
+    if accounts.is_empty() {
+        tracing::debug!(
+            mint = %mint_b58,
+            "[momentum] PumpSwap pool lookup: no pool found at offset 75"
+        );
+        return None;
+    }
+
+    use base64::Engine as _;
+    let data_b64 = accounts[0].pointer("/account/data/0")?.as_str()?;
+    let data = base64::engine::general_purpose::STANDARD.decode(data_b64).ok()?;
+
+    if data.len() < 204 {
+        tracing::warn!(
+            mint = %mint_b58,
+            data_len = data.len(),
+            "[momentum] PumpSwap pool lookup: pool state too short"
+        );
+        return None;
+    }
+
+    let pool_address = decode_bs58_32(accounts[0].get("pubkey")?.as_str()?)?;
+    // pool_base_token_account (offset 139) = WSOL vault = pc_vault (SOL reserves)
+    // pool_quote_token_account (offset 171) = token vault = coin_vault (token reserves)
+    let pc_vault: [u8; 32] = data[139..171].try_into().ok()?;   // WSOL/SOL vault
+    let coin_vault: [u8; 32] = data[171..203].try_into().ok()?; // token vault
+
+    let coin_vault_b58 = bs58::encode(&coin_vault).into_string();
+    let pc_vault_b58 = bs58::encode(&pc_vault).into_string();
+
+    let (reserve_token, reserve_sol) =
+        fetch_vault_reserves(client, helius_rpc_url, &coin_vault_b58, &pc_vault_b58).await?;
+
+    tracing::info!(
+        mint = %mint_b58,
+        pool = %bs58::encode(&pool_address).into_string(),
+        reserve_sol,
+        reserve_token,
+        "[momentum] PumpSwap pool resolved via mint lookup"
+    );
+
+    Some(PoolResolution {
+        mint: *mint,
+        pool_address,
+        coin_vault,
+        pc_vault,
+        pool_type: PoolType::PumpSwap,
+        reserve_sol_lamports: reserve_sol,
+        reserve_token_atoms: reserve_token,
+        bc_terminal_vsol: 0.0,
+        amm_id: [0u8; 32],
+        amm_open_orders: [0u8; 32],
+        amm_target_orders: [0u8; 32],
+        serum_market: [0u8; 32],
+        serum_bids: [0u8; 32],
+        serum_asks: [0u8; 32],
+        serum_event_queue: [0u8; 32],
+        serum_coin_vault: [0u8; 32],
+        serum_pc_vault: [0u8; 32],
+        serum_vault_signer: [0u8; 32],
+    })
+}
+
+/// Resolve a Raydium AMM V4 pool from the token mint using getProgramAccounts.
+///
+/// Fallback path for when the sig-based resolution fails. CoreCast sends DEX
+/// trade sigs (not pool-creation sigs), so getTransaction returns no vault data.
+/// This function queries Raydium's program accounts filtered by coin_mint at offset 400.
+///
+/// Raydium AMM V4 pool state layout (752 bytes):
+///   offset 336..368 — pc_vault  (WSOL vault pubkey)
+///   offset 368..400 — coin_vault (token vault pubkey)
+///   offset 400..432 — coin_mint  (the graduated token mint)
+pub async fn resolve_pool_from_mint(
+    client: &reqwest::Client,
+    mint: &[u8; 32],
+    helius_rpc_url: &str,
+) -> Option<PoolResolution> {
+    let mint_b58 = bs58::encode(mint).into_string();
+
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getProgramAccounts",
+        "params": [
+            RAYDIUM_AMM_V4_PROGRAM,
+            {
+                "encoding": "base64",
+                "commitment": "confirmed",
+                "filters": [
+                    {"dataSize": 752},
+                    {"memcmp": {"offset": 400, "bytes": mint_b58}}
+                ]
+            }
+        ]
+    });
+
+    let resp = client
+        .post(helius_rpc_url)
+        .json(&body)
+        .send()
+        .await
+        .ok()?;
+
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let accounts = json.pointer("/result")?.as_array()?;
+
+    if accounts.is_empty() {
+        tracing::debug!(
+            mint = %mint_b58,
+            "[momentum] mint-based pool lookup: no Raydium pool found (may be PumpSwap)"
+        );
+        return None;
+    }
+
+    use base64::Engine as _;
+    let data_b64 = accounts[0].pointer("/account/data/0")?.as_str()?;
+    let data = base64::engine::general_purpose::STANDARD.decode(data_b64).ok()?;
+
+    if data.len() < 464 {
+        tracing::warn!(
+            mint = %mint_b58,
+            data_len = data.len(),
+            "[momentum] mint-based pool lookup: pool state too short"
+        );
+        return None;
+    }
+
+    let pc_vault: [u8; 32] = data[336..368].try_into().ok()?;
+    let coin_vault: [u8; 32] = data[368..400].try_into().ok()?;
+    let amm_id = decode_bs58_32(accounts[0].get("pubkey")?.as_str()?)?;
+
+    let coin_vault_b58 = bs58::encode(&coin_vault).into_string();
+    let pc_vault_b58 = bs58::encode(&pc_vault).into_string();
+
+    let (reserve_token, reserve_sol) =
+        fetch_vault_reserves(client, helius_rpc_url, &coin_vault_b58, &pc_vault_b58).await?;
+
+    tracing::info!(
+        mint = %mint_b58,
+        amm_id = %bs58::encode(&amm_id).into_string(),
+        reserve_sol,
+        "[momentum] pool resolved via mint lookup (getProgramAccounts Raydium)"
+    );
+
+    Some(PoolResolution {
+        mint: *mint,
+        pool_address: amm_id,
+        coin_vault,
+        pc_vault,
+        pool_type: PoolType::RaydiumAmmV4,
+        reserve_sol_lamports: reserve_sol,
+        reserve_token_atoms: reserve_token,
+        bc_terminal_vsol: 0.0,
+        amm_id,
+        amm_open_orders: [0u8; 32],
+        amm_target_orders: [0u8; 32],
+        serum_market: [0u8; 32],
+        serum_bids: [0u8; 32],
+        serum_asks: [0u8; 32],
+        serum_event_queue: [0u8; 32],
+        serum_coin_vault: [0u8; 32],
+        serum_pc_vault: [0u8; 32],
+        serum_vault_signer: [0u8; 32],
+    })
 }
 
 #[cfg(test)]

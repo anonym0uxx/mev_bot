@@ -242,6 +242,23 @@ pub struct MomentumConfig {
     pub max_total_size_sol: f64,
 
     // ══════════════════════════════════════════════════════════
+    // SCALE-IN GATES (TASK 3 + TASK 4)
+    // ══════════════════════════════════════════════════════════
+
+    /// Minimum WebSocket notification count required before scale-in is allowed.
+    /// ws_notif measures realized trading activity on the Raydium/PumpSwap pool.
+    /// ws_notif=0 → 0.0% WR (165 trades). ws_notif≥10 → 27.2% WR (371 trades).
+    /// Set to 0 to disable. Default: 10.
+    pub min_ws_notif_for_scale_in: u16,
+
+    /// Minimum bps at price_samples_bps[1] (second sample, ~2s after entry)
+    /// required before scale-in is allowed.
+    /// s[1]=0: WR=6.8% (676 trades). s[1]>0: WR=50.9% (118 trades).
+    /// s[0] is always 0 (entry baseline), so s[1] is the first informative sample.
+    /// Set to i32::MIN to disable. Default: 1 (any positive movement).
+    pub scale_in_min_s1_bps: i32,
+
+    // ══════════════════════════════════════════════════════════
     // SCORE-AWARE SCALE-IN
     // ══════════════════════════════════════════════════════════
 
@@ -279,6 +296,46 @@ pub struct MomentumConfig {
     /// Hold time (ms) after which a stagnant position is exited. Default: 60_000 (60s).
     /// A position is stagnant if ALL price_samples_bps are zero after this time.
     pub stagnation_exit_ms: u64,
+
+    // ══════════════════════════════════════════════════════════
+    // DEAD TOKEN FAST EXIT (TASK 5B)
+    // ══════════════════════════════════════════════════════════
+
+    /// Enable fast exit for dead tokens with zero trading activity.
+    /// Detects: ws_notif_count=0 AND all price_samples flat AND hold≥min_hold_ms.
+    /// Frees position slot 3-4x faster than waiting for time_sl.
+    /// Default: true.
+    pub dead_token_fast_exit_enabled: bool,
+
+    /// Minimum hold time (ms) before dead token fast exit can fire.
+    /// Must wait long enough for price samples to populate (~1s each).
+    /// Default: 5000ms (5 samples at 1050ms cadence).
+    pub dead_token_fast_exit_min_hold_ms: u64,
+
+    /// Minimum price sample count before flat detection fires.
+    /// Needs enough samples to confirm flatness, not just early data gap.
+    /// Default: 5.
+    pub dead_token_fast_exit_min_samples: u8,
+
+    // ══════════════════════════════════════════════════════════
+    // HARD GATE: WHALE/BOT PUMP REJECTION (TASK 1)
+    // ══════════════════════════════════════════════════════════
+
+    /// Hard gate: minimum graduation speed (seconds) to accept.
+    /// Tokens graduating faster than this are bot/whale bonding curve fills
+    /// with near-zero post-graduation momentum (speed≤90s: 7.3% WR in backtest).
+    /// Default: 90. Set to 0 to disable.
+    pub min_grad_speed_s: u32,
+
+    /// Hard gate: max graduation volume (SOL) when grad is fast (speed < min_grad_speed_s * 2).
+    /// Fast-ish + high volume = bot pump. Default: 200.0.
+    /// Applied when: grad_speed_s < min_grad_speed_s * 2 AND grad_volume_sol >= this value.
+    pub max_grad_volume_sol_fast: f64,
+
+    /// Hard gate: absolute max graduation volume (SOL) regardless of speed.
+    /// u16 saturation value is 655.35 SOL — anything at/above this is a confirmed whale fill.
+    /// Default: 650.0. Set to 0.0 to disable.
+    pub max_grad_volume_sol_absolute: f64,
 }
 
 impl Default for MomentumConfig {
@@ -381,6 +438,10 @@ impl Default for MomentumConfig {
             scale_in_s1_sol: 0.15,
             max_total_size_sol: 0.50,
 
+            // Scale-in gates (Task 3 + Task 4)
+            min_ws_notif_for_scale_in: 10,
+            scale_in_min_s1_bps: 1,
+
             // Score-aware scale-in
             scale_in_high_score_threshold: 65,
             scale_in_high_score_s0_bps: 200,
@@ -397,6 +458,16 @@ impl Default for MomentumConfig {
 
             // Stagnation exit (TASK 5)
             stagnation_exit_ms: 60_000,
+
+            // Dead token fast exit (TASK 5B)
+            dead_token_fast_exit_enabled: true,
+            dead_token_fast_exit_min_hold_ms: 5_000,
+            dead_token_fast_exit_min_samples: 5,
+
+            // Hard gate: whale/bot pump rejection (TASK 1)
+            min_grad_speed_s: 90,
+            max_grad_volume_sol_fast: 200.0,
+            max_grad_volume_sol_absolute: 650.0,
         }
     }
 }

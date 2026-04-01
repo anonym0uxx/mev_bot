@@ -448,6 +448,91 @@ impl MomentumPosition {
         self.probe_phase() == ProbePhase::Scaled
     }
 
+    // ── Task 3: ws_notif scale-in gate ───────────────────────────────────────
+    /// Returns true if insufficient WebSocket notification activity to allow scale-in.
+    /// ws_notif=0 has 0.0% WR (165 trades). ws_notif≥10 has 27.2% WR (371 trades).
+    /// `min_threshold=0` disables the gate (always returns false).
+    #[inline(always)]
+    pub fn ws_notif_blocks_scale_in(&self, min_threshold: u16) -> bool {
+        if min_threshold == 0 {
+            return false;
+        }
+        self.ws_notif_count() < min_threshold
+    }
+
+    // ── Task 4: s[1] price trajectory gate ───────────────────────────────────
+    /// Returns true if the second price sample (s[1]) is below `min_s1_bps`.
+    /// s[1]=0: 6.8% WR (676 trades). s[1]>0: 50.9% WR (118 trades).
+    /// s[0] is always 0 (entry baseline); s[1] is the first informative sample.
+    /// Returns true (blocks) when sample_count < 2 — defer until we have the data.
+    /// `min_s1_bps=i32::MIN` disables the gate (always returns false).
+    #[inline(always)]
+    pub fn s1_blocks_scale_in(&self, min_s1_bps: i32) -> bool {
+        if min_s1_bps == i32::MIN {
+            return false;
+        }
+        if self.sample_count < 2 {
+            return true; // Not enough data yet — defer scale-in
+        }
+        self.price_samples_bps[1] < min_s1_bps
+    }
+
+    // ── T3+T4 combined: evaluate_probe_gated ─────────────────────────────────
+    /// Like `evaluate_probe`, but also applies T3 (ws_notif) and T4 (s[1]) gates.
+    /// When either gate blocks, returns `HeldTight` instead of `Scaled`.
+    /// Gates are applied only when the probe hold window has elapsed (same as scale-in timing).
+    ///
+    /// `min_ws_notif`: T3 threshold (0 = disabled)
+    /// `min_s1_bps`: T4 threshold (i32::MIN = disabled)
+    pub fn evaluate_probe_gated(
+        &self,
+        now_ms: u64,
+        current_price_fp: u64,
+        probe_hold_ms: u64,
+        probe_dump_threshold_bps: i32,
+        probe_scale_min_bps: i32,
+        probe_scale_require_price: bool,
+        min_ws_notif: u16,
+        min_s1_bps: i32,
+    ) -> ProbePhase {
+        // Run base probe evaluation first
+        let base = self.evaluate_probe(
+            now_ms,
+            current_price_fp,
+            probe_hold_ms,
+            probe_dump_threshold_bps,
+            probe_scale_min_bps,
+            probe_scale_require_price,
+        );
+
+        // Only apply gates when base result is Scaled (would scale up)
+        if base != ProbePhase::Scaled {
+            return base;
+        }
+
+        // T3: ws_notif gate — block scale-in on dead pools
+        if self.ws_notif_blocks_scale_in(min_ws_notif) {
+            tracing::trace!(
+                ws_notif = self.ws_notif_count(),
+                threshold = min_ws_notif,
+                "T3 gate: scale-in deferred (insufficient ws_notif)",
+            );
+            return ProbePhase::HeldTight;
+        }
+
+        // T4: s[1] price gate — block scale-in when price not rising
+        if self.s1_blocks_scale_in(min_s1_bps) {
+            tracing::trace!(
+                s1 = if self.sample_count >= 2 { self.price_samples_bps[1] } else { 0 },
+                threshold = min_s1_bps,
+                "T4 gate: scale-in deferred (s[1] below threshold)",
+            );
+            return ProbePhase::HeldTight;
+        }
+
+        ProbePhase::Scaled
+    }
+
     // ── Time-decay trailing stop methods (TASK 5) ───────────
 
     /// Get the current effective trailing stop in bps.
@@ -527,6 +612,42 @@ impl MomentumPosition {
             / self.peak_price_fp;
         drawdown_bps as u16 >= trail
     }
+
+    // ── Task 5B: Dead token fast exit ──────────────────────────────────
+
+    /// Check if this is a dead token that should be fast-exited.
+    ///
+    /// Returns true when ALL of:
+    /// 1. `hold_ms >= min_hold_ms` (waited long enough for data)
+    /// 2. `sample_count >= min_samples` (enough samples to judge)
+    /// 3. ALL recorded `price_samples_bps[0..sample_count]` are exactly 0 (flat)
+    /// 4. `ws_notif_count == 0` (zero on-chain trading activity)
+    ///
+    /// Data basis: 322/856 enriched trades (37.6%) have all-zero price samples.
+    /// ws_notif=0 at close: n=165, WR=0.0%. These are dead-on-arrival tokens
+    /// that waste a position slot for the full time_sl window (15-60s).
+    /// Fast exit after ~5s frees the slot 3-4x faster.
+    ///
+    /// Exits with TimeSl reason (caller decides). Defense-in-depth alongside
+    /// stagnation_exit and Phase 5 dead zone.
+    #[inline]
+    pub fn is_dead_token(&self, hold_ms: u64, min_hold_ms: u64, min_samples: u8) -> bool {
+        if hold_ms < min_hold_ms {
+            return false;
+        }
+        let n = self.sample_count;
+        if n < min_samples {
+            return false;
+        }
+        // All price samples must be exactly 0 (flat / never moved)
+        let count = n as usize;
+        let price_flat = self.price_samples_bps[..count].iter().all(|&s| s == 0);
+        // Zero WS notifications = no on-chain swap activity at all
+        let no_activity = self.ws_notif_count() == 0;
+        price_flat && no_activity
+    }
+
+    // ── End Task 5B ─────────────────────────────────────────────────────
 
     /// Check if the position is stagnant (dead token — no price movement).
     ///
@@ -1875,4 +1996,273 @@ mod tests {
         // Verify the effective trail is 300 (not 800 or 500)
         assert_eq!(pos.effective_trail_bps(), 300);
     }
+
+    // ── Task 3: ws_notif scale-in gate tests ────────────────────────────
+
+    #[test]
+    fn test_ws_notif_blocks_scale_in_zero_notifs() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        assert!(pos.ws_notif_blocks_scale_in(10), "ws_notif=0 should block");
+    }
+
+    #[test]
+    fn test_ws_notif_blocks_scale_in_below_threshold() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_ws_notif_count(5);
+        assert!(pos.ws_notif_blocks_scale_in(10), "ws_notif=5 < 10 should block");
+    }
+
+    #[test]
+    fn test_ws_notif_allows_scale_in_at_threshold() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_ws_notif_count(10);
+        assert!(!pos.ws_notif_blocks_scale_in(10), "ws_notif=10 at threshold should allow");
+    }
+
+    #[test]
+    fn test_ws_notif_allows_scale_in_above_threshold() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_ws_notif_count(15);
+        assert!(!pos.ws_notif_blocks_scale_in(10), "ws_notif=15 > 10 should allow");
+    }
+
+    #[test]
+    fn test_ws_notif_gate_disabled_when_threshold_zero() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        assert!(!pos.ws_notif_blocks_scale_in(0), "threshold=0 disables gate");
+    }
+
+    // ── Task 4: s[1] price trajectory gate tests ────────────────────────
+
+    #[test]
+    fn test_s1_blocks_scale_in_insufficient_samples() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.record_sample(10000);
+        assert_eq!(pos.sample_count, 1);
+        assert!(pos.s1_blocks_scale_in(1), "sample_count=1 should defer");
+    }
+
+    #[test]
+    fn test_s1_blocks_scale_in_negative() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.record_sample(10000);
+        pos.record_sample(9950); // s[1] = -50 bps
+        assert!(pos.s1_blocks_scale_in(1), "s[1]=-50 should block");
+    }
+
+    #[test]
+    fn test_s1_blocks_scale_in_zero() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.record_sample(10000);
+        pos.record_sample(10000); // s[1] = 0
+        assert!(pos.s1_blocks_scale_in(1), "s[1]=0 should block (below threshold=1)");
+    }
+
+    #[test]
+    fn test_s1_allows_scale_in_positive() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.record_sample(10000);
+        pos.record_sample(10005); // s[1] = 5 bps
+        assert!(!pos.s1_blocks_scale_in(1), "s[1]=5 >= 1 should allow");
+    }
+
+    #[test]
+    fn test_s1_allows_scale_in_strong_positive() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.record_sample(10000);
+        pos.record_sample(10100); // s[1] = 100 bps
+        assert!(!pos.s1_blocks_scale_in(1), "s[1]=100 should allow");
+    }
+
+    #[test]
+    fn test_s1_gate_disabled() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        assert!(!pos.s1_blocks_scale_in(i32::MIN), "i32::MIN disables gate");
+    }
+
+    // ── T3+T4 integration: evaluate_probe_gated tests ───────────────────
+
+    #[test]
+    fn test_probe_gated_ws_notif_blocks() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_probe_phase(ProbePhase::Probing);
+        pos.record_sample(10100);
+        pos.record_sample(10200); // s[1] = +200
+        // ws_notif = 0 (default)
+        let phase = pos.evaluate_probe_gated(
+            3000, 10200, 2000, -500, -300, true, 10, 1,
+        );
+        assert_eq!(phase, ProbePhase::HeldTight, "ws_notif=0 blocks even with good price");
+    }
+
+    #[test]
+    fn test_probe_gated_s1_blocks() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_probe_phase(ProbePhase::Probing);
+        pos.set_ws_notif_count(20);
+        pos.record_sample(10000);
+        pos.record_sample(10000); // s[1] = 0
+        let phase = pos.evaluate_probe_gated(
+            3000, 10000, 2000, -500, -300, true, 10, 1,
+        );
+        assert_eq!(phase, ProbePhase::HeldTight, "s[1]=0 blocks even with high ws_notif");
+    }
+
+    #[test]
+    fn test_probe_gated_both_pass_scales() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_probe_phase(ProbePhase::Probing);
+        pos.set_ws_notif_count(15);
+        pos.record_sample(10000);
+        pos.record_sample(10100); // s[1] = +100
+        let phase = pos.evaluate_probe_gated(
+            3000, 10100, 2000, -500, -300, true, 10, 1,
+        );
+        assert_eq!(phase, ProbePhase::Scaled, "both gates pass → scale");
+    }
+
+    #[test]
+    fn test_probe_gated_gates_disabled() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_probe_phase(ProbePhase::Probing);
+        pos.record_sample(10000);
+        pos.record_sample(10000);
+        let phase = pos.evaluate_probe_gated(
+            3000, 10000, 2000, -500, -300, true, 0, i32::MIN,
+        );
+        assert_eq!(phase, ProbePhase::Scaled, "gates disabled → normal behavior");
+    }
+
+    #[test]
+    fn test_probe_gated_s1_defers_before_second_sample() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_probe_phase(ProbePhase::Probing);
+        pos.set_ws_notif_count(20);
+        pos.record_sample(10100); // only s[0]
+        let phase = pos.evaluate_probe_gated(
+            3000, 10100, 2000, -500, -300, true, 10, 1,
+        );
+        assert_eq!(phase, ProbePhase::HeldTight, "s1 defers when only 1 sample");
+    }
+
+    #[test]
+    fn test_evaluate_probe_backward_compat() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10000, 411, 50_000_000, 0, 50, 60, 0, 0, 0,
+        );
+        pos.set_probe_phase(ProbePhase::Probing);
+        pos.record_sample(10200);
+        let phase = pos.evaluate_probe(3000, 10200, 2000, -500, -300, true);
+        assert_eq!(phase, ProbePhase::Scaled, "old API backward compat works");
+    }
+
+    // ── Task 5B: Dead token fast exit tests ────────────────────────────
+
+    #[test]
+    fn test_dead_token_below_min_hold_no_exit() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // 5 flat samples, ws_notif=0, but hold_ms < 5000 → no fast exit
+        for _ in 0..5 {
+            pos.record_sample(10_000);
+        }
+        assert!(!pos.is_dead_token(4_999, 5_000, 5));
+    }
+
+    #[test]
+    fn test_dead_token_fires_at_threshold() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // 5 flat samples, ws_notif=0, hold_ms=5000 → fast exit fires
+        for _ in 0..5 {
+            pos.record_sample(10_000);
+        }
+        assert!(pos.is_dead_token(5_000, 5_000, 5));
+    }
+
+    #[test]
+    fn test_dead_token_ws_notif_blocks() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // 5 flat samples, hold_ms=5000, but ws_notif=1 → no fast exit (has activity)
+        for _ in 0..5 {
+            pos.record_sample(10_000);
+        }
+        pos.set_ws_notif_count(1);
+        assert!(!pos.is_dead_token(5_000, 5_000, 5));
+    }
+
+    #[test]
+    fn test_dead_token_too_few_samples() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // Only 4 samples (need ≥5), ws_notif=0, hold_ms=5000 → no fast exit
+        for _ in 0..4 {
+            pos.record_sample(10_000);
+        }
+        assert!(!pos.is_dead_token(5_000, 5_000, 5));
+    }
+
+    #[test]
+    fn test_dead_token_price_not_flat() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // 5 samples but s[3] has movement → not flat → no fast exit
+        for _ in 0..3 {
+            pos.record_sample(10_000);
+        }
+        pos.record_sample(10_050); // +50 bps — movement detected
+        pos.record_sample(10_000);
+        assert!(!pos.is_dead_token(5_000, 5_000, 5));
+    }
+
+    #[test]
+    fn test_dead_token_disabled_via_zero_min_samples() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // min_samples=0 with 0 samples: vacuously flat + no ws → fires.
+        // In practice, dead_token_fast_exit_enabled=false in config prevents calling this.
+        assert!(pos.is_dead_token(5_000, 5_000, 0),
+            "min_samples=0 with 0 samples: vacuously flat + no ws → fires");
+    }
+
+    // ── End Task 5B tests ────────────────────────────────────────────────
 }

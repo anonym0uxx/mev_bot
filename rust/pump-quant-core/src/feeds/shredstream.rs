@@ -44,6 +44,26 @@ const SELL_DISCRIMINATOR: [u8; 8] = [51, 230, 133, 164, 1, 127, 131, 173];
 /// 80-200ms advantage over websocket-based graduation detection.
 const MIGRATE_DISCRIMINATOR: [u8; 8] = [155, 234, 231, 146, 236, 158, 162, 30];
 
+// ── PumpSwap graduation detection ───────────────────────────────────
+// Post-March 2025, most pump.fun tokens graduate to PumpSwap (pAMM) instead
+// of Raydium. The PumpSwap program's `MigrateFunds` instruction is the
+// graduation signal — detectable alongside pump.fun's own `migrate`.
+
+/// PumpSwap AMM program ID bytes (pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA).
+const PUMPSWAP_PROGRAM_ID: [u8; 32] = [
+    0x0c, 0x14, 0xde, 0xfc, 0x82, 0x5e, 0xc6, 0x76,
+    0x94, 0x25, 0x08, 0x18, 0xbb, 0x65, 0x40, 0x65,
+    0xf4, 0x29, 0x8d, 0x31, 0x56, 0xd5, 0x71, 0xb4,
+    0xd4, 0xf8, 0x09, 0x0c, 0x18, 0xe9, 0xa8, 0x63,
+];
+
+/// PumpSwap program ID as a `Pubkey` for comparison in parsed transactions.
+const PUMPSWAP_PROGRAM_PUBKEY: Pubkey = Pubkey::new_from_array(PUMPSWAP_PROGRAM_ID);
+
+/// 8-byte Anchor discriminator for PumpSwap `migrate_funds` instruction.
+/// SHA256("global:migrate_funds")[..8].
+const PUMPSWAP_MIGRATE_DISCRIMINATOR: [u8; 8] = [42, 229, 10, 231, 189, 62, 193, 174];
+
 /// Minimum datagram size: 8 (discriminator) + 32 (mint) + 8 (sol_amount) = 48 bytes.
 const MIN_PAYLOAD_SIZE: usize = 48;
 
@@ -386,6 +406,12 @@ impl ShredStreamFeed {
                         return true;
                     }
                 } else if let Some(migration) = parse_pump_migration(tx, slot, now_ms) {
+                    self.events_received.fetch_add(1, Ordering::Relaxed);
+                    if self.tx.send(migration).is_err() {
+                        info!("[shredstream] engine channel closed — exiting gRPC loop");
+                        return true;
+                    }
+                } else if let Some(migration) = parse_pumpswap_migration(tx, now_ms) {
                     self.events_received.fetch_add(1, Ordering::Relaxed);
                     if self.tx.send(migration).is_err() {
                         info!("[shredstream] engine channel closed — exiting gRPC loop");
@@ -787,6 +813,82 @@ fn parse_pump_migration(
             continue;
         }
         let mint = account_keys[mint_idx].to_bytes();
+
+        // Extract full signature for pool resolution RPC calls
+        let sig: [u8; 64] = if !tx.signatures.is_empty() {
+            tx.signatures[0].into()
+        } else {
+            continue;
+        };
+
+        return Some(FeedEvent::Migration {
+            mint,
+            ts_ms: now_ms,
+            source: MigrationSource::ShredStream,
+            sig,
+        });
+    }
+
+    None
+}
+
+/// Parse a PumpSwap `MigrateFunds` instruction from a decoded Solana transaction.
+///
+/// Post-March 2025, pump.fun tokens increasingly graduate to PumpSwap (pAMM)
+/// instead of Raydium. This function detects PumpSwap's `migrate_funds` instruction
+/// as a backup graduation signal alongside pump.fun's own `migrate` discriminator.
+///
+/// PumpSwap MigrateFunds account layout (Anchor IDL):
+/// ```text
+/// accounts[0] = pool (new PumpSwap pool being created)
+/// accounts[1] = bondingCurve
+/// accounts[2] = mint
+/// accounts[3..] = various vaults, authority, token programs
+/// ```
+///
+/// The mint is extracted from accounts[2]. Returns `FeedEvent::Migration` with
+/// the full tx signature for downstream pool resolution via `getTransaction`.
+///
+/// Note: `mint` may be [0u8; 32] if extraction fails — pool resolution will
+/// resolve the real mint from `postTokenBalances`, same as Helius feed does.
+#[inline(always)]
+fn parse_pumpswap_migration(
+    tx: &solana_sdk::transaction::VersionedTransaction,
+    now_ms: u64,
+) -> Option<FeedEvent> {
+    let account_keys = tx.message.static_account_keys();
+    let instructions = tx.message.instructions();
+
+    for ix in instructions {
+        let program_id_index = ix.program_id_index as usize;
+        if program_id_index >= account_keys.len() {
+            continue;
+        }
+
+        // Fast-path: must be PumpSwap program
+        if account_keys[program_id_index] != PUMPSWAP_PROGRAM_PUBKEY {
+            continue;
+        }
+
+        // Check discriminator — must be MigrateFunds
+        if ix.data.len() < 8 {
+            continue;
+        }
+        if ix.data[..8] != PUMPSWAP_MIGRATE_DISCRIMINATOR {
+            continue;
+        }
+
+        // Extract mint from accounts[2] (third account in MigrateFunds instruction)
+        let mint = if ix.accounts.len() > 2 {
+            let mint_idx = ix.accounts[2] as usize;
+            if mint_idx < account_keys.len() {
+                account_keys[mint_idx].to_bytes()
+            } else {
+                [0u8; 32] // fallback: pool resolution will find the real mint
+            }
+        } else {
+            [0u8; 32] // fallback: pool resolution will find the real mint
+        };
 
         // Extract full signature for pool resolution RPC calls
         let sig: [u8; 64] = if !tx.signatures.is_empty() {
