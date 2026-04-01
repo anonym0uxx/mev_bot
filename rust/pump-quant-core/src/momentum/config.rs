@@ -63,8 +63,13 @@ pub struct MomentumConfig {
     pub max_hold_trail_pct: f64,
     /// Tick interval: check positions every this many ms.
     pub check_ms: u64,
-    /// Daily loss cap in SOL — circuit breaker.
-    pub daily_loss_cap_sol: f64,
+    /// Daily loss cap as fraction of current wallet balance (0.0–1.0).
+    /// Circuit breaker trips when |daily_pnl_lamports| > wallet_balance_lamports * daily_loss_cap_pct.
+    /// Scales automatically with wallet size. Default: 0.10 (10%).
+    /// At 1.5 SOL wallet: trips at 0.15 SOL daily loss.
+    /// At 5.0 SOL wallet: trips at 0.50 SOL daily loss.
+    /// Set to 1.0 to effectively disable (never trips).
+    pub daily_loss_cap_pct: f64,
     /// Raydium AMM fee in basis points.
     pub raydium_fee_bps: u32,
     /// PumpSwap fee in basis points.
@@ -464,7 +469,7 @@ impl Default for MomentumConfig {
             max_hold_trail_activation_ms: 200_000,
             max_hold_trail_pct: 5.0,
             check_ms: 150,
-            daily_loss_cap_sol: 2.0,
+            daily_loss_cap_pct: 0.10,
             raydium_fee_bps: 25,
             pumpswap_fee_bps: 100,
             sample_interval_ticks: 7,
@@ -616,6 +621,17 @@ impl MomentumConfig {
         )
     }
 
+    /// Validate daily loss cap configuration.
+    pub fn validate_daily_loss_cap(&self) -> Result<(), String> {
+        if !(0.0 < self.daily_loss_cap_pct && self.daily_loss_cap_pct <= 1.0) {
+            return Err(format!(
+                "daily_loss_cap_pct must be in (0.0, 1.0], got {}",
+                self.daily_loss_cap_pct
+            ));
+        }
+        Ok(())
+    }
+
     /// Validate wallet balance monitor + Kelly sizing configuration.
     pub fn validate_balance_config(&self) -> Result<(), String> {
         if self.min_wallet_balance_lamports == 0 {
@@ -660,7 +676,7 @@ mod tests {
         assert_eq!(config.max_hold_trail_activation_ms, 200_000);
         assert!((config.max_hold_trail_pct - 5.0).abs() < f64::EPSILON);
         assert_eq!(config.check_ms, 150);
-        assert!((config.daily_loss_cap_sol - 2.0).abs() < f64::EPSILON);
+        assert!((config.daily_loss_cap_pct - 0.10).abs() < f64::EPSILON);
         assert_eq!(config.raydium_fee_bps, 25);
         assert_eq!(config.pumpswap_fee_bps, 100);
         assert_eq!(config.sample_interval_ticks, 7);
@@ -678,6 +694,21 @@ mod tests {
         assert_eq!(parsed.entry_delay_ms, config.entry_delay_ms);
         assert_eq!(parsed.min_grad_score, config.min_grad_score);
         assert!((parsed.position_size_sol - config.position_size_sol).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_validate_daily_loss_cap_ok() {
+        let config = MomentumConfig::default();
+        assert!(config.validate_daily_loss_cap().is_ok());
+    }
+
+    #[test]
+    fn test_validate_daily_loss_cap_invalid() {
+        let mut config = MomentumConfig::default();
+        config.daily_loss_cap_pct = 0.0;
+        assert!(config.validate_daily_loss_cap().is_err());
+        config.daily_loss_cap_pct = 1.5;
+        assert!(config.validate_daily_loss_cap().is_err());
     }
 
     #[test]

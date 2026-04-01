@@ -394,11 +394,23 @@ impl MomentumEngine {
 
         self.graduations_seen.fetch_add(1, Ordering::Relaxed);
 
-        // Check daily loss cap
+        // Check daily loss cap (wallet-relative circuit breaker)
         let daily_pnl = self.daily_pnl_lamports.load(Ordering::Relaxed);
-        let cap_lamports = -(self.config.daily_loss_cap_sol * 1e9) as i64;
-        if daily_pnl <= cap_lamports {
-            return; // daily cap hit
+        if daily_pnl < 0 {
+            let wallet_bal = self.wallet_balance_lamports.load(Ordering::Relaxed);
+            // Use a sensible floor for wallet_balance when unpolled (u64::MAX initial value)
+            let effective_balance = if wallet_bal == u64::MAX { 1_500_000_000u64 } else { wallet_bal };
+            let cap_lamports = (effective_balance as f64 * self.config.daily_loss_cap_pct) as i64;
+            if daily_pnl.unsigned_abs() >= cap_lamports as u64 {
+                tracing::warn!(
+                    daily_loss_sol = daily_pnl as f64 / -1e9,
+                    cap_pct = self.config.daily_loss_cap_pct,
+                    cap_sol = cap_lamports as f64 / 1e9,
+                    wallet_sol = effective_balance as f64 / 1e9,
+                    "[momentum] daily loss cap hit — pausing entries"
+                );
+                return; // daily cap hit
+            }
         }
 
         // Check concurrent position limit
