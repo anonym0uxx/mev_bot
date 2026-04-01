@@ -442,6 +442,18 @@ pub struct MomentumConfig {
     /// On engine init, scan active positions and force-close any with 0 token balance.
     /// Default: true.
     pub ghost_position_cleanup_enabled: bool,
+
+    // ── Pool resolution gates (FIX-1/4/5) ─────────────────────────────────
+    /// Max age (ms) for cold-miss graduation events before rejecting as stale CoreCast backlog.
+    /// Cold-miss = grad_speed_s==0 AND volume_sol_x100==0.
+    /// CoreCast replays ~430 old Raydium-era graduations/min — this gates them out early.
+    /// Set to 0 to disable. Default: 120_000 (2 minutes).
+    pub stale_grad_max_age_ms: u64,
+
+    /// Max idle time (ms) for a Raydium pc_vault before treating the pool as dead (FIX-5).
+    /// Queries getSignaturesForAddress to find last swap. If older than this → skip.
+    /// Set to 0 to disable. Default: 300_000 (5 minutes).
+    pub raydium_max_idle_ms: u64,
 }
 
 impl Default for MomentumConfig {
@@ -607,6 +619,10 @@ impl Default for MomentumConfig {
             min_probe_size_sol: 0.02,
             max_probe_size_sol: 0.20,
             ghost_position_cleanup_enabled: true,
+
+            // Pool resolution gates
+            stale_grad_max_age_ms: 120_000,  // 2 minutes
+            raydium_max_idle_ms: 300_000,    // 5 minutes
         }
     }
 }

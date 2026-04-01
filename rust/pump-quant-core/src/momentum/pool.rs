@@ -25,6 +25,12 @@ pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
 /// drained historical pool or failed launch returned by getProgramAccounts.
 pub const MIN_SOL_RESERVES_LAMPORTS: u64 = 50_000_000_000; // 50 SOL
 
+/// Minimum viable liquidity for PumpSwap pools specifically (FIX-3).
+/// New pump.fun graduations deposit ~85 SOL to PumpSwap, but some valid
+/// pools start with 30-50 SOL. Lower threshold than Raydium to capture
+/// fresh graduations. Raydium keeps 50 SOL minimum (stale/legacy pools).
+pub const MIN_PUMPSWAP_SOL_RESERVES_LAMPORTS: u64 = 30_000_000_000; // 30 SOL
+
 /// Pump.fun bonding curve terminal price at graduation (lamports per token atom).
 ///
 /// Derivation:
@@ -464,6 +470,26 @@ async fn resolve_pool_inner(
         }
     }
 
+    // ── FIX-2: PumpSwap preference ───────────────────────────────────────────
+    // Post-April 2026: all new pump.fun tokens graduate to PumpSwap.
+    // CoreCast backlog sigs point to old Raydium migration txs, but those pools
+    // are dead — all real trading is on PumpSwap. When we resolve a Raydium pool
+    // via the sig, always check for an active PumpSwap pool first.
+    if pool_type == PoolType::RaydiumAmmV4 {
+        if let Some(ps) = resolve_pumpswap_pool_from_mint(client, &mint, helius_rpc_url).await {
+            if ps.reserve_sol_lamports > 0 {
+                tracing::info!(
+                    mint = %bs58::encode(&mint).into_string(),
+                    raydium_sol = reserve_sol / 1_000_000_000,
+                    pumpswap_sol = ps.reserve_sol_lamports / 1_000_000_000,
+                    "[pool] preferring PumpSwap over Raydium — active pool found"
+                );
+                return Ok(ps);
+            }
+        }
+    }
+    // ── End FIX-2 ─────────────────────────────────────────────────────────────
+
     Ok(PoolResolution {
         mint,
         pool_address: amm_id, // For Raydium, pool_address = amm_id
@@ -740,13 +766,14 @@ pub async fn resolve_pumpswap_pool_from_mint(
     let (reserve_token, reserve_sol) =
         fetch_vault_reserves(client, helius_rpc_url, &coin_vault_b58, &pc_vault_b58).await?;
 
-    // Minimum viable liquidity check — reject empty/drained pools
-    if reserve_sol < MIN_SOL_RESERVES_LAMPORTS {
+    // FIX-3: PumpSwap uses lower 30 SOL threshold (fresh graduations start at ~85 SOL
+    // but some valid pools have 30-50 SOL). Raydium keeps 50 SOL minimum.
+    if reserve_sol < MIN_PUMPSWAP_SOL_RESERVES_LAMPORTS {
         tracing::warn!(
             mint = %mint_b58,
             pool = %bs58::encode(&pool_address).into_string(),
             reserve_sol,
-            "[momentum] PumpSwap pool rejected — insufficient liquidity (reserve_sol < 50 SOL)"
+            "[momentum] PumpSwap pool rejected — insufficient liquidity (reserve_sol < 30 SOL)"
         );
         return None;
     }
@@ -940,6 +967,32 @@ pub fn extract_pumpswap_pool_accounts(res: &PoolResolution) -> Option<PumpSwapPo
         coin_creator_vault_ata: [0u8; 32],
         coin_creator_vault_authority: [0u8; 32],
     })
+}
+
+/// FIX-5: Query the most recent confirmed transaction timestamp for an account.
+///
+/// Used to detect dead Raydium pools that have had no swap activity recently.
+/// Returns the blockTime in milliseconds, or None if unavailable/empty.
+pub async fn get_account_last_activity_ms(
+    client: &reqwest::Client,
+    rpc_url: &str,
+    account_b58: &str,
+) -> Option<u64> {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getSignaturesForAddress",
+        "params": [
+            account_b58,
+            {"limit": 1, "commitment": "confirmed"}
+        ]
+    });
+    let resp = client.post(rpc_url).json(&body).send().await.ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let sigs = json.pointer("/result")?.as_array()?;
+    let block_time = sigs.first()?.get("blockTime")?.as_i64()?;
+    // blockTime is Unix seconds → convert to ms
+    Some((block_time as u64).saturating_mul(1_000))
 }
 
 #[cfg(test)]

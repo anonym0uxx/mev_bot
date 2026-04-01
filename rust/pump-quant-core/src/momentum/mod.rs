@@ -2383,6 +2383,28 @@ impl MomentumEngine {
         // Detected from raw enrichment values before effective defaults are applied.
         let is_cold_miss = enrichment.grad_speed_s == 0 && enrichment.volume_sol_x100 == 0;
 
+        // ── FIX-1/FIX-4: Staleness gate — drop cold-miss CoreCast backlog ─────
+        // CoreCast replays ~430 old Raydium-era graduation events/min with no
+        // enrichment data. These waste RPC calls and resolve to dead Raydium pools.
+        // Gate: cold-miss events older than stale_grad_max_age_ms are dropped.
+        if is_cold_miss && self.config.stale_grad_max_age_ms > 0 {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let grad_age_ms = now_ms.saturating_sub(ts_ms);
+            if grad_age_ms > self.config.stale_grad_max_age_ms {
+                tracing::debug!(
+                    mint = %bs58::encode(&mint).into_string(),
+                    grad_age_ms,
+                    "[momentum] stale cold-miss grad rejected — CoreCast backlog"
+                );
+                self.resolving_sigs.remove(&sig);
+                return;
+            }
+        }
+        // ── End staleness gate ─────────────────────────────────────────────────
+
         match resolve_pool_from_transaction(&self.http_client, &sig, &self.rpc_url).await {
             Some(resolution) => {
                 let mint_b58 = bs58::encode(&resolution.mint).into_string();
@@ -2407,6 +2429,35 @@ impl MomentumEngine {
                     buys_5s = enrichment.buys_5s,
                     "[momentum] pool resolved — entering on_graduation"
                 );
+
+                // ── FIX-5: Raydium dead pool activity check ───────────────────
+                // If the resolved pool is Raydium, verify it has had recent swap
+                // activity. Dead Raydium pools have stale liquidity but zero trades.
+                if resolution.pool_type == crate::momentum::pool::PoolType::RaydiumAmmV4
+                    && self.config.raydium_max_idle_ms > 0
+                {
+                    let pc_vault_b58 = bs58::encode(&resolution.pc_vault).into_string();
+                    let last_ms = crate::momentum::pool::get_account_last_activity_ms(
+                        &self.http_client, &self.helius_rpc_url, &pc_vault_b58
+                    ).await;
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let idle_ms = now_ms.saturating_sub(last_ms.unwrap_or(0));
+                    if idle_ms > self.config.raydium_max_idle_ms {
+                        tracing::info!(
+                            mint = %bs58::encode(&resolution.mint).into_string(),
+                            idle_ms,
+                            idle_min = idle_ms / 60_000,
+                            "[momentum] Raydium pool dead — no activity in {}min, skipping",
+                            idle_ms / 60_000
+                        );
+                        return;
+                    }
+                }
+                // ── End FIX-5 ─────────────────────────────────────────────────
+
                 let pool_info = PoolInfo {
                     coin_vault: resolution.coin_vault,
                     pc_vault: resolution.pc_vault,
@@ -2558,6 +2609,33 @@ impl MomentumEngine {
                             reserve_sol = resolution.reserve_sol_lamports,
                             "[momentum] pool resolved via mint lookup — entering on_graduation"
                         );
+
+                        // ── FIX-5: Raydium dead pool activity check (mint-lookup path) ──
+                        if resolution.pool_type == crate::momentum::pool::PoolType::RaydiumAmmV4
+                            && self.config.raydium_max_idle_ms > 0
+                        {
+                            let pc_vault_b58 = bs58::encode(&resolution.pc_vault).into_string();
+                            let last_ms = crate::momentum::pool::get_account_last_activity_ms(
+                                &self.http_client, &self.helius_rpc_url, &pc_vault_b58
+                            ).await;
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
+                            let idle_ms = now_ms.saturating_sub(last_ms.unwrap_or(0));
+                            if idle_ms > self.config.raydium_max_idle_ms {
+                                tracing::info!(
+                                    mint = %mint_b58,
+                                    idle_ms,
+                                    idle_min = idle_ms / 60_000,
+                                    "[momentum] Raydium pool dead (mint lookup) — no activity in {}min, skipping",
+                                    idle_ms / 60_000
+                                );
+                                return;
+                            }
+                        }
+                        // ── End FIX-5 (mint-lookup path) ──────────────────────────────────
+
                         let pool_info = PoolInfo {
                             coin_vault: resolution.coin_vault,
                             pc_vault: resolution.pc_vault,
