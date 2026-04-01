@@ -102,9 +102,11 @@ async function main() {
   // ── Load momentum trades (primary engine) ─────────────────────────
   const allMomentum = loadJsonl(MOMENTUM_JSONL);
   // New build trades have size_sol field; filter out phantom PnL (>10x position size)
+  // Also require at least one non-zero price sample — zero-sample trades had no real price data
   const cleanMomentum = allMomentum.filter(t =>
     t.size_sol != null && t.size_sol > 0 &&
-    Math.abs(t.net_pnl_sol || 0) <= t.size_sol * 10
+    Math.abs(t.net_pnl_sol || 0) <= t.size_sol * 10 &&
+    Array.isArray(t.price_samples_bps) && t.price_samples_bps.some(s => s !== 0)
   );
   const sessionMomentum = cleanMomentum.filter(t => (t.exit_timestamp_ms || 0) >= sessionStartMs);
 

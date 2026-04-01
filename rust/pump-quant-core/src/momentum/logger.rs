@@ -79,6 +79,7 @@ pub struct MomentumClosedPosition {
 /// explicit flush per record — one JSON line per position.
 pub struct MomentumPaperLogger {
     sender: Sender<MomentumClosedPosition>,
+    log_path: String,
 }
 
 impl MomentumPaperLogger {
@@ -130,7 +131,7 @@ impl MomentumPaperLogger {
             })
             .expect("failed to spawn momentum logger thread");
 
-        (Self { sender }, handle)
+        (Self { sender, log_path: log_path.to_string() }, handle)
     }
 
     /// Send a closed position record to the writer thread.
@@ -141,6 +142,11 @@ impl MomentumPaperLogger {
     #[inline(always)]
     pub fn log(&self, position: MomentumClosedPosition) {
         let _ = self.sender.try_send(position);
+    }
+
+    /// Returns the path to the JSONL log file.
+    pub fn log_path(&self) -> String {
+        self.log_path.clone()
     }
 }
 

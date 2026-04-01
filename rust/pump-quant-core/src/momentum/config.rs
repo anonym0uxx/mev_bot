@@ -410,6 +410,33 @@ pub struct MomentumConfig {
     /// Minimum current price in bps above entry for velocity exit to fire.
     /// Below this, trailing stop handles it. Default: 50
     pub velocity_exit_min_profit_bps: i32,
+
+    // ══════════════════════════════════════════════════════════
+    // WALLET BALANCE MONITOR + KELLY SIZING
+    // ══════════════════════════════════════════════════════════
+
+    /// How often to poll wallet balance (ms). Default: 30_000 (30s).
+    pub wallet_balance_poll_ms: u64,
+    /// Minimum balance (lamports) to allow entries. Below this, engine pauses.
+    /// Default: 100_000_000 (0.1 SOL).
+    pub min_wallet_balance_lamports: u64,
+    /// Extra margin fraction on top of required entry+tip. Default: 0.05 (5%).
+    pub balance_safety_margin_pct: f64,
+    /// Master toggle for Kelly position sizing. Default: false (fixed probe_size_sol until bootstrap).
+    pub kelly_sizing_enabled: bool,
+    /// Kelly fraction (0.0–1.0). 1.0 = full Kelly, 0.5 = half Kelly. Default: 0.25.
+    pub kelly_fraction: f64,
+    /// Use fixed probe_size_sol until this many clean trades. Default: 30.
+    pub kelly_bootstrap_trades: usize,
+    /// Rolling window of trades for Kelly WR/avgwin/avgloss. Default: 50.
+    pub kelly_lookback_trades: usize,
+    /// Minimum allowed Kelly-computed size. Default: 0.02.
+    pub min_probe_size_sol: f64,
+    /// Maximum allowed Kelly-computed size. Default: 0.20.
+    pub max_probe_size_sol: f64,
+    /// On engine init, scan active positions and force-close any with 0 token balance.
+    /// Default: true.
+    pub ghost_position_cleanup_enabled: bool,
 }
 
 impl Default for MomentumConfig {
@@ -563,6 +590,18 @@ impl Default for MomentumConfig {
             velocity_exit_min_samples: 5,
             velocity_exit_confirm_samples: 2,
             velocity_exit_min_profit_bps: 50,
+
+            // Wallet balance monitor + Kelly sizing
+            wallet_balance_poll_ms: 30_000,
+            min_wallet_balance_lamports: 100_000_000,
+            balance_safety_margin_pct: 0.05,
+            kelly_sizing_enabled: false,
+            kelly_fraction: 0.25,
+            kelly_bootstrap_trades: 30,
+            kelly_lookback_trades: 50,
+            min_probe_size_sol: 0.02,
+            max_probe_size_sol: 0.20,
+            ghost_position_cleanup_enabled: true,
         }
     }
 }
@@ -575,6 +614,23 @@ impl MomentumConfig {
             "mom-v{:.2}sol_{}ms",
             self.position_size_sol, self.entry_delay_ms
         )
+    }
+
+    /// Validate wallet balance monitor + Kelly sizing configuration.
+    pub fn validate_balance_config(&self) -> Result<(), String> {
+        if self.min_wallet_balance_lamports == 0 {
+            return Err("min_wallet_balance_lamports must be > 0".into());
+        }
+        if !(0.0..=1.0).contains(&self.kelly_fraction) {
+            return Err(format!("kelly_fraction must be 0.0–1.0, got {}", self.kelly_fraction));
+        }
+        if self.kelly_bootstrap_trades < 10 {
+            return Err(format!("kelly_bootstrap_trades must be >= 10, got {}", self.kelly_bootstrap_trades));
+        }
+        if self.min_probe_size_sol >= self.max_probe_size_sol {
+            return Err(format!("min_probe_size_sol ({}) must be < max_probe_size_sol ({})", self.min_probe_size_sol, self.max_probe_size_sol));
+        }
+        Ok(())
     }
 }
 
@@ -622,5 +678,33 @@ mod tests {
         assert_eq!(parsed.entry_delay_ms, config.entry_delay_ms);
         assert_eq!(parsed.min_grad_score, config.min_grad_score);
         assert!((parsed.position_size_sol - config.position_size_sol).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_validate_balance_config_ok() {
+        let config = MomentumConfig::default();
+        assert!(config.validate_balance_config().is_ok());
+    }
+
+    #[test]
+    fn test_validate_balance_config_bad_kelly_fraction() {
+        let mut config = MomentumConfig::default();
+        config.kelly_fraction = 1.5;
+        assert!(config.validate_balance_config().is_err());
+    }
+
+    #[test]
+    fn test_validate_balance_config_bad_probe_sizes() {
+        let mut config = MomentumConfig::default();
+        config.min_probe_size_sol = 0.5;
+        config.max_probe_size_sol = 0.1;
+        assert!(config.validate_balance_config().is_err());
+    }
+
+    #[test]
+    fn test_validate_balance_config_zero_min_balance() {
+        let mut config = MomentumConfig::default();
+        config.min_wallet_balance_lamports = 0;
+        assert!(config.validate_balance_config().is_err());
     }
 }

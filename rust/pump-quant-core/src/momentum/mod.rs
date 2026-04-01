@@ -198,6 +198,10 @@ pub struct MomentumEngine {
     sl_exits: AtomicU64,
     timeout_exits: AtomicU64,
     daily_pnl_lamports: AtomicI64,
+    /// Cached wallet SOL balance in lamports. Updated by background poller every wallet_balance_poll_ms.
+    /// Initialized to u64::MAX to allow all entries until first poll completes.
+    /// Only enforced in live mode (paper_mode=false).
+    wallet_balance_lamports: Arc<AtomicU64>,
     last_tick_ms: AtomicU64,
     /// Graduation events where mint_map had no history (enrichment cold miss).
     /// High value = mint_map not being populated before graduation.
@@ -283,9 +287,65 @@ impl MomentumEngine {
             sl_exits: AtomicU64::new(0),
             timeout_exits: AtomicU64::new(0),
             daily_pnl_lamports: AtomicI64::new(0),
+            wallet_balance_lamports: Arc::new(AtomicU64::new(u64::MAX)),
             last_tick_ms: AtomicU64::new(0),
             grad_enrichment_cold_misses: AtomicU64::new(0),
         };
+
+        // Spawn wallet balance poller (no-op in paper mode — reads but doesn't gate)
+        let balance_arc = Arc::clone(&engine.wallet_balance_lamports);
+        let poll_ms = engine.config.wallet_balance_poll_ms;
+        let wallet_pk = engine.wallet_pubkey;
+        let rpc_for_balance = Arc::clone(&engine.helius_rpc_url);
+        let paper_mode = engine.config.paper_mode;
+
+        tokio::spawn(async move {
+            if wallet_pk.is_none() {
+                tracing::debug!("[balance_poller] no wallet pubkey — poller idle");
+                return;
+            }
+            let pk_bytes = wallet_pk.unwrap();
+            let pk_b58 = bs58::encode(&pk_bytes).into_string();
+            let client = reqwest::Client::new();
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_millis(poll_ms)).await;
+
+                // getBalance JSON-RPC call
+                let body = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getBalance",
+                    "params": [pk_b58, {"commitment": "confirmed"}]
+                });
+
+                match client
+                    .post(rpc_for_balance.as_str())
+                    .json(&body)
+                    .send()
+                    .await
+                {
+                    Ok(resp) => {
+                        if let Ok(json) = resp.json::<serde_json::Value>().await {
+                            if let Some(lamports) = json["result"]["value"].as_u64() {
+                                let prev = balance_arc.swap(lamports, Ordering::Relaxed);
+                                if (prev as i64 - lamports as i64).unsigned_abs() > 10_000_000 {
+                                    // Log only significant changes (>0.01 SOL delta)
+                                    tracing::info!(
+                                        lamports,
+                                        sol = lamports as f64 / 1e9,
+                                        paper_mode,
+                                        "[balance_poller] wallet balance updated"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "[balance_poller] getBalance failed — keeping last known value");
+                    }
+                }
+            }
+        });
 
         (engine, scored_tx, ws_handle, logger_handle)
     }
@@ -574,6 +634,59 @@ impl MomentumEngine {
         (size_sol * 1_000_000_000.0) as u64
     }
 
+    /// Compute Kelly-optimal probe size from rolling trade history.
+    /// Returns None if insufficient history (< kelly_bootstrap_trades) or negative EV.
+    /// Caller falls back to probe_size_sol when None is returned.
+    fn compute_kelly_probe_size(&self) -> Option<u64> {
+        use crate::engine::kelly_sizing::{compute_momentum_kelly_size, compute_momentum_kelly_inputs, MomentumPaperTrade};
+
+        // Read trade history from JSONL log
+        let log_path = self.logger.log_path();
+        let content = match std::fs::read_to_string(&log_path) {
+            Ok(c) => c,
+            Err(_) => return None,
+        };
+
+        let trades: Vec<MomentumPaperTrade> = content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|v| {
+                let net_pnl_sol = v["net_pnl_sol"].as_f64()?;
+                let size_sol = v["size_sol"].as_f64().unwrap_or(0.0);
+                // Only include trades with valid size (exclude ghost/zero-price trades)
+                if size_sol <= 0.0 { return None; }
+                if net_pnl_sol.abs() > size_sol * 10.0 { return None; }
+                Some(MomentumPaperTrade { net_pnl_sol })
+            })
+            .collect();
+
+        // Require bootstrap minimum
+        if trades.len() < self.config.kelly_bootstrap_trades {
+            return None;
+        }
+
+        let (wr, avg_win, avg_loss) = compute_momentum_kelly_inputs(
+            &trades,
+            self.config.kelly_lookback_trades,
+        )?;
+
+        let balance = self.wallet_balance_lamports.load(Ordering::Relaxed);
+
+        let kelly_size = compute_momentum_kelly_size(
+            balance,
+            wr,
+            avg_win,
+            avg_loss,
+            self.config.kelly_fraction,
+        )?;
+
+        // Clamp to [min_probe_size_sol, max_probe_size_sol]
+        let min_lamports = (self.config.min_probe_size_sol * 1_000_000_000.0) as u64;
+        let max_lamports = (self.config.max_probe_size_sol * 1_000_000_000.0) as u64;
+        Some(kelly_size.clamp(min_lamports, max_lamports))
+    }
+
     /// Called every `check_ms`. Manages active positions.
     ///
     /// This is the hot path — runs every 150ms when positions are open.
@@ -787,7 +900,37 @@ impl MomentumEngine {
             // Scale-in entry: ALL entries start as probes at probe_size_sol (0.10 SOL).
             // Scaling up happens in process_scale_in() when s[0] or s[1] confirms momentum.
             // Quant spec §4: probe 0.10 → scale to 0.50 on s[0]≥300, 0.30 on s[0]≥100.
-            let raw_size = if self.config.probe_size_sol > 0.0 {
+
+            // ── Balance gate (live mode only) ──────────────────────────────────────
+            // In paper mode: skipped entirely (wallet_balance_lamports stays at u64::MAX).
+            // In live mode: reject entry if cached balance is too low to cover probe + tip + margin.
+            if !self.config.paper_mode {
+                let cached_balance = self.wallet_balance_lamports.load(Ordering::Relaxed);
+                // Estimate tip: use 0.003 SOL as conservative estimate (actual tip computed at tx time)
+                let tip_estimate: u64 = 3_000_000;
+                let probe_lamports = (self.config.probe_size_sol * 1_000_000_000.0) as u64;
+                let margin = (probe_lamports as f64 * self.config.balance_safety_margin_pct) as u64;
+                let required = probe_lamports + tip_estimate + 10_000 + margin;
+
+                if cached_balance < required.max(self.config.min_wallet_balance_lamports) {
+                    tracing::warn!(
+                        mint = %bs58::encode(&entry.mint).into_string(),
+                        cached_sol = cached_balance as f64 / 1e9,
+                        required_sol = required as f64 / 1e9,
+                        "[momentum] insufficient balance — skipping entry"
+                    );
+                    self.price_feed.unsubscribe_sync(&entry.mint);
+                    self.active.remove(&entry.mint);
+                    continue;
+                }
+            }
+
+            let raw_size = if self.config.kelly_sizing_enabled {
+                // Kelly sizing: use rolling trade history to compute optimal size.
+                // Falls back to fixed probe_size_sol if insufficient history.
+                let kelly_size = self.compute_kelly_probe_size();
+                kelly_size.unwrap_or_else(|| (self.config.probe_size_sol * 1_000_000_000.0) as u64)
+            } else if self.config.probe_size_sol > 0.0 {
                 (self.config.probe_size_sol * 1_000_000_000.0) as u64
             } else {
                 self.compute_size_lamports(&entry.mint, final_score as u32)
