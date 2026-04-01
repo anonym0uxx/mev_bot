@@ -514,7 +514,7 @@
     "enabled": true,
     "paper_mode": true,
     "entry_delay_ms": 0,
-    "min_grad_score": 40,
+    "min_grad_score": 50,
     "position_size_sol": 0.3,
     "max_concurrent": 5,
     "tp1_pct": 5.0,
