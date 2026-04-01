@@ -20,6 +20,11 @@
 /// WSOL mint in base58 for vault extraction matching.
 pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
 
+/// Minimum viable liquidity — reject pools with less than 50 SOL in reserves.
+/// Fresh pump.fun graduations have 85-120 SOL; anything below 50 SOL is a
+/// drained historical pool or failed launch returned by getProgramAccounts.
+pub const MIN_SOL_RESERVES_LAMPORTS: u64 = 50_000_000_000; // 50 SOL
+
 /// Pump.fun bonding curve terminal price at graduation (lamports per token atom).
 ///
 /// Derivation:
@@ -344,6 +349,21 @@ async fn resolve_pool_inner(
         reserve_sol = reserve_sol,
         "[momentum] v2 vault reserves fetched"
     );
+
+    // Minimum viable liquidity check — reject empty/drained pools
+    if reserve_sol < MIN_SOL_RESERVES_LAMPORTS {
+        let pool_str = if pool_type == PoolType::RaydiumAmmV4 { "Raydium" } else { "PumpSwap" };
+        tracing::warn!(
+            mint = %graduation_mint_b58,
+            reserve_sol,
+            pool_type = %pool_str,
+            "[momentum] pool rejected from tx — insufficient liquidity (reserve_sol < 50 SOL)"
+        );
+        return Err(format!(
+            "pool has insufficient liquidity: {} lamports < {} minimum",
+            reserve_sol, MIN_SOL_RESERVES_LAMPORTS
+        ));
+    }
 
     // ── Phase C: Raydium pool account resolution ─────────────────────────
     // For Raydium AMM V4 pools, extract amm_id from accountKeys and fetch
@@ -720,6 +740,17 @@ pub async fn resolve_pumpswap_pool_from_mint(
     let (reserve_token, reserve_sol) =
         fetch_vault_reserves(client, helius_rpc_url, &coin_vault_b58, &pc_vault_b58).await?;
 
+    // Minimum viable liquidity check — reject empty/drained pools
+    if reserve_sol < MIN_SOL_RESERVES_LAMPORTS {
+        tracing::warn!(
+            mint = %mint_b58,
+            pool = %bs58::encode(&pool_address).into_string(),
+            reserve_sol,
+            "[momentum] PumpSwap pool rejected — insufficient liquidity (reserve_sol < 50 SOL)"
+        );
+        return None;
+    }
+
     tracing::info!(
         mint = %mint_b58,
         pool = %bs58::encode(&pool_address).into_string(),
@@ -824,6 +855,17 @@ pub async fn resolve_pool_from_mint(
 
     let (reserve_token, reserve_sol) =
         fetch_vault_reserves(client, helius_rpc_url, &coin_vault_b58, &pc_vault_b58).await?;
+
+    // Minimum viable liquidity check — reject empty/drained pools
+    if reserve_sol < MIN_SOL_RESERVES_LAMPORTS {
+        tracing::warn!(
+            mint = %mint_b58,
+            amm_id = %bs58::encode(&amm_id).into_string(),
+            reserve_sol,
+            "[momentum] Raydium pool rejected — insufficient liquidity (reserve_sol < 50 SOL)"
+        );
+        return None;
+    }
 
     tracing::info!(
         mint = %mint_b58,

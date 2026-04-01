@@ -1747,6 +1747,18 @@ impl MomentumEngine {
         match resolve_pool_from_transaction(&self.http_client, &sig, &self.rpc_url).await {
             Some(resolution) => {
                 let mint_b58 = bs58::encode(&resolution.mint).into_string();
+
+                // Defense in depth: reject pools with insufficient liquidity even if
+                // resolve_pool_from_transaction() didn't catch it (e.g. future code paths).
+                if resolution.reserve_sol_lamports < crate::momentum::pool::MIN_SOL_RESERVES_LAMPORTS {
+                    tracing::warn!(
+                        mint = %mint_b58,
+                        reserve_sol = resolution.reserve_sol_lamports,
+                        "[momentum] skipping graduation — pool has < 50 SOL liquidity"
+                    );
+                    return;
+                }
+
                 tracing::info!(
                     mint = %mint_b58,
                     pool_type = ?resolution.pool_type,
@@ -1879,6 +1891,17 @@ impl MomentumEngine {
                 match fallback_resolution {
                     Some(resolution) => {
                         let mint_b58 = bs58::encode(&resolution.mint).into_string();
+
+                        // Defense in depth: reject pools with insufficient liquidity
+                        if resolution.reserve_sol_lamports < crate::momentum::pool::MIN_SOL_RESERVES_LAMPORTS {
+                            tracing::warn!(
+                                mint = %mint_b58,
+                                reserve_sol = resolution.reserve_sol_lamports,
+                                "[momentum] skipping graduation (mint lookup) — pool has < 50 SOL liquidity"
+                            );
+                            return;
+                        }
+
                         tracing::info!(
                             mint = %mint_b58,
                             pool_type = ?resolution.pool_type,
