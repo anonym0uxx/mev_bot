@@ -1083,9 +1083,9 @@ impl MomentumEngine {
                             Ok(b) => b,
                             Err(e) => { tracing::error!(mint=%bs58::encode(&mint_buy).into_string(), err=?e, "[buy_task] build failed"); return; }
                         };
-                        use base64::Engine as _;
-                        let tx_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
-                        match jg.submit_bundle(&tx_b64).await {
+                        // Jito requires base58-encoded transactions (not base64)
+                        let tx_b58 = bs58::encode(&tx_bytes).into_string();
+                        match jg.submit_bundle(&tx_b58).await {
                             Ok(id) => {
                                 tracing::info!(mint=%bs58::encode(&mint_buy).into_string(), bundle_id=%id, tip, size_sol=size as f64/1e9, tokens_est, "[buy_task] Jito submitted");
                                 // tokens_held stored at position open — buy confirmed
@@ -1155,9 +1155,9 @@ impl MomentumEngine {
                             Ok(b) => b,
                             Err(e) => { tracing::error!(mint=%bs58::encode(&mint_buy).into_string(), err=?e, "[buy_pumpswap] build failed"); return; }
                         };
-                        use base64::Engine as _;
-                        let tx_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
-                        match jg.submit_bundle(&tx_b64).await {
+                        // Jito requires base58-encoded transactions (not base64)
+                        let tx_b58 = bs58::encode(&tx_bytes).into_string();
+                        match jg.submit_bundle(&tx_b58).await {
                             Ok(id) => tracing::info!(
                                 mint=%bs58::encode(&mint_buy).into_string(),
                                 bundle_id=%id,
@@ -2233,11 +2233,12 @@ impl MomentumEngine {
                             Err(e) => { tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] build failed"); return; }
                         };
                         use base64::Engine as _;
-                        let tx_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
+                        let tx_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes); // Nozomi needs base64
+                        let tx_b58 = bs58::encode(&tx_bytes).into_string(); // Jito needs base58
                         let landing = route_exit(&reason_str, gain, noz_ok);
                         match landing {
                             LandingPath::JitoOnly => {
-                                match jg.submit_bundle(&tx_b64).await {
+                                match jg.submit_bundle(&tx_b58).await {
                                     Ok(id) => tracing::info!(mint=%bs58::encode(&mint_copy).into_string(), bundle_id=%id, "[sell_raydium] Jito submitted"),
                                     Err(e) => tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] Jito FAILED"),
                                 }
@@ -2246,7 +2247,7 @@ impl MomentumEngine {
                                 if let Some(ref n) = noz {
                                     match n.send_transaction(&tx_b64).await {
                                         Ok(_) => tracing::info!(mint=%bs58::encode(&mint_copy).into_string(), "[sell_raydium] Nozomi OK"),
-                                        Err(e) => { tracing::warn!(err=?e, "[sell_raydium] Nozomi failed → Jito"); let _ = jg.submit_bundle(&tx_b64).await; }
+                                        Err(e) => { tracing::warn!(err=?e, "[sell_raydium] Nozomi failed → Jito"); let _ = jg.submit_bundle(&tx_b58).await; }
                                     }
                                 }
                             }
@@ -2314,11 +2315,12 @@ impl MomentumEngine {
                             Err(e) => { tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] build failed"); return; }
                         };
                         use base64::Engine as _;
-                        let tx_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
+                        let tx_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes); // Nozomi needs base64
+                        let tx_b58 = bs58::encode(&tx_bytes).into_string(); // Jito needs base58
                         let landing = route_exit(&reason_str, gain, noz_ok);
                         match landing {
                             LandingPath::JitoOnly => {
-                                match jg.submit_bundle(&tx_b64).await {
+                                match jg.submit_bundle(&tx_b58).await {
                                     Ok(id) => tracing::info!(mint=%bs58::encode(&mint_copy).into_string(), bundle_id=%id, "[sell_pumpswap] Jito submitted"),
                                     Err(e) => tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] Jito FAILED"),
                                 }
@@ -2327,7 +2329,7 @@ impl MomentumEngine {
                                 if let Some(ref n) = noz {
                                     match n.send_transaction(&tx_b64).await {
                                         Ok(_) => tracing::info!(mint=%bs58::encode(&mint_copy).into_string(), "[sell_pumpswap] Nozomi OK"),
-                                        Err(e) => { tracing::warn!(err=?e, "[sell_pumpswap] Nozomi failed → Jito"); let _ = jg.submit_bundle(&tx_b64).await; }
+                                        Err(e) => { tracing::warn!(err=?e, "[sell_pumpswap] Nozomi failed → Jito"); let _ = jg.submit_bundle(&tx_b58).await; }
                                     }
                                 }
                             }
