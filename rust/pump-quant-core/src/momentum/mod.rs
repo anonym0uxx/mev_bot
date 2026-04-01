@@ -302,6 +302,7 @@ impl MomentumEngine {
         grad_volume_sol_x100: u32,
         pre_grad_buys_5s: u32,
         sells_5s: u32,
+        is_cold_miss: bool,
     ) {
         if !self.config.enabled {
             return;
@@ -394,14 +395,39 @@ impl MomentumEngine {
         // Compute entry_price_fp from pool reserves for the entry discount scorer.
         let pre_score_entry_fp = price_from_reserves(pool_info.reserve_sol, pool_info.reserve_token);
         let bc_price_fp = (BC_TERMINAL_PRICE_LAMPORTS_PER_ATOM * 1_000_000.0) as u64;
-        let score = score_graduation(
+
+        // Cold miss neutral defaults: when enrichment data was unavailable,
+        // use neutral buys/sells instead of 0 (which would score 0 on velocity/BSR).
+        // These represent "we don't know" not "there were no buys".
+        let (effective_buys_5s, effective_sells_5s) = if is_cold_miss {
+            (3u32, 1u32) // 3:1 buy/sell ratio as neutral assumption
+        } else {
+            (pre_grad_buys_5s, sells_5s)
+        };
+
+        let mut score = score_graduation(
             grad_speed_s,
             grad_volume_sol_x100,
-            pre_grad_buys_5s,
-            sells_5s,
+            effective_buys_5s,
+            effective_sells_5s,
             pre_score_entry_fp,
             bc_price_fp,
+            pool_info.reserve_sol,
         );
+
+        // Cold miss detection: if enrichment data was unavailable, apply bonus.
+        // Cold miss = original grad_speed_s == 0 AND volume_sol_x100 == 0 at the
+        // on_migration() call site. We're faster than enrichment-dependent bots
+        // → information asymmetry edge.
+        if is_cold_miss {
+            let mint_b58 = bs58::encode(&pool_info.mint).into_string();
+            score.cold_miss_bonus = 5;
+            tracing::debug!(
+                mint = %mint_b58,
+                total = score.total(),
+                "[momentum] cold miss bonus applied — faster than enrichment-dependent bots"
+            );
+        }
         let effective_min = if self.config.paper_mode { 20 } else { self.config.min_grad_score };
         if score.total() < effective_min {
             tracing::info!(
@@ -1986,6 +2012,10 @@ impl MomentumEngine {
             "[momentum] on_migration: enrichment values at entry"
         );
 
+        // Cold miss: CoreCast hasn't propagated enrichment data yet.
+        // Detected from raw enrichment values before effective defaults are applied.
+        let is_cold_miss = enrichment.grad_speed_s == 0 && enrichment.volume_sol_x100 == 0;
+
         match resolve_pool_from_transaction(&self.http_client, &sig, &self.rpc_url).await {
             Some(resolution) => {
                 let mint_b58 = bs58::encode(&resolution.mint).into_string();
@@ -2105,6 +2135,7 @@ impl MomentumEngine {
                     effective_volume_sol_x100,
                     effective_buys_5s,
                     effective_sells_5s,
+                    is_cold_miss,
                 ).await;
             }
             None => {
@@ -2184,6 +2215,7 @@ impl MomentumEngine {
                             effective_volume_sol_x100,
                             effective_buys_5s,
                             effective_sells_5s,
+                            is_cold_miss,
                         ).await;
                     }
                     None => {
@@ -2305,7 +2337,7 @@ mod tests {
         };
 
         engine
-            .on_graduation(&pool_info, 1_000_000, 60, 50_000, 15, 2)
+            .on_graduation(&pool_info, 1_000_000, 60, 50_000, 15, 2, false)
             .await;
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 0);
     }
@@ -2325,7 +2357,7 @@ mod tests {
 
         // High-scoring graduation: speed=120 (passes hard gate), volume=13900 (139 SOL), velocity=15
         engine
-            .on_graduation(&pool_info, 1_000_000, 120, 13_900, 15, 2)
+            .on_graduation(&pool_info, 1_000_000, 120, 13_900, 15, 2, false)
             .await;
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
 
@@ -2348,7 +2380,7 @@ mod tests {
         };
 
         engine
-            .on_graduation(&pool_info, 1_000_000, 60, 50_000, 15, 2)
+            .on_graduation(&pool_info, 1_000_000, 60, 50_000, 15, 2, false)
             .await;
         // Counter incremented but no pending entry (PumpSwap skip)
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
@@ -2371,7 +2403,7 @@ mod tests {
         // Low-scoring: speed=91 (passes hard gate, speed_score=5 in v3),
         // tiny volume (10 SOL → 0), no buys → total=5 < paper_mode threshold 20
         engine
-            .on_graduation(&pool_info, 1_000_000, 91, 1_000, 0, 0)
+            .on_graduation(&pool_info, 1_000_000, 91, 1_000, 0, 0, false)
             .await;
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
         assert_eq!(engine.pending.lock().unwrap().active_count(), 0);
@@ -2617,7 +2649,7 @@ mod tests {
         };
 
         engine
-            .on_graduation(&pool_info, 1_000_000, 60, 50_000, 15, 2)
+            .on_graduation(&pool_info, 1_000_000, 60, 50_000, 15, 2, false)
             .await;
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
         // But no pending entry because daily cap hit
@@ -2696,7 +2728,7 @@ mod tests {
 
         // speed=60 (bot fill), volume=139 SOL (normal) — should be rejected on speed alone
         engine
-            .on_graduation(&pool_info, 1_000_000, 60, 13_900, 15, 2)
+            .on_graduation(&pool_info, 1_000_000, 60, 13_900, 15, 2, false)
             .await;
         // Counter incremented (fires before hard gate)
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
@@ -2720,7 +2752,7 @@ mod tests {
 
         // speed=300 (organic), but volume=655.35 SOL (u16 saturated) → whale fill
         engine
-            .on_graduation(&pool_info, 1_000_000, 300, 65_535, 15, 2)
+            .on_graduation(&pool_info, 1_000_000, 300, 65_535, 15, 2, false)
             .await;
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
         // Hard gate: saturated volume → rejected
@@ -2744,7 +2776,7 @@ mod tests {
 
         // speed=100 (passes absolute floor of 90, but < 180), vol=250 SOL (>= 200)
         engine
-            .on_graduation(&pool_info, 1_000_000, 100, 25_000, 15, 2)
+            .on_graduation(&pool_info, 1_000_000, 100, 25_000, 15, 2, false)
             .await;
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
         // Hard gate: fast-ish + high volume → rejected
@@ -2767,7 +2799,7 @@ mod tests {
 
         // speed=180 (organic), vol=139 SOL → passes all hard gates
         engine
-            .on_graduation(&pool_info, 1_000_000, 180, 13_900, 15, 2)
+            .on_graduation(&pool_info, 1_000_000, 180, 13_900, 15, 2, false)
             .await;
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
         // Should pass hard gate and reach scoring → pending entry scheduled
@@ -2795,7 +2827,7 @@ mod tests {
         // speed=30 (extreme bot), vol=655 SOL (saturated) — would normally be rejected
         // but hard gate is disabled → should pass through to scoring
         engine
-            .on_graduation(&pool_info, 1_000_000, 30, 65_500, 15, 2)
+            .on_graduation(&pool_info, 1_000_000, 30, 65_500, 15, 2, false)
             .await;
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
         // Gate disabled → reaches scoring. Whether it gets a pending entry depends on score,
