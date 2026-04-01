@@ -43,7 +43,7 @@ impl Default for MomentumTodConfig {
             // Block worst-performing UTC hours entirely (0x size)
             // UTC 18-20: 1.5-3.2% WR, negative expectancy (dead/thin market)
             // UTC 2-6: 4-13% WR, mostly negative expectancy (low liquidity)
-            blocked_hours_utc: vec![2, 3, 4, 5, 18, 19, 20],
+            blocked_hours_utc: vec![2, 3, 4, 5],
             // Reduce size for adjacent below-average hours
             reduced_hours_utc: vec![0, 1, 6, 21, 22, 23],
             // Boosted hours: UTC 7-17 (positive expectancy in backtest data)
@@ -135,8 +135,8 @@ mod tests {
     #[test]
     fn test_blocked_hours_return_zero() {
         let cfg = MomentumTodConfig::default();
-        // New defaults: blocked hours are 2, 3, 4, 5, 18, 19, 20
-        for h in [2, 3, 4, 5, 18, 19, 20] {
+        // New defaults: blocked hours are 2, 3, 4, 5 (18/19/20 UTC unblocked — US morning hours)
+        for h in [2, 3, 4, 5] {
             assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(h)), 0.0,
                 "hour {h} should be blocked (0.0)");
         }
@@ -160,9 +160,9 @@ mod tests {
     #[test]
     fn test_real_epoch_value() {
         // 2025-03-31 20:00:00 UTC = 1743451200000 ms
-        // Hour 20 is now in blocked_hours_utc (was reduced).
+        // Hour 20 is now open (unblocked) — US afternoon trading.
         let cfg = MomentumTodConfig::default();
-        assert_eq!(entry_size_multiplier(&cfg, 1_743_451_200_000), 0.0);
+        assert_eq!(entry_size_multiplier(&cfg, 1_743_451_200_000), 1.0);
     }
 
     #[test]
@@ -197,10 +197,10 @@ mod tests {
     #[test]
     fn test_tod_new_blocked_hours() {
         let cfg = MomentumTodConfig::default();
-        // UTC 18, 19, 20 should now be blocked
-        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(18)), 0.0);
-        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(19)), 0.0);
-        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(20)), 0.0);
+        // UTC 18, 19, 20 are now OPEN (unblocked — US morning/afternoon hours)
+        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(18)), 1.0);
+        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(19)), 1.0);
+        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(20)), 1.0);
         // UTC 2, 3, 4, 5 should be blocked
         assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(2)), 0.0);
         assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(3)), 0.0);
@@ -236,8 +236,8 @@ mod tests {
         let full: Vec<u8> = (0..24u8)
             .filter(|&h| entry_size_multiplier(&cfg, ms_for_utc_hour(h)) == 1.0)
             .collect();
-        assert_eq!(blocked, vec![2, 3, 4, 5, 18, 19, 20]);
+        assert_eq!(blocked, vec![2, 3, 4, 5]);
         assert_eq!(reduced, vec![0, 1, 6, 21, 22, 23]);
-        assert_eq!(full, vec![7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+        assert_eq!(full, vec![7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
     }
 }
