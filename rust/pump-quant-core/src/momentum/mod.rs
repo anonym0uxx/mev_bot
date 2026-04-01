@@ -200,8 +200,16 @@ impl MomentumEngine {
         blockhash_cache: Arc<crate::tx::executor::BlockhashCache>,
     ) -> (Self, crossbeam_channel::Sender<ScoredToken>, tokio::task::JoinHandle<()>, std::thread::JoinHandle<()>) {
         let poll_interval_ms = config.price_poll_interval_ms;
+        // Build Helius standard RPC URL for price polling — SOLANA_RPC_URL (marielle-*)
+        // does not support getProgramAccounts and rate-limits getAccountInfo heavily.
+        // Use the standard Helius endpoint which has higher rate limits.
+        let helius_poll_url = std::env::var("HELIUS_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
+            .map(|k| format!("https://mainnet.helius-rpc.com/?api-key={}", k))
+            .unwrap_or_else(|| rpc_url.to_string());
         let (price_feed, ws_handle) = PriceFeedManager::new(
-            rpc_url.to_string(),
+            helius_poll_url,
             helius_wss_url,
             poll_interval_ms,
         );
