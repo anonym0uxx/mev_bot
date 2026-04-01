@@ -281,6 +281,26 @@ pub struct MomentumConfig {
     pub stagnation_exit_ms: u64,
 
     // ══════════════════════════════════════════════════════════
+    // DEAD TOKEN FAST EXIT (TASK 5B)
+    // ══════════════════════════════════════════════════════════
+
+    /// Enable fast exit for dead tokens with zero trading activity.
+    /// Detects: ws_notif_count=0 AND all price_samples flat AND hold≥min_hold_ms.
+    /// Frees position slot 3-4x faster than waiting for time_sl.
+    /// Default: true.
+    pub dead_token_fast_exit_enabled: bool,
+
+    /// Minimum hold time (ms) before dead token fast exit can fire.
+    /// Must wait long enough for price samples to populate (~1s each).
+    /// Default: 5000ms (5 samples at 1050ms cadence).
+    pub dead_token_fast_exit_min_hold_ms: u64,
+
+    /// Minimum price sample count before flat detection fires.
+    /// Needs enough samples to confirm flatness, not just early data gap.
+    /// Default: 5.
+    pub dead_token_fast_exit_min_samples: u8,
+
+    // ══════════════════════════════════════════════════════════
     // HARD GATE: WHALE/BOT PUMP REJECTION (TASK 1)
     // ══════════════════════════════════════════════════════════
 
@@ -417,6 +437,11 @@ impl Default for MomentumConfig {
 
             // Stagnation exit (TASK 5)
             stagnation_exit_ms: 60_000,
+
+            // Dead token fast exit (TASK 5B)
+            dead_token_fast_exit_enabled: true,
+            dead_token_fast_exit_min_hold_ms: 5_000,
+            dead_token_fast_exit_min_samples: 5,
 
             // Hard gate: whale/bot pump rejection (TASK 1)
             min_grad_speed_s: 90,

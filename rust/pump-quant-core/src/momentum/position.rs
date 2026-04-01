@@ -613,6 +613,42 @@ impl MomentumPosition {
         drawdown_bps as u16 >= trail
     }
 
+    // ── Task 5B: Dead token fast exit ──────────────────────────────────
+
+    /// Check if this is a dead token that should be fast-exited.
+    ///
+    /// Returns true when ALL of:
+    /// 1. `hold_ms >= min_hold_ms` (waited long enough for data)
+    /// 2. `sample_count >= min_samples` (enough samples to judge)
+    /// 3. ALL recorded `price_samples_bps[0..sample_count]` are exactly 0 (flat)
+    /// 4. `ws_notif_count == 0` (zero on-chain trading activity)
+    ///
+    /// Data basis: 322/856 enriched trades (37.6%) have all-zero price samples.
+    /// ws_notif=0 at close: n=165, WR=0.0%. These are dead-on-arrival tokens
+    /// that waste a position slot for the full time_sl window (15-60s).
+    /// Fast exit after ~5s frees the slot 3-4x faster.
+    ///
+    /// Exits with TimeSl reason (caller decides). Defense-in-depth alongside
+    /// stagnation_exit and Phase 5 dead zone.
+    #[inline]
+    pub fn is_dead_token(&self, hold_ms: u64, min_hold_ms: u64, min_samples: u8) -> bool {
+        if hold_ms < min_hold_ms {
+            return false;
+        }
+        let n = self.sample_count;
+        if n < min_samples {
+            return false;
+        }
+        // All price samples must be exactly 0 (flat / never moved)
+        let count = n as usize;
+        let price_flat = self.price_samples_bps[..count].iter().all(|&s| s == 0);
+        // Zero WS notifications = no on-chain swap activity at all
+        let no_activity = self.ws_notif_count() == 0;
+        price_flat && no_activity
+    }
+
+    // ── End Task 5B ─────────────────────────────────────────────────────
+
     /// Check if the position is stagnant (dead token — no price movement).
     ///
     /// Returns true when:
@@ -2151,4 +2187,82 @@ mod tests {
         let phase = pos.evaluate_probe(3000, 10200, 2000, -500, -300, true);
         assert_eq!(phase, ProbePhase::Scaled, "old API backward compat works");
     }
+
+    // ── Task 5B: Dead token fast exit tests ────────────────────────────
+
+    #[test]
+    fn test_dead_token_below_min_hold_no_exit() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // 5 flat samples, ws_notif=0, but hold_ms < 5000 → no fast exit
+        for _ in 0..5 {
+            pos.record_sample(10_000);
+        }
+        assert!(!pos.is_dead_token(4_999, 5_000, 5));
+    }
+
+    #[test]
+    fn test_dead_token_fires_at_threshold() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // 5 flat samples, ws_notif=0, hold_ms=5000 → fast exit fires
+        for _ in 0..5 {
+            pos.record_sample(10_000);
+        }
+        assert!(pos.is_dead_token(5_000, 5_000, 5));
+    }
+
+    #[test]
+    fn test_dead_token_ws_notif_blocks() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // 5 flat samples, hold_ms=5000, but ws_notif=1 → no fast exit (has activity)
+        for _ in 0..5 {
+            pos.record_sample(10_000);
+        }
+        pos.set_ws_notif_count(1);
+        assert!(!pos.is_dead_token(5_000, 5_000, 5));
+    }
+
+    #[test]
+    fn test_dead_token_too_few_samples() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // Only 4 samples (need ≥5), ws_notif=0, hold_ms=5000 → no fast exit
+        for _ in 0..4 {
+            pos.record_sample(10_000);
+        }
+        assert!(!pos.is_dead_token(5_000, 5_000, 5));
+    }
+
+    #[test]
+    fn test_dead_token_price_not_flat() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // 5 samples but s[3] has movement → not flat → no fast exit
+        for _ in 0..3 {
+            pos.record_sample(10_000);
+        }
+        pos.record_sample(10_050); // +50 bps — movement detected
+        pos.record_sample(10_000);
+        assert!(!pos.is_dead_token(5_000, 5_000, 5));
+    }
+
+    #[test]
+    fn test_dead_token_disabled_via_zero_min_samples() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // min_samples=0 with 0 samples: vacuously flat + no ws → fires.
+        // In practice, dead_token_fast_exit_enabled=false in config prevents calling this.
+        assert!(pos.is_dead_token(5_000, 5_000, 0),
+            "min_samples=0 with 0 samples: vacuously flat + no ws → fires");
+    }
+
+    // ── End Task 5B tests ────────────────────────────────────────────────
 }
