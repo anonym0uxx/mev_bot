@@ -165,6 +165,9 @@ pub fn make_pool_resolution_client() -> reqwest::Client {
         .expect("reqwest client build should not fail")
 }
 
+/// Error message returned when getTransaction result is null (tx not yet indexed by RPC).
+const TX_NOT_FOUND_ERR: &str = "transaction not found (not yet indexed)";
+
 /// Resolve pool address and initial reserves from a graduation transaction.
 ///
 /// v2 approach: two-phase vault extraction.
@@ -173,20 +176,52 @@ pub fn make_pool_resolution_client() -> reqwest::Client {
 ///   Phase B: `getMultipleAccountsInfo` on vault addresses, parse SPL token
 ///            account amount at bytes [64..72] LE u64.
 ///
-/// Returns `None` if: RPC call fails, timeout, or tx doesn't contain pool creation.
+/// Retries up to 3 times with exponential backoff (200ms, 500ms) when the RPC
+/// returns `result: null` — this means Helius hasn't indexed the tx yet.
+/// Non-retriable errors (parse failures, vault extraction) fail immediately.
+///
+/// Returns `None` if: all retries exhausted, non-retriable error, or tx doesn't
+/// contain pool creation.
 #[inline(never)]
 pub async fn resolve_pool_from_transaction(
     client: &reqwest::Client,
     sig: &[u8; 64],
     helius_rpc_url: &str,
 ) -> Option<PoolResolution> {
-    match resolve_pool_inner(client, sig, helius_rpc_url).await {
-        Ok(resolution) => Some(resolution),
-        Err(e) => {
-            tracing::debug!("[momentum] pool resolution failed: {}", e);
-            None
+    const MAX_ATTEMPTS: u32 = 3;
+    const BACKOFF_MS: [u64; 2] = [200, 500];
+
+    let sig_b58_short = &bs58::encode(sig).into_string()[..8];
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match resolve_pool_inner(client, sig, helius_rpc_url).await {
+            Ok(resolution) => return Some(resolution),
+            Err(e) => {
+                let is_retriable = e == TX_NOT_FOUND_ERR;
+
+                if !is_retriable || attempt == MAX_ATTEMPTS {
+                    tracing::debug!(
+                        attempt,
+                        sig = %sig_b58_short,
+                        "[momentum] pool resolution failed (final): {}",
+                        e
+                    );
+                    return None;
+                }
+
+                let delay_ms = BACKOFF_MS[(attempt - 1) as usize];
+                tracing::info!(
+                    attempt,
+                    next_delay_ms = delay_ms,
+                    sig = %sig_b58_short,
+                    "[momentum] pool resolution retry — tx not yet indexed"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
         }
     }
+
+    None
 }
 
 /// Inner implementation — returns Result for clean error propagation.
@@ -224,15 +259,22 @@ async fn resolve_pool_inner(
         .await
         .map_err(|e| format!("RPC response parse failed: {}", e))?;
 
-    let tx = json
-        .get("result")
-        .ok_or_else(|| {
+    let result_field = json.get("result");
+
+    // Distinguish null result (tx not indexed yet → retriable) from missing result (RPC error)
+    let tx = match result_field {
+        Some(v) if v.is_null() => {
+            return Err(TX_NOT_FOUND_ERR.to_string());
+        }
+        Some(v) => v,
+        None => {
             let err_msg = json
                 .pointer("/error/message")
                 .and_then(|m| m.as_str())
-                .unwrap_or("null result");
-            format!("RPC returned no result: {}", err_msg)
-        })?;
+                .unwrap_or("missing result field");
+            return Err(format!("RPC returned error: {}", err_msg));
+        }
+    };
 
     // Detect pool type from account keys
     let account_keys_strs: Vec<&str> = tx
@@ -547,7 +589,7 @@ pub async fn fetch_vault_reserves(
 
     let resp = client
         .post(rpc_url)
-        .timeout(std::time::Duration::from_millis(150))
+        .timeout(std::time::Duration::from_millis(500))
         .json(&body)
         .send()
         .await

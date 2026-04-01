@@ -82,7 +82,7 @@ if [ "${1:-}" = "--start" ]; then
     set -a && source ./rust/.env.build && set +a
   fi
   echo "[ensure-single-daemon] Starting Rust daemon..."
-  PAPER_MODE=true RUST_LOG=info nohup "$BINARY" > "$LOG" 2>&1 &
+  PAPER_MODE=true RUST_LOG=info,pump_quant_core::momentum=debug nohup "$BINARY" > "$LOG" 2>&1 &
   NEW_PID=$!
   echo $NEW_PID > "$PIDFILE"
   echo "[ensure-single-daemon] ✅ Rust daemon started (PID $NEW_PID)"

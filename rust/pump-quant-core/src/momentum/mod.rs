@@ -207,7 +207,7 @@ impl MomentumEngine {
             config,
             rpc_url,
             http_client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_millis(500))
+                .timeout(std::time::Duration::from_millis(2000))
                 .build()
                 .expect("reqwest client build should not fail"),
             active: DashMap::new(),
