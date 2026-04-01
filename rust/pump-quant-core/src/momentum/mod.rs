@@ -381,7 +381,7 @@ impl MomentumEngine {
             pre_score_entry_fp,
             bc_price_fp,
         );
-        let effective_min = if self.config.paper_mode { 20 } else { self.config.min_grad_score };
+        let effective_min = self.config.min_grad_score;
         if score.total() < effective_min {
             tracing::info!(
                 score = score.total(),
