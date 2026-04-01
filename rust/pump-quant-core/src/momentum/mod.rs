@@ -383,6 +383,7 @@ impl MomentumEngine {
             opening_price_fp: entry_price_fp,
             bc_price_fp,
             first_scheduled_ts_ms: now_ms,
+            recovery_score: 0,
             active: true,
         };
 
@@ -441,14 +442,15 @@ impl MomentumEngine {
                 return st.kelly_size_lamports;
             }
         }
-        // Fallback: tiered sizing from grad_score
-        if grad_score >= 80 {
-            500_000_000 // 0.50 SOL
-        } else if grad_score >= 60 {
-            300_000_000 // 0.30 SOL
-        } else {
-            150_000_000 // 0.15 SOL
-        }
+        // Fallback: Kelly-tiered sizing from grad_score.
+        // Post-fix score range is 25-85 (E1 wires speed/volume/velocity inputs).
+        let size_sol: f64 = match grad_score {
+            75..=100 => 0.30,
+            55..=74  => 0.20,
+            35..=54  => 0.10,
+            _        => 0.05,
+        };
+        (size_sol * 1_000_000_000.0) as u64
     }
 
     /// Called every `check_ms`. Manages active positions.
@@ -553,13 +555,20 @@ impl MomentumEngine {
                 continue;
             }
 
+            // Compute recovery score from live price vs BC terminal price.
+            let recovery = crate::momentum::scorer::recovery_score_from_prices(
+                current_price_fp,
+                entry.bc_price_fp,
+            );
+            let final_score = entry.grad_score.saturating_add(recovery);
+
             // Scale-in entry: ALL entries start as probes at probe_size_sol (0.10 SOL).
             // Scaling up happens in process_scale_in() when s[0] or s[1] confirms momentum.
             // Quant spec §4: probe 0.10 → scale to 0.50 on s[0]≥300, 0.30 on s[0]≥100.
             let size_lamports = if self.config.probe_size_sol > 0.0 {
                 (self.config.probe_size_sol * 1_000_000_000.0) as u64
             } else {
-                self.compute_size_lamports(&entry.mint, entry.grad_score as u32)
+                self.compute_size_lamports(&entry.mint, final_score as u32)
             };
             let pos = MomentumPosition::new(
                 entry.mint,
@@ -568,7 +577,7 @@ impl MomentumEngine {
                 entry.bc_price_fp,
                 size_lamports,
                 entry.pool_type,
-                entry.grad_score,
+                final_score,
                 entry.grad_speed_s,
                 entry.grad_volume_sol_x100,
                 entry.pre_grad_buys_5s,
@@ -586,6 +595,16 @@ impl MomentumEngine {
 
             self.active.insert(entry.mint, pos);
             self.entries_opened.fetch_add(1, Ordering::Relaxed);
+
+            tracing::info!(
+                mint = %bs58::encode(&entry.mint).into_string(),
+                score = entry.grad_score,
+                size_sol = size_lamports as f64 / 1e9,
+                speed_s = entry.grad_speed_s,
+                volume_x100 = entry.grad_volume_sol_x100,
+                buys_5s = entry.pre_grad_buys_5s,
+                "[momentum] entry opened"
+            );
 
             // Build sell skeleton at position open (cold path — ~5μs is fine here)
             // NOTE: bonding_curve and assoc_bonding_curve are not currently available
@@ -905,6 +924,33 @@ impl MomentumEngine {
             }
             // ── End momentum decay ────────────────────────────────────────────────────
 
+            // ── Phase 5: Price-direct dead zone ──────────────────────────────────
+            // Flat priced tokens: max gain across all samples < threshold → dead
+            if self.config.dead_zone_price_flat_min_samples > 0
+                && pos.sample_count >= self.config.dead_zone_price_flat_min_samples
+                && elapsed_ms >= self.config.dead_zone_price_flat_min_hold_ms
+            {
+                let n = pos.sample_count as usize;
+                let nonzero: Vec<i32> = pos.price_samples_bps[..n].iter().filter(|&&s| s != 0).copied().collect();
+                if !nonzero.is_empty() {
+                    let max_gain = *nonzero.iter().max().unwrap();
+                    let _min_gain = *nonzero.iter().min().unwrap();
+
+                    // Always negative: genuine dump — exit as hard_sl (not time_sl)
+                    if max_gain < self.config.dead_zone_price_always_down_bps {
+                        to_close.push((mint, MomentumExitReason::HardSl, current_price_fp));
+                        continue;
+                    }
+
+                    // Flat: never exceeded threshold → dead token
+                    if max_gain < self.config.dead_zone_price_flat_bps {
+                        to_close.push((mint, MomentumExitReason::TimeSl, current_price_fp));
+                        continue;
+                    }
+                }
+            }
+            // ── End Phase 5 ──────────────────────────────────────────────────────
+
             // Dead zone detection — quant spec: kill tokens with no momentum early.
             // Phase 2 (T+60s): if cumulative bps < dead_zone_confirmed_bps (200) → exit
             // Phase 3: if total movement < dead_zone_stagnant_bps (300) in last 30s → exit
@@ -912,8 +958,10 @@ impl MomentumEngine {
                 let n = pos.sample_count as usize;
                 let current_bps = price_to_bps_offset(entry_fp, current_price_fp);
 
-                // Phase 2: confirmed dead at T+60s
-                if hold_ms >= self.config.dead_zone_confirmed_ms {
+                // Phase 2: confirmed dead at T+15s (was T+60s)
+                if hold_ms >= self.config.dead_zone_confirmed_ms
+                    && pos.sample_count >= 5
+                {
                     if current_bps < self.config.dead_zone_confirmed_bps {
                         to_close.push((mint, MomentumExitReason::TimeSl, current_price_fp));
                         continue;
@@ -1033,17 +1081,32 @@ impl MomentumEngine {
                 continue;
             }
 
-            // s[0] >= scale_in_s0_strong_bps (300): strong conviction
-            if s0 >= self.config.scale_in_s0_strong_bps {
+            // Score-aware strong conviction threshold:
+            // High-score tokens (grad_score >= 65) need less price confirmation (200 bps).
+            // Low-score tokens (grad_score < 35) need more proof (400 bps).
+            // Mid-range uses default scale_in_s0_strong_bps (300).
+            let s0_strong_bps = if pos.grad_score >= self.config.scale_in_high_score_threshold {
+                self.config.scale_in_high_score_s0_bps
+            } else if pos.grad_score < self.config.scale_in_low_score_threshold {
+                self.config.scale_in_low_score_s0_bps
+            } else {
+                self.config.scale_in_s0_strong_bps
+            };
+
+            // s[0] >= s0_strong_bps: strong conviction (score-adjusted)
+            if s0 >= s0_strong_bps {
                 let new_size = (probe_lamports as f64 + self.config.scale_in_s0_strong_sol * 1e9) as u64;
                 pos.size_lamports = new_size.min(max_lamports);
                 pos.set_scaled_in();
                 tracing::info!(
                     mint = %bs58::encode(&pos.mint).into_string(),
                     s0,
+                    grad_score = pos.grad_score,
+                    s0_strong_bps,
                     new_size_sol = pos.size_lamports as f64 / 1e9,
-                    "[momentum] scale-in: STRONG conviction (s[0] >= {})",
-                    self.config.scale_in_s0_strong_bps
+                    "[momentum] scale-in: STRONG conviction (s[0] >= {}, score={})",
+                    s0_strong_bps,
+                    pos.grad_score
                 );
                 continue;
             }
@@ -1225,6 +1288,17 @@ impl MomentumEngine {
             return;
         };
 
+        // Safety: exit_price_fp=0 means price feed had no data — clamp to entry to avoid phantom loss
+        let exit_price_fp = if exit_price_fp == 0 {
+            tracing::warn!(
+                mint = %bs58::encode(&mint).into_string(),
+                "[close_position] exit_price_fp=0 — clamping to entry_price (phantom prevention)"
+            );
+            pos.entry_price_fp
+        } else {
+            exit_price_fp
+        };
+
         // Record close timestamp for reentry cooldown
         self.recently_closed.insert(mint, now_ms);
 
@@ -1289,7 +1363,7 @@ impl MomentumEngine {
         let bc_price_f64 = pos.bc_terminal_price_fp as f64 / 1_000_000.0;
         let entry_price_f64 = pos.entry_price_fp as f64 / 1_000_000.0;
         let structural_discount = if bc_price_f64 > 0.0 {
-            (bc_price_f64 - entry_price_f64) / bc_price_f64 * 100.0
+            (entry_price_f64 - bc_price_f64) / bc_price_f64 * 100.0
         } else {
             0.0
         };
@@ -1425,13 +1499,29 @@ impl MomentumEngine {
                     pool_type: resolution.pool_type,
                     mint: resolution.mint,
                 };
-                // Use REAL enrichment data from hot_path's mint_map.
+                // Derive effective enrichment from LP reserves when mint_map was cold (all zeros).
+                let effective_volume_sol_x100 = if enrichment.volume_sol_x100 == 0 {
+                    (resolution.reserve_sol_lamports / 10_000_000).min(65535) as u32
+                } else {
+                    enrichment.volume_sol_x100
+                };
+                let effective_speed_s = if enrichment.grad_speed_s == 0 {
+                    let sol = resolution.reserve_sol_lamports / 1_000_000_000;
+                    if sol >= 150 { 60u32 } else if sol >= 100 { 120u32 } else { 240u32 }
+                } else {
+                    enrichment.grad_speed_s
+                };
+                let effective_buys_5s = if enrichment.buys_5s == 0 {
+                    3u32
+                } else {
+                    enrichment.buys_5s as u32
+                };
                 self.on_graduation(
                     &pool_info,
                     ts_ms,
-                    enrichment.grad_speed_s,
-                    enrichment.volume_sol_x100,
-                    enrichment.buys_5s as u32,
+                    effective_speed_s,
+                    effective_volume_sol_x100,
+                    effective_buys_5s,
                 ).await;
             }
             None => {
@@ -1643,6 +1733,7 @@ mod tests {
                 opening_price_fp: 381,
                 bc_price_fp: 411,
                 first_scheduled_ts_ms: 1_000,
+                recovery_score: 0,
                 active: true,
             });
         }

@@ -447,6 +447,8 @@ pub struct PendingEntry {
     /// Used to detect price feed timeout — if now_ms - first_scheduled_ts_ms > no_price_timeout_ms,
     /// skip entry rather than use stale opening_price_fp.
     pub first_scheduled_ts_ms: u64,
+    /// Recovery score (computed in process_pending_entries, init 0).
+    pub recovery_score: u8,
     /// Whether this slot is active.
     pub active: bool,
 }
@@ -464,6 +466,7 @@ impl Default for PendingEntry {
             opening_price_fp: 0,
             bc_price_fp: 0,
             first_scheduled_ts_ms: 0,
+            recovery_score: 0,
             active: false,
         }
     }
