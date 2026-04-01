@@ -572,6 +572,7 @@
     "max_total_size_sol": 0.5,
     "early_abort_max_bps": 30,
     "early_abort_min_samples": 3,
-    "early_abort_min_hold_ms": 3000
+    "early_abort_min_hold_ms": 3000,
+    "min_grad_speed_s": 0
   }
 }
