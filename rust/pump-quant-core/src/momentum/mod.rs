@@ -1355,13 +1355,18 @@ impl MomentumEngine {
             }
         }
 
+        // Capture WS notif info BEFORE unsubscribe removes the price state
+        let ws_notif_count_at_close = self.price_feed.ws_notif_info(&mint).0;
+
         // Unsubscribe from price feed (direct DashMap remove — no async needed)
         self.price_feed.unsubscribe_sync(&mint);
 
         // Log to JSONL
         let grad_vol_sol = pos.grad_volume_sol_x100 as f64 / 100.0;
-        let bc_price_f64 = pos.bc_terminal_price_fp as f64 / 1_000_000.0;
-        let entry_price_f64 = pos.entry_price_fp as f64 / 1_000_000.0;
+        // structural_discount uses fp units directly (both are lamports per 1M token atoms)
+        let bc_price_f64 = pos.bc_terminal_price_fp as f64;
+        let entry_price_f64 = pos.entry_price_fp as f64;
+        // Positive = entry above terminal (token pumping), negative = entry below
         let structural_discount = if bc_price_f64 > 0.0 {
             (entry_price_f64 - bc_price_f64) / bc_price_f64 * 100.0
         } else {
@@ -1388,6 +1393,7 @@ impl MomentumEngine {
             mint: mint_b58,
             pool_type: pool_type_str,
             grad_score: pos.grad_score,
+            grad_score_final: pos.grad_score, // updated by E3 when recovery enrichment lands
             grad_speed_s: pos.grad_speed_s as u64,
             grad_volume_sol: grad_vol_sol,
             pre_grad_buys_5s: pos.pre_grad_buys_5s,
@@ -1395,16 +1401,21 @@ impl MomentumEngine {
             size_lamports: pos.size_lamports,
             entry_delay_ms: pos.entry_delay_ms as u64,
             entry_price_lamports: pos.entry_price_fp,
-            bc_terminal_price_lamports: bc_price_f64,
+            exit_price_lamports: exit_price_fp,
+            bc_terminal_price_fp: pos.bc_terminal_price_fp,
             structural_discount_pct: structural_discount,
             entry_timestamp_ms: pos.entry_ts_ms,
             exit_timestamp_ms: now_ms,
             hold_ms: now_ms.saturating_sub(pos.entry_ts_ms),
             exit_reason: reason.as_str(),
+            raw_gain_bps,
             gross_pnl_sol,
             fee_sol,
+            fees_sol: fee_sol,
             net_pnl_sol,
             price_samples_bps: pos.price_samples_bps[..pos.sample_count as usize].to_vec(),
+            price_sample_count: pos.sample_count as u8,
+            ws_notif_count_at_close,
             is_paper: self.config.paper_mode,
             config_version: self.config.config_version(),
         });

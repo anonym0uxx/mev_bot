@@ -17,25 +17,30 @@ pub struct MomentumClosedPosition {
     pub mint: String,
     /// Pool type string (e.g. "raydium_amm_v4", "pump_swap").
     pub pool_type: &'static str,
-    /// Graduation score (0-100).
+    /// Graduation score at entry (0-100).
     pub grad_score: u8,
+    /// Final grad score at close — may differ from entry if recovery enriched.
+    pub grad_score_final: u8,
     /// Time from token creation to graduation (seconds).
     pub grad_speed_s: u64,
     /// Total SOL volume during bonding curve phase.
     pub grad_volume_sol: f64,
     /// Number of buys in the 5 seconds before graduation.
     pub pre_grad_buys_5s: u32,
-    /// Position size in SOL.
+    /// Position size in SOL (always populated, never null).
     pub size_sol: f64,
     /// Position size in lamports.
     pub size_lamports: u64,
     /// Delay between graduation and entry (ms).
     pub entry_delay_ms: u64,
-    /// Entry price in lamports.
+    /// Entry price in lamports per 1,000,000 token atoms (fp unit).
     pub entry_price_lamports: u64,
-    /// Bonding curve terminal price (lamports per atom, as f64).
-    pub bc_terminal_price_lamports: f64,
+    /// Exit price in lamports per 1,000,000 token atoms (fp unit, same as entry_price_lamports).
+    pub exit_price_lamports: u64,
+    /// Bonding curve terminal price in fp units (lamports per 1,000,000 token atoms).
+    pub bc_terminal_price_fp: u64,
     /// Structural discount at entry vs BC terminal (%).
+    /// Positive = entry above terminal (token pumping), negative = entry below.
     pub structural_discount_pct: f64,
     /// Entry timestamp (unix ms).
     pub entry_timestamp_ms: u64,
@@ -45,14 +50,22 @@ pub struct MomentumClosedPosition {
     pub hold_ms: u64,
     /// Exit reason string.
     pub exit_reason: &'static str,
+    /// Raw gain in bps before sanity clamp.
+    pub raw_gain_bps: i32,
     /// Gross PnL in SOL (before fees).
     pub gross_pnl_sol: f64,
     /// Total fees in SOL.
     pub fee_sol: f64,
+    /// Total fees in SOL (alias for analysis scripts that expect plural name).
+    pub fees_sol: f64,
     /// Net PnL in SOL (after fees).
     pub net_pnl_sol: f64,
     /// Price samples as bps offset from entry price.
     pub price_samples_bps: Vec<i32>,
+    /// Number of price samples recorded at close time.
+    pub price_sample_count: u8,
+    /// WS notification count from price feed at close time.
+    pub ws_notif_count_at_close: u64,
     /// Whether this was a paper trade.
     pub is_paper: bool,
     /// Config version string for offline analysis.
@@ -142,6 +155,7 @@ mod tests {
             mint: "7mHCxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx".to_string(),
             pool_type: "raydium_amm_v4",
             grad_score: 72,
+            grad_score_final: 72,
             grad_speed_s: 45,
             grad_volume_sol: 87.3,
             pre_grad_buys_5s: 12,
@@ -149,16 +163,21 @@ mod tests {
             size_lamports: 300_000_000,
             entry_delay_ms: 15000,
             entry_price_lamports: 381_900,
-            bc_terminal_price_lamports: 410_880.0,
+            exit_price_lamports: 420_000,
+            bc_terminal_price_fp: 410,
             structural_discount_pct: 7.07,
             entry_timestamp_ms: 1_711_700_000_000,
             exit_timestamp_ms: 1_711_700_023_400,
             hold_ms: 23_400,
             exit_reason: "tp2",
+            raw_gain_bps: 997,
             gross_pnl_sol: 0.045,
             fee_sol: 0.0015,
+            fees_sol: 0.0015,
             net_pnl_sol: 0.0435,
             price_samples_bps: vec![0, 250, 800, 1200, 900],
+            price_sample_count: 5,
+            ws_notif_count_at_close: 12,
             is_paper: true,
             config_version: "mom-v0.30sol_15000ms".to_string(),
         }

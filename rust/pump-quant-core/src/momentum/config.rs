@@ -168,6 +168,19 @@ pub struct MomentumConfig {
     pub dead_zone_stagnant_window_ms: u64,
 
     // ══════════════════════════════════════════════════════════
+    // PRICE-DIRECT DEAD ZONE (Phase 5)
+    // ══════════════════════════════════════════════════════════
+
+    /// Max gain threshold below which a priced token is considered flat/dead. Default: 200 bps.
+    pub dead_zone_price_flat_bps: i32,
+    /// Minimum non-zero samples required before Phase 5 fires. Default: 3.
+    pub dead_zone_price_flat_min_samples: u8,
+    /// Minimum hold time before Phase 5 can fire (ms). Default: 8_000.
+    pub dead_zone_price_flat_min_hold_ms: u64,
+    /// If max(samples) < this value (all negative), exit as hard_sl. Default: -100 bps.
+    pub dead_zone_price_always_down_bps: i32,
+
+    // ══════════════════════════════════════════════════════════
     // SCALE-IN ENTRY
     // ══════════════════════════════════════════════════════════
 
@@ -187,6 +200,19 @@ pub struct MomentumConfig {
     pub scale_in_s1_sol: f64,
     /// Absolute max position size (probe + all scale-ins). Default: 0.50 SOL.
     pub max_total_size_sol: f64,
+
+    // ══════════════════════════════════════════════════════════
+    // SCORE-AWARE SCALE-IN
+    // ══════════════════════════════════════════════════════════
+
+    /// Grad score threshold for high-conviction scale-in (lower s0 required). Default: 65.
+    pub scale_in_high_score_threshold: u8,
+    /// s[0] bps required for strong scale-in when grad_score >= high threshold. Default: 200.
+    pub scale_in_high_score_s0_bps: i32,
+    /// Grad score threshold below which scale-in requires higher s0. Default: 35.
+    pub scale_in_low_score_threshold: u8,
+    /// s[0] bps required for strong scale-in when grad_score < low threshold. Default: 400.
+    pub scale_in_low_score_s0_bps: i32,
 }
 
 impl Default for MomentumConfig {
@@ -261,6 +287,12 @@ impl Default for MomentumConfig {
             dead_zone_stagnant_bps: 300,
             dead_zone_stagnant_window_ms: 30_000,
 
+            // Price-direct dead zone (Phase 5)
+            dead_zone_price_flat_bps: 200,
+            dead_zone_price_flat_min_samples: 3,
+            dead_zone_price_flat_min_hold_ms: 8_000,
+            dead_zone_price_always_down_bps: -100,
+
             // Scale-in entry
             probe_size_sol: 0.10,
             scale_in_s0_strong_bps: 300,
@@ -270,6 +302,12 @@ impl Default for MomentumConfig {
             scale_in_s1_moderate_bps: 200,
             scale_in_s1_sol: 0.15,
             max_total_size_sol: 0.50,
+
+            // Score-aware scale-in
+            scale_in_high_score_threshold: 65,
+            scale_in_high_score_s0_bps: 200,
+            scale_in_low_score_threshold: 35,
+            scale_in_low_score_s0_bps: 400,
         }
     }
 }

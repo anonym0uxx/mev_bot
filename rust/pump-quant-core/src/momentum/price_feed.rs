@@ -152,9 +152,12 @@ impl PriceFeedManager {
 
     #[inline(always)]
     pub fn current_price(&self, mint: &[u8; 32]) -> Option<u64> {
-        self.prices
-            .get(mint)
-            .map(|s| s.price_fp.load(Ordering::Relaxed))
+        self.prices.get(mint).and_then(|s| {
+            let p = s.price_fp.load(Ordering::Relaxed);
+            // Only return a price when both vaults have contributed (price_fp > 0).
+            // A price_fp of 0 means only one vault has been seen — not a valid price.
+            if p > 0 { Some(p) } else { None }
+        })
     }
 
     #[inline(always)]
