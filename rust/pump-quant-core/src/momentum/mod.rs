@@ -1026,6 +1026,13 @@ impl MomentumEngine {
                 continue;
             }
 
+            // s[0] == 0: ambiguous — price hasn't moved from entry yet, OR feed hasn't delivered.
+            // Skip until we have a meaningful non-zero reading or fall through to s[1] check.
+            // Do NOT lock at probe — this will be resolved by s[1] or the sample_count guard.
+            if s0 == 0 && pos.sample_count == 1 {
+                continue;
+            }
+
             // s[0] >= scale_in_s0_strong_bps (300): strong conviction
             if s0 >= self.config.scale_in_s0_strong_bps {
                 let new_size = (probe_lamports as f64 + self.config.scale_in_s0_strong_sol * 1e9) as u64;
@@ -1074,8 +1081,15 @@ impl MomentumEngine {
                     // s[1] negative after weak s[0] — give up scaling, stay at probe
                     pos.set_scaled_in();
                 }
-                // 3 samples and still not confirmed — lock at probe size
-                if pos.sample_count >= 3 && !pos.is_scaled_in() {
+                // Only lock at probe if we've seen real price data (at least one non-zero sample).
+                // If all samples are zero, price feed hasn't delivered meaningful data yet — keep waiting.
+                let has_real_price = pos.price_samples_bps[..pos.sample_count as usize].iter().any(|&s| s != 0);
+                if pos.sample_count >= 3 && has_real_price && !pos.is_scaled_in() {
+                    pos.set_scaled_in();
+                }
+
+                // Hard lock: if we have 5+ samples and none show scale-in signal, accept flat token.
+                if pos.sample_count >= 5 && !pos.is_scaled_in() {
                     pos.set_scaled_in();
                 }
             }
