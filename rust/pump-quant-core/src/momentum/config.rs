@@ -279,6 +279,26 @@ pub struct MomentumConfig {
     /// Hold time (ms) after which a stagnant position is exited. Default: 60_000 (60s).
     /// A position is stagnant if ALL price_samples_bps are zero after this time.
     pub stagnation_exit_ms: u64,
+
+    // ══════════════════════════════════════════════════════════
+    // HARD GATE: WHALE/BOT PUMP REJECTION (TASK 1)
+    // ══════════════════════════════════════════════════════════
+
+    /// Hard gate: minimum graduation speed (seconds) to accept.
+    /// Tokens graduating faster than this are bot/whale bonding curve fills
+    /// with near-zero post-graduation momentum (speed≤90s: 7.3% WR in backtest).
+    /// Default: 90. Set to 0 to disable.
+    pub min_grad_speed_s: u32,
+
+    /// Hard gate: max graduation volume (SOL) when grad is fast (speed < min_grad_speed_s * 2).
+    /// Fast-ish + high volume = bot pump. Default: 200.0.
+    /// Applied when: grad_speed_s < min_grad_speed_s * 2 AND grad_volume_sol >= this value.
+    pub max_grad_volume_sol_fast: f64,
+
+    /// Hard gate: absolute max graduation volume (SOL) regardless of speed.
+    /// u16 saturation value is 655.35 SOL — anything at/above this is a confirmed whale fill.
+    /// Default: 650.0. Set to 0.0 to disable.
+    pub max_grad_volume_sol_absolute: f64,
 }
 
 impl Default for MomentumConfig {
@@ -397,6 +417,11 @@ impl Default for MomentumConfig {
 
             // Stagnation exit (TASK 5)
             stagnation_exit_ms: 60_000,
+
+            // Hard gate: whale/bot pump rejection (TASK 1)
+            min_grad_speed_s: 90,
+            max_grad_volume_sol_fast: 200.0,
+            max_grad_volume_sol_absolute: 650.0,
         }
     }
 }

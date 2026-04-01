@@ -40,9 +40,14 @@ impl Default for MomentumTodConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            blocked_hours_utc: Vec::new(),
-            reduced_hours_utc: vec![18, 19, 20, 21, 22, 23, 0, 1, 2, 3, 4, 5],
-            boosted_hours_utc: vec![8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+            // Block worst-performing UTC hours entirely (0x size)
+            // UTC 18-20: 1.5-3.2% WR, negative expectancy (dead/thin market)
+            // UTC 2-6: 4-13% WR, mostly negative expectancy (low liquidity)
+            blocked_hours_utc: vec![2, 3, 4, 5, 18, 19, 20],
+            // Reduce size for adjacent below-average hours
+            reduced_hours_utc: vec![0, 1, 6, 21, 22, 23],
+            // Boosted hours: UTC 7-17 (positive expectancy in backtest data)
+            boosted_hours_utc: vec![7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
             reduced_size_multiplier: 0.5,
         }
     }
@@ -99,7 +104,8 @@ mod tests {
     #[test]
     fn test_boosted_hours_return_one() {
         let cfg = MomentumTodConfig::default();
-        for h in 8..=17 {
+        // New defaults: boosted hours are 7-17 (UTC 7 added)
+        for h in 7..=17 {
             let m = entry_size_multiplier(&cfg, ms_for_utc_hour(h));
             assert_eq!(m, 1.0, "hour {h} should be boosted (1.0)");
         }
@@ -108,7 +114,8 @@ mod tests {
     #[test]
     fn test_reduced_hours_return_half() {
         let cfg = MomentumTodConfig::default();
-        for h in [18, 19, 20, 21, 22, 23, 0, 1, 2, 3, 4, 5] {
+        // New defaults: reduced hours are 0, 1, 6, 21, 22, 23
+        for h in [0, 1, 6, 21, 22, 23] {
             let m = entry_size_multiplier(&cfg, ms_for_utc_hour(h));
             assert_eq!(m, 0.5, "hour {h} should be reduced (0.5)");
         }
@@ -116,22 +123,23 @@ mod tests {
 
     #[test]
     fn test_hours_6_7_are_default_full() {
-        // Hours 6 and 7 are in neither reduced nor boosted → default 1.0.
+        // Hour 6 is now in reduced_hours_utc (0.5x) — adjacent to blocked UTC 2-5.
+        // Hour 7 is in boosted_hours_utc (1.0x).
         let cfg = MomentumTodConfig::default();
-        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(6)), 1.0);
-        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(7)), 1.0);
+        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(6)), 0.5,
+            "hour 6 is reduced (adjacent to blocked UTC 2-5)");
+        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(7)), 1.0,
+            "hour 7 is boosted");
     }
 
     #[test]
     fn test_blocked_hours_return_zero() {
-        let mut cfg = MomentumTodConfig::default();
-        cfg.blocked_hours_utc = vec![3, 4, 5];
-        // Blocked takes priority over reduced.
-        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(3)), 0.0);
-        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(4)), 0.0);
-        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(5)), 0.0);
-        // Hour 2 is still reduced (not blocked).
-        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(2)), 0.5);
+        let cfg = MomentumTodConfig::default();
+        // New defaults: blocked hours are 2, 3, 4, 5, 18, 19, 20
+        for h in [2, 3, 4, 5, 18, 19, 20] {
+            assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(h)), 0.0,
+                "hour {h} should be blocked (0.0)");
+        }
     }
 
     #[test]
@@ -152,9 +160,9 @@ mod tests {
     #[test]
     fn test_real_epoch_value() {
         // 2025-03-31 20:00:00 UTC = 1743451200000 ms
-        // Hour 20 is in reduced_hours_utc.
+        // Hour 20 is now in blocked_hours_utc (was reduced).
         let cfg = MomentumTodConfig::default();
-        assert_eq!(entry_size_multiplier(&cfg, 1_743_451_200_000), 0.5);
+        assert_eq!(entry_size_multiplier(&cfg, 1_743_451_200_000), 0.0);
     }
 
     #[test]
@@ -182,5 +190,54 @@ mod tests {
         for h in 0..24 {
             assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(h)), 1.0);
         }
+    }
+
+    // ── Task 5A: Verify expanded ToD defaults ────────────────────────────
+
+    #[test]
+    fn test_tod_new_blocked_hours() {
+        let cfg = MomentumTodConfig::default();
+        // UTC 18, 19, 20 should now be blocked
+        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(18)), 0.0);
+        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(19)), 0.0);
+        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(20)), 0.0);
+        // UTC 2, 3, 4, 5 should be blocked
+        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(2)), 0.0);
+        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(3)), 0.0);
+        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(4)), 0.0);
+        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(5)), 0.0);
+        // UTC 0, 1 should be reduced (not blocked)
+        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(0)), 0.5);
+        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(1)), 0.5);
+        // UTC 9 should be full (boosted)
+        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(9)), 1.0);
+        // UTC 7 now boosted (was unclassified default before)
+        assert_eq!(entry_size_multiplier(&cfg, ms_for_utc_hour(7)), 1.0);
+    }
+
+    #[test]
+    fn test_tod_all_24_hours_covered() {
+        // Verify every hour maps to exactly one category (no gaps).
+        let cfg = MomentumTodConfig::default();
+        for h in 0..24u8 {
+            let m = entry_size_multiplier(&cfg, ms_for_utc_hour(h));
+            assert!(
+                m == 0.0 || m == 0.5 || m == 1.0,
+                "hour {h} has unexpected multiplier {m}"
+            );
+        }
+        // Count blocked (0.0), reduced (0.5), full (1.0)
+        let blocked: Vec<u8> = (0..24u8)
+            .filter(|&h| entry_size_multiplier(&cfg, ms_for_utc_hour(h)) == 0.0)
+            .collect();
+        let reduced: Vec<u8> = (0..24u8)
+            .filter(|&h| entry_size_multiplier(&cfg, ms_for_utc_hour(h)) == 0.5)
+            .collect();
+        let full: Vec<u8> = (0..24u8)
+            .filter(|&h| entry_size_multiplier(&cfg, ms_for_utc_hour(h)) == 1.0)
+            .collect();
+        assert_eq!(blocked, vec![2, 3, 4, 5, 18, 19, 20]);
+        assert_eq!(reduced, vec![0, 1, 6, 21, 22, 23]);
+        assert_eq!(full, vec![7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
     }
 }

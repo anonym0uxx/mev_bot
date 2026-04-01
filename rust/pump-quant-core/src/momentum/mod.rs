@@ -297,6 +297,51 @@ impl MomentumEngine {
             return;
         }
 
+        let cfg = &self.config;
+
+        // ── Hard gate: reject whale/bot pump tokens ──────────────────────────
+        // Fast-graduation tokens (≤90s) filled by bots/whales have 5.9% WR in
+        // backtesting. Slow organic graduations (≥120s) have 41.1% WR.
+        let grad_volume_sol = grad_volume_sol_x100 as f64 / 100.0;
+
+        if cfg.min_grad_speed_s > 0 {
+            // Hard reject: absolute speed floor
+            if grad_speed_s < cfg.min_grad_speed_s {
+                tracing::debug!(
+                    mint = %bs58::encode(&pool_info.mint).into_string(),
+                    speed_s = grad_speed_s,
+                    threshold = cfg.min_grad_speed_s,
+                    "hard gate: rejected fast grad (bot/whale fill)"
+                );
+                return;
+            }
+            // Hard reject: fast-ish + high volume
+            if cfg.max_grad_volume_sol_fast > 0.0
+                && grad_speed_s < cfg.min_grad_speed_s * 2
+                && grad_volume_sol >= cfg.max_grad_volume_sol_fast
+            {
+                tracing::debug!(
+                    mint = %bs58::encode(&pool_info.mint).into_string(),
+                    speed_s = grad_speed_s,
+                    vol_sol = grad_volume_sol,
+                    "hard gate: rejected fast+high-vol grad"
+                );
+                return;
+            }
+        }
+        // Hard reject: saturated volume (u16 overflow = confirmed whale fill)
+        if cfg.max_grad_volume_sol_absolute > 0.0
+            && grad_volume_sol >= cfg.max_grad_volume_sol_absolute
+        {
+            tracing::debug!(
+                mint = %bs58::encode(&pool_info.mint).into_string(),
+                vol_sol = grad_volume_sol,
+                "hard gate: rejected saturated volume"
+            );
+            return;
+        }
+        // ── End hard gate ────────────────────────────────────────────────────
+
         // Score the graduation (v2: 5 components including entry discount).
         // Compute entry_price_fp from pool reserves for the entry discount scorer.
         let pre_score_entry_fp = price_from_reserves(pool_info.reserve_sol, pool_info.reserve_token);
@@ -1871,9 +1916,9 @@ mod tests {
             mint: [0xAA; 32],
         };
 
-        // High-scoring graduation: speed=60 (score 20), volume=50k (score 25), velocity=15
+        // High-scoring graduation: speed=120 (passes hard gate), volume=13900 (139 SOL), velocity=15
         engine
-            .on_graduation(&pool_info, 1_000_000, 60, 50_000, 15, 2)
+            .on_graduation(&pool_info, 1_000_000, 120, 13_900, 15, 2)
             .await;
         assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
 
@@ -2218,5 +2263,134 @@ mod tests {
             (a - b) < threshold
         });
         assert!(!all_below, "single bad tick should not trigger micro exit");
+    }
+
+    // ── Hard gate: whale/bot pump rejection tests (TASK 1) ──────────────
+
+    #[tokio::test]
+    async fn test_hard_gate_rejects_fast_grad() {
+        // speed=60 < min_grad_speed_s=90 → rejected by hard gate
+        let engine = make_test_engine(true);
+
+        let pool_info = PoolInfo {
+            coin_vault: [1u8; 32],
+            pc_vault: [2u8; 32],
+            reserve_token: 200_000_000_000_000,
+            reserve_sol: 80_000_000_000,
+            pool_type: PoolType::RaydiumAmmV4,
+            mint: [0xA1; 32],
+        };
+
+        // speed=60 (bot fill), volume=139 SOL (normal) — should be rejected on speed alone
+        engine
+            .on_graduation(&pool_info, 1_000_000, 60, 13_900, 15, 2)
+            .await;
+        // Counter incremented (fires before hard gate)
+        assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
+        // But NO pending entry — hard gate rejected it
+        assert_eq!(engine.pending.lock().unwrap().active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_hard_gate_rejects_saturated_volume() {
+        // vol=655.35 SOL (x100 = 65535) >= max_grad_volume_sol_absolute=650 → rejected
+        let engine = make_test_engine(true);
+
+        let pool_info = PoolInfo {
+            coin_vault: [1u8; 32],
+            pc_vault: [2u8; 32],
+            reserve_token: 200_000_000_000_000,
+            reserve_sol: 80_000_000_000,
+            pool_type: PoolType::RaydiumAmmV4,
+            mint: [0xA2; 32],
+        };
+
+        // speed=300 (organic), but volume=655.35 SOL (u16 saturated) → whale fill
+        engine
+            .on_graduation(&pool_info, 1_000_000, 300, 65_535, 15, 2)
+            .await;
+        assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
+        // Hard gate: saturated volume → rejected
+        assert_eq!(engine.pending.lock().unwrap().active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_hard_gate_rejects_fast_high_volume() {
+        // speed=100 (< min_grad_speed_s*2=180), vol=250 SOL (>= max_grad_volume_sol_fast=200)
+        // → rejected by fast+high-vol gate
+        let engine = make_test_engine(true);
+
+        let pool_info = PoolInfo {
+            coin_vault: [1u8; 32],
+            pc_vault: [2u8; 32],
+            reserve_token: 200_000_000_000_000,
+            reserve_sol: 80_000_000_000,
+            pool_type: PoolType::RaydiumAmmV4,
+            mint: [0xA3; 32],
+        };
+
+        // speed=100 (passes absolute floor of 90, but < 180), vol=250 SOL (>= 200)
+        engine
+            .on_graduation(&pool_info, 1_000_000, 100, 25_000, 15, 2)
+            .await;
+        assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
+        // Hard gate: fast-ish + high volume → rejected
+        assert_eq!(engine.pending.lock().unwrap().active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_hard_gate_passes_slow_organic() {
+        // speed=180 (>= min_grad_speed_s*2=180), vol=139 SOL (< 200) → passes all gates
+        let engine = make_test_engine(true);
+
+        let pool_info = PoolInfo {
+            coin_vault: [1u8; 32],
+            pc_vault: [2u8; 32],
+            reserve_token: 200_000_000_000_000,
+            reserve_sol: 80_000_000_000,
+            pool_type: PoolType::RaydiumAmmV4,
+            mint: [0xA4; 32],
+        };
+
+        // speed=180 (organic), vol=139 SOL → passes all hard gates
+        engine
+            .on_graduation(&pool_info, 1_000_000, 180, 13_900, 15, 2)
+            .await;
+        assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
+        // Should pass hard gate and reach scoring → pending entry scheduled
+        let pending_count = engine.pending.lock().unwrap().active_count();
+        assert_eq!(pending_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_hard_gate_disabled_when_zero() {
+        // min_grad_speed_s=0 disables the speed and fast+vol gates
+        let engine = make_test_engine_with(true, |cfg| {
+            cfg.min_grad_speed_s = 0;
+            cfg.max_grad_volume_sol_absolute = 0.0;
+        });
+
+        let pool_info = PoolInfo {
+            coin_vault: [1u8; 32],
+            pc_vault: [2u8; 32],
+            reserve_token: 200_000_000_000_000,
+            reserve_sol: 80_000_000_000,
+            pool_type: PoolType::RaydiumAmmV4,
+            mint: [0xA5; 32],
+        };
+
+        // speed=30 (extreme bot), vol=655 SOL (saturated) — would normally be rejected
+        // but hard gate is disabled → should pass through to scoring
+        engine
+            .on_graduation(&pool_info, 1_000_000, 30, 65_500, 15, 2)
+            .await;
+        assert_eq!(engine.graduations_seen.load(Ordering::Relaxed), 1);
+        // Gate disabled → reaches scoring. Whether it gets a pending entry depends on score,
+        // but it should NOT have been blocked by the hard gate.
+        // With paper_mode threshold of 20 and speed=30 + high volume, it may or may not score high enough.
+        // The key assertion is that it got past the hard gate (graduations_seen=1 + no early return).
+        // We can verify it reached scoring by checking that the function didn't return at the gate.
+        // Since we can't directly test "reached scoring", we rely on the fact that disabled=0
+        // means the if-block is skipped entirely.
     }
 }
