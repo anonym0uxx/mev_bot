@@ -25,6 +25,7 @@ pub mod position;
 pub mod price_feed;
 pub mod scorer;
 pub mod tod;
+pub mod velocity;
 
 pub use config::MomentumConfig;
 pub use logger::{MomentumClosedPosition, MomentumPaperLogger};
@@ -61,7 +62,7 @@ fn route_exit(reason: &str, gain_bps: i64, nozomi_available: bool) -> LandingPat
     }
     match reason {
         "drain_detected" | "hard_sl" => LandingPath::DualPath,
-        "trailing_stop" if gain_bps < 0 => LandingPath::DualPath,
+        "trailing_stop" | "velocity_exit" if gain_bps < 0 => LandingPath::DualPath,
         "time_sl" | "max_hold" => LandingPath::NozomiOnly,
         _ => LandingPath::JitoOnly,
     }
@@ -77,6 +78,8 @@ fn exit_to_context(
         MomentumExitReason::HardSl => TipContext::RideEmergency,
         MomentumExitReason::TrailingStop if gain_bps < 0 => TipContext::RideEmergency,
         MomentumExitReason::TrailingStop => TipContext::RideTighten,
+        MomentumExitReason::VelocityExit if gain_bps < 0 => TipContext::RideEmergency,
+        MomentumExitReason::VelocityExit => TipContext::RideTighten,
         MomentumExitReason::TimeSl => TipContext::Scalp,
         MomentumExitReason::MaxHold => TipContext::Scalp,
         _ => TipContext::RideMomentum,
@@ -1258,6 +1261,52 @@ impl MomentumEngine {
                 }
             }
 
+            // ── Velocity Exit ────────────────────────────────────────────────
+            // Detect sustained negative velocity/acceleration to exit before
+            // trailing stop trips. Protects profits on momentum collapse.
+            // Fires after trailing stop check — if trail already fired, we skip.
+            if self.config.velocity_exit_enabled
+                && pos.sample_count >= self.config.velocity_exit_min_samples as u8
+            {
+                let n = pos.sample_count as usize;
+                let current_bps = price_to_bps_offset(pos.entry_price_fp, current_price_fp);
+
+                // Guard: only fire if position is profitable enough
+                if current_bps >= self.config.velocity_exit_min_profit_bps as i32 {
+                    let vel = crate::momentum::velocity::compute_velocity(
+                        &pos.price_samples_bps[..n],
+                        self.config.velocity_window as usize,
+                    );
+
+                    // Check velocity threshold (negative = price falling)
+                    if vel <= self.config.velocity_exit_threshold_mbps {
+                        pos.velocity_confirm_counter = pos.velocity_confirm_counter.saturating_add(1);
+
+                        if pos.velocity_confirm_counter >= self.config.velocity_exit_confirm_samples as u8 {
+                            let accel = crate::momentum::velocity::compute_acceleration(
+                                &pos.price_samples_bps[..n],
+                                self.config.velocity_window as usize,
+                            );
+                            tracing::info!(
+                                mint = %bs58::encode(&mint).into_string(),
+                                velocity_mbps = vel,
+                                acceleration_mbps2 = accel,
+                                current_bps,
+                                peak_bps = price_to_bps_offset(pos.entry_price_fp, pos.peak_price_fp),
+                                confirm_count = pos.velocity_confirm_counter,
+                                "[momentum] velocity exit fired"
+                            );
+                            to_close.push((mint, MomentumExitReason::VelocityExit, current_price_fp));
+                            continue;
+                        }
+                    } else {
+                        // Velocity recovered — reset confirm counter
+                        pos.velocity_confirm_counter = 0;
+                    }
+                }
+            }
+            // ── End Velocity Exit ────────────────────────────────────────────
+
             // ── Adaptive dead zone Phase 1: WS activity silence ──────────────────────
             // ShredStream cannot see post-graduation Raydium/PumpSwap trades.
             // Helius WS accountSubscribe notifications proxy swap activity.
@@ -1814,7 +1863,7 @@ impl MomentumEngine {
             MomentumExitReason::Tp3 => {
                 self.tp3_exits.fetch_add(1, Ordering::Relaxed);
             }
-            MomentumExitReason::TrailingStop | MomentumExitReason::HardSl | MomentumExitReason::DrainDetected => {
+            MomentumExitReason::TrailingStop | MomentumExitReason::HardSl | MomentumExitReason::DrainDetected | MomentumExitReason::VelocityExit => {
                 self.sl_exits.fetch_add(1, Ordering::Relaxed);
             }
             _ => {

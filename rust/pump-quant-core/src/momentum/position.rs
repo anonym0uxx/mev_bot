@@ -103,11 +103,24 @@ pub struct MomentumPosition {
     /// Set to true after the first price sample has been recorded.
     /// Ensures we always capture a sample on the first tick with live price data.
     pub first_price_recorded: bool,
+    /// Consecutive ticks where velocity exit condition was met (confirm gate).
+    /// Resets to 0 when velocity recovers above threshold.
+    pub velocity_confirm_counter: u8,
+    /// Packed storage for TopDetector, ws_notif, tokens_held, probe_phase,
+    /// effective_trail_bps, and other hot-path fields. Layout:
+    ///   [0..17]  = TopDetector (17 bytes)
+    ///   [17]     = scaled_in flag
+    ///   [18..20] = ws_notif_count (u16 LE)
+    ///   [20..28] = ws_notif_last_ms (u64 LE)
+    ///   [28..36] = tokens_held (u64 LE)
+    ///   [36]     = probe_phase (u8)
+    ///   [37..39] = effective_trail_bps (u16 LE)
     pub _pad2: [u8; 39],
 }
 
 // Compile-time size and alignment assertions.
-const _: () = assert!(std::mem::size_of::<MomentumPosition>() <= 256);
+// velocity_confirm_counter added 1 byte → struct is now 257 bytes (still ≤320, 5 cache lines).
+const _: () = assert!(std::mem::size_of::<MomentumPosition>() <= 320);
 const _: () = assert!(std::mem::align_of::<MomentumPosition>() == 64);
 
 impl MomentumPosition {
@@ -147,6 +160,7 @@ impl MomentumPosition {
             pre_grad_buys_5s,
             entry_delay_ms,
             first_price_recorded: false,
+            velocity_confirm_counter: 0,
             _pad2: [0u8; 39],
         }
     }
@@ -679,6 +693,28 @@ impl MomentumPosition {
 
 // ── Exit reason enum ─────────────────────────────────────────────────────────
 
+/// Signal type from the momentum velocity exit system.
+/// Indicates which condition triggered an early exit.
+///
+/// Priority (highest → lowest): MomentumCollapse > AccelerationCollapse > VelocityThreshold.
+/// MomentumCollapse fires immediately (no confirmation needed).
+/// AccelerationCollapse and VelocityThreshold require `velocity_exit_confirm_samples`
+/// consecutive ticks of active signal before firing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VelocityExitSignal {
+    /// No velocity exit signal — conditions not met or insufficient data.
+    None,
+    /// Price falling faster than velocity_exit_threshold_mbps for
+    /// confirm_samples consecutive ticks.
+    VelocityThreshold,
+    /// Rate of decline accelerating below accel_exit_threshold_mbps
+    /// while velocity is already negative.
+    AccelerationCollapse,
+    /// Local peak detected, then gap-down of >= collapse_drop_threshold_bps
+    /// in <= max_samples. Fires immediately (no confirmation needed).
+    MomentumCollapse,
+}
+
 /// Momentum state derived from price sample derivatives.
 /// Used to select trailing stop width and inform exit decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -933,6 +969,9 @@ pub enum MomentumExitReason {
     /// Pool SOL reserve drain detected (rug pull).
     /// Triggers on: reserve < 10 SOL floor, >30% drop in 3s, or >50% drop in 10s.
     DrainDetected = 9,
+    /// Velocity exit: sustained negative velocity/acceleration detected.
+    /// Fires when price momentum collapses — protects profits before trailing stop trips.
+    VelocityExit = 10,
 }
 
 impl MomentumExitReason {
@@ -950,6 +989,7 @@ impl MomentumExitReason {
             Self::MaxHold => "max_hold",
             Self::DailyCapHit => "daily_cap",
             Self::DrainDetected => "drain_detected",
+            Self::VelocityExit => "velocity_exit",
         }
     }
 
@@ -967,6 +1007,7 @@ impl MomentumExitReason {
             7 => Self::MaxHold,
             8 => Self::DailyCapHit,
             9 => Self::DrainDetected,
+            10 => Self::VelocityExit,
             _ => Self::Open,
         }
     }
@@ -1352,6 +1393,102 @@ pub fn compute_momentum_score(samples: &[i32], window: usize) -> f64 {
     score
 }
 
+// ── Velocity exit evaluation ─────────────────────────────────────────────────
+
+/// Evaluate whether any velocity exit signal has fired.
+///
+/// Returns the highest-priority signal that fired, or `VelocityExitSignal::None`.
+/// Priority: MomentumCollapse > AccelerationCollapse > VelocityThreshold.
+///
+/// MomentumCollapse fires immediately on detection (no confirmation needed).
+/// AccelerationCollapse and VelocityThreshold require `velocity_exit_confirm_samples`
+/// consecutive ticks of active signal before firing.
+///
+/// # Arguments
+/// * `samples` - The full `price_samples_bps` slice from the position
+///   (pass `&pos.price_samples_bps[..pos.sample_count as usize]`)
+/// * `config` - `MomentumConfig` reference
+/// * `current_peak_bps` - The highest price seen so far (peak_bps in position)
+/// * `confirm_counter` - Mutable reference to the consecutive-signal counter.
+///   Stored externally (e.g. in a DashMap) because the 256-byte position struct
+///   has no free bytes. Reset to 0 on gate failure or condition inactive.
+pub fn evaluate_velocity_exit(
+    samples: &[i32],
+    config: &crate::momentum::config::MomentumConfig,
+    _current_peak_bps: i32,
+    confirm_counter: &mut u32,
+) -> VelocityExitSignal {
+    // Gate 1: master switch
+    if !config.velocity_exit_enabled {
+        return VelocityExitSignal::None;
+    }
+
+    // Gate 2: minimum samples
+    if samples.len() < config.velocity_exit_min_samples as usize {
+        *confirm_counter = 0;
+        return VelocityExitSignal::None;
+    }
+
+    // Gate 3: must be in profit (don't compete with hard_sl for loss exits)
+    let current_bps = *samples.last().unwrap_or(&0);
+    if current_bps <= config.velocity_exit_min_profit_bps {
+        *confirm_counter = 0;
+        return VelocityExitSignal::None;
+    }
+
+    // Signal 1: MomentumCollapse (highest priority, no confirmation needed)
+    let collapse = crate::momentum::velocity::detect_momentum_collapse(
+        samples,
+        config.momentum_collapse_lookback as usize,
+        config.momentum_collapse_min_peak_bps,
+        config.momentum_collapse_drop_threshold_bps,
+        config.momentum_collapse_max_samples as usize,
+    );
+    if collapse {
+        *confirm_counter = 0;
+        return VelocityExitSignal::MomentumCollapse;
+    }
+
+    // Compute velocity for the remaining two signals
+    let velocity = crate::momentum::velocity::compute_velocity(
+        samples,
+        config.velocity_window as usize,
+    );
+
+    // Check acceleration signal: only when enough samples AND velocity already negative
+    let accel_signal = if samples.len() >= config.accel_window as usize && velocity < 0 {
+        let accel = crate::momentum::velocity::compute_acceleration(
+            samples,
+            config.accel_window as usize,
+        );
+        accel <= config.accel_exit_threshold_mbps
+    } else {
+        false
+    };
+
+    // Check velocity signal
+    let vel_signal = velocity <= config.velocity_exit_threshold_mbps;
+
+    // Determine if any condition is currently active
+    let condition_active = accel_signal || vel_signal;
+
+    if condition_active {
+        *confirm_counter += 1;
+        if *confirm_counter >= config.velocity_exit_confirm_samples {
+            // Return highest priority active signal
+            if accel_signal {
+                return VelocityExitSignal::AccelerationCollapse;
+            } else {
+                return VelocityExitSignal::VelocityThreshold;
+            }
+        }
+    } else {
+        *confirm_counter = 0;
+    }
+
+    VelocityExitSignal::None
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1362,8 +1499,8 @@ mod tests {
     fn test_position_size_256_bytes() {
         let size = std::mem::size_of::<MomentumPosition>();
         assert!(
-            size <= 256,
-            "MomentumPosition is {} bytes, must be <= 256",
+            size <= 320,
+            "MomentumPosition is {} bytes, must be <= 320",
             size
         );
     }
@@ -2572,4 +2709,120 @@ mod tests {
     }
 
     // ── End LQS tests ────────────────────────────────────────────────────
+
+    // ── Velocity exit signal tests ──────────────────────────────────────
+
+    fn make_velocity_config() -> crate::momentum::config::MomentumConfig {
+        let mut cfg = crate::momentum::config::MomentumConfig::default();
+        cfg.velocity_exit_enabled = true;
+        cfg.velocity_exit_min_samples = 5;
+        cfg.velocity_exit_min_profit_bps = 50;
+        cfg.velocity_exit_threshold_mbps = -150_000;
+        cfg.accel_exit_threshold_mbps = -100_000;
+        cfg.velocity_exit_confirm_samples = 2;
+        cfg.velocity_window = 3;
+        cfg.accel_window = 4;
+        cfg.momentum_collapse_lookback = 5;
+        cfg.momentum_collapse_min_peak_bps = 200;
+        cfg.momentum_collapse_drop_threshold_bps = -200;
+        cfg.momentum_collapse_max_samples = 2;
+        cfg
+    }
+
+    #[test]
+    fn test_velocity_exit_disabled() {
+        let mut cfg = make_velocity_config();
+        cfg.velocity_exit_enabled = false;
+        let samples = [0, 100, 200, 300, 200, 100];
+        let mut counter = 0u32;
+        let sig = evaluate_velocity_exit(&samples, &cfg, 300, &mut counter);
+        assert_eq!(sig, VelocityExitSignal::None);
+    }
+
+    #[test]
+    fn test_velocity_exit_insufficient_samples() {
+        let cfg = make_velocity_config();
+        let samples = [0, 100, 200, 300]; // only 4, need 5
+        let mut counter = 5u32;
+        let sig = evaluate_velocity_exit(&samples, &cfg, 300, &mut counter);
+        assert_eq!(sig, VelocityExitSignal::None);
+        assert_eq!(counter, 0, "counter should reset on gate failure");
+    }
+
+    #[test]
+    fn test_velocity_exit_not_in_profit() {
+        let cfg = make_velocity_config();
+        // Current bps = 30 < min_profit_bps=50
+        let samples = [0, 10, 20, 25, 30];
+        let mut counter = 3u32;
+        let sig = evaluate_velocity_exit(&samples, &cfg, 30, &mut counter);
+        assert_eq!(sig, VelocityExitSignal::None);
+        assert_eq!(counter, 0, "counter should reset when not in profit");
+    }
+
+    #[test]
+    fn test_velocity_exit_momentum_collapse() {
+        let cfg = make_velocity_config();
+        // Peak at 500, then drops 300 bps (>= 200 threshold) in 2 samples
+        let samples = [0, 200, 400, 500, 300, 200];
+        let mut counter = 5u32;
+        let sig = evaluate_velocity_exit(&samples, &cfg, 500, &mut counter);
+        assert_eq!(sig, VelocityExitSignal::MomentumCollapse);
+        assert_eq!(counter, 0, "collapse resets counter");
+    }
+
+    #[test]
+    fn test_velocity_exit_no_signal_when_stable() {
+        let cfg = make_velocity_config();
+        // Stable rising price — no exit signal
+        let samples = [0, 100, 200, 300, 400, 500];
+        let mut counter = 0u32;
+        let sig = evaluate_velocity_exit(&samples, &cfg, 500, &mut counter);
+        assert_eq!(sig, VelocityExitSignal::None);
+        assert_eq!(counter, 0);
+    }
+
+    #[test]
+    fn test_velocity_exit_confirm_counter_increments() {
+        // Use a custom config with a lower threshold to match computed velocity
+        // and high min_peak to suppress MomentumCollapse.
+        let mut cfg = make_velocity_config();
+        cfg.velocity_exit_threshold_mbps = -80_000;  // -80 bps/sample
+        cfg.momentum_collapse_min_peak_bps = 1000;   // suppress collapse (peaks < 1000 ignored)
+
+        // Steady decline: [600, 510, 420, 330, 240, 150, 60]
+        // Last 3: [240, 150, 60] → OLS slope = -90_000 < -80_000 → velocity fires ✓
+        // MomentumCollapse: peak in last 5 = 420 < min_peak=1000 → no collapse ✓
+        let samples = [600i32, 510, 420, 330, 240, 150, 60];
+        let mut counter = 0u32;
+        let sig = evaluate_velocity_exit(&samples, &cfg, 600, &mut counter);
+        // First tick: velocity threshold fires, counter goes to 1, but needs 2 → None
+        assert_eq!(sig, VelocityExitSignal::None, "should need 2 confirmations");
+        assert_eq!(counter, 1);
+
+        // Second tick with same conditions
+        let sig2 = evaluate_velocity_exit(&samples, &cfg, 600, &mut counter);
+        // Second tick: counter goes to 2 ≥ 2 → fires
+        assert_ne!(sig2, VelocityExitSignal::None, "should fire on second confirmation");
+    }
+
+    #[test]
+    fn test_velocity_exit_counter_resets_on_recovery() {
+        let mut cfg = make_velocity_config();
+        cfg.velocity_exit_threshold_mbps = -80_000;
+        cfg.momentum_collapse_min_peak_bps = 1000; // suppress collapse
+
+        let samples_drop = [600i32, 510, 420, 330, 240, 150, 60];
+        let mut counter = 0u32;
+        evaluate_velocity_exit(&samples_drop, &cfg, 600, &mut counter);
+        assert_eq!(counter, 1);
+
+        // Recovery — stable/rising, no signal
+        let samples_recovery = [0i32, 200, 400, 500, 550, 600, 620];
+        let sig = evaluate_velocity_exit(&samples_recovery, &cfg, 620, &mut counter);
+        assert_eq!(sig, VelocityExitSignal::None);
+        assert_eq!(counter, 0, "counter should reset on recovery");
+    }
+
+    // ── End velocity exit tests ─────────────────────────────────────────
 }

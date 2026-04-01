@@ -360,6 +360,56 @@ pub struct MomentumConfig {
     /// u16 saturation value is 655.35 SOL — anything at/above this is a confirmed whale fill.
     /// Default: 650.0. Set to 0.0 to disable.
     pub max_grad_volume_sol_absolute: f64,
+
+    // ══════════════════════════════════════════════════════════
+    // VELOCITY EXIT
+    // ══════════════════════════════════════════════════════════
+
+    /// Enable/disable the velocity exit system entirely. Default: true
+    pub velocity_exit_enabled: bool,
+
+    /// Velocity threshold in milli-bps/sample (×1000 scale).
+    /// Signal fires when regression slope ≤ this. Must be negative.
+    /// Default: -150_000 (= -150 bps/sample)
+    pub velocity_exit_threshold_mbps: i64,
+
+    /// Acceleration threshold in milli-bps/sample² (×1000 scale).
+    /// Fires when acceleration ≤ this while velocity already negative.
+    /// Default: -100_000
+    pub accel_exit_threshold_mbps: i64,
+
+    /// Minimum peak bps before MomentumCollapse can fire.
+    /// Default: 200
+    pub momentum_collapse_min_peak_bps: i32,
+
+    /// Drop threshold (bps, negative) from local peak to trigger MomentumCollapse.
+    /// Default: -200
+    pub momentum_collapse_drop_threshold_bps: i32,
+
+    /// Max samples after local peak for MomentumCollapse (gap-down detector).
+    /// Default: 2
+    pub momentum_collapse_max_samples: u32,
+
+    /// Lookback window for MomentumCollapse pattern detection.
+    /// Must be >= momentum_collapse_max_samples + 2. Default: 5
+    pub momentum_collapse_lookback: u32,
+
+    /// Regression window size for velocity. Default: 3
+    pub velocity_window: u32,
+
+    /// Window for acceleration (split into halves). Must be >= 4. Default: 4
+    pub accel_window: u32,
+
+    /// Minimum samples before any velocity exit fires. Default: 5
+    pub velocity_exit_min_samples: u32,
+
+    /// Consecutive ticks condition must hold before VelocityThreshold/AccelCollapse fires.
+    /// Default: 2
+    pub velocity_exit_confirm_samples: u32,
+
+    /// Minimum current price in bps above entry for velocity exit to fire.
+    /// Below this, trailing stop handles it. Default: 50
+    pub velocity_exit_min_profit_bps: i32,
 }
 
 impl Default for MomentumConfig {
@@ -499,6 +549,20 @@ impl Default for MomentumConfig {
             min_grad_speed_s: 90,
             max_grad_volume_sol_fast: 200.0,
             max_grad_volume_sol_absolute: 650.0,
+
+            // Velocity exit
+            velocity_exit_enabled: true,
+            velocity_exit_threshold_mbps: -150_000,
+            accel_exit_threshold_mbps: -100_000,
+            momentum_collapse_min_peak_bps: 200,
+            momentum_collapse_drop_threshold_bps: -200,
+            momentum_collapse_max_samples: 2,
+            momentum_collapse_lookback: 5,
+            velocity_window: 3,
+            accel_window: 4,
+            velocity_exit_min_samples: 5,
+            velocity_exit_confirm_samples: 2,
+            velocity_exit_min_profit_bps: 50,
         }
     }
 }
