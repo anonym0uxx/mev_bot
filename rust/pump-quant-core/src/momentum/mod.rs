@@ -1689,7 +1689,7 @@ impl MomentumEngine {
     #[inline(never)]
     pub async fn on_migration(
         &self,
-        _mint: [u8; 32],
+        mint: [u8; 32],
         ts_ms: u64,
         sig: [u8; 64],
         enrichment: crate::engine::hot_path::GradEnrichment,
@@ -1825,8 +1825,65 @@ impl MomentumEngine {
                 ).await;
             }
             None => {
-                let sig_b58 = bs58::encode(&sig).into_string();
-                tracing::warn!(sig = %sig_b58, "[momentum] pool resolution FAILED");
+                // Sig-based resolution failed. CoreCast sends DEX trade sigs (not pool-creation
+                // sigs), so getTransaction finds no vault data → RPC error. Fall back to
+                // mint-based getProgramAccounts on Raydium AMM V4.
+                tracing::info!(
+                    mint = %bs58::encode(&mint).into_string(),
+                    "[momentum] sig resolution failed — trying mint-based pool lookup"
+                );
+                match crate::momentum::pool::resolve_pool_from_mint(&self.http_client, &mint, &self.rpc_url).await {
+                    Some(resolution) => {
+                        let mint_b58 = bs58::encode(&resolution.mint).into_string();
+                        tracing::info!(
+                            mint = %mint_b58,
+                            pool_type = ?resolution.pool_type,
+                            reserve_sol = resolution.reserve_sol_lamports,
+                            "[momentum] pool resolved via mint lookup — entering on_graduation"
+                        );
+                        let pool_info = PoolInfo {
+                            coin_vault: resolution.coin_vault,
+                            pc_vault: resolution.pc_vault,
+                            reserve_token: resolution.reserve_token_atoms,
+                            reserve_sol: resolution.reserve_sol_lamports,
+                            pool_type: resolution.pool_type,
+                            mint: resolution.mint,
+                        };
+                        let effective_volume_sol_x100 = if enrichment.volume_sol_x100 == 0 {
+                            (resolution.reserve_sol_lamports / 10_000_000).min(65535) as u32
+                        } else {
+                            enrichment.volume_sol_x100
+                        };
+                        let effective_speed_s = if enrichment.grad_speed_s == 0 {
+                            let sol = resolution.reserve_sol_lamports / 1_000_000_000;
+                            self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
+                            tracing::info!(
+                                mint = %mint_b58,
+                                reserve_sol = sol,
+                                "[momentum] enrichment cold miss (mint lookup) — estimating speed from LP reserves"
+                            );
+                            if sol >= 250 { 60u32 } else { 120u32 }
+                        } else {
+                            enrichment.grad_speed_s
+                        };
+                        let effective_buys_5s = if enrichment.buys_5s == 0 { 3u32 } else { enrichment.buys_5s as u32 };
+                        let effective_sells_5s = if enrichment.sells_5s == 0 { 1u32 } else { enrichment.sells_5s as u32 };
+                        self.on_graduation(
+                            &pool_info,
+                            ts_ms,
+                            effective_speed_s,
+                            effective_volume_sol_x100,
+                            effective_buys_5s,
+                            effective_sells_5s,
+                        ).await;
+                    }
+                    None => {
+                        tracing::warn!(
+                            mint = %bs58::encode(&mint).into_string(),
+                            "[momentum] pool resolution FAILED (sig + mint lookup both failed — likely PumpSwap)"
+                        );
+                    }
+                }
             }
         }
     }
