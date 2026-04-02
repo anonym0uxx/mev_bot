@@ -133,6 +133,9 @@ pub struct PumpSwapPoolAccounts {
     /// Resolved at graduation time from Helius notification or RPC.
     /// Defaults to [0u8; 32] (unresolved) — TX builder must check and resolve.
     pub token_mint_program: [u8; 32],
+    /// Whether this pool is a cashback coin (PumpSwap pool data offset [244]).
+    /// Cashback coins require extra remaining accounts in the swap TX.
+    pub is_cashback_coin: bool,
 }
 
 /// WSOL mint as raw bytes for detecting reversed PumpSwap pool ordering.
@@ -180,6 +183,7 @@ impl From<crate::momentum::pool::PumpSwapPoolAccounts> for PumpSwapPoolAccounts 
             coin_creator_vault_authority: p.coin_creator_vault_authority,
             token_is_base,
             token_mint_program: p.token_mint_program,
+            is_cashback_coin: p.is_cashback_coin,
         }
     }
 }
@@ -464,7 +468,7 @@ fn build_pumpswap_swap_ix(
         &pumpswap_program,
     );
 
-    let accounts = vec![
+    let mut accounts = vec![
         AccountMeta::new(Pubkey::new_from_array(pool.pool), false),     // [0]  pool
         AccountMeta::new(*wallet_pubkey, true),                          // [1]  user (signer)
         AccountMeta::new_readonly(global_config, false),                 // [2]  global_config
@@ -488,21 +492,36 @@ fn build_pumpswap_swap_ix(
         AccountMeta::new(user_volume_accumulator, false),                // [20] user_volume_accumulator
         AccountMeta::new_readonly(fee_config, false),                    // [21] fee_config
         AccountMeta::new_readonly(fee_program, false),                   // [22] fee_program
-        // ── remaining_accounts (not in IDL accounts list, appended after) ──
-        // pool_v2 PDA: seeds = ["pool-v2", base_mint] under PumpSwap program
-        {
-            let base_mint_for_v2 = if pool.token_is_base {
-                Pubkey::new_from_array(pool.base_mint)
-            } else {
-                Pubkey::from_str(WSOL_MINT_STR).unwrap()
-            };
-            let (pool_v2, _) = Pubkey::find_program_address(
-                &[b"pool-v2", base_mint_for_v2.as_ref()],
-                &pumpswap_program,
-            );
-            AccountMeta::new_readonly(pool_v2, false)                   // [23] pool_v2 (remaining)
-        },
     ];
+
+    // ── remaining_accounts (appended after IDL accounts list) ──────────
+    // For cashback coins: [cashback_ata, pool_v2]
+    // For non-cashback:   [pool_v2]
+    if pool.is_cashback_coin {
+        // cashback_ata = ATA(user_volume_accumulator, WSOL, SPL_TOKEN)
+        let wsol_mint = Pubkey::from_str(WSOL_MINT_STR).unwrap();
+        let spl_token = Pubkey::from_str(SPL_TOKEN_PROGRAM_STR).unwrap();
+        let ata_prog = Pubkey::from_str(SPL_ATA_PROGRAM_STR).unwrap();
+        let (cashback_ata, _) = Pubkey::find_program_address(
+            &[user_volume_accumulator.as_ref(), spl_token.as_ref(), wsol_mint.as_ref()],
+            &ata_prog,
+        );
+        accounts.push(AccountMeta::new(cashback_ata, false));            // [23] cashback ATA (remaining)
+    }
+
+    // pool_v2 PDA: seeds = ["pool-v2", base_mint] under PumpSwap program
+    {
+        let base_mint_for_v2 = if pool.token_is_base {
+            Pubkey::new_from_array(pool.base_mint)
+        } else {
+            Pubkey::from_str(WSOL_MINT_STR).unwrap()
+        };
+        let (pool_v2, _) = Pubkey::find_program_address(
+            &[b"pool-v2", base_mint_for_v2.as_ref()],
+            &pumpswap_program,
+        );
+        accounts.push(AccountMeta::new_readonly(pool_v2, false));        // pool_v2 (remaining)
+    }
 
     Instruction {
         program_id: pumpswap_program,
@@ -758,6 +777,7 @@ mod tests {
             coin_creator_vault_authority: [0u8; 32],  // zeroed — program handles it
             token_is_base: true,
             token_mint_program: SPL_TOKEN_PROGRAM_BYTES, // classic SPL Token for tests
+            is_cashback_coin: false,
         }
     }
 
@@ -772,6 +792,7 @@ mod tests {
             coin_creator_vault_authority: [0u8; 32],
             token_is_base: false,
             token_mint_program: SPL_TOKEN_PROGRAM_BYTES, // classic SPL Token for tests
+            is_cashback_coin: false,
         }
     }
 

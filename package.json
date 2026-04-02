@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.3",
+    "@pump-fun/pump-swap-sdk": "^1.14.1",
     "@solana/spl-token": "^0.4.9",
     "@solana/web3.js": "^1.98.0",
     "ajv": "^8.17.1",

@@ -4165,6 +4165,7 @@ impl MomentumEngine {
                 coin_creator_vault_authority: [0u8; 32],
                 token_is_base: true,
                 token_mint_program: [0u8; 32], // will be resolved at entry time
+                is_cashback_coin: false, // will be resolved from pool data
             };
             self.pumpswap_pools.insert(mint, ps_accts);
             tracing::debug!(

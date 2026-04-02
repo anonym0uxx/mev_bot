@@ -189,10 +189,18 @@ pub struct PoolResolution {
     pub serum_vault_signer: [u8; 32],
 
     // ── PumpSwap creator (zero for Raydium/Unknown) ──────────────────────
-    /// Creator pubkey extracted from PumpSwap pool data at offset [11..43].
-    /// Used to derive coin_creator_vault_ata for PumpSwap swap instructions.
+    /// Pool creator pubkey at offset [11..43] in PumpSwap pool data.
     /// Zero for non-PumpSwap pools.
     pub creator: [u8; 32],
+
+    /// Coin creator pubkey at offset [211..243] in PumpSwap pool data.
+    /// Used to derive coin_creator_vault_authority PDA and coin_creator_vault_ata
+    /// for PumpSwap swap instructions. Zero for non-PumpSwap or unknown.
+    pub coin_creator: [u8; 32],
+
+    /// Whether this pool is a cashback coin (PumpSwap pool data offset [244]).
+    /// Cashback coins require extra remaining accounts in buy/sell instructions.
+    pub is_cashback_coin: bool,
 }
 
 /// Decode a base58-encoded string into a 32-byte array.
@@ -584,6 +592,8 @@ async fn resolve_pool_inner(
         serum_pc_vault,
         serum_vault_signer,
         creator: [0u8; 32], // Raydium pools don't have a creator field
+        coin_creator: [0u8; 32],
+        is_cashback_coin: false,
     })
 }
 
@@ -964,8 +974,14 @@ pub async fn resolve_pumpswap_pool_from_mint(
 
     let pool_address = decode_bs58_32(account_json.get("pubkey")?.as_str()?)?;
 
-    // ── Extract creator from pool data at offset [11..43] ───────────────
+    // ── Extract creators from pool data ───────────────────────────────
     let creator: [u8; 32] = data[11..43].try_into().ok()?;
+    let coin_creator: [u8; 32] = if data.len() >= 243 {
+        data[211..243].try_into().unwrap_or([0u8; 32])
+    } else {
+        [0u8; 32]
+    };
+    let is_cashback_coin = data.len() >= 245 && data[244] == 1;
 
     // ── Vault assignment: depends on pool ordering ──────────────────────
     // When token_is_base (normal):
@@ -1035,6 +1051,8 @@ pub async fn resolve_pumpswap_pool_from_mint(
         serum_pc_vault: [0u8; 32],
         serum_vault_signer: [0u8; 32],
         creator,
+        coin_creator,
+        is_cashback_coin,
     })
 }
 
@@ -1166,6 +1184,8 @@ pub async fn resolve_pool_from_mint(
         serum_pc_vault: [0u8; 32],
         serum_vault_signer: [0u8; 32],
         creator: [0u8; 32], // Raydium pools don't have a creator field
+        coin_creator: [0u8; 32],
+        is_cashback_coin: false,
     })
 }
 
@@ -1193,6 +1213,9 @@ pub struct PumpSwapPoolAccounts {
     /// Token-2022: TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb
     /// [0u8; 32] = unresolved (TX builder will query on-chain).
     pub token_mint_program: [u8; 32],
+    /// Whether this pool is a cashback coin (offset [244] in pool data).
+    /// Cashback coins require additional remaining accounts in the swap TX.
+    pub is_cashback_coin: bool,
 }
 
 /// SPL Token program ID as raw bytes (for ATA derivation without solana_sdk::pubkey).
@@ -1229,18 +1252,18 @@ fn derive_coin_creator_vault_authority(pool_creator: &[u8; 32]) -> [u8; 32] {
     authority.to_bytes()
 }
 
-/// Derive the coin_creator_vault_ata — the pool creator's WSOL ATA.
+/// Derive the coin_creator_vault_ata — the vault authority's WSOL ATA.
 ///
-/// This is the ATA for WSOL owned by the pool creator (raw pubkey, NOT the PDA).
-/// PumpSwap collects creator fees in the quote token (WSOL), and the program
-/// internally computes ATA(pool.creator, WSOL, SPL_TOKEN) to verify the account.
-fn derive_creator_vault_wsol_ata(pool_creator: &[u8; 32]) -> [u8; 32] {
-    let creator_pk = solana_sdk::pubkey::Pubkey::new_from_array(*pool_creator);
+/// This is the ATA for WSOL owned by the coin_creator_vault_authority PDA.
+/// SDK: `coinCreatorVaultAtaPda(coinCreatorVaultAuthority, quoteMint, quoteTokenProgram)`
+///     = `getAssociatedTokenAddressSync(WSOL, vault_authority_pda, true, SPL_TOKEN)`
+fn derive_creator_vault_wsol_ata(vault_authority: &[u8; 32]) -> [u8; 32] {
+    let authority_pk = solana_sdk::pubkey::Pubkey::new_from_array(*vault_authority);
     let wsol_pk = solana_sdk::pubkey::Pubkey::new_from_array(WSOL_MINT_BYTES);
     let token_program = solana_sdk::pubkey::Pubkey::new_from_array(SPL_TOKEN_PROGRAM_BYTES);
     let ata_program = solana_sdk::pubkey::Pubkey::new_from_array(SPL_ATA_PROGRAM_BYTES);
     let (ata, _bump) = solana_sdk::pubkey::Pubkey::find_program_address(
-        &[creator_pk.as_ref(), token_program.as_ref(), wsol_pk.as_ref()],
+        &[authority_pk.as_ref(), token_program.as_ref(), wsol_pk.as_ref()],
         &ata_program,
     );
     ata.to_bytes()
@@ -1444,10 +1467,11 @@ pub fn build_pumpswap_pool_accounts_deterministic(
         extracted.quote_mint
     };
 
-    // Derive creator vault authority PDA + creator's WSOL ATA if creator is non-zero
+    // Derive vault authority PDA from creator (coin_creator not available from create_pool)
+    // When coin_creator is available (from pool data), it will be re-derived at resolution time
     let (creator_ata, creator_authority) = if extracted.creator != [0u8; 32] {
         let authority = derive_coin_creator_vault_authority(&extracted.creator);
-        let ata = derive_creator_vault_wsol_ata(&extracted.creator);
+        let ata = derive_creator_vault_wsol_ata(&authority);
         (ata, authority)
     } else {
         ([0u8; 32], [0u8; 32])
@@ -1470,6 +1494,7 @@ pub fn build_pumpswap_pool_accounts_deterministic(
         coin_creator_vault_ata: creator_ata,
         coin_creator_vault_authority: creator_authority,
         token_mint_program: [0u8; 32], // resolved lazily at TX build time
+        is_cashback_coin: false, // resolved from pool data at TX build time
     }
 }
 
@@ -1522,6 +1547,8 @@ pub fn build_pool_resolution_from_create_pool(
         serum_pc_vault: [0u8; 32],
         serum_vault_signer: [0u8; 32],
         creator: extracted.creator,
+        coin_creator: [0u8; 32], // not available from create_pool; resolved from pool data later
+        is_cashback_coin: false,
     }
 }
 
@@ -1542,10 +1569,18 @@ pub fn extract_pumpswap_pool_accounts(res: &PoolResolution) -> Option<PumpSwapPo
         return None;
     }
 
-    // Derive creator vault authority PDA + creator's WSOL ATA if creator is known (non-zero)
-    let (creator_ata, creator_authority) = if res.creator != [0u8; 32] {
-        let authority = derive_coin_creator_vault_authority(&res.creator);
-        let ata = derive_creator_vault_wsol_ata(&res.creator);
+    // Derive vault authority PDA from coin_creator, then ATA from authority
+    // SDK: coinCreatorVaultAuthority = PDA("creator_vault", pool.coinCreator)
+    //      coinCreatorVaultAta = ATA(coinCreatorVaultAuthority, WSOL, SPL_TOKEN)
+    let coin_cr = if res.coin_creator != [0u8; 32] {
+        res.coin_creator
+    } else {
+        // Fallback to pool creator if coin_creator not resolved
+        res.creator
+    };
+    let (creator_ata, creator_authority) = if coin_cr != [0u8; 32] {
+        let authority = derive_coin_creator_vault_authority(&coin_cr);
+        let ata = derive_creator_vault_wsol_ata(&authority);
         (ata, authority)
     } else {
         ([0u8; 32], [0u8; 32])
@@ -1559,6 +1594,7 @@ pub fn extract_pumpswap_pool_accounts(res: &PoolResolution) -> Option<PumpSwapPo
         coin_creator_vault_ata: creator_ata,
         coin_creator_vault_authority: creator_authority,
         token_mint_program: [0u8; 32], // resolved lazily at TX build time
+        is_cashback_coin: res.is_cashback_coin,
     })
 }
 
