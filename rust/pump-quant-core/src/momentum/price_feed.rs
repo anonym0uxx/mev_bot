@@ -455,6 +455,11 @@ fn ws_update_price(
         }
         let sol = state.reserve_sol.load(Ordering::Relaxed);
         let tok = state.reserve_token.load(Ordering::Relaxed);
+        // Clear is_estimated on any real WS data, even if reserves are zero
+        if (sol == 0 || tok == 0) && state.is_estimated.load(Ordering::Acquire) {
+            state.is_estimated.store(false, Ordering::Release);
+            state.price_fp.store(0, Ordering::Release);
+        }
         if sol > 0 && tok > 0 {
             let price = price_from_reserves(sol, tok);
             if price > 0 {
@@ -675,7 +680,28 @@ async fn price_feed_poll_loop(
                         continue;
                     }
                 };
-                if sr == 0 || tr == 0 { continue; }
+                // If either reserve is 0, we can't compute a valid price, but we
+                // MUST still clear is_estimated — we got real data from RPC, the vault
+                // just happens to be empty (common for fresh pools where all tokens sold).
+                if sr == 0 || tr == 0 {
+                    if let Some(state) = prices.get(mint) {
+                        if state.is_estimated.load(Ordering::Acquire) {
+                            state.is_estimated.store(false, Ordering::Release);
+                            // Clear estimated price so current_price() returns None.
+                            // This prevents entry at the garbage estimated price.
+                            // Next poll with non-zero reserves will set a real price.
+                            state.price_fp.store(0, Ordering::Release);
+                            state.reserve_sol.store(sr, Ordering::Relaxed);
+                            state.reserve_token.store(tr, Ordering::Relaxed);
+                            tracing::info!(
+                                mint = %bs58::encode(mint).into_string(),
+                                sol = sr, token = tr,
+                                "[price_feed] clearing estimated price — got real RPC data (zero reserve, awaiting non-zero)"
+                            );
+                        }
+                    }
+                    continue;
+                }
                 let fp = price_from_reserves(sr, tr);
                 if fp == 0 { continue; }
 
