@@ -353,6 +353,12 @@ pub struct MomentumEngine {
     /// Key: mint [u8; 32], Value: first-seen timestamp ms.
     recent_corecast_grads: DashMap<[u8; 32], u64>,
 
+    /// Atomic graduation dedup — inserted in on_graduation() BEFORE ring push.
+    /// Prevents TOCTOU race where two concurrent on_graduation calls both pass
+    /// the `active.contains_key()` check before either inserts into `active`.
+    /// Key: mint [u8; 32], Value: first-seen timestamp ms. TTL: 60s.
+    pending_grads: DashMap<[u8; 32], u64>,
+
     // ── Drain detection: reserve_sol samples per active position ───
     // Key = mint, Value = ring of (timestamp_ms, reserve_lamports), max 20 entries.
     // Stored outside MomentumPosition because the 256-byte struct has no free bytes.
@@ -562,6 +568,7 @@ impl MomentumEngine {
             recently_closed: DashMap::new(),
             resolving_sigs: DashMap::new(),
             recent_corecast_grads: DashMap::new(),
+            pending_grads: DashMap::new(),
             drain_samples: DashMap::new(),
             reserve_sol_ctx: DashMap::new(),
             momentum_zones: DashMap::new(),
@@ -732,14 +739,33 @@ impl MomentumEngine {
             }
         }
 
-        // Reject duplicate mint — prevent multiple positions in the same token.
-        // CoreCast can send duplicate graduation sigs for the same mint within
-        // seconds. Without this guard, the engine opens N positions in the same
-        // token, all bleeding fee drag on time_sl.
+        // Atomic graduation dedup — prevents TOCTOU race where two concurrent
+        // on_graduation calls both pass active.contains_key() before either
+        // process_pending_entries() inserts into active.
+        //
+        // Strategy: use DashMap::entry().or_insert() which is atomic. If the
+        // mint is already in pending_grads OR already in active, reject.
+        let now_ms_dedup = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        // Check active first (already has a live position)
         if self.active.contains_key(&pool_info.mint) {
             tracing::debug!(
                 mint = %bs58::encode(&pool_info.mint).into_string(),
                 "[momentum] skipping graduation — already have an open position in this mint"
+            );
+            return;
+        }
+        // Atomic insert: only the first concurrent caller wins; all others see the existing entry.
+        let mut already_pending = false;
+        self.pending_grads.entry(pool_info.mint).and_modify(|_| {
+            already_pending = true;
+        }).or_insert(now_ms_dedup);
+        if already_pending {
+            tracing::debug!(
+                mint = %bs58::encode(&pool_info.mint).into_string(),
+                "[momentum] skipping graduation — concurrent duplicate (pending_grads)"
             );
             return;
         }
@@ -1059,6 +1085,11 @@ impl MomentumEngine {
 
         // Prune stale mint-level graduation dedup entries (TTL 60s, O(n) but n ≤ ~200)
         self.recent_corecast_grads.retain(|_, first_seen| {
+            now_ms.saturating_sub(*first_seen) < 60_000
+        });
+
+        // Prune stale pending_grads entries (TTL 60s — covers the full obs window + buy lifetime)
+        self.pending_grads.retain(|_, first_seen| {
             now_ms.saturating_sub(*first_seen) < 60_000
         });
 
@@ -1474,8 +1505,23 @@ impl MomentumEngine {
                         1
                     };
                     let tokens_est_for_sandwich = tokens_estimate;
-                    // Fix #1: Track buy state for sell gating
-                    self.buy_states.insert(mint, BuyState::Pending);
+                    // Fix #1: Track buy state for sell gating.
+                    // Guard: if buy is already Pending or Confirmed, skip duplicate buy.
+                    // This can happen when process_deferred_buys fires for a mint that
+                    // already had a buy submitted via the normal path.
+                    {
+                        let already_buying = self.buy_states.get(&mint)
+                            .map(|s| matches!(*s, BuyState::Pending | BuyState::Confirmed))
+                            .unwrap_or(false);
+                        if already_buying {
+                            tracing::warn!(
+                                mint = %bs58::encode(&mint).into_string(),
+                                "[buy_pumpswap] duplicate buy suppressed — buy already in progress"
+                            );
+                            continue;
+                        }
+                        self.buy_states.insert(mint, BuyState::Pending);
+                    }
                     let buy_states = self.buy_states.clone();
 
                     tokio::spawn(async move {
@@ -2305,8 +2351,22 @@ impl MomentumEngine {
                         .unwrap_or_default()
                         .as_millis() % 8) as usize;
                     let rpc_sender = self.rpc_sender.clone();
-                    // Fix #1: Track buy state for sell gating
-                    self.buy_states.insert(mint, BuyState::Pending);
+                    // Fix #1: Track buy state for sell gating.
+                    // Guard: skip if buy is already in progress (prevents duplicate buy from
+                    // two on_graduation paths racing into process_pending_entries in same tick).
+                    {
+                        let already_buying = self.buy_states.get(&mint)
+                            .map(|s| matches!(*s, BuyState::Pending | BuyState::Confirmed))
+                            .unwrap_or(false);
+                        if already_buying {
+                            tracing::warn!(
+                                mint = %bs58::encode(&mint).into_string(),
+                                "[buy_pumpswap] duplicate buy suppressed — buy already in progress"
+                            );
+                            continue;
+                        }
+                        self.buy_states.insert(mint, BuyState::Pending);
+                    }
                     let buy_states = self.buy_states.clone();
                     tokio::spawn(async move {
                         let kp_bytes = match std::fs::read(&kp_path) {
@@ -2328,6 +2388,14 @@ impl MomentumEngine {
                         let tip_account = solana_sdk::pubkey::Pubkey::from_str(
                             crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
                         ).unwrap();
+                        tracing::info!(
+                            mint = %bs58::encode(&mint_buy).into_string(),
+                            pool = %bs58::encode(&ps_pool.pool).into_string(),
+                            token_is_base = ps_pool.token_is_base,
+                            pool_base_vault = %bs58::encode(&ps_pool.pool_base_token_account).into_string(),
+                            pool_quote_vault = %bs58::encode(&ps_pool.pool_quote_token_account).into_string(),
+                            "[buy_pumpswap] building TX with pool accounts"
+                        );
                         let tx_bytes = match crate::tx::pumpswap::build_pumpswap_buy_tx(
                             &ps_pool, &keypair, size, min_tokens_out, tip, tip_account, bh, fee_idx,
                         ) {
@@ -3270,6 +3338,9 @@ impl MomentumEngine {
         // Record close timestamp for reentry cooldown
         self.recently_closed.insert(mint, now_ms);
 
+        // Remove from graduation dedup so reentry is allowed after cooldown expires
+        self.pending_grads.remove(&mint);
+
         // Clean up observation window (safety: should already be removed at entry)
         self.observation_windows.remove(&mint);
 
@@ -3525,6 +3596,7 @@ impl MomentumEngine {
                     let balance_rpc_url = self.public_rpc_url.clone();
                     let balance_http = self.rpc_fallback_client.clone();
                     let exit_price_for_spawn = exit_price_fp;
+                    let sell_buy_states_ray = self.buy_states.clone();
                     tokio::spawn(async move {
                         let kp_bytes = match std::fs::read(&kp_path) {
                             Ok(b) => b,
@@ -3543,8 +3615,24 @@ impl MomentumEngine {
                         };
                         use std::str::FromStr as _;
 
-                        // ── Wait for buy TX to land before querying balance ──
-                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        // ── Wait for buy TX to confirm before querying balance ──
+                        // Poll buy_states with timeout (same pattern as sell_pumpswap).
+                        {
+                            let max_wait_ms = 8_000u64;
+                            let poll_interval_ms = 200u64;
+                            let mut waited_ms = 0u64;
+                            loop {
+                                let state = sell_buy_states_ray.get(&mint_copy).map(|s| matches!(*s, BuyState::Confirmed | BuyState::Failed));
+                                match state {
+                                    Some(true) => break,
+                                    _ if waited_ms >= max_wait_ms => break,
+                                    _ => {
+                                        tokio::time::sleep(std::time::Duration::from_millis(poll_interval_ms)).await;
+                                        waited_ms += poll_interval_ms;
+                                    }
+                                }
+                            }
+                        }
 
                         // ── Query actual on-chain token balance instead of paper estimate ──
                         use solana_sdk::signer::Signer as _;
@@ -3692,6 +3780,7 @@ impl MomentumEngine {
                     let balance_rpc_url = self.public_rpc_url.clone();
                     let balance_http = self.rpc_fallback_client.clone();
                     let exit_price_for_spawn = exit_price_fp;
+                    let sell_buy_states = self.buy_states.clone();
                     tokio::spawn(async move {
                         let kp_bytes = match std::fs::read(&kp_path) {
                             Ok(b) => b,
@@ -3711,10 +3800,26 @@ impl MomentumEngine {
                         use std::str::FromStr as _;
                         use solana_sdk::signer::Signer as _;
 
-                        // ── Wait for buy TX to land before querying balance ──
-                        // Buy TX is async and may still be in-flight when sell fires.
-                        // Typical buy latency: 600ms-1.2s. Wait 3s to be safe.
-                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        // ── Wait for buy TX to confirm before querying balance ──
+                        // Poll buy_states with timeout instead of blind sleep.
+                        // This ensures we don't skip the sell when buy lands quickly (<3s)
+                        // and also handles slow confirmations up to 8s.
+                        {
+                            let max_wait_ms = 8_000u64;
+                            let poll_interval_ms = 200u64;
+                            let mut waited_ms = 0u64;
+                            loop {
+                                let state = sell_buy_states.get(&mint_copy).map(|s| matches!(*s, BuyState::Confirmed | BuyState::Failed));
+                                match state {
+                                    Some(true) => break, // buy resolved
+                                    _ if waited_ms >= max_wait_ms => break, // timeout
+                                    _ => {
+                                        tokio::time::sleep(std::time::Duration::from_millis(poll_interval_ms)).await;
+                                        waited_ms += poll_interval_ms;
+                                    }
+                                }
+                            }
+                        }
 
                         // ── Query actual on-chain token balance instead of paper estimate ──
                         let wallet_pubkey = keypair.pubkey();
