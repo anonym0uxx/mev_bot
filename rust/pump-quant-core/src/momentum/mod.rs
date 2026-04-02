@@ -677,15 +677,21 @@ impl MomentumEngine {
             "[momentum] graduation score PASSED — opening position"
         );
 
-        // Start price feed subscription immediately (before entry delay)
+        // Start price feed subscription immediately (before entry delay).
+        // Seed with estimated reserves so current_price() returns a value instantly.
+        // The RPC poll will overwrite with real data within ~750ms.
         let coin_vault_b58 = bs58::encode(&pool_info.coin_vault).into_string();
         let pc_vault_b58 = bs58::encode(&pool_info.pc_vault).into_string();
         self.price_feed
-            .subscribe(VaultSubscription {
-                mint: pool_info.mint,
-                coin_vault: coin_vault_b58,
-                pc_vault: pc_vault_b58,
-            })
+            .subscribe_with_estimate(
+                VaultSubscription {
+                    mint: pool_info.mint,
+                    coin_vault: coin_vault_b58,
+                    pc_vault: pc_vault_b58,
+                },
+                pool_info.reserve_sol,
+                pool_info.reserve_token,
+            )
             .await;
 
         // Schedule entry at T+entry_delay_ms

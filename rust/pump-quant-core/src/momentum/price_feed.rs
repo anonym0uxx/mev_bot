@@ -105,7 +105,9 @@ impl PriceFeedManager {
         let p2 = prices.clone();
         let s2 = active_subs.clone();
         let poll_handle = tokio::spawn(async move {
+            tracing::info!("[price_feed] poll task spawned — entering loop");
             price_feed_poll_loop(rpc_url, s2, p2, poll_interval_ms).await;
+            tracing::error!("[price_feed] poll loop EXITED (should never happen)");
         });
 
         (Self { prices, active_subs, cmd_tx }, poll_handle)
@@ -119,6 +121,42 @@ impl PriceFeedManager {
             "[price_feed] subscribing to vaults"
         );
         self.prices.entry(sub.mint).or_insert_with(PriceState::new);
+        self.active_subs.insert(sub.mint, sub.clone());
+        let _ = self.cmd_tx.send(PriceFeedCommand::Subscribe(sub)).await;
+    }
+
+    /// Subscribe with an estimated initial price + reserves.
+    /// Seeds the PriceState so `current_price()` returns a value immediately,
+    /// avoiding the 15s timeout when the RPC poll is slow to respond.
+    /// The first real poll (~750ms later) will overwrite with actual data.
+    pub async fn subscribe_with_estimate(
+        &self,
+        sub: VaultSubscription,
+        estimated_reserve_sol: u64,
+        estimated_reserve_token: u64,
+    ) {
+        let fp = price_from_reserves(estimated_reserve_sol, estimated_reserve_token);
+        tracing::info!(
+            mint = %bs58::encode(&sub.mint).into_string(),
+            coin_vault = %sub.coin_vault,
+            pc_vault = %sub.pc_vault,
+            estimated_price_fp = fp,
+            estimated_sol = estimated_reserve_sol / 1_000_000_000,
+            "[price_feed] subscribing with estimated price (will update from RPC within ~750ms)"
+        );
+        let state = self.prices.entry(sub.mint).or_insert_with(PriceState::new);
+        if fp > 0 {
+            state.price_fp.store(fp, Ordering::Release);
+            state.reserve_sol.store(estimated_reserve_sol, Ordering::Relaxed);
+            state.reserve_token.store(estimated_reserve_token, Ordering::Relaxed);
+            state.last_update_ms.store(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
+                Ordering::Relaxed,
+            );
+        }
         self.active_subs.insert(sub.mint, sub.clone());
         let _ = self.cmd_tx.send(PriceFeedCommand::Subscribe(sub)).await;
     }
@@ -455,8 +493,12 @@ async fn price_feed_poll_loop(
 
     tracing::info!(poll_interval_ms, url = %rpc_url, "[price_feed] RPC polling started");
 
+    let mut tick_count: u64 = 0;
+    let mut last_nonempty_log: u64 = 0;
+
     loop {
         iv.tick().await;
+        tick_count += 1;
 
         let mut subs: Vec<([u8; 32], String, String)> = active_subs
             .iter()
@@ -464,6 +506,15 @@ async fn price_feed_poll_loop(
             .collect();
 
         if subs.is_empty() { continue; }
+
+        // Log first time we see non-empty subs (proves poll loop is alive)
+        if last_nonempty_log == 0 || tick_count - last_nonempty_log >= 60 {
+            tracing::info!(
+                n_subs = subs.len(), tick = tick_count,
+                "[price_feed] poll loop active — fetching vault data"
+            );
+            last_nonempty_log = tick_count;
+        }
         if subs.len() > 50 {
             tracing::warn!(n = subs.len(), "[price_feed] large active_subs — capping at 50 for this tick");
             subs.truncate(50);
