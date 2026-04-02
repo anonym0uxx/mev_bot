@@ -3241,6 +3241,9 @@ impl MomentumEngine {
                         };
                         use std::str::FromStr as _;
 
+                        // ── Wait for buy TX to land before querying balance ──
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
                         // ── Query actual on-chain token balance instead of paper estimate ──
                         use solana_sdk::signer::Signer as _;
                         let wallet_pubkey = keypair.pubkey();
@@ -3387,6 +3390,11 @@ impl MomentumEngine {
                         };
                         use std::str::FromStr as _;
                         use solana_sdk::signer::Signer as _;
+
+                        // ── Wait for buy TX to land before querying balance ──
+                        // Buy TX is async and may still be in-flight when sell fires.
+                        // Typical buy latency: 600ms-1.2s. Wait 3s to be safe.
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
                         // ── Query actual on-chain token balance instead of paper estimate ──
                         let wallet_pubkey = keypair.pubkey();
