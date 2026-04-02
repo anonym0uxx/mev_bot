@@ -164,6 +164,135 @@ async fn rpc_fallback_send(
     }
 }
 
+// ── Observation Window ──────────────────────────────────────────────────────
+// Pre-entry sniper dump detection. Collects price/reserve samples for
+// observation_window_ms after graduation detection before committing to entry.
+// Detects: sniper buy-everything-dump pattern, pool drains, price instability.
+
+/// Maximum number of price/reserve samples stored during observation window.
+/// At 500ms poll interval, 8s window = ~16 samples. 32 provides headroom.
+const OBSERVATION_MAX_SAMPLES: usize = 32;
+
+/// Per-mint observation window state. Tracks price and reserve trajectory
+/// between graduation detection and entry decision.
+///
+/// Stored in a DashMap<[u8; 32], ObservationWindow> on the engine.
+/// Created in on_graduation(), evaluated each tick in process_pending_entries(),
+/// removed on entry or rejection.
+struct ObservationWindow {
+    /// Observation window start timestamp (ms). Same as PendingEntry::first_scheduled_ts_ms.
+    start_ms: u64,
+    /// Collected price samples: (timestamp_ms, price_fp).
+    /// Pre-allocated fixed array to avoid heap allocation in hot path.
+    price_samples: [(u64, u64); OBSERVATION_MAX_SAMPLES],
+    /// Collected reserve samples: (timestamp_ms, reserve_sol_lamports).
+    reserve_samples: [(u64, u64); OBSERVATION_MAX_SAMPLES],
+    /// Number of price samples recorded.
+    price_count: u8,
+    /// Number of reserve samples recorded.
+    reserve_count: u8,
+    /// Peak price_fp observed during the window.
+    peak_price_fp: u64,
+    /// Window evaluation result: true = entry criteria met, proceed.
+    is_ready: bool,
+    /// Window evaluation result: true = rejected (sniper dump / drain / instability).
+    rejected: bool,
+    /// Human-readable rejection reason for logging.
+    reject_reason: Option<&'static str>,
+}
+
+impl ObservationWindow {
+    /// Create a new observation window starting at the given timestamp.
+    fn new(start_ms: u64) -> Self {
+        Self {
+            start_ms,
+            price_samples: [(0u64, 0u64); OBSERVATION_MAX_SAMPLES],
+            reserve_samples: [(0u64, 0u64); OBSERVATION_MAX_SAMPLES],
+            price_count: 0,
+            reserve_count: 0,
+            peak_price_fp: 0,
+            is_ready: false,
+            rejected: false,
+            reject_reason: None,
+        }
+    }
+
+    /// Record a price sample. Returns false if buffer is full.
+    #[inline(always)]
+    fn record_price(&mut self, ts_ms: u64, price_fp: u64) -> bool {
+        if (self.price_count as usize) >= OBSERVATION_MAX_SAMPLES {
+            return false;
+        }
+        self.price_samples[self.price_count as usize] = (ts_ms, price_fp);
+        self.price_count += 1;
+        if price_fp > self.peak_price_fp {
+            self.peak_price_fp = price_fp;
+        }
+        true
+    }
+
+    /// Record a reserve sample. Returns false if buffer is full.
+    #[inline(always)]
+    fn record_reserve(&mut self, ts_ms: u64, reserve_lamports: u64) -> bool {
+        if (self.reserve_count as usize) >= OBSERVATION_MAX_SAMPLES {
+            return false;
+        }
+        self.reserve_samples[self.reserve_count as usize] = (ts_ms, reserve_lamports);
+        self.reserve_count += 1;
+        true
+    }
+
+    /// Check drawdown from peak. Returns current drawdown in bps (negative = price below peak).
+    #[inline(always)]
+    fn current_drawdown_bps(&self, current_price_fp: u64) -> i32 {
+        if self.peak_price_fp == 0 || current_price_fp == 0 {
+            return 0;
+        }
+        // bps = (current - peak) / peak * 10000
+        let diff = current_price_fp as i64 - self.peak_price_fp as i64;
+        ((diff as i128 * 10_000) / self.peak_price_fp as i128) as i32
+    }
+
+    /// Check if the last 3 price samples are stable (within 10% of each other).
+    /// Returns true if stable, false if volatile.
+    fn last_3_stable(&self) -> bool {
+        let n = self.price_count as usize;
+        if n < 3 {
+            return false; // Not enough samples to evaluate
+        }
+        let p1 = self.price_samples[n - 1].1;
+        let p2 = self.price_samples[n - 2].1;
+        let p3 = self.price_samples[n - 3].1;
+
+        // All three must be non-zero
+        if p1 == 0 || p2 == 0 || p3 == 0 {
+            return false;
+        }
+
+        // Check each pair: |a - b| / max(a, b) < 10%
+        let pairs = [(p1, p2), (p1, p3), (p2, p3)];
+        for (a, b) in pairs {
+            let diff = (a as i64 - b as i64).unsigned_abs();
+            let max_val = a.max(b);
+            // diff * 100 / max_val < 10 → diff * 10 < max_val
+            if diff * 10 > max_val {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Get the latest reserve sample value (0 if no samples).
+    #[inline(always)]
+    fn latest_reserve(&self) -> u64 {
+        if self.reserve_count == 0 {
+            0
+        } else {
+            self.reserve_samples[self.reserve_count as usize - 1].1
+        }
+    }
+}
+
 /// Result from an async retry task when ShredStream detects a fresh PumpSwap
 /// pool before getProgramAccounts has indexed it. The retry task resolves the
 /// pool after a delay and sends the result back through `retry_tx` for
@@ -228,6 +357,11 @@ pub struct MomentumEngine {
 
     // ── Pending entries scheduled for T+delay ───────────────────────
     pending: std::sync::Mutex<PendingEntryRing>,
+
+    // ── Observation windows: mint → ObservationWindow ───────────────
+    // Pre-entry sniper dump detection. Created on graduation, evaluated
+    // each tick during process_pending_entries(), removed on entry or rejection.
+    observation_windows: DashMap<[u8; 32], ObservationWindow>,
 
     // ── Price feed ──────────────────────────────────────────────────
     price_feed: PriceFeedManager,
@@ -388,6 +522,7 @@ impl MomentumEngine {
             reserve_sol_ctx: DashMap::new(),
             momentum_zones: DashMap::new(),
             pending: std::sync::Mutex::new(PendingEntryRing::new()),
+            observation_windows: DashMap::new(),
             price_feed,
             logger,
             scored_tokens: DashMap::new(),
@@ -731,6 +866,22 @@ impl MomentumEngine {
             ring.push(entry);
         }
 
+        // Create observation window if enabled.
+        // The window starts now and runs for observation_window_ms.
+        // During this time, process_pending_entries() collects price/reserve
+        // samples and evaluates sniper dump patterns before allowing entry.
+        if self.config.observation_window_ms > 0 {
+            self.observation_windows.insert(
+                pool_info.mint,
+                ObservationWindow::new(now_ms),
+            );
+            tracing::info!(
+                mint = %mint_b58,
+                window_ms = self.config.observation_window_ms,
+                "[momentum] observation window started — collecting samples before entry"
+            );
+        }
+
         let kelly_scored = self.scored_tokens.contains_key(&pool_info.mint);
         tracing::debug!(
             mint = %bs58::encode(&pool_info.mint).into_string(),
@@ -768,6 +919,15 @@ impl MomentumEngine {
         self.recent_corecast_grads.retain(|_, first_seen| {
             now_ms.saturating_sub(*first_seen) < 60_000
         });
+
+        // Prune stale observation windows (safety net: 2× observation_window_ms TTL)
+        // Normally removed by process_pending_entries, but this catches leaked entries.
+        if self.config.observation_window_ms > 0 {
+            let obs_ttl = self.config.observation_window_ms * 2;
+            self.observation_windows.retain(|_, w| {
+                now_ms.saturating_sub(w.start_ms) < obs_ttl
+            });
+        }
     }
 
     /// Drain async retry results from the ShredStream fresh-detection retry channel.
@@ -1294,8 +1454,156 @@ impl MomentumEngine {
     /// for the next tick rather than entering at the stale graduation-time price.
     /// Entries are abandoned (skipped) once `no_price_timeout_ms` elapses without
     /// a live price, preventing ghost-price entries that trigger false stop-losses.
+    ///
+    /// ## Observation Window Phase
+    ///
+    /// When `observation_window_ms > 0`, entries go through an observation phase
+    /// BEFORE the normal entry logic. During observation:
+    /// 1. Price and reserve samples are collected each tick
+    /// 2. Drawdown from peak is monitored (rejects sniper dump pattern)
+    /// 3. Reserve floor is enforced (rejects drained pools)
+    /// 4. Price stability is checked at window expiry (rejects volatile tokens)
+    /// Entries only proceed to normal entry flow once observation passes.
     #[inline(never)]
     async fn process_pending_entries(&self, now_ms: u64) {
+        // ── Observation Window: collect samples and evaluate ─────────────
+        // Runs every tick for all active observation windows, independent of
+        // whether the PendingEntry has been drained from the ring buffer yet.
+        // This ensures we collect samples at full poll cadence (every 150ms tick).
+        if self.config.observation_window_ms > 0 {
+            // Collect mints to evaluate (can't mutate DashMap while iterating)
+            let obs_mints: Vec<[u8; 32]> = self.observation_windows
+                .iter()
+                .filter(|r| !r.value().is_ready && !r.value().rejected)
+                .map(|r| *r.key())
+                .collect();
+
+            for mint in obs_mints {
+                let mut should_reject = false;
+                let mut reject_reason: &str = "";
+                let mut should_ready = false;
+
+                // Collect current price and reserve from the feed
+                let current_price_fp = self.price_feed.current_price(&mint).unwrap_or(0);
+                let current_reserve = self.price_feed.get_reserve_sol(&mint).unwrap_or(0);
+                let is_estimated = self.price_feed.is_price_estimated(&mint);
+
+                if let Some(mut window) = self.observation_windows.get_mut(&mint) {
+                    let w = window.value_mut();
+                    let elapsed = now_ms.saturating_sub(w.start_ms);
+
+                    // Only record non-estimated, non-zero prices
+                    if !is_estimated && current_price_fp > 0 {
+                        w.record_price(now_ms, current_price_fp);
+                    }
+                    if current_reserve > 0 {
+                        w.record_reserve(now_ms, current_reserve);
+                    }
+
+                    // ── Early rejection checks (every tick during window) ──
+
+                    // Check drawdown from peak
+                    if current_price_fp > 0 && w.peak_price_fp > 0 {
+                        let drawdown = w.current_drawdown_bps(current_price_fp);
+                        if drawdown < self.config.observation_max_drawdown_bps {
+                            should_reject = true;
+                            reject_reason = "drawdown from peak exceeded threshold (sniper dump)";
+                        }
+                    }
+
+                    // Check reserve floor
+                    if !should_reject && current_reserve > 0
+                        && current_reserve < self.config.observation_min_reserve_sol_lamports
+                    {
+                        should_reject = true;
+                        reject_reason = "reserve below minimum during observation (pool drained)";
+                    }
+
+                    // ── Window expiry evaluation ───────────────────────────
+                    if !should_reject && elapsed >= self.config.observation_window_ms {
+                        // Check minimum sample count
+                        if w.price_count < self.config.observation_min_samples {
+                            should_reject = true;
+                            reject_reason = "insufficient price samples during observation window";
+                        }
+                        // Check price stability (last 3 samples within 10%)
+                        else if self.config.observation_require_price_stability && !w.last_3_stable() {
+                            should_reject = true;
+                            reject_reason = "price unstable at observation window expiry (last 3 samples diverge >10%)";
+                        }
+                        // Check reserve at end of window
+                        else if w.latest_reserve() > 0
+                            && w.latest_reserve() < self.config.observation_min_reserve_sol_lamports
+                        {
+                            should_reject = true;
+                            reject_reason = "reserve below minimum at observation window expiry";
+                        }
+                        else {
+                            // All checks passed — observation window complete
+                            should_ready = true;
+                        }
+                    }
+
+                    if should_reject {
+                        w.rejected = true;
+                        w.reject_reason = Some(reject_reason);
+                    } else if should_ready {
+                        w.is_ready = true;
+                    }
+                }
+
+                // Handle rejection: unsubscribe price feed, deactivate pending entry, clean up
+                if should_reject {
+                    let mint_b58 = bs58::encode(&mint).into_string();
+                    let window_data = self.observation_windows.get(&mint);
+                    let (price_count, reserve_count, peak, drawdown) = window_data
+                        .map(|w| {
+                            let v = w.value();
+                            let dd = if v.peak_price_fp > 0 && current_price_fp > 0 {
+                                v.current_drawdown_bps(current_price_fp)
+                            } else { 0 };
+                            (v.price_count, v.reserve_count, v.peak_price_fp, dd)
+                        })
+                        .unwrap_or((0, 0, 0, 0));
+
+                    tracing::warn!(
+                        mint = %mint_b58,
+                        reason = %reject_reason,
+                        price_samples = price_count,
+                        reserve_samples = reserve_count,
+                        peak_price_fp = peak,
+                        current_price_fp,
+                        drawdown_bps = drawdown,
+                        current_reserve_sol = current_reserve as f64 / 1e9,
+                        "[momentum] observation window REJECTED — skipping entry"
+                    );
+                    self.price_feed.unsubscribe_sync(&mint);
+                    // Deactivate the pending entry in the ring buffer
+                    if let Ok(mut ring) = self.pending.lock() {
+                        ring.deactivate_mint(&mint);
+                    }
+                    self.observation_windows.remove(&mint);
+                } else if should_ready {
+                    let mint_b58 = bs58::encode(&mint).into_string();
+                    let (price_count, peak) = self.observation_windows.get(&mint)
+                        .map(|w| (w.value().price_count, w.value().peak_price_fp))
+                        .unwrap_or((0, 0));
+
+                    tracing::info!(
+                        mint = %mint_b58,
+                        price_samples = price_count,
+                        peak_price_fp = peak,
+                        current_price_fp,
+                        current_reserve_sol = current_reserve as f64 / 1e9,
+                        "[momentum] observation window PASSED ✅ — proceeding to entry"
+                    );
+                    // Don't remove yet — process_pending_entries loop checks for is_ready
+                    // to gate entry. Remove happens when entry is processed or abandoned.
+                }
+            }
+        }
+        // ── End Observation Window Phase ─────────────────────────────────
+
         let ready: Vec<PendingEntry> = if let Ok(mut ring) = self.pending.lock() {
             ring.drain_ready(now_ms).collect()
         } else {
@@ -1306,10 +1614,35 @@ impl MomentumEngine {
         let mut requeue: Vec<PendingEntry> = Vec::new();
 
         for mut entry in ready {
+            // ── Gate: observation window must have passed ─────────────────
+            // If an observation window is active for this mint, check its state.
+            // - Not yet evaluated (still observing): re-queue
+            // - Rejected: skip (already unsubscribed in observation phase above)
+            // - Ready: remove window and proceed to normal entry
+            if self.config.observation_window_ms > 0 {
+                if let Some(window) = self.observation_windows.get(&entry.mint) {
+                    if window.rejected {
+                        // Already handled in observation phase — just clean up
+                        self.observation_windows.remove(&entry.mint);
+                        continue;
+                    }
+                    if !window.is_ready {
+                        // Still observing — re-queue for next tick
+                        requeue.push(entry);
+                        continue;
+                    }
+                    // Window passed — remove and proceed to normal entry flow
+                    drop(window); // release DashMap ref before remove
+                    self.observation_windows.remove(&entry.mint);
+                }
+                // No window found = observation disabled for this entry or already removed
+            }
+
             // Check limits again at entry time — drop excess entries
             if self.active.len() >= self.config.max_concurrent as usize {
                 // Unsubscribe any remaining entries that won't become positions
                 self.price_feed.unsubscribe_sync(&entry.mint);
+                self.observation_windows.remove(&entry.mint);
                 // Also unsubscribe the rest (we're about to break)
                 // Remaining entries in the iterator won't be processed
                 continue;  // continue instead of break so we unsubscribe all remaining
@@ -2651,6 +2984,9 @@ impl MomentumEngine {
 
         // Record close timestamp for reentry cooldown
         self.recently_closed.insert(mint, now_ms);
+
+        // Clean up observation window (safety: should already be removed at entry)
+        self.observation_windows.remove(&mint);
 
         // Clean up reserve samples (drain detection + reserve flatness)
         self.drain_samples.remove(&mint);

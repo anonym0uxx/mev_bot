@@ -167,6 +167,39 @@ pub struct MomentumConfig {
     pub price_poll_interval_ms: u64,
 
     // ══════════════════════════════════════════════════════════
+    // OBSERVATION WINDOW (T+5-8s sniper dump detection)
+    // ══════════════════════════════════════════════════════════
+
+    /// Duration of the observation window after graduation detection (ms).
+    /// During this window, price and reserve samples are collected to detect
+    /// sniper bot dump patterns before committing to entry.
+    /// Set to 0 to disable (legacy behavior: enter immediately after entry_delay_ms).
+    /// Default: 6000 (6 seconds).
+    pub observation_window_ms: u64,
+
+    /// Minimum price samples required during observation window before entry decision.
+    /// If fewer samples arrive (price feed lag), the entry is rejected.
+    /// At 500ms poll interval, 6s window yields ~12 samples; 5 is a safe floor.
+    /// Default: 5.
+    pub observation_min_samples: u8,
+
+    /// Maximum allowed drawdown from peak price during observation window (basis points, negative).
+    /// If price drops more than this from the observed peak, entry is rejected (sniper dump).
+    /// -2000 bps = -20% from peak. Default: -2000.
+    pub observation_max_drawdown_bps: i32,
+
+    /// Minimum SOL reserve in pool at the end of the observation window (lamports).
+    /// Pools drained below this threshold during observation are rejected.
+    /// Default: 50_000_000_000 (50 SOL).
+    pub observation_min_reserve_sol_lamports: u64,
+
+    /// Require price stability at the end of the observation window.
+    /// When true, the last 3 price samples must be within 10% of each other.
+    /// Catches volatile tokens still mid-dump at window expiry.
+    /// Default: true.
+    pub observation_require_price_stability: bool,
+
+    // ══════════════════════════════════════════════════════════
     // MOMENTUM STATE CLASSIFICATION
     // ══════════════════════════════════════════════════════════
 
@@ -583,6 +616,13 @@ impl Default for MomentumConfig {
             reentry_cooldown_ms: 300_000,
             price_poll_interval_ms: 500,
 
+            // Observation window (T+5-8s sniper dump detection)
+            observation_window_ms: 6_000,
+            observation_min_samples: 5,
+            observation_max_drawdown_bps: -2_000,
+            observation_min_reserve_sol_lamports: 50_000_000_000, // 50 SOL
+            observation_require_price_stability: true,
+
             // Momentum state classification
             momentum_accel_threshold_bps: 100,
             momentum_decel_threshold_bps: -100,
@@ -741,6 +781,22 @@ impl MomentumConfig {
                 "daily_loss_cap_pct must be in (0.0, 1.0], got {}",
                 self.daily_loss_cap_pct
             ));
+        }
+        Ok(())
+    }
+
+    /// Validate observation window configuration.
+    pub fn validate_observation_config(&self) -> Result<(), String> {
+        if self.observation_window_ms > 0 {
+            if self.observation_max_drawdown_bps > 0 {
+                return Err(format!(
+                    "observation_max_drawdown_bps must be <= 0, got {}",
+                    self.observation_max_drawdown_bps
+                ));
+            }
+            if self.observation_min_samples == 0 {
+                return Err("observation_min_samples must be > 0 when window is enabled".into());
+            }
         }
         Ok(())
     }

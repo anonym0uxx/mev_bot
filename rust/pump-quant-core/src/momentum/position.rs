@@ -1161,6 +1161,20 @@ impl PendingEntryRing {
         }
         count
     }
+
+    /// Deactivate a pending entry by mint. Used by the observation window
+    /// to kill entries that failed sniper dump detection before they are
+    /// drained by `drain_ready()`. O(64) scan.
+    pub fn deactivate_mint(&mut self, mint: &[u8; 32]) {
+        let count = self.count.min(64);
+        for i in 0..count {
+            let idx = (self.head + i) % 64;
+            if self.slots[idx].active && self.slots[idx].mint == *mint {
+                self.slots[idx].active = false;
+                return;
+            }
+        }
+    }
 }
 
 /// Iterator returned by `PendingEntryRing::drain_ready()`.
