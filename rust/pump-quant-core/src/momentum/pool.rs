@@ -294,7 +294,7 @@ async fn resolve_pool_inner(
             {
                 "encoding": "jsonParsed",
                 "maxSupportedTransactionVersion": 0,
-                "commitment": "processed"
+                "commitment": "confirmed"
             }
         ]
     });
