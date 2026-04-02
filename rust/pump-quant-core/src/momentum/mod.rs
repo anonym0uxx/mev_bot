@@ -1448,12 +1448,14 @@ impl MomentumEngine {
                     let resolve_client = self.http_client.clone();
                     let resolve_url = self.helius_rpc_url.clone();
                     let resolve_url_fallback = self.public_rpc_url.clone();
-                    // Slippage protection: accept up to 20% less tokens than estimated.
+                    // Anti-sandwich slippage: tighter for small positions (< 0.1 SOL = 100M lamports).
                     let min_tokens_out = if tokens_estimate > 0 {
-                        tokens_estimate * 80 / 100
+                        let slippage_pct = if size_lamports < 100_000_000 { 90 } else { 80 };
+                        tokens_estimate * slippage_pct / 100
                     } else {
                         1
                     };
+                    let tokens_est_for_sandwich = tokens_estimate;
 
                     tokio::spawn(async move {
                         // Resolve token_mint_program if unknown
@@ -1513,7 +1515,13 @@ impl MomentumEngine {
                         let mint_str = bs58::encode(&mint_buy).into_string();
                         match rpc_sender.submit_tx(&tx_bytes, &mint_str, "deferred_buy_pumpswap").await {
                             rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
-                                tracing::info!(mint=%mint_str, sig=%signature, latency_ms, tip, size_sol=size_lamports as f64/1e9, "[deferred_buy_pumpswap] RPC landed ✅");
+                                tracing::info!(
+                                    mint=%mint_str, sig=%signature, latency_ms, tip,
+                                    size_sol=size_lamports as f64/1e9,
+                                    estimated_tokens=tokens_est_for_sandwich,
+                                    min_tokens_out,
+                                    "[deferred_buy_pumpswap] RPC landed ✅ — compare on-chain receipt vs estimated_tokens for sandwich detection"
+                                );
                             }
                             rpc_sender::SubmitResult::TimedOut { signature } => {
                                 tracing::warn!(mint=%mint_str, sig=%signature, "[deferred_buy_pumpswap] RPC timed out (may still land)");
@@ -2259,13 +2267,15 @@ impl MomentumEngine {
                         pos.set_tokens_held(tokens_estimate);
                     }
                     let mint_buy = mint;
-                    // Slippage protection: accept up to 20% less tokens than estimated.
-                    // This prevents sandwich attacks where we'd receive 1 token for 0.067 SOL.
+                    // Anti-sandwich slippage: tighter for small positions (< 0.1 SOL = 100M lamports).
+                    // Small positions are more vulnerable to sandwich attacks.
                     let min_tokens_out = if tokens_estimate > 0 {
-                        tokens_estimate * 80 / 100 // 20% slippage tolerance
+                        let slippage_pct = if size < 100_000_000 { 90 } else { 80 };
+                        tokens_estimate * slippage_pct / 100
                     } else {
                         1 // fallback — shouldn't happen with valid price feed
                     };
+                    let tokens_est_for_sandwich = tokens_estimate;
                     let fee_idx = (std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
@@ -2301,7 +2311,13 @@ impl MomentumEngine {
                         // RPC only — rate limited + retried + circuit breaker waits
                         match rpc_sender.submit_tx(&tx_bytes, &mint_str, "buy_pumpswap").await {
                             rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
-                                tracing::info!(mint=%mint_str, sig=%signature, latency_ms, tip, size_sol=size as f64/1e9, "[buy_pumpswap] RPC landed ✅");
+                                tracing::info!(
+                                    mint=%mint_str, sig=%signature, latency_ms, tip,
+                                    size_sol=size as f64/1e9,
+                                    estimated_tokens=tokens_est_for_sandwich,
+                                    min_tokens_out,
+                                    "[buy_pumpswap] RPC landed ✅ — compare on-chain receipt vs estimated_tokens for sandwich detection"
+                                );
                             }
                             rpc_sender::SubmitResult::TimedOut { signature } => {
                                 tracing::warn!(mint=%mint_str, sig=%signature, "[buy_pumpswap] RPC timed out (may still land)");
@@ -3496,6 +3512,8 @@ impl MomentumEngine {
                             "method": "getTokenAccountBalance",
                             "params": [token_ata.to_string()]
                         });
+                        // STRICT balance check: if we can't verify on-chain balance, ABORT sell.
+                        // Selling estimated amounts when buy failed = guaranteed error.
                         let actual_tokens = match balance_http
                             .post(balance_rpc_url.as_str())
                             .header("Content-Type", "application/json")
@@ -3506,23 +3524,39 @@ impl MomentumEngine {
                             Ok(resp) => {
                                 match resp.json::<serde_json::Value>().await {
                                     Ok(json) => {
-                                        json["result"]["value"]["amount"]
+                                        // Check for RPC error (e.g. "could not find account")
+                                        if json.get("error").is_some() {
+                                            tracing::warn!(
+                                                mint=%bs58::encode(&mint_copy).into_string(),
+                                                body=%json,
+                                                "[sell] ATA not found — buy likely failed, skipping sell"
+                                            );
+                                            return;
+                                        }
+                                        match json["result"]["value"]["amount"]
                                             .as_str()
                                             .and_then(|s| s.parse::<u64>().ok())
-                                            .unwrap_or_else(|| {
-                                                tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), body=%json, "[sell_raydium] unexpected balance response — using estimate");
-                                                tokens
-                                            })
+                                        {
+                                            Some(bal) => bal,
+                                            None => {
+                                                tracing::warn!(
+                                                    mint=%bs58::encode(&mint_copy).into_string(),
+                                                    body=%json,
+                                                    "[sell_raydium] balance returned null/unparseable — aborting sell for safety"
+                                                );
+                                                return;
+                                            }
+                                        }
                                     }
                                     Err(e) => {
-                                        tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] balance response parse failed — using estimate");
-                                        tokens
+                                        tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] balance response parse failed — aborting sell for safety");
+                                        return;
                                     }
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] balance query failed — using estimate");
-                                tokens
+                                tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] balance RPC failed — aborting sell for safety");
+                                return;
                             }
                         };
                         if actual_tokens == 0 {
@@ -3647,6 +3681,8 @@ impl MomentumEngine {
                             "method": "getTokenAccountBalance",
                             "params": [token_ata.to_string()]
                         });
+                        // STRICT balance check: if we can't verify on-chain balance, ABORT sell.
+                        // Selling estimated amounts when buy failed = guaranteed error.
                         let actual_tokens = match balance_http
                             .post(balance_rpc_url.as_str())
                             .header("Content-Type", "application/json")
@@ -3657,23 +3693,39 @@ impl MomentumEngine {
                             Ok(resp) => {
                                 match resp.json::<serde_json::Value>().await {
                                     Ok(json) => {
-                                        json["result"]["value"]["amount"]
+                                        // Check for RPC error (e.g. "could not find account")
+                                        if json.get("error").is_some() {
+                                            tracing::warn!(
+                                                mint=%bs58::encode(&mint_copy).into_string(),
+                                                body=%json,
+                                                "[sell] ATA not found — buy likely failed, skipping sell"
+                                            );
+                                            return;
+                                        }
+                                        match json["result"]["value"]["amount"]
                                             .as_str()
                                             .and_then(|s| s.parse::<u64>().ok())
-                                            .unwrap_or_else(|| {
-                                                tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), body=%json, "[sell_pumpswap] unexpected balance response — using estimate");
-                                                tokens
-                                            })
+                                        {
+                                            Some(bal) => bal,
+                                            None => {
+                                                tracing::warn!(
+                                                    mint=%bs58::encode(&mint_copy).into_string(),
+                                                    body=%json,
+                                                    "[sell_pumpswap] balance returned null/unparseable — aborting sell for safety"
+                                                );
+                                                return;
+                                            }
+                                        }
                                     }
                                     Err(e) => {
-                                        tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] balance response parse failed — using estimate");
-                                        tokens
+                                        tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] balance response parse failed — aborting sell for safety");
+                                        return;
                                     }
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] balance query failed — using estimate");
-                                tokens
+                                tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] balance RPC failed — aborting sell for safety");
+                                return;
                             }
                         };
                         if actual_tokens == 0 {
@@ -3773,6 +3825,8 @@ impl MomentumEngine {
                         .unwrap_or_default()
                         .as_millis() % 8) as usize;
                     let rpc_sender = self.rpc_sender.clone();
+                    let balance_rpc_url = self.public_rpc_url.clone();
+                    let balance_http = self.rpc_fallback_client.clone();
                     tokio::spawn(async move {
                         // Resolve pool accounts
                         let resolution = match crate::momentum::pool::resolve_pumpswap_pool_from_mint(
@@ -3818,14 +3872,86 @@ impl MomentumEngine {
                             Err(e) => { tracing::error!(err=?e, "[sell_lastchance] keypair err"); return; }
                         };
                         use std::str::FromStr as _;
+                        use solana_sdk::signer::Signer as _;
+
+                        // ── STRICT balance check before last-chance sell ──
+                        // Wait for buy TX to land before querying balance (same as other sell paths).
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        let wallet_pubkey = keypair.pubkey();
+                        let token_mint = solana_sdk::pubkey::Pubkey::new_from_array(mint_copy);
+                        let token_program = crate::tx::pumpswap::token_program_for_mint_with_hint(
+                            &token_mint, &ps_pool.token_mint_program,
+                        );
+                        let ata_program = solana_sdk::pubkey::Pubkey::from_str(
+                            crate::tx::pumpswap::SPL_ATA_PROGRAM_STR,
+                        ).unwrap();
+                        let (token_ata, _) = solana_sdk::pubkey::Pubkey::find_program_address(
+                            &[wallet_pubkey.as_ref(), token_program.as_ref(), token_mint.as_ref()],
+                            &ata_program,
+                        );
+                        let balance_body = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "getTokenAccountBalance",
+                            "params": [token_ata.to_string()]
+                        });
+                        let actual_tokens = match balance_http
+                            .post(balance_rpc_url.as_str())
+                            .header("Content-Type", "application/json")
+                            .json(&balance_body)
+                            .send()
+                            .await
+                        {
+                            Ok(resp) => {
+                                match resp.json::<serde_json::Value>().await {
+                                    Ok(json) => {
+                                        if json.get("error").is_some() {
+                                            tracing::warn!(
+                                                mint=%bs58::encode(&mint_copy).into_string(),
+                                                body=%json,
+                                                "[sell] ATA not found — buy likely failed, skipping sell"
+                                            );
+                                            return;
+                                        }
+                                        match json["result"]["value"]["amount"]
+                                            .as_str()
+                                            .and_then(|s| s.parse::<u64>().ok())
+                                        {
+                                            Some(bal) => bal,
+                                            None => {
+                                                tracing::warn!(
+                                                    mint=%bs58::encode(&mint_copy).into_string(),
+                                                    body=%json,
+                                                    "[sell_lastchance] balance returned null/unparseable — aborting sell for safety"
+                                                );
+                                                return;
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_lastchance] balance response parse failed — aborting sell for safety");
+                                        return;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_lastchance] balance RPC failed — aborting sell for safety");
+                                return;
+                            }
+                        };
+                        if actual_tokens == 0 {
+                            tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), estimated_tokens=tokens, "[sell_lastchance] on-chain token balance is 0 — skipping sell");
+                            return;
+                        }
+
                         let tip_account = solana_sdk::pubkey::Pubkey::from_str(
                             crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
                         ).unwrap();
                         let min_sol_out = 0u64; // Emergency exit — accept any SOL
                         let mint_str = bs58::encode(&mint_copy).into_string();
-                        tracing::info!(mint=%mint_str, tokens, pool=%bs58::encode(&ps_pool.pool).into_string(), "[sell_lastchance] building sell TX");
+                        tracing::info!(mint=%mint_str, actual_tokens, estimated_tokens=tokens, pool=%bs58::encode(&ps_pool.pool).into_string(), "[sell_lastchance] building sell TX");
                         let tx_bytes = match crate::tx::pumpswap::build_pumpswap_sell_tx(
-                            &ps_pool, &keypair, tokens, min_sol_out, tip, tip_account, bh, fee_idx,
+                            &ps_pool, &keypair, actual_tokens, min_sol_out, tip, tip_account, bh, fee_idx,
                         ) {
                             Ok(b) => b,
                             Err(e) => { tracing::error!(mint=%mint_str, err=?e, "[sell_lastchance] build failed"); return; }

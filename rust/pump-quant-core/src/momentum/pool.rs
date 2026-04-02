@@ -551,18 +551,46 @@ async fn resolve_pool_inner(
         }
     }
 
-    // ── FIX-2: PumpSwap preference / full resolution ─────────────────────────
+    // ── FIX-2: Deterministic PumpSwap pool resolution from create_pool ix ────
     // Post-April 2026: all new pump.fun tokens graduate to PumpSwap.
     //
-    // Two cases handled:
-    //   1. Raydium pool detected via sig → check for active PumpSwap pool first
-    //   2. PumpSwap pool detected via sig → pool_address is [0u8;32] (amm_id)
-    //      because amm_id is only populated for Raydium. Must resolve full pool
-    //      data via getProgramAccounts to get the real pool PDA, creator, etc.
-    //      Without this, extract_pumpswap_pool_accounts() returns None (pool_address
-    //      == [0u8;32] guard), and the DashMap insert silently skips — causing
-    //      "no pool accounts" at entry time despite "pool resolved" logging.
-    if pool_type == PoolType::RaydiumAmmV4 || pool_type == PoolType::PumpSwap {
+    // The graduation TX contains a CPI to PumpSwap `create_pool` with ALL
+    // accounts we need. Extract them directly from innerInstructions — this
+    // is always available immediately via getTransaction (no indexer delay).
+    //
+    // Fallback: if create_pool extraction fails, try getProgramAccounts.
+    if pool_type == PoolType::PumpSwap || pool_type == PoolType::RaydiumAmmV4 {
+        // Phase D1: Try deterministic extraction from the create_pool inner instruction
+        if let Some(extracted) = extract_create_pool_from_tx_json(tx, &account_keys_strs) {
+            // Validate: one of the mints must be WSOL (token/WSOL pool, not token/token)
+            let has_wsol = extracted.base_mint == WSOL_MINT_BYTES
+                || extracted.quote_mint == WSOL_MINT_BYTES;
+            if has_wsol {
+                let resolution = build_pool_resolution_from_create_pool(
+                    &extracted,
+                    *sig,
+                    reserve_sol,
+                    reserve_token,
+                    grad_block_time_ms,
+                );
+                tracing::info!(
+                    mint = %graduation_mint_b58,
+                    pool = %bs58::encode(&resolution.pool_address).into_string(),
+                    creator = %bs58::encode(&resolution.creator).into_string(),
+                    "[pool] ✅ deterministic pool resolution from create_pool ix (no getProgramAccounts)"
+                );
+                return Ok(resolution);
+            } else {
+                tracing::warn!(
+                    mint = %graduation_mint_b58,
+                    base = %bs58::encode(&extracted.base_mint).into_string(),
+                    quote = %bs58::encode(&extracted.quote_mint).into_string(),
+                    "[pool] create_pool extracted but neither mint is WSOL — skipping"
+                );
+            }
+        }
+
+        // Phase D2: Fallback to getProgramAccounts (unreliable for fresh pools)
         if let Some(ps) = resolve_pumpswap_pool_from_mint(client, &mint, public_rpc_url, helius_rpc_url).await {
             if ps.reserve_sol_lamports > 0 {
                 tracing::info!(
@@ -570,7 +598,7 @@ async fn resolve_pool_inner(
                     sig_pool_type = ?pool_type,
                     pumpswap_sol = ps.reserve_sol_lamports / 1_000_000_000,
                     pool = %bs58::encode(&ps.pool_address).into_string(),
-                    "[pool] resolved full PumpSwap pool data via mint lookup (sig path had zeroed pool_address)"
+                    "[pool] resolved full PumpSwap pool data via mint lookup fallback (getProgramAccounts)"
                 );
                 return Ok(ps);
             }
@@ -649,6 +677,122 @@ fn extract_amm_id_from_account_keys(
     // In Raydium graduation txs, the amm_id appears early in the account list
     // (usually index 1-5). We take the first candidate.
     candidates.into_iter().next()
+}
+
+/// PumpSwap `create_pool` instruction discriminator = sha256("global:create_pool")[..8].
+const CREATE_POOL_DISCRIMINATOR: [u8; 8] = [0xe9, 0x92, 0xd1, 0x8e, 0xcf, 0x68, 0x40, 0xbc];
+
+/// Extract `CreatePoolExtracted` from the graduation TX's inner instructions.
+///
+/// Scans `innerInstructions` for a PumpSwap `create_pool` CPI call, extracts
+/// its account keys from the top-level `accountKeys` array, and returns the
+/// parsed pool data.
+///
+/// This is the deterministic path: `getTransaction` is always available
+/// immediately after a TX confirms (unlike `getProgramAccounts` which depends
+/// on indexer propagation). The `create_pool` instruction contains the pool PDA,
+/// creator, both mints, and both vaults — everything needed for trade execution.
+///
+/// Handles both legacy transactions (accounts as pubkey strings) and v0
+/// transactions with Address Lookup Tables (accounts as index integers).
+///
+/// Returns `None` if no `create_pool` instruction is found or parsing fails.
+fn extract_create_pool_from_tx_json(
+    tx_json: &serde_json::Value,
+    account_keys_strs: &[&str],
+) -> Option<CreatePoolExtracted> {
+    use base64::Engine as _;
+
+    let inner_instructions = tx_json
+        .pointer("/meta/innerInstructions")
+        .and_then(|v| v.as_array())?;
+
+    let pumpswap_b58 = PUMPSWAP_AMM_PROGRAM;
+
+    for group in inner_instructions {
+        let instructions = group.get("instructions").and_then(|v| v.as_array())?;
+        for ix in instructions {
+            // Check if this instruction is from the PumpSwap program
+            let program_id = ix.get("programId").and_then(|v| v.as_str())
+                .or_else(|| {
+                    // For compiled inner instructions, programId may be an index
+                    let idx = ix.get("programIdIndex").and_then(|v| v.as_u64())? as usize;
+                    account_keys_strs.get(idx).copied()
+                })?;
+
+            if program_id != pumpswap_b58 {
+                continue;
+            }
+
+            // Check the instruction data for the create_pool discriminator
+            let data_b58_or_b64 = ix.get("data").and_then(|v| v.as_str())?;
+
+            // Inner instruction data in jsonParsed is base58-encoded
+            let data_bytes = bs58::decode(data_b58_or_b64).into_vec().ok()
+                .or_else(|| {
+                    // Fallback: try base64 (some RPC providers use base64)
+                    base64::engine::general_purpose::STANDARD
+                        .decode(data_b58_or_b64).ok()
+                })?;
+
+            if data_bytes.len() < 8 {
+                continue;
+            }
+
+            let disc: [u8; 8] = data_bytes[..8].try_into().ok()?;
+            if disc != CREATE_POOL_DISCRIMINATOR {
+                continue;
+            }
+
+            // Found the create_pool instruction! Extract account keys.
+            // Inner instructions use `accounts` as an array of account indices
+            // into the top-level accountKeys array.
+            let account_indices = ix.get("accounts").and_then(|v| v.as_array())?;
+
+            if account_indices.len() < create_pool_ix::MIN_ACCOUNTS {
+                tracing::warn!(
+                    num_accounts = account_indices.len(),
+                    "[pool] create_pool ix found but too few accounts (need {})",
+                    create_pool_ix::MIN_ACCOUNTS
+                );
+                continue;
+            }
+
+            // Resolve account indices to pubkeys
+            let mut ix_accounts: Vec<[u8; 32]> = Vec::with_capacity(account_indices.len());
+            let mut resolve_ok = true;
+            for idx_val in account_indices {
+                let idx = idx_val.as_u64()? as usize;
+                if idx >= account_keys_strs.len() {
+                    tracing::warn!(
+                        idx,
+                        total_keys = account_keys_strs.len(),
+                        "[pool] create_pool account index out of bounds"
+                    );
+                    resolve_ok = false;
+                    break;
+                }
+                match decode_bs58_32(account_keys_strs[idx]) {
+                    Some(key) => ix_accounts.push(key),
+                    None => {
+                        resolve_ok = false;
+                        break;
+                    }
+                }
+            }
+
+            if !resolve_ok || ix_accounts.len() < create_pool_ix::MIN_ACCOUNTS {
+                continue;
+            }
+
+            // Convert Vec to slice and extract
+            return extract_from_create_pool_accounts(&ix_accounts);
+        }
+    }
+
+    // No create_pool instruction found in inner instructions.
+    // This can happen for Raydium-era graduation TXs or non-graduation TXs.
+    None
 }
 
 /// Extract vault addresses from getTransaction jsonParsed response.
