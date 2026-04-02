@@ -3,6 +3,8 @@
 //! Port 9421 (Rust daemon) to avoid conflicts with the TS daemon on 9420.
 
 use std::sync::{Arc, Mutex};
+// TODO: uncomment when rpc_sender is wired
+// use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
@@ -15,6 +17,8 @@ use tracing::{error, info};
 
 use crate::engine::health::HealthMonitor;
 use crate::feeds::FeedSource;
+// TODO: uncomment when rpc_sender is wired
+// use crate::momentum::rpc_sender::SubmissionMetrics;
 
 /// Default listen port for the Rust engine API.
 const DEFAULT_PORT: u16 = 9421;
@@ -91,6 +95,8 @@ pub struct ApiState {
     pub stats: Arc<Mutex<EngineStats>>,
     pub positions: Arc<Mutex<Vec<OpenPositionInfo>>>,
     pub health_monitor: Option<Arc<HealthMonitor>>,
+    // TODO: uncomment when rpc_sender is wired
+    // pub submission_metrics: Option<Arc<RwLock<SubmissionMetrics>>>,
 }
 
 impl ApiState {
@@ -110,6 +116,8 @@ impl ApiState {
             stats: Arc::new(Mutex::new(stats)),
             positions: Arc::new(Mutex::new(Vec::new())),
             health_monitor: None,
+            // TODO: uncomment when rpc_sender is wired
+            // submission_metrics: None,
         }
     }
 
@@ -335,6 +343,51 @@ async fn positions(State(state): State<ApiState>) -> Json<serde_json::Value> {
     }))
 }
 
+// TODO: uncomment when rpc_sender is wired
+// async fn submission_metrics(State(state): State<ApiState>) -> Json<serde_json::Value> {
+//     if let Some(ref metrics_lock) = state.submission_metrics {
+//         let m = metrics_lock.read().unwrap();
+//         Json(serde_json::json!({
+//             "status": "ok",
+//             "data": {
+//                 "rpc_attempts": m.rpc_attempts,
+//                 "rpc_landed": m.rpc_landed,
+//                 "rpc_failed": m.rpc_failed,
+//                 "rpc_timed_out": m.rpc_timed_out,
+//                 "jito_fallback_attempts": m.jito_fallback_attempts,
+//                 "jito_fallback_landed": m.jito_fallback_landed,
+//                 "inclusion_rate": m.inclusion_rate(),
+//                 "cost_per_landed_tx_lamports": m.cost_per_landed_tx(),
+//                 "avg_confirm_latency_ms": m.avg_confirm_latency_ms,
+//                 "consecutive_failures": m.consecutive_failures,
+//                 "total_priority_fees_lamports": m.total_priority_fees_lamports,
+//                 "total_jito_tips_lamports": m.total_jito_tips_lamports,
+//                 "circuit_state": m.circuit_state_label()
+//             }
+//         }))
+//     } else {
+//         // Graceful degradation — return zeroed metrics before wiring
+//         Json(serde_json::json!({
+//             "status": "ok",
+//             "data": {
+//                 "rpc_attempts": 0,
+//                 "rpc_landed": 0,
+//                 "rpc_failed": 0,
+//                 "rpc_timed_out": 0,
+//                 "jito_fallback_attempts": 0,
+//                 "jito_fallback_landed": 0,
+//                 "inclusion_rate": 0.0,
+//                 "cost_per_landed_tx_lamports": 0.0,
+//                 "avg_confirm_latency_ms": 0.0,
+//                 "consecutive_failures": 0,
+//                 "total_priority_fees_lamports": 0,
+//                 "total_jito_tips_lamports": 0,
+//                 "circuit_state": "closed"
+//             }
+//         }))
+//     }
+// }
+
 // ─── Server Startup ────────────────────────────────────────────────
 
 /// Build the axum router with all API routes.
@@ -345,6 +398,8 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/api/control/pause", post(control_pause))
         .route("/api/control/resume", post(control_resume))
         .route("/api/positions", get(positions))
+        // TODO: uncomment when rpc_sender is wired
+        // .route("/api/metrics/submission", get(submission_metrics))
         .with_state(state)
 }
 

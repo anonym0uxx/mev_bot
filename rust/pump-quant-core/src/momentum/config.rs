@@ -6,6 +6,67 @@
 use serde::{Deserialize, Serialize};
 use super::tod::MomentumTodConfig;
 
+// ── RPC sender default functions ─────────────────────────────────────────────
+
+fn default_priority_fee() -> u64 { 1_000 }
+fn default_max_retries() -> u32 { 3 }
+fn default_retry_delay() -> u64 { 500 }
+fn default_confirm_timeout() -> u64 { 30_000 }
+fn default_skip_preflight() -> bool { true }
+fn default_cb_threshold() -> u32 { 5 }
+fn default_cb_cooldown() -> u64 { 120_000 }
+fn default_jito_fallback_tip() -> u64 { 100_000 }
+fn default_rpc_primary() -> bool { true }
+
+/// Configuration for RPC transaction sending: priority fees, retries,
+/// circuit breaker, and Jito fallback.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RpcSenderConfig {
+    /// Compute unit price in micro-lamports. Default: 1000.
+    #[serde(default = "default_priority_fee")]
+    pub priority_fee_microlamports: u64,
+    /// Maximum send attempts before giving up. Default: 3.
+    #[serde(default = "default_max_retries")]
+    pub max_send_retries: u32,
+    /// Delay between retry attempts (ms). Default: 500.
+    #[serde(default = "default_retry_delay")]
+    pub retry_delay_ms: u64,
+    /// How long to wait for transaction confirmation (ms). Default: 30000.
+    #[serde(default = "default_confirm_timeout")]
+    pub confirm_timeout_ms: u64,
+    /// Skip preflight simulation before sending. Default: true.
+    #[serde(default = "default_skip_preflight")]
+    pub skip_preflight: bool,
+    /// Consecutive failures before circuit breaker opens. Default: 5.
+    #[serde(default = "default_cb_threshold")]
+    pub circuit_breaker_threshold: u32,
+    /// Cooldown (ms) before circuit breaker resets. Default: 120000.
+    #[serde(default = "default_cb_cooldown")]
+    pub circuit_breaker_cooldown_ms: u64,
+    /// Jito bundle tip (lamports) when falling back to Jito. Default: 100000.
+    #[serde(default = "default_jito_fallback_tip")]
+    pub jito_fallback_tip: u64,
+    /// Whether RPC is the primary send path (true) or Jito is primary (false). Default: true.
+    #[serde(default = "default_rpc_primary")]
+    pub rpc_primary: bool,
+}
+
+impl Default for RpcSenderConfig {
+    fn default() -> Self {
+        Self {
+            priority_fee_microlamports: default_priority_fee(),
+            max_send_retries: default_max_retries(),
+            retry_delay_ms: default_retry_delay(),
+            confirm_timeout_ms: default_confirm_timeout(),
+            skip_preflight: default_skip_preflight(),
+            circuit_breaker_threshold: default_cb_threshold(),
+            circuit_breaker_cooldown_ms: default_cb_cooldown(),
+            jito_fallback_tip: default_jito_fallback_tip(),
+            rpc_primary: default_rpc_primary(),
+        }
+    }
+}
+
 /// Configuration for the momentum trading engine.
 ///
 /// Loaded from the `momentum` section of canary.json.
@@ -472,6 +533,15 @@ pub struct MomentumConfig {
     /// PumpSwap WS notifications fire less frequently per swap volume.
     /// Default: 10_000 (10s) — looser than Raydium's 8s.
     pub dead_zone_pumpswap_ws_zero_ms: u64,
+
+    // ══════════════════════════════════════════════════════════
+    // RPC SENDER CONFIG
+    // ══════════════════════════════════════════════════════════
+
+    /// RPC transaction sender configuration: priority fees, retries,
+    /// circuit breaker, and Jito fallback settings.
+    #[serde(default)]
+    pub rpc_sender: RpcSenderConfig,
 }
 
 impl Default for MomentumConfig {
@@ -647,6 +717,9 @@ impl Default for MomentumConfig {
 
             dead_zone_pumpswap_reserve_tolerance_lamports: 2_000_000,
             dead_zone_pumpswap_ws_zero_ms: 10_000,
+
+            // RPC sender config
+            rpc_sender: RpcSenderConfig::default(),
         }
     }
 }

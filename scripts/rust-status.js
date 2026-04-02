@@ -86,9 +86,10 @@ async function main() {
   const sessionStartMs = engineState.daemonStartedAt || (Date.now() - 24 * 3600 * 1000);
 
   // Fetch Rust API
-  const [statsResp, healthResp] = await Promise.all([
+  const [statsResp, healthResp, submissionResp] = await Promise.all([
     fetchJson(9421, '/api/stats'),
     fetchJson(9421, '/api/health'),
+    fetchJson(9421, '/api/metrics/submission'),
   ]);
 
   const stats  = statsResp?.data || null;
@@ -190,6 +191,45 @@ async function main() {
   lines.push(`  Throughput: ${tps.toFixed(1)} evt/s | Migrations: ${stats?.migrations_seen ?? 0}`);
 
   if (paused) lines.push('  ⚠️ TRADING PAUSED');
+
+  // ── TX Submission ─────────────────────────────────────────────────
+  const sub = submissionResp; // direct response (no .data wrapper assumed)
+  lines.push('');
+  if (!sub) {
+    lines.push('📡 TX Submission: not available');
+  } else {
+    const totalAttempts = (sub.rpc_attempts || 0) + (sub.jito_fallback_attempts || 0);
+    const totalLanded = (sub.rpc_landed || 0) + (sub.jito_fallback_landed || 0);
+    if (totalAttempts === 0) {
+      lines.push('📡 TX Submission: no trades yet');
+    } else {
+      const overallRate = totalAttempts > 0 ? totalLanded / totalAttempts : 0;
+      const rpcRate = sub.rpc_attempts > 0 ? sub.rpc_landed / sub.rpc_attempts : 0;
+      const jitoRate = sub.jito_fallback_attempts > 0 ? sub.jito_fallback_landed / sub.jito_fallback_attempts : 0;
+      const avgLatency = Math.round(sub.avg_confirm_latency_ms || 0);
+      const costPerTx = sub.cost_per_landed_tx_lamports || 0;
+      const totalCostLam = (sub.total_priority_fees_lamports || 0) + (sub.total_jito_tips_lamports || 0);
+      const totalCostSol = totalCostLam / 1e9;
+
+      // Format cost numbers: use K for thousands, M for millions
+      const fmtLam = (v) => {
+        if (v >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
+        if (v >= 1e3) return `${(v / 1e3).toFixed(0)}K`;
+        return `${v}`;
+      };
+
+      lines.push(`📡 TX Submission`);
+      lines.push(`  Mode: RPC Primary (circuit: ${sub.circuit_state || 'unknown'})`);
+      lines.push(`  RPC: ${sub.rpc_landed}/${sub.rpc_attempts} landed (${(rpcRate * 100).toFixed(1)}%) | avg ${avgLatency}ms`);
+      if (sub.jito_fallback_attempts > 0) {
+        lines.push(`  Jito fallback: ${sub.jito_fallback_landed}/${sub.jito_fallback_attempts} landed (${(jitoRate * 100).toFixed(1)}%)`);
+      }
+      lines.push(`  Overall: ${totalLanded}/${totalAttempts} landed (${(overallRate * 100).toFixed(1)}%)`);
+      lines.push(`  Cost: ${fmtLam(costPerTx)} lam/landed TX | Total: ${fmtLam(totalCostLam)} lam (${totalCostSol.toFixed(5)} SOL)`);
+      lines.push(`  Consecutive fails: ${sub.consecutive_failures || 0}`);
+    }
+  }
+
   if (newHigh && all.net > 0) lines.push(`\n🏆 NEW HIGH WATER: ${sol(all.net)} SOL net!`);
 
   // ── Alerts ────────────────────────────────────────────────────────
@@ -201,6 +241,20 @@ async function main() {
   if (ses.net < -0.30) alerts.push(`⚠️ Session PnL: ${sol(ses.net)} SOL`);
   if (all.net < -2.0) alerts.push(`⚠️ Overall PnL: ${sol(all.net)} SOL`);
 
+  // TX submission alerts
+  if (sub) {
+    const totalSubAttempts = (sub.rpc_attempts || 0) + (sub.jito_fallback_attempts || 0);
+    if ((sub.consecutive_failures || 0) >= 3) {
+      alerts.push(`🔴 TX submission: ${sub.consecutive_failures} consecutive failures`);
+    }
+    if (totalSubAttempts >= 10 && (sub.inclusion_rate || 0) < 0.5) {
+      alerts.push(`⚠️ TX inclusion rate critical: ${((sub.inclusion_rate || 0) * 100).toFixed(1)}% on ${totalSubAttempts} attempts`);
+    }
+    if (sub.circuit_state === 'open') {
+      alerts.push('🔴 TX circuit breaker OPEN — RPC degraded, Jito-only');
+    }
+  }
+
   if (alerts.length > 0) {
     lines.push('');
     lines.push('🚨 Alerts:');
@@ -209,15 +263,27 @@ async function main() {
 
   console.log(lines.join('\n'));
 
-  // Save state
-  saveJson(HB_STATE, {
+  // Save state (including TX submission metadata for programmatic checks)
+  const stateObj = {
     last_momentum_count: cleanMomentum.length,
     last_trade_count: cleanMomentum.length,  // backward compat
     last_check_ts: Date.now(),
     last_win_rate: all.wr,
     momentum_pnl_high_water: Math.max(all.net, prevHigh),
     new_trades_this_hb: newMomTrades,
-  });
+  };
+  if (sub) {
+    const totalSubAttempts = (sub.rpc_attempts || 0) + (sub.jito_fallback_attempts || 0);
+    stateObj.tx_inclusion_rate = totalSubAttempts > 0
+      ? ((sub.rpc_landed || 0) + (sub.jito_fallback_landed || 0)) / totalSubAttempts
+      : null;
+    stateObj.circuit_state = sub.circuit_state || 'unknown';
+    stateObj.tx_submission_alert =
+      (sub.consecutive_failures || 0) >= 3 ||
+      (totalSubAttempts >= 10 && (sub.inclusion_rate || 0) < 0.5) ||
+      sub.circuit_state === 'open';
+  }
+  saveJson(HB_STATE, stateObj);
 
   if (alerts.some(a => a.startsWith('🔴'))) process.exit(2);
 }

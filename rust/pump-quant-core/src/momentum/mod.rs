@@ -23,6 +23,7 @@ pub mod logger;
 pub mod pool;
 pub mod position;
 pub mod price_feed;
+pub mod rpc_sender;
 pub mod scorer;
 pub mod tod;
 pub mod velocity;
@@ -224,7 +225,10 @@ pub struct MomentumEngine {
     wallet_pubkey: Option<[u8; 32]>,
     blockhash_cache: Arc<crate::tx::executor::BlockhashCache>,
 
-    // ── RPC fallback for sendTransaction when Jito/Nozomi fail ──────
+    // ── RPC primary sender (Helius) with circuit breaker + Jito fallback ──
+    rpc_sender: Arc<rpc_sender::RpcSender>,
+
+    // ── Legacy RPC fallback (kept for Nozomi→Jito→RPC triple fallback) ──
     /// Shared reqwest::Client for RPC fallback (created once, reused).
     rpc_fallback_client: reqwest::Client,
     /// RPC URL for fallback sendTransaction (SOLANA_RPC_URL or default).
@@ -305,6 +309,13 @@ impl MomentumEngine {
         );
         let rpc_fallback_client = reqwest::Client::new();
 
+        // RPC primary sender with circuit breaker (Helius RPC → Jito fallback)
+        let rpc_sender_config = rpc_sender::RpcSenderConfig::from_momentum_config(&config.rpc_sender);
+        let rpc_sender_inst = Arc::new(rpc_sender::RpcSender::new(
+            rpc_fallback_url.to_string(),
+            rpc_sender_config,
+        ));
+
         let engine = Self {
             config,
             rpc_url,
@@ -328,6 +339,7 @@ impl MomentumEngine {
             nozomi_client,
             wallet_pubkey,
             blockhash_cache,
+            rpc_sender: rpc_sender_inst,
             rpc_fallback_client,
             rpc_fallback_url,
             graduations_seen: AtomicU64::new(0),
@@ -1117,8 +1129,8 @@ impl MomentumEngine {
                     // Capture mint for move into async block
                     let mint_buy = mint;
                     let tokens_est = tokens_estimate;
-                    let rpc_fb_client = self.rpc_fallback_client.clone();
-                    let rpc_fb_url = self.rpc_fallback_url.clone();
+                    let rpc_sender = self.rpc_sender.clone();
+                    let jg_clone = jg.clone();
                     tokio::spawn(async move {
                         let kp_bytes = match std::fs::read(&kp_path) {
                             Ok(b) => b,
@@ -1145,17 +1157,25 @@ impl MomentumEngine {
                             Ok(b) => b,
                             Err(e) => { tracing::error!(mint=%bs58::encode(&mint_buy).into_string(), err=?e, "[buy_task] build failed"); return; }
                         };
-                        // Jito requires base58-encoded transactions (not base64)
-                        let tx_b58 = bs58::encode(&tx_bytes).into_string();
-                        match jg.submit_bundle(&tx_b58).await {
-                            Ok(id) => {
-                                tracing::info!(mint=%bs58::encode(&mint_buy).into_string(), bundle_id=%id, tip, size_sol=size as f64/1e9, tokens_est, "[buy_task] Jito submitted");
-                                // tokens_held stored at position open — buy confirmed
-                                // Note: tokens_est is the AMM formula estimate; actual tokens may differ slightly
+                        let mint_str = bs58::encode(&mint_buy).into_string();
+                        // RPC primary → Jito fallback
+                        match rpc_sender.submit_tx(&tx_bytes, &mint_str, "buy_task").await {
+                            rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
+                                tracing::info!(mint=%mint_str, sig=%signature, latency_ms, tip, size_sol=size as f64/1e9, tokens_est, "[buy_task] RPC landed ✅");
                             }
-                            Err(e) => {
-                                tracing::warn!(mint=%bs58::encode(&mint_buy).into_string(), err=?e, "[buy_task] Jito FAILED — trying RPC fallback");
-                                rpc_fallback_send(&rpc_fb_client, &rpc_fb_url, &tx_bytes, &bs58::encode(&mint_buy).into_string(), "buy_task").await;
+                            rpc_sender::SubmitResult::TimedOut { signature } => {
+                                tracing::warn!(mint=%mint_str, sig=%signature, "[buy_task] RPC timed out (may still land)");
+                            }
+                            rpc_sender::SubmitResult::JitoFallback { .. } => {
+                                // Circuit breaker tripped → fall back to Jito
+                                let tx_b58 = bs58::encode(&tx_bytes).into_string();
+                                match jg_clone.submit_bundle(&tx_b58).await {
+                                    Ok(id) => tracing::info!(mint=%mint_str, bundle_id=%id, tip, "[buy_task] Jito fallback submitted"),
+                                    Err(e) => tracing::error!(mint=%mint_str, err=?e, "[buy_task] Jito fallback also FAILED"),
+                                }
+                            }
+                            rpc_sender::SubmitResult::Failed { error } => {
+                                tracing::error!(mint=%mint_str, err=%error, "[buy_task] RPC FAILED");
                             }
                         }
                     });
@@ -1192,8 +1212,8 @@ impl MomentumEngine {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() % 8) as usize;
-                    let rpc_fb_client = self.rpc_fallback_client.clone();
-                    let rpc_fb_url = self.rpc_fallback_url.clone();
+                    let rpc_sender = self.rpc_sender.clone();
+                    let jg_clone = jg.clone();
                     tokio::spawn(async move {
                         let kp_bytes = match std::fs::read(&kp_path) {
                             Ok(b) => b,
@@ -1220,23 +1240,24 @@ impl MomentumEngine {
                             Ok(b) => b,
                             Err(e) => { tracing::error!(mint=%bs58::encode(&mint_buy).into_string(), err=?e, "[buy_pumpswap] build failed"); return; }
                         };
-                        // Jito requires base58-encoded transactions (not base64)
-                        let tx_b58 = bs58::encode(&tx_bytes).into_string();
-                        match jg.submit_bundle(&tx_b58).await {
-                            Ok(id) => tracing::info!(
-                                mint=%bs58::encode(&mint_buy).into_string(),
-                                bundle_id=%id,
-                                tip,
-                                size_sol=size as f64/1e9,
-                                "[buy_pumpswap] Jito submitted"
-                            ),
-                            Err(e) => {
-                                tracing::warn!(
-                                    mint=%bs58::encode(&mint_buy).into_string(),
-                                    err=?e,
-                                    "[buy_pumpswap] Jito FAILED — trying RPC fallback"
-                                );
-                                rpc_fallback_send(&rpc_fb_client, &rpc_fb_url, &tx_bytes, &bs58::encode(&mint_buy).into_string(), "buy_pumpswap").await;
+                        let mint_str = bs58::encode(&mint_buy).into_string();
+                        // RPC primary → Jito fallback
+                        match rpc_sender.submit_tx(&tx_bytes, &mint_str, "buy_pumpswap").await {
+                            rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
+                                tracing::info!(mint=%mint_str, sig=%signature, latency_ms, tip, size_sol=size as f64/1e9, "[buy_pumpswap] RPC landed ✅");
+                            }
+                            rpc_sender::SubmitResult::TimedOut { signature } => {
+                                tracing::warn!(mint=%mint_str, sig=%signature, "[buy_pumpswap] RPC timed out (may still land)");
+                            }
+                            rpc_sender::SubmitResult::JitoFallback { .. } => {
+                                let tx_b58 = bs58::encode(&tx_bytes).into_string();
+                                match jg_clone.submit_bundle(&tx_b58).await {
+                                    Ok(id) => tracing::info!(mint=%mint_str, bundle_id=%id, tip, "[buy_pumpswap] Jito fallback submitted"),
+                                    Err(e) => tracing::error!(mint=%mint_str, err=?e, "[buy_pumpswap] Jito fallback also FAILED"),
+                                }
+                            }
+                            rpc_sender::SubmitResult::Failed { error } => {
+                                tracing::error!(mint=%mint_str, err=%error, "[buy_pumpswap] RPC FAILED");
                             }
                         }
                     });
@@ -2285,6 +2306,8 @@ impl MomentumEngine {
                     let gain = gain_bps as i64;
                     let noz_ok = noz.is_some();
                     let mint_copy = mint;
+                    let rpc_sender = self.rpc_sender.clone();
+                    let jg_clone = jg.clone();
                     let rpc_fb_client = self.rpc_fallback_client.clone();
                     let rpc_fb_url = self.rpc_fallback_url.clone();
                     tokio::spawn(async move {
@@ -2313,25 +2336,35 @@ impl MomentumEngine {
                             Ok(b) => b,
                             Err(e) => { tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] build failed"); return; }
                         };
-                        use base64::Engine as _;
-                        let tx_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes); // Nozomi needs base64
-                        let tx_b58 = bs58::encode(&tx_bytes).into_string(); // Jito needs base58
-                        let landing = route_exit(&reason_str, gain, noz_ok);
-                        match landing {
-                            LandingPath::JitoOnly => {
-                                match jg.submit_bundle(&tx_b58).await {
-                                    Ok(id) => tracing::info!(mint=%bs58::encode(&mint_copy).into_string(), bundle_id=%id, "[sell_raydium] Jito submitted"),
+                        let mint_str = bs58::encode(&mint_copy).into_string();
+                        // SELL: aggressive 3-tier fallback (RPC → Jito → raw RPC)
+                        match rpc_sender.submit_tx(&tx_bytes, &mint_str, "sell_raydium").await {
+                            rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
+                                tracing::info!(mint=%mint_str, sig=%signature, latency_ms, reason=%reason_str, gain_bps=gain, "[sell_raydium] RPC landed ✅");
+                            }
+                            rpc_sender::SubmitResult::TimedOut { signature } => {
+                                tracing::warn!(mint=%mint_str, sig=%signature, "[sell_raydium] RPC timed out — trying Jito");
+                                let tx_b58 = bs58::encode(&tx_bytes).into_string();
+                                let _ = jg_clone.submit_bundle(&tx_b58).await;
+                            }
+                            rpc_sender::SubmitResult::JitoFallback { .. } => {
+                                let tx_b58 = bs58::encode(&tx_bytes).into_string();
+                                match jg_clone.submit_bundle(&tx_b58).await {
+                                    Ok(id) => tracing::info!(mint=%mint_str, bundle_id=%id, "[sell_raydium] Jito fallback submitted"),
                                     Err(e) => {
-                                        tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] Jito FAILED — trying RPC fallback");
-                                        rpc_fallback_send(&rpc_fb_client, &rpc_fb_url, &tx_bytes, &bs58::encode(&mint_copy).into_string(), "sell_raydium").await;
+                                        tracing::error!(mint=%mint_str, err=?e, "[sell_raydium] Jito fallback FAILED — last resort RPC");
+                                        rpc_fallback_send(&rpc_fb_client, &rpc_fb_url, &tx_bytes, &mint_str, "sell_raydium").await;
                                     }
                                 }
                             }
-                            LandingPath::NozomiOnly | LandingPath::DualPath => {
-                                if let Some(ref n) = noz {
-                                    match n.send_transaction(&tx_b64).await {
-                                        Ok(_) => tracing::info!(mint=%bs58::encode(&mint_copy).into_string(), "[sell_raydium] Nozomi OK"),
-                                        Err(e) => { tracing::warn!(err=?e, "[sell_raydium] Nozomi failed → Jito"); let _ = jg.submit_bundle(&tx_b58).await; }
+                            rpc_sender::SubmitResult::Failed { error } => {
+                                tracing::error!(mint=%mint_str, err=%error, "[sell_raydium] RPC FAILED — trying Jito");
+                                let tx_b58 = bs58::encode(&tx_bytes).into_string();
+                                match jg_clone.submit_bundle(&tx_b58).await {
+                                    Ok(id) => tracing::info!(mint=%mint_str, bundle_id=%id, "[sell_raydium] Jito rescue submitted"),
+                                    Err(e) => {
+                                        tracing::error!(mint=%mint_str, err=?e, "[sell_raydium] 🚨 ALL SELL PATHS FAILED");
+                                        rpc_fallback_send(&rpc_fb_client, &rpc_fb_url, &tx_bytes, &mint_str, "sell_raydium_emergency").await;
                                     }
                                 }
                             }
@@ -2372,6 +2405,8 @@ impl MomentumEngine {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() % 8) as usize;
+                    let rpc_sender = self.rpc_sender.clone();
+                    let jg_clone = jg.clone();
                     let rpc_fb_client = self.rpc_fallback_client.clone();
                     let rpc_fb_url = self.rpc_fallback_url.clone();
                     tokio::spawn(async move {
@@ -2400,25 +2435,35 @@ impl MomentumEngine {
                             Ok(b) => b,
                             Err(e) => { tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] build failed"); return; }
                         };
-                        use base64::Engine as _;
-                        let tx_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes); // Nozomi needs base64
-                        let tx_b58 = bs58::encode(&tx_bytes).into_string(); // Jito needs base58
-                        let landing = route_exit(&reason_str, gain, noz_ok);
-                        match landing {
-                            LandingPath::JitoOnly => {
-                                match jg.submit_bundle(&tx_b58).await {
-                                    Ok(id) => tracing::info!(mint=%bs58::encode(&mint_copy).into_string(), bundle_id=%id, "[sell_pumpswap] Jito submitted"),
+                        let mint_str = bs58::encode(&mint_copy).into_string();
+                        // SELL: aggressive 3-tier fallback (RPC → Jito → raw RPC)
+                        match rpc_sender.submit_tx(&tx_bytes, &mint_str, "sell_pumpswap").await {
+                            rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
+                                tracing::info!(mint=%mint_str, sig=%signature, latency_ms, reason=%reason_str, gain_bps=gain, "[sell_pumpswap] RPC landed ✅");
+                            }
+                            rpc_sender::SubmitResult::TimedOut { signature } => {
+                                tracing::warn!(mint=%mint_str, sig=%signature, "[sell_pumpswap] RPC timed out — trying Jito");
+                                let tx_b58 = bs58::encode(&tx_bytes).into_string();
+                                let _ = jg_clone.submit_bundle(&tx_b58).await;
+                            }
+                            rpc_sender::SubmitResult::JitoFallback { .. } => {
+                                let tx_b58 = bs58::encode(&tx_bytes).into_string();
+                                match jg_clone.submit_bundle(&tx_b58).await {
+                                    Ok(id) => tracing::info!(mint=%mint_str, bundle_id=%id, "[sell_pumpswap] Jito fallback submitted"),
                                     Err(e) => {
-                                        tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] Jito FAILED — trying RPC fallback");
-                                        rpc_fallback_send(&rpc_fb_client, &rpc_fb_url, &tx_bytes, &bs58::encode(&mint_copy).into_string(), "sell_pumpswap").await;
+                                        tracing::error!(mint=%mint_str, err=?e, "[sell_pumpswap] Jito fallback FAILED — last resort RPC");
+                                        rpc_fallback_send(&rpc_fb_client, &rpc_fb_url, &tx_bytes, &mint_str, "sell_pumpswap").await;
                                     }
                                 }
                             }
-                            LandingPath::NozomiOnly | LandingPath::DualPath => {
-                                if let Some(ref n) = noz {
-                                    match n.send_transaction(&tx_b64).await {
-                                        Ok(_) => tracing::info!(mint=%bs58::encode(&mint_copy).into_string(), "[sell_pumpswap] Nozomi OK"),
-                                        Err(e) => { tracing::warn!(err=?e, "[sell_pumpswap] Nozomi failed → Jito"); let _ = jg.submit_bundle(&tx_b58).await; }
+                            rpc_sender::SubmitResult::Failed { error } => {
+                                tracing::error!(mint=%mint_str, err=%error, "[sell_pumpswap] RPC FAILED — trying Jito");
+                                let tx_b58 = bs58::encode(&tx_bytes).into_string();
+                                match jg_clone.submit_bundle(&tx_b58).await {
+                                    Ok(id) => tracing::info!(mint=%mint_str, bundle_id=%id, "[sell_pumpswap] Jito rescue submitted"),
+                                    Err(e) => {
+                                        tracing::error!(mint=%mint_str, err=?e, "[sell_pumpswap] 🚨 ALL SELL PATHS FAILED");
+                                        rpc_fallback_send(&rpc_fb_client, &rpc_fb_url, &tx_bytes, &mint_str, "sell_pumpswap_emergency").await;
                                     }
                                 }
                             }
