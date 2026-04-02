@@ -944,20 +944,57 @@ pub async fn resolve_pumpswap_pool_from_mint(
         };
 
         use base64::Engine as _;
-        if let Some(data_b64) = accounts[0].pointer("/account/data/0").and_then(|d| d.as_str()) {
-            if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(data_b64) {
-                if data.len() >= 204 {
-                    pool_data = Some((accounts[0].clone(), data));
-                    token_is_base = is_base;
-                    tracing::debug!(
-                        mint = %mint_b58,
-                        offset,
-                        token_is_base,
-                        "[momentum] PumpSwap pool found at offset {offset}"
-                    );
-                    break;
+        // Iterate ALL returned pools to find one with WSOL as the other side.
+        // PumpSwap can have multiple pools per mint (token/WSOL + token/token).
+        // We must skip token/token pools and only use token/WSOL pools.
+        for account in accounts {
+            let data_b64 = match account.pointer("/account/data/0").and_then(|d| d.as_str()) {
+                Some(d) => d,
+                None => continue,
+            };
+            let data = match base64::engine::general_purpose::STANDARD.decode(data_b64) {
+                Ok(d) if d.len() >= 204 => d,
+                _ => continue,
+            };
+
+            // Validate the other side is WSOL before accepting this pool
+            let other_side: [u8; 32] = if is_base {
+                // Token is at offset 43 (base) → check offset 75 (quote) for WSOL
+                match data[75..107].try_into() {
+                    Ok(v) => v,
+                    Err(_) => continue,
                 }
+            } else {
+                // Token is at offset 75 (quote) → check offset 43 (base) for WSOL
+                match data[43..75].try_into() {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                }
+            };
+
+            if other_side != WSOL_MINT_BYTES {
+                let pool_pk = account.get("pubkey").and_then(|p| p.as_str()).unwrap_or("unknown");
+                tracing::debug!(
+                    mint = %mint_b58,
+                    pool = %pool_pk,
+                    other_mint = %bs58::encode(&other_side).into_string(),
+                    "[momentum] skipping non-WSOL pool at offset {offset}, checking next"
+                );
+                continue; // try next pool in results
             }
+
+            pool_data = Some((account.clone(), data));
+            token_is_base = is_base;
+            tracing::debug!(
+                mint = %mint_b58,
+                offset,
+                token_is_base,
+                "[momentum] PumpSwap WSOL pool found at offset {offset}"
+            );
+            break;
+        }
+        if pool_data.is_some() {
+            break; // found a valid WSOL pool, stop searching offsets
         }
     }
 
