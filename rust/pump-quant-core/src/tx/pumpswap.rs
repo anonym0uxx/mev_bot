@@ -172,11 +172,10 @@ const WSOL_MINT_BYTES: [u8; 32] = [
 /// account [3] (base_mint) was the token mint, but on-chain base_mint was WSOL.
 impl From<crate::momentum::pool::PumpSwapPoolAccounts> for PumpSwapPoolAccounts {
     fn from(p: crate::momentum::pool::PumpSwapPoolAccounts) -> Self {
-        // Dynamic detection: PumpSwap sorts mints by raw byte comparison.
-        // p.base_mint is ALWAYS the token mint (pool.rs normalizes it).
-        // If token_mint < WSOL → token is on-chain base (normal pool).
-        // If token_mint > WSOL → WSOL is on-chain base (reversed pool).
-        let token_is_base = p.base_mint < WSOL_MINT_BYTES;
+        // Use token_is_base from on-chain pool data detection (set in pool.rs).
+        // DO NOT recompute from byte comparison — PumpSwap's sort order is not
+        // always consistent with raw byte ordering, causing reversed-pool misdetection.
+        let token_is_base = p.token_is_base;
 
         // Re-order vaults to match on-chain base/quote order.
         // pool.rs normalized: pool_base = TOKEN vault, pool_quote = WSOL vault.

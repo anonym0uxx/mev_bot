@@ -201,6 +201,10 @@ pub struct PoolResolution {
     /// Whether this pool is a cashback coin (PumpSwap pool data offset [244]).
     /// Cashback coins require extra remaining accounts in buy/sell instructions.
     pub is_cashback_coin: bool,
+    /// True when token_mint is the on-chain base_mint (offset 43).
+    /// False when WSOL is base and token is quote (reversed pool).
+    /// Set from actual on-chain pool data — DO NOT recompute from byte comparison.
+    pub token_is_base: bool,
 }
 
 /// Decode a base58-encoded string into a 32-byte array.
@@ -629,6 +633,7 @@ async fn resolve_pool_inner(
         creator: [0u8; 32], // Raydium pools don't have a creator field
         coin_creator: [0u8; 32],
         is_cashback_coin: false,
+        token_is_base: true, // Raydium pools: not applicable, default true
     })
 }
 
@@ -1263,6 +1268,7 @@ pub async fn resolve_pumpswap_pool_from_mint(
         creator,
         coin_creator,
         is_cashback_coin,
+        token_is_base,
     })
 }
 
@@ -1396,6 +1402,7 @@ pub async fn resolve_pool_from_mint(
         creator: [0u8; 32], // Raydium pools don't have a creator field
         coin_creator: [0u8; 32],
         is_cashback_coin: false,
+        token_is_base: true, // Raydium pools: not applicable, default true
     })
 }
 
@@ -1426,6 +1433,10 @@ pub struct PumpSwapPoolAccounts {
     /// Whether this pool is a cashback coin (offset [244] in pool data).
     /// Cashback coins require additional remaining accounts in the swap TX.
     pub is_cashback_coin: bool,
+    /// True when token_mint is the on-chain base_mint (offset 43).
+    /// False for reversed pools where WSOL is base and token is quote.
+    /// Set from actual on-chain pool data detection — NOT recomputed from byte comparison.
+    pub token_is_base: bool,
 }
 
 /// SPL Token program ID as raw bytes (for ATA derivation without solana_sdk::pubkey).
@@ -1705,6 +1716,7 @@ pub fn build_pumpswap_pool_accounts_deterministic(
         coin_creator_vault_authority: creator_authority,
         token_mint_program: [0u8; 32], // resolved lazily at TX build time
         is_cashback_coin: false, // resolved from pool data at TX build time
+        token_is_base, // from extracted create_pool data
     }
 }
 
@@ -1759,6 +1771,7 @@ pub fn build_pool_resolution_from_create_pool(
         creator: extracted.creator,
         coin_creator: [0u8; 32], // not available from create_pool; resolved from pool data later
         is_cashback_coin: false,
+        token_is_base, // from extracted create_pool data
     }
 }
 
@@ -1805,6 +1818,7 @@ pub fn extract_pumpswap_pool_accounts(res: &PoolResolution) -> Option<PumpSwapPo
         coin_creator_vault_authority: creator_authority,
         token_mint_program: [0u8; 32], // resolved lazily at TX build time
         is_cashback_coin: res.is_cashback_coin,
+        token_is_base: res.token_is_base, // from on-chain pool data detection
     })
 }
 
