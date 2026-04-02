@@ -2304,13 +2304,39 @@ impl MomentumEngine {
                                 }
                             }
                             None => {
-                                // Fallback: classic SPL Token (all pump.fun tokens use SPL Token, not Token-2022).
-                                // Previous Token-2022 default caused IncorrectProgramId on buy TXs.
-                                tracing::warn!(
-                                    mint = %mint_b58_prog,
-                                    "[buy_pumpswap] failed to resolve token_mint_program — defaulting to classic SPL Token"
-                                );
-                                ps_pool.token_mint_program = crate::tx::pumpswap::SPL_TOKEN_PROGRAM_BYTES;
+                                // Primary resolution failed — try inferring from vault owner.
+                                // The pool's token vault is owned by the same program as the token mint.
+                                // This catches Token-2022 tokens where mint resolution timed out.
+                                let vault_mint = ps_pool.pool_base_token_account; // token vault
+                                let vault_b58 = bs58::encode(&vault_mint).into_string();
+                                let inferred = crate::momentum::pool::resolve_mint_program_with_fallback(
+                                    &self.http_client, &vault_mint, &self.helius_rpc_url, Some(&self.public_rpc_url),
+                                ).await;
+                                match inferred {
+                                    Some(prog) if prog != [0u8; 32] => {
+                                        let prog_b58 = bs58::encode(&prog).into_string();
+                                        tracing::info!(
+                                            mint = %mint_b58_prog,
+                                            vault = %vault_b58,
+                                            program = %prog_b58,
+                                            "[buy_pumpswap] inferred token_mint_program from vault owner"
+                                        );
+                                        ps_pool.token_mint_program = prog;
+                                        if let Some(mut stored) = self.pumpswap_pools.get_mut(&entry.mint) {
+                                            stored.token_mint_program = prog;
+                                        }
+                                    }
+                                    _ => {
+                                        // Both mint and vault resolution failed — default to SPL Token.
+                                        // This is safe for the ~99% of pump.fun tokens that use SPL Token.
+                                        // Token-2022 tokens will still fail, but we've tried our best.
+                                        tracing::warn!(
+                                            mint = %mint_b58_prog,
+                                            "[buy_pumpswap] failed to resolve token_mint_program (mint + vault) — defaulting to classic SPL Token"
+                                        );
+                                        ps_pool.token_mint_program = crate::tx::pumpswap::SPL_TOKEN_PROGRAM_BYTES;
+                                    }
+                                }
                             }
                         }
                     }
