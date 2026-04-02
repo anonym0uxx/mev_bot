@@ -92,7 +92,7 @@ pub struct MomentumConfig {
     /// Max ms to wait for live price feed before skipping an entry.
     /// If price hasn't arrived within this window, the entry is abandoned
     /// rather than entering at the stale graduation reserve price.
-    /// Default: 8000ms (gives Helius WSS ~8s to deliver live price).
+    /// Default: 2000ms (gives Helius WSS ~2s to deliver live price).
     pub no_price_timeout_ms: u64,
     /// Position size in SOL for tier-0 entries (first price reading, no momentum signal yet).
     /// Set to 0.0 to disable tier-0 sizing (use regular grad_score tiers).
@@ -120,11 +120,11 @@ pub struct MomentumConfig {
     // DYNAMIC TRAILING STOP (state-aware widths)
     // ══════════════════════════════════════════════════════════
 
-    /// Trail width when ACCELERATING — wide to avoid shakeouts. Default: 12.0%.
+    /// Trail width when ACCELERATING — wide to avoid shakeouts. Default: 15.0%.
     pub trailing_stop_accel_pct: f64,
-    /// Trail width when DECELERATING — tighter to protect gains. Default: 4.0%.
+    /// Trail width when DECELERATING — tighter to protect gains. Default: 5.0%.
     pub trailing_stop_decel_pct: f64,
-    /// Trail width when REVERSING — near-immediate exit. Default: 2.0%.
+    /// Trail width when REVERSING — near-immediate exit. Default: 3.0%.
     pub trailing_stop_reversal_pct: f64,
     /// Minimum price samples before trailing stop evaluation begins.
     /// Prevents premature exits on explosive tokens where the first few samples
@@ -508,7 +508,7 @@ impl Default for MomentumConfig {
             micro_exit_window_ms: 4_500,
             micro_exit_velocity_bps: -200,
             micro_exit_n_consecutive: 2,
-            no_price_timeout_ms: 8_000,
+            no_price_timeout_ms: 2_000,
             tier0_size_sol: 0.10,
             reentry_cooldown_ms: 300_000,
             price_poll_interval_ms: 500,
@@ -521,9 +521,9 @@ impl Default for MomentumConfig {
             // Dynamic trailing stop
             trailing_stop_min_samples: 5,
             trailing_stop_confirm_samples: 2,
-            trailing_stop_accel_pct: 12.0,
-            trailing_stop_decel_pct: 4.0,
-            trailing_stop_reversal_pct: 2.0,
+            trailing_stop_accel_pct: 15.0,
+            trailing_stop_decel_pct: 5.0,
+            trailing_stop_reversal_pct: 3.0,
             trail_atr_multiplier: 2.5,
             trail_atr_window: 10,
             trail_min_samples_for_atr: 4,
@@ -722,7 +722,7 @@ mod tests {
         assert_eq!(config.sample_interval_ticks, 7);
         assert!((config.micro_sl_pct - 8.0).abs() < f64::EPSILON);
         assert_eq!(config.micro_sl_ticks, 20);
-        assert_eq!(config.no_price_timeout_ms, 8_000);
+        assert_eq!(config.no_price_timeout_ms, 2_000);
         assert!((config.tier0_size_sol - 0.10).abs() < f64::EPSILON);
     }
 

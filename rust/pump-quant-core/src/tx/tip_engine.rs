@@ -72,15 +72,15 @@ impl Default for TipConfig {
             ride_momentum_tip: 2_000_000,    // 2 mSOL
             ride_tighten_tip: 3_000_000,     // 3 mSOL
             ride_emergency_tip: 5_000_000,   // 5 mSOL
-            entry_tip: 100_000,              // 100 μSOL
-            rate_emergency_bps: 20,          // 0.20%
-            rate_ride_bps: 6,                // 0.06%
-            rate_scalp_bps: 5,               // 0.05%
-            rate_entry_bps: 5,               // 0.05%
-            ceiling_normal: 5_000_000,       // 5 mSOL
-            ceiling_emergency: 20_000_000,   // 20 mSOL
-            congestion_multiplier_bp: 15_000, // 1.5x
-            min_tip: 200_000,                // 200 μSOL
+            entry_tip: 500_000,              // 500 μSOL — competitive entry floor
+            rate_emergency_bps: 25,          // 0.25% — pay to escape
+            rate_ride_bps: 10,               // 0.10% — share ride profits
+            rate_scalp_bps: 8,               // 0.08% — moderate scalp share
+            rate_entry_bps: 10,              // 0.10% — aggressive entry
+            ceiling_normal: 3_000_000,       // 3 mSOL — tighter cap for micro probes
+            ceiling_emergency: 10_000_000,   // 10 mSOL — generous for emergencies
+            congestion_multiplier_bp: 20_000, // 2.0x — doubles tip under congestion
+            min_tip: 500_000,                // 500 μSOL — competitive minimum
         }
     }
 }
@@ -239,20 +239,20 @@ mod tests {
     #[test]
     fn test_ride_tighten_size_proportional() {
         let engine = default_engine();
-        // 10 SOL position: proportional = 10_000_000_000 * 6 / 10_000 = 6_000_000
-        // base = 3_000_000. max(3M, 6M) = 6M. ceiling_normal = 5M. Result = 5M.
+        // 10 SOL position: proportional = 10_000_000_000 * 10 / 10_000 = 10_000_000
+        // base = 3_000_000. max(3M, 10M) = 10M. ceiling_normal = 3M. Result = 3M.
         let tip = engine.compute_tip(&make_req(TipContext::RideTighten, 10_000_000_000, 0));
-        assert_eq!(tip, 5_000_000, "Large position tip should be clamped to ceiling_normal");
+        assert_eq!(tip, 3_000_000, "Large position tip should be clamped to ceiling_normal");
     }
 
     #[test]
     fn test_emergency_tip_ceiling() {
         let engine = default_engine();
         // Emergency with negative profit (stop-loss), large position.
-        // base = 5M, proportional = 10B * 20 / 10000 = 20M.
-        // max(5M, 20M) = 20M. ceiling_emergency = 20M. Result = 20M.
+        // base = 5M, proportional = 10B * 25 / 10000 = 25M.
+        // max(5M, 25M) = 25M. ceiling_emergency = 10M. Result = 10M.
         let tip = engine.compute_tip(&make_req(TipContext::RideEmergency, 10_000_000_000, -5000));
-        assert_eq!(tip, 20_000_000, "Emergency should use emergency ceiling");
+        assert_eq!(tip, 10_000_000, "Emergency should use emergency ceiling");
     }
 
     #[test]
@@ -265,9 +265,9 @@ mod tests {
         assert!(engine.landing_rate_pct() < 80, "Landing rate should be below 80%");
 
         // Scalp with 0 size: base = 500k.
-        // Congestion multiplier: 500k * 15000 / 10000 = 750k.
+        // Congestion multiplier: 500k * 20000 / 10000 = 1_000_000.
         let tip = engine.compute_tip(&make_req(TipContext::Scalp, 0, 0));
-        assert_eq!(tip, 750_000, "Congestion should apply 1.5x multiplier");
+        assert_eq!(tip, 1_000_000, "Congestion should apply 2.0x multiplier");
     }
 
     #[test]
@@ -291,28 +291,28 @@ mod tests {
     #[test]
     fn test_entry_tip() {
         let engine = default_engine();
-        // Entry, 0.5 SOL position: proportional = 500M * 5 / 10000 = 250k.
-        // base = 100k. max(100k, 250k) = 250k. min_tip = 200k. ceiling_normal = 5M.
+        // Entry, 0.5 SOL position: proportional = 500M * 10 / 10000 = 500k.
+        // base = 500k. max(500k, 500k) = 500k. min_tip = 500k. ceiling_normal = 3M.
         let tip = engine.compute_tip(&make_req(TipContext::Entry, 500_000_000, 0));
-        assert_eq!(tip, 250_000, "Entry tip should use proportional when it exceeds base");
+        assert_eq!(tip, 500_000, "Entry tip should use entry_tip base");
 
         // Small position: 0.01 SOL
         let tip2 = engine.compute_tip(&make_req(TipContext::Entry, 10_000_000, 0));
-        // proportional = 10M * 5 / 10000 = 5000. base = 100k. max(100k, 5k) = 100k.
-        // < min_tip 200k → clamp to 200k.
-        assert_eq!(tip2, 200_000, "Small entry should clamp to min_tip");
+        // proportional = 10M * 10 / 10000 = 10000. base = 500k. max(500k, 10k) = 500k.
+        // = min_tip 500k.
+        assert_eq!(tip2, 500_000, "Small entry should use min_tip");
     }
 
     #[test]
     fn test_clamp_to_min() {
         let config = TipConfig {
-            scalp_tip: 100_000, // Below min_tip of 200k
-            min_tip: 200_000,
+            scalp_tip: 100_000, // Below min_tip of 500k
+            min_tip: 500_000,
             ..TipConfig::default()
         };
         let engine = TipEngine::new(config);
         let tip = engine.compute_tip(&make_req(TipContext::Scalp, 0, 0));
-        assert_eq!(tip, 200_000, "Tip below min should be raised to min_tip");
+        assert_eq!(tip, 500_000, "Tip below min should be raised to min_tip");
     }
 
     #[test]

@@ -19,8 +19,9 @@ const BACKRUN_JSONL  = path.join(BASE, 'data/backrun_paper_trades.jsonl');
 const STATE_PATH = path.join(BASE, 'data/engine-state.json');
 const HB_STATE   = path.join(BASE, 'data/heartbeat-trade-state.json');
 
-const isPaper = process.env.PAPER_MODE !== 'false';
-const modeFlag = isPaper ? '📄 PAPER' : '🔴 LIVE';
+// Determine mode from health API (momentum engine's actual config), fallback to env
+let isPaper = process.env.PAPER_MODE !== 'false';
+let modeFlag = isPaper ? '📄 PAPER' : '🔴 LIVE';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

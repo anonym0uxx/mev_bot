@@ -2160,7 +2160,7 @@ impl MomentumEngine {
             exit_reason = reason.as_str(),
             hold_ms = now_ms.saturating_sub(pos.entry_ts_ms),
             net_pnl_sol = format!("{:.6}", net_pnl_sol),
-            "[momentum] paper position CLOSED"
+            "[momentum] position CLOSED"
         );
 
         self.logger.log(MomentumClosedPosition {
