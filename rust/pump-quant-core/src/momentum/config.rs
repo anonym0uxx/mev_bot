@@ -101,6 +101,14 @@ pub struct MomentumConfig {
     pub tp3_exit_pct: f64,
     /// Trailing stop: exit when price drops this % below peak (active after TP2).
     pub trailing_stop_pct: f64,
+    /// Tiered trailing stop: gain threshold for tier 1 (tight trail). Default: 200 bps.
+    pub trailing_stop_tier1_max_bps: i64,
+    /// Tiered trailing stop: trail % for tier 1 (small gains). Default: 8.0%.
+    pub trailing_stop_tier1_pct: f64,
+    /// Tiered trailing stop: gain threshold for tier 2 (medium trail). Default: 500 bps.
+    pub trailing_stop_tier2_max_bps: i64,
+    /// Tiered trailing stop: trail % for tier 2 (medium gains). Default: 12.0%.
+    pub trailing_stop_tier2_pct: f64,
     /// Hard stop-loss: immediate full exit at this % loss.
     pub hard_sl_pct: f64,
     /// Time-based stop-loss: exit if still losing after this many ms.
@@ -460,6 +468,22 @@ pub struct MomentumConfig {
     /// Default: 650.0. Set to 0.0 to disable.
     pub max_grad_volume_sol_absolute: f64,
 
+    /// Entry filter: minimum graduation volume (SOL) to accept.
+    /// Tokens with volume < 50 SOL have 2.2% WR and net -0.167 SOL (massive loser bucket).
+    /// Default: 50.0. Set to 0.0 to disable.
+    pub min_grad_volume_sol: f64,
+
+    /// Entry filter: maximum graduation volume (SOL) to accept.
+    /// Tokens with volume > 200 SOL have 2.6% WR and net -0.012 SOL (marginal loser).
+    /// Sweet spot is 50-200 SOL (combined 13.6% WR, +0.422 SOL).
+    /// Default: 200.0. Set to 0.0 to disable.
+    pub max_grad_volume_sol: f64,
+
+    /// Maximum entries per mint per engine session.
+    /// Re-entries on the same token are net losers beyond 2 entries.
+    /// Counter resets on engine restart. Default: 2. Set to 0 to disable.
+    pub max_entries_per_mint: u32,
+
     // ══════════════════════════════════════════════════════════
     // VELOCITY EXIT
     // ══════════════════════════════════════════════════════════
@@ -575,6 +599,44 @@ pub struct MomentumConfig {
     /// circuit breaker, and Jito fallback settings.
     #[serde(default)]
     pub rpc_sender: RpcSenderConfig,
+
+    // ══════════════════════════════════════════════════════════
+    // SESSION CIRCUIT BREAKER & RISK MANAGEMENT (TASK 5)
+    // ══════════════════════════════════════════════════════════
+
+    /// Session drawdown: pause trading for session_pause_duration_ms when
+    /// cumulative session net PnL drops below -session_max_loss_pause_sol.
+    /// Default: 0.10 SOL. Set to 0.0 to disable.
+    pub session_max_loss_pause_sol: f64,
+
+    /// Session drawdown: halt all trading (manual resume required) when
+    /// cumulative session net PnL drops below -session_max_loss_halt_sol.
+    /// Default: 0.20 SOL. Set to 0.0 to disable.
+    pub session_max_loss_halt_sol: f64,
+
+    /// Duration (ms) to pause trading after session_max_loss_pause_sol is hit.
+    /// Default: 1_800_000 (30 minutes).
+    pub session_pause_duration_ms: u64,
+
+    /// After this many consecutive losses, reduce position size by 50%.
+    /// Default: 5. Set to 0 to disable.
+    pub consecutive_loss_halfsize: u32,
+
+    /// After this many consecutive losses, pause trading for loss_pause_duration_ms.
+    /// Default: 10. Set to 0 to disable.
+    pub consecutive_loss_pause: u32,
+
+    /// Duration (ms) to pause trading after consecutive_loss_pause is hit.
+    /// Default: 900_000 (15 minutes).
+    pub loss_pause_duration_ms: u64,
+
+    /// If rolling win rate (last rolling_wr_window trades) drops below this %, pause trading.
+    /// Default: 5.0. Set to 0.0 to disable.
+    pub min_rolling_wr_pct: f64,
+
+    /// Window size for rolling win rate calculation.
+    /// Default: 50.
+    pub rolling_wr_window: u32,
 }
 
 impl Default for MomentumConfig {
@@ -593,6 +655,10 @@ impl Default for MomentumConfig {
             tp3_pct: 999.0,
             tp3_exit_pct: 0.40,
             trailing_stop_pct: 8.0,
+            trailing_stop_tier1_max_bps: 200,
+            trailing_stop_tier1_pct: 8.0,
+            trailing_stop_tier2_max_bps: 500,
+            trailing_stop_tier2_pct: 12.0,
             hard_sl_pct: 12.0,
             time_sl_ms: 60_000,
             max_hold_ms: 600_000,
@@ -721,6 +787,9 @@ impl Default for MomentumConfig {
             min_grad_speed_s: 90,
             max_grad_volume_sol_fast: 200.0,
             max_grad_volume_sol_absolute: 650.0,
+            min_grad_volume_sol: 50.0,
+            max_grad_volume_sol: 200.0,
+            max_entries_per_mint: 2,
 
             // Velocity exit
             velocity_exit_enabled: true,
@@ -760,6 +829,16 @@ impl Default for MomentumConfig {
 
             // RPC sender config
             rpc_sender: RpcSenderConfig::default(),
+
+            // Session circuit breaker & risk management (TASK 5)
+            session_max_loss_pause_sol: 0.10,
+            session_max_loss_halt_sol: 0.20,
+            session_pause_duration_ms: 1_800_000,
+            consecutive_loss_halfsize: 5,
+            consecutive_loss_pause: 10,
+            loss_pause_duration_ms: 900_000,
+            min_rolling_wr_pct: 5.0,
+            rolling_wr_window: 50,
         }
     }
 }

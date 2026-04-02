@@ -423,6 +423,33 @@ pub struct MomentumEngine {
     /// High value = mint_map not being populated before graduation.
     grad_enrichment_cold_misses: AtomicU64,
 
+    /// Tracks how many times the engine has entered each mint this session.
+    /// Used to enforce max_entries_per_mint (re-entry limiter).
+    /// Key: mint [u8; 32], Value: entry count. Resets on engine restart.
+    mint_entry_counts: DashMap<[u8; 32], u32>,
+
+    // ── Circuit Breaker & Risk Management (TASK 5) ──────────────────
+    /// Cumulative session net PnL in lamports (signed). Updated after each close.
+    cb_session_pnl_lamports: AtomicI64,
+    /// Consecutive loss counter. Reset to 0 on any win. Updated after each close.
+    cb_consecutive_losses: AtomicU64,
+    /// Total trades this session (for rolling WR denominator).
+    cb_total_trades: AtomicU64,
+    /// Total wins this session (for rolling WR numerator).
+    cb_total_wins: AtomicU64,
+    /// Timestamp (ms) until which trading is paused (session drawdown or consecutive loss pause).
+    /// 0 = not paused. Entries blocked when now_ms < this value.
+    cb_pause_until_ms: AtomicU64,
+    /// Session halted flag. Once set, no new entries until manual restart.
+    /// Uses AtomicU64: 0 = not halted, 1 = halted.
+    cb_halted: AtomicU64,
+    /// Half-size flag. When set, compute_size_lamports divides result by 2.
+    /// Uses AtomicU64: 0 = normal, 1 = half-size active.
+    cb_halfsize: AtomicU64,
+    /// Trades remaining under half-size regime (counts down from consecutive_loss_halfsize).
+    /// When this reaches 0, cb_halfsize is cleared.
+    cb_halfsize_remaining: AtomicU64,
+
     // ── Async retry channel for ShredStream fresh detections ────────────
     // When ShredStream detects a PumpSwap pool before getProgramAccounts has
     // indexed it, an async retry task resolves the pool after a delay and sends
@@ -530,6 +557,7 @@ impl MomentumEngine {
             raydium_pools: DashMap::new(),
             pumpswap_pools: DashMap::new(),
             deferred_buy_pending: DashSet::new(),
+            mint_entry_counts: DashMap::new(),
             tip_engine,
             jito_grpc,
             nozomi_client,
@@ -550,6 +578,15 @@ impl MomentumEngine {
             wallet_balance_lamports: Arc::new(AtomicU64::new(u64::MAX)),
             last_tick_ms: AtomicU64::new(0),
             grad_enrichment_cold_misses: AtomicU64::new(0),
+            // Circuit breaker state (TASK 5)
+            cb_session_pnl_lamports: AtomicI64::new(0),
+            cb_consecutive_losses: AtomicU64::new(0),
+            cb_total_trades: AtomicU64::new(0),
+            cb_total_wins: AtomicU64::new(0),
+            cb_pause_until_ms: AtomicU64::new(0),
+            cb_halted: AtomicU64::new(0),
+            cb_halfsize: AtomicU64::new(0),
+            cb_halfsize_remaining: AtomicU64::new(0),
             retry_tx: async_retry_tx,
             retry_rx: tokio::sync::Mutex::new(async_retry_rx),
         };
@@ -740,6 +777,39 @@ impl MomentumEngine {
             );
             return;
         }
+        // Hard reject: volume below minimum (too thin, low conviction)
+        if cfg.min_grad_volume_sol > 0.0 && grad_volume_sol < cfg.min_grad_volume_sol {
+            tracing::debug!(
+                mint = %bs58::encode(&pool_info.mint).into_string(),
+                vol_sol = grad_volume_sol,
+                min = cfg.min_grad_volume_sol,
+                "hard gate: rejected low volume"
+            );
+            return;
+        }
+        // Hard reject: volume above max threshold
+        if cfg.max_grad_volume_sol > 0.0 && grad_volume_sol > cfg.max_grad_volume_sol {
+            tracing::debug!(
+                mint = %bs58::encode(&pool_info.mint).into_string(),
+                vol_sol = grad_volume_sol,
+                max = cfg.max_grad_volume_sol,
+                "hard gate: rejected high volume"
+            );
+            return;
+        }
+        // Hard reject: re-entry limiter (max entries per mint per session)
+        if cfg.max_entries_per_mint > 0 {
+            let count = self.mint_entry_counts.get(&pool_info.mint).map(|c| *c).unwrap_or(0);
+            if count >= cfg.max_entries_per_mint {
+                tracing::debug!(
+                    mint = %bs58::encode(&pool_info.mint).into_string(),
+                    entries = count,
+                    max = cfg.max_entries_per_mint,
+                    "hard gate: rejected re-entry limit"
+                );
+                return;
+            }
+        }
         // ── End hard gate ────────────────────────────────────────────────────
 
         // Score the graduation (v2: 5 components including entry discount).
@@ -820,6 +890,9 @@ impl MomentumEngine {
             "[momentum] graduation score PASSED — opening position"
         );
 
+        // Increment re-entry counter for this mint
+        *self.mint_entry_counts.entry(pool_info.mint).or_insert(0) += 1;
+
         // Start price feed subscription immediately (before entry delay).
         // Seed with estimated reserves so current_price() returns a value instantly.
         // The RPC poll will overwrite with real data within ~750ms.
@@ -890,6 +963,40 @@ impl MomentumEngine {
             entry_delay_ms = self.config.entry_delay_ms,
             "[momentum] graduation scored, entry scheduled"
         );
+    }
+
+    /// Circuit breaker check: returns true if new entries are allowed.
+    fn check_circuit_breakers(&self, now_ms: u64) -> bool {
+        // 1. Hard halt: session exceeded max loss
+        if self.cb_halted.load(Ordering::Relaxed) != 0 {
+            tracing::debug!("[circuit_breaker] entries blocked — session halted");
+            return false;
+        }
+        // 2. Timed pause (from session loss or consecutive losses)
+        let pause_until = self.cb_pause_until_ms.load(Ordering::Relaxed);
+        if pause_until > 0 && now_ms < pause_until {
+            tracing::debug!(
+                resume_in_s = (pause_until - now_ms) / 1000,
+                "[circuit_breaker] entries blocked — paused"
+            );
+            return false;
+        }
+        // 3. Rolling WR floor
+        let total = self.cb_total_trades.load(Ordering::Relaxed);
+        let wins = self.cb_total_wins.load(Ordering::Relaxed);
+        if total >= self.config.rolling_wr_window as u64 {
+            let wr_pct = (wins as f64 / total as f64) * 100.0;
+            if wr_pct < self.config.min_rolling_wr_pct {
+                tracing::warn!(
+                    wr_pct = wr_pct,
+                    total,
+                    wins,
+                    "[circuit_breaker] entries blocked — rolling WR below floor"
+                );
+                return false;
+            }
+        }
+        true
     }
 
     /// Drain scored tokens from the hot_path channel into the local DashMap.
@@ -1026,15 +1133,22 @@ impl MomentumEngine {
                 return st.kelly_size_lamports;
             }
         }
-        // Fallback: Kelly-tiered sizing from grad_score.
-        // Post-fix score range is 25-85 (E1 wires speed/volume/velocity inputs).
+        // Data-driven score-based sizing (from Kelly analysis of 776 trades)
         let size_sol: f64 = match grad_score {
-            75..=100 => 0.30,
-            55..=74  => 0.20,
-            35..=54  => 0.10,
-            _        => 0.05,
+            60..=100 => 0.05,   // score 60+: qKelly=0.034, optimal ~0.05 SOL
+            55..=59  => 0.02,   // score 55-59: marginal edge, conservative size
+            _        => 0.02,   // should not reach here with min_score=55
         };
-        (size_sol * 1_000_000_000.0) as u64
+        let mut lamports = (size_sol * 1_000_000_000.0) as u64;
+        // Circuit breaker: halfsize regime
+        if self.cb_halfsize.load(Ordering::Relaxed) != 0 {
+            lamports /= 2;
+            let remaining = self.cb_halfsize_remaining.fetch_sub(1, Ordering::Relaxed);
+            if remaining <= 1 {
+                self.cb_halfsize.store(0, Ordering::Relaxed);
+            }
+        }
+        lamports
     }
 
     /// Compute Kelly-optimal probe size from rolling trade history.
@@ -1113,8 +1227,13 @@ impl MomentumEngine {
         // Drain async retry results (ShredStream fresh detection → delayed pool resolution)
         self.drain_async_retries(now_ms).await;
 
-        // Process pending entries that are ready
-        self.process_pending_entries(now_ms).await;
+        // ── Circuit Breaker checks: block new entries if tripped ────────
+        let cb_allow_entries = self.check_circuit_breakers(now_ms);
+
+        // Process pending entries that are ready (skipped if circuit breaker blocks)
+        if cb_allow_entries {
+            self.process_pending_entries(now_ms).await;
+        }
 
         // Deferred buy TX: retry submission for positions that opened without pool accounts
         self.process_deferred_buys(now_ms);
@@ -2430,6 +2549,18 @@ impl MomentumEngine {
                     MomentumState::Reversing => self.config.trailing_stop_reversal_pct,
                 };
 
+                // Phase 2.5: Gain-tiered trailing stop cap.
+                // Tighter trail for smaller gains, wider for bigger winners.
+                let current_gain_bps = price_to_bps_offset(pos.entry_price_fp, current_price_fp) as i64;
+                let tier_cap = if current_gain_bps < self.config.trailing_stop_tier1_max_bps {
+                    self.config.trailing_stop_tier1_pct  // tight trail for small gains
+                } else if current_gain_bps < self.config.trailing_stop_tier2_max_bps {
+                    self.config.trailing_stop_tier2_pct  // medium trail
+                } else {
+                    999.0  // no tier cap, let state-based trail run
+                };
+                let base_trail = base_trail.min(tier_cap);
+
                 // Phase 3: ATR-adaptive trail width.
                 // trail = max(base, k * ATR_bps / 100), clamped per phase.
                 let trail_pct = if pos.sample_count >= self.config.trail_min_samples_for_atr {
@@ -3102,6 +3233,56 @@ impl MomentumEngine {
         let net_lamports = (net_pnl_sol * 1e9) as i64;
         self.daily_pnl_lamports
             .fetch_add(net_lamports, Ordering::Relaxed);
+
+        // ── Circuit breaker updates ──
+        self.cb_session_pnl_lamports.fetch_add(net_lamports, Ordering::Relaxed);
+        self.cb_total_trades.fetch_add(1, Ordering::Relaxed);
+        if net_pnl_sol > 0.0 {
+            self.cb_total_wins.fetch_add(1, Ordering::Relaxed);
+            self.cb_consecutive_losses.store(0, Ordering::Relaxed);
+            // Clear halfsize on a win
+            self.cb_halfsize.store(0, Ordering::Relaxed);
+        } else {
+            let cl = self.cb_consecutive_losses.fetch_add(1, Ordering::Relaxed) + 1;
+            // Activate halfsize if consecutive losses reach threshold
+            if cl >= self.config.consecutive_loss_halfsize as u64 && cl < self.config.consecutive_loss_pause as u64 {
+                self.cb_halfsize.store(1, Ordering::Relaxed);
+                self.cb_halfsize_remaining.store(self.config.consecutive_loss_halfsize as u64, Ordering::Relaxed);
+            }
+            // Pause if consecutive losses reach pause threshold
+            if cl >= self.config.consecutive_loss_pause as u64 {
+                let pause_until = now_ms + self.config.loss_pause_duration_ms;
+                self.cb_pause_until_ms.store(pause_until, Ordering::Relaxed);
+                tracing::warn!(
+                    consecutive_losses = cl,
+                    pause_until_ms = pause_until,
+                    "[circuit_breaker] consecutive loss pause activated"
+                );
+            }
+        }
+        // Session loss halt
+        let session_pnl = self.cb_session_pnl_lamports.load(Ordering::Relaxed);
+        let halt_lamports = (self.config.session_max_loss_halt_sol * 1e9) as i64;
+        if session_pnl < -halt_lamports {
+            self.cb_halted.store(1, Ordering::Relaxed);
+            tracing::error!(
+                session_pnl_sol = session_pnl as f64 / 1e9,
+                "[circuit_breaker] SESSION HALTED — max loss exceeded"
+            );
+        }
+        // Session loss pause
+        let pause_lamports = (self.config.session_max_loss_pause_sol * 1e9) as i64;
+        if session_pnl < -pause_lamports && self.cb_halted.load(Ordering::Relaxed) == 0 {
+            let pause_until = now_ms + self.config.session_pause_duration_ms;
+            let current_pause = self.cb_pause_until_ms.load(Ordering::Relaxed);
+            if pause_until > current_pause {
+                self.cb_pause_until_ms.store(pause_until, Ordering::Relaxed);
+                tracing::warn!(
+                    session_pnl_sol = session_pnl as f64 / 1e9,
+                    "[circuit_breaker] session loss pause activated"
+                );
+            }
+        }
 
         // Update stats
         match reason {
