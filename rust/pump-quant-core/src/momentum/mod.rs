@@ -476,6 +476,18 @@ impl MomentumEngine {
             }
         }
 
+        // Reject duplicate mint — prevent multiple positions in the same token.
+        // CoreCast can send duplicate graduation sigs for the same mint within
+        // seconds. Without this guard, the engine opens N positions in the same
+        // token, all bleeding fee drag on time_sl.
+        if self.active.contains_key(&pool_info.mint) {
+            tracing::debug!(
+                mint = %bs58::encode(&pool_info.mint).into_string(),
+                "[momentum] skipping graduation — already have an open position in this mint"
+            );
+            return;
+        }
+
         // Check concurrent position limit
         if self.active.len() >= self.config.max_concurrent as usize {
             return;
