@@ -48,6 +48,16 @@ use dashmap::DashMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
+/// WSOL mint as raw bytes for detecting reversed PumpSwap pool ordering.
+/// PumpSwap sorts mints by raw byte comparison — when token_bytes > WSOL_bytes,
+/// WSOL becomes base_mint and token becomes quote_mint (~81% of pools).
+const WSOL_MINT_BYTES: [u8; 32] = [
+    0x06, 0x9b, 0x88, 0x57, 0xfe, 0xab, 0x81, 0x84,
+    0xfb, 0x68, 0x7f, 0x63, 0x46, 0x18, 0xc0, 0x35,
+    0xda, 0xc4, 0x39, 0xdc, 0x1a, 0xeb, 0x3b, 0x55,
+    0x98, 0xa0, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x01,
+];
+
 // ── Live mode types ─────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug)]
@@ -3000,12 +3010,29 @@ impl MomentumEngine {
         mint: [u8; 32],
         sig: [u8; 64],
         ts_ms: u64,
-        coin_vault: [u8; 32],
-        pc_vault: [u8; 32],
+        mut coin_vault: [u8; 32],
+        mut pc_vault: [u8; 32],
         source: crate::feeds::MigrationSource,
         enrichment: crate::engine::hot_path::GradEnrichment,
     ) {
         if !self.config.enabled { return; }
+
+        // ── Detect reversed PumpSwap pool ordering ──────────────────────────
+        // PumpSwap sorts mints by raw byte comparison. WSOL (0x069b...) sorts
+        // before most pump.fun tokens, so ~81% of pools have WSOL as base_mint
+        // and token as quote_mint. The Helius Enhanced feed passes vaults in
+        // pool layout order (base_vault, quote_vault), meaning:
+        //   - coin_vault (param) = pool_base_token_account = WSOL vault (wrong!)
+        //   - pc_vault (param) = pool_quote_token_account = token vault (wrong!)
+        // We need coin_vault = token vault and pc_vault = WSOL vault.
+        // Detect: if mint > WSOL_MINT_BYTES, the pool is reversed.
+        if mint > WSOL_MINT_BYTES {
+            tracing::debug!(
+                mint = %bs58::encode(&mint).into_string(),
+                "[momentum] PumpSwapGraduationDirect: reversed pool detected (WSOL is base) — swapping vaults"
+            );
+            std::mem::swap(&mut coin_vault, &mut pc_vault);
+        }
 
         // RATE GATE: Shares budget with on_migration (same static counters)
         {
@@ -3141,6 +3168,14 @@ impl MomentumEngine {
                 // getProgramAccounts. For now, store what we have. The tx builder
                 // can derive the pool PDA from mint + index + creator seeds.
                 {
+                    // Determine pool ordering: if token mint < WSOL, token is base.
+                    let wsol_bytes: [u8; 32] = [
+                        0x06, 0x9b, 0x88, 0x57, 0xfe, 0xab, 0x81, 0x84,
+                        0xfb, 0x68, 0x7f, 0x63, 0x46, 0x18, 0xc0, 0x35,
+                        0xda, 0xc4, 0x39, 0xdc, 0x1a, 0xeb, 0x3b, 0x55,
+                        0x98, 0xa0, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x01,
+                    ];
+                    let token_is_base = mint < wsol_bytes;
                     let ps_accts = crate::tx::pumpswap::PumpSwapPoolAccounts {
                         pool: [0u8; 32], // Pool PDA unknown from direct path
                         base_mint: mint,
@@ -3148,6 +3183,7 @@ impl MomentumEngine {
                         pool_quote_token_account: pc_vault,
                         coin_creator_vault_ata: [0u8; 32],
                         coin_creator_vault_authority: [0u8; 32],
+                        token_is_base,
                     };
                     self.pumpswap_pools.insert(mint, ps_accts);
                     tracing::debug!(

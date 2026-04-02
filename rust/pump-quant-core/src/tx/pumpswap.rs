@@ -3,9 +3,24 @@
 //! Builds complete signed `VersionedTransaction`s for buy (SOL → Token) and
 //! sell (Token → SOL) swaps through PumpSwap's AMM program.
 //!
+//! **Pool ordering.** PumpSwap sorts mints by raw byte comparison.
+//! WSOL (0x069b…) sorts before most pump.fun tokens, so ~81% of pools have
+//! WSOL as base_mint and the token as quote_mint ("reversed" ordering).
+//! This module handles both orderings correctly:
+//! - Accounts [3]-[8] are placed in the pool's actual on-chain base/quote order
+//! - The instruction discriminator flips: BUY uses `sell` disc for reversed pools
+//!   (selling WSOL-base to get token-quote) and vice versa
+//!
 //! No dependency on `spl-token` or `spl-associated-token-account` crates —
 //! all SPL instructions and ATA derivation are built manually to avoid the
 //! zeroize version conflict with rustls.
+//!
+//! ## TODO for eng1 (pool.rs owner)
+//! Consider adding `token_is_base: bool` to `momentum::pool::PumpSwapPoolAccounts`
+//! so the From conversion doesn't need to re-derive it from mint bytes.
+//! Currently the From impl computes it as `base_mint < WSOL_MINT_BYTES`.
+//! If pool.rs already knows the ordering at resolution time, passing it through
+//! avoids redundant work and makes the contract explicit.
 
 use std::str::FromStr;
 
@@ -42,8 +57,17 @@ pub const PUMPSWAP_FEE_PROG_STATE: &str = "5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxP
 /// Coin fee program state account.
 pub const PUMPSWAP_FEE_PROG_STATE2: &str = "4Jjna3h73QbgmdqwnV5NJxjCidKWB7Q26jeuj9jtFetC";
 
-/// Discriminator for both buy and sell (same Anchor discriminator, different arg semantics).
-pub const PUMPSWAP_SWAP_DISCRIMINATOR: [u8; 8] = [0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad];
+/// PumpSwap `buy` instruction discriminator = sha256("global:buy")[..8].
+/// buy(base_out: u64, max_quote_in: u64) — buy base tokens by paying quote tokens.
+pub const PUMPSWAP_BUY_DISCRIMINATOR: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
+
+/// PumpSwap `sell` instruction discriminator = sha256("global:sell")[..8].
+/// sell(base_in: u64, min_quote_out: u64) — sell base tokens for quote tokens.
+pub const PUMPSWAP_SELL_DISCRIMINATOR: [u8; 8] = [0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad];
+
+/// Legacy alias — kept for existing tests only.
+#[deprecated(note = "Use PUMPSWAP_BUY_DISCRIMINATOR or PUMPSWAP_SELL_DISCRIMINATOR")]
+pub const PUMPSWAP_SWAP_DISCRIMINATOR: [u8; 8] = PUMPSWAP_SELL_DISCRIMINATOR;
 
 /// 8 protocol fee recipients — rotate randomly per tx.
 pub const PUMPSWAP_FEE_RECIPIENTS: [&str; 8] = [
@@ -71,36 +95,85 @@ pub const SPL_ATA_PROGRAM_STR: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8
 /// Pool accounts required for a PumpSwap swap.
 /// Populated from PoolResolution at graduation time, stored in pumpswap_pools DashMap.
 ///
-/// Matches `momentum::pool::PumpSwapPoolAccounts` structurally so the two types
-/// are interchangeable. Fixed-address accounts (coin_fee_config, coin_fee_program_state)
-/// are resolved from constants at instruction build time.
+/// **Pool ordering matters.** PumpSwap sorts mints by raw byte comparison.
+/// When WSOL < token (the majority ~81% case), WSOL is base_mint on-chain.
+/// The TX builder must pass accounts and instruction args in the pool's actual
+/// on-chain ordering (base/quote), not our normalized coin/pc ordering.
+///
+/// Fields `pool_base_token_account` and `pool_quote_token_account` always store
+/// the pool's on-chain base and quote vaults respectively. The `token_is_base`
+/// flag tells the TX builder which vault holds the token vs WSOL.
 #[derive(Debug, Clone)]
 pub struct PumpSwapPoolAccounts {
     /// Pool PDA address (PoolResolution.pool_address)
     pub pool: [u8; 32],
-    /// Token mint (PoolResolution.mint) = base_mint in PumpSwap terms
+    /// The traded token mint (always the non-WSOL token, regardless of pool ordering)
     pub base_mint: [u8; 32],
-    /// Pool token vault = PoolResolution.coin_vault = pool_base_token_account
+    /// Pool's on-chain base vault (pool_base_token_account at offset 139).
+    /// If token_is_base: this is the TOKEN vault.
+    /// If !token_is_base: this is the WSOL vault.
     pub pool_base_token_account: [u8; 32],
-    /// Pool WSOL vault = PoolResolution.pc_vault = pool_quote_token_account
+    /// Pool's on-chain quote vault (pool_quote_token_account at offset 171).
+    /// If token_is_base: this is the WSOL vault.
+    /// If !token_is_base: this is the TOKEN vault.
     pub pool_quote_token_account: [u8; 32],
     /// Coin creator vault ATA (may be zeroed if not applicable; always include in ix)
     pub coin_creator_vault_ata: [u8; 32],
     /// Coin creator vault authority (may be zeroed; always include in ix)
     pub coin_creator_vault_authority: [u8; 32],
+    /// Whether the token is the pool's base_mint (true) or quote_mint (false).
+    /// When false, WSOL is base and the token is quote (the "reversed" ~81% case).
+    /// Determines instruction discriminator choice and arg ordering.
+    pub token_is_base: bool,
 }
 
+/// WSOL mint as raw bytes for detecting reversed PumpSwap pool ordering.
+const WSOL_MINT_BYTES: [u8; 32] = [
+    0x06, 0x9b, 0x88, 0x57, 0xfe, 0xab, 0x81, 0x84,
+    0xfb, 0x68, 0x7f, 0x63, 0x46, 0x18, 0xc0, 0x35,
+    0xda, 0xc4, 0x39, 0xdc, 0x1a, 0xeb, 0x3b, 0x55,
+    0x98, 0xa0, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x01,
+];
+
 /// Convert from `momentum::pool::PumpSwapPoolAccounts` to `tx::pumpswap::PumpSwapPoolAccounts`.
-/// Both structs have identical fields; this bridges the module boundary.
+///
+/// **Critical: vault re-ordering for reversed pools.**
+///
+/// The upstream pool.rs struct uses a NORMALIZED convention:
+///   `pool_base_token_account` = always TOKEN vault (from PoolResolution.coin_vault)
+///   `pool_quote_token_account` = always WSOL vault (from PoolResolution.pc_vault)
+///
+/// But PumpSwap's on-chain layout and instruction expect vaults in the pool's
+/// actual base/quote order. For reversed pools (WSOL=base), the on-chain layout is:
+///   pool_base_token_account [offset 139] = WSOL vault
+///   pool_quote_token_account [offset 171] = TOKEN vault
+///
+/// So we swap the vaults when converting reversed pools to match on-chain order.
 impl From<crate::momentum::pool::PumpSwapPoolAccounts> for PumpSwapPoolAccounts {
     fn from(p: crate::momentum::pool::PumpSwapPoolAccounts) -> Self {
+        // Determine pool ordering: if token mint < WSOL bytes, token is base (normal).
+        // Otherwise WSOL is base (reversed).
+        let token_is_base = p.base_mint < WSOL_MINT_BYTES;
+
+        // Swap vaults to match on-chain ordering for reversed pools.
+        // p.pool_base_token_account = TOKEN vault (normalized)
+        // p.pool_quote_token_account = WSOL vault (normalized)
+        let (onchain_base_vault, onchain_quote_vault) = if token_is_base {
+            // Normal: token=base on-chain → base_vault=token, quote_vault=WSOL
+            (p.pool_base_token_account, p.pool_quote_token_account)
+        } else {
+            // Reversed: WSOL=base on-chain → base_vault=WSOL, quote_vault=token
+            (p.pool_quote_token_account, p.pool_base_token_account)
+        };
+
         Self {
             pool: p.pool,
             base_mint: p.base_mint,
-            pool_base_token_account: p.pool_base_token_account,
-            pool_quote_token_account: p.pool_quote_token_account,
+            pool_base_token_account: onchain_base_vault,
+            pool_quote_token_account: onchain_quote_vault,
             coin_creator_vault_ata: p.coin_creator_vault_ata,
             coin_creator_vault_authority: p.coin_creator_vault_authority,
+            token_is_base,
         }
     }
 }
@@ -218,12 +291,17 @@ fn build_sync_native_ix(native_account: &Pubkey) -> Instruction {
 // ── Instruction data ─────────────────────────────────────────────────────────
 
 /// Build 24-byte PumpSwap swap instruction data.
-/// buy:  [discriminator(8)] + base_out(u64 LE) + max_quote_in(u64 LE)
-/// sell: [discriminator(8)] + base_in(u64 LE) + min_quote_out(u64 LE)
-/// Both use the same discriminator and same arg layout.
-fn build_swap_data(arg1: u64, arg2: u64) -> Vec<u8> {
+///
+/// PumpSwap has TWO separate instructions with different discriminators:
+/// - `buy`  (0x66063d1201daebea): args = (base_out: u64, max_quote_in: u64)
+///   → buy base tokens by paying quote tokens
+/// - `sell` (0x33e685a4017f83ad): args = (base_in: u64, min_quote_out: u64)
+///   → sell base tokens for quote tokens
+///
+/// "base" and "quote" refer to the pool's on-chain ordering, NOT our token/SOL convention.
+fn build_swap_data(discriminator: &[u8; 8], arg1: u64, arg2: u64) -> Vec<u8> {
     let mut data = Vec::with_capacity(24);
-    data.extend_from_slice(&PUMPSWAP_SWAP_DISCRIMINATOR);
+    data.extend_from_slice(discriminator);
     data.extend_from_slice(&arg1.to_le_bytes());
     data.extend_from_slice(&arg2.to_le_bytes());
     data
@@ -233,33 +311,25 @@ fn build_swap_data(arg1: u64, arg2: u64) -> Vec<u8> {
 
 /// Build the PumpSwap swap instruction with the 22-account layout.
 ///
-/// Account order matches on-chain verified layout:
-///   [0]  pool                              (writable)
-///   [1]  user                              (signer, writable)
-///   [2]  global_config                     (readonly)
-///   [3]  base_mint                         (readonly)
-///   [4]  quote_mint (WSOL)                 (readonly)
-///   [5]  user_base_token_account           (writable)
-///   [6]  user_quote_token_account          (writable)
-///   [7]  pool_base_token_account           (writable)
-///   [8]  pool_quote_token_account          (writable)
-///   [9]  protocol_fee_recipient            (writable)
-///   [10] protocol_fee_recipient_token_acct (writable)
-///   [11] base_token_program               (readonly)
-///   [12] quote_token_program              (readonly)
-///   [13] system_program                   (readonly)
-///   [14] associated_token_program         (readonly)
-///   [15] event_authority                  (readonly)
-///   [16] pump_program                     (readonly)
-///   [17] coin_creator_vault_ata           (writable)
-///   [18] coin_creator_vault_authority     (writable)
-///   [19] coin_fee_config                  (readonly)
-///   [20] coin_fee_program                 (readonly)
-///   [21] coin_fee_program_state           (readonly)
+/// **Pool ordering aware.** Accounts [3]-[8] must match the pool's actual
+/// on-chain base/quote ordering, not our normalized token/SOL convention.
+///
+/// For a NORMAL pool (token=base, WSOL=quote):
+///   [3] = token mint    [4] = WSOL mint
+///   [5] = user token ATA  [6] = user WSOL ATA
+///   [7] = pool token vault [8] = pool WSOL vault
+///
+/// For a REVERSED pool (WSOL=base, token=quote):
+///   [3] = WSOL mint     [4] = token mint
+///   [5] = user WSOL ATA  [6] = user token ATA
+///   [7] = pool WSOL vault [8] = pool token vault
+///
+/// Fixed accounts [0]-[2], [9]-[21] are the same regardless of ordering.
 fn build_pumpswap_swap_ix(
     pool: &PumpSwapPoolAccounts,
     wallet_pubkey: &Pubkey,
     fee_recipient_idx: usize,
+    discriminator: &[u8; 8],
     arg1: u64,
     arg2: u64,
 ) -> Instruction {
@@ -271,9 +341,25 @@ fn build_pumpswap_swap_ix(
     let event_authority = Pubkey::from_str(PUMPSWAP_EVENT_AUTHORITY).unwrap();
     let fee_program = Pubkey::from_str(PUMPSWAP_FEE_PROGRAM).unwrap();
 
-    let base_mint = Pubkey::new_from_array(pool.base_mint);
-    let user_base_ata = token_ata(wallet_pubkey, &base_mint);
-    let user_quote_ata = token_ata(wallet_pubkey, &wsol_mint);
+    let token_mint = Pubkey::new_from_array(pool.base_mint);
+
+    // Derive user ATAs
+    let user_token_ata = token_ata(wallet_pubkey, &token_mint);
+    let user_wsol_ata = token_ata(wallet_pubkey, &wsol_mint);
+
+    // Accounts [3]-[8] depend on pool ordering:
+    // Pool's on-chain base_mint/quote_mint determine the account positions.
+    let (acct3_base_mint, acct4_quote_mint, acct5_user_base_ata, acct6_user_quote_ata) =
+        if pool.token_is_base {
+            // Normal: token=base, WSOL=quote
+            (token_mint, wsol_mint, user_token_ata, user_wsol_ata)
+        } else {
+            // Reversed: WSOL=base, token=quote
+            (wsol_mint, token_mint, user_wsol_ata, user_token_ata)
+        };
+    // Pool vaults [7]/[8] are already stored in the pool's on-chain order
+    let acct7_pool_base_vault = Pubkey::new_from_array(pool.pool_base_token_account);
+    let acct8_pool_quote_vault = Pubkey::new_from_array(pool.pool_quote_token_account);
 
     // Fee recipient rotation
     let fee_recipient = Pubkey::from_str(
@@ -290,34 +376,34 @@ fn build_pumpswap_swap_ix(
     let coin_fee_program_state = Pubkey::from_str(PUMPSWAP_FEE_PROG_STATE2).unwrap();
 
     let accounts = vec![
-        AccountMeta::new(Pubkey::new_from_array(pool.pool), false),              // [0]  pool
-        AccountMeta::new(*wallet_pubkey, true),                                   // [1]  user (signer)
-        AccountMeta::new_readonly(global_config, false),                          // [2]  global_config
-        AccountMeta::new_readonly(base_mint, false),                              // [3]  base_mint
-        AccountMeta::new_readonly(wsol_mint, false),                              // [4]  quote_mint
-        AccountMeta::new(user_base_ata, false),                                   // [5]  user_base_token_account
-        AccountMeta::new(user_quote_ata, false),                                  // [6]  user_quote_token_account
-        AccountMeta::new(Pubkey::new_from_array(pool.pool_base_token_account), false),  // [7]
-        AccountMeta::new(Pubkey::new_from_array(pool.pool_quote_token_account), false), // [8]
-        AccountMeta::new(fee_recipient, false),                                   // [9]  protocol_fee_recipient
-        AccountMeta::new(fee_recipient_token_account, false),                     // [10] fee_recipient_token_acct
-        AccountMeta::new_readonly(token_program, false),                          // [11] base_token_program
-        AccountMeta::new_readonly(token_program, false),                          // [12] quote_token_program
-        AccountMeta::new_readonly(system_program::id(), false),                   // [13] system_program
-        AccountMeta::new_readonly(ata_program, false),                            // [14] associated_token_program
-        AccountMeta::new_readonly(event_authority, false),                        // [15] event_authority
-        AccountMeta::new_readonly(pumpswap_program, false),                       // [16] pump_program (self CPI)
-        AccountMeta::new(coin_creator_vault_ata, false),                          // [17] coin_creator_vault_ata
-        AccountMeta::new(coin_creator_vault_authority, false),                    // [18] coin_creator_vault_authority
-        AccountMeta::new_readonly(coin_fee_config, false),                        // [19] coin_fee_config
-        AccountMeta::new_readonly(fee_program, false),                            // [20] coin_fee_program
-        AccountMeta::new_readonly(coin_fee_program_state, false),                 // [21] coin_fee_program_state
+        AccountMeta::new(Pubkey::new_from_array(pool.pool), false),     // [0]  pool
+        AccountMeta::new(*wallet_pubkey, true),                          // [1]  user (signer)
+        AccountMeta::new_readonly(global_config, false),                 // [2]  global_config
+        AccountMeta::new_readonly(acct3_base_mint, false),               // [3]  base_mint (on-chain)
+        AccountMeta::new_readonly(acct4_quote_mint, false),              // [4]  quote_mint (on-chain)
+        AccountMeta::new(acct5_user_base_ata, false),                    // [5]  user_base_token_account
+        AccountMeta::new(acct6_user_quote_ata, false),                   // [6]  user_quote_token_account
+        AccountMeta::new(acct7_pool_base_vault, false),                  // [7]  pool_base_token_account
+        AccountMeta::new(acct8_pool_quote_vault, false),                 // [8]  pool_quote_token_account
+        AccountMeta::new(fee_recipient, false),                          // [9]  protocol_fee_recipient
+        AccountMeta::new(fee_recipient_token_account, false),            // [10] fee_recipient_token_acct
+        AccountMeta::new_readonly(token_program, false),                 // [11] base_token_program
+        AccountMeta::new_readonly(token_program, false),                 // [12] quote_token_program
+        AccountMeta::new_readonly(system_program::id(), false),          // [13] system_program
+        AccountMeta::new_readonly(ata_program, false),                   // [14] associated_token_program
+        AccountMeta::new_readonly(event_authority, false),               // [15] event_authority
+        AccountMeta::new_readonly(pumpswap_program, false),              // [16] pump_program (self CPI)
+        AccountMeta::new(coin_creator_vault_ata, false),                 // [17] coin_creator_vault_ata
+        AccountMeta::new(coin_creator_vault_authority, false),           // [18] coin_creator_vault_authority
+        AccountMeta::new_readonly(coin_fee_config, false),               // [19] coin_fee_config
+        AccountMeta::new_readonly(fee_program, false),                   // [20] coin_fee_program
+        AccountMeta::new_readonly(coin_fee_program_state, false),        // [21] coin_fee_program_state
     ];
 
     Instruction {
         program_id: pumpswap_program,
         accounts,
-        data: build_swap_data(arg1, arg2),
+        data: build_swap_data(discriminator, arg1, arg2),
     }
 }
 
@@ -325,15 +411,26 @@ fn build_pumpswap_swap_ix(
 
 /// Build a complete signed PumpSwap BUY transaction (SOL → Token).
 ///
+/// **Pool ordering aware.** The PumpSwap instruction discriminator and arg
+/// semantics depend on whether the token is base or quote in the pool:
+///
+/// NORMAL pool (token=base, WSOL=quote):
+///   Use `buy` discriminator: buy(base_out=tokens, max_quote_in=sol)
+///   → "buy base tokens by paying quote tokens"
+///
+/// REVERSED pool (WSOL=base, token=quote):
+///   Use `sell` discriminator: sell(base_in=sol, min_quote_out=tokens)
+///   → "sell base(WSOL) to get quote(tokens)" — semantically a "buy tokens"
+///
 /// Instruction sequence:
 ///   1. ComputeBudget::set_compute_unit_limit(400_000)
 ///   2. ComputeBudget::set_compute_unit_price(5000)
-///   3. create_associated_token_account_idempotent(user, base_mint) — ensure token ATA
-///   4. create_associated_token_account_idempotent(user, WSOL) — ensure WSOL ATA
-///   5. system_instruction::transfer(wallet → wsol_ata, sol_lamports) — fund WSOL ATA
-///   6. spl_token::sync_native(wsol_ata) — wrap SOL → WSOL
-///   7. pumpswap swap ix (22 accounts, discriminator + base_out + max_quote_in)
-///   8. spl_token::close_account(wsol_ata → wallet) — reclaim leftover WSOL
+///   3. create_associated_token_account_idempotent(user, token_mint)
+///   4. create_associated_token_account_idempotent(user, WSOL)
+///   5. system_instruction::transfer(wallet → wsol_ata, sol_lamports)
+///   6. spl_token::sync_native(wsol_ata)
+///   7. pumpswap swap ix (22 accounts)
+///   8. spl_token::close_account(wsol_ata → wallet)
 ///   9. system_instruction::transfer(wallet → jito_tip_account, tip_lamports)
 ///
 /// Returns: serialized VersionedTransaction bytes (bincode).
@@ -348,7 +445,7 @@ pub fn build_pumpswap_buy_tx(
     fee_recipient_idx: usize,
 ) -> Result<Vec<u8>, PumpSwapTxError> {
     let wallet_pubkey = wallet_keypair.pubkey();
-    let base_mint = Pubkey::new_from_array(pool.base_mint);
+    let token_mint = Pubkey::new_from_array(pool.base_mint);
     let wsol_mint = Pubkey::from_str(WSOL_MINT_STR).unwrap();
     let blockhash = Hash::new_from_array(recent_blockhash);
 
@@ -361,11 +458,11 @@ pub fn build_pumpswap_buy_tx(
     // 2. Compute budget: priority fee
     let ix_cu_price = ComputeBudgetInstruction::set_compute_unit_price(5000);
 
-    // 3. Create token ATA (idempotent) — ensure base_mint ATA exists
+    // 3. Create token ATA (idempotent)
     let ix_create_token_ata = build_create_ata_idempotent_ix(
         &wallet_pubkey,
         &wallet_pubkey,
-        &base_mint,
+        &token_mint,
     );
 
     // 4. Create WSOL ATA (idempotent)
@@ -381,13 +478,24 @@ pub fn build_pumpswap_buy_tx(
     // 6. Sync native to wrap deposited SOL → WSOL
     let ix_sync = build_sync_native_ix(&wsol_ata_addr);
 
-    // 7. PumpSwap swap: buy(base_out=min_tokens_out, max_quote_in=sol_lamports)
+    // 7. PumpSwap swap — discriminator + args depend on pool ordering
+    let (discriminator, arg1, arg2) = if pool.token_is_base {
+        // NORMAL: token=base, WSOL=quote → PumpSwap "buy" (buy base with quote)
+        // buy(base_out=min_tokens_out, max_quote_in=sol_lamports)
+        (&PUMPSWAP_BUY_DISCRIMINATOR, min_tokens_out, sol_lamports)
+    } else {
+        // REVERSED: WSOL=base, token=quote → PumpSwap "sell" (sell base for quote)
+        // sell(base_in=sol_lamports, min_quote_out=min_tokens_out)
+        (&PUMPSWAP_SELL_DISCRIMINATOR, sol_lamports, min_tokens_out)
+    };
+
     let ix_swap = build_pumpswap_swap_ix(
         pool,
         &wallet_pubkey,
         fee_recipient_idx,
-        min_tokens_out,  // base_out
-        sol_lamports,    // max_quote_in
+        discriminator,
+        arg1,
+        arg2,
     );
 
     // 8. Close WSOL ATA → wallet (reclaim leftover WSOL)
@@ -423,12 +531,23 @@ pub fn build_pumpswap_buy_tx(
 
 /// Build a complete signed PumpSwap SELL transaction (Token → SOL).
 ///
+/// **Pool ordering aware.** The PumpSwap instruction discriminator and arg
+/// semantics depend on whether the token is base or quote in the pool:
+///
+/// NORMAL pool (token=base, WSOL=quote):
+///   Use `sell` discriminator: sell(base_in=tokens, min_quote_out=sol)
+///   → "sell base(tokens) to get quote(WSOL)"
+///
+/// REVERSED pool (WSOL=base, token=quote):
+///   Use `buy` discriminator: buy(base_out=sol, max_quote_in=tokens)
+///   → "buy base(WSOL) by paying quote(tokens)" — semantically a "sell tokens"
+///
 /// Instruction sequence:
 ///   1. ComputeBudget::set_compute_unit_limit(300_000)
 ///   2. ComputeBudget::set_compute_unit_price(5000)
-///   3. create_associated_token_account_idempotent(user, WSOL) — ensure WSOL ATA
-///   4. pumpswap swap ix (22 accounts, discriminator + base_in + min_quote_out)
-///   5. spl_token::close_account(wsol_ata → wallet) — close WSOL ATA, SOL flows back
+///   3. create_associated_token_account_idempotent(user, WSOL)
+///   4. pumpswap swap ix (22 accounts)
+///   5. spl_token::close_account(wsol_ata → wallet)
 ///   6. system_instruction::transfer(wallet → jito_tip_account, tip_lamports)
 ///
 /// Returns: serialized VersionedTransaction bytes (bincode).
@@ -462,13 +581,24 @@ pub fn build_pumpswap_sell_tx(
         &wsol_mint,
     );
 
-    // 4. PumpSwap swap: sell(base_in=tokens_to_sell, min_quote_out=min_sol_out)
+    // 4. PumpSwap swap — discriminator + args depend on pool ordering
+    let (discriminator, arg1, arg2) = if pool.token_is_base {
+        // NORMAL: token=base, WSOL=quote → PumpSwap "sell" (sell base for quote)
+        // sell(base_in=tokens_to_sell, min_quote_out=min_sol_out)
+        (&PUMPSWAP_SELL_DISCRIMINATOR, tokens_to_sell, min_sol_out)
+    } else {
+        // REVERSED: WSOL=base, token=quote → PumpSwap "buy" (buy base with quote)
+        // buy(base_out=min_sol_out, max_quote_in=tokens_to_sell)
+        (&PUMPSWAP_BUY_DISCRIMINATOR, min_sol_out, tokens_to_sell)
+    };
+
     let ix_swap = build_pumpswap_swap_ix(
         pool,
         &wallet_pubkey,
         fee_recipient_idx,
-        tokens_to_sell,  // base_in
-        min_sol_out,     // min_quote_out
+        discriminator,
+        arg1,
+        arg2,
     );
 
     // 5. Close WSOL ATA → wallet (SOL flows back to wallet)
@@ -505,7 +635,7 @@ mod tests {
     use solana_sdk::signature::Keypair;
     use solana_sdk::signer::Signer;
 
-    /// Create a dummy PumpSwapPoolAccounts for testing.
+    /// Create a dummy PumpSwapPoolAccounts for testing (NORMAL ordering: token=base).
     fn dummy_pool() -> PumpSwapPoolAccounts {
         PumpSwapPoolAccounts {
             pool: [1u8; 32],
@@ -514,6 +644,20 @@ mod tests {
             pool_quote_token_account: [4u8; 32],
             coin_creator_vault_ata: [0u8; 32],       // zeroed — program handles it
             coin_creator_vault_authority: [0u8; 32],  // zeroed — program handles it
+            token_is_base: true,
+        }
+    }
+
+    /// Create a dummy PumpSwapPoolAccounts with REVERSED ordering (WSOL=base, token=quote).
+    fn dummy_reversed_pool() -> PumpSwapPoolAccounts {
+        PumpSwapPoolAccounts {
+            pool: [1u8; 32],
+            base_mint: [42u8; 32],       // token mint (always the non-WSOL mint)
+            pool_base_token_account: [5u8; 32],  // WSOL vault (base=WSOL for reversed)
+            pool_quote_token_account: [6u8; 32], // token vault (quote=token for reversed)
+            coin_creator_vault_ata: [0u8; 32],
+            coin_creator_vault_authority: [0u8; 32],
+            token_is_base: false,
         }
     }
 
@@ -555,15 +699,27 @@ mod tests {
         .expect("sell tx build should succeed")
     }
 
-    // ── 1. test_discriminator_correct ────────────────────────────────────
+    // ── 1. test_buy_discriminator_correct ────────────────────────────────
 
     #[test]
-    fn test_discriminator_correct() {
-        let data = build_swap_data(100, 200);
+    fn test_buy_discriminator_correct() {
+        let data = build_swap_data(&PUMPSWAP_BUY_DISCRIMINATOR, 100, 200);
+        assert_eq!(
+            &data[..8],
+            &[0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea],
+            "discriminator must match PumpSwap buy discriminator"
+        );
+    }
+
+    // ── 1b. test_sell_discriminator_correct ───────────────────────────────
+
+    #[test]
+    fn test_sell_discriminator_correct() {
+        let data = build_swap_data(&PUMPSWAP_SELL_DISCRIMINATOR, 100, 200);
         assert_eq!(
             &data[..8],
             &[0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad],
-            "discriminator must match PumpSwap swap discriminator"
+            "discriminator must match PumpSwap sell discriminator"
         );
     }
 
@@ -571,7 +727,7 @@ mod tests {
 
     #[test]
     fn test_buy_data_length_24() {
-        let data = build_swap_data(1, 1_000_000_000);
+        let data = build_swap_data(&PUMPSWAP_BUY_DISCRIMINATOR, 1, 1_000_000_000);
         assert_eq!(data.len(), 24, "buy swap data must be exactly 24 bytes");
     }
 
@@ -579,7 +735,7 @@ mod tests {
 
     #[test]
     fn test_sell_data_length_24() {
-        let data = build_swap_data(1_000_000, 0);
+        let data = build_swap_data(&PUMPSWAP_SELL_DISCRIMINATOR, 1_000_000, 0);
         assert_eq!(data.len(), 24, "sell swap data must be exactly 24 bytes");
     }
 
@@ -668,10 +824,9 @@ mod tests {
 
     #[test]
     fn test_fee_recipient_idx0() {
-        // Build swap ix with fee_idx=0 and verify account[9] = 62qc2CNX...
         let pool = dummy_pool();
         let kp = Keypair::new();
-        let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 0, 1, 1_000_000);
+        let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 0, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1_000_000);
         let expected = Pubkey::from_str("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV").unwrap();
         assert_eq!(
             ix.accounts[9].pubkey, expected,
@@ -683,10 +838,9 @@ mod tests {
 
     #[test]
     fn test_fee_recipient_idx7() {
-        // Build swap ix with fee_idx=7 and verify account[9] = JCRGumo...
         let pool = dummy_pool();
         let kp = Keypair::new();
-        let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 7, 1, 1_000_000);
+        let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 7, &PUMPSWAP_SELL_DISCRIMINATOR, 1, 1_000_000);
         let expected = Pubkey::from_str("JCRGumoE9Qi5BBgULTgdgTLjSgkCMSbF62ZZfGs84JeU").unwrap();
         assert_eq!(
             ix.accounts[9].pubkey, expected,
@@ -722,20 +876,29 @@ mod tests {
     fn test_swap_ix_has_22_accounts() {
         let pool = dummy_pool();
         let kp = Keypair::new();
-        let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 0, 1, 1_000_000);
+        let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 0, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1_000_000);
         assert_eq!(ix.accounts.len(), 22, "PumpSwap swap ix must have 22 accounts");
+    }
+
+    // ── 13b. test_reversed_pool_swap_ix_has_22_accounts ──────────────────
+
+    #[test]
+    fn test_reversed_pool_swap_ix_has_22_accounts() {
+        let pool = dummy_reversed_pool();
+        let kp = Keypair::new();
+        let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 0, &PUMPSWAP_SELL_DISCRIMINATOR, 1, 1_000_000);
+        assert_eq!(ix.accounts.len(), 22, "reversed pool swap ix must have 22 accounts");
     }
 
     // ── 14. test_fee_recipient_wraps_around ──────────────────────────────
 
     #[test]
     fn test_fee_recipient_wraps_around() {
-        // idx=8 should wrap to idx=0
         let pool = dummy_pool();
         let kp = Keypair::new();
         let pubkey = kp.pubkey();
-        let ix0 = build_pumpswap_swap_ix(&pool, &pubkey, 0, 1, 1);
-        let ix8 = build_pumpswap_swap_ix(&pool, &pubkey, 8, 1, 1);
+        let ix0 = build_pumpswap_swap_ix(&pool, &pubkey, 0, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1);
+        let ix8 = build_pumpswap_swap_ix(&pool, &pubkey, 8, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1);
         assert_eq!(
             ix0.accounts[9].pubkey, ix8.accounts[9].pubkey,
             "fee_idx=8 should wrap to same as fee_idx=0"
@@ -748,7 +911,7 @@ mod tests {
     fn test_swap_data_args_encoded_correctly() {
         let arg1: u64 = 0xDEAD_BEEF_CAFE_BABE;
         let arg2: u64 = 0x1234_5678_9ABC_DEF0;
-        let data = build_swap_data(arg1, arg2);
+        let data = build_swap_data(&PUMPSWAP_BUY_DISCRIMINATOR, arg1, arg2);
         assert_eq!(
             u64::from_le_bytes(data[8..16].try_into().unwrap()),
             arg1,
@@ -759,5 +922,125 @@ mod tests {
             arg2,
             "arg2 should be LE-encoded at offset 16"
         );
+    }
+
+    // ── 16. test_buy_normal_pool_uses_buy_discriminator ──────────────────
+
+    #[test]
+    fn test_buy_normal_pool_uses_buy_discriminator() {
+        let pool = dummy_pool(); // token_is_base = true
+        let kp = Keypair::new();
+        let tx_bytes = build_pumpswap_buy_tx(
+            &pool, &kp, 1_000_000_000, 1, 10_000,
+            Pubkey::new_unique(), dummy_blockhash(), 0,
+        ).unwrap();
+        let tx: VersionedTransaction = bincode::deserialize(&tx_bytes).unwrap();
+        // swap ix is the 7th instruction (index 6)
+        if let VersionedMessage::V0(m) = &tx.message {
+            let swap_ix = &m.instructions[6];
+            let ix_data = &swap_ix.data;
+            assert_eq!(&ix_data[..8], &PUMPSWAP_BUY_DISCRIMINATOR,
+                "normal pool BUY should use buy discriminator");
+        } else { panic!("expected V0"); }
+    }
+
+    // ── 17. test_buy_reversed_pool_uses_sell_discriminator ───────────────
+
+    #[test]
+    fn test_buy_reversed_pool_uses_sell_discriminator() {
+        let pool = dummy_reversed_pool(); // token_is_base = false
+        let kp = Keypair::new();
+        let tx_bytes = build_pumpswap_buy_tx(
+            &pool, &kp, 1_000_000_000, 1, 10_000,
+            Pubkey::new_unique(), dummy_blockhash(), 0,
+        ).unwrap();
+        let tx: VersionedTransaction = bincode::deserialize(&tx_bytes).unwrap();
+        if let VersionedMessage::V0(m) = &tx.message {
+            let swap_ix = &m.instructions[6];
+            let ix_data = &swap_ix.data;
+            assert_eq!(&ix_data[..8], &PUMPSWAP_SELL_DISCRIMINATOR,
+                "reversed pool BUY should use sell discriminator (selling WSOL base for token quote)");
+        } else { panic!("expected V0"); }
+    }
+
+    // ── 18. test_sell_normal_pool_uses_sell_discriminator ─────────────────
+
+    #[test]
+    fn test_sell_normal_pool_uses_sell_discriminator() {
+        let pool = dummy_pool();
+        let kp = Keypair::new();
+        let tx_bytes = build_pumpswap_sell_tx(
+            &pool, &kp, 1_000_000, 500_000, 10_000,
+            Pubkey::new_unique(), dummy_blockhash(), 0,
+        ).unwrap();
+        let tx: VersionedTransaction = bincode::deserialize(&tx_bytes).unwrap();
+        if let VersionedMessage::V0(m) = &tx.message {
+            let swap_ix = &m.instructions[3]; // sell tx: swap is instruction index 3
+            let ix_data = &swap_ix.data;
+            assert_eq!(&ix_data[..8], &PUMPSWAP_SELL_DISCRIMINATOR,
+                "normal pool SELL should use sell discriminator");
+        } else { panic!("expected V0"); }
+    }
+
+    // ── 19. test_sell_reversed_pool_uses_buy_discriminator ───────────────
+
+    #[test]
+    fn test_sell_reversed_pool_uses_buy_discriminator() {
+        let pool = dummy_reversed_pool();
+        let kp = Keypair::new();
+        let tx_bytes = build_pumpswap_sell_tx(
+            &pool, &kp, 1_000_000, 500_000, 10_000,
+            Pubkey::new_unique(), dummy_blockhash(), 0,
+        ).unwrap();
+        let tx: VersionedTransaction = bincode::deserialize(&tx_bytes).unwrap();
+        if let VersionedMessage::V0(m) = &tx.message {
+            let swap_ix = &m.instructions[3];
+            let ix_data = &swap_ix.data;
+            assert_eq!(&ix_data[..8], &PUMPSWAP_BUY_DISCRIMINATOR,
+                "reversed pool SELL should use buy discriminator (buying WSOL base with token quote)");
+        } else { panic!("expected V0"); }
+    }
+
+    // ── 20. test_reversed_pool_base_mint_account_is_wsol ────────────────
+
+    #[test]
+    fn test_reversed_pool_base_mint_account_is_wsol() {
+        let pool = dummy_reversed_pool();
+        let kp = Keypair::new();
+        let ix = build_pumpswap_swap_ix(
+            &pool, &kp.pubkey(), 0, &PUMPSWAP_SELL_DISCRIMINATOR, 1, 1,
+        );
+        // Account [3] should be WSOL mint for reversed pool
+        let wsol_mint = Pubkey::from_str(WSOL_MINT_STR).unwrap();
+        assert_eq!(ix.accounts[3].pubkey, wsol_mint,
+            "reversed pool: account[3] (base_mint) must be WSOL");
+    }
+
+    // ── 21. test_normal_pool_base_mint_account_is_token ─────────────────
+
+    #[test]
+    fn test_normal_pool_base_mint_account_is_token() {
+        let pool = dummy_pool();
+        let kp = Keypair::new();
+        let ix = build_pumpswap_swap_ix(
+            &pool, &kp.pubkey(), 0, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1,
+        );
+        // Account [3] should be token mint for normal pool
+        let token_mint = Pubkey::new_from_array(pool.base_mint);
+        assert_eq!(ix.accounts[3].pubkey, token_mint,
+            "normal pool: account[3] (base_mint) must be token mint");
+    }
+
+    // ── 22. test_token_is_base_detection ─────────────────────────────────
+
+    #[test]
+    fn test_token_is_base_detection() {
+        // A token mint starting with 0x01 < WSOL (0x06...) → token_is_base = true
+        let low_mint = [0x01; 32];
+        assert!(low_mint < WSOL_MINT_BYTES, "mint 0x01.. should be < WSOL");
+
+        // A token mint starting with 0xFF > WSOL (0x06...) → token_is_base = false
+        let high_mint = [0xFF; 32];
+        assert!(high_mint > WSOL_MINT_BYTES, "mint 0xFF.. should be > WSOL");
     }
 }

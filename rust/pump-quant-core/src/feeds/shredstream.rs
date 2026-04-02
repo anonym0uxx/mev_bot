@@ -71,6 +71,16 @@ const PUMPSWAP_CREATE_POOL_DISCRIMINATOR: [u8; 8] = [233, 146, 209, 142, 207, 10
 /// kept as a separate constant for clarity in the PumpSwap detection context.)
 const PUMPFUN_MIGRATE_DISCRIMINATOR: [u8; 8] = [155, 234, 231, 146, 236, 158, 162, 30];
 
+/// WSOL mint as raw bytes for detecting reversed PumpSwap pool ordering.
+/// PumpSwap sorts mints by raw byte comparison — when token > WSOL,
+/// WSOL becomes base_mint and token becomes quote_mint (~81% of pools).
+const WSOL_MINT_BYTES: [u8; 32] = [
+    0x06, 0x9b, 0x88, 0x57, 0xfe, 0xab, 0x81, 0x84,
+    0xfb, 0x68, 0x7f, 0x63, 0x46, 0x18, 0xc0, 0x35,
+    0xda, 0xc4, 0x39, 0xdc, 0x1a, 0xeb, 0x3b, 0x55,
+    0x98, 0xa0, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x01,
+];
+
 /// Minimum datagram size: 8 (discriminator) + 32 (mint) + 8 (sol_amount) = 48 bytes.
 const MIN_PAYLOAD_SIZE: usize = 48;
 
@@ -953,18 +963,34 @@ fn parse_pumpswap_migration(
         // PumpSwap `create_pool` account layout:
         // accounts[0] = pool (new PDA)
         // accounts[1] = creator
-        // accounts[2] = base_mint  ← THE TOKEN MINT
-        // accounts[3] = quote_mint (WSOL)
+        // accounts[2] = base_mint   (can be WSOL or token — sorted by raw bytes)
+        // accounts[3] = quote_mint  (can be WSOL or token — sorted by raw bytes)
         // accounts[4] = lp_mint
         // accounts[5] = pool_base_token_account
         // accounts[6] = pool_quote_token_account
         // ...
-        let mint = if ix.accounts.len() > 2 {
-            let mint_idx = ix.accounts[2] as usize;
-            if mint_idx < account_keys.len() {
-                account_keys[mint_idx].to_bytes()
-            } else {
+        //
+        // PumpSwap sorts mints by raw byte comparison. WSOL (0x069b...) sorts
+        // before most pump.fun tokens, so ~81% of pools have WSOL as base_mint
+        // (accounts[2]) and the token as quote_mint (accounts[3]).
+        let mint = if ix.accounts.len() > 3 {
+            let base_mint_idx = ix.accounts[2] as usize;
+            if base_mint_idx >= account_keys.len() {
                 [0u8; 32]
+            } else {
+                let base_mint = account_keys[base_mint_idx].to_bytes();
+                if base_mint == WSOL_MINT_BYTES {
+                    // Reversed: WSOL is base_mint, token is quote_mint
+                    let quote_mint_idx = ix.accounts[3] as usize;
+                    if quote_mint_idx < account_keys.len() {
+                        account_keys[quote_mint_idx].to_bytes()
+                    } else {
+                        [0u8; 32]
+                    }
+                } else {
+                    // Normal: token is base_mint
+                    base_mint
+                }
             }
         } else {
             [0u8; 32]
