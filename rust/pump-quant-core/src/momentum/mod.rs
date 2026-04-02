@@ -2430,6 +2430,29 @@ impl MomentumEngine {
                     "[momentum] pool resolved — entering on_graduation"
                 );
 
+                // ── FIX-1/4 upgrade: block-time-based staleness gate ──────────
+                // Use the tx's actual blockTime (not CoreCast's ts_ms) to detect
+                // old graduations. CoreCast sets ts_ms = now(), so the ts_ms gate
+                // always shows ~0ms age. blockTime = actual on-chain graduation time.
+                if resolution.grad_block_time_ms > 0 && self.config.stale_grad_max_age_ms > 0 {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let grad_age_ms = now_ms.saturating_sub(resolution.grad_block_time_ms);
+                    if grad_age_ms > self.config.stale_grad_max_age_ms {
+                        tracing::debug!(
+                            mint = %bs58::encode(&resolution.mint).into_string(),
+                            grad_age_ms,
+                            grad_age_min = grad_age_ms / 60_000,
+                            "[momentum] stale graduation rejected — on-chain blockTime {}min ago",
+                            grad_age_ms / 60_000
+                        );
+                        return;
+                    }
+                }
+                // ── End block-time staleness gate ─────────────────────────────
+
                 // ── FIX-5: Raydium dead pool activity check ───────────────────
                 // If the resolved pool is Raydium, verify it has had recent swap
                 // activity. Dead Raydium pools have stale liquidity but zero trades.

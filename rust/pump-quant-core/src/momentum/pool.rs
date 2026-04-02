@@ -133,6 +133,9 @@ pub struct PoolResolution {
     pub reserve_token_atoms: u64,
     /// Bonding curve vSol at graduation (~85 SOL). 0.0 if unknown.
     pub bc_terminal_vsol: f64,
+    /// Block time of the graduation transaction (ms since epoch). 0 if unknown.
+    /// Used to gate stale CoreCast backlog events (old Raydium-era graduations).
+    pub grad_block_time_ms: u64,
 
     // ── Raydium AMM V4 pool accounts (zero for PumpSwap/Unknown) ─────────
     /// Raydium AMM pool state account. Same as pool_address for Raydium.
@@ -290,6 +293,13 @@ async fn resolve_pool_inner(
             return Err(format!("RPC returned error: {}", err_msg));
         }
     };
+
+    // Extract blockTime from tx for staleness gating (seconds → ms)
+    let grad_block_time_ms: u64 = tx
+        .get("blockTime")
+        .and_then(|v| v.as_i64())
+        .map(|t| (t as u64).saturating_mul(1_000))
+        .unwrap_or(0);
 
     // Detect pool type from account keys
     let account_keys_strs: Vec<&str> = tx
@@ -499,6 +509,7 @@ async fn resolve_pool_inner(
         reserve_sol_lamports: reserve_sol,
         reserve_token_atoms: reserve_token,
         bc_terminal_vsol: 0.0,
+        grad_block_time_ms,
         amm_id,
         amm_open_orders,
         amm_target_orders,
@@ -795,6 +806,7 @@ pub async fn resolve_pumpswap_pool_from_mint(
         reserve_sol_lamports: reserve_sol,
         reserve_token_atoms: reserve_token,
         bc_terminal_vsol: 0.0,
+        grad_block_time_ms: 0,
         amm_id: [0u8; 32],
         amm_open_orders: [0u8; 32],
         amm_target_orders: [0u8; 32],
@@ -910,6 +922,7 @@ pub async fn resolve_pool_from_mint(
         reserve_sol_lamports: reserve_sol,
         reserve_token_atoms: reserve_token,
         bc_terminal_vsol: 0.0,
+        grad_block_time_ms: 0,
         amm_id,
         amm_open_orders: [0u8; 32],
         amm_target_orders: [0u8; 32],
@@ -1058,6 +1071,7 @@ mod tests {
             reserve_sol_lamports: 100_000_000_000,
             reserve_token_atoms: 1_000_000_000,
             bc_terminal_vsol: 0.0,
+            grad_block_time_ms: 0,
             amm_id: [0u8; 32],
             amm_open_orders: [0u8; 32],
             amm_target_orders: [0u8; 32],
