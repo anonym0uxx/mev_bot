@@ -316,9 +316,16 @@ impl MomentumEngine {
             .filter(|k| !k.is_empty())
             .map(|k| format!("https://mainnet.helius-rpc.com/?api-key={}", k))
             .unwrap_or_else(|| rpc_url.to_string());
+        // WSS: use standard Helius WSS (supports accountSubscribe) instead of
+        // dedicated node WSS which silently drops subscription requests.
+        let helius_wss_for_price = std::env::var("HELIUS_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
+            .map(|k| format!("wss://mainnet.helius-rpc.com/?api-key={}", k))
+            .unwrap_or(helius_wss_url);
         let (price_feed, ws_handle) = PriceFeedManager::new(
             helius_poll_url,
-            helius_wss_url,
+            helius_wss_for_price,
             poll_interval_ms,
         );
         let (logger, logger_handle) = MomentumPaperLogger::new(log_path);

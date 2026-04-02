@@ -488,15 +488,18 @@ async fn price_feed_poll_loop(
 
             let mut batch = Vec::with_capacity(chunk.len() * 2);
             for (i, (_, cv, pv)) in chunk.iter().enumerate() {
+                // Use "processed" commitment for faster visibility on fresh accounts.
+                // Fresh PumpSwap vault accounts may not be "confirmed" for ~400ms
+                // after pool creation. "processed" sees them within the same slot.
                 batch.push(serde_json::json!({
                     "jsonrpc": "2.0", "id": i * 2,
                     "method": "getAccountInfo",
-                    "params": [cv, {"encoding": "base64", "commitment": "confirmed"}]
+                    "params": [cv, {"encoding": "base64", "commitment": "processed"}]
                 }));
                 batch.push(serde_json::json!({
                     "jsonrpc": "2.0", "id": i * 2 + 1,
                     "method": "getAccountInfo",
-                    "params": [pv, {"encoding": "base64", "commitment": "confirmed"}]
+                    "params": [pv, {"encoding": "base64", "commitment": "processed"}]
                 }));
             }
 
@@ -555,15 +558,42 @@ async fn price_feed_poll_loop(
                 }
             };
 
-            for (i, (mint, _, _)) in chunk.iter().enumerate() {
+            for (i, (mint, cv, pv)) in chunk.iter().enumerate() {
                 let cd = extract_account_data(&results, i * 2);
                 let pd = extract_account_data(&results, i * 2 + 1);
+                let coin_is_none = cd.is_none();
+                let pc_is_none = pd.is_none();
                 let (sr, tr) = match (cd, pd) {
                     (Some(c), Some(p)) => match (parse_spl_amount(&p), parse_spl_amount(&c)) {
                         (Some(s), Some(t)) => (s, t),
-                        _ => continue,
+                        _ => {
+                            // Log parse failure once per mint
+                            if let Some(state) = prices.get(mint) {
+                                if state.price_fp.load(Ordering::Relaxed) == 0 {
+                                    tracing::debug!(
+                                        mint = %bs58::encode(mint).into_string(),
+                                        coin_data_len = c.len(), pc_data_len = p.len(),
+                                        "[price_feed] parse_spl_amount failed on vault data"
+                                    );
+                                }
+                            }
+                            continue;
+                        }
                     },
-                    _ => continue,
+                    _ => {
+                        // Log null account data once per mint (only when we have no price yet)
+                        if let Some(state) = prices.get(mint) {
+                            if state.price_fp.load(Ordering::Relaxed) == 0 {
+                                tracing::warn!(
+                                    mint = %bs58::encode(mint).into_string(),
+                                    coin_null = coin_is_none, pc_null = pc_is_none,
+                                    coin_vault = %cv, pc_vault = %pv,
+                                    "[price_feed] vault account data NULL from RPC"
+                                );
+                            }
+                        }
+                        continue;
+                    }
                 };
                 if sr == 0 || tr == 0 { continue; }
                 let fp = price_from_reserves(sr, tr);
