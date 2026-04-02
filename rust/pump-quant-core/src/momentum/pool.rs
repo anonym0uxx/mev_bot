@@ -17,6 +17,14 @@
 //! - `fetch_vault_reserves()` — fetch SPL token vault reserves via getMultipleAccountsInfo
 //! - `fetch_vault_reserves_from_pubkeys()` — fetch vault reserves from raw [u8; 32] pubkeys
 //! - `parse_spl_token_amount()` — decode SPL token account amount from base64 data
+//!
+//! ### Deterministic PDA Derivation (no RPC)
+//!
+//! - `derive_pumpswap_pool_pda()` — derive pool PDA from (index, creator, base_mint, quote_mint)
+//! - `derive_pool_vault()` — derive pool vault ATA from (pool_pda, token_program, mint)
+//! - `extract_from_create_pool_accounts()` — extract pool data from create_pool ix accounts
+//! - `build_pumpswap_pool_accounts_deterministic()` — build PumpSwapPoolAccounts without RPC
+//! - `build_pool_resolution_from_create_pool()` — build PoolResolution from create_pool data
 
 use once_cell::sync::Lazy;
 
@@ -687,6 +695,9 @@ pub fn extract_vaults_from_tx_response(
 
 /// Fetch SPL token vault reserves via `getMultipleAccountsInfo`.
 ///
+/// Uses `confirmed` commitment and 3000ms timeout. Suitable for non-critical
+/// paths (pool resolution, mint-based lookup) where we can afford to wait.
+///
 /// Returns `(reserve_token_atoms, reserve_sol_lamports)` or `None` on failure.
 pub async fn fetch_vault_reserves(
     client: &reqwest::Client,
@@ -706,7 +717,7 @@ pub async fn fetch_vault_reserves(
 
     let resp = client
         .post(rpc_url)
-        .timeout(std::time::Duration::from_millis(500))
+        .timeout(std::time::Duration::from_millis(3000))
         .json(&body)
         .send()
         .await
@@ -730,6 +741,87 @@ pub async fn fetch_vault_reserves(
     let reserve_token = parse_account(&accounts[0])?;
     let reserve_sol = parse_account(&accounts[1])?;
     Some((reserve_token, reserve_sol))
+}
+
+/// Fast vault reserve fetch for freshly-created accounts.
+///
+/// Uses `processed` commitment (no confirmation wait) and 1500ms timeout.
+/// Suitable for Helius Enhanced direct path where we know the accounts just
+/// existed — `processed` is sufficient since we only need to see the account
+/// exists with initial reserves, not that it's confirmed.
+///
+/// Returns `(reserve_token_atoms, reserve_sol_lamports)` or `None` on failure.
+pub async fn fetch_vault_reserves_fast(
+    client: &reqwest::Client,
+    rpc_url: &str,
+    coin_vault_b58: &str,
+    pc_vault_b58: &str,
+) -> Option<(u64, u64)> {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getMultipleAccounts",
+        "params": [
+            [coin_vault_b58, pc_vault_b58],
+            {"encoding": "base64", "commitment": "processed"}
+        ]
+    });
+
+    let resp = client
+        .post(rpc_url)
+        .timeout(std::time::Duration::from_millis(1500))
+        .json(&body)
+        .send()
+        .await
+        .ok()?;
+
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let accounts = json
+        .pointer("/result/value")
+        .and_then(|v| v.as_array())?;
+
+    if accounts.len() < 2 {
+        return None;
+    }
+
+    let parse_account = |v: &serde_json::Value| -> Option<u64> {
+        let data_arr = v.get("data")?.as_array()?;
+        let data_b64 = data_arr.first()?.as_str()?;
+        parse_spl_token_amount(data_b64)
+    };
+
+    let reserve_token = parse_account(&accounts[0])?;
+    let reserve_sol = parse_account(&accounts[1])?;
+    Some((reserve_token, reserve_sol))
+}
+
+/// Vault reserve fetch with automatic retry and commitment escalation.
+///
+/// Designed for freshly-created PumpSwap accounts (Helius Enhanced direct path)
+/// where accounts may not yet be indexed at `confirmed` commitment.
+///
+/// Strategy:
+///   1. First try: `processed` commitment, 1500ms timeout (fastest)
+///   2. If that fails: wait 500ms for confirmation to propagate
+///   3. Retry: `confirmed` commitment, 3000ms timeout (most reliable)
+///
+/// Returns `(reserve_token_atoms, reserve_sol_lamports)` or `None` if both attempts fail.
+pub async fn fetch_vault_reserves_with_retry(
+    client: &reqwest::Client,
+    rpc_url: &str,
+    coin_vault_b58: &str,
+    pc_vault_b58: &str,
+) -> Option<(u64, u64)> {
+    // Fast attempt (processed commitment)
+    if let Some(result) = fetch_vault_reserves_fast(client, rpc_url, coin_vault_b58, pc_vault_b58).await {
+        return Some(result);
+    }
+
+    // Wait 500ms for confirmation to propagate
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Retry with confirmed commitment (3000ms timeout)
+    fetch_vault_reserves(client, rpc_url, coin_vault_b58, pc_vault_b58).await
 }
 
 /// Fetch SPL token vault reserves from raw `[u8; 32]` pubkeys via `getMultipleAccounts`.
@@ -1128,6 +1220,268 @@ fn derive_creator_ata(wallet: &[u8; 32], mint: &[u8; 32]) -> [u8; 32] {
         &ata_program,
     );
     ata.to_bytes()
+}
+
+// ── Deterministic PDA Derivation (no RPC) ────────────────────────────────────
+
+/// PumpSwap AMM program ID as raw bytes.
+/// Base58: pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA
+const PUMPSWAP_PROGRAM_BYTES: [u8; 32] = {
+    // Pre-computed from bs58::decode("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
+    // Verified in test_pumpswap_program_bytes_constant.
+    [
+        0x0c, 0x14, 0xde, 0xfc, 0x82, 0x5e, 0xc6, 0x76,
+        0x94, 0x25, 0x08, 0x18, 0xbb, 0x65, 0x40, 0x65,
+        0xf4, 0x29, 0x8d, 0x31, 0x56, 0xd5, 0x71, 0xb4,
+        0xd4, 0xf8, 0x09, 0x0c, 0x18, 0xe9, 0xa8, 0x63,
+    ]
+};
+
+/// Token-2022 program ID as raw bytes.
+/// Base58: TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb
+const TOKEN_2022_PROGRAM_BYTES: [u8; 32] = [
+    0x06, 0xdd, 0xf6, 0xe1, 0xee, 0x75, 0x8f, 0xde,
+    0x18, 0x42, 0x5d, 0xbc, 0xe4, 0x6c, 0xcd, 0xda,
+    0xb6, 0x1a, 0xfc, 0x4d, 0x83, 0xb9, 0x0d, 0x27,
+    0xfe, 0xbd, 0xf9, 0x28, 0xd8, 0xa1, 0x8b, 0xfc,
+];
+
+/// Derive PumpSwap pool PDA from index, creator, base_mint, and quote_mint.
+///
+/// **Seeds:** `["pool", index(u16 LE), creator, base_mint, quote_mint]`
+/// **Program:** `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`
+///
+/// PumpSwap sorts mints by raw byte comparison before passing to create_pool.
+/// WSOL (0x069b...) sorts before most pump.fun tokens, so for ~97% of pools:
+///   base_mint = WSOL, quote_mint = token
+///
+/// The `index` field is a u16 stored in the pool data at offset [9..11].
+/// For pump.fun graduations, the index is typically allocated by the pump.fun
+/// migration program. It is NOT always 0 — each graduation gets a unique index.
+///
+/// Returns `(pool_pda_bytes, bump)`.
+pub fn derive_pumpswap_pool_pda(
+    index: u16,
+    creator: &[u8; 32],
+    base_mint: &[u8; 32],
+    quote_mint: &[u8; 32],
+) -> ([u8; 32], u8) {
+    let program = solana_sdk::pubkey::Pubkey::new_from_array(PUMPSWAP_PROGRAM_BYTES);
+    let creator_pk = solana_sdk::pubkey::Pubkey::new_from_array(*creator);
+    let base_pk = solana_sdk::pubkey::Pubkey::new_from_array(*base_mint);
+    let quote_pk = solana_sdk::pubkey::Pubkey::new_from_array(*quote_mint);
+    let index_bytes = index.to_le_bytes();
+
+    let (pda, bump) = solana_sdk::pubkey::Pubkey::find_program_address(
+        &[b"pool", &index_bytes, creator_pk.as_ref(), base_pk.as_ref(), quote_pk.as_ref()],
+        &program,
+    );
+    (pda.to_bytes(), bump)
+}
+
+/// Derive the pool's token vault (ATA) for a given mint.
+///
+/// Pool vaults are standard Associated Token Accounts (ATAs) of the pool PDA,
+/// but the token program used in the ATA derivation seed varies:
+/// - WSOL always uses SPL Token (`TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`)
+/// - pump.fun tokens may use SPL Token OR Token-2022 (`TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb`)
+///
+/// The caller must pass the correct `token_program` bytes for the mint.
+pub fn derive_pool_vault(
+    pool_pda: &[u8; 32],
+    token_program: &[u8; 32],
+    mint: &[u8; 32],
+) -> [u8; 32] {
+    let pool_pk = solana_sdk::pubkey::Pubkey::new_from_array(*pool_pda);
+    let tp_pk = solana_sdk::pubkey::Pubkey::new_from_array(*token_program);
+    let mint_pk = solana_sdk::pubkey::Pubkey::new_from_array(*mint);
+    let ata_program = solana_sdk::pubkey::Pubkey::new_from_array(SPL_ATA_PROGRAM_BYTES);
+
+    let (ata, _bump) = solana_sdk::pubkey::Pubkey::find_program_address(
+        &[pool_pk.as_ref(), tp_pk.as_ref(), mint_pk.as_ref()],
+        &ata_program,
+    );
+    ata.to_bytes()
+}
+
+/// PumpSwap `create_pool` instruction account layout (from IDL).
+///
+/// ```text
+/// [0]  pool PDA (writable)
+/// [1]  global_config
+/// [2]  creator (writable, signer)
+/// [3]  base_mint
+/// [4]  quote_mint
+/// [5]  lp_mint (writable)
+/// [6]  user_base_token_account (writable)
+/// [7]  user_quote_token_account (writable)
+/// [8]  user_pool_token_account (writable)
+/// [9]  pool_base_token_account (writable, PDA) — base vault
+/// [10] pool_quote_token_account (writable, PDA) — quote vault
+/// [11] system_program
+/// [12] token_2022_program
+/// [13] base_token_program
+/// [14] quote_token_program
+/// [15] associated_token_program
+/// [16] event_authority
+/// [17] program (self)
+/// ```
+pub mod create_pool_ix {
+    pub const POOL: usize = 0;
+    pub const GLOBAL_CONFIG: usize = 1;
+    pub const CREATOR: usize = 2;
+    pub const BASE_MINT: usize = 3;
+    pub const QUOTE_MINT: usize = 4;
+    pub const LP_MINT: usize = 5;
+    pub const POOL_BASE_TOKEN_ACCOUNT: usize = 9;
+    pub const POOL_QUOTE_TOKEN_ACCOUNT: usize = 10;
+    pub const BASE_TOKEN_PROGRAM: usize = 13;
+    pub const QUOTE_TOKEN_PROGRAM: usize = 14;
+    /// Minimum number of accounts in a valid create_pool instruction.
+    pub const MIN_ACCOUNTS: usize = 18;
+}
+
+/// Data extracted from a PumpSwap `create_pool` instruction's account list.
+///
+/// All fields are deterministically available from the instruction — no RPC needed.
+/// This is the "zero-RPC" path for building PumpSwapPoolAccounts at graduation time.
+#[derive(Debug, Clone)]
+pub struct CreatePoolExtracted {
+    /// Pool PDA address.
+    pub pool: [u8; 32],
+    /// Pool creator (signer of create_pool).
+    pub creator: [u8; 32],
+    /// On-chain base_mint (may be WSOL or token, sorted by raw bytes).
+    pub base_mint: [u8; 32],
+    /// On-chain quote_mint (may be WSOL or token, sorted by raw bytes).
+    pub quote_mint: [u8; 32],
+    /// Pool base vault (pool_base_token_account).
+    pub pool_base_vault: [u8; 32],
+    /// Pool quote vault (pool_quote_token_account).
+    pub pool_quote_vault: [u8; 32],
+}
+
+/// Extract pool data from PumpSwap `create_pool` instruction accounts.
+///
+/// Uses the correct IDL account layout (18 accounts).
+/// Returns `None` if the instruction doesn't have enough accounts.
+///
+/// The returned `CreatePoolExtracted` has fields in on-chain order (base/quote),
+/// NOT normalized to coin/pc. The caller should check which mint is WSOL to
+/// determine vault assignment.
+pub fn extract_from_create_pool_accounts(
+    ix_accounts: &[[u8; 32]],
+) -> Option<CreatePoolExtracted> {
+    if ix_accounts.len() < create_pool_ix::MIN_ACCOUNTS {
+        return None;
+    }
+    Some(CreatePoolExtracted {
+        pool: ix_accounts[create_pool_ix::POOL],
+        creator: ix_accounts[create_pool_ix::CREATOR],
+        base_mint: ix_accounts[create_pool_ix::BASE_MINT],
+        quote_mint: ix_accounts[create_pool_ix::QUOTE_MINT],
+        pool_base_vault: ix_accounts[create_pool_ix::POOL_BASE_TOKEN_ACCOUNT],
+        pool_quote_vault: ix_accounts[create_pool_ix::POOL_QUOTE_TOKEN_ACCOUNT],
+    })
+}
+
+/// Build PumpSwapPoolAccounts deterministically from create_pool data.
+///
+/// No RPC calls — everything comes from the `CreatePoolExtracted` struct
+/// (which is derived from the create_pool instruction accounts).
+///
+/// Handles pool ordering: normalizes on-chain base/quote to our
+/// coin_vault (token) / pc_vault (WSOL) convention, then derives
+/// the creator's token ATA for the coin_creator_vault_ata field.
+pub fn build_pumpswap_pool_accounts_deterministic(
+    extracted: &CreatePoolExtracted,
+) -> PumpSwapPoolAccounts {
+    // Determine which mint is the token (non-WSOL)
+    let token_is_base = extracted.base_mint != WSOL_MINT_BYTES;
+
+    let token_mint = if token_is_base {
+        extracted.base_mint
+    } else {
+        extracted.quote_mint
+    };
+
+    // Derive creator vault ATA if creator is non-zero
+    let (creator_ata, creator_authority) = if extracted.creator != [0u8; 32] {
+        let ata = derive_creator_ata(&extracted.creator, &token_mint);
+        (ata, extracted.creator)
+    } else {
+        ([0u8; 32], [0u8; 32])
+    };
+
+    // Normalize vaults: coin_vault = token vault, pc_vault = WSOL vault
+    let (coin_vault, pc_vault) = if token_is_base {
+        // Normal: base=token, quote=WSOL
+        (extracted.pool_base_vault, extracted.pool_quote_vault)
+    } else {
+        // Reversed: base=WSOL, quote=token
+        (extracted.pool_quote_vault, extracted.pool_base_vault)
+    };
+
+    PumpSwapPoolAccounts {
+        pool: extracted.pool,
+        base_mint: token_mint,
+        pool_base_token_account: coin_vault,
+        pool_quote_token_account: pc_vault,
+        coin_creator_vault_ata: creator_ata,
+        coin_creator_vault_authority: creator_authority,
+    }
+}
+
+/// Build a PoolResolution from create_pool extracted data + reserves.
+///
+/// This is the fully deterministic path that skips `getProgramAccounts`
+/// and `getTransaction`. Requires reserves to be provided (e.g., from
+/// a separate `getMultipleAccounts` call on the vaults).
+///
+/// The `sig` and `ts_ms` come from the graduation event source.
+pub fn build_pool_resolution_from_create_pool(
+    extracted: &CreatePoolExtracted,
+    sig: [u8; 64],
+    reserve_sol: u64,
+    reserve_token: u64,
+    grad_block_time_ms: u64,
+) -> PoolResolution {
+    let token_is_base = extracted.base_mint != WSOL_MINT_BYTES;
+    let token_mint = if token_is_base {
+        extracted.base_mint
+    } else {
+        extracted.quote_mint
+    };
+
+    // Normalize vaults
+    let (coin_vault, pc_vault) = if token_is_base {
+        (extracted.pool_base_vault, extracted.pool_quote_vault)
+    } else {
+        (extracted.pool_quote_vault, extracted.pool_base_vault)
+    };
+
+    PoolResolution {
+        mint: token_mint,
+        pool_address: extracted.pool,
+        coin_vault,
+        pc_vault,
+        pool_type: PoolType::PumpSwap,
+        reserve_sol_lamports: reserve_sol,
+        reserve_token_atoms: reserve_token,
+        bc_terminal_vsol: 0.0,
+        grad_block_time_ms,
+        amm_id: [0u8; 32],
+        amm_open_orders: [0u8; 32],
+        amm_target_orders: [0u8; 32],
+        serum_market: [0u8; 32],
+        serum_bids: [0u8; 32],
+        serum_asks: [0u8; 32],
+        serum_event_queue: [0u8; 32],
+        serum_coin_vault: [0u8; 32],
+        serum_pc_vault: [0u8; 32],
+        serum_vault_signer: [0u8; 32],
+        creator: extracted.creator,
+    }
 }
 
 /// Extract PumpSwapPoolAccounts from a PoolResolution.
@@ -1873,4 +2227,317 @@ mod tests {
         let too_short = vec![0u8; 202];
         assert!(too_short.len() < 203, "202 bytes is not enough");
     }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Deterministic PDA derivation tests (eng5)
+    // ══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_pumpswap_program_bytes_constant() {
+        let b58 = bs58::encode(&PUMPSWAP_PROGRAM_BYTES).into_string();
+        assert_eq!(b58, "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+            "PUMPSWAP_PROGRAM_BYTES must match known PumpSwap program ID");
+    }
+
+    #[test]
+    fn test_token_2022_program_bytes_constant() {
+        let b58 = bs58::encode(&TOKEN_2022_PROGRAM_BYTES).into_string();
+        assert_eq!(b58, "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "TOKEN_2022_PROGRAM_BYTES must match known Token-2022 program ID");
+    }
+
+    #[test]
+    fn test_derive_pumpswap_pool_pda_pool_a() {
+        // Pool A: reversed pool (WSOL=base, token=quote)
+        // Address: 114XmiBstWqYVhSiH6qnU4jFCskFxP8t9iBqBLJPmaf
+        // index=0, creator from offset [11..43]
+        let creator: [u8; 32] = POOL_A_DATA[11..43].try_into().unwrap();
+        let base_mint: [u8; 32] = POOL_A_DATA[43..75].try_into().unwrap(); // WSOL
+        let quote_mint: [u8; 32] = POOL_A_DATA[75..107].try_into().unwrap(); // token
+        let index = u16::from_le_bytes([POOL_A_DATA[9], POOL_A_DATA[10]]);
+
+        let (pda, bump) = derive_pumpswap_pool_pda(index, &creator, &base_mint, &quote_mint);
+
+        let expected_b58 = "114XmiBstWqYVhSiH6qnU4jFCskFxP8t9iBqBLJPmaf";
+        let mut expected = [0u8; 32];
+        bs58::decode(expected_b58).onto(&mut expected[..]).unwrap();
+
+        assert_eq!(pda, expected,
+            "Pool A PDA derivation should match known address {}",
+            expected_b58);
+        assert_eq!(bump, 255, "Pool A bump should be 0xFF (from pool data byte[8])");
+        assert_eq!(bump, POOL_A_DATA[8], "Derived bump should match stored bump");
+    }
+
+    #[test]
+    fn test_derive_pumpswap_pool_pda_pool_b() {
+        // Pool B: normal pool (token=base, WSOL=quote)
+        // Address: 11CwRL2M8m5EeZUphCx8BvD6GXjw9VGTQUhjrWkjr3L
+        let creator: [u8; 32] = POOL_B_DATA[11..43].try_into().unwrap();
+        let base_mint: [u8; 32] = POOL_B_DATA[43..75].try_into().unwrap(); // token
+        let quote_mint: [u8; 32] = POOL_B_DATA[75..107].try_into().unwrap(); // WSOL
+        let index = u16::from_le_bytes([POOL_B_DATA[9], POOL_B_DATA[10]]);
+
+        assert_eq!(index, 1, "Pool B index should be 1");
+
+        let (pda, bump) = derive_pumpswap_pool_pda(index, &creator, &base_mint, &quote_mint);
+
+        let expected_b58 = "11CwRL2M8m5EeZUphCx8BvD6GXjw9VGTQUhjrWkjr3L";
+        let mut expected = [0u8; 32];
+        bs58::decode(expected_b58).onto(&mut expected[..]).unwrap();
+
+        assert_eq!(pda, expected,
+            "Pool B PDA derivation should match known address {}",
+            expected_b58);
+        assert_eq!(bump, POOL_B_DATA[8], "Derived bump should match stored bump");
+    }
+
+    #[test]
+    fn test_derive_pool_vault_wsol_uses_spl_token() {
+        // Pool A base vault (WSOL) should derive with SPL_TOKEN_PROGRAM
+        let pool_a_addr = "114XmiBstWqYVhSiH6qnU4jFCskFxP8t9iBqBLJPmaf";
+        let mut pool_a = [0u8; 32];
+        bs58::decode(pool_a_addr).onto(&mut pool_a[..]).unwrap();
+
+        let wsol_vault = derive_pool_vault(&pool_a, &SPL_TOKEN_PROGRAM_BYTES, &WSOL_MINT_BYTES);
+
+        // Expected from Pool A data at offset [139..171] (base = WSOL vault)
+        let expected: [u8; 32] = POOL_A_DATA[139..171].try_into().unwrap();
+
+        assert_eq!(wsol_vault, expected,
+            "WSOL vault should be derivable as ATA(pool, SPL_TOKEN, WSOL)");
+    }
+
+    #[test]
+    fn test_derive_pool_vault_token_uses_token_2022_for_pool_a() {
+        // Pool A quote vault (token) uses Token-2022
+        let pool_a_addr = "114XmiBstWqYVhSiH6qnU4jFCskFxP8t9iBqBLJPmaf";
+        let mut pool_a = [0u8; 32];
+        bs58::decode(pool_a_addr).onto(&mut pool_a[..]).unwrap();
+
+        let token_mint: [u8; 32] = POOL_A_DATA[75..107].try_into().unwrap(); // quote_mint
+
+        let token_vault = derive_pool_vault(&pool_a, &TOKEN_2022_PROGRAM_BYTES, &token_mint);
+        let expected: [u8; 32] = POOL_A_DATA[171..203].try_into().unwrap(); // quote vault
+
+        assert_eq!(token_vault, expected,
+            "Pool A token vault should derive with Token-2022");
+    }
+
+    #[test]
+    fn test_derive_pool_vault_token_uses_spl_token_for_pool_b() {
+        // Pool B base vault (token) uses SPL Token
+        let pool_b_addr = "11CwRL2M8m5EeZUphCx8BvD6GXjw9VGTQUhjrWkjr3L";
+        let mut pool_b = [0u8; 32];
+        bs58::decode(pool_b_addr).onto(&mut pool_b[..]).unwrap();
+
+        let token_mint: [u8; 32] = POOL_B_DATA[43..75].try_into().unwrap(); // base_mint (token)
+
+        let token_vault = derive_pool_vault(&pool_b, &SPL_TOKEN_PROGRAM_BYTES, &token_mint);
+        let expected: [u8; 32] = POOL_B_DATA[139..171].try_into().unwrap(); // base vault
+
+        assert_eq!(token_vault, expected,
+            "Pool B token vault should derive with SPL Token");
+    }
+
+    #[test]
+    fn test_derive_pool_vault_wsol_pool_b() {
+        // Pool B quote vault (WSOL) should derive with SPL Token
+        let pool_b_addr = "11CwRL2M8m5EeZUphCx8BvD6GXjw9VGTQUhjrWkjr3L";
+        let mut pool_b = [0u8; 32];
+        bs58::decode(pool_b_addr).onto(&mut pool_b[..]).unwrap();
+
+        let wsol_vault = derive_pool_vault(&pool_b, &SPL_TOKEN_PROGRAM_BYTES, &WSOL_MINT_BYTES);
+        let expected: [u8; 32] = POOL_B_DATA[171..203].try_into().unwrap(); // quote vault
+
+        assert_eq!(wsol_vault, expected,
+            "Pool B WSOL vault should derive with SPL Token");
+    }
+
+    #[test]
+    fn test_extract_from_create_pool_accounts_basic() {
+        // Build a mock 18-account list matching the IDL layout
+        let pool = [1u8; 32];
+        let global_config = [2u8; 32];
+        let creator = [3u8; 32];
+        let base_mint = WSOL_MINT_BYTES;
+        let quote_mint = [0x7au8; 32]; // token
+        let lp_mint = [5u8; 32];
+        let user_base = [6u8; 32];
+        let user_quote = [7u8; 32];
+        let user_pool = [8u8; 32];
+        let pool_base_vault = [9u8; 32];
+        let pool_quote_vault = [10u8; 32];
+        let sys_prog = [11u8; 32];
+        let token_2022 = [12u8; 32];
+        let base_tp = [13u8; 32];
+        let quote_tp = [14u8; 32];
+        let ata_prog = [15u8; 32];
+        let event_auth = [16u8; 32];
+        let program = [17u8; 32];
+
+        let accounts = [
+            pool, global_config, creator, base_mint, quote_mint,
+            lp_mint, user_base, user_quote, user_pool,
+            pool_base_vault, pool_quote_vault,
+            sys_prog, token_2022, base_tp, quote_tp, ata_prog, event_auth, program,
+        ];
+
+        let extracted = extract_from_create_pool_accounts(&accounts).unwrap();
+        assert_eq!(extracted.pool, pool);
+        assert_eq!(extracted.creator, creator);
+        assert_eq!(extracted.base_mint, base_mint);
+        assert_eq!(extracted.quote_mint, quote_mint);
+        assert_eq!(extracted.pool_base_vault, pool_base_vault);
+        assert_eq!(extracted.pool_quote_vault, pool_quote_vault);
+    }
+
+    #[test]
+    fn test_extract_from_create_pool_accounts_too_few() {
+        let accounts = [[0u8; 32]; 17]; // need 18
+        assert!(extract_from_create_pool_accounts(&accounts).is_none());
+    }
+
+    #[test]
+    fn test_build_pumpswap_pool_accounts_deterministic_reversed() {
+        // Reversed pool: base=WSOL, quote=token
+        let extracted = CreatePoolExtracted {
+            pool: [1u8; 32],
+            creator: [3u8; 32],
+            base_mint: WSOL_MINT_BYTES,        // WSOL is base
+            quote_mint: [0x7au8; 32],           // token is quote
+            pool_base_vault: [0xAAu8; 32],      // WSOL vault
+            pool_quote_vault: [0xBBu8; 32],     // token vault
+        };
+
+        let accts = build_pumpswap_pool_accounts_deterministic(&extracted);
+
+        // base_mint should be the token (non-WSOL)
+        assert_eq!(accts.base_mint, [0x7au8; 32]);
+        // Normalized: coin_vault = token vault, pc_vault = WSOL vault
+        assert_eq!(accts.pool_base_token_account, [0xBBu8; 32], "coin_vault = token vault (quote)");
+        assert_eq!(accts.pool_quote_token_account, [0xAAu8; 32], "pc_vault = WSOL vault (base)");
+        // Creator should be set
+        assert_eq!(accts.coin_creator_vault_authority, [3u8; 32]);
+        // ATA should be non-zero (derived)
+        assert_ne!(accts.coin_creator_vault_ata, [0u8; 32]);
+        // ATA should be deterministic
+        let accts2 = build_pumpswap_pool_accounts_deterministic(&extracted);
+        assert_eq!(accts.coin_creator_vault_ata, accts2.coin_creator_vault_ata);
+    }
+
+    #[test]
+    fn test_build_pumpswap_pool_accounts_deterministic_normal() {
+        // Normal pool: base=token, quote=WSOL
+        let extracted = CreatePoolExtracted {
+            pool: [2u8; 32],
+            creator: [4u8; 32],
+            base_mint: [0x01u8; 32],            // token < WSOL
+            quote_mint: WSOL_MINT_BYTES,
+            pool_base_vault: [0xCCu8; 32],      // token vault
+            pool_quote_vault: [0xDDu8; 32],     // WSOL vault
+        };
+
+        let accts = build_pumpswap_pool_accounts_deterministic(&extracted);
+
+        assert_eq!(accts.base_mint, [0x01u8; 32]);
+        // Normal: no swap
+        assert_eq!(accts.pool_base_token_account, [0xCCu8; 32], "coin_vault = token vault (base)");
+        assert_eq!(accts.pool_quote_token_account, [0xDDu8; 32], "pc_vault = WSOL vault (quote)");
+    }
+
+    #[test]
+    fn test_build_pumpswap_pool_accounts_deterministic_zero_creator() {
+        let extracted = CreatePoolExtracted {
+            pool: [1u8; 32],
+            creator: [0u8; 32], // unknown creator
+            base_mint: WSOL_MINT_BYTES,
+            quote_mint: [0x7au8; 32],
+            pool_base_vault: [0xAAu8; 32],
+            pool_quote_vault: [0xBBu8; 32],
+        };
+
+        let accts = build_pumpswap_pool_accounts_deterministic(&extracted);
+        assert_eq!(accts.coin_creator_vault_ata, [0u8; 32], "zeroed creator → zeroed ATA");
+        assert_eq!(accts.coin_creator_vault_authority, [0u8; 32], "zeroed creator → zeroed authority");
+    }
+
+    #[test]
+    fn test_build_pool_resolution_from_create_pool() {
+        let extracted = CreatePoolExtracted {
+            pool: [1u8; 32],
+            creator: [3u8; 32],
+            base_mint: WSOL_MINT_BYTES,
+            quote_mint: [0x7au8; 32],
+            pool_base_vault: [0xAAu8; 32],  // WSOL vault
+            pool_quote_vault: [0xBBu8; 32], // token vault
+        };
+
+        let res = build_pool_resolution_from_create_pool(
+            &extracted,
+            [0xFFu8; 64], // sig
+            85_000_000_000,
+            200_000_000_000_000,
+            1700000000000,
+        );
+
+        assert_eq!(res.mint, [0x7au8; 32], "mint should be the token");
+        assert_eq!(res.pool_address, [1u8; 32]);
+        assert_eq!(res.coin_vault, [0xBBu8; 32], "coin_vault = token vault");
+        assert_eq!(res.pc_vault, [0xAAu8; 32], "pc_vault = WSOL vault");
+        assert_eq!(res.pool_type, PoolType::PumpSwap);
+        assert_eq!(res.reserve_sol_lamports, 85_000_000_000);
+        assert_eq!(res.reserve_token_atoms, 200_000_000_000_000);
+        assert_eq!(res.creator, [3u8; 32]);
+        assert_eq!(res.grad_block_time_ms, 1700000000000);
+    }
+
+    #[test]
+    fn test_create_pool_ix_constants() {
+        // Verify the IDL account layout constants
+        assert_eq!(create_pool_ix::POOL, 0);
+        assert_eq!(create_pool_ix::GLOBAL_CONFIG, 1);
+        assert_eq!(create_pool_ix::CREATOR, 2);
+        assert_eq!(create_pool_ix::BASE_MINT, 3);
+        assert_eq!(create_pool_ix::QUOTE_MINT, 4);
+        assert_eq!(create_pool_ix::LP_MINT, 5);
+        assert_eq!(create_pool_ix::POOL_BASE_TOKEN_ACCOUNT, 9);
+        assert_eq!(create_pool_ix::POOL_QUOTE_TOKEN_ACCOUNT, 10);
+        assert_eq!(create_pool_ix::BASE_TOKEN_PROGRAM, 13);
+        assert_eq!(create_pool_ix::QUOTE_TOKEN_PROGRAM, 14);
+        assert_eq!(create_pool_ix::MIN_ACCOUNTS, 18);
+    }
+
+    #[test]
+    fn test_derive_pumpswap_pool_pda_deterministic() {
+        // Same inputs should always produce same output
+        let creator = [0x42u8; 32];
+        let base = WSOL_MINT_BYTES;
+        let quote = [0x7au8; 32];
+
+        let (pda1, bump1) = derive_pumpswap_pool_pda(0, &creator, &base, &quote);
+        let (pda2, bump2) = derive_pumpswap_pool_pda(0, &creator, &base, &quote);
+        assert_eq!(pda1, pda2);
+        assert_eq!(bump1, bump2);
+
+        // Different index → different PDA
+        let (pda3, _) = derive_pumpswap_pool_pda(1, &creator, &base, &quote);
+        assert_ne!(pda1, pda3, "different index should produce different PDA");
+    }
+
+    #[test]
+    fn test_derive_pool_vault_deterministic() {
+        let pool = [0x42u8; 32];
+        let mint = [0x7au8; 32];
+
+        let v1 = derive_pool_vault(&pool, &SPL_TOKEN_PROGRAM_BYTES, &mint);
+        let v2 = derive_pool_vault(&pool, &SPL_TOKEN_PROGRAM_BYTES, &mint);
+        assert_eq!(v1, v2, "vault derivation must be deterministic");
+        assert_ne!(v1, [0u8; 32], "derived vault should be non-zero");
+
+        // Different token program → different vault
+        let v3 = derive_pool_vault(&pool, &TOKEN_2022_PROGRAM_BYTES, &mint);
+        assert_ne!(v1, v3, "different token program should produce different vault");
+    }
 }
+

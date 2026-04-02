@@ -178,6 +178,20 @@ impl From<crate::momentum::pool::PumpSwapPoolAccounts> for PumpSwapPoolAccounts 
     }
 }
 
+/// Build `PumpSwapPoolAccounts` deterministically from `CreatePoolExtracted`.
+///
+/// This is the zero-RPC path: all data comes from the create_pool instruction
+/// accounts (available in the graduation transaction). No getProgramAccounts,
+/// no getTransaction, no pool data fetching needed.
+///
+/// Handles pool ordering normalization and creator ATA derivation.
+pub fn build_pool_accounts_from_create_pool(
+    extracted: &crate::momentum::pool::CreatePoolExtracted,
+) -> PumpSwapPoolAccounts {
+    let upstream = crate::momentum::pool::build_pumpswap_pool_accounts_deterministic(extracted);
+    PumpSwapPoolAccounts::from(upstream)
+}
+
 // ── Error type ───────────────────────────────────────────────────────────────
 
 #[derive(Debug)]

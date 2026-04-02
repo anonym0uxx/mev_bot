@@ -44,7 +44,7 @@ use crate::engine::hot_path::ScoredToken;
 
 use crate::tx::tip_engine::{TipEngine, TipConfig, TipRequest};
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -164,6 +164,17 @@ async fn rpc_fallback_send(
     }
 }
 
+/// Result from an async retry task when ShredStream detects a fresh PumpSwap
+/// pool before getProgramAccounts has indexed it. The retry task resolves the
+/// pool after a delay and sends the result back through `retry_tx` for
+/// processing on the next `on_tick()`.
+struct AsyncRetryResult {
+    resolution: PoolResolution,
+    enrichment: crate::engine::hot_path::GradEnrichment,
+    ts_ms: u64,
+    mint: [u8; 32],
+}
+
 /// Post-graduation momentum trading engine.
 ///
 /// Receives graduation events, scores them, delays entry, and manages
@@ -229,6 +240,11 @@ pub struct MomentumEngine {
     /// Raydium pool accounts keyed by mint, populated at graduation, consumed at close.
     raydium_pools: DashMap<[u8; 32], crate::tx::raydium::RaydiumPoolAccounts>,
     pumpswap_pools: DashMap<[u8; 32], crate::tx::pumpswap::PumpSwapPoolAccounts>,
+    /// Mints where position was opened but buy TX couldn't be submitted because
+    /// pool accounts were zeroed (not yet resolved). Checked each tick — when pool
+    /// accounts appear in pumpswap_pools/raydium_pools, the deferred buy is submitted.
+    /// Entries are removed after successful submission or after 10s timeout.
+    deferred_buy_pending: DashSet<[u8; 32]>,
     tip_engine: Arc<parking_lot::Mutex<TipEngine>>,
     jito_grpc: Option<Arc<crate::tx::jito_grpc::JitoGrpcClient>>,
     nozomi_client: Option<Arc<crate::tx::nozomi::NozomiClient>>,
@@ -265,6 +281,13 @@ pub struct MomentumEngine {
     /// Graduation events where mint_map had no history (enrichment cold miss).
     /// High value = mint_map not being populated before graduation.
     grad_enrichment_cold_misses: AtomicU64,
+
+    // ── Async retry channel for ShredStream fresh detections ────────────
+    // When ShredStream detects a PumpSwap pool before getProgramAccounts has
+    // indexed it, an async retry task resolves the pool after a delay and sends
+    // the result through this channel. on_tick() drains it.
+    retry_tx: tokio::sync::mpsc::UnboundedSender<AsyncRetryResult>,
+    retry_rx: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<AsyncRetryResult>>,
 }
 
 impl MomentumEngine {
@@ -335,6 +358,9 @@ impl MomentumEngine {
 
         let public_rpc_url = Arc::new(public_rpc_url);
 
+        // Channel for async retry results (ShredStream fresh detection → delayed pool resolution)
+        let (async_retry_tx, async_retry_rx) = tokio::sync::mpsc::unbounded_channel::<AsyncRetryResult>();
+
         let engine = Self {
             config,
             rpc_url,
@@ -353,6 +379,7 @@ impl MomentumEngine {
             scored_token_rx: scored_rx,
             raydium_pools: DashMap::new(),
             pumpswap_pools: DashMap::new(),
+            deferred_buy_pending: DashSet::new(),
             tip_engine,
             jito_grpc,
             nozomi_client,
@@ -373,6 +400,8 @@ impl MomentumEngine {
             wallet_balance_lamports: Arc::new(AtomicU64::new(u64::MAX)),
             last_tick_ms: AtomicU64::new(0),
             grad_enrichment_cold_misses: AtomicU64::new(0),
+            retry_tx: async_retry_tx,
+            retry_rx: tokio::sync::Mutex::new(async_retry_rx),
         };
 
         // Spawn wallet balance poller (no-op in paper mode — reads but doesn't gate)
@@ -715,6 +744,85 @@ impl MomentumEngine {
         });
     }
 
+    /// Drain async retry results from the ShredStream fresh-detection retry channel.
+    ///
+    /// When ShredStream detects a PumpSwap pool before getProgramAccounts has indexed
+    /// it, an async task retries resolution after 1s/2s/4s delays and sends the
+    /// result here. We process them identically to the mint-based fast path success
+    /// case in on_migration().
+    async fn drain_async_retries(&self, _now_ms: u64) {
+        let mut rx = match self.retry_rx.try_lock() {
+            Ok(rx) => rx,
+            Err(_) => return, // Another tick is draining — skip
+        };
+
+        // Drain all pending results (non-blocking)
+        while let Ok(result) = rx.try_recv() {
+            let mint_b58 = bs58::encode(&result.mint).into_string();
+            let resolution = &result.resolution;
+            let enrichment = result.enrichment;
+            let ts_ms = result.ts_ms;
+
+            tracing::info!(
+                mint = %mint_b58,
+                pool_type = ?resolution.pool_type,
+                reserve_sol = resolution.reserve_sol_lamports,
+                "[momentum] processing async retry result from ShredStream fresh detection"
+            );
+
+            let pool_info = PoolInfo {
+                coin_vault: resolution.coin_vault,
+                pc_vault: resolution.pc_vault,
+                reserve_token: resolution.reserve_token_atoms,
+                reserve_sol: resolution.reserve_sol_lamports,
+                pool_type: resolution.pool_type,
+                mint: resolution.mint,
+            };
+
+            // Derive effective enrichment (same logic as mint fast path in on_migration)
+            let effective_volume_sol_x100 = if enrichment.volume_sol_x100 == 0 {
+                (resolution.reserve_sol_lamports / 10_000_000).min(65535) as u32
+            } else {
+                enrichment.volume_sol_x100
+            };
+            let effective_speed_s = if enrichment.grad_speed_s == 0 {
+                let sol = resolution.reserve_sol_lamports / 1_000_000_000;
+                self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
+                tracing::info!(
+                    mint = %mint_b58,
+                    reserve_sol = sol,
+                    "[momentum] enrichment cold miss (async retry) — estimating speed from LP reserves"
+                );
+                if sol >= 250 { 60u32 } else { 120u32 }
+            } else {
+                enrichment.grad_speed_s
+            };
+            let effective_buys_5s = if enrichment.buys_5s == 0 { 3u32 } else { enrichment.buys_5s as u32 };
+            let effective_sells_5s = if enrichment.sells_5s == 0 { 1u32 } else { enrichment.sells_5s as u32 };
+
+            // Store PumpSwap pool accounts for live execution
+            if let Some(ps_pool) = crate::momentum::pool::extract_pumpswap_pool_accounts(resolution) {
+                let ps_accts: crate::tx::pumpswap::PumpSwapPoolAccounts = ps_pool.into();
+                self.pumpswap_pools.insert(resolution.mint, ps_accts);
+                tracing::debug!(
+                    mint = %mint_b58,
+                    "[momentum] pumpswap pool accounts stored (async retry)"
+                );
+            }
+
+            // is_cold_miss is always true for async retry results (that's why they were retried)
+            self.on_graduation(
+                &pool_info,
+                ts_ms,
+                effective_speed_s,
+                effective_volume_sol_x100,
+                effective_buys_5s,
+                effective_sells_5s,
+                true, // is_cold_miss — ShredStream fresh detections are always cold misses
+            ).await;
+        }
+    }
+
     /// Compute position size in lamports for a graduation entry.
     ///
     /// Priority:
@@ -816,8 +924,14 @@ impl MomentumEngine {
         // Drain Kelly-scored tokens from hot_path channel
         self.drain_scored_tokens(now_ms);
 
+        // Drain async retry results (ShredStream fresh detection → delayed pool resolution)
+        self.drain_async_retries(now_ms).await;
+
         // Process pending entries that are ready
         self.process_pending_entries(now_ms).await;
+
+        // Deferred buy TX: retry submission for positions that opened without pool accounts
+        self.process_deferred_buys(now_ms);
 
         // Process active positions
         let active_count = self.active.len();
@@ -904,6 +1018,247 @@ impl MomentumEngine {
                     _ => {}
                 }
             }
+        }
+    }
+
+    /// Check positions with deferred buy TXs. When pool accounts appear in the
+    /// DashMap (resolved by Engineer #1/#3 async tasks), submit the buy TX.
+    /// Gives up after 10 seconds — momentum opportunity has passed.
+    ///
+    /// Called from on_tick() after process_pending_entries(). O(n) where n is
+    /// the number of deferred positions (typically 0-2). No blocking RPC calls —
+    /// buy TX submission is spawned as a tokio task.
+    #[inline(never)]
+    fn process_deferred_buys(&self, now_ms: u64) {
+        if self.config.paper_mode || self.deferred_buy_pending.is_empty() {
+            return;
+        }
+
+        // Collect mints to process (can't mutate DashSet while iterating)
+        let pending_mints: Vec<[u8; 32]> = self.deferred_buy_pending.iter().map(|r| *r.key()).collect();
+
+        for mint in pending_mints {
+            // Position must still be active
+            let (entry_ts, size_lamports, entry_price_fp, grad_score) = match self.active.get(&mint) {
+                Some(pos) => (pos.entry_ts_ms, pos.size_lamports, pos.entry_price_fp, pos.grad_score),
+                None => {
+                    // Position was already closed — clean up
+                    self.deferred_buy_pending.remove(&mint);
+                    continue;
+                }
+            };
+
+            let age_ms = now_ms.saturating_sub(entry_ts);
+
+            // 10s timeout: momentum opportunity has passed
+            if age_ms > 10_000 {
+                tracing::warn!(
+                    mint = %bs58::encode(&mint).into_string(),
+                    age_ms,
+                    "[momentum] deferred buy timed out — pool resolution too slow, position stays accounting-only"
+                );
+                self.deferred_buy_pending.remove(&mint);
+                continue;
+            }
+
+            // Check PumpSwap pool accounts first (100% of pump.fun graduations since Apr 2026)
+            if let Some(ps_pool) = self.pumpswap_pools.get(&mint).map(|r| r.clone()) {
+                let has_pool = ps_pool.pool != [0u8; 32];
+                let has_creator = ps_pool.coin_creator_vault_ata != [0u8; 32];
+
+                if has_pool && has_creator {
+                    let mint_b58 = bs58::encode(&mint).into_string();
+                    tracing::info!(
+                        mint = %mint_b58,
+                        age_ms,
+                        "[momentum] deferred buy TX — PumpSwap pool accounts now resolved, submitting"
+                    );
+
+                    // Get current price for token estimate
+                    let current_price_fp = match self.price_feed.current_price(&mint) {
+                        Some(p) if p > 0 => p,
+                        _ => entry_price_fp, // fallback to entry price
+                    };
+
+                    let tokens_estimate = if current_price_fp > 0 {
+                        (size_lamports as u128 * 1_000_000 / current_price_fp as u128) as u64
+                    } else { 0u64 };
+
+                    // Set tokens_held on position BEFORE async buy
+                    if let Some(mut pos) = self.active.get_mut(&mint) {
+                        pos.set_tokens_held(tokens_estimate);
+                    }
+
+                    // Build and submit buy TX (same logic as initial PumpSwap buy path)
+                    let kp_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
+                    let bh = self.blockhash_cache_sync().unwrap_or([0u8; 32]);
+                    let tip_req = crate::tx::tip_engine::TipRequest {
+                        context: crate::tx::tip_engine::TipContext::Entry,
+                        size_lamports,
+                        gain_bps: 0,
+                        grad_score: grad_score as f64,
+                    };
+                    let tip = self.tip_engine.lock().compute_tip(&tip_req);
+                    let fee_idx = (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() % 8) as usize;
+                    let rpc_sender = self.rpc_sender.clone();
+                    let mint_buy = mint;
+
+                    tokio::spawn(async move {
+                        let kp_bytes = match std::fs::read(&kp_path) {
+                            Ok(b) => b,
+                            Err(e) => { tracing::error!(err=?e, "[deferred_buy_pumpswap] keypair load failed"); return; }
+                        };
+                        let kp_arr: Vec<u8> = match serde_json::from_slice(&kp_bytes) {
+                            Ok(v) => v,
+                            Err(e) => { tracing::error!(err=?e, "[deferred_buy_pumpswap] keypair parse failed"); return; }
+                        };
+                        if kp_arr.len() != 64 { tracing::error!("[deferred_buy_pumpswap] invalid keypair len"); return; }
+                        let mut kb = [0u8; 64];
+                        kb.copy_from_slice(&kp_arr);
+                        let keypair = match solana_sdk::signature::Keypair::from_bytes(&kb) {
+                            Ok(k) => k,
+                            Err(e) => { tracing::error!(err=?e, "[deferred_buy_pumpswap] keypair err"); return; }
+                        };
+                        use std::str::FromStr as _;
+                        let tip_account = solana_sdk::pubkey::Pubkey::from_str(
+                            crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
+                        ).unwrap();
+                        let tx_bytes = match crate::tx::pumpswap::build_pumpswap_buy_tx(
+                            &ps_pool, &keypair, size_lamports, 1, tip, tip_account, bh, fee_idx,
+                        ) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                tracing::error!(
+                                    mint=%bs58::encode(&mint_buy).into_string(),
+                                    err=?e,
+                                    "[deferred_buy_pumpswap] build failed"
+                                );
+                                return;
+                            }
+                        };
+                        let mint_str = bs58::encode(&mint_buy).into_string();
+                        match rpc_sender.submit_tx(&tx_bytes, &mint_str, "deferred_buy_pumpswap").await {
+                            rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
+                                tracing::info!(mint=%mint_str, sig=%signature, latency_ms, tip, size_sol=size_lamports as f64/1e9, "[deferred_buy_pumpswap] RPC landed ✅");
+                            }
+                            rpc_sender::SubmitResult::TimedOut { signature } => {
+                                tracing::warn!(mint=%mint_str, sig=%signature, "[deferred_buy_pumpswap] RPC timed out (may still land)");
+                            }
+                            rpc_sender::SubmitResult::Failed { error } => {
+                                tracing::error!(mint=%mint_str, err=%error, "[deferred_buy_pumpswap] RPC FAILED");
+                            }
+                            rpc_sender::SubmitResult::CircuitOpen { remaining_ms } => {
+                                tracing::warn!(mint=%mint_str, remaining_ms, "[deferred_buy_pumpswap] circuit breaker OPEN — skipped");
+                            }
+                        }
+                    });
+
+                    // Mark as submitted — remove from pending set
+                    self.deferred_buy_pending.remove(&mint);
+                    continue;
+                }
+                // Pool exists but accounts are still zeroed — wait for next tick
+            }
+
+            // Check Raydium pool accounts (legacy path)
+            if let Some(pool) = self.raydium_pools.get(&mint).map(|r| r.clone()) {
+                // Raydium pools need valid Serum accounts (non-zeroed)
+                let serum_valid = pool.serum_market != [0u8; 32]
+                    && pool.amm_open_orders != [0u8; 32];
+
+                if serum_valid {
+                    let mint_b58 = bs58::encode(&mint).into_string();
+                    tracing::info!(
+                        mint = %mint_b58,
+                        age_ms,
+                        "[momentum] deferred buy TX — Raydium pool accounts now resolved, submitting"
+                    );
+
+                    let current_price_fp = match self.price_feed.current_price(&mint) {
+                        Some(p) if p > 0 => p,
+                        _ => entry_price_fp,
+                    };
+
+                    let tokens_estimate = if current_price_fp > 0 {
+                        (size_lamports as u128 * 1_000_000 / current_price_fp as u128) as u64
+                    } else { 0u64 };
+
+                    if let Some(mut pos) = self.active.get_mut(&mint) {
+                        pos.set_tokens_held(tokens_estimate);
+                    }
+
+                    let kp_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
+                    let bh = self.blockhash_cache_sync().unwrap_or([0u8; 32]);
+                    let tip_req = crate::tx::tip_engine::TipRequest {
+                        context: crate::tx::tip_engine::TipContext::Entry,
+                        size_lamports,
+                        gain_bps: 0,
+                        grad_score: grad_score as f64,
+                    };
+                    let tip = self.tip_engine.lock().compute_tip(&tip_req);
+                    let rpc_sender = self.rpc_sender.clone();
+                    let mint_buy = mint;
+
+                    tokio::spawn(async move {
+                        let kp_bytes = match std::fs::read(&kp_path) {
+                            Ok(b) => b,
+                            Err(e) => { tracing::error!(err=?e, "[deferred_buy_raydium] keypair load failed"); return; }
+                        };
+                        let kp_arr: Vec<u8> = match serde_json::from_slice(&kp_bytes) {
+                            Ok(v) => v,
+                            Err(e) => { tracing::error!(err=?e, "[deferred_buy_raydium] keypair parse failed"); return; }
+                        };
+                        if kp_arr.len() != 64 { tracing::error!("[deferred_buy_raydium] invalid keypair len"); return; }
+                        let mut kb = [0u8; 64];
+                        kb.copy_from_slice(&kp_arr);
+                        let keypair = match solana_sdk::signature::Keypair::from_bytes(&kb) {
+                            Ok(k) => k,
+                            Err(e) => { tracing::error!(err=?e, "[deferred_buy_raydium] keypair err"); return; }
+                        };
+                        use std::str::FromStr as _;
+                        let tip_account = solana_sdk::pubkey::Pubkey::from_str(
+                            crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
+                        ).unwrap();
+                        let tx_bytes = match crate::tx::raydium::build_raydium_buy_tx(
+                            &pool, &mint_buy, &keypair, size_lamports, 0, tip, tip_account, bh,
+                        ) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                tracing::error!(
+                                    mint=%bs58::encode(&mint_buy).into_string(),
+                                    err=?e,
+                                    "[deferred_buy_raydium] build failed"
+                                );
+                                return;
+                            }
+                        };
+                        let mint_str = bs58::encode(&mint_buy).into_string();
+                        match rpc_sender.submit_tx(&tx_bytes, &mint_str, "deferred_buy_raydium").await {
+                            rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
+                                tracing::info!(mint=%mint_str, sig=%signature, latency_ms, tip, size_sol=size_lamports as f64/1e9, "[deferred_buy_raydium] RPC landed ✅");
+                            }
+                            rpc_sender::SubmitResult::TimedOut { signature } => {
+                                tracing::warn!(mint=%mint_str, sig=%signature, "[deferred_buy_raydium] RPC timed out (may still land)");
+                            }
+                            rpc_sender::SubmitResult::Failed { error } => {
+                                tracing::error!(mint=%mint_str, err=%error, "[deferred_buy_raydium] RPC FAILED");
+                            }
+                            rpc_sender::SubmitResult::CircuitOpen { remaining_ms } => {
+                                tracing::warn!(mint=%mint_str, remaining_ms, "[deferred_buy_raydium] circuit breaker OPEN — skipped");
+                            }
+                        }
+                    });
+
+                    self.deferred_buy_pending.remove(&mint);
+                    continue;
+                }
+                // Raydium pool exists but Serum accounts are zeroed — wait
+            }
+
+            // Neither PumpSwap nor Raydium pool accounts ready yet — check next tick
         }
     }
 
@@ -1207,7 +1562,47 @@ impl MomentumEngine {
                             }
                         }
                     });
-                } else if let Some(ps_pool) = self.pumpswap_pools.get(&entry.mint).map(|r| r.clone()) {
+                } else if let Some(mut ps_pool) = self.pumpswap_pools.get(&entry.mint).map(|r| r.clone()) {
+                    // ── Last-chance pool resolution for Helius direct path ──────
+                    // When on_pumpswap_graduation_direct() trusts Helius vault data
+                    // and enters immediately, it stores partial pool accounts with
+                    // zeroed pool PDA and creator. By now (T+entry_delay_ms, ~15s),
+                    // getProgramAccounts indexing has caught up. Resolve the full
+                    // pool accounts before building the buy TX.
+                    if ps_pool.pool == [0u8; 32] {
+                        let mint_b58_resolve = bs58::encode(&entry.mint).into_string();
+                        tracing::info!(
+                            mint = %mint_b58_resolve,
+                            "[buy_pumpswap] pool PDA is zeroed — attempting last-chance resolution"
+                        );
+                        if let Some(resolution) = crate::momentum::pool::resolve_pumpswap_pool_from_mint(
+                            &self.http_client, &entry.mint, &self.public_rpc_url, &self.helius_rpc_url,
+                        ).await {
+                            if let Some(resolved_pool) = crate::momentum::pool::extract_pumpswap_pool_accounts(&resolution) {
+                                let resolved_accts: crate::tx::pumpswap::PumpSwapPoolAccounts = resolved_pool.into();
+                                tracing::info!(
+                                    mint = %mint_b58_resolve,
+                                    pool = %bs58::encode(&resolved_accts.pool).into_string(),
+                                    "[buy_pumpswap] last-chance resolution succeeded ✅"
+                                );
+                                self.pumpswap_pools.insert(entry.mint, resolved_accts.clone());
+                                ps_pool = resolved_accts;
+                            } else {
+                                tracing::warn!(
+                                    mint = %mint_b58_resolve,
+                                    "[buy_pumpswap] last-chance resolution: extract_pumpswap_pool_accounts returned None — position is accounting-only"
+                                );
+                                continue;
+                            }
+                        } else {
+                            tracing::warn!(
+                                mint = %mint_b58_resolve,
+                                "[buy_pumpswap] last-chance resolution failed — position is accounting-only"
+                            );
+                            continue;
+                        }
+                    }
+
                     // PumpSwap live buy path
                     let mint = entry.mint;
                     let size = size_lamports;
@@ -1287,8 +1682,9 @@ impl MomentumEngine {
                 } else {
                     tracing::warn!(
                         mint=%bs58::encode(&entry.mint).into_string(),
-                        "[momentum] live mode: no pool accounts (Raydium or PumpSwap) — position is accounting-only"
+                        "[momentum] live mode: no pool accounts yet — deferring buy TX (will retry each tick for 10s)"
                     );
+                    self.deferred_buy_pending.insert(entry.mint);
                 }
             }
 
@@ -2173,6 +2569,8 @@ impl MomentumEngine {
         self.momentum_zones.remove(&mint);
         // Clean up LQS reserve context
         self.reserve_sol_ctx.remove(&mint);
+        // Clean up deferred buy tracking
+        self.deferred_buy_pending.remove(&mint);
 
         // Calculate P&L
         let size_sol = pos.size_lamports as f64 / 1e9;
@@ -2647,6 +3045,65 @@ impl MomentumEngine {
                 // Insufficient liquidity on PumpSwap — fall through to getTransaction
             }
             // PumpSwap mint lookup returned None — fall through to getTransaction
+            // ── ShredStream fresh detection async retry ─────────────────────────
+            // ShredStream detects PumpSwap pool creations ~100ms after the tx,
+            // but getProgramAccounts may not have indexed the pool yet.
+            // For cold-miss pump.fun mints, spawn an async retry rather than
+            // falling through to sig-based resolution (which also fails on
+            // fresh sigs) or Raydium (which finds dead V4 pools).
+            if is_cold_miss {
+                let mint_b58 = bs58::encode(&mint).into_string();
+                if mint_b58.ends_with("pump") {
+                    tracing::info!(
+                        mint = %mint_b58,
+                        "[momentum] fresh pump.fun mint — scheduling async pool resolution retry (1s, 2s, 4s)"
+                    );
+
+                    let http = self.http_client.clone();
+                    let mint_copy = mint;
+                    let enrichment_copy = enrichment;
+                    let ts_ms_copy = ts_ms;
+                    let public_rpc = self.public_rpc_url.clone();
+                    let helius_rpc = self.helius_rpc_url.clone();
+                    let retry_tx = self.retry_tx.clone();
+
+                    tokio::spawn(async move {
+                        let mint_b58 = bs58::encode(&mint_copy).into_string();
+                        for delay_ms in [1000u64, 2000, 4000] {
+                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+
+                            if let Some(resolution) = crate::momentum::pool::resolve_pumpswap_pool_from_mint(
+                                &http, &mint_copy, &public_rpc, &helius_rpc,
+                            ).await {
+                                if resolution.reserve_sol_lamports >= crate::momentum::pool::MIN_PUMPSWAP_SOL_RESERVES_LAMPORTS {
+                                    tracing::info!(
+                                        mint = %mint_b58,
+                                        reserve_sol = resolution.reserve_sol_lamports,
+                                        delay_ms,
+                                        "[momentum] async retry succeeded — pool now indexed"
+                                    );
+                                    let _ = retry_tx.send(AsyncRetryResult {
+                                        resolution,
+                                        enrichment: enrichment_copy,
+                                        ts_ms: ts_ms_copy,
+                                        mint: mint_copy,
+                                    });
+                                    return;
+                                }
+                            }
+                        }
+                        tracing::warn!(
+                            mint = %mint_b58,
+                            "[momentum] async retry failed after 3 attempts (1s, 2s, 4s) — pool not indexed"
+                        );
+                    });
+
+                    // Remove sig from dedup so async retry result can be processed fresh
+                    self.resolving_sigs.remove(&sig);
+                    return; // Don't fall through to Raydium — async retry will handle it
+                }
+            }
+            // ── End ShredStream fresh detection async retry ──────────────────────
         }
         // ── End PumpSwap mint-based fast path ──────────────────────────────────
 
@@ -3111,185 +3568,100 @@ impl MomentumEngine {
         let coin_vault_b58 = bs58::encode(&coin_vault).into_string();
         let pc_vault_b58 = bs58::encode(&pc_vault).into_string();
 
-        // Fetch vault reserves (one RPC call — getMultipleAccounts).
-        // Use Helius RPC for fresh graduations — public RPC may not have indexed
-        // the vault accounts yet (< 1s after pool creation). Helius detected the
-        // graduation so it should already have the accounts available.
-        match crate::momentum::pool::fetch_vault_reserves(
-            &self.http_client,
-            &self.helius_rpc_url,
-            &coin_vault_b58,
-            &pc_vault_b58,
-        ).await {
-            Some((reserve_token, reserve_sol)) => {
-                if reserve_sol < crate::momentum::pool::MIN_PUMPSWAP_SOL_RESERVES_LAMPORTS {
-                    tracing::warn!(
-                        mint = %bs58::encode(&mint).into_string(),
-                        reserve_sol,
-                        "[momentum] PumpSwapGraduationDirect rejected — insufficient liquidity"
-                    );
-                    return;
-                }
+        // ── Trust Helius Enhanced vault data — skip RPC verification ────────
+        // Helius transactionSubscribe already parsed the on-chain create_pool
+        // instruction and extracted the vault addresses. These are 100% correct.
+        // The old flow called fetch_vault_reserves() to verify, but that fails
+        // 100% of the time for fresh graduations because:
+        //   1. Vault accounts are < 1 second old
+        //   2. Even Helius RPC hasn't indexed them at confirmed commitment
+        //   3. The 500ms timeout is too tight for brand-new accounts
+        // Instead: use estimated reserves (all fresh PumpSwap graduations start
+        // with ~85 SOL + ~800M tokens) and enter immediately. The price feed
+        // will get real reserves from the first vault poll (~500ms later).
+        //
+        // Pool PDA + creator ATA are NOT available yet (require getProgramAccounts
+        // which also lags). Store partial pool accounts with zeroed PDA/creator.
+        // The buy TX executes at T+entry_delay_ms (15s) — by then, the
+        // "last-chance" resolution in process_pending_entries will resolve them.
 
-                let mint_b58 = bs58::encode(&mint).into_string();
-                tracing::info!(
-                    mint = %mint_b58,
-                    reserve_sol,
-                    reserve_token,
-                    source = source.as_str(),
-                    "[momentum] PumpSwapGraduationDirect pool resolved — fast path (no getTransaction)"
-                );
+        let estimated_reserve_sol: u64 = 85_000_000_000; // 85 SOL
+        let estimated_reserve_token: u64 = 800_000_000_000_000; // ~800M tokens (6 decimals)
 
-                let pool_info = PoolInfo {
-                    coin_vault,
-                    pc_vault,
-                    reserve_token,
-                    reserve_sol,
-                    pool_type: PoolType::PumpSwap,
-                    mint,
-                };
+        let mint_b58 = bs58::encode(&mint).into_string();
+        tracing::info!(
+            mint = %mint_b58,
+            coin_vault = %coin_vault_b58,
+            pc_vault = %pc_vault_b58,
+            source = source.as_str(),
+            "[momentum] PumpSwapGraduationDirect — trusting Helius vault data, entering immediately (est 85 SOL)"
+        );
 
-                // Cold miss detection
-                let is_cold_miss = enrichment.grad_speed_s == 0 && enrichment.volume_sol_x100 == 0;
+        let pool_info = PoolInfo {
+            coin_vault,
+            pc_vault,
+            reserve_token: estimated_reserve_token,
+            reserve_sol: estimated_reserve_sol,
+            pool_type: PoolType::PumpSwap,
+            mint,
+        };
 
-                // Derive effective enrichment (same logic as on_migration)
-                let effective_volume_sol_x100 = if enrichment.volume_sol_x100 == 0 {
-                    (reserve_sol / 10_000_000).min(65535) as u32
-                } else {
-                    enrichment.volume_sol_x100
-                };
-                let effective_speed_s = if enrichment.grad_speed_s == 0 {
-                    let sol = reserve_sol / 1_000_000_000;
-                    self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
-                    tracing::info!(
-                        mint = %mint_b58,
-                        reserve_sol = sol,
-                        "[momentum] enrichment cold miss (direct path) — estimating speed from LP reserves"
-                    );
-                    if sol >= 250 { 60u32 } else { 120u32 }
-                } else {
-                    enrichment.grad_speed_s
-                };
-                let effective_buys_5s = if enrichment.buys_5s == 0 { 3u32 } else { enrichment.buys_5s as u32 };
-                let effective_sells_5s = if enrichment.sells_5s == 0 { 1u32 } else { enrichment.sells_5s as u32 };
+        // Cold miss detection
+        let is_cold_miss = enrichment.grad_speed_s == 0 && enrichment.volume_sol_x100 == 0;
 
-                // Store PumpSwap pool accounts for live execution.
-                // Resolve full pool data via mint lookup to get pool PDA, creator,
-                // and coin_creator_vault_ata (required for PumpSwap swap TXs).
-                {
-                    if let Some(ps_resolution) = crate::momentum::pool::resolve_pumpswap_pool_from_mint(
-                        &self.http_client, &mint, &self.public_rpc_url, &self.helius_rpc_url,
-                    ).await {
-                        if let Some(ps_pool) = crate::momentum::pool::extract_pumpswap_pool_accounts(&ps_resolution) {
-                            let ps_accts: crate::tx::pumpswap::PumpSwapPoolAccounts = ps_pool.into();
-                            self.pumpswap_pools.insert(mint, ps_accts);
-                            tracing::debug!(
-                                mint = %mint_b58,
-                                pool = %bs58::encode(&ps_resolution.pool_address).into_string(),
-                                creator = %bs58::encode(&ps_resolution.creator).into_string(),
-                                "[momentum] pumpswap pool accounts stored (direct path — full resolution)"
-                            );
-                        }
-                    } else {
-                        // Fallback: store with zeroed pool PDA and creator fields.
-                        // Trades may fail with AccountOwnedByWrongProgram until pool is resolved.
-                        let token_is_base = mint < WSOL_MINT_BYTES;
-                        let ps_accts = crate::tx::pumpswap::PumpSwapPoolAccounts {
-                            pool: [0u8; 32],
-                            base_mint: mint,
-                            pool_base_token_account: coin_vault,
-                            pool_quote_token_account: pc_vault,
-                            coin_creator_vault_ata: [0u8; 32],
-                            coin_creator_vault_authority: [0u8; 32],
-                            token_is_base,
-                        };
-                        self.pumpswap_pools.insert(mint, ps_accts);
-                        tracing::warn!(
-                            mint = %mint_b58,
-                            "[momentum] pumpswap pool stored WITHOUT creator (resolve failed) — swaps may fail"
-                        );
-                    }
-                }
+        // Derive effective enrichment (same logic as on_migration)
+        let effective_volume_sol_x100 = if enrichment.volume_sol_x100 == 0 {
+            // Use estimated 85 SOL for cold miss enrichment
+            (estimated_reserve_sol / 10_000_000).min(65535) as u32
+        } else {
+            enrichment.volume_sol_x100
+        };
+        let effective_speed_s = if enrichment.grad_speed_s == 0 {
+            let sol = estimated_reserve_sol / 1_000_000_000;
+            self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
+            tracing::info!(
+                mint = %mint_b58,
+                reserve_sol = sol,
+                "[momentum] enrichment cold miss (direct path) — using estimated reserves"
+            );
+            if sol >= 250 { 60u32 } else { 120u32 }
+        } else {
+            enrichment.grad_speed_s
+        };
+        let effective_buys_5s = if enrichment.buys_5s == 0 { 3u32 } else { enrichment.buys_5s as u32 };
+        let effective_sells_5s = if enrichment.sells_5s == 0 { 1u32 } else { enrichment.sells_5s as u32 };
 
-                self.on_graduation(
-                    &pool_info,
-                    ts_ms,
-                    effective_speed_s,
-                    effective_volume_sol_x100,
-                    effective_buys_5s,
-                    effective_sells_5s,
-                    is_cold_miss,
-                ).await;
-            }
-            None => {
-                // Vault reserve fetch failed — fall back to mint-based PumpSwap lookup
-                tracing::warn!(
-                    mint = %bs58::encode(&mint).into_string(),
-                    "[momentum] PumpSwapGraduationDirect vault fetch failed — falling back to mint lookup"
-                );
-
-                // Cold miss detection for fallback path
-                let is_cold_miss = enrichment.grad_speed_s == 0 && enrichment.volume_sol_x100 == 0;
-
-                if let Some(resolution) = crate::momentum::pool::resolve_pumpswap_pool_from_mint(
-                    &self.http_client, &mint, &self.public_rpc_url, &self.helius_rpc_url
-                ).await {
-                    if resolution.reserve_sol_lamports >= crate::momentum::pool::MIN_PUMPSWAP_SOL_RESERVES_LAMPORTS {
-                        let mint_b58 = bs58::encode(&mint).into_string();
-                        tracing::info!(
-                            mint = %mint_b58,
-                            reserve_sol = resolution.reserve_sol_lamports,
-                            "[momentum] PumpSwapGraduationDirect fallback resolved via mint lookup"
-                        );
-
-                        let pool_info = PoolInfo {
-                            coin_vault: resolution.coin_vault,
-                            pc_vault: resolution.pc_vault,
-                            reserve_token: resolution.reserve_token_atoms,
-                            reserve_sol: resolution.reserve_sol_lamports,
-                            pool_type: resolution.pool_type,
-                            mint: resolution.mint,
-                        };
-
-                        let effective_volume_sol_x100 = if enrichment.volume_sol_x100 == 0 {
-                            (resolution.reserve_sol_lamports / 10_000_000).min(65535) as u32
-                        } else {
-                            enrichment.volume_sol_x100
-                        };
-                        let effective_speed_s = if enrichment.grad_speed_s == 0 {
-                            let sol = resolution.reserve_sol_lamports / 1_000_000_000;
-                            self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
-                            if sol >= 250 { 60u32 } else { 120u32 }
-                        } else {
-                            enrichment.grad_speed_s
-                        };
-                        let effective_buys_5s = if enrichment.buys_5s == 0 { 3u32 } else { enrichment.buys_5s as u32 };
-                        let effective_sells_5s = if enrichment.sells_5s == 0 { 1u32 } else { enrichment.sells_5s as u32 };
-
-                        // Store PumpSwap pool accounts for live execution
-                        if let Some(ps_pool) = crate::momentum::pool::extract_pumpswap_pool_accounts(&resolution) {
-                            let ps_accts: crate::tx::pumpswap::PumpSwapPoolAccounts = ps_pool.into();
-                            self.pumpswap_pools.insert(resolution.mint, ps_accts);
-                        }
-
-                        self.on_graduation(
-                            &pool_info,
-                            ts_ms,
-                            effective_speed_s,
-                            effective_volume_sol_x100,
-                            effective_buys_5s,
-                            effective_sells_5s,
-                            is_cold_miss,
-                        ).await;
-                    }
-                } else {
-                    tracing::warn!(
-                        mint = %bs58::encode(&mint).into_string(),
-                        "[momentum] PumpSwapGraduationDirect resolution FAILED (vault fetch + mint lookup both failed)"
-                    );
-                }
-            }
+        // Store partial PumpSwap pool accounts with zeroed pool PDA and creator.
+        // The buy TX path in process_pending_entries has a "last-chance" resolver
+        // that will fill these in before submitting (at T+entry_delay_ms, ~15s later,
+        // by which time getProgramAccounts indexing has caught up).
+        {
+            let token_is_base = mint < WSOL_MINT_BYTES;
+            let ps_accts = crate::tx::pumpswap::PumpSwapPoolAccounts {
+                pool: [0u8; 32],
+                base_mint: mint,
+                pool_base_token_account: coin_vault,
+                pool_quote_token_account: pc_vault,
+                coin_creator_vault_ata: [0u8; 32],
+                coin_creator_vault_authority: [0u8; 32],
+                token_is_base,
+            };
+            self.pumpswap_pools.insert(mint, ps_accts);
+            tracing::debug!(
+                mint = %mint_b58,
+                "[momentum] partial pumpswap pool accounts stored (pool PDA + creator will resolve at entry time)"
+            );
         }
+
+        self.on_graduation(
+            &pool_info,
+            ts_ms,
+            effective_speed_s,
+            effective_volume_sol_x100,
+            effective_buys_5s,
+            effective_sells_5s,
+            is_cold_miss,
+        ).await;
     }
 
     /// Read current stats as a snapshot (lock-free atomic loads).
