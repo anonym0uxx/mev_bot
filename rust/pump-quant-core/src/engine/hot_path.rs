@@ -372,6 +372,10 @@ impl HotPath {
         // If ShredStream already triggered this trade (sig_prefix match within 200ms),
         // don't re-trigger entry. Instead, enrich existing position with PumpPortal's
         // vSOL reserves data (which ShredStream doesn't provide).
+        //
+        // NOTE: When bonding_curve_enabled=false, no BC positions exist, so
+        // the position_manager lookup below is always a miss. Kept for
+        // correctness if bc_execution is ever re-enabled.
         if trade.source == FeedSource::PumpPortal {
             let sig_u64 = u64::from_le_bytes(trade.sig_prefix);
             for &(stored_sig, stored_ts) in &self.shred_sig_ring {
@@ -380,7 +384,7 @@ impl HotPath {
                 {
                     // ShredStream already processed this trade.
                     // Enrich existing position's vSOL if we have one open.
-                    if trade.vsol_reserves > 0 {
+                    if bc_execution_enabled && trade.vsol_reserves > 0 {
                         if let Some(pos) = self.position_manager.get_position_mut(&trade.mint) {
                             // Update cached vSOL reserves for accurate trail stop tracking
                             pos.current_vsol = trade.vsol_reserves;
@@ -409,7 +413,8 @@ impl HotPath {
         history.push(record, now);
 
         // 2. If we already have a position for this mint → on_subsequent_trade for exit logic
-        if self.position_manager.has_position(&trade.mint) {
+        //    When bonding_curve_enabled=false, no BC positions exist so this is always a miss.
+        if bc_execution_enabled && self.position_manager.has_position(&trade.mint) {
             // Helius dedup: if Helius already delivered this sig, PumpPortal
             // confirmation skips α/β update but still enriches reserves.
             let deduped = self.is_deduped_trade(trade);
@@ -464,6 +469,7 @@ impl HotPath {
                     // ── Publish scored token to momentum engine ──────
                     // Full Kelly/Bayesian scoring passed. Publish for
                     // post-graduation trading instead of BC position.
+                    // Hard disable: no position management runs in this branch.
                     self.stats.gates_passed += 1;
                     if let Some(ref tx) = self.scored_token_tx {
                         let scored = ScoredToken {
@@ -480,6 +486,9 @@ impl HotPath {
                         };
                         let _ = tx.try_send(scored);
                     }
+                    // Hard disable: backrunner positions completely off.
+                    // Engine only routes scored tokens to momentum above this point.
+                    return;
                 }
                 return;
             }
@@ -599,6 +608,9 @@ impl HotPath {
                     // momentum engine has it when the token graduates (could be
                     // minutes to hours later). Watchlist 2-buy confirmation is
                     // only meaningful for sub-second BC entries, not graduation.
+                    //
+                    // Hard disable: when bonding_curve_enabled=false, publish
+                    // scored token and return. No watchlist/position code below runs.
                     if !self.bonding_curve_enabled {
                         if let Some(ref tx) = self.scored_token_tx {
                             let scored = ScoredToken {
@@ -615,7 +627,7 @@ impl HotPath {
                             };
                             let _ = tx.try_send(scored);
                         }
-                        return;
+                        return; // Hard disable: backrunner positions completely off
                     }
 
                     // ── BC path: two-phase watchlist entry ──────────

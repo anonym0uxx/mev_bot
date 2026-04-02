@@ -107,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
     info!(path = %config_path.display(), "Loading config");
     let engine_config = load_config(&config_path)?;
 
+    // Controls backrunner only. Momentum reads its own config (engine_config.momentum.paper_mode).
     let paper_mode = std::env::var("PAPER_MODE")
         .map(|v| v == "true" || v == "1")
         .unwrap_or(engine_config.paper_mode);
@@ -202,13 +203,23 @@ async fn main() -> anyhow::Result<()> {
     let position_manager = PositionManager::new(engine_config.position, closed_tx);
 
     // ── Build V2 Entry Engine (ONLY entry path — no legacy fallback) ──
+    // NOTE: Still constructed when bonding_curve_enabled=false because HotPath
+    // uses EntryEngine for Kelly scoring that feeds ScoredTokens to momentum.
+    // The scoring pipeline is active; only position opening is disabled.
     let ee_config = engine_config.entry_engine_config
         .clone()
         .unwrap_or_else(|| pump_quant_core::engine::entry_engine::EntryEngineConfig::default());
     let entry_engine = pump_quant_core::engine::entry_engine::EntryEngine::new(&ee_config);
-    tracing::info!("EntryEngine: Kelly-tiered sizing + magnitude prediction");
+    tracing::info!(
+        bonding_curve_enabled = engine_config.bonding_curve_enabled,
+        "EntryEngine: Kelly-tiered sizing + magnitude prediction{}",
+        if !engine_config.bonding_curve_enabled { " (scoring-only mode — no BC positions)" } else { "" }
+    );
 
     // ── Build Risk Manager ──
+    // NOTE: When bonding_curve_enabled=false, risk_manager.allows_entry() is only
+    // called in the scoring pipeline (paper_mode bypasses it anyway). No BC positions
+    // are opened regardless — hard return in hot_path.rs prevents it.
     let risk_manager = if let Some(ref risk_cfg) = engine_config.risk_config {
         tracing::info!("RiskManager: config-driven");
         pump_quant_core::engine::risk_manager::RiskManager::new(risk_cfg)
@@ -235,9 +246,15 @@ async fn main() -> anyhow::Result<()> {
     // Attach health monitor to hot path for entry gating
     hot_path.set_health_monitor(health_monitor.clone());
 
-    // Kill switch: disable bonding curve engine when graduation arb is the focus
+    // Kill switch: disable bonding curve engine when graduation arb is the focus.
+    // When disabled, HotPath still runs full scoring pipeline (gates, Kelly, Bayesian)
+    // and publishes ScoredTokens to momentum, but:
+    //   - No BC positions are opened (hard return in on_trade)
+    //   - No position management runs (on_subsequent_trade guarded)
+    //   - PositionManager, EntryEngine, RiskManager are constructed but inert for BC
     if !engine_config.bonding_curve_enabled {
         hot_path.set_bonding_curve_enabled(false);
+        info!("🔴 Backrunner DISABLED — scoring-only mode. Momentum engine is primary.");
     }
 
     // ── Spawn logger thread ─────────────────────────────────────────
