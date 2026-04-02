@@ -551,19 +551,26 @@ async fn resolve_pool_inner(
         }
     }
 
-    // ── FIX-2: PumpSwap preference ───────────────────────────────────────────
+    // ── FIX-2: PumpSwap preference / full resolution ─────────────────────────
     // Post-April 2026: all new pump.fun tokens graduate to PumpSwap.
-    // CoreCast backlog sigs point to old Raydium migration txs, but those pools
-    // are dead — all real trading is on PumpSwap. When we resolve a Raydium pool
-    // via the sig, always check for an active PumpSwap pool first.
-    if pool_type == PoolType::RaydiumAmmV4 {
+    //
+    // Two cases handled:
+    //   1. Raydium pool detected via sig → check for active PumpSwap pool first
+    //   2. PumpSwap pool detected via sig → pool_address is [0u8;32] (amm_id)
+    //      because amm_id is only populated for Raydium. Must resolve full pool
+    //      data via getProgramAccounts to get the real pool PDA, creator, etc.
+    //      Without this, extract_pumpswap_pool_accounts() returns None (pool_address
+    //      == [0u8;32] guard), and the DashMap insert silently skips — causing
+    //      "no pool accounts" at entry time despite "pool resolved" logging.
+    if pool_type == PoolType::RaydiumAmmV4 || pool_type == PoolType::PumpSwap {
         if let Some(ps) = resolve_pumpswap_pool_from_mint(client, &mint, public_rpc_url, helius_rpc_url).await {
             if ps.reserve_sol_lamports > 0 {
                 tracing::info!(
                     mint = %bs58::encode(&mint).into_string(),
-                    raydium_sol = reserve_sol / 1_000_000_000,
+                    sig_pool_type = ?pool_type,
                     pumpswap_sol = ps.reserve_sol_lamports / 1_000_000_000,
-                    "[pool] preferring PumpSwap over Raydium — active pool found"
+                    pool = %bs58::encode(&ps.pool_address).into_string(),
+                    "[pool] resolved full PumpSwap pool data via mint lookup (sig path had zeroed pool_address)"
                 );
                 return Ok(ps);
             }
@@ -1688,9 +1695,45 @@ pub async fn get_account_last_activity_ms(
 /// Resolve the token program that owns a mint account.
 ///
 /// Queries getAccountInfo for the mint and returns the owner program as [u8; 32].
-/// Returns None on RPC failure. This is a one-shot call (~100-200ms) done once
-/// per entry, not in the hot path.
+/// Returns None on RPC failure. Tries `rpc_url` first, then `fallback_rpc_url`
+/// if the first attempt fails (network error, null value, missing owner).
+/// This is a one-shot call (~100-200ms) done once per entry, not in the hot path.
 pub async fn resolve_mint_program(
+    client: &reqwest::Client,
+    mint: &[u8; 32],
+    rpc_url: &str,
+) -> Option<[u8; 32]> {
+    resolve_mint_program_with_fallback(client, mint, rpc_url, None).await
+}
+
+/// Resolve the token program that owns a mint account, with optional fallback RPC.
+///
+/// Tries `rpc_url` first. If that fails and `fallback_rpc_url` is provided,
+/// retries on the fallback. Returns None only if both fail.
+pub async fn resolve_mint_program_with_fallback(
+    client: &reqwest::Client,
+    mint: &[u8; 32],
+    rpc_url: &str,
+    fallback_rpc_url: Option<&str>,
+) -> Option<[u8; 32]> {
+    if let Some(result) = resolve_mint_program_single(client, mint, rpc_url).await {
+        return Some(result);
+    }
+    // Primary failed — try fallback RPC if available
+    if let Some(fallback) = fallback_rpc_url {
+        tracing::info!(
+            mint = %bs58::encode(mint).into_string(),
+            "[resolve_mint_program] primary RPC failed — trying fallback"
+        );
+        if let Some(result) = resolve_mint_program_single(client, mint, fallback).await {
+            return Some(result);
+        }
+    }
+    None
+}
+
+/// Internal: single-RPC attempt to resolve mint program owner.
+async fn resolve_mint_program_single(
     client: &reqwest::Client,
     mint: &[u8; 32],
     rpc_url: &str,

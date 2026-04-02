@@ -1118,6 +1118,24 @@ impl MomentumEngine {
                     mint = %mint_b58,
                     "[momentum] pumpswap pool accounts stored (async retry)"
                 );
+            } else if resolution.pool_type == crate::momentum::pool::PoolType::PumpSwap && !self.config.paper_mode {
+                // Fallback: store partial accounts for last-chance resolution
+                let ps_accts = crate::tx::pumpswap::PumpSwapPoolAccounts {
+                    pool: [0u8; 32],
+                    base_mint: resolution.mint,
+                    pool_base_token_account: resolution.coin_vault,
+                    pool_quote_token_account: resolution.pc_vault,
+                    coin_creator_vault_ata: [0u8; 32],
+                    coin_creator_vault_authority: [0u8; 32],
+                    token_is_base: true,
+                    token_mint_program: [0u8; 32],
+                    is_cashback_coin: false,
+                };
+                self.pumpswap_pools.insert(resolution.mint, ps_accts);
+                tracing::warn!(
+                    mint = %mint_b58,
+                    "[momentum] pumpswap pool accounts stored PARTIAL (async retry fallback)"
+                );
             }
 
             // is_cold_miss is always true for async retry results (that's why they were retried)
@@ -1429,6 +1447,7 @@ impl MomentumEngine {
                     let mint_buy = mint;
                     let resolve_client = self.http_client.clone();
                     let resolve_url = self.helius_rpc_url.clone();
+                    let resolve_url_fallback = self.public_rpc_url.clone();
                     // Slippage protection: accept up to 20% less tokens than estimated.
                     let min_tokens_out = if tokens_estimate > 0 {
                         tokens_estimate * 80 / 100
@@ -1440,8 +1459,8 @@ impl MomentumEngine {
                         // Resolve token_mint_program if unknown
                         let mut ps_pool = ps_pool;
                         if ps_pool.token_mint_program == [0u8; 32] {
-                            if let Some(prog) = crate::momentum::pool::resolve_mint_program(
-                                &resolve_client, &mint_buy, &resolve_url,
+                            if let Some(prog) = crate::momentum::pool::resolve_mint_program_with_fallback(
+                                &resolve_client, &mint_buy, &resolve_url, Some(&resolve_url_fallback),
                             ).await {
                                 ps_pool.token_mint_program = prog;
                                 tracing::info!(
@@ -1450,10 +1469,11 @@ impl MomentumEngine {
                                     "[deferred_buy_pumpswap] resolved token_mint_program"
                                 );
                             } else {
-                                ps_pool.token_mint_program = crate::tx::pumpswap::SPL_TOKEN_2022_PROGRAM_BYTES;  // Token-2022 is the majority for pump.fun tokens
+                                // Fallback: classic SPL Token (all pump.fun tokens use SPL Token, not Token-2022)
+                                ps_pool.token_mint_program = crate::tx::pumpswap::SPL_TOKEN_PROGRAM_BYTES;
                                 tracing::warn!(
                                     mint = %bs58::encode(&mint_buy).into_string(),
-                                    "[deferred_buy_pumpswap] failed to resolve — defaulting to Token-2022"
+                                    "[deferred_buy_pumpswap] failed to resolve — defaulting to classic SPL Token"
                                 );
                             }
                         }
@@ -2178,13 +2198,13 @@ impl MomentumEngine {
                     }
 
                     // ── Resolve token_mint_program if unknown ────────────────
-                    // Some pump.fun tokens use Token-2022, others use classic SPL Token.
-                    // We MUST know the correct program to build valid TX instructions
-                    // (ATA derivation, ATA creation, swap accounts [11]/[12]).
+                    // All pump.fun tokens use classic SPL Token. We MUST know the correct
+                    // program to build valid TX instructions (ATA derivation, ATA creation,
+                    // swap accounts [11]/[12]). Try Helius first, public RPC as fallback.
                     if ps_pool.token_mint_program == [0u8; 32] {
                         let mint_b58_prog = bs58::encode(&entry.mint).into_string();
-                        match crate::momentum::pool::resolve_mint_program(
-                            &self.http_client, &entry.mint, &self.helius_rpc_url,
+                        match crate::momentum::pool::resolve_mint_program_with_fallback(
+                            &self.http_client, &entry.mint, &self.helius_rpc_url, Some(&self.public_rpc_url),
                         ).await {
                             Some(program_bytes) => {
                                 let prog_b58 = bs58::encode(&program_bytes).into_string();
@@ -2200,12 +2220,13 @@ impl MomentumEngine {
                                 }
                             }
                             None => {
-                                // Fallback: Token-2022 (majority for pump.fun tokens)
+                                // Fallback: classic SPL Token (all pump.fun tokens use SPL Token, not Token-2022).
+                                // Previous Token-2022 default caused IncorrectProgramId on buy TXs.
                                 tracing::warn!(
                                     mint = %mint_b58_prog,
-                                    "[buy_pumpswap] failed to resolve token_mint_program — defaulting to Token-2022"
+                                    "[buy_pumpswap] failed to resolve token_mint_program — defaulting to classic SPL Token"
                                 );
-                                ps_pool.token_mint_program = crate::tx::pumpswap::SPL_TOKEN_2022_PROGRAM_BYTES;  // Token-2022 is the majority for pump.fun tokens
+                                ps_pool.token_mint_program = crate::tx::pumpswap::SPL_TOKEN_PROGRAM_BYTES;
                             }
                         }
                     }
@@ -3717,10 +3738,114 @@ impl MomentumEngine {
                     });
                 }
             } else {
-                tracing::warn!(
-                    mint=%bs58::encode(&mint).into_string(),
-                    "[close_position] no pool accounts (Raydium or PumpSwap) — sell NOT submitted"
-                );
+                // Last-chance sell resolution: spawn async task to resolve PumpSwap pool
+                // and submit sell. close_position() is sync, so we spawn the async work.
+                let mint_b58_sell = bs58::encode(&mint).into_string();
+                let tokens = pos.tokens_held();
+                if tokens == 0 {
+                    tracing::warn!(
+                        mint=%mint_b58_sell,
+                        "[close_position] no pool accounts and tokens_held=0 — buy never landed, skipping sell"
+                    );
+                } else {
+                    tracing::warn!(
+                        mint=%mint_b58_sell,
+                        tokens,
+                        "[close_position] no pool accounts — spawning last-chance PumpSwap resolution for sell"
+                    );
+                    let http_client = self.http_client.clone();
+                    let public_rpc = self.public_rpc_url.clone();
+                    let helius_rpc = self.helius_rpc_url.clone();
+                    let mint_copy = mint;
+                    let kp_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
+                    let bh = self.blockhash_cache_sync().unwrap_or([0u8; 32]);
+                    let tip_req = TipRequest {
+                        context: exit_to_context(&reason, gain_bps as i64),
+                        size_lamports: pos.size_lamports,
+                        gain_bps: gain_bps as i64,
+                        grad_score: 0.0,
+                    };
+                    let tip = self.tip_engine.lock().compute_tip(&tip_req);
+                    let reason_str = reason.as_str().to_string();
+                    let gain = gain_bps as i64;
+                    let fee_idx = (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() % 8) as usize;
+                    let rpc_sender = self.rpc_sender.clone();
+                    tokio::spawn(async move {
+                        // Resolve pool accounts
+                        let resolution = match crate::momentum::pool::resolve_pumpswap_pool_from_mint(
+                            &http_client, &mint_copy, &public_rpc, &helius_rpc,
+                        ).await {
+                            Some(r) => r,
+                            None => {
+                                tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), "[sell_lastchance] pool resolution FAILED — tokens may be stuck");
+                                return;
+                            }
+                        };
+                        let ps_pool_raw = match crate::momentum::pool::extract_pumpswap_pool_accounts(&resolution) {
+                            Some(p) => p,
+                            None => {
+                                tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), "[sell_lastchance] extract_pool_accounts returned None");
+                                return;
+                            }
+                        };
+                        let mut ps_pool: crate::tx::pumpswap::PumpSwapPoolAccounts = ps_pool_raw.into();
+                        // Resolve token_mint_program
+                        if ps_pool.token_mint_program == [0u8; 32] {
+                            ps_pool.token_mint_program = match crate::momentum::pool::resolve_mint_program_with_fallback(
+                                &http_client, &mint_copy, &helius_rpc, Some(&public_rpc),
+                            ).await {
+                                Some(prog) => prog,
+                                None => crate::tx::pumpswap::SPL_TOKEN_PROGRAM_BYTES,
+                            };
+                        }
+                        // Load keypair
+                        let kp_bytes = match std::fs::read(&kp_path) {
+                            Ok(b) => b,
+                            Err(e) => { tracing::error!(err=?e, "[sell_lastchance] keypair load failed"); return; }
+                        };
+                        let kp_arr: Vec<u8> = match serde_json::from_slice(&kp_bytes) {
+                            Ok(v) => v,
+                            Err(e) => { tracing::error!(err=?e, "[sell_lastchance] keypair parse failed"); return; }
+                        };
+                        if kp_arr.len() != 64 { tracing::error!("[sell_lastchance] bad keypair len"); return; }
+                        let mut kb = [0u8; 64];
+                        kb.copy_from_slice(&kp_arr);
+                        let keypair = match solana_sdk::signature::Keypair::from_bytes(&kb) {
+                            Ok(k) => k,
+                            Err(e) => { tracing::error!(err=?e, "[sell_lastchance] keypair err"); return; }
+                        };
+                        use std::str::FromStr as _;
+                        let tip_account = solana_sdk::pubkey::Pubkey::from_str(
+                            crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
+                        ).unwrap();
+                        let min_sol_out = 0u64; // Emergency exit — accept any SOL
+                        let mint_str = bs58::encode(&mint_copy).into_string();
+                        tracing::info!(mint=%mint_str, tokens, pool=%bs58::encode(&ps_pool.pool).into_string(), "[sell_lastchance] building sell TX");
+                        let tx_bytes = match crate::tx::pumpswap::build_pumpswap_sell_tx(
+                            &ps_pool, &keypair, tokens, min_sol_out, tip, tip_account, bh, fee_idx,
+                        ) {
+                            Ok(b) => b,
+                            Err(e) => { tracing::error!(mint=%mint_str, err=?e, "[sell_lastchance] build failed"); return; }
+                        };
+                        match rpc_sender.submit_tx(&tx_bytes, &mint_str, "sell_lastchance").await {
+                            rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
+                                tracing::info!(mint=%mint_str, sig=%signature, latency_ms, reason=%reason_str, gain_bps=gain, "[sell_lastchance] RPC landed ✅");
+                            }
+                            rpc_sender::SubmitResult::TimedOut { signature } => {
+                                tracing::warn!(mint=%mint_str, sig=%signature, reason=%reason_str, "[sell_lastchance] RPC timed out");
+                            }
+                            rpc_sender::SubmitResult::Failed { error } => {
+                                tracing::error!(mint=%mint_str, err=%error, reason=%reason_str, "[sell_lastchance] 🚨 SELL FAILED");
+                            }
+                            rpc_sender::SubmitResult::CircuitOpen { remaining_ms } => {
+                                tracing::error!(mint=%mint_str, remaining_ms, "[sell_lastchance] circuit breaker OPEN");
+                            }
+                        }
+                    });
+                }
             }
             // Idempotent cleanup — safe if already removed in sell branch above
             self.pumpswap_pools.remove(&mint);
@@ -3914,6 +4039,24 @@ impl MomentumEngine {
                         tracing::debug!(
                             mint = %mint_b58,
                             "[momentum] pumpswap pool accounts stored (mint fast path)"
+                        );
+                    } else if !self.config.paper_mode {
+                        // Fallback: store partial accounts for last-chance resolution
+                        let ps_accts = crate::tx::pumpswap::PumpSwapPoolAccounts {
+                            pool: [0u8; 32],
+                            base_mint: resolution.mint,
+                            pool_base_token_account: resolution.coin_vault,
+                            pool_quote_token_account: resolution.pc_vault,
+                            coin_creator_vault_ata: [0u8; 32],
+                            coin_creator_vault_authority: [0u8; 32],
+                            token_is_base: true,
+                            token_mint_program: [0u8; 32],
+                            is_cashback_coin: false,
+                        };
+                        self.pumpswap_pools.insert(resolution.mint, ps_accts);
+                        tracing::warn!(
+                            mint = %mint_b58,
+                            "[momentum] pumpswap pool accounts stored PARTIAL (mint fast path fallback)"
                         );
                     }
 
@@ -4173,6 +4316,28 @@ impl MomentumEngine {
                         mint = %bs58::encode(&resolution.mint).into_string(),
                         "[momentum] pumpswap pool accounts stored for live execution"
                     );
+                } else if resolution.pool_type == PoolType::PumpSwap && !self.config.paper_mode {
+                    // Fallback: extract_pumpswap_pool_accounts returned None (e.g., pool_address
+                    // was [0u8;32] because sig-based path didn't resolve it and the FIX-2 mint
+                    // lookup also failed). Store PARTIAL pool accounts with zeroed pool PDA —
+                    // the last-chance resolver in process_pending_entries will fill them in
+                    // at T+entry_delay_ms when getProgramAccounts has indexed the pool.
+                    let ps_accts = crate::tx::pumpswap::PumpSwapPoolAccounts {
+                        pool: [0u8; 32],
+                        base_mint: resolution.mint,
+                        pool_base_token_account: resolution.coin_vault,
+                        pool_quote_token_account: resolution.pc_vault,
+                        coin_creator_vault_ata: [0u8; 32],
+                        coin_creator_vault_authority: [0u8; 32],
+                        token_is_base: true,
+                        token_mint_program: [0u8; 32], // resolved at entry time
+                        is_cashback_coin: false,
+                    };
+                    self.pumpswap_pools.insert(resolution.mint, ps_accts);
+                    tracing::warn!(
+                        mint = %bs58::encode(&resolution.mint).into_string(),
+                        "[momentum] pumpswap pool accounts stored PARTIAL (zeroed pool PDA) — last-chance resolution will fill at entry time"
+                    );
                 }
 
                 let effective_sells_5s = if enrichment.sells_5s == 0 {
@@ -4323,6 +4488,24 @@ impl MomentumEngine {
                             tracing::debug!(
                                 mint = %bs58::encode(&resolution.mint).into_string(),
                                 "[momentum] pumpswap pool accounts stored (mint lookup path)"
+                            );
+                        } else if resolution.pool_type == PoolType::PumpSwap && !self.config.paper_mode {
+                            // Fallback: store partial accounts for last-chance resolution
+                            let ps_accts = crate::tx::pumpswap::PumpSwapPoolAccounts {
+                                pool: [0u8; 32],
+                                base_mint: resolution.mint,
+                                pool_base_token_account: resolution.coin_vault,
+                                pool_quote_token_account: resolution.pc_vault,
+                                coin_creator_vault_ata: [0u8; 32],
+                                coin_creator_vault_authority: [0u8; 32],
+                                token_is_base: true,
+                                token_mint_program: [0u8; 32],
+                                is_cashback_coin: false,
+                            };
+                            self.pumpswap_pools.insert(resolution.mint, ps_accts);
+                            tracing::warn!(
+                                mint = %bs58::encode(&resolution.mint).into_string(),
+                                "[momentum] pumpswap pool accounts stored PARTIAL (mint lookup path fallback)"
                             );
                         }
 

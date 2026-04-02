@@ -254,13 +254,12 @@ pub(crate) fn token_program_for_mint_with_hint(mint: &Pubkey, hint: &[u8; 32]) -
     if *hint != [0u8; 32] {
         return Pubkey::new_from_array(*hint);
     }
-    // Fallback: WSOL → classic SPL Token, all pump.fun tokens → Token-2022 (majority case)
-    let wsol = Pubkey::from_str(WSOL_MINT_STR).unwrap();
-    if *mint == wsol {
-        Pubkey::from_str(SPL_TOKEN_PROGRAM_STR).unwrap()
-    } else {
-        Pubkey::new_from_array(SPL_TOKEN_2022_PROGRAM_BYTES)
-    }
+    // Fallback: ALL pump.fun tokens use classic SPL Token (not Token-2022).
+    // WSOL also uses classic SPL Token. The previous default of Token-2022
+    // caused IncorrectProgramId errors on buy TXs and Custom:3012 on sells.
+    // If a token genuinely uses Token-2022, the hint should be resolved
+    // before reaching this fallback (via resolve_mint_program).
+    Pubkey::new_from_array(SPL_TOKEN_PROGRAM_BYTES)
 }
 
 /// Determine the owning token program for WSOL (always classic SPL Token).
