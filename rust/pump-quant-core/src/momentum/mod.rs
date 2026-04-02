@@ -225,7 +225,7 @@ pub struct MomentumEngine {
     wallet_pubkey: Option<[u8; 32]>,
     blockhash_cache: Arc<crate::tx::executor::BlockhashCache>,
 
-    // ── RPC primary sender (Helius) with circuit breaker + Jito fallback ──
+    // ── RPC primary sender (Helius) with rate limiter + circuit breaker ──
     rpc_sender: Arc<rpc_sender::RpcSender>,
 
     // ── Legacy RPC fallback (kept for Nozomi→Jito→RPC triple fallback) ──
@@ -1130,7 +1130,6 @@ impl MomentumEngine {
                     let mint_buy = mint;
                     let tokens_est = tokens_estimate;
                     let rpc_sender = self.rpc_sender.clone();
-                    let jg_clone = jg.clone();
                     tokio::spawn(async move {
                         let kp_bytes = match std::fs::read(&kp_path) {
                             Ok(b) => b,
@@ -1158,7 +1157,7 @@ impl MomentumEngine {
                             Err(e) => { tracing::error!(mint=%bs58::encode(&mint_buy).into_string(), err=?e, "[buy_task] build failed"); return; }
                         };
                         let mint_str = bs58::encode(&mint_buy).into_string();
-                        // RPC primary → Jito fallback
+                        // RPC only — rate limited + retried + circuit breaker waits
                         match rpc_sender.submit_tx(&tx_bytes, &mint_str, "buy_task").await {
                             rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
                                 tracing::info!(mint=%mint_str, sig=%signature, latency_ms, tip, size_sol=size as f64/1e9, tokens_est, "[buy_task] RPC landed ✅");
@@ -1166,16 +1165,8 @@ impl MomentumEngine {
                             rpc_sender::SubmitResult::TimedOut { signature } => {
                                 tracing::warn!(mint=%mint_str, sig=%signature, "[buy_task] RPC timed out (may still land)");
                             }
-                            rpc_sender::SubmitResult::JitoFallback { .. } => {
-                                // Circuit breaker tripped → fall back to Jito
-                                let tx_b58 = bs58::encode(&tx_bytes).into_string();
-                                match jg_clone.submit_bundle(&tx_b58).await {
-                                    Ok(id) => tracing::info!(mint=%mint_str, bundle_id=%id, tip, "[buy_task] Jito fallback submitted"),
-                                    Err(e) => tracing::error!(mint=%mint_str, err=?e, "[buy_task] Jito fallback also FAILED"),
-                                }
-                            }
                             rpc_sender::SubmitResult::Failed { error } => {
-                                tracing::error!(mint=%mint_str, err=%error, "[buy_task] RPC FAILED");
+                                tracing::error!(mint=%mint_str, err=%error, "[buy_task] RPC FAILED — no fallback");
                             }
                         }
                     });
@@ -1213,7 +1204,6 @@ impl MomentumEngine {
                         .unwrap_or_default()
                         .as_millis() % 8) as usize;
                     let rpc_sender = self.rpc_sender.clone();
-                    let jg_clone = jg.clone();
                     tokio::spawn(async move {
                         let kp_bytes = match std::fs::read(&kp_path) {
                             Ok(b) => b,
@@ -1241,7 +1231,7 @@ impl MomentumEngine {
                             Err(e) => { tracing::error!(mint=%bs58::encode(&mint_buy).into_string(), err=?e, "[buy_pumpswap] build failed"); return; }
                         };
                         let mint_str = bs58::encode(&mint_buy).into_string();
-                        // RPC primary → Jito fallback
+                        // RPC only — rate limited + retried + circuit breaker waits
                         match rpc_sender.submit_tx(&tx_bytes, &mint_str, "buy_pumpswap").await {
                             rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
                                 tracing::info!(mint=%mint_str, sig=%signature, latency_ms, tip, size_sol=size as f64/1e9, "[buy_pumpswap] RPC landed ✅");
@@ -1249,15 +1239,8 @@ impl MomentumEngine {
                             rpc_sender::SubmitResult::TimedOut { signature } => {
                                 tracing::warn!(mint=%mint_str, sig=%signature, "[buy_pumpswap] RPC timed out (may still land)");
                             }
-                            rpc_sender::SubmitResult::JitoFallback { .. } => {
-                                let tx_b58 = bs58::encode(&tx_bytes).into_string();
-                                match jg_clone.submit_bundle(&tx_b58).await {
-                                    Ok(id) => tracing::info!(mint=%mint_str, bundle_id=%id, tip, "[buy_pumpswap] Jito fallback submitted"),
-                                    Err(e) => tracing::error!(mint=%mint_str, err=?e, "[buy_pumpswap] Jito fallback also FAILED"),
-                                }
-                            }
                             rpc_sender::SubmitResult::Failed { error } => {
-                                tracing::error!(mint=%mint_str, err=%error, "[buy_pumpswap] RPC FAILED");
+                                tracing::error!(mint=%mint_str, err=%error, "[buy_pumpswap] RPC FAILED — no fallback");
                             }
                         }
                     });
@@ -2307,9 +2290,6 @@ impl MomentumEngine {
                     let noz_ok = noz.is_some();
                     let mint_copy = mint;
                     let rpc_sender = self.rpc_sender.clone();
-                    let jg_clone = jg.clone();
-                    let rpc_fb_client = self.rpc_fallback_client.clone();
-                    let rpc_fb_url = self.rpc_fallback_url.clone();
                     tokio::spawn(async move {
                         let kp_bytes = match std::fs::read(&kp_path) {
                             Ok(b) => b,
@@ -2337,36 +2317,16 @@ impl MomentumEngine {
                             Err(e) => { tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] build failed"); return; }
                         };
                         let mint_str = bs58::encode(&mint_copy).into_string();
-                        // SELL: aggressive 3-tier fallback (RPC → Jito → raw RPC)
+                        // SELL: RPC only with rate limiting + backoff. Circuit breaker waits, never routes to Jito.
                         match rpc_sender.submit_tx(&tx_bytes, &mint_str, "sell_raydium").await {
                             rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
                                 tracing::info!(mint=%mint_str, sig=%signature, latency_ms, reason=%reason_str, gain_bps=gain, "[sell_raydium] RPC landed ✅");
                             }
                             rpc_sender::SubmitResult::TimedOut { signature } => {
-                                tracing::warn!(mint=%mint_str, sig=%signature, "[sell_raydium] RPC timed out — trying Jito");
-                                let tx_b58 = bs58::encode(&tx_bytes).into_string();
-                                let _ = jg_clone.submit_bundle(&tx_b58).await;
-                            }
-                            rpc_sender::SubmitResult::JitoFallback { .. } => {
-                                let tx_b58 = bs58::encode(&tx_bytes).into_string();
-                                match jg_clone.submit_bundle(&tx_b58).await {
-                                    Ok(id) => tracing::info!(mint=%mint_str, bundle_id=%id, "[sell_raydium] Jito fallback submitted"),
-                                    Err(e) => {
-                                        tracing::error!(mint=%mint_str, err=?e, "[sell_raydium] Jito fallback FAILED — last resort RPC");
-                                        rpc_fallback_send(&rpc_fb_client, &rpc_fb_url, &tx_bytes, &mint_str, "sell_raydium").await;
-                                    }
-                                }
+                                tracing::warn!(mint=%mint_str, sig=%signature, reason=%reason_str, "[sell_raydium] RPC timed out (may still land)");
                             }
                             rpc_sender::SubmitResult::Failed { error } => {
-                                tracing::error!(mint=%mint_str, err=%error, "[sell_raydium] RPC FAILED — trying Jito");
-                                let tx_b58 = bs58::encode(&tx_bytes).into_string();
-                                match jg_clone.submit_bundle(&tx_b58).await {
-                                    Ok(id) => tracing::info!(mint=%mint_str, bundle_id=%id, "[sell_raydium] Jito rescue submitted"),
-                                    Err(e) => {
-                                        tracing::error!(mint=%mint_str, err=?e, "[sell_raydium] 🚨 ALL SELL PATHS FAILED");
-                                        rpc_fallback_send(&rpc_fb_client, &rpc_fb_url, &tx_bytes, &mint_str, "sell_raydium_emergency").await;
-                                    }
-                                }
+                                tracing::error!(mint=%mint_str, err=%error, reason=%reason_str, "[sell_raydium] 🚨 SELL FAILED — tokens may be stuck");
                             }
                         }
                     });
@@ -2406,9 +2366,6 @@ impl MomentumEngine {
                         .unwrap_or_default()
                         .as_millis() % 8) as usize;
                     let rpc_sender = self.rpc_sender.clone();
-                    let jg_clone = jg.clone();
-                    let rpc_fb_client = self.rpc_fallback_client.clone();
-                    let rpc_fb_url = self.rpc_fallback_url.clone();
                     tokio::spawn(async move {
                         let kp_bytes = match std::fs::read(&kp_path) {
                             Ok(b) => b,
@@ -2436,36 +2393,16 @@ impl MomentumEngine {
                             Err(e) => { tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] build failed"); return; }
                         };
                         let mint_str = bs58::encode(&mint_copy).into_string();
-                        // SELL: aggressive 3-tier fallback (RPC → Jito → raw RPC)
+                        // SELL: RPC only with rate limiting + backoff. Circuit breaker waits, never routes to Jito.
                         match rpc_sender.submit_tx(&tx_bytes, &mint_str, "sell_pumpswap").await {
                             rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
                                 tracing::info!(mint=%mint_str, sig=%signature, latency_ms, reason=%reason_str, gain_bps=gain, "[sell_pumpswap] RPC landed ✅");
                             }
                             rpc_sender::SubmitResult::TimedOut { signature } => {
-                                tracing::warn!(mint=%mint_str, sig=%signature, "[sell_pumpswap] RPC timed out — trying Jito");
-                                let tx_b58 = bs58::encode(&tx_bytes).into_string();
-                                let _ = jg_clone.submit_bundle(&tx_b58).await;
-                            }
-                            rpc_sender::SubmitResult::JitoFallback { .. } => {
-                                let tx_b58 = bs58::encode(&tx_bytes).into_string();
-                                match jg_clone.submit_bundle(&tx_b58).await {
-                                    Ok(id) => tracing::info!(mint=%mint_str, bundle_id=%id, "[sell_pumpswap] Jito fallback submitted"),
-                                    Err(e) => {
-                                        tracing::error!(mint=%mint_str, err=?e, "[sell_pumpswap] Jito fallback FAILED — last resort RPC");
-                                        rpc_fallback_send(&rpc_fb_client, &rpc_fb_url, &tx_bytes, &mint_str, "sell_pumpswap").await;
-                                    }
-                                }
+                                tracing::warn!(mint=%mint_str, sig=%signature, reason=%reason_str, "[sell_pumpswap] RPC timed out (may still land)");
                             }
                             rpc_sender::SubmitResult::Failed { error } => {
-                                tracing::error!(mint=%mint_str, err=%error, "[sell_pumpswap] RPC FAILED — trying Jito");
-                                let tx_b58 = bs58::encode(&tx_bytes).into_string();
-                                match jg_clone.submit_bundle(&tx_b58).await {
-                                    Ok(id) => tracing::info!(mint=%mint_str, bundle_id=%id, "[sell_pumpswap] Jito rescue submitted"),
-                                    Err(e) => {
-                                        tracing::error!(mint=%mint_str, err=?e, "[sell_pumpswap] 🚨 ALL SELL PATHS FAILED");
-                                        rpc_fallback_send(&rpc_fb_client, &rpc_fb_url, &tx_bytes, &mint_str, "sell_pumpswap_emergency").await;
-                                    }
-                                }
+                                tracing::error!(mint=%mint_str, err=%error, reason=%reason_str, "[sell_pumpswap] 🚨 SELL FAILED — tokens may be stuck");
                             }
                         }
                     });
