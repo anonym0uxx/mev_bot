@@ -893,14 +893,25 @@ impl MomentumEngine {
                 continue;
             }
 
-            // Second liquidity check at actual entry time — pool may have drained since resolution
-            const MIN_ENTRY_RESERVE_LAMPORTS: u64 = 40_000_000_000; // 40 SOL
+            // LP reserve range gate: only trade fresh pump.fun graduations.
+            // Fresh PumpSwap migrations land at 50-120 SOL. Outside config range = skip.
             if let Some(current_reserve_sol) = self.price_feed.get_reserve_sol(&entry.mint) {
-                if current_reserve_sol < MIN_ENTRY_RESERVE_LAMPORTS {
+                if current_reserve_sol < self.config.min_lp_reserve_entry_lamports {
                     tracing::warn!(
                         mint = %bs58::encode(&entry.mint).into_string(),
                         reserve_sol_lamports = current_reserve_sol,
-                        "[momentum] skipping entry — pool drained since resolution (reserve < 40 SOL)"
+                        min_required = self.config.min_lp_reserve_entry_lamports,
+                        "[momentum] skipping entry — pool drained since resolution (reserve below min)"
+                    );
+                    self.price_feed.unsubscribe_sync(&entry.mint);
+                    continue;
+                }
+                if current_reserve_sol > self.config.max_lp_reserve_entry_lamports {
+                    tracing::info!(
+                        mint = %bs58::encode(&entry.mint).into_string(),
+                        reserve_sol = current_reserve_sol / 1_000_000_000,
+                        max_allowed = self.config.max_lp_reserve_entry_lamports / 1_000_000_000,
+                        "[momentum] entry rejected — LP reserve too large (established token)"
                     );
                     self.price_feed.unsubscribe_sync(&entry.mint);
                     continue;
@@ -1554,7 +1565,12 @@ impl MomentumEngine {
                 let timeout_ms = if ws_last_ms == 0 {
                     self.config.dead_zone_ws_fallback_ms
                 } else if ws_count == 0 {
-                    self.config.dead_zone_ws_zero_ms
+                    // PumpSwap pools get a wider WS silence window — lower notification frequency per swap
+                    if pos.pool_type == 1 {
+                        self.config.dead_zone_pumpswap_ws_zero_ms
+                    } else {
+                        self.config.dead_zone_ws_zero_ms
+                    }
                 } else if ws_count <= self.config.dead_zone_ws_sparse_n as u64 {
                     self.config.dead_zone_ws_sparse_ms
                 } else {
@@ -1657,7 +1673,13 @@ impl MomentumEngine {
                     let recent = &samples[samples.len().saturating_sub(min_n)..];
                     let max_r = recent.iter().map(|(_, r)| *r).max().unwrap_or(0);
                     let min_r = recent.iter().map(|(_, r)| *r).min().unwrap_or(0);
-                    max_r.saturating_sub(min_r) < self.config.dead_zone_reserve_flat_tolerance_lamports
+                    // PumpSwap pools: use wider tolerance (1% fee = bigger reserve swings per swap)
+                    let reserve_flat_tolerance = if pos.pool_type == 1 {
+                        self.config.dead_zone_pumpswap_reserve_tolerance_lamports
+                    } else {
+                        self.config.dead_zone_reserve_flat_tolerance_lamports
+                    };
+                    max_r.saturating_sub(min_r) < reserve_flat_tolerance
                 });
 
                 if reserve_flat {

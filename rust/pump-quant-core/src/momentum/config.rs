@@ -92,7 +92,7 @@ pub struct MomentumConfig {
     /// Max ms to wait for live price feed before skipping an entry.
     /// If price hasn't arrived within this window, the entry is abandoned
     /// rather than entering at the stale graduation reserve price.
-    /// Default: 2000ms (gives Helius WSS ~2s to deliver live price).
+    /// Default: 8000ms (gives Helius WSS ~8s to deliver live price).
     pub no_price_timeout_ms: u64,
     /// Position size in SOL for tier-0 entries (first price reading, no momentum signal yet).
     /// Set to 0.0 to disable tier-0 sizing (use regular grad_score tiers).
@@ -120,11 +120,11 @@ pub struct MomentumConfig {
     // DYNAMIC TRAILING STOP (state-aware widths)
     // ══════════════════════════════════════════════════════════
 
-    /// Trail width when ACCELERATING — wide to avoid shakeouts. Default: 15.0%.
+    /// Trail width when ACCELERATING — wide to avoid shakeouts. Default: 12.0%.
     pub trailing_stop_accel_pct: f64,
-    /// Trail width when DECELERATING — tighter to protect gains. Default: 5.0%.
+    /// Trail width when DECELERATING — tighter to protect gains. Default: 4.0%.
     pub trailing_stop_decel_pct: f64,
-    /// Trail width when REVERSING — near-immediate exit. Default: 3.0%.
+    /// Trail width when REVERSING — near-immediate exit. Default: 2.0%.
     pub trailing_stop_reversal_pct: f64,
     /// Minimum price samples before trailing stop evaluation begins.
     /// Prevents premature exits on explosive tokens where the first few samples
@@ -454,6 +454,24 @@ pub struct MomentumConfig {
     /// Queries getSignaturesForAddress to find last swap. If older than this → skip.
     /// Set to 0 to disable. Default: 300_000 (5 minutes).
     pub raydium_max_idle_ms: u64,
+
+    /// Minimum LP reserve (lamports) at entry time. Fresh PumpSwap grads land with ~85 SOL.
+    /// Default: 40_000_000_000 (40 SOL) — rejects drained/abnormal pools at entry.
+    pub min_lp_reserve_entry_lamports: u64,
+
+    /// Maximum LP reserve (lamports) at entry time. Pools >200 SOL are established tokens
+    /// with dampened momentum. Default: 200_000_000_000 (200 SOL).
+    pub max_lp_reserve_entry_lamports: u64,
+
+    /// Dead zone reserve flat tolerance (lamports) for PumpSwap pools specifically.
+    /// PumpSwap has 1% fee → reserve changes per swap are larger than Raydium.
+    /// Default: 2_000_000 (0.002 SOL) — wider than Raydium's 1_000_000.
+    pub dead_zone_pumpswap_reserve_tolerance_lamports: u64,
+
+    /// Dead zone WS zero timeout for PumpSwap pools (ms).
+    /// PumpSwap WS notifications fire less frequently per swap volume.
+    /// Default: 10_000 (10s) — looser than Raydium's 8s.
+    pub dead_zone_pumpswap_ws_zero_ms: u64,
 }
 
 impl Default for MomentumConfig {
@@ -462,7 +480,7 @@ impl Default for MomentumConfig {
             enabled: false,
             paper_mode: true,
             entry_delay_ms: 15_000,
-            min_grad_score: 40,
+            min_grad_score: 30,
             position_size_sol: 0.3,
             max_concurrent: 5,
             tp1_pct: 5.0,
@@ -490,7 +508,7 @@ impl Default for MomentumConfig {
             micro_exit_window_ms: 4_500,
             micro_exit_velocity_bps: -200,
             micro_exit_n_consecutive: 2,
-            no_price_timeout_ms: 2_000,
+            no_price_timeout_ms: 8_000,
             tier0_size_sol: 0.10,
             reentry_cooldown_ms: 300_000,
             price_poll_interval_ms: 500,
@@ -503,9 +521,9 @@ impl Default for MomentumConfig {
             // Dynamic trailing stop
             trailing_stop_min_samples: 5,
             trailing_stop_confirm_samples: 2,
-            trailing_stop_accel_pct: 15.0,
-            trailing_stop_decel_pct: 5.0,
-            trailing_stop_reversal_pct: 3.0,
+            trailing_stop_accel_pct: 12.0,
+            trailing_stop_decel_pct: 4.0,
+            trailing_stop_reversal_pct: 2.0,
             trail_atr_multiplier: 2.5,
             trail_atr_window: 10,
             trail_min_samples_for_atr: 4,
@@ -516,15 +534,15 @@ impl Default for MomentumConfig {
             top_detection_trail_pct: 3.0,
 
             // Adaptive dead zone (WS-based)
-            dead_zone_ws_zero_ms: 3_000,
-            dead_zone_ws_sparse_ms: 8_000,
+            dead_zone_ws_zero_ms: 8_000,
+            dead_zone_ws_sparse_ms: 12_000,
             dead_zone_ws_active_ms: 15_000,
             dead_zone_ws_sparse_n: 3,
-            dead_zone_ws_fallback_ms: 8_000,
+            dead_zone_ws_fallback_ms: 10_000,
 
             // Dead zone detection
             dead_zone_early_ms: 10_000,
-            dead_zone_early_bps: 50,
+            dead_zone_early_bps: 100,
             dead_zone_confirmed_ms: 60_000,
             dead_zone_confirmed_bps: 200,
             dead_zone_stagnant_bps: 300,
@@ -532,19 +550,19 @@ impl Default for MomentumConfig {
 
             // Price-direct dead zone (Phase 5)
             dead_zone_price_flat_bps: 200,
-            dead_zone_price_flat_min_samples: 3,
-            dead_zone_price_flat_min_hold_ms: 8_000,
+            dead_zone_price_flat_min_samples: 6,
+            dead_zone_price_flat_min_hold_ms: 12_000,
             dead_zone_price_always_down_bps: -100,
 
             // Reserve flatness dead zone (Phase 5B)
             dead_zone_reserve_flat_min_samples: 5,
-            dead_zone_reserve_flat_tolerance_lamports: 100_000, // 0.0001 SOL
-            dead_zone_reserve_flat_min_hold_ms: 3_000,
+            dead_zone_reserve_flat_tolerance_lamports: 1_000_000, // 0.001 SOL — PumpSwap 1% fee on 0.05 SOL = ~500K lamports
+            dead_zone_reserve_flat_min_hold_ms: 8_000,
 
             // Early abort (Phase 6)
             early_abort_max_bps: 30,
-            early_abort_min_samples: 3,
-            early_abort_min_hold_ms: 3_000,
+            early_abort_min_samples: 6,
+            early_abort_min_hold_ms: 8_000,
 
             // Probe-then-scale entry (TASK 2)
             probe_entry_enabled: true,
@@ -623,6 +641,12 @@ impl Default for MomentumConfig {
             // Pool resolution gates
             stale_grad_max_age_ms: 120_000,  // 2 minutes
             raydium_max_idle_ms: 300_000,    // 5 minutes
+
+            min_lp_reserve_entry_lamports: 40_000_000_000,  // 40 SOL
+            max_lp_reserve_entry_lamports: 200_000_000_000, // 200 SOL
+
+            dead_zone_pumpswap_reserve_tolerance_lamports: 2_000_000,
+            dead_zone_pumpswap_ws_zero_ms: 10_000,
         }
     }
 }
@@ -676,7 +700,7 @@ mod tests {
         assert!(!config.enabled);
         assert!(config.paper_mode);
         assert_eq!(config.entry_delay_ms, 15_000);
-        assert_eq!(config.min_grad_score, 40);
+        assert_eq!(config.min_grad_score, 30);
         assert!((config.position_size_sol - 0.3).abs() < f64::EPSILON);
         assert_eq!(config.max_concurrent, 5);
         assert!((config.tp1_pct - 5.0).abs() < f64::EPSILON);
@@ -698,7 +722,7 @@ mod tests {
         assert_eq!(config.sample_interval_ticks, 7);
         assert!((config.micro_sl_pct - 8.0).abs() < f64::EPSILON);
         assert_eq!(config.micro_sl_ticks, 20);
-        assert_eq!(config.no_price_timeout_ms, 2_000);
+        assert_eq!(config.no_price_timeout_ms, 8_000);
         assert!((config.tier0_size_sol - 0.10).abs() < f64::EPSILON);
     }
 
