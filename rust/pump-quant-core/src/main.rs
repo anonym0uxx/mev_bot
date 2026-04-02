@@ -21,7 +21,7 @@ use pump_quant_core::api::{ApiState, EngineStats, start_server};
 use pump_quant_core::momentum::MomentumEngine;
 use pump_quant_core::feeds::{
     event_joiner::EventJoiner,
-    helius::{HeliusConfig, HeliusWsClient},
+    helius::{HeliusConfig, HeliusPumpSwapClient, HeliusWsClient},
     shredstream::ShredStreamConfig,
     FeedEvent, FeedSource,
 };
@@ -427,7 +427,7 @@ async fn main() -> anyhow::Result<()> {
     let helius_api_key = std::env::var("HELIUS_API_KEY").unwrap_or_default();
     let helius_enabled = !helius_api_key.is_empty();
     let helius_config = HeliusConfig {
-        api_key: helius_api_key,
+        api_key: helius_api_key.clone(),
         enabled: helius_enabled,
     };
     let helius_client = HeliusWsClient::new(helius_config, helius_tx);
@@ -436,6 +436,21 @@ async fn main() -> anyhow::Result<()> {
         info!("Helius feed spawned");
     } else {
         info!("Helius feed disabled (no HELIUS_API_KEY)");
+    }
+
+    // Spawn Helius PumpSwap graduation detector (transactionSubscribe)
+    // Uses Helius Enhanced WS to receive full transactions involving PumpSwap AMM.
+    // Sends events directly to engine_tx (bypasses EventJoiner — dedup in momentum).
+    let helius_pumpswap_config = HeliusConfig {
+        api_key: helius_api_key.clone(),
+        enabled: helius_enabled,
+    };
+    let helius_pumpswap_tx = engine_tx.clone();
+    let helius_pumpswap_client =
+        HeliusPumpSwapClient::new(helius_pumpswap_config, helius_pumpswap_tx);
+    helius_pumpswap_client.spawn();
+    if helius_enabled {
+        info!("Helius PumpSwap transactionSubscribe feed spawned");
     }
 
     // Spawn ShredStream feed (optional)
@@ -758,6 +773,31 @@ async fn main() -> anyhow::Result<()> {
                     let momentum = Arc::clone(&momentum_engine);
                     tokio::spawn(async move {
                         momentum.on_migration(mint, ts_ms, sig, enrichment).await;
+                    });
+                }
+            }
+            Ok(FeedEvent::PumpSwapGraduationDirect { mint, sig, ts_ms, coin_vault, pc_vault, source }) => {
+                let mint_b58 = bs58::encode(&mint).into_string();
+                let open_before = hot_path.open_positions();
+                let enrichment = hot_path.on_migration(&mint, ts_ms);
+                let open_after = hot_path.open_positions();
+                let had_open_position = open_after < open_before;
+                drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
+
+                info!(
+                    mint = %mint_b58,
+                    ts_ms = ts_ms,
+                    source = source.as_str(),
+                    "[momentum] PumpSwap graduation direct detected"
+                );
+
+                // Momentum engine: fast path — vaults already extracted from Helius Enhanced WS
+                if engine_config.momentum.enabled {
+                    let momentum = Arc::clone(&momentum_engine);
+                    tokio::spawn(async move {
+                        momentum.on_pumpswap_graduation_direct(
+                            mint, sig, ts_ms, coin_vault, pc_vault, source, enrichment,
+                        ).await;
                     });
                 }
             }

@@ -18,6 +18,10 @@ pub enum MigrationSource {
     CoreCastStream2 = 1,
     /// Detected via Jito ShredStream gRPC — FASTEST (~0ms from shred decode)
     ShredStream = 2,
+    /// Helius Enhanced transactionSubscribe (full tx with account keys)
+    HeliusEnhanced = 3,
+    /// PumpPortal subscribeMigration feed
+    PumpPortalMigration = 4,
 }
 
 impl MigrationSource {
@@ -27,6 +31,8 @@ impl MigrationSource {
             Self::HeliusLogs => "helius",
             Self::CoreCastStream2 => "corecast",
             Self::ShredStream => "shredstream",
+            Self::HeliusEnhanced => "helius_enhanced",
+            Self::PumpPortalMigration => "pumpportal_migration",
         }
     }
 }
@@ -44,6 +50,16 @@ pub enum FeedEvent {
         source: MigrationSource,
         /// Full 64-byte Solana transaction signature (for getTransaction RPC calls + dedup)
         sig: [u8; 64],
+    },
+    /// PumpSwap graduation with pre-extracted pool data from Helius Enhanced WS.
+    /// Skips getTransaction — vaults already extracted from transactionNotification.
+    PumpSwapGraduationDirect {
+        mint: [u8; 32],
+        sig: [u8; 64],
+        ts_ms: u64,
+        coin_vault: [u8; 32],
+        pc_vault: [u8; 32],
+        source: MigrationSource,
     },
     /// LP removal / rug detection — force-exit any open position.
     LpRemoval { mint: [u8; 32], ts_ms: u64 },

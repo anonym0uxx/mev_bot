@@ -60,9 +60,16 @@ const PUMPSWAP_PROGRAM_ID: [u8; 32] = [
 /// PumpSwap program ID as a `Pubkey` for comparison in parsed transactions.
 const PUMPSWAP_PROGRAM_PUBKEY: Pubkey = Pubkey::new_from_array(PUMPSWAP_PROGRAM_ID);
 
-/// 8-byte Anchor discriminator for PumpSwap `migrate_funds` instruction.
-/// SHA256("global:migrate_funds")[..8].
-const PUMPSWAP_MIGRATE_DISCRIMINATOR: [u8; 8] = [42, 229, 10, 231, 189, 62, 193, 174];
+/// 8-byte Anchor discriminator for PumpSwap `create_pool` instruction.
+/// SHA256("global:create_pool")[..8]. This is what PumpSwap actually executes
+/// when pump.fun's `migrate` CPI-calls pool creation.
+const PUMPSWAP_CREATE_POOL_DISCRIMINATOR: [u8; 8] = [233, 146, 209, 142, 207, 104, 64, 188];
+
+/// 8-byte Anchor discriminator for pump.fun `migrate` instruction.
+/// SHA256("global:migrate")[..8]. This is the outer instruction on the pump.fun
+/// program that triggers the PumpSwap CPI. (Same as MIGRATE_DISCRIMINATOR above,
+/// kept as a separate constant for clarity in the PumpSwap detection context.)
+const PUMPFUN_MIGRATE_DISCRIMINATOR: [u8; 8] = [155, 234, 231, 146, 236, 158, 162, 30];
 
 /// Minimum datagram size: 8 (discriminator) + 32 (mint) + 8 (sol_amount) = 48 bytes.
 const MIN_PAYLOAD_SIZE: usize = 48;
@@ -832,25 +839,26 @@ fn parse_pump_migration(
     None
 }
 
-/// Parse a PumpSwap `MigrateFunds` instruction from a decoded Solana transaction.
+/// Parse a PumpSwap graduation from a decoded Solana transaction.
 ///
-/// Post-March 2025, pump.fun tokens increasingly graduate to PumpSwap (pAMM)
-/// instead of Raydium. This function detects PumpSwap's `migrate_funds` instruction
-/// as a backup graduation signal alongside pump.fun's own `migrate` discriminator.
+/// Post-March 2025, all pump.fun tokens graduate to PumpSwap (pAMM) instead
+/// of Raydium. Detection uses a dual strategy on the outer (top-level)
+/// instructions visible in ShredStream entries:
 ///
-/// PumpSwap MigrateFunds account layout (Anchor IDL):
-/// ```text
-/// accounts[0] = pool (new PumpSwap pool being created)
-/// accounts[1] = bondingCurve
-/// accounts[2] = mint
-/// accounts[3..] = various vaults, authority, token programs
-/// ```
+/// **Strategy 1 (primary):** Match pump.fun program `migrate` instruction.
+///   - Program: `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P` (pump.fun)
+///   - Discriminator: `PUMPFUN_MIGRATE_DISCRIMINATOR`
+///   - Mint extracted from `accounts[1]`
 ///
-/// The mint is extracted from accounts[2]. Returns `FeedEvent::Migration` with
-/// the full tx signature for downstream pool resolution via `getTransaction`.
+/// **Strategy 2 (fallback):** Match PumpSwap program `create_pool` instruction.
+///   - Program: `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA` (PumpSwap)
+///   - Discriminator: `PUMPSWAP_CREATE_POOL_DISCRIMINATOR`
+///   - Mint (base_mint) extracted from `accounts[2]`
 ///
-/// Note: `mint` may be [0u8; 32] if extraction fails — pool resolution will
-/// resolve the real mint from `postTokenBalances`, same as Helius feed does.
+/// Note: In a typical graduation tx, `create_pool` is a CPI inner instruction
+/// and may NOT appear as a top-level instruction in ShredStream entries.
+/// Strategy 1 (pump.fun `migrate`) is the primary detection path.
+/// Strategy 2 handles the edge case where `create_pool` appears top-level.
 #[inline(always)]
 fn parse_pumpswap_migration(
     tx: &solana_sdk::transaction::VersionedTransaction,
@@ -859,43 +867,121 @@ fn parse_pumpswap_migration(
     let account_keys = tx.message.static_account_keys();
     let instructions = tx.message.instructions();
 
+    // Strategy 1: Look for pump.fun's `migrate` instruction (outer).
+    // This is the primary graduation signal — the pump.fun program's migrate
+    // instruction that CPI-calls PumpSwap's create_pool.
     for ix in instructions {
         let program_id_index = ix.program_id_index as usize;
         if program_id_index >= account_keys.len() {
             continue;
         }
 
-        // Fast-path: must be PumpSwap program
-        if account_keys[program_id_index] != PUMPSWAP_PROGRAM_PUBKEY {
+        // Must be the pump.fun program
+        if account_keys[program_id_index] != PUMP_PROGRAM_PUBKEY {
             continue;
         }
 
-        // Check discriminator — must be MigrateFunds
         if ix.data.len() < 8 {
             continue;
         }
-        if ix.data[..8] != PUMPSWAP_MIGRATE_DISCRIMINATOR {
+
+        // Match pump.fun `migrate` discriminator
+        if ix.data[..8] != PUMPFUN_MIGRATE_DISCRIMINATOR {
             continue;
         }
 
-        // Extract mint from accounts[2] (third account in MigrateFunds instruction)
-        let mint = if ix.accounts.len() > 2 {
-            let mint_idx = ix.accounts[2] as usize;
+        // pump.fun `migrate` instruction account layout:
+        // accounts[0] = user (signer)
+        // accounts[1] = mint  ← EXTRACT THIS
+        // accounts[2] = bonding_curve
+        // accounts[3..] = CPI accounts for PumpSwap pool creation
+        let mint = if ix.accounts.len() > 1 {
+            let mint_idx = ix.accounts[1] as usize;
             if mint_idx < account_keys.len() {
                 account_keys[mint_idx].to_bytes()
             } else {
-                [0u8; 32] // fallback: pool resolution will find the real mint
+                [0u8; 32]
             }
         } else {
-            [0u8; 32] // fallback: pool resolution will find the real mint
+            [0u8; 32]
         };
 
-        // Extract full signature for pool resolution RPC calls
         let sig: [u8; 64] = if !tx.signatures.is_empty() {
             tx.signatures[0].into()
         } else {
             continue;
         };
+
+        let mint_b58 = bs58::encode(&mint).into_string();
+        tracing::info!(
+            mint = %mint_b58,
+            sig = %&bs58::encode(&sig).into_string()[..8],
+            "[shredstream] PumpSwap graduation detected via pump.fun migrate"
+        );
+
+        return Some(FeedEvent::Migration {
+            mint,
+            ts_ms: now_ms,
+            source: MigrationSource::ShredStream,
+            sig,
+        });
+    }
+
+    // Strategy 2: Look for PumpSwap `create_pool` as a top-level instruction.
+    // This is a fallback — normally create_pool is a CPI inner instruction,
+    // but handle the edge case where it appears as outer.
+    for ix in instructions {
+        let program_id_index = ix.program_id_index as usize;
+        if program_id_index >= account_keys.len() {
+            continue;
+        }
+
+        // Must be PumpSwap program
+        if account_keys[program_id_index] != PUMPSWAP_PROGRAM_PUBKEY {
+            continue;
+        }
+
+        if ix.data.len() < 8 {
+            continue;
+        }
+
+        // Match PumpSwap `create_pool` discriminator
+        if ix.data[..8] != PUMPSWAP_CREATE_POOL_DISCRIMINATOR {
+            continue;
+        }
+
+        // PumpSwap `create_pool` account layout:
+        // accounts[0] = pool (new PDA)
+        // accounts[1] = creator
+        // accounts[2] = base_mint  ← THE TOKEN MINT
+        // accounts[3] = quote_mint (WSOL)
+        // accounts[4] = lp_mint
+        // accounts[5] = pool_base_token_account
+        // accounts[6] = pool_quote_token_account
+        // ...
+        let mint = if ix.accounts.len() > 2 {
+            let mint_idx = ix.accounts[2] as usize;
+            if mint_idx < account_keys.len() {
+                account_keys[mint_idx].to_bytes()
+            } else {
+                [0u8; 32]
+            }
+        } else {
+            [0u8; 32]
+        };
+
+        let sig: [u8; 64] = if !tx.signatures.is_empty() {
+            tx.signatures[0].into()
+        } else {
+            continue;
+        };
+
+        let mint_b58 = bs58::encode(&mint).into_string();
+        tracing::info!(
+            mint = %mint_b58,
+            sig = %&bs58::encode(&sig).into_string()[..8],
+            "[shredstream] PumpSwap graduation detected via create_pool fallback"
+        );
 
         return Some(FeedEvent::Migration {
             mint,

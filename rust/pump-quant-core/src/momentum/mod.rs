@@ -2510,6 +2510,82 @@ impl MomentumEngine {
         }
         // ── End staleness gate ─────────────────────────────────────────────────
 
+        // ── PumpSwap mint-based fast path ──────────────────────────────────────
+        // If we have a non-zero mint, try PumpSwap pool lookup directly via
+        // getProgramAccounts (memcmp on base_mint). This skips the getTransaction
+        // round-trip which is slow (~500ms-15s) and often fails for fresh txs
+        // due to Helius indexing lag.
+        // 100% of pump.fun graduations go to PumpSwap since April 2026.
+        if mint != [0u8; 32] {
+            if let Some(resolution) = crate::momentum::pool::resolve_pumpswap_pool_from_mint(
+                &self.http_client, &mint, &self.helius_rpc_url
+            ).await {
+                if resolution.reserve_sol_lamports >= crate::momentum::pool::MIN_PUMPSWAP_SOL_RESERVES_LAMPORTS {
+                    let mint_b58 = bs58::encode(&resolution.mint).into_string();
+                    tracing::info!(
+                        mint = %mint_b58,
+                        pool_type = ?resolution.pool_type,
+                        reserve_sol = resolution.reserve_sol_lamports,
+                        "[momentum] PumpSwap pool resolved via mint-based fast path — skipping getTransaction"
+                    );
+
+                    let pool_info = PoolInfo {
+                        coin_vault: resolution.coin_vault,
+                        pc_vault: resolution.pc_vault,
+                        reserve_token: resolution.reserve_token_atoms,
+                        reserve_sol: resolution.reserve_sol_lamports,
+                        pool_type: resolution.pool_type,
+                        mint: resolution.mint,
+                    };
+
+                    // Derive effective enrichment (same logic as main resolution path)
+                    let effective_volume_sol_x100 = if enrichment.volume_sol_x100 == 0 {
+                        (resolution.reserve_sol_lamports / 10_000_000).min(65535) as u32
+                    } else {
+                        enrichment.volume_sol_x100
+                    };
+                    let effective_speed_s = if enrichment.grad_speed_s == 0 {
+                        let sol = resolution.reserve_sol_lamports / 1_000_000_000;
+                        self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
+                        tracing::info!(
+                            mint = %mint_b58,
+                            reserve_sol = sol,
+                            "[momentum] enrichment cold miss (mint fast path) — estimating speed from LP reserves"
+                        );
+                        if sol >= 250 { 60u32 } else { 120u32 }
+                    } else {
+                        enrichment.grad_speed_s
+                    };
+                    let effective_buys_5s = if enrichment.buys_5s == 0 { 3u32 } else { enrichment.buys_5s as u32 };
+                    let effective_sells_5s = if enrichment.sells_5s == 0 { 1u32 } else { enrichment.sells_5s as u32 };
+
+                    // Store PumpSwap pool accounts for live execution
+                    if let Some(ps_pool) = crate::momentum::pool::extract_pumpswap_pool_accounts(&resolution) {
+                        let ps_accts: crate::tx::pumpswap::PumpSwapPoolAccounts = ps_pool.into();
+                        self.pumpswap_pools.insert(resolution.mint, ps_accts);
+                        tracing::debug!(
+                            mint = %mint_b58,
+                            "[momentum] pumpswap pool accounts stored (mint fast path)"
+                        );
+                    }
+
+                    self.on_graduation(
+                        &pool_info,
+                        ts_ms,
+                        effective_speed_s,
+                        effective_volume_sol_x100,
+                        effective_buys_5s,
+                        effective_sells_5s,
+                        is_cold_miss,
+                    ).await;
+                    return; // Fast path succeeded — skip getTransaction fallback
+                }
+                // Insufficient liquidity on PumpSwap — fall through to getTransaction
+            }
+            // PumpSwap mint lookup returned None — fall through to getTransaction
+        }
+        // ── End PumpSwap mint-based fast path ──────────────────────────────────
+
         match resolve_pool_from_transaction(&self.http_client, &sig, &self.rpc_url).await {
             Some(resolution) => {
                 let mint_b58 = bs58::encode(&resolution.mint).into_string();
@@ -2858,6 +2934,250 @@ impl MomentumEngine {
                             "[momentum] pool resolution FAILED (sig + PumpSwap + Raydium all failed)"
                         );
                     }
+                }
+            }
+        }
+    }
+
+    /// Called from main.rs on PumpSwapGraduationDirect events.
+    ///
+    /// Fast path: vaults already extracted from Helius Enhanced transactionSubscribe
+    /// notification — no getTransaction RPC call needed. Only need to fetch vault
+    /// reserves via getMultipleAccounts (one RPC call).
+    ///
+    /// This is the fastest graduation path: Helius Enhanced → extract vaults from
+    /// notification → fetch reserves → on_graduation(). Total: ~200-400ms.
+    #[inline(never)]
+    pub async fn on_pumpswap_graduation_direct(
+        &self,
+        mint: [u8; 32],
+        sig: [u8; 64],
+        ts_ms: u64,
+        coin_vault: [u8; 32],
+        pc_vault: [u8; 32],
+        source: crate::feeds::MigrationSource,
+        enrichment: crate::engine::hot_path::GradEnrichment,
+    ) {
+        if !self.config.enabled { return; }
+
+        // Dedup: same sig-based dedup as on_migration
+        if self.resolving_sigs.contains_key(&sig) {
+            tracing::debug!(
+                sig = %&bs58::encode(&sig).into_string()[..8],
+                "[momentum] PumpSwapGraduationDirect already resolving — skipping duplicate"
+            );
+            return;
+        }
+        self.resolving_sigs.insert(sig, ts_ms);
+
+        // Reentry cooldown check
+        if let Some(close_ts) = self.recently_closed.get(&mint) {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            if now_ms.saturating_sub(*close_ts) < self.config.reentry_cooldown_ms
+            {
+                tracing::debug!(
+                    mint = %bs58::encode(&mint).into_string(),
+                    "[momentum] PumpSwapGraduationDirect reentry cooldown — skipping"
+                );
+                return;
+            }
+        }
+
+        // Duplicate mint guard (already have open position)
+        if self.active.contains_key(&mint) {
+            tracing::debug!(
+                mint = %bs58::encode(&mint).into_string(),
+                "[momentum] PumpSwapGraduationDirect already active — skipping"
+            );
+            return;
+        }
+
+        // Blocklist: reject known SPL token mints
+        if is_blocked_mint(&mint) {
+            tracing::debug!(
+                mint = %bs58::encode(&mint).into_string(),
+                "[momentum] PumpSwapGraduationDirect blocked mint — skipping"
+            );
+            return;
+        }
+
+        // Pump.fun graduation filter (same as on_migration)
+        {
+            let mint_b58 = bs58::encode(&mint).into_string();
+            let has_pump_suffix = mint_b58.ends_with("pump");
+            let has_enrichment = enrichment.grad_speed_s > 0 || enrichment.volume_sol_x100 > 0;
+            if !has_pump_suffix && !has_enrichment {
+                tracing::debug!(
+                    mint = %mint_b58,
+                    "[momentum] PumpSwapGraduationDirect non-pump.fun mint rejected"
+                );
+                self.resolving_sigs.remove(&sig);
+                return;
+            }
+        }
+
+        let coin_vault_b58 = bs58::encode(&coin_vault).into_string();
+        let pc_vault_b58 = bs58::encode(&pc_vault).into_string();
+
+        // Fetch vault reserves (one RPC call — getMultipleAccounts)
+        match crate::momentum::pool::fetch_vault_reserves(
+            &self.http_client,
+            &self.helius_rpc_url,
+            &coin_vault_b58,
+            &pc_vault_b58,
+        ).await {
+            Some((reserve_token, reserve_sol)) => {
+                if reserve_sol < crate::momentum::pool::MIN_PUMPSWAP_SOL_RESERVES_LAMPORTS {
+                    tracing::warn!(
+                        mint = %bs58::encode(&mint).into_string(),
+                        reserve_sol,
+                        "[momentum] PumpSwapGraduationDirect rejected — insufficient liquidity"
+                    );
+                    return;
+                }
+
+                let mint_b58 = bs58::encode(&mint).into_string();
+                tracing::info!(
+                    mint = %mint_b58,
+                    reserve_sol,
+                    reserve_token,
+                    source = source.as_str(),
+                    "[momentum] PumpSwapGraduationDirect pool resolved — fast path (no getTransaction)"
+                );
+
+                let pool_info = PoolInfo {
+                    coin_vault,
+                    pc_vault,
+                    reserve_token,
+                    reserve_sol,
+                    pool_type: PoolType::PumpSwap,
+                    mint,
+                };
+
+                // Cold miss detection
+                let is_cold_miss = enrichment.grad_speed_s == 0 && enrichment.volume_sol_x100 == 0;
+
+                // Derive effective enrichment (same logic as on_migration)
+                let effective_volume_sol_x100 = if enrichment.volume_sol_x100 == 0 {
+                    (reserve_sol / 10_000_000).min(65535) as u32
+                } else {
+                    enrichment.volume_sol_x100
+                };
+                let effective_speed_s = if enrichment.grad_speed_s == 0 {
+                    let sol = reserve_sol / 1_000_000_000;
+                    self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
+                    tracing::info!(
+                        mint = %mint_b58,
+                        reserve_sol = sol,
+                        "[momentum] enrichment cold miss (direct path) — estimating speed from LP reserves"
+                    );
+                    if sol >= 250 { 60u32 } else { 120u32 }
+                } else {
+                    enrichment.grad_speed_s
+                };
+                let effective_buys_5s = if enrichment.buys_5s == 0 { 3u32 } else { enrichment.buys_5s as u32 };
+                let effective_sells_5s = if enrichment.sells_5s == 0 { 1u32 } else { enrichment.sells_5s as u32 };
+
+                // Store PumpSwap pool accounts for live execution.
+                // Pool PDA is zeroed — Helius Enhanced notification doesn't include it.
+                // The pool PDA will need to be derived at tx time or resolved via
+                // getProgramAccounts. For now, store what we have. The tx builder
+                // can derive the pool PDA from mint + index + creator seeds.
+                {
+                    let ps_accts = crate::tx::pumpswap::PumpSwapPoolAccounts {
+                        pool: [0u8; 32], // Pool PDA unknown from direct path
+                        base_mint: mint,
+                        pool_base_token_account: coin_vault,
+                        pool_quote_token_account: pc_vault,
+                        coin_creator_vault_ata: [0u8; 32],
+                        coin_creator_vault_authority: [0u8; 32],
+                    };
+                    self.pumpswap_pools.insert(mint, ps_accts);
+                    tracing::debug!(
+                        mint = %mint_b58,
+                        "[momentum] pumpswap pool accounts stored (direct path)"
+                    );
+                }
+
+                self.on_graduation(
+                    &pool_info,
+                    ts_ms,
+                    effective_speed_s,
+                    effective_volume_sol_x100,
+                    effective_buys_5s,
+                    effective_sells_5s,
+                    is_cold_miss,
+                ).await;
+            }
+            None => {
+                // Vault reserve fetch failed — fall back to mint-based PumpSwap lookup
+                tracing::warn!(
+                    mint = %bs58::encode(&mint).into_string(),
+                    "[momentum] PumpSwapGraduationDirect vault fetch failed — falling back to mint lookup"
+                );
+
+                // Cold miss detection for fallback path
+                let is_cold_miss = enrichment.grad_speed_s == 0 && enrichment.volume_sol_x100 == 0;
+
+                if let Some(resolution) = crate::momentum::pool::resolve_pumpswap_pool_from_mint(
+                    &self.http_client, &mint, &self.helius_rpc_url
+                ).await {
+                    if resolution.reserve_sol_lamports >= crate::momentum::pool::MIN_PUMPSWAP_SOL_RESERVES_LAMPORTS {
+                        let mint_b58 = bs58::encode(&mint).into_string();
+                        tracing::info!(
+                            mint = %mint_b58,
+                            reserve_sol = resolution.reserve_sol_lamports,
+                            "[momentum] PumpSwapGraduationDirect fallback resolved via mint lookup"
+                        );
+
+                        let pool_info = PoolInfo {
+                            coin_vault: resolution.coin_vault,
+                            pc_vault: resolution.pc_vault,
+                            reserve_token: resolution.reserve_token_atoms,
+                            reserve_sol: resolution.reserve_sol_lamports,
+                            pool_type: resolution.pool_type,
+                            mint: resolution.mint,
+                        };
+
+                        let effective_volume_sol_x100 = if enrichment.volume_sol_x100 == 0 {
+                            (resolution.reserve_sol_lamports / 10_000_000).min(65535) as u32
+                        } else {
+                            enrichment.volume_sol_x100
+                        };
+                        let effective_speed_s = if enrichment.grad_speed_s == 0 {
+                            let sol = resolution.reserve_sol_lamports / 1_000_000_000;
+                            self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
+                            if sol >= 250 { 60u32 } else { 120u32 }
+                        } else {
+                            enrichment.grad_speed_s
+                        };
+                        let effective_buys_5s = if enrichment.buys_5s == 0 { 3u32 } else { enrichment.buys_5s as u32 };
+                        let effective_sells_5s = if enrichment.sells_5s == 0 { 1u32 } else { enrichment.sells_5s as u32 };
+
+                        // Store PumpSwap pool accounts for live execution
+                        if let Some(ps_pool) = crate::momentum::pool::extract_pumpswap_pool_accounts(&resolution) {
+                            let ps_accts: crate::tx::pumpswap::PumpSwapPoolAccounts = ps_pool.into();
+                            self.pumpswap_pools.insert(resolution.mint, ps_accts);
+                        }
+
+                        self.on_graduation(
+                            &pool_info,
+                            ts_ms,
+                            effective_speed_s,
+                            effective_volume_sol_x100,
+                            effective_buys_5s,
+                            effective_sells_5s,
+                            is_cold_miss,
+                        ).await;
+                    }
+                } else {
+                    tracing::warn!(
+                        mint = %bs58::encode(&mint).into_string(),
+                        "[momentum] PumpSwapGraduationDirect resolution FAILED (vault fetch + mint lookup both failed)"
+                    );
                 }
             }
         }

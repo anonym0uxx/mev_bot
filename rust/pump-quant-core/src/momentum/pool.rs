@@ -251,6 +251,9 @@ async fn resolve_pool_inner(
     let sig_b58 = bs58::encode(sig).into_string();
 
     // Phase A: getTransaction with jsonParsed — extract vault addresses from postTokenBalances
+    // Use "processed" commitment: Helius logsSubscribe fires at processed level, so the tx
+    // may not be confirmed yet. "processed" is safe — confirmed txs are always available at
+    // processed level. This eliminates the getTransaction race condition for fresh graduations.
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -260,7 +263,7 @@ async fn resolve_pool_inner(
             {
                 "encoding": "jsonParsed",
                 "maxSupportedTransactionVersion": 0,
-                "commitment": "confirmed"
+                "commitment": "processed"
             }
         ]
     });
@@ -315,10 +318,13 @@ async fn resolve_pool_inner(
         })
         .unwrap_or_default();
 
-    let pool_type = if account_keys_strs.iter().any(|k| *k == RAYDIUM_AMM_V4_PROGRAM) {
-        PoolType::RaydiumAmmV4
-    } else if account_keys_strs.iter().any(|k| *k == PUMPSWAP_AMM_PROGRAM) {
+    // PumpSwap-first priority: since April 2026, all new pump.fun graduations go to PumpSwap.
+    // PumpSwap graduation txs may contain BOTH program IDs (CPI chain from pump.fun → PumpSwap),
+    // so the first check wins. Check PumpSwap before Raydium.
+    let pool_type = if account_keys_strs.iter().any(|k| *k == PUMPSWAP_AMM_PROGRAM) {
         PoolType::PumpSwap
+    } else if account_keys_strs.iter().any(|k| *k == RAYDIUM_AMM_V4_PROGRAM) {
+        PoolType::RaydiumAmmV4
     } else {
         PoolType::Unknown
     };
@@ -693,22 +699,22 @@ pub fn parse_spl_token_amount(data_b64: &str) -> Option<u64> {
 
 /// Resolve a PumpSwap AMM pool from the token mint using getProgramAccounts.
 ///
-/// PumpSwap Pool account layout (301 bytes, Anchor, empirically derived Apr 2026):
+/// PumpSwap Pool account layout (official, from pump-public-docs):
 ///   [0..8]    discriminator (f19a6d0411b16dbc)
 ///   [8]       pool_bump (u8)
 ///   [9..11]   index (u16)
 ///   [11..43]  creator (pubkey)
-///   [43..75]  base_mint  ← WSOL (pump.fun graduated pools have WSOL as base)
-///   [75..107] quote_mint ← token mint (filter here at offset 75)
+///   [43..75]  base_mint  ← graduated token (filter here at offset 43)
+///   [75..107] quote_mint ← WSOL
 ///   [107..139] lp_mint
-///   [139..171] pool_base_token_account ← WSOL vault (SOL reserves)
-///   [171..203] pool_quote_token_account ← token vault (coin reserves)
+///   [139..171] pool_base_token_account ← token vault (coin reserves)
+///   [171..203] pool_quote_token_account ← WSOL vault (SOL reserves)
 ///   [203..235] (additional field — coin_creator or fee config pubkey)
 ///   [235..]   zeroed / padding
 ///
-/// NOTE: PumpSwap pools have WSOL as base and the graduated token as quote.
-/// So pool_base_token_account = SOL vault, pool_quote_token_account = token vault.
-/// This is inverted vs Raydium where coin_vault = token, pc_vault = SOL.
+/// NOTE: PumpSwap pools have the graduated token as base and WSOL as quote.
+/// So pool_base_token_account = token vault, pool_quote_token_account = SOL vault.
+/// Mapping: pool_base_token_account → coin_vault, pool_quote_token_account → pc_vault.
 pub async fn resolve_pumpswap_pool_from_mint(
     client: &reqwest::Client,
     mint: &[u8; 32],
@@ -716,7 +722,8 @@ pub async fn resolve_pumpswap_pool_from_mint(
 ) -> Option<PoolResolution> {
     let mint_b58 = bs58::encode(mint).into_string();
 
-    // PumpSwap pools have the token as quote_mint (offset 75), WSOL as base_mint (offset 43).
+    // PumpSwap pools have the graduated token as base_mint (offset 43), WSOL as quote_mint (offset 75).
+    // Filter on base_mint at offset 43 to find the pool for this token.
     // Use no dataSize filter — pool size may vary across versions (211 or 301 bytes seen).
     let body = serde_json::json!({
         "jsonrpc": "2.0",
@@ -728,7 +735,7 @@ pub async fn resolve_pumpswap_pool_from_mint(
                 "encoding": "base64",
                 "commitment": "confirmed",
                 "filters": [
-                    {"memcmp": {"offset": 75, "bytes": mint_b58}}
+                    {"memcmp": {"offset": 43, "bytes": mint_b58}}
                 ]
             }
         ]
@@ -747,7 +754,7 @@ pub async fn resolve_pumpswap_pool_from_mint(
     if accounts.is_empty() {
         tracing::debug!(
             mint = %mint_b58,
-            "[momentum] PumpSwap pool lookup: no pool found at offset 75"
+            "[momentum] PumpSwap pool lookup: no pool found at offset 43 (base_mint)"
         );
         return None;
     }
@@ -766,10 +773,10 @@ pub async fn resolve_pumpswap_pool_from_mint(
     }
 
     let pool_address = decode_bs58_32(accounts[0].get("pubkey")?.as_str()?)?;
-    // pool_base_token_account (offset 139) = WSOL vault = pc_vault (SOL reserves)
-    // pool_quote_token_account (offset 171) = token vault = coin_vault (token reserves)
-    let pc_vault: [u8; 32] = data[139..171].try_into().ok()?;   // WSOL/SOL vault
-    let coin_vault: [u8; 32] = data[171..203].try_into().ok()?; // token vault
+    // pool_base_token_account (offset 139) = token vault = coin_vault (token reserves)
+    // pool_quote_token_account (offset 171) = WSOL vault = pc_vault (SOL reserves)
+    let coin_vault: [u8; 32] = data[139..171].try_into().ok()?; // token vault
+    let pc_vault: [u8; 32] = data[171..203].try_into().ok()?;   // WSOL/SOL vault
 
     let coin_vault_b58 = bs58::encode(&coin_vault).into_string();
     let pc_vault_b58 = bs58::encode(&pc_vault).into_string();
