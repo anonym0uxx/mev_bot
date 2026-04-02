@@ -4196,6 +4196,26 @@ impl MomentumEngine {
             tracing::info!("[orphan_recovery] paper mode — skipping");
             return;
         }
+
+        // Load blocklist of permanently unrecoverable mints (pool gone or PumpSwap Overflow)
+        let blocklist: std::collections::HashSet<String> = {
+            let path = std::env::var("ORPHAN_BLOCKLIST_PATH")
+                .unwrap_or_else(|_| "/data/.openclaw/workspace/projects/pump-quant/config/orphan_blocklist.json".to_string());
+            match std::fs::read_to_string(&path) {
+                Ok(s) => match serde_json::from_str::<serde_json::Value>(&s) {
+                    Ok(v) => v["blocked_mints"]
+                        .as_array()
+                        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+                        .unwrap_or_default(),
+                    Err(e) => { tracing::warn!(err=?e, "[orphan_recovery] blocklist parse failed — ignoring"); Default::default() }
+                },
+                Err(_) => Default::default(), // no blocklist file = no skips
+            }
+        };
+        if !blocklist.is_empty() {
+            tracing::info!(count=blocklist.len(), "[orphan_recovery] loaded blocklist — will skip known-dead mints");
+        }
+
         let wallet_bytes = match self.wallet_pubkey {
             Some(w) => w,
             None => {
@@ -4270,6 +4290,12 @@ impl MomentumEngine {
 
                     // Skip WSOL (wrapped SOL) — not an orphan position
                     if mint_str == "So11111111111111111111111111111111111111112" { continue; }
+
+                    // Skip known-dead mints (pool gone or PumpSwap Overflow)
+                    if blocklist.contains(mint_str) {
+                        tracing::debug!(mint=%mint_str, "[orphan_recovery] skipping blocklisted mint");
+                        continue;
+                    }
 
                     let mint_bytes: [u8; 32] = match bs58::decode(mint_str).into_vec() {
                         Ok(v) if v.len() == 32 => {
@@ -4382,6 +4408,23 @@ impl MomentumEngine {
                 }
                 rpc_sender::SubmitResult::Failed { error } => {
                     tracing::error!(mint=%mint_str, err=%error, "[orphan_recovery] 🚨 sell FAILED");
+                    // Auto-add to blocklist so we don't retry on next restart
+                    let bl_path = std::env::var("ORPHAN_BLOCKLIST_PATH")
+                        .unwrap_or_else(|_| "/data/.openclaw/workspace/projects/pump-quant/config/orphan_blocklist.json".to_string());
+                    if let Ok(s) = std::fs::read_to_string(&bl_path) {
+                        if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&s) {
+                            if let Some(arr) = v["blocked_mints"].as_array_mut() {
+                                let already = arr.iter().any(|x| x.as_str() == Some(&mint_str));
+                                if !already {
+                                    arr.push(serde_json::Value::String(mint_str.clone()));
+                                    if let Ok(updated) = serde_json::to_string_pretty(&v) {
+                                        let _ = std::fs::write(&bl_path, updated);
+                                        tracing::info!(mint=%mint_str, "[orphan_recovery] auto-added to blocklist");
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 rpc_sender::SubmitResult::CircuitOpen { remaining_ms } => {
                     tracing::error!(mint=%mint_str, remaining_ms, "[orphan_recovery] circuit breaker OPEN");
