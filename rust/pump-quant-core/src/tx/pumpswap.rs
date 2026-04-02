@@ -51,11 +51,11 @@ pub const PUMPSWAP_EVENT_AUTHORITY: &str = "GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66
 /// Coin fee program.
 pub const PUMPSWAP_FEE_PROGRAM: &str = "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ";
 
-/// Coin fee config account.
-pub const PUMPSWAP_FEE_PROG_STATE: &str = "5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx";
+/// Fee config account.
+pub const PUMPSWAP_FEE_CONFIG: &str = "5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx";
 
-/// Coin fee program state account.
-pub const PUMPSWAP_FEE_PROG_STATE2: &str = "4Jjna3h73QbgmdqwnV5NJxjCidKWB7Q26jeuj9jtFetC";
+/// Global volume accumulator PDA (seeds: ["global_volume_accumulator"]).
+pub const PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR: &str = "C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw";
 
 /// PumpSwap `buy` instruction discriminator = sha256("global:buy")[..8].
 /// buy(base_out: u64, max_quote_in: u64) — buy base tokens by paying quote tokens.
@@ -450,9 +450,14 @@ fn build_pumpswap_swap_ix(
     // coin_creator_vault_ata / authority: Pubkey::default() when zeroed — program handles it
     let coin_creator_vault_ata = Pubkey::new_from_array(pool.coin_creator_vault_ata);
     let coin_creator_vault_authority = Pubkey::new_from_array(pool.coin_creator_vault_authority);
-    // Fixed-address accounts — always the same for all PumpSwap pools
-    let coin_fee_config = Pubkey::from_str(PUMPSWAP_FEE_PROG_STATE).unwrap();
-    let coin_fee_program_state = Pubkey::from_str(PUMPSWAP_FEE_PROG_STATE2).unwrap();
+    // Fixed-address accounts
+    let fee_config = Pubkey::from_str(PUMPSWAP_FEE_CONFIG).unwrap();
+    let global_volume_accumulator = Pubkey::from_str(PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR).unwrap();
+    // User volume accumulator PDA: seeds = ["user_volume_accumulator", user_pubkey]
+    let (user_volume_accumulator, _) = Pubkey::find_program_address(
+        &[b"user_volume_accumulator", wallet_pubkey.as_ref()],
+        &pumpswap_program,
+    );
 
     let accounts = vec![
         AccountMeta::new(Pubkey::new_from_array(pool.pool), false),     // [0]  pool
@@ -473,10 +478,11 @@ fn build_pumpswap_swap_ix(
         AccountMeta::new_readonly(event_authority, false),               // [15] event_authority
         AccountMeta::new_readonly(pumpswap_program, false),              // [16] pump_program (self CPI)
         AccountMeta::new(coin_creator_vault_ata, false),                 // [17] coin_creator_vault_ata
-        AccountMeta::new(coin_creator_vault_authority, false),           // [18] coin_creator_vault_authority
-        AccountMeta::new_readonly(coin_fee_config, false),               // [19] coin_fee_config
-        AccountMeta::new_readonly(fee_program, false),                   // [20] coin_fee_program
-        AccountMeta::new_readonly(coin_fee_program_state, false),        // [21] coin_fee_program_state
+        AccountMeta::new_readonly(coin_creator_vault_authority, false),  // [18] coin_creator_vault_authority
+        AccountMeta::new_readonly(global_volume_accumulator, false),     // [19] global_volume_accumulator
+        AccountMeta::new(user_volume_accumulator, false),                // [20] user_volume_accumulator
+        AccountMeta::new_readonly(fee_config, false),                    // [21] fee_config
+        AccountMeta::new_readonly(fee_program, false),                   // [22] fee_program
     ];
 
     Instruction {
@@ -966,7 +972,7 @@ mod tests {
         let pool = dummy_pool();
         let kp = Keypair::new();
         let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 0, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1_000_000);
-        assert_eq!(ix.accounts.len(), 22, "PumpSwap swap ix must have 22 accounts");
+        assert_eq!(ix.accounts.len(), 23, "PumpSwap swap ix must have 23 accounts");
     }
 
     // ── 13b. test_reversed_pool_swap_ix_has_22_accounts ──────────────────
@@ -976,7 +982,7 @@ mod tests {
         let pool = dummy_reversed_pool();
         let kp = Keypair::new();
         let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 0, &PUMPSWAP_SELL_DISCRIMINATOR, 1, 1_000_000);
-        assert_eq!(ix.accounts.len(), 22, "reversed pool swap ix must have 22 accounts");
+        assert_eq!(ix.accounts.len(), 23, "reversed pool swap ix must have 23 accounts");
     }
 
     // ── 14. test_fee_recipient_wraps_around ──────────────────────────────
