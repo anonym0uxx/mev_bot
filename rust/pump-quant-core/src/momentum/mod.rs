@@ -728,8 +728,23 @@ impl MomentumEngine {
 
         // Check concurrent position limit
         if self.active.len() >= self.config.max_concurrent as usize {
+            tracing::debug!(
+                active = self.active.len(),
+                max = self.config.max_concurrent,
+                "[on_graduation] rejected: max concurrent positions reached"
+            );
             return;
         }
+
+        tracing::info!(
+            mint = %bs58::encode(&pool_info.mint).into_string(),
+            reserve_sol = pool_info.reserve_sol,
+            pool_type = ?pool_info.pool_type,
+            grad_speed_s,
+            volume_sol_x100 = grad_volume_sol_x100,
+            is_cold_miss,
+            "[on_graduation] ENTERED — processing gates"
+        );
 
         // NOTE: PumpSwap is now the primary graduation target (100% of pump.fun tokens as of Apr 2026).
         // Momentum trading on PumpSwap is fully supported — vault reserves work the same as Raydium.
@@ -767,7 +782,8 @@ impl MomentumEngine {
             }
         }
         // Hard reject: saturated volume (u16 overflow = confirmed whale fill)
-        if cfg.max_grad_volume_sol_absolute > 0.0
+        // Skip for cold misses — volume is estimated from reserves and caps at u16 max (655.35)
+        if !is_cold_miss && cfg.max_grad_volume_sol_absolute > 0.0
             && grad_volume_sol >= cfg.max_grad_volume_sol_absolute
         {
             tracing::debug!(
