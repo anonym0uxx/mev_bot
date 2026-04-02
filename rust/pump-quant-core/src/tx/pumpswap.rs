@@ -159,20 +159,17 @@ const WSOL_MINT_BYTES: [u8; 32] = [
 /// So we swap the vaults when converting reversed pools to match on-chain order.
 impl From<crate::momentum::pool::PumpSwapPoolAccounts> for PumpSwapPoolAccounts {
     fn from(p: crate::momentum::pool::PumpSwapPoolAccounts) -> Self {
-        // Determine pool ordering: if token mint < WSOL bytes, token is base (normal).
-        // Otherwise WSOL is base (reversed).
-        let token_is_base = p.base_mint < WSOL_MINT_BYTES;
+        // PumpSwap ALWAYS creates pump.fun pools with token=base, WSOL=quote.
+        // The byte-ordering assumption (token < WSOL → base) was WRONG.
+        // Verified on-chain: pool offset 43 = token mint, offset 75 = WSOL,
+        // regardless of byte ordering.
+        let token_is_base = true;
 
-        // Swap vaults to match on-chain ordering for reversed pools.
-        // p.pool_base_token_account = TOKEN vault (normalized)
-        // p.pool_quote_token_account = WSOL vault (normalized)
-        let (onchain_base_vault, onchain_quote_vault) = if token_is_base {
-            // Normal: token=base on-chain → base_vault=token, quote_vault=WSOL
-            (p.pool_base_token_account, p.pool_quote_token_account)
-        } else {
-            // Reversed: WSOL=base on-chain → base_vault=WSOL, quote_vault=token
-            (p.pool_quote_token_account, p.pool_base_token_account)
-        };
+        // No vault swap needed — token vault is ALWAYS base, WSOL vault is ALWAYS quote.
+        // p.pool_base_token_account = TOKEN vault (base)
+        // p.pool_quote_token_account = WSOL vault (quote)
+        let (onchain_base_vault, onchain_quote_vault) =
+            (p.pool_base_token_account, p.pool_quote_token_account);
 
         Self {
             pool: p.pool,

@@ -4154,24 +4154,16 @@ impl MomentumEngine {
         // by which time getProgramAccounts indexing has caught up).
         {
             // Helius parser normalizes: coin_vault = token vault, pc_vault = WSOL vault.
-            // PumpSwapPoolAccounts stores vaults in pool layout order (lower-sorted mint is base).
-            // base_mint is always the traded token (non-WSOL), per struct contract.
-            let token_is_base = mint < WSOL_MINT_BYTES;
-            let (base_vault, quote_vault) = if token_is_base {
-                // Token sorts before WSOL: pool_base=token vault, pool_quote=WSOL vault
-                (coin_vault, pc_vault)
-            } else {
-                // WSOL sorts before token: pool_base=WSOL vault, pool_quote=token vault
-                (pc_vault, coin_vault)
-            };
+            // PumpSwap ALWAYS uses token=base, WSOL=quote for pump.fun pools.
+            // No vault swapping needed.
             let ps_accts = crate::tx::pumpswap::PumpSwapPoolAccounts {
                 pool: [0u8; 32],
                 base_mint: mint,
-                pool_base_token_account: base_vault,
-                pool_quote_token_account: quote_vault,
+                pool_base_token_account: coin_vault,  // token vault = base
+                pool_quote_token_account: pc_vault,    // WSOL vault = quote
                 coin_creator_vault_ata: [0u8; 32],
                 coin_creator_vault_authority: [0u8; 32],
-                token_is_base,
+                token_is_base: true,
                 token_mint_program: [0u8; 32], // will be resolved at entry time
             };
             self.pumpswap_pools.insert(mint, ps_accts);
