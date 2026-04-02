@@ -3715,7 +3715,7 @@ impl MomentumEngine {
                 POOL_RES_RESET.store(now, std::sync::atomic::Ordering::Relaxed);
             }
             let count = POOL_RES_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if count >= 60 {
+            if count >= 300 {
                 return; // Over budget — drop this graduation event
             }
         }
