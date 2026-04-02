@@ -2544,27 +2544,33 @@ impl MomentumEngine {
         }
         // ── End pump.fun graduation filter ────────────────────────────────────
 
-        // ── FIX: Drop ALL cold-miss events in on_migration() ───────────────
+        // ── FIX: Drop cold-miss events for NON-pump.fun mints ────────────────
         // CoreCast replays ~11,000+ stale graduation events per session with no
         // enrichment data (cold_miss). These ALWAYS resolve to dead Raydium pools
         // (AMM accounts closed, 0 bytes) or fail PumpSwap lookup entirely.
         // They consume the pool resolution semaphore (5 slots) and rate budget
         // (60/min), starving fresh ShredStream events of resolution capacity.
         //
-        // Evidence (Apr 1 2026): 1,518 events dropped by semaphore, 0% of cold
-        // misses produced a tradeable pool. Meanwhile Helius Enhanced's direct path
-        // (on_pumpswap_graduation_direct) handles fresh PumpSwap graduations
-        // WITHOUT hitting the semaphore — it has its own vault resolution.
+        // However, ShredStream detects fresh PumpSwap pool creations BEFORE
+        // PumpPortal enrichment arrives — these are legitimate cold misses for
+        // real pump.fun tokens (mint ends in "pump"). We MUST let these through.
         //
-        // Fresh graduations with enrichment (speed > 0 or volume > 0) from
-        // PumpPortal/ShredStream still pass through here.
+        // Gate: cold-miss + NOT a pump.fun mint → drop (CoreCast stale junk).
+        //       cold-miss + pump.fun mint → allow (ShredStream fresh detection).
+        //       cold-miss + zero mint → allow (Helius sig-only path).
         if is_cold_miss {
-            tracing::debug!(
-                mint = %bs58::encode(&mint).into_string(),
-                "[momentum] cold-miss grad dropped — preserving semaphore for enriched events"
-            );
-            self.resolving_sigs.remove(&sig);
-            return;
+            let mint_b58 = bs58::encode(&mint).into_string();
+            let is_pump_mint = mint_b58.ends_with("pump");
+            let is_zero_mint = mint == [0u8; 32];
+            if !is_pump_mint && !is_zero_mint {
+                tracing::debug!(
+                    mint = %mint_b58,
+                    "[momentum] non-pump.fun cold-miss dropped — CoreCast stale junk"
+                );
+                self.resolving_sigs.remove(&sig);
+                return;
+            }
+            // pump.fun cold misses pass through — ShredStream fresh detections
         }
         // ── End cold-miss gate ─────────────────────────────────────────────────
 
