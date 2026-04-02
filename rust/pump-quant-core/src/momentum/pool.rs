@@ -1215,6 +1215,40 @@ const SPL_ATA_PROGRAM_BYTES: [u8; 32] = [
 ///
 /// PDA seeds: [wallet, SPL_TOKEN_PROGRAM, mint] under the ATA program.
 /// Equivalent to `spl_associated_token_account::get_associated_token_address`.
+/// Derive the coin_creator_vault_authority PDA.
+///
+/// PDA seeds: ["creator_vault", pool.creator] under PumpSwap program.
+/// NOTE: uses pool.creator (offset [11..43]), NOT pool.coin_creator (offset [211..243]).
+fn derive_coin_creator_vault_authority(pool_creator: &[u8; 32]) -> [u8; 32] {
+    let pumpswap = solana_sdk::pubkey::Pubkey::new_from_array(PUMPSWAP_PROGRAM_BYTES);
+    let creator_pk = solana_sdk::pubkey::Pubkey::new_from_array(*pool_creator);
+    let (authority, _bump) = solana_sdk::pubkey::Pubkey::find_program_address(
+        &[b"creator_vault", creator_pk.as_ref()],
+        &pumpswap,
+    );
+    authority.to_bytes()
+}
+
+/// Derive the coin_creator_vault_ata — the pool creator's WSOL ATA.
+///
+/// This is the ATA for WSOL owned by the pool creator (raw pubkey, NOT the PDA).
+/// PumpSwap collects creator fees in the quote token (WSOL), and the program
+/// internally computes ATA(pool.creator, WSOL, SPL_TOKEN) to verify the account.
+fn derive_creator_vault_wsol_ata(pool_creator: &[u8; 32]) -> [u8; 32] {
+    let creator_pk = solana_sdk::pubkey::Pubkey::new_from_array(*pool_creator);
+    let wsol_pk = solana_sdk::pubkey::Pubkey::new_from_array(WSOL_MINT_BYTES);
+    let token_program = solana_sdk::pubkey::Pubkey::new_from_array(SPL_TOKEN_PROGRAM_BYTES);
+    let ata_program = solana_sdk::pubkey::Pubkey::new_from_array(SPL_ATA_PROGRAM_BYTES);
+    let (ata, _bump) = solana_sdk::pubkey::Pubkey::find_program_address(
+        &[creator_pk.as_ref(), token_program.as_ref(), wsol_pk.as_ref()],
+        &ata_program,
+    );
+    ata.to_bytes()
+}
+
+/// Legacy derive_creator_ata — DEPRECATED, kept for tests.
+/// Use derive_coin_creator_vault_authority + derive_creator_vault_wsol_ata instead.
+#[allow(dead_code)]
 fn derive_creator_ata(wallet: &[u8; 32], mint: &[u8; 32]) -> [u8; 32] {
     let wallet_pk = solana_sdk::pubkey::Pubkey::new_from_array(*wallet);
     let mint_pk = solana_sdk::pubkey::Pubkey::new_from_array(*mint);
@@ -1410,10 +1444,11 @@ pub fn build_pumpswap_pool_accounts_deterministic(
         extracted.quote_mint
     };
 
-    // Derive creator vault ATA if creator is non-zero
+    // Derive creator vault authority PDA + creator's WSOL ATA if creator is non-zero
     let (creator_ata, creator_authority) = if extracted.creator != [0u8; 32] {
-        let ata = derive_creator_ata(&extracted.creator, &token_mint);
-        (ata, extracted.creator)
+        let authority = derive_coin_creator_vault_authority(&extracted.creator);
+        let ata = derive_creator_vault_wsol_ata(&extracted.creator);
+        (ata, authority)
     } else {
         ([0u8; 32], [0u8; 32])
     };
@@ -1507,10 +1542,11 @@ pub fn extract_pumpswap_pool_accounts(res: &PoolResolution) -> Option<PumpSwapPo
         return None;
     }
 
-    // Derive creator vault ATA if creator is known (non-zero)
+    // Derive creator vault authority PDA + creator's WSOL ATA if creator is known (non-zero)
     let (creator_ata, creator_authority) = if res.creator != [0u8; 32] {
-        let ata = derive_creator_ata(&res.creator, &res.mint);
-        (ata, res.creator)
+        let authority = derive_coin_creator_vault_authority(&res.creator);
+        let ata = derive_creator_vault_wsol_ata(&res.creator);
+        (ata, authority)
     } else {
         ([0u8; 32], [0u8; 32])
     };
