@@ -439,7 +439,16 @@ fn build_pumpswap_swap_ix(
         PUMPSWAP_FEE_RECIPIENTS[fee_recipient_idx % 8],
     )
     .unwrap();
-    let fee_recipient_token_account = wsol_ata(&fee_recipient);
+    // PumpSwap collects protocol fees in the QUOTE mint of the pool.
+    // Normal pool (token=base, WSOL=quote): fee in WSOL → wsol_ata
+    // Reversed pool (WSOL=base, token=quote): fee in token → token_ata
+    let fee_recipient_token_account = if pool.token_is_base {
+        // Normal: quote = WSOL
+        wsol_ata(&fee_recipient)
+    } else {
+        // Reversed: quote = token
+        token_ata_with_program(&fee_recipient, &token_mint, &token_mint_program)
+    };
 
     // coin_creator_vault_ata / authority: Pubkey::default() when zeroed — program handles it
     let coin_creator_vault_ata = Pubkey::new_from_array(pool.coin_creator_vault_ata);
