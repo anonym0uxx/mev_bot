@@ -648,6 +648,18 @@ async fn main() -> anyhow::Result<()> {
         stats.momentum_enabled = engine_config.momentum.enabled;
     }
 
+    // ── Orphan position recovery ─────────────────────────────────────
+    // On startup, scan wallet for token balances not tracked by the engine.
+    // Emergency-sell any orphans so stuck positions don't survive restarts.
+    {
+        let recovery_engine = Arc::clone(&momentum_engine);
+        tokio::spawn(async move {
+            // Small delay to let RPC connections warm up
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            recovery_engine.recover_orphan_positions().await;
+        });
+    }
+
     // ── Engine hot-path loop ────────────────────────────────────────
     info!(paper_mode, "Engine hot-path running — full gate→score→position pipeline");
 

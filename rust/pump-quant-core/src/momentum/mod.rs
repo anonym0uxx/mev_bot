@@ -3544,11 +3544,22 @@ impl MomentumEngine {
         // ── Fix #1: Gate sell on buy state ──────────────────────────────────────
         // Only attempt sell if buy TX was confirmed on-chain. If buy failed,
         // selling would fail with ConstraintTokenMint (3012) or Custom:1.
-        let buy_state = self.buy_states.remove(&mint).map(|(_, s)| s).unwrap_or(BuyState::Failed);
+        //
+        // CRITICAL: Read state with .get() instead of .remove() so the spawned
+        // sell task can still poll the DashMap while the buy callback updates it.
+        // Removing here caused the sell task's poll loop to always get None,
+        // wasting 8s and then deriving the wrong ATA (key gone = no state update
+        // from buy callback). The sell task removes the key after it finishes.
+        let buy_state = self.buy_states.get(&mint).map(|s| *s).unwrap_or(BuyState::Failed);
         let should_sell = match buy_state {
-            BuyState::Confirmed => true,
+            BuyState::Confirmed => {
+                // Buy already confirmed — remove now (sell task doesn't need to poll)
+                self.buy_states.remove(&mint);
+                true
+            }
             BuyState::Pending => {
-                // Buy still pending (timed out?) — let the existing balance check gate it
+                // Buy still pending — DON'T remove! Let the sell task poll until
+                // the buy callback sets Confirmed. The sell task will remove it.
                 tracing::warn!(
                     mint = %bs58::encode(&mint).into_string(),
                     "[close_position] buy still Pending at close — will attempt sell with balance check"
@@ -3556,6 +3567,8 @@ impl MomentumEngine {
                 true
             }
             BuyState::Failed => {
+                // Buy failed — remove and skip sell
+                self.buy_states.remove(&mint);
                 tracing::info!(
                     mint = %bs58::encode(&mint).into_string(),
                     "[close_position] buy FAILED — skipping sell TX entirely"
@@ -3617,21 +3630,33 @@ impl MomentumEngine {
 
                         // ── Wait for buy TX to confirm before querying balance ──
                         // Poll buy_states with timeout (same pattern as sell_pumpswap).
+                        // None = key already removed by close_position (buy was Confirmed) → proceed immediately.
+                        // Some(Pending) = buy still in flight → keep polling.
                         {
                             let max_wait_ms = 8_000u64;
                             let poll_interval_ms = 200u64;
                             let mut waited_ms = 0u64;
                             loop {
-                                let state = sell_buy_states_ray.get(&mint_copy).map(|s| matches!(*s, BuyState::Confirmed | BuyState::Failed));
+                                let state = sell_buy_states_ray.get(&mint_copy).map(|s| *s);
                                 match state {
-                                    Some(true) => break,
-                                    _ if waited_ms >= max_wait_ms => break,
+                                    None => break, // key removed = already confirmed or handled
+                                    Some(BuyState::Confirmed) | Some(BuyState::Failed) => break,
+                                    _ if waited_ms >= max_wait_ms => {
+                                        tracing::warn!(
+                                            mint=%bs58::encode(&mint_copy).into_string(),
+                                            waited_ms,
+                                            "[sell_raydium] buy state poll timed out — proceeding with balance check"
+                                        );
+                                        break;
+                                    }
                                     _ => {
                                         tokio::time::sleep(std::time::Duration::from_millis(poll_interval_ms)).await;
                                         waited_ms += poll_interval_ms;
                                     }
                                 }
                             }
+                            // Deferred cleanup: remove buy_states entry now that sell task owns it
+                            sell_buy_states_ray.remove(&mint_copy);
                         }
 
                         // ── Query actual on-chain token balance instead of paper estimate ──
@@ -3802,23 +3827,33 @@ impl MomentumEngine {
 
                         // ── Wait for buy TX to confirm before querying balance ──
                         // Poll buy_states with timeout instead of blind sleep.
-                        // This ensures we don't skip the sell when buy lands quickly (<3s)
-                        // and also handles slow confirmations up to 8s.
+                        // None = key already removed by close_position (buy was Confirmed) → proceed immediately.
+                        // Some(Pending) = buy still in flight → keep polling until Confirmed/Failed/timeout.
                         {
                             let max_wait_ms = 8_000u64;
                             let poll_interval_ms = 200u64;
                             let mut waited_ms = 0u64;
                             loop {
-                                let state = sell_buy_states.get(&mint_copy).map(|s| matches!(*s, BuyState::Confirmed | BuyState::Failed));
+                                let state = sell_buy_states.get(&mint_copy).map(|s| *s);
                                 match state {
-                                    Some(true) => break, // buy resolved
-                                    _ if waited_ms >= max_wait_ms => break, // timeout
+                                    None => break, // key removed = already confirmed or handled
+                                    Some(BuyState::Confirmed) | Some(BuyState::Failed) => break,
+                                    _ if waited_ms >= max_wait_ms => {
+                                        tracing::warn!(
+                                            mint=%bs58::encode(&mint_copy).into_string(),
+                                            waited_ms,
+                                            "[sell_pumpswap] buy state poll timed out — proceeding with balance check"
+                                        );
+                                        break;
+                                    }
                                     _ => {
                                         tokio::time::sleep(std::time::Duration::from_millis(poll_interval_ms)).await;
                                         waited_ms += poll_interval_ms;
                                     }
                                 }
                             }
+                            // Deferred cleanup: remove buy_states entry now that sell task owns it
+                            sell_buy_states.remove(&mint_copy);
                         }
 
                         // ── Query actual on-chain token balance instead of paper estimate ──
@@ -4135,6 +4170,218 @@ impl MomentumEngine {
             // Idempotent cleanup — safe if already removed in sell branch above
             self.pumpswap_pools.remove(&mint);
         }
+    }
+
+    /// Recover orphan positions on daemon startup.
+    ///
+    /// Scans the wallet for any non-zero token balances that aren't tracked in
+    /// `self.active`. For each orphan, resolves the PumpSwap pool and immediately
+    /// submits a sell TX (min_sol_out=0, emergency exit). This is a safety net
+    /// ensuring stuck positions from prior crashes/bugs don't survive restarts.
+    ///
+    /// Must be called once, shortly after engine construction, from main.rs.
+    pub async fn recover_orphan_positions(&self) {
+        if self.config.paper_mode {
+            tracing::info!("[orphan_recovery] paper mode — skipping");
+            return;
+        }
+        let wallet_bytes = match self.wallet_pubkey {
+            Some(w) => w,
+            None => {
+                tracing::warn!("[orphan_recovery] no wallet_pubkey configured — skipping");
+                return;
+            }
+        };
+
+        let wallet = solana_sdk::pubkey::Pubkey::new_from_array(wallet_bytes);
+        let rpc_url = self.public_rpc_url.as_str();
+
+        // Fetch all SPL token accounts owned by wallet (both SPL Token and Token-2022)
+        tracing::info!(wallet=%wallet, "[orphan_recovery] scanning wallet for orphan token balances");
+
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getTokenAccountsByOwner",
+            "params": [
+                wallet.to_string(),
+                { "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" },
+                { "encoding": "jsonParsed" }
+            ]
+        });
+        let body_2022 = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "getTokenAccountsByOwner",
+            "params": [
+                wallet.to_string(),
+                { "programId": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb" },
+                { "encoding": "jsonParsed" }
+            ]
+        });
+
+        let http = &self.rpc_fallback_client;
+        let mut orphan_mints: Vec<([u8; 32], u64)> = Vec::new();
+
+        for req_body in [&body, &body_2022] {
+            let resp = match http
+                .post(rpc_url)
+                .header("Content-Type", "application/json")
+                .json(req_body)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!(err=?e, "[orphan_recovery] RPC failed");
+                    continue;
+                }
+            };
+            let json: serde_json::Value = match resp.json().await {
+                Ok(j) => j,
+                Err(e) => {
+                    tracing::error!(err=?e, "[orphan_recovery] parse failed");
+                    continue;
+                }
+            };
+            if let Some(accounts) = json["result"]["value"].as_array() {
+                for acct in accounts {
+                    let info = &acct["account"]["data"]["parsed"]["info"];
+                    let mint_str = match info["mint"].as_str() {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    let balance = info["tokenAmount"]["amount"]
+                        .as_str()
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    if balance == 0 { continue; }
+
+                    // Skip WSOL (wrapped SOL) — not an orphan position
+                    if mint_str == "So11111111111111111111111111111111111111112" { continue; }
+
+                    let mint_bytes: [u8; 32] = match bs58::decode(mint_str).into_vec() {
+                        Ok(v) if v.len() == 32 => {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&v);
+                            arr
+                        }
+                        _ => continue,
+                    };
+
+                    // Skip mints that have an active position (not orphans)
+                    if self.active.contains_key(&mint_bytes) { continue; }
+
+                    orphan_mints.push((mint_bytes, balance));
+                }
+            }
+        }
+
+        if orphan_mints.is_empty() {
+            tracing::info!("[orphan_recovery] no orphan positions found ✅");
+            return;
+        }
+
+        tracing::warn!(
+            count = orphan_mints.len(),
+            "[orphan_recovery] found orphan token balances — attempting emergency sell"
+        );
+
+        for (mint_bytes, balance) in orphan_mints {
+            let mint_str = bs58::encode(&mint_bytes).into_string();
+            tracing::info!(
+                mint=%mint_str,
+                balance,
+                "[orphan_recovery] selling orphan position"
+            );
+
+            // Resolve PumpSwap pool
+            let resolution = match crate::momentum::pool::resolve_pumpswap_pool_from_mint(
+                &self.http_client, &mint_bytes, &self.public_rpc_url, &self.helius_rpc_url,
+            ).await {
+                Some(r) => r,
+                None => {
+                    tracing::error!(mint=%mint_str, "[orphan_recovery] pool resolution failed — tokens stuck");
+                    continue;
+                }
+            };
+            let ps_pool_raw = match crate::momentum::pool::extract_pumpswap_pool_accounts(&resolution) {
+                Some(p) => p,
+                None => {
+                    tracing::error!(mint=%mint_str, "[orphan_recovery] extract_pool_accounts returned None");
+                    continue;
+                }
+            };
+            let mut ps_pool: crate::tx::pumpswap::PumpSwapPoolAccounts = ps_pool_raw.into();
+            if ps_pool.token_mint_program == [0u8; 32] {
+                ps_pool.token_mint_program = match crate::momentum::pool::resolve_mint_program_with_fallback(
+                    &self.http_client, &mint_bytes, &self.helius_rpc_url, Some(&self.public_rpc_url),
+                ).await {
+                    Some(prog) => prog,
+                    None => crate::tx::pumpswap::SPL_TOKEN_PROGRAM_BYTES,
+                };
+            }
+
+            // Load keypair
+            let kp_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
+            let kp_bytes = match std::fs::read(&kp_path) {
+                Ok(b) => b,
+                Err(e) => { tracing::error!(err=?e, "[orphan_recovery] keypair load failed"); continue; }
+            };
+            let kp_arr: Vec<u8> = match serde_json::from_slice(&kp_bytes) {
+                Ok(v) => v,
+                Err(e) => { tracing::error!(err=?e, "[orphan_recovery] keypair parse failed"); continue; }
+            };
+            if kp_arr.len() != 64 { tracing::error!("[orphan_recovery] bad keypair len"); continue; }
+            let mut kb = [0u8; 64];
+            kb.copy_from_slice(&kp_arr);
+            let keypair = match solana_sdk::signature::Keypair::from_bytes(&kb) {
+                Ok(k) => k,
+                Err(e) => { tracing::error!(err=?e, "[orphan_recovery] keypair err"); continue; }
+            };
+
+            let bh = self.blockhash_cache_sync().unwrap_or([0u8; 32]);
+            let tip = 1_000u64; // minimal tip for emergency exit
+            use std::str::FromStr as _;
+            let tip_account = solana_sdk::pubkey::Pubkey::from_str(
+                crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
+            ).unwrap();
+            let fee_idx = 0usize;
+
+            tracing::info!(
+                mint=%mint_str,
+                pool=%bs58::encode(&ps_pool.pool).into_string(),
+                tokens=balance,
+                "[orphan_recovery] building emergency sell TX (min_sol_out=0)"
+            );
+
+            let tx_bytes = match crate::tx::pumpswap::build_pumpswap_sell_tx(
+                &ps_pool, &keypair, balance, 0u64, tip, tip_account, bh, fee_idx,
+            ) {
+                Ok(b) => b,
+                Err(e) => { tracing::error!(mint=%mint_str, err=?e, "[orphan_recovery] sell build failed"); continue; }
+            };
+
+            match self.rpc_sender.submit_tx(&tx_bytes, &mint_str, "orphan_recovery").await {
+                rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
+                    tracing::info!(mint=%mint_str, sig=%signature, latency_ms, "[orphan_recovery] sell landed ✅");
+                }
+                rpc_sender::SubmitResult::TimedOut { signature } => {
+                    tracing::warn!(mint=%mint_str, sig=%signature, "[orphan_recovery] sell timed out (may still land)");
+                }
+                rpc_sender::SubmitResult::Failed { error } => {
+                    tracing::error!(mint=%mint_str, err=%error, "[orphan_recovery] 🚨 sell FAILED");
+                }
+                rpc_sender::SubmitResult::CircuitOpen { remaining_ms } => {
+                    tracing::error!(mint=%mint_str, remaining_ms, "[orphan_recovery] circuit breaker OPEN");
+                }
+            }
+
+            // Small delay between sells to avoid rate limiting
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+
+        tracing::info!("[orphan_recovery] sweep complete");
     }
 
     /// Called from main.rs on every graduation migration event.
