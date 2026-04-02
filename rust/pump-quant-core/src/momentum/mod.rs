@@ -778,7 +778,8 @@ impl MomentumEngine {
             return;
         }
         // Hard reject: volume below minimum (too thin, low conviction)
-        if cfg.min_grad_volume_sol > 0.0 && grad_volume_sol < cfg.min_grad_volume_sol {
+        // Skip for cold misses — they have volume=0 until enrichment resolves
+        if !is_cold_miss && cfg.min_grad_volume_sol > 0.0 && grad_volume_sol < cfg.min_grad_volume_sol {
             tracing::debug!(
                 mint = %bs58::encode(&pool_info.mint).into_string(),
                 vol_sol = grad_volume_sol,
@@ -788,7 +789,7 @@ impl MomentumEngine {
             return;
         }
         // Hard reject: volume above max threshold
-        if cfg.max_grad_volume_sol > 0.0 && grad_volume_sol > cfg.max_grad_volume_sol {
+        if !is_cold_miss && cfg.max_grad_volume_sol > 0.0 && grad_volume_sol > cfg.max_grad_volume_sol {
             tracing::debug!(
                 mint = %bs58::encode(&pool_info.mint).into_string(),
                 vol_sol = grad_volume_sol,
