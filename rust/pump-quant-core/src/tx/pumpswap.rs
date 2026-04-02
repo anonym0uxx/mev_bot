@@ -249,7 +249,7 @@ pub const SPL_TOKEN_2022_PROGRAM_BYTES: [u8; 32] = [
 /// Falls back to WSOL detection (classic SPL Token for WSOL).
 /// For unresolved non-WSOL mints, defaults to classic SPL Token (safe default —
 /// Token-2022 mints will fail and we'll detect at runtime).
-fn token_program_for_mint_with_hint(mint: &Pubkey, hint: &[u8; 32]) -> Pubkey {
+pub(crate) fn token_program_for_mint_with_hint(mint: &Pubkey, hint: &[u8; 32]) -> Pubkey {
     // If we have a resolved program hint, use it
     if *hint != [0u8; 32] {
         return Pubkey::new_from_array(*hint);

@@ -3214,18 +3214,15 @@ impl MomentumEngine {
                         grad_score: 0.0,
                     };
                     let tip = self.tip_engine.lock().compute_tip(&tip_req);
-                    // 1% slippage on profitable exits, 0 on losses (speed > price)
-                    let min_sol_out = if gain_bps > 0 {
-                        // Use exit price (not entry) for expected SOL — tighter slippage protection
-                        let expected = (exit_price_fp as u128 * tokens as u128 / 1_000_000) as u64;
-                        (expected as u128 * 9900 / 10000) as u64 // 1% slippage
-                    } else { 0u64 };
                     let noz = self.nozomi_client.clone();
                     let reason_str = reason.as_str().to_string();
                     let gain = gain_bps as i64;
                     let noz_ok = noz.is_some();
                     let mint_copy = mint;
                     let rpc_sender = self.rpc_sender.clone();
+                    let balance_rpc_url = self.public_rpc_url.clone();
+                    let balance_http = self.rpc_fallback_client.clone();
+                    let exit_price_for_spawn = exit_price_fp;
                     tokio::spawn(async move {
                         let kp_bytes = match std::fs::read(&kp_path) {
                             Ok(b) => b,
@@ -3243,11 +3240,79 @@ impl MomentumEngine {
                             Err(e) => { tracing::error!(err=?e, "[sell_raydium] keypair from_bytes"); return; }
                         };
                         use std::str::FromStr as _;
+
+                        // ── Query actual on-chain token balance instead of paper estimate ──
+                        use solana_sdk::signer::Signer as _;
+                        let wallet_pubkey = keypair.pubkey();
+                        let token_mint = solana_sdk::pubkey::Pubkey::new_from_array(mint_copy);
+                        let token_program = solana_sdk::pubkey::Pubkey::from_str(
+                            crate::tx::raydium::SPL_TOKEN_PROGRAM_STR,
+                        ).unwrap();
+                        let ata_program = solana_sdk::pubkey::Pubkey::from_str(
+                            crate::tx::pumpswap::SPL_ATA_PROGRAM_STR,
+                        ).unwrap();
+                        let (token_ata, _) = solana_sdk::pubkey::Pubkey::find_program_address(
+                            &[wallet_pubkey.as_ref(), token_program.as_ref(), token_mint.as_ref()],
+                            &ata_program,
+                        );
+                        let balance_body = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "getTokenAccountBalance",
+                            "params": [token_ata.to_string()]
+                        });
+                        let actual_tokens = match balance_http
+                            .post(balance_rpc_url.as_str())
+                            .header("Content-Type", "application/json")
+                            .json(&balance_body)
+                            .send()
+                            .await
+                        {
+                            Ok(resp) => {
+                                match resp.json::<serde_json::Value>().await {
+                                    Ok(json) => {
+                                        json["result"]["value"]["amount"]
+                                            .as_str()
+                                            .and_then(|s| s.parse::<u64>().ok())
+                                            .unwrap_or_else(|| {
+                                                tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), body=%json, "[sell_raydium] unexpected balance response — using estimate");
+                                                tokens
+                                            })
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] balance response parse failed — using estimate");
+                                        tokens
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] balance query failed — using estimate");
+                                tokens
+                            }
+                        };
+                        if actual_tokens == 0 {
+                            tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), estimated_tokens=tokens, "[sell_raydium] on-chain token balance is 0 — skipping sell");
+                            return;
+                        }
+
+                        // Recalculate min_sol_out with actual token balance
+                        let min_sol_out = if gain > 0 {
+                            let expected = (exit_price_for_spawn as u128 * actual_tokens as u128 / 1_000_000) as u64;
+                            (expected as u128 * 9900 / 10000) as u64
+                        } else { 0u64 };
+
                         let tip_account = solana_sdk::pubkey::Pubkey::from_str(
                             crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
                         ).unwrap();
+                        tracing::info!(
+                            mint=%bs58::encode(&mint_copy).into_string(),
+                            tokens = actual_tokens,
+                            estimated_tokens = tokens,
+                            min_sol_out,
+                            "[sell_raydium] building sell TX"
+                        );
                         let tx_bytes = match crate::tx::raydium::build_raydium_sell_tx(
-                            &pool, &mint_copy, &keypair, tokens, min_sol_out, tip, tip_account, bh,
+                            &pool, &mint_copy, &keypair, actual_tokens, min_sol_out, tip, tip_account, bh,
                         ) {
                             Ok(b) => b,
                             Err(e) => { tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] build failed"); return; }
@@ -3292,11 +3357,6 @@ impl MomentumEngine {
                         grad_score: 0.0,
                     };
                     let tip = self.tip_engine.lock().compute_tip(&tip_req);
-                    let min_sol_out = if gain_bps > 0 {
-                        // Use exit price (not entry) for expected SOL — tighter slippage protection
-                        let expected = (exit_price_fp as u128 * tokens as u128 / 1_000_000) as u64;
-                        (expected as u128 * 9900 / 10000) as u64 // 1% slippage
-                    } else { 0u64 };
                     let noz_ok = noz.is_some();
                     let reason_str = reason.as_str().to_string();
                     let gain = gain_bps as i64;
@@ -3306,6 +3366,9 @@ impl MomentumEngine {
                         .unwrap_or_default()
                         .as_millis() % 8) as usize;
                     let rpc_sender = self.rpc_sender.clone();
+                    let balance_rpc_url = self.public_rpc_url.clone();
+                    let balance_http = self.rpc_fallback_client.clone();
+                    let exit_price_for_spawn = exit_price_fp;
                     tokio::spawn(async move {
                         let kp_bytes = match std::fs::read(&kp_path) {
                             Ok(b) => b,
@@ -3323,6 +3386,67 @@ impl MomentumEngine {
                             Err(e) => { tracing::error!(err=?e, "[sell_pumpswap] keypair from_bytes"); return; }
                         };
                         use std::str::FromStr as _;
+                        use solana_sdk::signer::Signer as _;
+
+                        // ── Query actual on-chain token balance instead of paper estimate ──
+                        let wallet_pubkey = keypair.pubkey();
+                        let token_mint = solana_sdk::pubkey::Pubkey::new_from_array(mint_copy);
+                        let token_program = crate::tx::pumpswap::token_program_for_mint_with_hint(
+                            &token_mint, &ps_pool.token_mint_program,
+                        );
+                        let ata_program = solana_sdk::pubkey::Pubkey::from_str(
+                            crate::tx::pumpswap::SPL_ATA_PROGRAM_STR,
+                        ).unwrap();
+                        let (token_ata, _) = solana_sdk::pubkey::Pubkey::find_program_address(
+                            &[wallet_pubkey.as_ref(), token_program.as_ref(), token_mint.as_ref()],
+                            &ata_program,
+                        );
+                        let balance_body = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "getTokenAccountBalance",
+                            "params": [token_ata.to_string()]
+                        });
+                        let actual_tokens = match balance_http
+                            .post(balance_rpc_url.as_str())
+                            .header("Content-Type", "application/json")
+                            .json(&balance_body)
+                            .send()
+                            .await
+                        {
+                            Ok(resp) => {
+                                match resp.json::<serde_json::Value>().await {
+                                    Ok(json) => {
+                                        json["result"]["value"]["amount"]
+                                            .as_str()
+                                            .and_then(|s| s.parse::<u64>().ok())
+                                            .unwrap_or_else(|| {
+                                                tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), body=%json, "[sell_pumpswap] unexpected balance response — using estimate");
+                                                tokens
+                                            })
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] balance response parse failed — using estimate");
+                                        tokens
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] balance query failed — using estimate");
+                                tokens
+                            }
+                        };
+                        if actual_tokens == 0 {
+                            tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), estimated_tokens=tokens, "[sell_pumpswap] on-chain token balance is 0 — skipping sell");
+                            return;
+                        }
+
+                        // Recalculate min_sol_out with actual token balance
+                        let min_sol_out = if gain > 0 {
+                            let expected = (exit_price_for_spawn as u128 * actual_tokens as u128 / 1_000_000) as u64;
+                            (expected as u128 * 9900 / 10000) as u64
+                        } else { 0u64 };
+
                         let tip_account = solana_sdk::pubkey::Pubkey::from_str(
                             crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
                         ).unwrap();
@@ -3331,12 +3455,13 @@ impl MomentumEngine {
                             mint = %bs58::encode(&mint_copy).into_string(),
                             pool = %bs58::encode(&ps_pool.pool).into_string(),
                             token_is_base = ps_pool.token_is_base,
-                            tokens,
+                            tokens = actual_tokens,
+                            estimated_tokens = tokens,
                             min_sol_out,
                             "[sell_pumpswap] building sell TX"
                         );
                         let tx_bytes = match crate::tx::pumpswap::build_pumpswap_sell_tx(
-                            &ps_pool, &keypair, tokens, min_sol_out, tip, tip_account, bh, fee_idx,
+                            &ps_pool, &keypair, actual_tokens, min_sol_out, tip, tip_account, bh, fee_idx,
                         ) {
                             Ok(b) => b,
                             Err(e) => { tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] build failed"); return; }
