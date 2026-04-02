@@ -3488,29 +3488,17 @@ impl MomentumEngine {
         mint: [u8; 32],
         sig: [u8; 64],
         ts_ms: u64,
-        mut coin_vault: [u8; 32],
-        mut pc_vault: [u8; 32],
+        coin_vault: [u8; 32],
+        pc_vault: [u8; 32],
         source: crate::feeds::MigrationSource,
         enrichment: crate::engine::hot_path::GradEnrichment,
     ) {
         if !self.config.enabled { return; }
 
-        // ── Detect reversed PumpSwap pool ordering ──────────────────────────
-        // PumpSwap sorts mints by raw byte comparison. WSOL (0x069b...) sorts
-        // before most pump.fun tokens, so ~81% of pools have WSOL as base_mint
-        // and token as quote_mint. The Helius Enhanced feed passes vaults in
-        // pool layout order (base_vault, quote_vault), meaning:
-        //   - coin_vault (param) = pool_base_token_account = WSOL vault (wrong!)
-        //   - pc_vault (param) = pool_quote_token_account = token vault (wrong!)
-        // We need coin_vault = token vault and pc_vault = WSOL vault.
-        // Detect: if mint > WSOL_MINT_BYTES, the pool is reversed.
-        if mint > WSOL_MINT_BYTES {
-            tracing::debug!(
-                mint = %bs58::encode(&mint).into_string(),
-                "[momentum] PumpSwapGraduationDirect: reversed pool detected (WSOL is base) — swapping vaults"
-            );
-            std::mem::swap(&mut coin_vault, &mut pc_vault);
-        }
+        // NOTE: The Helius Enhanced parser (helius.rs) already identifies vaults
+        // by checking postTokenBalances mints: coin_vault = token mint account,
+        // pc_vault = WSOL account. No byte-order swap needed here — the parser
+        // resolves semantic assignment, not pool layout order.
 
         // RATE GATE: Shares budget with on_migration (same static counters)
         {

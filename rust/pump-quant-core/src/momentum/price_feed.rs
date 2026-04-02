@@ -8,7 +8,7 @@
 //! commitment=confirmed — silently delivered zero accountNotifications.
 //! Fix: use dedicated endpoint (SOLANA_WS_URL) with commitment=processed.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -55,6 +55,9 @@ pub struct PriceState {
     pub ws_notif_count: AtomicU64,
     /// Timestamp of last WS accountSubscribe notification (epoch ms). 0 if none received.
     pub ws_notif_last_ms: AtomicU64,
+    /// True when the price was seeded from estimated reserves (not yet confirmed by RPC).
+    /// The spike filter should allow the first real update to replace it unconditionally.
+    pub is_estimated: AtomicBool,
 }
 
 impl PriceState {
@@ -66,6 +69,7 @@ impl PriceState {
             reserve_token: AtomicU64::new(0),
             ws_notif_count: AtomicU64::new(0),
             ws_notif_last_ms: AtomicU64::new(0),
+            is_estimated: AtomicBool::new(false),
         })
     }
 }
@@ -149,6 +153,7 @@ impl PriceFeedManager {
             state.price_fp.store(fp, Ordering::Release);
             state.reserve_sol.store(estimated_reserve_sol, Ordering::Relaxed);
             state.reserve_token.store(estimated_reserve_token, Ordering::Relaxed);
+            state.is_estimated.store(true, Ordering::Release);
             state.last_update_ms.store(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -442,7 +447,11 @@ fn ws_update_price(
             let price = price_from_reserves(sol, tok);
             if price > 0 {
                 let prev = state.price_fp.load(Ordering::Relaxed);
-                if prev >= 100 {
+                // Skip spike filter if current price is estimated (not yet confirmed by RPC).
+                // Estimated prices use default reserves (85 SOL / 800M tokens) which can differ
+                // wildly from real reserves, especially for established pools.
+                let was_estimated = state.is_estimated.load(Ordering::Acquire);
+                if prev >= 100 && !was_estimated {
                     let hi = price.max(prev);
                     let lo = price.min(prev);
                     if lo > 0 && hi / lo > 100 {
@@ -453,6 +462,14 @@ fn ws_update_price(
                         );
                         return;
                     }
+                }
+                if was_estimated {
+                    state.is_estimated.store(false, Ordering::Release);
+                    tracing::info!(
+                        mint = %bs58::encode(mint).into_string(),
+                        estimated = prev, real = price,
+                        "[price_feed_ws] replacing estimated price with real WS data"
+                    );
                 }
                 let was_zero = state.price_fp.swap(price, Ordering::Release) == 0;
                 state.last_update_ms.store(now, Ordering::Relaxed);
@@ -652,7 +669,8 @@ async fn price_feed_poll_loop(
 
                 if let Some(state) = prices.get(mint) {
                     let prev = state.price_fp.load(Ordering::Acquire);
-                    if prev >= 100 {
+                    let was_estimated = state.is_estimated.load(Ordering::Acquire);
+                    if prev >= 100 && !was_estimated {
                         let hi = fp.max(prev);
                         let lo = fp.min(prev);
                         if lo > 0 && hi / lo > 100 {
@@ -663,6 +681,14 @@ async fn price_feed_poll_loop(
                             );
                             continue;
                         }
+                    }
+                    if was_estimated {
+                        state.is_estimated.store(false, Ordering::Release);
+                        tracing::info!(
+                            mint = %bs58::encode(mint).into_string(),
+                            estimated = prev, real = fp,
+                            "[price_feed] replacing estimated price with real RPC data"
+                        );
                     }
                     let was_zero = state.price_fp.swap(fp, Ordering::Release) == 0;
                     state.reserve_sol.store(sr, Ordering::Relaxed);
