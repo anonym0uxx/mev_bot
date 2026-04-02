@@ -3913,53 +3913,70 @@ impl MomentumEngine {
                             "method": "getTokenAccountBalance",
                             "params": [token_ata.to_string()]
                         });
-                        // STRICT balance check: if we can't verify on-chain balance, ABORT sell.
-                        // Selling estimated amounts when buy failed = guaranteed error.
-                        let actual_tokens = match balance_http
-                            .post(balance_rpc_url.as_str())
-                            .header("Content-Type", "application/json")
-                            .json(&balance_body)
-                            .send()
-                            .await
-                        {
-                            Ok(resp) => {
-                                match resp.json::<serde_json::Value>().await {
-                                    Ok(json) => {
-                                        // Check for RPC error (e.g. "could not find account")
-                                        if json.get("error").is_some() {
-                                            tracing::warn!(
-                                                mint=%bs58::encode(&mint_copy).into_string(),
-                                                body=%json,
-                                                "[sell] ATA not found — buy likely failed, skipping sell"
-                                            );
-                                            return;
-                                        }
-                                        match json["result"]["value"]["amount"]
-                                            .as_str()
-                                            .and_then(|s| s.parse::<u64>().ok())
-                                        {
-                                            Some(bal) => bal,
-                                            None => {
-                                                tracing::warn!(
+                        // Balance check with retry: RPC node may not have indexed the new ATA
+                        // immediately after buy TX lands. Retry up to 5x with 1s backoff.
+                        // Only hard-abort if we exhaust all retries.
+                        let actual_tokens = {
+                            let mut result = None;
+                            for attempt in 0..5u32 {
+                                if attempt > 0 {
+                                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                                }
+                                let resp = balance_http
+                                    .post(balance_rpc_url.as_str())
+                                    .header("Content-Type", "application/json")
+                                    .json(&balance_body)
+                                    .send()
+                                    .await;
+                                match resp {
+                                    Ok(r) => match r.json::<serde_json::Value>().await {
+                                        Ok(json) => {
+                                            if json.get("error").is_some() {
+                                                tracing::debug!(
                                                     mint=%bs58::encode(&mint_copy).into_string(),
-                                                    body=%json,
-                                                    "[sell_pumpswap] balance returned null/unparseable — aborting sell for safety"
+                                                    attempt,
+                                                    "[sell] ATA not found yet — retrying"
                                                 );
-                                                return;
+                                                continue; // retry
+                                            }
+                                            match json["result"]["value"]["amount"]
+                                                .as_str()
+                                                .and_then(|s| s.parse::<u64>().ok())
+                                            {
+                                                Some(bal) => { result = Some(bal); break; }
+                                                None => {
+                                                    tracing::warn!(
+                                                        mint=%bs58::encode(&mint_copy).into_string(),
+                                                        body=%json,
+                                                        "[sell_pumpswap] balance returned null/unparseable — aborting sell"
+                                                    );
+                                                    return;
+                                                }
                                             }
                                         }
-                                    }
+                                        Err(e) => {
+                                            tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] balance response parse failed");
+                                            return;
+                                        }
+                                    },
                                     Err(e) => {
-                                        tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] balance response parse failed — aborting sell for safety");
+                                        tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] balance RPC failed");
                                         return;
                                     }
                                 }
                             }
-                            Err(e) => {
-                                tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_pumpswap] balance RPC failed — aborting sell for safety");
-                                return;
+                            match result {
+                                Some(bal) => bal,
+                                None => {
+                                    tracing::warn!(
+                                        mint=%bs58::encode(&mint_copy).into_string(),
+                                        "[sell] ATA not found after 5 retries — buy likely failed, skipping sell"
+                                    );
+                                    return;
+                                }
                             }
                         };
+                        // actual_tokens resolved above via retry block
                         if actual_tokens == 0 {
                             tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), estimated_tokens=tokens, "[sell_pumpswap] on-chain token balance is 0 — skipping sell");
                             return;
