@@ -19,9 +19,9 @@ const BACKRUN_JSONL  = path.join(BASE, 'data/backrun_paper_trades.jsonl');
 const STATE_PATH = path.join(BASE, 'data/engine-state.json');
 const HB_STATE   = path.join(BASE, 'data/heartbeat-trade-state.json');
 
-// Determine mode from health API (momentum engine's actual config), fallback to env
-let isPaper = process.env.PAPER_MODE !== 'false';
-let modeFlag = isPaper ? '📄 PAPER' : '🔴 LIVE';
+// Mode determined from API after fetch — defaults updated below
+let isPaper = true;
+let modeFlag = '📄 PAPER';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -101,12 +101,25 @@ async function main() {
     process.exit(1);
   }
 
+  // Detect mode from config — momentum engine's paper_mode is authoritative
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(BASE, 'config/canary.json'), 'utf8'));
+    const momPaper = cfg?.momentum?.paper_mode;
+    if (momPaper === false) { isPaper = false; modeFlag = '🔴 LIVE'; }
+    else if (momPaper === true) { isPaper = true; modeFlag = '📄 PAPER'; }
+  } catch {}
+  // Env override (backward compat)
+  if (process.env.PAPER_MODE === 'false') { isPaper = false; modeFlag = '🔴 LIVE'; }
+  if (process.env.PAPER_MODE === 'true') { isPaper = true; modeFlag = '📄 PAPER'; }
+
   // ── Load momentum trades (primary engine) ─────────────────────────
   const allMomentum = loadJsonl(MOMENTUM_JSONL);
-  // New build trades have size_sol field; filter out phantom PnL (>10x position size)
-  // Also require at least one non-zero price sample — zero-sample trades had no real price data
+  // Filter to Rust engine PumpSwap trades only (pool_type "pump_swap" or 1).
+  // Excludes old TS daemon / Raydium trades that are no longer relevant.
+  // Also: require size_sol field, filter phantom PnL, require non-zero price samples.
   const cleanMomentum = allMomentum.filter(t =>
     t.size_sol != null && t.size_sol > 0 &&
+    (t.pool_type === 'pump_swap' || t.pool_type === 1) &&
     Math.abs(t.net_pnl_sol || 0) <= t.size_sol * 10 &&
     Array.isArray(t.price_samples_bps) && t.price_samples_bps.some(s => s !== 0)
   );
