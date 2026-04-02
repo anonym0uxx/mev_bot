@@ -1311,7 +1311,7 @@ impl MomentumEngine {
                                 ps_pool.token_mint_program = crate::tx::pumpswap::SPL_TOKEN_2022_PROGRAM_BYTES;  // Token-2022 is the majority for pump.fun tokens
                                 tracing::warn!(
                                     mint = %bs58::encode(&mint_buy).into_string(),
-                                    "[deferred_buy_pumpswap] failed to resolve — defaulting to classic SPL Token"
+                                    "[deferred_buy_pumpswap] failed to resolve — defaulting to Token-2022"
                                 );
                             }
                         }
@@ -2058,10 +2058,10 @@ impl MomentumEngine {
                                 }
                             }
                             None => {
-                                // Fallback: try classic SPL Token (most common for older pump.fun tokens)
+                                // Fallback: Token-2022 (majority for pump.fun tokens)
                                 tracing::warn!(
                                     mint = %mint_b58_prog,
-                                    "[buy_pumpswap] failed to resolve token_mint_program — defaulting to classic SPL Token"
+                                    "[buy_pumpswap] failed to resolve token_mint_program — defaulting to Token-2022"
                                 );
                                 ps_pool.token_mint_program = crate::tx::pumpswap::SPL_TOKEN_2022_PROGRAM_BYTES;  // Token-2022 is the majority for pump.fun tokens
                             }

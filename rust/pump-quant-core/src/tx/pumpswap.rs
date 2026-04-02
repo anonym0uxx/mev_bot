@@ -250,8 +250,13 @@ fn token_program_for_mint_with_hint(mint: &Pubkey, hint: &[u8; 32]) -> Pubkey {
     if *hint != [0u8; 32] {
         return Pubkey::new_from_array(*hint);
     }
-    // Fallback: WSOL → classic SPL Token, everything else → classic SPL Token (safe default)
-    Pubkey::from_str(SPL_TOKEN_PROGRAM_STR).unwrap()
+    // Fallback: WSOL → classic SPL Token, all pump.fun tokens → Token-2022 (majority case)
+    let wsol = Pubkey::from_str(WSOL_MINT_STR).unwrap();
+    if *mint == wsol {
+        Pubkey::from_str(SPL_TOKEN_PROGRAM_STR).unwrap()
+    } else {
+        Pubkey::new_from_array(SPL_TOKEN_2022_PROGRAM_BYTES)
+    }
 }
 
 /// Determine the owning token program for WSOL (always classic SPL Token).
@@ -483,6 +488,20 @@ fn build_pumpswap_swap_ix(
         AccountMeta::new(user_volume_accumulator, false),                // [20] user_volume_accumulator
         AccountMeta::new_readonly(fee_config, false),                    // [21] fee_config
         AccountMeta::new_readonly(fee_program, false),                   // [22] fee_program
+        // ── remaining_accounts (not in IDL accounts list, appended after) ──
+        // pool_v2 PDA: seeds = ["pool-v2", base_mint] under PumpSwap program
+        {
+            let base_mint_for_v2 = if pool.token_is_base {
+                Pubkey::new_from_array(pool.base_mint)
+            } else {
+                Pubkey::from_str(WSOL_MINT_STR).unwrap()
+            };
+            let (pool_v2, _) = Pubkey::find_program_address(
+                &[b"pool-v2", base_mint_for_v2.as_ref()],
+                &pumpswap_program,
+            );
+            AccountMeta::new_readonly(pool_v2, false)                   // [23] pool_v2 (remaining)
+        },
     ];
 
     Instruction {
