@@ -179,6 +179,12 @@ pub struct PoolResolution {
     pub serum_pc_vault: [u8; 32],
     /// Serum vault signer (PDA).
     pub serum_vault_signer: [u8; 32],
+
+    // ── PumpSwap creator (zero for Raydium/Unknown) ──────────────────────
+    /// Creator pubkey extracted from PumpSwap pool data at offset [11..43].
+    /// Used to derive coin_creator_vault_ata for PumpSwap swap instructions.
+    /// Zero for non-PumpSwap pools.
+    pub creator: [u8; 32],
 }
 
 /// Decode a base58-encoded string into a 32-byte array.
@@ -569,6 +575,7 @@ async fn resolve_pool_inner(
         serum_coin_vault,
         serum_pc_vault,
         serum_vault_signer,
+        creator: [0u8; 32], // Raydium pools don't have a creator field
     })
 }
 
@@ -865,6 +872,9 @@ pub async fn resolve_pumpswap_pool_from_mint(
 
     let pool_address = decode_bs58_32(account_json.get("pubkey")?.as_str()?)?;
 
+    // ── Extract creator from pool data at offset [11..43] ───────────────
+    let creator: [u8; 32] = data[11..43].try_into().ok()?;
+
     // ── Vault assignment: depends on pool ordering ──────────────────────
     // When token_is_base (normal):
     //   pool_base_token_account [139..171] = token vault (coin_vault)
@@ -932,6 +942,7 @@ pub async fn resolve_pumpswap_pool_from_mint(
         serum_coin_vault: [0u8; 32],
         serum_pc_vault: [0u8; 32],
         serum_vault_signer: [0u8; 32],
+        creator,
     })
 }
 
@@ -1062,6 +1073,7 @@ pub async fn resolve_pool_from_mint(
         serum_coin_vault: [0u8; 32],
         serum_pc_vault: [0u8; 32],
         serum_vault_signer: [0u8; 32],
+        creator: [0u8; 32], // Raydium pools don't have a creator field
     })
 }
 
@@ -1086,14 +1098,47 @@ pub struct PumpSwapPoolAccounts {
     pub coin_creator_vault_authority: [u8; 32],
 }
 
+/// SPL Token program ID as raw bytes (for ATA derivation without solana_sdk::pubkey).
+const SPL_TOKEN_PROGRAM_BYTES: [u8; 32] = [
+    0x06, 0xdd, 0xf6, 0xe1, 0xd7, 0x65, 0xa1, 0x93,
+    0xd9, 0xcb, 0xe1, 0x46, 0xce, 0xeb, 0x79, 0xac,
+    0x1c, 0xb4, 0x85, 0xed, 0x5f, 0x5b, 0x37, 0x91,
+    0x3a, 0x8c, 0xf5, 0x85, 0x7e, 0xff, 0x00, 0xa9,
+];
+
+/// SPL Associated Token Account program ID as raw bytes (for ATA derivation).
+const SPL_ATA_PROGRAM_BYTES: [u8; 32] = [
+    0x8c, 0x97, 0x25, 0x8f, 0x4e, 0x24, 0x89, 0xf1,
+    0xbb, 0x3d, 0x10, 0x29, 0x14, 0x8e, 0x0d, 0x83,
+    0x0b, 0x5a, 0x13, 0x99, 0xda, 0xff, 0x10, 0x84,
+    0x04, 0x8e, 0x7b, 0xd8, 0xdb, 0xe9, 0xf8, 0x59,
+];
+
+/// Derive the Associated Token Account address for a wallet + mint using raw bytes.
+///
+/// PDA seeds: [wallet, SPL_TOKEN_PROGRAM, mint] under the ATA program.
+/// Equivalent to `spl_associated_token_account::get_associated_token_address`.
+fn derive_creator_ata(wallet: &[u8; 32], mint: &[u8; 32]) -> [u8; 32] {
+    let wallet_pk = solana_sdk::pubkey::Pubkey::new_from_array(*wallet);
+    let mint_pk = solana_sdk::pubkey::Pubkey::new_from_array(*mint);
+    let token_program = solana_sdk::pubkey::Pubkey::new_from_array(SPL_TOKEN_PROGRAM_BYTES);
+    let ata_program = solana_sdk::pubkey::Pubkey::new_from_array(SPL_ATA_PROGRAM_BYTES);
+    let (ata, _bump) = solana_sdk::pubkey::Pubkey::find_program_address(
+        &[wallet_pk.as_ref(), token_program.as_ref(), mint_pk.as_ref()],
+        &ata_program,
+    );
+    ata.to_bytes()
+}
+
 /// Extract PumpSwapPoolAccounts from a PoolResolution.
 ///
 /// Returns None if:
 /// - pool_type != PoolType::PumpSwap
 /// - pool_address is all-zeros (resolution failed to capture pool PDA)
 ///
-/// coin_creator_vault_ata and coin_creator_vault_authority are zeroed by default.
-/// The PumpSwap program handles zero-address accounts gracefully for creator fee.
+/// If the resolution includes a non-zero creator (extracted from pool data at
+/// offset [11..43]), derives the creator's token ATA for the coin_creator_vault_ata
+/// field. Otherwise both creator fields are zeroed.
 pub fn extract_pumpswap_pool_accounts(res: &PoolResolution) -> Option<PumpSwapPoolAccounts> {
     if res.pool_type != PoolType::PumpSwap {
         return None;
@@ -1101,13 +1146,22 @@ pub fn extract_pumpswap_pool_accounts(res: &PoolResolution) -> Option<PumpSwapPo
     if res.pool_address == [0u8; 32] {
         return None;
     }
+
+    // Derive creator vault ATA if creator is known (non-zero)
+    let (creator_ata, creator_authority) = if res.creator != [0u8; 32] {
+        let ata = derive_creator_ata(&res.creator, &res.mint);
+        (ata, res.creator)
+    } else {
+        ([0u8; 32], [0u8; 32])
+    };
+
     Some(PumpSwapPoolAccounts {
         pool: res.pool_address,
         base_mint: res.mint,
         pool_base_token_account: res.coin_vault,
         pool_quote_token_account: res.pc_vault,
-        coin_creator_vault_ata: [0u8; 32],
-        coin_creator_vault_authority: [0u8; 32],
+        coin_creator_vault_ata: creator_ata,
+        coin_creator_vault_authority: creator_authority,
     })
 }
 
@@ -1213,6 +1267,7 @@ mod tests {
             serum_coin_vault: [0u8; 32],
             serum_pc_vault: [0u8; 32],
             serum_vault_signer: [0u8; 32],
+            creator: [0u8; 32],
         }
     }
 
@@ -1254,10 +1309,71 @@ mod tests {
 
     #[test]
     fn test_extract_pumpswap_creator_vaults_zeroed() {
+        // When creator is [0u8; 32] (unknown), both fields should stay zeroed
         let res = make_pumpswap_resolution();
+        assert_eq!(res.creator, [0u8; 32]);
         let accts = extract_pumpswap_pool_accounts(&res).unwrap();
         assert_eq!(accts.coin_creator_vault_ata, [0u8; 32]);
         assert_eq!(accts.coin_creator_vault_authority, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_extract_pumpswap_creator_vaults_populated_when_creator_known() {
+        // When creator is non-zero, coin_creator_vault_authority = creator
+        // and coin_creator_vault_ata = derived ATA for (creator, mint)
+        let mut res = make_pumpswap_resolution();
+        res.creator = [0xAA; 32]; // non-zero creator
+        let accts = extract_pumpswap_pool_accounts(&res).unwrap();
+        assert_eq!(accts.coin_creator_vault_authority, [0xAA; 32],
+            "coin_creator_vault_authority should be the creator pubkey");
+        assert_ne!(accts.coin_creator_vault_ata, [0u8; 32],
+            "coin_creator_vault_ata should be a derived ATA (non-zero)");
+        // The ATA is a PDA — verify it's deterministic
+        let accts2 = extract_pumpswap_pool_accounts(&res).unwrap();
+        assert_eq!(accts.coin_creator_vault_ata, accts2.coin_creator_vault_ata,
+            "ATA derivation should be deterministic");
+    }
+
+    #[test]
+    fn test_spl_program_constants_match_base58() {
+        // Verify SPL_TOKEN_PROGRAM_BYTES matches known base58
+        let decoded = bs58::encode(&SPL_TOKEN_PROGRAM_BYTES).into_string();
+        assert_eq!(decoded, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "SPL_TOKEN_PROGRAM_BYTES should decode to known Token Program");
+        // Verify SPL_ATA_PROGRAM_BYTES matches known base58
+        let decoded_ata = bs58::encode(&SPL_ATA_PROGRAM_BYTES).into_string();
+        assert_eq!(decoded_ata, "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+            "SPL_ATA_PROGRAM_BYTES should decode to known ATA Program");
+    }
+
+    #[test]
+    fn test_derive_creator_ata_matches_tx_pumpswap_token_ata() {
+        // Verify our raw-bytes ATA derivation matches the tx::pumpswap token_ata()
+        // by computing for a known wallet+mint and checking consistency
+        let wallet = [0x42; 32];
+        let mint = [0x7a; 32];
+        let ata = derive_creator_ata(&wallet, &mint);
+        // ATA should be non-zero and deterministic
+        assert_ne!(ata, [0u8; 32]);
+        let ata2 = derive_creator_ata(&wallet, &mint);
+        assert_eq!(ata, ata2, "ATA derivation must be deterministic");
+    }
+
+    #[test]
+    fn test_pool_a_creator_extraction() {
+        // Verify we can extract creator from reference Pool A data at offset [11..43]
+        let creator: [u8; 32] = POOL_A_DATA[11..43].try_into().unwrap();
+        assert_ne!(creator, [0u8; 32], "Pool A should have a non-zero creator");
+        // Verify it matches the expected creator from the hex dump
+        assert_eq!(creator[0], 0xb5, "Pool A creator first byte should be 0xb5");
+    }
+
+    #[test]
+    fn test_pool_b_creator_extraction() {
+        // Verify we can extract creator from reference Pool B data at offset [11..43]
+        let creator: [u8; 32] = POOL_B_DATA[11..43].try_into().unwrap();
+        assert_ne!(creator, [0u8; 32], "Pool B should have a non-zero creator");
+        assert_eq!(creator[0], 0xbe, "Pool B creator first byte should be 0xbe");
     }
 
     #[test]

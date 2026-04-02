@@ -3163,33 +3163,41 @@ impl MomentumEngine {
                 let effective_sells_5s = if enrichment.sells_5s == 0 { 1u32 } else { enrichment.sells_5s as u32 };
 
                 // Store PumpSwap pool accounts for live execution.
-                // Pool PDA is zeroed — Helius Enhanced notification doesn't include it.
-                // The pool PDA will need to be derived at tx time or resolved via
-                // getProgramAccounts. For now, store what we have. The tx builder
-                // can derive the pool PDA from mint + index + creator seeds.
+                // Resolve full pool data via mint lookup to get pool PDA, creator,
+                // and coin_creator_vault_ata (required for PumpSwap swap TXs).
                 {
-                    // Determine pool ordering: if token mint < WSOL, token is base.
-                    let wsol_bytes: [u8; 32] = [
-                        0x06, 0x9b, 0x88, 0x57, 0xfe, 0xab, 0x81, 0x84,
-                        0xfb, 0x68, 0x7f, 0x63, 0x46, 0x18, 0xc0, 0x35,
-                        0xda, 0xc4, 0x39, 0xdc, 0x1a, 0xeb, 0x3b, 0x55,
-                        0x98, 0xa0, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x01,
-                    ];
-                    let token_is_base = mint < wsol_bytes;
-                    let ps_accts = crate::tx::pumpswap::PumpSwapPoolAccounts {
-                        pool: [0u8; 32], // Pool PDA unknown from direct path
-                        base_mint: mint,
-                        pool_base_token_account: coin_vault,
-                        pool_quote_token_account: pc_vault,
-                        coin_creator_vault_ata: [0u8; 32],
-                        coin_creator_vault_authority: [0u8; 32],
-                        token_is_base,
-                    };
-                    self.pumpswap_pools.insert(mint, ps_accts);
-                    tracing::debug!(
-                        mint = %mint_b58,
-                        "[momentum] pumpswap pool accounts stored (direct path)"
-                    );
+                    if let Some(ps_resolution) = crate::momentum::pool::resolve_pumpswap_pool_from_mint(
+                        &self.http_client, &mint, &self.public_rpc_url, &self.helius_rpc_url,
+                    ).await {
+                        if let Some(ps_pool) = crate::momentum::pool::extract_pumpswap_pool_accounts(&ps_resolution) {
+                            let ps_accts: crate::tx::pumpswap::PumpSwapPoolAccounts = ps_pool.into();
+                            self.pumpswap_pools.insert(mint, ps_accts);
+                            tracing::debug!(
+                                mint = %mint_b58,
+                                pool = %bs58::encode(&ps_resolution.pool_address).into_string(),
+                                creator = %bs58::encode(&ps_resolution.creator).into_string(),
+                                "[momentum] pumpswap pool accounts stored (direct path — full resolution)"
+                            );
+                        }
+                    } else {
+                        // Fallback: store with zeroed pool PDA and creator fields.
+                        // Trades may fail with AccountOwnedByWrongProgram until pool is resolved.
+                        let token_is_base = mint < WSOL_MINT_BYTES;
+                        let ps_accts = crate::tx::pumpswap::PumpSwapPoolAccounts {
+                            pool: [0u8; 32],
+                            base_mint: mint,
+                            pool_base_token_account: coin_vault,
+                            pool_quote_token_account: pc_vault,
+                            coin_creator_vault_ata: [0u8; 32],
+                            coin_creator_vault_authority: [0u8; 32],
+                            token_is_base,
+                        };
+                        self.pumpswap_pools.insert(mint, ps_accts);
+                        tracing::warn!(
+                            mint = %mint_b58,
+                            "[momentum] pumpswap pool stored WITHOUT creator (resolve failed) — swaps may fail"
+                        );
+                    }
                 }
 
                 self.on_graduation(
