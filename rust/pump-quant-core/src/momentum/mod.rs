@@ -58,6 +58,20 @@ const WSOL_MINT_BYTES: [u8; 32] = [
     0x98, 0xa0, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x01,
 ];
 
+// ── Buy state tracking ──────────────────────────────────────────────────────
+// Tracks whether a buy TX landed on-chain. Sell is gated on Confirmed state.
+// Fix #1 from BUILD_SPEC_LIVE_EXECUTION.md — eliminates 49+ phantom sell failures.
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BuyState {
+    /// Buy TX submitted, awaiting confirmation.
+    Pending,
+    /// Buy TX confirmed on-chain. Safe to sell.
+    Confirmed,
+    /// Buy TX failed on-chain. Do NOT attempt sell.
+    Failed,
+}
+
 // ── Live mode types ─────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug)]
@@ -381,6 +395,9 @@ pub struct MomentumEngine {
     /// Raydium pool accounts keyed by mint, populated at graduation, consumed at close.
     raydium_pools: DashMap<[u8; 32], crate::tx::raydium::RaydiumPoolAccounts>,
     pumpswap_pools: DashMap<[u8; 32], crate::tx::pumpswap::PumpSwapPoolAccounts>,
+    /// Buy TX state tracking: mint → BuyState. Written by async buy tasks,
+    /// read by close_position to gate sell TX submission.
+    buy_states: DashMap<[u8; 32], BuyState>,
     /// Mints where position was opened but buy TX couldn't be submitted because
     /// pool accounts were zeroed (not yet resolved). Checked each tick — when pool
     /// accounts appear in pumpswap_pools/raydium_pools, the deferred buy is submitted.
@@ -556,6 +573,7 @@ impl MomentumEngine {
             scored_token_rx: scored_rx,
             raydium_pools: DashMap::new(),
             pumpswap_pools: DashMap::new(),
+            buy_states: DashMap::new(),
             deferred_buy_pending: DashSet::new(),
             mint_entry_counts: DashMap::new(),
             tip_engine,
@@ -1456,6 +1474,9 @@ impl MomentumEngine {
                         1
                     };
                     let tokens_est_for_sandwich = tokens_estimate;
+                    // Fix #1: Track buy state for sell gating
+                    self.buy_states.insert(mint, BuyState::Pending);
+                    let buy_states = self.buy_states.clone();
 
                     tokio::spawn(async move {
                         // Resolve token_mint_program if unknown
@@ -1515,6 +1536,7 @@ impl MomentumEngine {
                         let mint_str = bs58::encode(&mint_buy).into_string();
                         match rpc_sender.submit_tx(&tx_bytes, &mint_str, "deferred_buy_pumpswap").await {
                             rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
+                                buy_states.insert(mint_buy, BuyState::Confirmed);
                                 tracing::info!(
                                     mint=%mint_str, sig=%signature, latency_ms, tip,
                                     size_sol=size_lamports as f64/1e9,
@@ -1527,9 +1549,11 @@ impl MomentumEngine {
                                 tracing::warn!(mint=%mint_str, sig=%signature, "[deferred_buy_pumpswap] RPC timed out (may still land)");
                             }
                             rpc_sender::SubmitResult::Failed { error } => {
+                                buy_states.insert(mint_buy, BuyState::Failed);
                                 tracing::error!(mint=%mint_str, err=%error, "[deferred_buy_pumpswap] RPC FAILED");
                             }
                             rpc_sender::SubmitResult::CircuitOpen { remaining_ms } => {
+                                buy_states.insert(mint_buy, BuyState::Failed);
                                 tracing::warn!(mint=%mint_str, remaining_ms, "[deferred_buy_pumpswap] circuit breaker OPEN — skipped");
                             }
                         }
@@ -2281,21 +2305,24 @@ impl MomentumEngine {
                         .unwrap_or_default()
                         .as_millis() % 8) as usize;
                     let rpc_sender = self.rpc_sender.clone();
+                    // Fix #1: Track buy state for sell gating
+                    self.buy_states.insert(mint, BuyState::Pending);
+                    let buy_states = self.buy_states.clone();
                     tokio::spawn(async move {
                         let kp_bytes = match std::fs::read(&kp_path) {
                             Ok(b) => b,
-                            Err(e) => { tracing::error!(err=?e, "[buy_pumpswap] keypair load failed"); return; }
+                            Err(e) => { tracing::error!(err=?e, "[buy_pumpswap] keypair load failed"); buy_states.insert(mint_buy, BuyState::Failed); return; }
                         };
                         let kp_arr: Vec<u8> = match serde_json::from_slice(&kp_bytes) {
                             Ok(v) => v,
-                            Err(e) => { tracing::error!(err=?e, "[buy_pumpswap] keypair parse failed"); return; }
+                            Err(e) => { tracing::error!(err=?e, "[buy_pumpswap] keypair parse failed"); buy_states.insert(mint_buy, BuyState::Failed); return; }
                         };
-                        if kp_arr.len() != 64 { tracing::error!("[buy_pumpswap] invalid keypair len"); return; }
+                        if kp_arr.len() != 64 { tracing::error!("[buy_pumpswap] invalid keypair len"); buy_states.insert(mint_buy, BuyState::Failed); return; }
                         let mut kb = [0u8; 64];
                         kb.copy_from_slice(&kp_arr);
                         let keypair = match solana_sdk::signature::Keypair::from_bytes(&kb) {
                             Ok(k) => k,
-                            Err(e) => { tracing::error!(err=?e, "[buy_pumpswap] keypair err"); return; }
+                            Err(e) => { tracing::error!(err=?e, "[buy_pumpswap] keypair err"); buy_states.insert(mint_buy, BuyState::Failed); return; }
                         };
                         use std::str::FromStr as _;
                         let tip_account = solana_sdk::pubkey::Pubkey::from_str(
@@ -2305,12 +2332,13 @@ impl MomentumEngine {
                             &ps_pool, &keypair, size, min_tokens_out, tip, tip_account, bh, fee_idx,
                         ) {
                             Ok(b) => b,
-                            Err(e) => { tracing::error!(mint=%bs58::encode(&mint_buy).into_string(), err=?e, "[buy_pumpswap] build failed"); return; }
+                            Err(e) => { tracing::error!(mint=%bs58::encode(&mint_buy).into_string(), err=?e, "[buy_pumpswap] build failed"); buy_states.insert(mint_buy, BuyState::Failed); return; }
                         };
                         let mint_str = bs58::encode(&mint_buy).into_string();
                         // RPC only — rate limited + retried + circuit breaker waits
                         match rpc_sender.submit_tx(&tx_bytes, &mint_str, "buy_pumpswap").await {
                             rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
+                                buy_states.insert(mint_buy, BuyState::Confirmed);
                                 tracing::info!(
                                     mint=%mint_str, sig=%signature, latency_ms, tip,
                                     size_sol=size as f64/1e9,
@@ -2320,12 +2348,15 @@ impl MomentumEngine {
                                 );
                             }
                             rpc_sender::SubmitResult::TimedOut { signature } => {
+                                // Keep Pending — may still land. 30s timeout in process_active handles this.
                                 tracing::warn!(mint=%mint_str, sig=%signature, "[buy_pumpswap] RPC timed out (may still land)");
                             }
                             rpc_sender::SubmitResult::Failed { error } => {
+                                buy_states.insert(mint_buy, BuyState::Failed);
                                 tracing::error!(mint=%mint_str, err=%error, "[buy_pumpswap] RPC FAILED — no fallback");
                             }
                             rpc_sender::SubmitResult::CircuitOpen { remaining_ms } => {
+                                buy_states.insert(mint_buy, BuyState::Failed);
                                 tracing::warn!(mint=%mint_str, remaining_ms, "[buy_pumpswap] circuit breaker OPEN — skipped");
                             }
                         }
@@ -3439,8 +3470,31 @@ impl MomentumEngine {
             config_version: self.config.config_version(),
         });
 
+        // ── Fix #1: Gate sell on buy state ──────────────────────────────────────
+        // Only attempt sell if buy TX was confirmed on-chain. If buy failed,
+        // selling would fail with ConstraintTokenMint (3012) or Custom:1.
+        let buy_state = self.buy_states.remove(&mint).map(|(_, s)| s).unwrap_or(BuyState::Failed);
+        let should_sell = match buy_state {
+            BuyState::Confirmed => true,
+            BuyState::Pending => {
+                // Buy still pending (timed out?) — let the existing balance check gate it
+                tracing::warn!(
+                    mint = %bs58::encode(&mint).into_string(),
+                    "[close_position] buy still Pending at close — will attempt sell with balance check"
+                );
+                true
+            }
+            BuyState::Failed => {
+                tracing::info!(
+                    mint = %bs58::encode(&mint).into_string(),
+                    "[close_position] buy FAILED — skipping sell TX entirely"
+                );
+                false
+            }
+        };
+
         // ── Live mode: Raydium AMM V4 sell via Jito ────────────────────────────
-        if !self.config.paper_mode {
+        if !self.config.paper_mode && should_sell {
             if let Some((_, pool)) = self.raydium_pools.remove(&mint) {
                 let tokens = pos.tokens_held();
                 if tokens == 0 {
