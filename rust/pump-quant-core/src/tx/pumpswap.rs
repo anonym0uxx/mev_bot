@@ -381,7 +381,10 @@ fn build_swap_data(discriminator: &[u8; 8], arg1: u64, arg2: u64) -> Vec<u8> {
 
 // ── Swap instruction builder ─────────────────────────────────────────────────
 
-/// Build the PumpSwap swap instruction with the 22-account layout.
+/// Build the PumpSwap swap instruction.
+///
+/// BUY layout: 23 IDL accounts (includes global_volume_accumulator + user_volume_accumulator)
+/// SELL layout: 21 IDL accounts (omits volume accumulators; fee_config/fee_program shift to [19]/[20])
 ///
 /// **Pool ordering aware.** Accounts [3]-[8] must match the pool's actual
 /// on-chain base/quote ordering, not our normalized token/SOL convention.
@@ -396,7 +399,7 @@ fn build_swap_data(discriminator: &[u8; 8], arg1: u64, arg2: u64) -> Vec<u8> {
 ///   [5] = user WSOL ATA  [6] = user token ATA
 ///   [7] = pool WSOL vault [8] = pool token vault
 ///
-/// Fixed accounts [0]-[2], [9]-[21] are the same regardless of ordering.
+/// Fixed accounts [0]-[2], [9]-[18] are the same regardless of ordering.
 fn build_pumpswap_swap_ix(
     pool: &PumpSwapPoolAccounts,
     wallet_pubkey: &Pubkey,
@@ -404,6 +407,7 @@ fn build_pumpswap_swap_ix(
     discriminator: &[u8; 8],
     arg1: u64,
     arg2: u64,
+    is_sell: bool,
 ) -> Instruction {
     let pumpswap_program = Pubkey::from_str(PUMPSWAP_PROGRAM).unwrap();
     let global_config = Pubkey::from_str(PUMPSWAP_GLOBAL_CONFIG).unwrap();
@@ -488,11 +492,17 @@ fn build_pumpswap_swap_ix(
         AccountMeta::new_readonly(pumpswap_program, false),              // [16] pump_program (self CPI)
         AccountMeta::new(coin_creator_vault_ata, false),                 // [17] coin_creator_vault_ata
         AccountMeta::new_readonly(coin_creator_vault_authority, false),  // [18] coin_creator_vault_authority
-        AccountMeta::new_readonly(global_volume_accumulator, false),     // [19] global_volume_accumulator
-        AccountMeta::new(user_volume_accumulator, false),                // [20] user_volume_accumulator
-        AccountMeta::new_readonly(fee_config, false),                    // [21] fee_config
-        AccountMeta::new_readonly(fee_program, false),                   // [22] fee_program
     ];
+
+    if !is_sell {
+        // BUY ONLY: volume accumulators at [19] and [20]
+        accounts.push(AccountMeta::new_readonly(global_volume_accumulator, false));
+        accounts.push(AccountMeta::new(user_volume_accumulator, false));
+    }
+
+    // fee_config and fee_program: [21]/[22] for buy, [19]/[20] for sell
+    accounts.push(AccountMeta::new_readonly(fee_config, false));
+    accounts.push(AccountMeta::new_readonly(fee_program, false));
 
     // ── remaining_accounts (appended after IDL accounts list) ──────────
     // For cashback coins: [cashback_ata, pool_v2]
@@ -625,6 +635,7 @@ pub fn build_pumpswap_buy_tx(
         discriminator,
         arg1,
         arg2,
+        false,
     );
 
     // 8. Close WSOL ATA → wallet (reclaim leftover WSOL)
@@ -730,6 +741,7 @@ pub fn build_pumpswap_sell_tx(
         discriminator,
         arg1,
         arg2,
+        true,
     );
 
     // 5. Close WSOL ATA → wallet (SOL flows back to wallet)
@@ -961,7 +973,7 @@ mod tests {
     fn test_fee_recipient_idx0() {
         let pool = dummy_pool();
         let kp = Keypair::new();
-        let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 0, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1_000_000);
+        let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 0, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1_000_000, false);
         let expected = Pubkey::from_str("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV").unwrap();
         assert_eq!(
             ix.accounts[9].pubkey, expected,
@@ -975,7 +987,7 @@ mod tests {
     fn test_fee_recipient_idx7() {
         let pool = dummy_pool();
         let kp = Keypair::new();
-        let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 7, &PUMPSWAP_SELL_DISCRIMINATOR, 1, 1_000_000);
+        let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 7, &PUMPSWAP_SELL_DISCRIMINATOR, 1, 1_000_000, true);
         let expected = Pubkey::from_str("JCRGumoE9Qi5BBgULTgdgTLjSgkCMSbF62ZZfGs84JeU").unwrap();
         assert_eq!(
             ix.accounts[9].pubkey, expected,
@@ -1011,8 +1023,8 @@ mod tests {
     fn test_swap_ix_has_22_accounts() {
         let pool = dummy_pool();
         let kp = Keypair::new();
-        let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 0, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1_000_000);
-        assert_eq!(ix.accounts.len(), 23, "PumpSwap swap ix must have 23 accounts");
+        let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 0, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1_000_000, false);
+        assert_eq!(ix.accounts.len(), 23, "PumpSwap BUY swap ix must have 23 accounts");
     }
 
     // ── 13b. test_reversed_pool_swap_ix_has_22_accounts ──────────────────
@@ -1021,8 +1033,8 @@ mod tests {
     fn test_reversed_pool_swap_ix_has_22_accounts() {
         let pool = dummy_reversed_pool();
         let kp = Keypair::new();
-        let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 0, &PUMPSWAP_SELL_DISCRIMINATOR, 1, 1_000_000);
-        assert_eq!(ix.accounts.len(), 23, "reversed pool swap ix must have 23 accounts");
+        let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 0, &PUMPSWAP_SELL_DISCRIMINATOR, 1, 1_000_000, true);
+        assert_eq!(ix.accounts.len(), 21, "PumpSwap SELL swap ix must have 21 accounts");
     }
 
     // ── 14. test_fee_recipient_wraps_around ──────────────────────────────
@@ -1032,8 +1044,8 @@ mod tests {
         let pool = dummy_pool();
         let kp = Keypair::new();
         let pubkey = kp.pubkey();
-        let ix0 = build_pumpswap_swap_ix(&pool, &pubkey, 0, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1);
-        let ix8 = build_pumpswap_swap_ix(&pool, &pubkey, 8, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1);
+        let ix0 = build_pumpswap_swap_ix(&pool, &pubkey, 0, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1, false);
+        let ix8 = build_pumpswap_swap_ix(&pool, &pubkey, 8, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1, false);
         assert_eq!(
             ix0.accounts[9].pubkey, ix8.accounts[9].pubkey,
             "fee_idx=8 should wrap to same as fee_idx=0"
@@ -1143,7 +1155,7 @@ mod tests {
         let pool = dummy_reversed_pool();
         let kp = Keypair::new();
         let ix = build_pumpswap_swap_ix(
-            &pool, &kp.pubkey(), 0, &PUMPSWAP_SELL_DISCRIMINATOR, 1, 1,
+            &pool, &kp.pubkey(), 0, &PUMPSWAP_SELL_DISCRIMINATOR, 1, 1, true,
         );
         // Account [3] should be WSOL mint for reversed pool
         let wsol_mint = Pubkey::from_str(WSOL_MINT_STR).unwrap();
@@ -1158,7 +1170,7 @@ mod tests {
         let pool = dummy_pool();
         let kp = Keypair::new();
         let ix = build_pumpswap_swap_ix(
-            &pool, &kp.pubkey(), 0, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1,
+            &pool, &kp.pubkey(), 0, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1, false,
         );
         // Account [3] should be token mint for normal pool
         let token_mint = Pubkey::new_from_array(pool.base_mint);
