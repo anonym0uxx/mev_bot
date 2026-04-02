@@ -1497,10 +1497,14 @@ impl MomentumEngine {
                     let resolve_client = self.http_client.clone();
                     let resolve_url = self.helius_rpc_url.clone();
                     let resolve_url_fallback = self.public_rpc_url.clone();
-                    // Anti-sandwich slippage: tighter for small positions (< 0.1 SOL = 100M lamports).
-                    let min_tokens_out = if tokens_estimate > 0 {
-                        let slippage_pct = if size_lamports < 100_000_000 { 90 } else { 80 };
-                        tokens_estimate * slippage_pct / 100
+                    // Buffered max_quote_in: spend up to N% more SOL if price spiked
+                    // between observation and TX landing. Leftover WSOL reclaimed via close_account.
+                    let max_quote_in = (size_lamports as u128 * self.config.max_quote_in_multiplier_pct as u128 / 100) as u64;
+                    // Anti-sandwich slippage: compute min_tokens_out from buffered amount
+                    let min_tokens_out = if current_price_fp > 0 {
+                        let tokens_at_max = (max_quote_in as u128 * 1_000_000 / current_price_fp as u128) as u64;
+                        let slippage_pct = if size_lamports < 100_000_000 { 85u64 } else { 80 };
+                        std::cmp::max(tokens_at_max * slippage_pct / 100, 1)
                     } else {
                         1
                     };
@@ -1567,7 +1571,7 @@ impl MomentumEngine {
                             crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
                         ).unwrap();
                         let tx_bytes = match crate::tx::pumpswap::build_pumpswap_buy_tx(
-                            &ps_pool, &keypair, size_lamports, min_tokens_out, tip, tip_account, bh, fee_idx,
+                            &ps_pool, &keypair, max_quote_in, min_tokens_out, tip, tip_account, bh, fee_idx,
                         ) {
                             Ok(b) => b,
                             Err(e) => {
@@ -1586,6 +1590,7 @@ impl MomentumEngine {
                                 tracing::info!(
                                     mint=%mint_str, sig=%signature, latency_ms, tip,
                                     size_sol=size_lamports as f64/1e9,
+                                    max_quote_sol=max_quote_in as f64/1e9,
                                     estimated_tokens=tokens_est_for_sandwich,
                                     min_tokens_out,
                                     "[deferred_buy_pumpswap] RPC landed ✅ — compare on-chain receipt vs estimated_tokens for sandwich detection"
@@ -2337,11 +2342,15 @@ impl MomentumEngine {
                         pos.set_tokens_held(tokens_estimate);
                     }
                     let mint_buy = mint;
-                    // Anti-sandwich slippage: tighter for small positions (< 0.1 SOL = 100M lamports).
-                    // Small positions are more vulnerable to sandwich attacks.
-                    let min_tokens_out = if tokens_estimate > 0 {
-                        let slippage_pct = if size < 100_000_000 { 90 } else { 80 };
-                        tokens_estimate * slippage_pct / 100
+                    // Buffered max_quote_in: spend up to N% more SOL if price spiked
+                    // between observation and TX landing. Leftover WSOL reclaimed via close_account.
+                    let max_quote_in = (size as u128 * self.config.max_quote_in_multiplier_pct as u128 / 100) as u64;
+                    // Anti-sandwich slippage: compute min_tokens_out from buffered amount.
+                    // Small positions use tighter slippage (85%) vs large (80%).
+                    let min_tokens_out = if current_price_fp > 0 {
+                        let tokens_at_max = (max_quote_in as u128 * 1_000_000 / current_price_fp as u128) as u64;
+                        let slippage_pct = if size < 100_000_000 { 85u64 } else { 80 };
+                        std::cmp::max(tokens_at_max * slippage_pct / 100, 1)
                     } else {
                         1 // fallback — shouldn't happen with valid price feed
                     };
@@ -2394,10 +2403,11 @@ impl MomentumEngine {
                             token_is_base = ps_pool.token_is_base,
                             pool_base_vault = %bs58::encode(&ps_pool.pool_base_token_account).into_string(),
                             pool_quote_vault = %bs58::encode(&ps_pool.pool_quote_token_account).into_string(),
+                            max_quote_sol = max_quote_in as f64 / 1e9,
                             "[buy_pumpswap] building TX with pool accounts"
                         );
                         let tx_bytes = match crate::tx::pumpswap::build_pumpswap_buy_tx(
-                            &ps_pool, &keypair, size, min_tokens_out, tip, tip_account, bh, fee_idx,
+                            &ps_pool, &keypair, max_quote_in, min_tokens_out, tip, tip_account, bh, fee_idx,
                         ) {
                             Ok(b) => b,
                             Err(e) => { tracing::error!(mint=%bs58::encode(&mint_buy).into_string(), err=?e, "[buy_pumpswap] build failed"); buy_states.insert(mint_buy, BuyState::Failed); return; }
@@ -2410,6 +2420,7 @@ impl MomentumEngine {
                                 tracing::info!(
                                     mint=%mint_str, sig=%signature, latency_ms, tip,
                                     size_sol=size as f64/1e9,
+                                    max_quote_sol=max_quote_in as f64/1e9,
                                     estimated_tokens=tokens_est_for_sandwich,
                                     min_tokens_out,
                                     "[buy_pumpswap] RPC landed ✅ — compare on-chain receipt vs estimated_tokens for sandwich detection"

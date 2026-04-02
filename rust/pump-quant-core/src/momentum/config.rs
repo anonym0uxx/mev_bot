@@ -595,6 +595,13 @@ pub struct MomentumConfig {
     // RPC SENDER CONFIG
     // ══════════════════════════════════════════════════════════
 
+    /// Max SOL overspend multiplier for PumpSwap buy TX (basis: 100 = exact, 115 = 15% buffer).
+    /// Prevents ExceededSlippage (Custom:6004) when price spikes between observation window
+    /// end and TX landing (~150-300ms). The engine will spend up to (N-100)% more SOL than
+    /// the target entry size if the price moved up post-observation.
+    /// Default: 115 (15% buffer). Set to 100 to disable (exact size, old behavior).
+    pub max_quote_in_multiplier_pct: u32,
+
     /// RPC transaction sender configuration: priority fees, retries,
     /// circuit breaker, and Jito fallback settings.
     #[serde(default)]
@@ -826,6 +833,9 @@ impl Default for MomentumConfig {
 
             dead_zone_pumpswap_reserve_tolerance_lamports: 2_000_000,
             dead_zone_pumpswap_ws_zero_ms: 10_000,
+
+            // PumpSwap buy TX slippage buffer
+            max_quote_in_multiplier_pct: 115, // 15% overspend buffer
 
             // RPC sender config
             rpc_sender: RpcSenderConfig::default(),
