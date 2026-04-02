@@ -619,6 +619,9 @@
       "circuit_breaker_cooldown_ms": 120000,
       "jito_fallback_tip": 100000,
       "rpc_primary": true
+    },
+    "tod_config": {
+      "blocked_hours_utc": []
     }
   }
 }
