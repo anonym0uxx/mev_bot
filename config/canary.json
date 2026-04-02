@@ -563,7 +563,7 @@
     "dead_zone_reserve_flat_tolerance_lamports": 1000000,
     "dead_zone_stagnant_bps": 300,
     "dead_zone_stagnant_window_ms": 30000,
-    "probe_size_sol": 0.05,
+    "probe_size_sol": 0.03,
     "probe_hold_ms": 3000,
     "probe_dump_threshold_bps": -300,
     "probe_scale_min_bps": -150,
@@ -610,7 +610,7 @@
     "dead_zone_pumpswap_reserve_tolerance_lamports": 2000000,
     "dead_zone_pumpswap_ws_zero_ms": 10000,
     "rpc_sender": {
-      "priority_fee_microlamports": 1000,
+      "priority_fee_microlamports": 50000,
       "max_send_retries": 3,
       "retry_delay_ms": 500,
       "confirm_timeout_ms": 30000,

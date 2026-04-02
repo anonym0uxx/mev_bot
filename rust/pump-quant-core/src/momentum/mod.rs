@@ -2544,27 +2544,29 @@ impl MomentumEngine {
         }
         // ── End pump.fun graduation filter ────────────────────────────────────
 
-        // ── FIX-1/FIX-4: Staleness gate — drop cold-miss CoreCast backlog ─────
-        // CoreCast replays ~430 old Raydium-era graduation events/min with no
-        // enrichment data. These waste RPC calls and resolve to dead Raydium pools.
-        // Gate: cold-miss events older than stale_grad_max_age_ms are dropped.
-        if is_cold_miss && self.config.stale_grad_max_age_ms > 0 {
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            let grad_age_ms = now_ms.saturating_sub(ts_ms);
-            if grad_age_ms > self.config.stale_grad_max_age_ms {
-                tracing::debug!(
-                    mint = %bs58::encode(&mint).into_string(),
-                    grad_age_ms,
-                    "[momentum] stale cold-miss grad rejected — CoreCast backlog"
-                );
-                self.resolving_sigs.remove(&sig);
-                return;
-            }
+        // ── FIX: Drop ALL cold-miss events in on_migration() ───────────────
+        // CoreCast replays ~11,000+ stale graduation events per session with no
+        // enrichment data (cold_miss). These ALWAYS resolve to dead Raydium pools
+        // (AMM accounts closed, 0 bytes) or fail PumpSwap lookup entirely.
+        // They consume the pool resolution semaphore (5 slots) and rate budget
+        // (60/min), starving fresh ShredStream events of resolution capacity.
+        //
+        // Evidence (Apr 1 2026): 1,518 events dropped by semaphore, 0% of cold
+        // misses produced a tradeable pool. Meanwhile Helius Enhanced's direct path
+        // (on_pumpswap_graduation_direct) handles fresh PumpSwap graduations
+        // WITHOUT hitting the semaphore — it has its own vault resolution.
+        //
+        // Fresh graduations with enrichment (speed > 0 or volume > 0) from
+        // PumpPortal/ShredStream still pass through here.
+        if is_cold_miss {
+            tracing::debug!(
+                mint = %bs58::encode(&mint).into_string(),
+                "[momentum] cold-miss grad dropped — preserving semaphore for enriched events"
+            );
+            self.resolving_sigs.remove(&sig);
+            return;
         }
-        // ── End staleness gate ─────────────────────────────────────────────────
+        // ── End cold-miss gate ─────────────────────────────────────────────────
 
         // ── PumpSwap mint-based fast path ──────────────────────────────────────
         // If we have a non-zero mint, try PumpSwap pool lookup directly via
