@@ -983,6 +983,28 @@ pub async fn resolve_pumpswap_pool_from_mint(
     };
     let is_cashback_coin = data.len() >= 245 && data[244] == 1;
 
+    // ── Quote mint validation: reject non-WSOL quote pools ──────────────
+    // PumpSwap can create token/token pools (e.g., pump token A / pump token B).
+    // Our trading logic assumes token/WSOL pairs — attempting to trade a
+    // token/token pool causes InvalidQuoteMint (Custom:6009) on-chain.
+    let other_mint: [u8; 32] = if token_is_base {
+        // token is at offset 43 → the OTHER side (offset 75) must be WSOL
+        data[75..107].try_into().ok()?
+    } else {
+        // token is at offset 75 → the OTHER side (offset 43) must be WSOL
+        data[43..75].try_into().ok()?
+    };
+    if other_mint != WSOL_MINT_BYTES {
+        tracing::warn!(
+            mint = %mint_b58,
+            pool = %bs58::encode(&pool_address).into_string(),
+            other_mint = %bs58::encode(&other_mint).into_string(),
+            token_is_base,
+            "[momentum] PumpSwap pool rejected — non-WSOL pair (token/token pool)"
+        );
+        return None;
+    }
+
     // ── Vault assignment: depends on pool ordering ──────────────────────
     // When token_is_base (normal):
     //   pool_base_token_account [139..171] = token vault (coin_vault)

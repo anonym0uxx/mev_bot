@@ -1429,6 +1429,12 @@ impl MomentumEngine {
                     let mint_buy = mint;
                     let resolve_client = self.http_client.clone();
                     let resolve_url = self.helius_rpc_url.clone();
+                    // Slippage protection: accept up to 20% less tokens than estimated.
+                    let min_tokens_out = if tokens_estimate > 0 {
+                        tokens_estimate * 80 / 100
+                    } else {
+                        1
+                    };
 
                     tokio::spawn(async move {
                         // Resolve token_mint_program if unknown
@@ -1472,7 +1478,7 @@ impl MomentumEngine {
                             crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
                         ).unwrap();
                         let tx_bytes = match crate::tx::pumpswap::build_pumpswap_buy_tx(
-                            &ps_pool, &keypair, size_lamports, 1, tip, tip_account, bh, fee_idx,
+                            &ps_pool, &keypair, size_lamports, min_tokens_out, tip, tip_account, bh, fee_idx,
                         ) {
                             Ok(b) => b,
                             Err(e) => {
@@ -2232,6 +2238,13 @@ impl MomentumEngine {
                         pos.set_tokens_held(tokens_estimate);
                     }
                     let mint_buy = mint;
+                    // Slippage protection: accept up to 20% less tokens than estimated.
+                    // This prevents sandwich attacks where we'd receive 1 token for 0.067 SOL.
+                    let min_tokens_out = if tokens_estimate > 0 {
+                        tokens_estimate * 80 / 100 // 20% slippage tolerance
+                    } else {
+                        1 // fallback — shouldn't happen with valid price feed
+                    };
                     let fee_idx = (std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
@@ -2258,7 +2271,7 @@ impl MomentumEngine {
                             crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
                         ).unwrap();
                         let tx_bytes = match crate::tx::pumpswap::build_pumpswap_buy_tx(
-                            &ps_pool, &keypair, size, 1, tip, tip_account, bh, fee_idx,
+                            &ps_pool, &keypair, size, min_tokens_out, tip, tip_account, bh, fee_idx,
                         ) {
                             Ok(b) => b,
                             Err(e) => { tracing::error!(mint=%bs58::encode(&mint_buy).into_string(), err=?e, "[buy_pumpswap] build failed"); return; }
@@ -3644,6 +3657,19 @@ impl MomentumEngine {
                         };
                         if actual_tokens == 0 {
                             tracing::warn!(mint=%bs58::encode(&mint_copy).into_string(), estimated_tokens=tokens, "[sell_pumpswap] on-chain token balance is 0 — skipping sell");
+                            return;
+                        }
+
+                        // Sandwich detection: if we hold < 10% of estimated tokens,
+                        // the buy was sandwiched — selling dust wastes fees.
+                        if tokens > 0 && actual_tokens < tokens / 10 {
+                            tracing::warn!(
+                                mint = %bs58::encode(&mint_copy).into_string(),
+                                actual_tokens,
+                                estimated_tokens = tokens,
+                                ratio_pct = actual_tokens * 100 / tokens,
+                                "[sell_pumpswap] sandwich detected — skipping sell (dust position)"
+                            );
                             return;
                         }
 
