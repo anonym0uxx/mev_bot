@@ -203,6 +203,18 @@ impl PriceFeedManager {
         })
     }
 
+    /// Returns true if the current price for this mint is still an estimate
+    /// (not yet confirmed by WS or RPC data). Used by process_pending_entries
+    /// to gate entry until real price is available — prevents estimated price
+    /// (fp=106) from poisoning entry_price_fp, scale-in, and PnL calculations.
+    #[inline(always)]
+    pub fn is_price_estimated(&self, mint: &[u8; 32]) -> bool {
+        self.prices
+            .get(mint)
+            .map(|s| s.is_estimated.load(Ordering::Acquire))
+            .unwrap_or(true) // no state = treat as estimated
+    }
+
     #[inline(always)]
     pub fn price_state(&self, mint: &[u8; 32]) -> Option<Arc<PriceState>> {
         self.prices.get(mint).map(|s| Arc::clone(s.value()))

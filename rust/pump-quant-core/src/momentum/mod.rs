@@ -1302,7 +1302,33 @@ impl MomentumEngine {
                 continue;  // continue instead of break so we unsubscribe all remaining
             }
 
-            // Get current live price from price feed
+            // ── Gate: reject estimated prices ────────────────────────────
+            // subscribe_with_estimate() seeds a placeholder price (~106 fp)
+            // from default reserves (85 SOL / 800M tokens). If WS/RPC hasn't
+            // replaced it yet, using it as entry_price_fp would poison ALL
+            // downstream: scale-in, trailing stop, PnL, dead zone checks.
+            // Re-queue until real price arrives from WS or RPC poll.
+            if self.price_feed.is_price_estimated(&entry.mint) {
+                let waited_ms = now_ms.saturating_sub(entry.first_scheduled_ts_ms);
+                if waited_ms < self.config.no_price_timeout_ms {
+                    tracing::debug!(
+                        mint = %bs58::encode(&entry.mint).into_string(),
+                        waited_ms,
+                        "[momentum] price still estimated — re-queuing entry"
+                    );
+                    requeue.push(entry);
+                } else {
+                    tracing::warn!(
+                        mint = %bs58::encode(&entry.mint).into_string(),
+                        waited_ms,
+                        "[momentum] price still estimated after timeout — abandoning entry"
+                    );
+                    self.price_feed.unsubscribe_sync(&entry.mint);
+                }
+                continue;
+            }
+
+            // Get current live price from price feed (guaranteed real at this point)
             let current_price_fp = match self.price_feed.current_price(&entry.mint) {
                 Some(p) if p > 0 => p,
                 _ => {
@@ -2588,11 +2614,27 @@ impl MomentumEngine {
         // Calculate P&L
         let size_sol = pos.size_lamports as f64 / 1e9;
         let raw_gain_bps = price_to_bps_offset(pos.entry_price_fp, exit_price_fp);
-        // Sanity clamp: no real trade gains >500% or loses >100% — bad price feed data.
-        // Tightened from 100,000 (10x) to 50,000 (5x): real tokens don't 5x in one poll cycle.
-        // Ghost trades from residual spikes now cap at +0.4995 SOL, distinguishable from real exits.
-        let gain_bps = raw_gain_bps.clamp(-10_000, 50_000);
-        if raw_gain_bps != gain_bps {
+
+        // Defense-in-depth: detect residual estimated-price entries.
+        // Real pump.fun tokens rarely move >100× (1,000,000 bps) in a single hold.
+        // If raw_gain_bps exceeds this, entry_price_fp was likely still estimated.
+        // Clamp to 0 PnL to prevent phantom gains/losses.
+        let (gain_bps, gross_pnl_override): (i32, Option<f64>) = if raw_gain_bps.unsigned_abs() > 1_000_000 {
+            tracing::error!(
+                mint = %bs58::encode(&mint).into_string(),
+                entry_price_fp = pos.entry_price_fp,
+                exit_price_fp,
+                raw_gain_bps,
+                "[close_position] SUSPECTED ESTIMATED ENTRY PRICE — clamping to 0 PnL"
+            );
+            (0i32, Some(0.0f64))
+        } else {
+            // Sanity clamp: no real trade gains >500% or loses >100% — bad price feed data.
+            let clamped = raw_gain_bps.clamp(-10_000, 50_000);
+            (clamped, None)
+        };
+
+        if raw_gain_bps != gain_bps && gross_pnl_override.is_none() {
             tracing::warn!(
                 mint = %bs58::encode(&mint).into_string(),
                 raw_gain_bps,
@@ -2602,7 +2644,7 @@ impl MomentumEngine {
                 "[momentum] PnL sanity clamp — bad price data"
             );
         }
-        let gross_pnl_sol = size_sol * gain_bps as f64 / 10_000.0;
+        let gross_pnl_sol = gross_pnl_override.unwrap_or(size_sol * gain_bps as f64 / 10_000.0);
 
         // Fees: use config-specified bps per pool type
         let fee_bps = if pos.pool_type == 0 {
