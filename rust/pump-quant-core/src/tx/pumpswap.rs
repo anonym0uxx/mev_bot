@@ -731,14 +731,17 @@ pub fn build_pumpswap_buy_tx(
     let ix_sync = build_sync_native_ix(&wsol_ata_addr);
 
     // 7. PumpSwap swap — discriminator + args depend on pool ordering
-    let (discriminator, arg1, arg2) = if pool.token_is_base {
+    // IMPORTANT: is_pumpswap_sell controls account layout (volume accumulators), NOT trade direction.
+    // PumpSwap::Buy  ix has volume accumulator accounts → is_pumpswap_sell=false
+    // PumpSwap::Sell ix does NOT have volume accumulators → is_pumpswap_sell=true
+    let (discriminator, arg1, arg2, is_pumpswap_sell) = if pool.token_is_base {
         // NORMAL: token=base, WSOL=quote → PumpSwap "buy" (buy base with quote)
-        // buy(base_out=min_tokens_out, max_quote_in=sol_lamports)
-        (&PUMPSWAP_BUY_DISCRIMINATOR, min_tokens_out, sol_lamports)
+        // buy(base_out=min_tokens_out, max_quote_in=sol_lamports) — has volume accumulators
+        (&PUMPSWAP_BUY_DISCRIMINATOR, min_tokens_out, sol_lamports, false)
     } else {
-        // REVERSED: WSOL=base, token=quote → PumpSwap "sell" (sell base for quote)
-        // sell(base_in=sol_lamports, min_quote_out=min_tokens_out)
-        (&PUMPSWAP_SELL_DISCRIMINATOR, sol_lamports, min_tokens_out)
+        // REVERSED: WSOL=base, token=quote → PumpSwap "sell" (sell WSOL/base for tokens/quote)
+        // sell(base_in=sol_lamports, min_quote_out=min_tokens_out) — NO volume accumulators
+        (&PUMPSWAP_SELL_DISCRIMINATOR, sol_lamports, min_tokens_out, true)
     };
 
     let ix_swap = build_pumpswap_swap_ix(
@@ -748,7 +751,7 @@ pub fn build_pumpswap_buy_tx(
         discriminator,
         arg1,
         arg2,
-        false,
+        is_pumpswap_sell,
     )?;
 
     // 8. Close WSOL ATA → wallet (reclaim leftover WSOL)
@@ -858,14 +861,17 @@ pub fn build_pumpswap_sell_tx(
     );
 
     // 4. PumpSwap swap — discriminator + args depend on pool ordering
-    let (discriminator, arg1, arg2) = if pool.token_is_base {
-        // NORMAL: token=base, WSOL=quote → PumpSwap "sell" (sell base for quote)
-        // sell(base_in=tokens_to_sell, min_quote_out=min_sol_out)
-        (&PUMPSWAP_SELL_DISCRIMINATOR, tokens_to_sell, min_sol_out)
+    // IMPORTANT: is_pumpswap_sell controls account layout (volume accumulators), NOT trade direction.
+    // PumpSwap::Buy  ix has volume accumulator accounts → is_pumpswap_sell=false
+    // PumpSwap::Sell ix does NOT have volume accumulators → is_pumpswap_sell=true
+    let (discriminator, arg1, arg2, is_pumpswap_sell) = if pool.token_is_base {
+        // NORMAL: token=base, WSOL=quote → PumpSwap "sell" (sell base/tokens for quote/WSOL)
+        // sell(base_in=tokens_to_sell, min_quote_out=min_sol_out) — NO volume accumulators
+        (&PUMPSWAP_SELL_DISCRIMINATOR, tokens_to_sell, min_sol_out, true)
     } else {
-        // REVERSED: WSOL=base, token=quote → PumpSwap "buy" (buy base with quote)
-        // buy(base_out=min_sol_out, max_quote_in=tokens_to_sell)
-        (&PUMPSWAP_BUY_DISCRIMINATOR, min_sol_out, tokens_to_sell)
+        // REVERSED: WSOL=base, token=quote → PumpSwap "buy" (buy WSOL/base with tokens/quote)
+        // buy(base_out=min_sol_out, max_quote_in=tokens_to_sell) — has volume accumulators
+        (&PUMPSWAP_BUY_DISCRIMINATOR, min_sol_out, tokens_to_sell, false)
     };
 
     let ix_swap = build_pumpswap_swap_ix(
@@ -875,7 +881,7 @@ pub fn build_pumpswap_sell_tx(
         discriminator,
         arg1,
         arg2,
-        true,
+        is_pumpswap_sell,
     )?;
 
     // 5. Close WSOL ATA → wallet (SOL flows back to wallet)
