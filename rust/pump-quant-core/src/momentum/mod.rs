@@ -2633,27 +2633,41 @@ impl MomentumEngine {
                             crate::tx::raydium::SERUM_DEX_PROGRAM
                         ).unwrap_or_default().to_bytes()
                     };
-                    let pool_accts = RaydiumPoolAccounts {
-                        amm_id: resolution.amm_id,
-                        amm_authority,
-                        amm_open_orders: resolution.amm_open_orders,
-                        amm_target_orders: resolution.amm_target_orders,
-                        serum_program_id,
-                        serum_market: resolution.serum_market,
-                        serum_bids: resolution.serum_bids,
-                        serum_asks: resolution.serum_asks,
-                        serum_event_queue: resolution.serum_event_queue,
-                        serum_coin_vault: resolution.serum_coin_vault,
-                        serum_pc_vault: resolution.serum_pc_vault,
-                        serum_vault_signer: resolution.serum_vault_signer,
-                        coin_vault: resolution.coin_vault,
-                        pc_vault: resolution.pc_vault,
-                    };
-                    self.raydium_pools.insert(resolution.mint, pool_accts);
-                    tracing::debug!(
-                        mint = %bs58::encode(&resolution.mint).into_string(),
-                        "[momentum] raydium pool accounts stored for live execution"
-                    );
+                    // Guard: reject Raydium pools with zeroed Serum accounts.
+                    // When fetch_raydium_pool_accounts fails (account not found, 0 bytes,
+                    // or wrong amm_id extraction), all Serum fields are [0u8; 32].
+                    // Submitting a Raydium swap with zeroed accounts → Custom(27) on-chain
+                    // ("amm account owner is not match with this program").
+                    let serum_valid = resolution.serum_market != [0u8; 32]
+                        && resolution.amm_open_orders != [0u8; 32];
+                    if !serum_valid {
+                        tracing::warn!(
+                            mint = %bs58::encode(&resolution.mint).into_string(),
+                            "[momentum] Raydium pool has zeroed Serum accounts — NOT stored (position = accounting-only)"
+                        );
+                    } else {
+                        let pool_accts = RaydiumPoolAccounts {
+                            amm_id: resolution.amm_id,
+                            amm_authority,
+                            amm_open_orders: resolution.amm_open_orders,
+                            amm_target_orders: resolution.amm_target_orders,
+                            serum_program_id,
+                            serum_market: resolution.serum_market,
+                            serum_bids: resolution.serum_bids,
+                            serum_asks: resolution.serum_asks,
+                            serum_event_queue: resolution.serum_event_queue,
+                            serum_coin_vault: resolution.serum_coin_vault,
+                            serum_pc_vault: resolution.serum_pc_vault,
+                            serum_vault_signer: resolution.serum_vault_signer,
+                            coin_vault: resolution.coin_vault,
+                            pc_vault: resolution.pc_vault,
+                        };
+                        self.raydium_pools.insert(resolution.mint, pool_accts);
+                        tracing::debug!(
+                            mint = %bs58::encode(&resolution.mint).into_string(),
+                            "[momentum] raydium pool accounts stored for live execution"
+                        );
+                    }
                 }
 
                 // PumpSwap pool accounts (zeroed for Raydium tokens, populated for PumpSwap)
