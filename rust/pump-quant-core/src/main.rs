@@ -551,8 +551,9 @@ async fn main() -> anyhow::Result<()> {
     // should share a single Arc<BlockhashCache>.
     let momentum_bh_cache = pump_quant_core::tx::executor::BlockhashCache::new();
     {
-        let rpc_for_bh = std::env::var("SOLANA_RPC_URL")
-            .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
+        // Use public Solana RPC for blockhash refresh — this is a lightweight call
+        // (every 25s) that doesn't need Helius. Frees Helius budget for sendTransaction.
+        let rpc_for_bh = "https://api.mainnet-beta.solana.com".to_string();
         momentum_bh_cache.clone().spawn_refresh_task(rpc_for_bh);
     }
 

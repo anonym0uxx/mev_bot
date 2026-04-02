@@ -359,7 +359,9 @@ impl MomentumEngine {
         let balance_arc = Arc::clone(&engine.wallet_balance_lamports);
         let poll_ms = engine.config.wallet_balance_poll_ms;
         let wallet_pk = engine.wallet_pubkey;
-        let rpc_for_balance = Arc::clone(&engine.helius_rpc_url);
+        // Use public Solana RPC for balance polling — lightweight call (every 30s)
+        // that doesn't need Helius. Frees Helius rate budget for sendTransaction.
+        let rpc_for_balance = Arc::new("https://api.mainnet-beta.solana.com".to_string());
         let paper_mode = engine.config.paper_mode;
 
         tokio::spawn(async move {
@@ -2443,6 +2445,28 @@ impl MomentumEngine {
     ) {
         if !self.config.enabled { return; }
 
+        // RATE GATE: Limit pool resolution to 60/min to prevent Helius 429 storm.
+        // CoreCast sends 1000+ stale events/min → each triggers 2-15 RPC calls.
+        // Without this gate, we burn the entire Helius rate budget on reads,
+        // starving sendTransaction (buy/sell) of headroom.
+        {
+            static POOL_RES_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            static POOL_RES_RESET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let reset = POOL_RES_RESET.load(std::sync::atomic::Ordering::Relaxed);
+            if now.saturating_sub(reset) > 60_000 {
+                POOL_RES_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+                POOL_RES_RESET.store(now, std::sync::atomic::Ordering::Relaxed);
+            }
+            let count = POOL_RES_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if count >= 60 {
+                return; // Over budget — drop this graduation event
+            }
+        }
+
         // Dedup: prevent 3 feeds from triggering separate Helius lookups for the same graduation.
         // First-seen wins; duplicates are skipped. Map grows slowly (~100-200 entries/day).
         if self.resolving_sigs.contains_key(&sig) {
@@ -2959,6 +2983,13 @@ impl MomentumEngine {
         enrichment: crate::engine::hot_path::GradEnrichment,
     ) {
         if !self.config.enabled { return; }
+
+        // RATE GATE: Shares budget with on_migration (same static counters)
+        {
+            static POOL_RES_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let count = POOL_RES_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if count >= 60 { return; }
+        }
 
         // Dedup: same sig-based dedup as on_migration
         if self.resolving_sigs.contains_key(&sig) {
