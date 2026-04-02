@@ -234,6 +234,10 @@ pub struct MomentumEngine {
     /// RPC URL for fallback sendTransaction (SOLANA_RPC_URL or default).
     rpc_fallback_url: Arc<String>,
 
+    /// Public Solana RPC URL for read-heavy pool resolution calls.
+    /// Uses free public endpoint to avoid burning Helius rate budget.
+    pub public_rpc_url: Arc<String>,
+
     // ── Stats (atomic, lock-free) ───────────────────────────────────
     graduations_seen: AtomicU64,
     entries_opened: AtomicU64,
@@ -268,6 +272,7 @@ impl MomentumEngine {
         nozomi_client: Option<Arc<crate::tx::nozomi::NozomiClient>>,
         wallet_pubkey: Option<[u8; 32]>,
         blockhash_cache: Arc<crate::tx::executor::BlockhashCache>,
+        public_rpc_url: String,
     ) -> (Self, crossbeam_channel::Sender<ScoredToken>, tokio::task::JoinHandle<()>, std::thread::JoinHandle<()>) {
         let poll_interval_ms = config.price_poll_interval_ms;
         // Build Helius standard RPC URL for price polling — SOLANA_RPC_URL (marielle-*)
@@ -310,11 +315,15 @@ impl MomentumEngine {
         let rpc_fallback_client = reqwest::Client::new();
 
         // RPC primary sender with circuit breaker (Helius RPC → Jito fallback)
+        // Uses helius_rpc_url for both getSignatureStatuses and sendTransaction.
+        // When Engineer 4 adds send_rpc_url parameter, the second arg becomes the dedicated send endpoint.
         let rpc_sender_config = rpc_sender::RpcSenderConfig::from_momentum_config(&config.rpc_sender);
         let rpc_sender_inst = Arc::new(rpc_sender::RpcSender::new(
-            rpc_fallback_url.to_string(),
+            helius_rpc_url.to_string(),
             rpc_sender_config,
         ));
+
+        let public_rpc_url = Arc::new(public_rpc_url);
 
         let engine = Self {
             config,
@@ -342,6 +351,7 @@ impl MomentumEngine {
             rpc_sender: rpc_sender_inst,
             rpc_fallback_client,
             rpc_fallback_url,
+            public_rpc_url,
             graduations_seen: AtomicU64::new(0),
             entries_opened: AtomicU64::new(0),
             tp1_exits: AtomicU64::new(0),
@@ -361,7 +371,7 @@ impl MomentumEngine {
         let wallet_pk = engine.wallet_pubkey;
         // Use public Solana RPC for balance polling — lightweight call (every 30s)
         // that doesn't need Helius. Frees Helius rate budget for sendTransaction.
-        let rpc_for_balance = Arc::new("https://api.mainnet-beta.solana.com".to_string());
+        let rpc_for_balance = engine.public_rpc_url.clone();
         let paper_mode = engine.config.paper_mode;
 
         tokio::spawn(async move {
@@ -1182,6 +1192,9 @@ impl MomentumEngine {
                             rpc_sender::SubmitResult::Failed { error } => {
                                 tracing::error!(mint=%mint_str, err=%error, "[buy_task] RPC FAILED — no fallback");
                             }
+                            rpc_sender::SubmitResult::CircuitOpen { remaining_ms } => {
+                                tracing::warn!(mint=%mint_str, remaining_ms, "[buy_task] circuit breaker OPEN — skipped");
+                            }
                         }
                     });
                 } else if let Some(ps_pool) = self.pumpswap_pools.get(&entry.mint).map(|r| r.clone()) {
@@ -1255,6 +1268,9 @@ impl MomentumEngine {
                             }
                             rpc_sender::SubmitResult::Failed { error } => {
                                 tracing::error!(mint=%mint_str, err=%error, "[buy_pumpswap] RPC FAILED — no fallback");
+                            }
+                            rpc_sender::SubmitResult::CircuitOpen { remaining_ms } => {
+                                tracing::warn!(mint=%mint_str, remaining_ms, "[buy_pumpswap] circuit breaker OPEN — skipped");
                             }
                         }
                     });
@@ -2342,6 +2358,9 @@ impl MomentumEngine {
                             rpc_sender::SubmitResult::Failed { error } => {
                                 tracing::error!(mint=%mint_str, err=%error, reason=%reason_str, "[sell_raydium] 🚨 SELL FAILED — tokens may be stuck");
                             }
+                            rpc_sender::SubmitResult::CircuitOpen { remaining_ms } => {
+                                tracing::error!(mint=%mint_str, remaining_ms, reason=%reason_str, "[sell_raydium] 🚨 circuit breaker OPEN — SELL SKIPPED");
+                            }
                         }
                     });
                 }
@@ -2417,6 +2436,9 @@ impl MomentumEngine {
                             }
                             rpc_sender::SubmitResult::Failed { error } => {
                                 tracing::error!(mint=%mint_str, err=%error, reason=%reason_str, "[sell_pumpswap] 🚨 SELL FAILED — tokens may be stuck");
+                            }
+                            rpc_sender::SubmitResult::CircuitOpen { remaining_ms } => {
+                                tracing::error!(mint=%mint_str, remaining_ms, reason=%reason_str, "[sell_pumpswap] 🚨 circuit breaker OPEN — SELL SKIPPED");
                             }
                         }
                     });
@@ -2542,7 +2564,7 @@ impl MomentumEngine {
         // 100% of pump.fun graduations go to PumpSwap since April 2026.
         if mint != [0u8; 32] {
             if let Some(resolution) = crate::momentum::pool::resolve_pumpswap_pool_from_mint(
-                &self.http_client, &mint, &self.helius_rpc_url
+                &self.http_client, &mint, &self.public_rpc_url, &self.helius_rpc_url
             ).await {
                 if resolution.reserve_sol_lamports >= crate::momentum::pool::MIN_PUMPSWAP_SOL_RESERVES_LAMPORTS {
                     let mint_b58 = bs58::encode(&resolution.mint).into_string();
@@ -2610,7 +2632,7 @@ impl MomentumEngine {
         }
         // ── End PumpSwap mint-based fast path ──────────────────────────────────
 
-        match resolve_pool_from_transaction(&self.http_client, &sig, &self.rpc_url).await {
+        match resolve_pool_from_transaction(&self.http_client, &sig, &self.public_rpc_url, &self.helius_rpc_url).await {
             Some(resolution) => {
                 let mint_b58 = bs58::encode(&resolution.mint).into_string();
 
@@ -2666,7 +2688,7 @@ impl MomentumEngine {
                 {
                     let pc_vault_b58 = bs58::encode(&resolution.pc_vault).into_string();
                     let last_ms = crate::momentum::pool::get_account_last_activity_ms(
-                        &self.http_client, &self.helius_rpc_url, &pc_vault_b58
+                        &self.http_client, &self.public_rpc_url, &pc_vault_b58
                     ).await;
                     let now_ms = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -2819,15 +2841,16 @@ impl MomentumEngine {
                 // Try PumpSwap first (100% of current pump.fun graduations go to PumpSwap),
                 // then fall back to Raydium AMM V4 mint-based lookup.
                 let fallback_resolution = {
-                    // Use helius_rpc_url — SOLANA_RPC_URL doesn't support getProgramAccounts
+                    // Use public_rpc_url for pool resolution reads — frees Helius budget.
+                    // Falls back to helius_rpc_url if public RPC doesn't support getProgramAccounts.
                     let ps = crate::momentum::pool::resolve_pumpswap_pool_from_mint(
-                        &self.http_client, &mint, &self.helius_rpc_url
+                        &self.http_client, &mint, &self.public_rpc_url, &self.helius_rpc_url
                     ).await;
                     if ps.is_some() {
                         ps
                     } else {
                         crate::momentum::pool::resolve_pool_from_mint(
-                            &self.http_client, &mint, &self.helius_rpc_url
+                            &self.http_client, &mint, &self.public_rpc_url, &self.helius_rpc_url
                         ).await
                     }
                 };
@@ -2884,7 +2907,7 @@ impl MomentumEngine {
                         {
                             let pc_vault_b58 = bs58::encode(&resolution.pc_vault).into_string();
                             let last_ms = crate::momentum::pool::get_account_last_activity_ms(
-                                &self.http_client, &self.helius_rpc_url, &pc_vault_b58
+                                &self.http_client, &self.public_rpc_url, &pc_vault_b58
                             ).await;
                             let now_ms = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -3056,7 +3079,7 @@ impl MomentumEngine {
         // Fetch vault reserves (one RPC call — getMultipleAccounts)
         match crate::momentum::pool::fetch_vault_reserves(
             &self.http_client,
-            &self.helius_rpc_url,
+            &self.public_rpc_url,
             &coin_vault_b58,
             &pc_vault_b58,
         ).await {
@@ -3154,7 +3177,7 @@ impl MomentumEngine {
                 let is_cold_miss = enrichment.grad_speed_s == 0 && enrichment.volume_sol_x100 == 0;
 
                 if let Some(resolution) = crate::momentum::pool::resolve_pumpswap_pool_from_mint(
-                    &self.http_client, &mint, &self.helius_rpc_url
+                    &self.http_client, &mint, &self.public_rpc_url, &self.helius_rpc_url
                 ).await {
                     if resolution.reserve_sol_lamports >= crate::momentum::pool::MIN_PUMPSWAP_SOL_RESERVES_LAMPORTS {
                         let mint_b58 = bs58::encode(&mint).into_string();
@@ -3286,6 +3309,7 @@ mod tests {
             None, // nozomi_client
             None, // wallet_pubkey
             bh_cache,
+            "https://api.mainnet-beta.solana.com".to_string(),
         );
         // Abort the WS task so it doesn't retry forever
         ws_handle.abort();

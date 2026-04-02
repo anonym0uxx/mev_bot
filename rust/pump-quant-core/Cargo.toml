@@ -55,6 +55,9 @@ libc = "0.2"
 # Sync RwLock / Mutex (no-poison, faster than std)
 parking_lot = "0.12"
 
+# Lazy statics
+once_cell = "1.19"
+
 # Serialization
 base64 = "0.22"
 bincode = "1.3"

@@ -615,8 +615,8 @@
       "retry_delay_ms": 500,
       "confirm_timeout_ms": 30000,
       "skip_preflight": true,
-      "circuit_breaker_threshold": 5,
-      "circuit_breaker_cooldown_ms": 120000,
+      "circuit_breaker_threshold": 3,
+      "circuit_breaker_cooldown_ms": 15000,
       "jito_fallback_tip": 100000,
       "rpc_primary": true
     },

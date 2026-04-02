@@ -15,7 +15,18 @@
 //! - `make_pool_resolution_client()` — create shared reqwest client
 //! - `extract_vaults_from_tx_response()` — find vault addresses from postTokenBalances
 //! - `fetch_vault_reserves()` — fetch SPL token vault reserves via getMultipleAccountsInfo
+//! - `fetch_vault_reserves_from_pubkeys()` — fetch vault reserves from raw [u8; 32] pubkeys
 //! - `parse_spl_token_amount()` — decode SPL token account amount from base64 data
+
+use once_cell::sync::Lazy;
+
+/// Concurrency semaphore for pool resolution.
+///
+/// Limits concurrent pool resolution RPC calls to 5. Excess callers are
+/// dropped immediately (try_acquire) rather than queued, preventing unbounded
+/// HTTP connection buildup from CoreCast graduation storms.
+static POOL_RESOLUTION_SEMAPHORE: Lazy<tokio::sync::Semaphore> =
+    Lazy::new(|| tokio::sync::Semaphore::new(5));
 
 /// WSOL mint in base58 for vault extraction matching.
 pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -196,19 +207,35 @@ const TX_NOT_FOUND_ERR: &str = "transaction not found (not yet indexed)";
 ///
 /// Returns `None` if: all retries exhausted, non-retriable error, or tx doesn't
 /// contain pool creation.
+///
+/// # Parameters
+/// - `client` — shared reqwest HTTP client
+/// - `sig` — 64-byte transaction signature
+/// - `public_rpc_url` — public Solana RPC for getTransaction / getMultipleAccounts
+/// - `helius_rpc_url` — Helius API-key endpoint for getProgramAccounts (fallback)
 #[inline(never)]
 pub async fn resolve_pool_from_transaction(
     client: &reqwest::Client,
     sig: &[u8; 64],
+    public_rpc_url: &str,
     helius_rpc_url: &str,
 ) -> Option<PoolResolution> {
+    // ── Concurrency gate: drop if 5 resolutions already in flight ────────
+    let _permit = match POOL_RESOLUTION_SEMAPHORE.try_acquire() {
+        Ok(p) => p,
+        Err(_) => {
+            tracing::debug!("[pool] resolution semaphore full — dropping resolve_pool_from_transaction");
+            return None;
+        }
+    };
+
     const MAX_ATTEMPTS: u32 = 5;
     const BACKOFF_MS: [u64; 4] = [1_000, 2_000, 4_000, 8_000];
 
     let sig_b58_short = &bs58::encode(sig).into_string()[..8];
 
     for attempt in 1..=MAX_ATTEMPTS {
-        match resolve_pool_inner(client, sig, helius_rpc_url).await {
+        match resolve_pool_inner(client, sig, public_rpc_url, helius_rpc_url).await {
             Ok(resolution) => return Some(resolution),
             Err(e) => {
                 let is_retriable = e == TX_NOT_FOUND_ERR
@@ -243,9 +270,13 @@ pub async fn resolve_pool_from_transaction(
 }
 
 /// Inner implementation — returns Result for clean error propagation.
+///
+/// - `public_rpc_url` used for getTransaction and getMultipleAccounts (read-heavy, free tier)
+/// - `helius_rpc_url` used for getProgramAccounts fallbacks (requires API key)
 async fn resolve_pool_inner(
     client: &reqwest::Client,
     sig: &[u8; 64],
+    public_rpc_url: &str,
     helius_rpc_url: &str,
 ) -> Result<PoolResolution, String> {
     let sig_b58 = bs58::encode(sig).into_string();
@@ -268,8 +299,9 @@ async fn resolve_pool_inner(
         ]
     });
 
+    // getTransaction → public RPC (free tier, generous rate limits)
     let resp = client
-        .post(helius_rpc_url)
+        .post(public_rpc_url)
         .json(&body)
         .send()
         .await
@@ -360,9 +392,9 @@ async fn resolve_pool_inner(
         "[momentum] v2 vault extraction from postTokenBalances"
     );
 
-    // Phase B: fetch vault reserves via getMultipleAccountsInfo
+    // Phase B: fetch vault reserves via getMultipleAccounts → public RPC
     let (reserve_token, reserve_sol) =
-        fetch_vault_reserves(client, helius_rpc_url, &coin_vault_b58, &pc_vault_b58)
+        fetch_vault_reserves(client, public_rpc_url, &coin_vault_b58, &pc_vault_b58)
             .await
             .ok_or_else(|| "getMultipleAccountsInfo failed for vault reserves".to_string())?;
 
@@ -441,10 +473,10 @@ async fn resolve_pool_inner(
                     "[momentum] extracted amm_id from accountKeys"
                 );
 
-                // Fetch full Raydium pool accounts (2 RPC calls)
+                // Fetch full Raydium pool accounts (2 RPC calls) → public RPC
                 match crate::tx::raydium::fetch_raydium_pool_accounts(
                     client,
-                    helius_rpc_url,
+                    public_rpc_url,
                     &amm_id,
                     coin_vault,
                     pc_vault,
@@ -492,7 +524,7 @@ async fn resolve_pool_inner(
     // are dead — all real trading is on PumpSwap. When we resolve a Raydium pool
     // via the sig, always check for an active PumpSwap pool first.
     if pool_type == PoolType::RaydiumAmmV4 {
-        if let Some(ps) = resolve_pumpswap_pool_from_mint(client, &mint, helius_rpc_url).await {
+        if let Some(ps) = resolve_pumpswap_pool_from_mint(client, &mint, public_rpc_url, helius_rpc_url).await {
             if ps.reserve_sol_lamports > 0 {
                 tracing::info!(
                     mint = %bs58::encode(&mint).into_string(),
@@ -682,6 +714,23 @@ pub async fn fetch_vault_reserves(
     Some((reserve_token, reserve_sol))
 }
 
+/// Fetch SPL token vault reserves from raw `[u8; 32]` pubkeys via `getMultipleAccounts`.
+///
+/// Convenience wrapper around `fetch_vault_reserves()` that handles bs58 encoding.
+/// Used by `on_pumpswap_graduation_direct()` where vault pubkeys are already in byte form.
+///
+/// Returns `(reserve_token_atoms, reserve_sol_lamports)` or `None` on failure.
+pub async fn fetch_vault_reserves_from_pubkeys(
+    client: &reqwest::Client,
+    rpc_url: &str,
+    coin_vault: &[u8; 32],
+    pc_vault: &[u8; 32],
+) -> Option<(u64, u64)> {
+    let coin_vault_b58 = bs58::encode(coin_vault).into_string();
+    let pc_vault_b58 = bs58::encode(pc_vault).into_string();
+    fetch_vault_reserves(client, rpc_url, &coin_vault_b58, &pc_vault_b58).await
+}
+
 /// Parse SPL token account amount from base64-encoded account data.
 ///
 /// SPL Token Account layout: amount is a LE u64 at bytes [64..72].
@@ -715,11 +764,24 @@ pub fn parse_spl_token_amount(data_b64: &str) -> Option<u64> {
 /// NOTE: PumpSwap pools have the graduated token as base and WSOL as quote.
 /// So pool_base_token_account = token vault, pool_quote_token_account = SOL vault.
 /// Mapping: pool_base_token_account → coin_vault, pool_quote_token_account → pc_vault.
+///
+/// # Parameters
+/// - `public_rpc_url` — public Solana RPC for getMultipleAccounts (vault reserves)
+/// - `helius_rpc_url` — Helius API-key endpoint for getProgramAccounts
 pub async fn resolve_pumpswap_pool_from_mint(
     client: &reqwest::Client,
     mint: &[u8; 32],
+    public_rpc_url: &str,
     helius_rpc_url: &str,
 ) -> Option<PoolResolution> {
+    // ── Concurrency gate ─────────────────────────────────────────────────
+    let _permit = match POOL_RESOLUTION_SEMAPHORE.try_acquire() {
+        Ok(p) => p,
+        Err(_) => {
+            tracing::debug!("[pool] resolution semaphore full — dropping resolve_pumpswap_pool_from_mint");
+            return None;
+        }
+    };
     let mint_b58 = bs58::encode(mint).into_string();
 
     // PumpSwap pools have the graduated token as base_mint (offset 43), WSOL as quote_mint (offset 75).
@@ -781,8 +843,9 @@ pub async fn resolve_pumpswap_pool_from_mint(
     let coin_vault_b58 = bs58::encode(&coin_vault).into_string();
     let pc_vault_b58 = bs58::encode(&pc_vault).into_string();
 
+    // getMultipleAccounts → public RPC (vault reserves are read-only)
     let (reserve_token, reserve_sol) =
-        fetch_vault_reserves(client, helius_rpc_url, &coin_vault_b58, &pc_vault_b58).await?;
+        fetch_vault_reserves(client, public_rpc_url, &coin_vault_b58, &pc_vault_b58).await?;
 
     // FIX-3: PumpSwap uses lower 30 SOL threshold (fresh graduations start at ~85 SOL
     // but some valid pools have 30-50 SOL). Raydium keeps 50 SOL minimum.
@@ -837,11 +900,24 @@ pub async fn resolve_pumpswap_pool_from_mint(
 ///   offset 336..368 — pc_vault  (WSOL vault pubkey)
 ///   offset 368..400 — coin_vault (token vault pubkey)
 ///   offset 400..432 — coin_mint  (the graduated token mint)
+///
+/// # Parameters
+/// - `public_rpc_url` — public Solana RPC for getMultipleAccounts (vault reserves)
+/// - `helius_rpc_url` — Helius API-key endpoint for getProgramAccounts
 pub async fn resolve_pool_from_mint(
     client: &reqwest::Client,
     mint: &[u8; 32],
+    public_rpc_url: &str,
     helius_rpc_url: &str,
 ) -> Option<PoolResolution> {
+    // ── Concurrency gate ─────────────────────────────────────────────────
+    let _permit = match POOL_RESOLUTION_SEMAPHORE.try_acquire() {
+        Ok(p) => p,
+        Err(_) => {
+            tracing::debug!("[pool] resolution semaphore full — dropping resolve_pool_from_mint");
+            return None;
+        }
+    };
     let mint_b58 = bs58::encode(mint).into_string();
 
     let body = serde_json::json!({
@@ -899,8 +975,9 @@ pub async fn resolve_pool_from_mint(
     let coin_vault_b58 = bs58::encode(&coin_vault).into_string();
     let pc_vault_b58 = bs58::encode(&pc_vault).into_string();
 
+    // getMultipleAccounts → public RPC (vault reserves are read-only)
     let (reserve_token, reserve_sol) =
-        fetch_vault_reserves(client, helius_rpc_url, &coin_vault_b58, &pc_vault_b58).await?;
+        fetch_vault_reserves(client, public_rpc_url, &coin_vault_b58, &pc_vault_b58).await?;
 
     // Minimum viable liquidity check — reject empty/drained pools
     if reserve_sol < MIN_SOL_RESERVES_LAMPORTS {
@@ -993,6 +1070,8 @@ pub fn extract_pumpswap_pool_accounts(res: &PoolResolution) -> Option<PumpSwapPo
 ///
 /// Used to detect dead Raydium pools that have had no swap activity recently.
 /// Returns the blockTime in milliseconds, or None if unavailable/empty.
+///
+/// Uses public RPC for getSignaturesForAddress (read-only, no API key needed).
 pub async fn get_account_last_activity_ms(
     client: &reqwest::Client,
     rpc_url: &str,

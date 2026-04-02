@@ -6,6 +6,7 @@ pub mod core;
 pub mod engine;
 pub mod feeds;
 pub mod momentum;
+pub mod rpc;
 pub mod tx;
 pub mod persistence;
 pub mod system;

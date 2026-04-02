@@ -481,18 +481,23 @@ async fn main() -> anyhow::Result<()> {
         info!("CoreCast feed spawned (will activate if BITQUERY_API_KEY is set)");
     }
 
+    // ── Read PUBLIC_RPC_URL early — needed by both blockhash caches and momentum engine
+    let public_rpc_url = std::env::var("PUBLIC_RPC_URL")
+        .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
+
     // ── Spawn blockhash cache refresh task ─────────────────────────
     // Refreshes every 25s so tx execution never pays a per-trade RPC round-trip.
     // In paper mode: the cache is warmed but no TxExecutor consumes it — this
     // validates that the RPC endpoint is reachable (canary) at ~zero cost.
     // In live mode: pass `bh_cache` to TxExecutor::new() before this scope closes.
     {
-        let rpc_url = std::env::var("SOLANA_RPC_URL")
-            .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
+        // Use public Solana RPC for blockhash refresh — lightweight call (every 25s)
+        // that doesn't need Helius. Frees Helius budget for sendTransaction.
+        let rpc_for_bh = public_rpc_url.clone();
         let bh_cache = pump_quant_core::tx::executor::BlockhashCache::new();
         // Arc is captured by the spawned task — stays alive even after this scope exits.
-        bh_cache.clone().spawn_refresh_task(rpc_url);
-        info!("Blockhash cache refresh task started (25s interval)");
+        bh_cache.clone().spawn_refresh_task(rpc_for_bh);
+        info!("Blockhash cache refresh task started (25s interval, public RPC)");
     }
 
     // ── Spawn API server with shared stats ──────────────────────────
@@ -514,6 +519,8 @@ async fn main() -> anyhow::Result<()> {
         .name("event-joiner".to_string())
         .spawn(move || joiner.run())?;
     info!("EventJoiner thread started");
+
+    // public_rpc_url already defined above (before first blockhash cache)
 
     // ── Momentum Engine ──────────────────────────────────────────────
     let momentum_config = Arc::new(engine_config.momentum.clone());
@@ -553,7 +560,7 @@ async fn main() -> anyhow::Result<()> {
     {
         // Use public Solana RPC for blockhash refresh — this is a lightweight call
         // (every 25s) that doesn't need Helius. Frees Helius budget for sendTransaction.
-        let rpc_for_bh = "https://api.mainnet-beta.solana.com".to_string();
+        let rpc_for_bh = public_rpc_url.clone();
         momentum_bh_cache.clone().spawn_refresh_task(rpc_for_bh);
     }
 
@@ -618,6 +625,7 @@ async fn main() -> anyhow::Result<()> {
         nozomi_client,
         wallet_pubkey,
         momentum_bh_cache,
+        public_rpc_url.clone(),
     );
     let momentum_engine = Arc::new(momentum_engine);
 

@@ -2555,6 +2555,7 @@ dependencies = [
  "http 1.4.0",
  "libc",
  "memchr",
+ "once_cell",
  "parking_lot",
  "prost",
  "quanta",
