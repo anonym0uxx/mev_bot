@@ -129,6 +129,10 @@ pub struct PumpSwapPoolAccounts {
     /// When false, WSOL is base and the token is quote (the "reversed" ~81% case).
     /// Determines instruction discriminator choice and arg ordering.
     pub token_is_base: bool,
+    /// Token program that owns the traded token mint (SPL Token or Token-2022).
+    /// Resolved at graduation time from Helius notification or RPC.
+    /// Defaults to [0u8; 32] (unresolved) — TX builder must check and resolve.
+    pub token_mint_program: [u8; 32],
 }
 
 /// WSOL mint as raw bytes for detecting reversed PumpSwap pool ordering.
@@ -178,6 +182,7 @@ impl From<crate::momentum::pool::PumpSwapPoolAccounts> for PumpSwapPoolAccounts 
             coin_creator_vault_ata: p.coin_creator_vault_ata,
             coin_creator_vault_authority: p.coin_creator_vault_authority,
             token_is_base,
+            token_mint_program: p.token_mint_program,
         }
     }
 }
@@ -221,26 +226,57 @@ impl std::error::Error for PumpSwapTxError {}
 /// Equivalent to `spl_associated_token_account::get_associated_token_address`.
 ///
 /// PDA seeds: [wallet, token_program, mint] under the ATA program.
+/// SPL Token program raw bytes (public for use in mint program resolution fallback).
+pub const SPL_TOKEN_PROGRAM_BYTES: [u8; 32] = [
+    6,221,246,225, 215,101,161,147,
+    217,203,225, 70, 206, 235, 121, 172,
+    28, 180,133, 237, 95,  91, 55,145,
+    58,  140,245,133,126,255, 0, 169
+];
+
+/// SPL Token-2022 program raw bytes (public for pool resolution).
+pub const SPL_TOKEN_2022_PROGRAM_BYTES: [u8; 32] = [
+    6,221,246,225, 238,117,143,222,
+    170, 44,170, 99, 234, 71, 245,  86,
+    168, 167, 87, 215, 131, 140, 233,171,
+    175, 191,  9, 87,  45, 17, 78,  52
+];
+
 /// Determine the owning token program for a mint.
-/// Pump.fun tokens use Token-2022; WSOL uses classic SPL Token.
-fn token_program_for_mint(mint: &Pubkey) -> Pubkey {
-    let wsol = Pubkey::from_str(WSOL_MINT_STR).unwrap();
-    if *mint == wsol {
-        Pubkey::from_str(SPL_TOKEN_PROGRAM_STR).unwrap()
-    } else {
-        // All pump.fun graduated tokens use Token-2022
-        Pubkey::from_str(SPL_TOKEN_2022_PROGRAM_STR).unwrap()
+///
+/// Uses an explicit `token_mint_program` if provided (non-zero bytes from pool accounts).
+/// Falls back to WSOL detection (classic SPL Token for WSOL).
+/// For unresolved non-WSOL mints, defaults to classic SPL Token (safe default —
+/// Token-2022 mints will fail and we'll detect at runtime).
+fn token_program_for_mint_with_hint(mint: &Pubkey, hint: &[u8; 32]) -> Pubkey {
+    // If we have a resolved program hint, use it
+    if *hint != [0u8; 32] {
+        return Pubkey::new_from_array(*hint);
     }
+    // Fallback: WSOL → classic SPL Token, everything else → classic SPL Token (safe default)
+    Pubkey::from_str(SPL_TOKEN_PROGRAM_STR).unwrap()
 }
 
-fn token_ata(wallet: &Pubkey, mint: &Pubkey) -> Pubkey {
-    let program = token_program_for_mint(mint);
+/// Determine the owning token program for WSOL (always classic SPL Token).
+fn wsol_token_program() -> Pubkey {
+    Pubkey::from_str(SPL_TOKEN_PROGRAM_STR).unwrap()
+}
+
+/// Derive ATA address using the specified token program.
+fn token_ata_with_program(wallet: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Pubkey {
     let ata_program = Pubkey::from_str(SPL_ATA_PROGRAM_STR).unwrap();
     let (addr, _bump) = Pubkey::find_program_address(
-        &[wallet.as_ref(), program.as_ref(), mint.as_ref()],
+        &[wallet.as_ref(), token_program.as_ref(), mint.as_ref()],
         &ata_program,
     );
     addr
+}
+
+/// Derive ATA for WSOL (always classic SPL Token program).
+fn wsol_ata(wallet: &Pubkey) -> Pubkey {
+    let wsol_mint = Pubkey::from_str(WSOL_MINT_STR).unwrap();
+    let wsol_prog = wsol_token_program();
+    token_ata_with_program(wallet, &wsol_mint, &wsol_prog)
 }
 
 /// Build a create_associated_token_account_idempotent instruction manually.
@@ -259,9 +295,9 @@ fn build_create_ata_idempotent_ix(
     payer: &Pubkey,
     wallet: &Pubkey,
     mint: &Pubkey,
+    token_program: &Pubkey,
 ) -> Instruction {
-    let ata = token_ata(wallet, mint);
-    let token_program = token_program_for_mint(mint);
+    let ata = token_ata_with_program(wallet, mint, token_program);
     let ata_program = Pubkey::from_str(SPL_ATA_PROGRAM_STR).unwrap();
 
     Instruction {
@@ -272,7 +308,7 @@ fn build_create_ata_idempotent_ix(
             AccountMeta::new_readonly(*wallet, false), // 2. wallet address
             AccountMeta::new_readonly(*mint, false),   // 3. token mint
             AccountMeta::new_readonly(system_program::id(), false), // 4. system_program
-            AccountMeta::new_readonly(token_program, false),        // 5. token_program
+            AccountMeta::new_readonly(*token_program, false),       // 5. token_program
         ],
         data: vec![1], // 1 = CreateIdempotent instruction discriminator
     }
@@ -372,13 +408,13 @@ fn build_pumpswap_swap_ix(
 
     let token_mint = Pubkey::new_from_array(pool.base_mint);
 
-    // Token program for each side: pump.fun tokens use Token-2022, WSOL uses classic
-    let token_mint_program = token_program_for_mint(&token_mint);
-    let wsol_program = token_program_for_mint(&wsol_mint);
+    // Token program for each side: resolved from pool accounts (runtime-detected)
+    let token_mint_program = token_program_for_mint_with_hint(&token_mint, &pool.token_mint_program);
+    let wsol_prog = wsol_token_program();
 
     // Derive user ATAs (uses correct token program for PDA derivation)
-    let user_token_ata = token_ata(wallet_pubkey, &token_mint);
-    let user_wsol_ata = token_ata(wallet_pubkey, &wsol_mint);
+    let user_token_ata = token_ata_with_program(wallet_pubkey, &token_mint, &token_mint_program);
+    let user_wsol_ata = wsol_ata(wallet_pubkey);
 
     // Accounts [3]-[8] depend on pool ordering:
     // Pool's on-chain base_mint/quote_mint determine the account positions.
@@ -388,11 +424,11 @@ fn build_pumpswap_swap_ix(
         if pool.token_is_base {
             // Normal: token=base, WSOL=quote
             (token_mint, wsol_mint, user_token_ata, user_wsol_ata,
-             token_mint_program, wsol_program)
+             token_mint_program, wsol_prog)
         } else {
             // Reversed: WSOL=base, token=quote
             (wsol_mint, token_mint, user_wsol_ata, user_token_ata,
-             wsol_program, token_mint_program)
+             wsol_prog, token_mint_program)
         };
     // Pool vaults [7]/[8] are already stored in the pool's on-chain order
     let acct7_pool_base_vault = Pubkey::new_from_array(pool.pool_base_token_account);
@@ -403,7 +439,7 @@ fn build_pumpswap_swap_ix(
         PUMPSWAP_FEE_RECIPIENTS[fee_recipient_idx % 8],
     )
     .unwrap();
-    let fee_recipient_token_account = token_ata(&fee_recipient, &wsol_mint);
+    let fee_recipient_token_account = wsol_ata(&fee_recipient);
 
     // coin_creator_vault_ata / authority: Pubkey::default() when zeroed — program handles it
     let coin_creator_vault_ata = Pubkey::new_from_array(pool.coin_creator_vault_ata);
@@ -486,8 +522,12 @@ pub fn build_pumpswap_buy_tx(
     let wsol_mint = Pubkey::from_str(WSOL_MINT_STR).unwrap();
     let blockhash = Hash::new_from_array(recent_blockhash);
 
+    // Resolve token programs
+    let token_prog = token_program_for_mint_with_hint(&token_mint, &pool.token_mint_program);
+    let wsol_prog = wsol_token_program();
+
     // Derive ATAs
-    let wsol_ata_addr = token_ata(&wallet_pubkey, &wsol_mint);
+    let wsol_ata_addr = wsol_ata(&wallet_pubkey);
 
     // 1. Compute budget: limit
     let ix_cu_limit = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
@@ -500,6 +540,7 @@ pub fn build_pumpswap_buy_tx(
         &wallet_pubkey,
         &wallet_pubkey,
         &token_mint,
+        &token_prog,
     );
 
     // 4. Create WSOL ATA (idempotent)
@@ -507,6 +548,7 @@ pub fn build_pumpswap_buy_tx(
         &wallet_pubkey,
         &wallet_pubkey,
         &wsol_mint,
+        &wsol_prog,
     );
 
     // 5. Fund WSOL ATA with SOL
@@ -601,9 +643,10 @@ pub fn build_pumpswap_sell_tx(
     let wallet_pubkey = wallet_keypair.pubkey();
     let wsol_mint = Pubkey::from_str(WSOL_MINT_STR).unwrap();
     let blockhash = Hash::new_from_array(recent_blockhash);
+    let wsol_prog = wsol_token_program();
 
     // Derive WSOL ATA
-    let wsol_ata_addr = token_ata(&wallet_pubkey, &wsol_mint);
+    let wsol_ata_addr = wsol_ata(&wallet_pubkey);
 
     // 1. Compute budget: limit
     let ix_cu_limit = ComputeBudgetInstruction::set_compute_unit_limit(300_000);
@@ -616,6 +659,7 @@ pub fn build_pumpswap_sell_tx(
         &wallet_pubkey,
         &wallet_pubkey,
         &wsol_mint,
+        &wsol_prog,
     );
 
     // 4. PumpSwap swap — discriminator + args depend on pool ordering
@@ -682,6 +726,7 @@ mod tests {
             coin_creator_vault_ata: [0u8; 32],       // zeroed — program handles it
             coin_creator_vault_authority: [0u8; 32],  // zeroed — program handles it
             token_is_base: true,
+            token_mint_program: SPL_TOKEN_PROGRAM_BYTES, // classic SPL Token for tests
         }
     }
 
@@ -695,6 +740,7 @@ mod tests {
             coin_creator_vault_ata: [0u8; 32],
             coin_creator_vault_authority: [0u8; 32],
             token_is_base: false,
+            token_mint_program: SPL_TOKEN_PROGRAM_BYTES, // classic SPL Token for tests
         }
     }
 

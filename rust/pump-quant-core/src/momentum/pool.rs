@@ -1188,6 +1188,11 @@ pub struct PumpSwapPoolAccounts {
     pub coin_creator_vault_ata: [u8; 32],
     /// Coin creator vault authority ([0u8;32] if unknown)
     pub coin_creator_vault_authority: [u8; 32],
+    /// Token program that owns the traded token mint.
+    /// SPL Token: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+    /// Token-2022: TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb
+    /// [0u8; 32] = unresolved (TX builder will query on-chain).
+    pub token_mint_program: [u8; 32],
 }
 
 /// SPL Token program ID as raw bytes (for ATA derivation without solana_sdk::pubkey).
@@ -1429,6 +1434,7 @@ pub fn build_pumpswap_pool_accounts_deterministic(
         pool_quote_token_account: pc_vault,
         coin_creator_vault_ata: creator_ata,
         coin_creator_vault_authority: creator_authority,
+        token_mint_program: [0u8; 32], // resolved lazily at TX build time
     }
 }
 
@@ -1516,6 +1522,7 @@ pub fn extract_pumpswap_pool_accounts(res: &PoolResolution) -> Option<PumpSwapPo
         pool_quote_token_account: res.pc_vault,
         coin_creator_vault_ata: creator_ata,
         coin_creator_vault_authority: creator_authority,
+        token_mint_program: [0u8; 32], // resolved lazily at TX build time
     })
 }
 
@@ -1545,6 +1552,45 @@ pub async fn get_account_last_activity_ms(
     let block_time = sigs.first()?.get("blockTime")?.as_i64()?;
     // blockTime is Unix seconds → convert to ms
     Some((block_time as u64).saturating_mul(1_000))
+}
+
+/// Resolve the token program that owns a mint account.
+///
+/// Queries getAccountInfo for the mint and returns the owner program as [u8; 32].
+/// Returns None on RPC failure. This is a one-shot call (~100-200ms) done once
+/// per entry, not in the hot path.
+pub async fn resolve_mint_program(
+    client: &reqwest::Client,
+    mint: &[u8; 32],
+    rpc_url: &str,
+) -> Option<[u8; 32]> {
+    let mint_b58 = bs58::encode(mint).into_string();
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "getAccountInfo",
+        "params": [mint_b58, {"encoding": "jsonParsed"}]
+    });
+    let resp = client
+        .post(rpc_url)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+        .ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let owner_str = json
+        .get("result")?
+        .get("value")?
+        .get("owner")?
+        .as_str()?;
+    let owner_bytes = bs58::decode(owner_str).into_vec().ok()?;
+    if owner_bytes.len() != 32 {
+        return None;
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&owner_bytes);
+    Some(arr)
 }
 
 #[cfg(test)]

@@ -1291,8 +1291,31 @@ impl MomentumEngine {
                         .as_millis() % 8) as usize;
                     let rpc_sender = self.rpc_sender.clone();
                     let mint_buy = mint;
+                    let resolve_client = self.http_client.clone();
+                    let resolve_url = self.helius_rpc_url.clone();
 
                     tokio::spawn(async move {
+                        // Resolve token_mint_program if unknown
+                        let mut ps_pool = ps_pool;
+                        if ps_pool.token_mint_program == [0u8; 32] {
+                            if let Some(prog) = crate::momentum::pool::resolve_mint_program(
+                                &resolve_client, &mint_buy, &resolve_url,
+                            ).await {
+                                ps_pool.token_mint_program = prog;
+                                tracing::info!(
+                                    mint = %bs58::encode(&mint_buy).into_string(),
+                                    program = %bs58::encode(&prog).into_string(),
+                                    "[deferred_buy_pumpswap] resolved token_mint_program"
+                                );
+                            } else {
+                                ps_pool.token_mint_program = crate::tx::pumpswap::SPL_TOKEN_PROGRAM_BYTES;
+                                tracing::warn!(
+                                    mint = %bs58::encode(&mint_buy).into_string(),
+                                    "[deferred_buy_pumpswap] failed to resolve — defaulting to classic SPL Token"
+                                );
+                            }
+                        }
+
                         let kp_bytes = match std::fs::read(&kp_path) {
                             Ok(b) => b,
                             Err(e) => { tracing::error!(err=?e, "[deferred_buy_pumpswap] keypair load failed"); return; }
@@ -2009,6 +2032,39 @@ impl MomentumEngine {
                                 "[buy_pumpswap] last-chance resolution failed — position is accounting-only"
                             );
                             continue;
+                        }
+                    }
+
+                    // ── Resolve token_mint_program if unknown ────────────────
+                    // Some pump.fun tokens use Token-2022, others use classic SPL Token.
+                    // We MUST know the correct program to build valid TX instructions
+                    // (ATA derivation, ATA creation, swap accounts [11]/[12]).
+                    if ps_pool.token_mint_program == [0u8; 32] {
+                        let mint_b58_prog = bs58::encode(&entry.mint).into_string();
+                        match crate::momentum::pool::resolve_mint_program(
+                            &self.http_client, &entry.mint, &self.helius_rpc_url,
+                        ).await {
+                            Some(program_bytes) => {
+                                let prog_b58 = bs58::encode(&program_bytes).into_string();
+                                tracing::info!(
+                                    mint = %mint_b58_prog,
+                                    program = %prog_b58,
+                                    "[buy_pumpswap] resolved token_mint_program"
+                                );
+                                ps_pool.token_mint_program = program_bytes;
+                                // Update stored pool accounts
+                                if let Some(mut stored) = self.pumpswap_pools.get_mut(&entry.mint) {
+                                    stored.token_mint_program = program_bytes;
+                                }
+                            }
+                            None => {
+                                // Fallback: try classic SPL Token (most common for older pump.fun tokens)
+                                tracing::warn!(
+                                    mint = %mint_b58_prog,
+                                    "[buy_pumpswap] failed to resolve token_mint_program — defaulting to classic SPL Token"
+                                );
+                                ps_pool.token_mint_program = crate::tx::pumpswap::SPL_TOKEN_PROGRAM_BYTES;
+                            }
                         }
                     }
 
@@ -4116,6 +4172,7 @@ impl MomentumEngine {
                 coin_creator_vault_ata: [0u8; 32],
                 coin_creator_vault_authority: [0u8; 32],
                 token_is_base,
+                token_mint_program: [0u8; 32], // will be resolved at entry time
             };
             self.pumpswap_pools.insert(mint, ps_accts);
             tracing::debug!(
