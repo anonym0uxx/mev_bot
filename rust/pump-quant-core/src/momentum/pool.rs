@@ -1571,25 +1571,49 @@ pub async fn resolve_mint_program(
         "method": "getAccountInfo",
         "params": [mint_b58, {"encoding": "jsonParsed"}]
     });
-    let resp = client
+    let resp = match client
         .post(rpc_url)
         .json(&body)
-        .timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
-        .ok()?;
-    let json: serde_json::Value = resp.json().await.ok()?;
-    let owner_str = json
-        .get("result")?
-        .get("value")?
-        .get("owner")?
-        .as_str()?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(
+                mint = %mint_b58,
+                err = %e,
+                url = %&rpc_url[..rpc_url.len().min(50)],
+                "[resolve_mint_program] RPC request failed"
+            );
+            return None;
+        }
+    };
+    let json: serde_json::Value = match resp.json().await {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::warn!(mint = %mint_b58, err = %e, "[resolve_mint_program] JSON parse failed");
+            return None;
+        }
+    };
+    let owner_str = match json.get("result").and_then(|r| r.get("value")).and_then(|v| v.get("owner")).and_then(|o| o.as_str()) {
+        Some(s) => s,
+        None => {
+            tracing::warn!(mint = %mint_b58, "[resolve_mint_program] missing result.value.owner in response");
+            return None;
+        }
+    };
     let owner_bytes = bs58::decode(owner_str).into_vec().ok()?;
     if owner_bytes.len() != 32 {
         return None;
     }
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&owner_bytes);
+    tracing::info!(
+        mint = %mint_b58,
+        owner = %owner_str,
+        "[resolve_mint_program] resolved successfully"
+    );
     Some(arr)
 }
 

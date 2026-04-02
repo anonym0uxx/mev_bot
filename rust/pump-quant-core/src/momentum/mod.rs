@@ -1308,7 +1308,7 @@ impl MomentumEngine {
                                     "[deferred_buy_pumpswap] resolved token_mint_program"
                                 );
                             } else {
-                                ps_pool.token_mint_program = crate::tx::pumpswap::SPL_TOKEN_PROGRAM_BYTES;
+                                ps_pool.token_mint_program = crate::tx::pumpswap::SPL_TOKEN_2022_PROGRAM_BYTES;  // Token-2022 is the majority for pump.fun tokens
                                 tracing::warn!(
                                     mint = %bs58::encode(&mint_buy).into_string(),
                                     "[deferred_buy_pumpswap] failed to resolve — defaulting to classic SPL Token"
@@ -2063,7 +2063,7 @@ impl MomentumEngine {
                                     mint = %mint_b58_prog,
                                     "[buy_pumpswap] failed to resolve token_mint_program — defaulting to classic SPL Token"
                                 );
-                                ps_pool.token_mint_program = crate::tx::pumpswap::SPL_TOKEN_PROGRAM_BYTES;
+                                ps_pool.token_mint_program = crate::tx::pumpswap::SPL_TOKEN_2022_PROGRAM_BYTES;  // Token-2022 is the majority for pump.fun tokens
                             }
                         }
                     }
