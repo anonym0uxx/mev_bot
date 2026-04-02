@@ -4331,9 +4331,19 @@ impl MomentumEngine {
         // pc_vault = WSOL account. No byte-order swap needed here — the parser
         // resolves semantic assignment, not pool layout order.
 
-        // RATE GATE: Shares budget with on_migration (same static counters)
+        // RATE GATE: Limit direct path entries to 60/min (reset every 60s)
         {
             static POOL_RES_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            static POOL_RES_RESET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let reset = POOL_RES_RESET.load(std::sync::atomic::Ordering::Relaxed);
+            if now.saturating_sub(reset) > 60_000 {
+                POOL_RES_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+                POOL_RES_RESET.store(now, std::sync::atomic::Ordering::Relaxed);
+            }
             let count = POOL_RES_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if count >= 60 { return; }
         }
