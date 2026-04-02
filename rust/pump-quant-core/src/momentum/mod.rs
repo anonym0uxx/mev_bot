@@ -2633,6 +2633,32 @@ impl MomentumEngine {
                             "[momentum] pool resolved via mint lookup — entering on_graduation"
                         );
 
+                        // ── FIX-1/4 (mint-lookup path): ts_ms-based staleness gate ────────
+                        // Mint-lookup has no blockTime; use ts_ms (CoreCast sets ts_ms=now,
+                        // Helius sets ts_ms=now). For cold-miss tokens on the mint-lookup path,
+                        // use a stricter check: if enrichment is cold-miss, reject always —
+                        // we have no enrichment and no blockTime to validate freshness.
+                        // Only exception: Helius grads with mint=[0;32] need mint-lookup and ARE fresh.
+                        // They're cold-miss but their sig was freshly validated in resolve_pool_from_transaction.
+                        // The mint here is already resolved (non-zero), so if is_cold_miss here
+                        // on mint-lookup path it means CoreCast sent it without enrichment.
+                        if is_cold_miss && self.config.stale_grad_max_age_ms > 0 {
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
+                            let grad_age_ms = now_ms.saturating_sub(ts_ms);
+                            if grad_age_ms > self.config.stale_grad_max_age_ms {
+                                tracing::debug!(
+                                    mint = %mint_b58,
+                                    grad_age_ms,
+                                    "[momentum] stale cold-miss grad rejected (mint-lookup) — CoreCast backlog"
+                                );
+                                return;
+                            }
+                        }
+                        // ── End staleness gate (mint-lookup path) ─────────────────────────
+
                         // ── FIX-5: Raydium dead pool activity check (mint-lookup path) ──
                         if resolution.pool_type == crate::momentum::pool::PoolType::RaydiumAmmV4
                             && self.config.raydium_max_idle_ms > 0
