@@ -2383,6 +2383,28 @@ impl MomentumEngine {
         // Detected from raw enrichment values before effective defaults are applied.
         let is_cold_miss = enrichment.grad_speed_s == 0 && enrichment.volume_sol_x100 == 0;
 
+        // ── Pump.fun graduation filter ──────────────────────────────────────────
+        // CoreCast emits graduation events for ALL Raydium AMM trades, including
+        // established tokens (mSOL, USDT, DeFi tokens). We only care about pump.fun
+        // memecoins — their mints end in "pump" OR mint is [0u8;32] (Helius sig path).
+        // Tokens with real enrichment (speed > 0, volume > 0) have been validated by
+        // PumpPortal and are genuine pump.fun tokens — allow regardless of suffix.
+        {
+            let mint_b58 = bs58::encode(&mint).into_string();
+            let is_zero_mint = mint == [0u8; 32];
+            let has_pump_suffix = mint_b58.ends_with("pump");
+            let has_enrichment = enrichment.grad_speed_s > 0 || enrichment.volume_sol_x100 > 0;
+            if !is_zero_mint && !has_pump_suffix && !has_enrichment {
+                tracing::debug!(
+                    mint = %mint_b58,
+                    "[momentum] non-pump.fun mint rejected — not a pump.fun graduation"
+                );
+                self.resolving_sigs.remove(&sig);
+                return;
+            }
+        }
+        // ── End pump.fun graduation filter ────────────────────────────────────
+
         // ── FIX-1/FIX-4: Staleness gate — drop cold-miss CoreCast backlog ─────
         // CoreCast replays ~430 old Raydium-era graduation events/min with no
         // enrichment data. These waste RPC calls and resolve to dead Raydium pools.
