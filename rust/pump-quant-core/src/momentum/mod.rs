@@ -3103,10 +3103,13 @@ impl MomentumEngine {
         let coin_vault_b58 = bs58::encode(&coin_vault).into_string();
         let pc_vault_b58 = bs58::encode(&pc_vault).into_string();
 
-        // Fetch vault reserves (one RPC call — getMultipleAccounts)
+        // Fetch vault reserves (one RPC call — getMultipleAccounts).
+        // Use Helius RPC for fresh graduations — public RPC may not have indexed
+        // the vault accounts yet (< 1s after pool creation). Helius detected the
+        // graduation so it should already have the accounts available.
         match crate::momentum::pool::fetch_vault_reserves(
             &self.http_client,
-            &self.public_rpc_url,
+            &self.helius_rpc_url,
             &coin_vault_b58,
             &pc_vault_b58,
         ).await {
