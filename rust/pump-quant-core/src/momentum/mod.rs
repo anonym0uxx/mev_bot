@@ -203,6 +203,13 @@ pub struct MomentumEngine {
     /// for the same graduation event. Grows slowly (~100-200 entries/day).
     resolving_sigs: DashMap<[u8; 64], u64>,
 
+    /// Mint-level dedup for CoreCast duplicate graduation events.
+    /// CoreCast sends the same mint's graduation 10-20+ times per 3-minute window
+    /// with different sigs (DEX trade sigs, not graduation sigs), so sig-based
+    /// dedup in `resolving_sigs` doesn't catch them. This gates on mint + 30s TTL.
+    /// Key: mint [u8; 32], Value: first-seen timestamp ms.
+    recent_corecast_grads: DashMap<[u8; 32], u64>,
+
     // ── Drain detection: reserve_sol samples per active position ───
     // Key = mint, Value = ring of (timestamp_ms, reserve_lamports), max 20 entries.
     // Stored outside MomentumPosition because the 256-byte struct has no free bytes.
@@ -376,6 +383,7 @@ impl MomentumEngine {
             active: DashMap::new(),
             recently_closed: DashMap::new(),
             resolving_sigs: DashMap::new(),
+            recent_corecast_grads: DashMap::new(),
             drain_samples: DashMap::new(),
             reserve_sol_ctx: DashMap::new(),
             momentum_zones: DashMap::new(),
@@ -754,6 +762,11 @@ impl MomentumEngine {
         // Prune stale reentry cooldown entries (O(n) but n ≤ ~50 per session)
         self.recently_closed.retain(|_, close_ts| {
             now_ms.saturating_sub(*close_ts) < self.config.reentry_cooldown_ms
+        });
+
+        // Prune stale mint-level graduation dedup entries (TTL 60s, O(n) but n ≤ ~200)
+        self.recent_corecast_grads.retain(|_, first_seen| {
+            now_ms.saturating_sub(*first_seen) < 60_000
         });
     }
 
@@ -1292,7 +1305,7 @@ impl MomentumEngine {
         // Entries deferred because price feed isn't ready yet
         let mut requeue: Vec<PendingEntry> = Vec::new();
 
-        for entry in ready {
+        for mut entry in ready {
             // Check limits again at entry time — drop excess entries
             if self.active.len() >= self.config.max_concurrent as usize {
                 // Unsubscribe any remaining entries that won't become positions
@@ -1469,6 +1482,17 @@ impl MomentumEngine {
             } else {
                 ((raw_size as f64) * tod_mult) as u64
             };
+            // Update opening_price_fp to match real price (was estimated from default reserves)
+            if entry.opening_price_fp < 1000 && current_price_fp > 1000 {
+                tracing::info!(
+                    mint = %bs58::encode(&entry.mint).into_string(),
+                    estimated = entry.opening_price_fp,
+                    real = current_price_fp,
+                    "[momentum] correcting opening_price_fp: estimated → real"
+                );
+                entry.opening_price_fp = current_price_fp;
+            }
+
             let mut pos = MomentumPosition::new(
                 entry.mint,
                 now_ms,
@@ -1511,6 +1535,19 @@ impl MomentumEngine {
                 entry.mint,
                 crate::momentum::position::MomentumZoneTracker::new(entry_reserve),
             );
+
+            // Observability: log confirmed real price + reserves before entry
+            {
+                let confirmed_reserve_sol = self.price_feed.get_reserve_sol(&entry.mint);
+                let waited_ms = now_ms.saturating_sub(entry.first_scheduled_ts_ms);
+                tracing::info!(
+                    mint = %bs58::encode(&entry.mint).into_string(),
+                    confirmed_price_fp = current_price_fp,
+                    reserve_sol_lamports = ?confirmed_reserve_sol,
+                    waited_ms,
+                    "[momentum] entry confirmed — real price + reserves"
+                );
+            }
 
             tracing::info!(
                 mint = %bs58::encode(&entry.mint).into_string(),
@@ -2413,6 +2450,19 @@ impl MomentumEngine {
 
         // Close positions (must release iter_mut borrow first)
         for (mint, reason, exit_price_fp) in to_close {
+            // Observability: log exit details before closing
+            if let Some(pos) = self.active.get(&mint) {
+                let hold_ms = now_ms.saturating_sub(pos.entry_ts_ms);
+                tracing::info!(
+                    mint = %bs58::encode(&mint).into_string(),
+                    exit_reason = reason.as_str(),
+                    entry_price_fp = pos.entry_price_fp,
+                    exit_price_fp,
+                    hold_ms,
+                    size_lamports = pos.size_lamports,
+                    "[momentum] closing position — exit pipeline"
+                );
+            }
             self.close_position(mint, reason, exit_price_fp, now_ms);
         }
     }
@@ -2774,8 +2824,9 @@ impl MomentumEngine {
                     let tip = self.tip_engine.lock().compute_tip(&tip_req);
                     // 1% slippage on profitable exits, 0 on losses (speed > price)
                     let min_sol_out = if gain_bps > 0 {
-                        let expected = (pos.entry_price_fp as u128 * tokens as u128 / 1_000_000) as u64;
-                        (expected as u128 * 9900 / 10000) as u64
+                        // Use exit price (not entry) for expected SOL — tighter slippage protection
+                        let expected = (exit_price_fp as u128 * tokens as u128 / 1_000_000) as u64;
+                        (expected as u128 * 9900 / 10000) as u64 // 1% slippage
                     } else { 0u64 };
                     let noz = self.nozomi_client.clone();
                     let reason_str = reason.as_str().to_string();
@@ -2850,8 +2901,9 @@ impl MomentumEngine {
                     };
                     let tip = self.tip_engine.lock().compute_tip(&tip_req);
                     let min_sol_out = if gain_bps > 0 {
-                        let expected = (pos.entry_price_fp as u128 * tokens as u128 / 1_000_000) as u64;
-                        (expected as u128 * 9900 / 10000) as u64
+                        // Use exit price (not entry) for expected SOL — tighter slippage protection
+                        let expected = (exit_price_fp as u128 * tokens as u128 / 1_000_000) as u64;
+                        (expected as u128 * 9900 / 10000) as u64 // 1% slippage
                     } else { 0u64 };
                     let noz_ok = noz.is_some();
                     let reason_str = reason.as_str().to_string();
@@ -2882,6 +2934,15 @@ impl MomentumEngine {
                         let tip_account = solana_sdk::pubkey::Pubkey::from_str(
                             crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
                         ).unwrap();
+                        // Observability: log sell TX parameters before building
+                        tracing::info!(
+                            mint = %bs58::encode(&mint_copy).into_string(),
+                            pool = %bs58::encode(&ps_pool.pool).into_string(),
+                            token_is_base = ps_pool.token_is_base,
+                            tokens,
+                            min_sol_out,
+                            "[sell_pumpswap] building sell TX"
+                        );
                         let tx_bytes = match crate::tx::pumpswap::build_pumpswap_sell_tx(
                             &ps_pool, &keypair, tokens, min_sol_out, tip, tip_account, bh, fee_idx,
                         ) {
@@ -2950,6 +3011,27 @@ impl MomentumEngine {
             if count >= 60 {
                 return; // Over budget — drop this graduation event
             }
+        }
+
+        // Mint-level dedup: CoreCast sends 10-20+ duplicate graduation events per mint
+        // within seconds, each with a different DEX trade sig. Sig-based dedup doesn't
+        // catch these. Gate on mint + 30s TTL to avoid wasting RPC calls.
+        {
+            let now_dedup = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            if let Some(prev_ts) = self.recent_corecast_grads.get(&mint) {
+                if now_dedup.saturating_sub(*prev_ts) < 30_000 {
+                    tracing::debug!(
+                        mint = %bs58::encode(&mint).into_string(),
+                        age_ms = now_dedup.saturating_sub(*prev_ts),
+                        "[momentum] mint-level dedup — skipping duplicate graduation (seen <30s ago)"
+                    );
+                    return;
+                }
+            }
+            self.recent_corecast_grads.insert(mint, now_dedup);
         }
 
         // Dedup: prevent 3 feeds from triggering separate Helius lookups for the same graduation.
@@ -3679,12 +3761,22 @@ impl MomentumEngine {
         // that will fill these in before submitting (at T+entry_delay_ms, ~15s later,
         // by which time getProgramAccounts indexing has caught up).
         {
+            // Helius parser normalizes: coin_vault = token vault, pc_vault = WSOL vault.
+            // PumpSwapPoolAccounts stores vaults in pool layout order (lower-sorted mint is base).
+            // base_mint is always the traded token (non-WSOL), per struct contract.
             let token_is_base = mint < WSOL_MINT_BYTES;
+            let (base_vault, quote_vault) = if token_is_base {
+                // Token sorts before WSOL: pool_base=token vault, pool_quote=WSOL vault
+                (coin_vault, pc_vault)
+            } else {
+                // WSOL sorts before token: pool_base=WSOL vault, pool_quote=token vault
+                (pc_vault, coin_vault)
+            };
             let ps_accts = crate::tx::pumpswap::PumpSwapPoolAccounts {
                 pool: [0u8; 32],
                 base_mint: mint,
-                pool_base_token_account: coin_vault,
-                pool_quote_token_account: pc_vault,
+                pool_base_token_account: base_vault,
+                pool_quote_token_account: quote_vault,
                 coin_creator_vault_ata: [0u8; 32],
                 coin_creator_vault_authority: [0u8; 32],
                 token_is_base,
