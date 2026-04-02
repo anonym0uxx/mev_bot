@@ -299,9 +299,10 @@ async fn resolve_pool_inner(
         ]
     });
 
-    // getTransaction → public RPC (free tier, generous rate limits)
+    // getTransaction → Helius RPC (public RPC rate-limits this call aggressively).
+    // With the 60/min rate gate in on_migration(), this is well within Helius budget.
     let resp = client
-        .post(public_rpc_url)
+        .post(helius_rpc_url)
         .json(&body)
         .send()
         .await
