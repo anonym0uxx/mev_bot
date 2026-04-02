@@ -84,8 +84,12 @@ pub const PUMPSWAP_FEE_RECIPIENTS: [&str; 8] = [
 /// Wrapped SOL mint.
 pub const WSOL_MINT_STR: &str = "So11111111111111111111111111111111111111112";
 
-/// SPL Token program ID.
+/// SPL Token program ID (classic).
 pub const SPL_TOKEN_PROGRAM_STR: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+
+/// SPL Token-2022 (Token Extensions) program ID.
+/// Pump.fun graduated tokens use this program, NOT classic SPL Token.
+pub const SPL_TOKEN_2022_PROGRAM_STR: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
 /// SPL Associated Token Account program ID.
 pub const SPL_ATA_PROGRAM_STR: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
@@ -217,11 +221,23 @@ impl std::error::Error for PumpSwapTxError {}
 /// Equivalent to `spl_associated_token_account::get_associated_token_address`.
 ///
 /// PDA seeds: [wallet, token_program, mint] under the ATA program.
+/// Determine the owning token program for a mint.
+/// Pump.fun tokens use Token-2022; WSOL uses classic SPL Token.
+fn token_program_for_mint(mint: &Pubkey) -> Pubkey {
+    let wsol = Pubkey::from_str(WSOL_MINT_STR).unwrap();
+    if *mint == wsol {
+        Pubkey::from_str(SPL_TOKEN_PROGRAM_STR).unwrap()
+    } else {
+        // All pump.fun graduated tokens use Token-2022
+        Pubkey::from_str(SPL_TOKEN_2022_PROGRAM_STR).unwrap()
+    }
+}
+
 fn token_ata(wallet: &Pubkey, mint: &Pubkey) -> Pubkey {
-    let token_program = Pubkey::from_str(SPL_TOKEN_PROGRAM_STR).unwrap();
+    let program = token_program_for_mint(mint);
     let ata_program = Pubkey::from_str(SPL_ATA_PROGRAM_STR).unwrap();
     let (addr, _bump) = Pubkey::find_program_address(
-        &[wallet.as_ref(), token_program.as_ref(), mint.as_ref()],
+        &[wallet.as_ref(), program.as_ref(), mint.as_ref()],
         &ata_program,
     );
     addr
@@ -245,7 +261,7 @@ fn build_create_ata_idempotent_ix(
     mint: &Pubkey,
 ) -> Instruction {
     let ata = token_ata(wallet, mint);
-    let token_program = Pubkey::from_str(SPL_TOKEN_PROGRAM_STR).unwrap();
+    let token_program = token_program_for_mint(mint);
     let ata_program = Pubkey::from_str(SPL_ATA_PROGRAM_STR).unwrap();
 
     Instruction {
@@ -350,26 +366,33 @@ fn build_pumpswap_swap_ix(
     let pumpswap_program = Pubkey::from_str(PUMPSWAP_PROGRAM).unwrap();
     let global_config = Pubkey::from_str(PUMPSWAP_GLOBAL_CONFIG).unwrap();
     let wsol_mint = Pubkey::from_str(WSOL_MINT_STR).unwrap();
-    let token_program = Pubkey::from_str(SPL_TOKEN_PROGRAM_STR).unwrap();
     let ata_program = Pubkey::from_str(SPL_ATA_PROGRAM_STR).unwrap();
     let event_authority = Pubkey::from_str(PUMPSWAP_EVENT_AUTHORITY).unwrap();
     let fee_program = Pubkey::from_str(PUMPSWAP_FEE_PROGRAM).unwrap();
 
     let token_mint = Pubkey::new_from_array(pool.base_mint);
 
-    // Derive user ATAs
+    // Token program for each side: pump.fun tokens use Token-2022, WSOL uses classic
+    let token_mint_program = token_program_for_mint(&token_mint);
+    let wsol_program = token_program_for_mint(&wsol_mint);
+
+    // Derive user ATAs (uses correct token program for PDA derivation)
     let user_token_ata = token_ata(wallet_pubkey, &token_mint);
     let user_wsol_ata = token_ata(wallet_pubkey, &wsol_mint);
 
     // Accounts [3]-[8] depend on pool ordering:
     // Pool's on-chain base_mint/quote_mint determine the account positions.
-    let (acct3_base_mint, acct4_quote_mint, acct5_user_base_ata, acct6_user_quote_ata) =
+    // Accounts [11]/[12] = base/quote token programs — must match their respective mints.
+    let (acct3_base_mint, acct4_quote_mint, acct5_user_base_ata, acct6_user_quote_ata,
+         base_token_program, quote_token_program) =
         if pool.token_is_base {
             // Normal: token=base, WSOL=quote
-            (token_mint, wsol_mint, user_token_ata, user_wsol_ata)
+            (token_mint, wsol_mint, user_token_ata, user_wsol_ata,
+             token_mint_program, wsol_program)
         } else {
             // Reversed: WSOL=base, token=quote
-            (wsol_mint, token_mint, user_wsol_ata, user_token_ata)
+            (wsol_mint, token_mint, user_wsol_ata, user_token_ata,
+             wsol_program, token_mint_program)
         };
     // Pool vaults [7]/[8] are already stored in the pool's on-chain order
     let acct7_pool_base_vault = Pubkey::new_from_array(pool.pool_base_token_account);
@@ -401,8 +424,8 @@ fn build_pumpswap_swap_ix(
         AccountMeta::new(acct8_pool_quote_vault, false),                 // [8]  pool_quote_token_account
         AccountMeta::new(fee_recipient, false),                          // [9]  protocol_fee_recipient
         AccountMeta::new(fee_recipient_token_account, false),            // [10] fee_recipient_token_acct
-        AccountMeta::new_readonly(token_program, false),                 // [11] base_token_program
-        AccountMeta::new_readonly(token_program, false),                 // [12] quote_token_program
+        AccountMeta::new_readonly(base_token_program, false),              // [11] base_token_program
+        AccountMeta::new_readonly(quote_token_program, false),           // [12] quote_token_program
         AccountMeta::new_readonly(system_program::id(), false),          // [13] system_program
         AccountMeta::new_readonly(ata_program, false),                   // [14] associated_token_program
         AccountMeta::new_readonly(event_authority, false),               // [15] event_authority
