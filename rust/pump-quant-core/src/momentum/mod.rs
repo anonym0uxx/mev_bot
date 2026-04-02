@@ -403,7 +403,8 @@ pub struct MomentumEngine {
     pumpswap_pools: DashMap<[u8; 32], crate::tx::pumpswap::PumpSwapPoolAccounts>,
     /// Buy TX state tracking: mint → BuyState. Written by async buy tasks,
     /// read by close_position to gate sell TX submission.
-    buy_states: DashMap<[u8; 32], BuyState>,
+    /// MUST be Arc so all clones (buy task, sell task) share the same map.
+    buy_states: Arc<DashMap<[u8; 32], BuyState>>,
     /// Mints where position was opened but buy TX couldn't be submitted because
     /// pool accounts were zeroed (not yet resolved). Checked each tick — when pool
     /// accounts appear in pumpswap_pools/raydium_pools, the deferred buy is submitted.
@@ -580,7 +581,7 @@ impl MomentumEngine {
             scored_token_rx: scored_rx,
             raydium_pools: DashMap::new(),
             pumpswap_pools: DashMap::new(),
-            buy_states: DashMap::new(),
+            buy_states: Arc::new(DashMap::new()),
             deferred_buy_pending: DashSet::new(),
             mint_entry_counts: DashMap::new(),
             tip_engine,
