@@ -766,20 +766,12 @@ impl MomentumEngine {
             return;
         }
 
-        // u64 overflow gate: PumpSwap sell does reserve_sol * reserve_token in u64.
-        // If that product overflows, every sell will fail on-chain (Custom:6023).
-        // Check using u128 widening — if it exceeds u64::MAX, skip entry entirely.
-        let k_check = pool_info.reserve_sol as u128 * pool_info.reserve_token as u128;
-        if k_check > u64::MAX as u128 {
-            tracing::warn!(
-                mint = %bs58::encode(&pool_info.mint).into_string(),
-                reserve_sol = pool_info.reserve_sol,
-                reserve_token = pool_info.reserve_token,
-                k_check = k_check,
-                "[momentum] hard gate: pool k overflows u64 — sell would fail on-chain, skipping entry"
-            );
-            return;
-        }
+        // NOTE: u64 overflow gate REMOVED — it was incorrectly blocking ALL standard pump.fun
+        // tokens (800T atoms at 85 SOL = k >> u64::MAX). PumpSwap uses u128 internally
+        // for the constant product, so the gate logic was wrong. The Custom:6023 on Phxz39
+        // was caused by a different overflow (likely in the fee computation with extreme
+        // reserve_token values), not the k = sol * token product itself.
+        // TODO: Investigate real cause of Custom:6023 and add a correct gate if needed.
 
         // Reentry cooldown: skip if this mint was recently closed (CoreCast flood prevention)
         if let Some(close_ts) = self.recently_closed.get(&pool_info.mint) {
