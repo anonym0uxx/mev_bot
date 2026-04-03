@@ -642,6 +642,9 @@
             "blocked_hours_utc": [],
             "reduced_hours_utc": [],
             "boosted_hours_utc": []
+        },
+        "activity_gate": {
+            "enabled": false
         }
     }
 }

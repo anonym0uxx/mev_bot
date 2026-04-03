@@ -46,6 +46,7 @@ use crate::momentum::position::{
 use crate::momentum::price_feed::{price_from_reserves, PriceFeedManager, VaultSubscription};
 use crate::momentum::scorer::score_graduation;
 use crate::momentum::types::ScoredToken;
+use crate::momentum::activity_gate::{ActivityTracker, ActivityDecision};
 
 use crate::tx::tip_engine::{TipEngine, TipConfig, TipRequest};
 
@@ -485,6 +486,17 @@ pub struct MomentumEngine {
     // the result through this channel. on_tick() drains it.
     retry_tx: tokio::sync::mpsc::UnboundedSender<AsyncRetryResult>,
     retry_rx: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<AsyncRetryResult>>,
+
+    // ── Pre-entry activity gate (filters dead tokens) ───────────────
+    activity_tracker: ActivityTracker,
+
+    // ── Sell engine (escalation retry pipeline) ─────────────────────
+    // TODO(sell_engine_pr): Wire sell_engine into close_position() — separate PR
+    // sell_engine: Arc<sell_engine::SellEngine>,
+
+    // ── On-chain reconciler (P&L verification) ──────────────────────
+    // TODO(reconciler_pr): Wire reconciler background task + record_buy/sell — separate PR
+    // reconciler: Arc<reconciler::Reconciler>,
 }
 
 impl MomentumEngine {
@@ -620,6 +632,7 @@ impl MomentumEngine {
             cb_halfsize_remaining: AtomicU64::new(0),
             retry_tx: async_retry_tx,
             retry_rx: tokio::sync::Mutex::new(async_retry_rx),
+            activity_tracker: ActivityTracker::new(),
         };
 
         // Spawn wallet balance poller (no-op in paper mode — reads but doesn't gate)
@@ -957,6 +970,26 @@ impl MomentumEngine {
                 "[momentum] ToD gating: blocked hour — skipping entry"
             );
             return;
+        }
+
+        // ── Activity Gate: require minimum WS trading activity before entry ──
+        // Dead tokens waste -5.3% on AMM round-trip fees. This blocks ~90% of
+        // dead tokens (saves +0.042 SOL per 167 trades).
+        {
+            let decision = self.activity_tracker.check_entry(
+                &pool_info.mint,
+                now_ms,
+                &self.config.activity_gate,
+            );
+            if let ActivityDecision::Reject(reason) = decision {
+                tracing::info!(
+                    mint = %bs58::encode(&pool_info.mint).into_string(),
+                    score = score.total(),
+                    reason = %reason,
+                    "[momentum] activity gate REJECTED — insufficient trading activity"
+                );
+                return;
+            }
         }
 
         let mint_b58 = bs58::encode(&pool_info.mint).into_string();
@@ -1363,6 +1396,12 @@ impl MomentumEngine {
 
         // Scale-in: evaluate probe positions for momentum confirmation
         self.process_scale_in(now_ms);
+
+        // Activity tracker housekeeping: remove stale mints (~every 10s)
+        let tick_num_cleanup = now_ms / self.config.check_ms.max(1);
+        if tick_num_cleanup % 67 == 0 {
+            self.activity_tracker.cleanup(now_ms, self.config.activity_gate.cleanup_stale_ms);
+        }
     }
 
     /// Evaluate probe-phase positions for dump detection and scale-in readiness.
@@ -2529,6 +2568,53 @@ impl MomentumEngine {
         for mut entry in self.active.iter_mut() {
             let mint = *entry.key();
             let pos = entry.value_mut();
+
+            // ── Set buy_confirmed_ms on first tick where buy TX is confirmed ──
+            if pos.buy_confirmed_ms == 0 {
+                if let Some(state) = self.buy_states.get(&mint) {
+                    if matches!(*state, BuyState::Confirmed) {
+                        pos.stamp_buy_confirmed(now_ms);
+                        tracing::debug!(
+                            mint = %bs58::encode(&mint).into_string(),
+                            confirmed_at_ms = now_ms,
+                            "[momentum] buy_confirmed_ms stamped"
+                        );
+                    }
+                }
+            }
+
+            // ── Phase-gated exit evaluation ──────────────────────────────
+            {
+                let current_bps_for_phase = self.price_feed.current_price(&mint)
+                    .map(|p| price_to_bps_offset(pos.entry_price_fp, p))
+                    .unwrap_or(0);
+                let (ws_msgs, ws_last_ms) = self.price_feed.ws_notif_info(&mint);
+                let ws_age_ms = if ws_last_ms > 0 { now_ms.saturating_sub(ws_last_ms) } else { 0 };
+                let phase = pos.evaluate_phase(
+                    now_ms,
+                    current_bps_for_phase,
+                    ws_msgs.min(u16::MAX as u64) as u16,
+                    ws_age_ms,
+                );
+
+                match phase {
+                    position::PositionPhase::AwaitingConfirmation => {
+                        continue; // Not on-chain yet — skip ALL exit evaluation
+                    }
+                    position::PositionPhase::Exiting => {
+                        let exit_price = self.price_feed.current_price(&mint)
+                            .unwrap_or(pos.entry_price_fp);
+                        to_close.push((mint, MomentumExitReason::HardSl, exit_price));
+                        continue;
+                    }
+                    position::PositionPhase::RapidAssessment => {
+                        // Fall through — existing micro_exit + hard_sl covers this
+                    }
+                    _ => {
+                        // Observation, Momentum, ExitEligible — full evaluation
+                    }
+                }
+            }
 
             let elapsed_ms = now_ms.saturating_sub(pos.entry_ts_ms);
 

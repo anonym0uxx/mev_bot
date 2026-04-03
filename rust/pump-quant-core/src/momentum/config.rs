@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use super::tod::MomentumTodConfig;
+use super::activity_gate::ActivityGateConfig;
 use super::position::TrailConfig;
 
 // ── RPC sender default functions ─────────────────────────────────────────────
@@ -436,6 +437,12 @@ pub struct MomentumConfig {
     #[serde(default)]
     pub trail_config: TrailConfig,
 
+    /// Pre-entry activity gate configuration.
+    /// Blocks dead tokens by requiring minimum WS activity before entry.
+    /// Omit section to use defaults (enabled, 5 notifs, 2s stale, 1 buy, 50bps range).
+    #[serde(default)]
+    pub activity_gate: ActivityGateConfig,
+
     /// Enable winner protection (momentum lock). When true, profitable positions
     /// with ongoing WebSocket activity are protected from ALL time-based exits
     /// (time_sl, dead_zone, stagnation, early_abort, etc.). Only the trailing
@@ -811,6 +818,7 @@ impl Default for MomentumConfig {
             // Adaptive trailing stop + winner management (TASK 6)
             adaptive_trail_enabled: true,
             trail_config: TrailConfig::default(),
+            activity_gate: ActivityGateConfig::default(),
             winner_protection_enabled: true,
 
             // Stagnation exit (TASK 5)
