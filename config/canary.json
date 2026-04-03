@@ -624,7 +624,7 @@
     "dead_zone_pumpswap_ws_zero_ms": 6000,
     "max_quote_in_base_pct": 110,
     "max_quote_in_per_velocity_divisor": 5,
-    "max_quote_in_cap_pct": 175,
+    "max_quote_in_cap_pct": 300,
     "max_quote_in_tx_propagation_s": 4,
     "rpc_sender": {
       "priority_fee_microlamports": 50000,
@@ -656,10 +656,22 @@
     },
     "trail_config": {
       "tiers": [
-        { "up_to_bps": 300,        "trail_bps": 200  },
-        { "up_to_bps": 1200,       "trail_bps": 450  },
-        { "up_to_bps": 4000,       "trail_bps": 700  },
-        { "up_to_bps": 2147483647, "trail_bps": 1100 }
+        {
+          "up_to_bps": 300,
+          "trail_bps": 200
+        },
+        {
+          "up_to_bps": 1200,
+          "trail_bps": 450
+        },
+        {
+          "up_to_bps": 4000,
+          "trail_bps": 700
+        },
+        {
+          "up_to_bps": 2147483647,
+          "trail_bps": 1100
+        }
       ],
       "confirm_samples": 2,
       "min_samples_to_activate": 5,

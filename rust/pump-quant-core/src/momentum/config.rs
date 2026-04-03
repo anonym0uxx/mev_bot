@@ -907,7 +907,7 @@ impl Default for MomentumConfig {
             // Dynamic velocity-based max_quote_in
             max_quote_in_base_pct: 110,
             max_quote_in_per_velocity_divisor: 5,
-            max_quote_in_cap_pct: 175,
+            max_quote_in_cap_pct: 300,
             max_quote_in_tx_propagation_s: 4,
 
             // RPC sender config
