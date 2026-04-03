@@ -527,6 +527,11 @@ pub struct MomentumConfig {
     /// Counter resets on engine restart. Default: 2. Set to 0 to disable.
     pub max_entries_per_mint: u32,
 
+    /// Minimum buys_5s to receive full buy/sell ratio score.
+    /// Below this threshold, ratio score is halved (whale pump penalty).
+    /// Default: 5.
+    pub min_buys_for_full_ratio_score: u32,
+
     // ══════════════════════════════════════════════════════════
     // VELOCITY EXIT
     // ══════════════════════════════════════════════════════════
@@ -859,6 +864,7 @@ impl Default for MomentumConfig {
             min_grad_volume_sol: 50.0,
             max_grad_volume_sol: 200.0,
             max_entries_per_mint: 2,
+            min_buys_for_full_ratio_score: 5,
 
             // Velocity exit
             velocity_exit_enabled: true,

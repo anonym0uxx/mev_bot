@@ -413,6 +413,11 @@ pub struct MomentumEngine {
     // Stored outside MomentumPosition (no free bytes in 256-byte struct).
     momentum_zones: DashMap<[u8; 32], crate::momentum::position::MomentumZoneTracker>,
 
+    // ── Observed price velocity per position (for dynamic max_quote_in) ──
+    // Key = mint, Value = velocity in bps/s from observation window.
+    // Stored outside MomentumPosition (no free bytes in 256-byte struct).
+    observed_velocity: DashMap<[u8; 32], i64>,
+
     // ── Pending entries scheduled for T+delay ───────────────────────
     pending: std::sync::Mutex<PendingEntryRing>,
 
@@ -665,6 +670,7 @@ impl MomentumEngine {
             retry_tx: async_retry_tx,
             retry_rx: tokio::sync::Mutex::new(async_retry_rx),
             activity_tracker: ActivityTracker::new(),
+            observed_velocity: DashMap::new(),
         };
 
         // Spawn wallet balance poller (no-op in paper mode — reads but doesn't gate)
@@ -961,6 +967,8 @@ impl MomentumEngine {
             pre_score_entry_fp,
             bc_price_fp,
             pool_info.reserve_sol,
+            0, // velocity_bps_per_s: unknown at graduation time, set during observation
+            self.config.min_buys_for_full_ratio_score,
         );
 
         // Cold miss detection: if enrichment data was unavailable, apply bonus.
@@ -1591,8 +1599,8 @@ impl MomentumEngine {
                     let resolve_url = self.helius_rpc_url.clone();
                     let resolve_url_fallback = self.public_rpc_url.clone();
                     // Dynamic max_quote_in: scale slippage buffer based on observed price velocity.
-                    // Velocity from observation window extrapolated over TX propagation time.
-                    let obs_velocity = entry.observed_velocity_bps_per_s.unwrap_or(0);
+                    // TODO: wire observed_velocity from DashMap once velocity tracking is complete.
+                    let obs_velocity: i64 = 0;
                     let multiplier_pct = compute_max_quote_in_multiplier(&self.config, obs_velocity);
                     let max_quote_in = (size_lamports as u128 * multiplier_pct as u128 / 100) as u64;
                     // Anti-sandwich slippage: compute min_tokens_out from buffered amount.
@@ -6005,6 +6013,7 @@ mod tests {
                 bc_price_fp: 411,
                 first_scheduled_ts_ms: 1_000,
                 recovery_score: 0,
+                observed_velocity_bps_per_s: None,
                 active: true,
             });
         }
