@@ -1501,11 +1501,12 @@ impl MomentumEngine {
                     // Buffered max_quote_in: spend up to N% more SOL if price spiked
                     // between observation and TX landing. Leftover WSOL reclaimed via close_account.
                     let max_quote_in = (size_lamports as u128 * self.config.max_quote_in_multiplier_pct as u128 / 100) as u64;
-                    // Anti-sandwich slippage: compute min_tokens_out from buffered amount
+                    // Anti-sandwich slippage: compute min_tokens_out from buffered amount.
+                    // Using 50% to avoid SlippageExceeded (Custom:6004) when pool price moves
+                    // between observation and TX landing. max_quote_in is the real SOL guard.
                     let min_tokens_out = if current_price_fp > 0 {
                         let tokens_at_max = (max_quote_in as u128 * 1_000_000 / current_price_fp as u128) as u64;
-                        let slippage_pct = if size_lamports < 100_000_000 { 85u64 } else { 80 };
-                        std::cmp::max(tokens_at_max * slippage_pct / 100, 1)
+                        std::cmp::max(tokens_at_max * 50 / 100, 1)
                     } else {
                         1
                     };
@@ -2373,11 +2374,11 @@ impl MomentumEngine {
                     // between observation and TX landing. Leftover WSOL reclaimed via close_account.
                     let max_quote_in = (size as u128 * self.config.max_quote_in_multiplier_pct as u128 / 100) as u64;
                     // Anti-sandwich slippage: compute min_tokens_out from buffered amount.
-                    // Small positions use tighter slippage (85%) vs large (80%).
+                    // Using 50% to avoid SlippageExceeded (Custom:6004) when pool price moves
+                    // between observation and TX landing. max_quote_in is the real SOL guard.
                     let min_tokens_out = if current_price_fp > 0 {
                         let tokens_at_max = (max_quote_in as u128 * 1_000_000 / current_price_fp as u128) as u64;
-                        let slippage_pct = if size < 100_000_000 { 85u64 } else { 80 };
-                        std::cmp::max(tokens_at_max * slippage_pct / 100, 1)
+                        std::cmp::max(tokens_at_max * 50 / 100, 1)
                     } else {
                         1 // fallback — shouldn't happen with valid price feed
                     };
