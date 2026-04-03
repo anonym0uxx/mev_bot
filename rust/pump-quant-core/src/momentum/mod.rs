@@ -3871,9 +3871,34 @@ impl MomentumEngine {
                         use solana_sdk::signer::Signer as _;
                         let wallet_pubkey = keypair.pubkey();
                         let token_mint = solana_sdk::pubkey::Pubkey::new_from_array(mint_copy);
-                        let token_program = solana_sdk::pubkey::Pubkey::from_str(
-                            crate::tx::raydium::SPL_TOKEN_PROGRAM_STR,
-                        ).unwrap();
+                        // Resolve token_mint_program via RPC instead of hardcoding SPL Token.
+                        // Token-2022 tokens have their ATA at a DIFFERENT address than SPL Token.
+                        let resolved_token_program = {
+                            let rpc = std::env::var("SOLANA_RPC_URL")
+                                .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
+                            match crate::momentum::pool::resolve_mint_program_with_fallback(
+                                &balance_http, &mint_copy, &rpc, None,
+                            ).await {
+                                Some(prog) => {
+                                    tracing::info!(
+                                        mint=%bs58::encode(&mint_copy).into_string(),
+                                        program=%bs58::encode(&prog).into_string(),
+                                        "[sell_raydium] resolved token_mint_program at sell time"
+                                    );
+                                    prog
+                                }
+                                None => {
+                                    tracing::warn!(
+                                        mint=%bs58::encode(&mint_copy).into_string(),
+                                        "[sell_raydium] failed to resolve token_mint_program — using SPL Token fallback"
+                                    );
+                                    crate::tx::pumpswap::SPL_TOKEN_PROGRAM_BYTES
+                                }
+                            }
+                        };
+                        let token_program = crate::tx::pumpswap::token_program_for_mint_with_hint(
+                            &token_mint, &resolved_token_program,
+                        );
                         let ata_program = solana_sdk::pubkey::Pubkey::from_str(
                             crate::tx::pumpswap::SPL_ATA_PROGRAM_STR,
                         ).unwrap();
@@ -3887,51 +3912,66 @@ impl MomentumEngine {
                             "method": "getTokenAccountBalance",
                             "params": [token_ata.to_string()]
                         });
-                        // STRICT balance check: if we can't verify on-chain balance, ABORT sell.
-                        // Selling estimated amounts when buy failed = guaranteed error.
-                        let actual_tokens = match balance_http
-                            .post(balance_rpc_url.as_str())
-                            .header("Content-Type", "application/json")
-                            .json(&balance_body)
-                            .send()
-                            .await
-                        {
-                            Ok(resp) => {
-                                match resp.json::<serde_json::Value>().await {
-                                    Ok(json) => {
-                                        // Check for RPC error (e.g. "could not find account")
-                                        if json.get("error").is_some() {
-                                            tracing::warn!(
-                                                mint=%bs58::encode(&mint_copy).into_string(),
-                                                body=%json,
-                                                "[sell] ATA not found — buy likely failed, skipping sell"
-                                            );
-                                            return;
-                                        }
-                                        match json["result"]["value"]["amount"]
-                                            .as_str()
-                                            .and_then(|s| s.parse::<u64>().ok())
-                                        {
-                                            Some(bal) => bal,
-                                            None => {
-                                                tracing::warn!(
+                        // Balance check with retry: RPC node may not have indexed the new ATA
+                        // immediately after buy TX lands. Retry up to 15x with 1s backoff.
+                        let actual_tokens = {
+                            let mut result = None;
+                            for attempt in 0..15u32 {
+                                if attempt > 0 {
+                                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                                }
+                                let resp = balance_http
+                                    .post(balance_rpc_url.as_str())
+                                    .header("Content-Type", "application/json")
+                                    .json(&balance_body)
+                                    .send()
+                                    .await;
+                                match resp {
+                                    Ok(r) => match r.json::<serde_json::Value>().await {
+                                        Ok(json) => {
+                                            if json.get("error").is_some() {
+                                                tracing::debug!(
                                                     mint=%bs58::encode(&mint_copy).into_string(),
-                                                    body=%json,
-                                                    "[sell_raydium] balance returned null/unparseable — aborting sell for safety"
+                                                    attempt,
+                                                    "[sell_raydium] ATA not found yet — retrying"
                                                 );
-                                                return;
+                                                continue;
+                                            }
+                                            match json["result"]["value"]["amount"]
+                                                .as_str()
+                                                .and_then(|s| s.parse::<u64>().ok())
+                                            {
+                                                Some(bal) => { result = Some(bal); break; }
+                                                None => {
+                                                    tracing::warn!(
+                                                        mint=%bs58::encode(&mint_copy).into_string(),
+                                                        body=%json,
+                                                        "[sell_raydium] balance returned null/unparseable — aborting sell"
+                                                    );
+                                                    return;
+                                                }
                                             }
                                         }
-                                    }
+                                        Err(e) => {
+                                            tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] balance response parse failed");
+                                            return;
+                                        }
+                                    },
                                     Err(e) => {
-                                        tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] balance response parse failed — aborting sell for safety");
+                                        tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] balance RPC failed");
                                         return;
                                     }
                                 }
                             }
-                            Err(e) => {
-                                tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_raydium] balance RPC failed — aborting sell for safety");
-                                return;
+                            match result {
+                                Some(bal) => bal,
+                                None => {
+                                    tracing::warn!(
+                                        mint=%bs58::encode(&mint_copy).into_string(),
+                                        "[sell_raydium] ATA not found after 15 retries — buy likely failed, skipping sell"
+                                    );
+                                    return;
+                                }
                             }
                         };
                         if actual_tokens == 0 {
@@ -4067,8 +4107,36 @@ impl MomentumEngine {
                         // ── Query actual on-chain token balance instead of paper estimate ──
                         let wallet_pubkey = keypair.pubkey();
                         let token_mint = solana_sdk::pubkey::Pubkey::new_from_array(mint_copy);
+                        // Resolve token_mint_program if still unknown — critical for correct ATA derivation.
+                        // Token-2022 tokens have their ATA at a DIFFERENT address than SPL Token tokens.
+                        // Using the wrong program = wrong ATA address = "ATA not found" = position abandoned.
+                        let resolved_token_program = if ps_pool.token_mint_program != [0u8; 32] {
+                            ps_pool.token_mint_program
+                        } else {
+                            let rpc = std::env::var("SOLANA_RPC_URL")
+                                .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
+                            match crate::momentum::pool::resolve_mint_program_with_fallback(
+                                &balance_http, &mint_copy, &rpc, None,
+                            ).await {
+                                Some(prog) => {
+                                    tracing::info!(
+                                        mint=%bs58::encode(&mint_copy).into_string(),
+                                        program=%bs58::encode(&prog).into_string(),
+                                        "[sell_pumpswap] resolved token_mint_program at sell time"
+                                    );
+                                    prog
+                                }
+                                None => {
+                                    tracing::warn!(
+                                        mint=%bs58::encode(&mint_copy).into_string(),
+                                        "[sell_pumpswap] failed to resolve token_mint_program — using SPL Token fallback"
+                                    );
+                                    crate::tx::pumpswap::SPL_TOKEN_PROGRAM_BYTES
+                                }
+                            }
+                        };
                         let token_program = crate::tx::pumpswap::token_program_for_mint_with_hint(
-                            &token_mint, &ps_pool.token_mint_program,
+                            &token_mint, &resolved_token_program,
                         );
                         let ata_program = solana_sdk::pubkey::Pubkey::from_str(
                             crate::tx::pumpswap::SPL_ATA_PROGRAM_STR,
@@ -4084,13 +4152,14 @@ impl MomentumEngine {
                             "params": [token_ata.to_string()]
                         });
                         // Balance check with retry: RPC node may not have indexed the new ATA
-                        // immediately after buy TX lands. Retry up to 5x with 1s backoff.
+                        // immediately after buy TX lands. Retry up to 15x with 1s backoff.
                         // Only hard-abort if we exhaust all retries.
                         let actual_tokens = {
                             let mut result = None;
-                            // 10 retries at 1s spacing = 10s window.
+                            // 15 retries at 1s spacing = 15s window.
                             // Helius RPC can take up to 8-10s to index a new ATA after buy lands.
-                            for attempt in 0..10u32 {
+                            // Token-2022 tokens on Helius may need up to 15s.
+                            for attempt in 0..15u32 {
                                 if attempt > 0 {
                                     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                                 }
@@ -4142,7 +4211,7 @@ impl MomentumEngine {
                                 None => {
                                     tracing::warn!(
                                         mint=%bs58::encode(&mint_copy).into_string(),
-                                        "[sell] ATA not found after 10 retries — buy likely failed, skipping sell"
+                                        "[sell] ATA not found after 15 retries — buy likely failed, skipping sell"
                                     );
                                     return;
                                 }
@@ -4296,7 +4365,7 @@ impl MomentumEngine {
                         use solana_sdk::signer::Signer as _;
 
                         // ── STRICT balance check before last-chance sell ──
-                        // Wait for buy TX to land before querying balance, then retry up to 10x.
+                        // Wait for buy TX to land before querying balance, then retry up to 15x.
                         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                         let wallet_pubkey = keypair.pubkey();
                         let token_mint = solana_sdk::pubkey::Pubkey::new_from_array(mint_copy);
@@ -4318,7 +4387,8 @@ impl MomentumEngine {
                         });
                         let actual_tokens = {
                             let mut result = None;
-                            for attempt in 0..10u32 {
+                            // 15 retries at 1s spacing = 15s window for Token-2022 indexing.
+                            for attempt in 0..15u32 {
                                 if attempt > 0 {
                                     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                                 }
@@ -4370,7 +4440,7 @@ impl MomentumEngine {
                                 None => {
                                     tracing::warn!(
                                         mint=%bs58::encode(&mint_copy).into_string(),
-                                        "[sell_lastchance] ATA not found after 10 retries — skipping sell"
+                                        "[sell_lastchance] ATA not found after 15 retries — skipping sell"
                                     );
                                     return;
                                 }
