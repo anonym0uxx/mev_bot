@@ -3934,7 +3934,9 @@ impl MomentumEngine {
                         // Only hard-abort if we exhaust all retries.
                         let actual_tokens = {
                             let mut result = None;
-                            for attempt in 0..5u32 {
+                            // 10 retries at 1s spacing = 10s window.
+                            // Helius RPC can take up to 8-10s to index a new ATA after buy lands.
+                            for attempt in 0..10u32 {
                                 if attempt > 0 {
                                     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                                 }
@@ -3986,7 +3988,7 @@ impl MomentumEngine {
                                 None => {
                                     tracing::warn!(
                                         mint=%bs58::encode(&mint_copy).into_string(),
-                                        "[sell] ATA not found after 5 retries — buy likely failed, skipping sell"
+                                        "[sell] ATA not found after 10 retries — buy likely failed, skipping sell"
                                     );
                                     return;
                                 }
@@ -4011,11 +4013,11 @@ impl MomentumEngine {
                             return;
                         }
 
-                        // Recalculate min_sol_out with actual token balance
-                        let min_sol_out = if gain > 0 {
-                            let expected = (exit_price_for_spawn as u128 * actual_tokens as u128 / 1_000_000) as u64;
-                            (expected as u128 * 9900 / 10000) as u64
-                        } else { 0u64 };
+                        // min_sol_out = 0: accept whatever the AMM gives.
+                        // A non-zero floor causes Custom:6004 SlippageExceeded when pool
+                        // price moves between close decision and TX landing — tokens get stuck.
+                        // The AMM guarantees fair value by construction; we don't need a floor.
+                        let min_sol_out = 0u64;
 
                         let tip_account = solana_sdk::pubkey::Pubkey::from_str(
                             crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
@@ -4140,7 +4142,7 @@ impl MomentumEngine {
                         use solana_sdk::signer::Signer as _;
 
                         // ── STRICT balance check before last-chance sell ──
-                        // Wait for buy TX to land before querying balance (same as other sell paths).
+                        // Wait for buy TX to land before querying balance, then retry up to 10x.
                         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                         let wallet_pubkey = keypair.pubkey();
                         let token_mint = solana_sdk::pubkey::Pubkey::new_from_array(mint_copy);
@@ -4160,48 +4162,64 @@ impl MomentumEngine {
                             "method": "getTokenAccountBalance",
                             "params": [token_ata.to_string()]
                         });
-                        let actual_tokens = match balance_http
-                            .post(balance_rpc_url.as_str())
-                            .header("Content-Type", "application/json")
-                            .json(&balance_body)
-                            .send()
-                            .await
-                        {
-                            Ok(resp) => {
-                                match resp.json::<serde_json::Value>().await {
-                                    Ok(json) => {
-                                        if json.get("error").is_some() {
-                                            tracing::warn!(
-                                                mint=%bs58::encode(&mint_copy).into_string(),
-                                                body=%json,
-                                                "[sell] ATA not found — buy likely failed, skipping sell"
-                                            );
-                                            return;
-                                        }
-                                        match json["result"]["value"]["amount"]
-                                            .as_str()
-                                            .and_then(|s| s.parse::<u64>().ok())
-                                        {
-                                            Some(bal) => bal,
-                                            None => {
-                                                tracing::warn!(
+                        let actual_tokens = {
+                            let mut result = None;
+                            for attempt in 0..10u32 {
+                                if attempt > 0 {
+                                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                                }
+                                let resp = balance_http
+                                    .post(balance_rpc_url.as_str())
+                                    .header("Content-Type", "application/json")
+                                    .json(&balance_body)
+                                    .send()
+                                    .await;
+                                match resp {
+                                    Ok(r) => match r.json::<serde_json::Value>().await {
+                                        Ok(json) => {
+                                            if json.get("error").is_some() {
+                                                tracing::debug!(
                                                     mint=%bs58::encode(&mint_copy).into_string(),
-                                                    body=%json,
-                                                    "[sell_lastchance] balance returned null/unparseable — aborting sell for safety"
+                                                    attempt,
+                                                    "[sell_lastchance] ATA not found yet — retrying"
                                                 );
-                                                return;
+                                                continue;
+                                            }
+                                            match json["result"]["value"]["amount"]
+                                                .as_str()
+                                                .and_then(|s| s.parse::<u64>().ok())
+                                            {
+                                                Some(bal) => { result = Some(bal); break; }
+                                                None => {
+                                                    tracing::warn!(
+                                                        mint=%bs58::encode(&mint_copy).into_string(),
+                                                        body=%json,
+                                                        "[sell_lastchance] balance returned null/unparseable — aborting sell"
+                                                    );
+                                                    return;
+                                                }
                                             }
                                         }
-                                    }
+                                        Err(e) => {
+                                            tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_lastchance] balance response parse failed");
+                                            return;
+                                        }
+                                    },
                                     Err(e) => {
-                                        tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_lastchance] balance response parse failed — aborting sell for safety");
+                                        tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_lastchance] balance RPC failed");
                                         return;
                                     }
                                 }
                             }
-                            Err(e) => {
-                                tracing::error!(mint=%bs58::encode(&mint_copy).into_string(), err=?e, "[sell_lastchance] balance RPC failed — aborting sell for safety");
-                                return;
+                            match result {
+                                Some(bal) => bal,
+                                None => {
+                                    tracing::warn!(
+                                        mint=%bs58::encode(&mint_copy).into_string(),
+                                        "[sell_lastchance] ATA not found after 10 retries — skipping sell"
+                                    );
+                                    return;
+                                }
                             }
                         };
                         if actual_tokens == 0 {
