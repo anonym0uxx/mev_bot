@@ -638,7 +638,10 @@
         "min_rolling_wr_pct": 5.0,
         "rolling_wr_window": 50,
         "tod_config": {
-            "blocked_hours_utc": []
+            "enabled": false,
+            "blocked_hours_utc": [],
+            "reduced_hours_utc": [],
+            "boosted_hours_utc": []
         }
     }
 }
