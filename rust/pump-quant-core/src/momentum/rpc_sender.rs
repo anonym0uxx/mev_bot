@@ -561,15 +561,45 @@ impl RpcSender {
                     return SubmitResult::TimedOut { signature };
                 }
                 ConfirmOutcome::Error { error } => {
-                    last_error = error.clone();
-                    tracing::warn!(
-                        mint = %mint_str,
-                        signature = %signature,
-                        err = %error,
-                        attempt,
-                        "[rpc_confirm] TX error — will retry"
-                    );
-                    continue;
+                    // The TX was confirmed on-chain but the instruction failed.
+                    // This is NOT retryable — the TX already landed in a block.
+                    // Resubmitting the same signed bytes is pointless (duplicate or
+                    // same instruction error). Return Failed immediately.
+
+                    let is_slippage = error.contains("6004");
+                    if is_slippage {
+                        tracing::error!(
+                            mint = %mint_str,
+                            signature = %signature,
+                            err = %error,
+                            attempt,
+                            label,
+                            "[rpc_confirm] ❌ ExceededSlippage (Custom:6004) — TX landed but instruction failed. NOT retrying."
+                        );
+                    } else {
+                        tracing::error!(
+                            mint = %mint_str,
+                            signature = %signature,
+                            err = %error,
+                            attempt,
+                            label,
+                            "[rpc_confirm] ❌ TX confirmed with InstructionError — NOT retrying (TX already on-chain)."
+                        );
+                    }
+
+                    let mut m = self.metrics.write().await;
+                    m.rpc_failed += 1;
+                    m.consecutive_failures += 1;
+                    let cf = m.consecutive_failures;
+                    drop(m);
+                    self.maybe_trip_circuit(cf, mint_str).await;
+
+                    return SubmitResult::Failed {
+                        error: format!(
+                            "instruction_error(confirmed): sig={} err={}",
+                            signature, error,
+                        ),
+                    };
                 }
             }
         }
