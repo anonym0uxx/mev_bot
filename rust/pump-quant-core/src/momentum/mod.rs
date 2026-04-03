@@ -219,6 +219,8 @@ struct ObservationWindow {
     rejected: bool,
     /// Human-readable rejection reason for logging.
     reject_reason: Option<&'static str>,
+    /// Velocity computed at window completion, for use by buy path after window removal.
+    pub computed_velocity_bps_per_s: i64,
 }
 
 impl ObservationWindow {
@@ -234,6 +236,7 @@ impl ObservationWindow {
             is_ready: false,
             rejected: false,
             reject_reason: None,
+            computed_velocity_bps_per_s: 0,
         }
     }
 
@@ -1599,8 +1602,12 @@ impl MomentumEngine {
                     let resolve_url = self.helius_rpc_url.clone();
                     let resolve_url_fallback = self.public_rpc_url.clone();
                     // Dynamic max_quote_in: scale slippage buffer based on observed price velocity.
-                    // TODO: wire observed_velocity from DashMap once velocity tracking is complete.
-                    let obs_velocity: i64 = 0;
+                    let obs_velocity: i64 = self.observed_velocity
+                        .get(&mint_buy)
+                        .map(|v| *v)
+                        .unwrap_or(0);
+                    // Clean up after use
+                    self.observed_velocity.remove(&mint_buy);
                     let multiplier_pct = compute_max_quote_in_multiplier(&self.config, obs_velocity);
                     let max_quote_in = (size_lamports as u128 * multiplier_pct as u128 / 100) as u64;
                     // Anti-sandwich slippage: compute min_tokens_out from buffered amount.
@@ -1957,6 +1964,8 @@ impl MomentumEngine {
                         w.reject_reason = Some(reject_reason);
                     } else if should_ready {
                         w.is_ready = true;
+                        // Store velocity so buy path can use it after window is removed
+                        w.computed_velocity_bps_per_s = w.price_velocity_bps_per_s();
                     }
                 }
 
@@ -2040,9 +2049,14 @@ impl MomentumEngine {
                         requeue.push(entry);
                         continue;
                     }
+                    // Read velocity before removing window
+                    let obs_velocity_from_window = window.computed_velocity_bps_per_s;
                     // Window passed — remove and proceed to normal entry flow
                     drop(window); // release DashMap ref before remove
                     self.observation_windows.remove(&entry.mint);
+                    // Store on engine's velocity map for deferred buy path
+                    self.observed_velocity.insert(entry.mint, obs_velocity_from_window);
+                    entry.observed_velocity_bps_per_s = Some(obs_velocity_from_window);
                 }
                 // No window found = observation disabled for this entry or already removed
             }
