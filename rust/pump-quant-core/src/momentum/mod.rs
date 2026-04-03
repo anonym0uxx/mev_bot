@@ -1603,12 +1603,16 @@ impl MomentumEngine {
                                     "[deferred_buy_pumpswap] resolved token_mint_program"
                                 );
                             } else {
-                                // Fallback: classic SPL Token (all pump.fun tokens use SPL Token, not Token-2022)
-                                ps_pool.token_mint_program = crate::tx::pumpswap::SPL_TOKEN_PROGRAM_BYTES;
+                                // Resolution failed — we cannot determine the token program.
+                                // NEVER default to SPL Token: if the token is Token-2022 the TX will fail
+                                // on-chain with IncorrectProgramId, wasting fees and leaving a bad trade.
+                                // Safe path: abort this buy. The trade will be skipped.
                                 tracing::warn!(
                                     mint = %bs58::encode(&mint_buy).into_string(),
-                                    "[deferred_buy_pumpswap] failed to resolve — defaulting to classic SPL Token"
+                                    "[deferred_buy_pumpswap] failed to resolve token_mint_program — aborting buy (Token-2022 safety)"
                                 );
+                                buy_states.remove(&mint_buy);
+                                return;
                             }
                         }
 
@@ -2387,14 +2391,16 @@ impl MomentumEngine {
                                         }
                                     }
                                     _ => {
-                                        // Both mint and vault resolution failed — default to SPL Token.
-                                        // This is safe for the ~99% of pump.fun tokens that use SPL Token.
-                                        // Token-2022 tokens will still fail, but we've tried our best.
+                                        // Both mint and vault RPC resolution failed. We cannot determine the token
+                                        // program safely. Defaulting to SPL Token risks IncorrectProgramId on-chain
+                                        // for Token-2022 tokens. Skip this trade — better to miss than to burn fees.
                                         tracing::warn!(
                                             mint = %mint_b58_prog,
-                                            "[buy_pumpswap] failed to resolve token_mint_program (mint + vault) — defaulting to classic SPL Token"
+                                            "[buy_pumpswap] failed to resolve token_mint_program (mint + vault) — skipping trade (Token-2022 safety)"
                                         );
-                                        ps_pool.token_mint_program = crate::tx::pumpswap::SPL_TOKEN_PROGRAM_BYTES;
+                                        self.active.remove(&entry.mint);
+                                        self.momentum_zones.remove(&entry.mint);
+                                        continue;
                                     }
                                 }
                             }

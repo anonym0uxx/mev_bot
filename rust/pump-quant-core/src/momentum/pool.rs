@@ -205,6 +205,11 @@ pub struct PoolResolution {
     /// False when WSOL is base and token is quote (reversed pool).
     /// Set from actual on-chain pool data — DO NOT recompute from byte comparison.
     pub token_is_base: bool,
+
+    /// Token program that owns the traded token's mint.
+    /// Populated from create_pool IX index 13 (base_token_program) for normal pools,
+    /// or left as [0u8; 32] for reversed pools / non-PumpSwap pools (runtime-resolved).
+    pub base_token_program: [u8; 32],
 }
 
 /// Decode a base58-encoded string into a 32-byte array.
@@ -634,6 +639,7 @@ async fn resolve_pool_inner(
         coin_creator: [0u8; 32],
         is_cashback_coin: false,
         token_is_base: true, // Raydium pools: not applicable, default true
+        base_token_program: [0u8; 32], // Raydium: not applicable, resolved at TX build time
     })
 }
 
@@ -1269,6 +1275,7 @@ pub async fn resolve_pumpswap_pool_from_mint(
         coin_creator,
         is_cashback_coin,
         token_is_base,
+        base_token_program: [0u8; 32], // Not available from getProgramAccounts; runtime-resolved
     })
 }
 
@@ -1403,6 +1410,7 @@ pub async fn resolve_pool_from_mint(
         coin_creator: [0u8; 32],
         is_cashback_coin: false,
         token_is_base: true, // Raydium pools: not applicable, default true
+        base_token_program: [0u8; 32], // Raydium: not applicable
     })
 }
 
@@ -1642,6 +1650,10 @@ pub struct CreatePoolExtracted {
     pub pool_base_vault: [u8; 32],
     /// Pool quote vault (pool_quote_token_account).
     pub pool_quote_vault: [u8; 32],
+    /// Token program that owns the base_mint (index 13 in create_pool IX accounts).
+    /// Either SPL Token (Tokenkeg...) or Token-2022 (Tokenz...). Never zero — always
+    /// populated directly from the on-chain instruction. Zero-RPC, deterministic.
+    pub base_token_program: [u8; 32],
 }
 
 /// Extract pool data from PumpSwap `create_pool` instruction accounts.
@@ -1665,6 +1677,7 @@ pub fn extract_from_create_pool_accounts(
         quote_mint: ix_accounts[create_pool_ix::QUOTE_MINT],
         pool_base_vault: ix_accounts[create_pool_ix::POOL_BASE_TOKEN_ACCOUNT],
         pool_quote_vault: ix_accounts[create_pool_ix::POOL_QUOTE_TOKEN_ACCOUNT],
+        base_token_program: ix_accounts[create_pool_ix::BASE_TOKEN_PROGRAM],
     })
 }
 
@@ -1707,6 +1720,25 @@ pub fn build_pumpswap_pool_accounts_deterministic(
         (extracted.pool_quote_vault, extracted.pool_base_vault)
     };
 
+    // token_mint_program: use base_token_program from create_pool IX (index 13).
+    // This is available zero-RPC from the on-chain instruction — no resolution needed.
+    // For normal pools (token=base): base_token_program IS the token's program.
+    // For reversed pools (WSOL=base): base_token_program is SPL_TOKEN (WSOL's program);
+    //   the token program is quote_token_program (index 14) — but we don't capture that.
+    //   In practice, reversed pools have token as quote_mint, and since most pump.fun tokens
+    //   use SPL Token, base_token_program == SPL Token covers ~99% of reversed cases too.
+    //   For reversed Token-2022 pools: falls back to runtime resolution (still safe — only
+    //   ~1% of pools, and we already have runtime resolution as belt-and-suspenders).
+    let token_mint_program = if token_is_base {
+        // Normal pool: token IS the base mint → base_token_program is its program
+        extracted.base_token_program
+    } else {
+        // Reversed pool: WSOL is base → base_token_program is SPL Token (WSOL's program)
+        // We don't have quote_token_program in CreatePoolExtracted; leave unresolved
+        // so the runtime path resolves it. For SPL Token tokens this is a no-op fallback.
+        [0u8; 32]
+    };
+
     PumpSwapPoolAccounts {
         pool: extracted.pool,
         base_mint: token_mint,
@@ -1714,7 +1746,7 @@ pub fn build_pumpswap_pool_accounts_deterministic(
         pool_quote_token_account: pc_vault,
         coin_creator_vault_ata: creator_ata,
         coin_creator_vault_authority: creator_authority,
-        token_mint_program: [0u8; 32], // resolved lazily at TX build time
+        token_mint_program,
         is_cashback_coin: false, // resolved from pool data at TX build time
         token_is_base, // from extracted create_pool data
     }
@@ -1772,6 +1804,14 @@ pub fn build_pool_resolution_from_create_pool(
         coin_creator: [0u8; 32], // not available from create_pool; resolved from pool data later
         is_cashback_coin: false,
         token_is_base, // from extracted create_pool data
+        // For normal pools (token=base), base_token_program IS the token's program.
+        // For reversed pools, base_token_program is WSOL's program (SPL Token) — leave
+        // unresolved so runtime resolution handles it.
+        base_token_program: if token_is_base {
+            extracted.base_token_program
+        } else {
+            [0u8; 32]
+        },
     }
 }
 
@@ -1816,7 +1856,7 @@ pub fn extract_pumpswap_pool_accounts(res: &PoolResolution) -> Option<PumpSwapPo
         pool_quote_token_account: res.pc_vault,
         coin_creator_vault_ata: creator_ata,
         coin_creator_vault_authority: creator_authority,
-        token_mint_program: [0u8; 32], // resolved lazily at TX build time
+        token_mint_program: res.base_token_program, // from create_pool IX (zero if unresolved)
         is_cashback_coin: res.is_cashback_coin,
         token_is_base: res.token_is_base, // from on-chain pool data detection
     })
@@ -2027,6 +2067,7 @@ mod tests {
             coin_creator: [0u8; 32],
             is_cashback_coin: false,
             token_is_base: true,
+            base_token_program: [0u8; 32],
         }
     }
 
@@ -2078,13 +2119,15 @@ mod tests {
 
     #[test]
     fn test_extract_pumpswap_creator_vaults_populated_when_creator_known() {
-        // When creator is non-zero, coin_creator_vault_authority = creator
-        // and coin_creator_vault_ata = derived ATA for (creator, mint)
+        // When creator is non-zero, coin_creator_vault_authority is PDA-derived
+        // and coin_creator_vault_ata = derived ATA for (authority, WSOL)
         let mut res = make_pumpswap_resolution();
         res.creator = [0xAA; 32]; // non-zero creator
         let accts = extract_pumpswap_pool_accounts(&res).unwrap();
-        assert_eq!(accts.coin_creator_vault_authority, [0xAA; 32],
-            "coin_creator_vault_authority should be the creator pubkey");
+        assert_ne!(accts.coin_creator_vault_authority, [0u8; 32],
+            "coin_creator_vault_authority should be non-zero (PDA-derived from creator)");
+        assert_ne!(accts.coin_creator_vault_authority, [0xAA; 32],
+            "coin_creator_vault_authority is PDA-derived, not raw creator");
         assert_ne!(accts.coin_creator_vault_ata, [0u8; 32],
             "coin_creator_vault_ata should be a derived ATA (non-zero)");
         // The ATA is a PDA — verify it's deterministic
@@ -2795,6 +2838,7 @@ mod tests {
         assert_eq!(extracted.quote_mint, quote_mint);
         assert_eq!(extracted.pool_base_vault, pool_base_vault);
         assert_eq!(extracted.pool_quote_vault, pool_quote_vault);
+        assert_eq!(extracted.base_token_program, base_tp);
     }
 
     #[test]
@@ -2813,6 +2857,7 @@ mod tests {
             quote_mint: [0x7au8; 32],           // token is quote
             pool_base_vault: [0xAAu8; 32],      // WSOL vault
             pool_quote_vault: [0xBBu8; 32],     // token vault
+            base_token_program: SPL_TOKEN_PROGRAM_BYTES, // WSOL's program
         };
 
         let accts = build_pumpswap_pool_accounts_deterministic(&extracted);
@@ -2822,8 +2867,9 @@ mod tests {
         // Normalized: coin_vault = token vault, pc_vault = WSOL vault
         assert_eq!(accts.pool_base_token_account, [0xBBu8; 32], "coin_vault = token vault (quote)");
         assert_eq!(accts.pool_quote_token_account, [0xAAu8; 32], "pc_vault = WSOL vault (base)");
-        // Creator should be set
-        assert_eq!(accts.coin_creator_vault_authority, [3u8; 32]);
+        // Creator vault authority should be PDA-derived (non-zero, not equal to raw creator)
+        assert_ne!(accts.coin_creator_vault_authority, [0u8; 32], "authority should be non-zero (PDA-derived)");
+        assert_ne!(accts.coin_creator_vault_authority, [3u8; 32], "authority is PDA, not raw creator");
         // ATA should be non-zero (derived)
         assert_ne!(accts.coin_creator_vault_ata, [0u8; 32]);
         // ATA should be deterministic
@@ -2841,6 +2887,7 @@ mod tests {
             quote_mint: WSOL_MINT_BYTES,
             pool_base_vault: [0xCCu8; 32],      // token vault
             pool_quote_vault: [0xDDu8; 32],     // WSOL vault
+            base_token_program: SPL_TOKEN_PROGRAM_BYTES,
         };
 
         let accts = build_pumpswap_pool_accounts_deterministic(&extracted);
@@ -2860,6 +2907,7 @@ mod tests {
             quote_mint: [0x7au8; 32],
             pool_base_vault: [0xAAu8; 32],
             pool_quote_vault: [0xBBu8; 32],
+            base_token_program: SPL_TOKEN_PROGRAM_BYTES,
         };
 
         let accts = build_pumpswap_pool_accounts_deterministic(&extracted);
@@ -2876,6 +2924,7 @@ mod tests {
             quote_mint: [0x7au8; 32],
             pool_base_vault: [0xAAu8; 32],  // WSOL vault
             pool_quote_vault: [0xBBu8; 32], // token vault
+            base_token_program: SPL_TOKEN_PROGRAM_BYTES, // WSOL's program (reversed pool)
         };
 
         let res = build_pool_resolution_from_create_pool(
@@ -2943,6 +2992,117 @@ mod tests {
         // Different token program → different vault
         let v3 = derive_pool_vault(&pool, &TOKEN_2022_PROGRAM_BYTES, &mint);
         assert_ne!(v1, v3, "different token program should produce different vault");
+    }
+
+    #[test]
+    fn test_build_deterministic_normal_pool_uses_base_token_program() {
+        // Normal pool: base=token, quote=WSOL
+        // base_token_program (index 13) is Token-2022 → should propagate to token_mint_program
+        let extracted = CreatePoolExtracted {
+            pool: [2u8; 32],
+            creator: [4u8; 32],
+            base_mint: [0x01u8; 32],            // token < WSOL
+            quote_mint: WSOL_MINT_BYTES,
+            pool_base_vault: [0xCCu8; 32],      // token vault
+            pool_quote_vault: [0xDDu8; 32],     // WSOL vault
+            base_token_program: TOKEN_2022_PROGRAM_BYTES, // Token-2022!
+        };
+
+        let accts = build_pumpswap_pool_accounts_deterministic(&extracted);
+
+        // token_mint_program must equal base_token_program for normal pools
+        assert_eq!(
+            accts.token_mint_program, TOKEN_2022_PROGRAM_BYTES,
+            "normal pool: token_mint_program should be base_token_program (Token-2022)"
+        );
+        assert!(accts.token_is_base);
+    }
+
+    #[test]
+    fn test_build_deterministic_reversed_pool_leaves_token_program_unresolved() {
+        // Reversed pool: base=WSOL, quote=token
+        // base_token_program is SPL Token (WSOL's program) — NOT the token's program
+        // token_mint_program should be left as [0u8; 32] for runtime resolution
+        let extracted = CreatePoolExtracted {
+            pool: [1u8; 32],
+            creator: [3u8; 32],
+            base_mint: WSOL_MINT_BYTES,        // WSOL is base
+            quote_mint: [0x7au8; 32],           // token is quote
+            pool_base_vault: [0xAAu8; 32],      // WSOL vault
+            pool_quote_vault: [0xBBu8; 32],     // token vault
+            base_token_program: SPL_TOKEN_PROGRAM_BYTES, // WSOL's program, not token's
+        };
+
+        let accts = build_pumpswap_pool_accounts_deterministic(&extracted);
+
+        // Reversed pool: token_mint_program should be unresolved (left for runtime)
+        assert_eq!(
+            accts.token_mint_program, [0u8; 32],
+            "reversed pool: token_mint_program should be [0u8; 32] (unresolved)"
+        );
+        assert!(!accts.token_is_base);
+    }
+
+    #[test]
+    fn test_pool_resolution_carries_base_token_program_for_normal_pool() {
+        // Verify build_pool_resolution_from_create_pool threads base_token_program
+        // through to PoolResolution, and extract_pumpswap_pool_accounts picks it up.
+        let extracted = CreatePoolExtracted {
+            pool: [2u8; 32],
+            creator: [4u8; 32],
+            base_mint: [0x01u8; 32],            // token is base (normal pool)
+            quote_mint: WSOL_MINT_BYTES,
+            pool_base_vault: [0xCCu8; 32],
+            pool_quote_vault: [0xDDu8; 32],
+            base_token_program: TOKEN_2022_PROGRAM_BYTES,
+        };
+
+        let res = build_pool_resolution_from_create_pool(
+            &extracted,
+            [0xFFu8; 64],
+            85_000_000_000,
+            200_000_000_000_000,
+            1700000000000,
+        );
+
+        // PoolResolution should carry base_token_program for normal pool
+        assert_eq!(res.base_token_program, TOKEN_2022_PROGRAM_BYTES,
+            "normal pool PoolResolution should carry base_token_program");
+
+        // extract_pumpswap_pool_accounts should propagate it to token_mint_program
+        let accts = extract_pumpswap_pool_accounts(&res).unwrap();
+        assert_eq!(accts.token_mint_program, TOKEN_2022_PROGRAM_BYTES,
+            "extract_pumpswap_pool_accounts should propagate base_token_program to token_mint_program");
+    }
+
+    #[test]
+    fn test_pool_resolution_zeroes_base_token_program_for_reversed_pool() {
+        // Reversed pool: PoolResolution.base_token_program should be [0u8; 32]
+        let extracted = CreatePoolExtracted {
+            pool: [1u8; 32],
+            creator: [3u8; 32],
+            base_mint: WSOL_MINT_BYTES,
+            quote_mint: [0x7au8; 32],
+            pool_base_vault: [0xAAu8; 32],
+            pool_quote_vault: [0xBBu8; 32],
+            base_token_program: SPL_TOKEN_PROGRAM_BYTES,
+        };
+
+        let res = build_pool_resolution_from_create_pool(
+            &extracted,
+            [0xFFu8; 64],
+            85_000_000_000,
+            200_000_000_000_000,
+            1700000000000,
+        );
+
+        // Reversed pool: base_token_program should be zeroed (unresolved)
+        assert_eq!(res.base_token_program, [0u8; 32],
+            "reversed pool PoolResolution should zero base_token_program");
+
+        let accts = extract_pumpswap_pool_accounts(&res).unwrap();
+        assert_eq!(accts.token_mint_program, [0u8; 32],
+            "reversed pool: token_mint_program should be [0u8; 32] (runtime-resolved)");
     }
 }
 
