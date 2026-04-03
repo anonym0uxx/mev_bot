@@ -653,6 +653,7 @@
     },
     "activity_gate": {
       "enabled": false
-    }
+    },
+    "min_buys_for_full_ratio_score": 5
   }
 }

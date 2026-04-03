@@ -5870,6 +5870,8 @@ mod tests {
     fn make_test_engine_with(enabled: bool, f: impl FnOnce(&mut MomentumConfig)) -> MomentumEngine {
         let mut cfg = MomentumConfig::default();
         cfg.enabled = enabled;
+        // Disable activity gate in tests — no WS feed populates the tracker
+        cfg.activity_gate.enabled = false;
         f(&mut cfg);
         let config = Arc::new(cfg);
         let rpc_url = Arc::new("https://example.com".to_string());
@@ -6051,7 +6053,7 @@ mod tests {
         let engine = make_test_engine(true);
 
         // Insert a position directly (entered at T=1000)
-        let pos = MomentumPosition::new(
+        let mut pos = MomentumPosition::new(
             [0xEE; 32],
             1_000,
             381,   // entry price
@@ -6064,6 +6066,7 @@ mod tests {
             10,
             15_000,
         );
+        pos.buy_confirmed_ms = 1; // confirmed — allow exit evaluation
         engine.active.insert([0xEE; 32], pos);
 
         // Insert a price so on_tick can read it
@@ -6087,7 +6090,7 @@ mod tests {
         let engine = make_test_engine(true);
 
         // Position entered at price 1000
-        let pos = MomentumPosition::new(
+        let mut pos = MomentumPosition::new(
             [0xFF; 32],
             1_000,
             1000,  // entry price
@@ -6100,6 +6103,7 @@ mod tests {
             10,
             15_000,
         );
+        pos.buy_confirmed_ms = 1; // confirmed — allow exit evaluation
         engine.active.insert([0xFF; 32], pos);
 
         // Set price to -15% (below 12% hard SL)
@@ -6120,7 +6124,7 @@ mod tests {
         let engine = make_test_engine_with(true, |cfg| { cfg.tp3_pct = 50.0; });
 
         // Position entered at price 1000
-        let pos = MomentumPosition::new(
+        let mut pos = MomentumPosition::new(
             [0x11; 32],
             1_000,
             1000,
@@ -6133,6 +6137,7 @@ mod tests {
             10,
             15_000,
         );
+        pos.buy_confirmed_ms = 1; // confirmed — allow exit evaluation
         engine.active.insert([0x11; 32], pos);
 
         // Set price to +60% (above 50% TP3)
@@ -6154,6 +6159,7 @@ mod tests {
         let engine = make_test_engine_with(true, |cfg| {
             cfg.trailing_stop_min_samples = 0;
             cfg.trailing_stop_confirm_samples = 1;
+            cfg.adaptive_trail_enabled = false; // use legacy trailing stop path for this test
         });
 
         // Position entered at price 1000, TP1 already hit
@@ -6170,16 +6176,22 @@ mod tests {
             10,
             15_000,
         );
+        pos.buy_confirmed_ms = 1; // confirmed — allow exit evaluation
         pos.tp_flags = 0x1; // TP1 hit — trailing stop active
         pos.peak_price_fp = 1200; // peak at +20%
+        // Pre-fill samples so trailing stop sample gate passes (requires >= 2 samples for tp1 path)
+        pos.price_samples_bps[0] = 200; // +2%
+        pos.price_samples_bps[1] = 150; // +1.5%
+        pos.price_samples_bps[2] = 80;  // +0.8% (declining from peak)
+        pos.sample_count = 3;
         engine.active.insert([0x22; 32], pos);
 
-        // Price dropped 10% from peak (1200 → 1080), trailing stop is 8%
-        // 8% of 1200 = 96 drop → threshold at 1104
-        // 1080 is below 1104 → should trigger
+        // Price dropped 15.8% from peak (1200 → 1010), trailing stop is 15%
+        // 15% of 1200 = 180 drop → floor at 1020
+        // 1010 is below 1020 → should trigger trailing stop
         {
             let state = crate::momentum::price_feed::PriceState::new();
-            state.price_fp.store(1080, Ordering::Relaxed);
+            state.price_fp.store(1010, Ordering::Relaxed);
             engine.price_feed.prices.insert([0x22; 32], state);
         }
 
@@ -6194,7 +6206,7 @@ mod tests {
         let engine = make_test_engine(true);
 
         // Position entered at price 1000, T=1000
-        let pos = MomentumPosition::new(
+        let mut pos = MomentumPosition::new(
             [0x33; 32],
             1_000,
             1000,
@@ -6207,6 +6219,7 @@ mod tests {
             10,
             15_000,
         );
+        pos.buy_confirmed_ms = 1; // confirmed — allow exit evaluation
         engine.active.insert([0x33; 32], pos);
 
         // Price at entry level (no profit) after time_sl_ms (60_000ms)
