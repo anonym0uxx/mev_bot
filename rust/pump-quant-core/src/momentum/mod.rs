@@ -766,6 +766,21 @@ impl MomentumEngine {
             return;
         }
 
+        // u64 overflow gate: PumpSwap sell does reserve_sol * reserve_token in u64.
+        // If that product overflows, every sell will fail on-chain (Custom:6023).
+        // Check using u128 widening — if it exceeds u64::MAX, skip entry entirely.
+        let k_check = pool_info.reserve_sol as u128 * pool_info.reserve_token as u128;
+        if k_check > u64::MAX as u128 {
+            tracing::warn!(
+                mint = %bs58::encode(&pool_info.mint).into_string(),
+                reserve_sol = pool_info.reserve_sol,
+                reserve_token = pool_info.reserve_token,
+                k_check = k_check,
+                "[momentum] hard gate: pool k overflows u64 — sell would fail on-chain, skipping entry"
+            );
+            return;
+        }
+
         // Reentry cooldown: skip if this mint was recently closed (CoreCast flood prevention)
         if let Some(close_ts) = self.recently_closed.get(&pool_info.mint) {
             if now_ms.saturating_sub(*close_ts) < self.config.reentry_cooldown_ms {
@@ -5923,7 +5938,7 @@ mod tests {
         let pool_info = PoolInfo {
             coin_vault: [1u8; 32],
             pc_vault: [2u8; 32],
-            reserve_token: 200_000_000_000_000,
+            reserve_token: 200_000_000, // realistic pump.fun graduation pool (~200M tokens remaining in curve)
             reserve_sol: 80_000_000_000,
             pool_type: PoolType::RaydiumAmmV4,
             mint: [0xAA; 32],
@@ -5942,7 +5957,7 @@ mod tests {
         let pool_info = PoolInfo {
             coin_vault: [1u8; 32],
             pc_vault: [2u8; 32],
-            reserve_token: 200_000_000_000_000,
+            reserve_token: 200_000_000, // realistic pump.fun graduation pool (~200M tokens remaining in curve)
             reserve_sol: 80_000_000_000,
             pool_type: PoolType::RaydiumAmmV4,
             mint: [0xAA; 32],
@@ -5966,7 +5981,7 @@ mod tests {
         let pool_info = PoolInfo {
             coin_vault: [1u8; 32],
             pc_vault: [2u8; 32],
-            reserve_token: 200_000_000_000_000,
+            reserve_token: 200_000_000, // realistic pump.fun graduation pool (~200M tokens remaining in curve)
             reserve_sol: 80_000_000_000,
             pool_type: PoolType::PumpSwap,
             mint: [0xBB; 32],
@@ -5987,7 +6002,7 @@ mod tests {
         let pool_info = PoolInfo {
             coin_vault: [1u8; 32],
             pc_vault: [2u8; 32],
-            reserve_token: 200_000_000_000_000,
+            reserve_token: 200_000_000, // realistic pump.fun graduation pool (~200M tokens remaining in curve)
             reserve_sol: 80_000_000_000,
             pool_type: PoolType::RaydiumAmmV4,
             mint: [0xCC; 32],
@@ -6247,7 +6262,7 @@ mod tests {
         let pool_info = PoolInfo {
             coin_vault: [1u8; 32],
             pc_vault: [2u8; 32],
-            reserve_token: 200_000_000_000_000,
+            reserve_token: 200_000_000, // realistic pump.fun graduation pool (~200M tokens remaining in curve)
             reserve_sol: 80_000_000_000,
             pool_type: PoolType::RaydiumAmmV4,
             mint: [0x44; 32],
@@ -6325,7 +6340,7 @@ mod tests {
         let pool_info = PoolInfo {
             coin_vault: [1u8; 32],
             pc_vault: [2u8; 32],
-            reserve_token: 200_000_000_000_000,
+            reserve_token: 200_000_000, // realistic pump.fun graduation pool (~200M tokens remaining in curve)
             reserve_sol: 80_000_000_000,
             pool_type: PoolType::RaydiumAmmV4,
             mint: [0xA1; 32],
@@ -6349,7 +6364,7 @@ mod tests {
         let pool_info = PoolInfo {
             coin_vault: [1u8; 32],
             pc_vault: [2u8; 32],
-            reserve_token: 200_000_000_000_000,
+            reserve_token: 200_000_000, // realistic pump.fun graduation pool (~200M tokens remaining in curve)
             reserve_sol: 80_000_000_000,
             pool_type: PoolType::RaydiumAmmV4,
             mint: [0xA2; 32],
@@ -6373,7 +6388,7 @@ mod tests {
         let pool_info = PoolInfo {
             coin_vault: [1u8; 32],
             pc_vault: [2u8; 32],
-            reserve_token: 200_000_000_000_000,
+            reserve_token: 200_000_000, // realistic pump.fun graduation pool (~200M tokens remaining in curve)
             reserve_sol: 80_000_000_000,
             pool_type: PoolType::RaydiumAmmV4,
             mint: [0xA3; 32],
@@ -6396,7 +6411,7 @@ mod tests {
         let pool_info = PoolInfo {
             coin_vault: [1u8; 32],
             pc_vault: [2u8; 32],
-            reserve_token: 200_000_000_000_000,
+            reserve_token: 200_000_000, // realistic pump.fun graduation pool (~200M tokens remaining in curve)
             reserve_sol: 80_000_000_000,
             pool_type: PoolType::RaydiumAmmV4,
             mint: [0xA4; 32],
@@ -6423,7 +6438,7 @@ mod tests {
         let pool_info = PoolInfo {
             coin_vault: [1u8; 32],
             pc_vault: [2u8; 32],
-            reserve_token: 200_000_000_000_000,
+            reserve_token: 200_000_000, // realistic pump.fun graduation pool (~200M tokens remaining in curve)
             reserve_sol: 80_000_000_000,
             pool_type: PoolType::RaydiumAmmV4,
             mint: [0xA5; 32],

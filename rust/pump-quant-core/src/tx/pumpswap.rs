@@ -343,6 +343,7 @@ fn build_create_ata_idempotent_ix(
 ///   0. [writable] account to close
 ///   1. [writable] destination for remaining SOL
 ///   2. [signer]   owner of the account
+#[allow(dead_code)]
 fn build_close_account_ix(
     account_to_close: &Pubkey,
     destination: &Pubkey,
@@ -670,8 +671,7 @@ fn build_pumpswap_swap_ix_inner(
 ///   5. system_instruction::transfer(wallet → wsol_ata, sol_lamports)
 ///   6. spl_token::sync_native(wsol_ata)
 ///   7. pumpswap swap ix (22 accounts)
-///   8. spl_token::close_account(wsol_ata → wallet)
-///   9. system_instruction::transfer(wallet → jito_tip_account, tip_lamports)
+///   8. system_instruction::transfer(wallet → jito_tip_account, tip_lamports)
 ///
 /// Returns: serialized VersionedTransaction bytes (bincode).
 pub fn build_pumpswap_buy_tx(
@@ -767,10 +767,7 @@ pub fn build_pumpswap_buy_tx(
         is_pumpswap_sell,
     )?;
 
-    // 8. Close WSOL ATA → wallet (reclaim leftover WSOL)
-    let ix_close = build_close_account_ix(&wsol_ata_addr, &wallet_pubkey, &wallet_pubkey);
-
-    // 9. Jito tip
+    // 8. Jito tip (WSOL ATA kept open — created once at startup)
     let ix_tip = system_instruction::transfer(&wallet_pubkey, &jito_tip_account, jito_tip_lamports);
 
     let ixs = vec![
@@ -781,7 +778,6 @@ pub fn build_pumpswap_buy_tx(
         ix_fund_wsol,
         ix_sync,
         ix_swap,
-        ix_close,
         ix_tip,
     ];
 
@@ -816,8 +812,7 @@ pub fn build_pumpswap_buy_tx(
 ///   2. ComputeBudget::set_compute_unit_price(5000)
 ///   3. create_associated_token_account_idempotent(user, WSOL)
 ///   4. pumpswap swap ix (22 accounts)
-///   5. spl_token::close_account(wsol_ata → wallet)
-///   6. system_instruction::transfer(wallet → jito_tip_account, tip_lamports)
+///   5. system_instruction::transfer(wallet → jito_tip_account, tip_lamports)
 ///
 /// Returns: serialized VersionedTransaction bytes (bincode).
 pub fn build_pumpswap_sell_tx(
@@ -897,10 +892,7 @@ pub fn build_pumpswap_sell_tx(
         is_pumpswap_sell,
     )?;
 
-    // 5. Close WSOL ATA → wallet (SOL flows back to wallet)
-    let ix_close = build_close_account_ix(&wsol_ata_addr, &wallet_pubkey, &wallet_pubkey);
-
-    // 6. Jito tip
+    // 5. Jito tip (WSOL ATA kept open — created once at startup)
     let ix_tip = system_instruction::transfer(&wallet_pubkey, &jito_tip_account, jito_tip_lamports);
 
     let ixs = vec![
@@ -908,7 +900,6 @@ pub fn build_pumpswap_sell_tx(
         ix_cu_price,
         ix_create_wsol_ata,
         ix_swap,
-        ix_close,
         ix_tip,
     ];
 
@@ -958,12 +949,12 @@ pub fn build_pumpswap_sell_tx_with_ata(
         Some(user_token_ata),
     )?;
 
-    let ix_close = build_close_account_ix(&wsol_ata_addr, &wallet_pubkey, &wallet_pubkey);
+    // WSOL ATA kept open — created once at startup
     let ix_tip = system_instruction::transfer(&wallet_pubkey, &jito_tip_account, jito_tip_lamports);
 
     let msg = v0::Message::try_compile(
         &wallet_pubkey,
-        &[ix_cu_limit, ix_cu_price, ix_create_wsol_ata, ix_swap, ix_close, ix_tip],
+        &[ix_cu_limit, ix_cu_price, ix_create_wsol_ata, ix_swap, ix_tip],
         &[],
         blockhash,
     ).map_err(|e| PumpSwapTxError::SignError(format!("compile: {e}")))?;
@@ -1110,7 +1101,7 @@ mod tests {
     // ── 4. test_buy_tx_9_instructions ────────────────────────────────────
 
     #[test]
-    fn test_buy_tx_9_instructions() {
+    fn test_buy_tx_8_instructions() {
         let tx_bytes = build_buy_tx_helper(0);
         let tx: VersionedTransaction =
             bincode::deserialize(&tx_bytes).expect("should deserialize");
@@ -1118,8 +1109,8 @@ mod tests {
             VersionedMessage::V0(m) => {
                 assert_eq!(
                     m.instructions.len(),
-                    9,
-                    "buy tx should have 9 instructions"
+                    8,
+                    "buy tx should have 8 instructions (no closeAccount)"
                 );
             }
             _ => panic!("expected V0 message"),
@@ -1129,7 +1120,7 @@ mod tests {
     // ── 5. test_sell_tx_6_instructions ───────────────────────────────────
 
     #[test]
-    fn test_sell_tx_6_instructions() {
+    fn test_sell_tx_5_instructions() {
         let tx_bytes = build_sell_tx_helper(0, 500_000);
         let tx: VersionedTransaction =
             bincode::deserialize(&tx_bytes).expect("should deserialize");
@@ -1137,8 +1128,8 @@ mod tests {
             VersionedMessage::V0(m) => {
                 assert_eq!(
                     m.instructions.len(),
-                    6,
-                    "sell tx should have 6 instructions"
+                    5,
+                    "sell tx should have 5 instructions (no closeAccount)"
                 );
             }
             _ => panic!("expected V0 message"),
@@ -1245,7 +1236,7 @@ mod tests {
         let pool = dummy_pool();
         let kp = Keypair::new();
         let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 0, &PUMPSWAP_BUY_DISCRIMINATOR, 1, 1_000_000, false).unwrap();
-        assert_eq!(ix.accounts.len(), 23, "PumpSwap BUY swap ix must have 23 accounts");
+        assert_eq!(ix.accounts.len(), 24, "PumpSwap BUY swap ix must have 24 accounts");
     }
 
     // ── 13b. test_reversed_pool_swap_ix_has_22_accounts ──────────────────
@@ -1255,7 +1246,7 @@ mod tests {
         let pool = dummy_reversed_pool();
         let kp = Keypair::new();
         let ix = build_pumpswap_swap_ix(&pool, &kp.pubkey(), 0, &PUMPSWAP_SELL_DISCRIMINATOR, 1, 1_000_000, true).unwrap();
-        assert_eq!(ix.accounts.len(), 21, "PumpSwap SELL swap ix must have 21 accounts");
+        assert_eq!(ix.accounts.len(), 22, "PumpSwap SELL swap ix must have 22 accounts");
     }
 
     // ── 14. test_fee_recipient_wraps_around ──────────────────────────────
