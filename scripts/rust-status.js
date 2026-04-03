@@ -101,16 +101,14 @@ async function main() {
     process.exit(1);
   }
 
-  // Detect mode from config — momentum engine's paper_mode is authoritative
+  // Detect mode from config — canary.json momentum.paper_mode is authoritative.
+  // PAPER_MODE env var in rust/.env is NOT used by the momentum engine (it reads canary.json).
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(BASE, 'config/canary.json'), 'utf8'));
     const momPaper = cfg?.momentum?.paper_mode;
     if (momPaper === false) { isPaper = false; modeFlag = '🔴 LIVE'; }
     else if (momPaper === true) { isPaper = true; modeFlag = '📄 PAPER'; }
   } catch {}
-  // Env override (backward compat)
-  if (process.env.PAPER_MODE === 'false') { isPaper = false; modeFlag = '🔴 LIVE'; }
-  if (process.env.PAPER_MODE === 'true') { isPaper = true; modeFlag = '📄 PAPER'; }
 
   // ── Load momentum trades (primary engine) ─────────────────────────
   const allMomentum = loadJsonl(MOMENTUM_JSONL);

@@ -206,8 +206,12 @@ fn parse_message(mut text: String, write_tx: &mpsc::Sender<String>, creator_map:
         // Detect mayhem / tokenized agent from token metadata
         let name = val.get_str("name").unwrap_or("");
         let symbol = val.get_str("symbol").unwrap_or("");
-        let is_mayhem = crate::engine::regime::detect_mayhem(name, symbol);
-        let is_tokenized_agent = crate::engine::regime::detect_tokenized_agent(name, symbol);
+        // Inline regime detection (previously in engine::regime, removed with backrunner)
+        let name_lower = name.to_ascii_lowercase();
+        let sym_lower = symbol.to_ascii_lowercase();
+        let is_mayhem = name_lower.contains("mayhem") || sym_lower.contains("mayhem");
+        let is_tokenized_agent = name_lower.contains("agent") || sym_lower.contains("agent")
+            || name_lower.contains("a.i.") || sym_lower.contains("ai16z");
 
         // Emit TokenCreated event with regime flags
         if let Ok(mint_bytes) = decode_pubkey(mint_b58) {

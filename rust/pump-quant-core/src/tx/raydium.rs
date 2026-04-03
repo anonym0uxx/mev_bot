@@ -50,7 +50,7 @@ pub const WSOL_MINT_STR: &str = "So11111111111111111111111111111111111111112";
 pub const SPL_TOKEN_PROGRAM_STR: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 
 /// SPL Associated Token Account program ID.
-pub const SPL_ATA_PROGRAM_STR: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe8bXh";
+pub const SPL_ATA_PROGRAM_STR: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
 // ── Pool accounts ────────────────────────────────────────────────────────────
 

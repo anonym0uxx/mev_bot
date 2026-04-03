@@ -18,6 +18,8 @@
 //! 2. `on_tick()` — hot path, called every `check_ms` to manage positions
 //! 3. `stats()` — read atomic counters for monitoring
 
+pub mod types;
+pub mod kelly;
 pub mod config;
 pub mod logger;
 pub mod pool;
@@ -40,7 +42,7 @@ use crate::momentum::position::{
 };
 use crate::momentum::price_feed::{price_from_reserves, PriceFeedManager, VaultSubscription};
 use crate::momentum::scorer::score_graduation;
-use crate::engine::hot_path::ScoredToken;
+use crate::momentum::types::ScoredToken;
 
 use crate::tx::tip_engine::{TipEngine, TipConfig, TipRequest};
 
@@ -313,7 +315,7 @@ impl ObservationWindow {
 /// processing on the next `on_tick()`.
 struct AsyncRetryResult {
     resolution: PoolResolution,
-    enrichment: crate::engine::hot_path::GradEnrichment,
+    enrichment: crate::momentum::types::GradEnrichment,
     ts_ms: u64,
     mint: [u8; 32],
 }
@@ -1255,7 +1257,7 @@ impl MomentumEngine {
     /// Returns None if insufficient history (< kelly_bootstrap_trades) or negative EV.
     /// Caller falls back to probe_size_sol when None is returned.
     fn compute_kelly_probe_size(&self) -> Option<u64> {
-        use crate::engine::kelly_sizing::{compute_momentum_kelly_size, compute_momentum_kelly_inputs, MomentumPaperTrade};
+        use crate::momentum::kelly::{compute_momentum_kelly_size, compute_momentum_kelly_inputs, MomentumPaperTrade};
 
         // Read trade history from JSONL log
         let log_path = self.logger.log_path();
@@ -4626,7 +4628,7 @@ impl MomentumEngine {
         mint: [u8; 32],
         ts_ms: u64,
         sig: [u8; 64],
-        enrichment: crate::engine::hot_path::GradEnrichment,
+        enrichment: crate::momentum::types::GradEnrichment,
     ) {
         if !self.config.enabled { return; }
 
@@ -5312,7 +5314,7 @@ impl MomentumEngine {
         coin_vault: [u8; 32],
         pc_vault: [u8; 32],
         source: crate::feeds::MigrationSource,
-        enrichment: crate::engine::hot_path::GradEnrichment,
+        enrichment: crate::momentum::types::GradEnrichment,
     ) {
         if !self.config.enabled { return; }
 

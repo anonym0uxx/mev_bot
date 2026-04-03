@@ -126,7 +126,7 @@ async fn sell_position(
     // ATA for Token-2022: use Token-2022 program in seed
     let token_mint = Pubkey::from_str("FYEVo2ejcZncQ3JZULZ7ZswVoAQwg3bazVcNbNfgHLtc").unwrap();
     let token_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
-    let ata_program = Pubkey::from_str("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe8bXh").unwrap();
+    let ata_program = Pubkey::from_str("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL").unwrap();
     let (token_ata, _) = Pubkey::find_program_address(
         &[wallet.as_ref(), token_2022.as_ref(), token_mint.as_ref()],
         &ata_program,

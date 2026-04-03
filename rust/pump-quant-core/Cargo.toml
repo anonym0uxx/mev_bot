@@ -7,9 +7,7 @@ edition = "2021"
 name = "pump-quant"
 path = "src/main.rs"
 
-[[bin]]
-name = "parity-test"
-path = "src/bin/parity_test.rs"
+
 
 [[bin]]
 name = "manual-sell"
@@ -88,3 +86,43 @@ codegen-units = 1
 panic = "abort"
 strip = true
 overflow-checks = false
+
+[[bin]]
+name = "manual-sell-DtSQeRmkG9"
+path = "src/bin/manual_sell_DtSQeRmkG9.rs"
+
+[[bin]]
+name = "ata-check"
+path = "/tmp/ata_check.rs"
+
+[[bin]]
+name = "fee-check"
+path = "/tmp/fee_check.rs"
+
+[[bin]]
+name = "fee-check2"
+path = "/tmp/fee_check2.rs"
+
+[[bin]]
+name = "fee-verify"
+path = "/tmp/fee_verify.rs"
+
+[[bin]]
+name = "parse-config"
+path = "/tmp/parse_config.rs"
+
+[[bin]]
+name = "find-2fn8"
+path = "/tmp/find_2fn8.rs"
+
+[[bin]]
+name = "parse-gc"
+path = "/tmp/parse_gc.rs"
+
+[[bin]]
+name = "find-reserved"
+path = "/tmp/find_reserved.rs"
+
+[[bin]]
+name = "gc-full"
+path = "/tmp/gc_full.rs"

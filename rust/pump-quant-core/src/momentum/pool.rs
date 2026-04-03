@@ -479,7 +479,7 @@ async fn resolve_pool_inner(
         let known_programs: &[&str] = &[
             RAYDIUM_AMM_V4_PROGRAM,
             "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe8bXh",
+            "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
             "11111111111111111111111111111111",
             "SysvarRent111111111111111111111111111111111",
             "SysvarC1ock11111111111111111111111111111111",
@@ -2024,6 +2024,9 @@ mod tests {
             serum_pc_vault: [0u8; 32],
             serum_vault_signer: [0u8; 32],
             creator: [0u8; 32],
+            coin_creator: [0u8; 32],
+            is_cashback_coin: false,
+            token_is_base: true,
         }
     }
 
@@ -2098,7 +2101,7 @@ mod tests {
             "SPL_TOKEN_PROGRAM_BYTES should decode to known Token Program");
         // Verify SPL_ATA_PROGRAM_BYTES matches known base58
         let decoded_ata = bs58::encode(&SPL_ATA_PROGRAM_BYTES).into_string();
-        assert_eq!(decoded_ata, "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe8bXh",
+        assert_eq!(decoded_ata, "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
             "SPL_ATA_PROGRAM_BYTES should decode to known ATA Program");
     }
 

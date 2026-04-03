@@ -1,7 +1,7 @@
-//! pump-quant-core — Rust MEV engine entry point.
+//! pump-quant-core — Momentum graduation engine.
 //!
-//! Reads config from canary.json, wires feeds → joiner → engine hot-path.
-//! Paper mode: logs all closed positions to SQLite.
+//! Reads config from canary.json, wires feeds → event loop → momentum engine.
+//! The sole trading path: post-graduation momentum on PumpSwap/Raydium.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,50 +15,22 @@ use tracing_subscriber::{fmt, EnvFilter};
 use pump_quant_core::alerts::telegram::{self, TelegramAlerter};
 use pump_quant_core::engine::config::load_config;
 use pump_quant_core::engine::health::HealthMonitor;
-use pump_quant_core::engine::hot_path::HotPath;
-use pump_quant_core::engine::positions::{ClosedPosition, ExitReason, PositionManager};
 use pump_quant_core::api::{ApiState, EngineStats, start_server};
 use pump_quant_core::momentum::MomentumEngine;
+use pump_quant_core::momentum::types::GradEnrichment;
 use pump_quant_core::feeds::{
     event_joiner::EventJoiner,
     helius::{HeliusConfig, HeliusPumpSwapClient, HeliusWsClient},
     shredstream::ShredStreamConfig,
     FeedEvent, FeedSource,
 };
-use pump_quant_core::persistence::sqlite::{SqliteLogger, TradeLogEntry};
-use pump_quant_core::persistence::paper_logger::PaperTradeLogger;
 use pump_quant_core::persistence::engine_state::write_engine_state;
 
 const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-fn exit_reason_str(reason: ExitReason) -> &'static str {
-    match reason {
-        ExitReason::TakeProfit => "take_profit",
-        ExitReason::StopLoss => "stop_loss",
-        ExitReason::NextBuyer => "next_buyer",
-        ExitReason::MaxHold => "max_hold",
-        ExitReason::IntraHoldTrail => "intra_hold_trail",
-        ExitReason::MomentumDecayFlat => "momentum_decay_flat",
-        ExitReason::MomentumDecayFade => "momentum_decay_fade",
-        ExitReason::TakeProfitScaled => "take_profit_scaled",
-        ExitReason::MomentumStall => "momentum_stall",
-        ExitReason::RideTrailingStop => "ride_trailing_stop",
-        ExitReason::RideHardFloor => "ride_hard_floor",
-        ExitReason::RideWhaleExit => "ride_whale_exit",
-        ExitReason::RideBuyGapTimeout => "ride_buy_gap_timeout",
-        ExitReason::RideSellCascade => "ride_sell_cascade",
-        ExitReason::RideCreatorSell => "ride_creator_sell",
-        ExitReason::RideMaxHold => "ride_max_hold",
-        ExitReason::RideSignalExit => "ride_signal_exit",
-        ExitReason::RideUrgencyPartial => "ride_urgency_partial",
-        ExitReason::RideUrgencyFull => "ride_urgency_full",
-    }
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load .env file (relative to CWD, i.e. project root)
-    // Silently ignore if .env doesn't exist — env vars may be set externally.
     let _ = dotenvy::dotenv();
 
     // Install rustls crypto provider (required before any TLS connections)
@@ -72,20 +44,15 @@ async fn main() -> anyhow::Result<()> {
         .with(EnvFilter::from_default_env().add_directive("info".parse()?))
         .init();
 
-    // ── LATENCY: Anchor a monotonic clock to epoch time once at startup ──
-    // All subsequent now_ms calls use Instant::elapsed() (~3ns) instead of
-    // SystemTime::now() (~20ns syscall). One syscall at startup, zero in the loop.
+    // ── LATENCY: Anchor monotonic clock to epoch time once at startup ──
     let epoch_offset_ms: u64 = {
-        let sys = std::time::SystemTime::now()
+        std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis() as u64;
-        sys
+            .as_millis() as u64
     };
     let mono_start = Instant::now();
 
-    // Inline helper: epoch ms from monotonic clock (no syscall).
-    // Defined as a fn-like macro so it can be used anywhere without closure capture issues.
     macro_rules! now_ms_mono {
         () => {
             epoch_offset_ms + mono_start.elapsed().as_millis() as u64
@@ -107,59 +74,14 @@ async fn main() -> anyhow::Result<()> {
     info!(path = %config_path.display(), "Loading config");
     let engine_config = load_config(&config_path)?;
 
-    // Controls backrunner only. Momentum reads its own config (engine_config.momentum.paper_mode).
-    let paper_mode = std::env::var("PAPER_MODE")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(engine_config.paper_mode);
-
-    // ── Compute config version string for trade attribution ─────────
-    let config_version = format!(
-        "v{:.2}sol_{}ms_{}vsol",
-        engine_config.gate.trigger_min_buy_lamports as f64 / 1_000_000_000.0,
-        engine_config.position.max_hold_ms,
-        engine_config.gate.min_vsol_lamports / 1_000_000_000
-    );
-
-    // ── Active config dump (single source of truth verification) ────
-    info!(
-        trigger_min_buy_sol = engine_config.gate.trigger_min_buy_lamports as f64 / 1e9,
-        trigger_max_buy_sol = engine_config.gate.trigger_max_buy_lamports as f64 / 1e9,
-        min_vsol = engine_config.gate.min_vsol_lamports as f64 / 1e9,
-        max_vsol = engine_config.gate.max_vsol_lamports as f64 / 1e9,
-        max_hold_ms = engine_config.position.max_hold_ms,
-        min_hold_ms = engine_config.position.min_hold_before_exit_ms,
-        trigger_min_score = engine_config.gate.trigger_min_score,
-        pre_trigger_min_buys_1s = engine_config.gate.pre_trigger_min_buys_1s,
-        pre_trigger_min_buys_2s = engine_config.gate.pre_trigger_min_buys_2s,
-        pre_trigger_min_buys_5s = engine_config.gate.pre_trigger_min_buys_5s,
-        pre_trigger_min_vsol_accel = engine_config.gate.pre_trigger_min_vsol_accel as f64 / 1e9,
-        pre_trigger_min_volume_5s = engine_config.gate.pre_trigger_min_volume_5s_lamports as f64 / 1e9,
-        max_trigger_isolation = engine_config.gate.max_trigger_isolation,
-        max_token_age_ms = engine_config.gate.max_token_age_ms,
-        max_concurrent_positions = engine_config.position.max_concurrent_positions,
-        tp_tiers = engine_config.position.tp_tiers.len(),
-        size_tiers = engine_config.position.size_tiers.len(),
-        daily_loss_cap_sol = engine_config.daily_loss_cap_lamports as f64 / 1e9,
-        consecutive_stop_pause_count = engine_config.consecutive_stop_pause_count,
-        tod_gate_enabled = engine_config.gate.tod_gate_enabled,
-        paper_mode = paper_mode,
-        config_version = %config_version,
-        "active config"
-    );
+    let paper_mode = engine_config.momentum.paper_mode;
 
     info!(
         paper_mode,
-        gate_min_buy_lam = engine_config.gate.trigger_min_buy_lamports,
-        gate_max_buy_lam = engine_config.gate.trigger_max_buy_lamports,
-        min_vsol = engine_config.gate.min_vsol_lamports,
-        max_vsol = engine_config.gate.max_vsol_lamports,
-        min_score = engine_config.gate.trigger_min_score,
-        max_hold_ms = engine_config.position.max_hold_ms,
-        tp_tiers = engine_config.position.tp_tiers.len(),
-        size_tiers = engine_config.position.size_tiers.len(),
-        blocked_hours = engine_config.gate.blocked_hours_utc.len(),
-        tod_gate_enabled = engine_config.gate.tod_gate_enabled,
-        "pump-quant-core starting"
+        momentum_enabled = engine_config.momentum.enabled,
+        min_grad_score = engine_config.momentum.min_grad_score,
+        position_size_sol = engine_config.momentum.position_size_sol,
+        "pump-quant-core starting (momentum-only)"
     );
 
     // ── Write engine state on startup ─────────────────────────────────
@@ -173,10 +95,6 @@ async fn main() -> anyhow::Result<()> {
     } else {
         info!("Wrote engine-state.json to {data_dir}");
     }
-
-    // ── Build engine components ─────────────────────────────────────
-    // Legacy gate_stack and scorer removed — V2 EntryEngine is the only path.
-    // engine_config.gate and engine_config.score are parsed but unused.
 
     // ── Create Health Monitor ────────────────────────────────────────
     let health_monitor = HealthMonitor::new(&engine_config.health);
@@ -194,210 +112,6 @@ async fn main() -> anyhow::Result<()> {
         info!("Telegram alerter disabled (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set)");
     }
 
-    // Channel for closed positions: position_manager → main loop (safety tracking)
-    let (closed_tx, closed_rx) = bounded::<ClosedPosition>(256);
-    // Second channel: main loop → logger thread (after safety processing)
-    let (logger_tx, logger_rx) = bounded::<ClosedPosition>(256);
-
-    let max_entry_size_lamports = engine_config.position.max_entry_size_lamports;
-    let position_manager = PositionManager::new(engine_config.position, closed_tx);
-
-    // ── Build V2 Entry Engine (ONLY entry path — no legacy fallback) ──
-    // NOTE: Still constructed when bonding_curve_enabled=false because HotPath
-    // uses EntryEngine for Kelly scoring that feeds ScoredTokens to momentum.
-    // The scoring pipeline is active; only position opening is disabled.
-    let ee_config = engine_config.entry_engine_config
-        .clone()
-        .unwrap_or_else(|| pump_quant_core::engine::entry_engine::EntryEngineConfig::default());
-    let entry_engine = pump_quant_core::engine::entry_engine::EntryEngine::new(&ee_config);
-    tracing::info!(
-        bonding_curve_enabled = engine_config.bonding_curve_enabled,
-        "EntryEngine: Kelly-tiered sizing + magnitude prediction{}",
-        if !engine_config.bonding_curve_enabled { " (scoring-only mode — no BC positions)" } else { "" }
-    );
-
-    // ── Build Risk Manager ──
-    // NOTE: When bonding_curve_enabled=false, risk_manager.allows_entry() is only
-    // called in the scoring pipeline (paper_mode bypasses it anyway). No BC positions
-    // are opened regardless — hard return in hot_path.rs prevents it.
-    let risk_manager = if let Some(ref risk_cfg) = engine_config.risk_config {
-        tracing::info!("RiskManager: config-driven");
-        pump_quant_core::engine::risk_manager::RiskManager::new(risk_cfg)
-    } else {
-        tracing::info!("RiskManager: defaults");
-        pump_quant_core::engine::risk_manager::RiskManager::new(&pump_quant_core::engine::risk_manager::RiskConfig::default())
-    };
-
-    let mut hot_path = HotPath::new(
-        entry_engine,
-        risk_manager,
-        position_manager,
-        _now_ms_dummy, // LATENCY: HotPath uses quanta internally, not this fn
-        paper_mode,
-        engine_config.daily_loss_cap_lamports,
-        engine_config.consecutive_stop_pause_count,
-        engine_config.consecutive_stop_pause_ms,
-        engine_config.boosted_hours_utc.clone(),
-        engine_config.tod_boost_multiplier,
-        max_entry_size_lamports,
-        engine_config.randomizer.clone(),
-    );
-
-    // Attach health monitor to hot path for entry gating
-    hot_path.set_health_monitor(health_monitor.clone());
-
-    // Kill switch: disable bonding curve engine when graduation arb is the focus.
-    // When disabled, HotPath still runs full scoring pipeline (gates, Kelly, Bayesian)
-    // and publishes ScoredTokens to momentum, but:
-    //   - No BC positions are opened (hard return in on_trade)
-    //   - No position management runs (on_subsequent_trade guarded)
-    //   - PositionManager, EntryEngine, RiskManager are constructed but inert for BC
-    if !engine_config.bonding_curve_enabled {
-        hot_path.set_bonding_curve_enabled(false);
-        info!("🔴 Backrunner DISABLED — scoring-only mode. Momentum engine is primary.");
-    }
-
-    // ── Spawn logger thread ─────────────────────────────────────────
-    let log_file = engine_config.log_file.clone();
-    let logger_data_dir = data_dir.clone();
-    let logger_started_at = daemon_started_at_ms;
-    let logger_telegram = telegram_alerter.clone();
-    let logger_config_version = config_version.clone();
-
-    std::thread::Builder::new()
-        .name("trade-logger".to_string())
-        .spawn(move || {
-            // Ensure data directory exists
-            if let Some(parent) = PathBuf::from(&log_file).parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-
-            let db_path = log_file.replace(".jsonl", ".sqlite");
-            let sqlite_logger = match SqliteLogger::new(&db_path) {
-                Ok(l) => l,
-                Err(e) => {
-                    tracing::error!("Failed to open SQLite logger: {e}");
-                    return;
-                }
-            };
-
-            // Also open the JSONL paper trade logger (camelCase schema)
-            let mut paper_logger = match PaperTradeLogger::new(
-                &log_file,
-                paper_mode,
-                logger_config_version,
-            ) {
-                Ok(l) => l,
-                Err(e) => {
-                    tracing::error!("Failed to open PaperTradeLogger: {e}");
-                    return;
-                }
-            };
-
-            let mut batch: Vec<TradeLogEntry> = Vec::with_capacity(32);
-            let mut total_logged: u64 = 0;
-            let mut cumulative_pnl: i64 = 0;
-            let mut last_engine_state_ms: u64 = 0;
-
-            loop {
-                // Drain with a timeout to periodically flush
-                match logger_rx.recv_timeout(std::time::Duration::from_secs(5)) {
-                    Ok(cp) => {
-                        cumulative_pnl += cp.net_pnl_sol;
-                        total_logged += 1;
-
-                        let mint_b58 = bs58::encode(&cp.mint).into_string();
-
-                        info!(
-                            mint = %mint_b58,
-                            exit = exit_reason_str(cp.exit_reason),
-                            hold_ms = cp.hold_ms,
-                            gross_pnl = cp.gross_pnl_sol,
-                            net_pnl = cp.net_pnl_sol,
-                            fees = cp.fees_sol,
-                            score = format!("{:.4}", cp.score),
-                            total = total_logged,
-                            cum_pnl = cumulative_pnl,
-                            "CLOSED"
-                        );
-
-                        // Write JSONL (camelCase, TS-compatible)
-                        if let Err(e) = paper_logger.log(&cp, &mint_b58) {
-                            tracing::error!("JSONL write failed: {e}");
-                        }
-
-                        // Send Telegram alert for closed positions — LIVE MODE ONLY
-                        // In paper mode, trade alerts are suppressed (too noisy at data collection volume)
-                        if !paper_mode {
-                            if let Some(ref tg) = logger_telegram {
-                                let msg = telegram::format_trade_alert(
-                                    exit_reason_str(cp.exit_reason),
-                                    &mint_b58,
-                                    cp.hold_ms,
-                                    cp.net_pnl_sol as f64 / 1e9,
-                                );
-                                tg.try_send_blocking(&msg);
-                            }
-                        }
-
-                        batch.push(TradeLogEntry {
-                            mint: mint_b58,
-                            entry_vsol: cp.entry_vsol as f64 / 1e9,
-                            exit_vsol: cp.exit_vsol as f64 / 1e9,
-                            entry_ts_ms: cp.entry_ts_ms as i64,
-                            exit_ts_ms: cp.exit_ts_ms as i64,
-                            hold_ms: cp.hold_ms as i64,
-                            size_sol: cp.size_sol as f64 / 1e9,
-                            gross_pnl_sol: cp.gross_pnl_sol as f64 / 1e9,
-                            net_pnl_sol: cp.net_pnl_sol as f64 / 1e9,
-                            fees_sol: cp.fees_sol as f64 / 1e9,
-                            exit_reason: exit_reason_str(cp.exit_reason).to_string(),
-                            score: cp.score,
-                            is_paper: true,
-                            engine_version: ENGINE_VERSION.to_string(),
-                        });
-
-                        // Flush batch every 16 entries
-                        if batch.len() >= 16 {
-                            if let Err(e) = sqlite_logger.log_trades_batch(&batch) {
-                                tracing::error!("SQLite batch write failed: {e}");
-                            }
-                            batch.clear();
-                        }
-                    }
-                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                        // Flush any pending SQLite batch
-                        if !batch.is_empty() {
-                            if let Err(e) = sqlite_logger.log_trades_batch(&batch) {
-                                tracing::error!("SQLite batch write failed: {e}");
-                            }
-                            batch.clear();
-                        }
-
-                        // Periodically refresh engine-state.json (every 60s)
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64;
-                        if now - last_engine_state_ms >= 60_000 {
-                            if let Err(e) = write_engine_state(&logger_data_dir, logger_started_at) {
-                                tracing::warn!("Failed to refresh engine state: {e}");
-                            }
-                            last_engine_state_ms = now;
-                        }
-                    }
-                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                        // Flush remaining
-                        if !batch.is_empty() {
-                            let _ = sqlite_logger.log_trades_batch(&batch);
-                        }
-                        info!(total_logged, "Logger thread: channel closed, exiting");
-                        return;
-                    }
-                }
-            }
-        })?;
-
     // ── Feed channels ───────────────────────────────────────────────
     let (pp_tx, pp_rx) = bounded::<FeedEvent>(256);
     let (helius_tx, helius_rx) = bounded::<FeedEvent>(256);
@@ -405,12 +119,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    // TASK-10: Shared creator map (mint → creator wallet) for signer matching.
-    // PumpPortal writes on create events; CoreCast reads for creator-sell verification.
-    // Uses std::sync::RwLock — writes are infrequent (new token creation only, ~1/min).
-    // NOTE: std::sync::RwLock::write() will briefly block the tokio thread (~50ns),
-    // which is acceptable given write frequency. tokio::sync::RwLock is not needed here
-    // because the critical section is trivially short (HashMap insert, no I/O).
+    // Shared creator map (mint → creator wallet) for signer matching.
     let shared_creator_map: pump_quant_core::feeds::corecast::CreatorMap =
         Arc::new(RwLock::new(HashMap::new()));
 
@@ -438,9 +147,7 @@ async fn main() -> anyhow::Result<()> {
         info!("Helius feed disabled (no HELIUS_API_KEY)");
     }
 
-    // Spawn Helius PumpSwap graduation detector (transactionSubscribe)
-    // Uses Helius Enhanced WS to receive full transactions involving PumpSwap AMM.
-    // Sends events directly to engine_tx (bypasses EventJoiner — dedup in momentum).
+    // Spawn Helius PumpSwap graduation detector
     let helius_pumpswap_config = HeliusConfig {
         api_key: helius_api_key.clone(),
         enabled: helius_enabled,
@@ -470,8 +177,6 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn CoreCast/Bitquery feed (optional)
     {
-        // CoreCast events go directly to the engine channel (not through joiner)
-        // since they emit FeedEvent::CreatorSell, not Trade/PreWarm
         let corecast_tx = engine_tx.clone();
         let corecast_shutdown_rx = shutdown_rx.clone();
         let creator_map: pump_quant_core::feeds::corecast::CreatorMap = shared_creator_map.clone();
@@ -481,31 +186,11 @@ async fn main() -> anyhow::Result<()> {
         info!("CoreCast feed spawned (will activate if BITQUERY_API_KEY is set)");
     }
 
-    // ── Read PUBLIC_RPC_URL early — needed by both blockhash caches and momentum engine
     let public_rpc_url = std::env::var("PUBLIC_RPC_URL")
         .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
 
-    // ── Spawn blockhash cache refresh task ─────────────────────────
-    // Refreshes every 25s so tx execution never pays a per-trade RPC round-trip.
-    // In paper mode: the cache is warmed but no TxExecutor consumes it — this
-    // validates that the RPC endpoint is reachable (canary) at ~zero cost.
-    // In live mode: pass `bh_cache` to TxExecutor::new() before this scope closes.
-    {
-        // Use public Solana RPC for blockhash refresh — lightweight call (every 25s)
-        // that doesn't need Helius. Frees Helius budget for sendTransaction.
-        let rpc_for_bh = public_rpc_url.clone();
-        let bh_cache = pump_quant_core::tx::executor::BlockhashCache::new();
-        // Arc is captured by the spawned task — stays alive even after this scope exits.
-        bh_cache.clone().spawn_refresh_task(rpc_for_bh);
-        info!("Blockhash cache refresh task started (25s interval, public RPC)");
-    }
-
-    // ── Spawn API server with shared stats ──────────────────────────
+    // ── Spawn API server ────────────────────────────────────────────
     let api_state = ApiState::with_health(health_monitor.clone());
-    {
-        let mut stats = api_state.stats.lock().unwrap();
-        stats.graduation_arb_enabled = false; // graduation arb removed
-    }
     let shared_stats = api_state.stats.clone();
     let api_state_clone = api_state.clone();
     tokio::spawn(async move {
@@ -520,19 +205,13 @@ async fn main() -> anyhow::Result<()> {
         .spawn(move || joiner.run())?;
     info!("EventJoiner thread started");
 
-    // public_rpc_url already defined above (before first blockhash cache)
-
     // ── Momentum Engine ──────────────────────────────────────────────
     let momentum_config = Arc::new(engine_config.momentum.clone());
     let momentum_rpc_url = Arc::new(
-        // Use the dedicated fast mainnet endpoint (SOLANA_RPC_URL) for price feed reads.
-        // staked.helius-rpc.com is for sendTransaction priority and requires staking SOL —
-        // not appropriate for getAccountInfo polling.
         std::env::var("SOLANA_RPC_URL")
             .ok()
             .filter(|u| !u.is_empty())
             .unwrap_or_else(|| {
-                // Fallback: construct standard URL from API key
                 std::env::var("HELIUS_API_KEY")
                     .ok()
                     .filter(|k| !k.is_empty())
@@ -552,20 +231,16 @@ async fn main() -> anyhow::Result<()> {
         });
     let momentum_log_path = format!("{}/momentum_paper_trades.jsonl", data_dir);
 
-    // ── Live mode tx infrastructure (conditional on paper_mode) ─────
-    // Create a dedicated BlockhashCache for momentum engine. The original one
-    // spawned above is scoped to the original block. In a future refactor these
-    // should share a single Arc<BlockhashCache>.
+    // Blockhash cache for momentum engine
     let momentum_bh_cache = pump_quant_core::tx::executor::BlockhashCache::new();
     {
-        // Use public Solana RPC for blockhash refresh — this is a lightweight call
-        // (every 25s) that doesn't need Helius. Frees Helius budget for sendTransaction.
         let rpc_for_bh = public_rpc_url.clone();
         momentum_bh_cache.clone().spawn_refresh_task(rpc_for_bh);
     }
 
+    // Jito gRPC client (live mode only)
     let jito_grpc_client: Option<std::sync::Arc<pump_quant_core::tx::jito_grpc::JitoGrpcClient>> =
-        if !engine_config.momentum.paper_mode {
+        if !paper_mode {
             let cfg = pump_quant_core::tx::jito_grpc::JitoGrpcConfig::default();
             match pump_quant_core::tx::jito_grpc::JitoGrpcClient::new(cfg).await {
                 Ok(client) => {
@@ -581,8 +256,9 @@ async fn main() -> anyhow::Result<()> {
             None
         };
 
+    // Nozomi client (live mode only)
     let nozomi_client: Option<std::sync::Arc<pump_quant_core::tx::nozomi::NozomiClient>> =
-        if !engine_config.momentum.paper_mode {
+        if !paper_mode {
             std::env::var("NOZOMI_API_KEY")
                 .ok()
                 .filter(|k| !k.is_empty())
@@ -598,7 +274,8 @@ async fn main() -> anyhow::Result<()> {
             None
         };
 
-    let wallet_pubkey: Option<[u8; 32]> = if !engine_config.momentum.paper_mode {
+    // Wallet pubkey (live mode only)
+    let wallet_pubkey: Option<[u8; 32]> = if !paper_mode {
         std::env::var("WALLET_KEYPAIR_PATH")
             .ok()
             .and_then(|path| {
@@ -606,7 +283,7 @@ async fn main() -> anyhow::Result<()> {
                 let arr: Vec<u8> = serde_json::from_slice(&bytes).ok()?;
                 if arr.len() >= 64 {
                     let mut pk = [0u8; 32];
-                    pk.copy_from_slice(&arr[32..64]); // public key is second 32 bytes
+                    pk.copy_from_slice(&arr[32..64]);
                     Some(pk)
                 } else {
                     None
@@ -616,7 +293,7 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    let (momentum_engine, scored_token_tx, _momentum_ws_handle, _momentum_logger_handle) = MomentumEngine::new(
+    let (momentum_engine, _scored_token_tx, _momentum_ws_handle, _momentum_logger_handle) = MomentumEngine::new(
         momentum_config.clone(),
         momentum_rpc_url,
         momentum_wss_url,
@@ -629,108 +306,71 @@ async fn main() -> anyhow::Result<()> {
     );
     let momentum_engine = Arc::new(momentum_engine);
 
-    // Wire Kelly→Momentum channel: hot_path publishes scored tokens,
-    // momentum engine consumes them for Kelly-sized post-grad entries.
-    hot_path.set_scored_token_tx(scored_token_tx);
-
     info!(
         enabled = engine_config.momentum.enabled,
-        paper_mode = engine_config.momentum.paper_mode,
+        paper_mode,
         entry_delay_ms = engine_config.momentum.entry_delay_ms,
         min_grad_score = engine_config.momentum.min_grad_score,
         position_size_sol = engine_config.momentum.position_size_sol,
-        "[momentum] engine initialized (Kelly-scored channel wired)"
+        "[momentum] engine initialized"
     );
 
-    // Set momentum enabled flag in API stats at startup
+    // Set momentum enabled flag in API stats
     {
         let mut stats = api_state.stats.lock().unwrap();
         stats.momentum_enabled = engine_config.momentum.enabled;
     }
 
     // ── Orphan position recovery ─────────────────────────────────────
-    // On startup, scan wallet for token balances not tracked by the engine.
-    // Emergency-sell any orphans so stuck positions don't survive restarts.
     {
         let recovery_engine = Arc::clone(&momentum_engine);
         tokio::spawn(async move {
-            // Small delay to let RPC connections warm up
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             recovery_engine.recover_orphan_positions().await;
         });
     }
 
-    // ── Engine hot-path loop ────────────────────────────────────────
-    info!(paper_mode, "Engine hot-path running — full gate→score→position pipeline");
+    // ── Counters for stats logging ──────────────────────────────────
+    let mut trades_seen: u64 = 0;
+    let mut ticks: u64 = 0;
+    let mut migrations: u64 = 0;
+    let mut creator_sells: u64 = 0;
+
+    // ── Main event loop — momentum only ─────────────────────────────
+    info!(paper_mode, "Momentum engine running");
 
     loop {
         match engine_rx.recv() {
             Ok(FeedEvent::Trade(trade)) => {
-                // LATENCY: use trade's own timestamp for health monitoring instead
-                // of a redundant SystemTime::now() syscall. The trade timestamp comes
-                // from PumpPortal's "timestamp" field (epoch ms), or fallback to
-                // system time inside the feed parser. This eliminates one ~20ns
-                // clock_gettime syscall per trade on the hot path.
                 health_monitor.record_event(trade.source, trade.timestamp_ms);
-
-                hot_path.on_trade(&trade);
-
-                // Drain closed positions for safety tracking, then forward to logger
-                drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
-
-                // Update shared API stats every 100 trades (also at first trade)
-                let ts = hot_path.stats.trades_seen;
-                if ts == 1 || ts % 100 == 0 {
-                    sync_stats_to_api(&hot_path, &shared_stats);
-                }
+                trades_seen += 1;
 
                 // Stats logging every 1000 trades
-                if hot_path.stats.trades_seen % 1000 == 0 {
-                    let s = &hot_path.stats;
+                if trades_seen % 1000 == 0 {
                     info!(
-                        trades = s.trades_seen,
-                        gates_passed = s.gates_passed,
-                        gate_rejects = s.gate_rejects,
-                        score_rejects = s.score_rejects,
-                        positions = s.positions_opened,
-                        open = hot_path.open_positions(),
-                        prewarms = s.prewarms,
-                        ticks = s.ticks,
-                        migrations = s.migrations,
-                        lp_removals = s.lp_removals,
-                        creator_sells = s.creator_sells,
-                        helius_correlated = hot_path.helius_lead_count,
-                        helius_avg_lead_ms = if hot_path.helius_lead_count > 0 {
-                            hot_path.helius_lead_sum_ms / hot_path.helius_lead_count
-                        } else { 0 },
+                        trades = trades_seen,
+                        ticks,
+                        migrations,
+                        creator_sells,
                         "engine stats"
                     );
                 }
             }
             Ok(FeedEvent::PreWarm(prewarm)) => {
-                // LATENCY: use prewarm's own timestamp (same rationale as Trade)
                 health_monitor.record_event(prewarm.source, prewarm.timestamp_ms);
-
-                hot_path.on_prewarm(&prewarm);
             }
             Ok(FeedEvent::Tick { ts_ms }) => {
-                hot_path.on_tick(ts_ms);
+                ticks += 1;
 
                 // Momentum engine: check pending entries + active positions
                 momentum_engine.on_tick(ts_ms).await;
 
-                // Drain closed positions for safety tracking, then forward to logger
-                drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
-
                 // Health check every 100 ticks (~5 seconds)
-                if hot_path.stats.ticks % 100 == 0 {
+                if ticks % 100 == 0 {
                     let (health_status, recovered_feeds) = health_monitor.check(ts_ms);
 
-                    // Alert on stale feeds
                     if let pump_quant_core::engine::health::HealthStatus::Degraded { ref stale_feeds } = health_status {
                         for feed in stale_feeds {
-                            // AUDIT FIX: resolve the correct FeedSource per feed name,
-                            // not always PumpPortal (was a manual-patch bug).
                             let source = match *feed {
                                 "Helius" => FeedSource::Helius,
                                 _ => FeedSource::PumpPortal,
@@ -744,7 +384,6 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
 
-                    // Alert on recovered feeds
                     for feed in &recovered_feeds {
                         info!(feed = %feed, "Feed recovered — trading resumed");
                         if let Some(ref tg) = telegram_alerter {
@@ -754,42 +393,37 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 // Sync API stats every 200 ticks (~10 seconds)
-                if hot_path.stats.ticks % 200 == 0 {
-                    sync_stats_to_api(&hot_path, &shared_stats);
+                if ticks % 200 == 0 {
+                    if let Ok(mut api_stats) = shared_stats.lock() {
+                        api_stats.trades_seen = trades_seen;
+                        api_stats.migrations_seen = migrations;
+                        api_stats.creator_sells_seen = creator_sells;
+                    }
                 }
             }
-            Ok(FeedEvent::TokenCreated(created)) => {
-                hot_path.on_token_created(&created);
+            Ok(FeedEvent::TokenCreated(_)) => {
+                // No-op: momentum engine doesn't use token creation events
             }
-            Ok(FeedEvent::CreatorSell { mint, ts_ms }) => {
-                // CoreCast is the primary source of creator sell events
+            Ok(FeedEvent::CreatorSell { mint: _, ts_ms }) => {
                 health_monitor.record_event(FeedSource::CoreCast, ts_ms);
-                hot_path.on_creator_sell(&mint, ts_ms);
+                creator_sells += 1;
             }
             Ok(FeedEvent::Migration { mint, ts_ms, source, sig }) => {
-                // CoreCast migrations: track feed liveness
                 if matches!(source, pump_quant_core::feeds::MigrationSource::CoreCastStream2) {
                     health_monitor.record_event(FeedSource::CoreCast, ts_ms);
                 }
+                migrations += 1;
+
                 let mint_b58 = bs58::encode(&mint).into_string();
-                let open_before = hot_path.open_positions();
-                let enrichment = hot_path.on_migration(&mint, ts_ms);
-                let open_after = hot_path.open_positions();
-                let had_open_position = open_after < open_before;
-                drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
+                let enrichment = GradEnrichment::UNKNOWN;
 
                 info!(
                     mint = %mint_b58,
-                    ts_ms = ts_ms,
+                    ts_ms,
                     source = source.as_str(),
-                    open_position_closed = had_open_position,
-                    grad_speed_s = enrichment.grad_speed_s,
-                    volume_sol_x100 = enrichment.volume_sol_x100,
-                    buys_5s = enrichment.buys_5s,
                     "[momentum] graduation migration detected"
                 );
 
-                // Momentum engine: post-graduation directional trade (async, non-blocking)
                 if engine_config.momentum.enabled {
                     let momentum = Arc::clone(&momentum_engine);
                     tokio::spawn(async move {
@@ -799,20 +433,17 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(FeedEvent::PumpSwapGraduationDirect { mint, sig, ts_ms, coin_vault, pc_vault, source }) => {
                 let mint_b58 = bs58::encode(&mint).into_string();
-                let open_before = hot_path.open_positions();
-                let enrichment = hot_path.on_migration(&mint, ts_ms);
-                let open_after = hot_path.open_positions();
-                let had_open_position = open_after < open_before;
-                drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
+                migrations += 1;
+
+                let enrichment = GradEnrichment::UNKNOWN;
 
                 info!(
                     mint = %mint_b58,
-                    ts_ms = ts_ms,
+                    ts_ms,
                     source = source.as_str(),
                     "[momentum] PumpSwap graduation direct detected"
                 );
 
-                // Momentum engine: fast path — vaults already extracted from Helius Enhanced WS
                 if engine_config.momentum.enabled {
                     let momentum = Arc::clone(&momentum_engine);
                     tokio::spawn(async move {
@@ -822,106 +453,28 @@ async fn main() -> anyhow::Result<()> {
                     });
                 }
             }
-            Ok(FeedEvent::LpRemoval { mint, ts_ms }) => {
-                hot_path.on_lp_removal(&mint, ts_ms);
-                drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
+            Ok(FeedEvent::LpRemoval { mint: _, ts_ms: _ }) => {
+                // No-op: momentum engine handles exits internally
             }
-
             Ok(FeedEvent::Shutdown) => {
                 info!("Shutdown signal received");
-                let now = now_ms_mono!();
-                hot_path.close_all(now);
-                drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
-                sync_stats_to_api(&hot_path, &shared_stats);
                 let _ = shutdown_tx.send(true);
                 break;
             }
             Err(_) => {
                 info!("Engine channel closed — shutting down");
-                let now = now_ms_mono!();
-                hot_path.close_all(now);
-                drain_closed_positions(&closed_rx, &mut hot_path, &logger_tx, &telegram_alerter);
-                sync_stats_to_api(&hot_path, &shared_stats);
                 break;
             }
         }
     }
 
-    let s = &hot_path.stats;
     info!(
-        trades = s.trades_seen,
-        gates_passed = s.gates_passed,
-        positions_opened = s.positions_opened,
-        gate_rejects = s.gate_rejects,
-        score_rejects = s.score_rejects,
-        prewarms = s.prewarms,
-        creator_sells = s.creator_sells,
-        migrations = s.migrations,
-        lp_removals = s.lp_removals,
+        trades = trades_seen,
+        ticks,
+        migrations,
+        creator_sells,
         "pump-quant-core stopped"
     );
 
     Ok(())
-}
-
-/// Drain all pending ClosedPositions from the position manager channel,
-/// update HotPath safety counters, then forward to the logger thread.
-fn drain_closed_positions(
-    closed_rx: &crossbeam_channel::Receiver<ClosedPosition>,
-    hot_path: &mut HotPath,
-    logger_tx: &crossbeam_channel::Sender<ClosedPosition>,
-    telegram_alerter: &Option<Arc<TelegramAlerter>>,
-) {
-    while let Ok(cp) = closed_rx.try_recv() {
-        // Update paper bankroll with realized PnL
-        hot_path.bankroll.apply_paper_pnl(cp.net_pnl_sol);
-
-        // Track safety state — returns Some if circuit breaker just fired
-        if let Some((stops, pause_ms)) = hot_path.on_position_closed(&cp) {
-            tracing::warn!(
-                consecutive_stops = stops,
-                pause_ms,
-                "Circuit breaker fired"
-            );
-            if let Some(ref tg) = telegram_alerter {
-                tg.try_send_blocking(&telegram::format_circuit_breaker_alert(stops, pause_ms / 1000));
-            }
-        }
-        // Forward to logger thread (best-effort)
-        let _ = logger_tx.try_send(cp);
-    }
-}
-
-/// Dummy clock fn for HotPath API compat — HotPath uses quanta internally.
-fn _now_ms_dummy() -> u64 { 0 }
-
-/// Sync HotPath stats into the shared API EngineStats.
-fn sync_stats_to_api(
-    hot_path: &HotPath,
-    shared: &Arc<Mutex<EngineStats>>,
-) {
-    if let Ok(mut api_stats) = shared.lock() {
-        let s = &hot_path.stats;
-        api_stats.trades_seen = s.trades_seen;
-        api_stats.gates_passed = s.gates_passed;
-        api_stats.positions_opened = s.positions_opened;
-        api_stats.gate_reject_counts = hot_path.gate_reject_counts;
-        // Stream event counters
-        api_stats.migrations_seen = s.migrations;
-        api_stats.lp_removals_seen = s.lp_removals;
-        api_stats.creator_sells_seen = s.creator_sells;
-
-        // Graduation arb removed — zero all counters
-        api_stats.grad_arb_migrations = 0;
-        api_stats.grad_arb_entries = 0;
-        api_stats.grad_arb_timeouts = 0;
-        api_stats.grad_arb_pool_not_found = 0;
-        api_stats.grad_arb_no_spread = 0;
-        api_stats.grad_arb_exits_tp = 0;
-        api_stats.grad_arb_exits_sl = 0;
-        api_stats.grad_arb_exits_max_hold = 0;
-        api_stats.grad_arb_net_sol = 0.0;
-        api_stats.graduation_arb_trades = 0;
-        api_stats.graduation_arb_net_sol = 0.0;
-    }
 }
