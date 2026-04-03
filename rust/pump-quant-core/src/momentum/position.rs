@@ -1409,6 +1409,9 @@ pub struct PendingEntry {
     pub recovery_score: u8,
     /// Observed price velocity (bps/s) from observation window. None if window was skipped.
     pub observed_velocity_bps_per_s: Option<i64>,
+    /// Whether pool was resolved via last-chance RPC call (zeroed PDA path).
+    /// Used to apply wider slippage tolerance for Token-2022 on this high-latency path.
+    pub was_last_chance_resolved: bool,
     /// Whether this slot is active.
     pub active: bool,
 }
@@ -1428,6 +1431,7 @@ impl Default for PendingEntry {
             first_scheduled_ts_ms: 0,
             recovery_score: 0,
             observed_velocity_bps_per_s: None,
+            was_last_chance_resolved: false,
             active: false,
         }
     }

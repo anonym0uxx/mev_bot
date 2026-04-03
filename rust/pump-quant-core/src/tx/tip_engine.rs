@@ -24,6 +24,9 @@ pub struct TipRequest {
     pub size_lamports: u64,
     pub gain_bps: i64,
     pub grad_score: f64,
+    /// Observed price velocity in bps/s from the observation window (Entry only).
+    /// Higher velocity → higher tip to land faster in competitive slots.
+    pub obs_velocity_bps_per_s: i64,
 }
 
 impl TipRequest {
@@ -62,6 +65,10 @@ pub struct TipConfig {
     pub congestion_multiplier_bp: u32,
     /// Absolute minimum tip (lamports) — Jito floor
     pub min_tip: u64,
+    /// Extra tip per bps/s of observed price velocity (Entry only, lamports)
+    pub velocity_tip_per_bps: u64,
+    /// Cap on the velocity-based tip adder (lamports)
+    pub velocity_tip_cap: u64,
 }
 
 impl Default for TipConfig {
@@ -81,6 +88,8 @@ impl Default for TipConfig {
             ceiling_emergency: 10_000_000,   // 10 mSOL — generous for emergencies
             congestion_multiplier_bp: 20_000, // 2.0x — doubles tip under congestion
             min_tip: 500_000,                // 500 μSOL — competitive minimum
+            velocity_tip_per_bps: 50,        // 50 lamports per bps/s of observed velocity
+            velocity_tip_cap: 150_000,       // 150k lamports max velocity adder
         }
     }
 }
@@ -148,6 +157,16 @@ impl TipEngine {
         let base = self.base_tip(req.context);
         let proportional = req.size_lamports * self.rate_bps(req.context) / 10_000;
         let tip = base.max(proportional);
+
+        // Velocity-scaled adder: boost tip for fast-moving tokens (Entry only)
+        let tip = if matches!(req.context, TipContext::Entry) && req.obs_velocity_bps_per_s > 0 {
+            let adder = (req.obs_velocity_bps_per_s as u64)
+                .saturating_mul(self.config.velocity_tip_per_bps)
+                .min(self.config.velocity_tip_cap);
+            tip.saturating_add(adder)
+        } else {
+            tip
+        };
 
         // Congestion multiplier if landing rate < 80%
         let tip = if self.landing_rate_pct() < 80 {
@@ -224,6 +243,7 @@ mod tests {
             size_lamports,
             gain_bps,
             grad_score: 0.0,
+            obs_velocity_bps_per_s: 0,
         }
     }
 

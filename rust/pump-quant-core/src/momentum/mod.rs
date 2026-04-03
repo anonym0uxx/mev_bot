@@ -766,12 +766,34 @@ impl MomentumEngine {
             return;
         }
 
-        // NOTE: u64 overflow gate REMOVED — it was incorrectly blocking ALL standard pump.fun
-        // tokens (800T atoms at 85 SOL = k >> u64::MAX). PumpSwap uses u128 internally
-        // for the constant product, so the gate logic was wrong. The Custom:6023 on Phxz39
-        // was caused by a different overflow (likely in the fee computation with extreme
-        // reserve_token values), not the k = sol * token product itself.
-        // TODO: Investigate real cause of Custom:6023 and add a correct gate if needed.
+        // ── Token-2022 sell overflow gate ──────────────────────────────────
+        // Token-2022 tokens can have extreme reserve_token values that overflow
+        // u64 arithmetic in fee/swap computations. Gate only fires for Token-2022
+        // mints (standard SPL Token uses u128 internally and is safe).
+        const TOKEN_2022_PROGRAM: [u8; 32] = [
+            0x06, 0xdd, 0xf6, 0xe1, 0xd7, 0x65, 0xa1, 0x93,
+            0xd9, 0xcb, 0xe1, 0x46, 0xce, 0xeb, 0x79, 0xac,
+            0x1c, 0xb4, 0x85, 0xed, 0x5f, 0x5b, 0x37, 0x91,
+            0x3a, 0x8c, 0xf5, 0x85, 0x7e, 0xff, 0x00, 0xa9,
+        ];
+        if let Some(ps_pool) = self.pumpswap_pools.get(&pool_info.mint) {
+            let token_mint_program = ps_pool.token_mint_program;
+            if token_mint_program != [0u8; 32] && token_mint_program == TOKEN_2022_PROGRAM {
+                let max_sol_lamports = (self.config.max_total_size_sol * 1e9) as u64;
+                let product = max_sol_lamports as u128 * pool_info.reserve_token as u128;
+                let limit = u64::MAX as u128 / 2;
+                if product > limit {
+                    tracing::warn!(
+                        mint = %bs58::encode(&pool_info.mint).into_string(),
+                        reserve_token = pool_info.reserve_token,
+                        product = %product,
+                        limit = %limit,
+                        "[momentum] Token-2022 sell overflow gate — skipping graduation"
+                    );
+                    return;
+                }
+            }
+        }
 
         // Reentry cooldown: skip if this mint was recently closed (CoreCast flood prevention)
         if let Some(close_ts) = self.recently_closed.get(&pool_info.mint) {
@@ -987,11 +1009,11 @@ impl MomentumEngine {
         // → information asymmetry edge.
         if is_cold_miss {
             let mint_b58 = bs58::encode(&pool_info.mint).into_string();
-            score.cold_miss_bonus = 5;
+            score.cold_miss_bonus = 0;
             tracing::debug!(
                 mint = %mint_b58,
                 total = score.total(),
-                "[momentum] cold miss bonus applied — faster than enrichment-dependent bots"
+                "[momentum] cold miss detected — no score bonus (gate requires organic signal)"
             );
         }
         let effective_min = if self.config.paper_mode { 20 } else { self.config.min_grad_score };
@@ -1098,6 +1120,7 @@ impl MomentumEngine {
             first_scheduled_ts_ms: now_ms,
             recovery_score: 0,
             observed_velocity_bps_per_s: None,
+            was_last_chance_resolved: false,
             active: true,
         };
 
@@ -1592,11 +1615,19 @@ impl MomentumEngine {
                     // Build and submit buy TX (same logic as initial PumpSwap buy path)
                     let kp_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
                     let bh = self.blockhash_cache_sync().unwrap_or([0u8; 32]);
+                    // Dynamic max_quote_in: scale slippage buffer based on observed price velocity.
+                    let obs_velocity: i64 = self.observed_velocity
+                        .get(&mint)
+                        .map(|v| *v)
+                        .unwrap_or(0);
+                    // Clean up after use
+                    self.observed_velocity.remove(&mint);
                     let tip_req = crate::tx::tip_engine::TipRequest {
                         context: crate::tx::tip_engine::TipContext::Entry,
                         size_lamports,
                         gain_bps: 0,
                         grad_score: grad_score as f64,
+                        obs_velocity_bps_per_s: obs_velocity,
                     };
                     let tip = self.tip_engine.lock().compute_tip(&tip_req);
                     let fee_idx = (std::time::SystemTime::now()
@@ -1608,21 +1639,28 @@ impl MomentumEngine {
                     let resolve_client = self.http_client.clone();
                     let resolve_url = self.helius_rpc_url.clone();
                     let resolve_url_fallback = self.public_rpc_url.clone();
-                    // Dynamic max_quote_in: scale slippage buffer based on observed price velocity.
-                    let obs_velocity: i64 = self.observed_velocity
-                        .get(&mint_buy)
-                        .map(|v| *v)
-                        .unwrap_or(0);
-                    // Clean up after use
-                    self.observed_velocity.remove(&mint_buy);
                     let multiplier_pct = compute_max_quote_in_multiplier(&self.config, obs_velocity);
                     let max_quote_in = (size_lamports as u128 * multiplier_pct as u128 / 100) as u64;
                     // Anti-sandwich slippage: compute min_tokens_out from buffered amount.
-                    // Using 50% to avoid SlippageExceeded (Custom:6004) when pool price moves
+                    // Using tiered tolerance to avoid SlippageExceeded (Custom:6004) when pool price moves
                     // between observation and TX landing. max_quote_in is the real SOL guard.
+                    let is_t22 = self.pumpswap_pools.get(&mint_buy)
+                        .map(|p| {
+                            const T22: [u8; 32] = [
+                                0x06, 0xdd, 0xf6, 0xe1, 0xd7, 0x65, 0xa1, 0x93,
+                                0xd9, 0xcb, 0xe1, 0x46, 0xce, 0xeb, 0x79, 0xac,
+                                0x1c, 0xb4, 0x85, 0xed, 0x5f, 0x5b, 0x37, 0x91,
+                                0x3a, 0x8c, 0xf5, 0x85, 0x7e, 0xff, 0x00, 0xa9,
+                            ];
+                            p.token_mint_program == T22
+                        })
+                        .unwrap_or(false);
+                    // Deferred path: was_last_chance tracked in PendingEntry is not directly
+                    // accessible here since we already moved past it. Use conservative T22 tolerance.
+                    let tolerance_pct: u128 = if is_t22 { 40 } else { 50 };
                     let min_tokens_out = if current_price_fp > 0 {
                         let tokens_at_max = (max_quote_in as u128 * 1_000_000 / current_price_fp as u128) as u64;
-                        std::cmp::max(tokens_at_max * 50 / 100, 1)
+                        std::cmp::max((tokens_at_max as u128 * tolerance_pct / 100) as u64, 1)
                     } else {
                         1
                     };
@@ -1692,6 +1730,31 @@ impl MomentumEngine {
                         let tip_account = solana_sdk::pubkey::Pubkey::from_str(
                             crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
                         ).unwrap();
+                        // Fetch fresh blockhash immediately before TX build (processed = freshest)
+                        let bh = {
+                            let bh_body = serde_json::json!({
+                                "jsonrpc": "2.0", "id": 1,
+                                "method": "getLatestBlockhash",
+                                "params": [{"commitment": "processed"}]
+                            });
+                            match resolve_client.post(resolve_url.as_str()).json(&bh_body).send().await {
+                                Ok(resp) => match resp.json::<serde_json::Value>().await {
+                                    Ok(json) => {
+                                        if let Some(bh_str) = json["result"]["value"]["blockhash"].as_str() {
+                                            if let Ok(bh_bytes) = bs58::decode(bh_str).into_vec() {
+                                                if bh_bytes.len() == 32 {
+                                                    let mut arr = [0u8; 32];
+                                                    arr.copy_from_slice(&bh_bytes);
+                                                    arr
+                                                } else { bh }
+                                            } else { bh }
+                                        } else { bh }
+                                    }
+                                    Err(_) => bh,
+                                },
+                                Err(_) => bh,
+                            }
+                        };
                         let tx_bytes = match crate::tx::pumpswap::build_pumpswap_buy_tx(
                             &ps_pool, &keypair, max_quote_in, min_tokens_out, tip, tip_account, bh, fee_idx,
                         ) {
@@ -1775,6 +1838,7 @@ impl MomentumEngine {
                         size_lamports,
                         gain_bps: 0,
                         grad_score: grad_score as f64,
+                        obs_velocity_bps_per_s: 0,
                     };
                     let tip = self.tip_engine.lock().compute_tip(&tip_req);
                     let rpc_sender = self.rpc_sender.clone();
@@ -2348,6 +2412,7 @@ impl MomentumEngine {
                         size_lamports: size,
                         gain_bps: 0,
                         grad_score: entry.grad_score as f64,
+                        obs_velocity_bps_per_s: entry.observed_velocity_bps_per_s.unwrap_or(0),
                     };
                     let tip = self.tip_engine.lock().compute_tip(&tip_req);
                     // Estimate tokens from entry price: tokens ≈ sol_in / price_fp * 1_000_000
@@ -2431,6 +2496,7 @@ impl MomentumEngine {
                                 );
                                 self.pumpswap_pools.insert(entry.mint, resolved_accts.clone());
                                 ps_pool = resolved_accts;
+                                entry.was_last_chance_resolved = true;
                             } else {
                                 tracing::warn!(
                                     mint = %mint_b58_resolve,
@@ -2528,6 +2594,7 @@ impl MomentumEngine {
                         size_lamports: size,
                         gain_bps: 0,
                         grad_score: entry.grad_score as f64,
+                        obs_velocity_bps_per_s: entry.observed_velocity_bps_per_s.unwrap_or(0),
                     };
                     let tip = self.tip_engine.lock().compute_tip(&tip_req);
                     let tokens_estimate = if current_price_fp > 0 {
@@ -2542,13 +2609,29 @@ impl MomentumEngine {
                     let multiplier_pct = compute_max_quote_in_multiplier(&self.config, obs_velocity);
                     let max_quote_in = (size as u128 * multiplier_pct as u128 / 100) as u64;
                     // Anti-sandwich slippage: compute min_tokens_out from buffered amount.
-                    // Using 50% to avoid SlippageExceeded (Custom:6004) when pool price moves
+                    // Tiered tolerance to avoid SlippageExceeded (Custom:6004) when pool price moves
                     // between observation and TX landing. max_quote_in is the real SOL guard.
+                    let is_t22_buy = ps_pool.token_mint_program == [
+                        0x06u8, 0xdd, 0xf6, 0xe1, 0xd7, 0x65, 0xa1, 0x93,
+                        0xd9, 0xcb, 0xe1, 0x46, 0xce, 0xeb, 0x79, 0xac,
+                        0x1c, 0xb4, 0x85, 0xed, 0x5f, 0x5b, 0x37, 0x91,
+                        0x3a, 0x8c, 0xf5, 0x85, 0x7e, 0xff, 0x00, 0xa9,
+                    ];
+                    // Token-2022 + last-chance: stale PDA estimate → 20% floor (80% tolerance)
+                    // Token-2022 normal path: 40% floor (60% tolerance)
+                    // Standard SPL: 50% floor (50% tolerance)
+                    let tolerance_pct: u128 = if is_t22_buy && entry.was_last_chance_resolved {
+                        20
+                    } else if is_t22_buy {
+                        40
+                    } else {
+                        50
+                    };
                     let min_tokens_out = if current_price_fp > 0 {
                         let tokens_at_max = (max_quote_in as u128 * 1_000_000 / current_price_fp as u128) as u64;
-                        std::cmp::max(tokens_at_max * 50 / 100, 1)
+                        std::cmp::max((tokens_at_max as u128 * tolerance_pct / 100) as u64, 1)
                     } else {
-                        1 // fallback — shouldn't happen with valid price feed
+                        1
                     };
                     let tokens_est_for_sandwich = tokens_estimate;
                     let fee_idx = (std::time::SystemTime::now()
@@ -2573,6 +2656,8 @@ impl MomentumEngine {
                         self.buy_states.insert(mint, BuyState::Pending);
                     }
                     let buy_states = self.buy_states.clone();
+                    let bh_http_client = self.http_client.clone();
+                    let bh_rpc_url = self.helius_rpc_url.clone();
                     tokio::spawn(async move {
                         let kp_bytes = match std::fs::read(&kp_path) {
                             Ok(b) => b,
@@ -2604,6 +2689,31 @@ impl MomentumEngine {
                             max_quote_in_multiplier_pct = multiplier_pct,
                             "[buy_pumpswap] building TX with pool accounts"
                         );
+                        // Fetch fresh blockhash immediately before TX build (processed = freshest)
+                        let bh = {
+                            let bh_body = serde_json::json!({
+                                "jsonrpc": "2.0", "id": 1,
+                                "method": "getLatestBlockhash",
+                                "params": [{"commitment": "processed"}]
+                            });
+                            match bh_http_client.post(bh_rpc_url.as_str()).json(&bh_body).send().await {
+                                Ok(resp) => match resp.json::<serde_json::Value>().await {
+                                    Ok(json) => {
+                                        if let Some(bh_str) = json["result"]["value"]["blockhash"].as_str() {
+                                            if let Ok(bh_bytes) = bs58::decode(bh_str).into_vec() {
+                                                if bh_bytes.len() == 32 {
+                                                    let mut arr = [0u8; 32];
+                                                    arr.copy_from_slice(&bh_bytes);
+                                                    arr
+                                                } else { bh }
+                                            } else { bh }
+                                        } else { bh }
+                                    }
+                                    Err(_) => bh,
+                                },
+                                Err(_) => bh,
+                            }
+                        };
                         let tx_bytes = match crate::tx::pumpswap::build_pumpswap_buy_tx(
                             &ps_pool, &keypair, max_quote_in, min_tokens_out, tip, tip_account, bh, fee_idx,
                         ) {
@@ -3922,6 +4032,7 @@ impl MomentumEngine {
                         size_lamports: pos.size_lamports,
                         gain_bps: gain_bps as i64,
                         grad_score: 0.0,
+                        obs_velocity_bps_per_s: 0,
                     };
                     let tip = self.tip_engine.lock().compute_tip(&tip_req);
                     let noz = self.nozomi_client.clone();
@@ -4155,6 +4266,7 @@ impl MomentumEngine {
                         size_lamports: pos.size_lamports,
                         gain_bps: gain_bps as i64,
                         grad_score: 0.0,
+                        obs_velocity_bps_per_s: 0,
                     };
                     let tip = self.tip_engine.lock().compute_tip(&tip_req);
                     let noz_ok = noz.is_some();
@@ -4422,6 +4534,7 @@ impl MomentumEngine {
                         size_lamports: pos.size_lamports,
                         gain_bps: gain_bps as i64,
                         grad_score: 0.0,
+                        obs_velocity_bps_per_s: 0,
                     };
                     let tip = self.tip_engine.lock().compute_tip(&tip_req);
                     let reason_str = reason.as_str().to_string();
@@ -4691,7 +4804,7 @@ impl MomentumEngine {
                             kb.copy_from_slice(&kp_arr);
                             if let Ok(keypair) = solana_sdk::signature::Keypair::from_bytes(&kb) {
                                 // Get blockhash
-                                let bh_body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"getLatestBlockhash","params":[{"commitment":"confirmed"}]});
+                                let bh_body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"getLatestBlockhash","params":[{"commitment":"processed"}]});
                                 if let Ok(bh_resp) = balance_http.post(rpc_url).json(&bh_body).send().await {
                                     if let Ok(bh_json) = bh_resp.json::<serde_json::Value>().await {
                                         if let Some(bh_str) = bh_json["result"]["value"]["blockhash"].as_str() {
@@ -6051,6 +6164,7 @@ mod tests {
                 first_scheduled_ts_ms: 1_000,
                 recovery_score: 0,
                 observed_velocity_bps_per_s: None,
+                was_last_chance_resolved: false,
                 active: true,
             });
         }

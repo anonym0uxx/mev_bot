@@ -705,8 +705,8 @@ mod tests {
 
     #[test]
     fn test_total_true_max_100() {
-        // Same as above but with cold_miss_bonus = 5 applied externally
-        // 20 + 20 + 15 + 10 + 10 + 10 + 10 = 95, + 5 cold_miss = 100
+        // Same as above but with cold_miss_bonus = 0 (bonus removed)
+        // 20 + 20 + 15 + 10 + 10 + 10 + 10 = 95, + 0 cold_miss = 95
         let mut score = score_graduation(300, 5_000, 8, 1, 200, 411, DEFAULT_RESERVE, 200, DEFAULT_MIN_BUYS);
         assert_eq!(score.speed, 20);
         assert_eq!(score.volume_tier, 20);
@@ -716,8 +716,8 @@ mod tests {
         assert_eq!(score.lp_reserve, 10);
         assert_eq!(score.pre_entry_momentum, 10);
         assert_eq!(score.total(), 95);
-        score.cold_miss_bonus = 5;
-        assert_eq!(score.total(), 100);
+        score.cold_miss_bonus = 0;
+        assert_eq!(score.total(), 95);
     }
 
     #[test]
