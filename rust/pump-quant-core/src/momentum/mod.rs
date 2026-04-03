@@ -1968,6 +1968,11 @@ impl MomentumEngine {
                             should_reject = true;
                             reject_reason = "reserve below minimum at observation window expiry";
                         }
+                        // Check minimum velocity — zero velocity = dead/flat token, not worth entering
+                        else if w.price_velocity_bps_per_s() <= 0 {
+                            should_reject = true;
+                            reject_reason = "zero or negative velocity at observation window expiry — no momentum";
+                        }
                         else {
                             // All checks passed — observation window complete
                             should_ready = true;
