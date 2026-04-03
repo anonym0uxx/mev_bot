@@ -302,6 +302,27 @@ impl ObservationWindow {
         true
     }
 
+    /// Compute sustained price velocity in bps/s from first to latest sample.
+    /// Returns 0 if insufficient samples. Positive = rising, negative = falling.
+    fn price_velocity_bps_per_s(&self) -> i64 {
+        let n = self.price_count as usize;
+        if n < 2 {
+            return 0;
+        }
+        let (t_first, p_first) = self.price_samples[0];
+        let (t_last, p_last) = self.price_samples[n - 1];
+        if p_first == 0 || t_last <= t_first {
+            return 0;
+        }
+        let elapsed_ms = (t_last - t_first) as i64;
+        if elapsed_ms < 100 {
+            return 0; // Too short to be meaningful
+        }
+        let price_change_bps = ((p_last as i128 - p_first as i128) * 10_000 / p_first as i128) as i64;
+        // Convert bps over elapsed_ms to bps per second
+        price_change_bps * 1_000 / elapsed_ms
+    }
+
     /// Get the latest reserve sample value (0 if no samples).
     #[inline(always)]
     fn latest_reserve(&self) -> u64 {
@@ -322,6 +343,17 @@ struct AsyncRetryResult {
     enrichment: crate::momentum::types::GradEnrichment,
     ts_ms: u64,
     mint: [u8; 32],
+}
+
+/// Compute dynamic max_quote_in multiplier pct from observed price velocity.
+/// velocity_bps_per_s: from ObservationWindow::price_velocity_bps_per_s(), 0 if unknown.
+fn compute_max_quote_in_multiplier(cfg: &MomentumConfig, velocity_bps_per_s: i64) -> u32 {
+    let velocity = velocity_bps_per_s.max(0) as u32; // only positive velocity increases buffer
+    let extra_pct = velocity
+        .saturating_mul(cfg.max_quote_in_tx_propagation_s)
+        / cfg.max_quote_in_per_velocity_divisor.max(1);
+    let multiplier = cfg.max_quote_in_base_pct.saturating_add(extra_pct);
+    multiplier.min(cfg.max_quote_in_cap_pct)
 }
 
 /// Post-graduation momentum trading engine.
@@ -1047,6 +1079,7 @@ impl MomentumEngine {
             bc_price_fp,
             first_scheduled_ts_ms: now_ms,
             recovery_score: 0,
+            observed_velocity_bps_per_s: None,
             active: true,
         };
 
@@ -1557,9 +1590,11 @@ impl MomentumEngine {
                     let resolve_client = self.http_client.clone();
                     let resolve_url = self.helius_rpc_url.clone();
                     let resolve_url_fallback = self.public_rpc_url.clone();
-                    // Buffered max_quote_in: spend up to N% more SOL if price spiked
-                    // between observation and TX landing. Leftover WSOL reclaimed via close_account.
-                    let max_quote_in = (size_lamports as u128 * self.config.max_quote_in_multiplier_pct as u128 / 100) as u64;
+                    // Dynamic max_quote_in: scale slippage buffer based on observed price velocity.
+                    // Velocity from observation window extrapolated over TX propagation time.
+                    let obs_velocity = entry.observed_velocity_bps_per_s.unwrap_or(0);
+                    let multiplier_pct = compute_max_quote_in_multiplier(&self.config, obs_velocity);
+                    let max_quote_in = (size_lamports as u128 * multiplier_pct as u128 / 100) as u64;
                     // Anti-sandwich slippage: compute min_tokens_out from buffered amount.
                     // Using 50% to avoid SlippageExceeded (Custom:6004) when pool price moves
                     // between observation and TX landing. max_quote_in is the real SOL guard.
@@ -1656,6 +1691,8 @@ impl MomentumEngine {
                                     mint=%mint_str, sig=%signature, latency_ms, tip,
                                     size_sol=size_lamports as f64/1e9,
                                     max_quote_sol=max_quote_in as f64/1e9,
+                                    obs_velocity_bps_per_s = obs_velocity,
+                                    max_quote_in_multiplier_pct = multiplier_pct,
                                     estimated_tokens=tokens_est_for_sandwich,
                                     min_tokens_out,
                                     "[deferred_buy_pumpswap] RPC landed ✅ — compare on-chain receipt vs estimated_tokens for sandwich detection"
@@ -1852,6 +1889,36 @@ impl MomentumEngine {
                         reject_reason = "reserve below minimum during observation (pool drained)";
                     }
 
+                    // ── Early-entry velocity trigger (fires after min_ms + min_samples) ──
+                    if !should_reject && !should_ready
+                        && self.config.observation_window_min_ms > 0
+                        && elapsed >= self.config.observation_window_min_ms
+                        && w.price_count >= self.config.observation_early_entry_min_samples
+                    {
+                        // Check early abort (faster dump detection than main threshold)
+                        if current_price_fp > 0 && w.peak_price_fp > 0 {
+                            let drawdown = w.current_drawdown_bps(current_price_fp);
+                            if drawdown < self.config.observation_early_abort_drawdown_bps {
+                                should_reject = true;
+                                reject_reason = "early abort: drawdown exceeded fast threshold";
+                            }
+                        }
+                        // Check early entry velocity
+                        if !should_reject {
+                            let velocity = w.price_velocity_bps_per_s();
+                            if velocity >= self.config.observation_early_entry_velocity_bps_per_s {
+                                tracing::info!(
+                                    mint = %bs58::encode(&mint).into_string(),
+                                    velocity_bps_per_s = velocity,
+                                    elapsed_ms = elapsed,
+                                    price_samples = w.price_count,
+                                    "[momentum] observation early-entry triggered — price velocity threshold met"
+                                );
+                                should_ready = true;
+                            }
+                        }
+                    }
+
                     // ── Window expiry evaluation ───────────────────────────
                     if !should_reject && elapsed >= self.config.observation_window_ms {
                         // Check minimum sample count
@@ -1918,15 +1985,16 @@ impl MomentumEngine {
                     self.observation_windows.remove(&mint);
                 } else if should_ready {
                     let mint_b58 = bs58::encode(&mint).into_string();
-                    let (price_count, peak) = self.observation_windows.get(&mint)
-                        .map(|w| (w.value().price_count, w.value().peak_price_fp))
-                        .unwrap_or((0, 0));
+                    let (price_count, peak, velocity) = self.observation_windows.get(&mint)
+                        .map(|w| (w.value().price_count, w.value().peak_price_fp, w.value().price_velocity_bps_per_s()))
+                        .unwrap_or((0, 0, 0));
 
                     tracing::info!(
                         mint = %mint_b58,
                         price_samples = price_count,
                         peak_price_fp = peak,
                         current_price_fp,
+                        velocity_bps_per_s = velocity,
                         current_reserve_sol = current_reserve as f64 / 1e9,
                         "[momentum] observation window PASSED ✅ — proceeding to entry"
                     );
@@ -2435,9 +2503,10 @@ impl MomentumEngine {
                         pos.set_tokens_held(tokens_estimate);
                     }
                     let mint_buy = mint;
-                    // Buffered max_quote_in: spend up to N% more SOL if price spiked
-                    // between observation and TX landing. Leftover WSOL reclaimed via close_account.
-                    let max_quote_in = (size as u128 * self.config.max_quote_in_multiplier_pct as u128 / 100) as u64;
+                    // Dynamic max_quote_in: scale slippage buffer based on observed price velocity.
+                    let obs_velocity = entry.observed_velocity_bps_per_s.unwrap_or(0);
+                    let multiplier_pct = compute_max_quote_in_multiplier(&self.config, obs_velocity);
+                    let max_quote_in = (size as u128 * multiplier_pct as u128 / 100) as u64;
                     // Anti-sandwich slippage: compute min_tokens_out from buffered amount.
                     // Using 50% to avoid SlippageExceeded (Custom:6004) when pool price moves
                     // between observation and TX landing. max_quote_in is the real SOL guard.
@@ -2497,6 +2566,8 @@ impl MomentumEngine {
                             pool_base_vault = %bs58::encode(&ps_pool.pool_base_token_account).into_string(),
                             pool_quote_vault = %bs58::encode(&ps_pool.pool_quote_token_account).into_string(),
                             max_quote_sol = max_quote_in as f64 / 1e9,
+                            obs_velocity_bps_per_s = obs_velocity,
+                            max_quote_in_multiplier_pct = multiplier_pct,
                             "[buy_pumpswap] building TX with pool accounts"
                         );
                         let tx_bytes = match crate::tx::pumpswap::build_pumpswap_buy_tx(
@@ -2514,6 +2585,8 @@ impl MomentumEngine {
                                     mint=%mint_str, sig=%signature, latency_ms, tip,
                                     size_sol=size as f64/1e9,
                                     max_quote_sol=max_quote_in as f64/1e9,
+                                    obs_velocity_bps_per_s = obs_velocity,
+                                    max_quote_in_multiplier_pct = multiplier_pct,
                                     estimated_tokens=tokens_est_for_sandwich,
                                     min_tokens_out,
                                     "[buy_pumpswap] RPC landed ✅ — compare on-chain receipt vs estimated_tokens for sandwich detection"

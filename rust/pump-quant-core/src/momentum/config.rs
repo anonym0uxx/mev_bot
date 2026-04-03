@@ -208,6 +208,16 @@ pub struct MomentumConfig {
     /// Catches volatile tokens still mid-dump at window expiry.
     /// Default: true.
     pub observation_require_price_stability: bool,
+    /// Minimum observation window before early triggers can fire (ms).
+    pub observation_window_min_ms: u64,
+    /// Early entry trigger: if price velocity >= this (bps/s), skip remaining window and enter.
+    pub observation_early_entry_velocity_bps_per_s: i64,
+    /// Minimum price samples before early entry trigger can fire.
+    pub observation_early_entry_min_samples: u8,
+    /// Early abort trigger: if drawdown from peak < this (bps), abort immediately.
+    /// Should be less negative than observation_max_drawdown_bps to abort faster.
+    pub observation_early_abort_drawdown_bps: i32,
+
 
     // ══════════════════════════════════════════════════════════
     // MOMENTUM STATE CLASSIFICATION
@@ -628,12 +638,21 @@ pub struct MomentumConfig {
     // RPC SENDER CONFIG
     // ══════════════════════════════════════════════════════════
 
+    /// **DEPRECATED** — superseded by dynamic velocity-based fields below.
+    /// Kept for backward compat; ignored when max_quote_in_base_pct > 0.
     /// Max SOL overspend multiplier for PumpSwap buy TX (basis: 100 = exact, 115 = 15% buffer).
-    /// Prevents ExceededSlippage (Custom:6004) when price spikes between observation window
-    /// end and TX landing (~150-300ms). The engine will spend up to (N-100)% more SOL than
-    /// the target entry size if the price moved up post-observation.
-    /// Default: 115 (15% buffer). Set to 100 to disable (exact size, old behavior).
     pub max_quote_in_multiplier_pct: u32,
+
+    /// Base max_quote_in multiplier when price is stable (pct of position_size, e.g. 110 = 110%).
+    pub max_quote_in_base_pct: u32,
+    /// Per velocity bps divisor: for each bps/s of observed price velocity,
+    /// add (velocity_bps_per_s * propagation_s / this_value)% to the multiplier.
+    /// e.g. 5 means 100 bps/s velocity with 4s propagation → +80% multiplier (capped).
+    pub max_quote_in_per_velocity_divisor: u32,
+    /// Hard cap on max_quote_in multiplier regardless of velocity (pct).
+    pub max_quote_in_cap_pct: u32,
+    /// Estimated TX propagation time in seconds (used to extrapolate price at landing).
+    pub max_quote_in_tx_propagation_s: u32,
 
     /// RPC transaction sender configuration: priority fees, retries,
     /// circuit breaker, and Jito fallback settings.
@@ -728,6 +747,10 @@ impl Default for MomentumConfig {
             observation_max_drawdown_bps: -2_000,
             observation_min_reserve_sol_lamports: 50_000_000_000, // 50 SOL
             observation_require_price_stability: true,
+            observation_window_min_ms: 2_000,
+            observation_early_entry_velocity_bps_per_s: 150,
+            observation_early_entry_min_samples: 3,
+            observation_early_abort_drawdown_bps: -500,
 
             // Momentum state classification
             momentum_accel_threshold_bps: 100,
@@ -873,8 +896,13 @@ impl Default for MomentumConfig {
             dead_zone_pumpswap_reserve_tolerance_lamports: 2_000_000,
             dead_zone_pumpswap_ws_zero_ms: 10_000,
 
-            // PumpSwap buy TX slippage buffer
-            max_quote_in_multiplier_pct: 115, // 15% overspend buffer
+            // PumpSwap buy TX slippage buffer (deprecated static, kept for compat)
+            max_quote_in_multiplier_pct: 115,
+            // Dynamic velocity-based max_quote_in
+            max_quote_in_base_pct: 110,
+            max_quote_in_per_velocity_divisor: 5,
+            max_quote_in_cap_pct: 175,
+            max_quote_in_tx_propagation_s: 4,
 
             // RPC sender config
             rpc_sender: RpcSenderConfig::default(),
@@ -924,6 +952,12 @@ impl MomentumConfig {
             }
             if self.observation_min_samples == 0 {
                 return Err("observation_min_samples must be > 0 when window is enabled".into());
+            }
+            if self.observation_window_min_ms >= self.observation_window_ms {
+                return Err("observation_window_min_ms must be < observation_window_ms".into());
+            }
+            if self.observation_early_abort_drawdown_bps > 0 {
+                return Err("observation_early_abort_drawdown_bps must be <= 0".into());
             }
         }
         Ok(())

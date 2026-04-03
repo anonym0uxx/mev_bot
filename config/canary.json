@@ -622,6 +622,10 @@
     "micro_exit_velocity_bps": -400,
     "micro_exit_n_consecutive": 3,
     "dead_zone_pumpswap_ws_zero_ms": 6000,
+    "max_quote_in_base_pct": 110,
+    "max_quote_in_per_velocity_divisor": 5,
+    "max_quote_in_cap_pct": 175,
+    "max_quote_in_tx_propagation_s": 4,
     "rpc_sender": {
       "priority_fee_microlamports": 50000,
       "max_send_retries": 3,
