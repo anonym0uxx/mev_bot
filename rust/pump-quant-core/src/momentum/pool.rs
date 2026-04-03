@@ -2024,6 +2024,9 @@ mod tests {
             serum_pc_vault: [0u8; 32],
             serum_vault_signer: [0u8; 32],
             creator: [0u8; 32],
+            coin_creator: [0u8; 32],
+            is_cashback_coin: false,
+            token_is_base: true,
         }
     }
 

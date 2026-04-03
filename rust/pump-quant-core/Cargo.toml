@@ -7,9 +7,7 @@ edition = "2021"
 name = "pump-quant"
 path = "src/main.rs"
 
-[[bin]]
-name = "parity-test"
-path = "src/bin/parity_test.rs"
+
 
 [[bin]]
 name = "manual-sell"
