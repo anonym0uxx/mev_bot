@@ -1009,7 +1009,7 @@ impl MomentumEngine {
         // → information asymmetry edge.
         if is_cold_miss {
             let mint_b58 = bs58::encode(&pool_info.mint).into_string();
-            score.cold_miss_bonus = 0;
+            score.cold_miss_bonus = 3;
             tracing::debug!(
                 mint = %mint_b58,
                 total = score.total(),
