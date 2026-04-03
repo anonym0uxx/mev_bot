@@ -517,7 +517,7 @@
         "min_grad_score": 45,
         "min_grad_volume_sol": 30,
         "max_grad_volume_sol": 300,
-        "max_entries_per_mint": 2,
+        "max_entries_per_mint": 1,
         "position_size_sol": 0.3,
         "max_concurrent": 3,
         "tp1_pct": 5.0,

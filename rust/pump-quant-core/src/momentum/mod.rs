@@ -877,6 +877,21 @@ impl MomentumEngine {
         // Score the graduation (v2: 5 components including entry discount).
         // Compute entry_price_fp from pool reserves for the entry discount scorer.
         let pre_score_entry_fp = price_from_reserves(pool_info.reserve_sol, pool_info.reserve_token);
+
+        // Hard gate: reject extreme-supply tokens at entry.
+        // price_fp < 100 means token supply is so large that fixed-point price tracking
+        // is meaningless (1 bps = 0 change). These tokens always hit time_sl and are
+        // prone to PumpSwap Overflow (Custom:6023) on sell. Block them before observation.
+        if pre_score_entry_fp > 0 && pre_score_entry_fp < 100 {
+            tracing::warn!(
+                mint = %bs58::encode(&pool_info.mint).into_string(),
+                price_fp = pre_score_entry_fp,
+                reserve_token = pool_info.reserve_token,
+                "hard gate: rejected extreme-supply token (price_fp < 100) — PumpSwap Overflow risk"
+            );
+            return;
+        }
+
         let bc_price_fp = (BC_TERMINAL_PRICE_LAMPORTS_PER_ATOM * 1_000_000.0) as u64;
 
         // Cold miss neutral defaults: when enrichment data was unavailable,
