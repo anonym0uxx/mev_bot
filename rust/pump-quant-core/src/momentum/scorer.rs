@@ -759,16 +759,16 @@ mod tests {
 
     #[test]
     fn test_scenario_hot_organic_graduation() {
-        // Fast (30s) + medium volume (400 SOL) + 15 buys + 2 sells + 5% discount
+        // Fast (30s) + medium-high volume (400 SOL) + 15 buys + 2 sells + 5% discount
         let score = score_graduation(30, 40_000, 15, 2, 390, 411, DEFAULT_RESERVE, 0, DEFAULT_MIN_BUYS);
         assert_eq!(score.speed, 0);          // <=60s -> 0
-        assert_eq!(score.volume_tier, 6);    // 200-400 SOL -> 6 (was 3)
+        assert_eq!(score.volume_tier, 2);    // 40_000 centisol = 400 SOL, NOT < 40_000 -> falls to 400-655 SOL bucket -> 2
         assert_eq!(score.velocity, 3);       // 15*10_000/40_000 = 3
         assert_eq!(score.buy_sell_ratio, 10); // 15/2=7, 7*2=14, cap 10 (buys=15 >= 5)
         assert_eq!(score.entry_discount, 3); // 510bps * 10/1500 = 3
         assert_eq!(score.lp_reserve, 10);    // 85 SOL -> sweet spot
         assert_eq!(score.pre_entry_momentum, 0); // velocity=0
-        assert_eq!(score.total(), 32);
+        assert_eq!(score.total(), 28);       // 0+2+3+10+3+10+0 = 28
     }
 
     #[test]

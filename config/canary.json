@@ -654,6 +654,17 @@
     "activity_gate": {
       "enabled": false
     },
+    "trail_config": {
+      "tiers": [
+        { "up_to_bps": 300,        "trail_bps": 200  },
+        { "up_to_bps": 1200,       "trail_bps": 450  },
+        { "up_to_bps": 4000,       "trail_bps": 700  },
+        { "up_to_bps": 2147483647, "trail_bps": 1100 }
+      ],
+      "confirm_samples": 2,
+      "min_samples_to_activate": 5,
+      "floor_bps": 350
+    },
     "min_buys_for_full_ratio_score": 5
   }
 }

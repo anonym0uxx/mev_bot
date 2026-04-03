@@ -57,7 +57,7 @@ pub struct TrailTier {
 ///
 /// Replaces the old momentum-state-based trailing (Accel=25%, Sustain=15%, etc.)
 /// with gain-tiered trailing that's calibrated for memecoin dynamics:
-/// - Tight 1% trail on small gains (0-2%) — protect early profits
+/// - Tight 2% trail on small gains (0-3%) — protect early profits
 /// - Wider trails as gains grow — let moonshots run
 ///
 /// On-chain evidence: 25% trail at Accelerating state never triggers until
@@ -72,22 +72,30 @@ pub struct TrailConfig {
     pub confirm_samples: u8,
     /// Don't activate adaptive trail until this many price samples exist.
     /// Prevents premature exits on tokens with discontinuous early price action.
-    /// Default: 3.
+    /// Default: 5.
     pub min_samples_to_activate: u8,
+    /// Minimum gain (bps from entry) below which adaptive trailing stop will NOT fire.
+    /// Prevents "fee death" where small gains don't cover transaction overhead.
+    /// Set to 0 to disable.
+    /// Default: 350 (3.5% — covers 1.71% fee overhead + 1.25% avg slippage + margin).
+    #[serde(default = "default_floor_bps")]
+    pub floor_bps: u32,
 }
+
+fn default_floor_bps() -> u32 { 350 }
 
 impl Default for TrailConfig {
     fn default() -> Self {
         Self {
             tiers: vec![
-                TrailTier { up_to_bps: 200,      trail_bps: 100 },   // 0-2% gain: 1% trail
-                TrailTier { up_to_bps: 500,      trail_bps: 200 },   // 2-5% gain: 2% trail
-                TrailTier { up_to_bps: 1500,     trail_bps: 400 },   // 5-15% gain: 4% trail
-                TrailTier { up_to_bps: 5000,     trail_bps: 800 },   // 15-50% gain: 8% trail
-                TrailTier { up_to_bps: i32::MAX, trail_bps: 1500 },  // 50%+ gain: 15% trail
+                TrailTier { up_to_bps: 300,      trail_bps: 200 },   // 0-3% gain: 2% trail
+                TrailTier { up_to_bps: 1200,     trail_bps: 450 },   // 3-12% gain: 4.5% trail
+                TrailTier { up_to_bps: 4000,     trail_bps: 700 },   // 12-40% gain: 7% trail
+                TrailTier { up_to_bps: i32::MAX, trail_bps: 1100 },  // 40%+ gain: 11% trail
             ],
             confirm_samples: 2,
-            min_samples_to_activate: 3,
+            min_samples_to_activate: 5,
+            floor_bps: default_floor_bps(),
         }
     }
 }
@@ -3477,19 +3485,18 @@ mod tests {
     #[test]
     fn test_trail_config_default_tiers() {
         let tc = TrailConfig::default();
-        assert_eq!(tc.tiers.len(), 5);
-        assert_eq!(tc.tiers[0].up_to_bps, 200);
-        assert_eq!(tc.tiers[0].trail_bps, 100);
-        assert_eq!(tc.tiers[1].up_to_bps, 500);
-        assert_eq!(tc.tiers[1].trail_bps, 200);
-        assert_eq!(tc.tiers[2].up_to_bps, 1500);
-        assert_eq!(tc.tiers[2].trail_bps, 400);
-        assert_eq!(tc.tiers[3].up_to_bps, 5000);
-        assert_eq!(tc.tiers[3].trail_bps, 800);
-        assert_eq!(tc.tiers[4].up_to_bps, i32::MAX);
-        assert_eq!(tc.tiers[4].trail_bps, 1500);
+        assert_eq!(tc.tiers.len(), 4);
+        assert_eq!(tc.tiers[0].up_to_bps, 300);
+        assert_eq!(tc.tiers[0].trail_bps, 200);
+        assert_eq!(tc.tiers[1].up_to_bps, 1200);
+        assert_eq!(tc.tiers[1].trail_bps, 450);
+        assert_eq!(tc.tiers[2].up_to_bps, 4000);
+        assert_eq!(tc.tiers[2].trail_bps, 700);
+        assert_eq!(tc.tiers[3].up_to_bps, i32::MAX);
+        assert_eq!(tc.tiers[3].trail_bps, 1100);
         assert_eq!(tc.confirm_samples, 2);
-        assert_eq!(tc.min_samples_to_activate, 3);
+        assert_eq!(tc.min_samples_to_activate, 5);
+        assert_eq!(tc.floor_bps, 350);
     }
 
     #[test]
@@ -3500,10 +3507,19 @@ mod tests {
         assert_eq!(parsed.tiers.len(), tc.tiers.len());
         assert_eq!(parsed.confirm_samples, tc.confirm_samples);
         assert_eq!(parsed.min_samples_to_activate, tc.min_samples_to_activate);
+        assert_eq!(parsed.floor_bps, tc.floor_bps);
         for (a, b) in parsed.tiers.iter().zip(tc.tiers.iter()) {
             assert_eq!(a.up_to_bps, b.up_to_bps);
             assert_eq!(a.trail_bps, b.trail_bps);
         }
+    }
+
+    #[test]
+    fn test_trail_config_serde_floor_bps_default() {
+        // Omitting floor_bps from JSON should deserialize to default value
+        let json = r#"{"tiers":[],"confirm_samples":2,"min_samples_to_activate":5}"#;
+        let parsed: TrailConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.floor_bps, 350, "floor_bps should default to 350 when omitted");
     }
 
     #[test]
@@ -3522,10 +3538,10 @@ mod tests {
             [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
         );
         let tc = TrailConfig::default();
-        // +1% gain (100 bps) → tier 0: trail = 100 bps (1%)
-        assert_eq!(pos.compute_adaptive_trail_bps(100, &tc), 100);
-        // +2% gain (200 bps) → still tier 0: trail = 100 bps
-        assert_eq!(pos.compute_adaptive_trail_bps(200, &tc), 100);
+        // +1% gain (100 bps) → tier 0 (up_to=300): trail = 200 bps (2%)
+        assert_eq!(pos.compute_adaptive_trail_bps(100, &tc), 200);
+        // +3% gain (300 bps) → still tier 0: trail = 200 bps
+        assert_eq!(pos.compute_adaptive_trail_bps(300, &tc), 200);
     }
 
     #[test]
@@ -3534,10 +3550,10 @@ mod tests {
             [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
         );
         let tc = TrailConfig::default();
-        // +3% gain (300 bps) → tier 1: trail = 200 bps (2%)
-        assert_eq!(pos.compute_adaptive_trail_bps(300, &tc), 200);
-        // +5% gain (500 bps) → still tier 1: trail = 200 bps
-        assert_eq!(pos.compute_adaptive_trail_bps(500, &tc), 200);
+        // +4% gain (400 bps) → tier 1 (up_to=1200): trail = 450 bps (4.5%)
+        assert_eq!(pos.compute_adaptive_trail_bps(400, &tc), 450);
+        // +12% gain (1200 bps) → still tier 1: trail = 450 bps
+        assert_eq!(pos.compute_adaptive_trail_bps(1200, &tc), 450);
     }
 
     #[test]
@@ -3546,34 +3562,24 @@ mod tests {
             [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
         );
         let tc = TrailConfig::default();
-        // +10% gain (1000 bps) → tier 2: trail = 400 bps (4%)
-        assert_eq!(pos.compute_adaptive_trail_bps(1000, &tc), 400);
-        // +15% gain (1500 bps) → still tier 2: trail = 400 bps
-        assert_eq!(pos.compute_adaptive_trail_bps(1500, &tc), 400);
+        // +15% gain (1500 bps) → tier 2 (up_to=4000): trail = 700 bps (7%)
+        assert_eq!(pos.compute_adaptive_trail_bps(1500, &tc), 700);
+        // +40% gain (4000 bps) → still tier 2: trail = 700 bps
+        assert_eq!(pos.compute_adaptive_trail_bps(4000, &tc), 700);
     }
 
     #[test]
-    fn test_compute_adaptive_trail_bps_tier4_big_winner() {
+    fn test_compute_adaptive_trail_bps_tier4_moonshot() {
         let pos = MomentumPosition::new(
             [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
         );
         let tc = TrailConfig::default();
-        // +30% gain (3000 bps) → tier 3: trail = 800 bps (8%)
-        assert_eq!(pos.compute_adaptive_trail_bps(3000, &tc), 800);
-        // +50% gain (5000 bps) → still tier 3: trail = 800 bps
-        assert_eq!(pos.compute_adaptive_trail_bps(5000, &tc), 800);
-    }
-
-    #[test]
-    fn test_compute_adaptive_trail_bps_tier5_moonshot() {
-        let pos = MomentumPosition::new(
-            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
-        );
-        let tc = TrailConfig::default();
-        // +100% gain (10000 bps) → tier 4: trail = 1500 bps (15%)
-        assert_eq!(pos.compute_adaptive_trail_bps(10_000, &tc), 1500);
-        // +500% gain (50000 bps) → still tier 4: trail = 1500 bps
-        assert_eq!(pos.compute_adaptive_trail_bps(50_000, &tc), 1500);
+        // +50% gain (5000 bps) → tier 3 (up_to=MAX): trail = 1100 bps (11%)
+        assert_eq!(pos.compute_adaptive_trail_bps(5000, &tc), 1100);
+        // +100% gain (10000 bps) → still tier 3: trail = 1100 bps
+        assert_eq!(pos.compute_adaptive_trail_bps(10_000, &tc), 1100);
+        // +500% gain (50000 bps) → still tier 3
+        assert_eq!(pos.compute_adaptive_trail_bps(50_000, &tc), 1100);
     }
 
     #[test]
@@ -3584,7 +3590,8 @@ mod tests {
         let tc = TrailConfig {
             tiers: vec![],
             confirm_samples: 2,
-            min_samples_to_activate: 3,
+            min_samples_to_activate: 5,
+            floor_bps: 350,
         };
         // No tiers → fallback to 800
         assert_eq!(pos.compute_adaptive_trail_bps(500, &tc), 800);
@@ -3603,6 +3610,7 @@ mod tests {
             ],
             confirm_samples: 1,
             min_samples_to_activate: 2,
+            floor_bps: 0, // disabled
         };
         assert_eq!(pos.compute_adaptive_trail_bps(50, &tc), 50);
         assert_eq!(pos.compute_adaptive_trail_bps(100, &tc), 50);
@@ -3667,21 +3675,21 @@ mod tests {
 
         let tc = TrailConfig::default();
 
-        // Current gain at +20% = 2000 bps → tier[3] (1501-5000): trail = 800 bps (8%)
+        // Current gain at +20% = 2000 bps → tier[1] (301-1200): trail = 450 bps (4.5%)
         let current_at_peak_bps = price_to_bps_offset(10_000, 12_000); // 2000
         assert_eq!(current_at_peak_bps, 2000);
         let trail = pos.compute_adaptive_trail_bps(current_at_peak_bps, &tc);
-        assert_eq!(trail, 800); // 8% trail for 15-50% gain range
+        assert_eq!(trail, 700); // 7% trail for 12-40% gain range (tier 2)
 
-        // Floor = 12000 - (12000 * 800 / 10000) = 12000 - 960 = 11040
+        // Floor = 12000 - (12000 * 700 / 10000) = 12000 - 840 = 11160
         // With OLD 25% trail: floor = 12000 - 3000 = 9000
-        // Token drops to 11000 → new trail fires, old trail doesn't
-        assert!(pos.adaptive_trailing_stop_hit(11_000, trail));
+        // Token drops to 11100 → new trail fires, old trail doesn't
+        assert!(pos.adaptive_trailing_stop_hit(11_100, trail));
 
         // Old trailing stop with 25% (2500 bps) — same scenario
-        assert!(!pos.trailing_stop_hit(11_000, 2500)); // old trail: 11000 > 9000, doesn't fire
+        assert!(!pos.trailing_stop_hit(11_100, 2500)); // old trail: 11100 > 9000, doesn't fire
 
-        // Key improvement: new trail exits at ~+10% (11040/10000),
+        // Key improvement: new trail exits at ~+11.6% (11160/10000),
         // old trail wouldn't fire until +20% peak drops to 9000 (-10% loss)
     }
 
@@ -3693,18 +3701,23 @@ mod tests {
         );
         let tc = TrailConfig::default();
 
-        // Gain progression and expected trail widths
+        // New tier layout:
+        //   tier 0: 0-300 bps (0-3%): 200 bps (2%) trail
+        //   tier 1: 301-1200 bps (3-12%): 450 bps (4.5%) trail
+        //   tier 2: 1201-4000 bps (12-40%): 700 bps (7%) trail
+        //   tier 3: 4001+ bps (40%+): 1100 bps (11%) trail
         let cases = vec![
-            (50, 100),     // +0.5% → tier 0: 1% trail
-            (150, 100),    // +1.5% → tier 0: 1% trail
-            (201, 200),    // +2.01% → tier 1: 2% trail (crossed boundary)
-            (499, 200),    // +4.99% → tier 1: 2% trail
-            (501, 400),    // +5.01% → tier 2: 4% trail (crossed boundary)
-            (1499, 400),   // +14.99% → tier 2: 4% trail
-            (1501, 800),   // +15.01% → tier 3: 8% trail (crossed boundary)
-            (4999, 800),   // +49.99% → tier 3: 8% trail
-            (5001, 1500),  // +50.01% → tier 4: 15% trail (crossed boundary)
-            (10000, 1500), // +100% → tier 4: 15% trail
+            (50, 200),     // +0.5% → tier 0: 2% trail
+            (200, 200),    // +2.0% → tier 0: 2% trail
+            (300, 200),    // +3.0% → tier 0 boundary: 2% trail
+            (301, 450),    // +3.01% → tier 1: 4.5% trail (crossed boundary)
+            (800, 450),    // +8.0% → tier 1: 4.5% trail
+            (1200, 450),   // +12.0% → tier 1 boundary: 4.5% trail
+            (1201, 700),   // +12.01% → tier 2: 7% trail (crossed boundary)
+            (3000, 700),   // +30.0% → tier 2: 7% trail
+            (4000, 700),   // +40.0% → tier 2 boundary: 7% trail
+            (4001, 1100),  // +40.01% → tier 3: 11% trail (crossed boundary)
+            (10000, 1100), // +100% → tier 3: 11% trail
         ];
 
         for (gain_bps, expected_trail) in cases {
@@ -3764,33 +3777,33 @@ mod tests {
         let tc = TrailConfig::default();
 
         // Phase 1: token rises to +5% (500 bps)
-        pos.record_sample(10_500); // +5%
-        pos.record_sample(10_500);
-        pos.record_sample(10_500);
+        for _ in 0..5 {
+            pos.record_sample(10_500); // +5%
+        }
         assert!(pos.sample_count >= tc.min_samples_to_activate);
 
         let gain = price_to_bps_offset(10_000, 10_500); // 500 bps
         let trail = pos.compute_adaptive_trail_bps(gain, &tc);
-        // 500 bps <= tier[1].up_to_bps=500 → trail=200
-        assert_eq!(trail, 200); // 2% trail at 2-5% gain range
+        // 500 bps is in tier 1 (301-1200) → trail=450 (4.5%)
+        assert_eq!(trail, 450);
 
-        // Floor = 10500 - (10500 * 200 / 10000) = 10500 - 210 = 10290
-        assert!(!pos.adaptive_trailing_stop_hit(10_300, trail)); // above floor
-        assert!(pos.adaptive_trailing_stop_hit(10_289, trail));  // below floor
+        // Floor = 10500 - (10500 * 450 / 10000) = 10500 - 472 = 10028
+        assert!(!pos.adaptive_trailing_stop_hit(10_100, trail)); // above floor
+        assert!(pos.adaptive_trailing_stop_hit(10_020, trail));  // below floor
 
         // Phase 2: token pumps to +20% (peak = 12000)
         pos.peak_price_fp = 12_000;
         let gain = price_to_bps_offset(10_000, 12_000); // 2000 bps
         let trail = pos.compute_adaptive_trail_bps(gain, &tc);
-        // 2000 bps > 1500 (tier[2]), 2000 <= 5000 (tier[3]) → trail=800
-        assert_eq!(trail, 800); // 8% trail at 15-50% gain range
+        // 2000 bps is in tier 2 (1201-4000) → trail=700 (7%)
+        assert_eq!(trail, 700);
 
-        // Floor = 12000 - (12000 * 800 / 10000) = 12000 - 960 = 11040
-        assert!(!pos.adaptive_trailing_stop_hit(11_100, trail)); // still above
-        assert!(pos.adaptive_trailing_stop_hit(11_000, trail));  // below → exit at ~+10%
+        // Floor = 12000 - (12000 * 700 / 10000) = 12000 - 840 = 11160
+        assert!(!pos.adaptive_trailing_stop_hit(11_200, trail)); // still above
+        assert!(pos.adaptive_trailing_stop_hit(11_100, trail));  // below → exit at ~+11.6%
 
         // With old 25% trail: 12000 * 0.75 = 9000. Exit would be at -10% loss!
-        // New trail captures +10% vs old trail capturing -10% or worse.
+        // New trail captures +11.6% vs old trail capturing -10% or worse.
     }
 
     #[test]
@@ -3823,33 +3836,26 @@ mod tests {
 
     #[test]
     fn test_adaptive_trail_expected_impact_math() {
-        // Verify the key claim: at +20% peak with 4% trail, exit at ~+16%
+        // Verify the key claim: at +20% peak with 7% trail, exit at ~+13%
         // vs old 25% trail where exit would be at ~-10% (9000 from 10000 entry)
         let mut pos = MomentumPosition::new(
             [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
         );
         pos.peak_price_fp = 12_000; // +20% peak
 
-        // New adaptive trail: at +20% gain, tier 2 (5-15% range)... wait, 2000 bps is in 1500 range
-        // Actually gain_bps = 2000, which is > 1500 (tier 2 boundary), so we're in tier 3 (up_to_bps=5000)
-        // trail = 800 bps (8%)
+        // gain_bps = 2000, which is in tier 2 (1201-4000) → trail = 700 bps (7%)
         let tc = TrailConfig::default();
         let gain_at_peak = price_to_bps_offset(10_000, 12_000); // 2000 bps
         let trail = pos.compute_adaptive_trail_bps(gain_at_peak, &tc);
-        assert_eq!(trail, 800); // 8% trail for 15-50% range... wait, 2000 > 1500
+        assert_eq!(trail, 700); // 7% trail for 12-40% range
 
-        // Let me verify: up_to_bps boundaries
-        // tier[0]: up_to=200, tier[1]: up_to=500, tier[2]: up_to=1500
-        // gain=2000 > 1500, so NOT in tier[2]. Check tier[3]: up_to=5000.
-        // 2000 <= 5000 → tier[3], trail=800
+        // At +20% peak with 7% trail: floor = 12000 - (12000 * 700 / 10000) = 12000 - 840 = 11160
+        let floor = 12_000u64.saturating_sub(12_000 * 700 / 10_000);
+        assert_eq!(floor, 11_160);
 
-        // So at +20% peak with 8% trail: floor = 12000 * (1 - 0.08) = 11040
-        let floor = 12_000u64.saturating_sub(12_000 * 800 / 10_000);
-        assert_eq!(floor, 11_040);
-
-        // Exit at 11040 = +10.4% from entry (10000)
+        // Exit at 11160 = +11.6% from entry (10000)
         let exit_gain = price_to_bps_offset(10_000, floor);
-        assert_eq!(exit_gain, 1040); // +10.4%
+        assert_eq!(exit_gain, 1160); // +11.6%
 
         // Old 25% trail: floor = 12000 * 0.75 = 9000
         let old_floor = 12_000u64.saturating_sub(12_000 * 2500 / 10_000);
@@ -3857,7 +3863,7 @@ mod tests {
         let old_exit_gain = price_to_bps_offset(10_000, old_floor);
         assert_eq!(old_exit_gain, -1000); // -10%!
 
-        // Improvement: +10.4% vs -10% = 20.4 percentage points captured
+        // Improvement: +11.6% vs -10% = 21.6 percentage points captured
         assert!(exit_gain > old_exit_gain + 2000,
             "new trail should capture at least 20 pct pts more than old");
     }
@@ -3871,20 +3877,20 @@ mod tests {
         pos.peak_price_fp = 18_000; // +80%
 
         let tc = TrailConfig::default();
-        // gain=8000 bps > 5000 (tier[3]) → tier[4].up_to_bps=MAX → trail=1500 (15%)
+        // gain=8000 bps > 4000 (tier[2]) → tier[3].up_to_bps=MAX → trail=1100 (11%)
         let trail = pos.compute_adaptive_trail_bps(8000, &tc);
-        assert_eq!(trail, 1500); // 15% trail for moonshots (50%+ gain)
+        assert_eq!(trail, 1100); // 11% trail for moonshots (40%+ gain)
 
-        // Floor = 18000 - (18000 * 1500 / 10000) = 18000 - 2700 = 15300
-        let floor = 18_000u64.saturating_sub(18_000 * 1500 / 10_000);
-        assert_eq!(floor, 15_300);
+        // Floor = 18000 - (18000 * 1100 / 10000) = 18000 - 1980 = 16020
+        let floor = 18_000u64.saturating_sub(18_000 * 1100 / 10_000);
+        assert_eq!(floor, 16_020);
         let exit_gain = price_to_bps_offset(10_000, floor);
-        assert_eq!(exit_gain, 5300); // +53%
+        assert_eq!(exit_gain, 6020); // +60.2%
 
         // With old 25% trail: floor = 18000 * 0.75 = 13500 → +35%
-        // With new 15% trail: exit at +53% vs +35% → 18 pct pts improvement
-        assert!(pos.adaptive_trailing_stop_hit(15_200, trail));
-        assert!(!pos.adaptive_trailing_stop_hit(15_400, trail));
+        // With new 11% trail: exit at +60.2% vs +35% → 25 pct pts improvement
+        assert!(pos.adaptive_trailing_stop_hit(15_900, trail));   // below 16020 → trail fires
+        assert!(!pos.adaptive_trailing_stop_hit(16_100, trail));  // above 16020 → hold
     }
 
     #[test]
@@ -3898,14 +3904,14 @@ mod tests {
         let tc = TrailConfig::default();
         let gain = price_to_bps_offset(10_000, 10_150); // 150 bps
         let trail = pos.compute_adaptive_trail_bps(gain, &tc);
-        assert_eq!(trail, 100); // 1% trail for small gains
+        assert_eq!(trail, 200); // 2% trail for small gains (0-3%)
 
-        // Floor = 10150 - (10150 * 100 / 10000) = 10150 - 101 = 10049
-        // Exit at +0.49% from entry — at least preserves a tiny profit
-        let floor = 10_150u64.saturating_sub(10_150 * 100 / 10_000);
-        assert_eq!(floor, 10_049); // note: integer rounding
-        assert!(pos.adaptive_trailing_stop_hit(10_040, trail));  // below floor → exit
-        assert!(!pos.adaptive_trailing_stop_hit(10_060, trail)); // above floor → hold
+        // Floor = 10150 - (10150 * 200 / 10000) = 10150 - 203 = 9947
+        // Trail fires below 9947 — but floor_bps=350 prevents exit below +3.5%
+        let floor = 10_150u64.saturating_sub(10_150 * 200 / 10_000);
+        assert_eq!(floor, 9_947); // note: integer rounding
+        assert!(pos.adaptive_trailing_stop_hit(9_940, trail));  // below floor → trail triggers
+        assert!(!pos.adaptive_trailing_stop_hit(9_960, trail)); // above floor → hold
     }
 
     // ── End TASK 6 tests ─────────────────────────────────────────────────

@@ -2978,15 +2978,24 @@ impl MomentumEngine {
                     let trail_bps = pos.compute_adaptive_trail_bps(current_bps, tc);
 
                     if trail_bps > 0 && pos.adaptive_trailing_stop_hit(current_price_fp, trail_bps) {
-                        // Confirm gate: must stay below floor for N consecutive ticks
-                        pos.trail_stop_below_floor_count = pos.trail_stop_below_floor_count.saturating_add(1);
-                        if pos.trail_stop_below_floor_count >= tc.confirm_samples {
-                            to_close.push((
-                                mint,
-                                MomentumExitReason::TrailingStop,
-                                current_price_fp,
-                            ));
-                            continue;
+                        // Floor gate: don't trail-exit below minimum gain threshold.
+                        // Prevents "fee death" where 1-3% gains don't cover TX overhead.
+                        if tc.floor_bps > 0 && current_bps > 0 && (current_bps as u32) < tc.floor_bps {
+                            // Price is positive but below fee breakeven — hold position.
+                            // Will either recover (trail fires higher) or dump to hard SL.
+                            pos.trail_stop_below_floor_count = 0; // reset confirmation counter
+                            // Don't exit — fall through to other checks
+                        } else {
+                            // Confirm gate: must stay below trail floor for N consecutive ticks
+                            pos.trail_stop_below_floor_count = pos.trail_stop_below_floor_count.saturating_add(1);
+                            if pos.trail_stop_below_floor_count >= tc.confirm_samples {
+                                to_close.push((
+                                    mint,
+                                    MomentumExitReason::TrailingStop,
+                                    current_price_fp,
+                                ));
+                                continue;
+                            }
                         }
                     } else {
                         pos.trail_stop_below_floor_count = 0;

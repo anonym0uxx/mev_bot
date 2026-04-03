@@ -1,5 +1,5 @@
 {
-  "_comment": "Mints that are permanently unrecoverable \u2014 pool gone or PumpSwap Overflow (6023). Orphan recovery will skip these on startup.",
+  "_comment": "Mints that are permanently unrecoverable — pool gone or PumpSwap Overflow (6023). Orphan recovery will skip these on startup.",
   "blocked_mints": [
     "6dRaLH7gtxVXmiC2YmibWABKWyPFmVrmnLUK3h8CrhD4",
     "6VknsrpktuYfLCeVy9y9a9Y6weLFvtRE1KDTYwoypump",
@@ -20,6 +20,7 @@
     "z2TGkNhWgnV1WRC6SFsHs7TqPMp5ErSix34ksSVpump",
     "D1FipJ4cb6q9cSUvPwufLNaXni8PFz5krkDL33J2pump",
     "DtSQeRmkG9Xj1QNbcQevhRG1okBHJaZ6gMcvtuoFpump",
-    "7dpaUoCbMQ2dVXT2W8nEPYEYXyLKErmMzgqcGHq4pump"
+    "7dpaUoCbMQ2dVXT2W8nEPYEYXyLKErmMzgqcGHq4pump",
+    "Phxz39UHxuFy9JE9vzZn3VDFi6e4xUnDdR3ywvrpump"
   ]
 }
