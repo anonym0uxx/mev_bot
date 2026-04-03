@@ -93,7 +93,7 @@ pub const SPL_TOKEN_PROGRAM_STR: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623V
 pub const SPL_TOKEN_2022_PROGRAM_STR: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
 /// SPL Associated Token Account program ID.
-pub const SPL_ATA_PROGRAM_STR: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe8bXh";
+pub const SPL_ATA_PROGRAM_STR: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
 // ── Pool accounts ────────────────────────────────────────────────────────────
 
@@ -446,6 +446,19 @@ fn build_pumpswap_swap_ix(
     arg2: u64,
     is_sell: bool,
 ) -> Result<Instruction, PumpSwapTxError> {
+    build_pumpswap_swap_ix_inner(pool, wallet_pubkey, fee_recipient_idx, discriminator, arg1, arg2, is_sell, None)
+}
+
+fn build_pumpswap_swap_ix_inner(
+    pool: &PumpSwapPoolAccounts,
+    wallet_pubkey: &Pubkey,
+    fee_recipient_idx: usize,
+    discriminator: &[u8; 8],
+    arg1: u64,
+    arg2: u64,
+    is_sell: bool,
+    user_token_ata_override: Option<Pubkey>,
+) -> Result<Instruction, PumpSwapTxError> {
     let pumpswap_program = Pubkey::from_str(PUMPSWAP_PROGRAM).unwrap();
     let global_config = Pubkey::from_str(PUMPSWAP_GLOBAL_CONFIG).unwrap();
     let wsol_mint = Pubkey::from_str(WSOL_MINT_STR).unwrap();
@@ -460,7 +473,8 @@ fn build_pumpswap_swap_ix(
     let wsol_prog = wsol_token_program();
 
     // Derive user ATAs (uses correct token program for PDA derivation)
-    let user_token_ata = token_ata_with_program(wallet_pubkey, &token_mint, &token_mint_program);
+    let user_token_ata = user_token_ata_override
+        .unwrap_or_else(|| token_ata_with_program(wallet_pubkey, &token_mint, &token_mint_program));
     let user_wsol_ata = wsol_ata(wallet_pubkey);
 
     // Accounts [3]-[8] depend on pool ordering:
@@ -907,6 +921,57 @@ pub fn build_pumpswap_sell_tx(
 
     bincode::serialize(&tx)
         .map_err(|e| PumpSwapTxError::SignError(format!("failed to serialize transaction: {e}")))
+}
+
+/// Like `build_pumpswap_sell_tx` but accepts a known wallet token ATA address directly.
+/// Use when the on-chain ATA was created with a different program than what we'd derive,
+/// e.g. tokens bought before the ATA program address constant was fixed.
+pub fn build_pumpswap_sell_tx_with_ata(
+    pool: &PumpSwapPoolAccounts,
+    wallet_keypair: &Keypair,
+    tokens_to_sell: u64,
+    min_sol_out: u64,
+    jito_tip_lamports: u64,
+    jito_tip_account: Pubkey,
+    recent_blockhash: [u8; 32],
+    fee_recipient_idx: usize,
+    user_token_ata: Pubkey,
+) -> Result<Vec<u8>, PumpSwapTxError> {
+    let wallet_pubkey = wallet_keypair.pubkey();
+    let wsol_mint = Pubkey::from_str(WSOL_MINT_STR).unwrap();
+    let blockhash = Hash::new_from_array(recent_blockhash);
+    let wsol_prog = wsol_token_program();
+    let wsol_ata_addr = wsol_ata(&wallet_pubkey);
+
+    let ix_cu_limit = ComputeBudgetInstruction::set_compute_unit_limit(300_000);
+    let ix_cu_price = ComputeBudgetInstruction::set_compute_unit_price(5000);
+    let ix_create_wsol_ata = build_create_ata_idempotent_ix(&wallet_pubkey, &wallet_pubkey, &wsol_mint, &wsol_prog);
+
+    let (discriminator, arg1, arg2, is_pumpswap_sell) = if pool.token_is_base {
+        (&PUMPSWAP_SELL_DISCRIMINATOR, tokens_to_sell, min_sol_out, true)
+    } else {
+        (&PUMPSWAP_BUY_DISCRIMINATOR, min_sol_out, tokens_to_sell, false)
+    };
+
+    let ix_swap = build_pumpswap_swap_ix_inner(
+        pool, &wallet_pubkey, fee_recipient_idx, discriminator, arg1, arg2, is_pumpswap_sell,
+        Some(user_token_ata),
+    )?;
+
+    let ix_close = build_close_account_ix(&wsol_ata_addr, &wallet_pubkey, &wallet_pubkey);
+    let ix_tip = system_instruction::transfer(&wallet_pubkey, &jito_tip_account, jito_tip_lamports);
+
+    let msg = v0::Message::try_compile(
+        &wallet_pubkey,
+        &[ix_cu_limit, ix_cu_price, ix_create_wsol_ata, ix_swap, ix_close, ix_tip],
+        &[],
+        blockhash,
+    ).map_err(|e| PumpSwapTxError::SignError(format!("compile: {e}")))?;
+
+    let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[wallet_keypair])
+        .map_err(|e| PumpSwapTxError::SignError(format!("sign: {e}")))?;
+
+    bincode::serialize(&tx).map_err(|e| PumpSwapTxError::SignError(format!("serialize: {e}")))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

@@ -4305,6 +4305,107 @@ impl MomentumEngine {
         let wallet = solana_sdk::pubkey::Pubkey::new_from_array(wallet_bytes);
         let rpc_url = self.public_rpc_url.as_str();
 
+        // ── Pre-create WSOL ATA if missing ────────────────────────────────────
+        // Every PumpSwap sell TX requires the wallet's WSOL ATA to exist as a
+        // writable account. Solana validates all accounts before executing any
+        // instructions, so the idempotent create instruction inside the sell TX
+        // can't save us — if the ATA doesn't exist, the TX fails with
+        // ProgramAccountNotFound/MissingAccount before any instruction runs.
+        // Create it once here at startup; it persists forever.
+        {
+            use std::str::FromStr as _;
+            use crate::tx::pumpswap::{SPL_ATA_PROGRAM_STR, SPL_TOKEN_PROGRAM_STR};
+            let wsol_mint = solana_sdk::pubkey::Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap();
+            let spl_prog  = solana_sdk::pubkey::Pubkey::from_str(SPL_TOKEN_PROGRAM_STR).unwrap();
+            let ata_prog  = solana_sdk::pubkey::Pubkey::from_str(SPL_ATA_PROGRAM_STR).unwrap();
+            let (wsol_ata, _) = solana_sdk::pubkey::Pubkey::find_program_address(
+                &[wallet.as_ref(), spl_prog.as_ref(), wsol_mint.as_ref()],
+                &ata_prog,
+            );
+
+            // Check if it already exists
+            let check_body = serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "method": "getAccountInfo",
+                "params": [wsol_ata.to_string(), {"encoding": "base64"}]
+            });
+            let balance_http = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build().unwrap();
+            let exists = match balance_http.post(rpc_url).json(&check_body).send().await {
+                Ok(r) => match r.json::<serde_json::Value>().await {
+                    Ok(j) => j["result"]["value"].is_object(),
+                    Err(_) => false,
+                },
+                Err(_) => false,
+            };
+
+            if !exists {
+                tracing::info!(wsol_ata=%wsol_ata, "[startup] WSOL ATA missing — creating before first sell");
+                let kp_path = std::env::var("WALLET_KEYPAIR_PATH")
+                    .unwrap_or_else(|_| "/data/.openclaw/workspace/projects/pump-quant/config/keys/wallet-keypair.json".to_string());
+                if let Ok(kp_bytes) = std::fs::read(&kp_path) {
+                    if let Ok(kp_arr) = serde_json::from_slice::<Vec<u8>>(&kp_bytes) {
+                        if kp_arr.len() == 64 {
+                            let mut kb = [0u8; 64];
+                            kb.copy_from_slice(&kp_arr);
+                            if let Ok(keypair) = solana_sdk::signature::Keypair::from_bytes(&kb) {
+                                // Get blockhash
+                                let bh_body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"getLatestBlockhash","params":[{"commitment":"confirmed"}]});
+                                if let Ok(bh_resp) = balance_http.post(rpc_url).json(&bh_body).send().await {
+                                    if let Ok(bh_json) = bh_resp.json::<serde_json::Value>().await {
+                                        if let Some(bh_str) = bh_json["result"]["value"]["blockhash"].as_str() {
+                                            if let Ok(bh_bytes) = bs58::decode(bh_str).into_vec() {
+                                                let mut bh_arr = [0u8; 32];
+                                                bh_arr.copy_from_slice(&bh_bytes);
+                                                let blockhash = solana_sdk::hash::Hash::new_from_array(bh_arr);
+
+                                                let sys_prog = solana_sdk::pubkey::Pubkey::from_str("11111111111111111111111111111111").unwrap();
+                                                let create_ix = solana_sdk::instruction::Instruction {
+                                                    program_id: ata_prog,
+                                                    accounts: vec![
+                                                        solana_sdk::instruction::AccountMeta::new(wallet, true),
+                                                        solana_sdk::instruction::AccountMeta::new(wsol_ata, false),
+                                                        solana_sdk::instruction::AccountMeta::new_readonly(wallet, false),
+                                                        solana_sdk::instruction::AccountMeta::new_readonly(wsol_mint, false),
+                                                        solana_sdk::instruction::AccountMeta::new_readonly(sys_prog, false),
+                                                        solana_sdk::instruction::AccountMeta::new_readonly(spl_prog, false),
+                                                    ],
+                                                    data: vec![1u8], // CreateIdempotent
+                                                };
+                                                let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+                                                    &[create_ix], Some(&wallet), &[&keypair], blockhash,
+                                                );
+                                                if let Ok(tx_bytes) = bincode::serialize(&tx) {
+                                                    let tx_b64 = base64::encode(&tx_bytes);
+                                                    let send_body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":[tx_b64,{"encoding":"base64","skipPreflight":true}]});
+                                                    match balance_http.post(rpc_url).json(&send_body).send().await {
+                                                        Ok(r) => match r.json::<serde_json::Value>().await {
+                                                            Ok(j) => if let Some(sig) = j["result"].as_str() {
+                                                                tracing::info!(sig=%sig, wsol_ata=%wsol_ata, "[startup] WSOL ATA creation TX submitted");
+                                                                // Wait for it to land
+                                                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                                            } else {
+                                                                tracing::warn!(resp=?j, "[startup] WSOL ATA creation failed");
+                                                            },
+                                                            Err(e) => tracing::warn!(err=?e, "[startup] WSOL ATA creation response parse failed"),
+                                                        },
+                                                        Err(e) => tracing::warn!(err=?e, "[startup] WSOL ATA creation send failed"),
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                tracing::info!(wsol_ata=%wsol_ata, "[startup] WSOL ATA exists ✅");
+            }
+        }
+
         // Fetch all SPL token accounts owned by wallet (both SPL Token and Token-2022)
         tracing::info!(wallet=%wallet, "[orphan_recovery] scanning wallet for orphan token balances");
 
