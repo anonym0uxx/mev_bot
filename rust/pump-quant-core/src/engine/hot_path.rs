@@ -22,57 +22,8 @@ use crate::feeds::{FeedSource, PreWarmEvent, TokenCreatedEvent, TradeEvent};
 use super::gates::GateRejectReason;
 use super::regime;
 
-/// A token that passed the full Kelly/Bayesian scoring pipeline and watchlist
-/// promotion. Published to momentum engine when bonding_curve_enabled=false.
-/// Zero-copy: all fields are Copy, no heap.
-#[derive(Debug, Clone, Copy)]
-pub struct ScoredToken {
-    pub mint: [u8; 32],
-    /// Entry engine composite score (0–100).
-    pub score: f64,
-    /// Magnitude estimate from EntryEngine (0–100).
-    pub magnitude: f64,
-    /// Kelly-computed position size in lamports.
-    pub kelly_size_lamports: u64,
-    /// Win probability × 1000 (0–1000) from Kelly.
-    pub p_permille: u16,
-    /// Win/loss ratio × 100 from Kelly.
-    pub r_x100: u16,
-    /// Kelly fraction × 1000 (after half-Kelly + adjustments).
-    pub f_permille: u16,
-    /// Conviction tier: 0=LOW, 1=MED, 2=HIGH.
-    pub conviction_tier: u8,
-    /// Current bonding curve vSOL reserves at scoring time.
-    pub vsol_reserves: u64,
-    /// Epoch ms when scoring happened.
-    pub timestamp_ms: u64,
-}
-
-/// Graduation enrichment data extracted from mint_map at migration time.
-/// Zero-copy, all Copy fields. Passed to momentum engine for real scoring.
-#[derive(Debug, Clone, Copy)]
-pub struct GradEnrichment {
-    /// Seconds from first_seen to migration. 0 if unknown.
-    pub grad_speed_s: u32,
-    /// Total buy volume in the last 30s before migration, in centisol (sol × 100).
-    pub volume_sol_x100: u32,
-    /// Buy count in the 5s window before migration.
-    pub buys_5s: u16,
-    /// Unique buyers in 30s window.
-    pub unique_buyers: u16,
-    /// Sell count in 5s window (dump pressure signal).
-    pub sells_5s: u16,
-}
-
-impl GradEnrichment {
-    pub const UNKNOWN: Self = Self {
-        grad_speed_s: 0,
-        volume_sol_x100: 0,
-        buys_5s: 0,
-        unique_buyers: 0,
-        sells_5s: 0,
-    };
-}
+// Re-export from momentum::types for backward compatibility during refactor
+pub use crate::momentum::types::{ScoredToken, GradEnrichment};
 
 /// Statistics counters — exposed for periodic logging.
 pub struct HotPathStats {
