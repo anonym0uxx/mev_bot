@@ -18,15 +18,18 @@
 //! 2. `on_tick()` — hot path, called every `check_ms` to manage positions
 //! 3. `stats()` — read atomic counters for monitoring
 
+pub mod activity_gate;
 pub mod types;
 pub mod kelly;
 pub mod config;
 pub mod logger;
 pub mod pool;
+pub mod reconciler;
 pub mod position;
 pub mod price_feed;
 pub mod rpc_sender;
 pub mod scorer;
+pub mod sell_engine;
 pub mod tod;
 pub mod velocity;
 
@@ -2753,70 +2756,102 @@ impl MomentumEngine {
                 continue;
             }
 
-            // 3. Trailing stop — active after TP1 hit, width is momentum-state-aware.
-            // Quant spec: ACCELERATING=15%, SUSTAINING=8%, DECELERATING=5%, REVERSING=3%
-            // Guard: skip trailing stop until we have enough samples (trailing_stop_min_samples).
-            if pos.tp_flags & 0x1 != 0
-                && pos.sample_count >= self.config.trailing_stop_min_samples
-            {
-                let state = pos.momentum_state(
-                    self.config.momentum_accel_threshold_bps,
-                    self.config.momentum_decel_threshold_bps,
-                    self.config.momentum_reversal_threshold_bps,
-                );
-                let base_trail = match state {
-                    MomentumState::Accelerating => self.config.trailing_stop_accel_pct,
-                    MomentumState::Sustaining | MomentumState::Unknown => self.config.trailing_stop_pct,
-                    MomentumState::Decelerating => self.config.trailing_stop_decel_pct,
-                    MomentumState::Reversing => self.config.trailing_stop_reversal_pct,
-                };
+            // 3. Trailing stop — TASK 6: Adaptive gain-tiered OR legacy momentum-state.
+            //
+            // When adaptive_trail_enabled=true (default):
+            //   Uses gain-tiered trailing: tight 1% at small gains, wider as gains grow.
+            //   Activates after min_samples_to_activate (default: 3), no TP1 gate needed.
+            //   Rationale: old 25% Accelerating trail never triggered until complete dump.
+            //   At +30% peak with 25% trail, floor is +22.5% — by the time price drops
+            //   7.5%, the dump is accelerating and actual exit is +15% or worse.
+            //
+            // When adaptive_trail_enabled=false:
+            //   Falls back to legacy momentum-state trailing (Accel=15%, etc.)
+            //   with gain-tiered cap and ATR adaptation. Requires TP1 hit.
+            if self.config.adaptive_trail_enabled {
+                // ── ADAPTIVE GAIN-TIERED TRAILING STOP (TASK 6) ──────────────
+                let tc = &self.config.trail_config;
+                if pos.sample_count >= tc.min_samples_to_activate {
+                    let current_bps = price_to_bps_offset(pos.entry_price_fp, current_price_fp);
+                    let trail_bps = pos.compute_adaptive_trail_bps(current_bps, tc);
 
-                // Phase 2.5: Gain-tiered trailing stop cap.
-                // Tighter trail for smaller gains, wider for bigger winners.
-                let current_gain_bps = price_to_bps_offset(pos.entry_price_fp, current_price_fp) as i64;
-                let tier_cap = if current_gain_bps < self.config.trailing_stop_tier1_max_bps {
-                    self.config.trailing_stop_tier1_pct  // tight trail for small gains
-                } else if current_gain_bps < self.config.trailing_stop_tier2_max_bps {
-                    self.config.trailing_stop_tier2_pct  // medium trail
-                } else {
-                    999.0  // no tier cap, let state-based trail run
-                };
-                let base_trail = base_trail.min(tier_cap);
-
-                // Phase 3: ATR-adaptive trail width.
-                // trail = max(base, k * ATR_bps / 100), clamped per phase.
-                let trail_pct = if pos.sample_count >= self.config.trail_min_samples_for_atr {
-                    let n = pos.sample_count as usize;
-                    let atr = compute_atr_bps(
-                        &pos.price_samples_bps[..n],
-                        self.config.trail_atr_window,
-                    );
-                    let vol_trail = self.config.trail_atr_multiplier * atr as f64 / 100.0;
-                    let raw = base_trail.max(vol_trail);
-                    let (min_c, max_c) = match state {
-                        MomentumState::Accelerating                        => (5.0f64, 30.0),
-                        MomentumState::Sustaining | MomentumState::Unknown => (3.0, 20.0),
-                        MomentumState::Decelerating                        => (2.0, 12.0),
-                        MomentumState::Reversing                           => (1.0,  5.0),
-                    };
-                    raw.clamp(min_c, max_c)
-                } else {
-                    base_trail
-                };
-                let trailing_bps = (trail_pct * 100.0) as u32;
-                // Confirm samples gate: require N consecutive below-floor readings
-                if pos.trailing_stop_hit(current_price_fp, trailing_bps) {
-                    pos.trail_stop_below_floor_count = pos.trail_stop_below_floor_count.saturating_add(1);
-                    if pos.trail_stop_below_floor_count >= self.config.trailing_stop_confirm_samples {
-                        to_close.push((
-                            mint,
-                            MomentumExitReason::TrailingStop,
-                            current_price_fp,
-                        ));
-                        continue;
+                    if trail_bps > 0 && pos.adaptive_trailing_stop_hit(current_price_fp, trail_bps) {
+                        // Confirm gate: must stay below floor for N consecutive ticks
+                        pos.trail_stop_below_floor_count = pos.trail_stop_below_floor_count.saturating_add(1);
+                        if pos.trail_stop_below_floor_count >= tc.confirm_samples {
+                            to_close.push((
+                                mint,
+                                MomentumExitReason::TrailingStop,
+                                current_price_fp,
+                            ));
+                            continue;
+                        }
+                    } else {
+                        pos.trail_stop_below_floor_count = 0;
                     }
-                } else {
-                    pos.trail_stop_below_floor_count = 0; // reset on any above-floor reading
+                }
+            } else {
+                // ── LEGACY MOMENTUM-STATE TRAILING STOP (backward compat) ────
+                // Guard: skip trailing stop until we have enough samples (trailing_stop_min_samples).
+                if pos.tp_flags & 0x1 != 0
+                    && pos.sample_count >= self.config.trailing_stop_min_samples
+                {
+                    let state = pos.momentum_state(
+                        self.config.momentum_accel_threshold_bps,
+                        self.config.momentum_decel_threshold_bps,
+                        self.config.momentum_reversal_threshold_bps,
+                    );
+                    let base_trail = match state {
+                        MomentumState::Accelerating => self.config.trailing_stop_accel_pct,
+                        MomentumState::Sustaining | MomentumState::Unknown => self.config.trailing_stop_pct,
+                        MomentumState::Decelerating => self.config.trailing_stop_decel_pct,
+                        MomentumState::Reversing => self.config.trailing_stop_reversal_pct,
+                    };
+
+                    // Phase 2.5: Gain-tiered trailing stop cap.
+                    let current_gain_bps = price_to_bps_offset(pos.entry_price_fp, current_price_fp) as i64;
+                    let tier_cap = if current_gain_bps < self.config.trailing_stop_tier1_max_bps {
+                        self.config.trailing_stop_tier1_pct
+                    } else if current_gain_bps < self.config.trailing_stop_tier2_max_bps {
+                        self.config.trailing_stop_tier2_pct
+                    } else {
+                        999.0
+                    };
+                    let base_trail = base_trail.min(tier_cap);
+
+                    // Phase 3: ATR-adaptive trail width.
+                    let trail_pct = if pos.sample_count >= self.config.trail_min_samples_for_atr {
+                        let n = pos.sample_count as usize;
+                        let atr = compute_atr_bps(
+                            &pos.price_samples_bps[..n],
+                            self.config.trail_atr_window,
+                        );
+                        let vol_trail = self.config.trail_atr_multiplier * atr as f64 / 100.0;
+                        let raw = base_trail.max(vol_trail);
+                        let (min_c, max_c) = match state {
+                            MomentumState::Accelerating                        => (5.0f64, 30.0),
+                            MomentumState::Sustaining | MomentumState::Unknown => (3.0, 20.0),
+                            MomentumState::Decelerating                        => (2.0, 12.0),
+                            MomentumState::Reversing                           => (1.0,  5.0),
+                        };
+                        raw.clamp(min_c, max_c)
+                    } else {
+                        base_trail
+                    };
+                    let trailing_bps = (trail_pct * 100.0) as u32;
+                    if pos.trailing_stop_hit(current_price_fp, trailing_bps) {
+                        pos.trail_stop_below_floor_count = pos.trail_stop_below_floor_count.saturating_add(1);
+                        if pos.trail_stop_below_floor_count >= self.config.trailing_stop_confirm_samples {
+                            to_close.push((
+                                mint,
+                                MomentumExitReason::TrailingStop,
+                                current_price_fp,
+                            ));
+                            continue;
+                        }
+                    } else {
+                        pos.trail_stop_below_floor_count = 0;
+                    }
                 }
             }
 
@@ -2865,6 +2900,31 @@ impl MomentumEngine {
                 }
             }
             // ── End Velocity Exit ────────────────────────────────────────────
+
+            // ── WINNER PROTECTION: Momentum Lock (TASK 6) ────────────────────
+            // Skip ALL time-based exits for profitable positions with active trading.
+            // Only trailing stop (above) and velocity exit can close a momentum-locked position.
+            //
+            // On-chain evidence: biggest winner (+82.2%, +0.025 SOL) held 40 minutes.
+            // Time-based exits (time_sl, dead_zone, stagnation) killed profitable positions,
+            // capping avg win at +15.8% when we need +24% for +EV.
+            //
+            // A position is momentum-locked when:
+            //   1. Currently profitable (gain > 0 bps)
+            //   2. Pool has recent WebSocket activity (ws_count > 0)
+            //
+            // If either condition fails, normal time-based exits proceed.
+            if self.config.winner_protection_enabled {
+                let current_bps = price_to_bps_offset(pos.entry_price_fp, current_price_fp);
+                let (ws_count, _ws_last_ms) = self.price_feed.ws_notif_info(&mint);
+
+                if pos.is_momentum_locked(current_bps, ws_count) {
+                    // Position is momentum-locked — skip all time-based exits below.
+                    // Only trailing stop (already evaluated above) can close this position.
+                    continue;
+                }
+            }
+            // ── End Winner Protection ────────────────────────────────────────
 
             // ── Adaptive dead zone Phase 1: WS activity silence ──────────────────────
             // ShredStream cannot see post-graduation Raydium/PumpSwap trades.

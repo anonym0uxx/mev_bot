@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use super::tod::MomentumTodConfig;
+use super::position::TrailConfig;
 
 // ── RPC sender default functions ─────────────────────────────────────────────
 
@@ -421,6 +422,31 @@ pub struct MomentumConfig {
     pub time_decay_trail_bps: Vec<u16>,
 
     // ══════════════════════════════════════════════════════════
+    // ADAPTIVE TRAILING STOP + WINNER MANAGEMENT (TASK 6)
+    // ══════════════════════════════════════════════════════════
+
+    /// Enable adaptive gain-tiered trailing stop. When true, replaces
+    /// momentum-state-based trailing (Accel=25%, Sustain=15%, etc.) with
+    /// gain-tiered trailing calibrated for memecoin dynamics.
+    /// Default: true. Set to false to revert to legacy behavior.
+    pub adaptive_trail_enabled: bool,
+
+    /// Adaptive trailing stop configuration: gain tiers, confirm samples, etc.
+    /// Only used when `adaptive_trail_enabled` is true.
+    #[serde(default)]
+    pub trail_config: TrailConfig,
+
+    /// Enable winner protection (momentum lock). When true, profitable positions
+    /// with ongoing WebSocket activity are protected from ALL time-based exits
+    /// (time_sl, dead_zone, stagnation, early_abort, etc.). Only the trailing
+    /// stop can close a momentum-locked position.
+    ///
+    /// On-chain evidence: biggest winner (+82.2%) held 40 minutes. Time-based
+    /// exits kill winners early, capping avg win at +15.8% (need +24% for +EV).
+    /// Default: true.
+    pub winner_protection_enabled: bool,
+
+    // ══════════════════════════════════════════════════════════
     // STAGNATION EXIT (TASK 5)
     // ══════════════════════════════════════════════════════════
 
@@ -781,6 +807,11 @@ impl Default for MomentumConfig {
             time_decay_trailing_enabled: true,
             time_decay_stages_ms: vec![30_000, 60_000, 120_000, 180_000, 240_000],
             time_decay_trail_bps: vec![800, 500, 300, 200, 100],
+
+            // Adaptive trailing stop + winner management (TASK 6)
+            adaptive_trail_enabled: true,
+            trail_config: TrailConfig::default(),
+            winner_protection_enabled: true,
 
             // Stagnation exit (TASK 5)
             stagnation_exit_ms: 60_000,

@@ -1,12 +1,12 @@
 //! Cache-aligned position struct and pending entry ring buffer.
 //!
-//! ## Layout: MomentumPosition — exactly 256 bytes, 64-byte aligned
+//! ## Layout: MomentumPosition — 265 raw bytes, 64-byte aligned (padded to 320 by repr)
 //!
 //! ```text
 //! Offset  Size  Field
 //! ------  ----  -----
 //!   0      32   mint: [u8; 32]
-//!  32       8   entry_ts_ms: u64
+//!  32       8   entry_ts_ms: u64             — buy DECISION timestamp
 //!  40       8   entry_price_fp: u64
 //!  48       8   bc_terminal_price_fp: u64
 //!  56       8   peak_price_fp: u64
@@ -24,9 +24,11 @@
 //! 208       4   pre_grad_buys_5s: u32
 //! 212       4   entry_delay_ms: u32
 //! 216       1   first_price_recorded: bool
-//! 217      39   _pad2: [u8; 39]     — pad to 256
+//! 217       1   velocity_confirm_counter: u8
+//! 218       8   buy_confirmed_ms: u64        — on-chain TX confirmation timestamp (0 = unconfirmed)
+//! 226      39   _pad2: [u8; 39]              — packed storage (TopDetector, ws_notif, etc.)
 //! ------  ----
-//! TOTAL:  256
+//! TOTAL:  265 raw (320 with align(64), 5 cache lines)
 //! ```
 //!
 //! ## Performance
@@ -35,6 +37,60 @@
 //! - All hot-path methods are `#[inline(always)]`
 //! - No heap allocation in PendingEntryRing (64 fixed slots)
 //! - Integer-only price tracking (fixed-point bps offsets)
+
+// ── Adaptive Trail Config (TASK 6: Winner Management) ────────────────────────
+
+/// A single tier in the gain-tiered adaptive trailing stop.
+///
+/// Mathematical basis: optimal trail w* = σ²/(2μ) for geometric Brownian motion.
+/// For memecoins: μ ≈ 30-50 bps/s, σ ≈ 80-150 bps/s in momentum.
+/// w* ≈ 100-375 bps. We tier from 100 (small gains) to 1500 (moonshots).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct TrailTier {
+    /// Gain level this tier applies up to (bps). Tiers must be sorted ascending.
+    pub up_to_bps: i32,
+    /// Trail width at this gain level (bps from peak).
+    pub trail_bps: u16,
+}
+
+/// Configuration for the adaptive gain-tiered trailing stop.
+///
+/// Replaces the old momentum-state-based trailing (Accel=25%, Sustain=15%, etc.)
+/// with gain-tiered trailing that's calibrated for memecoin dynamics:
+/// - Tight 1% trail on small gains (0-2%) — protect early profits
+/// - Wider trails as gains grow — let moonshots run
+///
+/// On-chain evidence: 25% trail at Accelerating state never triggers until
+/// complete dump. At +30% peak, floor is +22.5% — by the time price drops 7.5%,
+/// the dump is accelerating and actual exit is at +15% or worse.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct TrailConfig {
+    /// Gain-tiered trail widths. Must be sorted ascending by `up_to_bps`.
+    pub tiers: Vec<TrailTier>,
+    /// Must be below trail floor for this many consecutive ticks before firing.
+    /// Prevents single-tick noise exits. Default: 2.
+    pub confirm_samples: u8,
+    /// Don't activate adaptive trail until this many price samples exist.
+    /// Prevents premature exits on tokens with discontinuous early price action.
+    /// Default: 3.
+    pub min_samples_to_activate: u8,
+}
+
+impl Default for TrailConfig {
+    fn default() -> Self {
+        Self {
+            tiers: vec![
+                TrailTier { up_to_bps: 200,      trail_bps: 100 },   // 0-2% gain: 1% trail
+                TrailTier { up_to_bps: 500,      trail_bps: 200 },   // 2-5% gain: 2% trail
+                TrailTier { up_to_bps: 1500,     trail_bps: 400 },   // 5-15% gain: 4% trail
+                TrailTier { up_to_bps: 5000,     trail_bps: 800 },   // 15-50% gain: 8% trail
+                TrailTier { up_to_bps: i32::MAX, trail_bps: 1500 },  // 50%+ gain: 15% trail
+            ],
+            confirm_samples: 2,
+            min_samples_to_activate: 3,
+        }
+    }
+}
 
 /// Number of price sample slots. At ~1s intervals (sample_interval_ticks=7),
 /// 30 slots ≈ 30s coverage. At 10s intervals, 30 slots = 300s max hold.
@@ -99,13 +155,26 @@ pub struct MomentumPosition {
     /// Entry delay from graduation in ms.
     pub entry_delay_ms: u32,
 
-    // ── First-tick tracking + padding to 256 bytes ────────
+    // ── First-tick tracking + on-chain confirmation + padding ────────
     /// Set to true after the first price sample has been recorded.
     /// Ensures we always capture a sample on the first tick with live price data.
     pub first_price_recorded: bool,
     /// Consecutive ticks where velocity exit condition was met (confirm gate).
     /// Resets to 0 when velocity recovers above threshold.
     pub velocity_confirm_counter: u8,
+    /// Epoch ms when the buy TX was confirmed on-chain (slot landed).
+    /// Set to 0 at position creation. Stamped by `process_active_positions`
+    /// when `BuyState` transitions to `Confirmed` (first tick after TX lands).
+    ///
+    /// Used as the reference point for **enforced probe hold time** — all
+    /// phase-gated exit evaluation (`evaluate_phase()`) measures hold duration
+    /// from this timestamp, NOT `entry_ts_ms` (which records decision time).
+    ///
+    /// Before this field existed, `entry_ts_ms` was used for both purposes,
+    /// causing the probe window to start 600-1200ms before the TX actually
+    /// landed on-chain. 84% of trades exited in 0-1s because the elapsed
+    /// time already included TX propagation latency.
+    pub buy_confirmed_ms: u64,
     /// Packed storage for TopDetector, ws_notif, tokens_held, probe_phase,
     /// effective_trail_bps, and other hot-path fields. Layout:
     ///   [0..17]  = TopDetector (17 bytes)
@@ -119,7 +188,7 @@ pub struct MomentumPosition {
 }
 
 // Compile-time size and alignment assertions.
-// velocity_confirm_counter added 1 byte → struct is now 257 bytes (still ≤320, 5 cache lines).
+// buy_confirmed_ms added 8 bytes → struct is now 265 raw bytes (still ≤320, 5 cache lines).
 const _: () = assert!(std::mem::size_of::<MomentumPosition>() <= 320);
 const _: () = assert!(std::mem::align_of::<MomentumPosition>() == 64);
 
@@ -161,6 +230,7 @@ impl MomentumPosition {
             entry_delay_ms,
             first_price_recorded: false,
             velocity_confirm_counter: 0,
+            buy_confirmed_ms: 0, // 0 = not yet confirmed on-chain
             _pad2: [0u8; 39],
         }
     }
@@ -263,10 +333,119 @@ impl MomentumPosition {
         self.remaining_bps == 0
     }
 
-    /// Hold duration in ms since entry.
+    /// Hold duration in ms since entry (decision time).
     #[inline(always)]
     pub fn hold_ms(&self, now_ms: u64) -> u64 {
         now_ms.saturating_sub(self.entry_ts_ms)
+    }
+
+    /// Hold duration in ms since on-chain buy confirmation.
+    /// Returns 0 if buy has not yet been confirmed (buy_confirmed_ms == 0).
+    #[inline(always)]
+    pub fn confirmed_hold_ms(&self, now_ms: u64) -> u64 {
+        if self.buy_confirmed_ms == 0 {
+            return 0;
+        }
+        now_ms.saturating_sub(self.buy_confirmed_ms)
+    }
+
+    /// Stamp the buy TX confirmation time. Should be called exactly once
+    /// when the buy TX lands on-chain (BuyState::Confirmed).
+    /// No-op if already stamped (idempotent).
+    #[inline(always)]
+    pub fn stamp_buy_confirmed(&mut self, now_ms: u64) {
+        if self.buy_confirmed_ms == 0 {
+            self.buy_confirmed_ms = now_ms;
+        }
+    }
+
+    /// Evaluate the enforced hold phase based on on-chain confirmation time.
+    ///
+    /// This is the **primary phase gate** for all exit evaluation. It replaces
+    /// the old `entry_ts_ms`-based elapsed calculation with one anchored to
+    /// the actual on-chain buy confirmation timestamp.
+    ///
+    /// # Phase Timeline (from buy_confirmed_ms)
+    ///
+    /// ```text
+    /// [0]────────[1500ms]──────────[4500ms]──────────→
+    ///   AwaitingConfirmation (buy_confirmed_ms == 0)
+    ///   RapidAssessment      (0 - 1500ms)  micro-SL only
+    ///   Observation           (1500 - 4500ms) hard SL + dead token
+    ///   Momentum              (any time, current_bps >= +100)
+    ///   ExitEligible          (>4500ms) full exit evaluation
+    ///   Exiting               (exit decision made)
+    /// ```
+    ///
+    /// # Arguments
+    /// * `now_ms` - Current epoch ms
+    /// * `current_bps` - Current price in bps relative to entry
+    /// * `ws_messages_last_3s` - WS notification count in last 3 seconds
+    /// * `last_ws_age_ms` - Ms since the last WS notification (now_ms - last_notif_ms)
+    ///
+    /// # Performance
+    /// O(1), no allocations, no loops. All comparisons are integer.
+    #[inline(always)]
+    pub fn evaluate_phase(
+        &self,
+        now_ms: u64,
+        current_bps: i32,
+        ws_messages_last_3s: u16,
+        last_ws_age_ms: u64,
+    ) -> PositionPhase {
+        // Not yet confirmed on-chain
+        if self.buy_confirmed_ms == 0 {
+            // Safety timeout: if 10s since decision and still not confirmed, force exit.
+            // Covers: TX dropped, RPC failure, circuit breaker timeout.
+            if now_ms.saturating_sub(self.entry_ts_ms) > 10_000 {
+                return PositionPhase::Exiting;
+            }
+            return PositionPhase::AwaitingConfirmation;
+        }
+
+        let hold_ms = now_ms.saturating_sub(self.buy_confirmed_ms);
+
+        // Phase 1: Rapid Assessment (0-1500ms from confirmation)
+        // Only micro-SL fires here. Everything else waits.
+        if hold_ms < 1500 {
+            // Micro-SL: instant kill at -2% (200 bps). These are instant dumps
+            // where the token is being actively sold into. No recovery expected.
+            if current_bps <= -200 {
+                return PositionPhase::Exiting;
+            }
+            // Early momentum: if price already crossed +100 bps, activate
+            // trailing stop tracking to protect the gain.
+            if current_bps >= 100 {
+                return PositionPhase::Momentum;
+            }
+            return PositionPhase::RapidAssessment;
+        }
+
+        // Momentum takes priority over observation — if price is running,
+        // we want trailing stop evaluation regardless of hold time.
+        if current_bps >= 100 {
+            return PositionPhase::Momentum;
+        }
+
+        // Phase 2: Observation (1500-4500ms)
+        // Hard SL + dead token detection. No trailing stop, no time_sl, no TP.
+        if hold_ms < 4500 {
+            // Kill losers: -2% in observation = no recovery for micro tokens
+            if current_bps <= -200 {
+                return PositionPhase::Exiting;
+            }
+            // Dead token detection: no WS activity for 3s+ AND fewer than
+            // 2 messages in the window. Token is DOA, free the slot.
+            if ws_messages_last_3s < 2 && last_ws_age_ms > 3000 {
+                return PositionPhase::Exiting;
+            }
+            return PositionPhase::Observation;
+        }
+
+        // Phase 3: Full exit evaluation (>4500ms from confirmation)
+        // All exit conditions enabled: TP levels, trailing stop, time_sl,
+        // velocity exit, dead zone, drain detection, etc.
+        PositionPhase::ExitEligible
     }
 
     /// Compute current momentum state from price sample derivatives.
@@ -689,6 +868,78 @@ impl MomentumPosition {
         }
         true
     }
+
+    // ── TASK 6: Adaptive Trailing Stop + Winner Management ──────────────
+
+    /// Compute trailing stop width based on current gain level.
+    /// Tighter trails at small gains, wider as gains grow.
+    ///
+    /// Mathematical basis: optimal trail w* = σ²/(2μ) for geometric Brownian motion.
+    /// For memecoins: μ ≈ 30-50 bps/s, σ ≈ 80-150 bps/s in momentum.
+    /// w* ≈ 100-375 bps. We tier from 100 (small gains) to 1500 (moonshots).
+    ///
+    /// Returns 0 for losses (no trailing on losing positions — hard_sl handles those).
+    #[inline(always)]
+    pub fn compute_adaptive_trail_bps(&self, gain_bps: i32, config: &TrailConfig) -> u16 {
+        if gain_bps <= 0 {
+            return 0; // No trailing for losses
+        }
+
+        // Find the appropriate tier (tiers sorted ascending by up_to_bps)
+        for tier in &config.tiers {
+            if gain_bps <= tier.up_to_bps {
+                return tier.trail_bps;
+            }
+        }
+        // Above all tiers: use the last tier's trail
+        config.tiers.last().map(|t| t.trail_bps).unwrap_or(800)
+    }
+
+    /// Check if adaptive trailing stop should fire.
+    /// Returns true if price has dropped by trail_bps from peak.
+    ///
+    /// Uses peak_price_fp (highest price seen since entry) as reference.
+    /// Floor = peak × (1 - trail_bps / 10000).
+    #[inline(always)]
+    pub fn adaptive_trailing_stop_hit(
+        &self,
+        current_price_fp: u64,
+        trail_bps: u16,
+    ) -> bool {
+        if self.peak_price_fp == 0 || trail_bps == 0 {
+            return false;
+        }
+
+        // Floor = peak - (peak * trail_bps / 10000)
+        let floor_fp = self
+            .peak_price_fp
+            .saturating_sub(self.peak_price_fp * trail_bps as u64 / 10_000);
+
+        current_price_fp < floor_fp
+    }
+
+    /// Returns true if this position should be protected from time-based exits.
+    ///
+    /// A profitable position with ongoing WebSocket activity should NEVER be
+    /// time-exited. Only the trailing stop can close it.
+    ///
+    /// On-chain evidence: the biggest winner (+82.2%, +0.025 SOL) held 40 minutes.
+    /// Time-based exits (time_sl, dead_zone) killed profitable positions early,
+    /// capping the average win at +15.8% when we need +24% for +EV.
+    ///
+    /// `ws_messages_last_5s`: WebSocket notifications in the last 5 seconds.
+    /// If >0, the pool is still actively trading — momentum is alive.
+    #[inline(always)]
+    pub fn is_momentum_locked(
+        &self,
+        current_bps: i32,
+        ws_messages_last_5s: u64,
+    ) -> bool {
+        // Profitable AND has recent activity
+        current_bps > 0 && ws_messages_last_5s > 0
+    }
+
+    // ── End TASK 6 ──────────────────────────────────────────────────────
 }
 
 // ── Exit reason enum ─────────────────────────────────────────────────────────
@@ -794,6 +1045,93 @@ impl ProbePhase {
             Self::Scaled => "scaled",
             Self::Failed => "failed",
             Self::HeldTight => "held_tight",
+        }
+    }
+}
+
+// ── Position Phase (enforced hold time state machine) ─────────────────────────
+
+/// Position lifecycle phase — enforces minimum hold time from on-chain buy
+/// confirmation, NOT from buy decision time.
+///
+/// This is the **root cause fix** for the 0-1s hold time problem:
+/// - `entry_ts_ms` was set when the buy DECISION was made
+/// - Buy TX takes 600-1200ms to land on-chain
+/// - Exit evaluation started immediately using `entry_ts_ms`, so the probe
+///   window (3s) was already 600-1200ms expired when the position actually existed
+/// - Result: 84% of trades held 0-1s, probe phase never fired
+///
+/// `PositionPhase` uses `buy_confirmed_ms` (set when BuyState → Confirmed)
+/// as the reference point. Until that timestamp is set, the position is in
+/// `AwaitingConfirmation` and ALL exit evaluation is skipped.
+///
+/// Data basis: 6 trades that held 3-5s had 50% win rate vs 13% at 0-1s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PositionPhase {
+    /// Buy TX submitted but not confirmed on-chain.
+    /// No exit evaluation. Position doesn't exist on-chain yet.
+    AwaitingConfirmation = 0,
+    /// 0-1500ms post-confirmation: watching for instant dump.
+    /// Only micro-SL (-2%) fires. Everything else waits.
+    RapidAssessment = 1,
+    /// 1500-4500ms: observing price + activity.
+    /// Hard SL + dead token detection only. No TP, no trail.
+    Observation = 2,
+    /// Price crossed +100 bps at any time: trailing stop active.
+    /// Can be entered from any phase. Protects early gains.
+    Momentum = 3,
+    /// Full exit evaluation enabled (>4500ms from confirmation).
+    /// All exit conditions: TP, trailing stop, time_sl, velocity, etc.
+    ExitEligible = 4,
+    /// Exit decision made, sell pending.
+    /// Terminal state — caller should push to `to_close` vec.
+    Exiting = 5,
+}
+
+impl PositionPhase {
+    /// Convert from u8 discriminant.
+    #[inline(always)]
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::AwaitingConfirmation,
+            1 => Self::RapidAssessment,
+            2 => Self::Observation,
+            3 => Self::Momentum,
+            4 => Self::ExitEligible,
+            5 => Self::Exiting,
+            _ => Self::AwaitingConfirmation,
+        }
+    }
+
+    /// Whether the phase blocks all exit evaluation.
+    #[inline(always)]
+    pub fn blocks_exit(self) -> bool {
+        matches!(self, Self::AwaitingConfirmation | Self::RapidAssessment)
+    }
+
+    /// Whether the phase allows full exit evaluation (TP, trailing, time_sl, etc.).
+    #[inline(always)]
+    pub fn allows_full_exit(self) -> bool {
+        matches!(self, Self::ExitEligible)
+    }
+
+    /// Whether the position is in a momentum state (trailing stop only).
+    #[inline(always)]
+    pub fn is_momentum(self) -> bool {
+        matches!(self, Self::Momentum)
+    }
+
+    /// String representation for JSONL logging.
+    #[inline(always)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitingConfirmation => "awaiting_confirmation",
+            Self::RapidAssessment => "rapid_assessment",
+            Self::Observation => "observation",
+            Self::Momentum => "momentum",
+            Self::ExitEligible => "exit_eligible",
+            Self::Exiting => "exiting",
         }
     }
 }
@@ -972,6 +1310,16 @@ pub enum MomentumExitReason {
     /// Velocity exit: sustained negative velocity/acceleration detected.
     /// Fires when price momentum collapses — protects profits before trailing stop trips.
     VelocityExit = 10,
+    /// Micro stop-loss: position exited during RapidAssessment or Observation phase
+    /// due to -2% dump within 4.5s of on-chain buy confirmation.
+    /// Distinct from HardSl to track enforced-hold exit effectiveness separately.
+    MicroSl = 11,
+    /// Dead token exit during Observation phase: no WS activity detected
+    /// within 3s of on-chain entry. Token is DOA.
+    DeadOnArrival = 12,
+    /// Buy TX never confirmed on-chain within 10s safety timeout.
+    /// Position never existed — no sell TX needed.
+    BuyTimeout = 13,
 }
 
 impl MomentumExitReason {
@@ -990,6 +1338,9 @@ impl MomentumExitReason {
             Self::DailyCapHit => "daily_cap",
             Self::DrainDetected => "drain_detected",
             Self::VelocityExit => "velocity_exit",
+            Self::MicroSl => "micro_sl",
+            Self::DeadOnArrival => "dead_on_arrival",
+            Self::BuyTimeout => "buy_timeout",
         }
     }
 
@@ -1008,6 +1359,9 @@ impl MomentumExitReason {
             8 => Self::DailyCapHit,
             9 => Self::DrainDetected,
             10 => Self::VelocityExit,
+            11 => Self::MicroSl,
+            12 => Self::DeadOnArrival,
+            13 => Self::BuyTimeout,
             _ => Self::Open,
         }
     }
@@ -1510,11 +1864,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_position_size_256_bytes() {
+    fn test_position_size_within_cache_lines() {
         let size = std::mem::size_of::<MomentumPosition>();
         assert!(
             size <= 320,
-            "MomentumPosition is {} bytes, must be <= 320",
+            "MomentumPosition is {} bytes, must be <= 320 (5 cache lines)",
             size
         );
     }
@@ -1742,7 +2096,7 @@ mod tests {
 
     #[test]
     fn test_exit_reason_roundtrip() {
-        for i in 0..=9u8 {
+        for i in 0..=13u8 {
             let reason = MomentumExitReason::from_u8(i);
             assert_eq!(reason as u8, i);
         }
@@ -1751,6 +2105,10 @@ mod tests {
         // DrainDetected variant
         assert_eq!(MomentumExitReason::DrainDetected.as_str(), "drain_detected");
         assert_eq!(MomentumExitReason::from_u8(9), MomentumExitReason::DrainDetected);
+        // New exit reasons
+        assert_eq!(MomentumExitReason::MicroSl.as_str(), "micro_sl");
+        assert_eq!(MomentumExitReason::DeadOnArrival.as_str(), "dead_on_arrival");
+        assert_eq!(MomentumExitReason::BuyTimeout.as_str(), "buy_timeout");
     }
 
     #[test]
@@ -2839,4 +3197,713 @@ mod tests {
     }
 
     // ── End velocity exit tests ─────────────────────────────────────────
+
+    // ── PositionPhase + evaluate_phase tests ────────────────────────────
+
+    #[test]
+    fn test_position_phase_enum_roundtrip() {
+        for i in 0..=5u8 {
+            let phase = PositionPhase::from_u8(i);
+            assert_eq!(phase as u8, i);
+        }
+        assert_eq!(PositionPhase::from_u8(255), PositionPhase::AwaitingConfirmation);
+    }
+
+    #[test]
+    fn test_position_phase_as_str() {
+        assert_eq!(PositionPhase::AwaitingConfirmation.as_str(), "awaiting_confirmation");
+        assert_eq!(PositionPhase::RapidAssessment.as_str(), "rapid_assessment");
+        assert_eq!(PositionPhase::Observation.as_str(), "observation");
+        assert_eq!(PositionPhase::Momentum.as_str(), "momentum");
+        assert_eq!(PositionPhase::ExitEligible.as_str(), "exit_eligible");
+        assert_eq!(PositionPhase::Exiting.as_str(), "exiting");
+    }
+
+    #[test]
+    fn test_position_phase_blocks_exit() {
+        assert!(PositionPhase::AwaitingConfirmation.blocks_exit());
+        assert!(PositionPhase::RapidAssessment.blocks_exit());
+        assert!(!PositionPhase::Observation.blocks_exit());
+        assert!(!PositionPhase::Momentum.blocks_exit());
+        assert!(!PositionPhase::ExitEligible.blocks_exit());
+        assert!(!PositionPhase::Exiting.blocks_exit());
+    }
+
+    #[test]
+    fn test_evaluate_phase_awaiting_confirmation() {
+        // buy_confirmed_ms == 0 → AwaitingConfirmation
+        let pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        assert_eq!(pos.buy_confirmed_ms, 0);
+        let phase = pos.evaluate_phase(105_000, 0, 10, 500);
+        assert_eq!(phase, PositionPhase::AwaitingConfirmation);
+    }
+
+    #[test]
+    fn test_evaluate_phase_buy_timeout_10s() {
+        // 10s since decision, still not confirmed → Exiting (safety timeout)
+        let pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        let phase = pos.evaluate_phase(110_001, 0, 10, 500);
+        assert_eq!(phase, PositionPhase::Exiting, "should force exit after 10s unconfirmed");
+    }
+
+    #[test]
+    fn test_evaluate_phase_rapid_assessment_neutral() {
+        // Confirmed 500ms ago, price flat → RapidAssessment
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.buy_confirmed_ms = 101_000; // confirmed 1s after decision
+        let phase = pos.evaluate_phase(101_500, 0, 5, 1000);
+        assert_eq!(phase, PositionPhase::RapidAssessment);
+    }
+
+    #[test]
+    fn test_evaluate_phase_rapid_assessment_micro_sl() {
+        // Confirmed 200ms ago, price dumped -2.5% → Exiting (micro-SL)
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.buy_confirmed_ms = 101_000;
+        let phase = pos.evaluate_phase(101_200, -250, 5, 200);
+        assert_eq!(phase, PositionPhase::Exiting, "should micro-SL at -2.5% in rapid assessment");
+    }
+
+    #[test]
+    fn test_evaluate_phase_rapid_assessment_not_triggered_at_minus_199() {
+        // -199 bps should NOT trigger micro-SL (threshold is -200)
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.buy_confirmed_ms = 101_000;
+        let phase = pos.evaluate_phase(101_500, -199, 5, 500);
+        assert_eq!(phase, PositionPhase::RapidAssessment, "-199 bps should NOT trigger micro-SL");
+    }
+
+    #[test]
+    fn test_evaluate_phase_early_momentum() {
+        // Confirmed 800ms ago, price already +1.5% → Momentum
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.buy_confirmed_ms = 101_000;
+        let phase = pos.evaluate_phase(101_800, 150, 10, 300);
+        assert_eq!(phase, PositionPhase::Momentum, "should enter Momentum at +150 bps in rapid assessment");
+    }
+
+    #[test]
+    fn test_evaluate_phase_observation_neutral() {
+        // Confirmed 2s ago, price -50 bps → Observation
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.buy_confirmed_ms = 101_000;
+        let phase = pos.evaluate_phase(103_000, -50, 5, 1000);
+        assert_eq!(phase, PositionPhase::Observation);
+    }
+
+    #[test]
+    fn test_evaluate_phase_observation_dump_exits() {
+        // Confirmed 2.5s ago, price -3% → Exiting
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.buy_confirmed_ms = 101_000;
+        let phase = pos.evaluate_phase(103_500, -300, 5, 1000);
+        assert_eq!(phase, PositionPhase::Exiting, "should exit at -3% in observation");
+    }
+
+    #[test]
+    fn test_evaluate_phase_observation_dead_token() {
+        // Confirmed 3s ago, 0 WS messages in 3s, last WS was >3s ago → dead token
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.buy_confirmed_ms = 101_000;
+        let phase = pos.evaluate_phase(104_000, 20, 1, 4000);
+        assert_eq!(phase, PositionPhase::Exiting, "should exit dead token: ws_messages=1 < 2 && ws_age=4s > 3s");
+    }
+
+    #[test]
+    fn test_evaluate_phase_observation_not_dead_with_ws_activity() {
+        // 2.5s hold, ws_messages_last_3s >= 2 → NOT dead, Observation continues
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.buy_confirmed_ms = 101_000;
+        let phase = pos.evaluate_phase(103_500, 20, 5, 500);
+        assert_eq!(phase, PositionPhase::Observation, "should stay in observation with active WS");
+    }
+
+    #[test]
+    fn test_evaluate_phase_momentum_from_observation() {
+        // 3s hold, +150 bps → Momentum (from observation window)
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.buy_confirmed_ms = 101_000;
+        let phase = pos.evaluate_phase(104_000, 150, 10, 500);
+        assert_eq!(phase, PositionPhase::Momentum, "+150 bps should enter Momentum");
+    }
+
+    #[test]
+    fn test_evaluate_phase_exit_eligible_after_4500ms() {
+        // 5s hold, price +50 bps (not momentum threshold) → ExitEligible
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.buy_confirmed_ms = 101_000;
+        let phase = pos.evaluate_phase(105_500, 50, 10, 500);
+        assert_eq!(phase, PositionPhase::ExitEligible);
+    }
+
+    #[test]
+    fn test_evaluate_phase_momentum_takes_priority_over_exit_eligible() {
+        // 10s hold, +200 bps → Momentum (not ExitEligible)
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.buy_confirmed_ms = 101_000;
+        let phase = pos.evaluate_phase(111_000, 200, 15, 500);
+        assert_eq!(phase, PositionPhase::Momentum, "+200 bps should be Momentum even after 10s");
+    }
+
+    #[test]
+    fn test_stamp_buy_confirmed_idempotent() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        assert_eq!(pos.buy_confirmed_ms, 0);
+        pos.stamp_buy_confirmed(101_000);
+        assert_eq!(pos.buy_confirmed_ms, 101_000);
+        // Second call should not overwrite
+        pos.stamp_buy_confirmed(105_000);
+        assert_eq!(pos.buy_confirmed_ms, 101_000, "stamp_buy_confirmed should be idempotent");
+    }
+
+    #[test]
+    fn test_confirmed_hold_ms() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // Before confirmation → 0
+        assert_eq!(pos.confirmed_hold_ms(105_000), 0);
+        pos.buy_confirmed_ms = 101_000;
+        assert_eq!(pos.confirmed_hold_ms(103_000), 2000);
+        assert_eq!(pos.confirmed_hold_ms(101_000), 0);
+        // Saturating sub: now < confirmed
+        assert_eq!(pos.confirmed_hold_ms(100_000), 0);
+    }
+
+    #[test]
+    fn test_evaluate_phase_boundary_1500ms() {
+        // Exactly at 1500ms → should transition from RapidAssessment to Observation
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.buy_confirmed_ms = 100_000;
+        // 1499ms → RapidAssessment
+        let phase = pos.evaluate_phase(101_499, 0, 10, 500);
+        assert_eq!(phase, PositionPhase::RapidAssessment);
+        // 1500ms → Observation
+        let phase = pos.evaluate_phase(101_500, 0, 10, 500);
+        assert_eq!(phase, PositionPhase::Observation);
+    }
+
+    #[test]
+    fn test_evaluate_phase_boundary_4500ms() {
+        // Exactly at 4500ms → should transition from Observation to ExitEligible
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.buy_confirmed_ms = 100_000;
+        // 4499ms → Observation
+        let phase = pos.evaluate_phase(104_499, 0, 10, 500);
+        assert_eq!(phase, PositionPhase::Observation);
+        // 4500ms → ExitEligible
+        let phase = pos.evaluate_phase(104_500, 0, 10, 500);
+        assert_eq!(phase, PositionPhase::ExitEligible);
+    }
+
+    #[test]
+    fn test_evaluate_phase_10s_safety_timeout_boundary() {
+        // 10000ms since decision, not confirmed → still AwaitingConfirmation
+        let pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        let phase = pos.evaluate_phase(110_000, 0, 10, 500);
+        assert_eq!(phase, PositionPhase::AwaitingConfirmation, "exactly 10000ms should NOT timeout");
+        // 10001ms → Exiting
+        let phase = pos.evaluate_phase(110_001, 0, 10, 500);
+        assert_eq!(phase, PositionPhase::Exiting, "10001ms should trigger safety timeout");
+    }
+
+    #[test]
+    fn test_buy_confirmed_ms_field_does_not_corrupt_pad2() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 100_000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // Set _pad2 packed fields first
+        pos.set_scaled_in();
+        pos.set_ws_notif_count(42);
+        pos.set_ws_notif_last_ms(9999999);
+        pos.set_tokens_held(1_000_000);
+        pos.set_probe_phase(ProbePhase::Probing);
+        pos.ratchet_trail_bps(500);
+
+        // Now set buy_confirmed_ms
+        pos.buy_confirmed_ms = 101_500;
+
+        // Verify no corruption
+        assert!(pos.is_scaled_in());
+        assert_eq!(pos.ws_notif_count(), 42);
+        assert_eq!(pos.ws_notif_last_ms(), 9999999);
+        assert_eq!(pos.tokens_held(), 1_000_000);
+        assert_eq!(pos.probe_phase(), ProbePhase::Probing);
+        assert_eq!(pos.effective_trail_bps(), 500);
+        assert_eq!(pos.buy_confirmed_ms, 101_500);
+    }
+
+    // ── End PositionPhase tests ─────────────────────────────────────────
+
+    // ── TASK 6: Adaptive Trailing Stop + Winner Management tests ─────────
+
+    #[test]
+    fn test_trail_config_default_tiers() {
+        let tc = TrailConfig::default();
+        assert_eq!(tc.tiers.len(), 5);
+        assert_eq!(tc.tiers[0].up_to_bps, 200);
+        assert_eq!(tc.tiers[0].trail_bps, 100);
+        assert_eq!(tc.tiers[1].up_to_bps, 500);
+        assert_eq!(tc.tiers[1].trail_bps, 200);
+        assert_eq!(tc.tiers[2].up_to_bps, 1500);
+        assert_eq!(tc.tiers[2].trail_bps, 400);
+        assert_eq!(tc.tiers[3].up_to_bps, 5000);
+        assert_eq!(tc.tiers[3].trail_bps, 800);
+        assert_eq!(tc.tiers[4].up_to_bps, i32::MAX);
+        assert_eq!(tc.tiers[4].trail_bps, 1500);
+        assert_eq!(tc.confirm_samples, 2);
+        assert_eq!(tc.min_samples_to_activate, 3);
+    }
+
+    #[test]
+    fn test_trail_config_serde_roundtrip() {
+        let tc = TrailConfig::default();
+        let json = serde_json::to_string(&tc).unwrap();
+        let parsed: TrailConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.tiers.len(), tc.tiers.len());
+        assert_eq!(parsed.confirm_samples, tc.confirm_samples);
+        assert_eq!(parsed.min_samples_to_activate, tc.min_samples_to_activate);
+        for (a, b) in parsed.tiers.iter().zip(tc.tiers.iter()) {
+            assert_eq!(a.up_to_bps, b.up_to_bps);
+            assert_eq!(a.trail_bps, b.trail_bps);
+        }
+    }
+
+    #[test]
+    fn test_compute_adaptive_trail_bps_loss_returns_zero() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        let tc = TrailConfig::default();
+        assert_eq!(pos.compute_adaptive_trail_bps(-500, &tc), 0);
+        assert_eq!(pos.compute_adaptive_trail_bps(0, &tc), 0);
+    }
+
+    #[test]
+    fn test_compute_adaptive_trail_bps_tier1_small_gain() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        let tc = TrailConfig::default();
+        // +1% gain (100 bps) → tier 0: trail = 100 bps (1%)
+        assert_eq!(pos.compute_adaptive_trail_bps(100, &tc), 100);
+        // +2% gain (200 bps) → still tier 0: trail = 100 bps
+        assert_eq!(pos.compute_adaptive_trail_bps(200, &tc), 100);
+    }
+
+    #[test]
+    fn test_compute_adaptive_trail_bps_tier2_moderate_gain() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        let tc = TrailConfig::default();
+        // +3% gain (300 bps) → tier 1: trail = 200 bps (2%)
+        assert_eq!(pos.compute_adaptive_trail_bps(300, &tc), 200);
+        // +5% gain (500 bps) → still tier 1: trail = 200 bps
+        assert_eq!(pos.compute_adaptive_trail_bps(500, &tc), 200);
+    }
+
+    #[test]
+    fn test_compute_adaptive_trail_bps_tier3_strong_gain() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        let tc = TrailConfig::default();
+        // +10% gain (1000 bps) → tier 2: trail = 400 bps (4%)
+        assert_eq!(pos.compute_adaptive_trail_bps(1000, &tc), 400);
+        // +15% gain (1500 bps) → still tier 2: trail = 400 bps
+        assert_eq!(pos.compute_adaptive_trail_bps(1500, &tc), 400);
+    }
+
+    #[test]
+    fn test_compute_adaptive_trail_bps_tier4_big_winner() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        let tc = TrailConfig::default();
+        // +30% gain (3000 bps) → tier 3: trail = 800 bps (8%)
+        assert_eq!(pos.compute_adaptive_trail_bps(3000, &tc), 800);
+        // +50% gain (5000 bps) → still tier 3: trail = 800 bps
+        assert_eq!(pos.compute_adaptive_trail_bps(5000, &tc), 800);
+    }
+
+    #[test]
+    fn test_compute_adaptive_trail_bps_tier5_moonshot() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        let tc = TrailConfig::default();
+        // +100% gain (10000 bps) → tier 4: trail = 1500 bps (15%)
+        assert_eq!(pos.compute_adaptive_trail_bps(10_000, &tc), 1500);
+        // +500% gain (50000 bps) → still tier 4: trail = 1500 bps
+        assert_eq!(pos.compute_adaptive_trail_bps(50_000, &tc), 1500);
+    }
+
+    #[test]
+    fn test_compute_adaptive_trail_bps_empty_tiers() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        let tc = TrailConfig {
+            tiers: vec![],
+            confirm_samples: 2,
+            min_samples_to_activate: 3,
+        };
+        // No tiers → fallback to 800
+        assert_eq!(pos.compute_adaptive_trail_bps(500, &tc), 800);
+    }
+
+    #[test]
+    fn test_compute_adaptive_trail_bps_custom_config() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // Very aggressive config: 50 bps trail at small gains, 150 at large
+        let tc = TrailConfig {
+            tiers: vec![
+                TrailTier { up_to_bps: 100, trail_bps: 50 },
+                TrailTier { up_to_bps: 1000, trail_bps: 150 },
+            ],
+            confirm_samples: 1,
+            min_samples_to_activate: 2,
+        };
+        assert_eq!(pos.compute_adaptive_trail_bps(50, &tc), 50);
+        assert_eq!(pos.compute_adaptive_trail_bps(100, &tc), 50);
+        assert_eq!(pos.compute_adaptive_trail_bps(500, &tc), 150);
+        // Above all tiers → use last tier
+        assert_eq!(pos.compute_adaptive_trail_bps(5000, &tc), 150);
+    }
+
+    #[test]
+    fn test_adaptive_trailing_stop_hit_basic() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // Peak at 12000 (20% gain)
+        pos.peak_price_fp = 12_000;
+
+        // 1% trail (100 bps): floor = 12000 - 120 = 11880
+        assert!(!pos.adaptive_trailing_stop_hit(11_900, 100)); // above floor
+        assert!(!pos.adaptive_trailing_stop_hit(11_880, 100)); // exactly at floor (not below)
+        assert!(pos.adaptive_trailing_stop_hit(11_879, 100));  // 1 below floor → hit
+        assert!(pos.adaptive_trailing_stop_hit(10_000, 100));  // way below → hit
+    }
+
+    #[test]
+    fn test_adaptive_trailing_stop_hit_wider_trail() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.peak_price_fp = 15_000; // +50% from entry
+
+        // 8% trail (800 bps): floor = 15000 - 1200 = 13800
+        assert!(!pos.adaptive_trailing_stop_hit(14_000, 800)); // above floor
+        assert!(!pos.adaptive_trailing_stop_hit(13_800, 800)); // at floor
+        assert!(pos.adaptive_trailing_stop_hit(13_799, 800));  // below floor → hit
+    }
+
+    #[test]
+    fn test_adaptive_trailing_stop_hit_zero_peak() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.peak_price_fp = 0;
+        assert!(!pos.adaptive_trailing_stop_hit(5_000, 400)); // zero peak → never hit
+    }
+
+    #[test]
+    fn test_adaptive_trailing_stop_hit_zero_trail() {
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.peak_price_fp = 12_000;
+        assert!(!pos.adaptive_trailing_stop_hit(5_000, 0)); // zero trail → never hit
+    }
+
+    #[test]
+    fn test_adaptive_trail_scenario_old_vs_new() {
+        // Scenario: token peaks at +20% (12000 from 10000 entry), then drops
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.peak_price_fp = 12_000; // +20% peak
+
+        let tc = TrailConfig::default();
+
+        // Current gain at +20% = 2000 bps → tier[3] (1501-5000): trail = 800 bps (8%)
+        let current_at_peak_bps = price_to_bps_offset(10_000, 12_000); // 2000
+        assert_eq!(current_at_peak_bps, 2000);
+        let trail = pos.compute_adaptive_trail_bps(current_at_peak_bps, &tc);
+        assert_eq!(trail, 800); // 8% trail for 15-50% gain range
+
+        // Floor = 12000 - (12000 * 800 / 10000) = 12000 - 960 = 11040
+        // With OLD 25% trail: floor = 12000 - 3000 = 9000
+        // Token drops to 11000 → new trail fires, old trail doesn't
+        assert!(pos.adaptive_trailing_stop_hit(11_000, trail));
+
+        // Old trailing stop with 25% (2500 bps) — same scenario
+        assert!(!pos.trailing_stop_hit(11_000, 2500)); // old trail: 11000 > 9000, doesn't fire
+
+        // Key improvement: new trail exits at ~+10% (11040/10000),
+        // old trail wouldn't fire until +20% peak drops to 9000 (-10% loss)
+    }
+
+    #[test]
+    fn test_adaptive_trail_gain_transitions() {
+        // Simulate a position gaining profit, verify trail adjusts at tier boundaries
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        let tc = TrailConfig::default();
+
+        // Gain progression and expected trail widths
+        let cases = vec![
+            (50, 100),     // +0.5% → tier 0: 1% trail
+            (150, 100),    // +1.5% → tier 0: 1% trail
+            (201, 200),    // +2.01% → tier 1: 2% trail (crossed boundary)
+            (499, 200),    // +4.99% → tier 1: 2% trail
+            (501, 400),    // +5.01% → tier 2: 4% trail (crossed boundary)
+            (1499, 400),   // +14.99% → tier 2: 4% trail
+            (1501, 800),   // +15.01% → tier 3: 8% trail (crossed boundary)
+            (4999, 800),   // +49.99% → tier 3: 8% trail
+            (5001, 1500),  // +50.01% → tier 4: 15% trail (crossed boundary)
+            (10000, 1500), // +100% → tier 4: 15% trail
+        ];
+
+        for (gain_bps, expected_trail) in cases {
+            let trail = pos.compute_adaptive_trail_bps(gain_bps, &tc);
+            assert_eq!(
+                trail, expected_trail,
+                "gain_bps={}: expected trail={}, got {}",
+                gain_bps, expected_trail, trail
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_momentum_locked_profitable_with_activity() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // Profitable and active → locked
+        assert!(pos.is_momentum_locked(500, 5));
+        assert!(pos.is_momentum_locked(1, 1));
+    }
+
+    #[test]
+    fn test_is_momentum_locked_profitable_no_activity() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // Profitable but no recent activity → NOT locked (stale, let time exits handle)
+        assert!(!pos.is_momentum_locked(500, 0));
+    }
+
+    #[test]
+    fn test_is_momentum_locked_losing_with_activity() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // Losing position → NOT locked (hard_sl/time_sl should handle)
+        assert!(!pos.is_momentum_locked(-100, 10));
+        assert!(!pos.is_momentum_locked(0, 10));
+    }
+
+    #[test]
+    fn test_is_momentum_locked_losing_no_activity() {
+        let pos = MomentumPosition::new(
+            [0u8; 32], 1000, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        // Losing and no activity → definitely NOT locked
+        assert!(!pos.is_momentum_locked(-500, 0));
+    }
+
+    #[test]
+    fn test_adaptive_trail_full_lifecycle() {
+        // Simulate the full lifecycle of a winning trade with adaptive trail
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        let tc = TrailConfig::default();
+
+        // Phase 1: token rises to +5% (500 bps)
+        pos.record_sample(10_500); // +5%
+        pos.record_sample(10_500);
+        pos.record_sample(10_500);
+        assert!(pos.sample_count >= tc.min_samples_to_activate);
+
+        let gain = price_to_bps_offset(10_000, 10_500); // 500 bps
+        let trail = pos.compute_adaptive_trail_bps(gain, &tc);
+        // 500 bps <= tier[1].up_to_bps=500 → trail=200
+        assert_eq!(trail, 200); // 2% trail at 2-5% gain range
+
+        // Floor = 10500 - (10500 * 200 / 10000) = 10500 - 210 = 10290
+        assert!(!pos.adaptive_trailing_stop_hit(10_300, trail)); // above floor
+        assert!(pos.adaptive_trailing_stop_hit(10_289, trail));  // below floor
+
+        // Phase 2: token pumps to +20% (peak = 12000)
+        pos.peak_price_fp = 12_000;
+        let gain = price_to_bps_offset(10_000, 12_000); // 2000 bps
+        let trail = pos.compute_adaptive_trail_bps(gain, &tc);
+        // 2000 bps > 1500 (tier[2]), 2000 <= 5000 (tier[3]) → trail=800
+        assert_eq!(trail, 800); // 8% trail at 15-50% gain range
+
+        // Floor = 12000 - (12000 * 800 / 10000) = 12000 - 960 = 11040
+        assert!(!pos.adaptive_trailing_stop_hit(11_100, trail)); // still above
+        assert!(pos.adaptive_trailing_stop_hit(11_000, trail));  // below → exit at ~+10%
+
+        // With old 25% trail: 12000 * 0.75 = 9000. Exit would be at -10% loss!
+        // New trail captures +10% vs old trail capturing -10% or worse.
+    }
+
+    #[test]
+    fn test_adaptive_trail_confirm_samples_integration() {
+        // Verify the confirm samples field reuse works correctly
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        let tc = TrailConfig { confirm_samples: 3, ..TrailConfig::default() };
+
+        pos.peak_price_fp = 12_000;
+
+        // Below floor for 1 tick
+        pos.trail_stop_below_floor_count = 0;
+        pos.trail_stop_below_floor_count = pos.trail_stop_below_floor_count.saturating_add(1);
+        assert!(pos.trail_stop_below_floor_count < tc.confirm_samples);
+
+        // Below floor for 2 ticks
+        pos.trail_stop_below_floor_count = pos.trail_stop_below_floor_count.saturating_add(1);
+        assert!(pos.trail_stop_below_floor_count < tc.confirm_samples);
+
+        // Below floor for 3 ticks → confirmed
+        pos.trail_stop_below_floor_count = pos.trail_stop_below_floor_count.saturating_add(1);
+        assert!(pos.trail_stop_below_floor_count >= tc.confirm_samples);
+
+        // Reset on recovery
+        pos.trail_stop_below_floor_count = 0;
+        assert!(pos.trail_stop_below_floor_count < tc.confirm_samples);
+    }
+
+    #[test]
+    fn test_adaptive_trail_expected_impact_math() {
+        // Verify the key claim: at +20% peak with 4% trail, exit at ~+16%
+        // vs old 25% trail where exit would be at ~-10% (9000 from 10000 entry)
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.peak_price_fp = 12_000; // +20% peak
+
+        // New adaptive trail: at +20% gain, tier 2 (5-15% range)... wait, 2000 bps is in 1500 range
+        // Actually gain_bps = 2000, which is > 1500 (tier 2 boundary), so we're in tier 3 (up_to_bps=5000)
+        // trail = 800 bps (8%)
+        let tc = TrailConfig::default();
+        let gain_at_peak = price_to_bps_offset(10_000, 12_000); // 2000 bps
+        let trail = pos.compute_adaptive_trail_bps(gain_at_peak, &tc);
+        assert_eq!(trail, 800); // 8% trail for 15-50% range... wait, 2000 > 1500
+
+        // Let me verify: up_to_bps boundaries
+        // tier[0]: up_to=200, tier[1]: up_to=500, tier[2]: up_to=1500
+        // gain=2000 > 1500, so NOT in tier[2]. Check tier[3]: up_to=5000.
+        // 2000 <= 5000 → tier[3], trail=800
+
+        // So at +20% peak with 8% trail: floor = 12000 * (1 - 0.08) = 11040
+        let floor = 12_000u64.saturating_sub(12_000 * 800 / 10_000);
+        assert_eq!(floor, 11_040);
+
+        // Exit at 11040 = +10.4% from entry (10000)
+        let exit_gain = price_to_bps_offset(10_000, floor);
+        assert_eq!(exit_gain, 1040); // +10.4%
+
+        // Old 25% trail: floor = 12000 * 0.75 = 9000
+        let old_floor = 12_000u64.saturating_sub(12_000 * 2500 / 10_000);
+        assert_eq!(old_floor, 9000);
+        let old_exit_gain = price_to_bps_offset(10_000, old_floor);
+        assert_eq!(old_exit_gain, -1000); // -10%!
+
+        // Improvement: +10.4% vs -10% = 20.4 percentage points captured
+        assert!(exit_gain > old_exit_gain + 2000,
+            "new trail should capture at least 20 pct pts more than old");
+    }
+
+    #[test]
+    fn test_adaptive_trail_moonshot_scenario() {
+        // Moonshot: token goes +80%, then dumps.
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.peak_price_fp = 18_000; // +80%
+
+        let tc = TrailConfig::default();
+        // gain=8000 bps > 5000 (tier[3]) → tier[4].up_to_bps=MAX → trail=1500 (15%)
+        let trail = pos.compute_adaptive_trail_bps(8000, &tc);
+        assert_eq!(trail, 1500); // 15% trail for moonshots (50%+ gain)
+
+        // Floor = 18000 - (18000 * 1500 / 10000) = 18000 - 2700 = 15300
+        let floor = 18_000u64.saturating_sub(18_000 * 1500 / 10_000);
+        assert_eq!(floor, 15_300);
+        let exit_gain = price_to_bps_offset(10_000, floor);
+        assert_eq!(exit_gain, 5300); // +53%
+
+        // With old 25% trail: floor = 18000 * 0.75 = 13500 → +35%
+        // With new 15% trail: exit at +53% vs +35% → 18 pct pts improvement
+        assert!(pos.adaptive_trailing_stop_hit(15_200, trail));
+        assert!(!pos.adaptive_trailing_stop_hit(15_400, trail));
+    }
+
+    #[test]
+    fn test_adaptive_trail_small_gain_protection() {
+        // Key scenario: small +1.5% gain with tight 1% trail protects tiny wins
+        let mut pos = MomentumPosition::new(
+            [0u8; 32], 0, 10_000, 411, 300_000_000, 0, 72, 60, 50_000, 10, 15_000,
+        );
+        pos.peak_price_fp = 10_150; // +1.5% peak
+
+        let tc = TrailConfig::default();
+        let gain = price_to_bps_offset(10_000, 10_150); // 150 bps
+        let trail = pos.compute_adaptive_trail_bps(gain, &tc);
+        assert_eq!(trail, 100); // 1% trail for small gains
+
+        // Floor = 10150 - (10150 * 100 / 10000) = 10150 - 101 = 10049
+        // Exit at +0.49% from entry — at least preserves a tiny profit
+        let floor = 10_150u64.saturating_sub(10_150 * 100 / 10_000);
+        assert_eq!(floor, 10_049); // note: integer rounding
+        assert!(pos.adaptive_trailing_stop_hit(10_040, trail));  // below floor → exit
+        assert!(!pos.adaptive_trailing_stop_hit(10_060, trail)); // above floor → hold
+    }
+
+    // ── End TASK 6 tests ─────────────────────────────────────────────────
 }
