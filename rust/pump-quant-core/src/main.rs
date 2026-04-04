@@ -5,24 +5,25 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use crossbeam_channel::bounded;
 use tracing::info;
 use tracing_subscriber::{fmt, EnvFilter};
 
-use pump_quant_core::alerts::telegram::{self, TelegramAlerter};
+use pump_quant_core::alerts::telegram::TelegramAlerter;
 use pump_quant_core::engine::config::load_config;
+use pump_quant_core::engine::feed_router::FeedRouter;
 use pump_quant_core::engine::health::HealthMonitor;
-use pump_quant_core::api::{ApiState, EngineStats, start_server};
+use pump_quant_core::engine::registry::EngineRegistry;
+use pump_quant_core::api::{ApiState, start_server};
 use pump_quant_core::momentum::MomentumEngine;
-use pump_quant_core::momentum::types::GradEnrichment;
 use pump_quant_core::feeds::{
     event_joiner::EventJoiner,
     helius::{HeliusConfig, HeliusPumpSwapClient, HeliusWsClient},
     shredstream::ShredStreamConfig,
-    FeedEvent, FeedSource,
+    FeedEvent,
 };
 use pump_quant_core::persistence::engine_state::write_engine_state;
 
@@ -191,7 +192,6 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Spawn API server ────────────────────────────────────────────
     let api_state = ApiState::with_health(health_monitor.clone());
-    let shared_stats = api_state.stats.clone();
     let api_state_clone = api_state.clone();
     tokio::spawn(async move {
         start_server(api_state_clone).await;
@@ -356,146 +356,24 @@ async fn main() -> anyhow::Result<()> {
         stats.momentum_enabled = engine_config.momentum.enabled;
     }
 
-    // ── Orphan position recovery ─────────────────────────────────────
-    {
-        let recovery_engine = Arc::clone(&momentum_engine);
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            recovery_engine.recover_orphan_positions().await;
-        });
-    }
+    // ── Engine registry ────────────────────────────────────────────────
+    let mut registry = EngineRegistry::new();
+    registry.register(momentum_engine as Arc<dyn pump_quant_core::engine::TradingEngine>);
+    registry.trigger_startup_recovery().await;
 
-    // ── Counters for stats logging ──────────────────────────────────
-    let mut trades_seen: u64 = 0;
-    let mut ticks: u64 = 0;
-    let mut migrations: u64 = 0;
-    let mut creator_sells: u64 = 0;
+    // ── FeedRouter (replaces manual match block) ─────────────────────
+    let mut router = FeedRouter::new(health_monitor, api_state.stats.clone(), telegram_alerter);
 
-    // ── Main event loop — momentum only ─────────────────────────────
+    // ── Main event loop ─────────────────────────────────────────────
     info!(paper_mode, "Momentum engine running");
 
     loop {
         match engine_rx.recv() {
-            Ok(FeedEvent::Trade(trade)) => {
-                health_monitor.record_event(trade.source, trade.timestamp_ms);
-                trades_seen += 1;
-
-                // Stats logging every 1000 trades
-                if trades_seen % 1000 == 0 {
-                    info!(
-                        trades = trades_seen,
-                        ticks,
-                        migrations,
-                        creator_sells,
-                        "engine stats"
-                    );
+            Ok(event) => {
+                if !router.dispatch(event, &registry).await {
+                    let _ = shutdown_tx.send(true);
+                    break;
                 }
-            }
-            Ok(FeedEvent::PreWarm(prewarm)) => {
-                health_monitor.record_event(prewarm.source, prewarm.timestamp_ms);
-            }
-            Ok(FeedEvent::Tick { ts_ms }) => {
-                ticks += 1;
-
-                // Momentum engine: check pending entries + active positions
-                momentum_engine.on_tick(ts_ms).await;
-
-                // Health check every 100 ticks (~5 seconds)
-                if ticks % 100 == 0 {
-                    let (health_status, recovered_feeds) = health_monitor.check(ts_ms);
-
-                    if let pump_quant_core::engine::health::HealthStatus::Degraded { ref stale_feeds } = health_status {
-                        for feed in stale_feeds {
-                            let source = match *feed {
-                                "Helius" => FeedSource::Helius,
-                                _ => FeedSource::PumpPortal,
-                            };
-                            let last_ms = health_monitor.last_event_ms(source);
-                            let stale_s = if last_ms > 0 { ts_ms.saturating_sub(last_ms) / 1000 } else { 0 };
-                            tracing::warn!(feed = %feed, stale_s, "Feed stale — trading paused");
-                            if let Some(ref tg) = telegram_alerter {
-                                tg.try_send_blocking(&telegram::format_feed_stale_alert(feed, stale_s));
-                            }
-                        }
-                    }
-
-                    for feed in &recovered_feeds {
-                        info!(feed = %feed, "Feed recovered — trading resumed");
-                        if let Some(ref tg) = telegram_alerter {
-                            tg.try_send_blocking(&telegram::format_feed_recovered_alert(feed));
-                        }
-                    }
-                }
-
-                // Sync API stats every 200 ticks (~10 seconds)
-                if ticks % 200 == 0 {
-                    if let Ok(mut api_stats) = shared_stats.lock() {
-                        api_stats.trades_seen = trades_seen;
-                        api_stats.migrations_seen = migrations;
-                        api_stats.creator_sells_seen = creator_sells;
-                    }
-                }
-            }
-            Ok(FeedEvent::TokenCreated(tc)) => {
-                // Record creation timestamp for real grad_speed_s computation
-                momentum_engine.record_token_created(tc.mint, tc.ts_ms);
-            }
-            Ok(FeedEvent::CreatorSell { mint: _, ts_ms }) => {
-                health_monitor.record_event(FeedSource::CoreCast, ts_ms);
-                creator_sells += 1;
-            }
-            Ok(FeedEvent::Migration { mint, ts_ms, source, sig }) => {
-                if matches!(source, pump_quant_core::feeds::MigrationSource::CoreCastStream2) {
-                    health_monitor.record_event(FeedSource::CoreCast, ts_ms);
-                }
-                migrations += 1;
-
-                let mint_b58 = bs58::encode(&mint).into_string();
-                let enrichment = GradEnrichment::UNKNOWN;
-
-                info!(
-                    mint = %mint_b58,
-                    ts_ms,
-                    source = source.as_str(),
-                    "[momentum] graduation migration detected"
-                );
-
-                if engine_config.momentum.enabled {
-                    let momentum = Arc::clone(&momentum_engine);
-                    tokio::spawn(async move {
-                        momentum.on_migration(mint, ts_ms, sig, enrichment).await;
-                    });
-                }
-            }
-            Ok(FeedEvent::PumpSwapGraduationDirect { mint, sig, ts_ms, coin_vault, pc_vault, source }) => {
-                let mint_b58 = bs58::encode(&mint).into_string();
-                migrations += 1;
-
-                let enrichment = GradEnrichment::UNKNOWN;
-
-                info!(
-                    mint = %mint_b58,
-                    ts_ms,
-                    source = source.as_str(),
-                    "[momentum] PumpSwap graduation direct detected"
-                );
-
-                if engine_config.momentum.enabled {
-                    let momentum = Arc::clone(&momentum_engine);
-                    tokio::spawn(async move {
-                        momentum.on_pumpswap_graduation_direct(
-                            mint, sig, ts_ms, coin_vault, pc_vault, source, enrichment,
-                        ).await;
-                    });
-                }
-            }
-            Ok(FeedEvent::LpRemoval { mint: _, ts_ms: _ }) => {
-                // No-op: momentum engine handles exits internally
-            }
-            Ok(FeedEvent::Shutdown) => {
-                info!("Shutdown signal received");
-                let _ = shutdown_tx.send(true);
-                break;
             }
             Err(_) => {
                 info!("Engine channel closed — shutting down");
@@ -504,11 +382,13 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    registry.shutdown_all().await;
+
     info!(
-        trades = trades_seen,
-        ticks,
-        migrations,
-        creator_sells,
+        trades = router.trades_seen(),
+        ticks = router.ticks(),
+        migrations = router.migrations(),
+        creator_sells = router.creator_sells(),
         "pump-quant-core stopped"
     );
 
