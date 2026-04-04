@@ -49,6 +49,7 @@ use crate::momentum::types::ScoredToken;
 use crate::momentum::activity_gate::{ActivityTracker, ActivityDecision};
 
 use crate::tx::tip_engine::{TipEngine, TipConfig, TipRequest};
+use crate::tx::execution_context::ExecutionContext;
 
 use dashmap::{DashMap, DashSet};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -382,11 +383,11 @@ pub struct MomentumEngine {
     config: Arc<MomentumConfig>,
     #[allow(dead_code)]
     rpc_url: Arc<String>,
-    /// Helius HTTPS RPC URL — used for getProgramAccounts (not supported on SOLANA_RPC_URL).
-    /// Constructed from HELIUS_API_KEY env var at startup.
-    helius_rpc_url: Arc<String>,
     #[allow(dead_code)]
     http_client: reqwest::Client,
+
+    // ── Shared transaction infrastructure (Jito, Nozomi, blockhash, wallet, RPC, tips) ──
+    exec_ctx: Arc<ExecutionContext>,
 
     // ── Token creation timestamps: mint → creation_ts_ms ──────────────
     // Populated by record_token_created() from PumpPortal TokenCreated events.
@@ -477,24 +478,6 @@ pub struct MomentumEngine {
     /// accounts appear in pumpswap_pools/raydium_pools, the deferred buy is submitted.
     /// Entries are removed after successful submission or after 10s timeout.
     deferred_buy_pending: DashSet<[u8; 32]>,
-    tip_engine: Arc<parking_lot::Mutex<TipEngine>>,
-    jito_grpc: Option<Arc<crate::tx::jito_grpc::JitoGrpcClient>>,
-    nozomi_client: Option<Arc<crate::tx::nozomi::NozomiClient>>,
-    wallet_pubkey: Option<[u8; 32]>,
-    blockhash_cache: Arc<crate::tx::executor::BlockhashCache>,
-
-    // ── RPC primary sender (Helius) with rate limiter + circuit breaker ──
-    rpc_sender: Arc<rpc_sender::RpcSender>,
-
-    // ── Legacy RPC fallback (kept for Nozomi→Jito→RPC triple fallback) ──
-    /// Shared reqwest::Client for RPC fallback (created once, reused).
-    rpc_fallback_client: reqwest::Client,
-    /// RPC URL for fallback sendTransaction (SOLANA_RPC_URL or default).
-    rpc_fallback_url: Arc<String>,
-
-    /// Public Solana RPC URL for read-heavy pool resolution calls.
-    /// Uses free public endpoint to avoid burning Helius rate budget.
-    pub public_rpc_url: Arc<String>,
 
     // ── Stats (atomic, lock-free) ───────────────────────────────────
     graduations_seen: AtomicU64,
@@ -571,11 +554,7 @@ impl MomentumEngine {
         rpc_url: Arc<String>,
         helius_wss_url: String,
         log_path: &str,
-        jito_grpc: Option<Arc<crate::tx::jito_grpc::JitoGrpcClient>>,
-        nozomi_client: Option<Arc<crate::tx::nozomi::NozomiClient>>,
-        wallet_pubkey: Option<[u8; 32]>,
-        blockhash_cache: Arc<crate::tx::executor::BlockhashCache>,
-        public_rpc_url: String,
+        exec_ctx: Arc<ExecutionContext>,
     ) -> (Self, crossbeam_channel::Sender<ScoredToken>, tokio::task::JoinHandle<()>, std::thread::JoinHandle<()>) {
         let poll_interval_ms = config.price_poll_interval_ms;
         // Build Helius standard RPC URL for price polling — SOLANA_RPC_URL (marielle-*)
@@ -603,46 +582,14 @@ impl MomentumEngine {
         // Channel for Kelly-scored tokens from hot_path → momentum engine
         let (scored_tx, scored_rx) = crossbeam_channel::bounded::<ScoredToken>(512);
 
-        // Tip engine for live mode
-        let tip_engine = Arc::new(parking_lot::Mutex::new(
-            TipEngine::new(TipConfig::default()),
-        ));
-
-        // Build a dedicated Helius HTTPS URL for getProgramAccounts (SOLANA_RPC_URL may not support it)
-        let helius_rpc_url = Arc::new(
-            std::env::var("HELIUS_API_KEY")
-                .ok()
-                .filter(|k| !k.is_empty())
-                .map(|k| format!("https://mainnet.helius-rpc.com/?api-key={}", k))
-                .unwrap_or_else(|| rpc_url.to_string()),
-        );
-
-        // RPC fallback client + URL (for sendTransaction when Jito/Nozomi fail)
-        let rpc_fallback_url = Arc::new(
-            std::env::var("SOLANA_RPC_URL")
-                .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string()),
-        );
-        let rpc_fallback_client = reqwest::Client::new();
-
-        // RPC primary sender with circuit breaker (Helius RPC → Jito fallback)
-        // Uses helius_rpc_url for both getSignatureStatuses and sendTransaction.
-        // When Engineer 4 adds send_rpc_url parameter, the second arg becomes the dedicated send endpoint.
-        let rpc_sender_config = rpc_sender::RpcSenderConfig::from_momentum_config(&config.rpc_sender);
-        let rpc_sender_inst = Arc::new(rpc_sender::RpcSender::new(
-            helius_rpc_url.to_string(),
-            rpc_sender_config,
-        ));
-
-        let public_rpc_url = Arc::new(public_rpc_url);
-
         // Channel for async retry results (ShredStream fresh detection → delayed pool resolution)
         let (async_retry_tx, async_retry_rx) = tokio::sync::mpsc::unbounded_channel::<AsyncRetryResult>();
 
         let engine = Self {
             config,
             rpc_url,
-            helius_rpc_url,
             http_client: crate::momentum::pool::make_pool_resolution_client(),
+            exec_ctx: Arc::clone(&exec_ctx),
             mint_creation_ts: DashMap::new(),
             active: DashMap::new(),
             recently_closed: DashMap::new(),
@@ -663,15 +610,6 @@ impl MomentumEngine {
             buy_states: Arc::new(DashMap::new()),
             deferred_buy_pending: DashSet::new(),
             mint_entry_counts: DashMap::new(),
-            tip_engine,
-            jito_grpc,
-            nozomi_client,
-            wallet_pubkey,
-            blockhash_cache,
-            rpc_sender: rpc_sender_inst,
-            rpc_fallback_client,
-            rpc_fallback_url,
-            public_rpc_url,
             graduations_seen: AtomicU64::new(0),
             entries_opened: AtomicU64::new(0),
             tp1_exits: AtomicU64::new(0),
@@ -701,10 +639,10 @@ impl MomentumEngine {
         // Spawn wallet balance poller (no-op in paper mode — reads but doesn't gate)
         let balance_arc = Arc::clone(&engine.wallet_balance_lamports);
         let poll_ms = engine.config.wallet_balance_poll_ms;
-        let wallet_pk = engine.wallet_pubkey;
+        let wallet_pk = exec_ctx.wallet_pubkey();
         // Use public Solana RPC for balance polling — lightweight call (every 30s)
         // that doesn't need Helius. Frees Helius rate budget for sendTransaction.
-        let rpc_for_balance = engine.public_rpc_url.clone();
+        let rpc_for_balance = exec_ctx.public_rpc_url.clone();
         let paper_mode = engine.config.paper_mode;
 
         tokio::spawn(async move {
@@ -1702,16 +1640,16 @@ impl MomentumEngine {
                         grad_score: grad_score as f64,
                         obs_velocity_bps_per_s: obs_velocity,
                     };
-                    let tip = self.tip_engine.lock().compute_tip(&tip_req);
+                    let tip = self.exec_ctx.tip_engine.lock().compute_tip(&tip_req);
                     let fee_idx = (std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() % 8) as usize;
-                    let rpc_sender = self.rpc_sender.clone();
+                    let rpc_sender = self.exec_ctx.rpc_sender.clone();
                     let mint_buy = mint;
                     let resolve_client = self.http_client.clone();
-                    let resolve_url = self.helius_rpc_url.clone();
-                    let resolve_url_fallback = self.public_rpc_url.clone();
+                    let resolve_url = self.exec_ctx.helius_rpc_url.clone();
+                    let resolve_url_fallback = self.exec_ctx.public_rpc_url.clone();
                     let multiplier_pct = compute_max_quote_in_multiplier(&self.config, obs_velocity);
                     let max_quote_in = (size_lamports as u128 * multiplier_pct as u128 / 100) as u64;
                     // Anti-sandwich slippage: compute min_tokens_out from buffered amount.
@@ -1913,8 +1851,8 @@ impl MomentumEngine {
                         grad_score: grad_score as f64,
                         obs_velocity_bps_per_s: 0,
                     };
-                    let tip = self.tip_engine.lock().compute_tip(&tip_req);
-                    let rpc_sender = self.rpc_sender.clone();
+                    let tip = self.exec_ctx.tip_engine.lock().compute_tip(&tip_req);
+                    let rpc_sender = self.exec_ctx.rpc_sender.clone();
                     let mint_buy = mint;
 
                     tokio::spawn(async move {
@@ -2497,7 +2435,7 @@ impl MomentumEngine {
                     let mint = entry.mint;
                     let size = size_lamports;
                     let kp_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
-                    let jg = match self.jito_grpc.clone() {
+                    let jg = match self.exec_ctx.jito_grpc.clone() {
                         Some(j) => j,
                         None => {
                             tracing::warn!(mint=%bs58::encode(&mint).into_string(), "[buy_task] no jito client");
@@ -2514,7 +2452,7 @@ impl MomentumEngine {
                         grad_score: entry.grad_score as f64,
                         obs_velocity_bps_per_s: entry.observed_velocity_bps_per_s.unwrap_or(0),
                     };
-                    let tip = self.tip_engine.lock().compute_tip(&tip_req);
+                    let tip = self.exec_ctx.tip_engine.lock().compute_tip(&tip_req);
                     // Estimate tokens from entry price: tokens ≈ sol_in / price_fp * 1_000_000
                     // price_fp = lamports per 1M token atoms, so tokens = sol_in * 1_000_000 / price_fp
                     let tokens_estimate = if current_price_fp > 0 {
@@ -2527,7 +2465,7 @@ impl MomentumEngine {
                     // Capture mint for move into async block
                     let mint_buy = mint;
                     let tokens_est = tokens_estimate;
-                    let rpc_sender = self.rpc_sender.clone();
+                    let rpc_sender = self.exec_ctx.rpc_sender.clone();
                     tokio::spawn(async move {
                         let kp_bytes = match std::fs::read(&kp_path) {
                             Ok(b) => b,
@@ -2585,7 +2523,7 @@ impl MomentumEngine {
                             "[buy_pumpswap] pool PDA is zeroed — attempting last-chance resolution"
                         );
                         if let Some(resolution) = crate::momentum::pool::resolve_pumpswap_pool_from_mint(
-                            &self.http_client, &entry.mint, &self.public_rpc_url, &self.helius_rpc_url,
+                            &self.http_client, &entry.mint, &self.exec_ctx.public_rpc_url, &self.exec_ctx.helius_rpc_url,
                         ).await {
                             if let Some(resolved_pool) = crate::momentum::pool::extract_pumpswap_pool_accounts(&resolution) {
                                 let resolved_accts: crate::tx::pumpswap::PumpSwapPoolAccounts = resolved_pool.into();
@@ -2620,7 +2558,7 @@ impl MomentumEngine {
                     if ps_pool.token_mint_program == [0u8; 32] {
                         let mint_b58_prog = bs58::encode(&entry.mint).into_string();
                         match crate::momentum::pool::resolve_mint_program_with_fallback(
-                            &self.http_client, &entry.mint, &self.helius_rpc_url, Some(&self.public_rpc_url),
+                            &self.http_client, &entry.mint, &self.exec_ctx.helius_rpc_url, Some(&self.exec_ctx.public_rpc_url),
                         ).await {
                             Some(program_bytes) => {
                                 let prog_b58 = bs58::encode(&program_bytes).into_string();
@@ -2642,7 +2580,7 @@ impl MomentumEngine {
                                 let vault_mint = ps_pool.pool_base_token_account; // token vault
                                 let vault_b58 = bs58::encode(&vault_mint).into_string();
                                 let inferred = crate::momentum::pool::resolve_mint_program_with_fallback(
-                                    &self.http_client, &vault_mint, &self.helius_rpc_url, Some(&self.public_rpc_url),
+                                    &self.http_client, &vault_mint, &self.exec_ctx.helius_rpc_url, Some(&self.exec_ctx.public_rpc_url),
                                 ).await;
                                 match inferred {
                                     Some(prog) if prog != [0u8; 32] => {
@@ -2679,7 +2617,7 @@ impl MomentumEngine {
                     let mint = entry.mint;
                     let size = size_lamports;
                     let kp_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
-                    let jg = match self.jito_grpc.clone() {
+                    let jg = match self.exec_ctx.jito_grpc.clone() {
                         Some(j) => j,
                         None => {
                             tracing::warn!(mint=%bs58::encode(&mint).into_string(), "[buy_pumpswap] no jito client");
@@ -2696,7 +2634,7 @@ impl MomentumEngine {
                         grad_score: entry.grad_score as f64,
                         obs_velocity_bps_per_s: entry.observed_velocity_bps_per_s.unwrap_or(0),
                     };
-                    let tip = self.tip_engine.lock().compute_tip(&tip_req);
+                    let tip = self.exec_ctx.tip_engine.lock().compute_tip(&tip_req);
                     let tokens_estimate = if current_price_fp > 0 {
                         (size as u128 * 1_000_000 / current_price_fp as u128) as u64
                     } else { 0u64 };
@@ -2738,7 +2676,7 @@ impl MomentumEngine {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() % 8) as usize;
-                    let rpc_sender = self.rpc_sender.clone();
+                    let rpc_sender = self.exec_ctx.rpc_sender.clone();
                     // Fix #1: Track buy state for sell gating.
                     // Guard: skip if buy is already in progress (prevents duplicate buy from
                     // two on_graduation paths racing into process_pending_entries in same tick).
@@ -2757,7 +2695,7 @@ impl MomentumEngine {
                     }
                     let buy_states = self.buy_states.clone();
                     let bh_http_client = self.http_client.clone();
-                    let bh_rpc_url = self.helius_rpc_url.clone();
+                    let bh_rpc_url = self.exec_ctx.helius_rpc_url.clone();
                     tokio::spawn(async move {
                         let kp_bytes = match std::fs::read(&kp_path) {
                             Ok(b) => b,
@@ -3902,7 +3840,7 @@ impl MomentumEngine {
 
     /// Sync blockhash access for the sell path (no async).
     fn blockhash_cache_sync(&self) -> Option<[u8; 32]> {
-        self.blockhash_cache.get_sync()
+        self.exec_ctx.blockhash_sync()
     }
 
     /// Close a position, calculate P&L, update stats, and log.
@@ -4183,7 +4121,7 @@ impl MomentumEngine {
                     );
                 } else {
                     let kp_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
-                    let jg = match self.jito_grpc.clone() {
+                    let jg = match self.exec_ctx.jito_grpc.clone() {
                         Some(j) => j,
                         None => { tracing::error!("[close_position] no jito client"); return; }
                     };
@@ -4195,15 +4133,15 @@ impl MomentumEngine {
                         grad_score: 0.0,
                         obs_velocity_bps_per_s: 0,
                     };
-                    let tip = self.tip_engine.lock().compute_tip(&tip_req);
-                    let noz = self.nozomi_client.clone();
+                    let tip = self.exec_ctx.tip_engine.lock().compute_tip(&tip_req);
+                    let noz = self.exec_ctx.nozomi_client.clone();
                     let reason_str = reason.as_str().to_string();
                     let gain = gain_bps as i64;
                     let noz_ok = noz.is_some();
                     let mint_copy = mint;
-                    let rpc_sender = self.rpc_sender.clone();
-                    let balance_rpc_url = self.public_rpc_url.clone();
-                    let balance_http = self.rpc_fallback_client.clone();
+                    let rpc_sender = self.exec_ctx.rpc_sender.clone();
+                    let balance_rpc_url = self.exec_ctx.public_rpc_url.clone();
+                    let balance_http = self.exec_ctx.rpc_fallback_client.clone();
                     let exit_price_for_spawn = exit_price_fp;
                     let sell_buy_states_ray = self.buy_states.clone();
                     tokio::spawn(async move {
@@ -4416,11 +4354,11 @@ impl MomentumEngine {
                     );
                 } else {
                     let kp_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
-                    let jg = match self.jito_grpc.clone() {
+                    let jg = match self.exec_ctx.jito_grpc.clone() {
                         Some(j) => j,
                         None => { tracing::error!("[close_pumpswap] no jito client"); return; }
                     };
-                    let noz = self.nozomi_client.clone();
+                    let noz = self.exec_ctx.nozomi_client.clone();
                     let bh = self.blockhash_cache_sync().unwrap_or([0u8; 32]);
                     let tip_req = TipRequest {
                         context: exit_to_context(&reason, gain_bps as i64),
@@ -4429,7 +4367,7 @@ impl MomentumEngine {
                         grad_score: 0.0,
                         obs_velocity_bps_per_s: 0,
                     };
-                    let tip = self.tip_engine.lock().compute_tip(&tip_req);
+                    let tip = self.exec_ctx.tip_engine.lock().compute_tip(&tip_req);
                     let noz_ok = noz.is_some();
                     let reason_str = reason.as_str().to_string();
                     let gain = gain_bps as i64;
@@ -4438,9 +4376,9 @@ impl MomentumEngine {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() % 8) as usize;
-                    let rpc_sender = self.rpc_sender.clone();
-                    let balance_rpc_url = self.public_rpc_url.clone();
-                    let balance_http = self.rpc_fallback_client.clone();
+                    let rpc_sender = self.exec_ctx.rpc_sender.clone();
+                    let balance_rpc_url = self.exec_ctx.public_rpc_url.clone();
+                    let balance_http = self.exec_ctx.rpc_fallback_client.clone();
                     let exit_price_for_spawn = exit_price_fp;
                     let sell_buy_states = self.buy_states.clone();
                     tokio::spawn(async move {
@@ -4704,8 +4642,8 @@ impl MomentumEngine {
                         "[close_position] no pool accounts — spawning last-chance PumpSwap resolution for sell"
                     );
                     let http_client = self.http_client.clone();
-                    let public_rpc = self.public_rpc_url.clone();
-                    let helius_rpc = self.helius_rpc_url.clone();
+                    let public_rpc = self.exec_ctx.public_rpc_url.clone();
+                    let helius_rpc = self.exec_ctx.helius_rpc_url.clone();
                     let mint_copy = mint;
                     let kp_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
                     let bh = self.blockhash_cache_sync().unwrap_or([0u8; 32]);
@@ -4716,16 +4654,16 @@ impl MomentumEngine {
                         grad_score: 0.0,
                         obs_velocity_bps_per_s: 0,
                     };
-                    let tip = self.tip_engine.lock().compute_tip(&tip_req);
+                    let tip = self.exec_ctx.tip_engine.lock().compute_tip(&tip_req);
                     let reason_str = reason.as_str().to_string();
                     let gain = gain_bps as i64;
                     let fee_idx = (std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() % 8) as usize;
-                    let rpc_sender = self.rpc_sender.clone();
-                    let balance_rpc_url = self.public_rpc_url.clone();
-                    let balance_http = self.rpc_fallback_client.clone();
+                    let rpc_sender = self.exec_ctx.rpc_sender.clone();
+                    let balance_rpc_url = self.exec_ctx.public_rpc_url.clone();
+                    let balance_http = self.exec_ctx.rpc_fallback_client.clone();
                     tokio::spawn(async move {
                         // Resolve pool accounts
                         let resolution = match crate::momentum::pool::resolve_pumpswap_pool_from_mint(
@@ -4927,7 +4865,7 @@ impl MomentumEngine {
             tracing::info!(count=blocklist.len(), "[orphan_recovery] loaded blocklist — will skip known-dead mints");
         }
 
-        let wallet_bytes = match self.wallet_pubkey {
+        let wallet_bytes = match self.exec_ctx.wallet_pubkey() {
             Some(w) => w,
             None => {
                 tracing::warn!("[orphan_recovery] no wallet_pubkey configured — skipping");
@@ -4936,7 +4874,7 @@ impl MomentumEngine {
         };
 
         let wallet = solana_sdk::pubkey::Pubkey::new_from_array(wallet_bytes);
-        let rpc_url = self.public_rpc_url.as_str();
+        let rpc_url = self.exec_ctx.public_rpc_url.as_str();
 
         // ── Pre-create WSOL ATA if missing ────────────────────────────────────
         // Every PumpSwap sell TX requires the wallet's WSOL ATA to exist as a
@@ -5063,7 +5001,7 @@ impl MomentumEngine {
             ]
         });
 
-        let http = &self.rpc_fallback_client;
+        let http = &self.exec_ctx.rpc_fallback_client;
         let mut orphan_mints: Vec<([u8; 32], u64)> = Vec::new();
 
         for req_body in [&body, &body_2022] {
@@ -5146,7 +5084,7 @@ impl MomentumEngine {
 
             // Resolve PumpSwap pool
             let resolution = match crate::momentum::pool::resolve_pumpswap_pool_from_mint(
-                &self.http_client, &mint_bytes, &self.public_rpc_url, &self.helius_rpc_url,
+                &self.http_client, &mint_bytes, &self.exec_ctx.public_rpc_url, &self.exec_ctx.helius_rpc_url,
             ).await {
                 Some(r) => r,
                 None => {
@@ -5164,7 +5102,7 @@ impl MomentumEngine {
             let mut ps_pool: crate::tx::pumpswap::PumpSwapPoolAccounts = ps_pool_raw.into();
             if ps_pool.token_mint_program == [0u8; 32] {
                 ps_pool.token_mint_program = match crate::momentum::pool::resolve_mint_program_with_fallback(
-                    &self.http_client, &mint_bytes, &self.helius_rpc_url, Some(&self.public_rpc_url),
+                    &self.http_client, &mint_bytes, &self.exec_ctx.helius_rpc_url, Some(&self.exec_ctx.public_rpc_url),
                 ).await {
                     Some(prog) => prog,
                     None => crate::tx::pumpswap::SPL_TOKEN_PROGRAM_BYTES,
@@ -5242,7 +5180,7 @@ impl MomentumEngine {
                 Err(e) => { tracing::error!(mint=%mint_str, err=?e, "[orphan_recovery] sell build failed"); continue; }
             };
 
-            match self.rpc_sender.submit_tx(&tx_bytes, &mint_str, "orphan_recovery").await {
+            match self.exec_ctx.rpc_sender.submit_tx(&tx_bytes, &mint_str, "orphan_recovery").await {
                 rpc_sender::SubmitResult::Landed { signature, latency_ms } => {
                     tracing::info!(mint=%mint_str, sig=%signature, latency_ms, "[orphan_recovery] sell landed ✅");
                 }
@@ -5420,7 +5358,7 @@ impl MomentumEngine {
         // 100% of pump.fun graduations go to PumpSwap since April 2026.
         if mint != [0u8; 32] {
             if let Some(resolution) = crate::momentum::pool::resolve_pumpswap_pool_from_mint(
-                &self.http_client, &mint, &self.public_rpc_url, &self.helius_rpc_url
+                &self.http_client, &mint, &self.exec_ctx.public_rpc_url, &self.exec_ctx.helius_rpc_url
             ).await {
                 if resolution.reserve_sol_lamports >= crate::momentum::pool::MIN_PUMPSWAP_SOL_RESERVES_LAMPORTS {
                     let mint_b58 = bs58::encode(&resolution.mint).into_string();
@@ -5531,8 +5469,8 @@ impl MomentumEngine {
                     let mint_copy = mint;
                     let enrichment_copy = enrichment;
                     let ts_ms_copy = ts_ms;
-                    let public_rpc = self.public_rpc_url.clone();
-                    let helius_rpc = self.helius_rpc_url.clone();
+                    let public_rpc = self.exec_ctx.public_rpc_url.clone();
+                    let helius_rpc = self.exec_ctx.helius_rpc_url.clone();
                     let retry_tx = self.retry_tx.clone();
 
                     tokio::spawn(async move {
@@ -5575,7 +5513,7 @@ impl MomentumEngine {
         }
         // ── End PumpSwap mint-based fast path ──────────────────────────────────
 
-        match resolve_pool_from_transaction(&self.http_client, &sig, &self.public_rpc_url, &self.helius_rpc_url).await {
+        match resolve_pool_from_transaction(&self.http_client, &sig, &self.exec_ctx.public_rpc_url, &self.exec_ctx.helius_rpc_url).await {
             Some(resolution) => {
                 let mint_b58 = bs58::encode(&resolution.mint).into_string();
 
@@ -5631,7 +5569,7 @@ impl MomentumEngine {
                 {
                     let pc_vault_b58 = bs58::encode(&resolution.pc_vault).into_string();
                     let last_ms = crate::momentum::pool::get_account_last_activity_ms(
-                        &self.http_client, &self.public_rpc_url, &pc_vault_b58
+                        &self.http_client, &self.exec_ctx.public_rpc_url, &pc_vault_b58
                     ).await;
                     let now_ms = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -5816,13 +5754,13 @@ impl MomentumEngine {
                     // Use public_rpc_url for pool resolution reads — frees Helius budget.
                     // Falls back to helius_rpc_url if public RPC doesn't support getProgramAccounts.
                     let ps = crate::momentum::pool::resolve_pumpswap_pool_from_mint(
-                        &self.http_client, &mint, &self.public_rpc_url, &self.helius_rpc_url
+                        &self.http_client, &mint, &self.exec_ctx.public_rpc_url, &self.exec_ctx.helius_rpc_url
                     ).await;
                     if ps.is_some() {
                         ps
                     } else {
                         crate::momentum::pool::resolve_pool_from_mint(
-                            &self.http_client, &mint, &self.public_rpc_url, &self.helius_rpc_url
+                            &self.http_client, &mint, &self.exec_ctx.public_rpc_url, &self.exec_ctx.helius_rpc_url
                         ).await
                     }
                 };
@@ -5879,7 +5817,7 @@ impl MomentumEngine {
                         {
                             let pc_vault_b58 = bs58::encode(&resolution.pc_vault).into_string();
                             let last_ms = crate::momentum::pool::get_account_last_activity_ms(
-                                &self.http_client, &self.public_rpc_url, &pc_vault_b58
+                                &self.http_client, &self.exec_ctx.public_rpc_url, &pc_vault_b58
                             ).await;
                             let now_ms = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -6244,6 +6182,29 @@ mod tests {
     use super::*;
     use crate::momentum::pool::PoolType;
 
+    /// Helper: create a test ExecutionContext (no wallet, no Jito/Nozomi, paper mode defaults).
+    fn test_exec_ctx() -> Arc<ExecutionContext> {
+        use crate::tx::tip_engine::{TipEngine, TipConfig};
+        let bh_cache = crate::tx::executor::BlockhashCache::new();
+        let rpc_sender_config = super::rpc_sender::RpcSenderConfig::default();
+        let rpc_sender_inst = Arc::new(super::rpc_sender::RpcSender::new(
+            "https://example.com".to_string(),
+            rpc_sender_config,
+        ));
+        Arc::new(ExecutionContext {
+            jito_grpc: None,
+            nozomi_client: None,
+            blockhash_cache: bh_cache,
+            wallet: None,
+            tip_engine: Arc::new(parking_lot::Mutex::new(TipEngine::new(TipConfig::default()))),
+            rpc_sender: rpc_sender_inst,
+            rpc_fallback_client: reqwest::Client::new(),
+            rpc_fallback_url: Arc::new("https://api.mainnet-beta.solana.com".to_string()),
+            helius_rpc_url: Arc::new("https://example.com".to_string()),
+            public_rpc_url: Arc::new("https://api.mainnet-beta.solana.com".to_string()),
+        })
+    }
+
     /// Helper: create a test engine (price feed connects to invalid URL, that's fine).
     fn make_test_engine(enabled: bool) -> MomentumEngine {
         make_test_engine_with(enabled, |_| {})
@@ -6264,18 +6225,14 @@ mod tests {
             std::process::id()
         );
 
-        let bh_cache = crate::tx::executor::BlockhashCache::new();
+        let exec_ctx = test_exec_ctx();
 
         let (engine, _scored_tx, ws_handle, _logger_handle) = MomentumEngine::new(
             config,
             rpc_url,
             "wss://invalid.example.com".to_string(),
             &log_path,
-            None, // jito_grpc
-            None, // nozomi_client
-            None, // wallet_pubkey
-            bh_cache,
-            "https://api.mainnet-beta.solana.com".to_string(),
+            exec_ctx,
         );
         // Abort the WS task so it doesn't retry forever
         ws_handle.abort();

@@ -1,3 +1,4 @@
+pub mod execution_context; // Shared infra: Jito, Nozomi, wallet, blockhash, RPC, tips
 pub mod executor;    // BlockhashCache only
 pub mod jito_grpc;   // Jito gRPC client (momentum's primary path)
 pub mod nozomi;      // Nozomi/Harmonic client
@@ -6,6 +7,7 @@ pub mod raydium;     // Raydium AMM V4 swap builder
 pub mod tip_engine;  // Dynamic tip computation
 pub mod wallet;      // Keypair management
 
+pub use execution_context::ExecutionContext;
 pub use jito_grpc::{JitoGrpcClient, JitoGrpcConfig, JitoGrpcStats};
 pub use nozomi::NozomiClient;
 pub use wallet::WalletManager;

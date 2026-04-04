@@ -231,66 +231,105 @@ async fn main() -> anyhow::Result<()> {
         });
     let momentum_log_path = format!("{}/momentum_paper_trades.jsonl", data_dir);
 
-    // Blockhash cache for momentum engine
-    let momentum_bh_cache = pump_quant_core::tx::executor::BlockhashCache::new();
-    {
-        let rpc_for_bh = public_rpc_url.clone();
-        momentum_bh_cache.clone().spawn_refresh_task(rpc_for_bh);
-    }
+    // ── Build ExecutionContext (shared infra: Jito, Nozomi, blockhash, wallet, RPC, tips) ──
+    let exec_ctx = {
+        // Blockhash cache
+        let bh_cache = pump_quant_core::tx::executor::BlockhashCache::new();
+        {
+            let rpc_for_bh = public_rpc_url.clone();
+            bh_cache.clone().spawn_refresh_task(rpc_for_bh);
+        }
 
-    // Jito gRPC client (live mode only)
-    let jito_grpc_client: Option<std::sync::Arc<pump_quant_core::tx::jito_grpc::JitoGrpcClient>> =
-        if !paper_mode {
-            let cfg = pump_quant_core::tx::jito_grpc::JitoGrpcConfig::default();
-            match pump_quant_core::tx::jito_grpc::JitoGrpcClient::new(cfg).await {
-                Ok(client) => {
-                    let _ = client.warmup().await;
-                    Some(std::sync::Arc::new(client))
+        // Jito gRPC client (live mode only)
+        let jito_grpc_client: Option<std::sync::Arc<pump_quant_core::tx::jito_grpc::JitoGrpcClient>> =
+            if !paper_mode {
+                let cfg = pump_quant_core::tx::jito_grpc::JitoGrpcConfig::default();
+                match pump_quant_core::tx::jito_grpc::JitoGrpcClient::new(cfg).await {
+                    Ok(client) => {
+                        let _ = client.warmup().await;
+                        Some(std::sync::Arc::new(client))
+                    }
+                    Err(e) => {
+                        tracing::warn!(err = ?e, "JitoGrpcClient init failed — live sells disabled");
+                        None
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(err = ?e, "JitoGrpcClient init failed — live sells disabled");
-                    None
-                }
-            }
+            } else {
+                None
+            };
+
+        // Nozomi client (live mode only)
+        let nozomi_client: Option<std::sync::Arc<pump_quant_core::tx::nozomi::NozomiClient>> =
+            if !paper_mode {
+                std::env::var("NOZOMI_API_KEY")
+                    .ok()
+                    .filter(|k| !k.is_empty())
+                    .map(|key| {
+                        std::sync::Arc::new(pump_quant_core::tx::nozomi::NozomiClient::new(
+                            std::env::var("NOZOMI_ENDPOINT").unwrap_or_else(|_| {
+                                "https://ewr1.nozomi.temporal.xyz".to_string()
+                            }),
+                            key,
+                        ))
+                    })
+            } else {
+                None
+            };
+
+        // Wallet keypair (pre-loaded once — replaces per-trade fs::read)
+        let wallet = if !paper_mode {
+            let kp_path = std::env::var("WALLET_KEYPAIR_PATH").unwrap_or_default();
+            pump_quant_core::tx::execution_context::WalletKeys::load_from_path(&kp_path)
         } else {
             None
         };
 
-    // Nozomi client (live mode only)
-    let nozomi_client: Option<std::sync::Arc<pump_quant_core::tx::nozomi::NozomiClient>> =
-        if !paper_mode {
-            std::env::var("NOZOMI_API_KEY")
+        // Tip engine
+        let tip_engine = std::sync::Arc::new(parking_lot::Mutex::new(
+            pump_quant_core::tx::tip_engine::TipEngine::new(
+                pump_quant_core::tx::tip_engine::TipConfig::default(),
+            ),
+        ));
+
+        // Helius HTTPS RPC URL for getProgramAccounts
+        let helius_rpc_url = std::sync::Arc::new(
+            std::env::var("HELIUS_API_KEY")
                 .ok()
                 .filter(|k| !k.is_empty())
-                .map(|key| {
-                    std::sync::Arc::new(pump_quant_core::tx::nozomi::NozomiClient::new(
-                        std::env::var("NOZOMI_ENDPOINT").unwrap_or_else(|_| {
-                            "https://ewr1.nozomi.temporal.xyz".to_string()
-                        }),
-                        key,
-                    ))
-                })
-        } else {
-            None
-        };
+                .map(|k| format!("https://mainnet.helius-rpc.com/?api-key={}", k))
+                .unwrap_or_else(|| momentum_rpc_url.to_string()),
+        );
 
-    // Wallet pubkey (live mode only)
-    let wallet_pubkey: Option<[u8; 32]> = if !paper_mode {
-        std::env::var("WALLET_KEYPAIR_PATH")
-            .ok()
-            .and_then(|path| {
-                let bytes = std::fs::read(&path).ok()?;
-                let arr: Vec<u8> = serde_json::from_slice(&bytes).ok()?;
-                if arr.len() >= 64 {
-                    let mut pk = [0u8; 32];
-                    pk.copy_from_slice(&arr[32..64]);
-                    Some(pk)
-                } else {
-                    None
-                }
-            })
-    } else {
-        None
+        // RPC fallback client + URL
+        let rpc_fallback_url = std::sync::Arc::new(
+            std::env::var("SOLANA_RPC_URL")
+                .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string()),
+        );
+        let rpc_fallback_client = reqwest::Client::new();
+
+        // RPC primary sender with circuit breaker
+        let rpc_sender_config = pump_quant_core::momentum::rpc_sender::RpcSenderConfig::from_momentum_config(
+            &momentum_config.rpc_sender,
+        );
+        let rpc_sender = std::sync::Arc::new(pump_quant_core::momentum::rpc_sender::RpcSender::new(
+            helius_rpc_url.to_string(),
+            rpc_sender_config,
+        ));
+
+        let public_rpc = std::sync::Arc::new(public_rpc_url.clone());
+
+        std::sync::Arc::new(pump_quant_core::tx::ExecutionContext {
+            jito_grpc: jito_grpc_client,
+            nozomi_client,
+            blockhash_cache: bh_cache,
+            wallet,
+            tip_engine,
+            rpc_sender,
+            rpc_fallback_client,
+            rpc_fallback_url,
+            helius_rpc_url,
+            public_rpc_url: public_rpc,
+        })
     };
 
     let (momentum_engine, _scored_token_tx, _momentum_ws_handle, _momentum_logger_handle) = MomentumEngine::new(
@@ -298,11 +337,7 @@ async fn main() -> anyhow::Result<()> {
         momentum_rpc_url,
         momentum_wss_url,
         &momentum_log_path,
-        jito_grpc_client,
-        nozomi_client,
-        wallet_pubkey,
-        momentum_bh_cache,
-        public_rpc_url.clone(),
+        exec_ctx,
     );
     let momentum_engine = Arc::new(momentum_engine);
 
