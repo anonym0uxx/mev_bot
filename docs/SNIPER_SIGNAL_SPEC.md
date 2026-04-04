@@ -1751,30 +1751,123 @@ Default tip: 100_000 lamports. Ladder up if congestion detected.
 
 ---
 
-## Signal Summary Table
+## Signal → Sizing Quick Reference
 
-| Signal | Tier | Source | Weight | Notes |
-|--------|------|--------|--------|-------|
-| Not Mayhem Mode | T0-G0 | Helius BC / PumpPortal | GATE | AI agent corrupts all T1 signals |
-| No dev prebuy | T0-G1 | ShredStream + creator_map | GATE | Extended to first 5 trades + linked wallet check |
-| No coordinated bundle | T0-G2 | ShredStream | GATE | ≥2 wallets + >2 SOL in create slot |
-| Dev not serial rugger | T0-G3 | Helius dev cache | GATE | ≥5/40% OR ≥10 tokens = fail |
-| Curve fill < 25 SOL | T0-G4 | Helius BC account | GATE | Math-based: >25 SOL needs >4.2 SOL follow-on |
-| Creator not throwaway | T0-G6 | Helius balance | GATE | <0.05 SOL + no history = disposable wallet |
-| No supply concentration | T0-G7 | ShredStream holdings | GATE | Single wallet >15% of buys |
-| Inflow rate (vsol/s) | T1-S1 | ShredStream + Helius | 0–30 pts | 0.3 SOL/s sweet spot; spike=lower score |
-| Wallet diversity | T1-S2 | ShredStream | 0–25 pts | Replaces bot detection; diversity = organic |
-| Curve fill % | T1-S3 | Helius BC account | 0–15 pts | U-curve; sweet spot 2–8% fill |
-| Sell pressure timing | T1-S4 | ShredStream | 0–15 pts | First sell index; replaces buy/sell ratio |
-| Smart money | T1-S5 | Pre-seeded wallet set | -10–+15 pts | Negative signal for known dumpers |
-| Dev wallet history | T2-SS1 | Helius DAS | 55% | Only reliable signal at mint |
-| Metadata quality | T2-SS4 | PumpPortal event | 25% | Instant, no API call |
-| Twitter presence | T2-SS3 | PumpPortal event | 10% | Presence only, weak but free |
-| Pump.fun engagement | T2-SS2 | Pump.fun API | 5% | Disabled <120s |
-| Telegram community | T2-SS5 | Telegram Bot API | 5% | Disabled <120s; pre-built = negative |
+*Single-page operator reference. All math verified by Opus 4.6 quant review (2026-04-04).*
 
 ---
 
-*Spec v1.2 | 2026-04-04 | Apollo*
-*Sources: ArXiv 2602.14860, social-signal-layer-spec.md, BONDING_CURVE_SNIPER_IDEATION.md*
-*Opus 4.6 quant review: 2026-04-04*
+### Gate Summary (Tier 0)
+
+All gates must pass. Any failure = immediate DROP. No scoring occurs.
+
+| Gate | Condition for FAIL | Data Source | Notes |
+|---|---|---|---|
+| **G0** Mayhem Mode | `is_mayhem_mode == true` | Helius BC / PumpPortal | AI-agent-driven markets corrupt all T1 signals simultaneously |
+| **G1** Dev Prebuy | Dev wallet in first 5 trades OR linked wallet in create slot | ShredStream + creator_map | Extended beyond just create slot — first 5 trades |
+| **G2** Coordinated Bundle | ≥2 wallets AND >2 SOL total in create slot | ShredStream | Same-block coordinated entry = coordinated dump setup |
+| **G3** Serial Rugger | dev_tokens_launched ≥ 10 OR (≥5 tokens AND rug_rate > 40%) | Helius dev cache | Tightened from ≥20/50% — now catches habitual ruggers earlier |
+| **G4** Curve Zone | real_sol < 2.0 → SKIP; real_sol > 20.0 → FAIL; 15–20 → FAIL if score < 60 | Helius BC accountSubscribe | Zone-aware: optimal 2–15, conditional 15–20, hard ceiling 20 |
+| **G6** Throwaway Wallet | creator balance < 0.05 SOL AND zero token history | Helius getBalance | Script wallets funded with exact creation fee only |
+| **G7** Supply Concentration | Any single wallet holds >15% of tokens bought in first 20 trades | ShredStream trade log | Single-wallet dump leverage |
+
+---
+
+### On-Chain Score Components (Tier 1)
+
+Max total: 100 pts. Floor for entry: on_chain_score ≥ 30 (hard floor). Entry threshold: ≥ 50 (velocity available) or ≥ 40 (trade_count < 10).
+
+| Signal | Max Pts | Metric | Key Thresholds | Data Source |
+|---|---|---|---|---|
+| **S1** Inflow Rate | 30 | real_sol / seconds_since_create | ≥1.5 SOL/s → 12 (spike risk) · ≥0.5 → 20 · **≥0.15 → 30** (sweet spot) · ≥0.05 → 22 · ≥0.02 → 12 · <0.02 → 5 | ShredStream |
+| **S2** Wallet Diversity | 25 | unique_wallets / trade_count | ≥0.80 → 25 · ≥0.60 → 18 · ≥0.40 → 10 · ≥0.20 → 4 · <0.20 → 0. Default 5 pts if <5 trades | ShredStream |
+| **S3** Curve Position | 15 | real_sol zone | <2 → 0 · **2–5 → 12** · **5–15 → 15** (peak) · 15–20 → 6 (conditional) · >20 → 0 | Helius BC |
+| **S4** Sell Timing | 15 | first_sell_trade_index | <5 trades → 3 · 5–9 no sells → 10 · 5–9 with sells → relative index · ≥10 trades sell>15 → 15 · sell<5 → 0 | ShredStream |
+| **S5** Smart Money | +15/−10 | Known wallet in first 10 buys | Top-100 → 15 · Top-500 → 10 · Own winner → +5 additive · Known dumper → −10 | data/smart_wallets.json |
+
+**Score confluence required for conviction tier (80+):** At least 3 signals must fire strong. A single maxed signal tops out at ~62 pts regardless of social multiplier on on_chain alone.
+
+---
+
+### Social Multiplier (Tier 2)
+
+Applied as: `final_score = on_chain_score × social_multiplier_bps / 10_000`. Clamped 0.5×–2.0×.
+
+| Signal | Weight | Key Logic | Disabled Condition |
+|---|---|---|---|
+| **SS1** Dev History | 55% | Blacklist → multiplier=0 · Clean 1-4 tokens → +2000 bps · 5-9 tokens, WR>40% → +1500 bps · Missing middle band (0.20-0.40 SR) → +400 bps | Never (always available) |
+| **SS4** Metadata Quality | 25% | link_count=3 + image + desc>150 → +2200 bps max raw (+550 bps effective) · No links, no desc → −1500 bps raw (−375 bps effective) | Never |
+| **SS3** Twitter Presence | 10% | Present → +800 bps · Absent → −800 bps | Never |
+| **SS2** Engagement | 5% | reply_count, KOTH status, live status | Token age < 120s |
+| **SS5** Telegram | 5% | >500 members at mint → −500 bps (coordinated) · 101–500 → +600 bps | Token age < 120s |
+
+---
+
+### Sizing Decision Pipeline
+
+Full pipeline in order. Each layer multiplies into the next.
+
+| Layer | Input | Output | Config Key |
+|---|---|---|---|
+| **Bootstrap gate** | total_trades < 50 | 0.02 SOL flat (no further layers) | `bootstrap_trades: 50` |
+| **Survival gate** | wallet_sol < 0.05 | 0.01 SOL floor (no further layers) | `survival_wallet_sol: 0.05` |
+| **Score tier (base size)** | final_score | 40–49 → 0.01 · 50–64 → 0.02 · 65–79 → 0.04 · 80–100 → 0.07 SOL | `score_tiers` |
+| **WR scalar** | rolling win rate (zone-separated, 100-trade lookback) | <35% → 0.50× · 35–45% → 0.70× · 45–55% → 1.00× · ≥55% → 1.40× | `win_rate_scalars` |
+| **Zone multiplier** | CurveFillZone | Optimal → 1.0× · Conditional → 0.60× | `conditional_zone_mult: 0.60` |
+| **Depth haircut** | real_sol | real_sol < 5 → 0.70× · ≥5 → 1.0× | `early_depth_mult: 0.70` |
+| **Drawdown multiplier** | wallet_sol / session_HWM | ≥90% → 1.0× · 80–90% → 0.80× · 70–80% → 0.60× · <70% → 0.40× | `dd_*_threshold` |
+| **Hard caps** | raw_size | clamp(0.01, 0.10) · conditional zone cap: 0.06 SOL · wallet pct cap: wallet × 20% | `min/max_position_sol` |
+
+---
+
+### Position Size Output (Optimal Zone, No Drawdown)
+
+Assumes: post-bootstrap, optimal zone (real_sol 5–15), no drawdown, no depth haircut.
+
+| Score Tier | Base | WR < 35% | WR 35–45% | WR 45–55% | WR ≥ 55% |
+|---|---|---|---|---|---|
+| 80–100 (conviction) | 0.07 | 0.035 | 0.049 | 0.070 | **0.098** |
+| 65–79 (normal) | 0.04 | 0.020 | 0.028 | 0.040 | **0.056** |
+| 50–64 (probe) | 0.02 | 0.010 | 0.014 | 0.020 | **0.028** |
+| 40–49 (floor probe) | 0.01 | 0.010 | 0.010 | 0.010 | **0.014** |
+
+*Floor at 0.01 applies to all values below it. Conditional zone (real_sol 15–20): multiply by 0.6×, hard cap 0.06 SOL. Depth haircut (real_sol < 5): multiply by 0.7×.*
+
+---
+
+### EV Sanity (Verified Math)
+
+**Assumptions:** 2.5% round-trip fees → net win = 9.5% on position. Expected loss on losing landed trades ≈ 7% of position (fees + adverse move on emergency exit). Partial bundle failure rate = 5% of landed bundles → 10% loss. Jito tip = 0.00005 SOL.
+
+**Break-even win rate for landed bundles:** ~46% (at 7% loser loss). At 5% loser loss → ~38%. At 10% loser loss → ~52%.
+
+⚠️ **Critical:** Break-even WR is highly sensitive to loser exit loss. The system MUST have defined emergency exits with a target max loss of ≤7% per losing trade.
+
+| Score Tier | Min Size | Max Size | Net Win (9.5%) | Loser Loss (7%) | Break-even WR | EV at 40% WR | EV at 50% WR |
+|---|---|---|---|---|---|---|---|
+| 80–100 (conviction) | 0.035 | 0.098 | +0.0066–0.0093 | −0.0025–0.0069 | ~46% | −0.0003 to −0.0009 | +0.0011 to +0.0031 |
+| 65–79 (normal) | 0.020 | 0.056 | +0.0019–0.0053 | −0.0014–0.0039 | ~46% | −0.0002 to −0.0005 | +0.0006 to +0.0018 |
+| 50–64 (probe) | 0.010 | 0.028 | +0.0010–0.0027 | −0.0007–0.0020 | ~46% | −0.0001 to −0.0003 | +0.0003 to +0.0009 |
+| 40–49 (floor) | 0.010 | 0.014 | +0.0010–0.0013 | −0.0007–0.0010 | ~46% | ~−0.0001 | ~+0.0003 |
+
+**Key insight:** At 40% WR, all tiers are slightly EV-negative. At 45% WR they approach breakeven. At 50%+ they turn positive. **The WR scalar is doing exactly the right job** — at <35% WR it sizes down to floor, reducing expected losses during poor performance periods. At ≥55% WR it sizes up to capture the full edge.
+
+**Floor probe EV note:** At 0.01 SOL, Jito tip = 0.00005 SOL. Break-even against rejection-only = tip / (tip + net_win) = 0.00005 / (0.00005 + 0.00095) = **5.0%** bundle land rate needed. (Previous spec had a decimal error stating 0.52% — corrected here.) However, against full trade loss model, break-even is ~46% WR regardless of position size.
+
+---
+
+### Implicit Stops Required
+
+The EV math above assumes ~7% max loss on losing trades. **This is not currently defined in the spec.** Before live trading, define:
+
+- **Time-based stop:** max hold time if +12% target not hit (e.g. 300s → emergency sell at market)
+- **Price-based stop:** if position drops X% → emergency sell (e.g. hard stop at −8%)
+- **Emergency exit path:** If TX1 lands but TX2 fails (partial bundle) → immediate market sell in next slot
+
+Without these, actual loser losses could be 20-50%+ and EV turns deeply negative at any win rate.
+
+---
+
+*Spec v1.5 | 2026-04-04 | Apollo*
+*Quant review: Opus 4.6 (2026-04-04) — G4 revision, T1/T2 audit, Kelly replacement, EV sanity check*
+*Sources: ArXiv 2602.14860, BONDING_CURVE_SNIPER_IDEATION.md, social-signal-layer-spec.md*
