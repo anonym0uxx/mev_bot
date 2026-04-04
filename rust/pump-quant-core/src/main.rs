@@ -19,6 +19,7 @@ use pump_quant_core::engine::health::HealthMonitor;
 use pump_quant_core::engine::registry::EngineRegistry;
 use pump_quant_core::api::{ApiState, start_server};
 use pump_quant_core::momentum::MomentumEngine;
+use pump_quant_core::sniper::SniperEngine;
 use pump_quant_core::feeds::{
     event_joiner::EventJoiner,
     helius::{HeliusConfig, HeliusPumpSwapClient, HeliusWsClient},
@@ -332,12 +333,13 @@ async fn main() -> anyhow::Result<()> {
         })
     };
 
+    let exec_ctx_for_sniper = Arc::clone(&exec_ctx);
     let (momentum_engine, _scored_token_tx, _momentum_ws_handle, _momentum_logger_handle) = MomentumEngine::new(
         momentum_config.clone(),
         momentum_rpc_url,
         momentum_wss_url,
         &momentum_log_path,
-        exec_ctx,
+        Arc::clone(&exec_ctx),
     );
     let momentum_engine = Arc::new(momentum_engine);
 
@@ -359,6 +361,14 @@ async fn main() -> anyhow::Result<()> {
     // ── Engine registry ────────────────────────────────────────────────
     let mut registry = EngineRegistry::new();
     registry.register(momentum_engine as Arc<dyn pump_quant_core::engine::TradingEngine>);
+
+    // Sniper engine (disabled by default — registry checks enabled() at dispatch time)
+    let sniper = SniperEngine::new(
+        Arc::new(engine_config.sniper.clone()),
+        Arc::clone(&exec_ctx),
+    );
+    registry.register(Arc::new(sniper) as Arc<dyn pump_quant_core::engine::TradingEngine>);
+
     registry.trigger_startup_recovery().await;
 
     // ── FeedRouter (replaces manual match block) ─────────────────────
