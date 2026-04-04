@@ -145,14 +145,75 @@ TokenCreated
 
 ---
 
-## MomentumEngine — How It Works
+## MomentumEngine — Signal & Scoring System
 
-1. **Graduation detected** — ShredStream `parse_pump_migration()` spots bonding curve → PumpSwap migration
-2. **Pool resolved** — Engine fetches on-chain pool accounts, validates liquidity ≥ 30 SOL
-3. **Scored** — Graduation quality scored 0–100 (curve dynamics, flow momentum, manipulation detection)
-4. **Probe** — Kelly-sized buy (~0.03 SOL) if score ≥ threshold
-5. **Position management** — Trailing stop floor, 3 take-profit tiers, hard SL, time SL
-6. **Exit** — Sell on Jito + Nozomi dual submit
+### Graduation Score (0–100 pts)
+
+Scored on 7 components at graduation time. Entry requires **≥ 50 pts** (enriched) or **≥ 70 pts** (cold-miss — fabricated defaults inflate score so threshold is higher).
+
+| Component | Max Pts | Metric | Logic |
+|-----------|---------|--------|-------|
+| **Speed** | 20 | `grad_speed_s` (seconds to graduate) | Inverted — SLOWER = HIGHER score. ≤60s → 0pts (bot/whale fill, 7.3% WR). ≥300s → 20pts (organic, 41.1% WR). |
+| **Volume Tier** | 20 | Total bonding curve volume (SOL) | Sweet spot 50–100 SOL → 20pts. Too low (<10 SOL) = noise. Too high (>400 SOL) = whale pump, 0pts. |
+| **Velocity** | 15 | Buy rate normalized by volume | Buy txns in last 5s of BC, normalized. Organic demand signal — high buys per SOL = retail-driven. |
+| **Buy/Sell Ratio** | 10 | `buys_5s / (buys_5s + sells_5s)` | Unidirectional pressure. Gated: halved if `buys_5s < 5` (whale pump penalty — one actor isn't momentum). |
+| **Entry Discount** | 10 | `(bc_terminal_price - entry_price) / entry_price` | Buying below BC terminal price = structural edge. AMM price typically discounts vs final BC price. |
+| **LP Reserve** | 10 | Pool SOL reserve at migration | Sweet spot 40–120 SOL (fresh pump.fun graduates). Too low = thin liquidity. Too high = whale-seeded. |
+| **Pre-Entry Momentum** | 10 | Observed price velocity (bps/s) during 8s observation window | Confirmed demand before committing capital. ≥200 bps/s can trigger early entry after 15 samples. |
+
+**Hard rejects before scoring:**
+- Volume < 30 SOL or > 300 SOL → skip
+- LP reserve < 40 SOL or > 200 SOL → skip
+- Graduation age > 300s → stale, skip
+- Entry price < 100 fixed-point → PumpSwap overflow risk, skip
+
+### Entry Sizing
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| **Probe size** | 0.03 SOL default | Base probe before Kelly adjustment |
+| **Kelly fraction** | 0.25 (quarter-Kelly) | Conservative — bootstrap requires ≥50 trades |
+| **Kelly lookback** | 100 trades | Rolling window for WR/avg-win/avg-loss |
+| **Min probe** | 0.02 SOL | Floor |
+| **Max probe** | 0.10 SOL | Cap |
+| **Max concurrent** | 3 positions | Hard cap |
+| **Max total size** | 0.12 SOL | Across all concurrent positions |
+
+### Observation Window (8 seconds)
+
+After graduation detected, engine waits up to 8s collecting price samples before committing:
+- **Early entry trigger:** ≥15 samples AND velocity ≥200 bps/s → enter before window expires
+- **Early abort:** Drawdown ≥ −500 bps during window → skip token
+- **Window expires → always enters** if score passed (unless early abort fired)
+
+### Position Management & Exit
+
+| Exit Type | Trigger | Action |
+|-----------|---------|--------|
+| **TP1** | +5% gain | Marker (no sell — holds full position) |
+| **TP2** | +15% gain | Marker (no sell — trailing stop floor activates) |
+| **TP3** | +999% | Catch-all hold |
+| **Trailing stop** | Activates at +5% | 15% trail distance. Tightens: 8% at tier-1, 12% at tier-2 |
+| **Acceleration trail** | Strong momentum | 25% trail (looser, rides momentum) |
+| **Deceleration trail** | Momentum slowing | 8% trail (tighter) |
+| **Hard SL** | −8% from entry | Armed after 3s. Dual-path Jito + Nozomi. |
+| **Time SL** | 60s hold, no TP | Exit if no positive signal in 60s |
+| **Max hold** | 600s (10 min) | Absolute ceiling. Trail tightens at 180s. |
+| **Velocity exit** | Price velocity < −150k mbps/s | Confirmed over 2 samples with ≥50 bps profit |
+| **Dead zone** | Price/reserve flat for 16–30s | Multiple stagnation detectors → exit |
+| **Drain detected** | LP reserve drop | Creator/whale draining pool → dual-path exit |
+
+### Risk Controls
+
+| Control | Value |
+|---------|-------|
+| Daily loss cap | 10% of balance |
+| Session max loss (pause) | 0.10 SOL → 30 min pause |
+| Session max loss (halt) | 0.20 SOL → halt |
+| Consecutive losses (half-size) | 5 → next probes at 50% size |
+| Consecutive losses (pause) | 10 → pause |
+| Rolling WR floor | 5% over last 50 trades → pause |
+| Reentry cooldown | 120s per mint |
 
 ---
 
