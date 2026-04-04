@@ -1,10 +1,16 @@
 # SniperEngine — Entry Signal System Spec
 
-**Version:** 1.0  
+**Version:** 1.1  
 **Date:** 2026-04-04  
 **Author:** Apollo (synthesized from ArXiv 2602.14860, social-signal-layer-spec.md, BONDING_CURVE_SNIPER_IDEATION.md)  
 **Status:** Ready for implementation  
 **Goal:** Bonding curve sniper. Jito atomic bundle (buy+sell). 12%+ scalp target. Max loss per attempt = Jito tip + fees (~5000 lamports).
+
+**v1.1 Changes:**
+- Added G0: Mayhem Mode hard gate (skip all Mayhem coins — AI agent poisons velocity + bot ratio signals)
+- Added timing-aware velocity: signal is gated behind `min_trades_for_velocity` (default 10). Entry threshold auto-adjusts when velocity data is unavailable.
+- Added `create_v2` parsing note (required to detect Mayhem flag and new token creates)
+- Signal stack inversion table: documents how signal weights shift at different entry windows
 
 ---
 
@@ -58,7 +64,27 @@ Economic breakeven (buy-and-hold, from ArXiv eq. 3):
 
 ## Tier 0: Hard Gates
 
-**Computed from ShredStream data. Evaluated within 10ms of TokenCreated. Any failure = immediate skip.**
+**Computed from ShredStream data + Helius BC account. Evaluated within 10ms of TokenCreated. Any failure = immediate skip, free all state.**
+
+### G0: Not a Mayhem Mode Coin ⚠️ CHECK FIRST
+**Source:** BondingCurve account data (Helius `accountSubscribe`) OR PumpPortal `TokenCreated` event field OR `create_v2` instruction decode.  
+**Logic:** `is_mayhem_mode == true` → FAIL immediately.  
+**Rationale:** Mayhem Mode deploys an autonomous AI agent that trades the token for 24h with a random buy/sell walk, using 1B extra minted tokens. This completely corrupts our signal stack:
+- **Velocity signal poisoned:** Agent places large buys → high `vsol/trade_count` that looks like strong momentum but is synthetic.
+- **Bot ratio signal flips:** Agent invokes contract directly (no pump.fun UI) → flagged `is_bot=true`. Mayhem coins look bot-dominated for the wrong reason.
+- **Buy/sell ratio distorted:** Agent does random equal-probability buy/sell → ratio trends toward 50/50 regardless of real demand.
+- **Fee routing changed:** Protocol fees go to undisclosed wallets, not tracked on fees.pump.fun. Revenue structure is different.
+
+**Detection:** `is_mayhem_mode` is an immutable boolean stored in the BondingCurve account after `create_v2`. Legacy `create` instruction always produces `is_mayhem_mode = false`.
+
+**Implementation sources (in priority order):**
+1. PumpPortal `TokenCreated` event — check if `mayhem_mode` field is present and true (zero cost, already streaming)
+2. Helius `accountSubscribe` on BondingCurve account — parse account data, `is_mayhem_mode` byte offset (confirm from pump IDL)
+3. ShredStream `create_v2` instruction decode — see Note below
+
+**⚠️ Note — `create_v2` parsing gap:** Pump.fun is transitioning from legacy `create` to `create_v2`. Most existing sniper bots (including our current `parse_pump_transaction()`) only parse the legacy instruction discriminator. **`create_v2` has a different discriminator.** When pump.fun completes the transition, bots that don't handle `create_v2` will silently miss all new token creates. This must be fixed before the sniper goes live. Add dual-discriminator detection in `shredstream.rs` for both `create` and `create_v2`.
+
+**Rust field:** `not_mayhem_mode: bool`
 
 ### G1: No Dev Pre-Buy
 **Source:** ShredStream — first `trade_count` transactions after mint.  
@@ -100,20 +126,40 @@ Economic breakeven (buy-and-hold, from ArXiv eq. 3):
 **Computed from ShredStream trade stream + Helius BC account state. Updated in real-time.**
 
 ### S1: Liquidity Velocity Score (0–35 pts)
-**The #1 signal per ArXiv 2602.14860.**  
-**Source:** ShredStream — track `vsol_accumulated` and `trade_count` per mint.  
-**Formula:**
-```
-vsol_per_trade = vsol_accumulated / max(trade_count, 1)
+**The #1 signal per ArXiv 2602.14860 — but only meaningful with sufficient trade history.**  
+**Source:** ShredStream — track `vsol_accumulated` and `trade_count` per mint.
 
-Score:
-  vsol_per_trade >= 2.0 SOL/trade  → 35 pts  (massive buyers, very strong)
-  vsol_per_trade >= 0.5 SOL/trade  → 25 pts  (strong)
-  vsol_per_trade >= 0.1 SOL/trade  → 15 pts  (moderate)
-  vsol_per_trade >= 0.02 SOL/trade → 8 pts   (weak, many small buys)
-  vsol_per_trade <  0.02           → 3 pts   (bot churn, very weak)
+**Timing awareness:** At mint time, `trade_count` is near zero. `vsol/1` is just the size of the first buy — not a velocity signal, just noise. This signal is gated behind `min_trades_for_velocity` (default: 10).
+
 ```
+// Timing-aware velocity computation:
+if trade_count < min_trades_for_velocity (default 10):
+    velocity_score = 0   // insufficient data — neutral, not a fail
+    entry_threshold -= 10  // compensate: lower bar since signal is absent
+                            // (effective threshold: 35 instead of 45)
+else:
+    vsol_per_trade = vsol_accumulated / trade_count
+
+    Score:
+      vsol_per_trade >= 2.0 SOL/trade  → 35 pts  (massive buyers, very strong)
+      vsol_per_trade >= 0.5 SOL/trade  → 25 pts  (strong)
+      vsol_per_trade >= 0.1 SOL/trade  → 15 pts  (moderate)
+      vsol_per_trade >= 0.02 SOL/trade → 8 pts   (weak, many small buys)
+      vsol_per_trade <  0.02           → 3 pts   (bot churn, very weak)
+```
+
+**Signal stack inversion by entry window:**
+
+| Entry Window | Primary Signals | Velocity Status | Entry Threshold |
+|---|---|---|---|
+| vSol 0–5 (mint fresh, <10 trades) | Tier 0 gates + Social multiplier | Disabled (0 pts) | 35 (adjusted) |
+| vSol 5–15 (10–50 trades) | Social + early velocity | Weak signal, lower weight | 40 |
+| vSol 15–40 (50+ trades) | Velocity dominant | Full weight | 45 |
+
+**Practical implication:** At early entry, the social multiplier carries the most weight since on-chain data is thin. Tier 0 gates (especially G0 Mayhem, G1 dev prebuy, G2 bundle detection) are the strongest fast filters at mint time.
+
 **Rust field:** `velocity_score: u8`  
+**Config:** `min_trades_for_velocity: u32 = 10`  
 **Note:** Use `vsol_accumulated` from Helius BC accountSubscribe for accuracy; approximate from ShredStream trade sums as fallback.
 
 ### S2: Non-Bot Trade Ratio (0–25 pts)
@@ -732,8 +778,11 @@ Outcome fields filled retroactively via `HashMap<[u8;32], SniperCreateRecord>` i
 "sniper": {
   "enabled": false,
   "paper_mode": true,
-  "entry_threshold": 40,
+  "entry_threshold": 45,
+  "entry_threshold_no_velocity": 35,   // used when trade_count < min_trades_for_velocity
   "min_on_chain_score": 45,
+  "min_trades_for_velocity": 10,       // below this, S1 contributes 0 pts
+  "skip_mayhem_mode": true,            // G0 gate — skip all is_mayhem_mode=true coins
   "min_position_sol": 0.01,
   "max_position_sol": 0.10,
   "kelly_fraction": 0.5,
@@ -769,6 +818,7 @@ Outcome fields filled retroactively via `HashMap<[u8;32], SniperCreateRecord>` i
 | Twitter presence | T2-SS3 | PumpPortal metadata | 20% weight | Legitimacy signal |
 | Metadata quality | T2-SS4 | PumpPortal metadata | 15% weight | Effort indicator |
 | Telegram community | T2-SS5 | Telegram Bot API | 10% weight | Real community = real demand |
+| **Not Mayhem Mode** | **T0-G0** | **Helius BC / PumpPortal** | **GATE** | **AI agent corrupts all signals** |
 | No dev prebuy | T0-G1 | ShredStream | GATE | Rug setup indicator |
 | No bundle wallets | T0-G2 | ShredStream | GATE | Coordinated dump setup |
 | Dev not blacklisted | T0-G3 | Dev cache | GATE | Known serial ruggers |
