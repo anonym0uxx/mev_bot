@@ -8,13 +8,15 @@ use anyhow::{Context, Result};
 
 use super::health::HealthConfig;
 
-/// Minimal engine config — momentum engine only.
+/// Minimal engine config — momentum + sniper engines.
 /// Backrunner fields (gate, score, position, ride, entry_engine, risk) removed.
 pub struct EngineConfig {
     pub health: HealthConfig,
     pub log_file: String,
     /// Post-graduation momentum engine configuration.
     pub momentum: crate::momentum::MomentumConfig,
+    /// Sniper engine configuration (disabled by default).
+    pub sniper: crate::sniper::SniperConfig,
 }
 
 /// Load canary.json from the given path and return a minimal `EngineConfig`.
@@ -50,6 +52,12 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
 
+    // ── Load sniper config from top-level `sniper` section ────────
+    let sniper: crate::sniper::SniperConfig = root
+        .get("sniper")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
     // ── Log file path from `mev.log_file` (backward compat) ────────
     let log_file = root
         .get("mev")
@@ -62,6 +70,7 @@ pub fn load_config(path: &Path) -> Result<EngineConfig> {
         health,
         log_file,
         momentum,
+        sniper,
     })
 }
 
