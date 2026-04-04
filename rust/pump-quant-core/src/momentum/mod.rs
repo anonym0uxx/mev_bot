@@ -6159,6 +6159,61 @@ impl MomentumEngine {
     }
 }
 
+// ── TradingEngine trait implementation ──────────────────────────────────────
+#[async_trait::async_trait]
+impl crate::engine::TradingEngine for MomentumEngine {
+    fn name(&self) -> &'static str {
+        "momentum"
+    }
+
+    fn paper_mode(&self) -> bool {
+        self.config.paper_mode
+    }
+
+    fn enabled(&self) -> bool {
+        self.config.enabled
+    }
+
+    fn on_token_created(&self, mint: [u8; 32], ts_ms: u64) {
+        self.record_token_created(mint, ts_ms);
+    }
+
+    async fn on_graduation(&self, event: crate::engine::GraduationEvent) {
+        let enrichment = event.enrichment;
+        if let Some(vaults) = event.pumpswap_vaults {
+            self.on_pumpswap_graduation_direct(
+                event.mint,
+                event.sig,
+                event.ts_ms,
+                vaults.coin_vault,
+                vaults.pc_vault,
+                event.source,
+                enrichment,
+            )
+            .await;
+        } else {
+            self.on_migration(event.mint, event.ts_ms, event.sig, enrichment)
+                .await;
+        }
+    }
+
+    async fn on_tick(&self, ts_ms: u64) {
+        // Delegates to inherent on_tick method (inherent methods shadow trait methods)
+        MomentumEngine::on_tick(self, ts_ms).await;
+    }
+
+    fn health(&self) -> crate::engine::EngineHealthSnapshot {
+        crate::engine::EngineHealthSnapshot::Unknown(serde_json::json!({
+            "engine": "momentum",
+            "enabled": self.config.enabled,
+        }))
+    }
+
+    async fn on_startup_recovery(&self) {
+        self.recover_orphan_positions().await;
+    }
+}
+
 /// Snapshot of momentum engine stats for monitoring/API.
 #[derive(Debug, serde::Serialize)]
 pub struct MomentumStats {
@@ -6782,5 +6837,14 @@ mod tests {
         // We can verify it reached scoring by checking that the function didn't return at the gate.
         // Since we can't directly test "reached scoring", we rely on the fact that disabled=0
         // means the if-block is skipped entirely.
+    }
+
+    /// Compile-time test: verify `Arc<dyn TradingEngine + Send + Sync>` is object-safe.
+    /// This test passes if it compiles — no runtime logic needed.
+    #[test]
+    fn test_momentum_engine_satisfies_trading_engine_trait() {
+        fn assert_trait_object(_: &Arc<dyn crate::engine::TradingEngine + Send + Sync>) {}
+        // If this compiles, MomentumEngine satisfies the TradingEngine trait
+        // and the trait is object-safe (can be used as Arc<dyn TradingEngine>).
     }
 }

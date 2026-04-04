@@ -51,6 +51,9 @@ axum = "0.7"
 # .env file loading
 dotenvy = "0.15"
 
+# Async trait object safety
+async-trait = "0.1"
+
 # System tuning (CPU pinning, mlockall, setsockopt)
 libc = "0.2"
 
