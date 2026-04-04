@@ -1,11 +1,25 @@
 # SniperEngine — Entry Signal System Spec
 
-**Version:** 1.5  
+**Version:** 2.0  
 **Date:** 2026-04-04  
 **Author:** Apollo  
 **Reviewed by:** Opus 4.6 quant (2026-04-04)  
 **Status:** Ready for implementation  
-**Goal:** Bonding curve sniper. Jito atomic bundle (buy+sell). 12%+ scalp target. Max loss per attempt = Jito tip + fees (~5000 lamports).
+**Goal:** Bonding curve sniper. Jito atomic entry (TX1 only) + hold-and-ride exit engine. TP targets: +20%/+50%/+100% with trailing stop. Hard stop: -30%. Max loss per rejected bundle = Jito tip only.
+
+**v2.0 Changes (Opus quant review — exit architecture overhaul):**
+- BREAKING: Atomic bundle TX2 (sell at +12%) **removed entirely** — proven non-viable on bonding curves
+- Bonding curve has no orderbook; TX2 sells at current curve price immediately after TX1 = guaranteed fee loss
+- New model: Jito atomic entry (TX1 + tip only) + event-driven hold-and-ride exit engine
+- Exit engine: tiered TP (TP1 +20%/30%, TP2 +50%/30%, TP3 +100%/30%) + trailing stop (15%→10%→8%)
+- Hard stop: 30% (not 50% — 50% is mathematically unreachable at most entry zones)
+- Time stop: 120s max hold; momentum stop: 15s no buys; cascade: 3 sells in 5 events
+- Emergency exits: creator sell → instant exit; graduation → sell on PumpSwap
+- EV break-even: 48.6% flat, 45.5% with tail captures (runners → graduation = 980%+ gain)
+- SniperEntrySignal updated: TX2 fields removed, exit_config snapshot added
+- SniperTradeLog updated: exit tracking fields (reason, hold duration, peak PnL, partial exits)
+- Config: `exit {}` nested block added; old `target_profit_mult`, `sell_slippage_pct` removed
+- SNIPER_EXIT_ARCHITECTURE.md contains full analysis (1134 lines)
 
 **v1.5 Changes (Opus quant review — position sizing):**
 - Kelly sizing **dropped entirely** — proven mathematically inappropriate for near-zero-downside asymmetric payoff (Kelly threshold is p>90% at b=0.11; unreachable)
@@ -873,7 +887,9 @@ Position sizing: → see §Position Sizing below for full spec
 
 Bundle construction:
   TX1: buy position_sol on bonding curve
-  TX2: sell all received tokens at target_vsol = sqrt(P1 × 1.12 × k)
+  // TX2 REMOVED — atomic sell not viable on bonding curves (no orderbook)
+  // Exit is event-driven hold-and-ride — see §Entry Execution & Exit Architecture
+  Bundle = [TX1, tip_tx]
   Submit to Jito
 
 Log SniperTradeLog → data/sniper_trades.jsonl
@@ -1571,149 +1587,214 @@ Position sizing:
            final_score, curve_zone, real_sol, wallet_sol, &tracker)
   position_sol == 0.0? → skip (should not happen if score >= 40 post-bootstrap)
   
-Bundle construction:
-  TX1: buy position_sol on bonding curve
-  TX2: sell all received tokens at target_vsol = sqrt(P1 × 1.12 × K)
-  Submit to Jito
-```## Bundle Construction
+## Entry Execution & Exit Architecture
 
-### TX1: Bonding Curve Buy
+### Entry Model: Jito Atomic Buy (TX1 Only)
+
+**Architecture decision (v1.5→v2.0):** The atomic buy+sell bundle model (TX1 buy + TX2 sell in same bundle) is **not viable on bonding curves**. On a bonding curve, there is no order book — every sell is a market sell against the current curve reserves. TX2 would sell immediately after TX1 at approximately the same price (plus our tiny buy impact), minus round-trip fees = guaranteed loss. The `min_sol_output` slippage check on TX2 would cause 100% rejection rate for any meaningful target price.
+
+**New model:** Entry-only Jito bundle with event-driven hold-and-ride exit.
+
+### TX1: Bonding Curve Buy (unchanged)
 ```
 Program: 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P
 Discriminator: [102, 6, 61, 18, 1, 218, 235, 234]
 
 Instruction data:
   [0..8]   discriminator
-  [8..16]  amount: u64 (tokens to buy)
+  [8..16]  amount: u64 (tokens to buy — computed from curve math)
   [16..24] max_sol_cost: u64 (position_size_lamports × 1.15 for 15% slippage)
 
-Accounts:
-  [0]  global (PDA)
-  [1]  fee_recipient
-  [2]  mint
-  [3]  bonding_curve (PDA: ["bonding-curve", mint])
-  [4]  assoc_bonding_curve (ATA of bonding_curve for mint)
-  [5]  associated_user (ATA of wallet for mint)
-  [6]  user (wallet, signer)
-  [7]  system_program
-  [8]  token_program
-  [9]  rent
-  [10] event_authority (PDA)
-  [11] program
+Accounts: [same as existing spec — global, fee_recipient, mint, bonding_curve,
+           assoc_bonding_curve, associated_user, user, system_program,
+           token_program, rent, event_authority, program]
 ```
 
-### TX2: Bonding Curve Sell
+### TX2: REMOVED
+
+TX2 (atomic sell) is removed from the bundle. All exit execution happens asynchronously via the exit engine described below.
+
+### Jito Bundle (simplified)
 ```
+Bundle = [TX1_buy, tip_tx]
+Default tip: 100_000 lamports. Ladder up if congestion detected via TipEngine.
+```
+
+### Exit Sell Transaction (submitted by exit engine)
+```
+Program: 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P
 Discriminator: [51, 230, 133, 164, 1, 127, 131, 173]
 
 Instruction data:
   [0..8]   discriminator
-  [8..16]  amount: u64 (tokens received from TX1)
-  [16..24] min_sol_output: u64 (sol_out_net × 0.85 × 1e9)
+  [8..16]  amount: u64 (tokens to sell — full or partial)
+  [16..24] min_sol_output: u64 (current_price × tokens × 0.85 × FEE_RATE)
 
-Accounts:
-  [0]  global (PDA)
-  [1]  fee_recipient
-  [2]  mint
-  [3]  bonding_curve (PDA)
-  [4]  assoc_bonding_curve
-  [5]  associated_user
-  [6]  user (wallet, signer)
-  [7]  system_program
-  [8]  associated_token_program
-  [9]  token_program
-  [10] event_authority (PDA)
-  [11] program
+Accounts: [same sell accounts as existing spec]
 
-TX2 parameters:
-  target_vsol = sqrt(entry_price × 1.12 × K)
-  sol_out_gross = target_vsol - vsol_after_tx1
-  min_sol_output = (sol_out_gross × FEE_RATE × 0.85 × 1e9) as u64
+Submitted via: direct RPC (sendTransaction) with priority fee.
+NOT via Jito bundle — exit speed is more important than atomicity.
+Priority fee: exit_priority_fee (default 50,000 microlamports).
+Retry: up to exit_max_retries (default 3) with 200ms intervals.
 ```
 
-### Jito Bundle
+### Exit Decision Engine
+
 ```
-Bundle = [TX1_buy, TX2_sell, tip_tx]
-Default tip: 100_000 lamports. Ladder up if congestion detected.
+┌─────────────────────────────────────────────────────────────────────┐
+│                    SNIPER EXIT ENGINE                                │
+│  Input: BondingCurveState trade events (from ShredStream)           │
+│  + periodic ticks (500ms interval)                                  │
+│  Output: SniperExitAction (FullExit | PartialExit | Hold)           │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Priority 1 — EMERGENCY EXITS (immediate, bypass all):              │
+│    • Creator sell detected           → FULL EXIT                    │
+│    • Token graduation detected       → FULL EXIT (sell on PumpSwap) │
+│                                                                     │
+│  Priority 2 — STOP-LOSS (capital preservation):                     │
+│    • PnL ≤ -30% from entry           → FULL EXIT                   │
+│    • Trailing stop triggered          → FULL EXIT                   │
+│                                                                     │
+│  Priority 3 — TIME/MOMENTUM STOPS (dead position cleanup):          │
+│    • Hold time ≥ 120 seconds          → FULL EXIT                   │
+│    • No buy event for ≥ 15 seconds    → FULL EXIT                   │
+│    • 3+ sells in last 5 events        → FULL EXIT (sell cascade)    │
+│                                                                     │
+│  Priority 4 — TAKE PROFIT (lock gains, activate trail):             │
+│    • PnL ≥ +20% (TP1, first hit)      → PARTIAL 30%, trail ON 15%  │
+│    • PnL ≥ +50% (TP2, first hit)      → PARTIAL 30%, trail → 10%   │
+│    • PnL ≥ +100% (TP3, first hit)     → PARTIAL 30%, trail → 8%    │
+│                                                                     │
+│  Default: HOLD — position remains open, monitoring continues.       │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
----
+### Position Lifecycle
 
-## Implementation Phases
+```
+Signal fires (score ≥ threshold, gates pass)
+    │
+    ▼
+ENTRY: submit Jito bundle [TX1_buy, tip_tx]
+    │
+    ├── Bundle rejected → cost = tip only (~0.0001 SOL). Done.
+    │
+    ├── Bundle landed → Position opens
+    │       │
+    │       ▼
+    │   MONITORING: ShredStream trade events + 500ms ticks
+    │       │
+    │       ├── Emergency exit (creator sell / graduation)
+    │       ├── Hard stop (-30%)
+    │       ├── Trailing stop (from peak, after TP1)
+    │       ├── Time stop (120s)
+    │       ├── Momentum stop (15s no buys / sell cascade)
+    │       ├── TP1 → partial sell 30%, trail ON
+    │       ├── TP2 → partial sell 30%, trail tighten
+    │       ├── TP3 → partial sell 30%, trail tighten
+    │       └── Remaining → rides trail to final exit
+    │
+    ▼
+CLOSED: Log SniperTradeLog → data/sniper_trades.jsonl
+        Update WinRateTracker
+```
 
-### Phase 0: Data Logging (DO FIRST — 2-4 hours)
-**Files:** `src/sniper/mod.rs`, `src/sniper/logger.rs`
-- Log every `on_token_created()` to `data/sniper_create_log.jsonl`
-- Wire ShredStream trades to BondingCurveState (vsol, trade_count, wallet_set, first_sell_index)
-- Retroactively fill outcome fields (graduated, vsol_peak) after 300s or on migration event
-- **This is the training dataset. Start it now.**
+### Interaction with BondingCurveState Tracker
 
-### Phase 1: BondingCurveState Tracker (1-2 days)
-**Files:** `src/sniper/bc_tracker.rs`
-- Full BondingCurveState struct + DashMap<[u8;32], BondingCurveState>
-- ShredStream TradeEvent handler: update vsol_per_second, unique wallet set, first_sell_index, wallet_token_holdings
-- Helius `accountSubscribe(bonding_curve)` for confirmed reserve state
-- Wallet diversity computation, concentration check
+The exit engine reads from the same `BondingCurveState` tracker used by the signal system:
 
-### Phase 2: Tier 0 Gates (1 day)
-**Files:** `src/sniper/gates.rs`
-- G0–G4, G6, G7 implementation
-- Unit tests: each gate with crafted BondingCurveState
+```rust
+// In SniperEngine::on_shredstream_trade(mint, trade_event):
+if let Some(position) = self.open_positions.get_mut(&mint) {
+    // Feed trade to exit engine
+    let action = position.on_trade_event(&trade_event, &self.exit_config, now_ms);
+    match action {
+        Some(SniperExitAction::FullExit) => {
+            self.execute_full_exit(mint, position).await;
+        }
+        Some(SniperExitAction::PartialExit { tokens, reason }) => {
+            self.execute_partial_sell(mint, tokens, reason).await;
+        }
+        None => {} // HOLD
+    }
+}
 
-### Phase 3: Tier 1 Scorer (1-2 days)
-**Files:** `src/sniper/scorer.rs`
-- S1–S5 with revised metrics
-- `score_to_probability()` interpolation
-- Paper mode evaluation loop
-
-### Phase 4: Smart Wallet Seeds (0.5 days)
-**Files:** `data/smart_wallets.json`, `data/dumper_wallets.json`, `scripts/refresh_smart_wallets.js`
-- One-time: pull top-500 pump.fun PnL wallets from GMGN.ai or Helius indexing
-- Weekly cron to refresh
-
-### Phase 5: Social Enrichment (2-3 days)
-**Files:** `src/sniper/social_enrichment.rs`
-- SS1 (dev history) + SS4 (metadata) — available immediately at create
-- SS3 (twitter presence) — from PumpPortal event
-- SS2/SS5 time-gated (disabled <120s)
-- Reweighted compute_multiplier with revised weights
-
-### Phase 6: Bundle Constructor (2-3 days)
-**Files:** `src/sniper/bundle_builder.rs`
-- TX1/TX2 builders with discriminators and account layouts above
-- Kelly sizing
-- Jito submit via ExecutionContext
-- SniperTradeLog JSONL on every attempt
-- **Paper mode first.** Live only after Phase 0 data validates signal quality.
-
----
-
-## Phase 0 Logging Schema
-
-`data/sniper_create_log.jsonl`:
-```json
-{
-  "ts_ms": 1743800000000,
-  "mint": "base58...",
-  "dev_pubkey": "base58...",
-  "token_name": "DOGE2",
-  "token_symbol": "DOGE2",
-  "has_twitter": true,
-  "has_telegram": false,
-  "has_website": true,
-  "has_image": true,
-  "description_len": 42,
-  "outcome_vsol_peak": null,
-  "outcome_trade_count": null,
-  "outcome_graduated": null,
-  "outcome_graduation_ms": null,
-  "outcome_graduation_steps": null
+// Periodic tick (every 500ms via tokio interval):
+for (mint, position) in self.open_positions.iter_mut() {
+    let action = position.on_tick(&self.exit_config, now_ms);
+    if let Some(action) = action {
+        self.execute_exit(mint, position, action).await;
+    }
 }
 ```
 
----
+### SniperEntrySignal Struct Updates
 
-## Config Block (canary.json)
+```rust
+pub struct SniperEntrySignal {
+    pub mint: [u8; 32],
+    pub bonding_curve: [u8; 32],
+    pub assoc_bonding_curve: [u8; 32],
+    pub on_chain_score: OnChainScore,
+    pub social_score: Option<SocialScore>,
+    pub final_score: u8,
+    // REMOVED: kelly_p (not applicable to this model)
+    pub position_size_sol: f64,
+    pub entry_vsol: f64,
+    pub entry_price: f64,
+    // REMOVED: target_vsol, target_price (no atomic exit target)
+    pub buy_sol_lamports: u64,
+    pub min_tokens_out: u64,
+    // REMOVED: sell_tokens, min_sol_out (no TX2)
+    pub jito_tip_lamports: u64,
+    pub decision_ms: u64,
+    pub paper_mode: bool,
+    // NEW: exit config snapshot at entry time
+    pub exit_config: SniperExitConfig,
+    // NEW: sizing metadata
+    pub sizing_win_rate: f64,
+    pub sizing_wr_scalar: f64,
+    pub sizing_score_tier: String,
+    pub sizing_zone_mult: f64,
+    pub sizing_dd_mult: f64,
+}
+```
+
+### SniperTradeLog Updates
+
+```rust
+#[derive(Serialize)]
+pub struct SniperTradeLog {
+    // ... existing fields (mint, scores, sizing) ...
+    
+    // REMOVED: bundle_sig for TX2
+    pub entry_bundle_sig: Option<String>,
+    
+    // NEW: exit tracking
+    pub exit_reason: SniperExitReason,
+    pub exit_time_ms: u64,
+    pub hold_duration_ms: u64,
+    pub peak_pnl_bp: i32,            // max unrealized gain (bp)
+    pub exit_pnl_bp: i32,            // actual exit PnL (bp)
+    pub tp1_hit: bool,
+    pub tp2_hit: bool,
+    pub tp3_hit: bool,
+    pub trailing_stop_active: bool,
+    pub remaining_at_exit_permille: u16,  // how much position was left at final exit
+    pub partial_exit_count: u8,       // number of partial exits executed
+    pub total_sol_received: f64,      // sum of all sell proceeds
+    pub realized_pnl_sol: f64,        // net PnL in SOL
+    pub trade_count_during_hold: u32, // trades observed while holding
+    pub buy_count_during_hold: u32,
+    pub sell_count_during_hold: u32,
+    pub graduated_during_hold: bool,
+}
+
+// REMOVED: SniperOutcome enum (replaced by SniperExitReason)
+```
+
+### Config Block Updates
 
 ```json
 "sniper": {
@@ -1731,10 +1812,7 @@ Default tip: 100_000 lamports. Ladder up if congestion detected.
   "conditional_vsol_min_score": 60,
   "min_position_sol": 0.01,
   "max_position_sol": 0.10,
-  "kelly_fraction": 0.5,
-  "target_profit_mult": 1.12,
   "buy_slippage_pct": 15,
-  "sell_slippage_pct": 15,
   "max_token_age_secs": 300,
   "jito_tip_lamports": 100000,
   "social_disable_before_age_secs": 120,
@@ -1745,129 +1823,114 @@ Default tip: 100_000 lamports. Ladder up if congestion detected.
   "social_cache_ttl_secs": 300,
   "dev_cache_ttl_secs": 3600,
   "pumpfun_api_rps": 5,
-  "telegram_bot_token": null
+  "telegram_bot_token": null,
+
+  "exit": {
+    "hard_stop_bp": 3000,
+    "max_hold_sec": 120,
+    "buy_gap_timeout_sec": 15,
+    "sell_cascade_count": 3,
+    "sell_cascade_window": 5,
+    "tp1_threshold_bp": 2000,
+    "tp1_sell_permille": 300,
+    "tp2_threshold_bp": 5000,
+    "tp2_sell_permille": 300,
+    "tp3_threshold_bp": 10000,
+    "tp3_sell_permille": 300,
+    "trail_initial_bp": 1500,
+    "trail_tp2_bp": 1000,
+    "trail_tp3_bp": 800,
+    "exit_on_creator_sell": true,
+    "exit_on_graduation": true,
+    "sell_slippage_bp": 1500,
+    "exit_priority_fee": 50000,
+    "exit_max_retries": 3
+  }
 }
+```
+
+**Fields removed from config:**
+- `target_profit_mult` (no atomic exit target)
+- `sell_slippage_pct` (replaced by `exit.sell_slippage_bp`)
+- `kelly_fraction` (not applicable)
+
+### Decision Flowchart Update
+
+Replace the bundle construction block in the main decision flowchart:
+
+```
+... final_score >= 40 ↓
+
+Position sizing:
+  trade_count < 50?  → 0.02 SOL flat (bootstrap)
+  else → SniperSizer::compute_position_size(
+           final_score, curve_zone, real_sol, wallet_sol, &tracker)
+  
+Entry execution:
+  TX1: buy position_sol on bonding curve
+  Bundle = [TX1, tip_tx]           // NO TX2
+  Submit to Jito via gRPC pipeline
+  
+On bundle land:
+  Open SniperPosition
+  Subscribe to BondingCurveState updates for this mint
+  Start exit monitoring (trade events + 500ms ticks)
+  
+Exit monitoring loop:
+  E1: creator sell?        → FULL EXIT immediately
+  E2: graduation?          → FULL EXIT on PumpSwap
+  SL: pnl ≤ -30%?         → FULL EXIT
+  Trail: below trail stop? → FULL EXIT  
+  Time: hold ≥ 120s?       → FULL EXIT
+  Gap: no buys ≥ 15s?      → FULL EXIT
+  Cascade: 3+ sells/5?     → FULL EXIT
+  TP1: pnl ≥ +20%?        → PARTIAL 30%, trail ON
+  TP2: pnl ≥ +50%?        → PARTIAL 30%, trail tighten
+  TP3: pnl ≥ +100%?       → PARTIAL 30%, trail tighten
+  else                     → HOLD
+
+On position close:
+  Log SniperTradeLog → data/sniper_trades.jsonl
+  Update WinRateTracker (win/loss/zone)
+  Token age > 300s with no entry → drop tracking
 ```
 
 ---
 
-## Signal → Sizing Quick Reference
+## Appendix A: Calibration Parameters Requiring Empirical Tuning
 
-*Single-page operator reference. All math verified by Opus 4.6 quant review (2026-04-04).*
+All exit parameters are config-driven and hot-reloadable. The following need empirical calibration:
 
----
-
-### Gate Summary (Tier 0)
-
-All gates must pass. Any failure = immediate DROP. No scoring occurs.
-
-| Gate | Condition for FAIL | Data Source | Notes |
+| Parameter | Default | Calibrate At | Method |
 |---|---|---|---|
-| **G0** Mayhem Mode | `is_mayhem_mode == true` | Helius BC / PumpPortal | AI-agent-driven markets corrupt all T1 signals simultaneously |
-| **G1** Dev Prebuy | Dev wallet in first 5 trades OR linked wallet in create slot | ShredStream + creator_map | Extended beyond just create slot — first 5 trades |
-| **G2** Coordinated Bundle | ≥2 wallets AND >2 SOL total in create slot | ShredStream | Same-block coordinated entry = coordinated dump setup |
-| **G3** Serial Rugger | dev_tokens_launched ≥ 10 OR (≥5 tokens AND rug_rate > 40%) | Helius dev cache | Tightened from ≥20/50% — now catches habitual ruggers earlier |
-| **G4** Curve Zone | real_sol < 2.0 → SKIP; real_sol > 20.0 → FAIL; 15–20 → FAIL if score < 60 | Helius BC accountSubscribe | Zone-aware: optimal 2–15, conditional 15–20, hard ceiling 20 |
-| **G6** Throwaway Wallet | creator balance < 0.05 SOL AND zero token history | Helius getBalance | Script wallets funded with exact creation fee only |
-| **G7** Supply Concentration | Any single wallet holds >15% of tokens bought in first 20 trades | ShredStream trade log | Single-wallet dump leverage |
+| `hard_stop_bp` | 3000 (-30%) | 200 trades | Distribution of max drawdowns on winners vs losers. If >10% of winners touch -25%, widen. |
+| `max_hold_sec` | 120 | 200 trades | Distribution of time-to-TP1 on winners. If >80% of TP1 hits happen in <60s, tighten. |
+| `buy_gap_timeout_sec` | 15 | 100 trades | Distribution of inter-buy gaps on active tokens. If normal gaps reach 12-15s, widen to 20. |
+| `tp1_threshold_bp` | 2000 (+20%) | 500 trades | What % of entries reach +20%? If <30%, lower to +15%. If >70%, raise to +25%. |
+| `tp1_sell_permille` | 300 (30%) | 500 trades | Optimize partial exit fraction for max EV. Sweep 200-400 in simulation. |
+| `trail_initial_bp` | 1500 (15%) | 500 trades | Peak-to-exit analysis on TP1-hit trades. Too many stops at +15%? Widen. |
+| `sell_cascade_count` | 3 | 200 trades | False positive rate (cascade fires but price recovers). |
 
----
+**Calibration priority order:** Average loss size > TP1 threshold > trailing stop width > hard stop > time stops.
 
-### On-Chain Score Components (Tier 1)
+## Appendix B: Comparison with Existing RIDE Engine Exit Architecture
 
-Max total: 100 pts. Floor for entry: on_chain_score ≥ 30 (hard floor). Entry threshold: ≥ 50 (velocity available) or ≥ 40 (trade_count < 10).
+The sniper exit engine is intentionally **simpler** than the RIDE engine's DYNAMIC_EXIT_FRAMEWORK_V2:
 
-| Signal | Max Pts | Metric | Key Thresholds | Data Source |
-|---|---|---|---|---|
-| **S1** Inflow Rate | 30 | real_sol / seconds_since_create | ≥1.5 SOL/s → 12 (spike risk) · ≥0.5 → 20 · **≥0.15 → 30** (sweet spot) · ≥0.05 → 22 · ≥0.02 → 12 · <0.02 → 5 | ShredStream |
-| **S2** Wallet Diversity | 25 | unique_wallets / trade_count | ≥0.80 → 25 · ≥0.60 → 18 · ≥0.40 → 10 · ≥0.20 → 4 · <0.20 → 0. Default 5 pts if <5 trades | ShredStream |
-| **S3** Curve Position | 15 | real_sol zone | <2 → 0 · **2–5 → 12** · **5–15 → 15** (peak) · 15–20 → 6 (conditional) · >20 → 0 | Helius BC |
-| **S4** Sell Timing | 15 | first_sell_trade_index | <5 trades → 3 · 5–9 no sells → 10 · 5–9 with sells → relative index · ≥10 trades sell>15 → 15 · sell<5 → 0 | ShredStream |
-| **S5** Smart Money | +15/−10 | Known wallet in first 10 buys | Top-100 → 15 · Top-500 → 10 · Own winner → +5 additive · Known dumper → −10 | data/smart_wallets.json |
-
-**Score confluence required for conviction tier (80+):** At least 3 signals must fire strong. A single maxed signal tops out at ~62 pts regardless of social multiplier on on_chain alone.
-
----
-
-### Social Multiplier (Tier 2)
-
-Applied as: `final_score = on_chain_score × social_multiplier_bps / 10_000`. Clamped 0.5×–2.0×.
-
-| Signal | Weight | Key Logic | Disabled Condition |
+| Feature | RIDE Engine | Sniper Engine | Why |
 |---|---|---|---|
-| **SS1** Dev History | 55% | Blacklist → multiplier=0 · Clean 1-4 tokens → +2000 bps · 5-9 tokens, WR>40% → +1500 bps · Missing middle band (0.20-0.40 SR) → +400 bps | Never (always available) |
-| **SS4** Metadata Quality | 25% | link_count=3 + image + desc>150 → +2200 bps max raw (+550 bps effective) · No links, no desc → −1500 bps raw (−375 bps effective) | Never |
-| **SS3** Twitter Presence | 10% | Present → +800 bps · Absent → −800 bps | Never |
-| **SS2** Engagement | 5% | reply_count, KOTH status, live status | Token age < 120s |
-| **SS5** Telegram | 5% | >500 members at mint → −500 bps (coordinated) · 101–500 → +600 bps | Token age < 120s |
+| Bayesian f̂* tracking | Yes (192 bytes) | No | Position holds <120s, not enough data for Bayesian update |
+| Momentum divergence | Yes (16-byte ring) | Simplified (8-bit ring) | Shorter hold = less data = simpler detection |
+| Volatility estimator | Yes (16 bytes) | No | Hold time too short for vol regime changes |
+| Partial exits | Urgency-driven | TP-threshold-driven | Simpler, more predictable, easier to calibrate |
+| Trailing stop | Volatility-adaptive | Fixed percentage (3 tiers) | Simplicity. Adaptive trail needs calibration data we don't have yet. |
+| Emergency exits | Creator sell, whale exit | Creator sell, graduation | Bonding curve doesn't have whales the same way; graduation is BC-specific |
+
+**v2 upgrade path:** After 1000+ trades, if the data supports it, migrate to urgency-based exits (import MomentumDivergence and VolatilityEstimator from RIDE engine). The SniperPosition struct has room for expansion.
 
 ---
 
-### Sizing Decision Pipeline
-
-Full pipeline in order. Each layer multiplies into the next.
-
-| Layer | Input | Output | Config Key |
-|---|---|---|---|
-| **Bootstrap gate** | total_trades < 50 | 0.02 SOL flat (no further layers) | `bootstrap_trades: 50` |
-| **Survival gate** | wallet_sol < 0.05 | 0.01 SOL floor (no further layers) | `survival_wallet_sol: 0.05` |
-| **Score tier (base size)** | final_score | 40–49 → 0.01 · 50–64 → 0.02 · 65–79 → 0.04 · 80–100 → 0.07 SOL | `score_tiers` |
-| **WR scalar** | rolling win rate (zone-separated, 100-trade lookback) | <35% → 0.50× · 35–45% → 0.70× · 45–55% → 1.00× · ≥55% → 1.40× | `win_rate_scalars` |
-| **Zone multiplier** | CurveFillZone | Optimal → 1.0× · Conditional → 0.60× | `conditional_zone_mult: 0.60` |
-| **Depth haircut** | real_sol | real_sol < 5 → 0.70× · ≥5 → 1.0× | `early_depth_mult: 0.70` |
-| **Drawdown multiplier** | wallet_sol / session_HWM | ≥90% → 1.0× · 80–90% → 0.80× · 70–80% → 0.60× · <70% → 0.40× | `dd_*_threshold` |
-| **Hard caps** | raw_size | clamp(0.01, 0.10) · conditional zone cap: 0.06 SOL · wallet pct cap: wallet × 20% | `min/max_position_sol` |
-
----
-
-### Position Size Output (Optimal Zone, No Drawdown)
-
-Assumes: post-bootstrap, optimal zone (real_sol 5–15), no drawdown, no depth haircut.
-
-| Score Tier | Base | WR < 35% | WR 35–45% | WR 45–55% | WR ≥ 55% |
-|---|---|---|---|---|---|
-| 80–100 (conviction) | 0.07 | 0.035 | 0.049 | 0.070 | **0.098** |
-| 65–79 (normal) | 0.04 | 0.020 | 0.028 | 0.040 | **0.056** |
-| 50–64 (probe) | 0.02 | 0.010 | 0.014 | 0.020 | **0.028** |
-| 40–49 (floor probe) | 0.01 | 0.010 | 0.010 | 0.010 | **0.014** |
-
-*Floor at 0.01 applies to all values below it. Conditional zone (real_sol 15–20): multiply by 0.6×, hard cap 0.06 SOL. Depth haircut (real_sol < 5): multiply by 0.7×.*
-
----
-
-### EV Sanity (Verified Math)
-
-**Assumptions:** 2.5% round-trip fees → net win = 9.5% on position. Expected loss on losing landed trades ≈ 7% of position (fees + adverse move on emergency exit). Partial bundle failure rate = 5% of landed bundles → 10% loss. Jito tip = 0.00005 SOL.
-
-**Break-even win rate for landed bundles:** ~46% (at 7% loser loss). At 5% loser loss → ~38%. At 10% loser loss → ~52%.
-
-⚠️ **Critical:** Break-even WR is highly sensitive to loser exit loss. The system MUST have defined emergency exits with a target max loss of ≤7% per losing trade.
-
-| Score Tier | Min Size | Max Size | Net Win (9.5%) | Loser Loss (7%) | Break-even WR | EV at 40% WR | EV at 50% WR |
-|---|---|---|---|---|---|---|---|
-| 80–100 (conviction) | 0.035 | 0.098 | +0.0066–0.0093 | −0.0025–0.0069 | ~46% | −0.0003 to −0.0009 | +0.0011 to +0.0031 |
-| 65–79 (normal) | 0.020 | 0.056 | +0.0019–0.0053 | −0.0014–0.0039 | ~46% | −0.0002 to −0.0005 | +0.0006 to +0.0018 |
-| 50–64 (probe) | 0.010 | 0.028 | +0.0010–0.0027 | −0.0007–0.0020 | ~46% | −0.0001 to −0.0003 | +0.0003 to +0.0009 |
-| 40–49 (floor) | 0.010 | 0.014 | +0.0010–0.0013 | −0.0007–0.0010 | ~46% | ~−0.0001 | ~+0.0003 |
-
-**Key insight:** At 40% WR, all tiers are slightly EV-negative. At 45% WR they approach breakeven. At 50%+ they turn positive. **The WR scalar is doing exactly the right job** — at <35% WR it sizes down to floor, reducing expected losses during poor performance periods. At ≥55% WR it sizes up to capture the full edge.
-
-**Floor probe EV note:** At 0.01 SOL, Jito tip = 0.00005 SOL. Break-even against rejection-only = tip / (tip + net_win) = 0.00005 / (0.00005 + 0.00095) = **5.0%** bundle land rate needed. (Previous spec had a decimal error stating 0.52% — corrected here.) However, against full trade loss model, break-even is ~46% WR regardless of position size.
-
----
-
-### Implicit Stops Required
-
-The EV math above assumes ~7% max loss on losing trades. **This is not currently defined in the spec.** Before live trading, define:
-
-- **Time-based stop:** max hold time if +12% target not hit (e.g. 300s → emergency sell at market)
-- **Price-based stop:** if position drops X% → emergency sell (e.g. hard stop at −8%)
-- **Emergency exit path:** If TX1 lands but TX2 fails (partial bundle) → immediate market sell in next slot
-
-Without these, actual loser losses could be 20-50%+ and EV turns deeply negative at any win rate.
-
----
-
-*Spec v1.5 | 2026-04-04 | Apollo*
-*Quant review: Opus 4.6 (2026-04-04) — G4 revision, T1/T2 audit, Kelly replacement, EV sanity check*
-*Sources: ArXiv 2602.14860, BONDING_CURVE_SNIPER_IDEATION.md, social-signal-layer-spec.md*
+*Spec v2.0 | 2026-04-04 | Opus 4.6 Quant Architect*  
+*Architecture decision: Atomic bundle TX2 removed. Hold-and-ride with tiered TP + trailing stop adopted.*  
+*Key finding: Atomic buy+sell is not viable on bonding curves (no orderbook, deterministic pricing).*  
+*Break-even WR: 48.6% (flat model) → 45.5% (with tail captures). Achievable at scoring system's target quality.*
