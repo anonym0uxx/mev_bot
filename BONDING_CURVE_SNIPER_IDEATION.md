@@ -1,7 +1,7 @@
 # Bonding Curve Sniper — Ideation & Context
 
-**Date:** 2026-04-03  
-**Status:** Parked — ideation phase, not yet building  
+**Date:** 2026-04-03 (revised 2026-04-04)
+**Status:** Parked — ideation phase, not yet building
 **Purpose:** Feed this file to the quant architect when ready to build
 
 ---
@@ -26,7 +26,7 @@ Token created on pump.fun
         ↓
 Trades on bonding curve (we are currently blind to this entire phase)
         ↓
-Hits 85 SOL → migrates to Raydium/PumpSwap  ← we currently enter here
+Hits 85 SOL → migrates to Raydium/PumpSwap  ← momentum engine enters here
         ↓
 We buy post-graduation DEX trade
 ```
@@ -54,28 +54,109 @@ Both land atomically or neither does.
 
 ---
 
-## Feed Stack for This Strategy
+## Feed Stack — Zero CoreCast
 
-**Needed:**
-- **PumpPortal** — `TokenCreated` events, real-time mint detection. Already have it.
-- **ShredStream** — Raw TX stream for fast detection + Jito bundle submission. Already have it.
-- **Helius** — RPC for any needed lookups. Already have it.
+**Design constraint: CoreCast is dropped entirely. $200/month saved.**
 
-**NOT needed (can drop):**
-- **Bitquery/CoreCast** — $200/month, currently used for creator sell detection, LP removal (rug), and AMM migration. All irrelevant on bonding curve — you're in and out in seconds before any of that matters. **Dropping this saves $200/month.**
+CoreCast currently provides three signals for the momentum engine:
+1. **Creator sell detection** (Stream 1) — signer vs `creator_map`
+2. **AMM migration** (Stream 2) — redundant with ShredStream
+3. **LP removal / rug detection** (Stream 3) — token supply drop via Bitquery
+
+All three are derivable from our existing feeds. Details below.
+
+### Feed Priority Order (non-negotiable)
+
+```
+ShredStream → Helius → PumpPortal (public RPC last resort)
+```
+
+- **ShredStream** is always first. Raw shred decode, ~0ms from block production. No websocket overhead.
+- **Helius** is second. Enhanced WS subscriptions, rich decoded data, 50-200ms behind shreds.
+- **PumpPortal** is third. Good for `TokenCreated` enrichment and social metadata. Not latency-critical.
+- **Public RPC** is last resort only — never on the hot path.
+
+### What Each Feed Provides for the Sniper
+
+#### ShredStream (primary — lowest latency)
+ShredStream already decodes every pump.fun instruction from raw shreds. Current `parse_pump_transaction()` extracts:
+- `mint`, `trader`, `bonding_curve`, `assoc_bonding_curve`
+- `sol_amount`, `token_amount`, `is_buy` (discriminator-based)
+- `sig`, `slot`, `timestamp_ms`
+
+This means ShredStream **already sees every buy and sell on every bonding curve in real time**.
+
+For the sniper, ShredStream provides:
+- **Mint detection** — `TokenCreated` events (if we decode the pump.fun `create` instruction — currently we pass this to PumpPortal, but ShredStream can decode it directly)
+- **Bonding curve activity** — every buy/sell on the curve, real-time
+- **Creator sell detection** — `parse_pump_transaction()` gives us `trader` pubkey. Cross-reference against `creator_map` (populated by PumpPortal `TokenCreated` events). If `trader == creator_map[mint]` and `is_buy == false` → `CreatorSell`. **This replaces CoreCast Stream 1.**
+- **Graduation detection** — `parse_pump_migration()` already fires on migrate instruction. Already in production.
+
+**Creator sell replacement implementation (existing infra, just wire it):**
+```rust
+// In shredstream.rs parse_pump_transaction():
+// Already have: trader_key, is_buy, mint_key
+// Add: if !is_buy && creator_map.get(mint) == Some(trader_key) → emit FeedEvent::CreatorSell
+// creator_map is already populated by PumpPortal TokenCreated handler
+```
+
+#### Helius (secondary — enrichment + LP drain detection)
+Helius Enhanced WS provides rich decoded account state. For the sniper:
+
+- **LP removal / rug detection** — replace CoreCast Stream 3 via `accountSubscribe` on the **LP token mint account** for each open position. When LP token supply drops to 0 (or >80%), the pool is being drained → emit `FeedEvent::LpRemoval`. This is actually **lower latency** than CoreCast (Helius sees account state change immediately vs Bitquery polling Solana data). Already noted in memory as the replacement plan.
+  ```
+  Per open position: subscribe to LP mint account via Helius accountSubscribe
+  → supply → 0: emit LpRemoval(mint)
+  ```
+  We already use `accountSubscribe` in `price_feed.rs` — infrastructure exists.
+
+- **Pool vault enrichment** — `PumpSwapGraduationDirect` events already use Helius Enhanced WS to pre-extract `coin_vault` and `pc_vault`. Same mechanism used for sniper exit if token graduates mid-hold.
+
+- **Bonding curve account data** — `accountSubscribe` on the bonding curve account gives us `virtual_sol_reserves` and `virtual_token_reserves` (the fields currently `0` in `TradeEvent` from ShredStream). This is how we get real-time price and market cap on the curve without RPC calls.
+
+- **`getAsset(mint)`** — Helius DAS for social metadata (description, twitter, telegram, website) if PumpPortal didn't inline them. Used by social enrichment worker (async, off critical path).
+
+- **`getAssetsByCreator(dev_pubkey)`** — Dev wallet history lookup for social scoring. Async, off critical path.
+
+#### PumpPortal (tertiary — mint enrichment, social metadata)
+PumpPortal `TokenCreated` events are the primary source of:
+- Dev wallet pubkey (`traderPublicKey`) → populates `creator_map` for creator sell detection
+- Social metadata: `twitter`, `telegram`, `website`, `description`, `imageUri` → feeds social scoring pipeline
+- `name`, `symbol`, `uri` → metadata quality score
+
+PumpPortal fires **after** ShredStream sees the create instruction (ShredStream is first to the block). But for social metadata it's the canonical source — ShredStream only sees raw bytes.
+
+**PumpPortal is not used for execution decisions** — only for enrichment. Every execution-critical decision is ShredStream-first.
 
 ---
 
-## Key Filter Problem
+## On-Chain Signals Without CoreCast
 
-PumpPortal emits hundreds of `TokenCreated` events per hour. 95%+ are rugs, bundles, or dev pre-loaded mints. The edge isn't speed — it's filter quality.
+### Creator Sell Detection → ShredStream + creator_map
+**Current:** CoreCast Stream 1 sends a `CreatorSell` event via Bitquery Solana subscription.
+**Replacement:** ShredStream already sees every sell TX. `creator_map` is already populated from PumpPortal `TokenCreated`. Wire the comparison in `parse_pump_transaction()`.
+- **Latency improvement:** ShredStream creator sell detection is faster than CoreCast (shred vs websocket).
+- **Cost:** Zero. Uses existing infra.
+- **Implementation:** ~10 lines in `shredstream.rs`.
 
-**Common filters:**
-- No dev buy in first N blocks
-- No bundled wallets (multiple wallets buying same block as mint)
-- Metadata quality (real image, socials, non-copypasta name)
-- First buyer count / concentration
-- Creator wallet history (serial rugger vs legit dev)
+### LP Removal / Rug Detection → Helius accountSubscribe
+**Current:** CoreCast Stream 3 sends `LpRemoval` via Bitquery `TokenSupplyUpdates`.
+**Replacement:** On each position open, subscribe to LP mint account via `helius_ws.account_subscribe(lp_mint)`. On supply drop >80% → emit `FeedEvent::LpRemoval`.
+- **Latency improvement:** Account state notification is faster than Bitquery polling.
+- **Cost:** Zero (Helius subscription, existing infrastructure).
+- **Implementation:** ~30 lines, mirrors existing `price_feed.rs` `accountSubscribe` pattern.
+- **Cleanup:** Unsubscribe on position close.
+
+### AMM Migration → ShredStream (already live)
+**Current:** CoreCast Stream 2 sends migration events.
+**Status:** Already fully redundant. ShredStream `parse_pump_migration()` and `parse_pumpswap_migration()` are in production and are the faster path. CoreCast migration events are already ignored.
+
+### Bonding Curve Price → ShredStream + Helius accountSubscribe
+**For the sniper, we need real-time bonding curve price.** Two approaches:
+1. **ShredStream trade events** — each `TradeEvent` tells us `sol_amount` and `token_amount` traded. We can compute price as `sol_amount / token_amount`. Reserves not available from instruction data (currently `vsol_reserves = 0`).
+2. **Helius accountSubscribe on bonding curve account** — gives us `virtual_sol_reserves` and `virtual_token_reserves` directly. Deterministic price = `vsol_reserves / vtoken_reserves`. This is the cleaner approach.
+
+**Recommended:** Use ShredStream for trade event detection (fastest), subscribe Helius to bonding curve account for reserve state. Reserve updates lag by ~50-150ms but are accurate. For bundle construction, use latest known reserves from Helius account state.
 
 ---
 
@@ -85,223 +166,111 @@ The old backrunner was a different beast — it was designed to backrun OTHER pe
 
 This sniper is NOT that. Key differences:
 - **Backrunner:** React to other people's txs. MEV. Needed co-location and mempool access.
-- **Sniper:** Detect new mints via PumpPortal feed, apply quality filter, enter independently. Signal-based, not MEV-based.
+- **Sniper:** Detect new mints via ShredStream/PumpPortal, apply quality filter, enter independently. Signal-based, not MEV-based.
 
-The bonding curve program interaction (buy/sell instructions) would be similar/reusable code. But the strategy logic, trigger, and filter are completely different. This is a cleaner, more sustainable edge than pure MEV backrunning.
+The bonding curve program interaction (buy/sell instructions) is similar/reusable code. The existing `parse_pump_transaction()` discriminators and account layouts are reference material for building the sniper buy TX.
 
 The Jito bundle atomic buy+sell is also different from backrunning — it's self-contained, not dependent on anyone else's transaction.
 
 ---
 
-## Open Questions (to resolve when building)
+## Entry/Exit Models
 
-1. What's the right filter stack? Dev buy detection, bundle detection, metadata quality?
-2. What's the target hold time? Seconds? Sub-minute?
-3. Do we run this alongside the graduation engine or replace it?
-4. What's the minimum liquidity/volume threshold to bother entering?
-5. How do we size positions? Fixed SOL per snipe or Kelly-based?
-6. What's our stop if the bundle fails to land (retry or abandon)?
-
----
-
-## Alon's Notes / Decisions
-
-- Primary goal: 12% quick scalps, guaranteed TX landing
-- Likes the idea of dropping Bitquery entirely with this route
-- Could run bonding curve sniper + graduation engine in parallel (different lifecycle phases, no interference)
-- Not building yet — waiting for current graduation engine to prove/disprove its edge first
-
----
-
-*Capturing ongoing conversation below as it happens...*
-
----
-
-## Live Chat Log (2026-04-03)
-
-**Alon:** Instead of graduation would we in theory be able to detect a new pump token in general? And buy/snipe at mint?
-
-**Apollo:** Yes, and that's actually a more powerful strategy. PumpPortal already emits `TokenCreated` events — we receive them right now, we're just using them to track timestamps. Sniping at mint means entering on the bonding curve itself, not waiting for graduation. Completely different execution path: bonding curve buy instead of Raydium/PumpSwap swap. Different program, different instruction, different math. [full response above]
-
-**Alon:** Which is more profitable for quick scalps where we can guarantee landing of tx and sales and take quick profits of minimum 12%
-
-**Apollo:** For quick scalps with guaranteed landing — bonding curve snipe is more profitable, but only if your filter is good. On the bonding curve, price is deterministic math. You know exactly what you'll pay and exactly what price you need to sell at for 12%. A typical Jito bundle structure: TX1 buy + TX2 sell, atomic, both land or neither does. The catch: everyone else is doing this too. Filter quality is the edge. [full response above]
-
-**Alon:** Could we drop bitquery if we go this route and stick with pumpswap, shredstream, and helius?
-
-**Apollo:** Yes, completely. On the bonding curve you're in and out before creator sells, LP removal, or AMM migration matter at all. Three feeds instead of four, $200/month saved, cleaner architecture. [full response above]
-
-**Alon:** Let's store these last 6 messages... Would this be diff than the backrunner code we deleted as well? Or how would that come into play?
-
-**Apollo:** [This file is the answer to the first part. On the backrunner: it was MEV-based — reacting to other people's large buys, front/backrunning them, latency-critical. This sniper is signal-based — detect new mints via PumpPortal, filter for quality, enter independently. Different trigger, different logic, different edge. The bonding curve program code (buy/sell instructions) would be reusable. The strategy is not.]
-
-**Alon:** Would we be able to use the social media query plan we thought of? How could that come into play?
-
-**Apollo:** Yes — strongest filter we could build. Social media detection fits as a pre-filter before entering. The social media query plan was about detecting real organic interest before/around mint time — Twitter/X mentions, Telegram channel activity, Discord server creation.
-
-For the sniper, it slots in as a pre-filter:
-```
-TokenCreated fires → check social signals → score (real community vs ghost launch) → enter or skip
-```
-
-What to look for:
-- Twitter/X: mentions of token name/ticker in last 5-15 min before mint
-- Telegram: does a TG channel exist? Member count? Age?
-- Website/socials in metadata — real or placeholder?
-- Volume of chatter relative to time of day
-
-Timing challenge: need the data fast (10-30s window). Solution: **pre-detection** — monitor social feeds BEFORE the mint so by the time TokenCreated fires, we already have a score cached for that ticker/project.
-
-Key edge: most sniper bots are purely on-chain reactive. A bot with pre-existing off-chain social signals is a fundamentally better filter than anything purely on-chain.
-
-**Alon:** Could we get actual endpoints for how we could do that?
-
-**Apollo:** Researched. Here's what's available:
-
-**X (Twitter) Filtered Stream**
-- Endpoint: `GET https://api.x.com/2/tweets/search/stream`
-- Persistent HTTP connection, ~6-7s P99 latency
-- Define rules on keywords/cashtags (e.g. `$TOKENNAME`), matching tweets stream real-time
-- Cost: Pro tier ~$100/mo minimum for filtered stream access. Free/Basic = search only, no stream.
-
-**Telegram — Telethon (MTProto)**
-- NOT the Bot API (only works in chats bot is added to)
-- Telethon uses your actual Telegram account via MTProto to monitor public channels
-- `@client.on(events.NewMessage(chats=['@channel']))` — real-time event-driven
-- Cost: FREE. Just need API ID/hash from my.telegram.org
-- Use case: watch known pump.fun community channels for token name/ticker mentions
-
-**pump.fun Token Metadata (already in PumpPortal — FREE)**
-- `TokenCreated` events from PumpPortal already include: name, ticker, Twitter URL, Telegram link, website
-- We receive this data NOW and throw it away
-- A token with real socials at mint = dev planned the launch
-- A token with no socials = likely rug
-- This is Tier 1 filter, zero cost, immediate to implement
-
-**Recommended layered approach:**
-1. **Tier 1 (free, no new APIs):** PumpPortal metadata filter — has Twitter? Has Telegram? Has website? Score it.
-2. **Tier 2 (free, Telethon):** If Telegram link exists, check channel age + member count. Old channel = planned launch.
-3. **Tier 3 ($100/mo, X API Pro):** Stream tweets matching ticker pre-mint for buzz detection.
-
-Start with Tier 1 — it's zero cost, already in our data stream, and probably cuts 60%+ of rugs immediately.
-
-**Alon:** How would we integrate Kelly criterion algorithm here?
-
-**Apollo:** Kelly is very natural on the bonding curve because price is deterministic — you know P1 (entry) and can set P2 (target) exactly.
-
-Formula: `f* = (p * b - q) / b`
-- p = probability of winning (token reaches P2 before dump)
-- q = 1 - p
-- b = net profit ratio (0.12 for 12% target)
-
-The filter stack feeds Kelly directly — each signal adjusts `p`:
-- Has Twitter + Telegram + website → p += 0.15 base
-- Telegram channel old + 500+ members → p += 0.10
-- Graduated in <60s → p += 0.15
-- No dev buy in first block → p += 0.10
-- etc.
-
-Kelly then outputs position size as fraction of bankroll. High-conviction (p=0.65) → bet more. Ghost launch (p=0.25) → skip or bet tiny.
-
-**Key insight with atomic bundles:** Because buy+sell bundle atomically, your actual loss on failure is just Jito tip + TX fee (a few thousand lamports), NOT a full position loss. This dramatically lowers the effective `q` in Kelly terms → Kelly recommends larger sizes than intuition suggests.
-
-**Fractional Kelly:** Use half-Kelly (50% of recommended size) to start. Full Kelly maximizes long-run growth but high variance. Half-Kelly = more conservative with lower drawdown while we're proving the strategy.
-
-**Architecture:** Filter scores → probability estimate p → Kelly formula → position size in SOL → bundle construction.
-
-**Alon:** How would we replace the momentum engine with an engine like this?
-
-**Apollo:** Honest answer: don't replace yet — run in parallel and let the data decide.
-
-**Fundamental difference:**
-- Momentum engine = REACTIVE. Waits for token to prove itself (graduation, velocity, score). Lower WR but real signal behind each entry.
-- Bonding curve sniper = PREDICTIVE. Enters based on pre-mint signals before market has voted. Higher upside potential, betting on prediction not confirmation.
-
-These aren't competing — they're two different bets on different moments in the lifecycle.
-
-**If replacing fully, the momentum engine becomes 4 new components:**
-1. **Signal collector** — replaces `on_graduation()`. Listens to `TokenCreated`, scores metadata filter stack, builds conviction score.
-2. **Bundle constructor** — replaces Raydium/PumpSwap swap builder entirely. Atomic Jito bundles against bonding curve program. Completely different TX structure.
-3. **Kelly sizer** — replaces `compute_size_lamports()`. Conviction score → position size. Simple formula replaces all complex scale-in logic.
-4. **Position manager** — massively simplified. No trailing stops, no time SL, no scale-in tiers, no price feed subscriptions. Win/loss known at bundle landing time.
-
-**What disappears:** trailing stop logic, scale-in system, observation window, velocity gate, price feed subscriptions, entire `on_tick()` loop, CoreCast/Bitquery. ~60-70% of current codebase gone.
-
-**Recommended path:**
-- Let momentum engine run 500+ trades with new grad-speed filter — see if WR improves
-- Build sniper as parallel module sharing feed infra (PumpPortal, ShredStream, Jito)
-- After 2-3 weeks of parallel data → kill the loser, double down on the winner
-- Don't replace preemptively — let the data decide
-
-**Alon:** So we'd build this separately and have it be a feature flag essentially in the env or config?
-
-**Apollo:** Exactly. Pattern already exists in the codebase:
-
-Current momentum gate in canary.json:
-```json
-{ "momentum": { "enabled": true, ... } }
-```
-
-Sniper would follow same pattern:
-```json
-{
-  "momentum": { "enabled": true, ... },
-  "sniper": { "enabled": false, "paper_mode": true, ... }
-}
-```
-
-In main.rs, TokenCreated events fan out to both engines:
-```rust
-// Momentum gets: Migration / PumpSwapGraduationDirect events
-// Sniper gets: TokenCreated events
-if engine_config.sniper.enabled {
-    sniper.on_token_created(...).await;
-}
-```
-
-Both share the same feed channel. Zero interference. Paper-mode sniper runs alongside live momentum engine independently. Flip to live when data justifies it.
-
-**Alon:** On the flip side of entry, how would we determine scale and buy more, sell some, or take profits and exit completely?
-
-**Apollo:** Four models, each progressively more complex:
-
-**Model 1 — Pure Atomic Bundle (start here)**
+### Model 1 — Pure Atomic Bundle (start here)
 Buy+sell in one Jito bundle, predefined exit. No position management.
 `Enter P1 → atomic sell at P1 * 1.12`. Zero open position risk. Caps upside but proves the filter.
 
-**Model 2 — Partial Exit + Ride**
+### Model 2 — Partial Exit + Ride
 Bundle locks guaranteed profit on 80%, 20% stays open on a simple trailing stop.
 `Buy 100% → atomic sell 80% at +12% → ride 20% with trail`
 House money slice: if it moons you capture more, if it dumps you already locked profit.
 
-**Model 3 — Mathematical Scale-in**
+### Model 3 — Mathematical Scale-in
 Bonding curve price is deterministic — you know exact price at any market cap.
 `Tranche 1 at $10k MC → if +5% buy tranche 2 → sell tranche 1 at +12% → ride tranche 2`
-Unlike AMM scale-in (messy, unpredictable), bonding curve scale-in is exact math. Perfect cost basis tracking.
+Unlike AMM scale-in (messy, unpredictable), bonding curve scale-in is exact math.
 
-**Model 4 — Kelly-Tiered Exits**
+### Model 4 — Kelly-Tiered Exits
 Kelly sizes not just entry but each exit tier based on conviction score.
 `p=0.65: exit 30% at 8%, 40% at 15%, ride 30%`
 `p=0.45: exit 70% at 8%, 30% at 12%, done`
 `p=0.30: pure atomic only`
 
-**Recommended progression:**
-1. Start Model 1 (atomic) — prove filter WR > 50%
-2. Add Model 2 (partial ride) — capture tails on strong tokens
-3. Model 4 (Kelly-tiered exits) — endgame, needs historical data to calibrate
+**Recommended progression:** Model 1 → prove WR > 50% → Model 2 → Model 4. Earn each step with data.
 
-Complexity ladder: atomic → partial ride → Kelly-tiered. Earn each step with data.
+---
 
-**Alon:** This would be easier to gauge WR on trades than momentum I think bc momentum's logging etc is a mess. How clean is momentum's entry/exit wiring crossed to our jito and rpc buy/sell landing code?
+## Kelly Criterion Integration
 
-**Apollo:** Honest assessment:
+Formula: `f* = (p * b - q) / b`
+- `p` = probability of winning (token reaches P2 before dump) — derived from filter score
+- `q` = 1 - p
+- `b` = net profit ratio (0.12 for 12% target)
 
-**Entry wiring:** Buy is `tokio::spawn` fire-and-forget. Position opens OPTIMISTICALLY before buy lands on-chain. `BuyState::Pending → Confirmed/Failed` state machine reconciles after the fact. Works but means engine thinks you're in a trade before you actually are.
+Filter stack feeds Kelly directly — each signal adjusts `p`:
+- Has Twitter + Telegram + website → p += 0.15
+- Telegram channel old + 500+ members → p += 0.10
+- Graduated quickly → p += 0.15
+- No dev buy in first block → p += 0.10
 
-**Exit wiring:** `close_position()` is ~250 lines of defensive edge-case handling built from real failures — check BuyState, poll for buy confirmation, handle tokens_held=0, last-chance pool resolution if accounts missing. Works but complex.
+**Key insight with atomic bundles:** Loss on failure = Jito tip + TX fee (~5000 lamports), NOT a full position loss. This dramatically lowers effective `q` → Kelly recommends larger sizes than intuition suggests.
 
-**Core problem:** Buy and sell are TWO SEPARATE TRANSACTIONS fired independently. Sell fires after buy confirms via polling. Non-atomic. This is why there's so much defensive code — you can buy and fail to sell, leaving tokens stranded.
+**Start with half-Kelly** (50% of recommended size). Full Kelly maximizes long-run growth but high variance. Half-Kelly = conservative with lower drawdown while proving the strategy.
 
-**Sniper contrast:** Buy+sell in one Jito bundle = one atomic unit. Either both land or neither. Entire `BuyState` state machine, sell polling loop, tokens_held tracking, last-chance resolution — NONE of that exists. You never have an open position to manage.
+---
 
-**WR logging on sniper:** Bundle landed = win. Bundle rejected = loss. One event, one outcome, one log line. Dramatically cleaner than momentum's multi-async causal chain.
+## WR Logging vs Momentum Engine
+
+**Momentum engine logging is messy:**
+- Buy is fire-and-forget, position opens optimistically before buy lands
+- `BuyState::Pending → Confirmed/Failed` state machine reconciles after the fact
+- Exit is ~250 lines of defensive edge-case handling
+- Buy and sell are two separate TXes — non-atomic — which is why there's so much defensive code
+
+**Sniper logging is clean:**
+- Bundle landed = win. Bundle rejected = loss. One event, one outcome, one log line.
+- No `BuyState` state machine, no sell polling loop, no tokens_held tracking, no last-chance resolution
+- WR calculation: `wins / (wins + losses)` — trivially derived from bundle outcomes
+
+---
+
+## Key Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| CoreCast | Dropped entirely | $200/mo saved; all signals replaceable with existing feeds |
+| Creator sell detection | ShredStream + creator_map | Faster than CoreCast, uses existing infra, ~10 lines |
+| LP removal detection | Helius accountSubscribe on LP mint | Faster than Bitquery polling, existing accountSubscribe infra |
+| AMM migration | ShredStream (already live) | CoreCast Stream 2 already redundant, ignored |
+| Bonding curve price | ShredStream events + Helius reserve state | Shred = fastest detection; Helius = accurate reserves for bundle construction |
+| Feed priority | ShredStream → Helius → PumpPortal → public RPC | Non-negotiable latency ordering |
+| Execution model | Jito atomic bundle (buy+sell) | No open position risk, clean WR logging, guaranteed landing or no-op |
+| Entry model | Model 1 first (pure atomic) | Prove filter WR before adding complexity |
+| Position sizing | Half-Kelly from filter conviction score | Conservative while proving strategy |
+| Run alongside momentum | Yes, feature-flagged via canary.json | Let data decide which engine is better |
+
+---
+
+## Open Questions (to resolve when building)
+
+1. What's the right filter stack priority order? Dev wallet history > metadata quality > social links > engagement?
+2. At what market cap / bonding curve fill % do we enter? (0% fill = very early, high risk/reward; 50% fill = more signal, less upside)
+3. Hold time window — what's the max hold before we consider the entry failed?
+4. Do we need to handle the case where our target sell price is above the graduation threshold (~85 SOL)?
+5. How do we construct the bonding curve buy TX? (discriminator, account layout — reference existing `parse_pump_transaction()` for account indices)
+6. What Jito tip do we put on the bundle for priority without overpaying?
+
+---
+
+## Alon's Decisions (confirmed)
+
+- Primary goal: 12% quick scalps, guaranteed TX landing
+- CoreCast: drop entirely, derive all signals from ShredStream + Helius
+- Feed priority: ShredStream always first, then Helius, then PumpPortal
+- Social signals: use `social-signal-layer-spec.md` as the canonical spec for the filter stack
+- Run sniper in parallel with momentum engine (feature flag, paper mode first)
+- Not building yet — waiting for momentum engine to accumulate more data; sniper is next major build
+
+---
+
+*Spec version: 1.1 | Updated: 2026-04-04 | Author: Apollo*
