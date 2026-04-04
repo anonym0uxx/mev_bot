@@ -1,11 +1,18 @@
 # SniperEngine — Entry Signal System Spec
 
-**Version:** 1.2  
+**Version:** 1.3  
 **Date:** 2026-04-04  
 **Author:** Apollo  
 **Reviewed by:** Opus 4.6 quant (2026-04-04)  
 **Status:** Ready for implementation  
 **Goal:** Bonding curve sniper. Jito atomic bundle (buy+sell). 12%+ scalp target. Max loss per attempt = Jito tip + fees (~5000 lamports).
+
+**v1.3 Changes (Opus quant review — G4 revision):**
+- G4 rewritten: zone-aware (TooEarly/Optimal/Conditional/TooLate) replacing flat 25 SOL ceiling
+- Entry zone: 2–15 SOL optimal, 15–20 SOL conditional (score ≥ 60), <2 SOL floor, >20 SOL fail
+- Bonding curve follow-on math corrected (previous figures were wrong — 4.2 SOL at vSol=25 was an error; correct is 1.43 SOL)
+- `curve_fill_ok: bool` → `CurveFillZone` enum + resolved bool (cleaner, debuggable)
+- Config: `max_vsol_entry` lowered to 20, added `min_vsol_entry`, `conditional_vsol_entry_min`, `conditional_vsol_min_score`
 
 **v1.2 Changes (Opus quant review):**
 - G1 dev prebuy: expanded to first 5 trades, added same-slot SOL-linked wallet detection
@@ -67,14 +74,22 @@ Sell P2 target (+12%):
   vsol_exit = sqrt(P1 × 1.12 × k)
   sol_out = (vsol_exit - vsol_after_buy) × 0.9875
 
-SOL inflow needed for +12% at various entry points:
-  Entry vSol=5:   need +0.67 SOL net inflow
-  Entry vSol=10:  need +1.4 SOL net inflow
-  Entry vSol=20:  need +3.1 SOL net inflow
-  Entry vSol=25:  need +4.2 SOL net inflow  ← revised G4 ceiling
+SOL inflow needed for +12% at various entry points (verified, 0.05 SOL position):
+  vSol=2:   0.068 SOL  (EASY)   ← G4 floor
+  vSol=3:   0.127 SOL  (EASY)
+  vSol=5:   0.245 SOL  (EASY)
+  vSol=7:   0.363 SOL  (EASY)
+  vSol=9:   0.481 SOL  (EASY)
+  vSol=10:  0.540 SOL  (OK)
+  vSol=12:  0.658 SOL  (OK)
+  vSol=15:  0.836 SOL  (OK)     ← conditional zone begins
+  vSol=18:  1.013 SOL  (HARD)
+  vSol=20:  1.131 SOL  (HARD)   ← G4 hard ceiling
+  vSol=25:  1.426 SOL  (HARD)
 
-This math is why G4 ceiling is 25 SOL, not 40. Above 25 SOL the required
-follow-on inflow becomes unrealistic for typical pump.fun token lifetime.
+Optimal entry zone: 2–15 SOL. Above 20 SOL, net follow-on > 1.13 SOL
+required — EV-negative for non-graduating tokens given active sell pressure
+from earlier entrants.
 ```
 
 ---
@@ -133,11 +148,55 @@ follow-on inflow becomes unrealistic for typical pump.fun token lifetime.
 
 ---
 
-### G4: Curve Fill Below 25 SOL
-**Source:** Helius BC `accountSubscribe` (vsol_reserves) OR ShredStream trade sum.  
-**Logic:** `vsol >= 25.0` → FAIL.  
-**Why 25 not 40:** At vSol=25, +12% requires ~4.2 SOL of follow-on net inflow. Typical pump.fun token that isn't graduating dies before accumulating that much additional inflow at this curve stage. The bonding curve math makes late entry EV-negative, not just low.  
-**Rust field:** `curve_fill_ok: bool`
+### G4: Curve Fill — Entry Zone Gate
+
+**Source:** Helius BC `accountSubscribe` (vsol_reserves) OR ShredStream trade sum.
+
+**Logic (zone-aware):**
+
+| vSol Range | Decision | Follow-on for +12% | Rationale |
+|---|---|---|---|
+| `< 2.0` | **SKIP** | < 0.07 SOL | Too early. 1–2 trades max. Signal pipeline has no data to score. |
+| `2.0 – 14.99` | **PASS** | 0.07 – 0.78 SOL | Optimal zone. Follow-on ≤ 0.84 SOL is achievable organically. |
+| `15.0 – 20.0` | **PASS if `on_chain_score ≥ 60`** | 0.84 – 1.13 SOL | Elevated zone. Follow-on achievable but needs above-average momentum. Gate on score. |
+| `> 20.0` | **FAIL** | > 1.13 SOL | Too late. Net inflow required exceeds what non-graduating tokens sustain. EV-negative. |
+
+**Why 20 SOL ceiling:** Tokens at 20+ SOL fill (~17%+ of graduation) that haven't built graduation momentum are statistically dying. Earlier entrants are taking profit — gross inflow must significantly exceed net 1.13 SOL target. Risk/reward flips EV-negative.
+
+**Why 2 SOL floor:** Below vSol=2, the token has seen 1–2 trades. G1–G3 signal pipeline has no data. Follow-on is trivial but may have no organic buyers to provide it.
+
+**Calibration note:** `on_chain_score ≥ 60` for the conditional zone should be recalibrated after 1000 trades. Target threshold: top 25–30% of scores seen in the 15–20 SOL range.
+
+**Rust implementation:**
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurveFillZone {
+    TooEarly,     // vsol < 2.0  → SKIP
+    Optimal,      // 2.0 <= vsol < 15.0  → PASS
+    Conditional,  // 15.0 <= vsol <= 20.0  → PASS if on_chain_score >= 60
+    TooLate,      // vsol > 20.0  → FAIL
+}
+
+pub fn classify_curve_zone(vsol: f64) -> CurveFillZone {
+    match vsol {
+        v if v < 2.0   => CurveFillZone::TooEarly,
+        v if v < 15.0  => CurveFillZone::Optimal,
+        v if v <= 20.0 => CurveFillZone::Conditional,
+        _              => CurveFillZone::TooLate,
+    }
+}
+
+pub fn curve_fill_ok(zone: CurveFillZone, on_chain_score: u8) -> bool {
+    match zone {
+        CurveFillZone::TooEarly    => false,
+        CurveFillZone::Optimal     => true,
+        CurveFillZone::Conditional => on_chain_score >= 60,
+        CurveFillZone::TooLate     => false,
+    }
+}
+```
+
+**Struct fields:** `curve_zone: CurveFillZone`, `curve_fill_ok: bool` (resolved after score gate)
 
 ---
 
@@ -893,7 +952,10 @@ Default tip: 100_000 lamports. Ladder up if congestion detected.
   "final_score_threshold": 40,
   "min_trades_for_velocity": 10,
   "skip_mayhem_mode": true,
-  "max_vsol_entry": 25.0,
+  "max_vsol_entry": 20.0,
+  "min_vsol_entry": 2.0,
+  "conditional_vsol_entry_min": 15.0,
+  "conditional_vsol_min_score": 60,
   "min_position_sol": 0.01,
   "max_position_sol": 0.10,
   "kelly_fraction": 0.5,

@@ -75,7 +75,7 @@ Binary pass/fail. Any failure = immediate skip. Evaluated within 10ms of `TokenC
 | **G1** No Dev Pre-Buy | Any of first 5 trades: `trader == creator` and `is_buy` → FAIL. Also: same-slot buy from SOL-linked wallet → FAIL | ShredStream + creator_map | Dev front-loading own token |
 | **G2** No Coordinated Bundle | `≥2 distinct wallets` in create slot AND `>2 SOL total` in that slot → FAIL | ShredStream slot tracking | Coordinated snipers use exactly 2 wallets to evade ≥3 detection |
 | **G3** Dev Not Serial Rugger | `dev_tokens_launched ≥ 10` → FAIL, or `≥5 tokens + >40% rug rate` → FAIL | Helius `getAssetsByCreator` (cached) | ArXiv: prolific creators graduate less. Serial launchers are almost always rugs |
-| **G4** Curve Fill < 25 SOL | `vsol ≥ 25.0` → FAIL | Helius BC accountSubscribe | At vSol=25, +12% requires ~4.2 SOL follow-on — unrealistic for most tokens |
+| **G4** Curve Fill — Entry Zone | `vsol < 2.0` → SKIP · `2.0–15.0` → PASS · `15.0–20.0` → PASS if score ≥ 60 · `> 20.0` → FAIL | Helius BC accountSubscribe | Optimal zone: 2–15 SOL (follow-on ≤ 0.84 SOL). At 15–20 SOL needs score ≥ 60 (follow-on 0.84–1.13 SOL). Above 20 SOL EV-negative for non-graduating tokens. |
 | **G6** Creator Not Throwaway | Creator balance `<0.05 SOL` AND zero launch history → FAIL | Helius `getBalance` (cached) | Script-generated rug factory wallets funded with exactly the creation fee |
 | **G7** No Supply Concentration | Any single wallet holds `>15%` of tokens bought in first 20 trades → FAIL | ShredStream holdings tracker | Single large holder = coordinated dump setup |
 
@@ -88,7 +88,7 @@ Computed in real-time from ShredStream trades + Helius BC account state. Re-eval
 |--------|---------|--------|--------|-------|
 | **S1** Inflow Rate | 30 | `(vsol−30) / seconds_since_create` (SOL/s) | ShredStream + Helius BC | 0.3 SOL/s = sweet spot (30pts). >1.0 SOL/s = spike risk (20pts). ArXiv #1 predictor. |
 | **S2** Wallet Diversity | 25 | `unique_wallets / trade_count` | ShredStream | ≥0.80 ratio → 25pts. Replaces fragile bot detection. Bots reuse wallets; organic = diverse. |
-| **S3** Curve Fill | 15 | `vsol / 115.0` (U-curve) | Helius BC accountSubscribe | Sweet spot: 2–8% fill (vsol 2.3–9.2 SOL) → 15pts. Too early = no data. Too late = hard math. |
+| **S3** Curve Fill | 15 | `vsol / 115.0` (U-curve) | Helius BC accountSubscribe | Sweet spot: 2–13% fill (vsol 2–15 SOL) → 15pts. Below 2 SOL = G4 SKIP. Above 15 SOL = conditional zone. Above 20 SOL = G4 FAIL. Follow-on: vSol=5 → 0.25 SOL · vSol=10 → 0.54 SOL · vSol=15 → 0.84 SOL. |
 | **S4** Sell Timing | 15 | Index of first sell trade | ShredStream | First sell after trade 15 → 15pts. First sell before trade 5 → 0pts. Replaces buy/sell ratio (noise at mint). |
 | **S5** Smart Money | −10 to +15 | Pre-seeded top-500 PnL wallet set | ShredStream + wallet list | Top-100 wallet buys early → +15pts. Known dumper buys early → −10pts. |
 
