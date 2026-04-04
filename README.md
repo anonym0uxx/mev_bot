@@ -86,10 +86,10 @@ Computed in real-time from ShredStream trades + Helius BC account state. Re-eval
 
 | Signal | Max Pts | Metric | Source | Notes |
 |--------|---------|--------|--------|-------|
-| **S1** Inflow Rate | 30 | `(vsol−30) / seconds_since_create` (SOL/s) | ShredStream + Helius BC | 0.3 SOL/s = sweet spot (30pts). >1.0 SOL/s = spike risk (20pts). ArXiv #1 predictor. |
-| **S2** Wallet Diversity | 25 | `unique_wallets / trade_count` | ShredStream | ≥0.80 ratio → 25pts. Replaces fragile bot detection. Bots reuse wallets; organic = diverse. |
-| **S3** Curve Fill | 15 | `vsol / 115.0` (U-curve) | Helius BC accountSubscribe | Sweet spot: 2–13% fill (vsol 2–15 SOL) → 15pts. Below 2 SOL = G4 SKIP. Above 15 SOL = conditional zone. Above 20 SOL = G4 FAIL. Follow-on: vSol=5 → 0.25 SOL · vSol=10 → 0.54 SOL · vSol=15 → 0.84 SOL. |
-| **S4** Sell Timing | 15 | Index of first sell trade | ShredStream | First sell after trade 15 → 15pts. First sell before trade 5 → 0pts. Replaces buy/sell ratio (noise at mint). |
+| **S1** Inflow Rate | 30 | `real_sol / seconds_since_create` (real_sol = vsol_raw − 30) | ShredStream + Helius BC | 0.15 SOL/s = sweet spot (30pts). 0.5+ SOL/s = aggressive (20pts). 1.5+ SOL/s = spike risk (12pts). ArXiv #1 predictor. |
+| **S2** Wallet Diversity | 25 | `unique_wallets / trade_count` | ShredStream | ≥0.80 → 25pts. Replaces fragile bot detection. Bots reuse wallets; organic = diverse. Default 5pts if <5 trades. |
+| **S3** Curve Position | 15 | `real_sol` zone-aligned with G4 | Helius BC accountSubscribe | 5–15 real_sol → 15pts (peak). 2–5 → 12pts (early). 15–20 → 6pts (conditional). Aligns exactly with G4 zones. |
+| **S4** Sell Timing | 15 | Index of first sell trade (relative for <10 trades) | ShredStream | 5-9 trades, no sells → 10pts. 10+ trades, first sell >15 → 15pts. First sell <5 → 0pts. Early-entry aware. |
 | **S5** Smart Money | −10 to +15 | Pre-seeded top-500 PnL wallet set | ShredStream + wallet list | Top-100 wallet buys early → +15pts. Known dumper buys early → −10pts. |
 
 **Sub-10-trade velocity substitute (S1 when trade_count < 10):**

@@ -1,11 +1,21 @@
 # SniperEngine — Entry Signal System Spec
 
-**Version:** 1.3  
+**Version:** 1.4  
 **Date:** 2026-04-04  
 **Author:** Apollo  
 **Reviewed by:** Opus 4.6 quant (2026-04-04)  
 **Status:** Ready for implementation  
 **Goal:** Bonding curve sniper. Jito atomic bundle (buy+sell). 12%+ scalp target. Max loss per attempt = Jito tip + fees (~5000 lamports).
+
+**v1.4 Changes (Opus quant review — T1/T2 audit):**
+- BREAKING: spec-wide vsol convention fixed. All thresholds now use `real_sol = vsol_raw - 30.0`. Graduation = 85 real_sol. fill_pct = real_sol / 85.0.
+- S1: thresholds adjusted (sweet spot now 0.15 SOL/s, spike risk redefined at 1.5+ SOL/s)
+- S3: rewritten to match G4 zones exactly (2–5 → 12pts, 5–15 → 15pts, 15–20 → 6pts)
+- S4: early-entry handling split (trade_count 5-9 now uses relative indexing; consecutive buys with no sells = 10pts)
+- SS1: missing middle band added (5-9 tokens, success 0.20-0.40 → +400 bps); N/A annotations for G3-blocked ranges
+- SS1: success definition lowered from >20 SOL to ≥12 SOL real inflow (better reflects meaningful traction)
+- SS4: weighting formula made explicit in code comment
+- Final score floor: minimum on_chain_score of 30 required before social multiplier can push to entry threshold (prevents weak on-chain + high social from firing)
 
 **v1.3 Changes (Opus quant review — G4 revision):**
 - G4 rewritten: zone-aware (TooEarly/Optimal/Conditional/TooLate) replacing flat 25 SOL ceiling
@@ -42,7 +52,7 @@ Signal system has three tiers:
 - **Tier 1: On-Chain Score** — continuous 0–100 score from ShredStream + Helius BC state.
 - **Tier 2: Social Multiplier** — async 0.5×–2.0× multiplier. Irrelevant for tokens <120s old.
 
-Entry fires when: all Tier 0 gates pass AND `on_chain_score * social_multiplier_bps / 10_000 >= entry_threshold`.
+Entry fires when: all Tier 0 gates pass AND `on_chain_score >= 30` (floor) AND `on_chain_score * social_multiplier_bps / 10_000 >= entry_threshold`.
 
 **Key insight (Opus review):** At fresh mint (<60s), most Tier 2 social signals don't exist or are fabricated. The system is biased toward Tier 0 gates and Tier 1 on-chain signals for early entries. Social layer is weighted toward dev history (only reliably available signal at mint).
 
@@ -54,42 +64,57 @@ Entry fires when: all Tier 0 gates pass AND `on_chain_score * social_multiplier_
 
 ## Bonding Curve Math (Reference)
 
+### vsol Convention (spec-wide — apply everywhere)
+
 ```
-k = x0_tot_virt × y0_tot_virt = 30 × 1.073e9 = 3.219e10
+vsol_raw:  actual virtual SOL reserve. Starts at 30.0 at mint. Graduation at 115.0.
+real_sol:  real SOL inflow from buyers = vsol_raw - 30.0. Starts at 0.0. Graduation at 85.0.
+fill_pct:  real_sol / 85.0  (NOT vsol_raw / 115.0)
 
-vsol: current virtual SOL in curve
-vtok: current virtual token supply = k / vsol
-Price P = vsol² / k
+ALL gate thresholds and score thresholds in this spec use real_sol unless
+explicitly annotated "vsol_raw". When the spec says "vsol=5" it means
+real_sol=5 (5 SOL of real inflow, vsol_raw=35).
+```
 
-Graduation: vsol_total = 115 (virtual). Real SOL raised = 85.
+### Curve Math
 
-Fee: 1.25% on SOL exchanged. effective_sol_in = delta_sol × 0.9875
+```
+k = 30 × 1.073e9 = 3.219e10
+
+Price P = vsol_raw² / k
+       = (real_sol + 30)² / k
 
 Buy:
-  vsol_new = vsol + effective_sol_in
-  tokens_out = vtok - k / vsol_new
+  effective_sol_in = delta_sol × 0.9875  (1.25% fee)
+  vsol_raw_new = vsol_raw + effective_sol_in
+  tokens_out = vtok - k / vsol_raw_new
 
 Sell P2 target (+12%):
   P2 = P1 × 1.12
-  vsol_exit = sqrt(P1 × 1.12 × k)
-  sol_out = (vsol_exit - vsol_after_buy) × 0.9875
+  vsol_raw_exit = sqrt(P1 × 1.12 × k)
+  sol_out = (vsol_raw_exit - vsol_raw_after_buy) × 0.9875
+```
 
-SOL inflow needed for +12% at various entry points (verified, 0.05 SOL position):
-  vSol=2:   0.068 SOL  (EASY)   ← G4 floor
-  vSol=3:   0.127 SOL  (EASY)
-  vSol=5:   0.245 SOL  (EASY)
-  vSol=7:   0.363 SOL  (EASY)
-  vSol=9:   0.481 SOL  (EASY)
-  vSol=10:  0.540 SOL  (OK)
-  vSol=12:  0.658 SOL  (OK)
-  vSol=15:  0.836 SOL  (OK)     ← conditional zone begins
-  vSol=18:  1.013 SOL  (HARD)
-  vSol=20:  1.131 SOL  (HARD)   ← G4 hard ceiling
-  vSol=25:  1.426 SOL  (HARD)
+### Follow-on SOL needed for +12% (verified, 0.05 SOL position)
 
-Optimal entry zone: 2–15 SOL. Above 20 SOL, net follow-on > 1.13 SOL
-required — EV-negative for non-graduating tokens given active sell pressure
-from earlier entrants.
+All values in real_sol (real inflow above virtual seed):
+
+```
+real_sol=2:   0.068 SOL  (EASY)   ← G4 floor
+real_sol=3:   0.127 SOL  (EASY)
+real_sol=5:   0.245 SOL  (EASY)   ← optimal zone
+real_sol=7:   0.363 SOL  (EASY)
+real_sol=9:   0.481 SOL  (EASY)
+real_sol=10:  0.540 SOL  (OK)
+real_sol=12:  0.658 SOL  (OK)
+real_sol=15:  0.836 SOL  (OK)     ← conditional zone begins
+real_sol=18:  1.013 SOL  (HARD)
+real_sol=20:  1.131 SOL  (HARD)   ← G4 hard ceiling
+real_sol=25:  1.426 SOL  (HARD)
+
+Optimal entry zone: real_sol 2–15. Above 20, net follow-on > 1.13 SOL
+required — EV-negative for non-graduating tokens given sell pressure from
+earlier entrants taking profit.
 ```
 
 ---
@@ -232,36 +257,42 @@ pub fn curve_fill_ok(zone: CurveFillZone, on_chain_score: u8) -> bool {
 ---
 
 ### S1: Inflow Rate Score (0–30 pts)
-**Replaces vsol/trade. Metric: vsol/second = delta_vsol / seconds_since_create.**
+**Metric: real_sol_per_second = real_sol / max(seconds_since_create, 1)**
+**Where: real_sol = vsol_raw - 30.0** (see vsol convention above)
 
-**Why vsol/second beats vsol/trade:** Bots fragment orders into many small trades to look organic. vsol/trade rewards fragmentation. vsol/second measures actual capital commitment rate — harder to fake with timing manipulation.
+**Why real_sol/second beats vsol/trade:** Bots fragment orders into many small trades to look organic. Per-trade metrics reward fragmentation. Per-second measures actual capital commitment rate — harder to fake.
 
-**Why 0.3 SOL/s scores higher than 1.0 SOL/s:** Instant spike (>1 SOL/s) in first 10s is the coordinated sniper signature — one or two actors front-running, then exiting. Steady acceleration (0.3 SOL/s) over 30-60s is genuine organic momentum. You don't want to be buying the exit of someone else's spike.
+**Rate interpretation in G4 optimal zone (2–15 real_sol):**
+- 0.02 SOL/s → reaches 15 SOL in ~12 min. Slow organic discovery.
+- 0.05 SOL/s → reaches 15 SOL in 5 min. Steady build.
+- 0.15 SOL/s → reaches 15 SOL in ~100s. Organic crowd rush. **Sweet spot.**
+- 0.5 SOL/s → reaches 15 SOL in 30s. Aggressive momentum — viable for scalp.
+- 1.5+ SOL/s → 15 SOL in <10s. Almost certainly coordinated — spike risk.
 
 ```
-vsol_per_second = (vsol - 30.0) / max(seconds_since_create, 1)
-// Note: subtract 30.0 (virtual synthetic initialization) to get real inflow rate
+real_sol_per_second = real_sol / max(seconds_since_create, 1)
 
 Score:
-  vsol/s >= 1.0  → 20 pts  (very fast — spike risk, capped lower)
-  vsol/s >= 0.3  → 30 pts  (sweet spot — strong organic momentum)
-  vsol/s >= 0.1  → 25 pts  (solid)
-  vsol/s >= 0.03 → 15 pts  (moderate)
-  vsol/s <  0.03 → 5 pts   (slow bleed)
+  real_sol/s >= 1.5  → 12 pts  (likely coordinated, high post-entry dump risk)
+  real_sol/s >= 0.5  → 20 pts  (aggressive momentum, viable for 12% scalp)
+  real_sol/s >= 0.15 → 30 pts  (sweet spot — organic crowd accumulation)
+  real_sol/s >= 0.05 → 22 pts  (steady build)
+  real_sol/s >= 0.02 → 12 pts  (slow — may stall before 12% move)
+  real_sol/s <  0.02 → 5 pts   (stagnant)
 ```
 
 **Sub-10-trade substitute (when trade_count < 10):**
 ```
-Instead of 0 pts flat, use first non-creator buy size:
+Use first non-creator buy size as early proxy:
   first_buy_sol 0.1–0.5 SOL  → 8 pts  (human-sized, plausible organic)
   first_buy_sol 0.5–2.0 SOL  → 5 pts  (large, possible whale/bot)
-  first_buy_sol > 2.0 SOL    → 3 pts  (very large single actor, spike risk)
+  first_buy_sol > 2.0 SOL    → 3 pts  (single large actor, spike risk)
   first_buy_sol < 0.01 SOL   → 0 pts  (dust/bot test)
   no trades yet               → 0 pts
-Entry threshold: -10 pts (40 instead of 50) when trade_count < 10
+Entry threshold drops to 40 (from 50) when trade_count < 10.
 ```
 
-**Rust fields:** `inflow_rate_score: u8`, `vsol_per_second: f64`  
+**Rust fields:** `inflow_rate_score: u8`, `real_sol_per_second: f64`  
 **Config:** `min_trades_for_velocity: u32 = 10`
 
 ---
@@ -288,50 +319,63 @@ Score:
 
 ---
 
-### S3: Curve Fill Score (0–15 pts)
-**U-shaped. Sweet spot at 2–8% fill (vSol 2.3–9.2).**
+### S3: Curve Position Score (0–15 pts)
+**Metric: real_sol (= vsol_raw - 30.0). Zones aligned exactly with G4.**
 
-**Why U-shaped:** ≤2% fill is favorable math but zero evidence (too early). >22% fill requires too much follow-on inflow for +12%. The 2–8% zone has the best combination of: some momentum evidence + favorable bonding curve math + early enough for full upside.
+**Why align with G4:** S3 scoring should reward the same zone G4 identifies as optimal, and penalize the conditional zone to make G4's score≥60 threshold harder to reach without strong other signals.
 
 ```
-fill_pct = vsol / 115.0
+fill_pct = real_sol / 85.0  (85.0 = real SOL to graduate)
 
-Score:
-  fill_pct <= 0.02  (vsol ≤ 2.3)   → 8 pts   (too early, math good, evidence zero)
-  fill_pct <= 0.08  (vsol ≤ 9.2)   → 15 pts  (sweet spot)
-  fill_pct <= 0.15  (vsol ≤ 17.25) → 12 pts  (solid, still good math)
-  fill_pct <= 0.22  (vsol ≤ 25.3)  → 6 pts   (G4 ceiling kicks in at 25 SOL)
+real_sol < 2.0          → 0 pts   (G4 SKIP — should never score, defensive)
+real_sol 2.0–5.0        → 12 pts  (early optimal — high upside, thinner data)
+real_sol 5.0–15.0       → 15 pts  (peak optimal zone — best risk/reward)
+real_sol 15.0–20.0      → 6 pts   (conditional zone — G4 requires score≥60)
+real_sol > 20.0         → 0 pts   (G4 FAIL — dead code, defensive)
 ```
 
-**Rust field:** `fill_score: u8`
+**Zone rationale:**
+- 2–5 real_sol: follow-on ≤ 0.25 SOL needed — favorable math. Slightly lower pts than 5–15 because thinner data.
+- 5–15 real_sol: peak. Enough trades to validate momentum quality, follow-on 0.25–0.84 SOL.
+- 15–20 real_sol: conditional. S3 contributes only 6 pts here, making it harder to reach entry threshold without strong S1/S2 scores. This correctly penalizes late entry.
+
+**Rust field:** `fill_score: u8`, `fill_zone: CurveFillZone` (shared with G4)
 
 ---
 
 ### S4: Sell Pressure Timing Score (0–15 pts)
-**Replaces buy/sell ratio. Metric: index of first sell trade.**
+**Metric: index of first sell trade. Early-entry aware.**
 
-**Why timing beats ratio:** The first N trades are almost always buys by definition — there are no tokens to sell until someone has bought first. A buy ratio of 1.0 in the first 5 trades is uninformative noise. The actually predictive signal is: when does the first sell appear? Early sells = dev or coordinated sniper exiting. Delayed sells = genuine buyers holding.
+**Why timing beats ratio:** First N trades are almost always buys — nobody has tokens to sell yet. A 1.0 buy ratio at 5 trades is noise. What matters: when does the first sell appear, and is it a partial take or a full dump?
+
+**Early-entry handling:** At 2–5 real_sol (G4 floor), tokens have 4–10 trades. Absolute index thresholds don't work at this scale — use relative indexing for small trade counts.
 
 ```
-first_sell_trade_index = index of first sell tx observed for this mint
+trade_count < 5:
+  → 3 pts flat (too little data, don't reward or punish)
 
-trade_count < 8:
-  → 5 pts flat (insufficient data, no buy/sell judgment)
+trade_count 5–9, no sells observed:
+  → 10 pts (all buys in early window = bullish sustained interest)
 
-trade_count >= 8:
-  first_sell_index > 15  → 15 pts  (strong sustained buying, no early exit)
-  first_sell_index 10-15 → 12 pts
-  first_sell_index 5-10  → 7 pts
-  first_sell_index < 5   → 0 pts   (immediate sell = dev/sniper dumping)
+trade_count 5–9, first sell exists:
+  first_sell_index > trade_count × 0.70  → 8 pts  (late relative — bullish)
+  first_sell_index > trade_count × 0.40  → 5 pts  (mid relative)
+  first_sell_index ≤ trade_count × 0.40  → 1 pt   (early relative — bearish)
 
-Bonus modifier (additive, applied after base score):
-  First seller sold <20% of their position → +3 pts  (partial take = holder, not dumper)
-  First seller sold >80% of their position → -5 pts  (full exit = bad signal)
+trade_count >= 10:
+  first_sell_index > 15  → 15 pts  (strong sustained buying)
+  first_sell_index 10–15 → 12 pts
+  first_sell_index 5–10  → 7 pts
+  first_sell_index < 5   → 0 pts   (immediate dump = dev/sniper exiting)
+
+Bonus (additive, applied after base score):
+  first_sell_pct < 0.20  → +3 pts  (partial take = still bullish on position)
+  first_sell_pct > 0.80  → -5 pts  (full exit = exit liquidity signal)
 
 Floor: 0 pts total
 ```
 
-**Rust field:** `sell_timing_score: u8`, `first_sell_index: u32`, `first_sell_pct: f32`
+**Rust fields:** `sell_timing_score: u8`, `first_sell_index: u32`, `first_sell_pct: f32`
 
 ---
 
@@ -417,31 +461,40 @@ impl OnChainScore {
 **Source:** Helius `getAssetsByCreator(dev_pubkey)` — async, cache 1hr.
 
 ```
-dev_is_blacklisted (from our own loss log) → social_multiplier = 0 (hard veto)
+dev_is_blacklisted (from our own loss log)
+  → social_multiplier = 0 (hard veto — overrides everything)
 
 dev_tokens_launched == 0:
-  → +500 bps (slight positive — first launch devs not automatically bad)
+  → +500 bps (first-time dev — not automatically bad, slight positive)
 
-dev_tokens_launched 1-4, rug_rate < 0.20:
-  → +2000 bps (track record: launched tokens, most succeeded)
+dev_tokens_launched 1–4, rug_rate < 0.20:
+  → +2000 bps (track record: mostly clean launches)
 
-dev_tokens_launched 1-4, rug_rate 0.20-0.40:
-  → neutral (10_000 bps)
+dev_tokens_launched 1–4, rug_rate 0.20–0.40:
+  → neutral (0 bps delta)
 
-dev_tokens_launched 1-4, rug_rate > 0.40:
-  → -2000 bps (more than 2 in 5 rugged)
+dev_tokens_launched 1–4, rug_rate > 0.40:
+  → -2000 bps (>2 in 5 rugged)
 
-dev_tokens_launched 5-9, success_rate > 0.40:
-  → +1500 bps (consistent launcher with decent record)
+dev_tokens_launched 5–9, rug_rate > 0.40:
+  → N/A (G3 blocks: ≥5 tokens AND rug_rate > 0.40 → gate fail)
 
-dev_tokens_launched 5-9, success_rate < 0.20:
-  → -2000 bps
+dev_tokens_launched 5–9, success_rate > 0.40:
+  → +1500 bps (consistent launcher, decent success record)
 
-dev_tokens_launched >= 10:
-  → G3 gate already blocked this. Shouldn't reach scoring.
+dev_tokens_launched 5–9, success_rate 0.20–0.40:
+  → +400 bps (some track record, not proven — mild positive)
+
+dev_tokens_launched 5–9, success_rate < 0.20:
+  → -2000 bps (launched several, almost none succeeded)
+
+dev_tokens_launched ≥ 10:
+  → N/A (G3 blocks: ≥10 tokens → gate fail regardless of rate)
 ```
 
-**Note:** "Success" = token graduated OR reached >20 SOL on curve (significant traction, even if not graduated).
+**"Success" definition:** Token graduated OR reached ≥ 12 real_sol (real SOL inflow). 12 SOL represents meaningful traction within G4's optimal zone — deep enough to show real demand, not just a brief pump.
+
+*Note: Previous definition used >20 SOL, which was the G4 ceiling. Lowered to 12 SOL to better reflect genuine demand vs near-graduation tokens.*
 
 ---
 
@@ -561,13 +614,24 @@ const W_TWI: i32 = 10;
 const W_ENG: i32 = 5;
 const W_TG:  i32 = 5;
 
+// Explicit formula:
+// final_multiplier_bps = 10_000
+//   + (dev_delta × W_DEV / 100)    // 55% — only reliable signal at mint
+//   + (met_delta × W_MET / 100)    // 25% — instant, in create event
+//   + (twi_delta × W_TWI / 100)    // 10% — presence only, weak but free
+//   + (eng_delta × W_ENG / 100)    //  5% — disabled <120s
+//   + (tg_delta  × W_TG  / 100)    //  5% — disabled <120s
+// Result clamped to [5_000, 20_000] = 0.5× to 2.0× multiplier
+//
+// SS4 max impact: +2200 bps raw × 0.25 = +550 bps effective (~5.5% boost)
+// SS4 max drag:  -1500 bps raw × 0.25 = -375 bps effective (~3.75% drag)
 fn compute_multiplier(s: &SocialScore) -> u16 {
     if s.dev_is_blacklisted { return 0; }
 
-    // Disable time-sensitive signals for fresh tokens
+    // Disable time-sensitive signals for tokens age < 120s
     let eng = if s.token_age_secs < 120 { 10_000i32 } else { s.engagement_score_bps as i32 };
     let tg  = if s.token_age_secs < 120 {
-        // Pre-built community is negative for fresh mints
+        // Pre-built large community at mint = coordinated launch = weak negative
         if s.telegram_members > 500 { 9_500i32 } else { 10_000i32 }
     } else {
         s.telegram_score_bps as i32
@@ -781,6 +845,11 @@ social_score_cache[mint] hit?
   social_multiplier_bps == 0? → DROP (blacklisted dev)
 
 final_score = on_chain_score × social_multiplier_bps / 10_000
+// FLOOR CHECK: on_chain_score must be >= 30 before social can push to threshold.
+// Prevents: weak on_chain=27 × social=1.5× = 40.5 → entry fires on noise.
+on_chain_score < 30? → keep monitoring (social multiplier cannot rescue this)
+                      ↓ on_chain_score >= 30
+
 final_score < 40? → keep monitoring
                   ↓ final_score >= 40
 
@@ -949,6 +1018,7 @@ Default tip: 100_000 lamports. Ladder up if congestion detected.
   "paper_mode": true,
   "entry_threshold_with_velocity": 50,
   "entry_threshold_no_velocity": 40,
+  "min_on_chain_score_for_entry": 30,
   "final_score_threshold": 40,
   "min_trades_for_velocity": 10,
   "skip_mayhem_mode": true,
