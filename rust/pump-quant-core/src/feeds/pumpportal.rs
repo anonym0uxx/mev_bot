@@ -213,10 +213,15 @@ fn parse_message(mut text: String, write_tx: &mpsc::Sender<String>, creator_map:
         let is_tokenized_agent = name_lower.contains("agent") || sym_lower.contains("agent")
             || name_lower.contains("a.i.") || sym_lower.contains("ai16z");
 
-        // Emit TokenCreated event with regime flags
+        // Emit TokenCreated event with regime flags + creation timestamp
         if let Ok(mint_bytes) = decode_pubkey(mint_b58) {
+            let ts_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
             let _ = feed_tx.try_send(super::FeedEvent::TokenCreated(super::TokenCreatedEvent {
                 mint: mint_bytes,
+                ts_ms,
                 is_mayhem,
                 is_tokenized_agent,
             }));

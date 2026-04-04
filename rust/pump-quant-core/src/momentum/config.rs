@@ -508,6 +508,12 @@ pub struct MomentumConfig {
     /// Default: 90. Set to 0 to disable.
     pub min_grad_speed_s: u32,
 
+    /// Hard gate: maximum token age at graduation (seconds).
+    /// Tokens older than this at graduation are stale (slow bleeds, concentrated
+    /// holders, already peaked). Real age computed from TokenCreated events.
+    /// Default: 300 (5 minutes). Set to 0 to disable.
+    pub max_grad_age_s: u32,
+
     /// Hard gate: max graduation volume (SOL) when grad is fast (speed < min_grad_speed_s * 2).
     /// Fast-ish + high volume = bot pump. Default: 200.0.
     /// Applied when: grad_speed_s < min_grad_speed_s * 2 AND grad_volume_sol >= this value.
@@ -868,6 +874,7 @@ impl Default for MomentumConfig {
 
             // Hard gate: whale/bot pump rejection (TASK 1)
             min_grad_speed_s: 90,
+            max_grad_age_s: 300,
             max_grad_volume_sol_fast: 200.0,
             max_grad_volume_sol_absolute: 650.0,
             min_grad_volume_sol: 50.0,

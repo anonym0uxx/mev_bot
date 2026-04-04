@@ -70,10 +70,12 @@ pub enum FeedEvent {
 }
 
 /// Token creation event from PumpPortal.
-/// Carries metadata needed for regime classification (mayhem/agent detection).
+/// Carries metadata needed for regime classification (mayhem/agent detection)
+/// and real graduation speed tracking (creation timestamp → grad speed).
 #[derive(Debug, Clone)]
 pub struct TokenCreatedEvent {
     pub mint: [u8; 32],
+    pub ts_ms: u64,
     pub is_mayhem: bool,
     pub is_tokenized_agent: bool,
 }

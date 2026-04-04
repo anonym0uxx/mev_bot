@@ -388,6 +388,12 @@ pub struct MomentumEngine {
     #[allow(dead_code)]
     http_client: reqwest::Client,
 
+    // ── Token creation timestamps: mint → creation_ts_ms ──────────────
+    // Populated by record_token_created() from PumpPortal TokenCreated events.
+    // Used to compute real grad_speed_s = (graduation_ts - creation_ts) / 1000.
+    // Entries expire after 4 hours to prevent unbounded growth.
+    mint_creation_ts: DashMap<[u8; 32], u64>,
+
     // ── Active positions: mint → MomentumPosition ───────────────────
     active: DashMap<[u8; 32], MomentumPosition>,
 
@@ -637,6 +643,7 @@ impl MomentumEngine {
             rpc_url,
             helius_rpc_url,
             http_client: crate::momentum::pool::make_pool_resolution_client(),
+            mint_creation_ts: DashMap::new(),
             active: DashMap::new(),
             recently_closed: DashMap::new(),
             resolving_sigs: DashMap::new(),
@@ -749,6 +756,22 @@ impl MomentumEngine {
         });
 
         (engine, scored_tx, ws_handle, logger_handle)
+    }
+
+    /// Record a token creation event from PumpPortal.
+    /// Stores `mint → creation_ts_ms` for real graduation speed computation.
+    /// Called from main.rs on every `FeedEvent::TokenCreated`.
+    pub fn record_token_created(&self, mint: [u8; 32], ts_ms: u64) {
+        self.mint_creation_ts.insert(mint, ts_ms);
+    }
+
+    /// Look up creation timestamp and compute real grad_speed_s.
+    /// Returns `Some(real_speed_s)` if creation ts exists, `None` otherwise (cold miss).
+    fn compute_real_grad_speed(&self, mint: &[u8; 32], graduation_ts_ms: u64) -> Option<u32> {
+        self.mint_creation_ts.get(mint).map(|creation_ts_ms| {
+            let elapsed_ms = graduation_ts_ms.saturating_sub(*creation_ts_ms);
+            (elapsed_ms / 1000) as u32
+        })
     }
 
     /// Called on every graduation event. Scores and schedules entry.
@@ -919,6 +942,25 @@ impl MomentumEngine {
                 return;
             }
         }
+
+        // ── Hard gate: reject stale graduations (real age from TokenCreated) ──────
+        // Uses mint_creation_ts populated from PumpPortal TokenCreated events.
+        // Tokens older than max_grad_age_s at graduation are cold distributions,
+        // already peaked, or slow bleeds — filter them out.
+        if cfg.max_grad_age_s > 0 {
+            if let Some(real_age_s) = self.compute_real_grad_speed(&pool_info.mint, now_ms) {
+                if real_age_s > cfg.max_grad_age_s {
+                    tracing::debug!(
+                        mint = %bs58::encode(&pool_info.mint).into_string(),
+                        real_grad_age_s = real_age_s,
+                        max = cfg.max_grad_age_s,
+                        "[momentum] hard gate: rejected stale graduation (real age > max_grad_age_s)"
+                    );
+                    return;
+                }
+            }
+        }
+
         // Hard reject: saturated volume (u16 overflow = confirmed whale fill)
         // Skip for cold misses — volume is estimated from reserves and caps at u16 max (655.35)
         if !is_cold_miss && cfg.max_grad_volume_sol_absolute > 0.0
@@ -1225,6 +1267,13 @@ impl MomentumEngine {
             now_ms.saturating_sub(*close_ts) < self.config.reentry_cooldown_ms
         });
 
+        // Prune stale mint creation timestamps (TTL 4 hours = 14_400_000ms)
+        // Mints that never graduated shouldn't grow the map unboundedly.
+        const CREATION_TS_TTL_MS: u64 = 4 * 60 * 60 * 1000; // 4 hours
+        self.mint_creation_ts.retain(|_, creation_ts| {
+            now_ms.saturating_sub(*creation_ts) < CREATION_TS_TTL_MS
+        });
+
         // Prune stale mint-level graduation dedup entries (TTL 60s, O(n) but n ≤ ~200)
         self.recent_corecast_grads.retain(|_, first_seen| {
             now_ms.saturating_sub(*first_seen) < 60_000
@@ -1287,14 +1336,24 @@ impl MomentumEngine {
                 enrichment.volume_sol_x100
             };
             let effective_speed_s = if enrichment.grad_speed_s == 0 {
-                let sol = resolution.reserve_sol_lamports / 1_000_000_000;
-                self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
-                tracing::info!(
-                    mint = %mint_b58,
-                    reserve_sol = sol,
-                    "[momentum] enrichment cold miss (async retry) — estimating speed from LP reserves"
-                );
-                if sol >= 250 { 60u32 } else { 120u32 }
+                // Try real creation timestamp first
+                if let Some(real_speed) = self.compute_real_grad_speed(&resolution.mint, ts_ms) {
+                    tracing::info!(
+                        mint = %mint_b58,
+                        real_grad_speed_s = real_speed,
+                        "[momentum] real grad speed from TokenCreated (async retry)"
+                    );
+                    real_speed
+                } else {
+                    let sol = resolution.reserve_sol_lamports / 1_000_000_000;
+                    self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
+                    tracing::info!(
+                        mint = %mint_b58,
+                        reserve_sol = sol,
+                        "[momentum] no creation ts — cold miss fallback (async retry)"
+                    );
+                    if sol >= 250 { 60u32 } else { 120u32 }
+                }
             } else {
                 enrichment.grad_speed_s
             };
@@ -5388,14 +5447,24 @@ impl MomentumEngine {
                         enrichment.volume_sol_x100
                     };
                     let effective_speed_s = if enrichment.grad_speed_s == 0 {
-                        let sol = resolution.reserve_sol_lamports / 1_000_000_000;
-                        self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
-                        tracing::info!(
-                            mint = %mint_b58,
-                            reserve_sol = sol,
-                            "[momentum] enrichment cold miss (mint fast path) — estimating speed from LP reserves"
-                        );
-                        if sol >= 250 { 60u32 } else { 120u32 }
+                        // Try real creation timestamp first
+                        if let Some(real_speed) = self.compute_real_grad_speed(&resolution.mint, ts_ms) {
+                            tracing::info!(
+                                mint = %mint_b58,
+                                real_grad_speed_s = real_speed,
+                                "[momentum] real grad speed from TokenCreated (mint fast path)"
+                            );
+                            real_speed
+                        } else {
+                            let sol = resolution.reserve_sol_lamports / 1_000_000_000;
+                            self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
+                            tracing::info!(
+                                mint = %mint_b58,
+                                reserve_sol = sol,
+                                "[momentum] no creation ts — cold miss fallback (mint fast path)"
+                            );
+                            if sol >= 250 { 60u32 } else { 120u32 }
+                        }
                     } else {
                         enrichment.grad_speed_s
                     };
@@ -5597,18 +5666,25 @@ impl MomentumEngine {
                     enrichment.volume_sol_x100
                 };
                 let effective_speed_s = if enrichment.grad_speed_s == 0 {
-                    // mint_map cold miss — estimate speed from LP SOL reserves.
-                    // BC deposits ~85 SOL at graduation; extra = immediate LP adds post-grad.
-                    // Conservative: assume organic unless LP is very high (≥250 SOL = clear whale/bot pump).
-                    let sol = resolution.reserve_sol_lamports / 1_000_000_000;
-                    self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
-                    tracing::info!(
-                        mint = %bs58::encode(&resolution.mint).into_string(),
-                        reserve_sol = sol,
-                        "[momentum] enrichment cold miss — estimating speed from LP reserves"
-                    );
-                    if sol >= 250 { 60u32 }  // Very aggressive LP add → likely whale, apply hard gate
-                    else { 120u32 }          // Unknown → assume organic minimum (passes hard gate at 90s)
+                    // Try real creation timestamp first
+                    if let Some(real_speed) = self.compute_real_grad_speed(&resolution.mint, ts_ms) {
+                        tracing::info!(
+                            mint = %bs58::encode(&resolution.mint).into_string(),
+                            real_grad_speed_s = real_speed,
+                            "[momentum] real grad speed from TokenCreated (getTransaction path)"
+                        );
+                        real_speed
+                    } else {
+                        // mint_map cold miss — estimate speed from LP SOL reserves.
+                        let sol = resolution.reserve_sol_lamports / 1_000_000_000;
+                        self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
+                        tracing::info!(
+                            mint = %bs58::encode(&resolution.mint).into_string(),
+                            reserve_sol = sol,
+                            "[momentum] no creation ts — cold miss fallback (getTransaction path)"
+                        );
+                        if sol >= 250 { 60u32 } else { 120u32 }
+                    }
                 } else {
                     enrichment.grad_speed_s
                 };
@@ -5837,14 +5913,24 @@ impl MomentumEngine {
                             enrichment.volume_sol_x100
                         };
                         let effective_speed_s = if enrichment.grad_speed_s == 0 {
-                            let sol = resolution.reserve_sol_lamports / 1_000_000_000;
-                            self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
-                            tracing::info!(
-                                mint = %mint_b58,
-                                reserve_sol = sol,
-                                "[momentum] enrichment cold miss (mint lookup) — estimating speed from LP reserves"
-                            );
-                            if sol >= 250 { 60u32 } else { 120u32 }
+                            // Try real creation timestamp first
+                            if let Some(real_speed) = self.compute_real_grad_speed(&resolution.mint, ts_ms) {
+                                tracing::info!(
+                                    mint = %mint_b58,
+                                    real_grad_speed_s = real_speed,
+                                    "[momentum] real grad speed from TokenCreated (mint lookup path)"
+                                );
+                                real_speed
+                            } else {
+                                let sol = resolution.reserve_sol_lamports / 1_000_000_000;
+                                self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
+                                tracing::info!(
+                                    mint = %mint_b58,
+                                    reserve_sol = sol,
+                                    "[momentum] no creation ts — cold miss fallback (mint lookup path)"
+                                );
+                                if sol >= 250 { 60u32 } else { 120u32 }
+                            }
                         } else {
                             enrichment.grad_speed_s
                         };
@@ -6054,14 +6140,24 @@ impl MomentumEngine {
             enrichment.volume_sol_x100
         };
         let effective_speed_s = if enrichment.grad_speed_s == 0 {
-            let sol = estimated_reserve_sol / 1_000_000_000;
-            self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
-            tracing::info!(
-                mint = %mint_b58,
-                reserve_sol = sol,
-                "[momentum] enrichment cold miss (direct path) — using estimated reserves"
-            );
-            if sol >= 250 { 60u32 } else { 120u32 }
+            // Try real creation timestamp first
+            if let Some(real_speed) = self.compute_real_grad_speed(&mint, ts_ms) {
+                tracing::info!(
+                    mint = %mint_b58,
+                    real_grad_speed_s = real_speed,
+                    "[momentum] real grad speed from TokenCreated (direct path)"
+                );
+                real_speed
+            } else {
+                let sol = estimated_reserve_sol / 1_000_000_000;
+                self.grad_enrichment_cold_misses.fetch_add(1, Ordering::Relaxed);
+                tracing::info!(
+                    mint = %mint_b58,
+                    reserve_sol = sol,
+                    "[momentum] no creation ts — cold miss fallback (direct path)"
+                );
+                if sol >= 250 { 60u32 } else { 120u32 }
+            }
         } else {
             enrichment.grad_speed_s
         };

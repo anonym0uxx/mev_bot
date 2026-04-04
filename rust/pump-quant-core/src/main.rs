@@ -401,8 +401,9 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
-            Ok(FeedEvent::TokenCreated(_)) => {
-                // No-op: momentum engine doesn't use token creation events
+            Ok(FeedEvent::TokenCreated(tc)) => {
+                // Record creation timestamp for real grad_speed_s computation
+                momentum_engine.record_token_created(tc.mint, tc.ts_ms);
             }
             Ok(FeedEvent::CreatorSell { mint: _, ts_ms }) => {
                 health_monitor.record_event(FeedSource::CoreCast, ts_ms);
