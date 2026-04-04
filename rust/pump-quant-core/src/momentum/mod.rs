@@ -767,31 +767,21 @@ impl MomentumEngine {
         }
 
         // ── Token-2022 sell overflow gate ──────────────────────────────────
-        // Token-2022 tokens can have extreme reserve_token values that overflow
-        // u64 arithmetic in fee/swap computations. Gate only fires for Token-2022
-        // mints (standard SPL Token uses u128 internally and is safe).
-        const TOKEN_2022_PROGRAM: [u8; 32] = [
-            0x06, 0xdd, 0xf6, 0xe1, 0xee, 0x75, 0x8f, 0xde,
-            0x18, 0x42, 0x5d, 0xbc, 0xe4, 0x6c, 0xcd, 0xda,
-            0xb6, 0x1a, 0xfc, 0x4d, 0x83, 0xb9, 0x0d, 0x27,
-            0xfe, 0xbd, 0xf9, 0x28, 0xd8, 0xa1, 0x8b, 0xfc,
-        ];
-        if let Some(ps_pool) = self.pumpswap_pools.get(&pool_info.mint) {
-            let token_mint_program = ps_pool.token_mint_program;
-            if token_mint_program != [0u8; 32] && token_mint_program == TOKEN_2022_PROGRAM {
-                let max_sol_lamports = (self.config.max_total_size_sol * 1e9) as u64;
-                let product = max_sol_lamports as u128 * pool_info.reserve_token as u128;
-                let limit = u64::MAX as u128 / 2;
-                if product > limit {
-                    tracing::warn!(
-                        mint = %bs58::encode(&pool_info.mint).into_string(),
-                        reserve_token = pool_info.reserve_token,
-                        product = %product,
-                        limit = %limit,
-                        "[momentum] Token-2022 sell overflow gate — skipping graduation"
-                    );
-                    return;
-                }
+        // Universal overflow gate: block any pool where AMM sell math would overflow u64.
+        // The PumpSwap AMM at sell.rs:206 computes tokens_in * reserve_sol in u64.
+        // Normal pump.fun migrations have ~800M raw tokens. 10B raw gives 12× headroom
+        // and catches pathological Token-2022 pools (e.g. 263T reserve_token).
+        // This gate fires regardless of token program — no async resolution needed.
+        {
+            const MAX_SAFE_RESERVE_TOKEN: u64 = 10_000_000_000; // 10B raw tokens
+            if pool_info.reserve_token > MAX_SAFE_RESERVE_TOKEN {
+                tracing::warn!(
+                    mint = %bs58::encode(&pool_info.mint).into_string(),
+                    reserve_token = pool_info.reserve_token,
+                    limit = MAX_SAFE_RESERVE_TOKEN,
+                    "[momentum] reserve_token overflow gate — skipping graduation (pathological pool, sell would overflow u64)"
+                );
+                return;
             }
         }
 
@@ -1016,7 +1006,16 @@ impl MomentumEngine {
                 "[momentum] cold miss detected — no score bonus (gate requires organic signal)"
             );
         }
-        let effective_min = if self.config.paper_mode { 20 } else { self.config.min_grad_score };
+        // Cold-miss tokens score on fabricated defaults (buys_5s=3, grad_speed=120s).
+        // Apply a higher threshold to cold misses to compensate for fake signal inflation.
+        // cold_miss_min_grad_score=65 vs enriched min=50 means cold misses need genuine velocity/volume.
+        let effective_min = if self.config.paper_mode {
+            20
+        } else if is_cold_miss {
+            self.config.cold_miss_min_grad_score.unwrap_or(self.config.min_grad_score + 15)
+        } else {
+            self.config.min_grad_score
+        };
         if score.total() < effective_min {
             tracing::info!(
                 score = score.total(),
@@ -3058,9 +3057,13 @@ impl MomentumEngine {
                 continue;
             }
 
-            // 2. Hard SL
+            // 2. Hard SL — with arm delay to avoid wick-stops on entry.
+            // Don't arm the SL for hard_sl_arm_delay_ms after entry (default 2000ms).
+            // This eliminates entries where price wicks below SL before establishing.
+            let hard_sl_arm_delay_ms = self.config.hard_sl_arm_delay_ms.unwrap_or(2000);
+            let sl_armed = now_ms.saturating_sub(pos.entry_ts_ms) >= hard_sl_arm_delay_ms;
             let hard_sl_bps = (self.config.hard_sl_pct * 100.0) as u32;
-            if pos.hard_sl_hit(current_price_fp, hard_sl_bps) {
+            if sl_armed && pos.hard_sl_hit(current_price_fp, hard_sl_bps) {
                 to_close.push((mint, MomentumExitReason::HardSl, current_price_fp));
                 continue;
             }
@@ -3610,6 +3613,28 @@ impl MomentumEngine {
             // Skip if already scaled in
             if pos.is_scaled_in() {
                 continue;
+            }
+
+            // T22 scale-in block: Token-2022 tokens can have pathological reserve_token values
+            // that make sell overflow unavoidable at higher position sizes. Keep at probe only.
+            {
+                let mint = pos.mint;
+                const TOKEN_2022_PROGRAM: [u8; 32] = [
+                    0x06, 0xdd, 0xf6, 0xe1, 0xee, 0x75, 0x8f, 0xde,
+                    0x18, 0x42, 0x5d, 0xbc, 0xe4, 0x6c, 0xcd, 0xda,
+                    0xb6, 0x1a, 0xfc, 0x4d, 0x83, 0xb9, 0x0d, 0x27,
+                    0xfe, 0xbd, 0xf9, 0x28, 0xd8, 0xa1, 0x8b, 0xfc,
+                ];
+                if let Some(pool) = self.pumpswap_pools.get(&mint) {
+                    if pool.token_mint_program == TOKEN_2022_PROGRAM {
+                        pos.set_scaled_in(); // mark as done — stay at probe forever
+                        tracing::debug!(
+                            mint = %bs58::encode(&mint).into_string(),
+                            "[momentum] scale-in blocked — Token-2022 token (sell overflow risk)"
+                        );
+                        continue;
+                    }
+                }
             }
 
             // Need at least 1 sample for s[0]
@@ -4464,6 +4489,25 @@ impl MomentumEngine {
                             return;
                         }
 
+                        // Sell-side overflow guard: PumpSwap AMM sell.rs:206 computes
+                        // tokens_in * reserve_sol in u64. If this overflows, the TX will land
+                        // with Custom:6023 and tokens are permanently stuck. Check before building.
+                        {
+                            // Use a conservative 100 SOL reserve_sol if we can't fetch current value.
+                            let reserve_sol_est: u128 = 100_000_000_000; // 100 SOL in lamports
+                            let overflow_check = actual_tokens as u128 * reserve_sol_est;
+                            if overflow_check > u64::MAX as u128 {
+                                tracing::error!(
+                                    mint = %bs58::encode(&mint_copy).into_string(),
+                                    actual_tokens,
+                                    reserve_sol_est,
+                                    overflow_check = %overflow_check,
+                                    "[sell_pumpswap] overflow guard — tokens * reserve_sol exceeds u64::MAX, tokens are dust, skipping TX (Custom:6023 would fire)"
+                                );
+                                return;
+                            }
+                        }
+
                         // min_sol_out = 0: accept whatever the AMM gives.
                         // A non-zero floor causes Custom:6004 SlippageExceeded when pool
                         // price moves between close decision and TX landing — tokens get stuck.
@@ -5016,6 +5060,37 @@ impl MomentumEngine {
                 crate::tx::raydium::JITO_TIP_ACCOUNTS[0]
             ).unwrap();
             let fee_idx = 0usize;
+
+            // Orphan recovery overflow guard: same check as sell_pumpswap.
+            // balance * reserve_sol overflows u64 in AMM — skip TX, log dust.
+            {
+                let reserve_sol_est: u128 = 100_000_000_000; // 100 SOL conservative
+                let overflow_check = balance as u128 * reserve_sol_est;
+                if overflow_check > u64::MAX as u128 {
+                    tracing::error!(
+                        mint=%mint_str,
+                        balance,
+                        "[orphan_recovery] overflow guard — tokens * reserve_sol exceeds u64::MAX, dust position, skipping TX"
+                    );
+                    // Add to file-based blocklist so orphan_recovery won't retry
+                    let bl_path = std::env::var("ORPHAN_BLOCKLIST_PATH")
+                        .unwrap_or_else(|_| "/data/.openclaw/workspace/projects/pump-quant/config/orphan_blocklist.json".to_string());
+                    if let Ok(raw) = std::fs::read_to_string(&bl_path) {
+                        if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                            if let Some(arr) = v["blocked_mints"].as_array_mut() {
+                                let already = arr.iter().any(|x| x.as_str() == Some(mint_str.as_str()));
+                                if !already {
+                                    arr.push(serde_json::Value::String(mint_str.clone()));
+                                    if let Ok(updated) = serde_json::to_string_pretty(&v) {
+                                        let _ = std::fs::write(&bl_path, updated);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+            }
 
             tracing::info!(
                 mint=%mint_str,

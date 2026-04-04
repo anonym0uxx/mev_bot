@@ -85,6 +85,10 @@ pub struct MomentumConfig {
     pub entry_delay_ms: u64,
     /// Minimum graduation score (0-100, excl. recovery at filter time) to schedule entry.
     pub min_grad_score: u8,
+    /// Minimum score for cold-miss tokens (no CoreCast enrichment).
+    /// Cold misses use fabricated defaults (buys_5s=3, grad_speed=120s) so need a higher bar.
+    /// If None, defaults to min_grad_score + 15.
+    pub cold_miss_min_grad_score: Option<u8>,
     /// Position size in SOL per entry.
     pub position_size_sol: f64,
     /// Maximum concurrent open positions.
@@ -113,6 +117,9 @@ pub struct MomentumConfig {
     pub trailing_stop_tier2_pct: f64,
     /// Hard stop-loss: immediate full exit at this % loss.
     pub hard_sl_pct: f64,
+    /// Delay after entry before hard SL arms (ms). Prevents wick-stops on entry candles.
+    /// Default: 2000ms (2s). Set to 0 to arm immediately.
+    pub hard_sl_arm_delay_ms: Option<u64>,
     /// Time-based stop-loss: exit if still losing after this many ms.
     pub time_sl_ms: u64,
     /// Maximum hold time before forced exit (ms).
@@ -710,6 +717,7 @@ impl Default for MomentumConfig {
             paper_mode: true,
             entry_delay_ms: 15_000,
             min_grad_score: 30,
+            cold_miss_min_grad_score: None,
             position_size_sol: 0.3,
             max_concurrent: 5,
             tp1_pct: 5.0,
@@ -724,6 +732,7 @@ impl Default for MomentumConfig {
             trailing_stop_tier2_max_bps: 500,
             trailing_stop_tier2_pct: 12.0,
             hard_sl_pct: 12.0,
+            hard_sl_arm_delay_ms: None,
             time_sl_ms: 60_000,
             max_hold_ms: 600_000,
             momentum_decay_min_hold_ms: 30_000,
@@ -754,7 +763,7 @@ impl Default for MomentumConfig {
             observation_require_price_stability: true,
             observation_window_min_ms: 2_000,
             observation_early_entry_velocity_bps_per_s: 150,
-            observation_early_entry_min_samples: 3,
+            observation_early_entry_min_samples: 10,
             observation_early_abort_drawdown_bps: -500,
 
             // Momentum state classification
