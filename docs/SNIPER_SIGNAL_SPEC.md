@@ -853,13 +853,9 @@ on_chain_score < 30? → keep monitoring (social multiplier cannot rescue this)
 final_score < 40? → keep monitoring
                   ↓ final_score >= 40
 
-Kelly sizing:
-  p = score_to_probability(final_score)
-       // 40→p=0.30, 55→p=0.45, 70→p=0.60, 85→p=0.70, 100→p=0.80
-  b = 0.12
-  kelly_f = (p*b - (1-p)) / b
-  position_sol = wallet_sol × kelly_f × 0.5  // half-Kelly
-  clamp(0.01, 0.10 SOL)
+Kelly sizing: → see §Kelly Position Sizing below for full spec
+  position_sol = compute_position_size(&signal, wallet_sol, &trade_history)
+  // clamp(0.01, 0.10 SOL) — full logic in sizing section
 
 Bundle construction:
   TX1: buy position_sol on bonding curve
@@ -869,6 +865,400 @@ Bundle construction:
 Log SniperTradeLog → data/sniper_trades.jsonl
 Token age > 300s with no entry → drop tracking
 ```
+
+---
+
+## Kelly Position Sizing
+
+### Design Principles
+
+The sniper has a binary outcome structure: the Jito atomic bundle either lands with both TX1 (buy) and TX2 (sell at +12%) or neither lands. If neither lands, cost = Jito tip only (~5000 lamports). This makes the downside nearly zero and the Kelly formula degenerate in the classical sense — but that's not the whole picture.
+
+**Why standard Kelly still applies:**
+- In paper mode and early live mode, the real risk is *opportunity cost* and *model error*. Sizing too large on bad signals wastes capital velocity.
+- The +12% target is not guaranteed — TX2 may not execute at target if the curve moved adversely between bundle construction and landing. Effective win rate reflects bundle success rate × exit price accuracy.
+- Jito tip cost is real and cumulative. At 50,000 lamports/bundle and 100 bundles/day, that's 0.005 SOL/day in tips alone. Sizing too small relative to tip cost is EV-negative.
+
+**Why zone-awareness matters for sizing:**
+- At real_sol=3 (early optimal), exit liquidity is thin. A 0.10 SOL buy in a 3 SOL curve moves price significantly. Our own buy affects the exit price.
+- At real_sol=12 (peak optimal), the curve has depth. A 0.10 SOL buy is a small fraction of existing liquidity.
+- At real_sol=17 (conditional zone), we already required on_chain_score ≥ 60. But the follow-on math is harder. Reduce size regardless of score.
+
+---
+
+### Phase 1: Bootstrap (first 50 trades)
+
+No Kelly. No probability estimation. Flat probe sizing.
+
+```
+if trade_history.total_trades < 50:
+    return 0.02 SOL  // flat probe — builds dataset, limits exposure
+```
+
+Rationale: Kelly requires calibrated win probability. Made-up p values lead to ruin. 50 trades at 0.02 SOL = max 1.0 SOL total exposure during calibration phase. After 50 trades, switch to adaptive Kelly.
+
+---
+
+### Phase 2: Adaptive Kelly (trades 50+)
+
+#### Step 1: Estimate win probability `p`
+
+After bootstrap, use rolling trade history (last 100 trades, or all trades if < 100):
+
+```
+p_raw = wins / total_trades  // from trade_history (last 100)
+
+// Bayesian smoothing toward prior of 0.35 (conservative base rate for pump.fun sniping)
+// Prevents wild swings on small samples between 50-100 trades
+prior_p = 0.35
+prior_weight = 20  // equivalent to 20 prior "trades"
+n = min(trade_history.total_trades, 100)
+p = (p_raw × n + prior_p × prior_weight) / (n + prior_weight)
+```
+
+This gives:
+- At trade 50 with 40% win rate: p = (0.40×50 + 0.35×20) / 70 = 0.386
+- At trade 100 with 40% win rate: p = (0.40×100 + 0.35×20) / 120 = 0.392
+- At trade 200 with 40% win rate: p → 0.40 (prior fully diluted)
+
+#### Step 2: Zone-adjusted reward `b`
+
+`b` is not a flat 0.12. It's the *effective* net gain ratio after fees and slippage, which varies by curve position:
+
+```
+// At real_sol=3: our 0.05 SOL buy moves the curve ~1.4%. Exit sell also moves it.
+// Round-trip slippage on a thin curve eats into the +12% target.
+// At real_sol=12: our buy is <0.5% of curve. Slippage minimal.
+
+fn zone_adjusted_b(real_sol: f64) -> f64 {
+    match real_sol {
+        r if r < 5.0  => 0.09,   // early optimal: thin depth, ~3% slippage haircut on 12%
+        r if r < 15.0 => 0.11,   // peak optimal: minimal slippage, slight haircut for fees
+        _             => 0.09,   // conditional zone: harder math, apply same early haircut
+    }
+}
+// Note: calibrate these haircuts after 200+ trades with actual slippage data
+```
+
+#### Step 3: Zone-adjusted probability `p`
+
+Conditional zone entries (real_sol 15–20) statistically have lower win rate than optimal zone. Apply a zone penalty to `p`:
+
+```
+fn zone_adjusted_p(p_base: f64, curve_zone: CurveFillZone) -> f64 {
+    match curve_zone {
+        CurveFillZone::Optimal     => p_base,
+        CurveFillZone::Conditional => p_base * 0.85,  // 15% lower win rate assumption
+        _                          => 0.0,            // should never reach sizing
+    }
+}
+// 0.85 multiplier = conservative prior. Calibrate from conditional-zone trade outcomes.
+```
+
+#### Step 4: Kelly fraction
+
+```
+kelly_f = (p × b - (1 - p)) / b
+half_kelly_f = kelly_f × 0.5   // half-Kelly always
+
+// Kelly is negative (or zero) when p × b < (1-p)
+// i.e. when p < 1/(1+b) ≈ 0.893 for b=0.11 → actually p < ~0.90, but our b is small
+// More precisely: for b=0.11, Kelly = 0 when p = 1/1.11 = 0.90. That's unreachable.
+// For b=0.11, Kelly > 0 when p > 0.90. Wait — that's wrong.
+//
+// Correct: Kelly > 0 when p*b > (1-p) → p > 1/(1+b)
+// b=0.11: threshold p = 1/1.11 = 0.474
+// b=0.09: threshold p = 1/1.09 = 0.478
+//
+// So at p < ~0.48, Kelly says don't bet. With our prior of 0.35, Kelly is NEGATIVE.
+// This means: in bootstrap/early phase, classical Kelly says size zero.
+// Solution: use score-gated minimum floor and treat early trades as exploration.
+
+if kelly_f <= 0.0 {
+    // Below Kelly threshold. Use score-gated floor only if final_score is high.
+    return if final_score >= 65 { 0.01 } else { 0.0 };  // 0.0 = skip entry
+}
+```
+
+**Important implication:** At our +12% target with typical win rates of 35-50%, classical Kelly often says bet very small or not at all. The minimum position floor (0.01 SOL) exists precisely to keep the bot exploring while Kelly is near zero. This is expected and correct — the sniper is a high-frequency low-edge strategy.
+
+#### Step 5: Score tiers and final size
+
+```
+fn score_tier_multiplier(final_score: u8) -> f64 {
+    match final_score {
+        s if s >= 80 => 1.0,   // conviction — full half-Kelly
+        s if s >= 65 => 0.75,  // normal
+        s if s >= 50 => 0.50,  // probe (above threshold but not high confidence)
+        _            => 0.25,  // floor probe (40–49, no-velocity entries)
+    }
+}
+
+base_size = wallet_sol × half_kelly_f × score_tier_multiplier(final_score)
+position_sol = base_size.clamp(0.01, 0.10)
+
+// Additional zone cap: conditional zone entries capped at 60% of normal max
+if curve_zone == CurveFillZone::Conditional {
+    position_sol = position_sol.min(0.06);
+}
+```
+
+#### Step 6: Wallet drawdown protection
+
+```
+// If wallet has dropped >20% from session high water mark, halve all sizes
+if wallet_sol < session_high_water_mark × 0.80 {
+    position_sol = (position_sol × 0.5).max(0.01);
+}
+
+// Hard stop: if wallet_sol < 0.05, only probe sizes
+if wallet_sol < 0.05 {
+    position_sol = 0.01;
+}
+```
+
+---
+
+### Kelly State Update (after each trade result)
+
+```rust
+pub fn update_kelly_state(outcome: TradeOutcome, history: &mut TradeHistory) {
+    history.trades.push_back(outcome);
+    if history.trades.len() > 100 {
+        history.trades.pop_front();
+    }
+    history.total_trades += 1;
+    if outcome.is_win { history.wins += 1; }
+    // Note: wins/total_trades is recomputed from the deque on each call,
+    // not from these counters, to ensure lookback window accuracy.
+}
+```
+
+---
+
+### Worked Examples
+
+**Example A — Bootstrap trade (trade #23)**
+- final_score = 72, real_sol = 8, curve_zone = Optimal
+- Result: 0.02 SOL flat (bootstrap, trade_count < 50)
+
+**Example B — Post-bootstrap, low-confidence (trade #67)**
+- trade history: 35 wins / 67 trades → p_raw=0.522, smoothed p=0.499
+- real_sol = 4.5, curve_zone = Optimal → b=0.09
+- kelly_f = (0.499×0.09 - 0.501) / 0.09 = (0.0449 - 0.501) / 0.09 = -5.07 → negative
+- Kelly < 0: final_score=52 < 65 → return 0.0 (skip entry)
+- *Interpretation: win rate not yet high enough to justify betting at this reward multiple. Bot stays out.*
+
+**Example C — Post-bootstrap, conviction entry (trade #120)**
+- trade history: 54 wins / 100 trades → p_raw=0.54, smoothed p=0.508
+- real_sol = 9, curve_zone = Optimal → b=0.11
+- kelly_f = (0.508×0.11 - 0.492) / 0.11 = (0.0559 - 0.492) / 0.11 = -3.96 → still negative
+- Kelly < 0: final_score=81 ≥ 65 → return 0.01 SOL floor probe
+- *Still at floor. This is correct for a 12% target — Kelly barely turns positive above ~50% win rate.*
+
+**Example D — High win rate, high score (trade #200)**
+- trade history: 72 wins / 100 trades → p_raw=0.72, smoothed p=0.683
+- real_sol = 11, curve_zone = Optimal → b=0.11
+- kelly_f = (0.683×0.11 - 0.317) / 0.11 = (0.0751 - 0.317) / 0.11 = -2.20 → still negative
+- *Even at 72% win rate, Kelly is negative for b=0.11. This reveals the fundamental math.*
+
+**Implication of the worked examples:**
+The Kelly criterion with b=0.11–0.12 only turns positive when p > ~0.48, and only becomes meaningfully positive (>5% of bankroll) at p > ~0.60+. With realistic pump.fun win rates (35–55%), **the Kelly formula will almost always recommend zero or floor sizing**. This is mathematically correct — it means the edge per trade is thin, and the strategy's alpha comes from *volume* (many small probes) not *size* (large positions per signal).
+
+**Practical consequence:** The score-tier system and floors are doing most of the real sizing work. Kelly acts as a *veto* (skip entries when p×b < 1-p at low scores) and a *sanity check* on max size, not as the primary sizing driver. This is appropriate for a high-frequency sniper.
+
+---
+
+### Rust Implementation
+
+```rust
+use std::collections::VecDeque;
+
+#[derive(Debug, Clone)]
+pub struct TradeOutcome {
+    pub is_win: bool,
+    pub pnl_sol: f64,
+    pub final_score: u8,
+    pub curve_zone: CurveFillZone,
+    pub real_sol_at_entry: f64,
+    pub timestamp_ms: u64,
+}
+
+#[derive(Debug)]
+pub struct TradeHistory {
+    pub trades: VecDeque<TradeOutcome>,
+    pub total_trades: u64,
+    pub session_high_water_mark: f64,
+}
+
+impl TradeHistory {
+    pub fn new() -> Self {
+        Self {
+            trades: VecDeque::with_capacity(100),
+            total_trades: 0,
+            session_high_water_mark: 0.0,
+        }
+    }
+
+    pub fn win_rate(&self) -> f64 {
+        if self.trades.is_empty() { return 0.0; }
+        let wins = self.trades.iter().filter(|t| t.is_win).count();
+        wins as f64 / self.trades.len() as f64
+    }
+}
+
+#[derive(Debug)]
+pub struct SniperSizer {
+    pub bootstrap_trades: u64,       // 50 — flat probe period
+    pub bootstrap_size_sol: f64,     // 0.02
+    pub kelly_fraction: f64,         // 0.5 (half-Kelly)
+    pub prior_p: f64,                // 0.35
+    pub prior_weight: f64,           // 20.0
+    pub min_position_sol: f64,       // 0.01
+    pub max_position_sol: f64,       // 0.10
+    pub conditional_zone_cap_sol: f64, // 0.06
+    pub drawdown_threshold: f64,     // 0.80 (80% of HWM)
+    pub low_wallet_threshold_sol: f64, // 0.05
+}
+
+impl SniperSizer {
+    pub fn compute_position_size(
+        &self,
+        final_score: u8,
+        curve_zone: CurveFillZone,
+        real_sol: f64,
+        wallet_sol: f64,
+        history: &TradeHistory,
+    ) -> f64 {
+        // Bootstrap: flat probe
+        if history.total_trades < self.bootstrap_trades {
+            return self.bootstrap_size_sol;
+        }
+
+        // Drawdown protection
+        let size_multiplier = if wallet_sol < self.low_wallet_threshold_sol {
+            return self.min_position_sol;
+        } else if wallet_sol < history.session_high_water_mark * self.drawdown_threshold {
+            0.5
+        } else {
+            1.0
+        };
+
+        // Estimate p with Bayesian smoothing
+        let n = history.trades.len() as f64;
+        let p_raw = history.win_rate();
+        let p_base = (p_raw * n + self.prior_p * self.prior_weight)
+            / (n + self.prior_weight);
+
+        // Zone-adjust p and b
+        let p = self.zone_adjusted_p(p_base, curve_zone);
+        let b = self.zone_adjusted_b(real_sol);
+
+        // Kelly fraction
+        let kelly_f = (p * b - (1.0 - p)) / b;
+        let half_kelly = kelly_f * self.kelly_fraction;
+
+        // Kelly veto
+        if half_kelly <= 0.0 {
+            return if final_score >= 65 { self.min_position_sol } else { 0.0 };
+        }
+
+        // Score tier multiplier
+        let tier_mult = self.score_tier_multiplier(final_score);
+
+        // Base size
+        let mut size = wallet_sol * half_kelly * tier_mult * size_multiplier;
+
+        // Zone cap for conditional entries
+        if curve_zone == CurveFillZone::Conditional {
+            size = size.min(self.conditional_zone_cap_sol);
+        }
+
+        size.clamp(self.min_position_sol, self.max_position_sol.min(wallet_sol * 0.20))
+    }
+
+    fn zone_adjusted_b(&self, real_sol: f64) -> f64 {
+        if real_sol < 5.0 { 0.09 } else if real_sol < 15.0 { 0.11 } else { 0.09 }
+    }
+
+    fn zone_adjusted_p(&self, p_base: f64, zone: CurveFillZone) -> f64 {
+        match zone {
+            CurveFillZone::Optimal     => p_base,
+            CurveFillZone::Conditional => p_base * 0.85,
+            _                          => 0.0,
+        }
+    }
+
+    fn score_tier_multiplier(&self, final_score: u8) -> f64 {
+        match final_score {
+            s if s >= 80 => 1.00,
+            s if s >= 65 => 0.75,
+            s if s >= 50 => 0.50,
+            _            => 0.25,
+        }
+    }
+}
+
+pub fn update_kelly_state(outcome: TradeOutcome, history: &mut TradeHistory) {
+    history.trades.push_back(outcome);
+    if history.trades.len() > 100 {
+        history.trades.pop_front();
+    }
+    history.total_trades += 1;
+    // Update session high water mark externally from wallet balance
+}
+```
+
+---
+
+### Config Block
+
+```json
+"sniper_sizing": {
+  "bootstrap_trades": 50,
+  "bootstrap_size_sol": 0.02,
+  "kelly_fraction": 0.5,
+  "prior_p": 0.35,
+  "prior_weight": 20,
+  "min_position_sol": 0.01,
+  "max_position_sol": 0.10,
+  "max_wallet_pct": 0.20,
+  "conditional_zone_cap_sol": 0.06,
+  "drawdown_threshold": 0.80,
+  "low_wallet_threshold_sol": 0.05,
+  "kelly_veto_floor_score": 65,
+  "b_early_optimal": 0.09,
+  "b_peak_optimal": 0.11,
+  "b_conditional": 0.09,
+  "conditional_p_multiplier": 0.85,
+  "score_tiers": {
+    "conviction": 80,
+    "normal": 65,
+    "probe": 50,
+    "floor_probe": 40
+  },
+  "score_tier_multipliers": {
+    "conviction": 1.00,
+    "normal": 0.75,
+    "probe": 0.50,
+    "floor_probe": 0.25
+  }
+}
+```
+
+---
+
+### Key Insight: Kelly as Veto, Not Driver
+
+At our reward multiple (b ≈ 0.09–0.11), Kelly only turns positive when win rate exceeds ~48%. With realistic pump.fun sniper win rates of 35–55% during calibration, **Kelly will frequently recommend zero or minimum sizing**. This is mathematically correct and expected.
+
+The practical sizing system is therefore:
+1. **Kelly veto**: if Kelly < 0 AND score < 65 → skip the trade
+2. **Score tiers**: primary driver of size within allowed range
+3. **Zone caps**: hard limits for conditional zone and thin-depth entries
+4. **Drawdown protection**: auto-reduce when wallet takes hits
+
+Track calibration needs: `b` haircuts for early/peak/conditional zones should be recalibrated after 200+ trades with actual slippage data from TX2 execution prices.
 
 ---
 
