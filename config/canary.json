@@ -527,8 +527,9 @@
     "tp3_pct": 999.0,
     "tp3_exit_pct": 1.0,
     "trailing_stop_pct": 15.0,
-    "hard_sl_pct": 15.0,
-    "time_sl_ms": 120000,
+    "hard_sl_pct": 8.0,
+    "time_sl_ms": 60000,
+    "hard_sl_arm_delay_ms": 3000,
     "max_hold_ms": 600000,
     "max_hold_trail_activation_ms": 180000,
     "max_hold_trail_pct": 2.0,
@@ -544,8 +545,9 @@
     "reentry_cooldown_ms": 120000,
     "price_poll_interval_ms": 500,
     "observation_window_min_ms": 2000,
-    "observation_early_entry_velocity_bps_per_s": 150,
-    "observation_early_entry_min_samples": 3,
+    "observation_early_entry_velocity_bps_per_s": 200,
+    "observation_early_entry_min_samples": 15,
+    "observation_window_ms": 8000,
     "observation_early_abort_drawdown_bps": -500,
     "momentum_accel_threshold_bps": 100,
     "momentum_decel_threshold_bps": -100,
@@ -571,19 +573,19 @@
     "dead_zone_stagnant_bps": 300,
     "dead_zone_stagnant_window_ms": 30000,
     "probe_size_sol": 0.03,
-    "probe_hold_ms": 3000,
+    "probe_hold_ms": 5000,
     "probe_dump_threshold_bps": -600,
     "probe_scale_min_bps": -150,
     "min_ws_notif_for_scale_in": 5,
-    "scale_in_s0_strong_bps": 200,
-    "scale_in_s0_strong_sol": 0.3,
-    "scale_in_s0_moderate_bps": 75,
-    "scale_in_s0_moderate_sol": 0.15,
-    "scale_in_s1_moderate_bps": 100,
-    "scale_in_s1_sol": 0.1,
+    "scale_in_s0_strong_bps": 300,
+    "scale_in_s0_strong_sol": 0.07,
+    "scale_in_s0_moderate_bps": 150,
+    "scale_in_s0_moderate_sol": 0.05,
+    "scale_in_s1_moderate_bps": 200,
+    "scale_in_s1_sol": 0.04,
     "scale_in_high_score_s0_bps": 75,
     "scale_in_low_score_s0_bps": 150,
-    "max_total_size_sol": 0.3,
+    "max_total_size_sol": 0.12,
     "early_abort_max_bps": 30,
     "early_abort_min_samples": 6,
     "early_abort_min_hold_ms": 8000,
@@ -657,27 +659,28 @@
     "trail_config": {
       "tiers": [
         {
-          "up_to_bps": 300,
-          "trail_bps": 200
+          "up_to_bps": 800,
+          "trail_bps": 350
         },
         {
-          "up_to_bps": 1200,
-          "trail_bps": 450
+          "up_to_bps": 2000,
+          "trail_bps": 500
         },
         {
-          "up_to_bps": 4000,
-          "trail_bps": 700
+          "up_to_bps": 5000,
+          "trail_bps": 800
         },
         {
           "up_to_bps": 2147483647,
-          "trail_bps": 1100
+          "trail_bps": 1200
         }
       ],
       "confirm_samples": 2,
       "min_samples_to_activate": 5,
-      "floor_bps": 350
+      "floor_bps": 550
     },
-    "min_buys_for_full_ratio_score": 5
+    "min_buys_for_full_ratio_score": 5,
+    "cold_miss_min_grad_score": 70
   },
   "min_grad_score": 50
 }

@@ -335,6 +335,21 @@ impl ObservationWindow {
             self.reserve_samples[self.reserve_count as usize - 1].1
         }
     }
+
+    /// Returns the percentage (0-100) of consecutive inter-sample price deltas that are positive.
+    /// Used to detect spike-then-dump patterns vs. sustained momentum.
+    fn velocity_consistency_pct(&self) -> u8 {
+        let n = self.price_count as usize;
+        if n < 2 { return 50; } // insufficient data — neutral
+        let mut positive = 0u8;
+        let total = (n - 1) as u8;
+        for i in 1..n {
+            if self.price_samples[i].1 > self.price_samples[i-1].1 {
+                positive += 1;
+            }
+        }
+        (positive as u16 * 100 / total as u16) as u8
+    }
 }
 
 /// Result from an async retry task when ShredStream detects a fresh PumpSwap
@@ -999,7 +1014,7 @@ impl MomentumEngine {
         // → information asymmetry edge.
         if is_cold_miss {
             let mint_b58 = bs58::encode(&pool_info.mint).into_string();
-            score.cold_miss_bonus = 3;
+            score.cold_miss_bonus = 0;
             tracing::debug!(
                 mint = %mint_b58,
                 total = score.total(),
@@ -1991,7 +2006,18 @@ impl MomentumEngine {
                         // Check early entry velocity
                         if !should_reject {
                             let velocity = w.price_velocity_bps_per_s();
-                            if velocity >= self.config.observation_early_entry_velocity_bps_per_s {
+                            // Velocity consistency gate: require >50% of inter-sample deltas to be positive.
+                            // Spike-then-dump tokens show high first-to-last velocity but negative deltas after the spike.
+                            let consistency = w.velocity_consistency_pct();
+                            if consistency < 50 {
+                                tracing::debug!(
+                                    mint = %bs58::encode(&mint).into_string(),
+                                    consistency,
+                                    velocity,
+                                    "[momentum] observation early-entry rejected — velocity inconsistent (spike pattern)"
+                                );
+                                // Don't early-exit; let full window complete
+                            } else if velocity >= self.config.observation_early_entry_velocity_bps_per_s {
                                 tracing::info!(
                                     mint = %bs58::encode(&mint).into_string(),
                                     velocity_bps_per_s = velocity,
@@ -2292,6 +2318,22 @@ impl MomentumEngine {
                 (self.config.probe_size_sol * 1_000_000_000.0) as u64
             } else {
                 self.compute_size_lamports(&entry.mint, final_score as u32)
+            };
+
+            // Asymmetric probe sizing: cold miss entries get reduced probe size.
+            // Cold miss detection: no enrichment data (grad_speed_s == 0 && grad_volume_sol_x100 == 0).
+            // Cold miss score < 70: 60% probe (low-conviction).
+            // Cold miss score >= 70: 85% probe (higher-conviction).
+            // Enriched entries: full probe.
+            let is_cold_miss_entry = entry.grad_speed_s == 0 && entry.grad_volume_sol_x100 == 0;
+            let raw_size = if is_cold_miss_entry {
+                if final_score < 70 {
+                    raw_size * 60 / 100
+                } else {
+                    raw_size * 85 / 100
+                }
+            } else {
+                raw_size
             };
             // Apply ToD multiplier to entry size (computed in on_graduation, recompute here
             // since pending entries may execute hours after scheduling).
@@ -3060,7 +3102,7 @@ impl MomentumEngine {
             // 2. Hard SL — with arm delay to avoid wick-stops on entry.
             // Don't arm the SL for hard_sl_arm_delay_ms after entry (default 2000ms).
             // This eliminates entries where price wicks below SL before establishing.
-            let hard_sl_arm_delay_ms = self.config.hard_sl_arm_delay_ms.unwrap_or(2000);
+            let hard_sl_arm_delay_ms = self.config.hard_sl_arm_delay_ms.unwrap_or(3000);
             let sl_armed = now_ms.saturating_sub(pos.entry_ts_ms) >= hard_sl_arm_delay_ms;
             let hard_sl_bps = (self.config.hard_sl_pct * 100.0) as u32;
             if sl_armed && pos.hard_sl_hit(current_price_fp, hard_sl_bps) {
@@ -3637,6 +3679,19 @@ impl MomentumEngine {
                 }
             }
 
+            // Block scale-in for low-conviction cold miss entries (score < 70).
+            // Cold misses score on fabricated defaults — don't amplify risk on uncertain entries.
+            if pos.grad_score < 70 {
+                pos.set_scaled_in();
+                tracing::debug!(
+                    mint = %bs58::encode(&pos.mint).into_string(),
+                    grad_score = pos.grad_score,
+                    "[momentum] scale-in blocked — low-conviction entry (score {} < 70)",
+                    pos.grad_score
+                );
+                continue;
+            }
+
             // Need at least 1 sample for s[0]
             if pos.sample_count < 1 {
                 continue;
@@ -3684,6 +3739,28 @@ impl MomentumEngine {
                     }
                 }
                 // If no zone tracker exists (edge case), allow scale-in (backward compat)
+            }
+
+            // Gain gate: only scale in if the position is already above breakeven.
+            // Breakeven is ~421 bps (buy slippage + sell slippage + TX overhead).
+            // Scale in on EVIDENCE the trade is working, not on hope.
+            {
+                let mint = pos.mint;
+                if let Some(current_fp) = self.price_feed.current_price(&mint) {
+                    let entry_fp = pos.entry_price_fp;
+                    if entry_fp > 0 && current_fp > 0 {
+                        let gain_bps = ((current_fp as i64 - entry_fp as i64) * 10_000) / entry_fp as i64;
+                        if gain_bps < 400 {
+                            tracing::trace!(
+                                mint = %bs58::encode(&mint).into_string(),
+                                gain_bps,
+                                "[momentum] scale-in deferred — gain below breakeven ({}bps < 400bps)",
+                                gain_bps
+                            );
+                            continue;
+                        }
+                    }
+                }
             }
 
             // Score-aware strong conviction threshold:
