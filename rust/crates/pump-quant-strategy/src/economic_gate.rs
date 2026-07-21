@@ -79,3 +79,56 @@ pub fn round_trip_cost_bps(
             .saturating_add(impact.impact_bps(size_lamports)),
     )
 }
+
+/// eg_min_viable_size — the smallest size `x_min` whose expected executable move still clears
+/// the whole cost floor with `margin_bps` to spare: `expected_move_bps >= cost(x) + margin`.
+///
+/// Below `x_min` the un-amortized fixed cost eats the edge, so a risk-permitted size under it
+/// is a *refusal*, never a shrunk position — this is the arithmetic that makes the legacy
+/// 0.01-SOL structural loss impossible by construction. Returns `None` when no size up to
+/// `search_hi_lamports` clears (the candidate is inadmissible at any size — e.g. a move
+/// thinner than protocol + margin, which no amount of amortization can rescue).
+pub fn min_viable_size(
+    expected_move_bps: u32,
+    eff_fixed_lamports: u64,
+    protocol_bps: u32,
+    margin_bps: u32,
+    impact: &ImpactCurve,
+    search_hi_lamports: u64,
+) -> Option<u64> {
+    let clears = |size: u64| {
+        round_trip_cost_bps(size, eff_fixed_lamports, protocol_bps, impact)
+            .is_some_and(|cost| expected_move_bps >= cost.saturating_add(margin_bps))
+    };
+    if search_hi_lamports == 0 {
+        return None;
+    }
+    // Bracket the lower crossing by doubling from the smallest representable size. The
+    // crossing sits on the falling (fixed-cost-dominated) branch of the U, so every probe
+    // that fails proves all smaller sizes fail too: when a probe finally clears, the answer
+    // is bracketed in `(lo, hi]` with `lo` known-infeasible.
+    let (mut lo, mut hi) = (0u64, 1u64);
+    loop {
+        let probe = hi.min(search_hi_lamports);
+        if clears(probe) {
+            hi = probe;
+            break;
+        }
+        if probe == search_hi_lamports {
+            return None;
+        }
+        lo = probe;
+        hi = probe.saturating_mul(2);
+    }
+    // Inside the bracket the feasible set is an upper interval, so bisection lands on the
+    // exact smallest clearing size — deterministic, pure integer, no float anywhere.
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if clears(mid) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    Some(hi)
+}
