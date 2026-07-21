@@ -12,3 +12,10 @@ config/keys/*.json
 config/keys/README.md
 rust/target/
 rust/.env
+
+# build artifacts that should never be tracked
+__pycache__/
+*.pyc
+supervisor_evidence.db
+supervisor_evidence.db-wal
+supervisor_evidence.db-shm
