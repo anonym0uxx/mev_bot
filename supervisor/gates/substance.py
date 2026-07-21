@@ -39,6 +39,13 @@ def _strip_rust_noise(src: str) -> str:
     # remove line comments (// and //!) and block comments, then blank lines
     src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
     src = re.sub(r"^\s*//.*$", "", src, flags=re.M)
+    # scaffold markers are NOT real implementation — strip them so a skeleton module doesn't
+    # count as "non-empty". These are written by scaffold_workspace.py to keep files valid
+    # before leaves land; real leaf code replaces/augments them.
+    src = src.replace("const _MODULE_SCAFFOLD: () = ();", "")
+    src = re.sub(r"^\s*#\[allow\(dead_code\)\]\s*$", "", src, flags=re.M)
+    # a bare `pub mod x;` declaration is structure, not implementation — don't count it
+    src = re.sub(r"^\s*pub mod \w+;\s*$", "", src, flags=re.M)
     src = re.sub(r"^\s*$\n", "", src, flags=re.M)
     return src.strip()
 

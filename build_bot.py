@@ -317,7 +317,20 @@ def main() -> int:
     store.start_run(run_id, cons.content_hash, "v")
     guard = BudgetGuard(max_usd=args.max_usd, max_seconds=args.max_hours * 3600)
 
-    # materialize the dossier tests first (correctness authority)
+    # ensure the Rust workspace exists FIRST (root Cargo.toml + crates + module files), so
+    # `cargo build`/`cargo test` have a valid workspace to compile against. Without this, every
+    # leaf fails with "could not find Cargo.toml". Idempotent and non-destructive: it never
+    # clobbers real leaf code, only creates missing skeleton files.
+    scaffold = repo / "scaffold_workspace.py"
+    if scaffold.is_file():
+        r = sh([sys.executable, str(scaffold), "--repo", str(repo)], repo)
+        if r.returncode != 0:
+            print(f"[bot] workspace scaffold warning: {(r.stderr or r.stdout or '')[:300]}")
+    else:
+        print("[bot] WARNING: scaffold_workspace.py not found — cargo build may fail without a "
+              "workspace. Place scaffold_workspace.py in the repo root.")
+
+    # materialize the dossier tests (correctness authority)
     sh([sys.executable, "scripts/materialize_tests.py", "--repo", str(repo)], repo)
 
     done, failed, skipped = 0, 0, 0
