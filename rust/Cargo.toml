@@ -24,6 +24,7 @@ members = [
     "crates/pump-quant-social",
     "crates/pump-quant-wallet-graph",
     "crates/pump-quant-watchlist",
+    "crates/pump-quant-app",
 ]
 
 [workspace.package]
