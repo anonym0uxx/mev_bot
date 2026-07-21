@@ -153,30 +153,53 @@ def leaf_satisfied(repo: Path, d, leaf) -> bool:
     return bool(re.search(rf"\bfn\s+{re.escape(ident)}\b[^;{{]*\{{", code, re.S))
 
 
-def run_leaf_gate(repo: Path, d=None, leaf=None) -> tuple[bool, str]:
-    """Substance + compile gate for a single leaf. Reuses the existing checks and adds the
-    substance battery. Portable profile only (Phase A).
+def _leaf_fn_exists(repo: Path, leaf) -> tuple[bool, str]:
+    """Does THIS leaf's function exist in the code with a real body (not just a comment)?"""
+    import re
+    m = re.search(r"\bfn\s+([a-zA-Z_][a-zA-Z0-9_]*)", leaf.signature or "")
+    if not m:
+        return True, ""  # non-fn signature (rare); rely on build+test
+    ident = m.group(1)
+    cargo_root = repo / "rust" if (repo / "rust").is_dir() else repo
+    code = ""
+    for f in cargo_root.rglob("*.rs"):
+        if "src" in f.parts and "tests" not in f.parts:
+            code += "\n" + f.read_text(encoding="utf-8", errors="ignore")
+    code = re.sub(r"^\s*//.*$", "", code, flags=re.M)  # strip comments
+    if re.search(rf"\bfn\s+{re.escape(ident)}\b[^;{{]*\{{", code, re.S):
+        return True, ""
+    return False, f"function `{ident}` not found with a real body in any src/ module"
 
-    Critically, when d/leaf are given, it verifies the SPECIFIC dossier test for this leaf
-    actually RAN and passed — not merely that `cargo test` returned 0. Without this, a leaf whose
-    test never executes (wrong crate, unexported symbol) could pass vacuously, which is the
-    empty-file loophole re-appearing at the test level.
+
+def run_leaf_gate(repo: Path, d=None, leaf=None) -> tuple[bool, str]:
+    """Per-leaf gate: verify THIS leaf is real and its test passes. It does NOT require the whole
+    codebase to be complete — that's what the final ledger check is for. For one leaf we check:
+      - the workspace still compiles (build:ok),
+      - it's formatted (fmt:ok),
+      - THIS leaf's function exists with a real body (leaf_fn:ok) — the per-leaf substance check,
+      - THIS leaf's specific dossier test ran and passed (test:ok).
+    Whole-codebase checks (all signatures present, every crate non-trivial) are intentionally NOT
+    run here, because after implementing leaf 1 of 55 they'd always fail. They belong to a final
+    completion gate, not the per-leaf loop.
     """
     r_build = checks.check_build(str(repo))
     r_fmt = checks.check_fmt(str(repo))
-    r_nonempty = substance.check_impl_nonempty(str(repo))
-    results = [r_build, r_fmt, r_nonempty]
+    results = [r_build, r_fmt]
+
+    # per-leaf substance: does THIS leaf's function exist for real?
+    if leaf is not None:
+        ok_fn, why = _leaf_fn_exists(repo, leaf)
+        results.append(checks.CheckResult("leaf_fn", ok_fn, {"reason": why},
+                                          "leaf function present" if ok_fn else why))
+
     # only run tests if it compiles (else the compiler error is the useful signal)
     if r_build.passed:
-        # require THIS leaf's test name to actually appear as run+passed in cargo output
         required = None
         if d is not None and leaf is not None:
-            # the materialized test file name (cargo prints the test module/function names)
             required = [f"dossier_{d.component}_{leaf.leaf_id}"]
         r_test = checks.check_tests(str(repo), required_test_names=required)
-        r_sig = substance.check_dossier_signatures(str(repo))
-        r_bind = substance.check_dossier_tests_bind(str(repo))
-        results += [r_test, r_sig, r_bind]
+        results.append(r_test)
+
     ok = all(r.passed for r in results)
     summary = " ".join(f"{r.name}:{'ok' if r.passed else 'X'}" for r in results)
     detail = ""

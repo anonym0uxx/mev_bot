@@ -123,6 +123,11 @@ def check_impl_nonempty(repo: str, min_code_lines_per_crate: int = 8) -> CheckRe
     return CheckResult("impl_nonempty", ok, {"empty": empty, "thin": thin}, detail)
 
 
+# Components that are hardware-bound and built on the server, not the laptop. Their signatures
+# must NOT be required by the laptop substance gate (they were never in the laptop build plan).
+SERVER_DEFERRED_COMPONENTS = {"cpu_numa_tuning"}
+
+
 def _load_dossiers(repo: str):
     """Import the dossier loader and return all dossiers discoverable in this repo."""
     import sys
@@ -175,6 +180,8 @@ def check_dossier_signatures(repo: str) -> CheckResult:
     missing: list[str] = []
     total = 0
     for d in dossiers:
+        if d.component in SERVER_DEFERRED_COMPONENTS:
+            continue  # built on the server, not required on the laptop
         for leaf in d.leaf_order():
             ident = _signature_ident(leaf.signature or "")
             if not ident:
@@ -205,6 +212,8 @@ def check_dossier_tests_bind(repo: str) -> CheckResult:
     vacuous: list[str] = []
     total = 0
     for d in dossiers:
+        if d.component in SERVER_DEFERRED_COMPONENTS:
+            continue  # built on the server, not required on the laptop
         for leaf in d.leaf_order():
             ident = _signature_ident(leaf.signature or "")
             if not ident:

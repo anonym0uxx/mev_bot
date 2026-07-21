@@ -56,6 +56,7 @@ COMPONENT_CRATE = {
     "economic_gate": "pump-quant-strategy",
     "evaluator_stats": "pump-quant-evaluator",
     "cpu_numa_tuning": "pump-quant-core",
+    "safety_integrity": "pump-quant-strategy",
 }
 DEFAULT_CRATE = "pump-quant-core"
 
@@ -65,7 +66,11 @@ HEADER = (
     "(leaf '{leaf}').\n"
     "// It was materialized independently of the builder. Editing it is a build-integrity\n"
     "// violation caught by `materialize_tests.py --verify` and denied by .claude/settings.json.\n"
-    "// To change a component's contract, change its dossier and re-materialize — never edit here.\n\n"
+    "// To change a component's contract, change its dossier and re-materialize — never edit here.\n"
+    "// The glob import below brings the leaf's public items into scope; integration tests in\n"
+    "// tests/ are a separate crate, so the implementation must be `pub` and reachable here.\n"
+    "#![allow(unused_imports)]\n"
+    "use {crate_ident}::{module}::*;\n\n"
 )
 
 
@@ -81,7 +86,9 @@ def _dossier_dir(repo: Path) -> Path:
 
 def _test_path(repo: Path, component: str, leaf_id: str) -> Path:
     crate = COMPONENT_CRATE.get(component, DEFAULT_CRATE)
-    return repo / "rust" / crate / "tests" / f"dossier_{component}_{leaf_id}.rs"
+    # crates live under rust/crates/<crate>/ (matching scaffold_workspace.py); integration tests
+    # go in that crate's tests/ dir so `cargo test` actually compiles and runs them.
+    return repo / "rust" / "crates" / crate / "tests" / f"dossier_{component}_{leaf_id}.rs"
 
 
 def materialize(repo: Path, verify: bool) -> int:
@@ -107,7 +114,11 @@ def materialize(repo: Path, verify: bool) -> int:
             print(f"[materialize] skip {yml.name}: {e}")
             continue
         for leaf in d.leaf_order():
-            body = HEADER.format(comp=d.component, leaf=leaf.leaf_id) + leaf.property_test.rstrip() + "\n"
+            crate_name = COMPONENT_CRATE.get(d.component, DEFAULT_CRATE)
+            crate_ident = crate_name.replace("-", "_")
+            body = HEADER.format(comp=d.component, leaf=leaf.leaf_id,
+                                 crate_ident=crate_ident, module=d.component) \
+                   + leaf.property_test.rstrip() + "\n"
             key = f"{d.component}/{leaf.leaf_id}"
             sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
             current[key] = sha
