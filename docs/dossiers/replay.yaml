@@ -1,0 +1,174 @@
+component: replay
+constitution_refs: ["§22", "§43 hot journal", "§44", "criterion 13, 31"]
+spec: >
+  The append-only binary journal and the deterministic replayer. Frames carry length prefix,
+  CRC, schema version, connection epoch, and sequence; segments carry a segment checksum;
+  writes are batched with atomic sealing; recovery scans truncate torn tails and reject
+  corrupt frames without losing sealed data. The replayer feeds journaled events through the
+  SAME reducer code as live and asserts state-hash parity against recorded live snapshots;
+  the first divergence is reported with its sequence and a bounded state diff — parity
+  failures are never summarized away. The sealed journal is also the deterministic PGO/bench
+  corpus (performance-engineering law).
+invariants:
+  - "a sealed frame either reads back byte-identical or is rejected by CRC — no third outcome"
+  - "recovery after truncation at ANY byte offset yields exactly the prefix of fully-sealed frames"
+  - "replay of a journal through the reducer reproduces the recorded state hashes exactly (criterion 13)"
+  - "journal write path allocates zero per frame (preallocated segment buffers)"
+  - "never JSONL, never one-file-per-transaction, never SQLite for the firehose (§43)"
+adversarial_checks:
+  - "a bit flip anywhere in a frame body is caught by frame CRC; anywhere in a sealed segment by segment checksum"
+  - "two interleaved writer epochs (crash + restart) replay in epoch order without double-applying"
+  - "a divergence at event N reports N, not merely 'mismatch at end'"
+benchmark:
+  bench_name: replay_bench
+  budgets_ns:
+    p50_ns: 350.0
+    p99_ns: 2000.0
+
+leaves:
+  - leaf_id: rp_frame_codec
+    responsibility: "encode/decode one journal frame: len | schema | epoch | seq | payload | crc32"
+    signature: |
+      pub fn encode_frame(buf: &mut SegBuf, schema: u8, epoch: u32, seq: u64, payload: &[u8]) -> Result<(), JErr>;
+      pub fn decode_frame(bytes: &[u8]) -> Result<(Frame<'_>, usize), JErr>
+    invariants:
+      - "decode(encode(x)) == x for all payloads up to MAX_PAYLOAD (round-trip)"
+      - "decode returns JErr::Crc on any single-bit corruption of the frame"
+      - "decode returns JErr::Truncated (not panic, not partial data) when bytes end mid-frame"
+      - "payload is borrowed (zero-copy) in Frame<'_>"
+    reference_pattern: |
+      // layout: [u32 len][u8 schema][u32 epoch][u64 seq][payload][u32 crc32(payload+header)]
+      // encode: reserve len, write fields LE, crc over everything after len, patch len last;
+      // decode: bounds-check len first, verify crc before exposing payload.
+    property_test: |
+      #[test]
+      fn prop_frame_roundtrip_and_corruption() {
+          let mut buf = SegBuf::new();
+          encode_frame(&mut buf, 1, 7, 42, b"hello-solana").unwrap();
+          let (f, used) = decode_frame(buf.bytes()).unwrap();
+          assert_eq!((f.schema, f.epoch, f.seq, f.payload), (1, 7, 42, &b"hello-solana"[..]));
+          let mut corrupt = buf.bytes().to_vec();
+          corrupt[used / 2] ^= 0x01;
+          assert!(matches!(decode_frame(&corrupt), Err(JErr::Crc)));
+          assert!(matches!(decode_frame(&buf.bytes()[..used - 3]), Err(JErr::Truncated)));
+      }
+    max_lines: 55
+    temperature_band: low
+
+  - leaf_id: rp_recovery_scan
+    responsibility: "crash-recovery scan: return the sealed-frame prefix, truncating any torn tail"
+    signature: >
+      pub fn recover(bytes: &[u8]) -> RecoverResult  // { frames: Vec<FrameMeta>, valid_len: usize, torn: bool }
+    invariants:
+      - "for every truncation point t of a valid journal, recover(&j[..t]) yields exactly the frames fully sealed before t"
+      - "a corrupt frame stops the scan at the last good frame boundary (valid_len), torn = true"
+      - "never panics on arbitrary bytes (fuzz obligation)"
+    reference_pattern: |
+      // UNVERIFIED FRONTIER REFERENCE (Fable). Not compiled here. property_test is authority.
+      //
+      // pub struct FrameMeta { pub start: usize, pub end: usize, pub schema: u8,
+      //                        pub epoch: u32, pub seq: u64 }
+      // pub struct RecoverResult { pub frames: Vec<FrameMeta>, pub valid_len: usize, pub torn: bool }
+      //
+      // pub fn recover(bytes: &[u8]) -> RecoverResult {
+      //     let mut frames = Vec::new();
+      //     let mut off = 0usize;
+      //     let mut torn = false;
+      //     loop {
+      //         if off == bytes.len() { break; }              // clean end
+      //         match decode_frame(&bytes[off..]) {
+      //             Ok((f, used)) => {
+      //                 // used is the frame length decode consumed from &bytes[off..]
+      //                 frames.push(FrameMeta {
+      //                     start: off, end: off + used,
+      //                     schema: f.schema, epoch: f.epoch, seq: f.seq,
+      //                 });
+      //                 off += used;
+      //             }
+      //             Err(JErr::Truncated) => { torn = true; break; } // torn tail: stop at last good boundary
+      //             Err(JErr::Crc)       => { torn = true; break; } // corrupt frame: unreachable past here by contract
+      //             Err(_)               => { torn = true; break; }
+      //         }
+      //     }
+      //     RecoverResult { valid_len: off, frames, torn }
+      // }
+      //
+      // Contract the test pins: for every truncation point t, recover(&j[..t]) returns exactly the
+      // frames whose full [start,end) fits within t, valid_len == sum of their lengths, and never
+      // panics on arbitrary bytes (decode_frame does all bounds-checking; recover only advances).
+    property_test: |
+      #[test]
+      fn prop_recovery_prefix_exact() {
+          let mut buf = SegBuf::new();
+          for i in 0..10u64 { encode_frame(&mut buf, 1, 1, i, &i.to_le_bytes()).unwrap(); }
+          let full = recover(buf.bytes());
+          assert_eq!(full.frames.len(), 10);
+          for cut in 1..buf.bytes().len() {
+              let r = recover(&buf.bytes()[..cut]);
+              assert!(r.frames.len() <= 10);
+              assert!(r.valid_len <= cut);
+              // frames reported are exactly those whose full extent fits in the cut prefix
+              assert!(r.frames.iter().all(|m| m.end <= cut));
+          }
+      }
+    depends_on: ["rp_frame_codec"]
+    max_lines: 40
+    temperature_band: high
+
+  - leaf_id: rp_epoch_order
+    responsibility: "merge frames across connection/writer epochs into a single deterministic apply order"
+    signature: >
+      pub fn epoch_merge(frames: &[FrameMeta]) -> Result<Vec<usize>, JErr>  // indices in apply order
+    invariants:
+      - "order is (epoch, seq) lexicographic; duplicate (epoch, seq) is JErr::DupSeq, never silently kept"
+      - "output is a permutation of input indices (nothing dropped except by explicit error)"
+      - "deterministic for identical input regardless of prior sort state"
+    reference_pattern: |
+      // sort_unstable_by_key(|m| (m.epoch, m.seq)); scan adjacent for dup (epoch,seq) -> DupSeq
+    property_test: |
+      #[test]
+      fn prop_epoch_merge_total_order() {
+          let f = |e, s| FrameMeta::test(e, s);
+          let frames = vec![f(2, 0), f(1, 5), f(1, 4), f(2, 1)];
+          let order = epoch_merge(&frames).unwrap();
+          let seq: Vec<_> = order.iter().map(|&i| (frames[i].epoch, frames[i].seq)).collect();
+          assert_eq!(seq, vec![(1, 4), (1, 5), (2, 0), (2, 1)]);
+          assert!(epoch_merge(&[f(1, 1), f(1, 1)]).is_err());
+      }
+    depends_on: ["rp_recovery_scan"]
+    max_lines: 25
+    temperature_band: low
+
+  - leaf_id: rp_parity_assert
+    responsibility: "replay events through the reducer and assert hash parity against recorded checkpoints"
+    signature: >
+      pub fn replay_assert(events: &[CanonEvent], checkpoints: &[(usize, [u8; 32])])
+      -> ReplayVerdict  // Match | Diverged { at_event: usize, expected: [u8;32], got: [u8;32] }
+    invariants:
+      - "uses the identical apply()/state_hash() the live path uses (imported, not reimplemented)"
+      - "on divergence reports the FIRST divergent checkpoint's event index — never only the final mismatch"
+      - "a Match verdict requires every checkpoint to match, including the last"
+    reference_pattern: |
+      // fold events through apply(); at each checkpoint index compare state_hash;
+      // return on first mismatch with indices and both hashes.
+    property_test: |
+      #[test]
+      fn prop_parity_first_divergence() {
+          let evs: Vec<_> = (0..50).map(|i| CanonEvent::test(i, 0, 0, i)).collect();
+          let mut st = WorldState::new();
+          let mut cps = vec![];
+          for (i, e) in evs.iter().enumerate() {
+              st = apply_world(&st, e);
+              if i % 10 == 9 { cps.push((i, state_hash(&st))); }
+          }
+          assert!(matches!(replay_assert(&evs, &cps), ReplayVerdict::Match));
+          let mut bad = cps.clone();
+          bad[2].1[0] ^= 0xFF;
+          match replay_assert(&evs, &bad) {
+              ReplayVerdict::Diverged { at_event, .. } => assert_eq!(at_event, bad[2].0),
+              _ => panic!("must diverge at the third checkpoint"),
+          }
+      }
+    depends_on: ["rp_epoch_order"]
+    max_lines: 35
+    temperature_band: low

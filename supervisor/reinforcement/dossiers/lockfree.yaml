@@ -1,0 +1,265 @@
+component: lockfree
+constitution_refs: ["§57", "performance-engineering law (§24)", "criterion 109"]
+spec: >
+  Hot-path concurrency primitives: a bounded SPSC ring buffer connecting pinned threads, a
+  seqlock snapshot cell for single-writer/multi-reader market state, and bounded busy-wait
+  backoff. Constitutional discipline: every lock-free structure must measurably beat its
+  verified-safe locked baseline on the benchmark or the locked version is kept (§57 —
+  safety never sacrificed for an unproven optimization); therefore the locked baseline is
+  itself a leaf and ships regardless. All cross-thread cells are cache-line padded; memory
+  orderings are the minimum proven correct; interleaving safety is demonstrated with loom
+  where the primitive is custom. Zero allocation after construction. Capacity bounds are
+  explicit (§57 no-unbounded-growth).
+invariants:
+  - "SPSC: items dequeue exactly once, in order, with no loss and no duplication, under concurrent producer/consumer"
+  - "seqlock readers never observe a torn snapshot (odd or changed sequence forces retry)"
+  - "no allocation after construction in any primitive; capacities are compile-time or construction-time fixed"
+  - "head/tail (and any shared counters) live on separate cache lines (#[repr(align(64))])"
+  - "the locked baseline passes the identical correctness battery as the lock-free version"
+adversarial_checks:
+  - "loom (or equivalent interleaving exploration) over push/pop finds no lost or duplicated element and no UB"
+  - "a full ring rejects push (backpressure) rather than overwriting; an empty ring returns None rather than blocking forever"
+  - "seqlock writer preempted mid-write cannot let a reader return the half-written snapshot"
+benchmark:
+  bench_name: lockfree_bench
+  budgets_ns:
+    p50_ns: 40.0
+    p99_ns: 200.0
+
+leaves:
+  - leaf_id: lf_mutex_baseline
+    responsibility: "verified-safe bounded MPSC/SPSC queue on parking_lot::Mutex — the baseline the lock-free version must beat"
+    signature: |
+      pub struct MutexQueue<T, const N: usize> { /* Mutex<ArrayDeque<T,N>> */ }
+      impl<T, const N: usize> MutexQueue<T, N> {
+          pub fn push(&self, v: T) -> Result<(), T>;
+          pub fn pop(&self) -> Option<T>;
+      }
+    invariants:
+      - "bounded at N; push on full returns Err(v) (value returned, not dropped)"
+      - "FIFO order preserved; no allocation after construction"
+      - "correct under arbitrary thread counts (Mutex makes this trivial — that's why it's the baseline)"
+    reference_pattern: |
+      // parking_lot::Mutex<heapless::Deque<T, N>> or ArrayVec-based ring under one mutex;
+      // this is intentionally boring. It exists so the benchmark has an honest opponent.
+    property_test: |
+      #[test]
+      fn prop_mutex_queue_fifo_bounded() {
+          let q: MutexQueue<u64, 4> = MutexQueue::new();
+          for i in 0..4 { assert!(q.push(i).is_ok()); }
+          assert_eq!(q.push(99), Err(99));
+          for i in 0..4 { assert_eq!(q.pop(), Some(i)); }
+          assert_eq!(q.pop(), None);
+      }
+    max_lines: 40
+    temperature_band: low
+
+  - leaf_id: lf_spsc_ring
+    responsibility: "bounded single-producer/single-consumer ring with acquire/release ordering and padded indices"
+    signature: |
+      pub struct Spsc<T, const N: usize>;  // N power of two
+      impl<T, const N: usize> Spsc<T, N> {
+          pub fn split(self) -> (Producer<T, N>, Consumer<T, N>);
+      }
+      impl<T, const N: usize> Producer<T, N> { pub fn push(&mut self, v: T) -> Result<(), T>; }
+      impl<T, const N: usize> Consumer<T, N> { pub fn pop(&mut self) -> Option<T>; }
+    invariants:
+      - "N is a power of two (compile-time assert); index masking, no modulo"
+      - "producer writes the slot before releasing tail (Release); consumer acquires tail before reading (Acquire)"
+      - "head and tail atomics are on distinct cache lines; single-producer/single-consumer enforced by !Clone split types"
+      - "push on full -> Err(v); pop on empty -> None; no spinning inside the primitive itself"
+    reference_pattern: |
+      // UNVERIFIED FRONTIER REFERENCE (Fable). Not compiled here. property_test (and loom, if
+      // wired) is the authority. Every unsafe block below carries its SAFETY argument.
+      //
+      // use std::cell::UnsafeCell;
+      // use std::mem::MaybeUninit;
+      // use std::sync::atomic::{AtomicUsize, Ordering};
+      // use std::sync::Arc;
+      //
+      // #[repr(align(64))]
+      // struct Pad(AtomicUsize);
+      //
+      // struct Ring<T, const N: usize> {
+      //     buf: [UnsafeCell<MaybeUninit<T>>; N],
+      //     head: Pad, // consumer-owned read index (monotone, wrapping via mask)
+      //     tail: Pad, // producer-owned write index
+      // }
+      // // SAFETY: T: Send is required; the split types guarantee exactly one producer and one
+      // // consumer, so the UnsafeCells are never aliased mutably across threads for the same slot.
+      // unsafe impl<T: Send, const N: usize> Sync for Ring<T, N> {}
+      //
+      // pub struct Producer<T, const N: usize>(Arc<Ring<T, N>>);
+      // pub struct Consumer<T, const N: usize>(Arc<Ring<T, N>>);
+      // // neither is Clone -> single-producer/single-consumer enforced at the type level
+      //
+      // const _: () = assert!(N.is_power_of_two()); // (place inside an impl with a const assert)
+      //
+      // impl<T, const N: usize> Producer<T, N> {
+      //     pub fn push(&mut self, v: T) -> Result<(), T> {
+      //         let r = &*self.0;
+      //         let tail = r.tail.0.load(Ordering::Relaxed);   // producer owns tail
+      //         let head = r.head.0.load(Ordering::Acquire);   // observe consumer progress
+      //         if tail.wrapping_sub(head) >= N { return Err(v); } // full -> backpressure
+      //         let slot = tail & (N - 1);
+      //         // SAFETY: slot is exclusively ours until we publish tail; consumer cannot read it
+      //         // until it observes the Release store below.
+      //         unsafe { (*r.buf[slot].get()).as_mut_ptr().write(v); }
+      //         r.tail.0.store(tail.wrapping_add(1), Ordering::Release); // publish AFTER write
+      //         Ok(())
+      //     }
+      // }
+      //
+      // impl<T, const N: usize> Consumer<T, N> {
+      //     pub fn pop(&mut self) -> Option<T> {
+      //         let r = &*self.0;
+      //         let head = r.head.0.load(Ordering::Relaxed);   // consumer owns head
+      //         let tail = r.tail.0.load(Ordering::Acquire);   // observe producer publish
+      //         if head == tail { return None; }               // empty
+      //         let slot = head & (N - 1);
+      //         // SAFETY: producer published this slot (Acquire above pairs with its Release);
+      //         // we read it exactly once and advance head so it is never read again.
+      //         let v = unsafe { (*r.buf[slot].get()).as_ptr().read() };
+      //         r.head.0.store(head.wrapping_add(1), Ordering::Release); // free the slot
+      //         Some(v)
+      //     }
+      // }
+      //
+      // Drop: draining Consumer::pop in Ring's Drop prevents leaking live T. The Relaxed loads of
+      // the owned index are sound because only one thread ever writes each index.
+    property_test: |
+      #[test]
+      fn prop_spsc_exactly_once_in_order() {
+          let (mut p, mut c) = Spsc::<u64, 1024>::new().split();
+          let h = std::thread::spawn(move || {
+              let mut got = Vec::new();
+              while got.len() < 100_000 {
+                  if let Some(v) = c.pop() { got.push(v); }
+                  else { std::hint::spin_loop(); }
+              }
+              got
+          });
+          let mut i = 0u64;
+          while i < 100_000 {
+              if p.push(i).is_ok() { i += 1; } else { std::hint::spin_loop(); }
+          }
+          let got = h.join().unwrap();
+          assert_eq!(got.len(), 100_000);
+          assert!(got.windows(2).all(|w| w[1] == w[0] + 1)); // in order, exactly once
+      }
+    depends_on: ["lf_mutex_baseline"]
+    max_lines: 60
+    temperature_band: high
+
+  - leaf_id: lf_seqlock
+    responsibility: "seqlock snapshot cell: one writer publishes fixed-size state; readers retry on torn reads"
+    signature: |
+      pub struct SeqCell<T: Copy>;
+      impl<T: Copy> SeqCell<T> {
+          pub fn write(&self, v: T);        // single writer by contract
+          pub fn read(&self) -> T;          // retries until consistent
+      }
+    invariants:
+      - "sequence increments to odd before the write and to even after (Release); readers accept only equal even sequences around the read (Acquire)"
+      - "T: Copy and fixed-size — no pointers chased inside the protected region"
+      - "reader loop is bounded-spin with spin_loop hint; a stuck-odd sequence is a writer-crash defect surfaced by a retry-count metric, not an infinite silent loop"
+    reference_pattern: |
+      // UNVERIFIED FRONTIER REFERENCE (Fable). Not compiled here. property_test is authority.
+      //
+      // use std::cell::UnsafeCell;
+      // use std::sync::atomic::{AtomicU32, Ordering, fence};
+      //
+      // pub struct SeqCell<T: Copy> {
+      //     seq: AtomicU32,          // even = stable, odd = write in progress
+      //     data: UnsafeCell<T>,
+      // }
+      // // SAFETY: single-writer-by-contract; readers only ever read, and retry on any tear.
+      // unsafe impl<T: Copy + Send> Sync for SeqCell<T> {}
+      //
+      // impl<T: Copy> SeqCell<T> {
+      //     pub fn new(v: T) -> Self {
+      //         Self { seq: AtomicU32::new(0), data: UnsafeCell::new(v) }
+      //     }
+      //     pub fn write(&self, v: T) {
+      //         let s = self.seq.load(Ordering::Relaxed);
+      //         self.seq.store(s.wrapping_add(1), Ordering::Release); // -> odd: write starting
+      //         fence(Ordering::Release);
+      //         // SAFETY: writer is unique by contract; readers that observe odd seq will retry
+      //         // and never expose this half-written value.
+      //         unsafe { *self.data.get() = v; }
+      //         self.seq.store(s.wrapping_add(2), Ordering::Release); // -> even: write done
+      //     }
+      //     pub fn read(&self) -> T {
+      //         let mut spins = 0u32;
+      //         loop {
+      //             let s1 = self.seq.load(Ordering::Acquire);
+      //             if s1 & 1 == 1 {                     // writer in progress
+      //                 std::hint::spin_loop();
+      //                 spins += 1;
+      //                 debug_assert!(spins < STUCK_ODD_LIMIT, "writer crashed mid-write");
+      //                 continue;
+      //             }
+      //             // SAFETY: value is Copy and fixed-size; volatile-ish read via ptr::read guarded
+      //             // by the seq check below.
+      //             let v = unsafe { std::ptr::read(self.data.get()) };
+      //             fence(Ordering::Acquire);
+      //             if self.seq.load(Ordering::Acquire) == s1 { return v; } // unchanged -> consistent
+      //             // else: writer intervened, retry
+      //         }
+      //     }
+      // }
+      //
+      // The test's Pair(.0, .0*2) invariant catches any torn read. STUCK_ODD_LIMIT surfaces a
+      // crashed writer as a debug assert / metric rather than an infinite silent spin.
+    property_test: |
+      #[test]
+      fn prop_seqlock_no_torn_reads() {
+          #[derive(Copy, Clone, PartialEq, Debug)]
+          struct Pair(u64, u64); // invariant: .1 == .0 * 2
+          let cell = std::sync::Arc::new(SeqCell::new(Pair(0, 0)));
+          let w = cell.clone();
+          let writer = std::thread::spawn(move || {
+              for i in 0..200_000u64 { w.write(Pair(i, i * 2)); }
+          });
+          for _ in 0..200_000 {
+              let p = cell.read();
+              assert_eq!(p.1, p.0 * 2, "torn read observed");
+          }
+          writer.join().unwrap();
+      }
+    depends_on: ["lf_mutex_baseline"]
+    max_lines: 55
+    temperature_band: high
+
+  - leaf_id: lf_backoff
+    responsibility: "bounded busy-wait backoff for the hot consumer: spin, then yield, park only outside the hot window"
+    signature: >
+      pub fn backoff_step(state: &mut Backoff, hot_window: bool) -> Waited
+      // Waited::{Spun, Yielded, Parked}
+    invariants:
+      - "inside hot_window: only Spun (spin_loop hint), never a syscall, never Parked"
+      - "outside hot_window: escalates spin -> yield -> park with exponential spin counts, capped"
+      - "state resets on reset(); deterministic escalation sequence for a given call count"
+    reference_pattern: |
+      // if hot_window { spin_loop(); state.spins += 1; return Spun; }
+      // match state.stage { s if s < SPIN_CAP => spin, s if s < YIELD_CAP => thread::yield_now(), _ => park_timeout }
+    property_test: |
+      #[test]
+      fn prop_backoff_hot_never_parks() {
+          let mut b = Backoff::new();
+          for _ in 0..1_000_000 {
+              assert!(matches!(backoff_step(&mut b, true), Waited::Spun));
+          }
+          b.reset();
+          let mut saw_yield = false; let mut saw_park = false;
+          for _ in 0..100_000 {
+              match backoff_step(&mut b, false) {
+                  Waited::Yielded => saw_yield = true,
+                  Waited::Parked => { saw_park = true; break; }
+                  Waited::Spun => {}
+              }
+          }
+          assert!(saw_yield && saw_park); // escalation reaches park off the hot window
+      }
+    max_lines: 30
+    temperature_band: low

@@ -1,0 +1,74 @@
+component: fixedpoint
+constitution_refs: ["§18.2", "§22"]
+spec: >
+  Exact integer/fixed-point arithmetic for AMM bonding-curve and constant-product math,
+  quote-mint-parametric (SOL or USDC). No floating point anywhere in outcome-controlling
+  logic. All operations must be deterministic and reproduce golden vectors captured from
+  real on-chain trades exactly. Overflow must be explicit (checked or wrapping-by-contract),
+  never silent. Values are u64/u128 fixed-point; price is represented as a rational of
+  reserves, never a float.
+invariants:
+  - "no f32/f64 appears anywhere in the module"
+  - "identical inputs always produce identical outputs"
+  - "constant-product invariant k = reserve_base * reserve_quote holds across a swap within rounding contract"
+  - "output amount matches captured golden vectors byte-for-byte"
+adversarial_checks:
+  - "u128 multiply of two near-u64::MAX reserves does not overflow silently"
+  - "zero-reserve and one-sided-reserve inputs are rejected, not divided-by-zero"
+  - "USDC (6dp) and SOL (9dp) quote mints both handled by the same parametric path"
+benchmark:
+  bench_name: fixedpoint_bench
+  budgets_ns:
+    p50_ns: 50.0
+
+leaves:
+  - leaf_id: fp_mul_div
+    responsibility: "compute (a * b) / c in u128 without overflow or precision loss, checked"
+    signature: "pub fn mul_div_u128(a: u128, b: u128, c: u128) -> Option<u128>"
+    invariants:
+      - "returns None if c == 0"
+      - "returns None on overflow of a*b beyond u128 (use u256 widening or checked path)"
+      - "exact integer division, truncating toward zero"
+    reference_pattern: |
+      // widening-multiply then divide; return None on div-by-zero or overflow
+      // pub fn mul_div(a: u128, b: u128, c: u128) -> Option<u128> {
+      //     if c == 0 { return None; }
+      //     let prod = a.checked_mul(b)?;      // if this can overflow, widen to u256
+      //     Some(prod / c)
+      // }
+    property_test: |
+      #[test]
+      fn prop_mul_div_matches_reference() {
+          assert_eq!(mul_div_u128(6, 7, 3), Some(14));
+          assert_eq!(mul_div_u128(10, 10, 0), None);
+          assert_eq!(mul_div_u128(u128::MAX, 2, 1), None); // overflow -> None
+          assert_eq!(mul_div_u128(100, 0, 5), Some(0));
+      }
+    max_lines: 20
+    temperature_band: low
+
+  - leaf_id: cp_amount_out
+    responsibility: "constant-product output amount for an exact-in swap with fee, integer-exact"
+    signature: >
+      pub fn amount_out(reserve_in: u128, reserve_out: u128, amount_in: u128,
+      fee_num: u64, fee_den: u64) -> Option<u128>
+    invariants:
+      - "returns None on zero reserves or zero amount_in"
+      - "applies fee as (amount_in * fee_num / fee_den) removed before the swap"
+      - "uses mul_div_u128 for the core x*y/(x+dx) computation"
+      - "never uses floating point"
+    reference_pattern: |
+      // dx' = dx * (fee_den - fee_num) / fee_den
+      // out = reserve_out * dx' / (reserve_in + dx')   via mul_div_u128
+    property_test: |
+      #[test]
+      fn prop_amount_out_golden() {
+          // golden vector from a real pump.fun swap (illustrative values)
+          let out = amount_out(1_000_000_000, 2_000_000_000, 100_000_000, 1, 100).unwrap();
+          assert!(out > 0 && out < 2_000_000_000);
+          assert_eq!(amount_out(0, 10, 5, 1, 100), None);
+          assert_eq!(amount_out(10, 10, 0, 1, 100), None);
+      }
+    depends_on: ["fp_mul_div"]
+    max_lines: 30
+    temperature_band: low

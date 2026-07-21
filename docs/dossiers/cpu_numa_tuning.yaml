@@ -1,0 +1,202 @@
+component: cpu_numa_tuning
+constitution_refs: ["§57", "performance-engineering law (§24)", "criteria 1, 2, 21, 109"]
+spec: >
+  Windows-native CPU topology discovery, pin-plan derivation, and runtime application for
+  the hot thread set. Decision logic is PURE and fully testable (topology in, plan out);
+  OS interaction is confined to thin, mockable adapters over the Windows APIs
+  (GetLogicalProcessorInformationEx, SetThreadGroupAffinity, priority classes,
+  timeBeginPeriod, VirtualLock). NO Linux-isms: mlockall, sched_setaffinity, /proc are
+  forbidden in this component (the repository's libc mlockall is the named porting defect
+  this dossier retires). Plans place each hot thread on its own physical core, leave SMT
+  siblings of hot cores unassigned, keep hot cores off group boundaries where possible, and
+  reserve non-hot cores for tokio/control/OS. Every applied setting is verified by reading
+  it back and by a measured jitter probe; unverifiable settings are reported, never assumed.
+invariants:
+  - "plan derivation is a pure function of (Topology, HotThreadSpec) — no OS calls inside it"
+  - "no two hot threads share a physical core; no hot thread shares a physical core with any SMT sibling assignment"
+  - "OS adapter calls return read-back-verified results (Applied { requested, observed }) — a silent no-op is a defect"
+  - "all Windows API usage is behind the OsTune trait so tests run with a mock on any platform"
+  - "no libc::mlockall, sched_setaffinity, or /proc access anywhere in the component (lint-tested by source scan)"
+adversarial_checks:
+  - "a topology with fewer physical cores than hot threads returns PlanError::Insufficient, never a doubled-up plan"
+  - "a multi-group (>64 logical CPU) topology never assigns one thread a mask spanning groups"
+  - "priority elevation on a starved single-core mock reports the starvation hazard rather than hanging the plan"
+benchmark:
+  bench_name: cpu_numa_bench
+  budgets_ns:
+    p50_ns: 100.0
+
+leaves:
+  - leaf_id: cn_topology_model
+    responsibility: "typed topology model + parser from the raw processor-relationship records"
+    signature: >
+      pub fn parse_topology(records: &[ProcRecord]) -> Result<Topology, TopoErr>
+      // Topology { groups: ArrayVec<Group, MAX_GROUPS>, physical_cores: u16, logical_cpus: u16 }
+      // Core { group: u16, physical_id: u16, logical_mask: u64, smt_siblings: u8, numa_node: u8, efficiency_class: u8 }
+    invariants:
+      - "every logical CPU appears in exactly one core's mask; masks within a group are disjoint"
+      - "physical_cores counts distinct physical ids; SMT sibling count derived from mask popcount"
+      - "malformed records (overlapping masks, empty mask) -> TopoErr, never a silently wrong model"
+    reference_pattern: |
+      // fold RelationProcessorCore records: each carries a group id + u64 mask;
+      // popcount > 1 => SMT; collect numa/efficiency class from companion records;
+      // validate disjointness with a per-group accumulator mask.
+    property_test: |
+      #[test]
+      fn prop_topology_parse_and_validate() {
+          // 2 physical cores, SMT2: masks 0b0011 and 0b1100 in group 0
+          let recs = vec![ProcRecord::core(0, 0b0011), ProcRecord::core(0, 0b1100)];
+          let t = parse_topology(&recs).unwrap();
+          assert_eq!(t.physical_cores, 2);
+          assert_eq!(t.logical_cpus, 4);
+          let overlap = vec![ProcRecord::core(0, 0b0011), ProcRecord::core(0, 0b0110)];
+          assert!(parse_topology(&overlap).is_err());
+      }
+    max_lines: 55
+    temperature_band: low
+
+  - leaf_id: cn_pin_plan
+    responsibility: "derive the hot-thread pin plan: one physical core per hot thread, SMT siblings idle, control set separated"
+    signature: >
+      pub fn derive_plan(t: &Topology, hot: &[HotThreadSpec]) -> Result<PinPlan, PlanError>
+      // PinPlan { assignments: ArrayVec<(ThreadId, GroupAffinity), MAX_HOT>, control_mask: GroupMask, reserved_idle: GroupMask }
+    invariants:
+      - "each hot thread gets a single-logical-CPU GroupAffinity on a distinct physical core (one CPU of that core's mask)"
+      - "the OTHER logical CPUs of every hot physical core go into reserved_idle (assigned to nothing)"
+      - "control_mask = all remaining CPUs; it never intersects hot assignments or reserved_idle"
+      - "PlanError::Insufficient when distinct physical cores < hot.len(); prefer higher efficiency_class cores for hot"
+    reference_pattern: |
+      // UNVERIFIED FRONTIER REFERENCE (Fable). Not compiled here. property_test is authority.
+      //
+      // pub struct GroupAffinity { pub group: u16, pub mask: u64 } // single-CPU mask for a hot thread
+      // pub struct GroupMask { pub group: u16, pub mask: u64 }
+      // pub struct PinPlan {
+      //     pub assignments: ArrayVec<(ThreadId, GroupAffinity), MAX_HOT>,
+      //     pub control_mask: GroupMask,
+      //     pub reserved_idle: GroupMask,
+      // }
+      // pub enum PlanError { Insufficient, MultiGroupSpan }
+      //
+      // pub fn derive_plan(t: &Topology, hot: &[HotThreadSpec]) -> Result<PinPlan, PlanError> {
+      //     if (t.physical_cores as usize) < hot.len() { return Err(PlanError::Insufficient); }
+      //
+      //     // rank physical cores: prefer higher efficiency_class (perf cores), then stable by id.
+      //     let mut cores: Vec<&Core> = t.all_cores().collect();
+      //     cores.sort_by(|a, b| b.efficiency_class.cmp(&a.efficiency_class)
+      //                             .then(a.physical_id.cmp(&b.physical_id)));
+      //
+      //     let mut assignments = ArrayVec::new();
+      //     let mut hot_mask = 0u64;      // (single-group model; extend to per-group for >64 CPUs)
+      //     let mut idle_mask = 0u64;
+      //     let group = cores[0].group;   // pin the hot set within one group; never span groups
+      //
+      //     for (spec, core) in hot.iter().zip(cores.iter()) {
+      //         if core.group != group { return Err(PlanError::MultiGroupSpan); }
+      //         let one = core.logical_mask & core.logical_mask.wrapping_neg(); // lowest set bit
+      //         assignments.push((spec.thread_id(), GroupAffinity { group, mask: one }));
+      //         hot_mask |= one;
+      //         idle_mask |= core.logical_mask & !one; // SMT siblings of hot cores -> reserved idle
+      //     }
+      //
+      //     // control = every CPU in the group not hot and not reserved-idle.
+      //     let group_all = t.group_mask(group);
+      //     let control_mask_bits = group_all & !hot_mask & !idle_mask;
+      //
+      //     // pairwise-disjoint invariant the test pins:
+      //     debug_assert_eq!(hot_mask & idle_mask, 0);
+      //     debug_assert_eq!(hot_mask & control_mask_bits, 0);
+      //     debug_assert_eq!(idle_mask & control_mask_bits, 0);
+      //
+      //     Ok(PinPlan {
+      //         assignments,
+      //         control_mask: GroupMask { group, mask: control_mask_bits },
+      //         reserved_idle: GroupMask { group, mask: idle_mask },
+      //     })
+      // }
+      //
+      // For >64-logical-CPU hosts, carry a per-group Vec of masks instead of one u64 and keep every
+      // hot thread's affinity within a single group (SetThreadGroupAffinity cannot span groups).
+    property_test: |
+      #[test]
+      fn prop_plan_disjoint_and_smt_isolated() {
+          let recs = vec![ProcRecord::core(0, 0b0011), ProcRecord::core(0, 0b1100),
+                          ProcRecord::core(0, 0b110000), ProcRecord::core(0, 0b11000000)];
+          let t = parse_topology(&recs).unwrap();
+          let hot = [HotThreadSpec::test("reducer"), HotThreadSpec::test("submit")];
+          let p = derive_plan(&t, &hot).unwrap();
+          assert_eq!(p.assignments.len(), 2);
+          let hot_mask: u64 = p.assignments.iter().map(|a| a.1.mask).fold(0, |m, x| m | x);
+          assert_eq!(hot_mask & p.reserved_idle.mask, 0);
+          assert_eq!(hot_mask & p.control_mask.mask, 0);
+          assert_eq!(p.reserved_idle.mask & p.control_mask.mask, 0);
+          assert_eq!(hot_mask.count_ones(), 2); // one logical CPU each
+          let too_many = [HotThreadSpec::test("a"), HotThreadSpec::test("b"),
+                          HotThreadSpec::test("c"), HotThreadSpec::test("d"),
+                          HotThreadSpec::test("e")];
+          assert!(matches!(derive_plan(&t, &too_many), Err(PlanError::Insufficient)));
+      }
+    depends_on: ["cn_topology_model"]
+    max_lines: 60
+    temperature_band: high
+
+  - leaf_id: cn_os_apply
+    responsibility: "apply a pin plan through the mockable OsTune trait with read-back verification"
+    signature: |
+      pub trait OsTune {
+          fn set_affinity(&mut self, th: ThreadId, aff: GroupAffinity) -> Result<GroupAffinity, OsErr>;
+          fn set_priority(&mut self, th: ThreadId, prio: Prio) -> Result<Prio, OsErr>;
+          fn set_timer_res_ms(&mut self, ms: u32) -> Result<u32, OsErr>;
+          fn lock_region(&mut self, ptr: *const u8, len: usize) -> Result<usize, OsErr>;
+      }
+      pub fn apply_plan(os: &mut dyn OsTune, plan: &PinPlan, prio: Prio) -> ApplyReport
+    invariants:
+      - "every call's returned observed value is compared to requested; mismatches land in ApplyReport::mismatches, never dropped"
+      - "partial failure applies nothing further to the failed thread but continues others; report is complete either way"
+      - "the Windows implementation of OsTune uses SetThreadGroupAffinity / SetPriorityClass / timeBeginPeriod / VirtualLock and NOTHING from libc"
+    reference_pattern: |
+      // for (th, aff) in plan { match os.set_affinity(th, aff) {
+      //   Ok(obs) if obs == aff => report.applied.push(..),
+      //   Ok(obs) => report.mismatches.push(Requested{aff}, Observed{obs}),
+      //   Err(e) => report.errors.push((th, e)) } }
+    property_test: |
+      #[test]
+      fn prop_apply_verifies_readback() {
+          let recs = vec![ProcRecord::core(0, 0b0011), ProcRecord::core(0, 0b1100)];
+          let t = parse_topology(&recs).unwrap();
+          let plan = derive_plan(&t, &[HotThreadSpec::test("x")]).unwrap();
+          let mut ok = MockOs::faithful();
+          let r = apply_plan(&mut ok, &plan, Prio::High);
+          assert!(r.mismatches.is_empty() && r.errors.is_empty());
+          let mut lying = MockOs::returns_wrong_affinity();
+          let r2 = apply_plan(&mut lying, &plan, Prio::High);
+          assert_eq!(r2.mismatches.len(), 1); // silent no-op is surfaced, not trusted
+      }
+    depends_on: ["cn_pin_plan"]
+    max_lines: 55
+    temperature_band: low
+
+  - leaf_id: cn_jitter_probe
+    responsibility: "measured verification: scheduling-jitter probe over a pinned spin loop, pure aggregation"
+    signature: >
+      pub fn jitter_stats(deltas_ns: &[u64]) -> JitterStats
+      // { p50_ns: u64, p99_ns: u64, p999_ns: u64, max_ns: u64, n: u32 }
+    invariants:
+      - "percentiles by deterministic select on a sorted copy (nearest-rank), documented and tested"
+      - "empty input -> JitterStats::missing(); no fabricated zeros"
+      - "aggregation is pure — the sampling loop (TSC deltas on the pinned thread) lives in the harness, not here"
+    reference_pattern: |
+      // sort copy; nearest-rank: idx = ((p * n) + 99) / 100 - 1 clamped; max = last;
+      // the bench harness compares p999 against the budget and against the UNPINNED baseline.
+    property_test: |
+      #[test]
+      fn prop_jitter_percentiles_nearest_rank() {
+          let deltas: Vec<u64> = (1..=100).collect();
+          let s = jitter_stats(&deltas);
+          assert_eq!(s.p50_ns, 50);
+          assert_eq!(s.p99_ns, 99);
+          assert_eq!(s.p999_ns, 100); // nearest-rank on n=100
+          assert_eq!(s.max_ns, 100);
+          assert!(jitter_stats(&[]).is_missing());
+      }
+    max_lines: 30
+    temperature_band: low

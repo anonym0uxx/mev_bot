@@ -1,0 +1,55 @@
+# Paths are REPO-RELATIVE by default so this config works at ANY clone location.
+# "." = the repo root (inferred as the dir containing docs/ and supervisor/).
+# Absolute paths are honored if you set them; relative paths resolve against the repo root.
+repo_path: .
+constitution_path: docs/HERMES_ONE_SHOT_PROMPT.md
+evidence_db: supervisor_evidence.db
+task_retry_budget: 4
+escalate_channel: cli
+telegram_token_env: SUPERVISOR_TG_TOKEN
+telegram_chat_id_env: SUPERVISOR_TG_CHAT
+# The BUILDER model (local GLM). Writes code; never authors its own property tests.
+model:
+  base_url: http://127.0.0.1:8080
+  model: glm-5.2
+  request_timeout_s: 600.0
+  max_retries: 4
+  control_temperature: 0.1
+  control_seed: 1
+  freeform_temperature: 0.6
+  freeform_max_tokens: 16384
+# The DESIGN model (independent frontier API). Authors dossiers when a hard component
+# has none — a different model/endpoint/key from the builder, so the tests that judge the
+# builder are not written by the builder. Disabled by default: with enabled:false or no
+# API key, missing dossiers simply escalate to you exactly as before.
+design_model:
+  enabled: false
+  provider: anthropic
+  base_url: https://api.anthropic.com
+  model: claude-opus-4-8
+  api_key_env: ANTHROPIC_API_KEY     # set the env var; NEVER inline the key here
+  max_tokens: 16000
+  timeout_s: 600
+
+gate:
+  target_triple: x86_64-pc-windows-msvc
+  production_globs:
+  - rust/**/src/**/*.rs
+  required_tests: []
+  run_bench: true
+  bench_name: ''
+  bench_budgets_ns: {}
+  run_determinism: true
+  replay_bin: ''
+  replay_fixture: ''
+reinforcement:
+  default_best_of_n: 8
+  max_best_of_n: 16
+  leaf_max_lines: 40
+build_host:
+  cargo_jobs: 32
+  reserve_cores_for_model: true
+evaluator_bin: ''
+evaluator_pinned_sha256: ''
+research_runner_bin: ''
+live_status_file: ''

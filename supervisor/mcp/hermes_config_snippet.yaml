@@ -1,0 +1,19 @@
+# Add this under the `mcp_servers:` key in ~/.hermes/config.yaml  (Hermes Agent's config).
+# PREREQUISITE on the Hermes side: `pip install mcp` — without the mcp Python package,
+# Hermes Agent SILENTLY DISABLES all MCP support. Install it first, then restart Hermes.
+#
+# After restart, tools appear to the agent as: mcp_hermes_supervisor_gate_verify, etc.
+
+mcp_servers:
+  hermes_supervisor:
+    command: "python"
+    args:
+      - "-m"
+      - "supervisor.mcp.server"
+      - "--config"
+      - "C:/hermes/hermes-loop/supervisor/config/supervisor.yaml"   # <- your path
+    # Optional: expose only the tools you want Hermes to see
+    # tools:
+    #   include: [gate_verify, check_tier0, run_reinforcement, register_artifact,
+    #             evidence_status, record_escalation, bench_endpoint, evaluator_verify,
+    #             experiment_run, promotion_check, live_status]

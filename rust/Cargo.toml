@@ -1,0 +1,44 @@
+# Hermes bot workspace — encodes the §24 Rust performance-engineering law (criterion 109)
+# as build configuration, so the perf law is compiled in rather than remembered.
+[workspace]
+resolver = "2"
+members = [
+    "crates/hot-core",    # reducer, fixedpoint, scalp_position, lockfree   (HOT: lint-enforced purity)
+    "crates/hot-exec",    # exit_ladder templates, patch-sign-send, routes   (HOT)
+    "crates/ingest",      # LaserStream/shred adapters, journal writer       (tokio allowed)
+    "crates/enrich",      # 29.x pollers: attention-spend, creator, social   (tokio allowed; never hot)
+    "crates/evaluator",   # evaluator_stats: frozen accountant               (money-lint scoped)
+    "crates/research",    # experiments, hazard fitting, feature admission
+    "crates/persist",     # cold storage, replay reader, recovery
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.85"
+
+[profile.release]           # §24(a): confirmed baseline, retained
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"             # static-by-design WITH the panic-free hot-set invariant (property-tested)
+debug = false
+overflow-checks = false     # global; money crates override below — silent money wrap is prohibited
+
+# §24(a): per-package override — money/fixed-point arithmetic keeps overflow checks in release.
+[profile.release.package.hot-core]
+overflow-checks = true
+[profile.release.package.evaluator]
+overflow-checks = true
+
+[profile.dev]               # §24(d): iteration speed
+opt-level = 1
+debug = 1                   # line tables only
+incremental = true
+
+[profile.bench]
+inherits = "release"
+debug = 1                   # symbols for profiling; budgets measured on deploy-identical hardware
+
+# NOTE (§24(a)): -C target-cpu is NOT set here — it is injected via RUSTFLAGS from the
+# infrastructure manifest's deploy-CPU entry. Never `native` on the build box.

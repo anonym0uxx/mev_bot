@@ -1,0 +1,15 @@
+{
+  "_comment": "Infrastructure manifest v2 (§9.5, criterion 113). DO NOT hand-edit identities — generate with scripts/gen_manifest.py, which MEASURES the machine. Trust model: the phase gate (a) measures the live machine at check time, (b) verifies deployment_host against the operator's hash pin (hermes-supervise pin-manifest). Because certification never trusts this file's self-report, agents (Claude Code, Hermes) may freely create/refresh it and append facts — none of that can forge Phase-B provenance.",
+  "deployment_host": {
+    "_how": "run ON THE SERVER once: python scripts/gen_manifest.py --declare-deployment-host --target-cpu znver5   (writes MEASURED machine_id; then pin: hermes-supervise pin-manifest)",
+    "machine_id": "(measured on declaration — never typed)",
+    "cpu_model": "AMD EPYC 9655",
+    "target_cpu": "znver5"
+  },
+  "current_machine": {
+    "_note": "informational only; refreshed by gen_manifest.py; the gate measures live and ignores this block"
+  },
+  "facts": [
+    {"key": "example", "value": "agent-writable provenance-stamped ledger (Helius plan, Jito status, CPU features); appended via gen_manifest.py --add-fact or the record_infra_fact MCP tool; appends never invalidate the pin", "source": "documentation", "at": 0}
+  ]
+}

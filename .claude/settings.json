@@ -1,0 +1,61 @@
+{
+  "_comment": "Claude Code project permissions for the Hermes build. Scoped for FAIL-LOUD autonomy (permission-mode dontAsk + this allowlist), NOT approve-everything. The build DRIVER (auto_build.py) owns commit/push/merge and the release profile; Claude Code may edit source and run the portable-profile toolchain, but may not commit, push, merge, run the release build, or touch keys/secrets. This is the capability boundary that keeps unattended runs safe.",
+  "permissions": {
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Edit(rust/**)",
+      "Edit(docs/**)",
+      "Write(rust/**)",
+      "Bash(cargo build)",
+      "Bash(cargo build --workspace)",
+      "Bash(cargo test*)",
+      "Bash(cargo fmt*)",
+      "Bash(cargo clippy*)",
+      "Bash(cargo check*)",
+      "Bash(git status)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git add*)",
+      "Bash(python scripts/gen_manifest.py*)"
+    ],
+    "deny": [
+      "Bash(git commit*)",
+      "Bash(git push*)",
+      "Bash(git merge*)",
+      "Bash(git reset*)",
+      "Bash(git checkout*)",
+      "Bash(cargo build --release*)",
+      "Bash(rm *)",
+      "Bash(curl *)",
+      "Bash(wget *)",
+      "Edit(**/*.key)",
+      "Edit(**/*.pem)",
+      "Edit(.env*)",
+      "Edit(supervisor/**)",
+      "Edit(**/Cargo.toml)",
+      "Read(**/*.key)",
+      "Read(**/*.pem)",
+      "Read(.env*)",
+      "Edit(infra_manifest.json)",
+      "Write(infra_manifest.json)",
+      "Edit(rust/**/tests/dossier_*.rs)",
+      "Write(rust/**/tests/dossier_*.rs)",
+      "Edit(.hermes_dossier_tests.json)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$CLAUDE_TOOL_INPUT_FILE_PATH\" | grep -qiE '\\.(env|pem|key)$|secrets/|credentials|infra_manifest\\\\.json$|Cargo\\.toml$|\\[profile\\.release\\]'; then echo 'Blocked: protected file (keys/secrets/release-profile are owned by the operator, not the build agent)' >&2; exit 2; fi"
+          }
+        ]
+      }
+    ]
+  }
+}

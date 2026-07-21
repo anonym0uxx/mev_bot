@@ -1,0 +1,171 @@
+component: shred
+constitution_refs: ["§18.3", "§18.3.4", "§18.3.5", "criterion 56, 66-68"]
+spec: >
+  Earliest-observation shred-class ingestion behind the neutral ObservationSource contract:
+  FEC-set bookkeeping, data-shred reassembly into entries/transactions, deduplication, gap
+  visibility, and the §18.3.5 parity gate against LaserStream/canonical RPC. Provider-neutral:
+  Jito ShredStream during its transitional window and/or a verified successor feed the same
+  code. Malformed input is rejected, never panics; missing shreds produce explicit
+  incompleteness, never fabricated transactions. Local arrival timing is preserved per shred
+  and per reconstructed transaction. Honest capability labeling (criterion 56): reconstruction
+  status is proven or INCOMPLETE, never assumed.
+invariants:
+  - "no panic on arbitrary bytes (fuzz obligation on every decode path)"
+  - "a transaction is emitted only from a complete, verified reassembly — partial data never becomes a transaction"
+  - "dedup by (slot, shred_index, shred_type); replays and duplicates are counted, not re-applied"
+  - "every emitted transaction carries first_local_arrival_ns preserved from its earliest constituent shred"
+  - "gaps are first-class: (slot, missing_indices) surfaces to telemetry and completeness state"
+adversarial_checks:
+  - "a shred claiming payload length beyond the buffer is rejected without over-read"
+  - "two shreds with identical (slot,index) but different payloads flag ConflictingShred — never last-write-wins silently"
+  - "an FEC set that never completes ages out with an explicit Incomplete record, bounded memory"
+benchmark:
+  bench_name: shred_bench
+  budgets_ns:
+    p50_ns: 500.0
+    p99_ns: 3000.0
+
+leaves:
+  - leaf_id: sh_header_decode
+    responsibility: "zero-copy shred header decode with strict bounds checking"
+    signature: >
+      pub fn decode_header(bytes: &[u8]) -> Result<ShredHeader, ShredErr>
+    invariants:
+      - "returns ShredErr::Short if bytes < minimum header size; never indexes past len"
+      - "validates shred_type is a known discriminant; unknown -> ShredErr::Type"
+      - "payload_range() derived from header is bounds-checked against the actual buffer before use"
+    reference_pattern: |
+      // read fixed offsets LE: slot u64, index u32, shred_type u8, fec_set_index u32, payload_len u16;
+      // if bytes.len() < HEADER_LEN { return Err(Short); }
+      // if header.payload_end() > bytes.len() { return Err(Short); }
+    property_test: |
+      #[test]
+      fn prop_header_bounds() {
+          let good = ShredHeader::test_bytes(100, 3, 0);
+          assert!(decode_header(&good).is_ok());
+          for cut in 0..good.len().min(16) {
+              assert!(decode_header(&good[..cut]).is_err()); // never panics, always Err
+          }
+          let mut bad_len = good.clone();
+          bad_len[BAD_PAYLOAD_LEN_OFF] = 0xFF; // claims payload beyond buffer
+          assert!(decode_header(&bad_len).is_err());
+      }
+    max_lines: 35
+    temperature_band: low
+
+  - leaf_id: sh_fec_track
+    responsibility: "FEC-set completion bookkeeping with bounded memory and conflict detection"
+    signature: >
+      pub fn track(sets: &mut FecTable, h: &ShredHeader, payload: &[u8]) -> Track
+      // Track::{Stored, Duplicate, Conflicting, SetComplete(FecSetId), Evicted(FecSetId)}
+    invariants:
+      - "identical (slot,index) with identical payload => Duplicate; with different payload => Conflicting (both counted)"
+      - "SetComplete fires exactly once per set, when the data-shred count reaches the set's expected count"
+      - "table capacity is fixed; eviction is oldest-slot-first and returns Evicted with an Incomplete record"
+    reference_pattern: |
+      // UNVERIFIED FRONTIER REFERENCE (Fable). Not compiled here. property_test is authority.
+      //
+      // pub enum Track { Stored, Duplicate, Conflicting, SetComplete(FecSetId), Evicted(FecSetId) }
+      // struct FecSet {
+      //     id: FecSetId,                       // (slot, fec_set_index)
+      //     expected: u8,                       // expected data-shred count (from any member header)
+      //     slots: [Option<u64>; MAX_SHREDS],   // per data-index payload hash (0..expected)
+      //     received: u8,
+      //     completed: bool,
+      // }
+      // pub struct FecTable { sets: Vec<FecSet>, cap: usize } // index-map keyed by id; ring-evicted
+      //
+      // pub fn track(sets: &mut FecTable, h: &ShredHeader, payload: &[u8]) -> Track {
+      //     let id = FecSetId { slot: h.slot, fec: h.fec_set_index };
+      //     let idx = h.index as usize;
+      //     let ph  = fnv1a64(payload);         // cheap payload fingerprint for conflict detection
+      //     // find or create the set (evicting oldest slot if at capacity)
+      //     let evicted = sets.ensure_capacity_for(id.slot); // returns Option<FecSetId> if it evicted
+      //     let set = sets.get_or_insert(id, h.expected_data_count);
+      //     match set.slots.get(idx).copied().flatten() {
+      //         Some(existing) if existing == ph => return Track::Duplicate,
+      //         Some(_)                          => return Track::Conflicting, // same (slot,index), different bytes
+      //         None => {
+      //             set.slots[idx] = Some(ph);
+      //             set.received += 1;
+      //         }
+      //     }
+      //     if !set.completed && set.received == set.expected {
+      //         set.completed = true;
+      //         return Track::SetComplete(id);
+      //     }
+      //     if let Some(ev) = evicted { return Track::Evicted(ev); }
+      //     Track::Stored
+      // }
+      //
+      // Bounded memory: FecTable.cap fixed; ensure_capacity_for evicts the oldest-slot set (emitting
+      // Evicted with its incompleteness) BEFORE inserting a new one. SetComplete fires exactly once
+      // because of the `!set.completed` guard. Conflict is detected by payload fingerprint mismatch at
+      // the same data index — never last-write-wins.
+    property_test: |
+      #[test]
+      fn prop_fec_complete_once_and_conflicts() {
+          let mut t = FecTable::with_capacity(8);
+          let mk = |i| (ShredHeader::test(5, i, /*fec*/0, /*expected*/3), [i as u8; 8]);
+          let (h0, p0) = mk(0); let (h1, p1) = mk(1); let (h2, p2) = mk(2);
+          assert!(matches!(track(&mut t, &h0, &p0), Track::Stored));
+          assert!(matches!(track(&mut t, &h0, &p0), Track::Duplicate));
+          assert!(matches!(track(&mut t, &h0, &[9u8; 8]), Track::Conflicting));
+          assert!(matches!(track(&mut t, &h1, &p1), Track::Stored));
+          assert!(matches!(track(&mut t, &h2, &p2), Track::SetComplete(_)));
+      }
+    depends_on: ["sh_header_decode"]
+    max_lines: 55
+    temperature_band: high
+
+  - leaf_id: sh_reassemble
+    responsibility: "reassemble a completed FEC set's data shreds into entry bytes, order-exact"
+    signature: >
+      pub fn reassemble(set: &CompleteSet, out: &mut SegBuf) -> Result<ReassemblyMeta, ShredErr>
+    invariants:
+      - "concatenates data payloads in ascending shred index order; any missing index is ShredErr::Missing (unreachable for a CompleteSet, asserted)"
+      - "ReassemblyMeta carries first_local_arrival_ns = min over constituent shreds"
+      - "output length equals the sum of payload lengths exactly; no padding invented"
+    reference_pattern: |
+      // for idx in set.data_indices_sorted() { out.extend(set.payload(idx)?); }
+      // meta.first_local_arrival_ns = set.min_arrival_ns();
+    property_test: |
+      #[test]
+      fn prop_reassembly_order_and_timing() {
+          let set = CompleteSet::test(&[(2, b"cc", 30), (0, b"aa", 10), (1, b"bb", 5)]);
+          let mut out = SegBuf::new();
+          let meta = reassemble(&set, &mut out).unwrap();
+          assert_eq!(out.bytes(), b"aabbcc");   // index order, not arrival order
+          assert_eq!(meta.first_local_arrival_ns, 5); // earliest constituent
+      }
+    depends_on: ["sh_fec_track"]
+    max_lines: 30
+    temperature_band: low
+
+  - leaf_id: sh_parity_gate
+    responsibility: "§18.3.5 parity comparison: shred-derived tx set vs canonical source, per slot"
+    signature: >
+      pub fn slot_parity(shred_txs: &[TxSig], canon_txs: &[TxSig],
+      arrivals: &ArrivalMap) -> SlotParity
+      // { matched: u32, shred_only: u32, canon_only: u32, arrival_delta_ns_p50: i64, verdict: ParityVerdict }
+    invariants:
+      - "verdict is Pass only when shred_only == 0 and canon_only == 0; anything else is Fail with counts (honest labeling, criterion 56)"
+      - "set comparison is order-independent and duplicate-safe (signatures deduped first)"
+      - "arrival delta is shred_arrival - canon_arrival per matched sig; negative means shreds were earlier (the point of the source)"
+    reference_pattern: |
+      // sort+dedup both sig slices; two-pointer walk for matched/only counts;
+      // collect deltas for matched sigs; p50 via select_nth_unstable.
+    property_test: |
+      #[test]
+      fn prop_parity_counts_and_verdict() {
+          let s = [TxSig::test(1), TxSig::test(2), TxSig::test(2)]; // dup collapses
+          let c = [TxSig::test(2), TxSig::test(3)];
+          let p = slot_parity(&s, &c, &ArrivalMap::test());
+          assert_eq!((p.matched, p.shred_only, p.canon_only), (1, 1, 1));
+          assert!(matches!(p.verdict, ParityVerdict::Fail));
+          let q = slot_parity(&[TxSig::test(7)], &[TxSig::test(7)], &ArrivalMap::test());
+          assert!(matches!(q.verdict, ParityVerdict::Pass));
+      }
+    depends_on: ["sh_reassemble"]
+    max_lines: 45
+    temperature_band: low

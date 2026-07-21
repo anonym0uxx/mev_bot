@@ -1,0 +1,208 @@
+component: reducer
+constitution_refs: ["§14.4", "§22", "criterion 12, 13"]
+spec: >
+  The deterministic event-sourced core: canonical decoded events applied by pure transition
+  functions to versioned state. Identical event sequences produce bit-identical state and
+  decisions (criterion 12); live, shadow, and replay share this exact code (criterion 13).
+  No clocks, no IO, no RNG, no HashMap iteration-order dependence, no floats in
+  outcome-controlling state, zero heap allocation per event. Duplicates are dropped
+  deterministically; gaps mark state INCOMPLETE — never fabricated. State is snapshot-hashable
+  for replay-parity assertion.
+invariants:
+  - "apply() is pure: (State, Event) -> State with no side effects, allocation, or ambient reads"
+  - "same event slice => same final state hash, across runs, threads, and machines"
+  - "iteration over any keyed collection uses a deterministic order (sorted keys or index vec) wherever it affects output"
+  - "gap in (slot, seq) sets Completeness::Incomplete on affected markets; no value is invented"
+  - "no f32/f64 in State; money u64/u128 lamports; ratios bps"
+adversarial_checks:
+  - "shuffled duplicate deliveries of the same events produce the same state as exactly-once delivery"
+  - "a state containing a HashMap hashed via unordered iteration would produce run-varying hashes — the snapshot hash test run twice in one process must be equal"
+  - "an event with slot regression (earlier than watermark) is rejected deterministically, not applied"
+benchmark:
+  bench_name: reducer_bench
+  budgets_ns:
+    p50_ns: 250.0
+    p99_ns: 900.0
+
+leaves:
+  - leaf_id: rd_event_key
+    responsibility: "canonical event identity and ordering key for dedup and sequencing"
+    signature: >
+      pub fn event_key(ev: &CanonEvent) -> EventKey  // (slot: u64, tx_index: u32, inner_index: u16, source_seq: u64)
+    invariants:
+      - "total order: two distinct on-chain events never share a key; the same event from two sources shares one"
+      - "Ord/Eq derive from on-chain position (slot, tx_index, inner_index), never from arrival time or source"
+      - "Copy, 24 bytes max, no allocation"
+    reference_pattern: |
+      // #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+      // pub struct EventKey { slot: u64, tx_index: u32, inner_index: u16 }
+      // source_seq is carried for telemetry but excluded from Eq/Ord.
+    property_test: |
+      #[test]
+      fn prop_key_source_independent() {
+          let a = CanonEvent::test(100, 5, 0, /*source_seq*/ 1);
+          let b = CanonEvent::test(100, 5, 0, /*source_seq*/ 999);
+          assert_eq!(event_key(&a), event_key(&b));
+          let c = CanonEvent::test(100, 6, 0, 1);
+          assert!(event_key(&a) < event_key(&c));
+      }
+    max_lines: 20
+    temperature_band: low
+
+  - leaf_id: rd_dedup_gap
+    responsibility: "deterministic dedup + gap detection over the event stream watermark"
+    signature: >
+      pub fn admit(seq: &mut SeqState, key: EventKey) -> Admit  // Admit::{Apply, Duplicate, Regression, GapThenApply(u64)}
+    invariants:
+      - "a key <= watermark that was already applied returns Duplicate; a key below the low watermark returns Regression"
+      - "a forward jump returns GapThenApply(missed_count) so the caller marks Completeness::Incomplete — never silently Apply"
+      - "bounded memory: recent-key window is fixed-capacity with deterministic eviction"
+    reference_pattern: |
+      // UNVERIFIED FRONTIER REFERENCE (Fable). Not compiled here. The property_test is the
+      // authority — if this and the test disagree, the test wins and this is wrong.
+      //
+      // pub struct SeqState {
+      //     low_watermark: u64,          // slots below this are Regression
+      //     next_expected: u64,          // the slot we expect to apply next (by ordering key)
+      //     recent: [Option<EventKey>; RECENT_CAP], // fixed ring of applied keys
+      //     head: usize,
+      // }
+      // const RECENT_CAP: usize = 1024;
+      //
+      // pub enum Admit { Apply, Duplicate, Regression, GapThenApply(u64) }
+      //
+      // impl SeqState {
+      //     pub fn new() -> Self {
+      //         Self { low_watermark: 0, next_expected: 0,
+      //                recent: [None; RECENT_CAP], head: 0 }
+      //     }
+      //     fn seen(&self, k: EventKey) -> bool {
+      //         self.recent.iter().flatten().any(|&r| r == k)
+      //     }
+      //     fn remember(&mut self, k: EventKey) {
+      //         self.recent[self.head] = Some(k);
+      //         self.head = (self.head + 1) & (RECENT_CAP - 1);
+      //     }
+      // }
+      //
+      // pub fn admit(seq: &mut SeqState, key: EventKey) -> Admit {
+      //     let slot = key.slot;
+      //     if slot < seq.low_watermark { return Admit::Regression; }
+      //     if slot < seq.next_expected {
+      //         // within the recent window: either a known duplicate or a late-but-valid fill
+      //         return if seq.seen(key) { Admit::Duplicate } else { Admit::Regression };
+      //     }
+      //     if slot == seq.next_expected {
+      //         seq.remember(key);
+      //         seq.next_expected = slot + 1;
+      //         seq.low_watermark = seq.next_expected.saturating_sub(RECENT_CAP as u64);
+      //         return Admit::Apply;
+      //     }
+      //     // slot > next_expected: forward jump
+      //     let missed = slot - seq.next_expected;
+      //     seq.remember(key);
+      //     seq.next_expected = slot + 1;
+      //     seq.low_watermark = seq.next_expected.saturating_sub(RECENT_CAP as u64);
+      //     Admit::GapThenApply(missed)
+      // }
+      //
+      // NOTE for GLM: the dossier test uses single-index EventKeys keyed by slot; if the real
+      // EventKey orders by (slot, tx_index, inner_index), replace `slot`/`next_expected` with a
+      // monotone u128 rank = ((slot as u128)<<48)|((tx_index as u128)<<16)|inner_index, and keep
+      // the same watermark/ring logic. The test contract is unchanged.
+    property_test: |
+      #[test]
+      fn prop_dedup_and_gaps() {
+          let mut s = SeqState::new();
+          let k = |slot| EventKey::test(slot, 0, 0);
+          assert!(matches!(admit(&mut s, k(1)), Admit::Apply));
+          assert!(matches!(admit(&mut s, k(1)), Admit::Duplicate));
+          assert!(matches!(admit(&mut s, k(5)), Admit::GapThenApply(3)));
+          assert!(matches!(admit(&mut s, k(0)), Admit::Regression));
+      }
+    depends_on: ["rd_event_key"]
+    max_lines: 45
+    temperature_band: high
+
+  - leaf_id: rd_apply
+    responsibility: "pure market-state transition for one admitted canonical swap"
+    signature: >
+      pub fn apply(state: &MarketState, ev: &CanonEvent) -> MarketState
+    invariants:
+      - "updates reserves, last trade, flow aggregates, completeness — all integer fields"
+      - "no allocation: MarketState is fixed-size; windows are fixed-capacity decayed summaries"
+      - "reserve arithmetic goes through the fixedpoint component (mul_div), never inline float math"
+      - "applying the same event to the same state twice yields the same result (referential transparency)"
+    reference_pattern: |
+      // let mut s = *state;
+      // s.reserve_base  = ev.post_reserve_base;   // decoded post-state is authoritative
+      // s.reserve_quote = ev.post_reserve_quote;
+      // s.flow.apply(ev.side, ev.quote_lamports, ev.ts_ns);  // fixed-size decayed summary
+      // s.last = LastTrade::from(ev);
+      // s
+    property_test: |
+      #[test]
+      fn prop_apply_pure_and_deterministic() {
+          let s0 = MarketState::test();
+          let ev = CanonEvent::test(10, 0, 0, 1);
+          let a = apply(&s0, &ev);
+          let b = apply(&s0, &ev);
+          assert_eq!(a, b);
+          assert_eq!(s0, MarketState::test()); // input untouched
+      }
+    depends_on: ["rd_event_key"]
+    max_lines: 45
+    temperature_band: low
+
+  - leaf_id: rd_snapshot_hash
+    responsibility: "order-stable state hash for replay-parity assertion"
+    signature: >
+      pub fn state_hash(state: &WorldState) -> [u8; 32]
+    invariants:
+      - "iterates markets in sorted key order; two hashes of the same logical state are equal within and across processes"
+      - "hash input is the canonical little-endian field serialization, versioned with a schema byte"
+      - "no floats hashed anywhere (there are none in state)"
+    reference_pattern: |
+      // let mut keys: ArrayVec<_, MAX> = state.market_keys().collect();
+      // keys.sort_unstable();
+      // let mut h = Hasher::new(); h.update(&[SCHEMA_V]);
+      // for k in keys { h.update(&k.to_le_bytes()); state.market(k).write_canon(&mut h); }
+      // h.finalize()
+    property_test: |
+      #[test]
+      fn prop_hash_order_stable() {
+          let mut w1 = WorldState::new();
+          let mut w2 = WorldState::new();
+          for i in 0..100u64 { w1.upsert_market(i, MarketState::test_with(i)); }
+          for i in (0..100u64).rev() { w2.upsert_market(i, MarketState::test_with(i)); }
+          assert_eq!(state_hash(&w1), state_hash(&w2)); // insertion order irrelevant
+          assert_eq!(state_hash(&w1), state_hash(&w1)); // stable within process
+      }
+    depends_on: ["rd_apply"]
+    max_lines: 35
+    temperature_band: low
+
+  - leaf_id: rd_quantize_boundary
+    responsibility: "fixed-point quantization boundary for off-hot-path features entering the reducer"
+    signature: >
+      pub fn quantize_feature(raw_f64: f64, scale: u32) -> Option<i64>
+    invariants:
+      - "this is the ONLY function where an f64 may appear, and it lives outside the hot module (boundary adapter)"
+      - "NaN/inf/out-of-range -> None (feature marked incomplete), never a fabricated value"
+      - "round-half-away-from-zero, documented and tested — a single rounding contract everywhere"
+    reference_pattern: |
+      // if !raw.is_finite() { return None; }
+      // let scaled = raw * scale as f64;
+      // if scaled.abs() > i64::MAX as f64 / 2.0 { return None; }
+      // Some(scaled.round() as i64)   // .round() is half-away-from-zero in Rust
+    property_test: |
+      #[test]
+      fn prop_quantize_contract() {
+          assert_eq!(quantize_feature(1.25, 100), Some(125));
+          assert_eq!(quantize_feature(-1.255, 1000), Some(-1255));
+          assert_eq!(quantize_feature(f64::NAN, 100), None);
+          assert_eq!(quantize_feature(f64::INFINITY, 100), None);
+          assert_eq!(quantize_feature(0.5, 1), Some(1)); // half away from zero
+      }
+    max_lines: 15
+    temperature_band: low

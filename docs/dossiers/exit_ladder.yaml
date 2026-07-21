@@ -1,0 +1,314 @@
+component: exit_ladder
+constitution_refs: ["§24", "§35", "§48", "criteria 102, 103, 107"]
+spec: >
+  The scalp exit execution family: pre-armed byte-level exit transactions, the salvaged
+  5-level sell-escalation ladder, partial-exit ladders sized from measured depth, per-market
+  derived profit targets (measured round-trip cost floor + configured margin — no global TP
+  constants, defect #3), whole-lifecycle exit protection with a never-freezing peak reference
+  (defects #1/#2), and the exit-into-strength trigger interface. Trigger-time work is
+  patch-sign-send: message skeletons are pre-serialized with blockhash / amount / min-out
+  patched in place at fixed offsets. Escalation cooldowns scale with measured price-decay
+  urgency (the single permitted dynamic safety constant). All arithmetic integer fixed-point.
+invariants:
+  - "no f32/f64 in any amount, price, bps, or fee field"
+  - "an exit template exists for every open position from the moment of entry (pre-armed law)"
+  - "patching a template never changes its length or any unpatched byte (fixed-offset contract)"
+  - "escalation only widens tolerance / raises priority — it never reduces exit aggressiveness mid-collapse"
+  - "profit targets are per-market derived: target_bps >= measured_floor_bps + margin_bps always holds"
+adversarial_checks:
+  - "patch offsets computed once at arm time remain valid after blockhash refresh (no re-serialization drift)"
+  - "ladder at max escalation with a failing route still emits a final emergency-path attempt (never a silent stall)"
+  - "a market whose measured floor exceeds any configured global TP would have produced a guaranteed net-loss target — derived targets make this impossible by construction (defect #3 regression)"
+  - "cooldown under fast price decay is strictly shorter than cooldown under slow decay (urgency scaling)"
+benchmark:
+  bench_name: exit_ladder_bench
+  budgets_ns:
+    p50_ns: 300.0
+    p99_ns: 1200.0
+
+leaves:
+  - leaf_id: el_template_arm
+    responsibility: "build a pre-armed exit skeleton at entry: serialized message bytes + fixed patch offsets"
+    signature: >
+      pub fn arm_exit_template(accounts: &ExitAccounts, params: &ExitParams)
+      -> Result<ExitTemplate, ArmError>
+    invariants:
+      - "all accounts resolved at arm time (entry) — none resolved on the sell hot path"
+      - "returns ExitTemplate { msg_bytes: ArrayVec<u8, MAX_MSG>, blockhash_off: usize, amount_off: usize, min_out_off: usize }"
+      - "offsets verified in-bounds and non-overlapping at arm time"
+      - "no heap allocation: fixed-capacity buffer"
+    reference_pattern: |
+      // UNVERIFIED FRONTIER REFERENCE (Fable). Not compiled here. property_test is authority.
+      // This leaf is venue-shaped: the exact message layout depends on the real sell instruction.
+      // The pattern below is the STRUCTURE GLM must fill with the actual serialized message; the
+      // offset-recording discipline is the part that must not change.
+      //
+      // use arrayvec::ArrayVec;
+      // pub const MAX_MSG: usize = 1232; // Solana packet cap; size to the real message
+      // pub struct ExitTemplate {
+      //     pub msg_bytes: ArrayVec<u8, MAX_MSG>,
+      //     pub blockhash_off: usize,
+      //     pub amount_off: usize,
+      //     pub min_out_off: usize,
+      // }
+      // pub enum ArmError { Serialize, OffsetOutOfBounds, Overlap }
+      //
+      // pub fn arm_exit_template(accounts: &ExitAccounts, params: &ExitParams)
+      //     -> Result<ExitTemplate, ArmError>
+      // {
+      //     // 1) serialize the FULL sell message once with placeholder values, capturing offsets.
+      //     //    Build via the real instruction builder; write placeholders for the three fields.
+      //     let mut msg = ArrayVec::<u8, MAX_MSG>::new();
+      //     let layout = serialize_sell_with_placeholders(&mut msg, accounts, params)
+      //         .map_err(|_| ArmError::Serialize)?; // returns the three field offsets
+      //
+      //     let (bh, amt, mo) = (layout.blockhash_off, layout.amount_off, layout.min_out_off);
+      //     // 2) validate offsets are in-bounds and the fields do not overlap.
+      //     let ends = [(bh, 32), (amt, 8), (mo, 8)];
+      //     for &(off, len) in &ends {
+      //         if off + len > msg.len() { return Err(ArmError::OffsetOutOfBounds); }
+      //     }
+      //     if ranges_overlap(bh, 32, amt, 8) || ranges_overlap(bh, 32, mo, 8)
+      //        || ranges_overlap(amt, 8, mo, 8) { return Err(ArmError::Overlap); }
+      //
+      //     Ok(ExitTemplate { msg_bytes: msg, blockhash_off: bh, amount_off: amt, min_out_off: mo })
+      // }
+      //
+      // fn ranges_overlap(a: usize, al: usize, b: usize, bl: usize) -> bool {
+      //     a < b + bl && b < a + al
+      // }
+      //
+      // Key discipline for GLM: offsets are recorded at serialize time and are STABLE for the life
+      // of the template. patch_and_finalize (next leaf) only overwrites those byte ranges; it never
+      // re-serializes. The test asserts a patch changes <= 8 bytes and never the length.
+    property_test: |
+      #[test]
+      fn prop_template_offsets_stable() {
+          let t = arm_exit_template(&ExitAccounts::test(), &ExitParams::test()).unwrap();
+          let before = t.msg_bytes.clone();
+          let mut t2 = t.clone();
+          patch_u64(&mut t2, t2.amount_off, 42);
+          assert_eq!(t2.msg_bytes.len(), before.len());
+          let mut diffs = 0;
+          for i in 0..before.len() {
+              if before[i] != t2.msg_bytes[i] { diffs += 1; }
+          }
+          assert!(diffs <= 8); // only the amount field bytes changed
+      }
+    max_lines: 55
+    temperature_band: high
+
+  - leaf_id: el_patch_sign
+    responsibility: "trigger-time in-place patch of blockhash/amount/min_out, then sign: the entire sell hot path"
+    signature: >
+      pub fn patch_and_finalize(t: &mut ExitTemplate, blockhash: &[u8; 32],
+      amount: u64, min_out: u64) -> Result<(), PatchError>
+    invariants:
+      - "writes exactly 32 bytes at blockhash_off and 8 at amount_off / min_out_off; nothing else"
+      - "no allocation, no serialization framework, no syscalls"
+      - "idempotent: patching twice with the same values yields identical bytes"
+    reference_pattern: |
+      // t.msg_bytes[t.blockhash_off..t.blockhash_off+32].copy_from_slice(blockhash);
+      // t.msg_bytes[t.amount_off..t.amount_off+8].copy_from_slice(&amount.to_le_bytes());
+      // t.msg_bytes[t.min_out_off..t.min_out_off+8].copy_from_slice(&min_out.to_le_bytes());
+    property_test: |
+      #[test]
+      fn prop_patch_idempotent_and_exact() {
+          let mut t = arm_exit_template(&ExitAccounts::test(), &ExitParams::test()).unwrap();
+          let bh = [7u8; 32];
+          patch_and_finalize(&mut t, &bh, 123, 100).unwrap();
+          let snap = t.msg_bytes.clone();
+          patch_and_finalize(&mut t, &bh, 123, 100).unwrap();
+          assert_eq!(snap, t.msg_bytes);
+          assert_eq!(&t.msg_bytes[t.blockhash_off..t.blockhash_off+32], &bh);
+      }
+    depends_on: ["el_template_arm"]
+    max_lines: 20
+    temperature_band: low
+
+  - leaf_id: el_target_derive
+    responsibility: "derive the per-market profit target from the measured round-trip floor plus margin (defect #3 fix)"
+    signature: >
+      pub fn derive_target_bps(floor_bps: u32, margin_bps: u32,
+      mfe_p25_bps: Option<u32>) -> Option<u32>
+    invariants:
+      - "returns None (market inadmissible) when floor_bps + margin_bps exceeds the archetype's conditional MFE evidence (mfe_p25_bps) where present (criterion 107 linkage)"
+      - "target >= floor + margin always; no global constant path exists"
+      - "checked add; None on overflow"
+    reference_pattern: |
+      // let t = floor_bps.checked_add(margin_bps)?;
+      // match mfe_p25_bps { Some(m) if m < t => None, _ => Some(t) }
+    property_test: |
+      #[test]
+      fn prop_target_above_floor_or_inadmissible() {
+          assert_eq!(derive_target_bps(200, 100, Some(500)), Some(300));
+          assert_eq!(derive_target_bps(200, 100, Some(250)), None); // MFE can't pay the floor
+          assert_eq!(derive_target_bps(200, 100, None), Some(300));
+          assert_eq!(derive_target_bps(u32::MAX, 1, None), None);   // overflow
+      }
+    max_lines: 15
+    temperature_band: low
+
+  - leaf_id: el_peak_protect
+    responsibility: "whole-lifecycle protection state: trail reference from the true running peak, armed from entry (defects #1/#2 fix)"
+    signature: >
+      pub fn protection_level_fp(peak_price_fp: u64, entry_price_fp: u64,
+      trail_bps: u32, hard_sl_bps: u32) -> u64
+    invariants:
+      - "protection exists from entry (max of trail-from-peak and hard-SL-from-entry) — no TP2-gated dead zone"
+      - "monotone in peak: a higher peak never lowers the protection level"
+      - "integer bps math, saturating at zero"
+    reference_pattern: |
+      // trail_level = peak * (10_000 - trail_bps) / 10_000
+      // sl_level    = entry * (10_000 - hard_sl_bps) / 10_000
+      // max(trail_level, sl_level)
+    property_test: |
+      #[test]
+      fn prop_protection_whole_life_monotone() {
+          let p0 = protection_level_fp(1_000, 1_000, 500, 800);
+          assert!(p0 > 0); // armed at entry, not after TP2
+          let p1 = protection_level_fp(2_000, 1_000, 500, 800);
+          assert!(p1 >= p0); // peak up -> protection never down
+          assert!(protection_level_fp(2_000, 1_000, 500, 800)
+                  >= protection_level_fp(1_000, 1_000, 500, 800));
+      }
+    max_lines: 20
+    temperature_band: low
+
+  - leaf_id: el_escalation
+    responsibility: "5-level sell-escalation state machine with decay-urgency-scaled cooldown (salvaged semantics)"
+    signature: >
+      pub fn next_escalation(cur: EscalationState, attempt_failed: bool,
+      decay_bps_per_s: u32, base_cooldown_ms: u32) -> EscalationState
+    invariants:
+      - "levels 0..=4 strictly increase slippage tolerance and priority fee; level transitions only on failure"
+      - "cooldown_ms = base scaled DOWN by measured decay urgency (faster collapse => shorter wait), floor at a configured minimum"
+      - "at level 4 with attempt_failed, state marks emergency_path_required = true; the machine never returns to a lower level mid-position"
+      - "pure state machine; retry counts bounded (safety constant retained static-by-design)"
+    reference_pattern: |
+      // let urgency = decay_bps_per_s.max(1);
+      // let cooldown = (base_cooldown_ms / urgency.min(MAX_URGENCY_DIV)).max(MIN_COOLDOWN_MS);
+      // if attempt_failed { level = (level + 1).min(4); if level == 4 { emergency_path_required = true } }
+    property_test: |
+      #[test]
+      fn prop_escalation_monotone_and_urgent() {
+          let s0 = EscalationState::new(1_000);
+          let s1 = next_escalation(s0, true, 1, 1_000);
+          let s2 = next_escalation(s1, true, 1, 1_000);
+          assert!(s2.level > s1.level && s1.level > s0.level);
+          let slow = next_escalation(s0, true, 1, 1_000).cooldown_ms;
+          let fast = next_escalation(s0, true, 100, 1_000).cooldown_ms;
+          assert!(fast < slow); // collapse => shorter cooldown (defect-list exception)
+          let mut s = s0;
+          for _ in 0..10 { s = next_escalation(s, true, 10, 1_000); }
+          assert_eq!(s.level, 4);
+          assert!(s.emergency_path_required);
+      }
+    max_lines: 45
+    temperature_band: low
+
+  - leaf_id: el_partial_ladder
+    responsibility: "size a partial-exit ladder cost-priced against per-rung fixed cost, not impact alone (criterion 112)"
+    signature: >
+      pub fn ladder_rungs(position_lamports: u64, max_rung_impact_bps: u32,
+      fixed_cost_lamports: u64, min_rung_margin_bps: u32,
+      impact_curve: &ImpactCurve) -> ArrayVec<u64, MAX_RUNGS>
+    invariants:
+      - "sum of rungs == position_lamports exactly (no dust lost)"
+      - "each rung's modeled impact <= max_rung_impact_bps per the supplied measured curve"
+      - "COST PRICING: a rung is only added if its share of the position still clears the fixed cost it pays with min_rung_margin_bps of margin — splitting that drives any rung below fixed_cost_lamports/margin is refused, because each rung pays full fixed cost while linear impact is barely reduced by splitting (criterion 112)"
+      - "at most MAX_RUNGS rungs; a position too small to carry two rungs above the fixed-cost floor returns exactly one (single-clip exit)"
+      - "no allocation; deterministic"
+    reference_pattern: |
+      // UNVERIFIED FRONTIER REFERENCE (Fable). Not compiled here. property_test is authority.
+      //
+      // use arrayvec::ArrayVec;
+      // pub const MAX_RUNGS: usize = 8;
+      //
+      // pub fn ladder_rungs(position_lamports: u64, max_rung_impact_bps: u32,
+      //                     fixed_cost_lamports: u64, min_rung_margin_bps: u32,
+      //                     impact_curve: &ImpactCurve) -> ArrayVec<u64, MAX_RUNGS>
+      // {
+      //     let mut rungs = ArrayVec::<u64, MAX_RUNGS>::new();
+      //     if position_lamports == 0 { return rungs; }
+      //
+      //     // (1) impact ceiling: largest rung whose modeled impact stays within the bound.
+      //     let impact_cap = impact_curve.max_size_at(max_rung_impact_bps).max(1);
+      //     // (2) cost floor per rung: a rung must be large enough that the fixed cost it pays
+      //     //     is <= min_rung_margin_bps of the rung. rung >= fixed * 10_000 / margin_bps.
+      //     let cost_floor = if min_rung_margin_bps == 0 { u64::MAX }
+      //         else { (fixed_cost_lamports as u128 * 10_000u128
+      //                 / min_rung_margin_bps as u128) as u64 };
+      //     // (3) the per-rung size must satisfy BOTH: big enough to clear cost, small enough
+      //     //     for impact. If cost_floor > impact_cap the constraints conflict -> one clip.
+      //     if cost_floor > impact_cap || position_lamports <= cost_floor {
+      //         rungs.push(position_lamports);        // too small to split profitably
+      //         return rungs;
+      //     }
+      //     let per_rung = impact_cap;                 // largest impact-safe rung
+      //     // max rungs the cost floor permits: position / cost_floor
+      //     let cost_limited = (position_lamports / cost_floor).max(1);
+      //     let impact_needed = position_lamports.div_ceil(per_rung);
+      //     let count = impact_needed.min(cost_limited)
+      //                              .min(MAX_RUNGS as u64) as usize;
+      //     let base = position_lamports / count as u64;
+      //     let mut assigned = 0u64;
+      //     for i in 0..count {
+      //         let rung = if i + 1 == count { position_lamports - assigned } else { base };
+      //         assigned += rung;
+      //         rungs.push(rung);
+      //     }
+      //     rungs
+      // }
+      //
+      // The reliability benefit of more rungs under a collapsing book is real but lives in the
+      // CALLER's policy (el_escalation), which may raise rung count within this cost-priced
+      // ceiling when reconciled evidence shows the reliability gain beats the fixed-cost penalty.
+    property_test: |
+      #[test]
+      fn prop_rungs_conserve_bound_and_cost_priced() {
+          let c = ImpactCurve::linear_test(1_000);        // 1_000 lamports per bps
+          // fixed cost 100 lamports, require each rung margin >= 200 bps -> rung >= 5_000
+          let rungs = ladder_rungs(20_000, 4, 100, 200, &c);
+          assert_eq!(rungs.iter().sum::<u64>(), 20_000);
+          for r in &rungs {
+              assert!(*r >= 5_000, "every rung clears the fixed-cost floor");
+              assert!(c.impact_bps(*r) <= 4 || rungs.len() == MAX_RUNGS);
+          }
+          // a position only twice the cost floor cannot profitably split -> one clip
+          let tiny = ladder_rungs(6_000, 4, 100, 200, &c);
+          assert_eq!(tiny.len(), 1);
+          assert_eq!(tiny[0], 6_000);
+          // zero-margin sentinel also collapses to a single clip (no free splitting)
+          let z = ladder_rungs(20_000, 4, 100, 0, &c);
+          assert_eq!(z.len(), 1);
+      }
+    max_lines: 45
+    temperature_band: high
+
+  - leaf_id: el_exit_into_strength
+    responsibility: "burst-climax exit trigger: fire the pre-armed exit into detected buy-pressure spurts"
+    signature: >
+      pub fn exit_into_strength_fires(burst: &BurstState, in_profit: bool,
+      authenticity_fp: u32, min_authenticity_fp: u32) -> bool
+    invariants:
+      - "fires only on BurstPhase::Climax with favorable (buy-side) direction while in profit"
+      - "never fires on flow below the authenticity threshold (fabricated bursts are what vendors sell)"
+      - "pure; competes against post-confirmation exits in the evaluator — this leaf only detects, never sizes"
+    reference_pattern: |
+      // matches!(burst.phase, BurstPhase::Climax)
+      //   && burst.direction == Dir::Buy
+      //   && in_profit
+      //   && authenticity_fp >= min_authenticity_fp
+    property_test: |
+      #[test]
+      fn prop_fires_only_on_authentic_climax_in_profit() {
+          let climax = BurstState::test(BurstPhase::Climax, Dir::Buy);
+          assert!(exit_into_strength_fires(&climax, true, 9_000, 5_000));
+          assert!(!exit_into_strength_fires(&climax, false, 9_000, 5_000)); // not in profit
+          assert!(!exit_into_strength_fires(&climax, true, 1_000, 5_000)); // fabricated burst
+          let onset = BurstState::test(BurstPhase::Onset, Dir::Buy);
+          assert!(!exit_into_strength_fires(&onset, true, 9_000, 5_000));
+      }
+    max_lines: 15
+    temperature_band: low

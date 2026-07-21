@@ -1,0 +1,72 @@
+# llama.cpp server config for GLM-5.2 (Unsloth GGUF) on THIS server.
+# Hardware: 3x RTX 6000 Pro workstation (96GB each = 288GB VRAM) + 256GB DDR5-4800
+#           => ~544GB COMBINED (VRAM + RAM) usable via llama.cpp MoE offload.
+# The supervisor reads ONLY the `endpoint` block; everything else is launch guidance for YOU.
+
+endpoint:
+  base_url: "http://127.0.0.1:8080"
+  model: "glm-5.2"
+
+# =============================================================================
+# MODEL FACTS (from the Unsloth GLM-5.2 GGUF card)
+#   Parameters: 754B    Architecture: glm-dsa (MoE)
+#   This is a MIXTURE-OF-EXPERTS model: only a fraction of params are active per token,
+#   so CPU/RAM offload of inactive expert layers (--n-cpu-moe) costs far less throughput
+#   than dense-model offload. This is why "mostly-VRAM + some RAM" is the right strategy here.
+# =============================================================================
+
+# QUANT FIT AGAINST YOUR BUDGET (288GB VRAM ; ~544GB VRAM+RAM combined)
+#   NOTE: HuggingFace's green/red marks each quant against a SINGLE device in isolation
+#   (VRAM-only OR RAM-only). It does NOT model VRAM+RAM combined with MoE offload, which is
+#   how you will actually run. Judge fit by the numbers below, not HF's checkmarks.
+#
+#   Fully in VRAM (<=~230GB, leaves KV/context headroom):
+#       UD-IQ1_S 217GB, UD-IQ1_M 228GB          <- 1-bit; NOT recommended for coding quality
+#   Mostly VRAM + modest RAM offload (fits in ~544GB combined) -- RECOMMENDED RANGE:
+#       UD-IQ2_XXS 238GB, UD-IQ2_M 239GB, UD-Q2_K_XL 254GB      (2-bit dynamic; acceptable floor)
+#       UD-IQ3_XXS 282GB, UD-IQ3_S 309GB, UD-Q3_K_M 343GB, UD-Q3_K_XL 343GB   (3-bit; GOOD)
+#       UD-IQ4_XS 365GB                                          (4-bit; BEST quality that still fits)
+#   Does NOT fit even combined (skip):
+#       Q4_K_S 436GB and up, all 5/6/8-bit, BF16 1.51TB
+#
+# RECOMMENDATION (quality-first for a CODING workload):
+#   PRIMARY:  UD-Q3_K_XL (343GB)  -- strong 3-bit dynamic; ~288GB on GPUs + ~55GB MoE offload to RAM
+#   BEST-FIT: UD-IQ4_XS  (365GB)  -- 4-bit dynamic, highest quality that fits; a bit more RAM offload
+#   LIGHTER:  UD-Q2_K_XL (254GB)  -- if you want more speed / less offload; acceptable quality floor
+quant_recommendation:
+  primary:        "UD-Q3_K_XL"   # 343GB — best balance of quality and fit for code
+  best_quality:   "UD-IQ4_XS"    # 365GB — highest quality that still fits in 544GB combined
+  lighter_faster: "UD-Q2_K_XL"   # 254GB — less RAM offload, more throughput, acceptable floor
+  avoid_for_code: "UD-IQ1_*"     # 1-bit fits fully in VRAM but too lossy for production code
+  note: >
+    MoE offload (--n-cpu-moe) puts inactive expert layers in your 256GB DDR5; because glm-dsa is
+    MoE, the throughput cost is modest. Prefer an Unsloth Dynamic (UD) quant and always use --jinja.
+
+launch_reference: |
+  :: Windows llama-server. Example for UD-Q3_K_XL (~343GB): ~288GB on 3 GPUs + remainder to RAM.
+  :: Tune --n-cpu-moe up until it fits: start low, raise if you see VRAM OOM at load.
+  llama-server ^
+    --model .\models\glm-5.2-UD-Q3_K_XL.gguf ^
+    --host 127.0.0.1 --port 8080 ^
+    --n-gpu-layers 999 ^                      :: try to place all layers on GPU...
+    --n-cpu-moe 12 ^                          :: ...then push N MoE expert layers to CPU/RAM to fit VRAM
+    --tensor-split 1,1,1 ^                    :: even split across the 3x RTX 6000
+    --ctx-size 32768 ^                        :: 32k context; raise/lower vs VRAM headroom after fit
+    --parallel 2 ^                            :: slot0 = build turn, slot1 = background research
+    --cont-batching ^
+    --flash-attn ^
+    --cache-type-k q8_0 --cache-type-v q8_0 ^ :: quantized KV = cheap long context, negligible loss
+    --jinja ^                                 :: REQUIRED for the correct GLM chat template
+    --seed 1 ^
+    --threads 48                              :: EPYC 9655 has plenty; leave cores for cargo builds
+  :: FIT PROCEDURE (do this once):
+  ::  1. Start with --n-cpu-moe 0 and --n-gpu-layers 999. If it loads, you're fully on GPU (great).
+  ::  2. If VRAM OOM at load, raise --n-cpu-moe (e.g. 8,12,16,...) until it loads. Each step moves
+  ::     more inactive-expert layers to the 256GB RAM. Q3_K_XL typically needs a modest value.
+  ::  3. Confirm /health returns 200, then run: hermes-supervise health
+  ::  4. If you want more speed, drop to UD-Q2_K_XL (254GB) -> less/no offload needed.
+
+requires:
+  openai_compatible: true          # /v1/chat/completions
+  json_schema_support: true        # response_format.json_schema -> GBNF constrained decoding
+  health_endpoint: true            # /health -> 200 ready / 503 loading

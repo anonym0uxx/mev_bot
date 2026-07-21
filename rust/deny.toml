@@ -1,0 +1,5 @@
+# cargo-deny: duplicate-dependency and license gate (§24(d) build-loop law)
+[bans]
+multiple-versions = "warn"   # tighten to "deny" once the tree stabilizes
+[licenses]
+allow = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib"]

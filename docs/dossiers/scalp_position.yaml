@@ -1,0 +1,208 @@
+component: scalp_position
+constitution_refs: ["§22", "§24", "§48", "criteria 97, 100, 103, 106"]
+spec: >
+  Per-swap event-driven scalp position management. Position state is updated by every decoded
+  swap event through the §22 reducer — never by a poll loop. All money/percent values are
+  integer fixed-point (lamports, bps). Every entry/exit/economic decision is evaluated at
+  EXPECTED LANDING STATE (observation + measured latency-drift adder + own impact), never at
+  observation state. Minimum hold is lane-parametric (near-zero for scalps; emergency and
+  sellability-failure exits always exempt). Exit decisions are optimal stopping against
+  redeployment value with a fixed-constant baseline whenever calibrated inputs are stale or
+  sample-starved. The accelerating-favorable-flow no-cut exception is void under fabrication
+  suspicion (anti-pin). Peak tracking covers the entire position lifecycle with bounded
+  memory and can never silently freeze (named defect #1).
+invariants:
+  - "no f32/f64 in any outcome-controlling field; lamports u64/u128, ratios in bps u32"
+  - "identical event sequences produce identical position states (determinism)"
+  - "peak_price_fp is monotonically non-decreasing over the position's whole life and updates on every applied swap"
+  - "no syscall clock: all time comes from event timestamps / injected now_ns"
+  - "emergency, sellability-failure, risk-limit, circuit-breaker exits bypass min-hold and every no-cut exception"
+adversarial_checks:
+  - "a swap stream longer than any internal buffer still moves the peak (frozen-peak defect regression test)"
+  - "fabricated accelerating buys (fabrication_suspicion above threshold) do NOT suppress the time-stop (anti-pin)"
+  - "stale arrival-rate/productivity inputs force the fixed-constant baseline, never a guess"
+  - "landing-state evaluation with positive drift adder never reports a better price than observation"
+benchmark:
+  bench_name: scalp_position_bench
+  budgets_ns:
+    p50_ns: 400.0
+    p99_ns: 1500.0
+
+leaves:
+  - leaf_id: sp_state_apply
+    responsibility: "pure per-swap position state transition: apply one decoded swap to ScalpPositionState"
+    signature: >
+      pub fn apply_swap(state: &ScalpPositionState, ev: &SwapEvent) -> ScalpPositionState
+    invariants:
+      - "pure function: no IO, no clocks, no allocation, no interior mutability"
+      - "updates last_price_fp, peak_price_fp (monotone max), flow window aggregates, time_in_trade_ns from ev.ts_ns"
+      - "peak update happens BEFORE any buffer-capacity early-return path (defect #1 regression)"
+      - "state size is Copy-able and fixed; no Vec growth per event"
+    reference_pattern: |
+      // let mut s = *state;
+      // s.last_price_fp = ev.price_fp;
+      // s.peak_price_fp = s.peak_price_fp.max(ev.price_fp);   // FIRST, unconditionally
+      // s.flow.push_decayed(ev);            // fixed-size decayed summary, never early-return before peak
+      // s.time_in_trade_ns = ev.ts_ns.saturating_sub(s.entry_ts_ns);
+      // s
+    property_test: |
+      #[test]
+      fn prop_peak_never_freezes() {
+          let mut s = ScalpPositionState::open(1_000, 0);
+          for i in 0..10_000u64 {  // far beyond any internal buffer
+              let ev = SwapEvent::test(1_000 + i, i * 1_000);
+              s = apply_swap(&s, &ev);
+          }
+          assert_eq!(s.peak_price_fp, 1_000 + 9_999);
+          let down = SwapEvent::test(500, 10_000_000);
+          s = apply_swap(&s, &down);
+          assert_eq!(s.peak_price_fp, 1_000 + 9_999); // monotone
+          assert_eq!(s.last_price_fp, 500);
+      }
+    max_lines: 40
+    temperature_band: low
+
+  - leaf_id: sp_min_hold
+    responsibility: "lane-parametric minimum-hold check with absolute exemptions"
+    signature: >
+      pub fn min_hold_blocks_exit(lane: Lane, time_in_trade_ns: u64,
+      min_hold_ns: u64, exit_class: ExitClass) -> bool
+    invariants:
+      - "ExitClass::{Emergency, SellabilityFailure, RiskLimit, CircuitBreaker} always return false (never blocked)"
+      - "scalp lane min_hold_ns comes from config and may be zero; no hardcoded 1500ms anywhere"
+      - "pure and branch-cheap; no clock reads"
+    reference_pattern: |
+      // match exit_class {
+      //     ExitClass::Emergency | ExitClass::SellabilityFailure
+      //     | ExitClass::RiskLimit | ExitClass::CircuitBreaker => false,
+      //     _ => time_in_trade_ns < min_hold_ns,
+      // }
+    property_test: |
+      #[test]
+      fn prop_exemptions_absolute() {
+          for c in [ExitClass::Emergency, ExitClass::SellabilityFailure,
+                    ExitClass::RiskLimit, ExitClass::CircuitBreaker] {
+              assert!(!min_hold_blocks_exit(Lane::Scalp, 0, u64::MAX, c));
+          }
+          assert!(min_hold_blocks_exit(Lane::Scalp, 10, 20, ExitClass::Normal));
+          assert!(!min_hold_blocks_exit(Lane::Scalp, 20, 20, ExitClass::Normal));
+          assert!(!min_hold_blocks_exit(Lane::Scalp, 5, 0, ExitClass::Normal)); // zero min-hold legal
+      }
+    max_lines: 15
+    temperature_band: low
+
+  - leaf_id: sp_landing_eval
+    responsibility: "expected-landing-state price/cost adjustment: observation + drift adder + own impact"
+    signature: >
+      pub fn expected_landing(obs_price_fp: u64, side: Side, drift_bps_p95: u32,
+      own_impact_bps: u32) -> Option<u64>
+    invariants:
+      - "for a BUY, landing price >= observation (drift and impact are adverse); for a SELL, proceeds price <= observation"
+      - "uses mul_div-style integer bps math; returns None on overflow"
+      - "drift_bps_p95 and own_impact_bps are measured, versioned inputs — this leaf only combines them"
+    reference_pattern: |
+      // adverse total = drift + impact (bps), applied against the trade direction:
+      // BUY : p * (10_000 + total) / 10_000
+      // SELL: p * (10_000 - total) / 10_000   (saturating at >=1)
+      // use checked mul into u128 then divide; None on overflow
+    property_test: |
+      #[test]
+      fn prop_landing_is_adverse() {
+          let p = 1_000_000u64;
+          let buy = expected_landing(p, Side::Buy, 50, 30).unwrap();
+          let sell = expected_landing(p, Side::Sell, 50, 30).unwrap();
+          assert!(buy >= p && sell <= p);
+          assert_eq!(expected_landing(p, Side::Buy, 0, 0).unwrap(), p);
+          assert!(expected_landing(u64::MAX, Side::Buy, 10_000, 10_000).is_none() ||
+                  expected_landing(u64::MAX, Side::Buy, 10_000, 10_000).unwrap() >= u64::MAX / 2);
+      }
+    depends_on: []
+    max_lines: 30
+    temperature_band: low
+
+  - leaf_id: sp_hazard_inputs
+    responsibility: "assemble the hazard-model covariate vector for the current position, fixed-point, causally available only"
+    signature: >
+      pub fn hazard_inputs(s: &ScalpPositionState, flow: &FlowState,
+      conviction_score_fp: u32, manip_history_fp: u32) -> HazardInputs
+    invariants:
+      - "includes time_in_trade, phase (curve|pool), catalyst class, regime id, conviction covariate, manipulation-history covariate, flow-state summary"
+      - "conviction and manipulation-history are continuous covariates, never used to index a conditioning cell (criterion 106)"
+      - "every field is integer/fixed-point quantized at this boundary; effective_sample and uncertainty passthrough fields present for the DecisionRecord"
+    reference_pattern: |
+      // HazardInputs { time_in_trade_ns, phase, catalyst, regime,
+      //   conviction_fp,        // continuous covariate (0..=10_000 fp)
+      //   manip_history_fp,     // decayed wash/LPI flag strength (0..=10_000 fp)
+      //   cvd_slope_fp, arrival_accel_fp, authenticity_fp, ... }
+      // cell key = (archetype, phase, catalyst, regime) ONLY — covariates never enter the key
+    property_test: |
+      #[test]
+      fn prop_covariates_not_in_cell_key() {
+          let a = hazard_inputs(&ScalpPositionState::test(), &FlowState::test(), 9_000, 0);
+          let b = hazard_inputs(&ScalpPositionState::test(), &FlowState::test(), 1_000, 8_000);
+          assert_eq!(a.cell_key(), b.cell_key()); // covariates differ, cell identical
+          assert_ne!(a.conviction_fp, b.conviction_fp);
+      }
+    depends_on: ["sp_state_apply"]
+    max_lines: 45
+    temperature_band: low
+
+  - leaf_id: sp_redeploy_stop
+    responsibility: "optimal-stopping comparator: hold only while marginal hold rate exceeds redeployment rate net of switching costs"
+    signature: >
+      pub fn should_exit_on_rate(hold_rate_fp: i64, redeploy_rate_fp: i64,
+      switch_cost_rate_fp: i64, inputs_fresh: bool, baseline_says_exit: bool) -> bool
+    invariants:
+      - "if !inputs_fresh, returns baseline_says_exit (fixed-constant fallback, never a guess)"
+      - "exit when hold_rate_fp < redeploy_rate_fp - switch_cost_rate_fp"
+      - "redeploy_rate_fp is zero when no qualified candidate exists (caller contract, tested)"
+      - "pure; signed fixed-point rates in lamports-per-second fp"
+    reference_pattern: |
+      // if !inputs_fresh { return baseline_says_exit; }
+      // hold_rate_fp < redeploy_rate_fp.saturating_sub(switch_cost_rate_fp)
+    property_test: |
+      #[test]
+      fn prop_rate_comparator() {
+          assert!(should_exit_on_rate(10, 100, 20, true, false));   // 10 < 80 -> exit
+          assert!(!should_exit_on_rate(90, 100, 20, true, true));   // 90 >= 80 -> hold
+          assert!(!should_exit_on_rate(-5, 0, 0, true, false) == false); // negative hold vs 0 redeploy -> exit
+          assert!(should_exit_on_rate(0, 0, 0, false, true));       // stale -> baseline
+          assert!(!should_exit_on_rate(0, 0, 0, false, false));     // stale -> baseline
+      }
+    depends_on: []
+    max_lines: 15
+    temperature_band: low
+
+  - leaf_id: sp_no_cut_guard
+    responsibility: "accelerating-favorable-flow no-cut exception with the anti-pin fabrication void"
+    signature: >
+      pub fn time_stop_binds(elapsed_ok: bool, flow_accel_favorable: bool,
+      flow_fresh: bool, authenticity_fp: u32, fabrication_threshold_fp: u32,
+      exit_class: ExitClass) -> bool
+    invariants:
+      - "emergency-class exits: always binds (true) regardless of every other argument"
+      - "if elapsed time-stop condition is met AND flow shows fresh accelerating favorable continuation AND authenticity_fp >= threshold: does NOT bind"
+      - "if authenticity_fp < fabrication_threshold_fp the exception is VOID and the stop binds normally (anti-pin)"
+      - "stale flow never suppresses the stop"
+    reference_pattern: |
+      // if exit_class.is_emergency() { return true; }
+      // if !elapsed_ok { return false; }
+      // let exception = flow_accel_favorable && flow_fresh
+      //     && authenticity_fp >= fabrication_threshold_fp;
+      // !exception
+    property_test: |
+      #[test]
+      fn prop_anti_pin() {
+          use ExitClass::*;
+          // fabricated acceleration cannot pin the position open:
+          assert!(time_stop_binds(true, true, true, 1_000, 5_000, Normal));
+          // authentic fresh acceleration suppresses the clock:
+          assert!(!time_stop_binds(true, true, true, 9_000, 5_000, Normal));
+          // stale flow never suppresses:
+          assert!(time_stop_binds(true, true, false, 9_000, 5_000, Normal));
+          // emergency always binds:
+          assert!(time_stop_binds(false, true, true, 9_000, 5_000, Emergency));
+      }
+    depends_on: []
+    max_lines: 20
+    temperature_band: low
