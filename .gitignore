@@ -19,3 +19,6 @@ __pycache__/
 supervisor_evidence.db
 supervisor_evidence.db-wal
 supervisor_evidence.db-shm
+
+hermes_audit.zip
+*.zip

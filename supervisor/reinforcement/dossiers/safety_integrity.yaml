@@ -1,0 +1,273 @@
+component: safety_integrity
+constitution_refs: ["criteria 7, 8, 15, 45, 52, 59, 64, 65, 66, 67, 68, 77, 78, 86, 87, 88, 94, 101, 105"]
+spec: >
+  The safety-boundary and data-integrity core: the pure, laptop-buildable functions that enforce
+  the constitution's hardest guarantees by construction. This dossier exists because the initial
+  component dossiers covered the mechanical trading core (reducer, exits, sizing, evaluator) but
+  omitted an entire class of criteria that are equally load-bearing and equally pure: the ones
+  that keep bad data, model output, un-simulated orders, and copy-trading OUT of the live path,
+  and that keep cost math honest across quote mints. Several of these criteria are stated in the
+  constitution as "proven by test" — meaning they demand a testable function, not prose. Each leaf
+  below is a single deterministic function with a property test; none require hardware, live
+  endpoints, or the server. What they collectively guarantee: the only path to an order runs
+  through the full deterministic pipeline (criterion 88), model output can never become fact
+  (8, 45), missing/failed states are represented rather than fabricated (7, 15, 64), sizing takes
+  authenticity exactly once (101), fee/cost math is quote-mint parametric (94), every order proves
+  sellability (77), failures are classified not silently retried (78), and smart-money observation
+  can only reweight, never copy (86, 87). This is the "impossible by construction" layer.
+invariants:
+  - "no f32/f64 in any outcome-controlling path; lamports u64/u128, ratios in bps"
+  - "identical inputs produce identical outputs (determinism) for every function here"
+  - "every function is total: it returns a typed refusal/UNKNOWN rather than panicking on bad input"
+adversarial_checks:
+  - "a decision assembled from any wallet/social/chart/label observation that skips the deterministic pipeline is rejected at the type level (criterion 88)"
+  - "an attempt to place model-derived text into factual state fails to compile or is rejected at runtime (criterion 8)"
+  - "authenticity confidence applied twice (both through edge and as a haircut) is detected and rejected (criterion 101)"
+  - "a SOL-quote cost assumption applied to a USDC-quote market is caught (criterion 94)"
+
+leaves:
+  - leaf_id: si_missingness
+    responsibility: "map an optional/partial field to an explicit UNKNOWN / INCOMPLETE / REJECT state; missing data never silently becomes zero or a default"
+    signature: >
+      pub fn resolve_field(raw: Option<FieldEvidence>, required: bool) -> FieldState
+    invariants:
+      - "None with required=true yields FieldState::Reject; None with required=false yields FieldState::Unknown"
+      - "a present-but-unparseable value yields FieldState::Incomplete, never a defaulted number"
+      - "a fully resolved value yields FieldState::Known(v) carrying its source evidence id"
+      - "the function is total and deterministic"
+    reference_pattern: "enum FieldState { Known(Evidence), Unknown, Incomplete, Reject } — match on raw, never unwrap_or(0)"
+    property_test: "assert Reject on required-missing; Unknown on optional-missing; Incomplete on unparseable; Known carries evidence"
+    max_lines: 30
+
+  - leaf_id: si_no_llm_fact
+    responsibility: "type-enforced boundary: a value tagged as model-produced cannot be admitted into factual state; only chain-evidence-tagged values pass"
+    signature: >
+      pub fn admit_fact(v: TaggedValue) -> Result<FactValue, FactError>
+    invariants:
+      - "TaggedValue::Model(_) always returns Err(FactError::ModelOutputRejected)"
+      - "TaggedValue::ResearchArtifact(_) always returns Err (research cannot be fact)"
+      - "only TaggedValue::ChainEvidence(_) returns Ok(FactValue)"
+      - "no code path converts Model/ResearchArtifact into ChainEvidence"
+    reference_pattern: "enum TaggedValue { ChainEvidence(E), Model(M), ResearchArtifact(R) } — the provenance is in the type"
+    property_test: "assert Model and ResearchArtifact are rejected; ChainEvidence admitted; exhaustive over variants"
+    max_lines: 25
+
+  - leaf_id: si_failed_sell_state
+    responsibility: "encode failed sells and terminal loss as first-class outcomes in the trade record, distinct from a completed round trip"
+    signature: >
+      pub fn classify_terminal(outcome: &RawOutcome) -> TerminalState
+    invariants:
+      - "a sell that never landed yields TerminalState::FailedSell (not a zero-PnL close)"
+      - "a position with no exit and an inactivity timeout yields TerminalState::TerminalLoss"
+      - "a completed round trip yields TerminalState::Closed{net_lamports}"
+      - "net accounting for FailedSell/TerminalLoss reflects full loss including fixed cost paid"
+    reference_pattern: "enum TerminalState { Closed{net_lamports:i128}, FailedSell, TerminalLoss } — losses are representable"
+    property_test: "assert FailedSell and TerminalLoss are distinct from Closed(0); loss includes fixed cost"
+    max_lines: 30
+
+  - leaf_id: si_narrative_boundary
+    responsibility: "keep narrative/social capture separate from chain truth: a narrative record can never be read as a factual reducer input without passing admission"
+    signature: >
+      pub fn narrative_to_research(n: NarrativeRecord) -> ResearchArtifact
+    invariants:
+      - "the output type is ResearchArtifact and there is NO function converting it to a FactValue"
+      - "a NarrativeRecord carries its capture provenance and horizon class"
+      - "no narrative reducer is constructible without an admitted-evidence token"
+    reference_pattern: "narrative always lands in ResearchArtifact; admission is a separate gated step (criterion 83)"
+    property_test: "assert output is ResearchArtifact; assert (by type) no direct narrative->fact path exists"
+    max_lines: 25
+
+  - leaf_id: si_config_boot_guard
+    responsibility: "reject boot from contradictory or live-armed committed configs; only a validated, non-contradictory, non-live-armed config boots"
+    signature: >
+      pub fn validate_boot_config(cfg: &BootConfig) -> Result<ValidatedConfig, BootError>
+    invariants:
+      - "a config with live_armed=true committed to source yields Err(BootError::LiveArmedCommitted)"
+      - "mutually contradictory fields (e.g. shadow=true and live=true) yield Err(BootError::Contradictory)"
+      - "only a fully consistent, non-live-armed config yields Ok(ValidatedConfig)"
+      - "the function is pure over the config value"
+    reference_pattern: "validate-then-construct: ValidatedConfig has no public constructor except through this fn"
+    property_test: "assert live-armed rejected; contradictory rejected; clean config accepted"
+    max_lines: 30
+
+  - leaf_id: si_signing_boundary
+    responsibility: "the signing boundary type: trading keys are non-exportable to the agent; every signing request carries a policy decision and no API returns raw key bytes"
+    signature: >
+      pub fn sign_through_policy(req: &SignRequest, policy: &SignPolicy) -> Result<SignedTx, SignError>
+    invariants:
+      - "there is no public function that returns the raw private key bytes (non-exportable by construction)"
+      - "a SignRequest violating policy (unapproved program, over-cap size) yields Err(SignError::PolicyDenied)"
+      - "a permitted request yields Ok(SignedTx) without exposing key material"
+      - "the KeyHandle type does not implement Debug/Display/Serialize (cannot be printed or exported)"
+    reference_pattern: "opaque KeyHandle behind a trait; sign() borrows it, never returns it; policy checked before signing"
+    property_test: "assert PolicyDenied on over-cap/unapproved; assert (by type) no key-bytes accessor exists"
+    max_lines: 35
+
+  - leaf_id: si_disconnect_safe
+    responsibility: "a stream disconnect (LaserStream/shred) produces an explicit gap/stale marker, never fabricated or interpolated state"
+    signature: >
+      pub fn on_disconnect(stream: &mut StreamState, at_seq: u64) -> GapMarker
+    invariants:
+      - "a disconnect records a GapMarker{from_seq, to_seq: None} — the gap is explicit"
+      - "no state is synthesized to fill the gap (subsequent reads see Unknown across the gap)"
+      - "reconnection with a new epoch is recorded as a distinct epoch boundary, not a continuation"
+      - "the function is deterministic given the stream state"
+    reference_pattern: "disconnect -> open GapMarker; the reducer treats gapped spans as Unknown, not zero"
+    property_test: "assert GapMarker created; assert no interpolated events; assert epoch boundary on reconnect"
+    max_lines: 30
+
+  - leaf_id: si_replay_provenance
+    responsibility: "tag every observation as ORIGINAL_LIVE vs PROVIDER_REPLAY so replayed data is never counted as original live discovery in any metric"
+    signature: >
+      pub fn tag_provenance(obs: &Observation, source_mode: SourceMode) -> ProvenancedObs
+    invariants:
+      - "SourceMode::Replay yields Provenance::ProviderReplay on the observation"
+      - "SourceMode::Live yields Provenance::OriginalLive"
+      - "a metric aggregator can filter by provenance; replay and live never merge silently"
+      - "provenance is immutable once set"
+    reference_pattern: "provenance is a required field set at ingestion; no default; metrics group by it"
+    property_test: "assert Replay->ProviderReplay, Live->OriginalLive; assert immutability"
+    max_lines: 25
+
+  - leaf_id: si_source_contract
+    responsibility: "the neutral ObservationSource contract: a successor source can be added and the Jito adapter removed without touching StrategyRuntime (criteria 66, 67, 68 — proven by test)"
+    signature: >
+      pub trait ObservationSource { fn poll(&mut self) -> Option<Observation>; fn source_id(&self) -> SourceId; }
+    invariants:
+      - "StrategyRuntime depends only on the ObservationSource trait, never on a concrete adapter type"
+      - "a NullSource and a second FakeSource both satisfy the trait and drive the runtime unchanged (successor added)"
+      - "removing the Jito adapter leaves the runtime compiling (no Jito-specific type leaks past the trait)"
+      - "no downstream component matches on the concrete source type"
+    reference_pattern: "runtime holds Box<dyn ObservationSource>; adapters are swappable; test constructs two different sources"
+    property_test: "assert two distinct sources both drive the runtime; assert no concrete-type dependency (compiles with either)"
+    max_lines: 40
+
+  - leaf_id: si_sell_simulation
+    responsibility: "post-entry sell-simulation proof: every live position must produce a proof that a sell instruction constructs and simulates successfully against current decoded state (criterion 77)"
+    signature: >
+      pub fn prove_sellable(pos: &Position, state: &DecodedMarket) -> Result<SellProof, SellUnprovable>
+    invariants:
+      - "a market state where the sell instruction fails to construct yields Err(SellUnprovable)"
+      - "insufficient reserve/liquidity for the position size yields Err(SellUnprovable)"
+      - "a constructible, simulatable sell yields Ok(SellProof) carrying the simulated out-amount"
+      - "no position is admitted live without an Ok(SellProof) (enforced by the caller's type)"
+    reference_pattern: "construct sell -> simulate against decoded reserves -> proof or explicit unprovable; never assume sellable"
+    property_test: "assert unprovable on empty reserves / unconstructible; assert proof carries out-amount on success"
+    max_lines: 40
+
+  - leaf_id: si_failure_taxonomy
+    responsibility: "classify a decoded transaction program error into the failure taxonomy; construction-class failures flag builder quarantine and can never be silently retried with capital (criterion 78)"
+    signature: >
+      pub fn classify_failure(err: &DecodedProgramError) -> FailureClass
+    invariants:
+      - "a slippage/price-moved error yields FailureClass::Transient (retryable within policy)"
+      - "a malformed-instruction/account-mismatch error yields FailureClass::Construction (triggers quarantine)"
+      - "FailureClass::Construction is never marked retryable-with-capital"
+      - "an unknown error decodes to FailureClass::Unknown (conservative: not auto-retried)"
+    reference_pattern: "match decoded error -> taxonomy; Construction => quarantine flag, never silent capital retry"
+    property_test: "assert Construction not retryable; Transient retryable within policy; Unknown conservative"
+    max_lines: 35
+
+  - leaf_id: si_no_copy_trade
+    responsibility: "THE copy-trade impossibility guard (criterion 88, proven by test): no path from any wallet/social/chart/ranking/label observation reaches an order without passing the full deterministic feature+liquidity+risk+economic+sellability+signing pipeline"
+    signature: >
+      pub fn to_order(signal: ExternalSignal, pipeline: &DeterministicPipeline) -> Result<Order, Blocked>
+    invariants:
+      - "an ExternalSignal (wallet/social/chart/label) cannot construct an Order except by returning a PipelineTicket first"
+      - "the pipeline must pass feature, liquidity, risk, economic (size-band), sellability, and signing stages in order"
+      - "skipping any stage yields Err(Blocked{stage}); there is no bypass constructor for Order"
+      - "mirroring a specific wallet's trade is unrepresentable: Order carries no source-wallet field to mirror"
+    reference_pattern: "Order has no public constructor except pipeline.finish(ticket); ExternalSignal only yields a ticket"
+    property_test: "assert every skipped stage blocks; assert no direct ExternalSignal->Order; assert Order has no mirror-source field"
+    max_lines: 40
+
+  - leaf_id: si_smart_money_gate
+    responsibility: "smart-money classification requires realized external-counterparty PnL that is family-screened and luck-filtered; raw PnL and public-legible wallets cannot qualify (criterion 86)"
+    signature: >
+      pub fn classify_wallet(w: &WalletEvidence) -> SmartMoneyClass
+    invariants:
+      - "raw unrealized or self-dealing PnL yields SmartMoneyClass::Unqualified"
+      - "a publicly legible wallet carries PUBLIC_BURNED until re-proven (yields Unqualified by default)"
+      - "only realized, family-screened, luck-filtered external-counterparty PnL with positive lagged shadow yields Qualified"
+      - "the function is deterministic over the evidence"
+    reference_pattern: "gate chain: realized? external-counterparty? family-screened? luck-filtered? lagged-shadow-positive? else Unqualified"
+    property_test: "assert raw/self-dealing/public-legible all Unqualified; assert full-gate-passing Qualified"
+    max_lines: 40
+
+  - leaf_id: si_signal_scoring_only
+    responsibility: "smart-money signals modify scoring/sizing/risk/rotation only, never trigger a direct trade or mirror (criterion 87)"
+    signature: >
+      pub fn apply_smart_money(base: ScoringInputs, sm: SmartMoneyClass) -> ScoringInputs
+    invariants:
+      - "the function returns modified ScoringInputs — it CANNOT return or construct an Order"
+      - "an inverting/demoted cohort reduces score (fast-kill path), never flips to a buy trigger"
+      - "the smart-money contribution enters scoring exactly once"
+      - "Qualified raises, Unqualified is neutral, Inverting lowers — none produce a trade directly"
+    reference_pattern: "signal adjusts a score field only; the order decision is downstream through the full pipeline"
+    property_test: "assert output is ScoringInputs (no Order); assert Inverting lowers; assert single application"
+    max_lines: 30
+
+  - leaf_id: si_quote_mint_param
+    responsibility: "all curve/cost/sizing/slippage math is quote-mint parametric (SOL vs USDC decoded per market); no SOL-quote assumption is hardcoded (criterion 94)"
+    signature: >
+      pub fn round_trip_cost_quote(size: u64, mkt: &Market, quote: QuoteMint) -> Option<u64>
+    invariants:
+      - "the same nominal size in a USDC-quote market and a SOL-quote market uses each market's decoded quote decimals"
+      - "no constant assumes 9 decimals / SOL; quote decimals come from QuoteMint"
+      - "a market whose quote mint is undecoded yields None (refuse, not assume SOL)"
+      - "cost is expressed in the market's quote units consistently"
+    reference_pattern: "QuoteMint carries decimals + mint; every lamport<->quote conversion goes through it; no hardcoded 1e9"
+    property_test: "assert USDC(6-dec) and SOL(9-dec) markets differ correctly; assert undecoded quote -> None"
+    max_lines: 35
+
+  - leaf_id: si_authenticity_once
+    responsibility: "flow authenticity confidence enters the sizing chain exactly once — either through the edge estimate OR as an explicit haircut, never both (criterion 101)"
+    signature: >
+      pub fn apply_authenticity(size_in: SizeInputs, auth: AuthConfidence, mode: AuthMode) -> SizeInputs
+    invariants:
+      - "AuthMode::ThroughEdge folds authenticity into the edge estimate and leaves the haircut at 1.0"
+      - "AuthMode::Haircut applies an explicit size haircut and leaves the edge unmodified"
+      - "the two modes are mutually exclusive; applying both is unrepresentable in one call"
+      - "a double-application (edge already authenticity-adjusted, then haircut) is detected and rejected"
+    reference_pattern: "enum AuthMode { ThroughEdge, Haircut } — the type forbids applying authenticity twice"
+    property_test: "assert exactly-once (each mode touches only its channel); assert double-apply rejected"
+    max_lines: 30
+
+  - leaf_id: si_lpi_screen
+    responsibility: "LPI (depth/phase-normalized appreciation-per-net-inflow anomaly) as a named fabrication signature; detected wash/LPI persists as a decaying extraction-risk covariate (criterion 105)"
+    signature: >
+      pub fn lpi_score(flow: &FlowWindow, depth: u64, phase: MarketPhase) -> LpiVerdict
+    invariants:
+      - "appreciation far exceeding what net inflow at the observed depth supports yields LpiVerdict::Fabricated"
+      - "the score is depth- and phase-normalized (same raw move at different depths scores differently)"
+      - "a detected fabrication contributes a decaying covariate (half-life defined, not permanent, not zero)"
+      - "over-rejection is measurable (the verdict exposes its threshold margin)"
+    reference_pattern: "normalize move by (net_inflow, depth, phase); threshold -> Fabricated; emit decaying covariate"
+    property_test: "assert Fabricated on impossible-move; assert depth/phase normalization; assert covariate decays"
+    max_lines: 40
+
+  - leaf_id: si_bounded_evict
+    responsibility: "capacity-bounded structure with a defined eviction policy: a long-lived buffer never grows without bound; eviction is deterministic (criterion 99, laptop-testable part)"
+    signature: >
+      pub fn admit_with_eviction<T>(buf: &mut BoundedRing<T>, item: T) -> Option<T>
+    invariants:
+      - "the buffer never exceeds its capacity N (push at capacity evicts the oldest, returned as Some)"
+      - "below capacity, push returns None and grows by one"
+      - "eviction order is deterministic (FIFO/defined), never arbitrary"
+      - "the structure exposes its current length and capacity for the soak monitor"
+    reference_pattern: "ring buffer with fixed N; at capacity, evict-oldest-then-insert; return the evicted item"
+    property_test: "assert never exceeds N; assert oldest evicted; assert deterministic order; assert len/cap exposed"
+    max_lines: 30
+
+  - leaf_id: si_backpressure_stale
+    responsibility: "under overload, produce explicit stale-rejection rather than processing outdated observations or blocking (criterion 23)"
+    signature: >
+      pub fn admit_or_stale(obs_ts_ns: u64, now_ns: u64, max_age_ns: u64) -> Admission
+    invariants:
+      - "an observation older than max_age_ns yields Admission::RejectStale"
+      - "a fresh observation yields Admission::Accept"
+      - "the decision is a pure comparison; no blocking, no unbounded queue"
+      - "boundary (age exactly max_age_ns) is defined and consistent"
+    reference_pattern: "if now - ts > max_age => RejectStale; the hot path sheds load rather than falling behind"
+    property_test: "assert stale rejected, fresh accepted, boundary defined; assert total/deterministic"
+    max_lines: 25
