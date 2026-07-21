@@ -17,7 +17,9 @@ fn prop_template_offsets_stable() {
     assert_eq!(t2.msg_bytes.len(), before.len());
     let mut diffs = 0;
     for i in 0..before.len() {
-        if before[i] != t2.msg_bytes[i] { diffs += 1; }
+        if before[i] != t2.msg_bytes[i] {
+            diffs += 1;
+        }
     }
     assert!(diffs <= 8); // only the amount field bytes changed
 }

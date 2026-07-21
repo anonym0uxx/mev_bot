@@ -15,7 +15,9 @@ fn prop_seqlock_no_torn_reads() {
     let cell = std::sync::Arc::new(SeqCell::new(Pair(0, 0)));
     let w = cell.clone();
     let writer = std::thread::spawn(move || {
-        for i in 0..200_000u64 { w.write(Pair(i, i * 2)); }
+        for i in 0..200_000u64 {
+            w.write(Pair(i, i * 2));
+        }
     });
     for _ in 0..200_000 {
         let p = cell.read();

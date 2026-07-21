@@ -15,11 +15,15 @@ fn prop_backoff_hot_never_parks() {
         assert!(matches!(backoff_step(&mut b, true), Waited::Spun));
     }
     b.reset();
-    let mut saw_yield = false; let mut saw_park = false;
+    let mut saw_yield = false;
+    let mut saw_park = false;
     for _ in 0..100_000 {
         match backoff_step(&mut b, false) {
             Waited::Yielded => saw_yield = true,
-            Waited::Parked => { saw_park = true; break; }
+            Waited::Parked => {
+                saw_park = true;
+                break;
+            }
             Waited::Spun => {}
         }
     }

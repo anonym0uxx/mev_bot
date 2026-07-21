@@ -14,14 +14,21 @@ fn prop_spsc_exactly_once_in_order() {
     let h = std::thread::spawn(move || {
         let mut got = Vec::new();
         while got.len() < 100_000 {
-            if let Some(v) = c.pop() { got.push(v); }
-            else { std::hint::spin_loop(); }
+            if let Some(v) = c.pop() {
+                got.push(v);
+            } else {
+                std::hint::spin_loop();
+            }
         }
         got
     });
     let mut i = 0u64;
     while i < 100_000 {
-        if p.push(i).is_ok() { i += 1; } else { std::hint::spin_loop(); }
+        if p.push(i).is_ok() {
+            i += 1;
+        } else {
+            std::hint::spin_loop();
+        }
     }
     let got = h.join().unwrap();
     assert_eq!(got.len(), 100_000);

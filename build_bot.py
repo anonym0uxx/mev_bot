@@ -124,6 +124,69 @@ def _crate_for(component: str) -> str:
     return mapping.get(component, "pump-quant-core")
 
 
+def _targeted_fix_hint(d, leaf, detail: str) -> str:
+    """Turn a raw gate failure into a precise, actionable correction. The generic 'fix it' loop
+    can spin uselessly when the model doesn't realize WHY a test can't see its function. These
+    hints name the exact cause and remedy."""
+    import re
+    crate = _crate_for(d.component)
+    crate_ident = crate.replace("-", "_")
+    hints = []
+    low = detail.lower()
+
+    # "cannot find function/type X in this scope" — the test can't see the item. Almost always
+    # the item isn't `pub`, or it's in the wrong module, or lib.rs doesn't declare the module.
+    if "cannot find" in low and "in this scope" in low:
+        m = re.search(r"cannot find \w+ [`']?(\w+)[`']?", detail)
+        name = m.group(1) if m else "the item"
+        hints.append(
+            f"ROOT CAUSE: the test imports `use {crate_ident}::{d.component}::*;` but cannot see "
+            f"`{name}`. To fix, ALL of these must hold:\n"
+            f"  1. `{name}` is declared with `pub` (i.e. `pub fn {name}` / `pub struct {name}` / "
+            f"`pub enum {name}`), NOT private and NOT inside a private `impl` or private module.\n"
+            f"  2. `{name}` lives in the file rust/crates/{crate}/src/{d.component}.rs "
+            f"(the `{d.component}` module), not in lib.rs and not in a different module.\n"
+            f"  3. rust/crates/{crate}/src/lib.rs contains the line `pub mod {d.component};` — if "
+            f"it's missing, add it. Do NOT remove other `pub mod` lines already there.\n"
+            f"  4. If `{name}` is a type the function returns/takes, it too must be `pub` in the "
+            f"same module so the test can name it.\n"
+            f"Check the file now and make the item `pub` in the correct module.\n\n")
+
+    # private/dead-code style signals
+    if "never used" in low or "is private" in low or "private" in low:
+        hints.append(
+            f"The item appears private. Integration tests are a SEPARATE crate, so anything the "
+            f"test touches must be `pub` and reachable via `{crate_ident}::{d.component}::`.\n\n")
+
+    # assertion failures = logic wrong, not placement
+    if "assertion" in low and "failed" in low:
+        hints.append(
+            f"The function is found but its LOGIC is wrong (an assertion failed). Re-read the "
+            f"invariants and the test's expected values, and correct the computation. Do not "
+            f"change the test.\n\n")
+
+    return "".join(hints)
+
+
+
+    """Which crate owns a component's code + tests. Must match materialize_tests.COMPONENT_CRATE
+    and scaffold_workspace CRATES so the function, its module, and its test all agree."""
+    mapping = {
+        "reducer": "pump-quant-core",
+        "shred": "pump-quant-core",
+        "replay": "pump-quant-core",
+        "lockfree": "pump-quant-core",
+        "fixedpoint": "pump-quant-core",
+        "scalp_position": "pump-quant-strategy",
+        "exit_ladder": "pump-quant-strategy",
+        "economic_gate": "pump-quant-strategy",
+        "safety_integrity": "pump-quant-strategy",
+        "evaluator_stats": "pump-quant-evaluator",
+        "cpu_numa_tuning": "pump-quant-core",
+    }
+    return mapping.get(component, "pump-quant-core")
+
+
 def leaf_prompt(repo: Path, d, leaf) -> str:
     """The precise, single-function instruction. This is the opposite of 'implement a whole
     milestone': one signature, one responsibility, the invariants, the reference pattern, and
@@ -390,7 +453,9 @@ def main() -> int:
         while not ok and iters < args.max_iters and res.ok:
             iters += 1
             print(f"[bot]   gate red (iter {iters}): {detail.splitlines()[0] if detail else ''}")
+            fix_hint = _targeted_fix_hint(d, leaf, detail)
             res = driver.iterate(res.session_id, f"The gate failed:\n{detail}\n\n"
+                                                 f"{fix_hint}"
                                                  f"Fix it. Implement REAL working code for "
                                                  f"{leaf.signature.strip()} — not a stub or comment.")
             guard.charge(res.cost_usd)
@@ -410,6 +475,18 @@ def main() -> int:
         else:
             store.escalate(run_id, d.component, leaf.leaf_id, "leaf_gate_fail", detail[:500])
             update_ledger(repo, d, leaf, "stub")
+            # save what the model actually wrote so a failed leaf can be diagnosed after the run
+            try:
+                import shutil as _sh
+                crate = _crate_for(d.component)
+                src_mod = repo / "rust" / "crates" / crate / "src" / f"{d.component}.rs"
+                dbg = repo / "docs" / "failed_leaves"
+                dbg.mkdir(parents=True, exist_ok=True)
+                if src_mod.is_file():
+                    _sh.copy2(src_mod, dbg / f"{d.component}_{leaf.leaf_id}__{d.component}.rs")
+                (dbg / f"{d.component}_{leaf.leaf_id}__ERROR.txt").write_text(detail[:4000], encoding="utf-8")
+            except Exception:
+                pass
             print(f"[bot]   {key}: UNRESOLVED after {iters} iters — recorded, continuing.")
             print(f"[bot]   detail:\n{detail[:800]}")
             failed += 1

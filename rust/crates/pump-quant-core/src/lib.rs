@@ -3,8 +3,8 @@
 // HOT crate: the hotpath_lint gate bans async/await, tokio, floats outside boundary adapters,
 // syscall clocks, sleeps, allocating macros, and panic paths in these modules.
 
-pub mod reducer;
-pub mod shred;
-pub mod replay;
-pub mod lockfree;
 pub mod fixedpoint;
+pub mod lockfree;
+pub mod reducer;
+pub mod replay;
+pub mod shred;

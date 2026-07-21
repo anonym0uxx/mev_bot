@@ -15,7 +15,8 @@ fn prop_effective_fixed_multiplier() {
     let e = effective_fixed_lamports(100, 2680).unwrap();
     assert!(e >= 136 && e <= 137);
     // monotone: higher failure rate -> higher effective fixed
-    assert!(effective_fixed_lamports(100, 5000).unwrap()
-            > effective_fixed_lamports(100, 2680).unwrap());
+    assert!(
+        effective_fixed_lamports(100, 5000).unwrap() > effective_fixed_lamports(100, 2680).unwrap()
+    );
     assert_eq!(effective_fixed_lamports(100, 10_000), None);
 }

@@ -10,8 +10,8 @@ use pump_quant_strategy::exit_ladder::*;
 
 #[test]
 fn prop_rungs_conserve_bound_and_cost_priced() {
-    let c = ImpactCurve::linear_test(1_000);        // 1_000 lamports per bps
-    // fixed cost 100 lamports, require each rung margin >= 200 bps -> rung >= 5_000
+    let c = ImpactCurve::linear_test(1_000); // 1_000 lamports per bps
+                                             // fixed cost 100 lamports, require each rung margin >= 200 bps -> rung >= 5_000
     let rungs = ladder_rungs(20_000, 4, 100, 200, &c);
     assert_eq!(rungs.iter().sum::<u64>(), 20_000);
     for r in &rungs {

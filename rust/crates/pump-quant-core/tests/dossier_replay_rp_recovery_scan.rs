@@ -11,7 +11,9 @@ use pump_quant_core::replay::*;
 #[test]
 fn prop_recovery_prefix_exact() {
     let mut buf = SegBuf::new();
-    for i in 0..10u64 { encode_frame(&mut buf, 1, 1, i, &i.to_le_bytes()).unwrap(); }
+    for i in 0..10u64 {
+        encode_frame(&mut buf, 1, 1, i, &i.to_le_bytes()).unwrap();
+    }
     let full = recover(buf.bytes());
     assert_eq!(full.frames.len(), 10);
     for cut in 1..buf.bytes().len() {

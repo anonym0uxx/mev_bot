@@ -11,7 +11,8 @@ use pump_quant_strategy::scalp_position::*;
 #[test]
 fn prop_peak_never_freezes() {
     let mut s = ScalpPositionState::open(1_000, 0);
-    for i in 0..10_000u64 {  // far beyond any internal buffer
+    for i in 0..10_000u64 {
+        // far beyond any internal buffer
         let ev = SwapEvent::test(1_000 + i, i * 1_000);
         s = apply_swap(&s, &ev);
     }
