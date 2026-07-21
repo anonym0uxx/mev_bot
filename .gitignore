@@ -25,3 +25,5 @@ hermes_audit.zip
 
 # runtime build outputs
 docs/criteria_ledger.json
+
+docs/failed_leaves/
