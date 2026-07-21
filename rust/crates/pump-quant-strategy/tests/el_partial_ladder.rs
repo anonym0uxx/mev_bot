@@ -1,0 +1,25 @@
+#![allow(
+    unused_imports,
+    clippy::manual_range_contains,
+    clippy::bool_comparison,
+    clippy::nonminimal_bool
+)]
+use pump_quant_strategy::exit_ladder::*;
+#[test]
+fn prop_rungs_conserve_bound_and_cost_priced() {
+    let c = ImpactCurve::linear_test(1_000); // 1_000 lamports per bps
+                                             // fixed cost 100 lamports, require each rung margin >= 200 bps -> rung >= 5_000
+    let rungs = ladder_rungs(20_000, 4, 100, 200, &c);
+    assert_eq!(rungs.iter().sum::<u64>(), 20_000);
+    for r in &rungs {
+        assert!(*r >= 5_000, "every rung clears the fixed-cost floor");
+        assert!(c.impact_bps(*r) <= 4 || rungs.len() == MAX_RUNGS);
+    }
+    // a position only twice the cost floor cannot profitably split -> one clip
+    let tiny = ladder_rungs(6_000, 4, 100, 200, &c);
+    assert_eq!(tiny.len(), 1);
+    assert_eq!(tiny[0], 6_000);
+    // zero-margin sentinel also collapses to a single clip (no free splitting)
+    let z = ladder_rungs(20_000, 4, 100, 0, &c);
+    assert_eq!(z.len(), 1);
+}

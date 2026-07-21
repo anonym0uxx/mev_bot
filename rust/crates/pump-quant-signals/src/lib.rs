@@ -22,6 +22,23 @@
 //!   component scorers (speed, volume tier, velocity, buy/sell ratio gate,
 //!   entry discount, LP reserve, pre-entry momentum).
 //! - [`velocity`] -- signed two-point price velocity in bps/sec.
+//! - [`microstructure`] -- AMM order-flow / microstructure feature catalog
+//!   (§21.7, criterion 95): CVD + divergence, breadth-decomposed OFI,
+//!   trade-size distribution, absorption/exhaustion, anchored VWAP, executable
+//!   price-impact, and swap-arrival burst signatures.
+//! - [`launch_trajectory`] -- launch-sale-trajectory + creation-window
+//!   competition feature families (§21.7, criterion 104).
+//! - [`attention_spend`] -- versioned paid-attention-spend computation and the
+//!   Tier-0 no-self-promotion guard (§29.10, criterion 110).
+//! - [`discovery_audit`] -- launch-discovery completeness auditor emitting
+//!   `COMPLETE | INCOMPLETE` with the shortfall (§62-M1, criterion 73).
+//! - [`meta_rotation`] -- MetaRotationState time-safe category-assignment
+//!   validator (§21.4, criterion 81).
 
+pub mod attention_spend;
+pub mod discovery_audit;
+pub mod launch_trajectory;
+pub mod meta_rotation;
+pub mod microstructure;
 pub mod scorer;
 pub mod velocity;

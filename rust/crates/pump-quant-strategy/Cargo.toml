@@ -1,12 +1,4 @@
 [package]
 name = "pump-quant-strategy"
 version = "0.1.0"
-edition.workspace = true
-rust-version.workspace = true
-
-[dependencies]
-# Populated per the constitution's dependency discipline: narrow solana component crates
-# (never the monolith), pruned feature sets, duplicates gated by `cargo tree -d` in CI.
-
-[dev-dependencies]
-# test-only deps for the dossier property tests live here.
+edition = "2021"

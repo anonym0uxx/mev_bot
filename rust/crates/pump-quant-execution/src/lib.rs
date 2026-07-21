@@ -25,6 +25,9 @@
 //! - [`ex_route_policy`] — MEV-aware route selection.
 //! - [`ex_bundle_assemble`] — Jito bundle ordering / validation.
 //! - [`ex_circuit_breaker`] — RPC circuit-breaker backoff state machine.
+//! - [`si_incident_gate`] — incident-branch remediation admission gate
+//!   (model output must pass sell-simulation + signing before reaching chain;
+//!   the deterministic exit path is proven model-independent).
 
 pub mod ex_blockhash_cache;
 pub mod ex_bundle_assemble;
@@ -34,3 +37,4 @@ pub mod ex_route_policy;
 pub mod ex_sell_ladder_escalate;
 pub mod ex_sell_ladder_state;
 pub mod ex_tip_compute;
+pub mod si_incident_gate;

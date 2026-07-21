@@ -21,6 +21,9 @@
 //!   reimplemented in integer fixed-point per §22 / named defect (8).
 //! - [`source_registry`] — source classification + observation-source-mix
 //!   labels (leaf `in_source_registry`; §14.5, §15, §16).
+//! - [`submission_surface`] — Jito submission-surface (Block Engine / bundles /
+//!   tips) lifecycle tracked independently of the ShredStream data-feed sunset
+//!   (leaf `in_submission_surface`; §18.3.1, §18.8; criterion 76).
 
 pub mod base58;
 pub mod canonical;
@@ -28,3 +31,4 @@ pub mod helius_parse;
 pub mod json;
 pub mod pumpportal_parse;
 pub mod source_registry;
+pub mod submission_surface;
