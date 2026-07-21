@@ -1,4 +1,5 @@
 {
+  "model": "opus",
   "_comment": "Claude Code project permissions for the Hermes build. Scoped for FAIL-LOUD autonomy (permission-mode acceptEdits + this allowlist), NOT approve-everything. The build DRIVER (auto_build.py) owns commit/push/merge and the release profile; Claude Code may edit source and run the portable-profile toolchain, but may not commit, push, merge, run the release build, or touch keys/secrets. This is the capability boundary that keeps unattended runs safe.",
   "permissions": {
     "allow": [
