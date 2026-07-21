@@ -153,52 +153,35 @@ def leaf_satisfied(repo: Path, d, leaf) -> bool:
     return bool(re.search(rf"\bfn\s+{re.escape(ident)}\b[^;{{]*\{{", code, re.S))
 
 
-def _leaf_fn_exists(repo: Path, leaf) -> tuple[bool, str]:
-    """Does THIS leaf's function exist in the code with a real body (not just a comment)?"""
-    import re
-    m = re.search(r"\bfn\s+([a-zA-Z_][a-zA-Z0-9_]*)", leaf.signature or "")
-    if not m:
-        return True, ""  # non-fn signature (rare); rely on build+test
-    ident = m.group(1)
-    cargo_root = repo / "rust" if (repo / "rust").is_dir() else repo
-    code = ""
-    for f in cargo_root.rglob("*.rs"):
-        if "src" in f.parts and "tests" not in f.parts:
-            code += "\n" + f.read_text(encoding="utf-8", errors="ignore")
-    code = re.sub(r"^\s*//.*$", "", code, flags=re.M)  # strip comments
-    if re.search(rf"\bfn\s+{re.escape(ident)}\b[^;{{]*\{{", code, re.S):
-        return True, ""
-    return False, f"function `{ident}` not found with a real body in any src/ module"
-
-
 def run_leaf_gate(repo: Path, d=None, leaf=None) -> tuple[bool, str]:
-    """Per-leaf gate: verify THIS leaf is real and its test passes. It does NOT require the whole
-    codebase to be complete — that's what the final ledger check is for. For one leaf we check:
-      - the workspace still compiles (build:ok),
+    """Per-leaf gate: verify THIS leaf compiles and its own test passes — independent of other
+    leaves whose tests won't compile until they're built.
+
+    Checks:
+      - the library workspace compiles (build:ok) — the src/ code is valid,
       - it's formatted (fmt:ok),
-      - THIS leaf's function exists with a real body (leaf_fn:ok) — the per-leaf substance check,
-      - THIS leaf's specific dossier test ran and passed (test:ok).
-    Whole-codebase checks (all signatures present, every crate non-trivial) are intentionally NOT
-    run here, because after implementing leaf 1 of 55 they'd always fail. They belong to a final
-    completion gate, not the per-leaf loop.
+      - THIS leaf's specific dossier test compiles AND passes (test:ok), run in isolation via
+        `cargo test --test dossier_<component>_<leaf>` so unbuilt leaves' tests don't block it.
+
+    A passing leaf test is itself proof the function exists with a real body and correct behavior,
+    so no separate signature-regex check is needed (that check was brittle and redundant).
+    Whole-codebase completeness (all 61 leaves present) is the final ledger's job, not per-leaf.
     """
     r_build = checks.check_build(str(repo))
     r_fmt = checks.check_fmt(str(repo))
     results = [r_build, r_fmt]
 
-    # per-leaf substance: does THIS leaf's function exist for real?
-    if leaf is not None:
-        ok_fn, why = _leaf_fn_exists(repo, leaf)
-        results.append(checks.CheckResult("leaf_fn", ok_fn, {"reason": why},
-                                          "leaf function present" if ok_fn else why))
-
-    # only run tests if it compiles (else the compiler error is the useful signal)
-    if r_build.passed:
-        required = None
-        if d is not None and leaf is not None:
-            required = [f"dossier_{d.component}_{leaf.leaf_id}"]
-        r_test = checks.check_tests(str(repo), required_test_names=required)
+    # only run the leaf's own test if the library compiles (else the compiler error on src/ is
+    # the useful signal to feed back)
+    if r_build.passed and d is not None and leaf is not None:
+        test_target = f"dossier_{d.component}_{leaf.leaf_id}"
+        r_test = checks.check_tests(str(repo),
+                                    required_test_names=[test_target],
+                                    single_test=test_target)
         results.append(r_test)
+    elif r_build.passed:
+        # no specific leaf context — fall back to running the whole suite
+        results.append(checks.check_tests(str(repo)))
 
     ok = all(r.passed for r in results)
     summary = " ".join(f"{r.name}:{'ok' if r.passed else 'X'}" for r in results)

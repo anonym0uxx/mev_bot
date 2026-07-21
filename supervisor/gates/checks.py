@@ -167,10 +167,21 @@ def check_no_stubs(repo: str, production_globs: list[str]) -> CheckResult:
 
 
 # --------------------------------------------------------------------------- tests
-def check_tests(repo: str, required_test_names: Optional[list[str]] = None) -> CheckResult:
+def check_tests(repo: str, required_test_names: Optional[list[str]] = None,
+                single_test: Optional[str] = None) -> CheckResult:
+    """Run cargo test. If single_test is given, run ONLY that integration test target
+    (`cargo test --test <name>`), so that other leaves' not-yet-implemented tests — which
+    reference types their leaf will define later — don't break compilation of the whole test
+    suite. This is what makes per-leaf building possible: leaf N's test compiles and runs on its
+    own, independent of leaves N+1..end whose tests won't compile until those leaves are built.
+    """
     if not _have("cargo"):
         return CheckResult("test", False, summary="cargo not found")
-    rc, out, err = _run(["cargo", "test"] + _cargo_profile_args(repo) + ["--", "--nocapture"], _cargo_dir(repo), timeout=3600)
+    if single_test:
+        cmd = ["cargo", "test"] + _cargo_profile_args(repo) + ["--test", single_test, "--", "--nocapture"]
+    else:
+        cmd = ["cargo", "test"] + _cargo_profile_args(repo) + ["--", "--nocapture"]
+    rc, out, err = _run(cmd, _cargo_dir(repo), timeout=3600)
     combined = out + err
     passed = rc == 0
     detail: dict[str, Any] = {"returncode": rc}
