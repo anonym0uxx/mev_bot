@@ -105,6 +105,25 @@ def leaf_plan(repo: Path):
     return plan
 
 
+def _crate_for(component: str) -> str:
+    """Which crate owns a component's code + tests. Must match materialize_tests.COMPONENT_CRATE
+    and scaffold_workspace CRATES so the function, its module, and its test all agree."""
+    mapping = {
+        "reducer": "pump-quant-core",
+        "shred": "pump-quant-core",
+        "replay": "pump-quant-core",
+        "lockfree": "pump-quant-core",
+        "fixedpoint": "pump-quant-core",
+        "scalp_position": "pump-quant-strategy",
+        "exit_ladder": "pump-quant-strategy",
+        "economic_gate": "pump-quant-strategy",
+        "safety_integrity": "pump-quant-strategy",
+        "evaluator_stats": "pump-quant-evaluator",
+        "cpu_numa_tuning": "pump-quant-core",
+    }
+    return mapping.get(component, "pump-quant-core")
+
+
 def leaf_prompt(repo: Path, d, leaf) -> str:
     """The precise, single-function instruction. This is the opposite of 'implement a whole
     milestone': one signature, one responsibility, the invariants, the reference pattern, and
@@ -120,11 +139,24 @@ def leaf_prompt(repo: Path, d, leaf) -> str:
         f"Reference pattern to imitate (known-correct analogous code):\n"
         f"    {leaf.reference_pattern}\n\n"
         f"Component contract (from the dossier):\n    {d.spec[:1200]}\n\n"
-        f"Place the implementation in the correct crate's src/ (create a module file if needed) "
-        f"and export it so the materialized test file "
-        f"rust/**/tests/dossier_{d.component}_{leaf.leaf_id}.rs compiles and PASSES. Write REAL, "
-        f"working code — not a stub, not a comment, not `todo!()`. The build will reject empty or "
-        f"comment-only files.\n\n"
+        f"WHERE TO PUT THE CODE — this is exact and mandatory:\n"
+        f"  - Crate: rust/crates/{_crate_for(d.component)}/\n"
+        f"  - Module file: rust/crates/{_crate_for(d.component)}/src/{d.component}.rs\n"
+        f"  - The function (and any supporting types/enums it needs) MUST be declared `pub` in "
+        f"that module, because the test imports them with "
+        f"`use {_crate_for(d.component).replace('-', '_')}::{d.component}::*;`. "
+        f"If the function or a type it returns is not `pub` in the `{d.component}` module, the "
+        f"test cannot see it and will fail to compile.\n"
+        f"  - The module `{d.component}` is already declared in that crate's src/lib.rs "
+        f"(`pub mod {d.component};`). Add your code to the existing "
+        f"src/{d.component}.rs file — do not create a differently-named module and do not put the "
+        f"function directly in lib.rs.\n"
+        f"  - If the test references types (structs/enums like a result or state type), define "
+        f"them as `pub` in the same module.\n\n"
+        f"The materialized test at "
+        f"rust/crates/{_crate_for(d.component)}/tests/dossier_{d.component}_{leaf.leaf_id}.rs must "
+        f"compile and PASS. Write REAL, working code — not a stub, not a comment, not `todo!()`. "
+        f"The build will reject empty or comment-only files.\n\n"
         f"CORRECTNESS AND COMPLETENESS ARE THE ONLY PRIORITY. Handle every case the invariants and "
         f"the property test require — all edge cases, all error paths, all boundary conditions. Do "
         f"NOT abbreviate, truncate, or omit logic to save space. If a correct, complete "
