@@ -24,7 +24,7 @@ fn mul_full(a: u128, b: u128) -> (u128, u128) {
 #[inline]
 fn div_256_by_128(hi: u128, lo: u128, d: u128) -> Option<u128> {
     if d == 0 || hi >= d {
-        return None; // hi >= d => quotient >= 2^128, does not fit u128
+        return None; // hi >= d ⇒ quotient ≥ 2^128, does not fit u128
     }
     let mut rem = hi;
     let mut quo = 0u128;
@@ -34,7 +34,7 @@ fn div_256_by_128(hi: u128, lo: u128, d: u128) -> Option<u128> {
         let carry = rem >> 127; // MSB shifted out becomes the 2^128 carry bit
         rem = (rem << 1) | ((lo >> i) & 1);
         quo <<= 1;
-        // true remainder is (carry*2^128 + rem); it is < 2d, so at most one subtraction
+        // true remainder is (carry·2^128 + rem); it is < 2d, so at most one subtraction
         if carry == 1 || rem >= d {
             rem = rem.wrapping_sub(d);
             quo |= 1;

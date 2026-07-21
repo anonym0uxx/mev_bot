@@ -1,13 +1,5 @@
-// GENERATED FROM DOSSIER — DO NOT EDIT.
-// This property test is the correctness authority for the 'evaluator_stats' component (leaf 'ev_topk_excision').
-// It was materialized independently of the builder. Editing it is a build-integrity
-// violation caught by `materialize_tests.py --verify` and denied by .claude/settings.json.
-// To change a component's contract, change its dossier and re-materialize — never edit here.
-// The glob import below brings the leaf's public items into scope; integration tests in
-// tests/ are a separate crate, so the implementation must be `pub` and reachable here.
 #![allow(unused_imports)]
 use pump_quant_evaluator::evaluator_stats::*;
-
 #[test]
 fn prop_excision_fragility_detected() {
     let t = |id, v: i128| (TradeId::test(id), v);
