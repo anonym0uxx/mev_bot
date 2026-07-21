@@ -132,3 +132,100 @@ pub fn min_viable_size(
     }
     Some(hi)
 }
+
+/// Whether a candidate is economically admissible at *any* size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// The band is non-empty: some size clears the whole cost floor with margin.
+    Admit,
+    /// The band is empty: no size clears. Refuse — never shrink into a guaranteed loss.
+    Refuse,
+}
+
+/// The size-viability band cut from the U-shaped round-trip cost curve.
+///
+/// These are *constraints* on Section 49's sizing, not a trade size: the far larger
+/// unconstrained profit-maximizing size is deliberately not computed here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SizeBand {
+    pub verdict: Verdict,
+    /// Smallest size that clears the cost floor with margin.
+    pub x_min: u64,
+    /// Cost-minimizing size — the bottom of the U. Reported as context, never traded.
+    pub x_cost: u64,
+    /// Largest size the impact curve and sellability allow.
+    pub x_max: u64,
+}
+
+impl SizeBand {
+    /// The empty band. Every field is zero: a refusal carries no permitted size at all.
+    pub const REFUSE: Self = Self {
+        verdict: Verdict::Refuse,
+        x_min: 0,
+        x_cost: 0,
+        x_max: 0,
+    };
+}
+
+/// eg_size_band — assemble the full viability band `[x_min, x_cost, x_max]` and the verdict.
+///
+/// Admit iff a minimum viable size exists and fits under the maximum; otherwise the band is
+/// empty and the candidate is refused outright.
+pub fn size_band(
+    expected_move_bps: u32,
+    base_fixed_lamports: u64,
+    fail_rate_bps: u32,
+    protocol_bps: u32,
+    margin_bps: u32,
+    depth_lamports: u64,
+    impact: &ImpactCurve,
+    sellable_max_lamports: u64,
+) -> SizeBand {
+    // Certain failure has no finite attempt count, so no fixed cost to amortize — fail closed.
+    let Some(eff) = effective_fixed_lamports(base_fixed_lamports, fail_rate_bps) else {
+        return SizeBand::REFUSE;
+    };
+    // Upper bound: the impact budget is whatever the edge leaves after protocol and margin.
+    // `impact_bps` is monotone non-decreasing in size, so bisecting over `[0, sellable_max]`
+    // yields exactly `min(impact-bounded size, sellable_max_lamports)`.
+    let impact_budget_bps = expected_move_bps
+        .saturating_sub(protocol_bps)
+        .saturating_sub(margin_bps);
+    let (mut lo, mut hi) = (0u64, sellable_max_lamports);
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        if impact.impact_bps(mid) <= impact_budget_bps {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let x_max = lo;
+    // Lower bound over the whole sellable range, then tested against the upper bound: an
+    // x_min past x_max is an empty band, which is a refusal and not a clamped trade.
+    let Some(x_min) = min_viable_size(
+        expected_move_bps,
+        eff,
+        protocol_bps,
+        margin_bps,
+        impact,
+        sellable_max_lamports,
+    ) else {
+        return SizeBand::REFUSE;
+    };
+    if x_min > x_max {
+        return SizeBand::REFUSE;
+    }
+    // Bottom of the U: cost'(x) = 0 at x = sqrt(eff * depth / 2) under the reserve impact
+    // model (a round trip moves ~2x/depth of price). The depth and the decoded impact curve
+    // are independent inputs, so pin the reference inside the band it is describing.
+    let x_cost_unclamped = u64::try_from((eff as u128 * depth_lamports as u128 / 2).isqrt())
+        .unwrap_or(u64::MAX)
+        .max(x_min);
+    SizeBand {
+        verdict: Verdict::Admit,
+        x_min,
+        x_cost: x_cost_unclamped.min(x_max),
+        x_max,
+    }
+}
