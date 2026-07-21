@@ -116,15 +116,6 @@ def check_fmt(repo: str) -> CheckResult:
     return CheckResult("fmt", True, {"formatted": True}, "formatted (applied)")
 
 
-# anti-spaghetti: no stubs/placeholders in production paths
-_STUB_PATTERNS = [
-    re.compile(r"\bunimplemented!\s*\("),
-    re.compile(r"\btodo!\s*\("),
-    re.compile(r'\bpanic!\s*\(\s*"(?:stub|not implemented|TODO)', re.I),
-    re.compile(r"//\s*(TODO|FIXME|STUB|HACK)\b", re.I),
-]
-
-
 
 def check_dossier_test_integrity(repo) -> "CheckResult":
     """The builder must not alter a materialized dossier property test to make it pass.
