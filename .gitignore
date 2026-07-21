@@ -22,3 +22,6 @@ supervisor_evidence.db-shm
 
 hermes_audit.zip
 *.zip
+
+# runtime build outputs
+docs/criteria_ledger.json
