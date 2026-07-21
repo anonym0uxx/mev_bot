@@ -1,4 +1,9 @@
-#![allow(unused_imports)]
+#![allow(
+    unused_imports,
+    clippy::manual_range_contains,
+    clippy::bool_comparison,
+    clippy::nonminimal_bool
+)]
 use pump_quant_core::reducer::*;
 #[test]
 fn prop_key_source_independent() {

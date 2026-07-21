@@ -58,7 +58,10 @@ pub struct ArrayVec<T, const N: usize> {
 impl<T: Copy + Default, const N: usize> ArrayVec<T, N> {
     /// A new, empty buffer of capacity `N`.
     pub fn new() -> Self {
-        Self { buf: [T::default(); N], len: 0 }
+        Self {
+            buf: [T::default(); N],
+            len: 0,
+        }
     }
 
     /// Number of live elements.
@@ -246,7 +249,11 @@ pub struct ExitParams {
 impl ExitParams {
     /// Deterministic fixture used by the property tests.
     pub fn test() -> Self {
-        Self { amount: 1_000_000, min_out: 900_000, slippage_bps: 300 }
+        Self {
+            amount: 1_000_000,
+            min_out: 900_000,
+            slippage_bps: 300,
+        }
     }
 }
 
@@ -292,28 +299,37 @@ pub fn arm_exit_template(
     let mut msg = ArrayVec::<u8, MAX_MSG>::new();
 
     // Header: instruction discriminator.
-    msg.try_extend_from_slice(&SELL_DISCRIMINATOR).map_err(|_| ArmError::Serialize)?;
+    msg.try_extend_from_slice(&SELL_DISCRIMINATOR)
+        .map_err(|_| ArmError::Serialize)?;
 
     // Account keys (all resolved now, at arm time).
-    msg.try_extend_from_slice(&accounts.program).map_err(|_| ArmError::Serialize)?;
-    msg.try_extend_from_slice(&accounts.wallet).map_err(|_| ArmError::Serialize)?;
-    msg.try_extend_from_slice(&accounts.mint).map_err(|_| ArmError::Serialize)?;
-    msg.try_extend_from_slice(&accounts.token_account).map_err(|_| ArmError::Serialize)?;
+    msg.try_extend_from_slice(&accounts.program)
+        .map_err(|_| ArmError::Serialize)?;
+    msg.try_extend_from_slice(&accounts.wallet)
+        .map_err(|_| ArmError::Serialize)?;
+    msg.try_extend_from_slice(&accounts.mint)
+        .map_err(|_| ArmError::Serialize)?;
+    msg.try_extend_from_slice(&accounts.token_account)
+        .map_err(|_| ArmError::Serialize)?;
 
     // Patchable field: amount (placeholder written now, offset recorded).
     let amount_off = msg.len();
-    msg.try_extend_from_slice(&params.amount.to_le_bytes()).map_err(|_| ArmError::Serialize)?;
+    msg.try_extend_from_slice(&params.amount.to_le_bytes())
+        .map_err(|_| ArmError::Serialize)?;
 
     // Patchable field: min_out (placeholder).
     let min_out_off = msg.len();
-    msg.try_extend_from_slice(&params.min_out.to_le_bytes()).map_err(|_| ArmError::Serialize)?;
+    msg.try_extend_from_slice(&params.min_out.to_le_bytes())
+        .map_err(|_| ArmError::Serialize)?;
 
     // Fixed (non-patchable) slippage tolerance.
-    msg.try_extend_from_slice(&params.slippage_bps.to_le_bytes()).map_err(|_| ArmError::Serialize)?;
+    msg.try_extend_from_slice(&params.slippage_bps.to_le_bytes())
+        .map_err(|_| ArmError::Serialize)?;
 
     // Patchable field: recent blockhash (placeholder zeros).
     let blockhash_off = msg.len();
-    msg.try_extend_from_slice(&[0u8; 32]).map_err(|_| ArmError::Serialize)?;
+    msg.try_extend_from_slice(&[0u8; 32])
+        .map_err(|_| ArmError::Serialize)?;
 
     // Validate offsets in-bounds.
     let fields = [(blockhash_off, 32usize), (amount_off, 8), (min_out_off, 8)];
@@ -332,7 +348,12 @@ pub fn arm_exit_template(
         return Err(ArmError::Overlap);
     }
 
-    Ok(ExitTemplate { msg_bytes: msg, blockhash_off, amount_off, min_out_off })
+    Ok(ExitTemplate {
+        msg_bytes: msg,
+        blockhash_off,
+        amount_off,
+        min_out_off,
+    })
 }
 
 /// Overwrite the 8 little-endian bytes of a `u64` field at `off` in place.
@@ -374,9 +395,15 @@ pub fn patch_and_finalize(
     min_out: u64,
 ) -> Result<(), PatchError> {
     let len = t.msg_bytes.len();
-    let bh_end = t.blockhash_off.checked_add(32).ok_or(PatchError::OutOfBounds)?;
+    let bh_end = t
+        .blockhash_off
+        .checked_add(32)
+        .ok_or(PatchError::OutOfBounds)?;
     let amt_end = t.amount_off.checked_add(8).ok_or(PatchError::OutOfBounds)?;
-    let mo_end = t.min_out_off.checked_add(8).ok_or(PatchError::OutOfBounds)?;
+    let mo_end = t
+        .min_out_off
+        .checked_add(8)
+        .ok_or(PatchError::OutOfBounds)?;
     if bh_end > len || amt_end > len || mo_end > len {
         return Err(PatchError::OutOfBounds);
     }
@@ -400,11 +427,7 @@ pub fn patch_and_finalize(
 /// smaller than the target, the market is *inadmissible* — its own evidence says
 /// the move cannot even pay the round-trip floor — and `None` is returned. A
 /// checked add means arithmetic overflow also returns `None`.
-pub fn derive_target_bps(
-    floor_bps: u32,
-    margin_bps: u32,
-    mfe_p25_bps: Option<u32>,
-) -> Option<u32> {
+pub fn derive_target_bps(floor_bps: u32, margin_bps: u32, mfe_p25_bps: Option<u32>) -> Option<u32> {
     let target = floor_bps.checked_add(margin_bps)?;
     match mfe_p25_bps {
         Some(mfe) if mfe < target => None,
@@ -514,7 +537,7 @@ pub fn next_escalation(
     // Urgency-scaled cooldown: faster measured decay => larger divisor => shorter
     // wait, bounded above by MAX_URGENCY_DIV and floored at MIN_COOLDOWN_MS.
     let urgency = decay_bps_per_s.max(1);
-    let divisor = urgency.min(MAX_URGENCY_DIV).max(1);
+    let divisor = urgency.clamp(1, MAX_URGENCY_DIV);
     let cooldown_ms = (base_cooldown_ms / divisor).max(MIN_COOLDOWN_MS);
 
     let mut level = cur.level;
@@ -527,7 +550,11 @@ pub fn next_escalation(
         }
     }
 
-    EscalationState { level, cooldown_ms, emergency_path_required: emergency }
+    EscalationState {
+        level,
+        cooldown_ms,
+        emergency_path_required: emergency,
+    }
 }
 
 // ===========================================================================
@@ -555,7 +582,9 @@ pub struct ImpactCurve {
 impl ImpactCurve {
     /// A linear test curve: `lamports_per_bps` lamports of size per bps of impact.
     pub fn linear_test(lamports_per_bps: u64) -> Self {
-        Self { lamports_per_bps: lamports_per_bps.max(1) }
+        Self {
+            lamports_per_bps: lamports_per_bps.max(1),
+        }
     }
 
     /// Modeled impact in bps for a clip of `size` lamports (floored).
@@ -623,25 +652,24 @@ pub fn ladder_rungs(
     };
 
     // Rung count permitted by the cost floor (each rung must clear it).
-    let cost_limited = if cost_floor == 0 {
-        MAX_RUNGS as u64
-    } else {
-        (position_lamports / cost_floor).max(1)
-    };
+    let cost_limited = position_lamports
+        .checked_div(cost_floor)
+        .map_or(MAX_RUNGS as u64, |v| v.max(1));
     // Rung count the impact ceiling would like.
     let impact_needed = ceil_div(position_lamports, impact_cap).max(1);
 
-    let count = impact_needed
-        .min(cost_limited)
-        .min(MAX_RUNGS as u64)
-        .max(1) as usize;
+    let count = impact_needed.min(cost_limited).min(MAX_RUNGS as u64).max(1) as usize;
 
     // Even split with the remainder folded into the final rung: conserves the total
     // exactly and keeps every rung >= the base, hence >= the cost floor when split.
     let base = position_lamports / count as u64;
     let mut assigned = 0u64;
     for i in 0..count {
-        let rung = if i + 1 == count { position_lamports - assigned } else { base };
+        let rung = if i + 1 == count {
+            position_lamports - assigned
+        } else {
+            base
+        };
         assigned += rung;
         rungs.push(rung);
     }

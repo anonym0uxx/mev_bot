@@ -1,4 +1,9 @@
-#![allow(unused_imports)]
+#![allow(
+    unused_imports,
+    clippy::manual_range_contains,
+    clippy::bool_comparison,
+    clippy::nonminimal_bool
+)]
 use pump_quant_strategy::scalp_position::*;
 
 #[test]
@@ -8,6 +13,8 @@ fn prop_landing_is_adverse() {
     let sell = expected_landing(p, Side::Sell, 50, 30).unwrap();
     assert!(buy >= p && sell <= p);
     assert_eq!(expected_landing(p, Side::Buy, 0, 0).unwrap(), p);
-    assert!(expected_landing(u64::MAX, Side::Buy, 10_000, 10_000).is_none() ||
-            expected_landing(u64::MAX, Side::Buy, 10_000, 10_000).unwrap() >= u64::MAX / 2);
+    assert!(
+        expected_landing(u64::MAX, Side::Buy, 10_000, 10_000).is_none()
+            || expected_landing(u64::MAX, Side::Buy, 10_000, 10_000).unwrap() >= u64::MAX / 2
+    );
 }

@@ -339,9 +339,7 @@ pub fn epoch_merge(frames: &[FrameMeta]) -> Result<Vec<usize>, JErr> {
     // Stable sort by (epoch, seq). Determinism does not depend on prior order
     // because the keys are unique once the duplicate check passes; ties (which
     // would only be exact (epoch, seq) duplicates) are rejected below.
-    order.sort_by(|&a, &b| {
-        (frames[a].epoch, frames[a].seq).cmp(&(frames[b].epoch, frames[b].seq))
-    });
+    order.sort_by(|&a, &b| (frames[a].epoch, frames[a].seq).cmp(&(frames[b].epoch, frames[b].seq)));
 
     // Scan adjacent pairs for an identical (epoch, seq).
     let mut i = 1;
@@ -485,10 +483,7 @@ pub enum ReplayVerdict {
 /// FIRST divergent checkpoint's event index — parity failures are never
 /// summarized away as merely "mismatch at end". A `Match` verdict requires every
 /// in-range checkpoint to match.
-pub fn replay_assert(
-    events: &[CanonEvent],
-    checkpoints: &[(usize, [u8; 32])],
-) -> ReplayVerdict {
+pub fn replay_assert(events: &[CanonEvent], checkpoints: &[(usize, [u8; 32])]) -> ReplayVerdict {
     // Process checkpoints in ascending event-index order so the FIRST divergence
     // reported is truly the earliest in the event stream, regardless of the
     // order the caller supplied them.

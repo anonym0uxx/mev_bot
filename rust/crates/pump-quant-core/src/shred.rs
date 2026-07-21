@@ -4,9 +4,9 @@
 //!
 //! * [`decode_header`]  — zero-copy, strictly bounds-checked shred-header decode.
 //! * [`track`]          — FEC-set completion bookkeeping with bounded memory and
-//!                        conflict detection.
+//!   conflict detection.
 //! * [`reassemble`]     — order-exact reassembly of a completed FEC set into bytes,
-//!                        preserving the earliest local arrival timestamp.
+//!   preserving the earliest local arrival timestamp.
 //! * [`slot_parity`]    — §18.3.5 parity gate: shred-derived tx set vs. canonical.
 //!
 //! Design constraints (constitution): no floating point in outcome-controlling
@@ -389,11 +389,7 @@ impl CompleteSet {
 
     /// Minimum local arrival timestamp across constituent shreds (0 if empty).
     pub fn min_arrival_ns(&self) -> u64 {
-        self.shreds
-            .iter()
-            .map(|s| s.arrival_ns)
-            .min()
-            .unwrap_or(0)
+        self.shreds.iter().map(|s| s.arrival_ns).min().unwrap_or(0)
     }
 }
 
@@ -569,11 +565,7 @@ fn median_i64(v: &mut [i64]) -> i64 {
 /// order-independent and duplicate-safe. Counts are exact set differences. The
 /// verdict is [`ParityVerdict::Pass`] **only** when both `shred_only` and
 /// `canon_only` are zero; any discrepancy is [`ParityVerdict::Fail`] with counts.
-pub fn slot_parity(
-    shred_txs: &[TxSig],
-    canon_txs: &[TxSig],
-    arrivals: &ArrivalMap,
-) -> SlotParity {
+pub fn slot_parity(shred_txs: &[TxSig], canon_txs: &[TxSig], arrivals: &ArrivalMap) -> SlotParity {
     let s = sorted_unique(shred_txs);
     let c = sorted_unique(canon_txs);
 

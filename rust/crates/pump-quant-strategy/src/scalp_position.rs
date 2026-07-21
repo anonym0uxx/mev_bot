@@ -457,7 +457,8 @@ pub fn hazard_inputs(
     manip_history_fp: u32,
 ) -> HazardInputs {
     // Uncertainty shrinks with more samples: fewer arrivals => higher uncertainty. Integer only.
-    let uncertainty_fp = 10_000u32.saturating_sub(flow.arrival_count.saturating_mul(100).min(10_000));
+    let uncertainty_fp =
+        10_000u32.saturating_sub(flow.arrival_count.saturating_mul(100).min(10_000));
     HazardInputs {
         time_in_trade_ns: s.time_in_trade_ns,
         phase: s.phase,

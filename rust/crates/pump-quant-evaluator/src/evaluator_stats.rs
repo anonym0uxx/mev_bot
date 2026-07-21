@@ -134,7 +134,7 @@ fn quantile_sorted(sorted: &[i64], num: usize, den: usize) -> i64 {
     if n == 0 {
         return 0;
     }
-    let rank = (num * n + den - 1) / den; // ceil(num/den * n)
+    let rank = (num * n).div_ceil(den); // ceil(num/den * n)
     let idx = rank.saturating_sub(1).min(n - 1);
     sorted[idx]
 }
@@ -728,10 +728,7 @@ pub fn markouts(fills: &[FillRow], horizons_s: &[u32]) -> Vec<MarkoutCell> {
             continue;
         }
         let bps = favorable_bps(f.side, f.fill_price, f.later_price);
-        buckets
-            .entry((f.class, f.horizon_s))
-            .or_default()
-            .push(bps);
+        buckets.entry((f.class, f.horizon_s)).or_default().push(bps);
     }
 
     let mut cells: Vec<MarkoutCell> = Vec::with_capacity(buckets.len());

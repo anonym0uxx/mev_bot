@@ -1,9 +1,15 @@
-#![allow(unused_imports)]
+#![allow(
+    unused_imports,
+    clippy::manual_range_contains,
+    clippy::bool_comparison,
+    clippy::nonminimal_bool
+)]
 use pump_quant_evaluator::evaluator_stats::*;
 #[test]
 fn prop_net_sol_golden() {
-    let t = |lane, gross: i128, fee: u128, tip: u128, failc: u128|
-        ReconTrade::test(lane, gross, fee, tip, failc);
+    let t = |lane, gross: i128, fee: u128, tip: u128, failc: u128| {
+        ReconTrade::test(lane, gross, fee, tip, failc)
+    };
     let trades = vec![
         t(Lane::Scalp, 1_000, 100, 50, 10),
         t(Lane::Scalp, -400, 100, 50, 0),

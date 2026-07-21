@@ -1,4 +1,9 @@
-#![allow(unused_imports)]
+#![allow(
+    unused_imports,
+    clippy::manual_range_contains,
+    clippy::bool_comparison,
+    clippy::nonminimal_bool
+)]
 use pump_quant_strategy::safety_integrity::*;
 
 #[test]
@@ -16,7 +21,10 @@ fn transient_retryable() {
     let t = classify_failure(&DecodedProgramError::SlippageExceeded);
     assert_eq!(t, FailureClass::Transient);
     assert!(t.retryable_with_capital());
-    assert_eq!(classify_failure(&DecodedProgramError::PriceMoved), FailureClass::Transient);
+    assert_eq!(
+        classify_failure(&DecodedProgramError::PriceMoved),
+        FailureClass::Transient
+    );
 }
 #[test]
 fn unknown_conservative() {

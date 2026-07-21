@@ -1,4 +1,9 @@
-#![allow(unused_imports)]
+#![allow(
+    unused_imports,
+    clippy::manual_range_contains,
+    clippy::bool_comparison,
+    clippy::nonminimal_bool
+)]
 use pump_quant_core::fixedpoint::*;
 #[test]
 fn prop_amount_out_golden() {

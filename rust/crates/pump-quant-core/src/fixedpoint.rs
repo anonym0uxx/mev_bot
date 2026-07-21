@@ -13,9 +13,11 @@ fn mul_full(a: u128, b: u128) -> (u128, u128) {
     let mut lo = ll;
     let mut hi = hh;
     let (s1, c1) = lo.overflowing_add(lh << 64);
-    lo = s1; hi += (lh >> 64) + c1 as u128;
+    lo = s1;
+    hi += (lh >> 64) + c1 as u128;
     let (s2, c2) = lo.overflowing_add(hl << 64);
-    lo = s2; hi += (hl >> 64) + c2 as u128;
+    lo = s2;
+    hi += (hl >> 64) + c2 as u128;
     (hi, lo)
 }
 

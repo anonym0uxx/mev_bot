@@ -1,4 +1,9 @@
-#![allow(unused_imports)]
+#![allow(
+    unused_imports,
+    clippy::manual_range_contains,
+    clippy::bool_comparison,
+    clippy::nonminimal_bool
+)]
 use pump_quant_core::replay::*;
 #[test]
 fn prop_parity_first_divergence() {
@@ -7,7 +12,9 @@ fn prop_parity_first_divergence() {
     let mut cps = vec![];
     for (i, e) in evs.iter().enumerate() {
         st = apply_world(&st, e);
-        if i % 10 == 9 { cps.push((i, state_hash(&st))); }
+        if i % 10 == 9 {
+            cps.push((i, state_hash(&st)));
+        }
     }
     assert!(matches!(replay_assert(&evs, &cps), ReplayVerdict::Match));
     let mut bad = cps.clone();

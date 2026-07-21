@@ -18,10 +18,10 @@
 //! viability band:
 //!
 //! * `x_min`  — the smallest size whose expected executable move still clears the full
-//!              cost floor *with configured margin*. A risk-permitted size below `x_min`
-//!              yields `Refuse` — we never shrink into a guaranteed loss.
+//!   cost floor *with configured margin*. A risk-permitted size below `x_min`
+//!   yields `Refuse` — we never shrink into a guaranteed loss.
 //! * `x_cost` — the cost-minimizing reference size (bottom of the U), reported as
-//!              context only; it is **never** used as the trade size.
+//!   context only; it is **never** used as the trade size.
 //! * `x_max`  — the largest viable size (impact + sellability bound).
 //!
 //! These are *inputs* to Section-49 sizing and are explicitly distinct from the
@@ -78,9 +78,7 @@ impl ImpactCurve {
     ///
     /// Rises monotonically with size. Saturates at `u32::MAX` rather than overflowing.
     pub fn impact_bps(&self, size_lamports: u64) -> u32 {
-        let raw = (size_lamports as u128)
-            .saturating_mul(self.slope_num)
-            / self.slope_den;
+        let raw = (size_lamports as u128).saturating_mul(self.slope_num) / self.slope_den;
         raw.min(u32::MAX as u128) as u32
     }
 
@@ -143,9 +141,7 @@ pub fn round_trip_cost_bps(
         return None;
     }
     let fixed_bps = (eff_fixed_lamports as u128 * BPS_SCALE as u128) / size_lamports as u128;
-    let total = fixed_bps
-        + protocol_bps as u128
-        + impact.impact_bps(size_lamports) as u128;
+    let total = fixed_bps + protocol_bps as u128 + impact.impact_bps(size_lamports) as u128;
     Some(total.min(u32::MAX as u128) as u32)
 }
 
@@ -288,6 +284,7 @@ impl SizeBand {
 /// The verdict is `Admit` iff a viable `x_min` exists and `x_min <= x_max`. The
 /// profit-maximizing size `R*(move - protocol)/4` is deliberately **not** computed here —
 /// that is Section 49's job; this leaf only bounds it.
+#[allow(clippy::too_many_arguments)]
 pub fn size_band(
     expected_move_bps: u32,
     base_fixed_lamports: u64,
@@ -349,7 +346,7 @@ fn isqrt(n: u128) -> u128 {
         return n;
     }
     // Newton's method with an integer seed derived from the bit length.
-    let mut x = 1u128 << ((128 - n.leading_zeros() + 1) / 2);
+    let mut x = 1u128 << (128 - n.leading_zeros()).div_ceil(2);
     loop {
         let next = (x + n / x) / 2;
         if next >= x {

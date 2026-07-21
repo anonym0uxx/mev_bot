@@ -245,9 +245,8 @@ impl TerminalState {
 pub fn classify_terminal(outcome: &RawOutcome) -> TerminalState {
     if outcome.sell_landed {
         if let Some(exit) = outcome.exit_lamports {
-            let net = exit as i128
-                - outcome.entry_lamports as i128
-                - outcome.fixed_cost_lamports as i128;
+            let net =
+                exit as i128 - outcome.entry_lamports as i128 - outcome.fixed_cost_lamports as i128;
             return TerminalState::Closed { net_lamports: net };
         }
         // "landed" but no proceeds recorded is contradictory → treat as failed.
@@ -838,7 +837,10 @@ pub struct Blocked {
 /// The only path from an external signal to an order: pass every deterministic
 /// stage, in order. Skipping any stage yields [`Blocked`]; there is no bypass
 /// constructor for [`Order`].
-pub fn to_order(signal: ExternalSignal, pipeline: &DeterministicPipeline) -> Result<Order, Blocked> {
+pub fn to_order(
+    signal: ExternalSignal,
+    pipeline: &DeterministicPipeline,
+) -> Result<Order, Blocked> {
     let stages = [
         (Stage::Feature, pipeline.feature_ok),
         (Stage::Liquidity, pipeline.liquidity_ok),
@@ -906,10 +908,8 @@ pub fn classify_wallet(w: &WalletEvidence) -> SmartMoneyClass {
         return SmartMoneyClass::Unqualified;
     }
     // Full gate chain.
-    let passes_gate = w.external_counterparty
-        && w.family_screened
-        && w.luck_filtered
-        && w.lagged_shadow_positive;
+    let passes_gate =
+        w.external_counterparty && w.family_screened && w.luck_filtered && w.lagged_shadow_positive;
     if !passes_gate {
         return SmartMoneyClass::Unqualified;
     }
@@ -1171,10 +1171,7 @@ pub fn lpi_score(flow: &FlowWindow, depth: u64, phase: MarketPhase) -> LpiVerdic
 
     // supported appreciation (bps) ≈ net_inflow / depth, scaled by phase.
     // (10_000 keeps the ratio in bps units.)
-    let supported_bps = net
-        .saturating_mul(10_000)
-        .saturating_mul(pn)
-        / depth.saturating_mul(pd);
+    let supported_bps = net.saturating_mul(10_000).saturating_mul(pn) / depth.saturating_mul(pd);
 
     let observed = flow.appreciation_bps as u128;
     let margin: i128 = observed as i128 - supported_bps as i128;

@@ -1,4 +1,9 @@
-#![allow(unused_imports)]
+#![allow(
+    unused_imports,
+    clippy::manual_range_contains,
+    clippy::bool_comparison,
+    clippy::nonminimal_bool
+)]
 use pump_quant_strategy::exit_ladder::*;
 #[test]
 fn prop_template_offsets_stable() {
@@ -13,7 +18,9 @@ fn prop_template_offsets_stable() {
     assert_eq!(t2.msg_bytes.len(), before.len());
     let mut diffs = 0;
     for i in 0..before.len() {
-        if before[i] != t2.msg_bytes[i] { diffs += 1; }
+        if before[i] != t2.msg_bytes[i] {
+            diffs += 1;
+        }
     }
     assert!(diffs <= 8); // only the amount field bytes changed
 }

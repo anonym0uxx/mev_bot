@@ -132,7 +132,7 @@ impl CanonEvent {
     /// Every derived field is a pure function of the arguments so that identical
     /// coordinates always yield identical events.
     pub fn test(slot: u64, tx_index: u32, inner_index: u16, source_seq: u64) -> Self {
-        let side = if (tx_index.wrapping_add(inner_index as u32)) % 2 == 0 {
+        let side = if (tx_index.wrapping_add(inner_index as u32)).is_multiple_of(2) {
             Side::Buy
         } else {
             Side::Sell
@@ -475,7 +475,7 @@ impl MarketState {
 /// the same event to the same state always yields the same result. No allocation.
 pub fn apply(state: &MarketState, ev: &CanonEvent) -> MarketState {
     let mut s = *state; // MarketState: Copy — no allocation, input untouched.
-    // Decoded post-state is authoritative for reserves.
+                        // Decoded post-state is authoritative for reserves.
     s.reserve_base = ev.post_reserve_base;
     s.reserve_quote = ev.post_reserve_quote;
     // Fold the trade into the fixed-size decayed summary.
@@ -575,10 +575,7 @@ impl WorldState {
 
     /// Immutable access to a market by key.
     pub fn market(&self, key: u64) -> Option<&MarketState> {
-        self.markets
-            .iter()
-            .find(|(k, _)| *k == key)
-            .map(|(_, m)| m)
+        self.markets.iter().find(|(k, _)| *k == key).map(|(_, m)| m)
     }
 
     /// All market keys, in insertion order (callers that need order must sort).

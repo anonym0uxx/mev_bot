@@ -1,4 +1,9 @@
-#![allow(unused_imports)]
+#![allow(
+    unused_imports,
+    clippy::manual_range_contains,
+    clippy::bool_comparison,
+    clippy::nonminimal_bool
+)]
 use pump_quant_strategy::exit_ladder::*;
 #[test]
 fn prop_fires_only_on_authentic_climax_in_profit() {

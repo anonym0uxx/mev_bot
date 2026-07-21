@@ -155,7 +155,10 @@ impl<T, const N: usize> Ring<T, N> {
         // Compile-time enforcement that N is a non-zero power of two, so that
         // `& (N - 1)` is a correct modulo and masking never divides.
         const {
-            assert!(N.is_power_of_two(), "Spsc capacity N must be a power of two");
+            assert!(
+                N.is_power_of_two(),
+                "Spsc capacity N must be a power of two"
+            );
         }
         // SAFETY: an array of `UnsafeCell<MaybeUninit<T>>` needs no init.
         let buf = unsafe { MaybeUninit::<[UnsafeCell<MaybeUninit<T>>; N]>::uninit().assume_init() };

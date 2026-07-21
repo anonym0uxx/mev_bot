@@ -1,13 +1,21 @@
-#![allow(unused_imports)]
+#![allow(
+    unused_imports,
+    clippy::manual_range_contains,
+    clippy::bool_comparison,
+    clippy::nonminimal_bool
+)]
 use pump_quant_strategy::economic_gate::*;
 
 #[test]
 fn prop_cost_is_u_shaped() {
     let c = ImpactCurve::linear_test(1_000);
     let small = round_trip_cost_bps(10_000, 160, 200, &c).unwrap();
-    let mid   = round_trip_cost_bps(50_000, 160, 200, &c).unwrap();
+    let mid = round_trip_cost_bps(50_000, 160, 200, &c).unwrap();
     let large = round_trip_cost_bps(500_000, 160, 200, &c).unwrap();
-    assert!(mid < small, "cost falls from tiny size (fixed cost amortizes)");
+    assert!(
+        mid < small,
+        "cost falls from tiny size (fixed cost amortizes)"
+    );
     assert!(large > mid, "cost rises at large size (impact dominates)");
     assert_eq!(round_trip_cost_bps(0, 160, 200, &c), None);
 }
