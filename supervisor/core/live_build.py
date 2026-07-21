@@ -149,9 +149,9 @@ class GitVcs:
 class ClaudeCodeConfig:
     """How the headless `claude` binary is invoked for one unit of build work."""
     binary: str = "claude"
-    permission_mode: str = "dontAsk"          # fail-loud automation, not approve-everything
+    permission_mode: str = "acceptEdits"       # headless automation: apply file edits without prompting
     allowed_tools: list[str] = field(default_factory=lambda: [
-        "Read", "Grep", "Glob", "Edit",
+        "Read", "Grep", "Glob", "Edit", "Write", "MultiEdit",
         "Bash(cargo build*)", "Bash(cargo test*)", "Bash(cargo fmt*)",
         "Bash(cargo clippy*)", "Bash(cargo check*)",
         "Bash(git status)", "Bash(git diff*)", "Bash(git log*)", "Bash(git add*)",
