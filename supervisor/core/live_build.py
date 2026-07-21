@@ -39,7 +39,7 @@ def _run(cmd: list[str], cwd: Path, timeout: int = 120,
          check: bool = True) -> subprocess.CompletedProcess:
     """Run a subprocess, checked and bounded. Never shell=True."""
     p = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
-                       timeout=timeout)
+                       encoding="utf-8", errors="replace", timeout=timeout)
     if check and p.returncode != 0:
         raise GitError(f"$ {' '.join(shlex.quote(c) for c in cmd)}\n"
                        f"exit {p.returncode}\nstdout: {p.stdout}\nstderr: {p.stderr}")
@@ -112,11 +112,24 @@ class GitVcs:
         _run(["git", "commit", "-m", message], self.repo)
         return _run(["git", "rev-parse", "HEAD"], self.repo).stdout.strip()
 
-    def revert_last(self) -> None:
-        """Discard the working tree back to HEAD (used when a gate fails mid-task)."""
+    def revert_last(self, keep_untracked: bool = True) -> None:
+        """Undo uncommitted MODIFICATIONS back to HEAD. By default keeps untracked files
+        (newly-created source the builder legitimately added) and never hard-fails on Windows
+        lock files. Only a full wipe (keep_untracked=False) removes untracked files, and even
+        then it excludes the evidence DB and its SQLite lock files which may be open.
+        """
         self._env()
-        _run(["git", "reset", "--hard", "HEAD"], self.repo)
-        _run(["git", "clean", "-fd"], self.repo)
+        # revert tracked-file modifications only; this does not touch newly-added files
+        _run(["git", "reset", "--hard", "HEAD"], self.repo, check=False)
+        if not keep_untracked:
+            # exclude the evidence DB + WAL/SHM lock files (open handles fail to delete on Windows)
+            _run(["git", "clean", "-fd",
+                  "-e", "supervisor_evidence.db",
+                  "-e", "supervisor_evidence.db-wal",
+                  "-e", "supervisor_evidence.db-shm",
+                  "-e", "infra_manifest.json",
+                  "-e", ".hermes_dossier_tests.json"],
+                 self.repo, check=False)
 
     def push(self, branch: str, remote: str = "origin", set_upstream: bool = True) -> str:
         self._env()
@@ -199,20 +212,44 @@ class ClaudeCodeDriver:
         return cmd
 
     def _invoke(self, cmd: list[str]) -> ClaudeCodeResult:
+        import shutil as _sh
+        # Windows fix: `claude` installs as claude.CMD (a batch wrapper), which
+        # subprocess.run cannot launch by bare name. Resolve the real path, and on Windows
+        # run the command as a single shell string so .CMD/.BAT wrappers execute.
+        run_cmd = list(cmd)
+        resolved = _sh.which(run_cmd[0])
+        if resolved:
+            run_cmd[0] = resolved
+        use_shell = os.name == "nt"
         try:
-            p = subprocess.run(cmd, cwd=str(self.repo), capture_output=True,
-                               text=True, timeout=self.cfg.timeout_s)
+            if use_shell:
+                # build a properly quoted command line for cmd.exe
+                line = subprocess.list2cmdline(run_cmd)
+                p = subprocess.run(line, cwd=str(self.repo), capture_output=True,
+                                   text=True, encoding="utf-8", errors="replace",
+                                   timeout=self.cfg.timeout_s, shell=True)
+            else:
+                p = subprocess.run(run_cmd, cwd=str(self.repo), capture_output=True,
+                                   text=True, encoding="utf-8", errors="replace",
+                                   timeout=self.cfg.timeout_s)
         except subprocess.TimeoutExpired:
             return ClaudeCodeResult(False, error=f"timed out after {self.cfg.timeout_s}s")
+        except FileNotFoundError as e:
+            return ClaudeCodeResult(
+                False, error=f"could not launch '{cmd[0]}' ({e}). Ensure Claude Code is "
+                             f"installed and on PATH (npm install -g @anthropic-ai/claude-code).")
+        # guard against a subprocess that produced no captured output (never crash on None)
+        out = p.stdout or ""
+        err = p.stderr or ""
         # Claude Code returns non-zero on error/rate-limit — honor it
-        if p.returncode != 0 and not p.stdout.strip():
-            return ClaudeCodeResult(False, error=f"exit {p.returncode}: {p.stderr[:400]}")
+        if p.returncode != 0 and not out.strip():
+            return ClaudeCodeResult(False, error=f"exit {p.returncode}: {err[:400]}")
         # parse JSON output
         try:
-            data = json.loads(p.stdout.strip().splitlines()[-1])
+            data = json.loads(out.strip().splitlines()[-1])
         except (json.JSONDecodeError, IndexError):
             # text fell back or partial — treat as soft failure with captured text
-            return ClaudeCodeResult(p.returncode == 0, text=p.stdout[:2000],
+            return ClaudeCodeResult(p.returncode == 0, text=out[:2000],
                                     error="" if p.returncode == 0 else "unparseable output")
         is_error = bool(data.get("is_error"))
         return ClaudeCodeResult(
