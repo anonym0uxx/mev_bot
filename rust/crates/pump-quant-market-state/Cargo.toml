@@ -1,0 +1,11 @@
+[package]
+name = "pump-quant-market-state"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic, integer/fixed-point market-state reducers for the pump-quant scalping bot (constitution §21, §28, §22)."
+
+[lib]
+name = "pump_quant_market_state"
+path = "src/lib.rs"
+
+[dependencies]

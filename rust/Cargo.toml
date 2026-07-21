@@ -11,6 +11,19 @@ members = [
     "crates/pump-quant-core",
     "crates/pump-quant-strategy",
     "crates/pump-quant-evaluator",
+    "crates/pump-quant-canonical",
+    "crates/pump-quant-clock",
+    "crates/pump-quant-domain",
+    "crates/pump-quant-features",
+    "crates/pump-quant-governance",
+    "crates/pump-quant-journal",
+    "crates/pump-quant-market-state",
+    "crates/pump-quant-memory",
+    "crates/pump-quant-narrative",
+    "crates/pump-quant-simulator",
+    "crates/pump-quant-social",
+    "crates/pump-quant-wallet-graph",
+    "crates/pump-quant-watchlist",
 ]
 
 [workspace.package]
@@ -26,12 +39,30 @@ panic = "abort"
 debug = false
 overflow-checks = false
 
-# money/fixed-point crates keep overflow checks in release — silent money wrap is prohibited.
+# money/fixed-point & outcome-controlling crates keep overflow checks in release —
+# silent money wrap is prohibited (§22). Plumbing crates (clock, journal, canonical,
+# governance, social) inherit the workspace default.
 [profile.release.package.pump-quant-core]
 overflow-checks = true
 [profile.release.package.pump-quant-strategy]
 overflow-checks = true
 [profile.release.package.pump-quant-evaluator]
+overflow-checks = true
+[profile.release.package.pump-quant-domain]
+overflow-checks = true
+[profile.release.package.pump-quant-market-state]
+overflow-checks = true
+[profile.release.package.pump-quant-features]
+overflow-checks = true
+[profile.release.package.pump-quant-simulator]
+overflow-checks = true
+[profile.release.package.pump-quant-narrative]
+overflow-checks = true
+[profile.release.package.pump-quant-wallet-graph]
+overflow-checks = true
+[profile.release.package.pump-quant-watchlist]
+overflow-checks = true
+[profile.release.package.pump-quant-memory]
 overflow-checks = true
 
 [profile.dev]

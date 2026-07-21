@@ -1,0 +1,11 @@
+[package]
+name = "pump-quant-clock"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic clock seam and equal-timestamp tie-break comparator for the pump-quant memecoin scalping bot (constitution §19, §22)."
+
+[lib]
+name = "pump_quant_clock"
+path = "src/lib.rs"
+
+[dependencies]

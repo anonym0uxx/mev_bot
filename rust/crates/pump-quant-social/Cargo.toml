@@ -1,0 +1,11 @@
+[package]
+name = "pump-quant-social"
+version = "0.1.0"
+edition = "2021"
+description = "SocialSourceQualityLedger (constitution §29.8): deterministic integer scoring of social alpha sources"
+
+[lib]
+name = "pump_quant_social"
+path = "src/lib.rs"
+
+[dependencies]

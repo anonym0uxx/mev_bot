@@ -1,0 +1,13 @@
+[package]
+name = "pump-quant-governance"
+version = "0.1.0"
+edition = "2021"
+description = "Governance guards for a memecoin scalping bot: parameter-envelope bounds enforcement (§56.2), source-registry lifecycle FSM (§18.8), and reproducible StrategyHash/EvaluatorReleaseHash canonical hashing (§56.3). Deterministic, integer-only, dependency-free."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "pump_quant_governance"
+path = "src/lib.rs"
+
+# No dependencies: the governance guards must be deterministic and self-contained
+# (no network, no RNG, no wall-clock, no floating point per §22).

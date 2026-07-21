@@ -1,0 +1,11 @@
+[package]
+name = "pump-quant-canonical"
+version = "0.1.0"
+edition = "2021"
+description = "Provenance canonicalizer (§15): merges multi-source observations of one transaction into a CanonicalTransaction that preserves feed disagreement, dual timelines, fork status, and full provenance."
+
+[lib]
+name = "pump_quant_canonical"
+path = "src/lib.rs"
+
+[dependencies]

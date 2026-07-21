@@ -1,0 +1,11 @@
+[package]
+name = "pump-quant-wallet-graph"
+version = "0.1.0"
+edition = "2021"
+description = "Wallet intelligence for the pump-quant memecoin scalping bot: Tier-1 bounded hot summaries, Tier-2 union-find wallet graph with family holdout and activity-matched placebo, smart-money follower-executable PnL screen with lagged-shadow simulator, and point-in-time deployer-credibility features. Deterministic, integer/fixed-point, no floating point in outcome paths (constitution Sections 22, 27, 28, 46, 53)."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "pump_quant_wallet_graph"
+
+[dependencies]

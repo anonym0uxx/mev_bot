@@ -1,0 +1,12 @@
+[package]
+name = "pump-quant-memory"
+version = "0.1.0"
+edition = "2021"
+description = "QuantMemoryStore: versioned research-memory schema, sealed-experiment immutability, and deterministic value-of-information ranking for the pump-quant memecoin scalping bot (constitution 29.9, 56, 22)."
+license = "MIT"
+
+[lib]
+name = "pump_quant_memory"
+path = "src/lib.rs"
+
+[dependencies]
