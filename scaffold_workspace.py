@@ -164,6 +164,24 @@ def main() -> int:
     rust = repo / "rust"
     rust.mkdir(exist_ok=True)
 
+    # Remove OLD crate directories left by earlier milestone runs (hot-core, enrich, etc.).
+    # They are not workspace members, contain only comment stubs, and pollute both `cargo build`
+    # and the substance check. We only delete known-old empties, never the pump-quant-* crates
+    # and never a crate that has real code.
+    OLD_CRATES = ["hot-core", "hot-exec", "ingest", "enrich", "evaluator", "research", "persist"]
+    import shutil as _shutil
+    crates_root = rust / "crates"
+    removed_old = []
+    if crates_root.is_dir():
+        for oc in OLD_CRATES:
+            ocdir = crates_root / oc
+            lib = ocdir / "src" / "lib.rs"
+            if ocdir.is_dir() and (not lib.is_file() or not has_real_code(lib)):
+                _shutil.rmtree(ocdir, ignore_errors=True)
+                removed_old.append(oc)
+    if removed_old:
+        print(f"  removed stale old crates (comment-only, not workspace members): {removed_old}")
+
     # root workspace Cargo.toml
     root_toml = rust / "Cargo.toml"
     if not root_toml.is_file() or args.force:

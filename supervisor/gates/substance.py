@@ -68,17 +68,34 @@ def check_impl_nonempty(repo: str, min_code_lines_per_crate: int = 8) -> CheckRe
     This is the check that would have caught the overnight run: seven crates each holding four
     lines of `//!` comment and nothing else. We strip comments/blanks and require a minimum of
     actual code lines per crate. A crate that is all-comments fails.
+
+    Only crates that are actual workspace members (listed in rust/Cargo.toml) are checked, so
+    stray/abandoned crate directories left over from earlier builds don't pollute the result.
     """
     root = Path(repo)
     cargo_root = root / "rust" if (root / "rust").is_dir() else root
     crates_dir = cargo_root / "crates"
+
+    # determine the set of workspace-member crate names from rust/Cargo.toml, if present
+    members: set[str] = set()
+    ws_toml = cargo_root / "Cargo.toml"
+    if ws_toml.is_file():
+        txt = ws_toml.read_text(encoding="utf-8", errors="ignore")
+        import re as _re
+        m = _re.search(r"members\s*=\s*\[(.*?)\]", txt, _re.S)
+        if m:
+            for item in _re.findall(r"[\"']([^\"']+)[\"']", m.group(1)):
+                members.add(item.rsplit("/", 1)[-1])  # 'crates/pump-quant-core' -> 'pump-quant-core'
+
     if not crates_dir.is_dir():
-        # fall back to any src/lib.rs under the workspace
         crate_srcs = {f.parent.parent: [f] for f in _rust_impl_files(repo)}
     else:
         crate_srcs = {}
         for crate in crates_dir.iterdir():
             if not crate.is_dir():
+                continue
+            # if we know the workspace members, only check those (ignore stray old crates)
+            if members and crate.name not in members:
                 continue
             srcs = [f for f in (crate / "src").rglob("*.rs")] if (crate / "src").is_dir() else []
             if srcs:
