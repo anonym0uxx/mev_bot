@@ -4,6 +4,10 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/pump-quant-signals",
+    "crates/pump-quant-protocol",
+    "crates/pump-quant-execution",
+    "crates/pump-quant-ingest",
     "crates/pump-quant-core",
     "crates/pump-quant-strategy",
     "crates/pump-quant-evaluator",
