@@ -1,44 +1,43 @@
-# Hermes bot workspace — encodes the §24 Rust performance-engineering law (criterion 109)
-# as build configuration, so the perf law is compiled in rather than remembered.
+# Hermes bot workspace. The §24 performance-engineering law (criterion 109) is encoded as
+# build configuration so it is compiled in rather than remembered. Phase-A (laptop) builds use
+# the dev/portable profile; the release profile's deploy-CPU pinning and PGO are the server's job.
 [workspace]
 resolver = "2"
 members = [
-    "crates/hot-core",    # reducer, fixedpoint, scalp_position, lockfree   (HOT: lint-enforced purity)
-    "crates/hot-exec",    # exit_ladder templates, patch-sign-send, routes   (HOT)
-    "crates/ingest",      # LaserStream/shred adapters, journal writer       (tokio allowed)
-    "crates/enrich",      # 29.x pollers: attention-spend, creator, social   (tokio allowed; never hot)
-    "crates/evaluator",   # evaluator_stats: frozen accountant               (money-lint scoped)
-    "crates/research",    # experiments, hazard fitting, feature admission
-    "crates/persist",     # cold storage, replay reader, recovery
+    "crates/pump-quant-core",
+    "crates/pump-quant-strategy",
+    "crates/pump-quant-evaluator",
 ]
 
 [workspace.package]
 edition = "2021"
 rust-version = "1.85"
 
-[profile.release]           # §24(a): confirmed baseline, retained
+[profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
-panic = "abort"             # static-by-design WITH the panic-free hot-set invariant (property-tested)
+panic = "abort"
 debug = false
-overflow-checks = false     # global; money crates override below — silent money wrap is prohibited
+overflow-checks = false
 
-# §24(a): per-package override — money/fixed-point arithmetic keeps overflow checks in release.
-[profile.release.package.hot-core]
+# money/fixed-point crates keep overflow checks in release — silent money wrap is prohibited.
+[profile.release.package.pump-quant-core]
 overflow-checks = true
-[profile.release.package.evaluator]
+[profile.release.package.pump-quant-strategy]
+overflow-checks = true
+[profile.release.package.pump-quant-evaluator]
 overflow-checks = true
 
-[profile.dev]               # §24(d): iteration speed
+[profile.dev]
 opt-level = 1
-debug = 1                   # line tables only
+debug = 1
 incremental = true
 
 [profile.bench]
 inherits = "release"
-debug = 1                   # symbols for profiling; budgets measured on deploy-identical hardware
+debug = 1
 
 # NOTE (§24(a)): -C target-cpu is NOT set here — it is injected via RUSTFLAGS from the
-# infrastructure manifest's deploy-CPU entry. Never `native` on the build box.
+# infrastructure manifest's deploy-CPU entry on the server. Never `native` on the build box.
