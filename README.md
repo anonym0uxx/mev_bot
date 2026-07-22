@@ -31,7 +31,7 @@
 | **Trading style** | High-frequency scalping — many small, fast, net-positive round trips; not long holds. |
 | **Determinism** | Integer/fixed-point only in outcome paths; no floating point, no wall-clock, no RNG in decisions. Byte-exact under replay. |
 | **Current phase** | **Phase-A (laptop) COMPLETE**: paper/replay only, fully built, gate-verified, and constitution-aligned. Phase-B (server: live streams, submission, keys, OS tuning) is enumerated in [`docs/SERVER_BUILD_MANIFEST.md`](docs/SERVER_BUILD_MANIFEST.md) and is not in this build. |
-| **Live capital** | Tier-0 human-gated. No code path signs keys or moves funds. Qualified strategies park in `AwaitingLiveCapability` — a missing-capability state, never a human-approval queue. |
+| **Live capital** | Tier-0: key custody + enablement are human-held; no code path in this build signs or moves funds. Live execution (Phase-B) is autonomous under those human-held keys. Qualified strategies park in `AwaitingLiveCapability` — a missing-capability state, never a human-approval queue. |
 | **Tests** | 434 green workspace test binaries (1,500+ tests); 191 SHA-locked property tests across 50 dossiers (`scripts/materialize_tests.py --verify`). |
 | **CI gate** | `hermes-gate/portable-gate`: fmt + clippy(-D warnings) + build + test + dossier `--verify` + supervisor portable gate. |
 | **Rust edition / MSRV** | edition 2021, rust-version 1.85. |
@@ -88,7 +88,7 @@ row is a self-contained rule.
 | **§29 / §71** | **Corroboration discipline (fade-first).** Social, narrative, and smart-money evidence can raise a candidate's rank but can never authorise entry alone; on-chain confirmation is always required. | The entry gate rejects any candidate lacking on-chain confirmation plus numeric microstructure. |
 | **§99** | **Bounded state.** No collection grows without a cap over a long-running session. | Every accumulator (watchlist, world-state, journals, stream gaps) is capacity-bounded with eviction; tests assert the bound. |
 | **§56 / §71** | **Reflection enhances discovery.** Realized net-SOL reshapes which discovery lanes get weight, inside a governance envelope. | Bounded-step, floor/ceiling-clamped weight adaptation; replay-reproducible. |
-| **Tier-0** | **Live capital is human-gated.** Key signing and fund movement are never automated. | The `RunMode` type has no `Live` variant; the laptop binary cannot construct one. |
+| **Tier-0** | **Key custody and live-capital enablement are human-held.** Hermes/LLM can never sign or move funds, and only the operator provisions keys and funds wallets. Once capability exists (Phase-B), the deterministic Rust engine trades **autonomously** — per-trade signing and submission are automated inside wallet floors, governance ceilings, and the probe ladder; paper→shadow→probe→scale progression is gate-driven with no per-trade or per-stage human approval (§64). | This laptop binary contains no signing path and `RunMode` has no `Live` variant; qualified strategies park in `AwaitingLiveCapability` until Phase-B capability flips. |
 | **No-hardcode** | **Every decision threshold is an operator-supplied parameter, never a magic number in a decision path.** | A test proves that changing one config value alone changes the engine's decisions. |
 
 ---
@@ -285,7 +285,7 @@ which is why the dossier count is a proxy for how much of the system is proven, 
 
 ## Safety model
 
-- **Live capital is human-gated (Tier-0).** No code path signs a key or moves funds. The laptop build is
+- **Live capital is Tier-0 (custody human-held).** No code path in this build signs a key or moves funds. The laptop build is
   paper/replay only, and `RunMode` cannot express `Live`.
 - **Fade-first.** Narrative and social evidence is capped before on-chain confirmation and can never trigger
   entry alone.
@@ -373,7 +373,7 @@ Domain and project terms, defined for unambiguous reference.
 - **dossier** — a YAML contract for one component, defining leaves whose property tests are the locked correctness authority.
 - **leaf** — one narrowly-scoped function/behavior with a single property test as its authority.
 - **independence lock** — the mechanism (materialize + SHA-verify + edit-deny) ensuring the builder cannot edit the tests it is judged by.
-- **Tier-0** — the highest safety class: actions (live capital, key signing, fund movement) that are always human-gated and never automated.
+- **Tier-0** — the highest safety class: key custody, wallet funding, live-capital enablement, evaluator releases, and emergency stops are human-held and can never be exercised by Hermes/an LLM. Deterministic per-trade signing in live operation (Phase-B) runs under those human-held keys — autonomy of execution, human monopoly on custody.
 - **Phase-A / Phase-B** — laptop (paper/replay, this build) vs deployment server (live IO, OS tuning, live capital).
 - **Hermes** — the overall system and its Python supervisor that governs the build and research loop.
 - **pump-quant** — the Rust engine workspace in this repository.
