@@ -1,0 +1,17 @@
+# Standalone probe (NOT a workspace member) so the gated workspace never builds
+# tooling. It path-deps the real ingest crate and runs the actual deterministic
+# decoder on the live twitterapi.io feed, proving end-to-end flow.
+[package]
+name = "social-probe"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "social-probe"
+path = "src/main.rs"
+
+[dependencies]
+pump-quant-ingest = { path = "../../../rust/crates/pump-quant-ingest" }
+
+# Own workspace so it never attaches to rust/ (keeps it out of the gated build).
+[workspace]

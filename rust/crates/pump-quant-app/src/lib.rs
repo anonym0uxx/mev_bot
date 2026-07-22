@@ -49,6 +49,7 @@ pub mod journal_log;
 pub mod lane;
 pub mod reflect;
 pub mod scalp;
+pub mod social_ingest;
 
 pub use config::{Config, ConfigError, FillModeCfg};
 pub use engine::{Engine, Report, RunMode};

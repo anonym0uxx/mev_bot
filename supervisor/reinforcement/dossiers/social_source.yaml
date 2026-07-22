@@ -1,0 +1,76 @@
+component: social_source
+constitution_refs: ['22', '54']
+spec: >
+  Independence-lock dossier for the `social_source` module of pump-quant-ingest:
+  the live-capture trait seam plus its portable mock and the pure batch fan-out.
+  The trait boundary is where `[S]` live capture (twitterapi.io / Telegram /
+  TikTok / Firecrawl) plugs in; this crate performs no I/O (§22). parse_batch is
+  order-preserving and skips undecodable payloads so a recorded batch stream
+  replays byte-for-byte (§54).
+invariants:
+- parse_batch preserves order and silently drops only payloads that fail to decode.
+- MockSocialSource returns queued batches in order, then empty forever (drained).
+adversarial_checks:
+- A single malformed payload in a batch must not abort the whole batch.
+- Draining past the queued batches must yield empty, never panic or repeat.
+leaves:
+- leaf_id: ss_parse_batch
+  responsibility: Decode a batch of raw payloads into SocialEvents, order-preserving, skipping undecodable ones.
+  signature: 'pub fn parse_batch(batch: &[RawSocialPayload]) -> Vec<SocialEvent>'
+  invariants:
+  - Good payloads decode in input order; a bad payload is skipped, not fatal.
+  - Each event carries the payload's observed_at_ns.
+  reference_pattern: property_test is the sole correctness authority; authored and verified against the committed implementation.
+  property_test: |
+    #[test]
+    fn ss_parse_batch_order_and_skip_bad() {
+        let good_x = RawSocialPayload::new(
+            br#"{"platform":"x","author":"a","text":"$WIF","likes":1}"#.to_vec(),
+            1,
+        );
+        let bad = RawSocialPayload::new(b"garbage".to_vec(), 2);
+        let good_tg = RawSocialPayload::new(
+            br#"{"platform":"telegram","author":"b","text":"$PEPE","likes":1}"#.to_vec(),
+            3,
+        );
+        let events = parse_batch(&[good_x, bad, good_tg]);
+        assert_eq!(events.len(), 2, "bad payload skipped, not fatal");
+        assert_eq!(
+            events[0].platform,
+            pump_quant_ingest::social_parse::SocialPlatform::X
+        );
+        assert_eq!(
+            events[1].platform,
+            pump_quant_ingest::social_parse::SocialPlatform::Telegram
+        );
+        assert_eq!(events[1].observed_at_ns, 3, "capture instant preserved");
+    }
+
+- leaf_id: ss_mock
+  responsibility: Portable deterministic SocialSource that replays queued batches then empties.
+  signature: 'impl SocialSource for MockSocialSource { fn next_batch(&mut self) -> Vec<RawSocialPayload> }'
+  invariants:
+  - Queued batches are returned in order; after the last, every call yields empty.
+  - is_drained becomes true once all batches are consumed.
+  reference_pattern: property_test is the sole correctness authority; authored and verified against the committed implementation.
+  property_test: |
+    #[test]
+    fn ss_mock_replays_then_drains() {
+        let p = |t: u64| {
+            RawSocialPayload::new(
+                br#"{"platform":"x","author":"a","text":"$WIF","likes":1}"#.to_vec(),
+                t,
+            )
+        };
+        let mut src = MockSocialSource::new()
+            .with_batch(vec![p(10)])
+            .with_batch(vec![p(20), p(21)]);
+        assert_eq!(src.next_batch().len(), 1);
+        assert_eq!(src.next_batch().len(), 2);
+        assert!(src.next_batch().is_empty());
+        assert!(
+            src.next_batch().is_empty(),
+            "draining past the end stays empty"
+        );
+        assert!(src.is_drained());
+    }

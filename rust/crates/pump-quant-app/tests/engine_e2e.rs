@@ -137,3 +137,37 @@ fn promote_k_config_bounds_promotions_per_tick() {
 
     assert!(r_small.promoted <= r_def.promoted);
 }
+
+#[test]
+fn ingest_social_wires_the_lane_into_the_loop() {
+    use pump_quant_ingest::social_source::{MockSocialSource, RawSocialPayload};
+
+    // A real 32-byte Solana address named in a captured post.
+    let usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    let json = format!(r#"{{"platform":"x","author":"kol","text":"ape {usdc} $USDC","likes":50}}"#)
+        .into_bytes();
+
+    let mut eng = Engine::new(Config::dev_portable(), RunMode::Paper);
+    let mut src = MockSocialSource::new().with_batch(vec![RawSocialPayload::new(json, 1)]);
+
+    // Draining the live source applies exactly one corroboration call (one contract).
+    let applied = eng.ingest_social(&mut src, |_| 6_000);
+    assert_eq!(applied, 1);
+
+    // The social lane is now live in the loop: a tick promotes the corroborated
+    // mint to the gate, where — social being corroboration-tier — it is refused for
+    // lack of on-chain confirmation (never admitted on social alone, §29/§71).
+    eng.tick(AppEvent::Tick);
+    let r = eng.report();
+    assert!(r.promoted >= 1, "social corroboration reached the gate");
+    assert_eq!(r.admitted, 0, "social alone never admits capital");
+
+    // Determinism: the same drained source reproduces the same application count.
+    let mut eng2 = Engine::new(Config::dev_portable(), RunMode::Paper);
+    let mut src2 = MockSocialSource::new().with_batch(vec![RawSocialPayload::new(
+        format!(r#"{{"platform":"x","author":"kol","text":"ape {usdc} $USDC","likes":50}}"#)
+            .into_bytes(),
+        1,
+    )]);
+    assert_eq!(eng2.ingest_social(&mut src2, |_| 6_000), 1);
+}

@@ -1,0 +1,65 @@
+component: social_ingest
+constitution_refs: ['29', '71', '102']
+spec: >
+  Independence-lock dossier for the `social_ingest` module of pump-quant-app: the
+  seam that turns normalized SocialEvents into engine inputs. Locks the two
+  compliance-critical leaves — the D1-D10-ledger-backed quality resolver (earned
+  trust, PUBLIC_BURNED default, never a per-account hardcode) and cross-source
+  content coordination (identical content from distinct authors in a window feeds
+  COORDINATED_SPAM). Social is corroboration-tier only; nothing here can authorize
+  capital (§29/§71). Integer/deterministic (§22); named policy ceilings (§102).
+invariants:
+- An unseen source resolves to the policy baseline (PUBLIC_BURNED), never to trust.
+- Fade classification states contribute zero corroboration quality.
+- Coordination flags a content hash only with >=2 distinct authors inside the window.
+adversarial_checks:
+- A hot account with no reconciled evidence must not earn quality above the baseline floor.
+- Two posts from the SAME author must not count as coordination.
+- Identical content just outside the window must not be flagged coordinated.
+leaves:
+- leaf_id: si_ledger_quality
+  responsibility: Resolve corroboration quality (bps) from the earned ledger; unseen -> PUBLIC_BURNED baseline.
+  signature: 'pub fn ledger_quality(ledger: &SourceQualityLedger, source_id: u64, policy: &SourceQualityPolicy) -> u32'
+  invariants:
+  - A source absent from the ledger resolves to policy.baseline_bp.
+  - The conservative policy baseline is a low, non-alpha floor.
+  reference_pattern: property_test is the sole correctness authority; authored and verified against the committed implementation.
+  property_test: |
+    #[test]
+    fn si_ledger_quality_unseen_is_public_burned() {
+        let ledger = pump_quant_social::ledger::SourceQualityLedger::with_capacity(8);
+        let policy = SourceQualityPolicy::conservative();
+        // A source the ledger has never reconciled earns only the baseline floor.
+        assert_eq!(ledger_quality(&ledger, 999, &policy), policy.baseline_bp);
+        // The baseline is a conservative, non-alpha floor (well under full weight).
+        assert!(policy.baseline_bp < policy.pre_flow_alpha_bp);
+        assert!(policy.baseline_bp <= 2_000);
+    }
+
+- leaf_id: si_coordination
+  responsibility: Flag cross-source content coordination (distinct authors, same content, within window).
+  signature: 'pub fn coordinated_content(events: &[SocialEvent], window_ns: u64) -> Vec<(u64, u32)>'
+  invariants:
+  - Two distinct authors posting identical content within the window flag the content hash.
+  - Same-author repeats do not count; content outside the window is not flagged.
+  reference_pattern: property_test is the sole correctness authority; authored and verified against the committed implementation.
+  property_test: |
+    #[test]
+    fn si_coordination_needs_distinct_authors_in_window() {
+        let mk = |author: &str, at: u64| {
+            let json = format!(
+                r#"{{"platform":"telegram","author":"{author}","text":"BUY $PEPE same copypasta","likes":1}}"#
+            );
+            pump_quant_ingest::social_parse::parse_social_event(json.as_bytes(), at).unwrap()
+        };
+        let a = mk("chanA", 100);
+        let b = mk("chanB", 150);
+        let a2 = mk("chanA", 160); // same author as a
+        assert_eq!(a.content_hash, b.content_hash);
+        let coord = coordinated_content(&[a, b, a2], 1_000);
+        assert_eq!(coord.len(), 1);
+        assert_eq!(coord[0], (a.content_hash, 2));
+        // Identical content outside the window is not coordinated.
+        let far = mk("chanC", 10_000);
+        assert!(coordinated_content(&[a, far], 100).is_empty());
+    }
