@@ -547,28 +547,60 @@ impl Hasher {
     }
 }
 
+/// Default hard cap on the number of concurrently-tracked markets. A fixed bound so
+/// the world state cannot grow without limit across a long-running session (§99);
+/// callers that know their active-universe size can set a tighter one via
+/// [`WorldState::with_capacity`]. Chosen well above any realistic concurrent-market
+/// count so it never perturbs normal operation.
+pub const DEFAULT_MARKET_CAP: usize = 65_536;
+
 /// The full multi-market world state.
 ///
 /// Markets are stored in an index vector (never a `HashMap`) so there is no
-/// iteration-order nondeterminism; hashing sorts keys explicitly.
-#[derive(Clone, Debug, Default)]
+/// iteration-order nondeterminism; hashing sorts keys explicitly. The vector is
+/// bounded at `cap`: inserting a new market when full evicts the oldest-inserted one
+/// (FIFO), so a bot that has seen millions of mints over a long session retains only
+/// the most recent `cap` (§99). Re-`upsert`ing an existing key never evicts.
+#[derive(Clone, Debug)]
 pub struct WorldState {
     markets: Vec<(u64, MarketState)>,
+    cap: usize,
+}
+
+impl Default for WorldState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WorldState {
-    /// Empty world.
+    /// Empty world with the default market cap.
     pub fn new() -> Self {
+        Self::with_capacity(DEFAULT_MARKET_CAP)
+    }
+
+    /// Empty world with an explicit market cap (clamped to `>= 1`).
+    pub fn with_capacity(cap: usize) -> Self {
         Self {
             markets: Vec::new(),
+            cap: cap.max(1),
         }
     }
 
-    /// Insert or replace the market under `key`.
+    /// The market cap in force.
+    pub fn capacity(&self) -> usize {
+        self.cap
+    }
+
+    /// Insert or replace the market under `key`. If `key` is new and the world is at
+    /// capacity, the oldest-inserted market is evicted first (FIFO, deterministic).
     pub fn upsert_market(&mut self, key: u64, state: MarketState) {
         if let Some(slot) = self.markets.iter_mut().find(|(k, _)| *k == key) {
             slot.1 = state;
         } else {
+            if self.markets.len() >= self.cap {
+                self.markets.remove(0);
+            }
             self.markets.push((key, state));
         }
     }

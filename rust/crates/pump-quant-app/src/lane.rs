@@ -192,18 +192,20 @@ impl NarrativeLane {
     }
 
     /// Emit one candidate per tracked mint. Score comes from `nv_candidate_score`
-    /// with the lifecycle stage inferred from the virality coefficient.
+    /// with the lifecycle stage inferred from the virality coefficient against the
+    /// operator-supplied band edges (`stage_hi_fp` ≥ `stage_lo_fp`, both in the
+    /// narrative crate's fixed-point unit) — no band edge is baked in.
     #[must_use]
-    pub fn emit(&self, now: u64) -> Vec<Candidate> {
+    pub fn emit(&self, now: u64, stage_hi_fp: u64, stage_lo_fp: u64) -> Vec<Candidate> {
         self.obs
             .iter()
             .map(|(k, o)| {
                 let virality = nv_virality_coeff(o.prior_active, o.new_mentions).unwrap_or(0);
-                // Stage/divergence inferred deterministically from virality bands.
-                // These bands live in the narrative leaf's fixed-point unit (FP_ONE).
-                let stage = if virality >= 2 * pump_quant_narrative::narrative::FP_ONE {
+                // Stage/divergence inferred deterministically from the configured
+                // virality bands (in the narrative leaf's fixed-point unit).
+                let stage = if virality >= stage_hi_fp {
                     LifecycleStage::Virality
-                } else if virality >= pump_quant_narrative::narrative::FP_ONE {
+                } else if virality >= stage_lo_fp {
                     LifecycleStage::Emergence
                 } else {
                     LifecycleStage::Formation
@@ -300,16 +302,18 @@ impl WalletLane {
     }
 
     /// Emit one candidate per tracked mint. Score is cumulative followable size,
-    /// compressed to a decade so it is comparable with the other lanes' scores.
+    /// compressed to a decade then scaled by the operator-supplied `score_scale` so
+    /// it is comparable with the other lanes' score magnitudes — the cross-lane
+    /// weight is a config field, not a baked-in constant.
     #[must_use]
-    pub fn emit(&self, now: u64) -> Vec<Candidate> {
+    pub fn emit(&self, now: u64, score_scale: u64) -> Vec<Candidate> {
         self.obs
             .iter()
             .map(|(k, &size)| {
                 Candidate::new(
                     WlMint::new(*k),
                     WlLane::GraduationTransition,
-                    decade(size).saturating_mul(100),
+                    decade(size).saturating_mul(score_scale),
                     now,
                     Features::default(),
                 )

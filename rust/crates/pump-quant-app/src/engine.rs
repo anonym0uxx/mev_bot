@@ -22,7 +22,7 @@ use crate::reflect::reflect;
 use crate::scalp::scalp;
 
 use pump_quant_domain::ids::Mint as DomainMint;
-use pump_quant_evaluator::evaluator_stats::{net_sol, Lane as EvalLane, ReconTrade};
+use pump_quant_evaluator::evaluator_stats::{Lane as EvalLane, ReconTrade};
 use pump_quant_watchlist::candidate::{Candidate, Features, Lane as WlLane};
 use pump_quant_watchlist::lane_ingest::ingest_union;
 use pump_quant_watchlist::lane_performance::LanePerformance;
@@ -30,6 +30,50 @@ use pump_quant_watchlist::promote::promote_top;
 use pump_quant_watchlist::rank::{LaneWeights, RankParams};
 use pump_quant_watchlist::state::WatchlistState;
 use std::collections::BTreeMap;
+
+/// A bounded running reconciliation of realized net-SOL for one evaluator lane.
+///
+/// Replaces retaining every `ReconTrade` for the life of the engine (§99): the loop
+/// runs indefinitely, so the accountant folds each fill into fixed-width running
+/// totals instead of a growing vector. `net()` reproduces `evaluator::net_sol`'s
+/// arithmetic exactly (`gross − fees − tips − failed`), so the reported net-SOL is
+/// identical to what a full reconciliation over the same trades would yield.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ReconAccum {
+    gross: i128,
+    fees: u128,
+    tips: u128,
+    failed: u128,
+    n: u64,
+}
+
+impl ReconAccum {
+    fn add(&mut self, t: &ReconTrade) {
+        self.gross = self.gross.saturating_add(t.gross_lamports);
+        self.fees = self.fees.saturating_add(t.fees);
+        self.tips = self.tips.saturating_add(t.tips);
+        self.failed = self.failed.saturating_add(t.failed_costs);
+        self.n = self.n.saturating_add(1);
+    }
+
+    fn net(&self) -> i128 {
+        if self.n == 0 {
+            return 0;
+        }
+        let costs = (self.fees as i128)
+            .saturating_add(self.tips as i128)
+            .saturating_add(self.failed as i128);
+        self.gross.saturating_sub(costs)
+    }
+}
+
+/// Index of an evaluator lane into the running-accumulator array.
+const fn accum_index(lane: EvalLane) -> usize {
+    match lane {
+        EvalLane::Scalp => 0,
+        EvalLane::Early => 1,
+    }
+}
 
 /// How the engine is allowed to act. The laptop build supports only paper and
 /// replay; live capital is a Tier-0 human-gated world this type cannot express, so
@@ -80,7 +124,8 @@ pub struct Engine {
     confirmed: BTreeMap<[u8; 32], u64>,
 
     lane_perf: LanePerformance,
-    recon: Vec<ReconTrade>,
+    /// Running net-SOL reconciliation per evaluator lane (Scalp=0, Early=1); bounded.
+    recon: [ReconAccum; 2],
     journal: DecisionJournal,
 
     promoted: u64,
@@ -108,7 +153,7 @@ impl Engine {
             watchlist,
             confirmed: BTreeMap::new(),
             lane_perf: LanePerformance::new(),
-            recon: Vec::new(),
+            recon: [ReconAccum::default(); 2],
             journal: DecisionJournal::new(),
             promoted: 0,
             admitted: 0,
@@ -170,8 +215,13 @@ impl Engine {
     }
 
     fn confirm(&mut self, mint: [u8; 32], depth: u64) {
-        // Bound the confirmed set alongside the watchlist (§99).
-        let cap = self.cfg.watchlist_capacity.saturating_mul(4).max(1);
+        // Bound the confirmed set alongside the watchlist (§99); the multiple is a
+        // config field, not a baked-in constant.
+        let cap = self
+            .cfg
+            .watchlist_capacity
+            .saturating_mul(self.cfg.confirmed_capacity_mult)
+            .max(1);
         if !self.confirmed.contains_key(&mint) && self.confirmed.len() >= cap {
             if let Some((&weakest, _)) = self.confirmed.iter().min_by_key(|(_, &d)| d) {
                 self.confirmed.remove(&weakest);
@@ -185,11 +235,16 @@ impl Engine {
         self.now = self.now.saturating_add(1);
 
         // 1. Discovery: every lane emits independently; union, not intersection.
+        // Lane scoring parameters come from config — no band edge or scale is baked in.
         let mut all: Vec<Candidate> = Vec::new();
         all.extend(self.numeric.emit(self.now));
-        all.extend(self.narrative.emit(self.now));
+        all.extend(self.narrative.emit(
+            self.now,
+            self.cfg.narrative_stage_hi_fp,
+            self.cfg.narrative_stage_lo_fp,
+        ));
         all.extend(self.social.emit(self.now));
-        all.extend(self.wallet.emit(self.now));
+        all.extend(self.wallet.emit(self.now, self.cfg.wallet_score_scale));
         let unioned = ingest_union(all, &self.weights);
         for cand in unioned.values() {
             self.watchlist.insert(*cand, self.now);
@@ -262,7 +317,8 @@ impl Engine {
                     cand.lane,
                     i64::try_from(result.net_pnl_lamports).unwrap_or(i64::MAX),
                 );
-                self.recon.push(result.recon);
+                // Fold the reconciliation trade into the bounded running accountant.
+                self.recon[accum_index(result.recon.lane)].add(&result.recon);
             }
             GateDecision::Reject(reason) => {
                 self.rejected += 1;
@@ -307,8 +363,8 @@ impl Engine {
     /// Snapshot the current report without consuming the engine.
     #[must_use]
     pub fn report(&self) -> Report {
-        let scalp_net = net_sol(&self.recon, EvalLane::Scalp).net_lamports;
-        let early_net = net_sol(&self.recon, EvalLane::Early).net_lamports;
+        let scalp_net = self.recon[accum_index(EvalLane::Scalp)].net();
+        let early_net = self.recon[accum_index(EvalLane::Early)].net();
         let mut per_lane_net = [(WlLane::CreationSniper, 0i64); WlLane::COUNT];
         let mut final_weights = [(WlLane::CreationSniper, 0u32); WlLane::COUNT];
         for (i, lane) in WlLane::ALL.into_iter().enumerate() {

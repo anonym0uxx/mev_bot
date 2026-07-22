@@ -412,6 +412,14 @@ pub struct GapMarker {
     pub epoch: u64,
 }
 
+/// Default hard cap on retained gap markers. A long-lived stream can disconnect
+/// arbitrarily many times; retaining every historical gap forever is an unbounded
+/// accumulator (§99). The cap keeps the most recent gaps and, when full, evicts the
+/// oldest already-*closed* gap first — open gaps (which `is_gapped` consults) are
+/// never dropped, so gap detection is unaffected. Chosen large enough that normal
+/// operation and the dossier tests never reach it.
+pub const DEFAULT_STREAM_GAP_CAP: usize = 4_096;
+
 /// Tracked state of a single observation stream.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct StreamState {
@@ -421,19 +429,46 @@ pub struct StreamState {
     pub last_seq: u64,
     /// Whether the stream is currently connected.
     pub connected: bool,
-    /// All recorded gaps (open and closed).
+    /// Recorded gaps (open and closed), bounded at `gaps_cap` (§99).
     pub gaps: Vec<GapMarker>,
+    /// Hard cap on retained gaps.
+    gaps_cap: usize,
 }
 
 impl StreamState {
-    /// A fresh, connected stream at epoch 0.
+    /// A fresh, connected stream at epoch 0 with the default gap cap.
     pub fn new() -> Self {
+        Self::with_gap_capacity(DEFAULT_STREAM_GAP_CAP)
+    }
+
+    /// A fresh, connected stream with an explicit gap cap (clamped to `>= 1`).
+    pub fn with_gap_capacity(gaps_cap: usize) -> Self {
         StreamState {
             epoch: 0,
             last_seq: 0,
             connected: true,
             gaps: Vec::new(),
+            gaps_cap: gaps_cap.max(1),
         }
+    }
+
+    /// The gap-retention cap in force.
+    pub fn gap_capacity(&self) -> usize {
+        self.gaps_cap
+    }
+
+    /// Push a gap marker, enforcing the retention cap: if full, evict the oldest
+    /// *closed* gap (or, if all are open, the oldest gap) so open gaps survive.
+    fn push_gap_bounded(&mut self, marker: GapMarker) {
+        if self.gaps.len() >= self.gaps_cap {
+            let evict = self
+                .gaps
+                .iter()
+                .position(|g| g.to_seq.is_some())
+                .unwrap_or(0);
+            self.gaps.remove(evict);
+        }
+        self.gaps.push(marker);
     }
 
     /// Record a reconnection at `at_seq`: this closes the currently-open gap and
@@ -473,7 +508,7 @@ pub fn on_disconnect(stream: &mut StreamState, at_seq: u64) -> GapMarker {
         to_seq: None,
         epoch: stream.epoch,
     };
-    stream.gaps.push(marker.clone());
+    stream.push_gap_bounded(marker.clone());
     marker
 }
 

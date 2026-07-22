@@ -59,6 +59,23 @@ pub struct Config {
     /// Minimum rank a candidate must reach to be promoted at all.
     pub promote_min_rank: u64,
 
+    // ---- discovery lane scoring ----
+    /// Cross-lane scale applied to the wallet lane's cumulative-size score so it is
+    /// comparable with the other lanes' score magnitudes. Operator-tunable weight —
+    /// it governs which mints the wallet lane pushes toward promotion.
+    pub wallet_score_scale: u64,
+    /// Narrative virality band, in the narrative crate's fixed-point unit, at/above
+    /// which a mint is classified `Virality` (the highest stage). Governs the
+    /// narrative lane's discovery score, so it is operator-tunable, not baked in.
+    pub narrative_stage_hi_fp: u64,
+    /// Narrative virality band at/above which a mint is classified `Emergence`
+    /// (below `hi`). Below this it is `Formation`. Operator-tunable.
+    pub narrative_stage_lo_fp: u64,
+    /// Confirmed-market set capacity as a multiple of `watchlist_capacity` (§99
+    /// bound). Operator-tunable: too small and a valid on-chain confirmation can be
+    /// evicted before its candidate clears the gate.
+    pub confirmed_capacity_mult: usize,
+
     // ---- corroboration / gate ----
     /// Expected favourable move, in bps, credited to a confirmed candidate. Feeds
     /// the economic size-band. Operator-tuned, never inferred from a single trade.
@@ -116,6 +133,11 @@ impl Config {
             promote_k: 8,
             promote_min_rank: 1,
 
+            wallet_score_scale: 100,
+            narrative_stage_hi_fp: 2 * pump_quant_narrative::narrative::FP_ONE,
+            narrative_stage_lo_fp: pump_quant_narrative::narrative::FP_ONE,
+            confirmed_capacity_mult: 4,
+
             gate_expected_move_bps: 300,
             gate_base_fixed_lamports: 50_000,
             gate_fail_rate_bps: 500,
@@ -154,6 +176,10 @@ impl Config {
             "watchlist_ttl_ticks" => self.watchlist_ttl_ticks = nonneg(value)?,
             "promote_k" => self.promote_k = sz(value)?,
             "promote_min_rank" => self.promote_min_rank = nonneg(value)?,
+            "wallet_score_scale" => self.wallet_score_scale = nonneg(value)?,
+            "narrative_stage_hi_fp" => self.narrative_stage_hi_fp = nonneg(value)?,
+            "narrative_stage_lo_fp" => self.narrative_stage_lo_fp = nonneg(value)?,
+            "confirmed_capacity_mult" => self.confirmed_capacity_mult = sz(value)?.max(1),
             "gate_expected_move_bps" => self.gate_expected_move_bps = bp(value)?,
             "gate_base_fixed_lamports" => self.gate_base_fixed_lamports = nonneg(value)?,
             "gate_fail_rate_bps" => self.gate_fail_rate_bps = bp(value)?,
@@ -210,6 +236,16 @@ impl Config {
         }
         if self.promote_k == 0 {
             return Err(ConfigError::Inconsistent("promote_k must be positive"));
+        }
+        if self.narrative_stage_lo_fp > self.narrative_stage_hi_fp {
+            return Err(ConfigError::Inconsistent(
+                "narrative stage lo band exceeds hi band",
+            ));
+        }
+        if self.confirmed_capacity_mult == 0 {
+            return Err(ConfigError::Inconsistent(
+                "confirmed_capacity_mult must be positive",
+            ));
         }
         if self.watchlist_capacity == 0 {
             return Err(ConfigError::Inconsistent(
