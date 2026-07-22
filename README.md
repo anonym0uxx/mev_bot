@@ -1,289 +1,376 @@
-# pump-quant
+<div align="center">
 
-> Solana trading bot — dual-engine architecture  
-> **MomentumEngine** (live, post-graduation PumpSwap) + **SniperEngine** (in design, bonding curve)  
-> Single Rust binary · ShredStream-first · Jito atomic bundles · Kelly sizing · Paper mode
+# ⚡ Hermes · `pump-quant`
 
----
+**A deterministic, integer-exact Solana memecoin scalping engine.**
 
-## Engines
+![Rust](https://img.shields.io/badge/rust-1.85%2B-000000?style=for-the-badge&logo=rust&logoColor=white)
+![Solana](https://img.shields.io/badge/Solana-mainnet-14F195?style=for-the-badge&logo=solana&logoColor=black)
+![Tests](https://img.shields.io/badge/tests-1389%20passing-2ea44f?style=for-the-badge)
+![Gate](https://img.shields.io/badge/portable--gate-green-2ea44f?style=for-the-badge)
+![Determinism](https://img.shields.io/badge/floats%20in%20outcome%20paths-0-8250df?style=for-the-badge)
 
-### MomentumEngine — Live
-Enters tokens **after** graduation from the Pump.fun bonding curve onto PumpSwap. Detects migration via ShredStream, scores graduation quality, fires Kelly-sized probes, manages position with trailing stop + take-profit tiers.
+![CI](https://github.com/anonym0uxx/mev_bot/actions/workflows/gate.yml/badge.svg)
 
-### SniperEngine — In Design (Phase 0 logging active)
-Enters tokens **before** graduation, directly on the bonding curve. Uses Jito atomic bundles (buy + sell in same bundle — both land or neither does). 12% scalp target. Max loss per attempt = Jito tip only (~5000 lamports).
-
-See [`docs/SNIPER_SIGNAL_SPEC.md`](docs/SNIPER_SIGNAL_SPEC.md) for full spec.
+</div>
 
 ---
 
-## Architecture
+## At a glance
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     pump-quant  (single Rust binary)                    │
-│                                                                         │
-│  FEEDS (priority order)         ENGINE REGISTRY       ENGINES          │
-│  ─────────────────────          ───────────────       ───────          │
-│                                                                         │
-│  ShredStream gRPC (:20100) ──►  FeedRouter        ──► MomentumEngine  │
-│  (~0ms from block production)   (fan-out to all       (live trading)   │
-│                                  registered engines)                    │
-│  Helius WS ──────────────────►                    ──► SniperEngine     │
-│  (enhanced, decoded)                                  (stub, paper)    │
-│                                                                         │
-│  PumpPortal WS ──────────────►  ExecutionContext                       │
-│  (TokenCreated, social)         • Jito HTTP/2 (NY primary)             │
-│                                 • Nozomi (EWR1)                         │
-│  [CoreCast — being removed]     • BlockhashCache                       │
-│                                 • Wallet + WSOL ATA                    │
-│                                                                         │
-│  SHARED INFRA                                                           │
-│  ────────────                                                           │
-│  HealthMonitor (per-feed staleness → auto-pause)                       │
-│  ShredStream gRPC proxy (:20100)                                       │
-│  REST API (:9421) — status, control, health                            │
-│  JSONL trade log · Telegram alerts                                     │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+<!-- Retrieval note: this block is a dense, self-contained fact sheet. Every field is a standalone claim. -->
+
+| Field | Value |
+|-------|-------|
+| **Project name** | Hermes (system) · `pump-quant` (the Rust engine workspace) |
+| **Repository** | `anonym0uxx/mev_bot` on GitHub |
+| **Purpose** | Autonomously discover and scalp net-SOL-positive Solana memecoin opportunities under a mechanically-enforced risk constitution. |
+| **Objective function** | Maximize realized **net SOL** (SOL in minus SOL out, after all costs). Net SOL is the single scalar the system optimizes. |
+| **Primary language** | Rust (a 22-crate Cargo workspace) + a Python supervisor (Hermes). |
+| **Target market** | Solana memecoins on Pump.fun (bonding curve) and PumpSwap / Raydium (AMM pools). |
+| **Trading style** | High-frequency scalping — many small, fast, net-positive round trips; not long holds. |
+| **Determinism** | Integer/fixed-point only in outcome paths; no floating point, no wall-clock, no RNG in decisions. Byte-exact under replay. |
+| **Current phase** | Phase-A (laptop): paper/replay only, fully built and tested. Phase-B (server, live capital) is human-gated and not in this build. |
+| **Live capital** | Tier-0 human-gated. No code path signs keys or moves funds. |
+| **Tests** | 1389 workspace tests passing; 179 SHA-locked property tests across 45 dossiers. |
+| **CI gate** | `hermes-gate/portable-gate`: fmt + clippy(-D warnings) + build + test + dossier `--verify` + supervisor portable gate. |
+| **Rust edition / MSRV** | edition 2021, rust-version 1.85. |
 
 ---
 
-## Feed Priority
+## What this project is
 
-| Feed | Latency | Role |
-|------|---------|------|
-| **ShredStream** | ~0ms from shred | First. All execution-critical events. |
-| **Helius** | 50–200ms | Second. Account state, enrichment, reserves. |
-| **PumpPortal** | 100–500ms | Third. TokenCreated events, social metadata. |
-| Public RPC | variable | Last resort only. Never on hot path. |
+`pump-quant` is the Rust execution engine of **Hermes**, an autonomous Solana memecoin trading system. It
+scans memecoin markets continuously — across independent lanes of on-chain and off-chain evidence — builds a
+ranked watchlist of candidates, gates each candidate against on-chain confirmation and economic viability,
+and scalps the survivors for small net-SOL gains. On the laptop (Phase-A) it does this in **paper mode**
+(simulated fills) and **replay mode** (deterministic re-run of recorded events); live capital is a separate,
+human-gated concern handled on the server (Phase-B).
+
+The system is named **Hermes** as a whole. The Rust workspace in this repository is called **`pump-quant`**.
+A separate **Hermes supervisor** (Python) governs the build and the research loop. The GitHub repository is
+`mev_bot`. These three names refer to parts of one system and are used consistently throughout this document.
+
+## Why it exists (the goal)
+
+The goal is a system that **relentlessly and autonomously searches for, validates, and compounds real
+on-chain net-SOL edge in Solana memecoins, without human prompting, for as long as it operates** — while
+never risking capital outside an explicit human gate. Profitable on-chain scalping demonstrably exists in
+this market; the system's job is to find the forms of it that survive its own risk gates and execute them,
+and to keep finding new edge as old edge decays. This is the constitution's *Continuous-Improvement
+Mandate*: never idle, always hunting for the next testable source of net-SOL edge, prioritized by expected
+value.
+
+## Scope: what is and is not in this build
+
+**In scope (Phase-A, this repository, built and tested):** market discovery, candidate ranking, the
+corroboration + economics gate, paper/backtest fill simulation, deterministic replay, net-SOL evaluation,
+research/overfitting diagnostics, governance envelopes, and the full decision logic — all pure, integer,
+and testable off a live wire.
+
+**Out of scope here (Phase-B, server, intentionally absent):** live market-data sockets (Helius
+LaserStream), the real OS-tuning and memory binding, PGO / deploy-CPU pinning, live-chain reconciliation,
+and any signing of keys or movement of funds. Each of these has a portable trait seam and a locked
+acceptance test in this build; the server implements the trait. See
+[`docs/SERVER_BUILD_MANIFEST.md`](docs/SERVER_BUILD_MANIFEST.md).
 
 ---
 
-## SniperEngine — Entry Gate System
+## Design invariants — "the Laws"
 
-Entry fires only when **all Tier 0 gates pass** AND **on-chain score ≥ threshold** AND **final score (with social multiplier) ≥ 40**.
+These invariants are non-negotiable and are compiled in, tested, or gated in CI — not merely intended. Each
+row is a self-contained rule.
 
-### Tier 0: Hard Gates
+| Ref | Invariant | Enforcement |
+|-----|-----------|-------------|
+| **§22** | **No floating point in any outcome-affecting path.** Prices are rationals of reserves; sizes are lamports; scores are basis points. | Source scan in CI. The single sanctioned `f64` quantization boundary is documented and isolated. |
+| **§54** | **Deterministic replay.** The same event stream yields the same decisions and the same net-SOL, byte-for-byte. | A canonical FNV-1a decision journal; a test asserts identical digests across independent runs. |
+| **§29 / §71** | **Corroboration discipline (fade-first).** Social, narrative, and smart-money evidence can raise a candidate's rank but can never authorise entry alone; on-chain confirmation is always required. | The entry gate rejects any candidate lacking on-chain confirmation plus numeric microstructure. |
+| **§99** | **Bounded state.** No collection grows without a cap over a long-running session. | Every accumulator (watchlist, world-state, journals, stream gaps) is capacity-bounded with eviction; tests assert the bound. |
+| **§56 / §71** | **Reflection enhances discovery.** Realized net-SOL reshapes which discovery lanes get weight, inside a governance envelope. | Bounded-step, floor/ceiling-clamped weight adaptation; replay-reproducible. |
+| **Tier-0** | **Live capital is human-gated.** Key signing and fund movement are never automated. | The `RunMode` type has no `Live` variant; the laptop binary cannot construct one. |
+| **No-hardcode** | **Every decision threshold is an operator-supplied parameter, never a magic number in a decision path.** | A test proves that changing one config value alone changes the engine's decisions. |
 
-Binary pass/fail. Any failure = immediate skip. Evaluated within 10ms of `TokenCreated`.
+---
 
-| Gate | Logic | Source | Why |
-|------|-------|--------|-----|
-| **G0** Not Mayhem Mode | `is_mayhem_mode == true` → FAIL | Helius BC account / PumpPortal | Pump.fun AI agent corrupts all Tier 1 signals (velocity, wallet diversity, sell timing) |
-| **G1** No Dev Pre-Buy | Any of first 5 trades: `trader == creator` and `is_buy` → FAIL. Also: same-slot buy from SOL-linked wallet → FAIL | ShredStream + creator_map | Dev front-loading own token |
-| **G2** No Coordinated Bundle | `≥2 distinct wallets` in create slot AND `>2 SOL total` in that slot → FAIL | ShredStream slot tracking | Coordinated snipers use exactly 2 wallets to evade ≥3 detection |
-| **G3** Dev Not Serial Rugger | `dev_tokens_launched ≥ 10` → FAIL, or `≥5 tokens + >40% rug rate` → FAIL | Helius `getAssetsByCreator` (cached) | ArXiv: prolific creators graduate less. Serial launchers are almost always rugs |
-| **G4** Curve Fill — Entry Zone | `vsol < 2.0` → SKIP · `2.0–15.0` → PASS · `15.0–20.0` → PASS if score ≥ 60 · `> 20.0` → FAIL | Helius BC accountSubscribe | Optimal zone: 2–15 SOL (follow-on ≤ 0.84 SOL). At 15–20 SOL needs score ≥ 60 (follow-on 0.84–1.13 SOL). Above 20 SOL EV-negative for non-graduating tokens. |
-| **G6** Creator Not Throwaway | Creator balance `<0.05 SOL` AND zero launch history → FAIL | Helius `getBalance` (cached) | Script-generated rug factory wallets funded with exactly the creation fee |
-| **G7** No Supply Concentration | Any single wallet holds `>15%` of tokens bought in first 20 trades → FAIL | ShredStream holdings tracker | Single large holder = coordinated dump setup |
+## How it works — the discovery → gate → scalp → reflect loop
 
-### Tier 1: On-Chain Score (0–100 pts)
+The core of `pump-quant` is a single deterministic loop implemented in the crate `pump-quant-app` (the
+"nervous system"). It runs continuously under one explicit logical clock and behaves like a disciplined
+scalper who never sleeps. The five stages, in order, are:
 
-Computed in real-time from ShredStream trades + Helius BC account state. Re-evaluated on every trade event.  
-**Entry threshold: ≥50 pts** (with velocity data) or **≥40 pts** (trade_count < 10).
+1. **Ingest.** Integer-valued events arrive: `MarketTrade` (on-chain swap), `NarrativeSample` (attention),
+   `SocialCall` (a scored mention), `WalletAction` (smart-money activity), `OnchainConfirm` (proof a market
+   is real and sellable), and `Tick` (advance the logical clock). Ingestion only updates state; a `Tick`
+   runs the loop.
+2. **Discover.** Four independent discovery lanes each emit candidates on their own (see next section). This
+   is a **union**, not an intersection — no lane waits for another to agree.
+3. **Fuse & rank.** Candidates are unioned per mint (strongest lane evidence wins ties), recency-decayed,
+   and ranked into a bounded watchlist. The top-ranked candidates are promoted to the gate.
+4. **Gate.** Each promoted candidate faces two hard hurdles: on-chain corroboration (confirmation + numeric
+   microstructure) and economic viability (a size band that survives its own costs). Failing either is a
+   reject.
+5. **Scalp (paper).** Admitted candidates are filled through the calibrated simulator (fill modes A/B/C).
+   No capital moves on the laptop.
+6. **Reflect.** Realized net-SOL per lane nudges that lane's discovery weight inside a governance envelope,
+   so the system leans into whichever senses are actually paying off. Net SOL is the objective.
 
-| Signal | Max Pts | Metric | Source | Notes |
-|--------|---------|--------|--------|-------|
-| **S1** Inflow Rate | 30 | `real_sol / seconds_since_create` (real_sol = vsol_raw − 30) | ShredStream + Helius BC | 0.15 SOL/s = sweet spot (30pts). 0.5+ SOL/s = aggressive (20pts). 1.5+ SOL/s = spike risk (12pts). ArXiv #1 predictor. |
-| **S2** Wallet Diversity | 25 | `unique_wallets / trade_count` | ShredStream | ≥0.80 → 25pts. Replaces fragile bot detection. Bots reuse wallets; organic = diverse. Default 5pts if <5 trades. |
-| **S3** Curve Position | 15 | `real_sol` zone-aligned with G4 | Helius BC accountSubscribe | 5–15 real_sol → 15pts (peak). 2–5 → 12pts (early). 15–20 → 6pts (conditional). Aligns exactly with G4 zones. |
-| **S4** Sell Timing | 15 | Index of first sell trade (relative for <10 trades) | ShredStream | 5-9 trades, no sells → 10pts. 10+ trades, first sell >15 → 15pts. First sell <5 → 0pts. Early-entry aware. |
-| **S5** Smart Money | −10 to +15 | Pre-seeded top-500 PnL wallet set | ShredStream + wallet list | Top-100 wallet buys early → +15pts. Known dumper buys early → −10pts. |
+Every stage is a pure function of prior state and the current event. Advancing the same event stream twice
+produces the same net-SOL twice. That property makes replay a correctness authority, not a demo.
 
-**Sub-10-trade velocity substitute (S1 when trade_count < 10):**
-- First buy 0.1–0.5 SOL → 8pts (human-sized)
-- First buy 0.5–2.0 SOL → 5pts (large, possible whale)
-- First buy >2.0 SOL → 3pts (spike risk)
-- First buy <0.01 SOL → 0pts (bot dust)
-
-### Tier 2: Social Multiplier (0.5×–2.0×)
-
-Applied async: `final_score = on_chain_score × social_multiplier_bps / 10_000`  
-**Signals SS2 and SS5 disabled for tokens age < 120s** — data doesn't exist at mint.
-
-| Signal | Weight | Source | Notes |
-|--------|--------|--------|-------|
-| **SS1** Dev wallet history | 55% | Helius `getAssetsByCreator` | Only reliable signal at mint. 1-4 launches, low rug rate → +2000bps. Blacklisted → hard veto (multiplier=0). |
-| **SS4** Metadata quality | 25% | PumpPortal `TokenCreated` | Instant, no API. Link count + description length + image. Zero effort → −1500bps. Full set → +1200bps. |
-| **SS3** Twitter presence | 10% | PumpPortal event | Presence only. Present → +800bps. Absent → −800bps. |
-| **SS2** Pump.fun engagement | 5% | Pump.fun API | **Disabled <120s.** Reply count, KOTH, live stream. |
-| **SS5** Telegram community | 5% | Telegram Bot API | **Disabled <120s.** Pre-built large channels at mint = negative signal. |
-
-### Decision Flow
-
-```
-TokenCreated
-    │
-    ├─ G0: Mayhem? ──────────────────────────────────────────► DROP
-    ├─ G1: Dev prebuy? ──────────────────────────────────────► DROP
-    ├─ G2: Coordinated bundle? ──────────────────────────────► DROP
-    ├─ G3: Serial rugger? ───────────────────────────────────► DROP
-    ├─ G4: vSol ≥ 25? ───────────────────────────────────────► DROP
-    ├─ G6: Throwaway wallet? ────────────────────────────────► DROP
-    └─ G7: Supply concentration? ────────────────────────────► DROP
-                    │ ALL PASS
-                    ▼
-    [Fire async social enrichment — non-blocking]
-    [ShredStream trades update BondingCurveState continuously]
-                    │
-    S1 + S2 + S3 + S4 + S5 = on_chain_score (0–100)
-                    │
-    score < threshold (50/40)? ──────────────────────────────► MONITOR
-                    │ threshold met
-                    ▼
-    social_multiplier × on_chain_score = final_score
-    final_score < 40? ───────────────────────────────────────► MONITOR
-                    │ ≥ 40
-                    ▼
-    Kelly size → p = score_to_p(final_score), half-Kelly, 0.01–0.10 SOL
-                    │
-    Jito bundle → TX1: buy at P1 · TX2: sell at P1×1.12
-    Both land or neither does.
+```mermaid
+flowchart LR
+    subgraph INGEST["ingest — integer events"]
+      MT[MarketTrade] & NS[NarrativeSample] & SC[SocialCall] & WA[WalletAction] & OC[OnchainConfirm]
+    end
+    INGEST --> LANES
+    subgraph LANES["discovery lanes — UNION not intersection"]
+      N[Numeric]:::self --> U
+      NA[Narrative]:::corr --> U
+      SO[Social]:::corr --> U
+      WL[Wallet]:::corr --> U
+      U[(watchlist · rank · recency · bounded)]
+    end
+    U --> G{Gate}
+    G -->|on-chain confirmed<br/>+ economically viable| S[Paper scalp<br/>simulator fill A/B/C]
+    G -->|corroboration alone| X[Reject]
+    S --> R[Reflect · net-SOL → lane weights]
+    R -.->|reweights| LANES
+    classDef self fill:#14F195,stroke:#0a7,color:#000;
+    classDef corr fill:#2b2b2b,stroke:#8250df,color:#fff;
 ```
 
----
+## Discovery: a union of four independent lanes
 
-## MomentumEngine — Signal & Scoring System
+Most scanners require several signals to agree (an intersection) and therefore miss opportunities that are
+early or single-sourced. `pump-quant` instead runs four independent discovery lanes and takes their
+**union**: any lane can surface a mint onto the watchlist on its own. Each lane carries a weight that the
+reflection stage tunes from realized net-SOL.
 
-### Graduation Score (0–100 pts)
+- **Numeric lane** — reads on-chain flow, liquidity, buyer breadth, and velocity. This is the only
+  **self-authorizing** lane: its evidence may, in principle, justify capital (still subject to the gate).
+- **Narrative lane** — reads attention velocity, virality coefficient, and meta-emergence. Corroboration
+  only; capped pre-confirmation (fade-first). Cannot trigger entry alone.
+- **Social lane** — reads quality-weighted calls and mentions from scored sources. Corroboration only.
+- **Wallet lane** — reads smart-money / followable-wallet activity. Corroboration only.
 
-Scored on 7 components at graduation time. Entry requires **≥ 50 pts** (enriched) or **≥ 70 pts** (cold-miss — fabricated defaults inflate score so threshold is higher).
+A loud social call and a quiet on-chain accumulation are both admitted to the watchlist and reconciled later
+at the gate, not suppressed at discovery. This is how the system can notice a narrative before it is legible
+without letting hype pull the trigger.
 
-| Component | Max Pts | Metric | Logic |
-|-----------|---------|--------|-------|
-| **Speed** | 20 | `grad_speed_s` (seconds to graduate) | Inverted — SLOWER = HIGHER score. ≤60s → 0pts (bot/whale fill, 7.3% WR). ≥300s → 20pts (organic, 41.1% WR). |
-| **Volume Tier** | 20 | Total bonding curve volume (SOL) | Sweet spot 50–100 SOL → 20pts. Too low (<10 SOL) = noise. Too high (>400 SOL) = whale pump, 0pts. |
-| **Velocity** | 15 | Buy rate normalized by volume | Buy txns in last 5s of BC, normalized. Organic demand signal — high buys per SOL = retail-driven. |
-| **Buy/Sell Ratio** | 10 | `buys_5s / (buys_5s + sells_5s)` | Unidirectional pressure. Gated: halved if `buys_5s < 5` (whale pump penalty — one actor isn't momentum). |
-| **Entry Discount** | 10 | `(bc_terminal_price - entry_price) / entry_price` | Buying below BC terminal price = structural edge. AMM price typically discounts vs final BC price. |
-| **LP Reserve** | 10 | Pool SOL reserve at migration | Sweet spot 40–120 SOL (fresh pump.fun graduates). Too low = thin liquidity. Too high = whale-seeded. |
-| **Pre-Entry Momentum** | 10 | Observed price velocity (bps/s) during 8s observation window | Confirmed demand before committing capital. ≥200 bps/s can trigger early entry after 15 samples. |
+## The gate: on-chain corroboration plus economic viability
 
-**Hard rejects before scoring:**
-- Volume < 30 SOL or > 300 SOL → skip
-- LP reserve < 40 SOL or > 200 SOL → skip
-- Graduation age > 300s → stale, skip
-- Entry price < 100 fixed-point → PumpSwap overflow risk, skip
+A candidate at the top of the watchlist is a hypothesis, not an order. The gate applies two hard,
+independent hurdles:
 
-### Entry Sizing
+1. **On-chain corroboration (§29 / §71).** Entry is authorised only when the market has an `OnchainConfirm`
+   *and* real numeric microstructure. Social, narrative, and wallet evidence can push a mint to the top of
+   the watchlist but can never substitute for on-chain truth. This is the fade-first rule, made mechanical.
+2. **Economic viability (§18).** Given confirmed depth, the real economic-gate leaf computes the viable
+   size band `[x_min, x_cost, x_max]` net of round-trip fees, tips, expected send-failure, and a safety
+   margin. If no size clears its own costs, the edge does not exist and the candidate is dropped.
 
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| **Probe size** | 0.03 SOL default | Base probe before Kelly adjustment |
-| **Kelly fraction** | 0.25 (quarter-Kelly) | Conservative — bootstrap requires ≥50 trades |
-| **Kelly lookback** | 100 trades | Rolling window for WR/avg-win/avg-loss |
-| **Min probe** | 0.02 SOL | Floor |
-| **Max probe** | 0.10 SOL | Cap |
-| **Max concurrent** | 3 positions | Hard cap |
-| **Max total size** | 0.12 SOL | Across all concurrent positions |
+The gate's verdict is a small enum: `Admit(size_band)`, or `Reject` with a reason
+(`NeedsOnchainConfirmation`, `NoNumericConfirmation`, or `EconomicallyUnviable`).
 
-### Observation Window (8 seconds)
+## Scalp and paper fill
 
-After graduation detected, engine waits up to 8s collecting price samples before committing:
-- **Early entry trigger:** ≥15 samples AND velocity ≥200 bps/s → enter before window expires
-- **Early abort:** Drawdown ≥ −500 bps during window → skip token
-- **Window expires → always enters** if score passed (unless early abort fired)
+An admitted candidate is sized within its band and filled through the `pump-quant-simulator` crate, which
+implements three fill modes: (A) causal signal replay with no profitability claim, (B) a deterministic
+optimistic mechanical ceiling, and (C) calibrated adversarial execution at realistic or pessimistic
+severity, with an explicit terminal-loss policy. The realized net-SOL is reconciled by the evaluator. No
+capital moves on the laptop; the live executor is a Phase-B concern behind a trait seam.
 
-### Position Management & Exit
+## Reflection: realized net-SOL reshapes discovery
 
-| Exit Type | Trigger | Action |
-|-----------|---------|--------|
-| **TP1** | +5% gain | Marker (no sell — holds full position) |
-| **TP2** | +15% gain | Marker (no sell — trailing stop floor activates) |
-| **TP3** | +999% | Catch-all hold |
-| **Trailing stop** | Activates at +5% | 15% trail distance. Tightens: 8% at tier-1, 12% at tier-2 |
-| **Acceleration trail** | Strong momentum | 25% trail (looser, rides momentum) |
-| **Deceleration trail** | Momentum slowing | 8% trail (tighter) |
-| **Hard SL** | −8% from entry | Armed after 3s. Dual-path Jito + Nozomi. |
-| **Time SL** | 60s hold, no TP | Exit if no positive signal in 60s |
-| **Max hold** | 600s (10 min) | Absolute ceiling. Trail tightens at 180s. |
-| **Velocity exit** | Price velocity < −150k mbps/s | Confirmed over 2 samples with ≥50 bps profit |
-| **Dead zone** | Price/reserve flat for 16–30s | Multiple stagnation detectors → exit |
-| **Drain detected** | LP reserve drop | Creator/whale draining pool → dual-path exit |
-
-### Risk Controls
-
-| Control | Value |
-|---------|-------|
-| Daily loss cap | 10% of balance |
-| Session max loss (pause) | 0.10 SOL → 30 min pause |
-| Session max loss (halt) | 0.20 SOL → halt |
-| Consecutive losses (half-size) | 5 → next probes at 50% size |
-| Consecutive losses (pause) | 10 → pause |
-| Rolling WR floor | 5% over last 50 trades → pause |
-| Reentry cooldown | 120s per mint |
+On a configured cadence, the reflection stage aggregates realized net-SOL per discovery lane and nudges that
+lane's weight up (if paying its way) or down (if bleeding), bounded by a governance envelope: a maximum
+single-step change, and a floor and ceiling so no lane is ever silently killed or allowed to dominate. The
+adaptation is a pure function of performance, weights, and config, so replay reproduces the adapted weights
+exactly. This closes the loop the constitution demands: reflection must *enhance discovery*, not merely
+grade it.
 
 ---
 
-## Bonding Curve Math
+## Architecture — the 22 crates
 
+The workspace is 22 crates grouped by role. Decision logic is pure and portable; every live-IO, OS, or
+hardware concern sits behind a mockable trait seam so the logic is testable off a wire. Full map:
+[`docs/ARCHITECTURE.md`](docs/architecture.md).
+
+**Data & determinism spine**
+- `pump-quant-domain` — core value/identity types (Mint, Lamports, Slot), the candidate lifecycle state machine, evidence stages.
+- `pump-quant-clock` — the determinism seam: a `Clock` trait that a live impl and a `ReplayClock` share, plus deterministic tie-breaking.
+- `pump-quant-journal` — durable event journal: framing, checksums, manifest, recovery/replay scan.
+- `pump-quant-canonical` — provenance and dual-timeline canonicalization of observations.
+- `pump-quant-ingest` — portable ingest/decode plumbing (the live socket is Phase-B).
+- `pump-quant-protocol` — Pump.fun / PumpSwap AMM decode, constant-product math, instruction build, account-discriminator identity verification with fail-closed decode, and a versioned protocol registry.
+- `pump-quant-market-state` — market regime, breadth, meta-rotation, and creator-state reducers.
+- `pump-quant-features` — point-in-time feature store: bars, microstructure (order-flow imbalance, CVD, VWAP), and market-structure states.
+- `pump-quant-wallet-graph` — smart-money classification, deployer credibility, funding/family graphs, leakage-safe holdouts.
+- `pump-quant-core` — deterministic primitives: fixed-point AMM math, lock-free structures, shred decode/FEC/reassemble/parity, the reducer world-state, replay parity, the CPU/NUMA pin planner, and memory-pressure load-shedding.
+
+**Decision & discovery**
+- `pump-quant-signals` — entry/graduation/velocity/discount scorers, launch-coverage audit, the ActiveMarketUniverse selector, setup-family classifiers, and the anti-bundle fee-plausibility floor.
+- `pump-quant-narrative` — the attention-velocity layer: virality, meta-emergence, candidate score, a ten-class catalyst classifier, and attention-decay and attention-state models.
+- `pump-quant-watchlist` — union-not-intersection candidate ranking, per-lane performance, promotion.
+- `pump-quant-strategy` — the decision core: economic gate / size band, exit ladder, scalp position, safety-integrity contracts, survival-floor and capital-derived sizing, and setup-archetype / risk-type classifiers.
+- `pump-quant-execution` — route policy, bundle assembly, sell-ladder escalation, circuit breaker, fill reconciliation, incident gate (live send is Phase-B).
+
+**Verification & research**
+- `pump-quant-replay` — the replay driver: max-speed, real-time, scaled-time, step-by-observation, and break-on modes, composing clock and journal parity.
+- `pump-quant-simulator` — the paper/backtest fill engine (modes A/B/C), terminal-loss policy, capacity, hazard estimation, calibration.
+- `pump-quant-evaluator` — the frozen evaluator: net-SOL reconciliation, MFE/MAE, top-k excision, inactivity labelling, log-utility sizing validation, entry-zone taxonomy, the CVaR / profit-factor trading-metrics suite, PBO/CSCV overfitting diagnostics, Benjamini-Hochberg FDR, per-trade edge decomposition, and a convexity ledger.
+
+**Governance / memory / social**
+- `pump-quant-governance` — parameter-envelope guards, source lifecycle, canonical hashing, the versioned infrastructure manifest.
+- `pump-quant-memory` — sealed-experiment store, value-of-information ranking, schema.
+- `pump-quant-social` — social-source quality ledger, determinant scoring, amplification, copy-echo detection.
+
+**The nervous system (spine binary)**
+- `pump-quant-app` — the continuous discovery → gate → scalp → reflect loop that composes the above under one deterministic logical clock. Its `RunMode` has no `Live` variant.
+
+## The Hermes supervisor
+
+Hermes is the **Python supervisor** that governs how this Rust engine is built and, later, operated. It is
+not the trading engine; it is the disciplined process around it. Its responsibilities include: driving the
+leaf-by-leaf build against dossier contracts, running the CI gate, maintaining the knowledge base and the
+research/experiment loop, enforcing promotion gates, and escalating anything that requires a human. Critically,
+Hermes never authorises live capital — promotion checks for live-capital scope always return
+`human_gate_required`. Hermes reads this repository (including this README and the constitution in
+`docs/`) as the ground truth for what the system is and must do.
+
+---
+
+## Build-integrity — the independence lock
+
+A property test is only an honest authority if the code's author cannot edit it. `pump-quant` makes this
+physical. Forty-five component **dossiers** (`supervisor/reinforcement/dossiers/<component>.yaml`) declare
+the contract for **179 leaves**. The script `scripts/materialize_tests.py` renders each leaf's property test
+into a SHA-locked file at `rust/crates/<crate>/tests/dossier_<component>_<leaf>.rs`. The implementation is
+written against tests it did not author and cannot change: CI re-hashes them with `--verify`, and the
+repository denies edits to these files. The guarantee is "the builder cannot grade its own homework,"
+enforced by the toolchain rather than trusted. A leaf cannot be green unless real, correct code backs it —
+which is why the dossier count is a proxy for how much of the system is proven, not merely present.
+
+## Determinism and replay
+
+- 1389 workspace tests, all passing; 179 of them are the SHA-locked dossier property tests.
+- Byte-exact replay: the decision journal folds every promotion, gate verdict, fill, and reweight into a
+  canonical rolling FNV-1a hash. Two runs over the same events produce the same digest. A single
+  non-determinism bug (a stray wall-clock read, an unordered map used for an outcome) flips it.
+- No wall-clock in logic: time is an explicit `ReplayClock` tick. Randomness, where it appears (bootstrap
+  bands, Monte-Carlo survival), is a seeded, caller-supplied `splitmix64` generator: same seed, same bytes.
+
+## Safety model
+
+- **Live capital is human-gated (Tier-0).** No code path signs a key or moves funds. The laptop build is
+  paper/replay only, and `RunMode` cannot express `Live`.
+- **Fade-first.** Narrative and social evidence is capped before on-chain confirmation and can never trigger
+  entry alone.
+- **On-chain truth always required.** The gate refuses any candidate lacking confirmation plus numeric
+  microstructure.
+- **Bounded everything (§99).** No unbounded accumulator can exhaust memory in a long-running session.
+- **No silent no-ops.** OS-tuning and fill claims are read-back-verified; an unverifiable setting is
+  reported, never assumed.
+
+## Phase-A / Phase-B boundary
+
+Everything provable off a live wire is built and tested here (Phase-A, laptop). What genuinely needs the
+deployment box is intentionally absent (Phase-B, server), each left as a trait seam with a locked acceptance
+test: the real `OsTune` Windows binding, the `MemorySampler`, Helius LaserStream live ingest, PGO /
+deploy-CPU pinning, live-chain reconciliation, and key signing / fund movement. The server task for each is
+"implement this trait and satisfy this named locked test," not "design from scratch." The actionable
+checklist is [`docs/SERVER_BUILD_MANIFEST.md`](docs/SERVER_BUILD_MANIFEST.md).
+
+---
+
+## Build and run (quick start)
+
+Requires Rust 1.85 or newer.
+
+```bash
+git clone https://github.com/anonym0uxx/mev_bot.git
+cd mev_bot/rust
+
+# The full portable gate — exactly what CI runs:
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --workspace
+cargo test  --workspace                                  # 1389 tests
+
+# Verify the dossier independence lock (needs pyyaml):
+python -m pip install pyyaml
+python ../scripts/materialize_tests.py --repo .. --verify # 179/179 intact
 ```
-k = 30 × 1.073e9 = 3.219e10  (constant product invariant)
-Price P = vsol² / k
-Graduation at vsol = 115 (virtual) = 85 SOL real raised
 
-Buy: tokens_out = vtok - k / (vsol + delta_sol × 0.9875)
-Sell: sol_out = (vsol_exit - vsol) × 0.9875
-     where vsol_exit = sqrt(P_target × k)
+Run the nervous system in paper mode over a recorded event journal:
 
-For +12% target: vsol_exit = sqrt(P1 × 1.12 × k)
-SOL needed for +12% from entry:
-  vSol=5  → ~0.67 SOL follow-on
-  vSol=10 → ~1.4 SOL
-  vSol=20 → ~3.1 SOL
-  vSol=25 → ~4.2 SOL  ← G4 ceiling
+```bash
+cargo run -p pump-quant-app -- paper config.txt events.txt
+# Prints: mode, ticks, promoted/admitted/rejected counts, net_lamports (the objective),
+# per-lane net-SOL, adapted lane weights, and journal_digest (the determinism fingerprint).
+# The `live` argument is refused by design: live capital is Tier-0 human-gated and not in this binary.
 ```
 
----
+## Repository layout
 
-## Infra
-
-| Component | Value |
-|-----------|-------|
-| VPS | Hostinger, Boston MA (US East) |
-| Jito block engine | `ny.mainnet.block-engine.jito.wtf` (primary), Frankfurt (secondary) |
-| Nozomi endpoint | `ewr1.nozomi.temporal.xyz` (Newark NJ) |
-| ShredStream proxy | `localhost:20100` |
-| Rust daemon port | `9421` |
-| Paper mode | Controlled via `canary.json` → `paper_mode: true` |
-
----
-
-## Key Files
-
-| File | Description |
-|------|-------------|
-| `rust/pump-quant-core/src/main.rs` | Entry point, engine registry, feed wiring |
-| `rust/pump-quant-core/src/momentum/` | MomentumEngine implementation |
-| `rust/pump-quant-core/src/sniper/` | SniperEngine stub |
-| `rust/pump-quant-core/src/engine/` | TradingEngine trait, FeedRouter, EngineRegistry |
-| `rust/pump-quant-core/src/feeds/` | ShredStream, Helius, PumpPortal feed handlers |
-| `rust/pump-quant-core/src/execution/` | ExecutionContext, Jito, Nozomi |
-| `scripts/watchdog.sh` | Service health + auto-restart |
-| `scripts/rust-status.js` | Status report for heartbeat |
-| `canary.json` | Runtime config (paper mode, thresholds, feature flags) |
-| `data/momentum_paper_trades.jsonl` | Trade log |
-| `docs/SNIPER_SIGNAL_SPEC.md` | Complete sniper entry signal spec (v1.2) |
-| `docs/BONDING_CURVE_SNIPER_IDEATION.md` | Sniper strategy context |
-| `docs/social-signal-layer-spec.md` | Social enrichment pipeline spec |
-
----
-
-## Research
-
-Signal system backed by:
-- **ArXiv 2602.14860** — "Predicting the success of new crypto-tokens: the Pump.fun case" (Marino/Tarantelli/Lillo, Feb 2026). Dataset: 655k tokens, Sep 2025. Key findings: liquidity inflow rate is #1 graduation predictor; bot-dominated tokens graduate less; prolific creators graduate less.
-- Internal momentum engine trade log (84 trades, live PnL data)
-
----
+```text
+rust/                        the 22-crate Cargo workspace (the pump-quant engine)
+  crates/pump-quant-*         domain, core, strategy, evaluator, app, and the rest
+supervisor/                  Hermes — the Python governance/build supervisor
+  reinforcement/dossiers/     45 component contracts (the correctness authority)
+  gates/                      portable CI checks (no-stubs, secrets, hot-path lint)
+scripts/                     materialize_tests.py (dossier lock) · ci_gate.py (portable gate)
+docs/                        ARCHITECTURE.md · SERVER_BUILD_MANIFEST.md · the constitution
+.github/workflows/gate.yml   the portable-gate CI workflow
+```
 
 ## Status
 
-| Engine | Mode | Status |
-|--------|------|--------|
-| MomentumEngine | Paper | Live, monitoring |
-| SniperEngine | Paper | Stub only — Phase 0 logging next |
+Phase-A (laptop) is complete: 22 crates, 45 dossiers, 179 locked property tests, 1389 tests passing, the
+portable gate green in CI. The next step is bringing the workspace to the deployment box and executing the
+Phase-B server manifest. Live trading remains behind the Tier-0 human gate.
 
-*Last updated: 2026-04-04*
+---
+
+## Glossary
+
+Domain and project terms, defined for unambiguous reference.
+
+- **net SOL** — realized SOL received minus SOL spent, after all fees, tips, and failed-attempt costs. The system's objective function.
+- **scalp** — a small, fast, net-positive round trip (buy then sell), as opposed to a long hold.
+- **discovery lane** — one independent source of candidate evidence (numeric, narrative, social, or wallet). Lanes are unioned, not intersected.
+- **union, not intersection** — a candidate may enter the watchlist on the strength of a single lane; lanes do not have to agree.
+- **corroboration / corroboration-tier** — evidence (social, narrative, wallet) that can raise a candidate's rank but can never authorise entry on its own.
+- **fade-first** — the discipline of not acting on hype: narrative/social signals are capped before on-chain confirmation and never trigger entry alone.
+- **gate** — the stage that decides Admit vs Reject, requiring on-chain confirmation plus numeric microstructure and economic viability.
+- **size band** — the viable trade-size interval `[x_min, x_cost, x_max]` computed net of costs, failure rate, and margin. An empty band means no viable edge.
+- **paper mode** — execution against a simulated fill model; no real capital moves.
+- **replay mode** — deterministic re-run of a recorded event journal; used to prove byte-exact determinism.
+- **reflection** — the stage where realized net-SOL per lane adjusts that lane's discovery weight within a governance envelope.
+- **dossier** — a YAML contract for one component, defining leaves whose property tests are the locked correctness authority.
+- **leaf** — one narrowly-scoped function/behavior with a single property test as its authority.
+- **independence lock** — the mechanism (materialize + SHA-verify + edit-deny) ensuring the builder cannot edit the tests it is judged by.
+- **Tier-0** — the highest safety class: actions (live capital, key signing, fund movement) that are always human-gated and never automated.
+- **Phase-A / Phase-B** — laptop (paper/replay, this build) vs deployment server (live IO, OS tuning, live capital).
+- **Hermes** — the overall system and its Python supervisor that governs the build and research loop.
+- **pump-quant** — the Rust engine workspace in this repository.
+- **§N** — a reference to section N of the project constitution (`docs/HERMES_ONE_SHOT_PROMPT.md`).
+
+## Disclaimer
+
+This software trades — or models the trading of — Solana memecoins, among the most volatile and adversarial
+markets in existence. Nothing here is financial advice. The laptop build executes no live trades; live
+capital is human-gated by design. If you connect this to real funds, you do so at your own risk, with your
+own review, and your own responsibility. Profitable on-chain trading provably exists; so does total loss.
+
+---
+
+<div align="center">
+
+*Built integer-exact, tested to the byte, gated against its own author.*
+
+**Discovery is a union. Every number is an integer. The wall clock is a lie we refuse to tell.**
+
+</div>
