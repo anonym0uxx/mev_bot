@@ -94,6 +94,8 @@ COMPONENT_CRATE = {
     "social_parse": "pump-quant-ingest",
     "social_source": "pump-quant-ingest",
     "social_ingest": "pump-quant-app",
+    "attention": "pump-quant-app",
+    "social_earn": "pump-quant-app",
 }
 DEFAULT_CRATE = "pump-quant-core"
 
