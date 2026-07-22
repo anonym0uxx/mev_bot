@@ -41,6 +41,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod attention;
 pub mod config;
 pub mod engine;
 pub mod event;
