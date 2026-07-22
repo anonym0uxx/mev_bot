@@ -12,6 +12,10 @@
 //! * [`bar`] — a streaming [`BarBuilder`](bar::BarBuilder) that folds canonical trade
 //!   flow into time bars or volume bars (constitution 21.6). Bars bind back to the
 //!   originating events and are built from our own flow, the only leakage-proof source.
+//! * [`market_structure`] — deterministic bar-level price-structure detectors
+//!   (constitution 21.6): compression/expansion, breakout-and-retest,
+//!   failed-breakdown/reclaim, sweep-and-reclaim, and swing-trend structure, all
+//!   pure integer functions over the [`bar::Bar`] sequences the builder emits.
 //! * [`micro`] — an integer AMM order-flow / microstructure feature catalog
 //!   (constitution 21.7): CVD, delta velocity, order-flow imbalance, VWAP /
 //!   anchored VWAP, trade-size distribution & large-print detection, swap-arrival
@@ -32,6 +36,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bar;
+pub mod market_structure;
 pub mod micro;
 pub mod timed_feature;
 pub mod types;

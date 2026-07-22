@@ -11,6 +11,14 @@
 //! * §22 — integer-only; no floats are produced or consumed here.
 //! * Bounds are checked on every field access, so malformed input can never
 //!   trigger a silent out-of-range read.
+//! * §18.2 — **fail closed on unknown account identity**: before trusting any
+//!   field, each decoder verifies the 8-byte Anchor account discriminator at
+//!   offset `0..8` against the expected constant recorded in
+//!   [`crate::registry`]. A buffer belonging to the wrong account type, a
+//!   foreign program, or an all-zero placeholder is rejected with `None`
+//!   rather than being decoded into plausible-looking reserves.
+
+use crate::registry::{self, Venue};
 
 /// Decoded pump.fun bonding-curve account (the "virtual" AMM state).
 ///
@@ -46,15 +54,19 @@ const CURVE_MIN_LEN: usize = 49;
 
 /// Decode a pump.fun bonding-curve account.
 ///
-/// Returns `None` when `account` is shorter than [`CURVE_MIN_LEN`] or when the
-/// `complete` byte is not a canonical boolean (`0` or `1`).
+/// Returns `None` when `account` is shorter than [`CURVE_MIN_LEN`], when the
+/// leading 8-byte discriminator does not match the registry's expected
+/// `BondingCurve` identity (§18.2 fail-closed), or when the `complete` byte is
+/// not a canonical boolean (`0` or `1`).
 ///
 /// # Constitution
-/// §22 — pure integer decode; bounds checked on every field.
+/// * §22 — pure integer decode; bounds checked on every field.
+/// * §18.2 — account identity is verified before any field is trusted.
 pub fn decode_pump_curve(account: &[u8]) -> Option<PumpCurve> {
     if account.len() < CURVE_MIN_LEN {
         return None;
     }
+    verify_discriminator(account, Venue::PumpFun)?;
     let virtual_token = read_u64_le(account, 8)?;
     let virtual_sol = read_u64_le(account, 16)?;
     let real_token = read_u64_le(account, 24)?;
@@ -104,14 +116,18 @@ const POOL_MIN_LEN: usize = 35;
 
 /// Decode a PumpSwap AMM pool account.
 ///
-/// Returns `None` when `account` is shorter than [`POOL_MIN_LEN`].
+/// Returns `None` when `account` is shorter than [`POOL_MIN_LEN`] or when the
+/// leading 8-byte discriminator does not match the registry's expected `Pool`
+/// identity (§18.2 fail-closed).
 ///
 /// # Constitution
-/// §22 — pure integer decode; bounds checked on every field.
+/// * §22 — pure integer decode; bounds checked on every field.
+/// * §18.2 — account identity is verified before any field is trusted.
 pub fn decode_pumpswap_pool(account: &[u8]) -> Option<PumpSwapPool> {
     if account.len() < POOL_MIN_LEN {
         return None;
     }
+    verify_discriminator(account, Venue::PumpSwap)?;
     let pool_bump = *account.get(8)?;
     let index = read_u16_le(account, 9)?;
     let base_reserve = read_u64_le(account, 11)?;
@@ -149,5 +165,114 @@ fn read_bool(buf: &[u8], offset: usize) -> Option<bool> {
         0 => Some(false),
         1 => Some(true),
         _ => None,
+    }
+}
+
+/// Verify the 8-byte account discriminator at offset `0..8` (§18.2).
+///
+/// Returns `Some(())` only when `account[0..8]` equals the discriminator the
+/// [`crate::registry`] records for `venue`'s primary account. Any mismatch —
+/// wrong account type, foreign program, or an all-zero placeholder — yields
+/// `None`, so the caller fails closed instead of trusting reserves that may
+/// belong to an unrelated account.
+fn verify_discriminator(account: &[u8], venue: Venue) -> Option<()> {
+    let found = account.get(0..8)?;
+    if found == registry::account_discriminator(venue) {
+        Some(())
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn curve_bytes(disc: [u8; 8], v_token: u64, v_sol: u64, complete: u8) -> Vec<u8> {
+        let mut b = vec![0u8; CURVE_MIN_LEN];
+        b[0..8].copy_from_slice(&disc);
+        b[8..16].copy_from_slice(&v_token.to_le_bytes());
+        b[16..24].copy_from_slice(&v_sol.to_le_bytes());
+        b[48] = complete;
+        b
+    }
+
+    fn pool_bytes(disc: [u8; 8], base: u64, quote: u64) -> Vec<u8> {
+        let mut b = vec![0u8; POOL_MIN_LEN];
+        b[0..8].copy_from_slice(&disc);
+        b[8] = 255;
+        b[11..19].copy_from_slice(&base.to_le_bytes());
+        b[19..27].copy_from_slice(&quote.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn curve_decodes_with_correct_discriminator() {
+        let disc = registry::account_discriminator(Venue::PumpFun);
+        let b = curve_bytes(disc, 100, 200, 0);
+        let c = decode_pump_curve(&b).expect("valid identity should decode");
+        assert_eq!(c.virtual_token, 100);
+        assert_eq!(c.virtual_sol, 200);
+    }
+
+    #[test]
+    fn curve_rejects_zero_discriminator() {
+        // The historical "left as zeros" buffer must now fail closed.
+        let b = curve_bytes([0u8; 8], 100, 200, 0);
+        assert!(decode_pump_curve(&b).is_none());
+    }
+
+    #[test]
+    fn curve_rejects_foreign_discriminator() {
+        // The PumpSwap Pool discriminator on a curve-length buffer is rejected.
+        let wrong = registry::account_discriminator(Venue::PumpSwap);
+        let b = curve_bytes(wrong, 100, 200, 0);
+        assert!(decode_pump_curve(&b).is_none());
+    }
+
+    #[test]
+    fn curve_rejects_single_flipped_discriminator_byte() {
+        let mut disc = registry::account_discriminator(Venue::PumpFun);
+        disc[0] ^= 0x01;
+        let b = curve_bytes(disc, 100, 200, 0);
+        assert!(decode_pump_curve(&b).is_none());
+    }
+
+    #[test]
+    fn pool_decodes_with_correct_discriminator() {
+        let disc = registry::account_discriminator(Venue::PumpSwap);
+        let b = pool_bytes(disc, 555, 777);
+        let p = decode_pumpswap_pool(&b).expect("valid identity should decode");
+        assert_eq!(p.base_reserve, 555);
+        assert_eq!(p.quote_reserve, 777);
+    }
+
+    #[test]
+    fn pool_rejects_zero_discriminator() {
+        let b = pool_bytes([0u8; 8], 555, 777);
+        assert!(decode_pumpswap_pool(&b).is_none());
+    }
+
+    #[test]
+    fn pool_rejects_foreign_discriminator() {
+        let wrong = registry::account_discriminator(Venue::PumpFun);
+        let b = pool_bytes(wrong, 555, 777);
+        assert!(decode_pumpswap_pool(&b).is_none());
+    }
+
+    #[test]
+    fn short_buffer_rejected_before_discriminator_check() {
+        // Fewer than 8 bytes cannot carry a discriminator at all.
+        assert!(decode_pump_curve(&[1, 2, 3]).is_none());
+        assert!(decode_pumpswap_pool(&[1, 2, 3]).is_none());
+    }
+
+    #[test]
+    fn golden_fixtures_decode() {
+        // Each registry entry's golden fixture must decode cleanly.
+        let pf = registry::entry(Venue::PumpFun);
+        assert!(decode_pump_curve(pf.golden_fixture).is_some());
+        let ps = registry::entry(Venue::PumpSwap);
+        assert!(decode_pumpswap_pool(ps.golden_fixture).is_some());
     }
 }

@@ -34,11 +34,26 @@
 //!   `COMPLETE | INCOMPLETE` with the shortfall (§62-M1, criterion 73).
 //! - [`meta_rotation`] -- MetaRotationState time-safe category-assignment
 //!   validator (§21.4, criterion 81).
+//! - [`setup_classifier`] -- §24 scalp setup-family classifier: maps a
+//!   reconstructed market state to a named setup archetype (breakout-retest,
+//!   failed-breakdown reversal, reclaim, compression->expansion, short-horizon
+//!   mean reversion, order-flow dislocation), composing the §21.6/§21.7
+//!   primitives and deriving the `u16` archetype discriminator.
+//! - [`active_market_universe`] -- §21.5 ActiveMarketUniverse selector
+//!   (criterion 90): deterministic broad-screen -> progressive-filter -> deep-
+//!   analysis -> reprioritize -> removal pipeline producing candidates stamped
+//!   `discovery_source = ActiveMarketQualification`.
+//! - [`fee_plausibility`] -- §70.10 anti-bundle economic heuristic: a
+//!   cumulative-fees-vs-activity FLOOR filter emitting a two-sided fade prior
+//!   when fees are implausibly low for the apparent activity.
 
+pub mod active_market_universe;
 pub mod attention_spend;
 pub mod discovery_audit;
+pub mod fee_plausibility;
 pub mod launch_trajectory;
 pub mod meta_rotation;
 pub mod microstructure;
 pub mod scorer;
+pub mod setup_classifier;
 pub mod velocity;

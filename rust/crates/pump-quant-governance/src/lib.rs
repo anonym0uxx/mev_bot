@@ -51,4 +51,5 @@ pub mod canonical;
 pub mod envelope;
 pub mod hashing;
 pub mod lifecycle;
+pub mod manifest;
 pub mod sha256;

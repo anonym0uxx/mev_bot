@@ -1,10 +1,15 @@
 #![allow(unused_imports)]
 use pump_quant_protocol::decode::*;
 
+use pump_quant_protocol::registry::{self, Venue};
+
 /// Build a 49-byte bonding-curve account with the given fields.
+///
+/// The 0..8 discriminator is written with the registry's expected
+/// `BondingCurve` identity so the decoder's §18.2 fail-closed check passes.
 fn curve_bytes(v_token: u64, v_sol: u64, r_token: u64, r_sol: u64, complete: u8) -> Vec<u8> {
     let mut b = vec![0u8; 49];
-    // 0..8 discriminator left as zeros.
+    b[0..8].copy_from_slice(&registry::account_discriminator(Venue::PumpFun));
     b[8..16].copy_from_slice(&v_token.to_le_bytes());
     b[16..24].copy_from_slice(&v_sol.to_le_bytes());
     b[24..32].copy_from_slice(&r_token.to_le_bytes());
@@ -61,4 +66,20 @@ fn extra_trailing_bytes_are_ok() {
     let c = decode_pump_curve(&bytes).unwrap();
     assert_eq!(c.virtual_token, 11);
     assert_eq!(c.virtual_sol, 22);
+}
+
+#[test]
+fn rejects_zero_discriminator() {
+    // A well-formed 49-byte buffer with a zeroed discriminator must fail closed.
+    let mut bytes = curve_bytes(1, 2, 3, 4, 0);
+    bytes[0..8].copy_from_slice(&[0u8; 8]);
+    assert!(decode_pump_curve(&bytes).is_none());
+}
+
+#[test]
+fn rejects_foreign_program_discriminator() {
+    // Same length, but the PumpSwap Pool discriminator — a foreign account type.
+    let mut bytes = curve_bytes(1, 2, 3, 4, 0);
+    bytes[0..8].copy_from_slice(&registry::account_discriminator(Venue::PumpSwap));
+    assert!(decode_pump_curve(&bytes).is_none());
 }

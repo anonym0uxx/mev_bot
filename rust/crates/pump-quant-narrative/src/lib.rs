@@ -25,6 +25,9 @@
 //! Memory-bounded: every function is a pure fold over caller-owned slices; the
 //! crate holds no growing state of its own.
 
+pub mod attention_decay;
+pub mod attention_state;
+pub mod catalyst_classifier;
 pub mod narrative;
 
 pub use narrative::{
@@ -32,4 +35,17 @@ pub use narrative::{
     nv_lifecycle_stage, nv_meta_emergence, nv_narrative_ceiling, nv_platform_lead,
     nv_pre_legibility, nv_virality_coeff, AttentionMoneyDivergence, AttentionSeries, ClassFeatures,
     LifecycleStage, MetaEmergence, NarrativeClass, PlatformLead, FP_ONE,
+};
+
+pub use catalyst_classifier::{
+    classify as nv_catalyst_classify, CatalystFeatures, CatalystThresholds, SocialCatalyst,
+};
+
+pub use attention_decay::{
+    nv_attention_decay, AttentionDecayModel, AttentionEvent, DecayInputs, EventKind,
+};
+
+pub use attention_state::{
+    nv_attention_distinction, nv_attention_state, AttentionDistinction, AttentionState, Mention,
+    MAX_TRACKED,
 };

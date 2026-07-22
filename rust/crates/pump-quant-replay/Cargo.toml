@@ -1,0 +1,12 @@
+[package]
+name = "pump-quant-replay"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic §19 replay driver — execution modes (maximum-speed / real-time / scaled-time), step-by-observation/canonical-event/slot granularities, break-on-mint/decision/entry/exit conditions, and resume-from-checkpoint — for the pump-quant memecoin scalping bot (constitution §19, §22, §13 pq-replay)."
+
+[lib]
+name = "pump_quant_replay"
+path = "src/lib.rs"
+
+[dependencies]
+pump-quant-clock = { path = "../pump-quant-clock" }

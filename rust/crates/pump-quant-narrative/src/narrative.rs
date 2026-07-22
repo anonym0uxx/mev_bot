@@ -14,7 +14,7 @@ pub const FP_ONE: u64 = 10_000;
 ///
 /// Private helper (no test touches it). Overflow policy (§22): values outside
 /// `i64` clamp to `i64::MIN`/`i64::MAX` rather than wrapping.
-fn sat_i64(v: i128) -> i64 {
+pub(crate) fn sat_i64(v: i128) -> i64 {
     if v > i64::MAX as i128 {
         i64::MAX
     } else if v < i64::MIN as i128 {
@@ -27,7 +27,7 @@ fn sat_i64(v: i128) -> i64 {
 /// Saturating narrowing of a `u128` into `u64` by contract.
 ///
 /// Private helper. Overflow policy (§22): values above `u64::MAX` clamp.
-fn sat_u64(v: u128) -> u64 {
+pub(crate) fn sat_u64(v: u128) -> u64 {
     if v > u64::MAX as u128 {
         u64::MAX
     } else {

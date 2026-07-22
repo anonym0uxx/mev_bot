@@ -1,10 +1,15 @@
 #![allow(unused_imports)]
 use pump_quant_protocol::decode::*;
 
+use pump_quant_protocol::registry::{self, Venue};
+
 /// Build a 35-byte PumpSwap pool account with the given fields.
+///
+/// The 0..8 discriminator is written with the registry's expected `Pool`
+/// identity so the decoder's §18.2 fail-closed check passes.
 fn pool_bytes(bump: u8, index: u16, base: u64, quote: u64, lp: u64) -> Vec<u8> {
     let mut b = vec![0u8; 35];
-    // 0..8 discriminator left as zeros.
+    b[0..8].copy_from_slice(&registry::account_discriminator(Venue::PumpSwap));
     b[8] = bump;
     b[9..11].copy_from_slice(&index.to_le_bytes());
     b[11..19].copy_from_slice(&base.to_le_bytes());
@@ -49,4 +54,18 @@ fn extra_trailing_bytes_are_ok() {
     assert_eq!(p.base_reserve, 3);
     assert_eq!(p.quote_reserve, 4);
     assert_eq!(p.lp_supply, 5);
+}
+
+#[test]
+fn rejects_zero_discriminator() {
+    let mut bytes = pool_bytes(1, 2, 3, 4, 5);
+    bytes[0..8].copy_from_slice(&[0u8; 8]);
+    assert!(decode_pumpswap_pool(&bytes).is_none());
+}
+
+#[test]
+fn rejects_foreign_program_discriminator() {
+    let mut bytes = pool_bytes(1, 2, 3, 4, 5);
+    bytes[0..8].copy_from_slice(&registry::account_discriminator(Venue::PumpFun));
+    assert!(decode_pumpswap_pool(&bytes).is_none());
 }

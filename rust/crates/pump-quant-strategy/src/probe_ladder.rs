@@ -164,6 +164,53 @@ pub enum FloorVerdict {
     RefusedBelowFloor,
 }
 
+/// Absolute minimum survival floor: `0.5 SOL` in lamports (§1).
+///
+/// The derived floor is never lower than this, no matter how small the verified
+/// balance is — half a SOL of survival capital is always reserved.
+pub const MIN_SURVIVAL_FLOOR_LAMPORTS: u64 = 500_000_000;
+
+/// Default floor fraction: `0.5` expressed in bps (`5_000 bps == 50%`) (§1).
+pub const DEFAULT_FLOOR_FRACTION_BPS: u32 = 5_000;
+
+/// Basis-points scale used by the floor derivation (`10_000 bps == 100%`).
+const FLOOR_BPS_SCALE: u128 = 10_000;
+
+/// Derive the wallet-survival floor from a verified starting balance (§1).
+///
+/// ```text
+///     floor = max(MIN_SURVIVAL_FLOOR_LAMPORTS,
+///                 verified_starting_balance * floor_fraction_bps / 10_000)
+/// ```
+///
+/// The fraction is applied in `u128` (saturating to `u64::MAX`) and then floored
+/// at the absolute `0.5 SOL` minimum. This is the derivation the existing
+/// [`wallet_floor_guard`] enforcement veto consumes: the caller re-derives it on
+/// every verified capital change and feeds the result in as `floor_lamports`.
+/// Pure, integer, deterministic.
+#[inline]
+pub fn derive_survival_floor(
+    verified_starting_balance_lamports: u64,
+    floor_fraction_bps: u32,
+) -> u64 {
+    let fractional =
+        (verified_starting_balance_lamports as u128 * floor_fraction_bps as u128) / FLOOR_BPS_SCALE;
+    let fractional = fractional.min(u64::MAX as u128) as u64;
+    fractional.max(MIN_SURVIVAL_FLOOR_LAMPORTS)
+}
+
+/// Deployable capital = `verified_balance − floor`, saturating at zero (§1).
+///
+/// The single verified figure that every downstream probe tier, exposure limit,
+/// and calibration cap must derive from (see
+/// [`capital_allocator::derive_sizing`](crate::capital_allocator::derive_sizing)).
+/// A floor at or above the balance yields zero deployable capital. Pure integer,
+/// deterministic.
+#[inline]
+pub fn deployable_capital(verified_balance_lamports: u64, floor_lamports: u64) -> u64 {
+    verified_balance_lamports.saturating_sub(floor_lamports)
+}
+
 /// Hard survival-floor veto (leaf **pl_wallet_floor**).
 ///
 /// Deployable capital is `reconciled_balance − floor` (saturating at zero). A
@@ -182,5 +229,89 @@ pub fn wallet_floor_guard(
         FloorVerdict::RefusedBelowFloor
     } else {
         FloorVerdict::Allowed
+    }
+}
+
+// ===========================================================================
+// Tests — survival-floor + deployable-capital derivation (leaf: pl_floor_derive)
+// ===========================================================================
+
+#[cfg(test)]
+mod floor_derive_tests {
+    use super::*;
+
+    const SOL: u64 = 1_000_000_000;
+
+    #[test]
+    fn fraction_dominates_above_the_minimum() {
+        // 10 SOL * 50% = 5 SOL, well above the 0.5 SOL absolute minimum.
+        assert_eq!(
+            derive_survival_floor(10 * SOL, DEFAULT_FLOOR_FRACTION_BPS),
+            5 * SOL
+        );
+        // 4 SOL * 25% = 1 SOL.
+        assert_eq!(derive_survival_floor(4 * SOL, 2_500), SOL);
+    }
+
+    #[test]
+    fn minimum_floor_dominates_for_small_balances() {
+        // 0.5 SOL * 50% = 0.25 SOL -> clamped up to the 0.5 SOL minimum.
+        assert_eq!(
+            derive_survival_floor(SOL / 2, DEFAULT_FLOOR_FRACTION_BPS),
+            MIN_SURVIVAL_FLOOR_LAMPORTS
+        );
+        // Zero balance still reserves the absolute minimum.
+        assert_eq!(
+            derive_survival_floor(0, DEFAULT_FLOOR_FRACTION_BPS),
+            MIN_SURVIVAL_FLOOR_LAMPORTS
+        );
+        // A zero fraction still yields the absolute minimum.
+        assert_eq!(
+            derive_survival_floor(100 * SOL, 0),
+            MIN_SURVIVAL_FLOOR_LAMPORTS
+        );
+    }
+
+    #[test]
+    fn exact_boundary_at_one_sol_balance() {
+        // 1 SOL * 50% = 0.5 SOL exactly == the minimum (either branch agrees).
+        assert_eq!(
+            derive_survival_floor(SOL, DEFAULT_FLOOR_FRACTION_BPS),
+            MIN_SURVIVAL_FLOOR_LAMPORTS
+        );
+    }
+
+    #[test]
+    fn full_fraction_never_overflows() {
+        // 100% of u64::MAX saturates cleanly in u128 math.
+        assert_eq!(derive_survival_floor(u64::MAX, 10_000), u64::MAX);
+    }
+
+    #[test]
+    fn deployable_is_balance_minus_floor_saturating() {
+        assert_eq!(deployable_capital(10 * SOL, 5 * SOL), 5 * SOL);
+        // Floor equal to balance -> zero deployable.
+        assert_eq!(deployable_capital(5 * SOL, 5 * SOL), 0);
+        // Floor above balance -> saturates to zero, never underflows.
+        assert_eq!(deployable_capital(3 * SOL, 5 * SOL), 0);
+    }
+
+    #[test]
+    fn derivation_feeds_the_enforcement_veto_consistently() {
+        // End-to-end: derive floor, derive deployable, and confirm the guard
+        // admits exactly up to deployable and refuses one lamport more.
+        let balance = 8 * SOL;
+        let floor = derive_survival_floor(balance, DEFAULT_FLOOR_FRACTION_BPS); // 4 SOL
+        let deployable = deployable_capital(balance, floor); // 4 SOL
+        assert_eq!(floor, 4 * SOL);
+        assert_eq!(deployable, 4 * SOL);
+        assert_eq!(
+            wallet_floor_guard(deployable, balance, floor),
+            FloorVerdict::Allowed
+        );
+        assert_eq!(
+            wallet_floor_guard(deployable + 1, balance, floor),
+            FloorVerdict::RefusedBelowFloor
+        );
     }
 }
