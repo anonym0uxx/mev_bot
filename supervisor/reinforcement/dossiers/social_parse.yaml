@@ -1,0 +1,109 @@
+component: social_parse
+constitution_refs: ['22', '29', '99']
+spec: >
+  Independence-lock dossier for the `social_parse` module of pump-quant-ingest.
+  Each leaf's property_test is the locked correctness authority over that leaf's
+  public contract: vendor-agnostic decode of one normalized social payload into a
+  bounded, Copy, deterministic SocialEvent. No float, no wall-clock, no RNG, no
+  network (§22); provenance + measured instant preserved (§29); extraction bounded
+  (§99). LLM sentiment is intentionally absent (§83 research-artifact-only).
+invariants:
+- Every field of SocialEvent is an integer, a fixed hash, or a bounded array; the type is Copy.
+- observed_at_ns is supplied by the caller and echoed verbatim; the module never reads a clock.
+- Cashtag/mint extraction is order-preserving, de-duplicated, and capped at MAX_CASHTAGS/MAX_MINTS.
+adversarial_checks:
+- Case-different cashtags ($wif vs $WIF) must collapse to one; over-long alnum runs are not tickers.
+- Ordinary English words must never base58-decode to a spurious 32-byte mint.
+- Unknown platform / missing author or text must fail closed (None), never a partial event.
+leaves:
+- leaf_id: sp_cashtags
+  responsibility: Extract distinct uppercased $TICKER cashtag hashes from free text, bounded and deduped.
+  signature: 'pub fn extract_cashtags(text: &str) -> ([u64; MAX_CASHTAGS], u8)'
+  invariants:
+  - Case-folded duplicates collapse to a single entry; count never exceeds MAX_CASHTAGS.
+  - A $ run shorter than 2 or longer than 10 alphanumerics is not emitted.
+  reference_pattern: property_test is the sole correctness authority; authored and verified against the committed implementation.
+  property_test: |
+    #[test]
+    fn sp_cashtags_case_fold_dedup_and_bounds() {
+        let (h, n) = extract_cashtags("gm $wif and $WIF then $BONK $bonk");
+        assert_eq!(n, 2, "case-folded duplicates collapse to one");
+        assert_eq!(h[0], fnv1a_64(b"WIF"));
+        assert_eq!(h[1], fnv1a_64(b"BONK"));
+        // Too short and too long are both rejected.
+        let (_, none) = extract_cashtags("$X $TOOOOOOOOOOONG");
+        assert_eq!(none, 0);
+        // Bound holds even when many tickers appear.
+        let (_, capped) = extract_cashtags("$AA $BB $CC $DD $EE $FF $GG $HH $II $JJ");
+        assert_eq!(capped as usize, MAX_CASHTAGS);
+    }
+
+- leaf_id: sp_mints
+  responsibility: Extract distinct valid Solana mint keys (base58 → 32 bytes) from free text, bounded and deduped.
+  signature: 'pub fn extract_solana_mints(text: &str) -> ([[u8; 32]; MAX_MINTS], u8)'
+  invariants:
+  - Only base58 runs that decode to exactly 32 bytes are emitted; duplicates collapse.
+  - Ordinary words never produce a false mint.
+  reference_pattern: property_test is the sole correctness authority; authored and verified against the committed implementation.
+  property_test: |
+    #[test]
+    fn sp_mints_valid_only_and_dedup() {
+        let usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let text = format!("ape {usdc} now, again {usdc}, ticker $USDC not-an-addr");
+        let (m, n) = extract_solana_mints(&text);
+        assert_eq!(n, 1, "same mint twice de-duplicates");
+        assert_eq!(
+            m[0],
+            pump_quant_ingest::base58::decode_pubkey(usdc).unwrap()
+        );
+        let (_, none) = extract_solana_mints("just some normal english words here");
+        assert_eq!(none, 0, "plain words never decode to a 32-byte mint");
+    }
+
+- leaf_id: sp_parse
+  responsibility: Decode one normalized JSON payload into a SocialEvent, failing closed on bad input.
+  signature: 'pub fn parse_social_event(raw: &[u8], observed_at_ns: u64) -> Option<SocialEvent>'
+  invariants:
+  - observed_at_ns is echoed verbatim; engagement is the saturating sum of likes+reposts+replies.
+  - Unknown platform or missing author/text yields None; identical bytes yield an identical event.
+  reference_pattern: property_test is the sole correctness authority; authored and verified against the committed implementation.
+  property_test: |
+    #[test]
+    fn sp_parse_full_and_failclosed_and_deterministic() {
+        let raw = br#"{"platform":"x","author":"kolguy","community":"",
+            "text":"send it $WIF EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "likes":100,"reposts":20,"replies":5,"echo":false}"#;
+        let ev = parse_social_event(raw, 1_000_000_000).unwrap();
+        assert_eq!(ev.platform, SocialPlatform::X);
+        assert_eq!(ev.observed_at_ns, 1_000_000_000);
+        assert_eq!(ev.engagement, 125);
+        assert_eq!(ev.n_cashtags, 1);
+        assert_eq!(ev.n_mints, 1);
+        assert!(ev.is_targeted());
+        // Fail-closed cases.
+        assert!(parse_social_event(br#"{"platform":"foo","author":"a","text":"t"}"#, 0).is_none());
+        assert!(parse_social_event(br#"{"platform":"x","text":"t"}"#, 0).is_none());
+        assert!(parse_social_event(b"not json", 0).is_none());
+        // Determinism.
+        assert_eq!(
+            parse_social_event(raw, 7).unwrap(),
+            parse_social_event(raw, 7).unwrap()
+        );
+    }
+
+- leaf_id: sp_horizon
+  responsibility: Provide the Signal-Horizon provenance ordering across platforms (upstream→legible).
+  signature: 'pub const fn horizon_rank(self) -> u8'
+  invariants:
+  - Telegram < X < TikTok < Web; a strict total order, structural (not a tradeable weight).
+  - The ordering is fixed by pipeline structure; timing is never equated across ranks.
+  reference_pattern: property_test is the sole correctness authority; authored and verified against the committed implementation.
+  property_test: |
+    #[test]
+    fn sp_horizon_orders_upstream_to_legible() {
+        // Telegram (upstream) < X < TikTok < Web (most legible). Provenance ordering
+        // only: a lower rank sits earlier, it does not score higher.
+        assert!(SocialPlatform::Telegram.horizon_rank() < SocialPlatform::X.horizon_rank());
+        assert!(SocialPlatform::X.horizon_rank() < SocialPlatform::TikTok.horizon_rank());
+        assert!(SocialPlatform::TikTok.horizon_rank() < SocialPlatform::Web.horizon_rank());
+    }

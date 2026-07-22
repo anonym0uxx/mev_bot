@@ -91,6 +91,9 @@ COMPONENT_CRATE = {
     "smart_money": "pump-quant-wallet-graph",
     "types": "pump-quant-canonical",
     "voi": "pump-quant-memory",
+    "social_parse": "pump-quant-ingest",
+    "social_source": "pump-quant-ingest",
+    "social_ingest": "pump-quant-app",
 }
 DEFAULT_CRATE = "pump-quant-core"
 

@@ -1,0 +1,63 @@
+# Seed source inventory for social ingestion.
+#
+# Every entry enters the SocialSourceQualityLedger at INSUFFICIENT_SAMPLE and is
+# PUBLIC_BURNED-presumed: these are things to SCORE against our own reconstructed
+# market state (D1-D10), NEVER to trust or copy. Seeded from the constitution's
+# §29.7 sourcing decisions. Operator-editable; discovery expands it empirically
+# (ChannelDiscoveryEngine), it is never a fixed allow-list.
+
+telegram:
+  # §29.7 designated PRIMARY machine-friendly capture path (upstream of X-KOLs).
+  # Public call channels — real-time via MTProto, edits/deletions captured as D6.
+  channels:
+    - crypticannouncements
+    - chasescharts
+    - PikalosiCalls
+    - PikalosiLounge
+    - jacalcooks
+    - Marlonalpha
+
+x:
+  # The cashtag / contract-address firehose: breadth + mention velocity/acceleration
+  # (the tradeable derivative), distinct-originator counts. queryType=Latest.
+  firehose_query: '($SOL OR "pump.fun" OR "pumpfun" OR url:pump.fun) -is:retweet'
+  # Amplifier watchlist — the X-KOL layer. Tagged PUBLIC_BURNED: used only for
+  # wave-timing, meta rotation, and FADE. Never an entry trigger, never copied.
+  # (Handles are examples/seeds — verify + edit; the ledger proves any exception.)
+  amplifier_accounts:
+    - blknoiz06      # Ansem — amplifier tier
+    - OrangeSBS      # Orangie — amplifier tier
+    - notthreadguy
+    - a1lon9
+  # Curated CT lists to poll (id -> label). Greek-CT cluster seeded from §29.7.
+  lists:
+    - id: '2074150651030876515'
+      label: greek-ct-cluster
+
+tiktok:
+  # Slow-meta / broad narrative emergence. Polled, not real-time.
+  hashtags:
+    - solana
+    - memecoin
+    - pumpfun
+    - crypto
+
+web:
+  # General-web breadth via Firecrawl (news / aggregators / project pages).
+  # Legal, downstream/legibility tier — a "has this become crowded yet?" clock.
+  pages:
+    - https://www.dexscreener.com/solana
+    - https://pump.fun/board
+
+# Operator-family / coordination map (§28) — cross-membership used for
+# copy-echo / coordinated-campaign detection, NOT confluence. Research-tier.
+operator_family:
+  - GreekFnF
+  - xbd19z
+  - 0xAvatar
+
+# Discord seeds (adapter not built this round; listed for completeness/scoring).
+discord:
+  - pumpfuns
+  - heavenorhell
+  - potionalpha

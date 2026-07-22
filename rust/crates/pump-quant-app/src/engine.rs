@@ -23,6 +23,8 @@ use crate::scalp::scalp;
 
 use pump_quant_domain::ids::Mint as DomainMint;
 use pump_quant_evaluator::evaluator_stats::{Lane as EvalLane, ReconTrade};
+use pump_quant_ingest::social_parse::{parse_social_event, SocialEvent};
+use pump_quant_ingest::social_source::SocialSource;
 use pump_quant_watchlist::candidate::{Candidate, Features, Lane as WlLane};
 use pump_quant_watchlist::lane_ingest::ingest_union;
 use pump_quant_watchlist::lane_performance::LanePerformance;
@@ -219,6 +221,45 @@ impl Engine {
             } => self.confirm(*mint.as_bytes(), sellable_depth_lamports),
             AppEvent::Tick => self.evaluate(),
         }
+    }
+
+    /// Drain one batch from a live social [`SocialSource`] and apply it to the
+    /// social discovery lane as corroboration-tier calls — the live wiring of the
+    /// social lane into the loop.
+    ///
+    /// Latency + determinism discipline (§22, §24): this runs BETWEEN ticks, never
+    /// inside [`Self::evaluate`], so the deterministic hot path is byte-for-byte
+    /// unchanged and the source pull — the only `[S]` I/O, a non-blocking drain of
+    /// an already-captured buffer (a mock/replay in Phase-A) — can never add latency
+    /// or non-determinism to a decision. It is allocation-free per call: each post
+    /// is parsed and applied one at a time straight from the source-owned batch,
+    /// with no intermediate `SocialEvent`/`AppEvent` vector, and applied directly to
+    /// the lane (bypassing the `AppEvent::SocialCall` match) for the tightest path.
+    ///
+    /// Each named contract in each captured post becomes one corroboration call at
+    /// the caller-resolved quality — wire `quality` to
+    /// [`crate::social_ingest::ledger_quality`] so trust is earned from the D1–D10
+    /// ledger, never assumed (corroboration-tier only; on-chain confirmation is
+    /// still required to admit capital, §29/§71). Cashtag-only posts (no contract)
+    /// carry no on-chain target and are skipped here; the attention-velocity layer
+    /// consumes them separately. Returns the number of corroboration calls applied.
+    pub fn ingest_social<S, Q>(&mut self, source: &mut S, quality: Q) -> usize
+    where
+        S: SocialSource,
+        Q: Fn(&SocialEvent) -> u32,
+    {
+        let batch = source.next_batch();
+        let mut applied = 0usize;
+        for payload in &batch {
+            if let Some(ev) = parse_social_event(&payload.json, payload.observed_at_ns) {
+                let q = quality(&ev);
+                for m in ev.mints() {
+                    self.social.observe(DomainMint::from_bytes(*m), q);
+                    applied += 1;
+                }
+            }
+        }
+        applied
     }
 
     fn confirm(&mut self, mint: [u8; 32], depth: u64) {

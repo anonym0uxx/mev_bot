@@ -173,6 +173,14 @@
     "smart_money/sm_pnl_screen_evaluate": "d852fa1a0d60a7c7a7b21c8c7983a6cfb375dfa5ab3d024551a0ef537d7b6108",
     "smart_money/sm_simulate_and_lagged_shadow": "f8b09bfc54c70a0464f07bb17b321e4aa4331ae7e3734bc74dc7e2a5fd828cdb",
     "smart_money/sm_classify_smart_money": "9a2a317d43190a704659c92851c1dd962b216e3a6461efc07f8c24a3edcbbef2",
+    "social_ingest/si_ledger_quality": "b4205b6937a4460a1778426cb02b2c240c531bcb6985ee42cee2aa62a2c3f214",
+    "social_ingest/si_coordination": "dec8381032f4681ca482dd3cc8cc5cc105a694b09b985e3d9b1c96256bdae078",
+    "social_parse/sp_cashtags": "01782ed2b0f5955e1660bc3d570e7d8d14678810d59d60e9ef80f2c6c03517b5",
+    "social_parse/sp_mints": "adae1699123aeacc8a73b9c94356a195415be3e42c39b2e2552bbcbe5ef4b73b",
+    "social_parse/sp_parse": "1a8d07c2e8bb370a2ece3c8e7ff1b0e05ef1d4b6154405c52cad4db80bad87d4",
+    "social_parse/sp_horizon": "69ad5fb67eb7682a5aab5615ce670d2ad85e0b4a20099f8c2438c018273142bd",
+    "social_source/ss_parse_batch": "37dd4ca244b2404de0d383cc2744764d1e09cc1a3451d1644b19258b4ba0772d",
+    "social_source/ss_mock": "347d453b0d4832b2053a83d19f254c716e00402ed4d81d2f7d9a87a39dd0ed61",
     "types/tt_source_class_rank_authority": "28ccd687ed9bdd0028547614c55da8bed969190958a6907eedb4c8dc5f6f6d9a",
     "types/tt_commitment_rank_progression": "0f1bb704985d400b20973e66ef12b0bda7dc0681f69b526ab4e337fc15b24ec0",
     "types/tt_signature_identity": "9a4b8c2f97160c96061fde53dfd5143d69d8fba6c5a8b68ec080200fc1a849e6",
@@ -180,5 +188,5 @@
     "voi/voi_rank_order": "b52d49d969508fb0111d29a546f1b0ba3eb0f5209606ab511521df43612019a0",
     "voi/voi_rank_open": "e59fb85e045da11b85d70b24483bb4514977bf2280ed3ddc02d45b0be623743e"
   },
-  "count": 179
+  "count": 187
 }
