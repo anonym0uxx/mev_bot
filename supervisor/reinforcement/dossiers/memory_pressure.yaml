@@ -1,0 +1,232 @@
+component: memory_pressure
+constitution_refs: []
+spec: Independence-lock dossier for the `memory_pressure` module of pump-quant-core (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: classify_severity
+  responsibility: Classify a memory sample into an ordinal PressureLevel taking the more-severe of the RSS-fraction and system-available dimensions, deterministically.
+  signature: 'pub fn classify(sample: &MemorySample, thresholds: &PressureThresholds) -> PressureLevel'
+  invariants:
+  - 'RSS bands are inclusive at the lower edge: <70% budget => Nominal, ==70% => Soft, ==85% => Hard, >=95% => Critical (with an exact-percentage budget).'
+  - Result is monotone non-decreasing in rss_bytes when all other inputs are fixed.
+  - The final level equals max(rss_dimension, available_dimension); a more-severe available figure escalates a milder RSS reading (e.g. Soft RSS + Hard available => Hard).
+  - An unobserved available_bytes (None) contributes nothing and never fabricates pressure — it stays Nominal for that dimension.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn classify_severity_prop() {
+        // Exact-percentage budget so RSS band edges are integer-clean; park the
+        // available dimension at 0 floors so only RSS scores in this fixture.
+        let t = PressureThresholds {
+            budget_bytes: 1_000_000,
+            avail_soft_bytes: 0,
+            avail_hard_bytes: 0,
+            avail_critical_bytes: 0,
+            ..PressureThresholds::default()
+        };
+
+        // Concrete band edges, inclusive lower edge.
+        assert_eq!(
+            classify(&MemorySample::rss(699_999), &t),
+            PressureLevel::Nominal
+        );
+        assert_eq!(
+            classify(&MemorySample::rss(700_000), &t),
+            PressureLevel::Soft
+        );
+        assert_eq!(
+            classify(&MemorySample::rss(850_000), &t),
+            PressureLevel::Hard
+        );
+        assert_eq!(
+            classify(&MemorySample::rss(950_000), &t),
+            PressureLevel::Critical
+        );
+
+        // Monotone non-decreasing in RSS across the whole range.
+        let mut prev = PressureLevel::Nominal;
+        let mut r: u64 = 0;
+        while r <= 1_200_000 {
+            let cur = classify(&MemorySample::rss(r), &t);
+            assert!(
+                cur >= prev,
+                "classify must be monotone non-decreasing in RSS"
+            );
+            prev = cur;
+            r += 5_000;
+        }
+
+        // More-severe dimension wins: RSS Soft (72%) but available Hard -> Hard.
+        let d = PressureThresholds::default();
+        let s = MemorySample::new(72 * (1u64 << 30) / 100, 256 * (1u64 << 20));
+        assert_eq!(classify(&s, &d), PressureLevel::Hard);
+
+        // Edge: unobserved available never fabricates pressure.
+        assert_eq!(
+            classify(&MemorySample::rss(10 * (1u64 << 20)), &d),
+            PressureLevel::Nominal
+        );
+    }
+- leaf_id: shed_plan_cumulative
+  responsibility: Map a PressureLevel to its cumulative, monotone ShedPlan of graceful degradations.
+  signature: 'pub fn for_level(level: PressureLevel) -> ShedPlan'
+  invariants:
+  - Nominal yields ShedPlan::none() with is_shedding()==false; Critical sets all four flags (flag count 4).
+  - 'Flags activate in severity order: Soft={shed_research,compact_caches}, Hard adds narrow_best_of_n, Critical adds flush_and_release.'
+  - Each escalating level's flag set is a superset of the previous (no flag is ever cleared as pressure rises); set-flag count is monotone non-decreasing.
+  - is_shedding() is true iff at least one flag is set.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn shed_plan_cumulative_prop() {
+        let levels = [
+            PressureLevel::Nominal,
+            PressureLevel::Soft,
+            PressureLevel::Hard,
+            PressureLevel::Critical,
+        ];
+        let count = |p: ShedPlan| {
+            p.shed_research as u32
+                + p.compact_caches as u32
+                + p.narrow_best_of_n as u32
+                + p.flush_and_release as u32
+        };
+
+        // Concrete plans at each level.
+        assert_eq!(
+            ShedPlan::for_level(PressureLevel::Nominal),
+            ShedPlan::none()
+        );
+        assert!(!ShedPlan::for_level(PressureLevel::Nominal).is_shedding());
+        let soft = ShedPlan::for_level(PressureLevel::Soft);
+        assert!(
+            soft.shed_research
+                && soft.compact_caches
+                && !soft.narrow_best_of_n
+                && !soft.flush_and_release
+        );
+        let hard = ShedPlan::for_level(PressureLevel::Hard);
+        assert!(
+            hard.shed_research
+                && hard.compact_caches
+                && hard.narrow_best_of_n
+                && !hard.flush_and_release
+        );
+        let crit = ShedPlan::for_level(PressureLevel::Critical);
+        assert!(
+            crit.shed_research
+                && crit.compact_caches
+                && crit.narrow_best_of_n
+                && crit.flush_and_release
+        );
+
+        // Concrete flag counts (edge cases at both extremes).
+        assert_eq!(count(ShedPlan::for_level(PressureLevel::Nominal)), 0);
+        assert_eq!(count(ShedPlan::for_level(PressureLevel::Critical)), 4);
+
+        // Each escalation is a superset (cumulative + monotone) and is_shedding
+        // agrees with "any flag set".
+        for w in levels.windows(2) {
+            let l = ShedPlan::for_level(w[0]);
+            let h = ShedPlan::for_level(w[1]);
+            assert!(count(h) >= count(l));
+            assert!(!l.shed_research || h.shed_research);
+            assert!(!l.compact_caches || h.compact_caches);
+            assert!(!l.narrow_best_of_n || h.narrow_best_of_n);
+            assert!(!l.flush_and_release || h.flush_and_release);
+            assert_eq!(h.is_shedding(), count(h) > 0);
+        }
+    }
+- leaf_id: reducer_hysteresis
+  responsibility: 'Fold one sample into the debounced pressure level: escalate instantly to the raw severity, de-escalate one level only after calm_required consecutive strictly-lower samples.'
+  signature: 'pub fn observe(&mut self, sample: &MemorySample) -> PressureLevel'
+  invariants:
+  - A single more-severe sample escalates immediately to the classified level (Nominal -> Critical in one observe).
+  - De-escalation requires exactly calm_required consecutive lower-classified samples and steps down at most one ordinal level per satisfied streak.
+  - samples_seen() increments once per observe call.
+  - calm_required is clamped to at least 1, so even a constructor value of 0 relaxes after one calm sample rather than instantly.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn reducer_hysteresis_prop() {
+        const GIB: u64 = 1 << 30;
+        const MIB: u64 = 1 << 20;
+
+        let mut r = PressureReducer::new(PressureThresholds::default(), 3);
+        assert_eq!(r.level(), PressureLevel::Nominal);
+
+        // Escalate instantly: single severe sample jumps straight to Critical.
+        assert_eq!(
+            r.observe(&MemorySample::rss(98 * GIB / 100)),
+            PressureLevel::Critical
+        );
+        assert_eq!(r.samples_seen(), 1);
+        assert!(r.shed_plan().flush_and_release);
+
+        // De-escalate slowly: exactly `calm_required` consecutive lower samples per
+        // one-level step, never more than one level per confirmed streak.
+        let calm = MemorySample::rss(10 * MIB);
+        r.observe(&calm);
+        r.observe(&calm);
+        assert_eq!(r.level(), PressureLevel::Critical); // 2 calm insufficient
+        assert_eq!(r.observe(&calm), PressureLevel::Hard); // 3rd steps down one
+        r.observe(&calm);
+        r.observe(&calm);
+        assert_eq!(r.level(), PressureLevel::Hard); // streak reset, 2 insufficient
+        assert_eq!(r.observe(&calm), PressureLevel::Soft);
+
+        // observe counts every sample.
+        assert_eq!(r.samples_seen(), 7);
+
+        // Edge: calm_required clamped to at least 1, so one calm sample relaxes.
+        let mut r2 = PressureReducer::new(PressureThresholds::default(), 0);
+        r2.observe(&MemorySample::rss(98 * GIB / 100));
+        assert_eq!(
+            r2.observe(&MemorySample::rss(10 * MIB)),
+            PressureLevel::Hard
+        );
+    }
+- leaf_id: thresholds_validate
+  responsibility: 'Validate that a PressureThresholds set satisfies the ordering invariants classify relies on: positive budget, strictly increasing RSS cuts, strictly decreasing available floors.'
+  signature: pub fn validate(&self) -> Result<(), ThresholdError>
+  invariants:
+  - A default set validates as Ok(()); a minimal strictly-ordered custom set also validates.
+  - budget_bytes == 0 is rejected with ThresholdError::ZeroBudget.
+  - RSS cuts not strictly increasing (soft < hard < critical violated) is rejected with ThresholdError::RssNotMonotone.
+  - Available floors not strictly decreasing (soft > hard > critical violated) is rejected with ThresholdError::AvailNotMonotone.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn thresholds_validate_prop() {
+        // Default set is valid.
+        assert_eq!(PressureThresholds::default().validate(), Ok(()));
+
+        // Rejection: zero budget.
+        let mut z = PressureThresholds::default();
+        z.budget_bytes = 0;
+        assert_eq!(z.validate(), Err(ThresholdError::ZeroBudget));
+
+        // Rejection: RSS cuts not strictly increasing.
+        let mut r = PressureThresholds::default();
+        r.rss_hard_bps = r.rss_soft_bps;
+        assert_eq!(r.validate(), Err(ThresholdError::RssNotMonotone));
+
+        // Rejection: available floors not strictly decreasing.
+        let mut a = PressureThresholds::default();
+        a.avail_hard_bytes = a.avail_soft_bytes;
+        assert_eq!(a.validate(), Err(ThresholdError::AvailNotMonotone));
+
+        // Acceptance: a minimal strictly-ordered custom set validates.
+        let ok = PressureThresholds {
+            version: 5,
+            budget_bytes: 2_000_000,
+            rss_soft_bps: 1,
+            rss_hard_bps: 2,
+            rss_critical_bps: 3,
+            avail_soft_bytes: 30,
+            avail_hard_bytes: 20,
+            avail_critical_bytes: 10,
+        };
+        assert_eq!(ok.validate(), Ok(()));
+    }

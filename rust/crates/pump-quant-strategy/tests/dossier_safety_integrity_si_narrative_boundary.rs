@@ -5,13 +5,7 @@
 // To change a component's contract, change its dossier and re-materialize — never edit here.
 // The glob import below brings the leaf's public items into scope; integration tests in
 // tests/ are a separate crate, so the implementation must be `pub` and reachable here.
-#![allow(
-    unused_imports,
-    dead_code,
-    clippy::manual_range_contains,
-    clippy::bool_comparison,
-    clippy::nonminimal_bool
-)]
+#![allow(unused_imports, dead_code, clippy::all)]
 use pump_quant_strategy::safety_integrity::*;
 
 #[test]

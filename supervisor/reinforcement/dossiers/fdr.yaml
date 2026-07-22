@@ -1,0 +1,145 @@
+component: fdr
+constitution_refs: []
+spec: Independence-lock dossier for the `fdr` module of pump-quant-evaluator (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: bh_threshold_ordering
+  responsibility: Benjamini–Hochberg step-up returns a deterministic, ascending-id discovery set whose threshold_ppm is the largest rejected p-value and which is closed under the step-up rule.
+  signature: 'pub fn benjamini_hochberg(family: &[Hypothesis], alpha_ppm: u32) -> BhResult'
+  invariants:
+  - result.m == family.len() as u32.
+  - result.discovered is strictly ascending (sorted and duplicate-free).
+  - When discovered is empty, threshold_ppm == 0; otherwise threshold_ppm == max p_ppm over the discovered ids.
+  - 'Step-up closure: a hypothesis is in discovered iff its p_ppm <= threshold_ppm (every p at or below the threshold is rejected, none above).'
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn bh_threshold_and_ordering_consistency() {
+        // Concrete BH-1995 case.
+        let fam = vec![
+            Hypothesis::new(1, 5_000),
+            Hypothesis::new(2, 20_000),
+            Hypothesis::new(3, 30_000),
+            Hypothesis::new(4, 500_000),
+        ];
+        let r = benjamini_hochberg(&fam, 50_000);
+        assert_eq!(r.discovered, vec![1, 2, 3]);
+        assert_eq!(r.threshold_ppm, 30_000);
+        assert_eq!(r.m, 4);
+
+        // Rejection edge: nothing significant -> empty set, zero threshold.
+        let none = benjamini_hochberg(&[Hypothesis::new(1, 900_000)], 50_000);
+        assert!(none.discovered.is_empty());
+        assert_eq!(none.threshold_ppm, 0);
+        assert_eq!(none.m, 1);
+
+        // Property sweep over deterministic families and an alpha grid.
+        for m in 1u64..=12 {
+            let fam: Vec<Hypothesis> = (0..m)
+                .map(|k| Hypothesis::new(m * 100 + k, ((k * 90_000) % 1_000_001) as u32))
+                .collect();
+            for a in (0u32..=200_000).step_by(10_000) {
+                let r = benjamini_hochberg(&fam, a);
+                assert_eq!(r.m as u64, m);
+                // Discovered ids strictly ascending (sorted + unique).
+                for w in r.discovered.windows(2) {
+                    assert!(w[0] < w[1]);
+                }
+                if r.discovered.is_empty() {
+                    assert_eq!(r.threshold_ppm, 0);
+                } else {
+                    // threshold_ppm == max p over discovered.
+                    let maxp = r
+                        .discovered
+                        .iter()
+                        .map(|id| fam.iter().find(|h| h.id == *id).unwrap().p_ppm)
+                        .max()
+                        .unwrap();
+                    assert_eq!(r.threshold_ppm, maxp);
+                    // Step-up closure: p <= threshold iff discovered.
+                    for h in &fam {
+                        if h.p_ppm <= r.threshold_ppm {
+                            assert!(r.discovered.contains(&h.id));
+                        } else {
+                            assert!(!r.discovered.contains(&h.id));
+                        }
+                    }
+                }
+            }
+        }
+    }
+- leaf_id: bh_monotone_alpha
+  responsibility: Benjamini–Hochberg discoveries grow monotonically as alpha rises and are deterministic across identical calls, with exact m=1 reject-iff-p<=alpha behaviour.
+  signature: 'pub fn benjamini_hochberg(family: &[Hypothesis], alpha_ppm: u32) -> BhResult'
+  invariants:
+  - 'm==1: hypothesis is discovered iff p_ppm <= alpha_ppm, and threshold_ppm == p_ppm when discovered.'
+  - 'Monotonic in alpha: for alpha1 <= alpha2 the discovery set at alpha1 is a subset of the set at alpha2 (raising alpha never removes a discovery).'
+  - 'Deterministic: two calls with identical (family, alpha) return equal BhResult.'
+  - At alpha_ppm == 1_000_000 every hypothesis with p_ppm <= 1_000_000 is discovered.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn bh_monotone_in_alpha_and_deterministic() {
+        // m=1 exact: reject iff p <= alpha; threshold == p when rejected.
+        let one = vec![Hypothesis::new(42, 10_000)];
+        assert_eq!(benjamini_hochberg(&one, 10_000).discovered, vec![42]);
+        assert_eq!(benjamini_hochberg(&one, 10_000).threshold_ppm, 10_000);
+        // Rejection edge: alpha just below p discovers nothing.
+        assert!(benjamini_hochberg(&one, 9_999).discovered.is_empty());
+
+        // Deterministic family; raising alpha never drops an existing discovery,
+        // and repeated calls are bit-identical.
+        let fam: Vec<Hypothesis> = (0..10u64)
+            .map(|k| Hypothesis::new(k, ((k * 40_000 + 3_000) % 1_000_001) as u32))
+            .collect();
+        let mut prev: Vec<u64> = Vec::new();
+        for a in (0u32..=300_000).step_by(5_000) {
+            let r1 = benjamini_hochberg(&fam, a);
+            let r2 = benjamini_hochberg(&fam, a);
+            assert_eq!(r1, r2); // determinism
+            for id in &prev {
+                assert!(r1.discovered.contains(id), "alpha={a} lost id {id}");
+            }
+            prev = r1.discovered.clone();
+        }
+
+        // At alpha = 1.0 every hypothesis (all p <= 363_000) is discovered.
+        let all = benjamini_hochberg(&fam, 1_000_000);
+        assert_eq!(all.discovered.len(), 10);
+        assert_eq!(all.discovered, (0..10u64).collect::<Vec<_>>());
+        assert_eq!(all.threshold_ppm, 363_000);
+    }
+- leaf_id: blocks_promotion
+  responsibility: blocks_promotion returns true exactly when the candidate is not among the BH discoveries, so a raw win that fails family correction cannot promote.
+  signature: 'pub fn blocks_promotion(family: &[Hypothesis], alpha_ppm: u32, candidate_id: u64) -> bool'
+  invariants:
+  - blocks_promotion(family, alpha, id) == !benjamini_hochberg(family, alpha).discovered.contains(&id) for every id and alpha.
+  - An unknown candidate_id (not present in family) is always blocked (returns true).
+  - An empty family blocks every candidate (returns true).
+  - A discovered candidate is not blocked (returns false).
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn blocks_promotion_matches_discovery_membership() {
+        // Concrete: discovered id not blocked; undiscovered blocked; unknown blocked.
+        let fam = vec![Hypothesis::new(1, 5_000), Hypothesis::new(2, 500_000)];
+        assert!(!blocks_promotion(&fam, 50_000, 1));
+        assert!(blocks_promotion(&fam, 50_000, 2));
+        assert!(blocks_promotion(&fam, 50_000, 99));
+
+        // Rejection edge: empty family blocks every candidate.
+        assert!(blocks_promotion(&[], 50_000, 1));
+
+        // Property: blocks_promotion(id) == !discovered.contains(id) for all ids/alphas.
+        let fam: Vec<Hypothesis> = (0..8u64)
+            .map(|k| Hypothesis::new(k + 1, ((k * 60_000 + 1_000) % 1_000_001) as u32))
+            .collect();
+        for a in (0u32..=250_000).step_by(10_000) {
+            let disc = benjamini_hochberg(&fam, a).discovered;
+            for cand in 0u64..=10 {
+                let blocked = blocks_promotion(&fam, a, cand);
+                assert_eq!(blocked, !disc.contains(&cand), "alpha={a} cand={cand}");
+            }
+        }
+    }

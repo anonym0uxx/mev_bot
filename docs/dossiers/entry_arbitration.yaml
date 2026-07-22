@@ -1,0 +1,167 @@
+component: entry_arbitration
+constitution_refs: []
+spec: Independence-lock dossier for the `entry_arbitration` module of pump-quant-strategy (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: rank_eligible_total_order
+  responsibility: Rank candidates into a deterministic total order (higher expected net SOL first, ascending candidate_id tie-break) after dropping those at/below the cost floor, reporting the rejected count.
+  signature: 'pub fn rank_eligible(candidates: &[EntryCandidate], min_expected_net_lamports: i64) -> (Vec<EntryCandidate>, u32)'
+  invariants:
+  - 'Ordering is a total order: for adjacent i,i+1 either expected_net_sol_lamports[i] > [i+1], or equal net with candidate_id[i] < candidate_id[i+1].'
+  - A candidate is eligible iff expected_net_sol_lamports strictly greater than min_expected_net_lamports; net == floor and net < floor are rejected.
+  - eligible.len() + rejected == candidates.len() (every input is either ranked or counted rejected, never both).
+  - 'Order-independent: permuting the input slice yields an identical (Vec, u32) result.'
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn c(id: u64, net: i64, size: u64) -> EntryCandidate {
+        EntryCandidate {
+            candidate_id: id,
+            entry_mode: 1,
+            archetype: 2,
+            regime: 3,
+            expected_net_sol_lamports: net,
+            size_lamports: size,
+        }
+    }
+
+    #[test]
+    fn rank_eligible_total_order_and_floor() {
+        // Higher net first; equal net broken by ascending candidate_id.
+        let cands = [c(5, 100, 10), c(2, 300, 10), c(9, 100, 10)];
+        let (ranked, rejected) = rank_eligible(&cands, 0);
+        assert_eq!(rejected, 0);
+        let ids: Vec<u64> = ranked.iter().map(|x| x.candidate_id).collect();
+        assert_eq!(ids, vec![2, 5, 9]);
+
+        // Floor is strict (> floor). net == floor and net < floor are rejected.
+        let cands2 = [c(1, 500, 10), c(2, 0, 10), c(3, -50, 10)];
+        let (ranked2, rejected2) = rank_eligible(&cands2, 0);
+        assert_eq!(rejected2, 2);
+        assert_eq!(ranked2.len(), 1);
+        assert_eq!(ranked2[0].candidate_id, 1);
+
+        // Order independence: shuffled input yields identical ranking.
+        let a = [c(1, 100, 10), c(2, 400, 10), c(3, 300, 10)];
+        let b = [c(3, 300, 10), c(1, 100, 10), c(2, 400, 10)];
+        let (ra, _) = rank_eligible(&a, 0);
+        let (rb, _) = rank_eligible(&b, 0);
+        assert_eq!(ra, rb);
+
+        // Edge: empty slice -> empty ranking, zero rejected.
+        let (re, rej_e) = rank_eligible(&[], 0);
+        assert!(re.is_empty());
+        assert_eq!(rej_e, 0);
+
+        // eligible count + rejected count == total input.
+        assert_eq!(ranked2.len() as u32 + rejected2, 3);
+    }
+- leaf_id: arbitrate_slots_bounded
+  responsibility: Award scarce concurrent-position slots to the top-ranked eligible candidates, bounding the awarded set by max_slots and recording losers as forgone opportunity cost.
+  signature: 'pub fn arbitrate(candidates: &[EntryCandidate], params: &ArbitrationParams) -> ArbitrationOutcome'
+  invariants:
+  - awarded.len() as u32 <= params.max_slots (output bounded by the slot budget).
+  - Awarded candidates are the top-ranked eligible ones, listed best-first (awarded[0] has the highest expected net SOL).
+  - max_slots == 0 yields an empty award set and every eligible candidate's net summed into forgone_opportunity_cost_lamports.
+  - forgone_opportunity_cost_lamports is the sum of expected_net_sol_lamports over eligible candidates that received no slot.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn c(id: u64, net: i64, size: u64) -> EntryCandidate {
+        EntryCandidate {
+            candidate_id: id,
+            entry_mode: 1,
+            archetype: 2,
+            regime: 3,
+            expected_net_sol_lamports: net,
+            size_lamports: size,
+        }
+    }
+
+    #[test]
+    fn arbitrate_awards_top_ranked_bounded_by_slots() {
+        let cands = [c(1, 100, 10), c(2, 400, 10), c(3, 300, 10), c(4, 200, 10)];
+        let params = ArbitrationParams {
+            max_slots: 2,
+            exposure_cap_lamports: 1_000,
+            min_expected_net_lamports: 0,
+        };
+        let out = arbitrate(&cands, &params);
+        // Awarded is bounded by max_slots and ordered best-first.
+        assert_eq!(out.awarded.len(), 2);
+        assert_eq!(out.awarded[0].candidate_id, 2);
+        assert_eq!(out.awarded[1].candidate_id, 3);
+        assert_eq!(out.used_exposure_lamports, 20);
+        // Losers' net summed as forgone: 200 + 100 = 300.
+        assert_eq!(out.forgone_opportunity_cost_lamports, 300);
+        assert_eq!(out.rejected_below_floor, 0);
+
+        // Edge: zero slots -> nothing awarded, every eligible candidate forgone.
+        let zero = ArbitrationParams {
+            max_slots: 0,
+            exposure_cap_lamports: 1_000,
+            min_expected_net_lamports: 0,
+        };
+        let out0 = arbitrate(&[c(1, 100, 10), c(2, 50, 10)], &zero);
+        assert!(out0.awarded.is_empty());
+        assert_eq!(out0.used_exposure_lamports, 0);
+        assert_eq!(out0.forgone_opportunity_cost_lamports, 150);
+
+        // awarded.len never exceeds max_slots even with surplus candidates.
+        assert!(out.awarded.len() as u32 <= params.max_slots);
+    }
+- leaf_id: arbitrate_exposure_conserved
+  responsibility: Enforce the exposure cap during greedy allocation (skipping oversize candidates while continuing to fit smaller ones) and conserve total expected net SOL across awarded and forgone buckets.
+  signature: 'pub fn arbitrate(candidates: &[EntryCandidate], params: &ArbitrationParams) -> ArbitrationOutcome'
+  invariants:
+  - used_exposure_lamports <= params.exposure_cap_lamports (the budget is never breached).
+  - used_exposure_lamports equals the sum of size_lamports over awarded slots.
+  - 'A candidate whose size exceeds remaining budget is skipped (forgone), not terminal: a later smaller ranked candidate may still be awarded.'
+  - 'Conservation: sum of awarded expected_net_sol_lamports + forgone_opportunity_cost_lamports == sum of expected_net_sol_lamports over all eligible candidates.'
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn c(id: u64, net: i64, size: u64) -> EntryCandidate {
+        EntryCandidate {
+            candidate_id: id,
+            entry_mode: 1,
+            archetype: 2,
+            regime: 3,
+            expected_net_sol_lamports: net,
+            size_lamports: size,
+        }
+    }
+
+    #[test]
+    fn arbitrate_exposure_cap_and_forgone_conservation() {
+        let cands = [c(1, 500, 700), c(2, 400, 700), c(3, 300, 200)];
+        let params = ArbitrationParams {
+            max_slots: 3,
+            exposure_cap_lamports: 1_000,
+            min_expected_net_lamports: 0,
+        };
+        let out = arbitrate(&cands, &params);
+        // 1 takes 700; 2 needs 700 > 300 remaining -> skipped; 3 fits (200 <= 300).
+        let ids: Vec<u64> = out.awarded.iter().map(|a| a.candidate_id).collect();
+        assert_eq!(ids, vec![1, 3]);
+        // Used exposure never exceeds the cap and equals the sum of awarded sizes.
+        assert_eq!(out.used_exposure_lamports, 900);
+        assert!(out.used_exposure_lamports <= params.exposure_cap_lamports);
+        let sum_awarded: u64 = out.awarded.iter().map(|a| a.size_lamports).sum();
+        assert_eq!(out.used_exposure_lamports, sum_awarded);
+        // Forgone equals the summed net of eligible-but-unfunded candidates (only id 2).
+        assert_eq!(out.forgone_opportunity_cost_lamports, 400);
+
+        // Conservation: awarded-net + forgone-net == total eligible net.
+        let awarded_net: i64 = out
+            .awarded
+            .iter()
+            .map(|a| a.expected_net_sol_lamports)
+            .sum();
+        assert_eq!(
+            awarded_net + out.forgone_opportunity_cost_lamports,
+            500 + 400 + 300
+        );
+
+        // Order independence of the whole outcome.
+        let shuffled = [c(3, 300, 200), c(2, 400, 700), c(1, 500, 700)];
+        assert_eq!(arbitrate(&cands, &params), arbitrate(&shuffled, &params));
+    }

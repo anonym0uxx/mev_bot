@@ -1,0 +1,173 @@
+component: setup_classifier
+constitution_refs: []
+spec: Independence-lock dossier for the `setup_classifier` module of pump-quant-signals (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: archetype_id_bijection
+  responsibility: SetupFamily::archetype_id maps each family to its pinned, distinct u16 wire discriminator with None reserved as 0.
+  signature: pub const fn SetupFamily::archetype_id(self) -> u16
+  invariants:
+  - The seven families map in declared order to exactly [0,1,2,3,4,5,6].
+  - SetupFamily::None maps to 0.
+  - All seven ids are pairwise distinct (injective).
+  - No non-None family maps to id 0 (0 is reserved for None).
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn archetype_id_is_stable_and_bijective() {
+        let all = [
+            SetupFamily::None,
+            SetupFamily::BreakoutRetest,
+            SetupFamily::FailedBreakdownReversal,
+            SetupFamily::Reclaim,
+            SetupFamily::CompressionExpansion,
+            SetupFamily::ShortHorizonMeanReversion,
+            SetupFamily::OrderFlowDislocation,
+        ];
+        let ids: Vec<u16> = all.iter().map(|f| f.archetype_id()).collect();
+        assert_eq!(ids, vec![0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(SetupFamily::None.archetype_id(), 0);
+        let mut sorted = ids.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), all.len());
+        for f in all.iter().filter(|f| **f != SetupFamily::None) {
+            assert_ne!(f.archetype_id(), 0);
+        }
+    }
+- leaf_id: family_matches
+  responsibility: classify_setup maps a reconstructed integer market state to the correct §24 named setup family for each recognized pattern, and to None for a neutral state.
+  signature: 'pub fn classify_setup(state: &MarketState, t: &SetupThresholds) -> SetupFamily'
+  invariants:
+  - A neutral base state (no breach, no breakout, price==vwap, cvd==0, flat ranges) classifies as None.
+  - A support-breach-then-reclaim state with net buying classifies as FailedBreakdownReversal.
+  - A resistance-breakout held within retest tolerance with non-negative flow classifies as BreakoutRetest; a below-then-above-VWAP state with net buying and no breach/breakout classifies as Reclaim.
+  - A compressed prior range with current range >= expansion_multiple x prior classifies as CompressionExpansion.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn base() -> MarketState {
+        MarketState {
+            price_open_fp: 1_000,
+            price_fp: 1_000,
+            high_extreme_fp: 1_000,
+            low_extreme_fp: 1_000,
+            prior_high_fp: 2_000,
+            prior_low_fp: 500,
+            vwap_fp: 1_000,
+            cvd_delta: 0,
+            range_bps: 10,
+            prior_range_bps: 10,
+        }
+    }
+
+    #[test]
+    fn classify_setup_matches_each_family() {
+        let t = SetupThresholds::neutral();
+        assert_eq!(classify_setup(&base(), &t), SetupFamily::None);
+
+        let mut s = base();
+        s.prior_low_fp = 1_000;
+        s.low_extreme_fp = 940;
+        s.price_fp = 1_010;
+        s.price_open_fp = 1_000;
+        s.high_extreme_fp = 1_010;
+        s.cvd_delta = 5_000;
+        s.vwap_fp = 1_005;
+        assert_eq!(classify_setup(&s, &t), SetupFamily::FailedBreakdownReversal);
+
+        let mut s = base();
+        s.prior_high_fp = 1_000;
+        s.high_extreme_fp = 1_080;
+        s.price_fp = 1_005;
+        s.price_open_fp = 1_000;
+        s.low_extreme_fp = 1_000;
+        s.prior_low_fp = 400;
+        s.vwap_fp = 1_000;
+        s.cvd_delta = 100;
+        assert_eq!(classify_setup(&s, &t), SetupFamily::BreakoutRetest);
+
+        let mut s = base();
+        s.vwap_fp = 1_000;
+        s.low_extreme_fp = 950;
+        s.price_fp = 1_010;
+        s.price_open_fp = 990;
+        s.high_extreme_fp = 1_010;
+        s.prior_low_fp = 100;
+        s.prior_high_fp = 5_000;
+        s.cvd_delta = 3_000;
+        assert_eq!(classify_setup(&s, &t), SetupFamily::Reclaim);
+
+        let mut s = base();
+        s.prior_range_bps = 100;
+        s.range_bps = 400;
+        s.cvd_delta = 0;
+        s.prior_low_fp = 100;
+        s.prior_high_fp = 5_000;
+        s.vwap_fp = 1_000;
+        s.low_extreme_fp = 1_000;
+        assert_eq!(classify_setup(&s, &t), SetupFamily::CompressionExpansion);
+    }
+- leaf_id: precedence_and_rejection
+  responsibility: classify_setup honors the documented first-match precedence order and rejects near-miss states that fail a family's threshold conditions.
+  signature: 'pub fn classify_setup(state: &MarketState, t: &SetupThresholds) -> SetupFamily'
+  invariants:
+  - A state satisfying both FailedBreakdownReversal and Reclaim resolves to FailedBreakdownReversal (earlier in precedence).
+  - A support breach with no reclaim (price stays below prior_low) is not FailedBreakdownReversal.
+  - A breakout extended beyond retest_tolerance_bps above the level is not BreakoutRetest.
+  - A range expansion whose prior range exceeds compression_range_bps is not CompressionExpansion.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn base() -> MarketState {
+        MarketState {
+            price_open_fp: 1_000,
+            price_fp: 1_000,
+            high_extreme_fp: 1_000,
+            low_extreme_fp: 1_000,
+            prior_high_fp: 2_000,
+            prior_low_fp: 500,
+            vwap_fp: 1_000,
+            cvd_delta: 0,
+            range_bps: 10,
+            prior_range_bps: 10,
+        }
+    }
+
+    #[test]
+    fn classify_setup_precedence_and_rejections() {
+        let t = SetupThresholds::neutral();
+
+        let mut s = base();
+        s.prior_low_fp = 1_000;
+        s.vwap_fp = 1_000;
+        s.low_extreme_fp = 940;
+        s.price_fp = 1_010;
+        s.price_open_fp = 1_000;
+        s.high_extreme_fp = 1_010;
+        s.cvd_delta = 5_000;
+        assert_eq!(classify_setup(&s, &t), SetupFamily::FailedBreakdownReversal);
+
+        let mut s = base();
+        s.prior_low_fp = 1_000;
+        s.low_extreme_fp = 900;
+        s.price_fp = 950;
+        s.cvd_delta = 5_000;
+        assert_ne!(classify_setup(&s, &t), SetupFamily::FailedBreakdownReversal);
+
+        let mut s = base();
+        s.prior_high_fp = 1_000;
+        s.high_extreme_fp = 1_080;
+        s.price_fp = 1_030;
+        s.low_extreme_fp = 1_000;
+        s.cvd_delta = 100;
+        assert_ne!(classify_setup(&s, &t), SetupFamily::BreakoutRetest);
+
+        let mut s = base();
+        s.prior_range_bps = 300;
+        s.range_bps = 2_000;
+        s.cvd_delta = 0;
+        s.prior_low_fp = 100;
+        s.prior_high_fp = 5_000;
+        s.low_extreme_fp = 1_000;
+        assert_ne!(classify_setup(&s, &t), SetupFamily::CompressionExpansion);
+    }

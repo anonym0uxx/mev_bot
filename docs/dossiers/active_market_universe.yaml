@@ -1,0 +1,290 @@
+component: active_market_universe
+constitution_refs: []
+spec: Independence-lock dossier for the `active_market_universe` module of pump-quant-signals (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: select_pipeline
+  responsibility: Run the full §21.5 qualification pipeline (screen → filter → analyze → reprioritize → remove) producing a bounded, ranked, provenance-stamped universe.
+  signature: 'pub fn select_active_market_universe(observations: &[MarketObservation], cfg: &UniverseConfig) -> Vec<QualifiedCandidate>'
+  invariants:
+  - Every survivor is stamped discovery_source == DiscoverySource::ActiveMarketQualification.
+  - Output ranks are the contiguous sequence 0..len in descending-priority_score order (rank[i] == i).
+  - Observations failing the broad screen or below min_priority_score are removed (thin-liquidity token dropped; impossibly-high floor empties the universe).
+  - 'Output length never exceeds cfg.capacity (§99): 5 qualifiers with capacity 2 yield exactly 2 candidates.'
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn select_pipeline() {
+        fn analysis() -> AnalysisConfig {
+            AnalysisConfig {
+                liquidity_ref_lamports: 100_000_000_000,
+                volume_ref_lamports: 50_000_000_000,
+                traders_ref: 100,
+                swaps_ref: 500,
+                w_liquidity_bps: 2_500,
+                w_volume_bps: 2_500,
+                w_breadth_bps: 2_000,
+                w_activity_bps: 1_000,
+                w_spread_bps: 1_000,
+                w_concentration_bps: 1_000,
+            }
+        }
+        fn screen() -> ScreenCriteria {
+            ScreenCriteria {
+                min_liquidity_lamports: 10_000_000_000,
+                min_volume_lamports: 5_000_000_000,
+                min_swap_count: 20,
+                min_unique_traders: 10,
+                max_spread_bps: 300,
+                max_concentration_bps: 5_000,
+                min_age_ms: 60_000,
+                max_age_ms: 86_400_000,
+            }
+        }
+        fn cfg() -> UniverseConfig {
+            UniverseConfig {
+                screen: screen(),
+                analysis: analysis(),
+                min_priority_score: 1,
+                capacity: 10,
+            }
+        }
+        fn obs(id: u64) -> MarketObservation {
+            MarketObservation {
+                token_id: id,
+                liquidity_lamports: 50_000_000_000,
+                volume_lamports_window: 25_000_000_000,
+                swap_count_window: 250,
+                unique_traders_window: 50,
+                age_ms: 600_000,
+                spread_bps: 100,
+                top_holder_concentration_bps: 2_000,
+            }
+        }
+
+        let mut strong = obs(7);
+        strong.liquidity_lamports = 100_000_000_000;
+        strong.volume_lamports_window = 50_000_000_000;
+        strong.unique_traders_window = 100;
+        strong.swap_count_window = 500;
+        strong.spread_bps = 0;
+        strong.top_holder_concentration_bps = 0;
+        let mid = obs(3);
+        let mut weak = obs(9);
+        weak.liquidity_lamports = 12_000_000_000;
+        weak.volume_lamports_window = 6_000_000_000;
+        weak.unique_traders_window = 12;
+        weak.swap_count_window = 25;
+
+        let out = select_active_market_universe(&[mid, weak, strong], &cfg());
+
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].token_id, 7);
+        for (i, c) in out.iter().enumerate() {
+            assert_eq!(c.rank, i as u32);
+            assert_eq!(
+                c.discovery_source,
+                DiscoverySource::ActiveMarketQualification
+            );
+        }
+        for w in out.windows(2) {
+            assert!(w[0].priority_score >= w[1].priority_score);
+        }
+
+        let mut bad = obs(1);
+        bad.liquidity_lamports = 100;
+        let good = select_active_market_universe(&[bad, obs(2)], &cfg());
+        assert_eq!(good.len(), 1);
+        assert_eq!(good[0].token_id, 2);
+
+        let mut floored = cfg();
+        floored.min_priority_score = 100_000;
+        assert!(select_active_market_universe(&[obs(1), obs(2)], &floored).is_empty());
+
+        let mut capped = cfg();
+        capped.capacity = 2;
+        let many: Vec<MarketObservation> = (1..=5).map(obs).collect();
+        let bounded = select_active_market_universe(&many, &capped);
+        assert_eq!(bounded.len(), 2);
+        assert_eq!(bounded[0].rank, 0);
+        assert_eq!(bounded[1].rank, 1);
+    }
+- leaf_id: analyze_candidate_composite
+  responsibility: 'Deep-analysis stage: fold reconstructed criteria into one composite integer priority score via normalized, weighted sub-scores plus inverted spread/concentration quality.'
+  signature: 'pub fn analyze_candidate(obs: &MarketObservation, a: &AnalysisConfig) -> u64'
+  invariants:
+  - 'Deterministic: identical criteria yield identical scores.'
+  - Weights summing to 10_000 bound the score to 0..=10_000; a maximal observation saturates at exactly 10_000.
+  - Baseline all-half observation scores exactly 5_790 (12.5M+12.5M+10M+5M+9.9M+8M = 57.9M, /10_000).
+  - Monotonic non-decreasing in liquidity; a fully-zeroed observation still scores 2_000 from the two zero-penalty inverted-quality terms.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn analyze_candidate_composite() {
+        fn analysis() -> AnalysisConfig {
+            AnalysisConfig {
+                liquidity_ref_lamports: 100_000_000_000,
+                volume_ref_lamports: 50_000_000_000,
+                traders_ref: 100,
+                swaps_ref: 500,
+                w_liquidity_bps: 2_500,
+                w_volume_bps: 2_500,
+                w_breadth_bps: 2_000,
+                w_activity_bps: 1_000,
+                w_spread_bps: 1_000,
+                w_concentration_bps: 1_000,
+            }
+        }
+        fn obs(id: u64) -> MarketObservation {
+            MarketObservation {
+                token_id: id,
+                liquidity_lamports: 50_000_000_000,
+                volume_lamports_window: 25_000_000_000,
+                swap_count_window: 250,
+                unique_traders_window: 50,
+                age_ms: 600_000,
+                spread_bps: 100,
+                top_holder_concentration_bps: 2_000,
+            }
+        }
+
+        let a = analysis();
+
+        assert_eq!(analyze_candidate(&obs(1), &a), 5_790);
+
+        assert_eq!(
+            analyze_candidate(&obs(1), &a),
+            analyze_candidate(&obs(2), &a)
+        );
+
+        let mut best = obs(1);
+        best.liquidity_lamports = u128::MAX;
+        best.volume_lamports_window = u128::MAX;
+        best.unique_traders_window = u32::MAX;
+        best.swap_count_window = u32::MAX;
+        best.spread_bps = 0;
+        best.top_holder_concentration_bps = 0;
+        assert_eq!(analyze_candidate(&best, &a), 10_000);
+
+        let mut low = obs(1);
+        low.liquidity_lamports = 0;
+        low.volume_lamports_window = 0;
+        low.unique_traders_window = 0;
+        low.swap_count_window = 0;
+        low.spread_bps = 0;
+        low.top_holder_concentration_bps = 0;
+        let low_score = analyze_candidate(&low, &a);
+        assert_eq!(low_score, 2_000);
+        let mut more_liq = low;
+        more_liq.liquidity_lamports = 100_000_000_000;
+        assert!(analyze_candidate(&more_liq, &a) >= low_score);
+    }
+- leaf_id: reprioritize_ranks
+  responsibility: 'Reprioritization stage: sort candidates by descending score with ascending-token_id tie-break and stamp contiguous zero-based ranks in place.'
+  signature: 'pub fn reprioritize(cands: &mut [QualifiedCandidate])'
+  invariants:
+  - Result is ordered by descending priority_score; equal scores break by ascending token_id.
+  - Assigned ranks are exactly the contiguous 0..len sequence matching final order (rank[i] == i).
+  - 'Idempotent: re-running on an already-reprioritized slice leaves order and ranks unchanged.'
+  - Empty slice is a no-op (no panic).
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn reprioritize_ranks() {
+        fn cand(token_id: u64, score: u64) -> QualifiedCandidate {
+            QualifiedCandidate {
+                token_id,
+                discovery_source: DiscoverySource::ActiveMarketQualification,
+                priority_score: score,
+                rank: 999,
+            }
+        }
+
+        let mut cands = vec![cand(30, 500), cand(10, 500), cand(20, 900)];
+        reprioritize(&mut cands);
+
+        assert_eq!(cands[0].token_id, 20);
+        assert_eq!(cands[1].token_id, 10);
+        assert_eq!(cands[2].token_id, 30);
+
+        assert_eq!(cands[0].rank, 0);
+        assert_eq!(cands[1].rank, 1);
+        assert_eq!(cands[2].rank, 2);
+
+        for w in cands.windows(2) {
+            assert!(w[0].priority_score >= w[1].priority_score);
+        }
+
+        let snapshot = cands.clone();
+        reprioritize(&mut cands);
+        assert_eq!(cands, snapshot);
+
+        let mut empty: Vec<QualifiedCandidate> = Vec::new();
+        reprioritize(&mut empty);
+        assert!(empty.is_empty());
+    }
+- leaf_id: progressive_filter_band
+  responsibility: 'Progressive-filter stage: reject markets that pass the broad screen but are un-executable (wide spread), unsafe (concentrated), or outside the closed age band.'
+  signature: 'pub fn passes_progressive_filter(obs: &MarketObservation, c: &ScreenCriteria) -> bool'
+  invariants:
+  - A baseline in-band observation passes all four gates.
+  - 'Gates are inclusive at the boundary: spread == max, concentration == max, age == min and age == max all pass.'
+  - One unit past the spread or concentration ceiling rejects.
+  - 'Age is a closed band: age == min_age_ms-1 (too young) and age == max_age_ms+1 (stale) both reject.'
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn progressive_filter_band() {
+        fn screen() -> ScreenCriteria {
+            ScreenCriteria {
+                min_liquidity_lamports: 10_000_000_000,
+                min_volume_lamports: 5_000_000_000,
+                min_swap_count: 20,
+                min_unique_traders: 10,
+                max_spread_bps: 300,
+                max_concentration_bps: 5_000,
+                min_age_ms: 60_000,
+                max_age_ms: 86_400_000,
+            }
+        }
+        fn obs(id: u64) -> MarketObservation {
+            MarketObservation {
+                token_id: id,
+                liquidity_lamports: 50_000_000_000,
+                volume_lamports_window: 25_000_000_000,
+                swap_count_window: 250,
+                unique_traders_window: 50,
+                age_ms: 600_000,
+                spread_bps: 100,
+                top_holder_concentration_bps: 2_000,
+            }
+        }
+
+        let c = screen();
+
+        assert!(passes_progressive_filter(&obs(1), &c));
+
+        let mut edge = obs(1);
+        edge.spread_bps = c.max_spread_bps;
+        edge.top_holder_concentration_bps = c.max_concentration_bps;
+        edge.age_ms = c.min_age_ms;
+        assert!(passes_progressive_filter(&edge, &c));
+        let mut edge_hi = obs(1);
+        edge_hi.age_ms = c.max_age_ms;
+        assert!(passes_progressive_filter(&edge_hi, &c));
+
+        let mut wide = obs(1);
+        wide.spread_bps = c.max_spread_bps + 1;
+        assert!(!passes_progressive_filter(&wide, &c));
+        let mut conc = obs(1);
+        conc.top_holder_concentration_bps = c.max_concentration_bps + 1;
+        assert!(!passes_progressive_filter(&conc, &c));
+
+        let mut young = obs(1);
+        young.age_ms = c.min_age_ms - 1;
+        assert!(!passes_progressive_filter(&young, &c));
+        let mut stale = obs(1);
+        stale.age_ms = c.max_age_ms + 1;
+        assert!(!passes_progressive_filter(&stale, &c));
+    }

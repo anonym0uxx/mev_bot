@@ -1,0 +1,155 @@
+component: attention_state
+constitution_refs: []
+spec: Independence-lock dossier for the `attention_state` module of pump-quant-narrative (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: attention_state_windows_nest_and_bound
+  responsibility: Fold mentions into weighted 1m/5m windows with half-open (lo, now] boundaries so the 1m window's weighted sum never exceeds the 5m window's when its span is smaller.
+  signature: 'pub fn nv_attention_state(mentions: &[Mention], now_ns: u64, window_1m_ns: u64, window_5m_ns: u64, level_series: &[u64], series_window: usize, freshness_full_ns: u64) -> AttentionState'
+  invariants:
+  - For window_1m_ns <= window_5m_ns over identical mentions, weighted_mentions_1m <= weighted_mentions_5m.
+  - A mention with ts_ns == now_ns - window is excluded (lower bound exclusive) while ts_ns == now_ns is included (upper bound inclusive).
+  - Empty mention stream yields weighted_mentions_1m == 0 and weighted_mentions_5m == 0.
+  - A window includes exactly the weights of mentions with ts_ns in (now_ns - window, now_ns].
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn prop_attention_state_windows_nest_and_bound() {
+        let mk = |ts_ns: u64, weight: u64| Mention {
+            ts_ns,
+            source_id: 1,
+            community_id: 1,
+            weight,
+            copycat: false,
+        };
+        // Property: for window_1m <= window_5m, weighted_mentions_1m <= weighted_mentions_5m.
+        let now = 1_000u64;
+        let mentions = [mk(990, 5), mk(950, 7), mk(800, 11), mk(600, 13)];
+        for w1 in 0..200u64 {
+            for w5 in w1..=w1 + 50 {
+                let st = nv_attention_state(&mentions, now, w1, w5, &[], 1, 10_000);
+                assert!(st.weighted_mentions_1m <= st.weighted_mentions_5m);
+            }
+        }
+        // Concrete: now=1000, 1m window=60 -> (940,1000], 5m=300 -> (700,1000].
+        let st = nv_attention_state(&mentions, 1_000, 60, 300, &[], 1, 10_000);
+        assert_eq!(st.weighted_mentions_1m, 12); // 990,950
+        assert_eq!(st.weighted_mentions_5m, 23); // 990,950,800
+                                                 // Edge/boundary: lower bound exclusive, `now` inclusive. window=100 -> (900,1000].
+        let edge = [mk(900, 4), mk(1000, 8)];
+        let st = nv_attention_state(&edge, 1_000, 100, 100, &[], 1, 10_000);
+        assert_eq!(st.weighted_mentions_1m, 8); // 900 excluded, 1000 included
+        assert_eq!(st.weighted_mentions_5m, 8);
+        // Rejection/no-data: empty stream -> zero on both windows.
+        let st = nv_attention_state(&[], 1_000, 60, 300, &[], 1, 10_000);
+        assert_eq!(st.weighted_mentions_1m, 0);
+        assert_eq!(st.weighted_mentions_5m, 0);
+    }
+- leaf_id: attention_state_distinct_concentration_bounded
+  responsibility: Track distinct sources/communities under a fixed MAX_TRACKED cap and report top-source weight concentration in bounded fixed-point without heap growth.
+  signature: 'pub fn nv_attention_state(mentions: &[Mention], now_ns: u64, window_1m_ns: u64, window_5m_ns: u64, level_series: &[u64], series_window: usize, freshness_full_ns: u64) -> AttentionState'
+  invariants:
+  - unique_sources as usize <= MAX_TRACKED for any number of distinct sources (count saturates, never grows unbounded).
+  - source_concentration is always in [0, FP_ONE] (0..=10_000).
+  - 'Repeated mentions from one source accumulate weight: two mentions of source 1 with weights 70 and 10 give it 80 of a 100 total -> source_concentration == 8_000.'
+  - With no observed weight (empty stream) source_concentration == 0 and unique_sources == 0.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn prop_attention_state_distinct_concentration_bounded() {
+        let mk = |source_id: u64, community_id: u64, weight: u64| Mention {
+            ts_ns: 100,
+            source_id,
+            community_id,
+            weight,
+            copycat: false,
+        };
+        // Property: unique_sources never exceeds MAX_TRACKED and concentration stays in [0, FP_ONE].
+        for n in 0..(MAX_TRACKED as u64 + 20) {
+            let mentions: Vec<Mention> = (0..n).map(|i| mk(i, 0, 1)).collect();
+            let st = nv_attention_state(&mentions, 1_000, 10_000, 10_000, &[], 1, 10_000);
+            assert!(st.unique_sources as usize <= MAX_TRACKED);
+            assert!(st.source_concentration <= 10_000); // FP_ONE
+        }
+        // Concrete: source 1 accumulates 80 of total 100 weight -> 8_000 bps; 3 sources, 2 communities.
+        let mentions = [mk(1, 10, 70), mk(1, 10, 10), mk(2, 11, 10), mk(3, 11, 10)];
+        let st = nv_attention_state(&mentions, 1_000, 10_000, 10_000, &[], 1, 10_000);
+        assert_eq!(st.unique_sources, 3);
+        assert_eq!(st.unique_communities, 2);
+        assert_eq!(st.source_concentration, 8_000);
+        // Edge: distinct sources past the cap saturate at MAX_TRACKED.
+        let mentions: Vec<Mention> = (0..(MAX_TRACKED as u64 + 10))
+            .map(|i| mk(i, 0, 1))
+            .collect();
+        let st = nv_attention_state(&mentions, 1_000, 10_000, 10_000, &[], 1, 10_000);
+        assert_eq!(st.unique_sources as usize, MAX_TRACKED);
+        // Rejection/no-weight: no observations -> concentration 0.
+        let st = nv_attention_state(&[], 1_000, 10_000, 10_000, &[], 1, 10_000);
+        assert_eq!(st.source_concentration, 0);
+        assert_eq!(st.unique_sources, 0);
+    }
+- leaf_id: attention_distinction_priority
+  responsibility: Classify an AttentionState into one of six distinctions via a fixed, total, first-match-wins priority order.
+  signature: 'pub fn nv_attention_distinction(st: &AttentionState, net_flow: i64, copycat_share_threshold_fp: u64, total_mentions: u32, min_sources: u32) -> AttentionDistinction'
+  invariants:
+  - total_mentions == 0 always yields NoSignal regardless of velocity, copycat_count, or net_flow.
+  - 'Rule 2 outranks rule 3: velocity > 0 with net_flow < 0 yields LateExitLiquidityPromotion even when copycat share exceeds the threshold.'
+  - copycat_count/total_mentions >= copycat_share_threshold_fp (with velocity>=0, net_flow>=0) yields CopycatAttention; velocity < 0 yields DecayingAttention.
+  - velocity > 0 with unique_sources >= min_sources yields OrganicEmergence; a rising-but-narrow or flat-velocity state falls through to SaturatedAttention.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn prop_attention_distinction_priority() {
+        let st = |velocity: i64, copycat_count: u32, unique_sources: u32| AttentionState {
+            unique_sources,
+            unique_communities: 1,
+            weighted_mentions_1m: 0,
+            weighted_mentions_5m: 0,
+            engagement_velocity: velocity,
+            engagement_acceleration: 0,
+            source_concentration: 0,
+            narrative_age_ns: 0,
+            copycat_count,
+            freshness: 0,
+        };
+        // Property: total_mentions == 0 always yields NoSignal regardless of the other arguments.
+        for v in [-5i64, 0, 5] {
+            for cc in [0u32, 100] {
+                let s = st(v, cc, 10);
+                assert_eq!(
+                    nv_attention_distinction(&s, -1, 3_000, 0, 3),
+                    AttentionDistinction::NoSignal
+                );
+            }
+        }
+        // Rule 2 outranks rule 3: rising + outflow with heavy copycat -> LateExit.
+        assert_eq!(
+            nv_attention_distinction(&st(5, 100, 10), -1, 3_000, 100, 3),
+            AttentionDistinction::LateExitLiquidityPromotion
+        );
+        // Rule 3: rising, positive flow, copycat share 50% >= 30% threshold.
+        assert_eq!(
+            nv_attention_distinction(&st(5, 5, 10), 100, 3_000, 10, 3),
+            AttentionDistinction::CopycatAttention
+        );
+        // Rule 4: velocity < 0 -> Decaying.
+        assert_eq!(
+            nv_attention_distinction(&st(-5, 0, 10), 100, 3_000, 10, 3),
+            AttentionDistinction::DecayingAttention
+        );
+        // Rule 5: rising, broad, low copycat -> Organic.
+        assert_eq!(
+            nv_attention_distinction(&st(5, 0, 10), 100, 3_000, 10, 3),
+            AttentionDistinction::OrganicEmergence
+        );
+        // Rule 6: rising but too narrow, and flat velocity, both -> Saturated.
+        assert_eq!(
+            nv_attention_distinction(&st(5, 0, 1), 100, 3_000, 10, 3),
+            AttentionDistinction::SaturatedAttention
+        );
+        assert_eq!(
+            nv_attention_distinction(&st(0, 0, 10), 100, 3_000, 10, 3),
+            AttentionDistinction::SaturatedAttention
+        );
+    }

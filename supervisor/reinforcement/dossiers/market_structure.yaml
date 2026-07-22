@@ -1,0 +1,261 @@
+component: market_structure
+constitution_refs: []
+spec: Independence-lock dossier for the `market_structure` module of pump-quant-features (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: bar_range_fp_equals_high_minus_low
+  responsibility: Bar price range is exactly high_fp - low_fp and never negative for a well-formed bar.
+  signature: 'pub fn bar_range_fp(bar: &Bar) -> i128'
+  invariants:
+  - Returns bar.high_fp - bar.low_fp whenever the subtraction does not overflow.
+  - Result is >= 0 for any bar with high_fp >= low_fp (the by-construction invariant).
+  - A zero-width bar (high_fp == low_fp) yields exactly 0.
+  - Result is invariant to open_fp, close_fp, volumes, and provenance fields.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn mk(open: i128, high: i128, low: i128, close: i128) -> pump_quant_features::bar::Bar {
+        pump_quant_features::bar::Bar {
+            open_time_ns: 0,
+            close_time_ns: 0,
+            open_fp: open,
+            high_fp: high,
+            low_fp: low,
+            close_fp: close,
+            base_volume: 1,
+            quote_volume: 1,
+            buy_base_volume: 1,
+            sell_base_volume: 0,
+            trade_count: 1,
+            first_event_id: 0,
+            last_event_id: 0,
+        }
+    }
+
+    #[test]
+    fn bar_range_fp_equals_high_minus_low() {
+        let b = mk(100, 130, 90, 110);
+        assert_eq!(bar_range_fp(&b), 40);
+        // Edge: zero-width bar.
+        assert_eq!(bar_range_fp(&mk(50, 50, 50, 50)), 0);
+        // Property: for high >= low the range equals high-low and is non-negative,
+        // across a signed grid including negative fixed-point prices.
+        let mut h = -20i128;
+        while h <= 20 {
+            let mut w = 0i128;
+            while w <= 40 {
+                let r = bar_range_fp(&mk(0, h, h - w, 0));
+                assert_eq!(r, w);
+                assert!(r >= 0);
+                w += 1;
+            }
+            h += 1;
+        }
+    }
+- leaf_id: range_state_ratio_classification
+  responsibility: Classify compression/expansion/neutral from the recent-vs-baseline mean-range ratio using exact integer cross-multiplication, with defined rejections.
+  signature: 'pub fn range_state(bars: &[Bar], recent: usize, baseline: usize, contraction_bps: u32, expansion_bps: u32) -> Option<RangeState>'
+  invariants:
+  - Returns Compression when recent_sum*baseline_n*10000 <= baseline_sum*recent_n*contraction_bps (boundary inclusive).
+  - Returns Expansion when recent_sum*baseline_n*10000 >= baseline_sum*recent_n*expansion_bps, else Neutral.
+  - Returns None when recent==0, baseline==0, or bars.len() < recent+baseline.
+  - Returns None when the baseline range sum is zero (ratio undefined).
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn mk(open: i128, high: i128, low: i128, close: i128) -> pump_quant_features::bar::Bar {
+        pump_quant_features::bar::Bar {
+            open_time_ns: 0,
+            close_time_ns: 0,
+            open_fp: open,
+            high_fp: high,
+            low_fp: low,
+            close_fp: close,
+            base_volume: 1,
+            quote_volume: 1,
+            buy_base_volume: 1,
+            sell_base_volume: 0,
+            trade_count: 1,
+            first_event_id: 0,
+            last_event_id: 0,
+        }
+    }
+
+    #[test]
+    fn range_state_ratio_classification() {
+        // Baseline range 100 each, recent 20 each -> 20% -> compression.
+        let comp = vec![
+            mk(0, 100, 0, 50),
+            mk(0, 100, 0, 50),
+            mk(0, 20, 0, 10),
+            mk(0, 20, 0, 10),
+        ];
+        assert_eq!(
+            range_state(&comp, 2, 2, 6_000, 15_000),
+            Some(RangeState::Compression)
+        );
+
+        // Recent 200 vs baseline 100 -> 200% -> expansion.
+        let exp = vec![
+            mk(0, 100, 0, 50),
+            mk(0, 100, 0, 50),
+            mk(0, 200, 0, 100),
+            mk(0, 200, 0, 100),
+        ];
+        assert_eq!(
+            range_state(&exp, 2, 2, 6_000, 15_000),
+            Some(RangeState::Expansion)
+        );
+
+        // Recent == baseline -> neutral.
+        let neu = vec![mk(0, 100, 0, 50); 4];
+        assert_eq!(
+            range_state(&neu, 2, 2, 6_000, 15_000),
+            Some(RangeState::Neutral)
+        );
+
+        // Boundary: recent 60% of baseline == contraction_bps 6000 -> inclusive compression.
+        let boundary = vec![
+            mk(0, 100, 0, 50),
+            mk(0, 100, 0, 50),
+            mk(0, 60, 0, 30),
+            mk(0, 60, 0, 30),
+        ];
+        assert_eq!(
+            range_state(&boundary, 2, 2, 6_000, 15_000),
+            Some(RangeState::Compression)
+        );
+
+        // Rejection: fewer than recent+baseline bars.
+        assert_eq!(range_state(&comp, 3, 2, 6_000, 15_000), None);
+        // Rejection: zero window length.
+        assert_eq!(range_state(&neu, 0, 2, 6_000, 15_000), None);
+        // Rejection: zero baseline range -> ratio undefined.
+        let flat = vec![
+            mk(50, 50, 50, 50),
+            mk(50, 50, 50, 50),
+            mk(0, 20, 0, 10),
+            mk(0, 20, 0, 10),
+        ];
+        assert_eq!(range_state(&flat, 2, 2, 6_000, 15_000), None);
+    }
+- leaf_id: breakout_retest_transitions
+  responsibility: Classify breakout-and-retest of action bars against a resistance level with left-to-right arming and Failed-dominates priority.
+  signature: 'pub fn breakout_retest_state(action: &[Bar], level_fp: i128) -> BreakoutState'
+  invariants:
+  - Returns None when no bar closes strictly above level_fp (including an empty slice).
+  - After a bar closes strictly above level_fp, a later bar closing strictly below level_fp yields Failed immediately.
+  - A post-breakout bar with low_fp <= level_fp and close_fp >= level_fp upgrades a non-failed result to RetestHeld.
+  - 'Failed dominates: an invalidating close-below overrides any earlier held retest.'
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn mk(open: i128, high: i128, low: i128, close: i128) -> pump_quant_features::bar::Bar {
+        pump_quant_features::bar::Bar {
+            open_time_ns: 0,
+            close_time_ns: 0,
+            open_fp: open,
+            high_fp: high,
+            low_fp: low,
+            close_fp: close,
+            base_volume: 1,
+            quote_volume: 1,
+            buy_base_volume: 1,
+            sell_base_volume: 0,
+            trade_count: 1,
+            first_event_id: 0,
+            last_event_id: 0,
+        }
+    }
+
+    #[test]
+    fn breakout_retest_transitions() {
+        let level = 100;
+        // Never closes strictly above -> None.
+        let none = [mk(90, 95, 85, 92), mk(92, 99, 90, 95)];
+        assert_eq!(breakout_retest_state(&none, level), BreakoutState::None);
+        // Closes above, no retest touch -> Broken.
+        let broke = [mk(95, 105, 94, 104), mk(104, 110, 103, 108)];
+        assert_eq!(breakout_retest_state(&broke, level), BreakoutState::Broken);
+        // Break out then dip to level (low<=100) closing back above -> RetestHeld.
+        let held = [mk(95, 106, 94, 104), mk(104, 105, 98, 101)];
+        assert_eq!(
+            breakout_retest_state(&held, level),
+            BreakoutState::RetestHeld
+        );
+        // Break out then close below -> Failed.
+        let failed = [mk(95, 106, 94, 104), mk(104, 105, 90, 95)];
+        assert_eq!(breakout_retest_state(&failed, level), BreakoutState::Failed);
+        // Failed dominates an earlier held retest.
+        let held_then_fail = [
+            mk(95, 106, 94, 104),
+            mk(104, 105, 98, 101),
+            mk(101, 102, 88, 90),
+        ];
+        assert_eq!(
+            breakout_retest_state(&held_then_fail, level),
+            BreakoutState::Failed
+        );
+        // Edge: empty action slice -> None (never armed).
+        assert_eq!(breakout_retest_state(&[], level), BreakoutState::None);
+    }
+- leaf_id: sweep_scan_ordered_hits
+  responsibility: Scan action bars for single-bar bullish/bearish liquidity sweeps, emitting (index, kind) hits in ascending scan order consistent with the single-bar predicates.
+  signature: 'pub fn sweep_scan(action: &[Bar], low_level_fp: i128, high_level_fp: i128) -> Vec<(usize, SweepKind)>'
+  invariants:
+  - A bar with low_fp < low_level_fp and close_fp > low_level_fp emits (i, SweptLowReclaimed), matching is_bullish_sweep.
+  - A bar with high_fp > high_level_fp and close_fp < high_level_fp emits (i, SweptHighRejected), matching is_bearish_sweep.
+  - Emitted indices are non-decreasing (ascending scan order), low-reclaim before high-reject within one bar.
+  - A bar that only touches a level (not strictly pierces) produces no hit; a non-sweeping sequence yields an empty vec.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn mk(open: i128, high: i128, low: i128, close: i128) -> pump_quant_features::bar::Bar {
+        pump_quant_features::bar::Bar {
+            open_time_ns: 0,
+            close_time_ns: 0,
+            open_fp: open,
+            high_fp: high,
+            low_fp: low,
+            close_fp: close,
+            base_volume: 1,
+            quote_volume: 1,
+            buy_base_volume: 1,
+            sell_base_volume: 0,
+            trade_count: 1,
+            first_event_id: 0,
+            last_event_id: 0,
+        }
+    }
+
+    #[test]
+    fn sweep_scan_ordered_hits() {
+        let sup = 100;
+        let res = 200;
+        let action = [
+            mk(101, 105, 95, 103),  // idx0 bullish sweep of support (low<sup, close>sup)
+            mk(150, 160, 145, 155), // idx1 nothing
+            mk(198, 210, 195, 197), // idx2 bearish sweep of resistance (high>res, close<res)
+        ];
+        assert_eq!(
+            sweep_scan(&action, sup, res),
+            vec![
+                (0, SweepKind::SweptLowReclaimed),
+                (2, SweepKind::SweptHighRejected),
+            ]
+        );
+        // Single-bar predicates agree with the scan.
+        assert!(is_bullish_sweep(&action[0], sup));
+        assert!(!is_bearish_sweep(&action[0], res));
+        assert!(is_bearish_sweep(&action[2], res));
+        assert!(!is_bullish_sweep(&action[2], sup));
+
+        // Output indices are non-decreasing (ascending scan order).
+        let hits = sweep_scan(&action, sup, res);
+        for w in hits.windows(2) {
+            assert!(w[0].0 <= w[1].0);
+        }
+
+        // Edge: a bar touching but not piercing the level is not a sweep -> empty.
+        let calm = [mk(100, 200, 100, 150)];
+        assert!(sweep_scan(&calm, sup, res).is_empty());
+        assert!(!is_bullish_sweep(&calm[0], sup));
+        assert!(!is_bearish_sweep(&calm[0], res));
+    }

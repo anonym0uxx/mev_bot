@@ -57,6 +57,26 @@ COMPONENT_CRATE = {
     "evaluator_stats": "pump-quant-evaluator",
     "cpu_numa_tuning": "pump-quant-core",
     "safety_integrity": "pump-quant-strategy",
+    "active_market_universe": "pump-quant-signals",
+    "attention_decay": "pump-quant-narrative",
+    "attention_state": "pump-quant-narrative",
+    "catalyst_classifier": "pump-quant-narrative",
+    "convexity_ledger": "pump-quant-evaluator",
+    "decode": "pump-quant-protocol",
+    "driver": "pump-quant-replay",
+    "edge_decomposition": "pump-quant-evaluator",
+    "entry_arbitration": "pump-quant-strategy",
+    "entry_zone": "pump-quant-evaluator",
+    "fdr": "pump-quant-evaluator",
+    "fee_plausibility": "pump-quant-signals",
+    "market_structure": "pump-quant-features",
+    "memory_pressure": "pump-quant-core",
+    "metrics": "pump-quant-evaluator",
+    "overfitting": "pump-quant-evaluator",
+    "risk_type": "pump-quant-strategy",
+    "setup_archetype": "pump-quant-strategy",
+    "setup_classifier": "pump-quant-signals",
+    "sizing_validator": "pump-quant-evaluator",
     "clock": "pump-quant-clock",
     "config": "pump-quant-app",
     "determinants": "pump-quant-social",
@@ -83,13 +103,7 @@ HEADER = (
     "// To change a component's contract, change its dossier and re-materialize — never edit here.\n"
     "// The glob import below brings the leaf's public items into scope; integration tests in\n"
     "// tests/ are a separate crate, so the implementation must be `pub` and reachable here.\n"
-    "#![allow(\n"
-    "    unused_imports,\n"
-    "    dead_code,\n"
-    "    clippy::manual_range_contains,\n"
-    "    clippy::bool_comparison,\n"
-    "    clippy::nonminimal_bool\n"
-    ")]\n"
+    "#![allow(unused_imports, dead_code, clippy::all)]\n"
     "use {crate_ident}::{module}::*;\n\n"
 )
 

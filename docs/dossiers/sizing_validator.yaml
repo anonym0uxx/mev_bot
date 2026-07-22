@@ -1,0 +1,148 @@
+component: sizing_validator
+constitution_refs: []
+spec: Independence-lock dossier for the `sizing_validator` module of pump-quant-evaluator (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: optimal_log_utility_kelly_fit
+  responsibility: Grid-searches the log-utility (Kelly) optimal capital fraction over an empirical per-trade return distribution, keeping all-cash when no positive edge exists.
+  signature: 'pub fn optimal_log_utility(returns_bps: &[i64], f_max_bps: u32, step_bps: u32) -> LogUtilityFit'
+  invariants:
+  - 'Empty input yields the canonical zero fit: optimal_f_bps==0, expected_log_growth==0, n==0.'
+  - A distribution with no positive log-edge (symmetric +50%/-50% coin, or purely negative returns) returns optimal_f_bps==0 with expected_log_growth==0 (all-cash baseline is always feasible with growth exactly 0).
+  - A favorable +100%/-50% coin sizes up to a positive fraction near the classic Kelly f*=0.5 (in [4000,6000] bps on a 100-bps grid) with expected_log_growth>0.
+  - optimal_f_bps never exceeds f_max_bps, and n always equals returns_bps.len(); step_bps==0 panics (message contains "step_bps").
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn prop_optimal_log_utility_kelly_fit() {
+        // Empty input -> canonical zero fit.
+        let empty = optimal_log_utility(&[], 10_000, 100);
+        assert_eq!(empty.optimal_f_bps, 0);
+        assert_eq!(empty.expected_log_growth, 0);
+        assert_eq!(empty.n, 0);
+
+        // Symmetric no-edge coin (+50%/-50%) loses in log terms -> all cash, 0 growth.
+        let flat = optimal_log_utility(&[5_000i64, -5_000], 10_000, 500);
+        assert_eq!(flat.optimal_f_bps, 0);
+        assert_eq!(flat.expected_log_growth, 0);
+        assert_eq!(flat.n, 2);
+
+        // Purely negative returns can never beat all-cash -> stays at 0.
+        let losers = optimal_log_utility(&[-2_000i64, -3_000, -1_000], 10_000, 100);
+        assert_eq!(losers.optimal_f_bps, 0);
+        assert_eq!(losers.expected_log_growth, 0);
+        assert_eq!(losers.n, 3);
+
+        // Favorable coin +100%/-50%: classic Kelly f* = 0.5 -> grid lands in [4000,6000].
+        let edge = optimal_log_utility(&[10_000i64, -5_000], 10_000, 100);
+        assert!(
+            edge.optimal_f_bps >= 4_000 && edge.optimal_f_bps <= 6_000,
+            "kelly off grid: {}",
+            edge.optimal_f_bps
+        );
+        assert!(edge.expected_log_growth > 0);
+        assert_eq!(edge.n, 2);
+        // Optimal fraction never exceeds the searched ceiling.
+        assert!(edge.optimal_f_bps <= 10_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "step_bps")]
+    fn prop_optimal_log_utility_zero_step_panics() {
+        let _ = optimal_log_utility(&[1_000i64], 10_000, 0);
+    }
+- leaf_id: bootstrap_fraction_band
+  responsibility: Computes a deterministic seeded-bootstrap p05/p50/p95 uncertainty band around the log-utility optimal fraction to signal sizing fragility.
+  signature: 'pub fn bootstrap_fraction_band(returns_bps: &[i64], f_max_bps: u32, step_bps: u32, n_resamples: u32, seed: u64) -> Band'
+  invariants:
+  - 'Deterministic in (returns, seed): two calls with identical arguments produce byte-identical Bands.'
+  - The returned band is ordered p05<=p50<=p95, echoes n_resamples exactly, and every percentile is bounded by f_max_bps (<=10_000 here).
+  - Empty returns input yields the all-zero band Band{p05:0,p50:0,p95:0,n_resamples:0}.
+  - n_resamples==0 yields the all-zero band regardless of the (non-empty) returns slice.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn prop_bootstrap_fraction_band() {
+        let returns = vec![10_000i64, -5_000, 8_000, -4_000, 12_000];
+
+        // Deterministic in (returns, seed): identical seed -> byte-identical band.
+        let a = bootstrap_fraction_band(&returns, 10_000, 500, 200, 42);
+        let b = bootstrap_fraction_band(&returns, 10_000, 500, 200, 42);
+        assert_eq!(a, b);
+
+        // Echoes resample count, band is ordered and bounded by the searched ceiling.
+        assert_eq!(a.n_resamples, 200);
+        assert!(a.p05 <= a.p50 && a.p50 <= a.p95, "band must be ordered");
+        assert!(a.p95 <= 10_000);
+
+        // Empty input -> all-zero band.
+        let e = bootstrap_fraction_band(&[], 10_000, 500, 10, 1);
+        assert_eq!(
+            e,
+            Band {
+                p05: 0,
+                p50: 0,
+                p95: 0,
+                n_resamples: 0
+            }
+        );
+
+        // Zero resamples -> all-zero band regardless of returns.
+        let z = bootstrap_fraction_band(&[1_000i64], 10_000, 500, 0, 1);
+        assert_eq!(
+            z,
+            Band {
+                p05: 0,
+                p50: 0,
+                p95: 0,
+                n_resamples: 0
+            }
+        );
+    }
+- leaf_id: monte_carlo_survival
+  responsibility: Runs a deterministic seeded Monte-Carlo path simulation of drawdown and survival at a fixed sizing fraction against a ruin floor.
+  signature: 'pub fn monte_carlo_survival(returns_bps: &[i64], f_bps: u32, n_paths: u32, path_len: u32, ruin_bps: u32, seed: u64) -> SurvivalReport'
+  invariants:
+  - An all-winner return set produces survived==n_paths and zero median/p95 drawdown (peak==equity every step).
+  - 'A single -100% (-10_000 bps) return at full sizing wipes out every path: survived==0 and median/p95 drawdown both saturate to 10_000 bps.'
+  - Deterministic in (returns, seed); always survived<=n_paths and median_max_drawdown_bps<=p95_max_drawdown_bps<=10_000.
+  - Empty returns / zero paths / zero length yield a zeroed report; ruin_bps>=10_000 panics (message contains "ruin_bps").
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn prop_monte_carlo_survival() {
+        // All-winner return set: no path ever dies, zero drawdown everywhere.
+        let win = monte_carlo_survival(&[1_000i64, 2_000, 500], 2_000, 50, 30, 5_000, 99);
+        assert_eq!(win.f_bps, 2_000);
+        assert_eq!(win.n_paths, 50);
+        assert_eq!(win.survived, 50);
+        assert_eq!(win.median_max_drawdown_bps, 0);
+        assert_eq!(win.p95_max_drawdown_bps, 0);
+
+        // Full-sizing on a -100% return wipes out: every path dies, drawdown maxes out.
+        let dead = monte_carlo_survival(&[-10_000i64], 10_000, 25, 10, 5_000, 3);
+        assert_eq!(dead.survived, 0);
+        assert_eq!(dead.median_max_drawdown_bps, 10_000);
+        assert_eq!(dead.p95_max_drawdown_bps, 10_000);
+
+        // Deterministic in seed; survivors bounded by paths; median <= p95 drawdown.
+        let a = monte_carlo_survival(&[3_000i64, -2_000, 4_000, -1_500], 1_500, 40, 20, 3_000, 11);
+        let b = monte_carlo_survival(&[3_000i64, -2_000, 4_000, -1_500], 1_500, 40, 20, 3_000, 11);
+        assert_eq!(a, b);
+        assert!(a.survived <= a.n_paths);
+        assert!(a.median_max_drawdown_bps <= a.p95_max_drawdown_bps);
+        assert!(a.p95_max_drawdown_bps <= 10_000);
+
+        // Empty input -> zeroed report.
+        let z = monte_carlo_survival(&[], 1_000, 10, 10, 5_000, 1);
+        assert_eq!(z.n_paths, 0);
+        assert_eq!(z.survived, 0);
+        assert_eq!(z.median_max_drawdown_bps, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "ruin_bps")]
+    fn prop_monte_carlo_survival_bad_ruin_panics() {
+        let _ = monte_carlo_survival(&[1_000i64], 1_000, 1, 1, 10_000, 1);
+    }

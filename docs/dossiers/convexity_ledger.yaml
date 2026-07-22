@@ -1,0 +1,141 @@
+component: convexity_ledger
+constitution_refs: []
+spec: Independence-lock dossier for the `convexity_ledger` module of pump-quant-evaluator (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: two_sided_accounting_folds_both_sides
+  responsibility: 'build_ledger folds each rule two-sidedly: losses avoided on suppressed losers vs net forgone / runners missed / MFE killed on suppressed winners, and MFE captured on allowed events.'
+  signature: 'pub fn build_ledger(events: &[ConvexityEvent], runner_threshold_bps: i64) -> Vec<RuleLedger>'
+  invariants:
+  - For a suppressed event with counterfactual_bps < 0, its magnitude adds to losses_avoided_bps and never to net_forgone_bps; for counterfactual_bps >= 0 it adds to net_forgone_bps and never to losses_avoided_bps.
+  - A suppressed event counts as a runner (increments runners_missed and adds to runners_missed_bps) iff counterfactual_bps >= runner_threshold_bps; strictly below the threshold it is forgone but not a runner.
+  - mfe_killed_bps equals the sum of mfe_bps over suppressed events; mfe_captured_bps equals the sum of max(0, realized_bps) over allowed events.
+  - n equals total events for the rule and suppressed_n equals the count of suppressed events.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn two_sided_accounting_folds_both_sides() {
+        fn r(id: u64) -> RuleId {
+            RuleId::new(RuleKind::Veto, id)
+        }
+        let evs = vec![
+            ConvexityEvent::test(r(1), true, -5_000, 0, 100),
+            ConvexityEvent::test(r(1), true, 8_000, 0, 9_000),
+            ConvexityEvent::test(r(1), false, 3_000, 2_500, 4_000),
+        ];
+        let led = build_ledger(&evs, 5_000);
+        assert_eq!(led.len(), 1);
+        let l = led[0];
+        assert_eq!(l.n, 3);
+        assert_eq!(l.suppressed_n, 2);
+        assert_eq!(l.losses_avoided_bps, 5_000);
+        assert_eq!(l.net_forgone_bps, 8_000);
+        assert_eq!(l.runners_missed, 1);
+        assert_eq!(l.runners_missed_bps, 8_000);
+        assert_eq!(l.mfe_killed_bps, 9_100);
+        assert_eq!(l.mfe_captured_bps, 2_500);
+
+        // Edge: counterfactual just below threshold is forgone but NOT a runner.
+        let evs2 = vec![ConvexityEvent::test(r(2), true, 4_999, 0, 0)];
+        let l2 = build_ledger(&evs2, 5_000)[0];
+        assert_eq!(l2.runners_missed, 0);
+        assert_eq!(l2.net_forgone_bps, 4_999);
+        assert_eq!(l2.losses_avoided_bps, 0);
+    }
+- leaf_id: right_tail_and_participation_by_rank
+  responsibility: build_ledger ranks a rule's events by counterfactual and scores the top-10% right tail as preserved (allowed) vs destroyed (suppressed) plus tail participation counts.
+  signature: 'pub fn build_ledger(events: &[ConvexityEvent], runner_threshold_bps: i64) -> Vec<RuleLedger>'
+  invariants:
+  - top10_total equals ceil(n * 10 / 100) clamped to at least 1 when n > 0 (=1 for n=2).
+  - When the single highest-counterfactual event is suppressed, its counterfactual sums into right_tail_destroyed_bps, right_tail_preserved_bps stays 0, and top10_participated is 0.
+  - When the single highest-counterfactual event is allowed, its counterfactual sums into right_tail_preserved_bps, right_tail_destroyed_bps stays 0, and top10_participated is 1.
+  - top10_participated counts allowed events among the top-10% and never exceeds top10_total.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn right_tail_and_participation_by_rank() {
+        fn r(id: u64) -> RuleId {
+            RuleId::new(RuleKind::ExitPolicy, id)
+        }
+        // Biggest counterfactual was suppressed -> right tail destroyed.
+        let evs = vec![
+            ConvexityEvent::test(r(1), true, 20_000, 0, 25_000),
+            ConvexityEvent::test(r(1), false, 1_000, 900, 1_500),
+        ];
+        let l = build_ledger(&evs, 5_000)[0];
+        assert_eq!(l.top10_total, 1);
+        assert_eq!(l.top10_participated, 0);
+        assert_eq!(l.right_tail_destroyed_bps, 20_000);
+        assert_eq!(l.right_tail_preserved_bps, 0);
+
+        // Biggest counterfactual was allowed -> right tail preserved, participated.
+        let evs2 = vec![
+            ConvexityEvent::test(r(2), false, 12_000, 11_000, 15_000),
+            ConvexityEvent::test(r(2), true, -3_000, 0, 200),
+        ];
+        let l2 = build_ledger(&evs2, 5_000)[0];
+        assert_eq!(l2.top10_total, 1);
+        assert_eq!(l2.top10_participated, 1);
+        assert_eq!(l2.right_tail_preserved_bps, 12_000);
+        assert_eq!(l2.right_tail_destroyed_bps, 0);
+    }
+- leaf_id: net_convexity_is_avoided_minus_forgone
+  responsibility: RuleLedger::net_convexity_bps returns the rule's downside saved minus upside cost (losses_avoided_bps - net_forgone_bps).
+  signature: pub fn net_convexity_bps(&self) -> i128
+  invariants:
+  - net_convexity_bps() always equals losses_avoided_bps - net_forgone_bps exactly.
+  - A rule that only suppresses losers (no forgone upside) yields a strictly positive net_convexity_bps equal to total losses avoided.
+  - When forgone upside exceeds losses avoided, net_convexity_bps is negative.
+  - The value is computed in i128 with no truncation or overflow for the tested magnitudes.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn net_convexity_is_avoided_minus_forgone() {
+        fn r(id: u64) -> RuleId {
+            RuleId::new(RuleKind::Veto, id)
+        }
+        // One loser avoided (+6000 saved), one winner forgone (7000 cost).
+        let evs = vec![
+            ConvexityEvent::test(r(1), true, -6_000, 0, 0),
+            ConvexityEvent::test(r(1), true, 7_000, 0, 0),
+        ];
+        let l = build_ledger(&evs, 100_000)[0];
+        assert_eq!(l.losses_avoided_bps, 6_000);
+        assert_eq!(l.net_forgone_bps, 7_000);
+        assert_eq!(l.net_convexity_bps(), -1_000);
+
+        // Edge: only losers avoided -> strictly positive net convexity.
+        let evs2 = vec![ConvexityEvent::test(r(2), true, -2_000, 0, 0)];
+        let l2 = build_ledger(&evs2, 100_000)[0];
+        assert_eq!(l2.net_convexity_bps(), 2_000);
+    }
+- leaf_id: groups_by_rule_ordered_and_empty
+  responsibility: build_ledger groups events by RuleId, emits one RuleLedger per rule in ascending RuleId order, and returns an empty vector for empty input.
+  signature: 'pub fn build_ledger(events: &[ConvexityEvent], runner_threshold_bps: i64) -> Vec<RuleLedger>'
+  invariants:
+  - Events sharing a RuleId collapse into exactly one RuleLedger whose n is that group's event count.
+  - Output ledgers are ordered by RuleId, so RuleKind::Veto precedes RuleKind::ExitPolicy in the discriminant order.
+  - Each ledger's aggregates cover only its own group's events (e.g. two suppressed -2000/-3000 losers give losses_avoided_bps = 5000).
+  - Empty input produces an empty output vector.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn groups_by_rule_ordered_and_empty() {
+        let evs = vec![
+            ConvexityEvent::test(RuleId::new(RuleKind::ExitPolicy, 9), true, -1_000, 0, 0),
+            ConvexityEvent::test(RuleId::new(RuleKind::Veto, 1), true, -2_000, 0, 0),
+            ConvexityEvent::test(RuleId::new(RuleKind::Veto, 1), true, -3_000, 0, 0),
+        ];
+        let led = build_ledger(&evs, 5_000);
+        assert_eq!(led.len(), 2);
+        // Veto sorts before ExitPolicy by RuleKind discriminant order.
+        assert_eq!(led[0].rule.kind, RuleKind::Veto);
+        assert_eq!(led[0].n, 2);
+        assert_eq!(led[0].losses_avoided_bps, 5_000);
+        assert_eq!(led[1].rule.kind, RuleKind::ExitPolicy);
+        assert_eq!(led[1].n, 1);
+
+        // Empty input -> empty ledger.
+        assert!(build_ledger(&[], 1_000).is_empty());
+    }

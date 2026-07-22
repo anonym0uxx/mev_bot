@@ -1,0 +1,210 @@
+component: catalyst_classifier
+constitution_refs: []
+spec: Independence-lock dossier for the `catalyst_classifier` module of pump-quant-narrative (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: classify_no_data_fade_first
+  responsibility: With zero samples the classifier returns Unknown regardless of any other signal (§29.5 fade-first, absence never fabricated).
+  signature: 'pub fn classify(f: &CatalystFeatures, t: &CatalystThresholds) -> SocialCatalyst'
+  invariants:
+  - sample_count == 0 => classify(...) == SocialCatalyst::Unknown for every combination of echo/coordination/creator/platform/streamer/velocity/flow/breadth inputs.
+  - The no-data override precedes every manipulation and flow rule (rule 1 wins over rules 2-11).
+  - Holding all other fields fixed and only raising sample_count from 0 to a positive value changes the verdict away from the fade-first default.
+  - 'classify is pure: identical inputs yield identical outputs across calls.'
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn base() -> CatalystFeatures {
+        CatalystFeatures {
+            sample_count: 100,
+            copy_echo_density_bps: 0,
+            coordination_bps: 0,
+            creator_funding_bps: 0,
+            platform_surge_bps: 0,
+            streamer_event: false,
+            net_flow: 0,
+            attention_velocity: 0,
+            unique_sources: 0,
+            independent_breadth: 0,
+        }
+    }
+
+    #[test]
+    fn classify_no_data_fade_first() {
+        let t = CatalystThresholds::standard();
+        for echo in [0u64, 6_000, 9_000, 10_000] {
+            for coord in [0u64, 5_000, 9_000, 10_000] {
+                for stream in [false, true] {
+                    for vel in [-5i64, 0, 7] {
+                        let mut f = base();
+                        f.sample_count = 0;
+                        f.copy_echo_density_bps = echo;
+                        f.coordination_bps = coord;
+                        f.creator_funding_bps = 9_000;
+                        f.platform_surge_bps = 9_000;
+                        f.streamer_event = stream;
+                        f.attention_velocity = vel;
+                        f.net_flow = -1;
+                        f.unique_sources = 100;
+                        f.independent_breadth = 100;
+                        assert_eq!(classify(&f, &t), SocialCatalyst::Unknown);
+                    }
+                }
+            }
+        }
+        let mut g = base();
+        g.sample_count = 1;
+        g.copy_echo_density_bps = 9_000;
+        g.coordination_bps = 9_000;
+        assert_eq!(classify(&g, &t), SocialCatalyst::CoordinatedSpam);
+    }
+- leaf_id: classify_manipulation_precedence
+  responsibility: Manipulation classes are matched in severity order (spam > echo > creator > platform > streamer) and preempt benign flow interpretation.
+  signature: 'pub fn classify(f: &CatalystFeatures, t: &CatalystThresholds) -> SocialCatalyst'
+  invariants:
+  - copy_echo_density_bps >= echo_bps AND coordination_bps >= coordination_bps => CoordinatedSpam, even when a rising pre-flow setup is also present.
+  - copy_echo_density_bps >= echo_bps but coordination_bps < coordination_bps => CopyEcho (downgrade), not CoordinatedSpam.
+  - creator_funding_bps >= creator_bps outranks a simultaneous platform surge and streamer event => CreatorFundedPush.
+  - platform_surge_bps >= platform_bps outranks a simultaneous streamer_event => PlatformVisibilitySurge.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn base() -> CatalystFeatures {
+        CatalystFeatures {
+            sample_count: 100,
+            copy_echo_density_bps: 0,
+            coordination_bps: 0,
+            creator_funding_bps: 0,
+            platform_surge_bps: 0,
+            streamer_event: false,
+            net_flow: 0,
+            attention_velocity: 0,
+            unique_sources: 0,
+            independent_breadth: 0,
+        }
+    }
+
+    #[test]
+    fn classify_manipulation_precedence() {
+        let t = CatalystThresholds::standard();
+
+        let mut spam = base();
+        spam.copy_echo_density_bps = t.echo_bps;
+        spam.coordination_bps = t.coordination_bps;
+        spam.attention_velocity = 500;
+        spam.net_flow = 0;
+        assert_eq!(classify(&spam, &t), SocialCatalyst::CoordinatedSpam);
+
+        let mut echo = base();
+        echo.copy_echo_density_bps = t.echo_bps;
+        echo.coordination_bps = t.coordination_bps - 1;
+        assert_eq!(classify(&echo, &t), SocialCatalyst::CopyEcho);
+
+        let mut cr = base();
+        cr.copy_echo_density_bps = t.echo_bps - 1;
+        cr.coordination_bps = 10_000;
+        cr.creator_funding_bps = t.creator_bps;
+        assert_eq!(classify(&cr, &t), SocialCatalyst::CreatorFundedPush);
+
+        let mut both = base();
+        both.creator_funding_bps = t.creator_bps;
+        both.platform_surge_bps = 10_000;
+        both.streamer_event = true;
+        assert_eq!(classify(&both, &t), SocialCatalyst::CreatorFundedPush);
+
+        let mut pl = base();
+        pl.platform_surge_bps = t.platform_bps;
+        pl.streamer_event = true;
+        assert_eq!(classify(&pl, &t), SocialCatalyst::PlatformVisibilitySurge);
+    }
+- leaf_id: classify_flow_tier
+  responsibility: Once no manipulation fires, rising attention plus net-flow sign selects late-exit / pre-flow / live-amplifier, with breadth giving genuine formation and flat/narrow falling to Unknown.
+  signature: 'pub fn classify(f: &CatalystFeatures, t: &CatalystThresholds) -> SocialCatalyst'
+  invariants:
+  - rising (attention_velocity > 0) AND net_flow strictly below -exit_flow => LateExitLiquidityPromotion; net_flow == -exit_flow is NOT below and falls through.
+  - rising AND net_flow <= flow_floor (and not an active exit) => PreFlowDiscovery; rising with net_flow > flow_floor and narrow breadth => LiveFlowAmplifier.
+  - not rising with unique_sources >= genuine_sources AND independent_breadth >= genuine_breadth => GenuineCommunityFormation.
+  - not rising with no dominant driver => Unknown (fade-first).
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn base() -> CatalystFeatures {
+        CatalystFeatures {
+            sample_count: 100,
+            copy_echo_density_bps: 0,
+            coordination_bps: 0,
+            creator_funding_bps: 0,
+            platform_surge_bps: 0,
+            streamer_event: false,
+            net_flow: 0,
+            attention_velocity: 0,
+            unique_sources: 0,
+            independent_breadth: 0,
+        }
+    }
+
+    #[test]
+    fn classify_flow_tier() {
+        let mut t = CatalystThresholds::standard();
+        t.exit_flow = 100;
+
+        let mut le = base();
+        le.attention_velocity = 300;
+        le.net_flow = -101;
+        assert_eq!(
+            classify(&le, &t),
+            SocialCatalyst::LateExitLiquidityPromotion
+        );
+
+        let mut edge = base();
+        edge.attention_velocity = 300;
+        edge.net_flow = -100;
+        assert_eq!(classify(&edge, &t), SocialCatalyst::PreFlowDiscovery);
+
+        let mut pf = base();
+        pf.attention_velocity = 1;
+        pf.net_flow = 0;
+        assert_eq!(classify(&pf, &t), SocialCatalyst::PreFlowDiscovery);
+
+        let mut la = base();
+        la.attention_velocity = 1;
+        la.net_flow = 5_000;
+        assert_eq!(classify(&la, &t), SocialCatalyst::LiveFlowAmplifier);
+
+        let flat = base();
+        assert_eq!(classify(&flat, &t), SocialCatalyst::Unknown);
+
+        let mut gc = base();
+        gc.unique_sources = t.genuine_sources;
+        gc.independent_breadth = t.genuine_breadth;
+        assert_eq!(classify(&gc, &t), SocialCatalyst::GenuineCommunityFormation);
+    }
+- leaf_id: thresholds_standard_values
+  responsibility: The documented standard() threshold set exposes exact, non-degenerate integer gates within the basis-point domain.
+  signature: pub const fn standard() -> CatalystThresholds
+  invariants:
+  - standard() pins echo_bps=6000, coordination_bps=5000, creator_bps=4000, platform_bps=5000, exit_flow=0, flow_floor=0, genuine_sources=8, genuine_breadth=5.
+  - Every bps gate lies in the valid (0, 10_000] basis-point domain (non-degenerate, no full-scale saturation).
+  - 'standard() is const/deterministic: two independent constructions compare equal.'
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn thresholds_standard_values() {
+        let t = CatalystThresholds::standard();
+        assert_eq!(t.echo_bps, 6_000);
+        assert_eq!(t.coordination_bps, 5_000);
+        assert_eq!(t.creator_bps, 4_000);
+        assert_eq!(t.platform_bps, 5_000);
+        assert_eq!(t.exit_flow, 0);
+        assert_eq!(t.flow_floor, 0);
+        assert_eq!(t.genuine_sources, 8);
+        assert_eq!(t.genuine_breadth, 5);
+        for g in [
+            t.echo_bps,
+            t.coordination_bps,
+            t.creator_bps,
+            t.platform_bps,
+        ] {
+            assert!(g <= 10_000);
+            assert!(g > 0);
+        }
+        assert_eq!(t, CatalystThresholds::standard());
+    }
