@@ -2,7 +2,7 @@
 
 Authoritative record of the code-level latency work on the trade hot path. Every change
 here is **behaviour-preserving**: the decision-journal digest, realized net-SOL, and the
-179 SHA-locked dossier tests are byte-identical before and after (proven, not asserted —
+191 SHA-locked dossier tests are byte-identical before and after (proven, not asserted —
 see *Behaviour proof*). Absolute-CPU tuning (`target-cpu`, PGO, core/NUMA pinning) is
 Phase-B and is specified at the end; it is deliberately not applied on the build box (§24).
 
@@ -69,11 +69,13 @@ the thing that was quadratic — barely fires; its win there is purely the remov
 
 `rust/crates/pump-quant-app/tests/golden_digest.rs` drives a 72-tick, all-four-lanes,
 eviction-heavy (512 mints vs capacity 64), confirm/prune/promote/reflect scenario and pins
-the exact outcome: `journal_digest = 17194072179380622382`, `net = 3766464`,
-`promoted/admitted/rejected = 576/288/288`. This digest was captured from the
-**pre-optimization** tree and re-verified **unchanged** on the optimized tree. Plus: the full
-suite (1390 tests) is green, `materialize_tests.py --verify` confirms all 179 locked dossier
-tests intact, and `clippy -D warnings` + the supervisor portable gate pass.
+the exact outcome: `journal_digest = 14000818526377800221`, `net_lamports = 8785954`,
+`promoted/admitted/rejected = 432/15/417` (re-pin #4, `tests/golden_digest.rs`). This digest
+was re-verified **unchanged** across the optimization work. Plus: 433 workspace test binaries
+are green, `materialize_tests.py --verify` confirms all 191 SHA-locked dossier tests intact,
+and `clippy -D warnings` + the supervisor portable gate pass.
+(machine-verified 2026-07-22; regenerate via
+`cargo test -p pump-quant-app --test golden_digest -- --nocapture`)
 
 ## Deferred — spec-gated, NOT drop-in
 

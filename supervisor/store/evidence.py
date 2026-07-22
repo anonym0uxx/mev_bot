@@ -117,7 +117,41 @@ CREATE TABLE IF NOT EXISTS criteria_map (
     updated_at  REAL,
     PRIMARY KEY (criterion, run_id)
 );
+CREATE TABLE IF NOT EXISTS hypotheses (
+    id                            TEXT PRIMARY KEY,   -- hypothesis_id from HYPOTHESIS_SCHEMA
+    statement                     TEXT,
+    causal_mechanism              TEXT,
+    competing_explanations        TEXT,               -- json array of strings (§56.10)
+    disconfirming_evidence_sought TEXT,
+    expected_net_sol_impact       REAL,
+    prior_probability             REAL,
+    cost_to_test                  TEXT,
+    edge_half_life                TEXT,
+    inference_state               TEXT DEFAULT 'Hypothesis'
+        CHECK (inference_state IN ('Observation','Hypothesis','ProvisionalInference',
+                                   'ValidatedInference','RejectedInference',
+                                   'ExpiredInference','RegimeSpecificInference')),
+    created_run                   TEXT,
+    updated_at                    REAL
+);
+CREATE TABLE IF NOT EXISTS reconciled_outcomes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          TEXT,
+    source_path     TEXT,          -- trade-JSONL artifact the row was ingested from
+    digest          TEXT,          -- sha256 of the source artifact
+    net_lamports    INTEGER,
+    trades          INTEGER,
+    fill_mode       TEXT,
+    evidence_status TEXT,
+    created_at      REAL
+);
 """
+
+# Constitution §56.10 inference ladder — the only states a hypothesis may occupy.
+VALID_INFERENCE_STATES: tuple[str, ...] = (
+    "Observation", "Hypothesis", "ProvisionalInference", "ValidatedInference",
+    "RejectedInference", "ExpiredInference", "RegimeSpecificInference",
+)
 
 
 @dataclass
@@ -425,13 +459,130 @@ class EvidenceStore:
         except Exception:  # noqa: BLE001
             return ""
 
+    # ------------------------------------------- hypotheses (durable memory, §43/§56.10)
+    def record_hypothesis(self, hyp: dict[str, Any], created_run: str = "") -> dict:
+        """Persist a generated hypothesis. `hyp` uses HYPOTHESIS_SCHEMA field names
+        (hypothesis_id, statement, causal_mechanism, competing_explanations,
+        disconfirming_evidence_sought, expected_net_sol_impact, prior_probability,
+        cost_to_test, edge_half_life) plus optional inference_state."""
+        state = hyp.get("inference_state", "Hypothesis")
+        if state not in VALID_INFERENCE_STATES:
+            raise ValueError(f"invalid inference_state {state!r}; "
+                             f"must be one of {VALID_INFERENCE_STATES} (§56.10)")
+        hid = hyp.get("hypothesis_id") or hyp.get("id")
+        if not hid:
+            raise ValueError("hypothesis requires 'hypothesis_id'")
+        comp = hyp.get("competing_explanations", [])
+        if not isinstance(comp, list):
+            raise ValueError("competing_explanations must be a list (§56.10)")
+        self._db.execute(
+            "INSERT OR REPLACE INTO hypotheses VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (hid, hyp.get("statement", ""), hyp.get("causal_mechanism", ""),
+             json.dumps(comp), hyp.get("disconfirming_evidence_sought", ""),
+             float(hyp.get("expected_net_sol_impact", 0.0)),
+             float(hyp.get("prior_probability", 0.0)),
+             hyp.get("cost_to_test", "unknown"), hyp.get("edge_half_life", "unknown"),
+             state, created_run, time.time()))
+        self._db.commit()
+        return {"recorded": True, "id": hid, "inference_state": state}
+
+    def set_inference_state(self, hypothesis_id: str, state: str) -> dict:
+        """Move a hypothesis along the §56.10 inference ladder. Validated; never silent."""
+        if state not in VALID_INFERENCE_STATES:
+            raise ValueError(f"invalid inference_state {state!r}; "
+                             f"must be one of {VALID_INFERENCE_STATES} (§56.10)")
+        cur = self._db.execute(
+            "UPDATE hypotheses SET inference_state=?, updated_at=? WHERE id=?",
+            (state, time.time(), hypothesis_id))
+        self._db.commit()
+        if cur.rowcount == 0:
+            return {"ok": False, "reason": f"no hypothesis with id '{hypothesis_id}'"}
+        return {"ok": True, "id": hypothesis_id, "inference_state": state}
+
+    def get_hypothesis(self, hypothesis_id: str) -> Optional[dict]:
+        row = self._db.execute(
+            "SELECT id,statement,causal_mechanism,competing_explanations,"
+            "disconfirming_evidence_sought,expected_net_sol_impact,prior_probability,"
+            "cost_to_test,edge_half_life,inference_state,created_run,updated_at "
+            "FROM hypotheses WHERE id=?", (hypothesis_id,)).fetchone()
+        if not row:
+            return None
+        cols = ["id", "statement", "causal_mechanism", "competing_explanations",
+                "disconfirming_evidence_sought", "expected_net_sol_impact",
+                "prior_probability", "cost_to_test", "edge_half_life",
+                "inference_state", "created_run", "updated_at"]
+        d = dict(zip(cols, row))
+        try:
+            d["competing_explanations"] = json.loads(d["competing_explanations"] or "[]")
+        except json.JSONDecodeError:
+            pass  # return raw text rather than losing the record
+        return d
+
+    def list_hypotheses(self, inference_state: str = "", limit: int = 500) -> list[dict]:
+        q = ("SELECT id,statement,causal_mechanism,competing_explanations,"
+             "disconfirming_evidence_sought,expected_net_sol_impact,prior_probability,"
+             "cost_to_test,edge_half_life,inference_state,created_run,updated_at "
+             "FROM hypotheses")
+        args: tuple = ()
+        if inference_state:
+            if inference_state not in VALID_INFERENCE_STATES:
+                raise ValueError(f"invalid inference_state filter {inference_state!r}")
+            q += " WHERE inference_state=?"
+            args = (inference_state,)
+        q += " ORDER BY updated_at DESC LIMIT ?"
+        args = args + (limit,)
+        cols = ["id", "statement", "causal_mechanism", "competing_explanations",
+                "disconfirming_evidence_sought", "expected_net_sol_impact",
+                "prior_probability", "cost_to_test", "edge_half_life",
+                "inference_state", "created_run", "updated_at"]
+        out = []
+        for row in self._db.execute(q, args).fetchall():
+            d = dict(zip(cols, row))
+            try:
+                d["competing_explanations"] = json.loads(d["competing_explanations"] or "[]")
+            except json.JSONDecodeError:
+                pass
+            out.append(d)
+        return out
+
+    # -------------------------------------- reconciled outcomes (durable memory, §43)
+    def record_reconciled_outcome(self, run_id: str, source_path: str, digest: str,
+                                  net_lamports: int, trades: int, fill_mode: str,
+                                  evidence_status: str) -> int:
+        cur = self._db.execute(
+            "INSERT INTO reconciled_outcomes (run_id,source_path,digest,net_lamports,"
+            "trades,fill_mode,evidence_status,created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (run_id, source_path, digest, int(net_lamports), int(trades),
+             fill_mode, evidence_status, time.time()))
+        self._db.commit()
+        return cur.lastrowid
+
+    def list_reconciled_outcomes(self, run_id: str = "", limit: int = 500) -> list[dict]:
+        q = ("SELECT id,run_id,source_path,digest,net_lamports,trades,fill_mode,"
+             "evidence_status,created_at FROM reconciled_outcomes")
+        args: tuple = ()
+        if run_id:
+            q += " WHERE run_id=?"
+            args = (run_id,)
+        q += " ORDER BY created_at DESC LIMIT ?"
+        args = args + (limit,)
+        cols = ["id", "run_id", "source_path", "digest", "net_lamports", "trades",
+                "fill_mode", "evidence_status", "created_at"]
+        return [dict(zip(cols, r)) for r in self._db.execute(q, args).fetchall()]
+
     def journal_infra_fact(self, key: str, value: str, source: str, by: str) -> None:
         """Evidence-side journal of a manifest facts append (agent-writable lane)."""
+        # repair: previously inserted into a nonexistent `resolved` column (schema has
+        # `resolved_at`), so every call raised sqlite3.OperationalError — silently
+        # swallowed by the MCP server, losing the journal entry. Rows are stamped
+        # created_at/resolved_at=now so they never appear as open escalations
+        # (open_escalations filters on resolved_at IS NULL).
+        now = time.time()
         self._db.execute(
-            "INSERT INTO escalations (run_id, milestone, task_id, domain, context, resolved) "
-            "VALUES ('', 'infra', ?, 'infra_fact', ?, 1)",
+            "INSERT INTO escalations (run_id, milestone, task_id, domain, context, "
+            "created_at, resolved_at) VALUES ('', 'infra', ?, 'infra_fact', ?, ?, ?)",
             (key, json.dumps({"value": value[:500], "source": source, "by": by,
-                               "at": time.time()})))
+                              "at": now}), now, now))
         self._db.commit()
 
     def close(self) -> None:

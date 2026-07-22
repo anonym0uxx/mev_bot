@@ -15,17 +15,33 @@ use std::process::ExitCode;
 
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, RunMode};
-use pump_quant_app::event::AppEvent;
+use pump_quant_app::event::{AppEvent, CreatorActionKind};
 use pump_quant_domain::ids::Mint as DomainMint;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 4 {
+    if args.len() < 4 {
         eprintln!(
-            "usage: {} <paper|replay> <config-file> <events-file>",
+            "usage: {} <paper|replay> <config-file> <events-file> [--trade-jsonl PATH] [--config-ledger PATH]",
             args[0]
         );
         return ExitCode::from(2);
+    }
+    // Optional post-run export sinks (§40/§43: JSONL is SECONDARY — audit and
+    // export, never authoritative over the journal digest or chain truth).
+    let mut trade_jsonl: Option<String> = None;
+    let mut config_ledger: Option<String> = None;
+    let mut i = 4;
+    while i + 1 < args.len() {
+        match args[i].as_str() {
+            "--trade-jsonl" => trade_jsonl = Some(args[i + 1].clone()),
+            "--config-ledger" => config_ledger = Some(args[i + 1].clone()),
+            other => {
+                eprintln!("unknown flag '{other}'");
+                return ExitCode::from(2);
+            }
+        }
+        i += 2;
     }
 
     let mode = match args[1].as_str() {
@@ -81,6 +97,7 @@ fn main() -> ExitCode {
     println!("promoted          {}", report.promoted);
     println!("admitted          {}", report.admitted);
     println!("rejected          {}", report.rejected);
+    println!("universe_filtered {}", report.universe_filtered);
     println!("net_lamports      {}", report.net_lamports);
     for (lane, net) in report.per_lane_net {
         println!("  lane {lane:?}: net {net}");
@@ -89,8 +106,129 @@ fn main() -> ExitCode {
         println!("  weight {lane:?}: {w} bp");
     }
     println!("journal_digest    {:#018x}", report.journal_digest);
+    // §38 evidence law: every emitted report is labeled with the fill model
+    // that produced it. Modes A/B are NOT promotion evidence — say so.
+    let readiness = engine.promotion_readiness();
+    let identity = engine.strategy_identity();
+    println!(
+        "evidence          {:?} / {:?} — {}",
+        readiness.evidence_status,
+        readiness.fill_model,
+        if readiness.live_probe_eligible {
+            "live-probe eligible"
+        } else {
+            "NOT promotion evidence"
+        }
+    );
+    println!("blocked_on        {}", readiness.blocked_on);
+    println!("strategy_hash     {}", identity.strategy_hash.to_hex());
+    println!("config_fnv        {:#018x}", identity.config_fnv);
+
+    // Optional JSONL exports (§40: never authoritative over chain/journal).
+    if let Some(path) = trade_jsonl {
+        if let Err(e) = write_trade_jsonl(&path, &engine, &report) {
+            eprintln!("trade-jsonl export failed: {e}");
+            return ExitCode::from(1);
+        }
+    }
+    if let Some(path) = config_ledger {
+        if let Err(e) = write_config_ledger(&path, &engine, &report, &readiness) {
+            eprintln!("config-ledger export failed: {e}");
+            return ExitCode::from(1);
+        }
+    }
 
     ExitCode::SUCCESS
+}
+
+/// Export the retained decision journal as JSONL (one decision per line).
+/// SECONDARY record (§40): the canonical truth is the rolling journal digest;
+/// this file exists for audit, supervisor ingestion, and human inspection.
+fn write_trade_jsonl(
+    path: &str,
+    engine: &Engine,
+    report: &pump_quant_app::engine::Report,
+) -> Result<(), String> {
+    use pump_quant_app::journal_log::Decision;
+    let mut out = String::new();
+    for d in engine.journal().recent() {
+        let line = match *d {
+            Decision::Promoted { mint, lane, rank } => format!(
+                "{{\"t\":\"promoted\",\"mint\":\"{}\",\"lane\":{lane},\"rank\":{rank}}}",
+                hex32(&mint)
+            ),
+            Decision::Admitted {
+                mint,
+                size_lamports,
+            } => format!(
+                "{{\"t\":\"admitted\",\"mint\":\"{}\",\"size_lamports\":{size_lamports}}}",
+                hex32(&mint)
+            ),
+            Decision::Rejected { mint, reason } => format!(
+                "{{\"t\":\"rejected\",\"mint\":\"{}\",\"reason\":{reason}}}",
+                hex32(&mint)
+            ),
+            Decision::Filled {
+                mint,
+                net_pnl_lamports,
+                reason,
+            } => format!(
+                "{{\"t\":\"filled\",\"mint\":\"{}\",\"net_pnl_lamports\":{net_pnl_lamports},\"reason\":{reason}}}",
+                hex32(&mint)
+            ),
+            Decision::Reweighted {
+                lane,
+                before_bp,
+                after_bp,
+            } => format!(
+                "{{\"t\":\"reweighted\",\"lane\":{lane},\"before_bp\":{before_bp},\"after_bp\":{after_bp}}}"
+            ),
+        };
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out.push_str(&format!(
+        "{{\"t\":\"run_summary\",\"digest\":\"{:#018x}\",\"net_lamports\":{},\"ticks\":{},\"authoritative\":false}}\n",
+        report.journal_digest, report.net_lamports, report.ticks
+    ));
+    std::fs::write(path, out).map_err(|e| e.to_string())
+}
+
+/// Append one configuration-identity line (§14.2 config hash logging): the
+/// exact identity this run executed under, bound to its journal digest.
+fn write_config_ledger(
+    path: &str,
+    engine: &Engine,
+    report: &pump_quant_app::engine::Report,
+    readiness: &pump_quant_app::authority::PromotionReadiness,
+) -> Result<(), String> {
+    let identity = engine.strategy_identity();
+    let line = format!(
+        "{{\"t\":\"config_identity\",\"strategy_hash\":\"{}\",\"config_fnv\":\"{:#018x}\",\"protocol_registry_fnv\":\"{:#018x}\",\"journal_digest\":\"{:#018x}\",\"evidence\":\"{:?}\",\"fill_model\":\"{:?}\",\"promotion_evidence\":{}}}\n",
+        identity.strategy_hash.to_hex(),
+        identity.config_fnv,
+        identity.protocol_registry_fnv,
+        report.journal_digest,
+        readiness.evidence_status,
+        readiness.fill_model,
+        readiness.live_probe_eligible
+    );
+    use std::io::Write as _;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    f.write_all(line.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// Lowercase hex of a 32-byte id.
+fn hex32(b: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(64);
+    for byte in b {
+        s.push_str(&format!("{byte:02x}"));
+    }
+    s
 }
 
 /// Parse the dependency-free event format (one event per line; `#` comments).
@@ -107,12 +245,18 @@ fn parse_events(text: &str) -> Result<Vec<AppEvent>, String> {
         let num = |s: &str| s.parse::<i64>().map_err(|_| err("bad integer"));
         let ev = match f[0] {
             "tick" => AppEvent::Tick,
-            "trade" if f.len() == 6 => AppEvent::MarketTrade {
+            "migrate" if f.len() == 3 => AppEvent::Migration {
                 mint: mint(f[1])?,
-                liquidity_lamports: num(f[2])?.max(0) as u64,
-                signed_base: num(f[3])?,
-                buyer_entity: num(f[4])?.max(0) as u64,
-                age_slots: num(f[5])?.max(0) as u32,
+                slot: num(f[2])?.max(0) as u64,
+            },
+            "trade" if f.len() == 8 => AppEvent::MarketTrade {
+                mint: mint(f[1])?,
+                price_fp: f[2].parse::<i128>().map_err(|_| err("bad price_fp"))?,
+                quote_lamports: num(f[3])?.max(0) as u64,
+                liquidity_lamports: num(f[4])?.max(0) as u64,
+                signed_base: num(f[5])?,
+                buyer_entity: num(f[6])?.max(0) as u64,
+                age_slots: num(f[7])?.max(0) as u32,
             },
             "narr" if f.len() == 4 => AppEvent::NarrativeSample {
                 mint: mint(f[1])?,
@@ -131,6 +275,47 @@ fn parse_events(text: &str) -> Result<Vec<AppEvent>, String> {
             "confirm" if f.len() == 3 => AppEvent::OnchainConfirm {
                 mint: mint(f[1])?,
                 sellable_depth_lamports: num(f[2])?.max(0) as u64,
+            },
+            // Factual, on-chain-led category assignment (the classifier ran upstream;
+            // the journal carries the resolved integer id, §85).
+            "tokenmeta" if f.len() == 6 => AppEvent::TokenMetadata {
+                mint: mint(f[1])?,
+                category_id: num(f[2])?.max(0) as u64,
+                taxonomy_version: num(f[3])?.max(0) as u32,
+                creator: num(f[4])?.max(0) as u64,
+                slot: num(f[5])?.max(0) as u64,
+            },
+            "creator_init" if f.len() == 5 => AppEvent::CreatorAction {
+                mint: mint(f[1])?,
+                kind: CreatorActionKind::Init {
+                    initial_tokens: num(f[2])?.max(0) as u64,
+                    total_supply: num(f[3])?.max(0) as u64,
+                },
+                slot: num(f[4])?.max(0) as u64,
+            },
+            "creator_buy" if f.len() == 5 => AppEvent::CreatorAction {
+                mint: mint(f[1])?,
+                kind: CreatorActionKind::Buy {
+                    tokens: num(f[2])?.max(0) as u64,
+                    quote_lamports: num(f[3])?.max(0) as u64,
+                },
+                slot: num(f[4])?.max(0) as u64,
+            },
+            "creator_sell" if f.len() == 5 => AppEvent::CreatorAction {
+                mint: mint(f[1])?,
+                kind: CreatorActionKind::Sell {
+                    tokens: num(f[2])?.max(0) as u64,
+                    quote_lamports: num(f[3])?.max(0) as u64,
+                },
+                slot: num(f[4])?.max(0) as u64,
+            },
+            "creator_link" if f.len() == 5 => AppEvent::CreatorAction {
+                mint: mint(f[1])?,
+                kind: CreatorActionKind::LinkedBuy {
+                    cluster: num(f[2])?.max(0) as u64,
+                    tokens: num(f[3])?.max(0) as u64,
+                },
+                slot: num(f[4])?.max(0) as u64,
             },
             other => return Err(err(&format!("unknown or malformed event '{other}'"))),
         };

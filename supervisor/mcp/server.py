@@ -10,7 +10,7 @@ Register with Hermes via its MCP config (see hermes_mcp_config.example.json):
     command: python
     args:    ["-m", "supervisor.mcp.server", "--config", "<path>/supervisor.yaml"]
 
-Tools exposed:
+Tools exposed (16 registered):
   gate_verify        -> run the independent milestone/task gate battery (build/clippy/fmt/
                         no-stubs/tests[/secrets/bench/determinism]); returns pass/fail + reasons.
                         THIS is how a milestone gets certified — never by model self-report.
@@ -18,8 +18,21 @@ Tools exposed:
                         funds). Non-empty hits = STOP and escalate to the human.
   run_reinforcement  -> grind a HARD component leaf-by-leaf via best-of-N against its dossier
                         (the supervisor samples GLM directly for candidates).
+  author_dossier     -> [design-model] author a missing HARD-component dossier via the
+                        independent design model; validated by the real loader before install.
+  propose_amendment  -> queue a constitution change proposal (intake only; evidence_ref required;
+                        Tier-0 material refused).
+  draft_amendment    -> [design-model] draft queued proposal text; human approves via CLI.
+  amendment_status   -> list queued/drafted/approved/applied constitution amendments.
+  record_infra_fact  -> append a provenance-stamped infrastructure fact to the manifest ledger.
   evidence_status    -> milestone/criteria/escalation dashboard from the evidence store.
   record_escalation  -> journal a human-needed escalation (Tier-0, stuck leaf, contradiction).
+  register_artifact  -> self-bind a build-produced artifact (evaluator/research_runner/
+                        live_status); evaluator hash is TOFU-pinned, never silently re-pinned.
+  evaluator_verify   -> verify the frozen evaluator's hash against the pin (§44).
+  experiment_run     -> invoke the sealed-experiment runner for a registered experiment (§56).
+  promotion_check    -> report promotion preconditions; live scope always requires the human gate.
+  live_status        -> read the running bot's exported status/metrics.
   bench_endpoint     -> measure real tokens/sec of the llama.cpp endpoint.
 
 The server never advances anything itself; it returns verified facts. Hermes remains the
@@ -30,6 +43,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os  # repair: was missing — _dossier_authoring_brief used os.path.isfile and silently swallowed the NameError, blanking constitution_context
 import sys
 import time
 import traceback

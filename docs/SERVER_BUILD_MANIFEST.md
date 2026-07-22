@@ -1,88 +1,205 @@
-# SERVER BUILD MANIFEST — Phase-B (deployment box) implementation tasks
+# SERVER_BUILD_MANIFEST — Phase-B handoff (deferred server capabilities)
 
-This file is the **authoritative, actionable checklist for the server build**. Everything here is
-`server_deferred` in `docs/criteria_coverage_map.json`: it is intentionally NOT implemented on the
-laptop (Phase-A) because it needs real hardware, a live endpoint, the Windows OS, or fund custody.
+This is the handoff manifest for capabilities that are deliberately **deferred to the
+deployment server** (Phase-B). Phase-A (laptop build box) delivered the interfaces,
+deterministic logic, and tests listed under each item; nothing below claims a live
+capability that does not exist yet. Every item is **fail-closed**: absent its production
+adapter, credentials, or measurement, the affected path refuses to arm — it never
+degrades silently into simulation-as-live.
 
-**For the supervisor / build model (Hermes):** when building on the deployment box, treat every task
-below as an open work item. Each names (a) exactly what to implement, (b) the portable trait/seam it
-plugs into that is ALREADY built and tested on the laptop, and (c) the locked acceptance test or
-contract it must satisfy. The laptop side deliberately left a trait boundary for each so the server
-work is "implement this trait and wire it," never "design from scratch." Do not consider Phase-B
-complete until every item's acceptance condition holds on the real box.
-
-Cross-reference: criterion numbers are the acceptance-criteria ids in `criteria_coverage_map.json`.
+Section numbers are load-bearing: `docs/LATENCY.md` cites §1 (OsTune pinning) and §5
+(the never-`target-cpu=native` rule); `pump-quant-core/src/cpu_numa_tuning.rs` cites
+task #1.
 
 ---
 
-## 1. CPU/NUMA tuning — implement `OsTune` for Windows  (criterion 21, §57, §24)
+## §1 CPU affinity / NUMA / NIC / IRQ / Windows tuning (OsTune)
 
-**Status on laptop:** portable logic DONE + locked. `pump_quant_core::cpu_numa_tuning` ships
-`parse_topology` (cn_topology_model), `derive_plan` (cn_pin_plan), `jitter_stats` (cn_jitter_probe),
-`apply_plan`, the `OsTune` TRAIT, and a `MockOs`. The decision logic is fully tested via the mock.
+- **Phase-A interface:** `pump-quant-core::cpu_numa_tuning` — topology model, pin plan,
+  jitter probe, and the `OsTune` trait with a no-op/recording impl; plus
+  `pump-quant-core::lockfree` and `pump-quant-core::latency` for the structures the plan
+  protects.
+- **Required production adapter:** real `impl OsTune` on the deploy OS (Windows:
+  `SetThreadGroupAffinity` / `SetPriorityClass` / `timeBeginPeriod` / `VirtualLock`;
+  Linux equivalent if the deploy OS changes), plus NIC queue/IRQ steering config.
+- **Hardware/credential dependency:** the EPYC 9655P deploy box itself (CCD/L3 topology);
+  administrator rights for affinity/priority/page-lock calls.
+- **Server measurement required:** jitter probe before/after pinning; per-CCD cache
+  residency of the hot decision thread; IRQ distribution under ingest load.
+- **Integration point:** app startup applies the pin plan from `cpu_numa_tuning` before
+  the `evaluate()` loop starts.
+- **Acceptance test:** jitter-probe deltas recorded in the evidence store; the golden
+  digest (`tests/golden_digest.rs`) unchanged — tuning must be behaviour-preserving.
+- **Failure behaviour (fail-closed):** if any OsTune call fails, the bot runs unpinned
+  and records the failure; it never claims tuned latency numbers.
+- **Enablement condition:** deploy box provisioned + real `OsTune` impl merged + jitter
+  measurements journaled.
 
-**Server task:** implement the REAL `impl OsTune` (e.g. `struct WindowsOsTune`) over the Windows APIs —
-`GetLogicalProcessorInformationEx` (to feed `parse_topology`), `SetThreadGroupAffinity`,
-`SetPriorityClass`/`SetThreadPriority`, `timeBeginPeriod`, and `VirtualLock`. NO libc / no
-`sched_setaffinity` / no `/proc`. Each setter must READ BACK the applied value and return the observed
-result so `apply_plan`'s verification surfaces a silent OS no-op as a `Mismatch` (never trusts it).
+## §2 Helius LaserStream connection
 
-**Wire-up:** at boot, `parse_topology(records)` → `derive_plan(&topology, &hot_threads)` →
-`apply_plan(&mut windows_os, &plan, Prio::High)`; assert `report.mismatches.is_empty() &&
-report.errors.is_empty()`. Then run the jitter probe on the pinned hot thread and feed the TSC deltas
-to `jitter_stats`; compare p999 against the §24 budget and against the unpinned baseline.
+- **Phase-A interface:** `pump-quant-ingest::helius_parse` (message parsing, tested on
+  fixtures) and `pump-quant-ingest::submission_surface`; canonicalization via
+  `pump-quant-canonical`.
+- **Required production adapter:** authenticated LaserStream (gRPC/WebSocket) client with
+  reconnect/backpressure, feeding the parser's existing input type.
+- **Hardware/credential dependency:** Helius API key on a paid plan with LaserStream
+  entitlement; server-grade network.
+- **Server measurement required:** end-to-end event latency (stream receive → reducer
+  apply), disconnect/reconnect gap statistics.
+- **Integration point:** ingest source registry (`pump-quant-ingest::source_registry`)
+  registers the live source; staleness/disconnect handling per the safety-integrity
+  dossier tests.
+- **Acceptance test:** parser fixtures stay green; live soak run journaled with zero
+  unexplained sequence gaps.
+- **Failure behaviour (fail-closed):** disconnect or stale stream trips the staleness
+  gate — no trading decisions on stale data.
+- **Enablement condition:** credentialed endpoint + soak-run evidence in the store.
 
-**Acceptance:** `rust/crates/pump-quant-core/tests/dossier_cpu_numa_tuning_cn_os_apply.rs` is the locked
-contract the Windows impl must satisfy (behaviourally — it tests against `MockOs`, the real impl must
-exhibit the same read-back-verified semantics). The pin plan + jitter budget must verify on the real
-topology.
+## §3 Jito ShredStream
+
+- **Phase-A interface:** `pump-quant-core::shred` (header decode, FEC tracking,
+  reassembly, parity gate — dossier-tested).
+- **Required production adapter:** Jito ShredStream proxy/client subscription delivering
+  raw shreds to the decoder.
+- **Hardware/credential dependency:** Jito ShredStream access approval; UDP-capable
+  server network path.
+- **Server measurement required:** shred-vs-RPC lead time distribution; reassembly
+  success rate under real loss.
+- **Integration point:** early-signal path ahead of confirmed RPC data; the parity gate
+  decides when reassembled data may be used.
+- **Acceptance test:** dossier tests for `shred` remain SHA-locked green; live parity
+  gate statistics journaled.
+- **Failure behaviour (fail-closed):** parity/FEC failure discards the shred-derived
+  view; the bot falls back to the confirmed stream.
+- **Enablement condition:** granted ShredStream access + measured lead-time evidence.
+
+## §4 Canonical RPC failover
+
+- **Phase-A interface:** `pump-quant-canonical` (canonical observation/reducer types,
+  deterministic tie-breaks via `pump-quant-clock::tie_break`);
+  `pump-quant-ingest::canonical`.
+- **Required production adapter:** multi-provider RPC client set with health scoring and
+  deterministic failover among providers.
+- **Hardware/credential dependency:** at least two funded RPC provider accounts
+  (e.g. Helius + fallback).
+- **Server measurement required:** per-provider latency/error-rate baselines; failover
+  switch time.
+- **Integration point:** all confirmed-state reads route through the canonical layer;
+  failover must preserve reducer determinism.
+- **Acceptance test:** replay parity (`pump-quant-replay` + `pump-quant-clock`) across a
+  forced failover — identical journal digest.
+- **Failure behaviour (fail-closed):** all providers unhealthy → incident gate
+  (`si_incident_gate`) halts new entries; open positions manage via the sell path only.
+- **Enablement condition:** two credentialed providers + failover parity evidence.
+
+## §5 Production latency calibration (incl. build-flag injection)
+
+- **Phase-A interface:** `pump-quant-core::latency` (hot-path timing scaffolding) and the
+  standalone `bench/` harness (non-workspace); `docs/LATENCY.md` records the
+  algorithmic (relative) wins.
+- **Required production adapter:** deploy-box bench run + injection of
+  `RUSTFLAGS="-C target-cpu=znver5"` (fallback `znver4`) from the infra manifest's
+  deploy-CPU entry; optional PGO on a recorded-replay profile. **Never
+  `-C target-cpu=native` on a build box** (§24) — the flag value comes from the pinned
+  deployment_host declaration, not from whatever machine compiles.
+- **Hardware/credential dependency:** the deploy CPU (EPYC 9655P) — absolute numbers are
+  box-specific and meaningless from the laptop.
+- **Server measurement required:** p50/p99/p999 per-tick and kernel timings at 64/256/1024
+  mints on the deploy box, before and after flag/PGO application.
+- **Integration point:** infra manifest supplies the CPU model; CI/build scripts inject
+  the flags; results journaled as benchmarks in the evidence store.
+- **Acceptance test:** golden digest unchanged under the tuned build; deploy-box bench
+  numbers recorded.
+- **Failure behaviour (fail-closed):** missing deploy-CPU declaration → build uses the
+  portable target; no tuned-latency claims are made.
+- **Enablement condition:** operator-pinned deployment_host declaration + deploy-box
+  bench evidence.
+
+## §6 Real transaction submission + signing / key custody (Tier-0)
+
+- **Phase-A interface:** `pump-quant-execution` — `ex_route_policy`,
+  `ex_bundle_assemble`, `ex_tip_compute`, `ex_blockhash_cache`, `ex_circuit_breaker`,
+  `ex_reconcile_fill`; `pump-quant-ingest::submission_surface`; signing-boundary and
+  no-key-material invariants dossier-tested (`si_signing_boundary`).
+- **Required production adapter:** signer service holding keys behind the signing
+  boundary; live submission client (RPC send + Jito bundle path via
+  `ex_bundle_assemble`).
+- **Hardware/credential dependency:** wallet keypairs under operator custody (never in
+  repo/config/model context — Tier-0), Jito auth if bundles are used.
+- **Server measurement required:** submit→land latency, blockhash staleness rate,
+  bundle acceptance rate.
+- **Integration point:** route policy picks the surface; reconcile-fill
+  (`ex_reconcile_fill`) closes the loop from submission to confirmed fill;
+  `pump-quant-journal` records every attempt.
+- **Acceptance test:** devnet/probe-scale round trip fully reconciled in the journal and
+  evidence store.
+- **Failure behaviour (fail-closed):** no signer configured → submission refuses to arm;
+  circuit breaker (`ex_circuit_breaker`) halts on anomaly; key material anywhere in the
+  agent-visible surface is a Tier-0 stop.
+- **Enablement condition:** human-provisioned key custody + explicit human arming
+  (constitution Tier-0 gate); this manifest cannot enable it.
+
+## §7 Funded wallets + live probes (ExecutionCalibrationBudget, §39)
+
+- **Phase-A interface:** probe accounting logic and the evidence-store ledger (supervisor
+  `store/evidence.py`: `reconciled_outcomes`); `ex_reconcile_fill` supplies per-probe
+  outcomes.
+- **Required production adapter:** funded probe wallet(s) with the §39 calibration budget
+  cap enforced in code before any probe fires.
+- **Hardware/credential dependency:** operator-funded wallets (human action; Tier-0
+  adjacent) with balances above the wallet floor.
+- **Server measurement required:** realized probe costs vs budget; slippage/fill quality
+  distributions from live probes.
+- **Integration point:** probe results land as `reconciled_outcomes` rows and feed the
+  calibration stores (§38) and the research loop's ingestion binding.
+- **Acceptance test:** probe ledger reconciles exactly against on-chain balances; budget
+  cap provably not exceeded in the journal.
+- **Failure behaviour (fail-closed):** budget exhausted or reconciliation mismatch →
+  probes stop; no fallback to estimates presented as measurements.
+- **Enablement condition:** human funds the wallets and approves the probe budget.
+
+## §8 Fee / priority-fee / tip calibration (CalibrationStore, §38)
+
+- **Phase-A interface:** `pump-quant-execution::ex_tip_compute` (deterministic tip logic
+  over supplied calibration inputs, dossier-tested with fixture data).
+- **Required production adapter:** live fee-market sampler (recent prioritization fees,
+  tip landscape) writing versioned calibration records; CalibrationStore backing file/DB.
+- **Hardware/credential dependency:** live RPC access for fee sampling; probe results
+  from §7 for ground truth.
+- **Server measurement required:** landing probability vs (priority fee, tip) surface
+  under current network conditions; drift over time.
+- **Integration point:** `ex_tip_compute` reads only from the CalibrationStore; stale
+  calibration is detectable via record timestamps.
+- **Acceptance test:** tip decisions on recorded fixtures match expected outputs; live
+  calibration freshness check green before arming.
+- **Failure behaviour (fail-closed):** missing/stale calibration → conservative default
+  and no-arm for latency-sensitive strategies; never invents fee numbers.
+- **Enablement condition:** live sampler deployed + first calibration epoch validated
+  against probe outcomes.
+
+## §9 Live sell-path simulateTransaction validation (§35)
+
+- **Phase-A interface:** `pump-quant-execution::ex_sell_ladder_state` /
+  `ex_sell_ladder_escalate` (ladder state machine + escalation, dossier-tested);
+  `si_incident_gate`; sell-simulation invariant test
+  (`dossier_safety_integrity_si_sell_simulation`).
+- **Required production adapter:** pre-trade `simulateTransaction` call on the real sell
+  route for every armed position's exit path.
+- **Hardware/credential dependency:** live RPC with simulation support; funded position
+  context (from §6/§7) to make simulation meaningful.
+- **Server measurement required:** simulation-vs-actual divergence rate; simulation
+  latency budget on the hot exit path.
+- **Integration point:** a buy may only arm if its sell path simulates successfully
+  (§35); failures feed `si_incident_gate` and the failed-sell state machinery.
+- **Acceptance test:** ladder dossier tests stay SHA-locked green; live run journals a
+  successful simulation for every armed entry.
+- **Failure behaviour (fail-closed):** sell simulation fails → the entry is refused;
+  an in-position simulation failure escalates the ladder and raises an incident.
+- **Enablement condition:** live RPC simulation wired + divergence measurement journaled;
+  human sign-off alongside §6 arming.
 
 ---
 
-## 2. Windows-native build & runtime  (criteria 1, 2, 69)
-
-Build and run the release binaries on the real Windows deployment box. No Linux / WSL / Docker on the
-critical path. The shred-ingest decode path (`pump_quant_core::shred`: sh_header_decode / sh_fec_track /
-sh_reassemble / sh_parity_gate) is built + tested portably; only the OS-native socket/runtime around it
-is Phase-B. Verify the whole workspace builds and its tests pass under the Windows toolchain.
-
-## 3. Helius LaserStream live ingest  (criteria 61, 62, 72, 63)
-
-Wire the live Helius LaserStream gRPC mainnet endpoint into the ingest layer (the portable protocol/
-decode/reducer logic is built + tested). Preserve raw Helius payloads for replay/audit (63). Put the
-plan/budget in the infra manifest (62) and keep cost monitoring active (72). Acceptance: live frames
-decode through the existing `pump-quant-protocol` / `pump-quant-ingest` / reducer path with parity to
-the recorded-replay results.
-
-## 4. Live-chain reconciliation  (criterion 14)
-
-Reconcile executed trades to the finalized chain (the portable reconciliation/accounting — evaluator
-`net_sol`, execution `reconcile_fill` — is built + tested). Server task: feed real finalized on-chain
-outcomes into it and assert the reconciled net-SOL matches. This is the truth source the research loop
-grounds on; never assume, always reconcile.
-
-## 5. Release profile / PGO / deploy-CPU pinning / zero-alloc harness  (criterion 109, §24)
-
-Already encoded as build config in `rust/Cargo.toml` (`[profile.release]` opt-level 3, fat LTO,
-codegen-units 1, panic=abort, overflow-checks on for money crates). Server task: inject
-`-C target-cpu=<deploy-cpu>` via RUSTFLAGS from the infra manifest's deploy-CPU entry (NEVER `native`
-on a build box), run PGO, pre-warm connections, and validate the zero-alloc hot-path harness on the
-real CPU.
-
-## 6. Isolation & custody topology  (criteria 22, 70, 71)
-
-Deployment topology, not code: model inference isolated from the trading process (22); no container/
-process with raw-key access (70); nothing but the sanctioned path mutates the frozen evaluator (71).
-Real key signing and fund movement remain **Tier-0 human-gated** — never automated by any binary or
-MCP tool.
-
-## 7. Two-phase discipline itself  (criterion 113, §9)
-
-The Phase-A (laptop) → Phase-B (server) split is the process. This manifest is the Phase-A→Phase-B
-handoff record; keeping it accurate is part of satisfying 113.
-
----
-
-_The laptop build is complete for everything above the trait boundary. Each server task is "implement
-the named trait / wire the named endpoint and satisfy the named locked test," so the deployment build
-has precise targets rather than open-ended design._
+*Nothing in this manifest is self-enabling. Each item requires its stated adapter,
+credentials, and server measurement, and the Tier-0 items (§6, §7 funding) additionally
+require explicit human action that no agent tool surface can perform.*

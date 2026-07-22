@@ -41,15 +41,26 @@
 
 #![forbid(unsafe_code)]
 
+pub mod analytics;
+pub mod attention;
+pub mod authority;
 pub mod config;
 pub mod engine;
 pub mod event;
 pub mod gate;
 pub mod journal_log;
 pub mod lane;
+pub mod market_context;
+pub mod position;
 pub mod reflect;
 pub mod scalp;
+pub mod screen;
+pub mod shadow;
+pub mod social_earn;
 pub mod social_ingest;
+pub mod structure;
+pub mod token_ingest;
+pub mod toxicity;
 
 pub use config::{Config, ConfigError, FillModeCfg};
 pub use engine::{Engine, Report, RunMode};

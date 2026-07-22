@@ -3,8 +3,10 @@
 Verification and reinforcement layer for the Hermes build. **Primary mode (Option A): Hermes Agent
 (Nous Research) is the conductor** — you launch llama.cpp with GLM-5.2, start Hermes, and message it
 (Telegram/CLI) to build from `docs/HERMES_ONE_SHOT_PROMPT.md`. The supervisor plugs into Hermes as an
-**MCP server** (`supervisor/mcp/server.py`) exposing independent verification tools: gate_verify,
-check_tier0, run_reinforcement, evidence_status, record_escalation, bench_endpoint. Hermes calls them;
+**MCP server** (`supervisor/mcp/server.py`) exposing 16 independent verification tools: gate_verify,
+check_tier0, run_reinforcement, author_dossier, propose_amendment, draft_amendment, amendment_status,
+record_infra_fact, evidence_status, record_escalation, register_artifact, evaluator_verify,
+experiment_run, promotion_check, live_status, bench_endpoint. Hermes calls them;
 the constitution (§62) obligates it to. A standalone driver mode (`supervise.py build`) remains available
 if you ever want the supervisor to drive GLM directly without Hermes.
 
@@ -21,7 +23,7 @@ micro-decomposition + reference-pattern priming (see `HERMES_HARD_TASK_REINFORCE
 ## Module status (honest — same discipline the loop enforces)
 | Module | Status | Notes |
 |---|---|---|
-| `core/schemas.py` | **real** | Pydantic/JSON-schema control envelopes + GBNF export |
+| `core/schemas.py` | **real** | stdlib dict-schema control envelopes + GBNF export (deliberately no pydantic dependency) |
 | `core/model_client.py` | **real** | llama.cpp OpenAI-compat client, GBNF-constrained control channel, retry/health |
 | `core/safety.py` | **real** | Tier-0 tripwires, escalation triggers |
 | `core/config.py` | **real** | typed config load/validate |
@@ -34,7 +36,7 @@ micro-decomposition + reference-pattern priming (see `HERMES_HARD_TASK_REINFORCE
 | `core/orchestrator.py` | **real** | build-loop FSM wiring the above |
 | `research/loop.py` | **scaffold** | standing research cycle; real structure, integration points marked TODO(live) |
 | `console/escalate.py` | **real** | CLI + pluggable Telegram escalation channel |
-| `mcp/server.py` | **real** | MCP server for Hermes Agent (stdio JSON-RPC; 6 tools; tested) |
+| `mcp/server.py` | **real** | MCP server for Hermes Agent (stdio JSON-RPC; 16 tools; tested) |
 | `supervise.py` | **real** | entrypoint / CLI |
 
 "scaffold" means: correct structure and interfaces, with clearly-marked `TODO(live)` where it must bind to

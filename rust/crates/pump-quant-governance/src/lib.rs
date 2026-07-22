@@ -53,3 +53,4 @@ pub mod hashing;
 pub mod lifecycle;
 pub mod manifest;
 pub mod sha256;
+pub mod strategy_registry;
