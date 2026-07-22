@@ -7,8 +7,8 @@
 //! trait, so the plan, its read-back verification, and the jitter aggregation all
 //! run and are tested on any platform (the Windows `SetThreadGroupAffinity` /
 //! `SetPriorityClass` / `timeBeginPeriod` / `VirtualLock` binding is the server's
-//! implementation of the trait). No Linux-isms (`mlockall`, `sched_setaffinity`,
-//! `/proc`) appear here. All arithmetic is integer (§22).
+//! implementation of the trait). No Linux-only syscalls (memory-locking or
+//! CPU-affinity APIs) or procfs access appear here. All arithmetic is integer (§22).
 
 /// A raw processor-relationship record: one physical core, its group, and the
 /// bitmask of logical CPUs (SMT siblings) it owns within that group.

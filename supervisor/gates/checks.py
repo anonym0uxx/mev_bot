@@ -140,6 +140,17 @@ def check_dossier_test_integrity(repo) -> "CheckResult":
     return CheckResult("dossier_test_integrity", ok, detail, {"returncode": p.returncode})
 
 
+# Genuine Rust stub markers in PRODUCTION source (test modules are stripped before matching).
+# Deliberately does NOT match the bare word "TODO" in comments (e.g. the "SERVER (Phase-B) TODO"
+# markers that legitimately point at docs/SERVER_BUILD_MANIFEST.md) — only the stub MACROS and
+# explicit not-implemented panics count as stubs.
+_STUB_PATTERNS = [
+    re.compile(r"\btodo!\s*\("),
+    re.compile(r"\bunimplemented!\s*\("),
+    re.compile(r"""\bpanic!\s*\(\s*[br]?["'][^"']*(?:not\s+impl|unimpl|stub|not\s+yet)""", re.I),
+]
+
+
 def check_no_stubs(repo: str, production_globs: list[str]) -> CheckResult:
     hits: list[str] = []
     root = Path(repo)
