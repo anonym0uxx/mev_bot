@@ -172,3 +172,54 @@ fn ingest_social_wires_the_lane_into_the_loop() {
     )]);
     assert_eq!(eng2.ingest_social(&mut src2), 1);
 }
+
+#[test]
+fn social_source_earns_quality_from_realized_outcomes() {
+    use pump_quant_ingest::base58::decode_pubkey;
+    use pump_quant_ingest::social_parse::fnv1a_64;
+    use pump_quant_ingest::social_source::{MockSocialSource, RawSocialPayload};
+
+    // A source ("caller") names a real market via the attributed social path.
+    let usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    let mkt = DomainMint::from_bytes(decode_pubkey(usdc).unwrap());
+    let source_id = fnv1a_64(b"caller");
+
+    let mut eng = Engine::new(Config::dev_portable(), RunMode::Paper);
+    let mut src = MockSocialSource::new().with_batch(vec![RawSocialPayload::new(
+        format!(r#"{{"platform":"x","author":"caller","text":"early {usdc}","likes":10}}"#)
+            .into_bytes(),
+        1,
+    )]);
+    eng.ingest_social(&mut src);
+
+    // Unproven at first: no reconciled evidence yet → baseline fallback (None here).
+    assert_eq!(eng.earned_source_quality(source_id), None);
+
+    // The same market accrues real numeric flow + an on-chain confirmation, so it
+    // becomes admissible and is scalped — a realized outcome the earn loop attributes
+    // back to the caller and reconciles at the reflection cadence.
+    for i in 0..5 {
+        eng.tick(AppEvent::MarketTrade {
+            mint: mkt,
+            liquidity_lamports: 100_000_000,
+            signed_base: 1_000_000,
+            buyer_entity: i,
+            age_slots: 30,
+        });
+    }
+    eng.tick(AppEvent::OnchainConfirm {
+        mint: mkt,
+        sellable_depth_lamports: 200_000_000,
+    });
+    let reflect_ticks = Config::dev_portable().reflect_every_ticks + 2;
+    for _ in 0..reflect_ticks {
+        eng.tick(AppEvent::Tick);
+    }
+
+    // The caller now has an earned grade (favorable-rate bps), no longer unproven —
+    // the dormant D1–D10 quality loop is closed.
+    assert!(
+        eng.earned_source_quality(source_id).is_some(),
+        "a source whose called market realized an outcome earns a reconciled grade"
+    );
+}

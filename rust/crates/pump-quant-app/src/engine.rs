@@ -22,6 +22,7 @@ use crate::reflect::reflect;
 use crate::scalp::scalp;
 
 use crate::attention::{AttentionField, AttentionParams};
+use crate::social_earn::{SocialEarn, SocialEarnParams};
 use crate::social_ingest::{ledger_quality, to_mention, SourceQualityPolicy};
 use pump_quant_domain::ids::Mint as DomainMint;
 use pump_quant_evaluator::evaluator_stats::{Lane as EvalLane, ReconTrade};
@@ -142,6 +143,10 @@ pub struct Engine {
     ledger: SourceQualityLedger,
     /// Operator policy mapping an earned classification to a corroboration ceiling.
     quality_policy: SourceQualityPolicy,
+    /// The social-source earn loop: attributes realized net-SOL back to the sources
+    /// that called each market and reconciles it (§82) into an earned favorable-rate
+    /// that supersedes the PUBLIC_BURNED baseline. Fed by the attributed social path.
+    social_earn: SocialEarn,
 
     /// Reused per-tick discovery scratch: the union of all four lanes' emissions.
     /// Cleared (not freed) each tick so steady-state discovery does not re-allocate
@@ -179,6 +184,7 @@ impl Engine {
             attention: AttentionField::new(AttentionParams::standard()),
             ledger: SourceQualityLedger::with_capacity(4_096),
             quality_policy: SourceQualityPolicy::conservative(),
+            social_earn: SocialEarn::new(SocialEarnParams::standard()),
             scratch: Vec::new(),
             promoted: 0,
             admitted: 0,
@@ -269,11 +275,20 @@ impl Engine {
         let mut applied = 0usize;
         for payload in &batch {
             if let Some(ev) = parse_social_event(&payload.json, payload.observed_at_ns) {
-                let q = ledger_quality(&self.ledger, ev.author_id, &self.quality_policy);
+                // Earned favorable-rate from the reconciliation loop supersedes the
+                // PUBLIC_BURNED baseline; an unproven source falls back to the ledger.
+                let q = self
+                    .social_earn
+                    .quality_bps_for(ev.author_id)
+                    .unwrap_or_else(|| {
+                        ledger_quality(&self.ledger, ev.author_id, &self.quality_policy)
+                    });
                 let mention = to_mention(&ev);
                 for m in ev.mints() {
                     self.social.observe(DomainMint::from_bytes(*m), q);
                     self.attention.observe(*m, mention);
+                    self.social_earn
+                        .record_call(ev.author_id, *m, payload.observed_at_ns);
                     applied += 1;
                 }
             }
@@ -411,6 +426,11 @@ impl Engine {
                 );
                 // Fold the reconciliation trade into the bounded running accountant.
                 self.recon[accum_index(result.recon.lane)].add(&result.recon);
+                // Attribute this realized outcome back to any social sources that
+                // called this market, so their quality is earned from ground truth
+                // (§82). A market no source called records nothing.
+                self.social_earn
+                    .record_outcome(&mint_bytes, result.net_pnl_lamports);
             }
             GateDecision::Reject(reason) => {
                 self.rejected += 1;
@@ -423,6 +443,10 @@ impl Engine {
     }
 
     fn run_reflection(&mut self) {
+        // Re-derive earned social-source quality from all reconciled outcomes (§82,
+        // §29.9 reflection cadence). Off the hot path; a no-op until social calls
+        // have been attributed to realized markets.
+        self.social_earn.reconcile();
         let deltas = reflect(&self.lane_perf, &mut self.weights, &self.cfg);
         for d in &deltas {
             if d.before_bp != d.after_bp {
@@ -485,6 +509,15 @@ impl Engine {
     #[must_use]
     pub fn numeric_features(&self, mint: DomainMint) -> Option<Features> {
         self.numeric.features_for(mint)
+    }
+
+    /// The earned favorable-rate (bps) for a social source, once the reconciliation
+    /// loop has graded it against realized outcomes (§82). `None` until a source's
+    /// attributed calls have reconciled — the caller then uses the PUBLIC_BURNED
+    /// baseline. Inspection / telemetry seam for the research plane.
+    #[must_use]
+    pub fn earned_source_quality(&self, source_id: u64) -> Option<u32> {
+        self.social_earn.quality_bps_for(source_id)
     }
 }
 
