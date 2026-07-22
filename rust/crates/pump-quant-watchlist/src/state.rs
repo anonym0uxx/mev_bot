@@ -35,6 +35,19 @@ pub struct WatchlistState {
     capacity: usize,
     params: RankParams,
     weights: LaneWeights,
+    /// Memoized weakest entry `(now, rank, mint)` for the full-set eviction path.
+    ///
+    /// Pure optimization, zero behavioural effect (§22): the weakest entry by rank
+    /// is a pure function of `entries`, `now`, `params`, and `weights`. `params`
+    /// and `weights` are fixed for a state's lifetime and `entries` only changes
+    /// through this type's own mutators, so any mutation clears the cache and a new
+    /// `now` misses it. When the engine inserts a whole batch at one fixed `now`
+    /// without evicting (the steady state — most incoming candidates do not outrank
+    /// the retained top-`capacity`), the O(capacity) weakest scan runs once for the
+    /// batch instead of once per candidate, collapsing the per-tick insert cost from
+    /// O(candidates × capacity) toward O(candidates + capacity). Never a source of
+    /// truth — only a remembered answer to a scan we would otherwise repeat.
+    weakest_cache: Option<(u64, u64, Mint)>,
 }
 
 impl WatchlistState {
@@ -50,6 +63,7 @@ impl WatchlistState {
             capacity,
             params,
             weights,
+            weakest_cache: None,
         }
     }
 
@@ -108,13 +122,21 @@ impl WatchlistState {
     /// Returns `true` iff `candidate` is present in the set after the call.
     pub fn insert(&mut self, candidate: Candidate, now: u64) -> bool {
         if let Some(existing) = self.entries.get(&candidate.mint) {
-            // Merge: keep the stronger lane evidence for this mint.
-            let keep_new = lane_ingest::ingest_union([*existing, candidate], &self.weights)
-                .get(&candidate.mint)
-                .copied()
-                == Some(candidate);
-            if keep_new {
+            // Merge: keep the stronger lane evidence for this mint. This is exactly
+            // what `ingest_union([existing, candidate])` computes — the new record
+            // wins iff its evidence strictly outranks the incumbent — but applied
+            // via the shared comparator directly, with no per-insert scratch
+            // `BTreeMap` allocation. After warm-up every tracked mint is re-emitted
+            // and re-inserted each tick, so this path is the steady-state hot path;
+            // removing its allocation removes ~one heap alloc per live candidate per
+            // tick. Behaviour is byte-identical (§22).
+            if lane_ingest::evidence_cmp(&candidate, existing, &self.weights)
+                == core::cmp::Ordering::Greater
+            {
+                // Replacing the record changes its rank, so any memoized weakest is
+                // stale — drop it.
                 self.entries.insert(candidate.mint, candidate);
+                self.weakest_cache = None;
             }
             return self.entries.get(&candidate.mint) == Some(&candidate);
         }
@@ -124,25 +146,46 @@ impl WatchlistState {
         }
 
         if self.entries.len() < self.capacity {
+            // Growing the set can introduce a new weakest — invalidate.
             self.entries.insert(candidate.mint, candidate);
+            self.weakest_cache = None;
             return true;
         }
 
-        // Full: find the current weakest entry by rank at `now`.
+        // Full: find the current weakest entry by rank at `now`, reusing the memo if
+        // it was computed at this same `now` and the set has not mutated since.
         let new_rank = self.rank_of(&candidate, now);
-        let weakest = self
-            .entries
-            .values()
-            .map(|c| (self.rank_of(c, now), c.mint))
-            .min_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-
-        match weakest {
-            Some((weak_rank, weak_mint)) if new_rank > weak_rank => {
-                self.entries.remove(&weak_mint);
-                self.entries.insert(candidate.mint, candidate);
-                true
+        let (weak_rank, weak_mint) = match self.weakest_cache {
+            Some((cached_now, rank, mint)) if cached_now == now => (rank, mint),
+            _ => {
+                let w = self
+                    .entries
+                    .values()
+                    .map(|c| (self.rank_of(c, now), c.mint))
+                    .min_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+                match w {
+                    Some((rank, mint)) => {
+                        self.weakest_cache = Some((now, rank, mint));
+                        (rank, mint)
+                    }
+                    // Empty set cannot happen here (full ⇒ non-empty for capacity ≥ 1),
+                    // but stay total: nothing to evict, reject.
+                    None => return false,
+                }
             }
-            _ => false,
+        };
+
+        if new_rank > weak_rank {
+            // Eviction + insertion mutates the set; the memoized weakest no longer
+            // holds. Recomputed lazily on the next full-path insert.
+            self.entries.remove(&weak_mint);
+            self.entries.insert(candidate.mint, candidate);
+            self.weakest_cache = None;
+            true
+        } else {
+            // No mutation: the memoized weakest remains exactly valid for the rest of
+            // this batch, which is what makes the steady-state insert loop linear.
+            false
         }
     }
 
@@ -158,7 +201,12 @@ impl WatchlistState {
             let age = now.saturating_sub(c.discovered_at);
             ttl != 0 && age < ttl
         });
-        before - self.entries.len()
+        let evicted = before - self.entries.len();
+        if evicted != 0 {
+            // The set shrank; any memoized weakest is stale.
+            self.weakest_cache = None;
+        }
+        evicted
     }
 
     /// All live candidates ranked at `now`, strongest first.

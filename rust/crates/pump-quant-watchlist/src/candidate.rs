@@ -164,6 +164,7 @@ impl Candidate {
     /// Defined as `discovery_score × lane.default_weight_bp` in `u128` so it
     /// never overflows for any `u64 × u32` product. Deterministic (§22); larger
     /// is stronger. `lane_weights` overrides the per-lane basis-point weight.
+    #[inline]
     #[must_use]
     pub fn evidence_strength(&self, weight_bp: u32) -> u128 {
         u128::from(self.discovery_score) * u128::from(weight_bp)

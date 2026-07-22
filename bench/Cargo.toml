@@ -1,0 +1,21 @@
+[package]
+name = "pump-quant-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "bench"
+path = "src/main.rs"
+
+[dependencies]
+pump-quant-app      = { path = "../rust/crates/pump-quant-app" }
+pump-quant-core     = { path = "../rust/crates/pump-quant-core" }
+pump-quant-protocol = { path = "../rust/crates/pump-quant-protocol" }
+pump-quant-domain   = { path = "../rust/crates/pump-quant-domain" }
+
+# Measure release-representative code: opt-level 3, matching the shipped profile's spirit.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

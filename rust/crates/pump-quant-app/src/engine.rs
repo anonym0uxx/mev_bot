@@ -128,6 +128,12 @@ pub struct Engine {
     recon: [ReconAccum; 2],
     journal: DecisionJournal,
 
+    /// Reused per-tick discovery scratch: the union of all four lanes' emissions.
+    /// Cleared (not freed) each tick so steady-state discovery does not re-allocate
+    /// (§99: its capacity is bounded by the number of tracked mints, which the lanes
+    /// already cap). Holds no state between ticks — purely a scratch buffer.
+    scratch: Vec<Candidate>,
+
     promoted: u64,
     admitted: u64,
     rejected: u64,
@@ -155,6 +161,7 @@ impl Engine {
             lane_perf: LanePerformance::new(),
             recon: [ReconAccum::default(); 2],
             journal: DecisionJournal::new(),
+            scratch: Vec::new(),
             promoted: 0,
             admitted: 0,
             rejected: 0,
@@ -236,16 +243,21 @@ impl Engine {
 
         // 1. Discovery: every lane emits independently; union, not intersection.
         // Lane scoring parameters come from config — no band edge or scale is baked in.
-        let mut all: Vec<Candidate> = Vec::new();
-        all.extend(self.numeric.emit(self.now));
-        all.extend(self.narrative.emit(
+        // Each lane appends into the reused `scratch` buffer (cleared, not freed) so
+        // steady state allocates no per-tick lane vectors; the union then dedups by
+        // mint. Disjoint field borrows keep this a single pass with no clones.
+        self.scratch.clear();
+        self.numeric.emit_into(&mut self.scratch, self.now);
+        self.narrative.emit_into(
+            &mut self.scratch,
             self.now,
             self.cfg.narrative_stage_hi_fp,
             self.cfg.narrative_stage_lo_fp,
-        ));
-        all.extend(self.social.emit(self.now));
-        all.extend(self.wallet.emit(self.now, self.cfg.wallet_score_scale));
-        let unioned = ingest_union(all, &self.weights);
+        );
+        self.social.emit_into(&mut self.scratch, self.now);
+        self.wallet
+            .emit_into(&mut self.scratch, self.now, self.cfg.wallet_score_scale);
+        let unioned = ingest_union(self.scratch.iter().copied(), &self.weights);
         for cand in unioned.values() {
             self.watchlist.insert(*cand, self.now);
         }

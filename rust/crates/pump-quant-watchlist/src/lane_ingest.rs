@@ -29,7 +29,12 @@ use std::collections::BTreeMap;
 ///
 /// Returns [`Ordering::Greater`] when `a` is the stronger evidence to keep.
 /// Total order per the module's documented rule. §22.
-fn evidence_cmp(a: &Candidate, b: &Candidate, weights: &LaneWeights) -> Ordering {
+///
+/// Public so hot callers (e.g. [`crate::state::WatchlistState::insert`]) can apply
+/// the exact same merge rule without allocating a scratch map to run it through.
+#[inline]
+#[must_use]
+pub fn evidence_cmp(a: &Candidate, b: &Candidate, weights: &LaneWeights) -> Ordering {
     let sa = a.evidence_strength(weights.get(a.lane));
     let sb = b.evidence_strength(weights.get(b.lane));
     sa.cmp(&sb)

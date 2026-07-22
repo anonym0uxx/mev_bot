@@ -88,6 +88,7 @@ impl RankParams {
 /// `age = now.saturating_sub(discovered_at)` (a candidate from the future — a
 /// caller bug — is treated as brand-new, age 0, never as negative). Monotonic
 /// non-increasing in `age`. `ttl == 0` disables the lane (returns 0). §22.
+#[inline]
 #[must_use]
 pub fn recency_factor(discovered_at: u64, now: u64, ttl_ticks: u64) -> u64 {
     if ttl_ticks == 0 {
@@ -112,6 +113,7 @@ pub fn recency_factor(discovered_at: u64, now: u64, ttl_ticks: u64) -> u64 {
 /// monotonic — two candidates that would both exceed it compare equal at the
 /// ceiling, which cannot mis-order a smaller candidate above a larger one.
 /// A candidate whose recency has decayed to 0 ranks 0.
+#[inline]
 #[must_use]
 pub fn score_rank(
     candidate: &Candidate,
