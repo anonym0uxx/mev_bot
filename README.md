@@ -6,7 +6,7 @@
 
 ![Rust](https://img.shields.io/badge/rust-1.85%2B-000000?style=for-the-badge&logo=rust&logoColor=white)
 ![Solana](https://img.shields.io/badge/Solana-mainnet-14F195?style=for-the-badge&logo=solana&logoColor=black)
-![Tests](https://img.shields.io/badge/tests-1389%20passing-2ea44f?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-1500%2B%20passing-2ea44f?style=for-the-badge)
 ![Gate](https://img.shields.io/badge/portable--gate-green-2ea44f?style=for-the-badge)
 ![Determinism](https://img.shields.io/badge/floats%20in%20outcome%20paths-0-8250df?style=for-the-badge)
 
@@ -30,9 +30,9 @@
 | **Target market** | Solana memecoins on Pump.fun (bonding curve) and PumpSwap / Raydium (AMM pools). |
 | **Trading style** | High-frequency scalping — many small, fast, net-positive round trips; not long holds. |
 | **Determinism** | Integer/fixed-point only in outcome paths; no floating point, no wall-clock, no RNG in decisions. Byte-exact under replay. |
-| **Current phase** | Phase-A (laptop): paper/replay only, fully built and tested. Phase-B (server, live capital) is human-gated and not in this build. |
-| **Live capital** | Tier-0 human-gated. No code path signs keys or moves funds. |
-| **Tests** | 1389 workspace tests passing; 179 SHA-locked property tests across 45 dossiers. |
+| **Current phase** | **Phase-A (laptop) COMPLETE**: paper/replay only, fully built, gate-verified, and constitution-aligned. Phase-B (server: live streams, submission, keys, OS tuning) is enumerated in [`docs/SERVER_BUILD_MANIFEST.md`](docs/SERVER_BUILD_MANIFEST.md) and is not in this build. |
+| **Live capital** | Tier-0 human-gated. No code path signs keys or moves funds. Qualified strategies park in `AwaitingLiveCapability` — a missing-capability state, never a human-approval queue. |
+| **Tests** | 434 green workspace test binaries (1,500+ tests); 191 SHA-locked property tests across 50 dossiers (`scripts/materialize_tests.py --verify`). |
 | **CI gate** | `hermes-gate/portable-gate`: fmt + clippy(-D warnings) + build + test + dossier `--verify` + supervisor portable gate. |
 | **Rust edition / MSRV** | edition 2021, rust-version 1.85. |
 
@@ -189,6 +189,27 @@ single-step change, and a floor and ceiling so no lane is ever silently killed o
 adaptation is a pure function of performance, weights, and config, so replay reproduces the adapted weights
 exactly. This closes the loop the constitution demands: reflection must *enhance discovery*, not merely
 grade it.
+
+## Evidence & authority — nothing gets to lie in its own favor
+
+Every run is labeled with the fill model that produced it and the evidence status it may claim
+(`Paper` on any laptop run). The optimistic ceiling (Mode B) can **never** satisfy promotion — the
+governance crate's `strategy_registry` implements the constitution's full 14-status promotion
+lifecycle (RESEARCH_CANDIDATE → … → CHAMPION) with a fail-closed ProbeReadinessGate: advancement past
+the Mode-C boundary requires calibrated-adversarial evidence, live-ward transitions additionally
+require live capability to be present, and every criterion the laptop cannot attest is hard `false`.
+Unknown critical data fails closed on the capital path: stale numeric snapshots cannot back a fresh
+confirm, an unpriceable exit is treated as unaffordable, asserted depth is cross-checked against
+observed liquidity, thin-sample authenticity is a label rather than confirmation, and unknown exit
+marks are valued at the hard-stop distance — never assumed flat. The configured expected move is a
+cold-start prior only: per-lane realized returns graduate into conditional expectancy via partial
+pooling (EXPECTANCY_V1), and the §52 baseline is valued at the realized hold move on the same tape,
+so configuration can never manufacture edge or baseline evidence. These laws are pinned as tests
+(`tests/phase_a_alignment.rs`, `tests/batch_e_laws.rs`) alongside a golden determinism tape whose
+realized net rose 2,979,624 → 5,017,234 → 6,443,936 → 8,785,954 lamports across discipline re-pins —
+same market, more law, more kept lamports. The runner exports a trade JSONL and a config-identity
+ledger on request (`--trade-jsonl`, `--config-ledger`); both are secondary records, never
+authoritative over the journal digest or chain truth.
 
 ---
 
