@@ -83,6 +83,12 @@ pub enum SocialPlatform {
     /// Twitch live-stream chat (real-time viewing; §29.6 stream/comment events).
     /// Captured by the dependency-free Rust IRC lane (`tools/social-ingest-rs`).
     Twitch,
+    /// Pump.fun-native social surface (per-coin replies / communities): venue-
+    /// native commentary, structurally the EARLIEST off-chain signal — degens
+    /// comment on the coin page before X/Telegram pick it up. Captured by the
+    /// tier-3 frontend lane (`pq-social-capture pump`) behind a degradation
+    /// sentinel (undocumented endpoint, §18.8).
+    Pump,
 }
 
 impl SocialPlatform {
@@ -95,6 +101,7 @@ impl SocialPlatform {
             "telegram" | "tg" => Some(Self::Telegram),
             "web" | "firecrawl" => Some(Self::Web),
             "twitch" => Some(Self::Twitch),
+            "pump" => Some(Self::Pump),
             _ => None,
         }
     }
@@ -108,6 +115,7 @@ impl SocialPlatform {
             Self::Telegram => 3,
             Self::Web => 4,
             Self::Twitch => 5,
+            Self::Pump => 6,
         }
     }
 
@@ -128,7 +136,9 @@ impl SocialPlatform {
             // Live-stream chat is a real-time push channel: structurally as early
             // as Telegram call channels (both sit at the unlegible front of the
             // shill pipeline). Equal rank = equal tier, never a tradeable weight.
-            Self::Telegram | Self::Twitch => 0,
+            // Venue-native replies sit with the real-time push tier: the coin
+            // page is where the FIRST off-chain reaction lands.
+            Self::Telegram | Self::Twitch | Self::Pump => 0,
             Self::X => 1,
             Self::TikTok => 2,
             Self::Web => 3,
@@ -310,7 +320,32 @@ pub fn parse_social_event(raw: &[u8], observed_at_ns: u64) -> Option<SocialEvent
         .saturating_add(eng_field("replies"));
 
     let (cashtags, n_cashtags) = extract_cashtags(text);
-    let (mints, n_mints) = extract_solana_mints(text);
+    let (mut mints, mut n_mints) = extract_solana_mints(text);
+    // Optional EXPLICIT mint reference (§29 provenance): a capture lane with
+    // thread context (e.g. a pump.fun coin page's replies) names the coin at
+    // MINT GRADE — stronger than any ticker or in-text match. It is prepended
+    // (deduplicated) so canonical identity outranks text extraction; an
+    // invalid value is ignored, never guessed (§6.4 fail-closed resolution).
+    if let Some(m58) = v.get("mint").and_then(|m| m.as_str()) {
+        if let Some(key) = base58::decode_pubkey(m58) {
+            let already = mints[..n_mints as usize].contains(&key);
+            if !already {
+                let mut shifted = [[0u8; 32]; MAX_MINTS];
+                shifted[0] = key;
+                let keep = (n_mints as usize).min(MAX_MINTS - 1);
+                shifted[1..=keep].copy_from_slice(&mints[..keep]);
+                mints = shifted;
+                n_mints = (keep + 1) as u8;
+            } else {
+                // Promote the explicit reference to slot 0 (identity-first).
+                let pos = mints[..n_mints as usize]
+                    .iter()
+                    .position(|k| *k == key)
+                    .unwrap_or(0);
+                mints.swap(0, pos);
+            }
+        }
+    }
 
     Some(SocialEvent {
         platform,

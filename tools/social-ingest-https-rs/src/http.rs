@@ -41,6 +41,21 @@ pub fn parse_retry_after(header: Option<&str>) -> Option<u64> {
     header.and_then(|s| s.trim().parse::<u64>().ok())
 }
 
+/// A response WITH the metadata a degradation sentinel needs (status code and
+/// content type alongside the body). Used by the tier-3 `pump` lane, whose
+/// undocumented endpoint must be classified — challenge wall vs auth wall vs
+/// drift — rather than merely read.
+pub struct Meta {
+    /// HTTP status code (2xx AND permanent 4xx/5xx after retries — the caller
+    /// classifies; only transient statuses are retried away here).
+    pub status: u16,
+    /// `Content-Type` without parameters (ureq strips `; charset=...`).
+    pub content_type: String,
+    /// Body text (size-capped, UTF-8-checked). Read even on error statuses:
+    /// a Cloudflare challenge page arrives on a 403.
+    pub body: String,
+}
+
 /// One shared blocking HTTP client per subcommand process.
 pub struct Http {
     agent: ureq::Agent,
@@ -66,6 +81,43 @@ impl Http {
     /// ladder. Returns the body as text (size-capped, UTF-8-checked).
     pub fn get(&self, url: &str, headers: &[(&str, &str)]) -> Result<String, String> {
         self.fetch(url, headers, None)
+    }
+
+    /// GET `url` returning status + content-type + body ([`Meta`]) instead of
+    /// treating non-2xx as an opaque error. Transient failures (429/5xx,
+    /// transport) still retry on the backoff ladder; PERMANENT statuses
+    /// (401/403/404/...) return `Ok(Meta)` so the caller's degradation
+    /// sentinel can classify them — a tier-3 lane needs to distinguish a
+    /// Cloudflare challenge 403 from an auth-revocation 403, which requires
+    /// seeing the body. `Err` is reserved for transport-level failure.
+    pub fn get_meta(&self, url: &str, headers: &[(&str, &str)]) -> Result<Meta, String> {
+        let mut attempt: u32 = 0;
+        loop {
+            let mut req = self.agent.get(url);
+            for (k, v) in headers {
+                req = req.set(k, v);
+            }
+            let (err_text, retry_after) = match req.call() {
+                Ok(resp) => return read_meta(resp),
+                Err(ureq::Error::Status(code, resp)) if is_transient_status(code) => (
+                    format!("HTTP Error {code}: {}", resp.status_text()),
+                    parse_retry_after(resp.header("retry-after")),
+                ),
+                Err(ureq::Error::Status(_, resp)) => return read_meta(resp),
+                Err(transport) => (transport.to_string(), None),
+            };
+            match backoff::retry_delay_secs(attempt, retry_after) {
+                Some(delay) => {
+                    eprintln!(
+                        "[pq-social-capture] transient fetch failure ({err_text}); \
+                         retry in {delay}s"
+                    );
+                    thread::sleep(Duration::from_secs(delay));
+                    attempt += 1;
+                }
+                None => return Err(err_text),
+            }
+        }
     }
 
     /// POST a JSON `body` to `url` with `headers`; same retry/cap contract.
@@ -123,6 +175,19 @@ impl Http {
             }
         }
     }
+}
+
+/// Read a response into a [`Meta`] (status + content-type captured before the
+/// body is consumed), under the same size cap as [`read_capped`].
+fn read_meta(resp: ureq::Response) -> Result<Meta, String> {
+    let status = resp.status();
+    let content_type = resp.content_type().to_string();
+    let body = read_capped(resp)?;
+    Ok(Meta {
+        status,
+        content_type,
+        body,
+    })
 }
 
 /// Read a response body under [`MAX_BODY_BYTES`]; over-cap or non-UTF-8 is an

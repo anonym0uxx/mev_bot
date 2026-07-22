@@ -1,0 +1,12 @@
+[
+  {"id": 4210001, "mint": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump", "text": "dev is based lfg", "user": "7XkAcCpQGmvz3FkNojFwhDcpRJioBGspQQhbg2G6oYQx", "timestamp": 1753120000000, "total_likes": 3, "username": "degenwallet", "profile_image": null, "is_banned": false},
+  {"id": "4210002", "mint": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump", "text": "floor is in, adding here", "user": "FhKrTsnPmXaeqvJC8x1PSvKa4trQfjMSHomsHrvyu2b4", "timestamp": 1753120004000, "total_likes": 0, "username": null, "profile_image": null, "reply_to": null},
+  {"id": 4210003, "mint": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump", "text": "this is the next $WIF fr", "user": "GkEnVpNZ5yMqLwUuRrTbXcVdEeFfGgHhJjKkLlMmNnPp", "timestamp": 1753120009000, "total_likes": 1, "some_future_field": {"nested": [1, 2]}},
+  {"id": 4210004, "mint": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump", "text": "compare EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v flow before you ape", "user": "BqXwYvUtSrQpOnMlKjIhGfEdCbAz1234567890abcdef", "timestamp": 1753120015000, "total_likes": 0},
+  {"total_likes": 7, "text": 42, "hidden": true, "note": "malformed: no id, non-string text - must be skipped"},
+  {"id": 4210001, "mint": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump", "text": "edited duplicate of the first reply id - must be deduped", "user": "7XkAcCpQGmvz3FkNojFwhDcpRJioBGspQQhbg2G6oYQx", "timestamp": 1753120018000, "total_likes": 4},
+  {"id": 4210005, "mint": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump", "text": "send it 🚀", "user": "So1anaStreamerXxYyZz1122334455667788990011aB", "timestamp": 1753120022000, "total_likes": 0},
+  {"id": 4210006, "mint": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump", "text": "who is buying this", "timestamp": 1753120026000, "total_likes": 0},
+  {"id": 4210007, "mint": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump", "text": "\"rug\" fud is priced in", "user": "DeGenWaLLet999888777666555444333222111aaaBbb", "timestamp": 1753120031000, "total_likes": 2},
+  {"id": 4210008, "mint": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump", "text": "koth soon", "user": "KoTHhunterAAAbbbCCCdddEEEfffGGGhhhIIIjjjKKKl", "timestamp": 1753120035000, "total_likes": 0}
+]

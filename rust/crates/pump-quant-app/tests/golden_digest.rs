@@ -183,7 +183,7 @@ fn drive(cfg: Config) -> pump_quant_app::engine::Report {
             let mint_b58 = "BmoVsKix7SdPJwY9PRDsX3jDux3rr78RHEycUwWod4qM";
             let ts0 = 1_000_000_000u64 + round * 60_000_000_000;
             let mut batch = vec![RawSocialPayload::new(
-                format!("{{\"platform\":\"twitch\",\"author\":\"streamer\",\"community\":\"streamer\",\"text\":\"$LIVE {mint_b58} full send\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false}}").into_bytes(),
+                format!("{{\"platform\":\"twitch\",\"author\":\"streamer\",\"community\":\"streamer\",\"text\":\"$LIVE {mint_b58} full send r{round}\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false}}").into_bytes(),
                 ts0,
             )];
             // The chat SNOWBALLS as the coin pumps (4, 8, 12, 16, ... distinct
@@ -191,7 +191,7 @@ fn drive(cfg: Config) -> pump_quant_app::engine::Report {
             let n_chat = (4 + round * 4).min(16);
             for c in 0..n_chat {
                 batch.push(RawSocialPayload::new(
-                    format!("{{\"platform\":\"twitch\",\"author\":\"chat{c}\",\"community\":\"streamer\",\"text\":\"$LIVE lfg {c}\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false}}").into_bytes(),
+                    format!("{{\"platform\":\"twitch\",\"author\":\"chat{c}\",\"community\":\"streamer\",\"text\":\"$LIVE lfg {c} r{round}\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false}}").into_bytes(),
                     ts0 + (c + 1) * 1_000_000,
                 ));
             }

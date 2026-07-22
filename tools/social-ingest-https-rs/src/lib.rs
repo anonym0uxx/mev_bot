@@ -27,6 +27,7 @@ pub mod emit;
 pub mod firecrawl;
 pub mod http;
 pub mod json;
+pub mod pump;
 pub mod tiktok;
 pub mod twitterapi;
 pub mod urlenc;

@@ -11,6 +11,8 @@
 //!                              [--replay fixture.json]
 //! pq-social-capture firecrawl  [--url u] [--sources f] [--watch secs]
 //!                              [--replay fixture.json]
+//! pq-social-capture pump       [--mints-file f] [--interval-secs n]
+//!                              [--live-list] [--once] [--replay fixture.json]
 //! ```
 //!
 //! Telegram is intentionally absent: MTProto requires a heavy SDK (grammers),
@@ -36,13 +38,16 @@
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pq_social_capture::{firecrawl, tiktok, twitterapi};
+use pq_social_capture::{firecrawl, pump, tiktok, twitterapi};
 
-const USAGE: &str = "usage: pq-social-capture <twitterapi|tiktok|firecrawl> [flags...]\n\
+const USAGE: &str = "usage: pq-social-capture <twitterapi|tiktok|firecrawl|pump> [flags...]\n\
   twitterapi  --class firehose|amplifier|list  --sources f  --query q\n\
               --type Latest|Top  --pages n  --watch secs  --replay fixture\n\
   tiktok      --hashtag h  --sources f  --watch secs  --replay fixture\n\
   firecrawl   --url u      --sources f  --watch secs  --replay fixture\n\
+  pump        --mints-file f  --interval-secs n  --live-list  --once\n\
+              --replay fixture   (anonymous tier-3 lane, no key; exits 3 on\n\
+              AUTH_WALL so the supervisor sees the capability loss)\n\
   NDJSON on stdout, diagnostics on stderr. --replay is deterministic and\n\
   touches no network (fixture = saved raw API responses, one JSON value per\n\
   poll). Env: TWITTERAPI_IO_KEY | TIKTOK_API_KEY + TIKTOK_API_BASE |\n\
@@ -71,6 +76,7 @@ fn main() -> ExitCode {
         "twitterapi" => twitterapi::run(rest, now_ns),
         "tiktok" => tiktok::run(rest, now_ns),
         "firecrawl" => firecrawl::run(rest, now_ns),
+        "pump" => pump::run(rest, now_ns),
         "-h" | "--help" => {
             eprintln!("{USAGE}");
             0

@@ -1,0 +1,5 @@
+{"replies": [
+  {"id": 5310001, "mint": "6tPg3KVqZBN8jVg2Fu3eYhTWKRXVxTDyyBs76cUCfpump", "text": "wrapped-object response shape", "user": "AbCdWaLLetEfGh1234567890ZyXwVuTsRqPoNmLkJiHg", "timestamp": 1753121000000, "likes_count": 2},
+  {"id": 5310002, "mint": "6tPg3KVqZBN8jVg2Fu3eYhTWKRXVxTDyyBs76cUCfpump", "text": "second wrapped reply", "user": "MnOpQrStUvWxYzAbCdEfGh1122334455667788990011", "timestamp": 1753121004000, "likes_count": 0},
+  {"id": 5310001, "mint": "6tPg3KVqZBN8jVg2Fu3eYhTWKRXVxTDyyBs76cUCfpump", "text": "duplicate wrapped id - must be deduped", "user": "AbCdWaLLetEfGh1234567890ZyXwVuTsRqPoNmLkJiHg", "timestamp": 1753121008000, "likes_count": 0}
+], "hasMore": false, "offset": 0}

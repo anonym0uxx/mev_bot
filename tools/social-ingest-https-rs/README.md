@@ -1,4 +1,4 @@
-# `pq-social-capture` — Rust HTTPS `[S]` capture lanes (twitterapi / tiktok / firecrawl)
+# `pq-social-capture` — Rust HTTPS `[S]` capture lanes (twitterapi / tiktok / firecrawl / pump)
 
 Rust twins of the polling Python adapters in [`../social-ingest/`](../social-ingest),
 one subcommand per feasible platform, all emitting the identical normalized
@@ -79,6 +79,70 @@ shared Agent (connection reuse), bounded jitter-free exponential backoff
 `Retry-After` respected, 8 MiB response-size cap, malformed-JSON skip (never a
 panic), stdout line-buffered NDJSON only.
 
+## `pump` — the Pump.fun-native lane (tier-3, degradation-sentineled)
+
+The one lane with **no Python twin and no vendor**: pump.fun has NO official
+public data API, so this subcommand polls the same undocumented frontend feed
+the pump.fun web UI uses —
+`GET https://frontend-api-v3.pump.fun/replies/{mint}?limit=50&offset=0&reverseOrder=true`
+per watched mint, plus (with `--live-list`) `GET /coins/currently-live` once
+per 60 s for stderr liveness logging. That makes it a **tier-3 source** by this
+project's acquisition hierarchy: reverse-engineered, unversioned-for-us,
+Cloudflare-fronted, and historically churny — the host has already walked
+`frontend-api` → `frontend-api-v2` → `frontend-api-v3`, and each hop broke
+unofficial consumers overnight. **Anonymous-read status from a datacenter IP is
+UNVERIFIED until Phase-B server probing** — residential-browser behavior does
+not transfer.
+
+```bash
+$B pump --mints-file mints.txt              # one base58 mint per line, # comments ok
+$B pump --mints-file mints.txt --live-list  # + currently-live logging (1 req/min reserved)
+$B pump --mints-file mints.txt --once       # single probe pass (Phase-B checklist)
+$B pump --replay tests/fixtures/pump_replies.json
+```
+
+Emission: the shared NDJSON schema (platform `"pump"`, author = replying
+wallet **lowercased**, community = the coin's mint **verbatim base58 case** —
+mints are case-sensitive, engagement zeros, `echo:false`, capture stamp) plus
+ONE extra trailing field `"mint"`: the thread's mint. The thread context IS a
+mint-grade coin reference — stronger than any ticker in the text — so it is
+carried explicitly. Dedupe is by reply id on the shared bounded ring; both
+response shapes the endpoint has shipped (bare array and `{"replies":[...]}`)
+are handled; unknown fields are tolerated; malformed entries are skipped;
+an **empty array is a quiet poll, never an error**.
+
+### Degradation sentinel (first-class for an undocumented endpoint)
+
+| Signal | Detection | Reaction |
+|---|---|---|
+| `SCHEMA_DRIFT` | FNV-1a hash over the sorted top-level key names of the first reply object changed | stderr log with old/new hash; tolerant parser keeps running |
+| `STATUS_CLASS_DRIFT` | per-endpoint HTTP status class changed (2xx→5xx, …) | stderr log; poll skipped, cadence continues |
+| `CHALLENGE_WALL` | HTML content-type / HTML body / Cloudflare challenge markers where JSON belongs (checked BEFORE the auth wall — Cloudflare serves its challenge WITH a 403) | stderr log; back off 5 minutes; keep running |
+| `AUTH_WALL` | 401/403 without a challenge page = anonymous reads revoked | stderr log; **exit code 3** (distinct — the supervisor must see the capability loss loudly) |
+
+### Request budget
+
+Hard global budget: **≤ 20 requests/minute across ALL watched mints**,
+round-robin. `--interval-secs` (seconds per full cycle) defaults to the budget
+floor `ceil(n_mints * 60 / 20)` and is **clamped up** to it — the lane can run
+slower than the budget, never faster. `--live-list` reserves 1 req/min for the
+currently-live poll (floor becomes `ceil(n * 60 / 19)`). Ten watched mints =
+one 30 s cycle = a 3 s gap between requests.
+
+### Phase-B activation checklist
+
+1. **Probe anonymous GET from the server IP first**: `pump --mints-file probe.txt --once`
+   with 1–2 mints; healthy = NDJSON or a quiet pass, exit 0.
+2. Exit 3 (`AUTH_WALL`) on the probe = anonymous reads are revoked for
+   datacenter IPs → do NOT activate the lane.
+3. `CHALLENGE_WALL` on the probe = Cloudflare challenges the server IP → treat
+   as unavailable from this host; try again later before concluding.
+4. Watch the first hour of stderr for `SCHEMA_DRIFT` (fixture shapes are from
+   the reverse-engineered spec, not a contract).
+5. JWT fallback (authenticating with a sacrificial pump.fun account to survive
+   an auth wall) is **documented as NOT implemented** — a deliberate Phase-B+
+   decision point, not an oversight. See `docs/PUMP_NATIVE_INTELLIGENCE.md`.
+
 ## Env vars
 
 | Subcommand | Required env |
@@ -86,6 +150,7 @@ panic), stdout line-buffered NDJSON only.
 | `twitterapi` | `TWITTERAPI_IO_KEY` (https://twitterapi.io, pay-as-you-go) |
 | `tiktok` | `TIKTOK_API_KEY` + `TIKTOK_API_BASE` (your provider endpoint) |
 | `firecrawl` | `FIRECRAWL_API_KEY` (https://firecrawl.dev) |
+| `pump` | none — anonymous frontend reads (tier-3; revocation = exit 3) |
 
 ## Usage
 
@@ -118,7 +183,8 @@ $B firecrawl --url https://www.dexscreener.com/solana --watch 120
 Flags mirror the Python twins exactly: `twitterapi` takes
 `--class firehose|amplifier|list --sources --query --type Latest|Top --pages
 --watch`; `tiktok` takes `--hashtag --sources --watch`; `firecrawl` takes
-`--url --sources --watch`.
+`--url --sources --watch`. The twin-less `pump` lane takes
+`--mints-file --interval-secs --live-list --once`.
 
 ## Replay mode (deterministic, zero network)
 
@@ -127,6 +193,9 @@ $B twitterapi --replay tests/fixtures/twitterapi_pages.json
 $B tiktok     --replay tests/fixtures/tiktok_feed.json
 $B firecrawl  --url https://www.dexscreener.com/solana \
               --replay tests/fixtures/firecrawl_scrape.json
+$B pump       --replay tests/fixtures/pump_replies.json           # bare array
+$B pump       --replay tests/fixtures/pump_replies_wrapped.json   # {"replies":[...]}
+$B pump       --replay tests/fixtures/pump_drift.json             # SCHEMA_DRIFT demo
 ```
 
 A fixture is a saved sequence of raw API responses (one JSON value per poll —
@@ -165,8 +234,10 @@ committed (37 MB of third-party source does not belong in the repo). `cargo buil
 cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
 ```
 
-60 tests: 52 unit (parsing, Python-coercion parity, YAML subset, dedupe ring,
-backoff ladder, urlencode parity, per-platform normalizers) + 8 integration
-(byte-exact replay per platform, determinism, keyless refusal with the Python
-twins' exact messages, NDJSON round-trip + schema order). Tests never touch
-the network.
+87 tests: 73 unit (parsing, Python-coercion parity, YAML subset, dedupe ring,
+backoff ladder, urlencode parity, per-platform normalizers, pump shape-hash /
+challenge / status-class sentinels, pump budget-pacing math) + 14 integration
+(byte-exact replay per platform including both pump response shapes, replay
+determinism, schema-drift survival, keyless refusal with the Python twins'
+exact messages, NDJSON round-trip + schema order incl. the pump trailing
+`mint` field). Tests never touch the network.

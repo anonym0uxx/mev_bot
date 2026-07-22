@@ -165,6 +165,122 @@ fn firecrawl_replay_without_urls_refuses_like_python() {
     );
 }
 
+// ---------------------------------------------------------------------- pump
+
+/// Expected pump-lane output for pump_replies.json: 10 fixture entries →
+/// 8 lines (one malformed entry skipped, one duplicate id deduped). The pump
+/// lane has no Python twin — this tier-3 lane is Rust-first — so the expected
+/// strings are the hand-audited normalization contract itself: author = reply
+/// wallet LOWERCASED, community = thread mint VERBATIM case, zero engagement,
+/// `echo:false`, and the one extra trailing field `"mint"` (thread context is
+/// a mint-grade coin reference).
+const PUMP_EXPECTED: [&str; 8] = [
+    "{\"platform\":\"pump\",\"author\":\"7xkaccpqgmvz3fknojfwhdcprjiobgspqqhbg2g6oyqx\",\"community\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\",\"text\":\"dev is based lfg\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1000000000,\"mint\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\"}",
+    "{\"platform\":\"pump\",\"author\":\"fhkrtsnpmxaeqvjc8x1psvka4trqfjmshomshrvyu2b4\",\"community\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\",\"text\":\"floor is in, adding here\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1001000000,\"mint\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\"}",
+    "{\"platform\":\"pump\",\"author\":\"gkenvpnz5ymqlwuurrtbxcvdeeffgghhjjkkllmmnnpp\",\"community\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\",\"text\":\"this is the next $WIF fr\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1002000000,\"mint\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\"}",
+    "{\"platform\":\"pump\",\"author\":\"bqxwyvutsrqponmlkjihgfedcbaz1234567890abcdef\",\"community\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\",\"text\":\"compare EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v flow before you ape\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1003000000,\"mint\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\"}",
+    "{\"platform\":\"pump\",\"author\":\"so1anastreamerxxyyzz1122334455667788990011ab\",\"community\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\",\"text\":\"send it \u{1F680}\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1004000000,\"mint\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\"}",
+    "{\"platform\":\"pump\",\"author\":\"unknown\",\"community\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\",\"text\":\"who is buying this\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1005000000,\"mint\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\"}",
+    "{\"platform\":\"pump\",\"author\":\"degenwallet999888777666555444333222111aaabbb\",\"community\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\",\"text\":\"\\\"rug\\\" fud is priced in\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1006000000,\"mint\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\"}",
+    "{\"platform\":\"pump\",\"author\":\"kothhunteraaabbbcccdddeeefffggghhhiiijjjkkkl\",\"community\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\",\"text\":\"koth soon\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1007000000,\"mint\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\"}",
+];
+
+#[test]
+fn pump_replay_is_byte_exact() {
+    let out = run(&["pump", "--replay", &fixture("pump_replies.json")]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        stdout_lines(&out),
+        PUMP_EXPECTED,
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // 10 raw entries: 1 malformed skipped + 1 duplicate id deduped = 8.
+    assert!(String::from_utf8_lossy(&out.stderr).contains("replay: emitted 8 events"));
+}
+
+#[test]
+fn pump_wrapped_object_variant_replays() {
+    let out = run(&["pump", "--replay", &fixture("pump_replies_wrapped.json")]);
+    assert!(out.status.success(), "{out:?}");
+    let lines = stdout_lines(&out);
+    assert_eq!(lines.len(), 2, "3 wrapped entries, 1 duplicate id deduped");
+    assert!(lines[0].contains("\"community\":\"6tPg3KVqZBN8jVg2Fu3eYhTWKRXVxTDyyBs76cUCfpump\""));
+    assert!(lines[0].contains("\"text\":\"wrapped-object response shape\""));
+    assert!(lines[0].ends_with(",\"mint\":\"6tPg3KVqZBN8jVg2Fu3eYhTWKRXVxTDyyBs76cUCfpump\"}"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("replay: emitted 2 events"));
+}
+
+#[test]
+fn pump_replay_is_deterministic_across_runs() {
+    let a = run(&["pump", "--replay", &fixture("pump_replies.json")]);
+    let b = run(&["pump", "--replay", &fixture("pump_replies.json")]);
+    assert_eq!(a.stdout, b.stdout, "byte-identical replays (§22)");
+    assert_eq!(a.stderr, b.stderr, "diagnostics deterministic too");
+}
+
+#[test]
+fn pump_schema_drift_is_logged_and_survived() {
+    let out = run(&["pump", "--replay", &fixture("pump_drift.json")]);
+    assert!(
+        out.status.success(),
+        "drift must NOT kill the lane: {out:?}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("SCHEMA_DRIFT replies: shape "),
+        "drift is loud on stderr: {stderr}"
+    );
+    assert!(stderr.contains(" -> "), "old AND new hash logged: {stderr}");
+    assert_eq!(
+        stdout_lines(&out).len(),
+        2,
+        "the tolerant parser keeps emitting through the drift"
+    );
+}
+
+#[test]
+fn pump_lines_carry_the_shared_schema_plus_trailing_mint() {
+    let out = run(&["pump", "--replay", &fixture("pump_replies.json")]);
+    assert!(out.status.success());
+    for line in stdout_lines(&out) {
+        let v = json::parse(&line).unwrap_or_else(|e| panic!("invalid JSON {line:?}: {e}"));
+        assert_eq!(json::serialize(&v), line, "round-trip drift");
+        let json::Value::Object(pairs) = &v else {
+            panic!("top level must be an object");
+        };
+        let keys: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+        // The normalize.py schema + capture stamp, then the ONE pump-specific
+        // field LAST: the thread's mint (a mint-grade coin reference).
+        assert_eq!(
+            keys,
+            [
+                "platform",
+                "author",
+                "community",
+                "text",
+                "likes",
+                "reposts",
+                "replies",
+                "echo",
+                "observed_at_ns",
+                "mint"
+            ]
+        );
+        assert_eq!(pairs[0].1, json::Value::String("pump".to_string()));
+        assert_eq!(pairs[2].1, pairs[9].1, "community and mint agree");
+    }
+}
+
+#[test]
+fn pump_without_mints_file_refuses_before_any_network() {
+    let out = run(&["pump"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr)
+        .contains("error: pump needs --mints-file (one base58 mint per line)"));
+    assert!(out.stdout.is_empty(), "stdout stays NDJSON-only");
+}
+
 // ----------------------------------------------------- credentials + hygiene
 
 #[test]

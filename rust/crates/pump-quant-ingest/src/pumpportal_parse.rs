@@ -156,3 +156,89 @@ pub fn parse_pumpportal(payload: &[u8]) -> Option<CanonicalTx> {
         source: SourceKind::PumpPortal,
     })
 }
+
+/// Parse a PumpPortal `txType == "create"` launch message into the decoded
+/// [`RawTokenMetadata`] the token-ingest classifier consumes — closing the gap
+/// where free-tier `subscribeNewToken` events were received and DROPPED. The
+/// creator is the FNV-1a of the creating wallet (the same entity fold the
+/// social plane uses); `slot` is 0 (PumpPortal carries no slot — unknown is
+/// labeled, never fabricated, §6.4). Returns `None` for any other message.
+#[must_use]
+pub fn parse_pumpportal_create(
+    payload: &[u8],
+) -> Option<crate::token_metadata_parse::RawTokenMetadata> {
+    let root = json::parse(payload)?;
+    if root.get("txType")?.as_str()? != "create" {
+        return None;
+    }
+    let mint = base58::decode_pubkey(root.get("mint")?.as_str()?)?;
+    let name = root
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let symbol = root
+        .get("symbol")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let creator = root
+        .get("traderPublicKey")
+        .and_then(|t| t.as_str())
+        .filter(|t| !t.is_empty())
+        .map(|t| crate::social_parse::fnv1a_64(t.as_bytes()))
+        .unwrap_or(0);
+    Some(crate::token_metadata_parse::RawTokenMetadata {
+        mint,
+        name,
+        symbol,
+        creator,
+        slot: 0,
+    })
+}
+
+/// Parse a PumpPortal migration message (free-tier `subscribeMigration`) into
+/// the migrated mint — previously received and DROPPED. Accepts both observed
+/// tag spellings (`migrate` / `migration`); anything else returns `None`.
+#[must_use]
+pub fn parse_pumpportal_migration(payload: &[u8]) -> Option<[u8; 32]> {
+    let root = json::parse(payload)?;
+    let t = root.get("txType")?.as_str()?;
+    if t != "migrate" && t != "migration" {
+        return None;
+    }
+    base58::decode_pubkey(root.get("mint")?.as_str()?)
+}
+
+#[cfg(test)]
+mod pump_native_tests {
+    use super::*;
+
+    #[test]
+    fn create_message_parses_to_raw_metadata() {
+        let j = br#"{"signature":"x","mint":"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump","txType":"create","name":"Test Coin","symbol":"TEST","traderPublicKey":"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"}"#;
+        let raw = parse_pumpportal_create(j).expect("create parses");
+        assert_eq!(raw.name, "Test Coin");
+        assert_eq!(raw.symbol, "TEST");
+        assert_ne!(raw.creator, 0);
+        assert_eq!(raw.slot, 0, "no slot claimed when none is carried");
+    }
+
+    #[test]
+    fn non_create_messages_are_none() {
+        let j = br#"{"signature":"x","mint":"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump","txType":"buy"}"#;
+        assert!(parse_pumpportal_create(j).is_none());
+    }
+
+    #[test]
+    fn migration_message_parses_to_mint() {
+        for tag in ["migrate", "migration"] {
+            let j = format!(
+                "{{\"mint\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\",\"txType\":\"{tag}\"}}"
+            );
+            assert!(parse_pumpportal_migration(j.as_bytes()).is_some(), "{tag}");
+        }
+        let j = br#"{"mint":"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump","txType":"sell"}"#;
+        assert!(parse_pumpportal_migration(j).is_none());
+    }
+}

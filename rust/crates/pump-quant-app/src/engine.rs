@@ -175,6 +175,12 @@ const PRESSURE_BALANCED_BP: u32 = 5_000;
 /// to the formula so expectancy artifacts stay attributable.
 pub const EXPECTANCY_VERSION: u32 = 1;
 
+/// Maximum (author, content) duplicate-suppression keys retained (§99). At the
+/// cap the oldest key is evicted — an ancient post replayed later may count
+/// again (a bounded-memory tradeoff, biased toward availability of the screen
+/// for CURRENT tape, which is where duplicate inflation matters).
+const SOCIAL_SEEN_CAP: usize = 8_192;
+
 /// Maximum learned cashtag→mint bindings retained (§99). First-bind-wins under
 /// the cap; at the cap no new symbols bind (a lower bound on coverage, never a
 /// wrong binding). 4096 matches the lane track caps.
@@ -348,6 +354,15 @@ pub struct Engine {
     f_recommended: Option<u32>,
     /// Regime summary flag consumed by sizing (refreshed at reflection cadence).
     regime_rug_elevated: bool,
+    /// Cross-provider / repost duplicate suppression (§29 directive: the same
+    /// underlying post arriving via multiple capture lanes — or verbatim
+    /// re-posted by the same author — must count ONCE, never as independent
+    /// corroboration). Keyed (author, content-hash); bounded ring + set (§99).
+    /// Cross-AUTHOR identical content is NOT deduped — that is the §29.7c
+    /// coordination signature and must stay visible to the batch screen.
+    social_seen: std::collections::BTreeSet<(u64, u64)>,
+    /// Eviction order for [`Self::social_seen`] (oldest evicted at the cap).
+    social_seen_ring: std::collections::VecDeque<(u64, u64)>,
     /// Learned cashtag→mint bindings (§29): when one event names BOTH a ticker
     /// and a concrete mint, the ticker binds to that mint (FIRST bind wins — a
     /// later post cannot hijack an established symbol). Cashtag-only chatter
@@ -477,6 +492,8 @@ impl Engine {
             retired: [false; 4],
             f_recommended: None,
             regime_rug_elevated: false,
+            social_seen: std::collections::BTreeSet::new(),
+            social_seen_ring: std::collections::VecDeque::new(),
             cashtag_binds: BTreeMap::new(),
             lane_edge: [(0, 0); 4],
             structure,
@@ -958,6 +975,22 @@ impl Engine {
             crate::social_ingest::coordinated_content(&events, COORDINATION_WINDOW_NS);
         let mut applied = 0usize;
         for ev in &events {
+            // Duplicate suppression FIRST (§29): the same (author, content) seen
+            // before — a cross-provider duplicate delivery or a verbatim same-
+            // author repost — is dropped entirely: no lane observation, no
+            // attention, no earn-loop call. Distinct authors sharing content
+            // pass through to the coordination screen below.
+            let seen_key = (ev.author_id, ev.content_hash);
+            if self.social_seen.contains(&seen_key) {
+                continue;
+            }
+            if self.social_seen_ring.len() >= SOCIAL_SEEN_CAP {
+                if let Some(old) = self.social_seen_ring.pop_front() {
+                    self.social_seen.remove(&old);
+                }
+            }
+            self.social_seen.insert(seen_key);
+            self.social_seen_ring.push_back(seen_key);
             let is_coordinated = coordinated.iter().any(|&(h, _)| h == ev.content_hash);
             // Earned favorable-rate from the reconciliation loop supersedes the
             // PUBLIC_BURNED baseline; an unproven source falls back to the ledger.
