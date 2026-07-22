@@ -25,6 +25,10 @@
 
 use crate::event::LaneKind;
 use pump_quant_domain::ids::Mint as DomainMint;
+use pump_quant_features::micro::{
+    classify_divergence, cumulative_volume_delta, order_flow_imbalance_bps, CvdDivergence,
+};
+use pump_quant_features::types::{Side, TradeEvent};
 use pump_quant_narrative::narrative::{
     nv_candidate_score, nv_virality_coeff, AttentionMoneyDivergence, LifecycleStage,
 };
@@ -34,6 +38,107 @@ use std::collections::BTreeMap;
 /// Bound on how many distinct mints a single lane tracks before it evicts the
 /// weakest (§99 bounded state). Set high enough that laptop replays never hit it.
 const LANE_TRACK_CAP: usize = 4_096;
+
+/// Max recent trades retained per mint for microstructure (§57/§99). A small ring:
+/// CVD/OFI/VWAP over the last N swaps is the scalping horizon, and a bounded ring
+/// keeps per-mint state O(1) and the emit hot path cache-friendly.
+const NUMERIC_RING_CAP: usize = 64;
+
+/// Minimum trades before the numeric microstructure is trusted. With fewer than
+/// this, CVD/OFI/divergence are pure noise on a sparse tape (§21.7 thin-market
+/// degradation clause), so the lane emits nothing rather than a spurious score.
+const NUMERIC_MIN_TRADES: usize = 3;
+
+/// Map order-flow imbalance (bps, −10_000..=10_000, or `None` on empty flow) onto
+/// the shared 0..=10_000 buy-pressure scale (5_000 = balanced) so the `Features`
+/// contract keeps meaning while being sourced from wash-robust *signed* flow rather
+/// than the old buy/(buy+sell) share that a manipulator can inflate (§21.7).
+#[inline]
+#[must_use]
+fn ofi_to_pressure_bp(ofi_bps: Option<i32>) -> u32 {
+    match ofi_bps {
+        Some(b) => ((i64::from(b) + 10_000) / 2) as u32,
+        None => 0,
+    }
+}
+
+/// The tape's momentum/reversion regime from the Roll-measure serial-covariance
+/// sign — the **#1 crypto short-horizon predictor** (Easley et al., SSRN 4814346;
+/// Roll 1984). On a bonding curve the sign of `cov(Δp_t, Δp_{t−1})` is an
+/// impact-weighted run/alternation statistic: positive = one-sided flow (TREND),
+/// negative = side alternation / churn (REVERT — also the matched-wash signature,
+/// which usefully forces the strict playbook).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Regime {
+    /// Positive serial covariance: momentum playbook (current gates unchanged).
+    Trend,
+    /// Deadband / insufficient tape: default playbook.
+    Neutral,
+    /// Negative serial covariance: raised entry bar + reduced size (Kaminski–Lo —
+    /// momentum-following components only earn their keep under positive ρ).
+    Revert,
+}
+
+/// Minimum nonzero price deltas before the Roll estimator is trusted; below this
+/// the tape is noise and the regime stays [`Regime::Neutral`] (fail-safe).
+const ROLL_MIN_NONZERO_DELTAS: usize = 16;
+
+/// Lag-1 (uncentered) autocorrelation of trade-price changes over the ring, in bps
+/// of [−10_000, 10_000]: `10_000 × Σ Δᵢ·Δᵢ₋₁ / Σ Δᵢ²` (i128; truncation toward
+/// zero biases toward Neutral — fail-safe). `None` on insufficient nonzero deltas.
+#[must_use]
+fn roll_rho_bp(trades: &[TradeEvent]) -> Option<i64> {
+    if trades.len() < 3 {
+        return None;
+    }
+    let mut cov_num: i128 = 0;
+    let mut den: i128 = 0;
+    let mut prev_delta: Option<i128> = None;
+    let mut nonzero = 0usize;
+    for w in trades.windows(2) {
+        let d = w[1].price_fp - w[0].price_fp;
+        if d != 0 {
+            nonzero += 1;
+        }
+        den = den.saturating_add(d.saturating_mul(d));
+        if let Some(pd) = prev_delta {
+            cov_num = cov_num.saturating_add(d.saturating_mul(pd));
+        }
+        prev_delta = Some(d);
+    }
+    if nonzero < ROLL_MIN_NONZERO_DELTAS || den == 0 {
+        return None;
+    }
+    Some(((cov_num.saturating_mul(10_000)) / den) as i64)
+}
+
+/// Classify a rho reading against operator deadband edges into a [`Regime`].
+#[inline]
+#[must_use]
+fn classify_regime(rho_bp: Option<i64>, trend_bp: i64, revert_bp: i64) -> Regime {
+    match rho_bp {
+        Some(r) if r >= trend_bp => Regime::Trend,
+        Some(r) if r <= revert_bp => Regime::Revert,
+        _ => Regime::Neutral,
+    }
+}
+
+/// The operator gate the numeric lane's emission consults (§102 named, config-fed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NumericEmitGate {
+    /// Baseline minimum OFI (bps) to emit a self-authorizing candidate.
+    pub ofi_min_bp: u32,
+    /// Raised OFI bar under [`Regime::Revert`] (the regime is breaking — only a
+    /// violent imbalance qualifies; Kaminski–Lo value-destruction case otherwise).
+    pub revert_ofi_min_bp: u32,
+    /// Regime deadband edge for TREND (rho bps ≥ this).
+    pub roll_trend_bp: i64,
+    /// Regime deadband edge for REVERT (rho bps ≤ this; negative).
+    pub roll_revert_bp: i64,
+    /// Evidence freshness TTL (ticks): a mint whose last decoded trade is older
+    /// emits nothing — dead tapes must not keep ranking (§29.6/§34.3 staleness law).
+    pub evidence_ttl_ticks: u64,
+}
 
 /// The documented source→ranking-lane bijection (see module docs).
 #[must_use]
@@ -53,20 +158,24 @@ pub fn to_wl_mint(m: DomainMint) -> WlMint {
     WlMint::new(*m.as_bytes())
 }
 
-/// Per-mint numeric microstructure accumulator.
-#[derive(Clone, Copy, Debug, Default)]
+/// Per-mint numeric microstructure accumulator: a bounded ring of recent decoded
+/// swaps plus the O(1) scalar context the discovery score needs. The ring is what
+/// the real `features::micro` CVD / OFI / VWAP-divergence functions fold over.
+#[derive(Clone, Debug, Default)]
 struct NumericObs {
     liquidity_lamports: u64,
-    buy_base: u128,
-    sell_base: u128,
     buyer_bitset: u64,
     age_slots: u32,
     last_tick: u64,
+    /// Bounded ring of recent trades (oldest→newest), cap = [`NUMERIC_RING_CAP`].
+    trades: Vec<TradeEvent>,
 }
 
-/// The on-chain numeric lane: signed flow, liquidity and buyer breadth. This is the
-/// only self-authorizing lane. Its discovery score is monotonic in net buy pressure
-/// and liquidity, both integer.
+/// The on-chain numeric lane: real trade-flow microstructure (CVD, order-flow
+/// imbalance, CVD/price divergence) over a bounded per-mint trade ring. This is the
+/// only self-authorizing lane, and it now discovers on *signed* flow — wash-robust,
+/// exhaustion-aware — instead of the old buy/(buy+sell) share a manipulator could
+/// fake (§21.7). Every derived quantity is integer/fixed-point (§22).
 #[derive(Clone, Debug, Default)]
 pub struct NumericLane {
     obs: BTreeMap<[u8; 32], NumericObs>,
@@ -79,10 +188,15 @@ impl NumericLane {
         Self::default()
     }
 
-    /// Ingest a decoded swap.
+    /// Ingest a decoded swap: append it to the mint's bounded trade ring and refresh
+    /// the scalar context. `price_fp` is fixed-point (PRICE_SCALE), `quote_lamports`
+    /// the swap's quote volume (signed into CVD by `signed_base`'s sign).
+    #[allow(clippy::too_many_arguments)]
     pub fn observe(
         &mut self,
         mint: DomainMint,
+        price_fp: i128,
+        quote_lamports: u64,
         liquidity_lamports: u64,
         signed_base: i64,
         buyer_entity: u64,
@@ -93,18 +207,26 @@ impl NumericLane {
         e.liquidity_lamports = liquidity_lamports;
         e.age_slots = age_slots;
         e.last_tick = now;
-        if signed_base >= 0 {
-            e.buy_base = e
-                .buy_base
-                .saturating_add(signed_base.unsigned_abs() as u128);
-        } else {
-            e.sell_base = e
-                .sell_base
-                .saturating_add(signed_base.unsigned_abs() as u128);
-        }
         // Cheap deterministic buyer-breadth proxy: fold the entity id into a 64-bit
         // set so `unique_buyers` grows without an unbounded per-mint collection.
         e.buyer_bitset |= 1u64 << (buyer_entity % 64);
+        let side = if signed_base >= 0 {
+            Side::Buy
+        } else {
+            Side::Sell
+        };
+        // Bounded ring (§57/§99): drop the oldest when full.
+        if e.trades.len() >= NUMERIC_RING_CAP {
+            e.trades.remove(0);
+        }
+        e.trades.push(TradeEvent {
+            event_id: now,
+            ts_ns: now,
+            price_fp,
+            base_qty: signed_base.unsigned_abs(),
+            quote_qty: quote_lamports,
+            side,
+        });
     }
 
     fn entry(&mut self, key: [u8; 32]) -> &mut NumericObs {
@@ -114,51 +236,109 @@ impl NumericLane {
         self.obs.entry(key).or_default()
     }
 
-    /// The numeric feature snapshot for a mint, if the lane has seen it.
+    /// The most recent trade price (fixed-point, PRICE_SCALE) the lane holds for a
+    /// mint, if any — the entry / mark price the held-position lifecycle tracks
+    /// against. Narrowed to `u64` (saturating) for the strategy protection leaf;
+    /// realistic AMM prices in PRICE_SCALE units are well within `u64`.
+    #[must_use]
+    pub fn latest_price_fp(&self, mint: DomainMint) -> Option<u64> {
+        self.obs
+            .get(mint.as_bytes())
+            .and_then(|o| o.trades.last())
+            .map(|t| u64::try_from(t.price_fp.max(0)).unwrap_or(u64::MAX))
+    }
+
+    /// The numeric feature snapshot for a mint, if the lane has seen it. Buy-pressure
+    /// is now the OFI-derived (signed, wash-robust) value on the shared scale.
     #[must_use]
     pub fn features_for(&self, mint: DomainMint) -> Option<Features> {
         self.obs.get(mint.as_bytes()).map(|o| Features {
             liquidity_lamports: o.liquidity_lamports,
-            buy_pressure_bp: buy_pressure_bp(o.buy_base, o.sell_base),
+            buy_pressure_bp: ofi_to_pressure_bp(order_flow_imbalance_bps(&o.trades)),
             unique_buyers: o.buyer_bitset.count_ones(),
             age_slots: o.age_slots,
         })
     }
 
-    /// Emit one candidate per tracked mint with an integer discovery score.
+    /// The tape regime for a mint (Roll-sign over its trade ring). [`Regime::Neutral`]
+    /// for an untracked mint or an insufficient tape.
     #[must_use]
-    pub fn emit(&self, now: u64) -> Vec<Candidate> {
+    pub fn regime_of(&self, mint: DomainMint, trend_bp: i64, revert_bp: i64) -> Regime {
+        match self.obs.get(mint.as_bytes()) {
+            Some(o) => classify_regime(roll_rho_bp(&o.trades), trend_bp, revert_bp),
+            None => Regime::Neutral,
+        }
+    }
+
+    /// Emit one candidate per bullish-flow mint with an integer discovery score.
+    #[must_use]
+    pub fn emit(&self, now: u64, gate: &NumericEmitGate) -> Vec<Candidate> {
         let mut out = Vec::with_capacity(self.obs.len());
-        self.emit_into(&mut out, now);
+        self.emit_into(&mut out, now, gate);
         out
     }
 
-    /// Append one candidate per tracked mint into `buf` (see [`Self::emit`]).
+    /// Append one self-authorizing candidate per mint whose real trade flow is
+    /// genuinely bullish into `buf`.
     ///
-    /// The engine drives this every tick over a reused buffer, so steady-state
-    /// discovery allocates nothing here; `emit` is the owning convenience wrapper.
-    /// The emitted candidates are byte-identical to `emit`'s.
-    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64) {
+    /// **Sign-agreement gate (§21.7 CVD/OFI/VWAP combined, wash-robust).** A numeric
+    /// candidate is emitted only when order-flow imbalance clears the regime's OFI
+    /// bar (baseline in TREND/NEUTRAL, raised under REVERT — a mean-reverting tape
+    /// only qualifies on a violent imbalance, Kaminski–Lo), the cumulative volume
+    /// delta is net-buy, price is NOT diverging bearishly from flow (exhaustion),
+    /// **and the evidence is fresh** — a mint whose last decoded trade is older than
+    /// `evidence_ttl_ticks` emits nothing (dead tapes must not keep ranking, §34.3).
+    /// Sub-[`NUMERIC_MIN_TRADES`] sparse tapes emit nothing. Score is monotone in
+    /// imbalance strength × liquidity magnitude × buyer breadth; integer, saturating
+    /// (§22). Reused buffer ⇒ alloc-free steady state.
+    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64, gate: &NumericEmitGate) {
         buf.reserve(self.obs.len());
         for (k, o) in &self.obs {
-            let feats = Features {
-                liquidity_lamports: o.liquidity_lamports,
-                buy_pressure_bp: buy_pressure_bp(o.buy_base, o.sell_base),
-                unique_buyers: o.buyer_bitset.count_ones(),
-                age_slots: o.age_slots,
+            if o.trades.len() < NUMERIC_MIN_TRADES {
+                continue;
+            }
+            // Staleness law: dead evidence never ranks.
+            if now.saturating_sub(o.last_tick) > gate.evidence_ttl_ticks {
+                continue;
+            }
+            let ofi_bp = order_flow_imbalance_bps(&o.trades).unwrap_or(0);
+            let cvd = cumulative_volume_delta(&o.trades);
+            let first = o.trades.first().map_or(0, |t| t.price_fp);
+            let last = o.trades.last().map_or(0, |t| t.price_fp);
+            let divergence = classify_divergence(last - first, cvd);
+            let regime = classify_regime(
+                roll_rho_bp(&o.trades),
+                gate.roll_trend_bp,
+                gate.roll_revert_bp,
+            );
+            let required_ofi = if regime == Regime::Revert {
+                gate.revert_ofi_min_bp
+            } else {
+                gate.ofi_min_bp
             };
-            // Score = buy-pressure(bps) × liquidity-decade × buyer breadth.
-            // Monotone in each input, saturating, integer-only.
+            let bullish = ofi_bp >= 0
+                && (ofi_bp as u32) >= required_ofi
+                && cvd > 0
+                && divergence != CvdDivergence::Bearish;
+            if !bullish {
+                continue;
+            }
+            let breadth = u64::from(o.buyer_bitset.count_ones()).max(1);
             let liq_decade = decade(o.liquidity_lamports);
-            let score = (feats.buy_pressure_bp as u64)
+            let score = (ofi_bp as u64)
                 .saturating_mul(liq_decade)
-                .saturating_mul((feats.unique_buyers as u64).max(1));
+                .saturating_mul(breadth);
             buf.push(Candidate::new(
                 WlMint::new(*k),
                 WlLane::ActiveMarketScalp,
                 score,
                 now,
-                feats,
+                Features {
+                    liquidity_lamports: o.liquidity_lamports,
+                    buy_pressure_bp: ofi_to_pressure_bp(Some(ofi_bp)),
+                    unique_buyers: o.buyer_bitset.count_ones(),
+                    age_slots: o.age_slots,
+                },
             ));
         }
     }
@@ -170,6 +350,7 @@ struct NarrativeObs {
     prior_active: u64,
     new_mentions: u64,
     samples: u32,
+    last_tick: u64,
 }
 
 /// The narrative / attention-velocity lane. Uses the real `pump_quant_narrative`
@@ -188,8 +369,8 @@ impl NarrativeLane {
         Self::default()
     }
 
-    /// Ingest a narrative sample.
-    pub fn observe(&mut self, mint: DomainMint, prior_active: u64, new_mentions: u64) {
+    /// Ingest a narrative sample at logical `now` (freshness stamp).
+    pub fn observe(&mut self, mint: DomainMint, prior_active: u64, new_mentions: u64, now: u64) {
         let key = *mint.as_bytes();
         if !self.obs.contains_key(&key) && self.obs.len() >= LANE_TRACK_CAP {
             evict_weakest_narrative(&mut self.obs);
@@ -198,16 +379,29 @@ impl NarrativeLane {
         e.prior_active = prior_active;
         e.new_mentions = e.new_mentions.saturating_add(new_mentions);
         e.samples = e.samples.saturating_add(1);
+        e.last_tick = now;
     }
 
     /// Emit one candidate per tracked mint. Score comes from `nv_candidate_score`
     /// with the lifecycle stage inferred from the virality coefficient against the
     /// operator-supplied band edges (`stage_hi_fp` ≥ `stage_lo_fp`, both in the
-    /// narrative crate's fixed-point unit) — no band edge is baked in.
+    /// narrative crate's fixed-point unit) — no band edge is baked in. Evidence
+    /// older than `ttl_ticks` emits nothing (staleness law, §29.6/§34.3), and
+    /// evidence ages CONTINUOUSLY before that cliff: every `decay.step_ticks` of
+    /// age multiplies the score by `decay.rate_bp` (§29.6 decay-after-peak —
+    /// memecoin attention decays in minutes; a stale mention must not rank like
+    /// a fresh one). Decayed scores below `decay.floor` emit nothing at all.
     #[must_use]
-    pub fn emit(&self, now: u64, stage_hi_fp: u64, stage_lo_fp: u64) -> Vec<Candidate> {
+    pub fn emit(
+        &self,
+        now: u64,
+        stage_hi_fp: u64,
+        stage_lo_fp: u64,
+        ttl_ticks: u64,
+        decay: &AttentionDecayParams,
+    ) -> Vec<Candidate> {
         let mut out = Vec::with_capacity(self.obs.len());
-        self.emit_into(&mut out, now, stage_hi_fp, stage_lo_fp);
+        self.emit_into(&mut out, now, stage_hi_fp, stage_lo_fp, ttl_ticks, decay);
         out
     }
 
@@ -218,9 +412,15 @@ impl NarrativeLane {
         now: u64,
         stage_hi_fp: u64,
         stage_lo_fp: u64,
+        ttl_ticks: u64,
+        decay: &AttentionDecayParams,
     ) {
         buf.reserve(self.obs.len());
         for (k, o) in &self.obs {
+            let age = now.saturating_sub(o.last_tick);
+            if age > ttl_ticks {
+                continue;
+            }
             let virality = nv_virality_coeff(o.prior_active, o.new_mentions).unwrap_or(0);
             // Stage/divergence inferred deterministically from the configured
             // virality bands (in the narrative leaf's fixed-point unit).
@@ -239,6 +439,10 @@ impl NarrativeLane {
                 // fade-first: pre-confirmation the narrative score is capped.
                 false,
             );
+            let score = decay.apply(score, age);
+            if score < decay.floor {
+                continue;
+            }
             buf.push(Candidate::new(
                 WlMint::new(*k),
                 WlLane::EarlyConfirmation,
@@ -250,10 +454,43 @@ impl NarrativeLane {
     }
 }
 
+/// §29.6 attention-decay law applied to narrative evidence at emission time:
+/// multiplicative shrinkage per age step, with an absolute floor below which the
+/// evidence is treated as gone. All parameters are operator config (§102); the
+/// TTL cliff (§34.3) remains the hard cutoff behind this continuous ramp.
+#[derive(Clone, Copy, Debug)]
+pub struct AttentionDecayParams {
+    /// Per-step multiplicative survival rate, bps of 10_000 (≤ 10_000).
+    pub rate_bp: u32,
+    /// Logical ticks per decay step (clamped ≥ 1 by config).
+    pub step_ticks: u64,
+    /// Absolute decayed-score floor: below this the mint emits nothing.
+    pub floor: u64,
+}
+
+impl AttentionDecayParams {
+    /// Bound on decay iterations: after this many steps at any realistic rate
+    /// the score is far below any meaningful floor (0.933^32 ≈ 0.11 of peak,
+    /// compounding on already-small integer scores).
+    const MAX_STEPS: u64 = 32;
+
+    /// `score × rate^(age/step)`, integer, saturating, bounded iterations.
+    #[must_use]
+    pub fn apply(&self, score: u64, age_ticks: u64) -> u64 {
+        let steps = (age_ticks / self.step_ticks.max(1)).min(Self::MAX_STEPS);
+        let mut s = u128::from(score);
+        for _ in 0..steps {
+            s = s * u128::from(self.rate_bp) / 10_000;
+        }
+        s as u64
+    }
+}
+
 /// The social lane: quality-weighted call accumulation. Corroboration-tier.
 #[derive(Clone, Debug, Default)]
 pub struct SocialLane {
-    obs: BTreeMap<[u8; 32], u64>,
+    /// mint → (summed quality weight, last observation tick).
+    obs: BTreeMap<[u8; 32], (u64, u64)>,
 }
 
 impl SocialLane {
@@ -263,30 +500,37 @@ impl SocialLane {
         Self::default()
     }
 
-    /// Ingest a scored social call. Weak sources contribute proportionally less.
-    pub fn observe(&mut self, mint: DomainMint, source_quality_bp: u32) {
+    /// Ingest a scored social call at logical `now`. Weak sources contribute
+    /// proportionally less.
+    pub fn observe(&mut self, mint: DomainMint, source_quality_bp: u32, now: u64) {
         let key = *mint.as_bytes();
         if !self.obs.contains_key(&key) && self.obs.len() >= LANE_TRACK_CAP {
-            if let Some((&weakest, _)) = self.obs.iter().min_by_key(|(_, &v)| v) {
+            if let Some((&weakest, _)) = self.obs.iter().min_by_key(|(_, &(v, _))| v) {
                 self.obs.remove(&weakest);
             }
         }
-        let e = self.obs.entry(key).or_insert(0);
-        *e = e.saturating_add(source_quality_bp as u64);
+        let e = self.obs.entry(key).or_insert((0, now));
+        e.0 = e.0.saturating_add(source_quality_bp as u64);
+        e.1 = now;
     }
 
-    /// Emit one candidate per tracked mint. Score is the summed quality weight.
+    /// Emit one candidate per FRESH tracked mint. Score is the summed quality
+    /// weight; evidence older than `ttl_ticks` emits nothing — one call long ago
+    /// must not rank a mint forever (staleness law, §29.6/§34.3).
     #[must_use]
-    pub fn emit(&self, now: u64) -> Vec<Candidate> {
+    pub fn emit(&self, now: u64, ttl_ticks: u64) -> Vec<Candidate> {
         let mut out = Vec::with_capacity(self.obs.len());
-        self.emit_into(&mut out, now);
+        self.emit_into(&mut out, now, ttl_ticks);
         out
     }
 
-    /// Append one candidate per tracked mint into `buf` (see [`Self::emit`]).
-    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64) {
+    /// Append one candidate per fresh tracked mint into `buf` (see [`Self::emit`]).
+    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64, ttl_ticks: u64) {
         buf.reserve(self.obs.len());
-        for (k, &w) in &self.obs {
+        for (k, &(w, last)) in &self.obs {
+            if now.saturating_sub(last) > ttl_ticks {
+                continue;
+            }
             buf.push(Candidate::new(
                 WlMint::new(*k),
                 WlLane::CreationSniper,
@@ -301,7 +545,8 @@ impl SocialLane {
 /// The wallet / smart-money lane: cumulative followable size. Corroboration-tier.
 #[derive(Clone, Debug, Default)]
 pub struct WalletLane {
-    obs: BTreeMap<[u8; 32], u64>,
+    /// mint → (cumulative followable lamports, last observation tick).
+    obs: BTreeMap<[u8; 32], (u64, u64)>,
 }
 
 impl WalletLane {
@@ -311,36 +556,42 @@ impl WalletLane {
         Self::default()
     }
 
-    /// Ingest a smart-money action; only followable wallets contribute.
-    pub fn observe(&mut self, mint: DomainMint, followable: bool, size_lamports: u64) {
+    /// Ingest a smart-money action at logical `now`; only followable wallets
+    /// contribute.
+    pub fn observe(&mut self, mint: DomainMint, followable: bool, size_lamports: u64, now: u64) {
         if !followable {
             return;
         }
         let key = *mint.as_bytes();
         if !self.obs.contains_key(&key) && self.obs.len() >= LANE_TRACK_CAP {
-            if let Some((&weakest, _)) = self.obs.iter().min_by_key(|(_, &v)| v) {
+            if let Some((&weakest, _)) = self.obs.iter().min_by_key(|(_, &(v, _))| v) {
                 self.obs.remove(&weakest);
             }
         }
-        let e = self.obs.entry(key).or_insert(0);
-        *e = e.saturating_add(size_lamports);
+        let e = self.obs.entry(key).or_insert((0, now));
+        e.0 = e.0.saturating_add(size_lamports);
+        e.1 = now;
     }
 
-    /// Emit one candidate per tracked mint. Score is cumulative followable size,
-    /// compressed to a decade then scaled by the operator-supplied `score_scale` so
-    /// it is comparable with the other lanes' score magnitudes — the cross-lane
-    /// weight is a config field, not a baked-in constant.
+    /// Emit one candidate per FRESH tracked mint. Score is cumulative followable
+    /// size, compressed to a decade then scaled by the operator-supplied
+    /// `score_scale` so it is comparable with the other lanes' score magnitudes —
+    /// the cross-lane weight is a config field, not a baked-in constant. Evidence
+    /// older than `ttl_ticks` emits nothing (staleness law).
     #[must_use]
-    pub fn emit(&self, now: u64, score_scale: u64) -> Vec<Candidate> {
+    pub fn emit(&self, now: u64, score_scale: u64, ttl_ticks: u64) -> Vec<Candidate> {
         let mut out = Vec::with_capacity(self.obs.len());
-        self.emit_into(&mut out, now, score_scale);
+        self.emit_into(&mut out, now, score_scale, ttl_ticks);
         out
     }
 
-    /// Append one candidate per tracked mint into `buf` (see [`Self::emit`]).
-    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64, score_scale: u64) {
+    /// Append one candidate per fresh tracked mint into `buf` (see [`Self::emit`]).
+    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64, score_scale: u64, ttl_ticks: u64) {
         buf.reserve(self.obs.len());
-        for (k, &size) in &self.obs {
+        for (k, &(size, last)) in &self.obs {
+            if now.saturating_sub(last) > ttl_ticks {
+                continue;
+            }
             buf.push(Candidate::new(
                 WlMint::new(*k),
                 WlLane::GraduationTransition,
@@ -350,17 +601,6 @@ impl WalletLane {
             ));
         }
     }
-}
-
-/// Buy pressure in basis points: `buy / (buy + sell)`, integer, 10_000 = 100%.
-#[inline]
-#[must_use]
-fn buy_pressure_bp(buy: u128, sell: u128) -> u32 {
-    let total = buy.saturating_add(sell);
-    if total == 0 {
-        return 0;
-    }
-    ((buy.saturating_mul(10_000)) / total) as u32
 }
 
 /// A coarse base-10 magnitude of a lamport quantity (0 → 0, 1..9 → 1, 10..99 → 2 …).
@@ -378,7 +618,9 @@ fn decade(v: u64) -> u64 {
 }
 
 fn evict_weakest_numeric(obs: &mut BTreeMap<[u8; 32], NumericObs>) {
-    if let Some((&weakest, _)) = obs.iter().min_by_key(|(_, o)| o.buy_base) {
+    // Weakest = fewest observed trades (least microstructure evidence). Deterministic
+    // and cheap; the cap is high enough that laptop replays rarely reach here (§99).
+    if let Some((&weakest, _)) = obs.iter().min_by_key(|(_, o)| o.trades.len()) {
         obs.remove(&weakest);
     }
 }

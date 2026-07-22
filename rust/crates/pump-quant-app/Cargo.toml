@@ -14,11 +14,17 @@ path = "src/main.rs"
 
 [dependencies]
 pump-quant-domain = { path = "../pump-quant-domain" }
+pump-quant-features = { path = "../pump-quant-features" }
 pump-quant-ingest = { path = "../pump-quant-ingest" }
 pump-quant-watchlist = { path = "../pump-quant-watchlist" }
 pump-quant-narrative = { path = "../pump-quant-narrative" }
+pump-quant-market-state = { path = "../pump-quant-market-state" }
 pump-quant-social = { path = "../pump-quant-social" }
 pump-quant-strategy = { path = "../pump-quant-strategy" }
 pump-quant-simulator = { path = "../pump-quant-simulator" }
 pump-quant-evaluator = { path = "../pump-quant-evaluator" }
 pump-quant-memory = { path = "../pump-quant-memory" }
+pump-quant-signals = { path = "../pump-quant-signals" }
+pump-quant-wallet-graph = { path = "../pump-quant-wallet-graph" }
+pump-quant-protocol = { path = "../pump-quant-protocol" }
+pump-quant-governance = { path = "../pump-quant-governance" }

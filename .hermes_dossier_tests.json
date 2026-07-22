@@ -175,6 +175,8 @@
     "smart_money/sm_pnl_screen_evaluate": "d852fa1a0d60a7c7a7b21c8c7983a6cfb375dfa5ab3d024551a0ef537d7b6108",
     "smart_money/sm_simulate_and_lagged_shadow": "f8b09bfc54c70a0464f07bb17b321e4aa4331ae7e3734bc74dc7e2a5fd828cdb",
     "smart_money/sm_classify_smart_money": "9a2a317d43190a704659c92851c1dd962b216e3a6461efc07f8c24a3edcbbef2",
+    "social_earn/se_earn": "7469ff71d220e574ebff8e94730df2883e5311935803b6e4d286f4f9974660ed",
+    "social_earn/se_bounded": "25c579a18a209783ed82e47b92c9f07068da1b8830c9af239e1a6541a1f9a1a5",
     "social_ingest/si_ledger_quality": "b4205b6937a4460a1778426cb02b2c240c531bcb6985ee42cee2aa62a2c3f214",
     "social_ingest/si_coordination": "dec8381032f4681ca482dd3cc8cc5cc105a694b09b985e3d9b1c96256bdae078",
     "social_parse/sp_cashtags": "01782ed2b0f5955e1660bc3d570e7d8d14678810d59d60e9ef80f2c6c03517b5",
@@ -190,5 +192,5 @@
     "voi/voi_rank_order": "b52d49d969508fb0111d29a546f1b0ba3eb0f5209606ab511521df43612019a0",
     "voi/voi_rank_open": "e59fb85e045da11b85d70b24483bb4514977bf2280ed3ddc02d45b0be623743e"
   },
-  "count": 189
+  "count": 191
 }

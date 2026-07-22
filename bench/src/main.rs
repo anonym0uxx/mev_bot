@@ -83,6 +83,8 @@ fn engine_scenario(n_mints: u64) -> (Engine, Vec<AppEvent>) {
         for i in 0..4u64 {
             eng.tick(AppEvent::MarketTrade {
                 mint: mt,
+                price_fp: 1_000_000_000 + (i as i128) * 1_000_000,
+                quote_lamports: 500_000,
                 liquidity_lamports: 100_000_000,
                 signed_base: 1_000_000,
                 buyer_entity: i,
