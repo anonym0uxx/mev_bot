@@ -1,0 +1,157 @@
+{
+  "coins": [
+    {
+      "item": {
+        "id": "dogwifcoin",
+        "coin_id": 28752,
+        "name": "dogwifhat",
+        "symbol": "WIF",
+        "market_cap_rank": 98,
+        "thumb": "https://assets.coingecko.com/coins/images/33566/thumb/dogwifhat.jpg",
+        "small": "https://assets.coingecko.com/coins/images/33566/small/dogwifhat.jpg",
+        "large": "https://assets.coingecko.com/coins/images/33566/large/dogwifhat.jpg",
+        "slug": "dogwifhat",
+        "price_btc": 1.5e-05,
+        "score": 0,
+        "data": {
+          "price": 1.62,
+          "price_btc": "0.0000150",
+          "price_change_percentage_24h": {"usd": 12.4, "btc": 11.1},
+          "market_cap": "$1,610,000,000",
+          "market_cap_btc": "14900",
+          "total_volume": "$420,000,000",
+          "total_volume_btc": "3890",
+          "sparkline": "https://www.coingecko.com/coins/28752/sparkline.svg",
+          "content": null
+        }
+      }
+    },
+    {
+      "item": {
+        "id": "useless-coin",
+        "coin_id": 66123,
+        "name": "Useless Coin",
+        "symbol": "USELESS",
+        "market_cap_rank": null,
+        "thumb": "https://assets.coingecko.com/coins/images/66123/thumb/useless.jpg",
+        "small": "https://assets.coingecko.com/coins/images/66123/small/useless.jpg",
+        "large": "https://assets.coingecko.com/coins/images/66123/large/useless.jpg",
+        "slug": "useless-coin",
+        "price_btc": 2.1e-09,
+        "score": 1,
+        "data": {
+          "price": 0.00023,
+          "price_btc": "0.0000000021",
+          "price_change_percentage_24h": {"usd": 88.0, "btc": 85.2},
+          "market_cap": "$230,000",
+          "market_cap_btc": "2.1",
+          "total_volume": "$1,900,000",
+          "total_volume_btc": "17.5",
+          "sparkline": "https://www.coingecko.com/coins/66123/sparkline.svg",
+          "content": null
+        }
+      }
+    }
+  ],
+  "nfts": [
+    {
+      "id": "some-nft-collection",
+      "name": "Ignored NFT",
+      "symbol": "INFT",
+      "thumb": "https://assets.coingecko.com/nft_contracts/images/1/thumb/x.png",
+      "floor_price_in_native_currency": 1.2,
+      "floor_price_24h_percentage_change": 4.5
+    }
+  ],
+  "categories": [
+    {
+      "id": 214,
+      "name": "Pump.fun Ecosystem",
+      "market_cap_1h_change": 2.4,
+      "slug": "pump-fun",
+      "coins_count": 231,
+      "data": {
+        "market_cap": 5200000000,
+        "market_cap_btc": 48000,
+        "total_volume": 910000000,
+        "total_volume_btc": 8400,
+        "market_cap_change_percentage_24h": {"usd": 6.1, "btc": 5.8},
+        "sparkline": "https://www.coingecko.com/categories/214/sparkline.svg"
+      }
+    }
+  ]
+}
+{
+  "coins": [
+    {
+      "item": {
+        "id": "dogwifcoin",
+        "coin_id": 28752,
+        "name": "dogwifhat",
+        "symbol": "WIF",
+        "market_cap_rank": 98,
+        "thumb": "https://assets.coingecko.com/coins/images/33566/thumb/dogwifhat.jpg",
+        "small": "https://assets.coingecko.com/coins/images/33566/small/dogwifhat.jpg",
+        "large": "https://assets.coingecko.com/coins/images/33566/large/dogwifhat.jpg",
+        "slug": "dogwifhat",
+        "price_btc": 1.5e-05,
+        "score": 0,
+        "data": {
+          "price": 1.66,
+          "price_btc": "0.0000151",
+          "price_change_percentage_24h": {"usd": 13.0, "btc": 11.8},
+          "market_cap": "$1,650,000,000",
+          "market_cap_btc": "15100",
+          "total_volume": "$450,000,000",
+          "total_volume_btc": "4100",
+          "sparkline": "https://www.coingecko.com/coins/28752/sparkline.svg",
+          "content": null
+        }
+      }
+    },
+    {
+      "item": {
+        "id": "hosico-cat",
+        "coin_id": 67001,
+        "name": "Hosico Cat",
+        "symbol": "HOSICO",
+        "market_cap_rank": 601,
+        "thumb": "https://assets.coingecko.com/coins/images/67001/thumb/hosico.jpg",
+        "small": "https://assets.coingecko.com/coins/images/67001/small/hosico.jpg",
+        "large": "https://assets.coingecko.com/coins/images/67001/large/hosico.jpg",
+        "slug": "hosico-cat",
+        "price_btc": 6.0e-08,
+        "score": 2,
+        "data": {
+          "price": 0.0065,
+          "price_btc": "0.00000006",
+          "price_change_percentage_24h": {"usd": 31.7, "btc": 30.0},
+          "market_cap": "$6,400,000",
+          "market_cap_btc": "59",
+          "total_volume": "$3,200,000",
+          "total_volume_btc": "29",
+          "sparkline": "https://www.coingecko.com/coins/67001/sparkline.svg",
+          "content": null
+        }
+      }
+    }
+  ],
+  "nfts": [],
+  "categories": [
+    {
+      "id": 214,
+      "name": "Pump.fun Ecosystem",
+      "market_cap_1h_change": 2.9,
+      "slug": "pump-fun",
+      "coins_count": 232,
+      "data": {
+        "market_cap": 5300000000,
+        "market_cap_btc": 48600,
+        "total_volume": 930000000,
+        "total_volume_btc": 8500,
+        "market_cap_change_percentage_24h": {"usd": 6.6, "btc": 6.1},
+        "sparkline": "https://www.coingecko.com/categories/214/sparkline.svg"
+      }
+    }
+  ]
+}

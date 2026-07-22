@@ -89,6 +89,11 @@ pub enum SocialPlatform {
     /// tier-3 frontend lane (`pq-social-capture pump`) behind a degradation
     /// sentinel (undocumented endpoint, §18.8).
     Pump,
+    /// Aggregator surfaces (CoinGecko trending/listings/categories): the
+    /// LEGIBILITY tier (§783) — a coin the aggregator lists is already
+    /// surfaced to the whole market. Never earliness; feeds the pre-legibility
+    /// clock and aggregator-sentiment corroboration.
+    Aggregator,
 }
 
 impl SocialPlatform {
@@ -102,6 +107,7 @@ impl SocialPlatform {
             "web" | "firecrawl" => Some(Self::Web),
             "twitch" => Some(Self::Twitch),
             "pump" => Some(Self::Pump),
+            "coingecko" | "aggregator" => Some(Self::Aggregator),
             _ => None,
         }
     }
@@ -116,6 +122,7 @@ impl SocialPlatform {
             Self::Web => 4,
             Self::Twitch => 5,
             Self::Pump => 6,
+            Self::Aggregator => 7,
         }
     }
 
@@ -141,7 +148,9 @@ impl SocialPlatform {
             Self::Telegram | Self::Twitch | Self::Pump => 0,
             Self::X => 1,
             Self::TikTok => 2,
-            Self::Web => 3,
+            // Aggregator listings share the legibility tier with the general
+            // web: by the time a coin is on the board, earliness is gone.
+            Self::Web | Self::Aggregator => 3,
         }
     }
 }
@@ -178,7 +187,23 @@ pub struct SocialEvent {
     pub mints: [[u8; 32]; MAX_MINTS],
     /// Count of valid entries in [`Self::mints`].
     pub n_mints: u8,
+    /// LLM/aggregator-derived sentiment toward the named token, bps of 10_000
+    /// (5_000 = neutral, 0 = maximally bearish). [`SENTIMENT_UNKNOWN`] when no
+    /// enrichment annotated the event — UNKNOWN is labeled, never defaulted to
+    /// neutral (§6.4). Enrichment is a recorded INPUT (the brain seam runs off
+    /// the hot path); replay of the same annotated stream is byte-identical.
+    pub sentiment_bp: u32,
+    /// Confidence of [`Self::sentiment_bp`], bps. [`SENTIMENT_UNKNOWN`] when absent.
+    pub sentiment_conf_bp: u32,
+    /// Whether an AGGREGATOR (e.g. CoinGecko) lists/surfaces this token — the
+    /// §783 legibility clock. `false` means "no aggregator evidence in this
+    /// event", never "not listed".
+    pub aggregator_listed: bool,
 }
+
+/// Sentinel for an ABSENT sentiment annotation (§6.4: unknown stays unknown;
+/// no valid reading uses this value — the valid domain is 0..=10_000).
+pub const SENTIMENT_UNKNOWN: u32 = u32::MAX;
 
 impl SocialEvent {
     /// The valid cashtag hashes as a slice.
@@ -347,6 +372,23 @@ pub fn parse_social_event(raw: &[u8], observed_at_ns: u64) -> Option<SocialEvent
         }
     }
 
+    // Optional brain-seam / aggregator annotations (§6.4: absent = UNKNOWN,
+    // out-of-range = UNKNOWN — a malformed annotation is no annotation).
+    let sent_field = |k: &str| -> u32 {
+        v.get(k)
+            .and_then(|n| n.as_number_str())
+            .and_then(json::number_to_u128_trunc)
+            .filter(|&x| x <= 10_000)
+            .map(|x| x as u32)
+            .unwrap_or(SENTIMENT_UNKNOWN)
+    };
+    let sentiment_bp = sent_field("sentiment_bp");
+    let sentiment_conf_bp = sent_field("sentiment_conf_bp");
+    let aggregator_listed = v
+        .get("aggregator_listed")
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false);
+
     Some(SocialEvent {
         platform,
         observed_at_ns,
@@ -363,6 +405,9 @@ pub fn parse_social_event(raw: &[u8], observed_at_ns: u64) -> Option<SocialEvent
         n_cashtags,
         mints,
         n_mints,
+        sentiment_bp,
+        sentiment_conf_bp,
+        aggregator_listed,
     })
 }
 

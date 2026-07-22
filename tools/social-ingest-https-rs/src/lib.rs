@@ -19,15 +19,22 @@
 //! * **§67 removable adapter.** One binary, one dependency (`ureq`), speaks
 //!   only the shared NDJSON contract on stdout. Delete it and the system loses
 //!   the Rust HTTPS lanes; the Python twins still work.
-//! * **§83.** No sentiment, no opinion, no decision — capture only.
+//! * **§83.** No sentiment, no opinion, no decision — capture only. The one
+//!   deliberately-separate stage is [`sentiment`] (`sentiment-enrich`): a
+//!   downstream stream FILTER, off the hot path, whose LLM output is an
+//!   enrichment annotation with provenance — recorded input, never fact
+//!   (§6.4 absence semantics; §65 crit. 8). The capture lanes themselves
+//!   remain sentiment-free.
 
 pub mod backoff;
+pub mod coingecko;
 pub mod dedupe;
 pub mod emit;
 pub mod firecrawl;
 pub mod http;
 pub mod json;
 pub mod pump;
+pub mod sentiment;
 pub mod tiktok;
 pub mod twitterapi;
 pub mod urlenc;

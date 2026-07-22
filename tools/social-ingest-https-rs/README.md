@@ -1,4 +1,4 @@
-# `pq-social-capture` — Rust HTTPS `[S]` capture lanes (twitterapi / tiktok / firecrawl / pump)
+# `pq-social-capture` — Rust HTTPS `[S]` capture lanes (twitterapi / tiktok / firecrawl / pump / coingecko)
 
 Rust twins of the polling Python adapters in [`../social-ingest/`](../social-ingest),
 one subcommand per feasible platform, all emitting the identical normalized
@@ -143,6 +143,70 @@ one 30 s cycle = a 3 s gap between requests.
    an auth wall) is **documented as NOT implemented** — a deliberate Phase-B+
    decision point, not an oversight. See `docs/PUMP_NATIVE_INTELLIGENCE.md`.
 
+## `coingecko` — the aggregator-legibility lane (LATE tier, documented API)
+
+**What CoinGecko is for us: a legibility clock + the aggregator's own
+sentiment gauge + news-tier corroboration — NEVER earliness.** A pump.fun /
+letsbonk memecoin trades on-chain for hours-to-days before any aggregator
+lists it; a CoinGecko listing is a LATE legibility event per the
+pre-legibility doctrine (the coin has crossed the aggregator's inclusion bar:
+exchange tickers, a maintained page, retail discoverability). The lane
+therefore feeds WAVE-TIMING / crowd-arrival / fade context, never entry
+earliness. Full research record, endpoint rationale and activation checklist:
+`docs/COINGECKO_SOURCE.md`. For genuinely EARLY pool-level coverage of
+pump/bonk tokens the right CoinGecko-family surface is the **GeckoTerminal
+onchain API** (`/onchain/networks/solana/tokens/{mint}/pools`, free-tier
+accessible) — deliberately NOT wired here because the DEX-microstructure plane
+already owns pool telemetry; this lane captures only what is social-shaped.
+
+Three modes, all pollable in ONE process sharing a global budget pacer
+(same shape as `pump`'s — the lane can run slower than the budget, never
+faster):
+
+```bash
+$B coingecko --trending                          # /search/trending: retail search attention
+$B coingecko --category pump-fun                 # /coins/markets?category=: roster watch
+$B coingecko --contract-watch mints.txt          # /coins/solana/contract/{mint} round-robin
+$B coingecko --trending --category solana-meme-coins --contract-watch mints.txt \
+             --interval-secs 1800 --once         # all three, one probe pass
+```
+
+| Mode | Endpoint | Event captured |
+|---|---|---|
+| `--trending` | `GET /search/trending` (top-15 coins + top-6 categories by search popularity, ~10 min server cache) | a coin/category entering the retail attention board (`TRENDING …`) |
+| `--category <id>` | `GET /coins/markets?vs_currency=usd&category=<id>&per_page=250` | a NEW coin appearing in a category roster (`LISTED …`); real ids: `solana-meme-coins`, `pump-fun`, `letsbonk-fun-ecosystem`, `meme-token` (verify via `/coins/categories/list`) |
+| `--contract-watch <mints-file>` | `GET /coins/solana/contract/{mint}` per watched mint (file format = the pump lane's) | 404 = not listed (quiet poll); first 200 = the **AGGREGATOR-LISTED** legibility event; changed `sentiment_votes_up_percentage` re-emits as `SENTIMENT …` |
+
+### Tier / auth / limits (researched 2026-07, docs.coingecko.com)
+
+| Tier | Auth | Root | Rate | Monthly cap |
+|---|---|---|---|---|
+| Keyless public | none | `api.coingecko.com/api/v3` | IP-throttled, **dynamic** ("fair access"); budget default 10 req/min | n/a |
+| Demo (free) | `CG_API_KEY` → `x-cg-demo-api-key` header | `api.coingecko.com/api/v3` | ~30 req/min (varies with traffic); budget default 25 req/min | **10 000 calls/month** |
+| Paid (Analyst+) | `x-cg-pro-api-key` | `pro-api.coingecko.com` | plan-dependent | plan credits; unlocks `/coins/list/new`, `/news`, onchain megafilter/trades |
+
+Both keyless and Demo are allowed; the startup log states which is active.
+The startup log also prints the **monthly-sustainable cycle** for the chosen
+mode mix (10 000 calls/month ≈ one request per 260 s) — the per-minute budget
+alone would burn the Demo month in under 7 hours, so slow the lane with
+`--interval-secs` (clamped UP to the budget floor, never down) or
+`--budget-per-min`. 429s respect `Retry-After` on the shared backoff ladder;
+401/403 exits 2 loudly (`AUTH_REJECTED`); the same FNV-1a shape-hash
+`SCHEMA_DRIFT` + `STATUS_CLASS_DRIFT` sentinels as `pump` watch each endpoint
+family (documented API — drift expected rare, tracked anyway).
+
+Emission: shared schema (platform `"coingecko"`, author `"coingecko"` — the
+aggregator is the actor, community = category id / `"trending"` / the watched
+mint, engagement zeros, `echo:false`, capture stamp) plus optional trailing
+fields ONLY when the vendor stated them (§6.4 — never fabricate):
+`"mint"` (base58 VERBATIM case from `platforms.solana`),
+`"aggregator_listed":true`, `"sentiment_bp"` (0–10000 =
+`sentiment_votes_up_percentage` × 100, rounded),
+`"sentiment_conf_bp"` (CoinGecko does not expose raw vote counts, so
+confidence maps the audience-size field it does publish:
+**1 `watchlist_portfolio_users` = 1 bp, saturating at 10 000**) and
+`"sentiment_model":"coingecko-votes-v1"`.
+
 ## Env vars
 
 | Subcommand | Required env |
@@ -151,6 +215,8 @@ one 30 s cycle = a 3 s gap between requests.
 | `tiktok` | `TIKTOK_API_KEY` + `TIKTOK_API_BASE` (your provider endpoint) |
 | `firecrawl` | `FIRECRAWL_API_KEY` (https://firecrawl.dev) |
 | `pump` | none — anonymous frontend reads (tier-3; revocation = exit 3) |
+| `coingecko` | `CG_API_KEY` optional — free Demo key → `x-cg-demo-api-key` header (~30 req/min, 10 000 calls/month); absent = keyless public access (IP-throttled, lower); the log states which is active |
+| `sentiment-enrich` | none required — `LLAMA_SERVER_URL` (default `http://127.0.0.1:8080`, the local llama.cpp server) + `LLAMA_MODEL_ID` (default `local-llm-v0`, the provenance tag) |
 
 ## Usage
 
@@ -184,7 +250,9 @@ Flags mirror the Python twins exactly: `twitterapi` takes
 `--class firehose|amplifier|list --sources --query --type Latest|Top --pages
 --watch`; `tiktok` takes `--hashtag --sources --watch`; `firecrawl` takes
 `--url --sources --watch`. The twin-less `pump` lane takes
-`--mints-file --interval-secs --live-list --once`.
+`--mints-file --interval-secs --live-list --once`; the twin-less `coingecko`
+lane takes `--trending --category --contract-watch --interval-secs
+--budget-per-min --once`.
 
 ## Replay mode (deterministic, zero network)
 
@@ -196,6 +264,11 @@ $B firecrawl  --url https://www.dexscreener.com/solana \
 $B pump       --replay tests/fixtures/pump_replies.json           # bare array
 $B pump       --replay tests/fixtures/pump_replies_wrapped.json   # {"replies":[...]}
 $B pump       --replay tests/fixtures/pump_drift.json             # SCHEMA_DRIFT demo
+$B coingecko  --replay tests/fixtures/coingecko_trending.json     # trending board
+$B coingecko  --replay tests/fixtures/coingecko_contract.json     # LISTED -> SENTIMENT
+$B coingecko  --category pump-fun \
+              --replay tests/fixtures/coingecko_markets.json      # category roster
+$B coingecko  --replay tests/fixtures/coingecko_drift.json        # SCHEMA_DRIFT demo
 ```
 
 A fixture is a saved sequence of raw API responses (one JSON value per poll —
@@ -209,6 +282,83 @@ fixtures. Example line:
 ```json
 {"platform":"x","author":"cryptoKOL","community":"","text":"send it $WIF EPjF...","likes":420,"reposts":69,"replies":12,"echo":false,"observed_at_ns":1000000000}
 ```
+
+## The brain seam — `sentiment-enrich` (LLM annotations, OFF the hot path)
+
+`sentiment-enrich` is deliberately NOT a capture lane. It is the one seam
+where the local LLM (the operator's llama.cpp server — the same
+`http://127.0.0.1:8080` endpoint the supervisor's `llama_server.yaml`
+describes and its `bench_endpoint` health-checks) touches the social stream,
+and the architecture keeps it in its constitutional place:
+
+```
+capture (Rust/Python lanes)  →  sentiment-enrich  →  deterministic core
+        [S] observations          BRAIN seam            judgment
+```
+
+- **The LLM is never a fact source or authority** (§65 criterion 8: "LLM
+  output cannot enter factual state"). Its output is an ENRICHMENT annotation
+  with provenance: three fields spliced into each NDJSON line —
+  `"sentiment_bp"` (0–10000, 5000 = neutral, 0 = maximal bearish /
+  scam-accusation, 10000 = maximal bullish), `"sentiment_conf_bp"` (0–10000)
+  and `"sentiment_model"` (which model said so). Downstream these are
+  corroboration-tier integers at most — evidence the core may weigh alongside
+  everything else, never truth it may cite (§6.5-spirit: a research artifact
+  is never cast into canonical truth; sentiment annotates social observations
+  only, it can never create, confirm or veto an on-chain fact).
+- **Annotations are recorded INPUTS, so replay is byte-identical.** The
+  enrichment happens at the capture side of the determinism boundary and is
+  written into the recorded stream; the deterministic core replays the exact
+  bytes it originally saw. The nondeterministic model is quarantined at the
+  seam — it can never make a replay diverge.
+- **Absent sentiment is UNKNOWN, never neutral-positive (§6.4).** Server
+  unreachable, timeout (5 s hard budget), non-JSON output, out-of-range
+  values (rejected, NOT clamped — clamping would manufacture certainty from
+  garbage): the line passes through byte-identical, unannotated. The core
+  treats missing `sentiment_bp` as UNKNOWN — it must never default it to
+  5000. Enrichment absence never blocks capture; the filter never drops,
+  never reorders, and adds three fields or nothing.
+- **The stream contract is a splice, not a re-serialization.** The original
+  line bytes are preserved verbatim up to the closing brace (byte-prefix
+  identical); only the three fields are inserted before the final `}`. Input
+  lines over 64 KiB are streamed through untouched (bounded memory, no model
+  call).
+- **The request is grammar-caged.** llama.cpp's `json_schema` field
+  (server-side GBNF constrained decoding — `json_schema_support: true` in the
+  supervisor's server config) makes the model physically unable to emit
+  anything but the two bounded integers; temperature 0, fixed seed, small
+  `n_predict`, `cache_prompt` for the shared instruction prefix, one
+  keep-alive connection for the whole run. Per-line latency p50/max goes to
+  stderr at exit; a degradation-counter summary every 100 lines.
+
+```bash
+# The pipeline: capture | enrich | core. Delete the middle stage and the
+# stream still flows — the annotation is optional by construction (§67).
+$B twitterapi --sources ../social-ingest/sources.yaml --watch 5 \
+    | $B sentiment-enrich \
+    | cargo run --quiet --manifest-path ../social-ingest/probe/Cargo.toml
+
+# Supervised run: enrichment failure exits loudly instead of failing open.
+$B sentiment-enrich --require < capture.ndjson > enriched.ndjson
+
+# Deterministic offline test: fixture responses instead of the network.
+$B sentiment-enrich --replay tests/fixtures/sentiment_replay.json < in.ndjson
+
+# Pipeline stub (identity filter — no server, no annotation):
+$B sentiment-enrich --passthrough < in.ndjson
+```
+
+Before / after (one line; the splice is everything after `...s":42`):
+
+```json
+{"platform":"x","author":"degen","community":"","text":"send it $WIF","likes":420,"reposts":69,"replies":12,"echo":false,"observed_at_ns":42}
+{"platform":"x","author":"degen","community":"","text":"send it $WIF","likes":420,"reposts":69,"replies":12,"echo":false,"observed_at_ns":42,"sentiment_bp":9100,"sentiment_conf_bp":7000,"sentiment_model":"local-llm-v0"}
+```
+
+`--replay <responses.json>` takes a JSON array of sentiment responses
+consumed in order (a `null` entry simulates a failure → line unchanged; an
+optional `content_hash` field is carried for fixture bookkeeping and
+ignored). Exhausted fixture = absence, not an error.
 
 ## Python twins remain
 
@@ -234,10 +384,18 @@ committed (37 MB of third-party source does not belong in the repo). `cargo buil
 cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
 ```
 
-87 tests: 73 unit (parsing, Python-coercion parity, YAML subset, dedupe ring,
-backoff ladder, urlencode parity, per-platform normalizers, pump shape-hash /
-challenge / status-class sentinels, pump budget-pacing math) + 14 integration
-(byte-exact replay per platform including both pump response shapes, replay
-determinism, schema-drift survival, keyless refusal with the Python twins'
-exact messages, NDJSON round-trip + schema order incl. the pump trailing
-`mint` field). Tests never touch the network.
+149 tests: 116 unit (parsing, Python-coercion parity, YAML subset, dedupe
+ring, backoff ladder, urlencode parity, per-platform normalizers, pump
+shape-hash / challenge / status-class sentinels, pump budget-pacing math,
+coingecko budget/monthly-cap math, sentiment-bp/conf-bp mappings, trending /
+markets / contract normalizers, shape dispatch, optional-field emission,
+sentiment splice / strict-validation / prompt-escaping / line-cap mechanics)
++ 33 integration (byte-exact replay per platform including both pump response
+shapes and all three coingecko surfaces, replay determinism, schema-drift
+survival, keyless refusal with the Python twins' exact messages, NDJSON
+round-trip + schema order incl. the pump trailing `mint` field and the
+coingecko optional-tail order; sentiment-enrich never-drop/never-reorder,
+fail-open absence for null/out-of-range/unreachable-server/oversize,
+`--require` loud exit, passthrough byte-identity, replay byte-determinism).
+Tests never touch the network — the "unreachable server" tests point at a
+closed loopback port.

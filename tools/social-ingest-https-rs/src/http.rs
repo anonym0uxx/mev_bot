@@ -120,6 +120,31 @@ impl Http {
         }
     }
 
+    /// POST a JSON `body` to `url` with NO retry ladder — exactly one attempt,
+    /// then the caller's failure policy applies. The sentiment-enrichment seam
+    /// uses this: enrichment failure is ABSENCE (§6.4), so a slow backoff
+    /// ladder would only delay the stream it must never block. Any HTTP error
+    /// status is an `Err` (there is nothing to classify: the annotation is
+    /// simply absent). Body is size-capped and UTF-8-checked as everywhere.
+    pub fn post_json_once(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> Result<String, String> {
+        let mut req = self.agent.post(url);
+        for (k, v) in headers {
+            req = req.set(k, v);
+        }
+        match req.send_string(body) {
+            Ok(resp) => read_capped(resp),
+            Err(ureq::Error::Status(code, resp)) => {
+                Err(format!("HTTP Error {code}: {}", resp.status_text()))
+            }
+            Err(transport) => Err(transport.to_string()),
+        }
+    }
+
     /// POST a JSON `body` to `url` with `headers`; same retry/cap contract.
     pub fn post_json(
         &self,

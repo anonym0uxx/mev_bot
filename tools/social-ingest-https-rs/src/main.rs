@@ -13,6 +13,10 @@
 //!                              [--replay fixture.json]
 //! pq-social-capture pump       [--mints-file f] [--interval-secs n]
 //!                              [--live-list] [--once] [--replay fixture.json]
+//! pq-social-capture coingecko  [--trending] [--category id]
+//!                              [--contract-watch f] [--interval-secs n]
+//!                              [--budget-per-min n] [--once]
+//!                              [--replay fixture.json]
 //! ```
 //!
 //! Telegram is intentionally absent: MTProto requires a heavy SDK (grammers),
@@ -38,9 +42,10 @@
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pq_social_capture::{firecrawl, pump, tiktok, twitterapi};
+use pq_social_capture::{coingecko, firecrawl, pump, sentiment, tiktok, twitterapi};
 
-const USAGE: &str = "usage: pq-social-capture <twitterapi|tiktok|firecrawl|pump> [flags...]\n\
+const USAGE: &str = "usage: pq-social-capture \
+<twitterapi|tiktok|firecrawl|pump|coingecko|sentiment-enrich> [flags...]\n\
   twitterapi  --class firehose|amplifier|list  --sources f  --query q\n\
               --type Latest|Top  --pages n  --watch secs  --replay fixture\n\
   tiktok      --hashtag h  --sources f  --watch secs  --replay fixture\n\
@@ -48,10 +53,20 @@ const USAGE: &str = "usage: pq-social-capture <twitterapi|tiktok|firecrawl|pump>
   pump        --mints-file f  --interval-secs n  --live-list  --once\n\
               --replay fixture   (anonymous tier-3 lane, no key; exits 3 on\n\
               AUTH_WALL so the supervisor sees the capability loss)\n\
+  coingecko   --trending  --category id  --contract-watch mints-file\n\
+              --interval-secs n  --budget-per-min n  --once  --replay fixture\n\
+              (aggregator-LEGIBILITY lane, LATE tier; CG_API_KEY optional:\n\
+              free Demo key -> x-cg-demo-api-key, absent -> keyless)\n\
+  sentiment-enrich  [--replay responses.json] [--passthrough] [--require]\n\
+              (stream FILTER, not a lane: NDJSON stdin -> same lines stdout\n\
+              with sentiment_bp/sentiment_conf_bp/sentiment_model spliced in\n\
+              via a local llama.cpp server; failure = line unchanged, §6.4)\n\
   NDJSON on stdout, diagnostics on stderr. --replay is deterministic and\n\
   touches no network (fixture = saved raw API responses, one JSON value per\n\
   poll). Env: TWITTERAPI_IO_KEY | TIKTOK_API_KEY + TIKTOK_API_BASE |\n\
-  FIRECRAWL_API_KEY (same variables as the Python twins).";
+  FIRECRAWL_API_KEY (same variables as the Python twins) |\n\
+  CG_API_KEY (coingecko, optional) |\n\
+  LLAMA_SERVER_URL + LLAMA_MODEL_ID (sentiment-enrich only).";
 
 /// Capture-boundary clock read — the ONE place wall time enters the pipeline
 /// (§22). Matches the Twitch lane's stamp exactly.
@@ -77,6 +92,11 @@ fn main() -> ExitCode {
         "tiktok" => tiktok::run(rest, now_ns),
         "firecrawl" => firecrawl::run(rest, now_ns),
         "pump" => pump::run(rest, now_ns),
+        "coingecko" => coingecko::run(rest, now_ns),
+        // The brain seam is a FILTER, not a capture lane: it stamps nothing,
+        // so the capture clock is not injected (its only time reads are
+        // monotonic latency diagnostics on stderr).
+        "sentiment-enrich" => sentiment::run(rest),
         "-h" | "--help" => {
             eprintln!("{USAGE}");
             0

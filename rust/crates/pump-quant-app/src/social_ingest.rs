@@ -62,7 +62,29 @@ pub fn provenance_of(ev: &SocialEvent, is_coordinated: bool) -> MentionProvenanc
         broadcaster: realtime && ev.community_id != 0 && ev.author_id == ev.community_id,
         author_id: ev.author_id,
         echo_or_coordinated: ev.is_echo || is_coordinated,
+        aggregator: ev.aggregator_listed || ev.platform == SocialPlatform::Aggregator,
+        bearish: is_bearish(ev),
     }
+}
+
+/// Maximum sentiment (bps) that still reads as BEARISH for the reduce-only
+/// enthusiasm suppression: 3_500 = clearly below neutral (rug-call territory),
+/// chosen a full 1_500bp under the 5_000 midpoint so borderline-negative chat
+/// never trips it (§102 rationale; fade-first — the law only ever REDUCES).
+pub const SENTIMENT_BEARISH_MAX_BP: u32 = 3_500;
+/// Minimum enrichment confidence (bps) before a bearish reading is consumed at
+/// all — a low-confidence guess is UNKNOWN, not evidence (§6.4).
+pub const SENTIMENT_MIN_CONF_BP: u32 = 6_000;
+
+/// Whether the event carries a HIGH-CONFIDENCE bearish annotation. UNKNOWN
+/// sentiment (absent enrichment) is never bearish — absence of the brain seam
+/// must leave behavior byte-identical (§6.4/§22).
+#[must_use]
+pub fn is_bearish(ev: &SocialEvent) -> bool {
+    ev.sentiment_bp != pump_quant_ingest::social_parse::SENTIMENT_UNKNOWN
+        && ev.sentiment_conf_bp != pump_quant_ingest::social_parse::SENTIMENT_UNKNOWN
+        && ev.sentiment_conf_bp >= SENTIMENT_MIN_CONF_BP
+        && ev.sentiment_bp <= SENTIMENT_BEARISH_MAX_BP
 }
 
 /// Emit one corroboration-tier [`AppEvent::SocialCall`] per concrete market named

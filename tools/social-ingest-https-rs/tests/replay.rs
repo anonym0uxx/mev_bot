@@ -28,6 +28,7 @@ fn run(args: &[&str]) -> Output {
         .env_remove("TIKTOK_API_KEY")
         .env_remove("TIKTOK_API_BASE")
         .env_remove("FIRECRAWL_API_KEY")
+        .env_remove("CG_API_KEY")
         .output()
         .expect("binary runs")
 }
@@ -368,6 +369,193 @@ fn every_replay_line_round_trips_as_valid_json_with_schema_order() {
                 pairs[0].1,
                 json::Value::String(platform.to_string()),
                 "platform tag"
+            );
+        }
+    }
+}
+
+// ----------------------------------------------------------------- coingecko
+
+/// Expected coingecko-lane output for coingecko_trending.json: 2 saved polls,
+/// 5 raw observations → 4 lines (the re-trending coin and the repeated
+/// category deduplicate; trending NFTs are ignored by design). No Python twin
+/// — the expected strings are the hand-audited normalization contract:
+/// author = "coingecko" (the aggregator is the actor), community =
+/// "trending", zero engagement, `echo:false`, and optional trailing fields
+/// ONLY when the vendor stated them (a null `market_cap_rank` drops the
+/// `rank=` clause instead of faking a zero).
+const COINGECKO_TRENDING_EXPECTED: [&str; 4] = [
+    "{\"platform\":\"coingecko\",\"author\":\"coingecko\",\"community\":\"trending\",\"text\":\"TRENDING dogwifhat ($WIF) rank=98\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1000000000,\"aggregator_listed\":true}",
+    "{\"platform\":\"coingecko\",\"author\":\"coingecko\",\"community\":\"trending\",\"text\":\"TRENDING Useless Coin ($USELESS)\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1001000000,\"aggregator_listed\":true}",
+    "{\"platform\":\"coingecko\",\"author\":\"coingecko\",\"community\":\"trending\",\"text\":\"TRENDING CATEGORY Pump.fun Ecosystem\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1002000000}",
+    "{\"platform\":\"coingecko\",\"author\":\"coingecko\",\"community\":\"trending\",\"text\":\"TRENDING Hosico Cat ($HOSICO) rank=601\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1003000000,\"aggregator_listed\":true}",
+];
+
+/// Expected output for coingecko_contract.json: 3 saved contract lookups of
+/// one watched mint → 2 lines. Poll 1 is the AGGREGATOR-LISTED legibility
+/// event (`LISTED …`, sentiment 87.5% → 8750 bp, 1234 watchlist users →
+/// conf 1234 bp); poll 2's changed sentiment re-emits as `SENTIMENT …`
+/// (91.25% → 9125 bp); poll 3 is identical to poll 2 and deduplicates (an
+/// unchanged gauge is a quiet poll). community = the mint VERBATIM base58
+/// case, exactly like the pump lane.
+const COINGECKO_CONTRACT_EXPECTED: [&str; 2] = [
+    "{\"platform\":\"coingecko\",\"author\":\"coingecko\",\"community\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\",\"text\":\"LISTED Fartcoin ($FARTCOIN) 9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump rank=120\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1000000000,\"mint\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\",\"aggregator_listed\":true,\"sentiment_bp\":8750,\"sentiment_conf_bp\":1234,\"sentiment_model\":\"coingecko-votes-v1\"}",
+    "{\"platform\":\"coingecko\",\"author\":\"coingecko\",\"community\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\",\"text\":\"SENTIMENT 9125bp Fartcoin ($FARTCOIN) 9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1001000000,\"mint\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\",\"aggregator_listed\":true,\"sentiment_bp\":9125,\"sentiment_conf_bp\":2500,\"sentiment_model\":\"coingecko-votes-v1\"}",
+];
+
+/// Expected output for coingecko_markets.json with `--category pump-fun`:
+/// 2 saved roster polls, 4 raw entries → 3 lines (the repeated coin
+/// deduplicates by roster identity even though its rank moved — a rank move
+/// is not a NEW listing). community = the category id.
+const COINGECKO_MARKETS_EXPECTED: [&str; 3] = [
+    "{\"platform\":\"coingecko\",\"author\":\"coingecko\",\"community\":\"pump-fun\",\"text\":\"LISTED Fartcoin ($FARTCOIN) rank=120\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1000000000,\"aggregator_listed\":true}",
+    "{\"platform\":\"coingecko\",\"author\":\"coingecko\",\"community\":\"pump-fun\",\"text\":\"LISTED Goatseus Maximus ($GOAT) rank=890\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1001000000,\"aggregator_listed\":true}",
+    "{\"platform\":\"coingecko\",\"author\":\"coingecko\",\"community\":\"pump-fun\",\"text\":\"LISTED Peanut the Squirrel ($PNUT) rank=650\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false,\"observed_at_ns\":1002000000,\"aggregator_listed\":true}",
+];
+
+#[test]
+fn coingecko_trending_replay_is_byte_exact() {
+    let out = run(&["coingecko", "--replay", &fixture("coingecko_trending.json")]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        stdout_lines(&out),
+        COINGECKO_TRENDING_EXPECTED,
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("replay: emitted 4 events"));
+}
+
+#[test]
+fn coingecko_contract_replay_emits_listed_then_sentiment() {
+    let out = run(&["coingecko", "--replay", &fixture("coingecko_contract.json")]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        stdout_lines(&out),
+        COINGECKO_CONTRACT_EXPECTED,
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // 3 polls: LISTED + SENTIMENT + one unchanged-gauge quiet poll.
+    assert!(String::from_utf8_lossy(&out.stderr).contains("replay: emitted 2 events"));
+}
+
+#[test]
+fn coingecko_markets_replay_labels_the_category() {
+    let out = run(&[
+        "coingecko",
+        "--category",
+        "pump-fun",
+        "--replay",
+        &fixture("coingecko_markets.json"),
+    ]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        stdout_lines(&out),
+        COINGECKO_MARKETS_EXPECTED,
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("replay: emitted 3 events"));
+}
+
+#[test]
+fn coingecko_replay_is_deterministic_across_runs() {
+    for f in [
+        "coingecko_trending.json",
+        "coingecko_contract.json",
+        "coingecko_markets.json",
+    ] {
+        let a = run(&["coingecko", "--replay", &fixture(f)]);
+        let b = run(&["coingecko", "--replay", &fixture(f)]);
+        assert_eq!(a.stdout, b.stdout, "byte-identical replays for {f} (§22)");
+        assert_eq!(a.stderr, b.stderr, "diagnostics deterministic for {f}");
+    }
+}
+
+#[test]
+fn coingecko_schema_drift_is_logged_and_survived() {
+    let out = run(&["coingecko", "--replay", &fixture("coingecko_drift.json")]);
+    assert!(
+        out.status.success(),
+        "drift must NOT kill the lane: {out:?}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("SCHEMA_DRIFT trending: shape "),
+        "drift is loud on stderr: {stderr}"
+    );
+    assert!(stderr.contains(" -> "), "old AND new hash logged: {stderr}");
+    assert_eq!(
+        stdout_lines(&out).len(),
+        2,
+        "the tolerant parser keeps emitting through the drift"
+    );
+}
+
+#[test]
+fn coingecko_without_mode_refuses_before_any_network() {
+    let out = run(&["coingecko"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains(
+        "error: coingecko needs at least one mode: --trending | --category <id> | --contract-watch <mints-file>"
+    ));
+    assert!(out.stdout.is_empty(), "stdout stays NDJSON-only");
+}
+
+#[test]
+fn coingecko_lines_round_trip_with_optional_field_order() {
+    for f in [
+        "coingecko_trending.json",
+        "coingecko_contract.json",
+        "coingecko_markets.json",
+    ] {
+        let out = run(&["coingecko", "--replay", &fixture(f)]);
+        assert!(out.status.success(), "{f}");
+        for line in stdout_lines(&out) {
+            let v = json::parse(&line).unwrap_or_else(|e| panic!("invalid JSON {line:?}: {e}"));
+            assert_eq!(json::serialize(&v), line, "round-trip drift in {f}");
+            let json::Value::Object(pairs) = &v else {
+                panic!("top level must be an object");
+            };
+            let keys: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+            // The shared schema + capture stamp, then the optional coingecko
+            // fields as an ORDER-PRESERVING SUBSET of the documented tail —
+            // present only when the vendor stated them (§6.4).
+            let base = [
+                "platform",
+                "author",
+                "community",
+                "text",
+                "likes",
+                "reposts",
+                "replies",
+                "echo",
+                "observed_at_ns",
+            ];
+            assert_eq!(&keys[..9], &base, "{f}: fixed schema prefix");
+            let tail = [
+                "mint",
+                "aggregator_listed",
+                "sentiment_bp",
+                "sentiment_conf_bp",
+                "sentiment_model",
+            ];
+            let mut cursor = 0usize;
+            for k in &keys[9..] {
+                let pos = tail[cursor..]
+                    .iter()
+                    .position(|t| t == k)
+                    .unwrap_or_else(|| panic!("{f}: unexpected/misordered tail key {k}"));
+                cursor += pos + 1;
+            }
+            assert_eq!(pairs[0].1, json::Value::String("coingecko".to_string()));
+            assert_eq!(pairs[1].1, json::Value::String("coingecko".to_string()));
+            // sentiment_model appears iff sentiment_bp does (provenance tag).
+            assert_eq!(
+                keys.contains(&"sentiment_bp"),
+                keys.contains(&"sentiment_model"),
+                "{f}: model tag must accompany sentiment"
             );
         }
     }

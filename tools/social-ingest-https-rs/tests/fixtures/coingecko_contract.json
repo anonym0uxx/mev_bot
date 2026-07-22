@@ -1,0 +1,174 @@
+{
+  "id": "fartcoin",
+  "symbol": "fartcoin",
+  "name": "Fartcoin",
+  "web_slug": "fartcoin",
+  "asset_platform_id": "solana",
+  "platforms": {
+    "solana": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"
+  },
+  "detail_platforms": {
+    "solana": {
+      "decimal_place": 6,
+      "contract_address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+      "geckoterminal_url": "https://www.geckoterminal.com/solana/tokens/9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"
+    }
+  },
+  "categories": ["Solana Meme Coins", "Pump.fun Ecosystem"],
+  "links": {
+    "homepage": ["https://example.invalid/fartcoin"],
+    "blockchain_site": ["https://solscan.io/token/9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"],
+    "twitter_screen_name": "FartCoinOfSOL",
+    "telegram_channel_identifier": "",
+    "subreddit_url": null,
+    "repos_url": {"github": [], "bitbucket": []}
+  },
+  "sentiment_votes_up_percentage": 87.5,
+  "sentiment_votes_down_percentage": 12.5,
+  "watchlist_portfolio_users": 1234,
+  "market_cap_rank": 120,
+  "community_data": {
+    "facebook_likes": null,
+    "reddit_subscribers": 0,
+    "reddit_average_posts_48h": 0.0,
+    "reddit_average_comments_48h": 0.0,
+    "telegram_channel_user_count": null
+  },
+  "market_data": {
+    "current_price": {"usd": 1.05},
+    "market_cap": {"usd": 1050000000},
+    "fully_diluted_valuation": {"usd": 1050000000},
+    "total_volume": {"usd": 210000000},
+    "price_change_percentage_24h": 9.4,
+    "circulating_supply": 999992180.0,
+    "total_supply": 999992180.0,
+    "max_supply": null
+  },
+  "tickers": [
+    {
+      "base": "9BB6NFECJBCTNNLFKO2FQVQBQ8HHM13KCYYCDQBGPUMP",
+      "target": "SOL",
+      "market": {"name": "Raydium", "identifier": "raydium", "has_trading_incentive": false},
+      "last": 0.0062,
+      "volume": 31500000,
+      "converted_last": {"usd": 1.05},
+      "trade_url": "https://raydium.io/swap/"
+    }
+  ]
+}
+{
+  "id": "fartcoin",
+  "symbol": "fartcoin",
+  "name": "Fartcoin",
+  "web_slug": "fartcoin",
+  "asset_platform_id": "solana",
+  "platforms": {
+    "solana": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"
+  },
+  "detail_platforms": {
+    "solana": {
+      "decimal_place": 6,
+      "contract_address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+      "geckoterminal_url": "https://www.geckoterminal.com/solana/tokens/9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"
+    }
+  },
+  "categories": ["Solana Meme Coins", "Pump.fun Ecosystem"],
+  "links": {
+    "homepage": ["https://example.invalid/fartcoin"],
+    "blockchain_site": ["https://solscan.io/token/9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"],
+    "twitter_screen_name": "FartCoinOfSOL",
+    "telegram_channel_identifier": "",
+    "subreddit_url": null,
+    "repos_url": {"github": [], "bitbucket": []}
+  },
+  "sentiment_votes_up_percentage": 91.25,
+  "sentiment_votes_down_percentage": 8.75,
+  "watchlist_portfolio_users": 2500,
+  "market_cap_rank": 118,
+  "community_data": {
+    "facebook_likes": null,
+    "reddit_subscribers": 0,
+    "reddit_average_posts_48h": 0.0,
+    "reddit_average_comments_48h": 0.0,
+    "telegram_channel_user_count": null
+  },
+  "market_data": {
+    "current_price": {"usd": 1.11},
+    "market_cap": {"usd": 1110000000},
+    "fully_diluted_valuation": {"usd": 1110000000},
+    "total_volume": {"usd": 260000000},
+    "price_change_percentage_24h": 12.1,
+    "circulating_supply": 999992180.0,
+    "total_supply": 999992180.0,
+    "max_supply": null
+  },
+  "tickers": [
+    {
+      "base": "9BB6NFECJBCTNNLFKO2FQVQBQ8HHM13KCYYCDQBGPUMP",
+      "target": "SOL",
+      "market": {"name": "Raydium", "identifier": "raydium", "has_trading_incentive": false},
+      "last": 0.0066,
+      "volume": 36100000,
+      "converted_last": {"usd": 1.11},
+      "trade_url": "https://raydium.io/swap/"
+    }
+  ]
+}
+{
+  "id": "fartcoin",
+  "symbol": "fartcoin",
+  "name": "Fartcoin",
+  "web_slug": "fartcoin",
+  "asset_platform_id": "solana",
+  "platforms": {
+    "solana": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"
+  },
+  "detail_platforms": {
+    "solana": {
+      "decimal_place": 6,
+      "contract_address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+      "geckoterminal_url": "https://www.geckoterminal.com/solana/tokens/9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"
+    }
+  },
+  "categories": ["Solana Meme Coins", "Pump.fun Ecosystem"],
+  "links": {
+    "homepage": ["https://example.invalid/fartcoin"],
+    "blockchain_site": ["https://solscan.io/token/9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"],
+    "twitter_screen_name": "FartCoinOfSOL",
+    "telegram_channel_identifier": "",
+    "subreddit_url": null,
+    "repos_url": {"github": [], "bitbucket": []}
+  },
+  "sentiment_votes_up_percentage": 91.25,
+  "sentiment_votes_down_percentage": 8.75,
+  "watchlist_portfolio_users": 2500,
+  "market_cap_rank": 118,
+  "community_data": {
+    "facebook_likes": null,
+    "reddit_subscribers": 0,
+    "reddit_average_posts_48h": 0.0,
+    "reddit_average_comments_48h": 0.0,
+    "telegram_channel_user_count": null
+  },
+  "market_data": {
+    "current_price": {"usd": 1.09},
+    "market_cap": {"usd": 1090000000},
+    "fully_diluted_valuation": {"usd": 1090000000},
+    "total_volume": {"usd": 255000000},
+    "price_change_percentage_24h": 10.8,
+    "circulating_supply": 999992180.0,
+    "total_supply": 999992180.0,
+    "max_supply": null
+  },
+  "tickers": [
+    {
+      "base": "9BB6NFECJBCTNNLFKO2FQVQBQ8HHM13KCYYCDQBGPUMP",
+      "target": "SOL",
+      "market": {"name": "Raydium", "identifier": "raydium", "has_trading_incentive": false},
+      "last": 0.0065,
+      "volume": 35800000,
+      "converted_last": {"usd": 1.09},
+      "trade_url": "https://raydium.io/swap/"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "coins": [
+    {
+      "item": {
+        "id": "dogwifcoin",
+        "name": "dogwifhat",
+        "symbol": "WIF",
+        "market_cap_rank": 98
+      }
+    }
+  ],
+  "nfts": [],
+  "categories": []
+}
+{
+  "coins": [
+    {
+      "item": {
+        "id": "hosico-cat",
+        "name": "Hosico Cat",
+        "symbol": "HOSICO",
+        "market_cap_rank": 601,
+        "renamed_future_field": {"x": [1, 2]}
+      }
+    }
+  ],
+  "nfts": [],
+  "categories": []
+}

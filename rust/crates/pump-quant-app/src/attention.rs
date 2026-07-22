@@ -132,6 +132,15 @@ pub struct MentionProvenance {
     /// Whether the event is an echo/coordinated repeat — echoes raise reach,
     /// never breadth (fade-first, §29).
     pub echo_or_coordinated: bool,
+    /// An AGGREGATOR (CoinGecko-tier) lists this token: the §783 legibility
+    /// clock. Once seen, the mint's pre-legibility earliness bonus is gone —
+    /// permanently (listing is not un-observed). Reduce-only.
+    pub aggregator: bool,
+    /// A HIGH-CONFIDENCE BEARISH sentiment reading accompanies this mention
+    /// (scam accusation / rug call territory). Reduce-only consumption: it
+    /// suppresses the live-chat enthusiasm bonus while fresh; it never blocks
+    /// tracking and never becomes negative market evidence on its own (§29.5).
+    pub bearish: bool,
 }
 
 /// Per-mint accumulated attention state.
@@ -156,6 +165,13 @@ struct MintAttn {
     broadcaster_seen_ns: u64,
     /// Latest instant (ns) any live-chat mention named this mint (0 = never).
     live_chat_latest_ns: u64,
+    /// Whether an aggregator listing has EVER been observed (§783 legibility
+    /// clock — one-way; a listed coin cannot regain earliness).
+    aggregator_seen: bool,
+    /// Latest instant (ns) a high-confidence bearish reading named this mint
+    /// (0 = never). While fresh (within the 5-minute window) the live-chat
+    /// bonus is suppressed.
+    bearish_seen_ns: u64,
 }
 
 /// The bounded, per-mint social attention field. Fed by [`Self::observe`] from the
@@ -265,6 +281,12 @@ impl AttentionField {
                 a.live_chatters.push(prov.author_id);
             }
         }
+        if prov.aggregator {
+            a.aggregator_seen = true;
+        }
+        if prov.bearish {
+            a.bearish_seen_ns = a.bearish_seen_ns.max(mention.ts_ns);
+        }
     }
 
     /// Emit one corroboration-tier `EarlyConfirmation` candidate per tracked mint
@@ -305,7 +327,14 @@ impl AttentionField {
             // exactly — the no-Twitch path is byte-identical (golden-pinned).
             let live_fresh = a.live_chat_latest_ns > 0
                 && now_ns.saturating_sub(a.live_chat_latest_ns) < params.window_5m_ns;
-            let live_bonus: u64 = if live_fresh {
+            // §29 fade-first: a FRESH high-confidence bearish reading (rug
+            // call / scam accusation) suppresses the live-enthusiasm bonus —
+            // reduce-only; tracking, level, and staging are otherwise
+            // untouched (bearish sentiment is never negative market evidence
+            // by itself, §29.5 — it only stops us AMPLIFYING).
+            let bearish_fresh = a.bearish_seen_ns > 0
+                && now_ns.saturating_sub(a.bearish_seen_ns) < params.window_5m_ns;
+            let live_bonus: u64 = if live_fresh && !bearish_fresh {
                 let breadth =
                     (a.live_chatters.len() as u64).saturating_mul(params.live_chatter_weight);
                 let bcast_fresh = a.broadcaster_seen_ns > 0
@@ -368,11 +397,14 @@ impl AttentionField {
             );
             let stage = nv_lifecycle_stage(&series, virality, params.formation_level);
             let age_windows = a.levels.len() as u32;
+            // §783 legibility clock — LIVE at last: once an aggregator lists
+            // the coin, the pre-legibility earliness bonus is cut by the model
+            // itself (previously hardcoded `false` awaiting this source).
             let pre_leg = nv_pre_legibility(
                 state.unique_sources,
                 state.source_concentration,
                 age_windows,
-                false, // aggregator_listed: the [S] legibility clock is a separate signal
+                a.aggregator_seen,
                 params.age_step_fp,
             );
             let money_confirmed = is_confirmed(mint);
@@ -587,6 +619,8 @@ mod twitch_tests {
                 broadcaster: true,
                 author_id: 500,
                 echo_or_coordinated: false,
+                aggregator: false,
+                bearish: false,
             },
         );
         let mut p = Vec::new();
@@ -618,6 +652,8 @@ mod twitch_tests {
                     broadcaster: false,
                     author_id: 200 + i,
                     echo_or_coordinated: true,
+                    aggregator: false,
+                    bearish: false,
                 },
             );
         }
@@ -633,6 +669,8 @@ mod twitch_tests {
                     broadcaster: false,
                     author_id: 200 + i,
                     echo_or_coordinated: false,
+                    aggregator: false,
+                    bearish: false,
                 },
             );
         }
@@ -664,6 +702,8 @@ mod twitch_tests {
                     broadcaster: i == 0,
                     author_id: 300 + i,
                     echo_or_coordinated: false,
+                    aggregator: false,
+                    bearish: false,
                 },
             );
         }
