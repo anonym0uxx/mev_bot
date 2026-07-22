@@ -52,8 +52,9 @@ leaves:
           let e = effective_fixed_lamports(100, 2680).unwrap();
           assert!(e >= 136 && e <= 137);
           // monotone: higher failure rate -> higher effective fixed
-          assert!(effective_fixed_lamports(100, 5000).unwrap()
-                  > effective_fixed_lamports(100, 2680).unwrap());
+          assert!(
+              effective_fixed_lamports(100, 5000).unwrap() > effective_fixed_lamports(100, 2680).unwrap()
+          );
           assert_eq!(effective_fixed_lamports(100, 10_000), None);
       }
     max_lines: 15
@@ -79,9 +80,12 @@ leaves:
       fn prop_cost_is_u_shaped() {
           let c = ImpactCurve::linear_test(1_000);
           let small = round_trip_cost_bps(10_000, 160, 200, &c).unwrap();
-          let mid   = round_trip_cost_bps(50_000, 160, 200, &c).unwrap();
+          let mid = round_trip_cost_bps(50_000, 160, 200, &c).unwrap();
           let large = round_trip_cost_bps(500_000, 160, 200, &c).unwrap();
-          assert!(mid < small, "cost falls from tiny size (fixed cost amortizes)");
+          assert!(
+              mid < small,
+              "cost falls from tiny size (fixed cost amortizes)"
+          );
           assert!(large > mid, "cost rises at large size (impact dominates)");
           assert_eq!(round_trip_cost_bps(0, 160, 200, &c), None);
       }

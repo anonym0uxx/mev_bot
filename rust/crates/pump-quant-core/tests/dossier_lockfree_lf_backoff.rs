@@ -1,3 +1,10 @@
+// GENERATED FROM DOSSIER — DO NOT EDIT.
+// This property test is the correctness authority for the 'lockfree' component (leaf 'lf_backoff').
+// It was materialized independently of the builder. Editing it is a build-integrity
+// violation caught by `materialize_tests.py --verify` and denied by .claude/settings.json.
+// To change a component's contract, change its dossier and re-materialize — never edit here.
+// The glob import below brings the leaf's public items into scope; integration tests in
+// tests/ are a separate crate, so the implementation must be `pub` and reachable here.
 #![allow(
     unused_imports,
     clippy::manual_range_contains,
@@ -5,6 +12,7 @@
     clippy::nonminimal_bool
 )]
 use pump_quant_core::lockfree::*;
+
 #[test]
 fn prop_backoff_hot_never_parks() {
     let mut b = Backoff::new();

@@ -42,8 +42,9 @@ leaves:
     property_test: |
       #[test]
       fn prop_net_sol_golden() {
-          let t = |lane, gross: i128, fee: u128, tip: u128, failc: u128|
-              ReconTrade::test(lane, gross, fee, tip, failc);
+          let t = |lane, gross: i128, fee: u128, tip: u128, failc: u128| {
+              ReconTrade::test(lane, gross, fee, tip, failc)
+          };
           let trades = vec![
               t(Lane::Scalp, 1_000, 100, 50, 10),
               t(Lane::Scalp, -400, 100, 50, 0),
@@ -74,10 +75,14 @@ leaves:
       #[test]
       fn prop_capture_ratio_golden_and_screening() {
           let r = |mfe, mae, real, scr| ExcursionRow::test(ArchetypeKey::test(), mfe, mae, real, scr);
-          let rows = vec![r(400, 100, 200, true), r(600, 300, 100, true), r(10_000, 0, 10_000, false)];
+          let rows = vec![
+              r(400, 100, 200, true),
+              r(600, 300, 100, true),
+              r(10_000, 0, 10_000, false),
+          ];
           let rep = mfe_capture(&rows, ArchetypeKey::test());
           assert_eq!(rep.n, 2);
-          assert_eq!(rep.excluded_unscreened, 1);         // phantom excursion excluded
+          assert_eq!(rep.excluded_unscreened, 1); // phantom excursion excluded
           assert_eq!(rep.capture_bps_of_mfe, (300u32 * 10_000) / 1_000); // 3000 bps = 30%
       }
     max_lines: 45
@@ -202,13 +207,15 @@ leaves:
       #[test]
       fn prop_prfs_both_sides_of_the_ledger() {
           let s = |g, r, p| PrfsSample::test(g, r, p, 3600);
-          let samples = vec![s(1, 1_000, 400),  // halved: filter ate a loss
-                             s(1, 1_000, 2_500), // doubled: filter ate a winner
-                             s(2, 1_000, 990)];
+          let samples = vec![
+              s(1, 1_000, 400),   // halved: filter ate a loss
+              s(1, 1_000, 2_500), // doubled: filter ate a winner
+              s(2, 1_000, 990),
+          ];
           let ledgers = prfs_fold(&samples);
           let g1 = &ledgers[0];
           assert_eq!(g1.halved_within_24h, 1);
-          assert_eq!(g1.doubled_within_24h, 1);   // over-rejection is visible, not hidden
+          assert_eq!(g1.doubled_within_24h, 1); // over-rejection is visible, not hidden
           assert!(g1.loss_avoided_bps_sum > 0 && g1.upside_foregone_bps_sum > 0);
       }
     max_lines: 55
@@ -229,7 +236,8 @@ leaves:
     property_test: |
       #[test]
       fn prop_markout_sign_adjustment() {
-          let f = |side, fill: u64, later: u64| FillRow::test(FillClass::ScalpEntry, side, fill, later, 30);
+          let f =
+              |side, fill: u64, later: u64| FillRow::test(FillClass::ScalpEntry, side, fill, later, 30);
           let rows = vec![f(Side::Buy, 1_000, 1_100), f(Side::Sell, 1_000, 900)];
           let m = markouts(&rows, &[30]);
           assert_eq!(m[0].n, 2);

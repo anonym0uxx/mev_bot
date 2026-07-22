@@ -69,7 +69,12 @@ HEADER = (
     "// To change a component's contract, change its dossier and re-materialize — never edit here.\n"
     "// The glob import below brings the leaf's public items into scope; integration tests in\n"
     "// tests/ are a separate crate, so the implementation must be `pub` and reachable here.\n"
-    "#![allow(unused_imports)]\n"
+    "#![allow(\n"
+    "    unused_imports,\n"
+    "    clippy::manual_range_contains,\n"
+    "    clippy::bool_comparison,\n"
+    "    clippy::nonminimal_bool\n"
+    ")]\n"
     "use {crate_ident}::{module}::*;\n\n"
 )
 

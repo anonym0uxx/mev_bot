@@ -36,7 +36,42 @@ leaves:
       - "a fully resolved value yields FieldState::Known(v) carrying its source evidence id"
       - "the function is total and deterministic"
     reference_pattern: "enum FieldState { Known(Evidence), Unknown, Incomplete, Reject } — match on raw, never unwrap_or(0)"
-    property_test: "assert Reject on required-missing; Unknown on optional-missing; Incomplete on unparseable; Known carries evidence"
+    property_test: |
+      #[test]
+      fn required_missing_rejects() {
+          assert_eq!(resolve_field(None, true), FieldState::Reject);
+      }
+      #[test]
+      fn optional_missing_unknown() {
+          assert_eq!(resolve_field(None, false), FieldState::Unknown);
+      }
+      #[test]
+      fn unparseable_incomplete() {
+          let fe = FieldEvidence {
+              evidence_id: 7,
+              parsed: None,
+          };
+          assert_eq!(resolve_field(Some(fe), true), FieldState::Incomplete);
+          let fe = FieldEvidence {
+              evidence_id: 7,
+              parsed: None,
+          };
+          assert_eq!(resolve_field(Some(fe), false), FieldState::Incomplete);
+      }
+      #[test]
+      fn resolved_known_carries_evidence() {
+          let fe = FieldEvidence {
+              evidence_id: 42,
+              parsed: Some(-5),
+          };
+          match resolve_field(Some(fe), true) {
+              FieldState::Known(e) => {
+                  assert_eq!(e.evidence_id, 42);
+                  assert_eq!(e.value, -5);
+              }
+              other => panic!("expected Known, got {:?}", other),
+          }
+      }
     max_lines: 30
 
   - leaf_id: si_no_llm_fact
@@ -49,7 +84,33 @@ leaves:
       - "only TaggedValue::ChainEvidence(_) returns Ok(FactValue)"
       - "no code path converts Model/ResearchArtifact into ChainEvidence"
     reference_pattern: "enum TaggedValue { ChainEvidence(E), Model(M), ResearchArtifact(R) } — the provenance is in the type"
-    property_test: "assert Model and ResearchArtifact are rejected; ChainEvidence admitted; exhaustive over variants"
+    property_test: |
+      #[test]
+      fn model_and_research_rejected_chain_admitted() {
+          let m = TaggedValue::Model(ModelOutput {
+              text: "buy now".into(),
+          });
+          assert_eq!(admit_fact(m), Err(FactError::ModelOutputRejected));
+
+          let r = TaggedValue::ResearchArtifact(ResearchArtifact {
+              note: "narrative".into(),
+              provenance: CaptureProvenance::Social,
+              horizon: HorizonClass::Short,
+          });
+          assert_eq!(admit_fact(r), Err(FactError::ResearchRejected));
+
+          let c = TaggedValue::ChainEvidence(ChainEvidence {
+              slot: 100,
+              value: 9,
+          });
+          assert_eq!(
+              admit_fact(c),
+              Ok(FactValue {
+                  slot: 100,
+                  value: 9
+              })
+          );
+      }
     max_lines: 25
 
   - leaf_id: si_failed_sell_state
@@ -62,7 +123,50 @@ leaves:
       - "a completed round trip yields TerminalState::Closed{net_lamports}"
       - "net accounting for FailedSell/TerminalLoss reflects full loss including fixed cost paid"
     reference_pattern: "enum TerminalState { Closed{net_lamports:i128}, FailedSell, TerminalLoss } — losses are representable"
-    property_test: "assert FailedSell and TerminalLoss are distinct from Closed(0); loss includes fixed cost"
+    property_test: |
+      #[test]
+      fn failed_sell_distinct_from_zero_close() {
+          let o = RawOutcome {
+              entry_lamports: 1000,
+              exit_lamports: None,
+              fixed_cost_lamports: 50,
+              sell_landed: false,
+              inactivity_timeout: false,
+          };
+          let t = classify_terminal(&o);
+          assert_eq!(t, TerminalState::FailedSell);
+          assert_ne!(t, TerminalState::Closed { net_lamports: 0 });
+          // full loss includes fixed cost
+          assert_eq!(t.net_lamports(&o), -(1000 + 50));
+      }
+      #[test]
+      fn terminal_loss_distinct_and_full_loss() {
+          let o = RawOutcome {
+              entry_lamports: 2000,
+              exit_lamports: None,
+              fixed_cost_lamports: 30,
+              sell_landed: false,
+              inactivity_timeout: true,
+          };
+          let t = classify_terminal(&o);
+          assert_eq!(t, TerminalState::TerminalLoss);
+          assert_ne!(t, TerminalState::Closed { net_lamports: 0 });
+          assert_eq!(t.net_lamports(&o), -(2000 + 30));
+      }
+      #[test]
+      fn completed_round_trip_closed() {
+          let o = RawOutcome {
+              entry_lamports: 1000,
+              exit_lamports: Some(1200),
+              fixed_cost_lamports: 50,
+              sell_landed: true,
+              inactivity_timeout: false,
+          };
+          assert_eq!(
+              classify_terminal(&o),
+              TerminalState::Closed { net_lamports: 150 }
+          );
+      }
     max_lines: 30
 
   - leaf_id: si_narrative_boundary
@@ -74,7 +178,21 @@ leaves:
       - "a NarrativeRecord carries its capture provenance and horizon class"
       - "no narrative reducer is constructible without an admitted-evidence token"
     reference_pattern: "narrative always lands in ResearchArtifact; admission is a separate gated step (criterion 83)"
-    property_test: "assert output is ResearchArtifact; assert (by type) no direct narrative->fact path exists"
+    property_test: |
+      #[test]
+      fn narrative_lands_in_research() {
+          let n = NarrativeRecord {
+              text: "hype".into(),
+              provenance: CaptureProvenance::Chart,
+              horizon: HorizonClass::Immediate,
+          };
+          let r: ResearchArtifact = narrative_to_research(n);
+          assert_eq!(r.provenance, CaptureProvenance::Chart);
+          assert_eq!(r.horizon, HorizonClass::Immediate);
+          // The only admission path rejects research → no direct narrative->fact route.
+          let tagged = TaggedValue::ResearchArtifact(r);
+          assert_eq!(admit_fact(tagged), Err(FactError::ResearchRejected));
+      }
     max_lines: 25
 
   - leaf_id: si_config_boot_guard
@@ -87,7 +205,42 @@ leaves:
       - "only a fully consistent, non-live-armed config yields Ok(ValidatedConfig)"
       - "the function is pure over the config value"
     reference_pattern: "validate-then-construct: ValidatedConfig has no public constructor except through this fn"
-    property_test: "assert live-armed rejected; contradictory rejected; clean config accepted"
+    property_test: |
+      #[test]
+      fn live_armed_committed_rejected() {
+          let cfg = BootConfig {
+              live_armed: true,
+              committed_to_source: true,
+              shadow: false,
+              live: false,
+          };
+          assert_eq!(
+              validate_boot_config(&cfg),
+              Err(BootError::LiveArmedCommitted)
+          );
+      }
+      #[test]
+      fn contradictory_rejected() {
+          let cfg = BootConfig {
+              live_armed: false,
+              committed_to_source: true,
+              shadow: true,
+              live: true,
+          };
+          assert_eq!(validate_boot_config(&cfg), Err(BootError::Contradictory));
+      }
+      #[test]
+      fn clean_config_accepted() {
+          let cfg = BootConfig {
+              live_armed: false,
+              committed_to_source: true,
+              shadow: true,
+              live: false,
+          };
+          let v = validate_boot_config(&cfg).expect("clean config should validate");
+          assert!(v.shadow());
+          assert!(!v.live());
+      }
     max_lines: 30
 
   - leaf_id: si_signing_boundary
@@ -100,7 +253,49 @@ leaves:
       - "a permitted request yields Ok(SignedTx) without exposing key material"
       - "the KeyHandle type does not implement Debug/Display/Serialize (cannot be printed or exported)"
     reference_pattern: "opaque KeyHandle behind a trait; sign() borrows it, never returns it; policy checked before signing"
-    property_test: "assert PolicyDenied on over-cap/unapproved; assert (by type) no key-bytes accessor exists"
+    property_test: |
+      #[test]
+      fn unapproved_and_over_cap_denied() {
+          let policy = SignPolicy {
+              approved_programs: vec![10, 20],
+              max_tx_size: 1000,
+              key: KeyHandle::new(1),
+          };
+          let unapproved = SignRequest {
+              program_id: 99,
+              tx_size: 100,
+              digest: 5,
+          };
+          assert_eq!(
+              sign_through_policy(&unapproved, &policy),
+              Err(SignError::PolicyDenied)
+          );
+          let overcap = SignRequest {
+              program_id: 10,
+              tx_size: 5000,
+              digest: 5,
+          };
+          assert_eq!(
+              sign_through_policy(&overcap, &policy),
+              Err(SignError::PolicyDenied)
+          );
+      }
+      #[test]
+      fn permitted_signs_deterministically() {
+          let policy = SignPolicy {
+              approved_programs: vec![10],
+              max_tx_size: 1000,
+              key: KeyHandle::new(1),
+          };
+          let req = SignRequest {
+              program_id: 10,
+              tx_size: 100,
+              digest: 5,
+          };
+          let a = sign_through_policy(&req, &policy).expect("should sign");
+          let b = sign_through_policy(&req, &policy).expect("should sign");
+          assert_eq!(a, b); // deterministic, no key material exposed
+      }
     max_lines: 35
 
   - leaf_id: si_disconnect_safe
@@ -113,7 +308,28 @@ leaves:
       - "reconnection with a new epoch is recorded as a distinct epoch boundary, not a continuation"
       - "the function is deterministic given the stream state"
     reference_pattern: "disconnect -> open GapMarker; the reducer treats gapped spans as Unknown, not zero"
-    property_test: "assert GapMarker created; assert no interpolated events; assert epoch boundary on reconnect"
+    property_test: |
+      #[test]
+      fn disconnect_opens_explicit_gap_no_interpolation() {
+          let mut s = StreamState::new();
+          let m = on_disconnect(&mut s, 500);
+          assert_eq!(m.from_seq, 500);
+          assert_eq!(m.to_seq, None);
+          assert!(!s.connected);
+          assert_eq!(s.gaps.len(), 1);
+          // gapped seqs read as Unknown (no synthesized events)
+          assert!(s.is_gapped(600));
+      }
+      #[test]
+      fn reconnect_is_distinct_epoch_boundary() {
+          let mut s = StreamState::new();
+          on_disconnect(&mut s, 500);
+          let e0 = s.epoch;
+          s.reconnect(800);
+          assert_eq!(s.epoch, e0 + 1);
+          assert_eq!(s.gaps[0].to_seq, Some(800));
+          assert!(!s.is_gapped(900));
+      }
     max_lines: 30
 
   - leaf_id: si_replay_provenance
@@ -126,7 +342,18 @@ leaves:
       - "a metric aggregator can filter by provenance; replay and live never merge silently"
       - "provenance is immutable once set"
     reference_pattern: "provenance is a required field set at ingestion; no default; metrics group by it"
-    property_test: "assert Replay->ProviderReplay, Live->OriginalLive; assert immutability"
+    property_test: |
+      #[test]
+      fn mode_maps_to_provenance_and_is_immutable() {
+          let obs = Observation { seq: 1, payload: 7 };
+          let live = tag_provenance(&obs, SourceMode::Live);
+          assert_eq!(live.provenance(), Provenance::OriginalLive);
+          let replay = tag_provenance(&obs, SourceMode::Replay);
+          assert_eq!(replay.provenance(), Provenance::ProviderReplay);
+          // immutable: still original after re-reading
+          assert_eq!(live.provenance(), Provenance::OriginalLive);
+          assert_ne!(live.provenance(), replay.provenance());
+      }
     max_lines: 25
 
   - leaf_id: si_source_contract
@@ -139,7 +366,35 @@ leaves:
       - "removing the Jito adapter leaves the runtime compiling (no Jito-specific type leaks past the trait)"
       - "no downstream component matches on the concrete source type"
     reference_pattern: "runtime holds Box<dyn ObservationSource>; adapters are swappable; test constructs two different sources"
-    property_test: "assert two distinct sources both drive the runtime; assert no concrete-type dependency (compiles with either)"
+    property_test: |
+      #[test]
+      fn two_distinct_sources_drive_runtime() {
+          let null = NullSource { id: 1 };
+          let mut rt_null = StrategyRuntime::new(Box::new(null));
+          assert_eq!(rt_null.drive_to_empty(), 0);
+          assert_eq!(rt_null.source_id(), SourceId(1));
+
+          let fake = FakeSource::new(
+              2,
+              vec![
+                  Observation {
+                      seq: 1,
+                      payload: 10,
+                  },
+                  Observation {
+                      seq: 2,
+                      payload: 20,
+                  },
+                  Observation {
+                      seq: 3,
+                      payload: 30,
+                  },
+              ],
+          );
+          let mut rt_fake = StrategyRuntime::new(Box::new(fake));
+          assert_eq!(rt_fake.drive_to_empty(), 3);
+          assert_eq!(rt_fake.source_id(), SourceId(2));
+      }
     max_lines: 40
 
   - leaf_id: si_sell_simulation
@@ -152,7 +407,54 @@ leaves:
       - "a constructible, simulatable sell yields Ok(SellProof) carrying the simulated out-amount"
       - "no position is admitted live without an Ok(SellProof) (enforced by the caller's type)"
     reference_pattern: "construct sell -> simulate against decoded reserves -> proof or explicit unprovable; never assume sellable"
-    property_test: "assert unprovable on empty reserves / unconstructible; assert proof carries out-amount on success"
+    property_test: |
+      #[test]
+      fn empty_reserves_unprovable() {
+          let pos = Position {
+              token_amount: 100,
+              mint: 1,
+          };
+          let empty = DecodedMarket {
+              base_reserve: 0,
+              quote_reserve: 0,
+              constructible: true,
+          };
+          assert_eq!(
+              prove_sellable(&pos, &empty),
+              Err(SellUnprovable::InsufficientLiquidity)
+          );
+      }
+      #[test]
+      fn unconstructible_unprovable() {
+          let pos = Position {
+              token_amount: 100,
+              mint: 1,
+          };
+          let mkt = DecodedMarket {
+              base_reserve: 1_000_000,
+              quote_reserve: 1_000_000,
+              constructible: false,
+          };
+          assert_eq!(
+              prove_sellable(&pos, &mkt),
+              Err(SellUnprovable::Unconstructible)
+          );
+      }
+      #[test]
+      fn simulatable_sell_carries_out_amount() {
+          let pos = Position {
+              token_amount: 1_000,
+              mint: 1,
+          };
+          let mkt = DecodedMarket {
+              base_reserve: 1_000_000,
+              quote_reserve: 1_000_000,
+              constructible: true,
+          };
+          let proof = prove_sellable(&pos, &mkt).expect("should be provable");
+          // out = 1_000_000 * 1000 / (1_000_000 + 1000) = 999
+          assert_eq!(proof.out_amount, 999);
+      }
     max_lines: 40
 
   - leaf_id: si_failure_taxonomy
@@ -165,7 +467,34 @@ leaves:
       - "FailureClass::Construction is never marked retryable-with-capital"
       - "an unknown error decodes to FailureClass::Unknown (conservative: not auto-retried)"
     reference_pattern: "match decoded error -> taxonomy; Construction => quarantine flag, never silent capital retry"
-    property_test: "assert Construction not retryable; Transient retryable within policy; Unknown conservative"
+    property_test: |
+      #[test]
+      fn construction_never_retryable_with_capital() {
+          let c = classify_failure(&DecodedProgramError::MalformedInstruction);
+          assert_eq!(c, FailureClass::Construction);
+          assert!(!c.retryable_with_capital());
+          assert!(c.triggers_quarantine());
+          let c2 = classify_failure(&DecodedProgramError::AccountMismatch);
+          assert_eq!(c2, FailureClass::Construction);
+          assert!(!c2.retryable_with_capital());
+      }
+      #[test]
+      fn transient_retryable() {
+          let t = classify_failure(&DecodedProgramError::SlippageExceeded);
+          assert_eq!(t, FailureClass::Transient);
+          assert!(t.retryable_with_capital());
+          assert_eq!(
+              classify_failure(&DecodedProgramError::PriceMoved),
+              FailureClass::Transient
+          );
+      }
+      #[test]
+      fn unknown_conservative() {
+          let u = classify_failure(&DecodedProgramError::Unknown(7));
+          assert_eq!(u, FailureClass::Unknown);
+          assert!(!u.retryable_with_capital());
+          assert!(!u.triggers_quarantine());
+      }
     max_lines: 35
 
   - leaf_id: si_no_copy_trade
@@ -178,7 +507,80 @@ leaves:
       - "skipping any stage yields Err(Blocked{stage}); there is no bypass constructor for Order"
       - "mirroring a specific wallet's trade is unrepresentable: Order carries no source-wallet field to mirror"
     reference_pattern: "Order has no public constructor except pipeline.finish(ticket); ExternalSignal only yields a ticket"
-    property_test: "assert every skipped stage blocks; assert no direct ExternalSignal->Order; assert Order has no mirror-source field"
+    property_test: |
+      fn full_pipe() -> DeterministicPipeline {
+          DeterministicPipeline {
+              feature_ok: true,
+              liquidity_ok: true,
+              risk_ok: true,
+              economic_ok: true,
+              sellability_ok: true,
+              signing_ok: true,
+          }
+      }
+      fn sig() -> ExternalSignal {
+          ExternalSignal {
+              kind: SignalKind::Wallet,
+              token_mint: 77,
+          }
+      }
+
+      #[test]
+      fn every_skipped_stage_blocks() {
+          let cases = [
+              (
+                  Stage::Feature,
+                  DeterministicPipeline {
+                      feature_ok: false,
+                      ..full_pipe()
+                  },
+              ),
+              (
+                  Stage::Liquidity,
+                  DeterministicPipeline {
+                      liquidity_ok: false,
+                      ..full_pipe()
+                  },
+              ),
+              (
+                  Stage::Risk,
+                  DeterministicPipeline {
+                      risk_ok: false,
+                      ..full_pipe()
+                  },
+              ),
+              (
+                  Stage::Economic,
+                  DeterministicPipeline {
+                      economic_ok: false,
+                      ..full_pipe()
+                  },
+              ),
+              (
+                  Stage::Sellability,
+                  DeterministicPipeline {
+                      sellability_ok: false,
+                      ..full_pipe()
+                  },
+              ),
+              (
+                  Stage::Signing,
+                  DeterministicPipeline {
+                      signing_ok: false,
+                      ..full_pipe()
+                  },
+              ),
+          ];
+          for (stage, p) in cases {
+              assert_eq!(to_order(sig(), &p), Err(Blocked { stage }));
+          }
+      }
+      #[test]
+      fn full_pipeline_yields_order_no_mirror_source() {
+          let o = to_order(sig(), &full_pipe()).expect("should produce order");
+          assert_eq!(o.token_mint(), 77);
+          // Order exposes only its token — no source-wallet accessor exists to mirror.
+      }
     max_lines: 40
 
   - leaf_id: si_smart_money_gate
@@ -191,7 +593,50 @@ leaves:
       - "only realized, family-screened, luck-filtered external-counterparty PnL with positive lagged shadow yields Qualified"
       - "the function is deterministic over the evidence"
     reference_pattern: "gate chain: realized? external-counterparty? family-screened? luck-filtered? lagged-shadow-positive? else Unqualified"
-    property_test: "assert raw/self-dealing/public-legible all Unqualified; assert full-gate-passing Qualified"
+    property_test: |
+      fn full() -> WalletEvidence {
+          WalletEvidence {
+              realized: true,
+              self_dealing: false,
+              external_counterparty: true,
+              family_screened: true,
+              luck_filtered: true,
+              lagged_shadow_positive: true,
+              publicly_legible: false,
+              inverting_cohort: false,
+          }
+      }
+
+      #[test]
+      fn raw_self_dealing_public_all_unqualified() {
+          let unrealized = WalletEvidence {
+              realized: false,
+              ..full()
+          };
+          assert_eq!(classify_wallet(&unrealized), SmartMoneyClass::Unqualified);
+          let selfdeal = WalletEvidence {
+              self_dealing: true,
+              ..full()
+          };
+          assert_eq!(classify_wallet(&selfdeal), SmartMoneyClass::Unqualified);
+          let public = WalletEvidence {
+              publicly_legible: true,
+              ..full()
+          };
+          assert_eq!(classify_wallet(&public), SmartMoneyClass::Unqualified);
+      }
+      #[test]
+      fn full_gate_qualifies() {
+          assert_eq!(classify_wallet(&full()), SmartMoneyClass::Qualified);
+      }
+      #[test]
+      fn missing_a_gate_unqualified() {
+          let no_luck = WalletEvidence {
+              luck_filtered: false,
+              ..full()
+          };
+          assert_eq!(classify_wallet(&no_luck), SmartMoneyClass::Unqualified);
+      }
     max_lines: 40
 
   - leaf_id: si_signal_scoring_only
@@ -204,7 +649,38 @@ leaves:
       - "the smart-money contribution enters scoring exactly once"
       - "Qualified raises, Unqualified is neutral, Inverting lowers — none produce a trade directly"
     reference_pattern: "signal adjusts a score field only; the order decision is downstream through the full pipeline"
-    property_test: "assert output is ScoringInputs (no Order); assert Inverting lowers; assert single application"
+    property_test: |
+      #[test]
+      fn inverting_lowers_and_single_application() {
+          let base = ScoringInputs {
+              base_score: 500,
+              smart_money_applied: false,
+              smart_money_delta: 0,
+          };
+          let inv = apply_smart_money(base.clone(), SmartMoneyClass::Inverting);
+          assert!(inv.base_score < base.base_score);
+          assert!(inv.smart_money_applied);
+          // applying again is a no-op (exactly once)
+          let inv2 = apply_smart_money(inv.clone(), SmartMoneyClass::Inverting);
+          assert_eq!(inv2, inv);
+      }
+      #[test]
+      fn qualified_raises_unqualified_neutral() {
+          let base = ScoringInputs {
+              base_score: 100,
+              smart_money_applied: false,
+              smart_money_delta: 0,
+          };
+          let q = apply_smart_money(base.clone(), SmartMoneyClass::Qualified);
+          assert!(q.base_score > base.base_score);
+          let base2 = ScoringInputs {
+              base_score: 100,
+              smart_money_applied: false,
+              smart_money_delta: 0,
+          };
+          let u = apply_smart_money(base2, SmartMoneyClass::Unqualified);
+          assert_eq!(u.base_score, 100);
+      }
     max_lines: 30
 
   - leaf_id: si_quote_mint_param
@@ -217,7 +693,32 @@ leaves:
       - "a market whose quote mint is undecoded yields None (refuse, not assume SOL)"
       - "cost is expressed in the market's quote units consistently"
     reference_pattern: "QuoteMint carries decimals + mint; every lamport<->quote conversion goes through it; no hardcoded 1e9"
-    property_test: "assert USDC(6-dec) and SOL(9-dec) markets differ correctly; assert undecoded quote -> None"
+    property_test: |
+      #[test]
+      fn usdc_and_sol_decimals_differ() {
+          let mkt = Market {
+              fee_bps: 100,
+              fixed_cost_whole: 1,
+          };
+          let usdc = round_trip_cost_quote(1_000_000, &mkt, QuoteMint::Usdc { decimals: 6 }).unwrap();
+          let sol = round_trip_cost_quote(1_000_000, &mkt, QuoteMint::Sol { decimals: 9 }).unwrap();
+          // fee round trip = 1_000_000 * 100/10000 * 2 = 20_000 for both;
+          // fixed: usdc = 1 * 1e6, sol = 1 * 1e9 -> different totals.
+          assert_eq!(usdc, 20_000 + 1_000_000);
+          assert_eq!(sol, 20_000 + 1_000_000_000);
+          assert_ne!(usdc, sol);
+      }
+      #[test]
+      fn undecoded_quote_refuses() {
+          let mkt = Market {
+              fee_bps: 100,
+              fixed_cost_whole: 1,
+          };
+          assert_eq!(
+              round_trip_cost_quote(1_000_000, &mkt, QuoteMint::Undecoded),
+              None
+          );
+      }
     max_lines: 35
 
   - leaf_id: si_authenticity_once
@@ -230,7 +731,36 @@ leaves:
       - "the two modes are mutually exclusive; applying both is unrepresentable in one call"
       - "a double-application (edge already authenticity-adjusted, then haircut) is detected and rejected"
     reference_pattern: "enum AuthMode { ThroughEdge, Haircut } — the type forbids applying authenticity twice"
-    property_test: "assert exactly-once (each mode touches only its channel); assert double-apply rejected"
+    property_test: |
+      #[test]
+      fn each_mode_touches_only_its_channel() {
+          let s = SizeInputs::fresh(200);
+          let edge = apply_authenticity(
+              s.clone(),
+              AuthConfidence { bps: 5000 },
+              AuthMode::ThroughEdge,
+          );
+          assert_eq!(edge.edge_bps, 100); // 200 * 0.5
+          assert_eq!(edge.haircut_bps, 10_000); // haircut untouched
+          assert!(edge.edge_auth_adjusted && !edge.haircut_applied);
+
+          let hc = apply_authenticity(s.clone(), AuthConfidence { bps: 5000 }, AuthMode::Haircut);
+          assert_eq!(hc.edge_bps, 200); // edge untouched
+          assert_eq!(hc.haircut_bps, 5000);
+          assert!(hc.haircut_applied && !hc.edge_auth_adjusted);
+      }
+      #[test]
+      fn double_application_rejected() {
+          let s = SizeInputs::fresh(200);
+          let once = apply_authenticity(s, AuthConfidence { bps: 5000 }, AuthMode::ThroughEdge);
+          // now try to also apply a haircut -> must be rejected (unchanged)
+          let twice = apply_authenticity(
+              once.clone(),
+              AuthConfidence { bps: 5000 },
+              AuthMode::Haircut,
+          );
+          assert_eq!(twice, once);
+      }
     max_lines: 30
 
   - leaf_id: si_lpi_screen
@@ -243,7 +773,61 @@ leaves:
       - "a detected fabrication contributes a decaying covariate (half-life defined, not permanent, not zero)"
       - "over-rejection is measurable (the verdict exposes its threshold margin)"
     reference_pattern: "normalize move by (net_inflow, depth, phase); threshold -> Fabricated; emit decaying covariate"
-    property_test: "assert Fabricated on impossible-move; assert depth/phase normalization; assert covariate decays"
+    property_test: |
+      #[test]
+      fn impossible_move_is_fabricated() {
+          // tiny inflow, deep market, huge appreciation -> unsupportable
+          let flow = FlowWindow {
+              net_inflow: 1,
+              appreciation_bps: 50_000,
+              age_secs: 0,
+          };
+          match lpi_score(&flow, 1_000_000, MarketPhase::Late) {
+              LpiVerdict::Fabricated {
+                  covariate_bps,
+                  threshold_margin,
+              } => {
+                  assert!(covariate_bps > 0); // non-zero at detection
+                  assert!(threshold_margin > 0); // beyond support
+              }
+              v => panic!("expected Fabricated, got {:?}", v),
+          }
+      }
+      #[test]
+      fn depth_normalization_changes_verdict() {
+          let flow = FlowWindow {
+              net_inflow: 100,
+              appreciation_bps: 5_000,
+              age_secs: 0,
+          };
+          let shallow = lpi_score(&flow, 1, MarketPhase::Mid); // lots of support
+          let deep = lpi_score(&flow, 10_000_000, MarketPhase::Mid); // little support
+          assert!(matches!(shallow, LpiVerdict::Clean { .. }));
+          assert!(matches!(deep, LpiVerdict::Fabricated { .. }));
+      }
+      #[test]
+      fn covariate_decays_with_age() {
+          let young = FlowWindow {
+              net_inflow: 1,
+              appreciation_bps: 50_000,
+              age_secs: 0,
+          };
+          let old = FlowWindow {
+              net_inflow: 1,
+              appreciation_bps: 50_000,
+              age_secs: LPI_COVARIATE_HALF_LIFE_SECS,
+          };
+          let cy = match lpi_score(&young, 1_000_000, MarketPhase::Late) {
+              LpiVerdict::Fabricated { covariate_bps, .. } => covariate_bps,
+              _ => panic!(),
+          };
+          let co = match lpi_score(&old, 1_000_000, MarketPhase::Late) {
+              LpiVerdict::Fabricated { covariate_bps, .. } => covariate_bps,
+              _ => panic!(),
+          };
+          assert_eq!(co, cy / 2); // one half-life
+          assert!(co < cy);
+      }
     max_lines: 40
 
   - leaf_id: si_bounded_evict
@@ -256,7 +840,23 @@ leaves:
       - "eviction order is deterministic (FIFO/defined), never arbitrary"
       - "the structure exposes its current length and capacity for the soak monitor"
     reference_pattern: "ring buffer with fixed N; at capacity, evict-oldest-then-insert; return the evicted item"
-    property_test: "assert never exceeds N; assert oldest evicted; assert deterministic order; assert len/cap exposed"
+    property_test: |
+      #[test]
+      fn never_exceeds_capacity_and_evicts_oldest() {
+          let mut ring: BoundedRing<u32> = BoundedRing::new(3);
+          assert_eq!(ring.capacity(), 3);
+          assert_eq!(admit_with_eviction(&mut ring, 1), None);
+          assert_eq!(admit_with_eviction(&mut ring, 2), None);
+          assert_eq!(admit_with_eviction(&mut ring, 3), None);
+          assert_eq!(ring.len(), 3);
+          // at capacity: evict oldest (1) deterministically
+          assert_eq!(admit_with_eviction(&mut ring, 4), Some(1));
+          assert_eq!(ring.len(), 3);
+          assert!(ring.len() <= ring.capacity());
+          assert_eq!(admit_with_eviction(&mut ring, 5), Some(2));
+          assert_eq!(ring.front(), Some(&3));
+          assert_eq!(ring.back(), Some(&5));
+      }
     max_lines: 30
 
   - leaf_id: si_backpressure_stale
@@ -269,5 +869,18 @@ leaves:
       - "the decision is a pure comparison; no blocking, no unbounded queue"
       - "boundary (age exactly max_age_ns) is defined and consistent"
     reference_pattern: "if now - ts > max_age => RejectStale; the hot path sheds load rather than falling behind"
-    property_test: "assert stale rejected, fresh accepted, boundary defined; assert total/deterministic"
+    property_test: |
+      #[test]
+      fn stale_rejected_fresh_accepted_boundary_defined() {
+          // fresh
+          assert_eq!(admit_or_stale(1000, 1500, 1000), Admission::Accept);
+          // stale (age 2000 > 1000)
+          assert_eq!(admit_or_stale(1000, 3000, 1000), Admission::RejectStale);
+          // boundary: age exactly max_age -> Accept
+          assert_eq!(admit_or_stale(1000, 2000, 1000), Admission::Accept);
+          // just over boundary -> RejectStale
+          assert_eq!(admit_or_stale(1000, 2001, 1000), Admission::RejectStale);
+          // future timestamp saturates to age 0 -> Accept
+          assert_eq!(admit_or_stale(5000, 1000, 1000), Admission::Accept);
+      }
     max_lines: 25

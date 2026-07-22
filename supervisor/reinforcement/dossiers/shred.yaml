@@ -106,8 +106,15 @@ leaves:
       #[test]
       fn prop_fec_complete_once_and_conflicts() {
           let mut t = FecTable::with_capacity(8);
-          let mk = |i| (ShredHeader::test(5, i, /*fec*/0, /*expected*/3), [i as u8; 8]);
-          let (h0, p0) = mk(0); let (h1, p1) = mk(1); let (h2, p2) = mk(2);
+          let mk = |i| {
+              (
+                  ShredHeader::test(5, i, /*fec*/ 0, /*expected*/ 3),
+                  [i as u8; 8],
+              )
+          };
+          let (h0, p0) = mk(0);
+          let (h1, p1) = mk(1);
+          let (h2, p2) = mk(2);
           assert!(matches!(track(&mut t, &h0, &p0), Track::Stored));
           assert!(matches!(track(&mut t, &h0, &p0), Track::Duplicate));
           assert!(matches!(track(&mut t, &h0, &[9u8; 8]), Track::Conflicting));
@@ -135,7 +142,7 @@ leaves:
           let set = CompleteSet::test(&[(2, b"cc", 30), (0, b"aa", 10), (1, b"bb", 5)]);
           let mut out = SegBuf::new();
           let meta = reassemble(&set, &mut out).unwrap();
-          assert_eq!(out.bytes(), b"aabbcc");   // index order, not arrival order
+          assert_eq!(out.bytes(), b"aabbcc"); // index order, not arrival order
           assert_eq!(meta.first_local_arrival_ns, 5); // earliest constituent
       }
     depends_on: ["sh_fec_track"]

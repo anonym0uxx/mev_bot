@@ -5,7 +5,12 @@
 // To change a component's contract, change its dossier and re-materialize — never edit here.
 // The glob import below brings the leaf's public items into scope; integration tests in
 // tests/ are a separate crate, so the implementation must be `pub` and reachable here.
-#![allow(unused_imports)]
+#![allow(
+    unused_imports,
+    clippy::manual_range_contains,
+    clippy::bool_comparison,
+    clippy::nonminimal_bool
+)]
 use pump_quant_core::cpu_numa_tuning::*;
 
 #[test]
