@@ -150,8 +150,9 @@ fn ingest_social_wires_the_lane_into_the_loop() {
     let mut eng = Engine::new(Config::dev_portable(), RunMode::Paper);
     let mut src = MockSocialSource::new().with_batch(vec![RawSocialPayload::new(json, 1)]);
 
-    // Draining the live source applies exactly one corroboration call (one contract).
-    let applied = eng.ingest_social(&mut src, |_| 6_000);
+    // Draining the live source applies exactly one corroboration call (one contract)
+    // and feeds the attention field; quality is resolved from the engine's ledger.
+    let applied = eng.ingest_social(&mut src);
     assert_eq!(applied, 1);
 
     // The social lane is now live in the loop: a tick promotes the corroborated
@@ -169,5 +170,5 @@ fn ingest_social_wires_the_lane_into_the_loop() {
             .into_bytes(),
         1,
     )]);
-    assert_eq!(eng2.ingest_social(&mut src2, |_| 6_000), 1);
+    assert_eq!(eng2.ingest_social(&mut src2), 1);
 }

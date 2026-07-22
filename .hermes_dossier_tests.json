@@ -4,6 +4,8 @@
     "active_market_universe/analyze_candidate_composite": "69fff2a1b0dc2fb9665d7a247749e5c5e900df4ade307d806e8bb982875454ab",
     "active_market_universe/reprioritize_ranks": "9bed47cbe855809651533fbab6454f3bb4cd975a7ad663226fbd8c8de902e0b4",
     "active_market_universe/progressive_filter_band": "d8d052bbf799f753a979711c62346a06500b631d582127cc16a079cd7e0fbebe",
+    "attention/at_fade_cap": "af4336d082d04ad2025f3dab4bf754a175b197b27f77c9a219c5a859dbaea682",
+    "attention/at_bounded": "096e67ac2eafeb7c9796c82c8a100d49ecfe9b8264db08d8ce027f8b3b0c7db0",
     "attention_decay/decay_after_peak_bps_is_bounded_fraction": "592294d28303caa60ab8726a4b1df175702ba75288c570187a500b733fe958f5",
     "attention_decay/first_instants_are_minimum_per_kind": "94155adcc886fa5af43c4d73bd3da24d34e0ee1d03b0699fe0219af8e7956880",
     "attention_decay/window_velocities_are_half_open": "aa38f81237750fb74f85fbcf20b19b780e455818db225b87e7ac3ca81274236a",
@@ -188,5 +190,5 @@
     "voi/voi_rank_order": "b52d49d969508fb0111d29a546f1b0ba3eb0f5209606ab511521df43612019a0",
     "voi/voi_rank_open": "e59fb85e045da11b85d70b24483bb4514977bf2280ed3ddc02d45b0be623743e"
   },
-  "count": 187
+  "count": 189
 }

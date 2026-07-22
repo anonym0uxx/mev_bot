@@ -1,0 +1,96 @@
+component: attention
+constitution_refs: ['22', '29', '71', '99', '102']
+spec: >
+  Independence-lock dossier for the `attention` module of pump-quant-app: the live
+  per-mint social attention-velocity field that runs the full NARRATIVE ALPHA model
+  (virality = attention = money) on the deterministic side. Fed by the social
+  pipeline as narrative Mentions; emits corroboration-tier EarlyConfirmation
+  candidates fused by nv_candidate_score. Deterministic on the measured
+  observed_at_ns time base with no wall-clock (§22); bounded per-mint and per-field
+  (§99); fade-first / corroboration-tier so attention alone never dominates
+  (§29/§71); every window and threshold is a named AttentionParams scale (§102).
+invariants:
+- An empty field emits nothing (a run that never ingests social attention is unaffected).
+- Emitted candidates are always EarlyConfirmation and, when money is unconfirmed, score <= 500.
+- Tracking is bounded: exceeding track_cap evicts the weakest mint; the same stream is deterministic.
+adversarial_checks:
+- Money-unconfirmed attention must never exceed the fade cap regardless of burst size.
+- A distinct-source burst must not be counted as a single source (breadth preserved).
+- Two identical mention streams must emit byte-identical candidate vectors.
+leaves:
+- leaf_id: at_fade_cap
+  responsibility: Accumulate mentions and emit a corroboration-tier, fade-capped EarlyConfirmation candidate.
+  signature: 'pub fn emit_into<M, C>(&mut self, buf: &mut Vec<Candidate>, now_tick: u64, money_of: M, is_confirmed: C)'
+  invariants:
+  - A tracked mint with attention emits exactly one EarlyConfirmation candidate.
+  - With money unconfirmed the fused score is hard-capped at 500 (fade-first).
+  reference_pattern: property_test is the sole correctness authority; authored and verified against the committed implementation.
+  property_test: |
+    #[test]
+    fn at_emit_is_corroboration_tier_and_fade_capped() {
+        let m = |ts: u64, src: u64, w: u64| pump_quant_narrative::attention_state::Mention {
+            ts_ns: ts,
+            source_id: src,
+            community_id: src,
+            weight: w,
+            copycat: false,
+        };
+        let mut f = AttentionField::new(AttentionParams::standard());
+        let mint = [7u8; 32];
+        for i in 0..6u64 {
+            f.observe(mint, m(1_000 + i * 10, i, 500));
+        }
+        let mut buf = Vec::new();
+        f.emit_into(&mut buf, 1, |_| 0, |_| false);
+        buf.clear();
+        for i in 6..12u64 {
+            f.observe(mint, m(2_000 + i * 10, i, 800));
+        }
+        // Money flat + unconfirmed => attention-leads, hard-capped at 500 (fade-first).
+        f.emit_into(&mut buf, 2, |_| 0, |_| false);
+        assert_eq!(buf.len(), 1);
+        assert_eq!(
+            buf[0].lane,
+            pump_quant_watchlist::candidate::Lane::EarlyConfirmation
+        );
+        assert!(buf[0].discovery_score <= 500);
+    }
+
+- leaf_id: at_bounded
+  responsibility: Keep tracking bounded (evict weakest past track_cap) and deterministic over a stream.
+  signature: 'pub fn observe(&mut self, mint: [u8; 32], mention: Mention)'
+  invariants:
+  - Exceeding track_cap evicts the mint with the fewest retained mentions.
+  - The same mention stream always yields the same emitted candidate vector.
+  reference_pattern: property_test is the sole correctness authority; authored and verified against the committed implementation.
+  property_test: |
+    #[test]
+    fn at_bounded_eviction_and_determinism() {
+        let m = |ts: u64, src: u64, w: u64| pump_quant_narrative::attention_state::Mention {
+            ts_ns: ts,
+            source_id: src,
+            community_id: src,
+            weight: w,
+            copycat: false,
+        };
+        let params = AttentionParams {
+            track_cap: 2,
+            ..AttentionParams::standard()
+        };
+        let mut f = AttentionField::new(params);
+        f.observe([1u8; 32], m(1, 1, 10));
+        f.observe([1u8; 32], m(2, 2, 10));
+        f.observe([2u8; 32], m(3, 3, 10));
+        f.observe([3u8; 32], m(4, 4, 10));
+        assert_eq!(f.len(), 2);
+        let build = || {
+            let mut g = AttentionField::new(AttentionParams::standard());
+            for i in 0..10u64 {
+                g.observe([5u8; 32], m(1_000 + i * 5, i % 4, 300 + i * 7));
+            }
+            let mut b = Vec::new();
+            g.emit_into(&mut b, 1, |_| 100, |_| false);
+            b
+        };
+        assert_eq!(build(), build());
+    }

@@ -21,10 +21,13 @@ use crate::lane::{NarrativeLane, NumericLane, SocialLane, WalletLane};
 use crate::reflect::reflect;
 use crate::scalp::scalp;
 
+use crate::attention::{AttentionField, AttentionParams};
+use crate::social_ingest::{ledger_quality, to_mention, SourceQualityPolicy};
 use pump_quant_domain::ids::Mint as DomainMint;
 use pump_quant_evaluator::evaluator_stats::{Lane as EvalLane, ReconTrade};
-use pump_quant_ingest::social_parse::{parse_social_event, SocialEvent};
+use pump_quant_ingest::social_parse::parse_social_event;
 use pump_quant_ingest::social_source::SocialSource;
+use pump_quant_social::ledger::SourceQualityLedger;
 use pump_quant_watchlist::candidate::{Candidate, Features, Lane as WlLane};
 use pump_quant_watchlist::lane_ingest::ingest_union;
 use pump_quant_watchlist::lane_performance::LanePerformance;
@@ -130,6 +133,16 @@ pub struct Engine {
     recon: [ReconAccum; 2],
     journal: DecisionJournal,
 
+    /// Live social attention-velocity field (`virality = attention = money`), fed by
+    /// [`Self::ingest_social`]. Empty until social attention is ingested, so a run
+    /// without social input is byte-identical to one before this layer existed.
+    attention: AttentionField,
+    /// Earned D1–D10 source-quality ledger; resolves each social call's corroboration
+    /// weight (PUBLIC_BURNED baseline until a source earns evidence). Bounded (§99).
+    ledger: SourceQualityLedger,
+    /// Operator policy mapping an earned classification to a corroboration ceiling.
+    quality_policy: SourceQualityPolicy,
+
     /// Reused per-tick discovery scratch: the union of all four lanes' emissions.
     /// Cleared (not freed) each tick so steady-state discovery does not re-allocate
     /// (§99: its capacity is bounded by the number of tracked mints, which the lanes
@@ -163,6 +176,9 @@ impl Engine {
             lane_perf: LanePerformance::new(),
             recon: [ReconAccum::default(); 2],
             journal: DecisionJournal::new(),
+            attention: AttentionField::new(AttentionParams::standard()),
+            ledger: SourceQualityLedger::with_capacity(4_096),
+            quality_policy: SourceQualityPolicy::conservative(),
             scratch: Vec::new(),
             promoted: 0,
             admitted: 0,
@@ -236,25 +252,28 @@ impl Engine {
     /// with no intermediate `SocialEvent`/`AppEvent` vector, and applied directly to
     /// the lane (bypassing the `AppEvent::SocialCall` match) for the tightest path.
     ///
-    /// Each named contract in each captured post becomes one corroboration call at
-    /// the caller-resolved quality — wire `quality` to
-    /// [`crate::social_ingest::ledger_quality`] so trust is earned from the D1–D10
-    /// ledger, never assumed (corroboration-tier only; on-chain confirmation is
-    /// still required to admit capital, §29/§71). Cashtag-only posts (no contract)
-    /// carry no on-chain target and are skipped here; the attention-velocity layer
-    /// consumes them separately. Returns the number of corroboration calls applied.
-    pub fn ingest_social<S, Q>(&mut self, source: &mut S, quality: Q) -> usize
+    /// Each named contract in each captured post becomes both a corroboration call
+    /// on the social lane (at the ledger-resolved quality) and a narrative
+    /// [`Mention`] on the [`AttentionField`], so the post drives the full
+    /// attention-velocity model, not just a rank bump. Quality is resolved from the
+    /// engine's own D1–D10 [`SourceQualityLedger`] — earned, never assumed; a source
+    /// with no reconciled evidence gets the PUBLIC_BURNED baseline (§29.8). Social is
+    /// corroboration-tier: on-chain confirmation is still required to admit capital
+    /// (§29/§71). Cashtag-only posts (no contract) carry no on-chain target and are
+    /// skipped here. Returns the number of corroboration calls applied.
+    pub fn ingest_social<S>(&mut self, source: &mut S) -> usize
     where
         S: SocialSource,
-        Q: Fn(&SocialEvent) -> u32,
     {
         let batch = source.next_batch();
         let mut applied = 0usize;
         for payload in &batch {
             if let Some(ev) = parse_social_event(&payload.json, payload.observed_at_ns) {
-                let q = quality(&ev);
+                let q = ledger_quality(&self.ledger, ev.author_id, &self.quality_policy);
+                let mention = to_mention(&ev);
                 for m in ev.mints() {
                     self.social.observe(DomainMint::from_bytes(*m), q);
+                    self.attention.observe(*m, mention);
                     applied += 1;
                 }
             }
@@ -298,6 +317,26 @@ impl Engine {
         self.social.emit_into(&mut self.scratch, self.now);
         self.wallet
             .emit_into(&mut self.scratch, self.now, self.cfg.wallet_score_scale);
+        // Social attention-velocity candidates (the full `virality = attention =
+        // money` model) join the same union. The field is empty until social
+        // attention is ingested, so this is a zero-cost no-op — and byte-identical —
+        // for any run that never feeds it. Disjoint field borrows: the money proxy
+        // reads `numeric`, confirmation reads `confirmed`, both immutable, while
+        // `attention` and `scratch` are mutable.
+        if !self.attention.is_empty() {
+            let numeric = &self.numeric;
+            let confirmed = &self.confirmed;
+            self.attention.emit_into(
+                &mut self.scratch,
+                self.now,
+                |m| {
+                    numeric
+                        .features_for(DomainMint::from_bytes(*m))
+                        .map_or(0, |f| u64::from(f.buy_pressure_bp))
+                },
+                |m| confirmed.contains_key(m),
+            );
+        }
         let unioned = ingest_union(self.scratch.iter().copied(), &self.weights);
         for cand in unioned.values() {
             self.watchlist.insert(*cand, self.now);
