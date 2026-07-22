@@ -92,10 +92,15 @@ fn wallet_score_scales_with_config_and_ignores_unfollowable() {
 #[test]
 fn narrative_stage_bands_are_config_driven_and_fade_capped() {
     let fp1 = pump_quant_narrative::narrative::FP_ONE;
+    let no_decay = pump_quant_app::lane::AttentionDecayParams {
+        rate_bp: 10_000,
+        step_ticks: 1,
+        floor: 0,
+    };
     let mut l = NarrativeLane::new();
     // virality = new/prior * FP_ONE = 400/10 = 40 * FP_ONE  -> above any sane hi band.
     l.observe(mint(5), 10, 400, 1);
-    let hot = l.emit(1, 2 * fp1, fp1, 100);
+    let hot = l.emit(1, 2 * fp1, fp1, 100, &no_decay);
     assert_eq!(hot.len(), 1);
     // Pre-confirmation (money_confirmed = false) the narrative score is fade-capped.
     assert!(hot[0].discovery_score > 0);
@@ -106,6 +111,6 @@ fn narrative_stage_bands_are_config_driven_and_fade_capped() {
 
     // Raising the band edges above the observed virality demotes the inferred stage,
     // which cannot raise the score — proving the edges actually drive classification.
-    let cold = l.emit(1, 1_000 * fp1, 500 * fp1, 100);
+    let cold = l.emit(1, 1_000 * fp1, 500 * fp1, 100, &no_decay);
     assert!(cold[0].discovery_score <= hot[0].discovery_score);
 }

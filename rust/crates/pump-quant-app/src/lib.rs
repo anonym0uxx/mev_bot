@@ -57,6 +57,7 @@ pub mod screen;
 pub mod shadow;
 pub mod social_earn;
 pub mod social_ingest;
+pub mod structure;
 pub mod token_ingest;
 pub mod toxicity;
 

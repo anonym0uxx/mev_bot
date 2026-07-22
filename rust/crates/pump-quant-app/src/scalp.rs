@@ -154,3 +154,46 @@ pub fn scalp(
         claimable: fill.claimable,
     }
 }
+
+/// §55 capacity-curve report over the mandated size grid, priced by the SAME
+/// fill/cost/impairment models the paper scalp path uses — so the curve is an
+/// honest projection of this config's economics, not a separate optimistic model.
+/// Report-only: nothing in the decision path reads this.
+#[must_use]
+pub fn capacity_report(
+    cfg: &Config,
+    depth_lamports: u64,
+) -> Vec<pump_quant_simulator::capacity::CapacityPoint> {
+    let market = MarketState {
+        // The base notional is overridden per grid size by `capacity_curve`.
+        notional_lamports: 0,
+        move_bps: i32::try_from(cfg.gate_expected_move_bps).unwrap_or(i32::MAX),
+        depth_lamports,
+        impact_k_bps: cfg.sim_impact_k_bps,
+    };
+    let costs = CostModel {
+        entry_fee_bps: cfg.entry_fee_bps,
+        exit_fee_bps: cfg.exit_fee_bps,
+        entry_tip_lamports: cfg.entry_tip_lamports,
+        exit_tip_lamports: cfg.exit_tip_lamports,
+    };
+    let imp = ExitImpairment {
+        first_sell_penalty_bps: cfg.exit_fee_bps,
+        retry_slippage_bps: cfg.gate_protocol_bps,
+        fee_escalation_bps: cfg.entry_fee_bps,
+        retry_tip_lamports: cfg.exit_tip_lamports,
+        unexitable: false,
+    };
+    let landing = pump_quant_simulator::capacity::LandingModel {
+        base_bps: cfg.landing_base_bps,
+        penalty_k_bps: cfg.landing_penalty_k_bps,
+    };
+    pump_quant_simulator::capacity::capacity_curve(
+        &market,
+        &costs,
+        &imp,
+        fill_mode(cfg.fill_mode),
+        &TerminalLossPolicy::WriteToZero,
+        &landing,
+    )
+}

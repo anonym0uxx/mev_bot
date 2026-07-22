@@ -81,6 +81,7 @@ fn main() -> ExitCode {
     println!("promoted          {}", report.promoted);
     println!("admitted          {}", report.admitted);
     println!("rejected          {}", report.rejected);
+    println!("universe_filtered {}", report.universe_filtered);
     println!("net_lamports      {}", report.net_lamports);
     for (lane, net) in report.per_lane_net {
         println!("  lane {lane:?}: net {net}");

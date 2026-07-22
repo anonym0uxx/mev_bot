@@ -18,12 +18,16 @@ use crate::config::Config;
 use crate::event::AppEvent;
 use crate::gate::{decide, Confirmation, GateDecision, GateReject};
 use crate::journal_log::{Decision, DecisionJournal};
-use crate::lane::{NarrativeLane, NumericEmitGate, NumericLane, Regime, SocialLane, WalletLane};
+use crate::lane::{
+    AttentionDecayParams, NarrativeLane, NumericEmitGate, NumericLane, Regime, SocialLane,
+    WalletLane,
+};
 use crate::market_context::MarketContext;
 use crate::position::{Exit, ExitReason, LifecycleParams, ScalpLifecycle};
 use crate::reflect::reflect;
 use crate::screen::{creator_credibility_haircut_bp, FlowScreen, WalletScreen};
 use crate::shadow::{ChallengerStanding, ExitTournament};
+use crate::structure::StructureState;
 use crate::toxicity::{
     vpin_exit_escalates, vpin_size_mult_bp, VpinParams, VpinState, VpinThresholds,
 };
@@ -33,7 +37,11 @@ use crate::event::CreatorActionKind;
 use crate::social_earn::{SocialEarn, SocialEarnParams};
 use crate::social_ingest::{ledger_quality, to_mention, SourceQualityPolicy};
 use pump_quant_domain::ids::Mint as DomainMint;
+use pump_quant_evaluator::baseline_destruction::{
+    baseline_destruction, Competitor, DestructionVerdict,
+};
 use pump_quant_evaluator::evaluator_stats::{Lane as EvalLane, ReconTrade};
+use pump_quant_features::market_structure::TrendStructure;
 use pump_quant_ingest::social_parse::fnv1a_64;
 use pump_quant_ingest::social_parse::parse_social_event;
 use pump_quant_ingest::social_source::SocialSource;
@@ -42,6 +50,10 @@ use pump_quant_market_state::meta::{
     rotation_between, CategoryEvent, CategoryEventKind, MetaRotationReducer, MetaRotationState,
 };
 use pump_quant_narrative::narrative::nv_meta_emergence;
+use pump_quant_signals::active_market_universe::{
+    passes_broad_screen, MarketObservation, ScreenCriteria,
+};
+use pump_quant_simulator::capacity::CapacityPoint;
 use pump_quant_social::ledger::SourceQualityLedger;
 use pump_quant_strategy::economic_gate::{
     effective_fixed_lamports, round_trip_cost_bps, ImpactCurve,
@@ -167,6 +179,9 @@ pub struct Report {
     pub final_weights: [(WlLane, u32); WlLane::COUNT],
     /// Canonical digest of the decision journal (determinism fingerprint).
     pub journal_digest: u64,
+    /// Mature-but-inactive candidates removed by the §21.5 universe screen at
+    /// promotion (dead markets must not consume promotion slots or gate work).
+    pub universe_filtered: u64,
 }
 
 /// The running engine.
@@ -296,6 +311,12 @@ pub struct Engine {
     f_recommended: Option<u32>,
     /// Regime summary flag consumed by sizing (refreshed at reflection cadence).
     regime_rug_elevated: bool,
+    /// §21.6 per-mint trade-count bars + swing structure + §21.5 activity window
+    /// (bounded; fed per decoded trade; read at promotion and gate time).
+    structure: StructureState,
+    /// Count of mature-but-inactive candidates the §21.5 universe screen removed
+    /// at promotion (dead markets must not consume promotion slots or gate work).
+    universe_filtered: u64,
 
     /// Reused per-tick discovery scratch: the union of all four lanes' emissions.
     /// Cleared (not freed) each tick so steady-state discovery does not re-allocate
@@ -364,6 +385,8 @@ impl Engine {
         let mut journal = DecisionJournal::new();
         journal.seed(fnv1a_64(format!("{cfg:?}").as_bytes()));
         let tournament = ExitTournament::new(lifecycle_params);
+        // Bar clock interval from config, read BEFORE `cfg` moves into the struct.
+        let structure = StructureState::new(cfg.bar_trades_per_bar);
         Self {
             cfg,
             mode,
@@ -406,6 +429,8 @@ impl Engine {
             retired: [false; 4],
             f_recommended: None,
             regime_rug_elevated: false,
+            structure,
+            universe_filtered: 0,
             scratch: Vec::new(),
             promoted: 0,
             admitted: 0,
@@ -520,6 +545,19 @@ impl Engine {
                     signed_base >= 0,
                     quote_lamports,
                 );
+                // §21.6 trade-count bars + §21.5 activity window: O(1) fold per
+                // decoded trade (open-bar update + fixed-ring write).
+                self.structure.record(
+                    *mint.as_bytes(),
+                    &crate::structure::TradeObs {
+                        now: self.now,
+                        price_fp,
+                        base_qty: signed_base.unsigned_abs(),
+                        quote_lamports,
+                        buyer_entity,
+                        is_buy: signed_base >= 0,
+                    },
+                );
                 self.wallet_screen.record(
                     buyer_entity,
                     mint.as_bytes(),
@@ -566,7 +604,16 @@ impl Engine {
                     } else if self.positions.has(mint.as_bytes()) {
                         // §33 probe→confirm scale-in (one-shot; scale_in refuses after
                         // any de-risking): in profit + authentic flow ⇒ full target.
-                        if price_fp > 0 {
+                        // §21.6 reduce-only structure block: never ADD risk while the
+                        // bar-structure trend contradicts the long (Downtrend). The
+                        // probe keeps managing itself — structure blocks additions,
+                        // never authorizes anything.
+                        if price_fp > 0
+                            && self
+                                .structure
+                                .trend(mint.as_bytes(), self.cfg.structure_min_bars)
+                                != TrendStructure::Downtrend
+                        {
                             let (auth, _) = self.flow_screen.authenticity(mint.as_bytes());
                             if auth >= 8_000 {
                                 if let Some((_, _, _, add, add_cost)) =
@@ -914,12 +961,20 @@ impl Engine {
         };
         self.numeric
             .emit_into(&mut self.scratch, self.now, &numeric_gate);
+        // §29.6 attention decay: narrative evidence ages continuously toward the
+        // TTL cliff — a stale mention must not outrank fresh flow.
+        let decay = AttentionDecayParams {
+            rate_bp: self.cfg.narrative_decay_bp,
+            step_ticks: self.cfg.narrative_decay_step_ticks,
+            floor: self.cfg.narrative_decay_floor,
+        };
         self.narrative.emit_into(
             &mut self.scratch,
             self.now,
             self.cfg.narrative_stage_hi_fp,
             self.cfg.narrative_stage_lo_fp,
             self.cfg.lane_evidence_ttl_ticks,
+            &decay,
         );
         self.social.emit_into(
             &mut self.scratch,
@@ -999,6 +1054,17 @@ impl Engine {
         // implicit in the arbitration record, never silently dropped.
         let mut pending: Vec<PendingEntry> = Vec::new();
         for cand in promoted {
+            // §21.5 active-market-universe screen, applied at the cheapest
+            // possible stage: a MATURE mint whose recent tape shows no genuine
+            // activity must not consume a promotion slot or any gate work.
+            // Fresh launches (below the age exemption) and mints with no
+            // numeric age evidence pass through — the gate still demands
+            // on-chain confirmation, so this can only remove dead weight,
+            // never authorize anything.
+            if !self.universe_promotable(&cand) {
+                self.universe_filtered += 1;
+                continue;
+            }
             self.promoted += 1;
             let rank = self.watchlist.rank_of(&cand, self.now);
             self.journal.record(Decision::Promoted {
@@ -1090,6 +1156,59 @@ impl Engine {
                 numeric.latest_price_fp(DomainMint::from_bytes(*m))
             });
         }
+    }
+
+    /// §21.5 active-market-universe promotion screen. Returns whether the
+    /// candidate may proceed to promotion. Exemptions (return `true`): mints
+    /// with no numeric evidence at all (age unknown — the screen never judges
+    /// what it cannot see, §6.4 UNKNOWN discipline) and launches younger than
+    /// `universe_age_exempt_slots` (a fresh creation legitimately has no
+    /// history; §23 earliness is a design asset). A MATURE mint must show
+    /// recent genuine activity: enough trades from enough distinct entities,
+    /// a sane trades-per-entity ratio (wash guard, §28), and a liquidity
+    /// floor — evaluated through the signals crate's broad screen, the same
+    /// leaf the server-side selector uses.
+    fn universe_promotable(&self, cand: &Candidate) -> bool {
+        let mint_bytes = cand.mint.bytes();
+        let Some(feats) = self
+            .numeric
+            .features_for(DomainMint::from_bytes(mint_bytes))
+        else {
+            return true; // no numeric evidence — nothing to screen on
+        };
+        if feats.age_slots < self.cfg.universe_age_exempt_slots {
+            return true; // fresh launch: exempt by design
+        }
+        let w = self
+            .structure
+            .activity(&mint_bytes, self.now, self.cfg.universe_window_ticks);
+        // Crude wash guard: hyperactive single-entity tape is not organic (§28).
+        if w.entities > 0 && w.trades / w.entities.max(1) > self.cfg.universe_wash_ratio_max {
+            return false;
+        }
+        let obs = MarketObservation {
+            token_id: u64::from_le_bytes(mint_bytes[..8].try_into().unwrap_or([0; 8])),
+            liquidity_lamports: u128::from(feats.liquidity_lamports),
+            volume_lamports_window: u128::from(w.volume_lamports),
+            swap_count_window: w.trades,
+            unique_traders_window: w.entities,
+            // Slot time ≈ 400ms; the screen's age bounds are no-bind here (the
+            // app's own exemption handled age), so the exact scale is inert.
+            age_ms: u64::from(feats.age_slots).saturating_mul(400),
+            spread_bps: 0,                   // no live source — never binds (max = MAX)
+            top_holder_concentration_bps: 0, // no live source — never binds
+        };
+        let criteria = ScreenCriteria {
+            min_liquidity_lamports: u128::from(self.cfg.universe_min_liquidity_lamports),
+            min_volume_lamports: 0,
+            min_swap_count: self.cfg.universe_min_trades,
+            min_unique_traders: self.cfg.universe_min_entities,
+            max_spread_bps: u32::MAX,
+            max_concentration_bps: u32::MAX,
+            min_age_ms: 0,
+            max_age_ms: u64::MAX,
+        };
+        passes_broad_screen(&obs, &criteria)
     }
 
     /// Evaluate one promoted candidate through every gate and sizing law, WITHOUT
@@ -1225,6 +1344,19 @@ impl Engine {
                 } else {
                     10_000
                 };
+                // §21.6 bar-structure factor — REDUCE-ONLY (§56.2 envelope): a
+                // Downtrend swing structure contradicting the long entry shrinks
+                // size; confirmed or undefined structure is identity. Structure
+                // never authorizes and never boosts above the §33 fraction.
+                let struct_mult: u32 = if self
+                    .structure
+                    .trend(&mint_bytes, self.cfg.structure_min_bars)
+                    == TrendStructure::Downtrend
+                {
+                    self.cfg.structure_downtrend_haircut_bp
+                } else {
+                    10_000
+                };
                 let haircut_bp = (u128::from(self.size_haircut_bps(&mint_bytes))
                     * u128::from(vpin_mult)
                     / 10_000
@@ -1235,6 +1367,8 @@ impl Engine {
                     * u128::from(cred_mult)
                     / 10_000
                     * u128::from(rug_mult)
+                    / 10_000
+                    * u128::from(struct_mult)
                     / 10_000) as u32;
                 let raw = u128::from(deployable) * u128::from(f_eff) / 10_000;
                 let sized = (raw * u128::from(haircut_bp) / 10_000)
@@ -1629,6 +1763,7 @@ impl Engine {
             per_lane_net,
             final_weights,
             journal_digest: self.journal.digest(),
+            universe_filtered: self.universe_filtered,
         }
     }
 
@@ -1810,6 +1945,33 @@ impl Engine {
     #[must_use]
     pub fn analytics_report(&self) -> crate::analytics::AnalyticsReport {
         self.analytics.report()
+    }
+
+    /// §55 capacity-curve report over the mandated size grid (0.01–1.00 SOL) at
+    /// the given venue depth, priced by the SAME fill/cost/impairment models the
+    /// paper scalp path uses. Report-only — nothing in the decision path reads
+    /// this; scaling never assumes linear PnL.
+    #[must_use]
+    pub fn capacity_report(&self, depth_lamports: u64) -> Vec<CapacityPoint> {
+        crate::scalp::capacity_report(&self.cfg, depth_lamports)
+    }
+
+    /// §52 baseline-destruction verdict: the live policy's all-time realized net
+    /// versus the buy-every-confirm hold baseline, through the evaluator's
+    /// family-wise-margin verdict. `None` until `baseline_min_trades` realized
+    /// trades exist (small-n verdicts are noise, §46). Report-only: the verdict
+    /// informs the operator's promotion review (§56.1), never a trade.
+    #[must_use]
+    pub fn baseline_verdict(&self) -> Option<DestructionVerdict> {
+        let a = self.analytics.report();
+        if a.trades < self.cfg.baseline_min_trades || a.baseline_trades == 0 {
+            return None;
+        }
+        Some(baseline_destruction(
+            a.live_net_lamports,
+            &[Competitor::baseline(a.baseline_net_lamports)],
+            i128::from(self.cfg.baseline_margin_lamports),
+        ))
     }
 
     /// §48 exit-policy tournament standings (report-only; adoption is an operator

@@ -265,6 +265,57 @@ pub struct Config {
     pub reflect_weight_floor_bp: u32,
     /// Ceiling a lane weight may never exceed (bps).
     pub reflect_weight_ceiling_bp: u32,
+
+    // ---- §21.6 bars + market structure (reduce-only consumption) ----
+    /// Trades per bar on the per-mint trade-count clock (the volume-clock family:
+    /// Easley/López de Prado/O'Hara 2012 — sample by activity, not seconds).
+    pub bar_trades_per_bar: u64,
+    /// Minimum closed bars before a swing-structure trend is defined at all
+    /// (below this the factor is identity — structure never authorizes, §21.6).
+    pub structure_min_bars: usize,
+    /// Reduce-only size haircut (bps of 10_000) applied when swing structure
+    /// CONTRADICTS the long entry (Downtrend). Confirmed/undefined structure is
+    /// identity — no boost above the §33 envelope (§56.2).
+    pub structure_downtrend_haircut_bp: u32,
+
+    // ---- §21.5 active-market-universe promotion screen ----
+    /// Token age (slots) below which a launch is exempt from the activity screen
+    /// (a fresh creation legitimately has no history; the gate still demands
+    /// numeric confirmation — earliness never bypasses corroboration).
+    pub universe_age_exempt_slots: u32,
+    /// Recent-activity window, logical ticks, for the promotion screen.
+    pub universe_window_ticks: u64,
+    /// Minimum trades within the window for a mature mint to stay promotable.
+    pub universe_min_trades: u32,
+    /// Minimum distinct buyer entities within the window (breadth, wash-resistant).
+    pub universe_min_entities: u32,
+    /// Maximum trades-per-entity ratio within the window (a crude wash guard:
+    /// hyperactive single-entity tape is not organic activity, §28).
+    pub universe_wash_ratio_max: u32,
+    /// Minimum observed liquidity (lamports) for a mature mint to stay promotable.
+    pub universe_min_liquidity_lamports: u64,
+
+    // ---- §29.6 attention decay (narrative lane) ----
+    /// Multiplicative per-step evidence decay, bps of 10_000 (< 10_000). At the
+    /// research-grounded 9_330 the half-life is ~10 steps (memecoin attention
+    /// decays in minutes, not hours).
+    pub narrative_decay_bp: u32,
+    /// Logical ticks per decay step (the step clock; TTL remains the hard cutoff).
+    pub narrative_decay_step_ticks: u64,
+    /// Absolute score floor below which decayed narrative evidence emits nothing.
+    pub narrative_decay_floor: u64,
+
+    // ---- §55 capacity curve (report-only) + §52 baseline destruction ----
+    /// Landing-probability model base (bps) for the capacity-curve report.
+    pub landing_base_bps: u32,
+    /// Landing-probability penalty slope (bps) per unit size/depth for the report.
+    pub landing_penalty_k_bps: u32,
+    /// Required §52 margin (lamports) by which live must beat every baseline
+    /// before the destruction verdict reads `defeats`.
+    pub baseline_margin_lamports: i64,
+    /// Minimum realized trades before a §52 destruction verdict is computed at
+    /// all (small-n verdicts are noise, §46).
+    pub baseline_min_trades: u32,
 }
 
 impl Config {
@@ -364,6 +415,26 @@ impl Config {
             reflect_weight_step_bp: 250,
             reflect_weight_floor_bp: 2_000,
             reflect_weight_ceiling_bp: 40_000,
+
+            bar_trades_per_bar: 8, // trade-count clock (volume-clock family)
+            structure_min_bars: 3, // left+right+1 at neighborhood 1
+            structure_downtrend_haircut_bp: 7_000, // −30% size against structure
+
+            universe_age_exempt_slots: 64, // fresh launches are exempt (§21.5/§23)
+            universe_window_ticks: 24,     // recent-activity window
+            universe_min_trades: 3,
+            universe_min_entities: 2,
+            universe_wash_ratio_max: 6, // > 6 trades/entity ⇒ wash-suspect tape
+            universe_min_liquidity_lamports: 10_000_000, // 0.01 SOL floor
+
+            narrative_decay_bp: 9_330, // half-life ≈ 10 steps
+            narrative_decay_step_ticks: 5,
+            narrative_decay_floor: 4,
+
+            landing_base_bps: 9_500, // §55 report landing model
+            landing_penalty_k_bps: 2_000,
+            baseline_margin_lamports: 100_000, // §52: beat baselines by ≥0.0001 SOL
+            baseline_min_trades: 32,           // no small-n verdicts (§46)
         }
     }
 
@@ -460,6 +531,26 @@ impl Config {
             "reflect_weight_step_bp" => self.reflect_weight_step_bp = bp(value)?,
             "reflect_weight_floor_bp" => self.reflect_weight_floor_bp = bp(value)?,
             "reflect_weight_ceiling_bp" => self.reflect_weight_ceiling_bp = bp(value)?,
+            "bar_trades_per_bar" => self.bar_trades_per_bar = nonneg(value)?.max(1),
+            "structure_min_bars" => self.structure_min_bars = sz(value)?.max(3),
+            "structure_downtrend_haircut_bp" => self.structure_downtrend_haircut_bp = bp(value)?,
+            "universe_age_exempt_slots" => self.universe_age_exempt_slots = bp(value)?,
+            "universe_window_ticks" => self.universe_window_ticks = nonneg(value)?.max(1),
+            "universe_min_trades" => self.universe_min_trades = bp(value)?,
+            "universe_min_entities" => self.universe_min_entities = bp(value)?,
+            "universe_wash_ratio_max" => self.universe_wash_ratio_max = bp(value)?.max(1),
+            "universe_min_liquidity_lamports" => {
+                self.universe_min_liquidity_lamports = nonneg(value)?;
+            }
+            "narrative_decay_bp" => self.narrative_decay_bp = bp(value)?,
+            "narrative_decay_step_ticks" => {
+                self.narrative_decay_step_ticks = nonneg(value)?.max(1);
+            }
+            "narrative_decay_floor" => self.narrative_decay_floor = nonneg(value)?,
+            "landing_base_bps" => self.landing_base_bps = bp(value)?,
+            "landing_penalty_k_bps" => self.landing_penalty_k_bps = bp(value)?,
+            "baseline_margin_lamports" => self.baseline_margin_lamports = value,
+            "baseline_min_trades" => self.baseline_min_trades = bp(value)?,
             other => return Err(ConfigError::UnknownKey(other.to_string())),
         }
         Ok(())
@@ -518,6 +609,20 @@ impl Config {
             return Err(ConfigError::Inconsistent(
                 "meta_saturation_haircut_bp exceeds 100%",
             ));
+        }
+        // Structure is reduce-only (§21.6/§56.2): the haircut lives in [0,100%].
+        if self.structure_downtrend_haircut_bp > 10_000 {
+            return Err(ConfigError::Inconsistent(
+                "structure_downtrend_haircut_bp exceeds 100%",
+            ));
+        }
+        // Decay is multiplicative shrinkage: > 100% would GROW stale evidence.
+        if self.narrative_decay_bp > 10_000 {
+            return Err(ConfigError::Inconsistent("narrative_decay_bp exceeds 100%"));
+        }
+        // A landing probability is a probability.
+        if self.landing_base_bps > 10_000 {
+            return Err(ConfigError::Inconsistent("landing_base_bps exceeds 100%"));
         }
         // The creator-fade trigger is a fraction of peak sold, so it lives in [0,100%].
         if self.creator_fade_sold_bps > 10_000 {

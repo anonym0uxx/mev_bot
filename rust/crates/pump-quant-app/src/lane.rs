@@ -386,7 +386,11 @@ impl NarrativeLane {
     /// with the lifecycle stage inferred from the virality coefficient against the
     /// operator-supplied band edges (`stage_hi_fp` ≥ `stage_lo_fp`, both in the
     /// narrative crate's fixed-point unit) — no band edge is baked in. Evidence
-    /// older than `ttl_ticks` emits nothing (staleness law, §29.6/§34.3).
+    /// older than `ttl_ticks` emits nothing (staleness law, §29.6/§34.3), and
+    /// evidence ages CONTINUOUSLY before that cliff: every `decay.step_ticks` of
+    /// age multiplies the score by `decay.rate_bp` (§29.6 decay-after-peak —
+    /// memecoin attention decays in minutes; a stale mention must not rank like
+    /// a fresh one). Decayed scores below `decay.floor` emit nothing at all.
     #[must_use]
     pub fn emit(
         &self,
@@ -394,9 +398,10 @@ impl NarrativeLane {
         stage_hi_fp: u64,
         stage_lo_fp: u64,
         ttl_ticks: u64,
+        decay: &AttentionDecayParams,
     ) -> Vec<Candidate> {
         let mut out = Vec::with_capacity(self.obs.len());
-        self.emit_into(&mut out, now, stage_hi_fp, stage_lo_fp, ttl_ticks);
+        self.emit_into(&mut out, now, stage_hi_fp, stage_lo_fp, ttl_ticks, decay);
         out
     }
 
@@ -408,10 +413,12 @@ impl NarrativeLane {
         stage_hi_fp: u64,
         stage_lo_fp: u64,
         ttl_ticks: u64,
+        decay: &AttentionDecayParams,
     ) {
         buf.reserve(self.obs.len());
         for (k, o) in &self.obs {
-            if now.saturating_sub(o.last_tick) > ttl_ticks {
+            let age = now.saturating_sub(o.last_tick);
+            if age > ttl_ticks {
                 continue;
             }
             let virality = nv_virality_coeff(o.prior_active, o.new_mentions).unwrap_or(0);
@@ -432,6 +439,10 @@ impl NarrativeLane {
                 // fade-first: pre-confirmation the narrative score is capped.
                 false,
             );
+            let score = decay.apply(score, age);
+            if score < decay.floor {
+                continue;
+            }
             buf.push(Candidate::new(
                 WlMint::new(*k),
                 WlLane::EarlyConfirmation,
@@ -440,6 +451,38 @@ impl NarrativeLane {
                 Features::default(),
             ));
         }
+    }
+}
+
+/// §29.6 attention-decay law applied to narrative evidence at emission time:
+/// multiplicative shrinkage per age step, with an absolute floor below which the
+/// evidence is treated as gone. All parameters are operator config (§102); the
+/// TTL cliff (§34.3) remains the hard cutoff behind this continuous ramp.
+#[derive(Clone, Copy, Debug)]
+pub struct AttentionDecayParams {
+    /// Per-step multiplicative survival rate, bps of 10_000 (≤ 10_000).
+    pub rate_bp: u32,
+    /// Logical ticks per decay step (clamped ≥ 1 by config).
+    pub step_ticks: u64,
+    /// Absolute decayed-score floor: below this the mint emits nothing.
+    pub floor: u64,
+}
+
+impl AttentionDecayParams {
+    /// Bound on decay iterations: after this many steps at any realistic rate
+    /// the score is far below any meaningful floor (0.933^32 ≈ 0.11 of peak,
+    /// compounding on already-small integer scores).
+    const MAX_STEPS: u64 = 32;
+
+    /// `score × rate^(age/step)`, integer, saturating, bounded iterations.
+    #[must_use]
+    pub fn apply(&self, score: u64, age_ticks: u64) -> u64 {
+        let steps = (age_ticks / self.step_ticks.max(1)).min(Self::MAX_STEPS);
+        let mut s = u128::from(score);
+        for _ in 0..steps {
+            s = s * u128::from(self.rate_bp) / 10_000;
+        }
+        s as u64
     }
 }
 
