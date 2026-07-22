@@ -57,6 +57,11 @@ pub struct AttentionParams {
     pub divergence_threshold: i64,
     /// Pre-legibility age penalty per elapsed window (fixed-point over `FP_ONE`).
     pub age_step_fp: u64,
+    /// Attention units each distinct GENUINE live-chat chatter adds to the
+    /// weighted level while the live window is fresh (§29.6 stream structure).
+    pub live_chatter_weight: u64,
+    /// Attention units a fresh broadcaster call adds (see `standard()` rationale).
+    pub live_broadcaster_weight: u64,
 }
 
 impl AttentionParams {
@@ -66,7 +71,13 @@ impl AttentionParams {
     /// freshness horizon matches §29.6 staleness; the formation floor requires a
     /// small but real amount of weighted attention before "emergence"; a zero
     /// deadband treats any strictly-positive velocity as rising; and a `FP_ONE/16`
-    /// age step fully legibilizes a narrative over ~16 windows.
+    /// age step fully legibilizes a narrative over ~16 windows. The live-chat
+    /// weights (§29.6 stream/comment structure): each distinct genuine chatter
+    /// adds one attention unit (the same floor a single mention carries), and a
+    /// broadcaster call adds a quarter of the formation floor — enough to pull a
+    /// watched stream's coin toward Formation faster, NEVER enough to reach
+    /// Virality without organic level, and always still behind the §29
+    /// fade-first cap until money confirms.
     #[must_use]
     pub const fn standard() -> Self {
         Self {
@@ -80,6 +91,8 @@ impl AttentionParams {
             formation_level: 100,
             divergence_threshold: 0,
             age_step_fp: FP_ONE / 16,
+            live_chatter_weight: 1,
+            live_broadcaster_weight: 25,
         }
     }
 }
@@ -88,6 +101,34 @@ impl Default for AttentionParams {
     fn default() -> Self {
         Self::standard()
     }
+}
+
+/// Distinct live-chat chatters tracked per mint before the count saturates
+/// (§99 bounded state). 16 distinct genuine chatters inside one live window is
+/// already maximal breadth evidence at Twitch-chat scale; past it the count is
+/// a lower bound, exactly like the creator linked-cluster cap.
+const LIVE_CHATTER_CAP: usize = 16;
+
+/// Provenance of one mention, derived at the ingest seam from the normalized
+/// event — a PARALLEL channel that reaches into the field's internal state
+/// without touching the shared [`Mention`] type (whose shape is locked by
+/// dossier tests in two crates). §29.6 names stream/comment events as
+/// first-class attention structure; this is that structure, carried honestly.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MentionProvenance {
+    /// The mention originated in a REAL-TIME live-stream chat (Twitch IRC): the
+    /// capture channel only delivers messages while the stream's chat is live,
+    /// so this flag is structural, not inferred.
+    pub realtime_chat: bool,
+    /// The author IS the channel (broadcaster speaking in their own chat —
+    /// `author_id == community_id` on Twitch): a broadcaster call, the §25
+    /// PUMP_LIVE_STREAM archetype's defining trigger.
+    pub broadcaster: bool,
+    /// Distinct-originator identity for live-chat breadth (the author id).
+    pub author_id: u64,
+    /// Whether the event is an echo/coordinated repeat — echoes raise reach,
+    /// never breadth (fade-first, §29).
+    pub echo_or_coordinated: bool,
 }
 
 /// Per-mint accumulated attention state.
@@ -105,6 +146,13 @@ struct MintAttn {
     prev_money: u64,
     /// Whether a money level has been recorded yet (first emit seeds `prev_money`).
     seen_money: bool,
+    /// Distinct GENUINE (non-echo, non-coordinated) live-chat chatter ids that
+    /// have named this mint — Twitch-origin breadth (bounded, saturating).
+    live_chatters: Vec<u64>,
+    /// Latest instant (ns) a broadcaster call named this mint (0 = never).
+    broadcaster_seen_ns: u64,
+    /// Latest instant (ns) any live-chat mention named this mint (0 = never).
+    live_chat_latest_ns: u64,
 }
 
 /// The bounded, per-mint social attention field. Fed by [`Self::observe`] from the
@@ -169,6 +217,23 @@ impl AttentionField {
     /// retained mentions (the weakest attention), and each mint keeps at most
     /// `mention_cap` most-recent mentions.
     pub fn observe(&mut self, mint: [u8; 32], mention: Mention) {
+        // Neutral provenance: the no-live-chat path through `observe_tagged` is
+        // byte-identical to the historical `observe` (the zero-hot-path-change
+        // guarantee the golden digest pins).
+        self.observe_tagged(mint, mention, &MentionProvenance::default());
+    }
+
+    /// Record one mention WITH its provenance (the deep live-chat channel).
+    ///
+    /// With a default (neutral) provenance this is exactly the historical
+    /// [`Self::observe`]. With `realtime_chat` set, the mention additionally
+    /// maintains the mint's live-chat internal state: distinct genuine chatter
+    /// breadth (bounded at [`LIVE_CHATTER_CAP`]), broadcaster-call recency, and
+    /// the live-window instant — which [`Self::emit_into`] converts into
+    /// attention level through the operator-visible weights. Echo/coordinated
+    /// mentions never add breadth (fade-first, §29); everything stays
+    /// corroboration-tier — the gate still demands on-chain confirmation.
+    pub fn observe_tagged(&mut self, mint: [u8; 32], mention: Mention, prov: &MentionProvenance) {
         if !self.obs.contains_key(&mint) && self.obs.len() >= self.params.track_cap {
             if let Some((&weakest, _)) = self.obs.iter().min_by_key(|(_, a)| a.mentions.len()) {
                 self.obs.remove(&weakest);
@@ -185,6 +250,18 @@ impl AttentionField {
             a.mentions.remove(0); // drop oldest (ring); cap is small
         }
         a.mentions.push(mention);
+        if prov.realtime_chat {
+            a.live_chat_latest_ns = a.live_chat_latest_ns.max(mention.ts_ns);
+            if prov.broadcaster {
+                a.broadcaster_seen_ns = a.broadcaster_seen_ns.max(mention.ts_ns);
+            }
+            if !prov.echo_or_coordinated
+                && a.live_chatters.len() < LIVE_CHATTER_CAP
+                && !a.live_chatters.contains(&prov.author_id)
+            {
+                a.live_chatters.push(prov.author_id);
+            }
+        }
     }
 
     /// Emit one corroboration-tier `EarlyConfirmation` candidate per tracked mint
@@ -212,11 +289,34 @@ impl AttentionField {
             let now_ns = a.latest_ns;
             // Current weighted attention level: sum of mention weights inside the
             // 1-minute window (bounded by mention_cap).
-            let level: u64 = a
+            let base_level: u64 = a
                 .mentions
                 .iter()
                 .filter(|m| now_ns.saturating_sub(m.ts_ns) < params.window_1m_ns)
                 .fold(0u64, |acc, m| acc.saturating_add(m.weight));
+            // §29.6 live-chat structure: while the live window is fresh, distinct
+            // genuine chatter breadth and a broadcaster call add attention level
+            // through the SAME model everything else uses (virality, stage,
+            // divergence, fade cap all still bind downstream). When the mint has
+            // no live-chat state, every term is zero and `level == base_level`
+            // exactly — the no-Twitch path is byte-identical (golden-pinned).
+            let live_fresh = a.live_chat_latest_ns > 0
+                && now_ns.saturating_sub(a.live_chat_latest_ns) < params.window_5m_ns;
+            let live_bonus: u64 = if live_fresh {
+                let breadth =
+                    (a.live_chatters.len() as u64).saturating_mul(params.live_chatter_weight);
+                let bcast_fresh = a.broadcaster_seen_ns > 0
+                    && now_ns.saturating_sub(a.broadcaster_seen_ns) < params.window_5m_ns;
+                let bcast = if bcast_fresh {
+                    params.live_broadcaster_weight
+                } else {
+                    0
+                };
+                breadth.saturating_add(bcast)
+            } else {
+                0
+            };
+            let level = base_level.saturating_add(live_bonus);
 
             // Append to the bounded level series (oldest→newest).
             if a.levels.len() >= params.series_cap {
@@ -411,5 +511,172 @@ mod tests {
         let v2 = f.velocity_of(&mint);
         assert_eq!(v1, v2, "repeated reads are stable (non-mutating)");
         assert!(v1.is_some(), "a tracked mint has a defined velocity");
+    }
+}
+
+#[cfg(test)]
+mod twitch_tests {
+    use super::*;
+
+    fn mention(ts: u64, src: u64, w: u64) -> Mention {
+        Mention {
+            ts_ns: ts,
+            source_id: src,
+            community_id: 7,
+            weight: w,
+            copycat: false,
+        }
+    }
+
+    fn emit_scores(f: &mut AttentionField) -> Vec<u64> {
+        let mut buf = Vec::new();
+        f.emit_into(&mut buf, 1, |_| 0, |_| false);
+        buf.iter().map(|c| c.discovery_score).collect()
+    }
+
+    /// The zero-hot-path-change guarantee: neutral provenance through
+    /// `observe_tagged` is byte-identical to the historical `observe`.
+    #[test]
+    fn neutral_provenance_is_byte_identical_to_observe() {
+        let mut f1 = AttentionField::new(AttentionParams::standard());
+        let mut f2 = AttentionField::new(AttentionParams::standard());
+        let m = [9u8; 32];
+        for i in 0..5u64 {
+            f1.observe(m, mention(1_000_000_000 + i, i, 3));
+            f2.observe_tagged(
+                m,
+                mention(1_000_000_000 + i, i, 3),
+                &MentionProvenance::default(),
+            );
+        }
+        assert_eq!(emit_scores(&mut f1), emit_scores(&mut f2));
+    }
+
+    /// A broadcaster call landing in live chat is an attention SPIKE the model
+    /// reads as a virality jump: same tape, same model, higher rank than the
+    /// identical mentions without the live structure. (Emitted with money
+    /// confirmed so the fade cap — tested separately — does not mask the
+    /// comparison.)
+    #[test]
+    fn live_chat_structure_raises_attention() {
+        let m = [8u8; 32];
+        let mut plain = AttentionField::new(AttentionParams::standard());
+        let mut live = AttentionField::new(AttentionParams::standard());
+        // Round 1: identical plain chatter in both fields; seed the level series.
+        for i in 0..6u64 {
+            let men = mention(1_000_000_000 + i, 100 + i, 3);
+            plain.observe(m, men);
+            live.observe(m, men);
+        }
+        let mut buf = Vec::new();
+        plain.emit_into(&mut buf, 1, |_| 0, |_| true);
+        buf.clear();
+        live.emit_into(&mut buf, 1, |_| 0, |_| true);
+        // Round 2: one more message each — but in the live field the broadcaster
+        // says it in their own chat (realtime + broadcaster provenance).
+        let men2 = mention(1_000_000_100, 500, 3);
+        plain.observe(m, men2);
+        live.observe_tagged(
+            m,
+            men2,
+            &MentionProvenance {
+                realtime_chat: true,
+                broadcaster: true,
+                author_id: 500,
+                echo_or_coordinated: false,
+            },
+        );
+        let mut p = Vec::new();
+        plain.emit_into(&mut p, 2, |_| 0, |_| true);
+        let mut l = Vec::new();
+        live.emit_into(&mut l, 2, |_| 0, |_| true);
+        assert!(!p.is_empty() && !l.is_empty());
+        assert!(
+            l[0].discovery_score > p[0].discovery_score,
+            "broadcaster live-chat spike must outrank plain mentions ({} vs {})",
+            l[0].discovery_score,
+            p[0].discovery_score
+        );
+    }
+
+    /// Echo / coordinated repeats never add live-chat breadth (fade-first §29),
+    /// and the distinct-chatter set is bounded (§99).
+    #[test]
+    fn echoes_add_no_breadth_and_chatters_are_bounded() {
+        let m = [7u8; 32];
+        let mut f = AttentionField::new(AttentionParams::standard());
+        // A coordinated flood: many "chatters", all flagged echo/coordinated.
+        for i in 0..40u64 {
+            f.observe_tagged(
+                m,
+                mention(1_000_000_000 + i, 200 + i, 1),
+                &MentionProvenance {
+                    realtime_chat: true,
+                    broadcaster: false,
+                    author_id: 200 + i,
+                    echo_or_coordinated: true,
+                },
+            );
+        }
+        let flood = emit_scores(&mut f);
+        // Same mentions, genuine: breadth counts, but bounded at the cap.
+        let mut g = AttentionField::new(AttentionParams::standard());
+        for i in 0..40u64 {
+            g.observe_tagged(
+                m,
+                mention(1_000_000_000 + i, 200 + i, 1),
+                &MentionProvenance {
+                    realtime_chat: true,
+                    broadcaster: false,
+                    author_id: 200 + i,
+                    echo_or_coordinated: false,
+                },
+            );
+        }
+        let genuine = emit_scores(&mut g);
+        assert!(
+            genuine[0] >= flood[0],
+            "genuine breadth must not rank below a flood"
+        );
+        // The genuine field's breadth is capped: LIVE_CHATTER_CAP distinct ids,
+        // so the bonus is bounded regardless of flood size.
+        let a = g.obs.get(&m).expect("tracked");
+        assert!(a.live_chatters.len() <= LIVE_CHATTER_CAP);
+        let b = f.obs.get(&m).expect("tracked");
+        assert!(b.live_chatters.is_empty(), "echoes must add zero breadth");
+    }
+
+    /// The §29 fade-first cap still binds: without money confirmation, no amount
+    /// of live-chat structure can push the score past the pre-confirmation cap.
+    #[test]
+    fn fade_cap_binds_until_money_confirms() {
+        let m = [6u8; 32];
+        let mut f = AttentionField::new(AttentionParams::standard());
+        for i in 0..LIVE_CHATTER_CAP as u64 + 4 {
+            f.observe_tagged(
+                m,
+                mention(1_000_000_000 + i, 300 + i, 50),
+                &MentionProvenance {
+                    realtime_chat: true,
+                    broadcaster: i == 0,
+                    author_id: 300 + i,
+                    echo_or_coordinated: false,
+                },
+            );
+        }
+        let mut unconfirmed = Vec::new();
+        f.clone().emit_into(&mut unconfirmed, 1, |_| 0, |_| false);
+        let mut confirmed = Vec::new();
+        f.emit_into(&mut confirmed, 1, |_| 0, |_| true);
+        assert!(!unconfirmed.is_empty() && !confirmed.is_empty());
+        assert!(
+            unconfirmed[0].discovery_score <= confirmed[0].discovery_score,
+            "confirmation may only lift the cap, never lower it"
+        );
+        assert!(
+            unconfirmed[0].discovery_score <= 500,
+            "pre-confirmation fade cap must bind, got {}",
+            unconfirmed[0].discovery_score
+        );
     }
 }

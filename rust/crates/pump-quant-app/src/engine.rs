@@ -175,6 +175,11 @@ const PRESSURE_BALANCED_BP: u32 = 5_000;
 /// to the formula so expectancy artifacts stay attributable.
 pub const EXPECTANCY_VERSION: u32 = 1;
 
+/// Maximum learned cashtag→mint bindings retained (§99). First-bind-wins under
+/// the cap; at the cap no new symbols bind (a lower bound on coverage, never a
+/// wrong binding). 4096 matches the lane track caps.
+const CASHTAG_BIND_CAP: usize = 4_096;
+
 /// Maximum size fade (bps of 10_000) that creator *distribution* alone may apply.
 /// A fully-distributed creator caps the haircut here — it can shrink size, never
 /// veto a trade the on-chain gate already admitted (§22 behavioral-risk clause:
@@ -343,6 +348,13 @@ pub struct Engine {
     f_recommended: Option<u32>,
     /// Regime summary flag consumed by sizing (refreshed at reflection cadence).
     regime_rug_elevated: bool,
+    /// Learned cashtag→mint bindings (§29): when one event names BOTH a ticker
+    /// and a concrete mint, the ticker binds to that mint (FIRST bind wins — a
+    /// later post cannot hijack an established symbol). Cashtag-only chatter
+    /// (the dominant Twitch-chat shape) then resolves through this map into the
+    /// attention field — attention-tier only, never a `SocialCall`: an inferred
+    /// binding corroborates even more weakly than a named mint. Bounded (§99).
+    cashtag_binds: BTreeMap<u64, [u8; 32]>,
     /// Per-lane realized-return accumulator (Σ realized bps, fills) feeding the
     /// §24 conditional-expectancy shrinkage — EXPECTANCY_V1. Bounded by
     /// construction (4 lanes × two integers).
@@ -465,6 +477,7 @@ impl Engine {
             retired: [false; 4],
             f_recommended: None,
             regime_rug_elevated: false,
+            cashtag_binds: BTreeMap::new(),
             lane_edge: [(0, 0); 4],
             structure,
             universe_filtered: 0,
@@ -959,13 +972,39 @@ impl Engine {
                     })
             };
             let mention = to_mention(ev);
+            // §29.6 provenance: the live-chat structure travels beside the
+            // mention on a parallel channel — the shared `Mention` type (locked
+            // by dossiers in two crates) is untouched.
+            let prov = crate::social_ingest::provenance_of(ev, is_coordinated);
             for m in ev.mints() {
                 let now = self.now;
                 self.social.observe(DomainMint::from_bytes(*m), q, now);
-                self.attention.observe(*m, mention);
+                self.attention.observe_tagged(*m, mention, &prov);
                 self.social_earn
                     .record_call(ev.author_id, *m, ev.observed_at_ns);
                 applied += 1;
+            }
+            // Learn cashtag→mint bindings from events that name BOTH (first bind
+            // wins; bounded). Then resolve cashtag-ONLY chatter — the dominant
+            // live-chat shape — into the attention field so a coin being watched
+            // on stream RIGHT NOW becomes a discovery candidate without waiting
+            // for someone to paste the mint address. Attention-tier only: no
+            // `SocialCall` is fabricated from an inferred binding, and the gate
+            // still demands numeric evidence + an on-chain confirm to admit.
+            if ev.n_mints > 0 {
+                if self.cashtag_binds.len() < CASHTAG_BIND_CAP {
+                    let first = ev.mints()[0];
+                    for &tag in ev.cashtags() {
+                        self.cashtag_binds.entry(tag).or_insert(first);
+                    }
+                }
+            } else {
+                for &tag in ev.cashtags() {
+                    if let Some(&bound) = self.cashtag_binds.get(&tag) {
+                        self.attention.observe_tagged(bound, mention, &prov);
+                        applied += 1;
+                    }
+                }
             }
         }
         applied

@@ -80,6 +80,9 @@ pub enum SocialPlatform {
     Telegram,
     /// General web (news / aggregators / project pages), e.g. Firecrawl.
     Web,
+    /// Twitch live-stream chat (real-time viewing; §29.6 stream/comment events).
+    /// Captured by the dependency-free Rust IRC lane (`tools/social-ingest-rs`).
+    Twitch,
 }
 
 impl SocialPlatform {
@@ -91,6 +94,7 @@ impl SocialPlatform {
             "tiktok" => Some(Self::TikTok),
             "telegram" | "tg" => Some(Self::Telegram),
             "web" | "firecrawl" => Some(Self::Web),
+            "twitch" => Some(Self::Twitch),
             _ => None,
         }
     }
@@ -103,6 +107,7 @@ impl SocialPlatform {
             Self::TikTok => 2,
             Self::Telegram => 3,
             Self::Web => 4,
+            Self::Twitch => 5,
         }
     }
 
@@ -120,7 +125,10 @@ impl SocialPlatform {
     #[must_use]
     pub const fn horizon_rank(self) -> u8 {
         match self {
-            Self::Telegram => 0,
+            // Live-stream chat is a real-time push channel: structurally as early
+            // as Telegram call channels (both sit at the unlegible front of the
+            // shill pipeline). Equal rank = equal tier, never a tradeable weight.
+            Self::Telegram | Self::Twitch => 0,
             Self::X => 1,
             Self::TikTok => 2,
             Self::Web => 3,

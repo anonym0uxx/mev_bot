@@ -83,3 +83,13 @@ is being exit liquidity. So we watch them only for wave-timing, meta rotation, a
 FADE, and put the real weight on the upstream sources (Telegram, on-chain money) and
 the *derivative* of distinct-originator mentions before the wave. Full write-up:
 project doc **SOCIAL INGESTION STRATEGY — polling playbook**.
+
+## Twitch (Rust lane)
+
+Twitch chat is the one social lane that needs no TLS (plain-TCP IRC, anonymous
+read-only access), so its capture is a dependency-free pure-std Rust binary:
+[`../social-ingest-rs`](../social-ingest-rs) (`pq-twitch-capture`). It emits the
+exact same one-object-per-line schema as `normalize.py` (platform `"twitch"`,
+engagement zeros, `echo:false`, capture-stamped `observed_at_ns`), so it pipes
+into the probe / paper runner and fuses with `run_all.py` output like any adapter
+here. Includes a deterministic `--replay` mode for offline tests. See its README.

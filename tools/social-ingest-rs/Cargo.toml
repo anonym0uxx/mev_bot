@@ -1,0 +1,14 @@
+[package]
+name = "pq-twitch-capture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "pq-twitch-capture"
+path = "src/main.rs"
+
+# Proudly empty (§67 removable adapter): Twitch IRC speaks plain TCP, so the whole
+# capture edge is pure std — no TLS stack, no async runtime, no serde. This is the
+# ONE social lane where a dependency-free Rust capture is feasible today.
+[dependencies]

@@ -20,9 +20,10 @@
 //!   flag, so distinct-originator breadth and copy-echo are computed downstream —
 //!   reach is never mistaken for alpha.
 
+use crate::attention::MentionProvenance;
 use crate::event::AppEvent;
 use pump_quant_domain::ids::Mint;
-use pump_quant_ingest::social_parse::SocialEvent;
+use pump_quant_ingest::social_parse::{SocialEvent, SocialPlatform};
 use pump_quant_ingest::social_source::{parse_batch, RawSocialPayload, SocialSource};
 use pump_quant_narrative::attention_state::Mention;
 use pump_quant_social::classification::Classification;
@@ -42,6 +43,25 @@ pub fn to_mention(ev: &SocialEvent) -> Mention {
         community_id: ev.community_id,
         weight: ev.engagement.max(1),
         copycat: ev.is_echo,
+    }
+}
+
+/// Derive a mention's [`MentionProvenance`] from the normalized event (§29.6).
+///
+/// Structural, never trust-weighted (§29.8): `realtime_chat` is a property of
+/// the capture channel (Twitch IRC only delivers while chat is live);
+/// `broadcaster` is the identity equation `author == community` on Twitch (the
+/// streamer speaking in their own channel); `echo_or_coordinated` folds the
+/// event's echo flag with the caller-computed coordination verdict so neither
+/// reposts nor copy-paste blasts ever count as live-chat breadth.
+#[must_use]
+pub fn provenance_of(ev: &SocialEvent, is_coordinated: bool) -> MentionProvenance {
+    let realtime = ev.platform == SocialPlatform::Twitch;
+    MentionProvenance {
+        realtime_chat: realtime,
+        broadcaster: realtime && ev.community_id != 0 && ev.author_id == ev.community_id,
+        author_id: ev.author_id,
+        echo_or_coordinated: ev.is_echo || is_coordinated,
     }
 }
 
