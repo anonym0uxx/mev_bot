@@ -1,0 +1,108 @@
+component: overfitting
+constitution_refs: []
+spec: Independence-lock dossier for the `overfitting` module of pump-quant-evaluator (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: pbo_cscv_rejects_inadmissible
+  responsibility: pbo_cscv rejects inadmissible performance matrices with the correct CscvError rather than fabricating a diagnostic.
+  signature: 'pub fn pbo_cscv(perf: &[Vec<i64>]) -> Result<PboReport, CscvError>'
+  invariants:
+  - n_trials < 2 (including empty) yields Err(CscvError::TooFewTrials)
+  - n_blocks < 2 or odd n_blocks yields Err(CscvError::BadBlockCount)
+  - any row length != n_blocks yields Err(CscvError::RaggedMatrix)
+  - a well-formed matrix (>=2 trials, even >=2 equal-length blocks) returns Ok
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn pbo_cscv_rejects_inadmissible() {
+        // Fewer than two trials.
+        let empty: Vec<Vec<i64>> = Vec::new();
+        assert_eq!(pbo_cscv(&empty), Err(CscvError::TooFewTrials));
+        assert_eq!(pbo_cscv(&[vec![1, 2]]), Err(CscvError::TooFewTrials));
+        // Odd block count.
+        assert_eq!(
+            pbo_cscv(&[vec![1, 2, 3], vec![4, 5, 6]]),
+            Err(CscvError::BadBlockCount)
+        );
+        // Single block (< 2).
+        assert_eq!(pbo_cscv(&[vec![1], vec![2]]), Err(CscvError::BadBlockCount));
+        // Ragged rows.
+        assert_eq!(
+            pbo_cscv(&[vec![1, 2], vec![4, 5, 6, 7]]),
+            Err(CscvError::RaggedMatrix)
+        );
+        // A well-formed matrix is accepted.
+        assert!(pbo_cscv(&[vec![1, 2], vec![3, 4]]).is_ok());
+    }
+- leaf_id: pbo_cscv_skill_zero_noise_full
+  responsibility: pbo_cscv scores a dominant (genuinely skilled) strategy at PBO=0 and perfect mirror-image noise at PBO=10000, with a correct split count and pbo_bps formula.
+  signature: 'pub fn pbo_cscv(perf: &[Vec<i64>]) -> Result<PboReport, CscvError>'
+  invariants:
+  - a strategy dominating every block yields overfit_splits=0 and pbo_bps=0
+  - perfect anti-correlated noise (IS winner always loses OOS) yields pbo_bps=10_000
+  - n_splits equals C(n_blocks, n_blocks/2) (6 for 4 blocks, 2 for 2 blocks)
+  - pbo_bps == overfit_splits*10_000/n_splits and always lies in [0, 10_000]
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn pbo_cscv_skill_zero_noise_full() {
+        // Trial 0 dominates every block -> best IS and best OOS on every split,
+        // never at/below the OOS median -> PBO = 0.
+        let skilled = vec![
+            vec![100, 100, 100, 100],
+            vec![10, 10, 10, 10],
+            vec![20, 20, 20, 20],
+            vec![30, 30, 30, 30],
+        ];
+        let r = pbo_cscv(&skilled).unwrap();
+        assert_eq!(r.n_trials, 4);
+        assert_eq!(r.n_blocks, 4);
+        assert_eq!(r.n_splits, 6); // C(4,2)
+        assert_eq!(r.overfit_splits, 0);
+        assert_eq!(r.pbo_bps, 0);
+        assert!(!r.blocks_promotion(1));
+
+        // Perfect mirror-image noise: the IS winner always loses OOS -> PBO = 100%.
+        let noise = vec![vec![100, -100], vec![-100, 100]];
+        let n = pbo_cscv(&noise).unwrap();
+        assert_eq!(n.n_splits, 2); // C(2,1)
+        assert_eq!(n.overfit_splits, 2);
+        assert_eq!(n.pbo_bps, 10_000);
+        assert!(n.blocks_promotion(5_000));
+
+        // pbo_bps = overfit_splits * 10_000 / n_splits, always in [0, 10_000].
+        assert_eq!(n.pbo_bps, n.overfit_splits * 10_000 / n.n_splits);
+        assert!(r.pbo_bps <= 10_000 && n.pbo_bps <= 10_000);
+    }
+- leaf_id: blocks_promotion_threshold
+  responsibility: PboReport::blocks_promotion applies the promotion-blocking gate as an inclusive pbo_bps >= threshold_bps comparison.
+  signature: 'pub fn blocks_promotion(&self, threshold_bps: u32) -> bool'
+  invariants:
+  - blocks_promotion(t) is true iff pbo_bps >= t (comparison is inclusive at equality)
+  - a full-overfit report (pbo_bps=10_000) blocks at threshold 10_000 but not 10_001
+  - a zero-overfit report (pbo_bps=0) blocks at threshold 0 but not 1
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn blocks_promotion_threshold() {
+        // pbo_bps = 10_000 (full overfit).
+        let noise = vec![vec![100, -100], vec![-100, 100]];
+        let hi = pbo_cscv(&noise).unwrap();
+        assert_eq!(hi.pbo_bps, 10_000);
+        assert!(hi.blocks_promotion(10_000)); // inclusive: >= threshold
+        assert!(hi.blocks_promotion(9_999));
+        assert!(!hi.blocks_promotion(10_001));
+
+        // pbo_bps = 0 (no overfit).
+        let skilled = vec![
+            vec![100, 100, 100, 100],
+            vec![10, 10, 10, 10],
+            vec![20, 20, 20, 20],
+            vec![30, 30, 30, 30],
+        ];
+        let lo = pbo_cscv(&skilled).unwrap();
+        assert_eq!(lo.pbo_bps, 0);
+        assert!(lo.blocks_promotion(0)); // 0 >= 0
+        assert!(!lo.blocks_promotion(1));
+    }

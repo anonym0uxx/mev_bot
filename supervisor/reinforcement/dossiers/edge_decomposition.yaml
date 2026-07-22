@@ -1,0 +1,124 @@
+component: edge_decomposition
+constitution_refs: []
+spec: Independence-lock dossier for the `edge_decomposition` module of pump-quant-evaluator (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: decompose_trade_exact_residual
+  responsibility: Decompose one trade into the summed attributed lamports plus an exact balancing residual and linearly-propagated uncertainty.
+  signature: 'pub fn decompose_trade(trade: &PerTradeEdge) -> TradeDecomposition'
+  invariants:
+  - attributed_lamports == the plain i128 sum of all nine components' lamports
+  - 'residual_lamports == realized_net_lamports - attributed_lamports (exactness identity: attributed + residual == realized_net)'
+  - total_uncertainty_lamports == the u128 sum of every component's uncertainty_lamports
+  - all-zero measured components yield attributed=0, residual=realized_net (0 here), uncertainty=0
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn prop_decompose_trade_exact_residual() {
+        for realized in [-1000i128, -1, 0, 37, 100_000] {
+            for base in [-50i128, 0, 7, 250] {
+                let comps = [
+                    ComponentValue::measured(base),
+                    ComponentValue::estimated(base + 1, 8),
+                    ComponentValue::estimated(-base, 5),
+                    ComponentValue::measured(-20),
+                    ComponentValue::measured(-40),
+                    ComponentValue::measured(-5),
+                    ComponentValue::estimated(-10, 3),
+                    ComponentValue::estimated(15, 4),
+                    ComponentValue::unknown(),
+                ];
+                let attributed_expected: i128 =
+                    base + (base + 1) + (-base) + (-20) + (-40) + (-5) + (-10) + 15 + 0;
+                let t = PerTradeEdge::new(realized, comps);
+                let d = decompose_trade(&t);
+                assert_eq!(d.attributed_lamports, attributed_expected);
+                assert_eq!(d.residual_lamports, realized - attributed_expected);
+                assert_eq!(d.attributed_lamports + d.residual_lamports, realized);
+                assert_eq!(d.total_uncertainty_lamports, 8 + 5 + 3 + 4);
+            }
+        }
+        // Edge case: all-zero measured components -> zero everything.
+        let z = PerTradeEdge::new(0, [ComponentValue::measured(0); 9]);
+        let dz = decompose_trade(&z);
+        assert_eq!(dz.attributed_lamports, 0);
+        assert_eq!(dz.residual_lamports, 0);
+        assert_eq!(dz.total_uncertainty_lamports, 0);
+    }
+- leaf_id: aggregate_edge_identity
+  responsibility: Aggregate per-trade decompositions into a book-level attribution that preserves the sum/residual identity, tracks worst quality, and handles the empty book.
+  signature: 'pub fn aggregate_edge(trades: &[PerTradeEdge]) -> EdgeAttribution'
+  invariants:
+  - Σ components[i].sum_lamports + residual_lamports == realized_net_lamports (book identity)
+  - residual_lamports is the signed sum of per-trade residuals; residual_abs_sum_lamports is the sum of their absolute values
+  - each component's worst_quality is the least-confident non-zero contributor, and quality_counts counts every contributing value (including zero-valued) by confidence rank
+  - an empty book yields n=0, all sums/residuals 0, and every component worst_quality=Unknown with zero counts
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn prop_aggregate_edge_identity() {
+        fn trade(sel: i128, realized: i128) -> PerTradeEdge {
+            let comps = [
+                ComponentValue::measured(sel),
+                ComponentValue::estimated(50, 8),
+                ComponentValue::estimated(-30, 5),
+                ComponentValue::measured(-20),
+                ComponentValue::measured(-40),
+                ComponentValue::measured(-5),
+                ComponentValue::estimated(-10, 3),
+                ComponentValue::estimated(15, 4),
+                ComponentValue::measured(-25),
+            ];
+            PerTradeEdge::new(realized, comps)
+        }
+        // attributed(sel) = sel + 50 - 30 - 20 - 40 - 5 - 10 + 15 - 25 = sel - 65.
+        let trades = vec![trade(100, 50), trade(200, -10), trade(0, 0)];
+        let a = aggregate_edge(&trades);
+        assert_eq!(a.n, 3);
+        let comp_sum: i128 = a.components.iter().map(|c| c.sum_lamports).sum();
+        assert_eq!(comp_sum + a.residual_lamports, a.realized_net_lamports);
+        assert_eq!(a.realized_net_lamports, 40); // 50 - 10 + 0
+        assert_eq!(a.components[0].sum_lamports, 300); // 100 + 200 + 0
+                                                       // Residuals: 50-35=15, -10-135=-145, 0-(-65)=65 -> net -65, abs 225.
+        assert_eq!(a.residual_lamports, -65);
+        assert_eq!(a.residual_abs_sum_lamports, 225);
+        assert_eq!(a.components[0].worst_quality, Attribution::Measured);
+        assert_eq!(a.components[0].quality_counts, [3, 0, 0, 0]);
+        assert_eq!(a.components[1].worst_quality, Attribution::Estimated);
+        assert_eq!(a.components[1].uncertainty_lamports, 24);
+        // Edge case: empty book fully zeroed, worst quality Unknown.
+        let e = aggregate_edge(&[]);
+        assert_eq!(e.n, 0);
+        assert_eq!(e.residual_lamports, 0);
+        assert_eq!(e.realized_net_lamports, 0);
+        assert_eq!(e.components[0].worst_quality, Attribution::Unknown);
+        assert_eq!(e.components[0].quality_counts, [0, 0, 0, 0]);
+    }
+- leaf_id: confidence_rank_orders
+  responsibility: Map each Attribution quality to a total confidence rank where 0 is most confident (Measured) and 3 is least (Unknown).
+  signature: pub fn confidence_rank(self) -> u8
+  invariants:
+  - Measured->0, Estimated->1, Assumed->2, Unknown->3
+  - rank is strictly increasing as confidence decreases along Measured<Estimated<Assumed<Unknown
+  - rank order agrees with the derived Ord order on Attribution
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn prop_confidence_rank_orders() {
+        assert_eq!(Attribution::Measured.confidence_rank(), 0);
+        assert_eq!(Attribution::Estimated.confidence_rank(), 1);
+        assert_eq!(Attribution::Assumed.confidence_rank(), 2);
+        assert_eq!(Attribution::Unknown.confidence_rank(), 3);
+        let order = [
+            Attribution::Measured,
+            Attribution::Estimated,
+            Attribution::Assumed,
+            Attribution::Unknown,
+        ];
+        for w in order.windows(2) {
+            assert!(w[0].confidence_rank() < w[1].confidence_rank());
+        }
+        assert!(Attribution::Measured < Attribution::Unknown);
+        assert!(Attribution::Estimated < Attribution::Assumed);
+    }

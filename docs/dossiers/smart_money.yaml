@@ -1,0 +1,285 @@
+component: smart_money
+constitution_refs: []
+spec: Independence-lock dossier for the `smart_money` module of pump-quant-wallet-graph. Each leaf's property_test is the locked correctness authority over that leaf's public contract, verified to compile and pass against the committed Phase-A implementation. Decision logic is integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: sm_pnl_screen_evaluate
+  responsibility: Family-netted, self-dealing-excluded, luck-filtered realized-PnL screen over a wallet's trades.
+  signature: 'pub fn evaluate(&self, trades: &[Trade]) -> PnlScreenResult'
+  invariants:
+  - Per-token realized PnL nets buys against sells at min(bought,sold) units with pro-rated cost basis and pro-rated proceeds; open (buy-only or sell-only) tokens contribute no realized PnL and are not counted in token_count.
+  - Self-dealt tokens are excluded from total_realized/token_count and reported separately in self_dealt_token_count/self_dealt_realized; any positive self-dealt realized PnL forces reason=SelfDealing.
+  - 'top_removed_realized = total_realized - top_token_pnl, and reason is decided in fixed order: InsufficientSample (token_count<min_tokens) then SelfDealing then NonPositiveRealized (total_realized<=0) then LuckyConcentrated (top_removed_realized<=0) else None.'
+  - passed() is true iff reason==None; all arithmetic is integer i128/u128 and deterministic (token iteration ordered by token id).
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn sm_pnl_evaluate_props() {
+        fn tr(token: u64, is_buy: bool, units: u64, sol: u64, self_dealt: bool) -> Trade {
+            Trade {
+                family: pump_quant_wallet_graph::FamilyId(1),
+                token: pump_quant_wallet_graph::TokenId(token),
+                is_buy,
+                units,
+                sol_lamports: sol,
+                self_dealt,
+                slot: 0,
+            }
+        }
+        let s = PnlScreen::new(PnlScreenConfig { min_tokens: 2 });
+
+        // Clean two-token profit passes with exact components.
+        let clean = [
+            tr(1, true, 100, 1000, false),
+            tr(1, false, 100, 1500, false),
+            tr(2, true, 50, 500, false),
+            tr(2, false, 50, 700, false),
+        ];
+        let r = s.evaluate(&clean);
+        assert_eq!(r.reason, PnlFailReason::None);
+        assert!(r.passed());
+        assert_eq!(r.components.total_realized, 700);
+        assert_eq!(r.components.top_removed_realized, 200);
+        assert_eq!(r.components.top_token_pnl, 500);
+        assert_eq!(r.components.token_count, 2);
+        assert_eq!(r.components.profitable_token_count, 2);
+
+        // Self-dealt profit is excluded from skill PnL and rejected.
+        let sd = [
+            tr(1, true, 100, 1000, true),
+            tr(1, false, 100, 1500, true),
+            tr(2, true, 50, 500, false),
+            tr(2, false, 50, 700, false),
+            tr(3, true, 50, 500, false),
+            tr(3, false, 50, 600, false),
+        ];
+        let r2 = s.evaluate(&sd);
+        assert_eq!(r2.reason, PnlFailReason::SelfDealing);
+        assert!(!r2.passed());
+        assert_eq!(r2.components.self_dealt_token_count, 1);
+        assert_eq!(r2.components.self_dealt_realized, 500);
+        assert_eq!(r2.components.total_realized, 300);
+        assert_eq!(r2.components.token_count, 2);
+
+        // One jackpot (+500) plus a loser (-100): concentration screen fires.
+        let lucky = [
+            tr(1, true, 100, 1000, false),
+            tr(1, false, 100, 1500, false),
+            tr(2, true, 50, 500, false),
+            tr(2, false, 50, 400, false),
+        ];
+        let r3 = s.evaluate(&lucky);
+        assert_eq!(r3.reason, PnlFailReason::LuckyConcentrated);
+        assert_eq!(r3.components.total_realized, 400);
+        assert_eq!(r3.components.top_removed_realized, -100);
+
+        // Partial realization pro-rates cost basis: buy 100u/1000L, sell 60u/900L -> pnl 300.
+        let partial = [
+            tr(1, true, 100, 1000, false),
+            tr(1, false, 60, 900, false),
+            tr(2, true, 40, 400, false),
+            tr(2, false, 40, 500, false),
+        ];
+        let r4 = s.evaluate(&partial);
+        assert_eq!(r4.reason, PnlFailReason::None);
+        assert_eq!(r4.components.top_token_pnl, 300);
+        assert_eq!(r4.components.total_realized, 400);
+    }
+- leaf_id: sm_simulate_and_lagged_shadow
+  responsibility: Follower-executable lagged-shadow round-trip simulator and its wallet-vs-control aggregation.
+  signature: 'pub fn simulate_action(oracle: &dyn PriceOracle, action: WalletAction, cfg: &ShadowConfig) -> Option<i128>'
+  invariants:
+  - Entry is at action_slot + latency_slots; None if there is no entry price or the entry price is zero, and None if no exit price is observed within (entry_slot, entry_slot+horizon_slots].
+  - Exit is the first slot whose price reaches TP (>= entry*(1+tp_bps/BPS) ) or SL (<= entry*(1-sl_bps/BPS)); absent a touch, exit is the last observed price in the horizon.
+  - Net = (proceeds - size) - entry_fee - exit_fee - 2*tip_lamports, where units = size*PRICE_SCALE/entry_price, proceeds = units*exit_price/PRICE_SCALE, and fees are fee_bps of size and of proceeds; e.g. TP@125M yields +225_500 and SL@89M yields -130_900 for the given config.
+  - lagged_shadow sums simulate_action over wallet and control actions, counts simulated vs skipped, and is_followable() is true iff wallet_net>0 and wallet_net>control_net.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn sm_simulate_action_props() {
+        use std::collections::HashMap;
+        struct O {
+            p: HashMap<(u64, u64), u64>,
+        }
+        impl PriceOracle for O {
+            fn price_scaled(&self, token: pump_quant_wallet_graph::TokenId, slot: u64) -> Option<u64> {
+                self.p.get(&(token.0, slot)).copied()
+            }
+        }
+        let cfg = ShadowConfig {
+            latency_slots: 2,
+            horizon_slots: 5,
+            tp_bps: 2000,
+            sl_bps: 1000,
+            size_lamports: 1_000_000,
+            fee_bps: 100,
+            tip_lamports: 1000,
+        };
+        let act = |t: u64| WalletAction {
+            token: pump_quant_wallet_graph::TokenId(t),
+            action_slot: 10,
+        };
+
+        // Take-profit touch: entry@100M, exit@125M -> net +225_500.
+        let mut m = HashMap::new();
+        m.insert((1, 12), 100_000_000u64);
+        m.insert((1, 13), 110_000_000u64);
+        m.insert((1, 14), 115_000_000u64);
+        m.insert((1, 15), 125_000_000u64);
+        assert_eq!(simulate_action(&O { p: m }, act(1), &cfg), Some(225_500));
+
+        // Stop-loss touch: entry@100M, exit@89M -> net -130_900.
+        let mut m3 = HashMap::new();
+        m3.insert((2, 12), 100_000_000u64);
+        m3.insert((2, 13), 95_000_000u64);
+        m3.insert((2, 14), 89_000_000u64);
+        assert_eq!(simulate_action(&O { p: m3 }, act(2), &cfg), Some(-130_900));
+
+        // No entry price -> unshadowable.
+        assert_eq!(
+            simulate_action(&O { p: HashMap::new() }, act(9), &cfg),
+            None
+        );
+
+        // Entry price present but no exit anywhere in the horizon -> None.
+        let mut m4 = HashMap::new();
+        m4.insert((4, 12), 100_000_000u64);
+        assert_eq!(simulate_action(&O { p: m4 }, act(4), &cfg), None);
+    }
+
+    #[test]
+    fn sm_lagged_shadow_aggregates_and_followable() {
+        use std::collections::HashMap;
+        struct O {
+            p: HashMap<(u64, u64), u64>,
+        }
+        impl PriceOracle for O {
+            fn price_scaled(&self, token: pump_quant_wallet_graph::TokenId, slot: u64) -> Option<u64> {
+                self.p.get(&(token.0, slot)).copied()
+            }
+        }
+        let cfg = ShadowConfig {
+            latency_slots: 2,
+            horizon_slots: 5,
+            tp_bps: 2000,
+            sl_bps: 1000,
+            size_lamports: 1_000_000,
+            fee_bps: 100,
+            tip_lamports: 1000,
+        };
+        let mut m = HashMap::new();
+        // token 1: TP winner (+225_500)
+        m.insert((1, 12), 100_000_000u64);
+        m.insert((1, 13), 110_000_000u64);
+        m.insert((1, 14), 115_000_000u64);
+        m.insert((1, 15), 125_000_000u64);
+        // token 2: SL loser (-130_900)
+        m.insert((2, 12), 100_000_000u64);
+        m.insert((2, 13), 95_000_000u64);
+        m.insert((2, 14), 89_000_000u64);
+        let o = O { p: m };
+        let wallet = [WalletAction {
+            token: pump_quant_wallet_graph::TokenId(1),
+            action_slot: 10,
+        }];
+        let control = [WalletAction {
+            token: pump_quant_wallet_graph::TokenId(2),
+            action_slot: 10,
+        }];
+        let res = lagged_shadow(&o, &wallet, &control, &cfg);
+        assert_eq!(res.wallet_net, 225_500);
+        assert_eq!(res.control_net, -130_900);
+        assert_eq!(res.wallet_actions_simulated, 1);
+        assert_eq!(res.wallet_actions_skipped, 0);
+        assert!(res.is_followable());
+    }
+- leaf_id: sm_classify_smart_money
+  responsibility: Combine the PnL screen, lagged-shadow result, bait signal, and legibility into the final WalletQualityState.
+  signature: 'pub fn classify_smart_money(pnl: &PnlScreenResult, shadow: &LaggedShadowResult, legibility: Legibility, bait_suspect: bool) -> WalletQualityState'
+  invariants:
+  - 'bait_suspect dominates everything: returns CopyBaitSuspect regardless of PnL/shadow/legibility.'
+  - 'If the PnL screen did not pass, the failure reason maps deterministically: SelfDealing->SelfDealingPnl, LuckyConcentrated->LuckyConcentratedPnl, InsufficientSample|NonPositiveRealized->InsufficientSample.'
+  - If PnL passed but shadow.is_followable() is false, returns InsiderTimingNonreplicable.
+  - 'If PnL passed and shadow is followable, legibility selects the label: Private->SmartMoneyFollowable, PreLegibility->PreLegibilityCandidate, PublicBurned->PublicBurned.'
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn sm_classify_props() {
+        let pass = PnlScreenResult {
+            components: PnlComponents {
+                total_realized: 700,
+                top_removed_realized: 200,
+                top_token_pnl: 500,
+                token_count: 2,
+                profitable_token_count: 2,
+                self_dealt_token_count: 0,
+                self_dealt_realized: 0,
+            },
+            reason: PnlFailReason::None,
+        };
+        let followable = LaggedShadowResult {
+            wallet_net: 225_500,
+            control_net: -130_900,
+            wallet_actions_simulated: 1,
+            wallet_actions_skipped: 0,
+        };
+        let unfollowable = LaggedShadowResult {
+            wallet_net: -50_000,
+            control_net: 0,
+            wallet_actions_simulated: 1,
+            wallet_actions_skipped: 0,
+        };
+        assert!(followable.is_followable());
+        assert!(!unfollowable.is_followable());
+
+        // Passing PnL + followable shadow + private -> SmartMoneyFollowable.
+        assert_eq!(
+            classify_smart_money(&pass, &followable, Legibility::Private, false),
+            WalletQualityState::SmartMoneyFollowable
+        );
+        // Legibility escalation.
+        assert_eq!(
+            classify_smart_money(&pass, &followable, Legibility::PreLegibility, false),
+            WalletQualityState::PreLegibilityCandidate
+        );
+        assert_eq!(
+            classify_smart_money(&pass, &followable, Legibility::PublicBurned, false),
+            WalletQualityState::PublicBurned
+        );
+        // Bait dominates even a passing, followable wallet.
+        assert_eq!(
+            classify_smart_money(&pass, &followable, Legibility::Private, true),
+            WalletQualityState::CopyBaitSuspect
+        );
+        // Passing PnL but shadow not followable -> InsiderTimingNonreplicable.
+        assert_eq!(
+            classify_smart_money(&pass, &unfollowable, Legibility::Private, false),
+            WalletQualityState::InsiderTimingNonreplicable
+        );
+        // PnL-failure reasons map through even with a failing shadow.
+        let sd = PnlScreenResult {
+            components: pass.components.clone(),
+            reason: PnlFailReason::SelfDealing,
+        };
+        assert_eq!(
+            classify_smart_money(&sd, &unfollowable, Legibility::Private, false),
+            WalletQualityState::SelfDealingPnl
+        );
+        let lucky = PnlScreenResult {
+            components: pass.components.clone(),
+            reason: PnlFailReason::LuckyConcentrated,
+        };
+        assert_eq!(
+            classify_smart_money(&lucky, &unfollowable, Legibility::Private, false),
+            WalletQualityState::LuckyConcentratedPnl
+        );
+        let insufficient = PnlScreenResult {
+            components: pass.components.clone(),
+            reason: PnlFailReason::InsufficientSample,
+        };
+        assert_eq!(
+            classify_smart_money(&insufficient, &unfollowable, Legibility::Private, false),
+            WalletQualityState::InsufficientSample
+        );
+    }

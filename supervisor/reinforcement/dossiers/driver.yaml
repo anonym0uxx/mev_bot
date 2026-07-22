@@ -1,0 +1,125 @@
+component: driver
+constitution_refs: []
+spec: Independence-lock dossier for the `driver` module of pump-quant-replay (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: break_set_with_arms_only_target
+  responsibility: BreakSet::with returns a copy that arms exactly the named break condition and no other, deciding where run_to_break halts.
+  signature: 'pub const fn with(self, c: BreakCondition) -> Self'
+  invariants:
+  - For every BreakCondition c, BreakSet::none().with(c).contains(c) is true.
+  - For c != other, BreakSet::none().with(c).contains(other) is false (bits are independent, no aliasing).
+  - BreakSet::none().with(c) is never empty.
+  - 'with is idempotent: s.with(c) == s.with(c).with(c).'
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn break_set_with_arms_only_target() {
+        let all = [
+            BreakCondition::OnMint,
+            BreakCondition::OnDecision,
+            BreakCondition::OnEntry,
+            BreakCondition::OnExit,
+        ];
+        for &c in &all {
+            let s = BreakSet::none().with(c);
+            // Exactly the target is armed.
+            assert!(s.contains(c));
+            assert!(!s.is_empty());
+            // No other condition is armed.
+            let mut armed = 0u32;
+            for &other in &all {
+                if s.contains(other) {
+                    armed += 1;
+                    assert_eq!(other, c);
+                }
+            }
+            assert_eq!(armed, 1);
+            // Arming the same condition twice is idempotent.
+            assert_eq!(s.with(c), s);
+        }
+        // Concrete cross-check: mint armed, exit not.
+        let m = BreakSet::none().with(BreakCondition::OnMint);
+        assert!(m.contains(BreakCondition::OnMint));
+        assert!(!m.contains(BreakCondition::OnExit));
+    }
+- leaf_id: break_set_insert_accumulates
+  responsibility: BreakSet::insert arms a condition in place, accumulating with previously armed conditions without clobbering them.
+  signature: 'pub fn insert(&mut self, c: BreakCondition)'
+  invariants:
+  - After a single insert(c) on none(), the set equals BreakSet::none().with(c).
+  - Inserting the four conditions one at a time yields an armed count that increases by exactly one each step (no bit collisions).
+  - Inserting all four equals the four-way with(...) chain by PartialEq.
+  - Re-inserting an already-armed condition is a no-op (set unchanged).
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn break_set_insert_accumulates() {
+        let all = [
+            BreakCondition::OnMint,
+            BreakCondition::OnDecision,
+            BreakCondition::OnEntry,
+            BreakCondition::OnExit,
+        ];
+        // insert matches the const `with` builder for a single condition.
+        for &c in &all {
+            let mut s = BreakSet::none();
+            s.insert(c);
+            assert_eq!(s, BreakSet::none().with(c));
+        }
+        // Inserting accumulates without clobbering earlier conditions.
+        let mut s = BreakSet::none();
+        let mut count = 0u32;
+        for &c in &all {
+            s.insert(c);
+            count += 1;
+            let mut armed = 0u32;
+            for &prev in &all {
+                if s.contains(prev) {
+                    armed += 1;
+                }
+            }
+            assert_eq!(armed, count);
+        }
+        // All four armed; equals the fully-armed `with` chain.
+        let full = BreakSet::none()
+            .with(BreakCondition::OnMint)
+            .with(BreakCondition::OnDecision)
+            .with(BreakCondition::OnEntry)
+            .with(BreakCondition::OnExit);
+        assert_eq!(s, full);
+        // Re-inserting an already-armed condition is a no-op.
+        let before = s;
+        s.insert(BreakCondition::OnMint);
+        assert_eq!(s, before);
+    }
+- leaf_id: break_set_none_is_empty_identity
+  responsibility: BreakSet::none is the armed-nothing identity — is_empty is true, it equals Default, and it contains no condition until one is armed.
+  signature: pub const fn none() -> Self
+  invariants:
+  - BreakSet::none().is_empty() is true.
+  - BreakSet::none() == BreakSet::default().
+  - BreakSet::none().contains(c) is false for every one of the four conditions.
+  - For every c, BreakSet::none().with(c).is_empty() is false.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn break_set_none_is_empty_identity() {
+        let all = [
+            BreakCondition::OnMint,
+            BreakCondition::OnDecision,
+            BreakCondition::OnEntry,
+            BreakCondition::OnExit,
+        ];
+        let empty = BreakSet::none();
+        assert!(empty.is_empty());
+        assert_eq!(empty, BreakSet::default());
+        for &c in &all {
+            assert!(!empty.contains(c));
+        }
+        for &c in &all {
+            assert!(!BreakSet::none().with(c).is_empty());
+        }
+        assert_eq!(BreakSet::none(), BreakSet::none());
+    }

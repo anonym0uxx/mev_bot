@@ -1,0 +1,4 @@
+[package]
+name = "pump-quant-strategy"
+version = "0.1.0"
+edition = "2021"

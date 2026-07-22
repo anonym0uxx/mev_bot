@@ -1,0 +1,10 @@
+[package]
+name = "pump-quant-watchlist"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "pump_quant_watchlist"
+path = "src/lib.rs"
+
+[dependencies]

@@ -1,0 +1,297 @@
+component: attention_decay
+constitution_refs: []
+spec: Independence-lock dossier for the `attention_decay` module of pump-quant-narrative (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: decay_after_peak_bps_is_bounded_fraction
+  responsibility: Compute item-18 decay-after-peak as a fixed-point fraction (peak-current)/peak in bps, guarding peak==0 and at/above-peak.
+  signature: 'pub fn nv_attention_decay(events: &[AttentionEvent], now_ns: u64, window_ns: u64, inputs: &DecayInputs) -> AttentionDecayModel'
+  invariants:
+  - peak_level==0 => decay_after_peak_bps==0 (no divide-by-zero on unknown peak).
+  - current_level>=peak_level (at or fresh-high above peak) => decay_after_peak_bps==0.
+  - For peak>current>0, decay_after_peak_bps == (peak-current)*10_000/peak (FP_ONE=10_000).
+  - decay_after_peak_bps is always <= 10_000 (a bounded fraction of FP_ONE).
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn base_inputs() -> DecayInputs {
+        DecayInputs {
+            semantic_duplication_bps: 1_500,
+            source_diversity: 12,
+            raid_activity: 2,
+            narrative_saturation_bps: 3_000,
+            conversion_to_new_wallets: 40,
+            conversion_to_independent_breadth: 9,
+            conversion_to_net_flow: 25_000,
+            peak_level: 1_000,
+            current_level: 600,
+        }
+    }
+
+    #[test]
+    fn decay_after_peak_bps_is_bounded_fraction() {
+        // Concrete: (1000-600)/1000 = 0.4 -> 4_000 bps.
+        let mut inp = base_inputs();
+        inp.peak_level = 1_000;
+        inp.current_level = 600;
+        let m = nv_attention_decay(&[], 10_000, 1_000, &inp);
+        assert_eq!(m.decay_after_peak_bps, 4_000);
+
+        // At peak -> 0 (rejection of "any drop" claim).
+        inp.current_level = 1_000;
+        assert_eq!(
+            nv_attention_decay(&[], 10_000, 1_000, &inp).decay_after_peak_bps,
+            0
+        );
+
+        // Above peak (fresh high) -> 0.
+        inp.current_level = 1_200;
+        assert_eq!(
+            nv_attention_decay(&[], 10_000, 1_000, &inp).decay_after_peak_bps,
+            0
+        );
+
+        // Unknown peak (peak==0) -> 0, no divide-by-zero.
+        inp.peak_level = 0;
+        inp.current_level = 500;
+        assert_eq!(
+            nv_attention_decay(&[], 10_000, 1_000, &inp).decay_after_peak_bps,
+            0
+        );
+
+        // Sweep: for peak>current>0 result equals (peak-current)*10_000/peak and never exceeds 10_000.
+        for peak in [1u64, 7, 100, 999, 1_000, 65_536, 1_000_000] {
+            for current in 0..peak {
+                let mut s = base_inputs();
+                s.peak_level = peak;
+                s.current_level = current;
+                let got = nv_attention_decay(&[], 10_000, 1_000, &s).decay_after_peak_bps;
+                let want = ((peak - current) as u128 * 10_000u128 / peak as u128) as u64;
+                assert_eq!(got, want, "peak={peak} current={current}");
+                assert!(got <= 10_000, "decay bps must stay <= FP_ONE");
+            }
+        }
+        // current==0 with peak>0 -> full decay 10_000 bps.
+        let mut full = base_inputs();
+        full.peak_level = 1_000;
+        full.current_level = 0;
+        assert_eq!(
+            nv_attention_decay(&[], 10_000, 1_000, &full).decay_after_peak_bps,
+            10_000
+        );
+    }
+- leaf_id: first_instants_are_minimum_per_kind
+  responsibility: Resolve items 1-4 first-event instants as order-independent per-kind minimum timestamps, None when a kind is absent.
+  signature: 'pub fn nv_attention_decay(events: &[AttentionEvent], now_ns: u64, window_ns: u64, inputs: &DecayInputs) -> AttentionDecayModel'
+  invariants:
+  - Empty event slice => all four first_*_ns fields are None.
+  - first_mention_ns is the global minimum ts_ns across all event kinds, independent of slice order.
+  - first_high_quality_source_ns / first_creator_event_ns are the min ts of that exact kind.
+  - first_stream_comment_event_ns is the min ts across StreamEvent OR Comment; a kind with no matching events stays None while others resolve.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn base_inputs() -> DecayInputs {
+        DecayInputs {
+            semantic_duplication_bps: 1_500,
+            source_diversity: 12,
+            raid_activity: 2,
+            narrative_saturation_bps: 3_000,
+            conversion_to_new_wallets: 40,
+            conversion_to_independent_breadth: 9,
+            conversion_to_net_flow: 25_000,
+            peak_level: 1_000,
+            current_level: 600,
+        }
+    }
+
+    fn ev(ts_ns: u64, kind: EventKind) -> AttentionEvent {
+        AttentionEvent { ts_ns, kind }
+    }
+
+    #[test]
+    fn first_instants_are_minimum_per_kind() {
+        // Empty stream -> every first-instant is None (rejection of "always Some").
+        let m0 = nv_attention_decay(&[], 10_000, 1_000, &base_inputs());
+        assert_eq!(m0.first_mention_ns, None);
+        assert_eq!(m0.first_high_quality_source_ns, None);
+        assert_eq!(m0.first_creator_event_ns, None);
+        assert_eq!(m0.first_stream_comment_event_ns, None);
+
+        // Unordered stream: first-instant is the MIN ts per kind, independent of slice order.
+        let events = [
+            ev(500, EventKind::Post),
+            ev(900, EventKind::HighQualitySource),
+            ev(300, EventKind::HighQualitySource),
+            ev(700, EventKind::CreatorEvent),
+            ev(650, EventKind::Comment),
+            ev(800, EventKind::StreamEvent),
+        ];
+        let m = nv_attention_decay(&events, 10_000, 1_000, &base_inputs());
+        assert_eq!(m.first_mention_ns, Some(300)); // global min across all kinds
+        assert_eq!(m.first_high_quality_source_ns, Some(300)); // min(300,900)
+        assert_eq!(m.first_creator_event_ns, Some(700));
+        // item 4 is min of stream(800) OR comment(650).
+        assert_eq!(m.first_stream_comment_event_ns, Some(650));
+
+        // A kind absent from the stream stays None while others resolve.
+        let only_post = [ev(42, EventKind::Post)];
+        let mp = nv_attention_decay(&only_post, 10_000, 1_000, &base_inputs());
+        assert_eq!(mp.first_mention_ns, Some(42));
+        assert_eq!(mp.first_high_quality_source_ns, None);
+        assert_eq!(mp.first_creator_event_ns, None);
+        assert_eq!(mp.first_stream_comment_event_ns, None);
+    }
+- leaf_id: window_velocities_are_half_open
+  responsibility: Count items 5,6,9,10,12 velocities/acceleration over the half-open current window (cur_lo, now] vs previous (prev_lo, cur_lo], saturating on huge windows.
+  signature: 'pub fn nv_attention_decay(events: &[AttentionEvent], now_ns: u64, window_ns: u64, inputs: &DecayInputs) -> AttentionDecayModel'
+  invariants:
+  - Velocities count only kind-matching events in current window (cur_lo, now]; ts==now included, ts==cur_lo excluded (belongs to previous window).
+  - post_acceleration == current-window posts minus previous-window posts.
+  - window_ns > now_ns saturates cur_lo/prev_lo to 0 without panic; all events fall in the current window.
+  - Empty event slice => post/comment/reply velocities, creator_cadence, and post_acceleration are all 0.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn base_inputs() -> DecayInputs {
+        DecayInputs {
+            semantic_duplication_bps: 1_500,
+            source_diversity: 12,
+            raid_activity: 2,
+            narrative_saturation_bps: 3_000,
+            conversion_to_new_wallets: 40,
+            conversion_to_independent_breadth: 9,
+            conversion_to_net_flow: 25_000,
+            peak_level: 1_000,
+            current_level: 600,
+        }
+    }
+
+    fn ev(ts_ns: u64, kind: EventKind) -> AttentionEvent {
+        AttentionEvent { ts_ns, kind }
+    }
+
+    #[test]
+    fn window_velocities_are_half_open() {
+        // now=10_000, window=1_000. current=(9_000,10_000], prev=(8_000,9_000].
+        let events = [
+            ev(9_500, EventKind::Post),
+            ev(9_800, EventKind::Post),
+            ev(9_900, EventKind::Post),
+            ev(8_500, EventKind::Post), // prev window
+            ev(7_000, EventKind::Post), // older, ignored
+            ev(9_600, EventKind::Comment),
+            ev(9_700, EventKind::Reply),
+            ev(9_100, EventKind::CreatorEvent),
+        ];
+        let m = nv_attention_decay(&events, 10_000, 1_000, &base_inputs());
+        assert_eq!(m.post_velocity, 3);
+        assert_eq!(m.post_acceleration, 2); // 3 current - 1 prev
+        assert_eq!(m.comment_velocity, 1);
+        assert_eq!(m.reply_velocity, 1);
+        assert_eq!(m.creator_cadence, 1);
+
+        // Half-open boundaries: ts == now included; ts == cur_lo excluded from current
+        // (it is the top of the previous window).
+        let bnd = [
+            ev(10_000, EventKind::Post), // == now -> current
+            ev(9_000, EventKind::Post),  // == cur_lo -> previous, not current
+        ];
+        let mb = nv_attention_decay(&bnd, 10_000, 1_000, &base_inputs());
+        assert_eq!(mb.post_velocity, 1);
+        assert_eq!(mb.post_acceleration, 0); // 1 current - 1 prev
+
+        // Saturating window: window > now must not underflow/panic; all events land in current.
+        let sat = [ev(5, EventKind::Post)];
+        let ms = nv_attention_decay(&sat, 10, 1_000_000, &base_inputs());
+        assert_eq!(ms.post_velocity, 1);
+        assert_eq!(ms.post_acceleration, 1); // prev window empty
+
+        // Empty stream -> all velocities and acceleration zero.
+        let me = nv_attention_decay(&[], 10_000, 1_000, &base_inputs());
+        assert_eq!(me.post_velocity, 0);
+        assert_eq!(me.comment_velocity, 0);
+        assert_eq!(me.reply_velocity, 0);
+        assert_eq!(me.creator_cadence, 0);
+        assert_eq!(me.post_acceleration, 0);
+    }
+- leaf_id: wired_inputs_pass_through_and_fatigue
+  responsibility: Surface items 7,8,11,14,15,16,17 wired inputs verbatim and compute item-13 streamer fatigue as prev-minus-current stream counts (signed).
+  signature: 'pub fn nv_attention_decay(events: &[AttentionEvent], now_ns: u64, window_ns: u64, inputs: &DecayInputs) -> AttentionDecayModel'
+  invariants:
+  - semantic_duplication_bps, source_diversity, raid_activity, narrative_saturation_bps, conversion_to_new_wallets, conversion_to_independent_breadth, conversion_to_net_flow are copied from inputs unchanged, regardless of event stream.
+  - conversion_to_net_flow preserves sign (negative values pass through).
+  - streamer_fatigue == previous-window StreamEvent count minus current-window StreamEvent count.
+  - streamer_fatigue is negative when stream engagement is rising (current > previous).
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn base_inputs() -> DecayInputs {
+        DecayInputs {
+            semantic_duplication_bps: 1_500,
+            source_diversity: 12,
+            raid_activity: 2,
+            narrative_saturation_bps: 3_000,
+            conversion_to_new_wallets: 40,
+            conversion_to_independent_breadth: 9,
+            conversion_to_net_flow: 25_000,
+            peak_level: 1_000,
+            current_level: 600,
+        }
+    }
+
+    fn ev(ts_ns: u64, kind: EventKind) -> AttentionEvent {
+        AttentionEvent { ts_ns, kind }
+    }
+
+    #[test]
+    fn wired_inputs_pass_through_and_fatigue() {
+        // Items 7,8,11,14,15,16,17 are wired inputs and must surface verbatim,
+        // even with an empty event stream.
+        let inp = base_inputs();
+        let m = nv_attention_decay(&[], 10_000, 1_000, &inp);
+        assert_eq!(m.semantic_duplication_bps, 1_500);
+        assert_eq!(m.source_diversity, 12);
+        assert_eq!(m.raid_activity, 2);
+        assert_eq!(m.narrative_saturation_bps, 3_000);
+        assert_eq!(m.conversion_to_new_wallets, 40);
+        assert_eq!(m.conversion_to_independent_breadth, 9);
+        assert_eq!(m.conversion_to_net_flow, 25_000);
+
+        // Distinct inputs propagate exactly (rejection of hard-coded constants), incl. a
+        // negative signed net flow.
+        let mut inp2 = base_inputs();
+        inp2.semantic_duplication_bps = 42;
+        inp2.source_diversity = 7;
+        inp2.raid_activity = 0;
+        inp2.narrative_saturation_bps = 9_999;
+        inp2.conversion_to_new_wallets = 1_000_000;
+        inp2.conversion_to_independent_breadth = 3;
+        inp2.conversion_to_net_flow = -123_456;
+        let m2 = nv_attention_decay(&[ev(1, EventKind::Post)], 10_000, 1_000, &inp2);
+        assert_eq!(m2.semantic_duplication_bps, 42);
+        assert_eq!(m2.source_diversity, 7);
+        assert_eq!(m2.raid_activity, 0);
+        assert_eq!(m2.narrative_saturation_bps, 9_999);
+        assert_eq!(m2.conversion_to_new_wallets, 1_000_000);
+        assert_eq!(m2.conversion_to_independent_breadth, 3);
+        assert_eq!(m2.conversion_to_net_flow, -123_456);
+
+        // Streamer fatigue = prev-window stream count - current-window stream count.
+        // 2 prev, 0 current -> +2 (declining).
+        let declining = [
+            ev(8_200, EventKind::StreamEvent),
+            ev(8_800, EventKind::StreamEvent),
+        ];
+        assert_eq!(
+            nv_attention_decay(&declining, 10_000, 1_000, &base_inputs()).streamer_fatigue,
+            2
+        );
+
+        // 0 prev, 2 current -> -2 (rising, rejection of "always non-negative").
+        let rising = [
+            ev(9_200, EventKind::StreamEvent),
+            ev(9_800, EventKind::StreamEvent),
+        ];
+        assert_eq!(
+            nv_attention_decay(&rising, 10_000, 1_000, &base_inputs()).streamer_fatigue,
+            -2
+        );
+    }

@@ -1,0 +1,112 @@
+component: fee_plausibility
+constitution_refs: []
+spec: Independence-lock dossier for the `fee_plausibility` module of pump-quant-signals (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: fee_intensity_scaled_metric
+  responsibility: Compute the scaled cumulative-fees-per-activity floor metric with a zero-activity guard and saturating u64 cast.
+  signature: 'pub fn fee_intensity(total_fees_lamports: u128, activity_count: u64) -> u64'
+  invariants:
+  - activity_count == 0 returns 0 for any fee amount (division guard)
+  - total_fees_lamports == 0 with positive activity returns 0
+  - result equals (total_fees_lamports * INTENSITY_SCALE / activity_count) clamped to u64::MAX, and is non-decreasing in total_fees for fixed activity
+  - an overflowing product saturates to u64::MAX without panic or wraparound
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn fee_intensity_scaled_metric_props() {
+        // Zero-activity guard: always 0 regardless of fees.
+        assert_eq!(fee_intensity(0, 0), 0);
+        assert_eq!(fee_intensity(1_000_000, 0), 0);
+        assert_eq!(fee_intensity(u128::MAX, 0), 0);
+
+        // Zero fees => zero intensity for any positive activity.
+        for a in 1u64..50 {
+            assert_eq!(fee_intensity(0, a), 0);
+        }
+
+        // Exact scaled formula: fees * INTENSITY_SCALE / activity, and
+        // monotonic non-decreasing in fees for fixed activity.
+        for a in 1u64..40 {
+            let mut prev = 0u64;
+            for f in 0u128..200 {
+                let got = fee_intensity(f, a);
+                let expected =
+                    (f.saturating_mul(INTENSITY_SCALE) / a as u128).min(u64::MAX as u128) as u64;
+                assert_eq!(got, expected, "fees={f} activity={a}");
+                assert!(got >= prev, "non-monotonic fees={f} activity={a}");
+                prev = got;
+            }
+        }
+
+        // Concrete documented value: 100_000 lamports over 10 activity.
+        assert_eq!(fee_intensity(100_000, 10), 10_000 * INTENSITY_SCALE as u64);
+
+        // Saturating cast: a product exceeding u64::MAX clamps, never wraps/panics.
+        assert_eq!(fee_intensity(u128::MAX, 1), u64::MAX);
+        assert_eq!(fee_intensity(u128::MAX, 2), u64::MAX);
+    }
+- leaf_id: assess_fee_floor_verdict
+  responsibility: 'Emit the two-sided fade covariate: classify a fee footprint as InsufficientActivity, Plausible, or ImplausiblyLow and compute the proportional fade_bps.'
+  signature: 'pub fn assess_fee_floor(total_fees_lamports: u128, activity_count: u64, cfg: &FeeFloorConfig) -> FeePlausibility'
+  invariants:
+  - activity_count < cfg.min_activity yields InsufficientActivity, fade_bps == 0, and echoes activity_count
+  - intensity >= cfg.floor_intensity (or floor_intensity == 0) yields Plausible with fade_bps == 0
+  - otherwise ImplausiblyLow with fade_bps == min((floor_intensity - intensity) * 10_000 / floor_intensity, 10_000) and fade_bps >= 1
+  - fade_bps is always <= 10_000 and reported intensity equals fee_intensity(total_fees, activity_count)
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn assess_fee_floor_verdict_props() {
+        let cfg = FeeFloorConfig::neutral(); // min_activity 8, floor 5_000 * 1e6
+
+        // Below min_activity => InsufficientActivity, never fades, echoes count.
+        for a in 0u64..cfg.min_activity {
+            let r = assess_fee_floor(1_000_000_000, a, &cfg);
+            assert_eq!(r.status, FeeFloorStatus::InsufficientActivity);
+            assert_eq!(r.fade_bps, 0);
+            assert_eq!(r.activity_count, a);
+        }
+
+        // Sweep fees at fixed sufficient activity, reconstructing the whole verdict.
+        let activity = 100u64;
+        for f in 0u128..600 {
+            let total = f * 100_000; // scale up so intensity spans below/above floor
+            let r = assess_fee_floor(total, activity, &cfg);
+            let intensity = fee_intensity(total, activity);
+            assert_eq!(r.intensity, intensity);
+            assert_eq!(r.activity_count, activity);
+            // fade_bps is always a valid basis-point magnitude.
+            assert!(r.fade_bps <= 10_000);
+            if intensity >= cfg.floor_intensity {
+                assert_eq!(r.status, FeeFloorStatus::Plausible);
+                assert_eq!(r.fade_bps, 0);
+            } else {
+                assert_eq!(r.status, FeeFloorStatus::ImplausiblyLow);
+                let deficit = cfg.floor_intensity - intensity;
+                let expected =
+                    ((deficit as u128 * 10_000) / cfg.floor_intensity as u128).min(10_000) as u32;
+                assert_eq!(r.fade_bps, expected, "total={total}");
+                // Implausibly-low always carries a strictly positive fade.
+                assert!(r.fade_bps >= 1);
+            }
+        }
+
+        // floor_intensity == 0 => always Plausible with no fade (guarded div).
+        let zero_floor = FeeFloorConfig {
+            min_activity: 1,
+            floor_intensity: 0,
+        };
+        assert_eq!(
+            assess_fee_floor(0, 100, &zero_floor).status,
+            FeeFloorStatus::Plausible
+        );
+        assert_eq!(assess_fee_floor(0, 100, &zero_floor).fade_bps, 0);
+
+        // Concrete rejection case: 100 txs at 1_000 lamports each => 8_000 bps fade.
+        let r = assess_fee_floor(100_000, 100, &cfg);
+        assert_eq!(r.status, FeeFloorStatus::ImplausiblyLow);
+        assert_eq!(r.intensity, 1_000 * INTENSITY_SCALE as u64);
+        assert_eq!(r.fade_bps, 8_000);
+    }

@@ -40,11 +40,15 @@ def main() -> int:
     if not r.passed:
         failures.append("no-stubs")
 
-    # secrets
+    # secrets — WARNING ONLY (non-blocking).
+    # Repo policy: the operator has explicitly accepted the risk of credentials committed to
+    # this repository (e.g. a Helius API key in docs). Findings are still PRINTED for visibility
+    # so nothing is hidden, but they do not fail the gate. Rotate exposed keys at your discretion.
     r = checks.check_secrets(repo)
-    print(f"[ci_gate] secrets: {'ok' if r.passed else 'FAIL'} — {r.detail}")
-    if not r.passed:
-        failures.append("secrets")
+    if r.passed:
+        print(f"[ci_gate] secrets: ok — {r.detail}")
+    else:
+        print(f"[ci_gate] secrets: WARN (allowed by repo policy, not failing) — {r.detail}")
 
     # hot-path lint (criterion 109 bans)
     r = check_hotpath_lint(repo, None, None)

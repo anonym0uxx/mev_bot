@@ -1,0 +1,138 @@
+component: types
+constitution_refs: []
+spec: Independence-lock dossier for the `types` module of pump-quant-canonical. Each leaf's property_test is the locked correctness authority over that leaf's public contract, verified to compile and pass against the committed Phase-A implementation. Decision logic is integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: tt_source_class_rank_authority
+  responsibility: SourceClass::rank defines the strict, total authority order that alone decides which source's claimed value becomes canonical (§15/§18.8).
+  signature: pub const fn rank(self) -> u8
+  invariants:
+  - 'The four classes rank exactly 0,1,2,3: EarliestSignal=0, StructuredObservation=1, CanonicalRepair=2, ReconciledExecution=3.'
+  - rank is strictly ascending across the authority lattice, so each level outranks every lower level (ReconciledExecution is the unique maximum, EarliestSignal the unique minimum).
+  - rank is injective over the four classes (four distinct values), guaranteeing a total, unambiguous winner.
+  - SourceClass::ALL has length 4 and is ordered strictly ascending by rank, covering every class exactly once.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn source_class_rank_is_strict_total_authority_order() {
+        // Concrete authority ranks (§15): higher wins field resolution.
+        assert_eq!(SourceClass::EarliestSignal.rank(), 0);
+        assert_eq!(SourceClass::StructuredObservation.rank(), 1);
+        assert_eq!(SourceClass::CanonicalRepair.rank(), 2);
+        assert_eq!(SourceClass::ReconciledExecution.rank(), 3);
+
+        // Strictly ascending authority: each level outranks the previous.
+        assert!(SourceClass::EarliestSignal.rank() < SourceClass::StructuredObservation.rank());
+        assert!(SourceClass::StructuredObservation.rank() < SourceClass::CanonicalRepair.rank());
+        assert!(SourceClass::CanonicalRepair.rank() < SourceClass::ReconciledExecution.rank());
+
+        // ReconciledExecution is the unique maximum authority; EarliestSignal the unique minimum.
+        let ranks: Vec<u8> = SourceClass::ALL.iter().map(|c| c.rank()).collect();
+        assert_eq!(ranks, vec![0, 1, 2, 3]);
+        assert_eq!(
+            *ranks.iter().max().unwrap(),
+            SourceClass::ReconciledExecution.rank()
+        );
+        assert_eq!(
+            *ranks.iter().min().unwrap(),
+            SourceClass::EarliestSignal.rank()
+        );
+
+        // Injective: four classes -> four distinct ranks.
+        let mut sorted = ranks.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 4);
+
+        // ALL is ordered ascending by rank and covers exactly the four classes once.
+        assert_eq!(SourceClass::ALL.len(), 4);
+        for w in SourceClass::ALL.windows(2) {
+            assert!(w[0].rank() < w[1].rank());
+        }
+        assert_eq!(SourceClass::ALL[0], SourceClass::EarliestSignal);
+        assert_eq!(SourceClass::ALL[3], SourceClass::ReconciledExecution);
+    }
+- leaf_id: tt_commitment_rank_progression
+  responsibility: Commitment::rank is the monotone chain-lifecycle order used to keep the highest observed commitment among equally-authoritative sources (§17).
+  signature: pub const fn rank(self) -> u8
+  invariants:
+  - Lifecycle ranks are exactly Seen=0, Processed=1, Confirmed=2, Finalized=3.
+  - rank is strictly increasing along the natural chain progression, so a later lifecycle stage always ranks above an earlier one.
+  - Finalized is the unique maximum and Seen the unique minimum; rank is injective over the four levels.
+  - The derived Ord agrees with rank ordering (no inversion), so ordering the enum matches ordering its rank.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn commitment_rank_is_monotone_chain_lifecycle() {
+        // Concrete lifecycle ranks used to keep the highest observed commitment.
+        assert_eq!(Commitment::Seen.rank(), 0);
+        assert_eq!(Commitment::Processed.rank(), 1);
+        assert_eq!(Commitment::Confirmed.rank(), 2);
+        assert_eq!(Commitment::Finalized.rank(), 3);
+
+        // Strictly increasing along the natural chain progression.
+        assert!(Commitment::Seen.rank() < Commitment::Processed.rank());
+        assert!(Commitment::Processed.rank() < Commitment::Confirmed.rank());
+        assert!(Commitment::Confirmed.rank() < Commitment::Finalized.rank());
+
+        // Finalized is the unique maximum; Seen the unique minimum.
+        let all = [
+            Commitment::Seen,
+            Commitment::Processed,
+            Commitment::Confirmed,
+            Commitment::Finalized,
+        ];
+        let ranks: Vec<u8> = all.iter().map(|c| c.rank()).collect();
+        assert_eq!(ranks, vec![0, 1, 2, 3]);
+        assert_eq!(*ranks.iter().max().unwrap(), Commitment::Finalized.rank());
+
+        // Derived Ord agrees with rank ordering (monotone, no inversion).
+        assert!(Commitment::Seen < Commitment::Finalized);
+        assert!(Commitment::Confirmed > Commitment::Processed);
+
+        // Injective across the four levels.
+        let mut r = ranks.clone();
+        r.sort_unstable();
+        r.dedup();
+        assert_eq!(r.len(), 4);
+    }
+- leaf_id: tt_signature_identity
+  responsibility: Signature preserves its raw 64 bytes and orders byte-lexicographically, giving a deterministic transaction merge key and eviction tie-break (§17).
+  signature: 'pub const fn new(bytes: [u8; 64]) -> Self; pub const fn bytes(&self) -> &[u8; 64]'
+  invariants:
+  - bytes() returns exactly the 64 bytes passed to new() (lossless round-trip).
+  - Equal byte arrays yield equal signatures and distinct byte arrays yield distinct signatures (identity is the full byte content).
+  - 'Ordering is byte-lexicographic: the first differing byte dominates regardless of later bytes.'
+  - The ordering is used only for deterministic iteration/tie-break, never for authority.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn signature_preserves_bytes_and_orders_lexicographically() {
+        let a = Signature::new([7u8; 64]);
+        // Raw bytes round-trip exactly.
+        assert_eq!(a.bytes(), &[7u8; 64]);
+
+        // Equal bytes => equal identity (the merge key).
+        let a2 = Signature::new([7u8; 64]);
+        assert_eq!(a, a2);
+
+        // Distinct bytes => distinct identity.
+        let b = Signature::new([8u8; 64]);
+        assert_ne!(a, b);
+
+        // Byte-lexicographic ordering for deterministic iteration / eviction tie-break.
+        assert!(a < b);
+        let mut lo = [0u8; 64];
+        lo[0] = 1;
+        let mut hi = [0u8; 64];
+        hi[0] = 2;
+        assert!(Signature::new(lo) < Signature::new(hi));
+        // First differing byte dominates: [1,9,...] < [2,0,...].
+        let mut x = [0u8; 64];
+        x[0] = 1;
+        x[1] = 9;
+        let mut y = [0u8; 64];
+        y[0] = 2;
+        assert!(Signature::new(x) < Signature::new(y));
+    }

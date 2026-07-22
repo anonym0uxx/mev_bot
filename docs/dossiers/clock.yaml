@@ -1,0 +1,147 @@
+component: clock
+constitution_refs: []
+spec: Independence-lock dossier for the `clock` module of pump-quant-clock. Each leaf's property_test is the locked correctness authority over that leaf's public contract, verified to compile and pass against the committed Phase-A implementation. Decision logic is integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: clk_replay_serves_in_order
+  responsibility: ReplayClock serves sealed readings in recorded order under caller-driven advance, then saturates on the final reading and latches exhaustion.
+  signature: pub fn advance(&self) -> ClockReading; pub fn current(&self) -> ClockReading; pub fn position(&self) -> usize; pub fn is_exhausted(&self) -> bool
+  invariants:
+  - Before any advance the cursor is at position 0 and current()/monotonic_ns()/wallclock_ns()/current_slot() reflect sequence[0].
+  - Each advance() steps the cursor forward by exactly one and returns the newly-served reading equal to sequence[position].
+  - Advancing past the last index is a no-op that keeps serving the final reading (saturating overflow-by-contract, position stays at len()-1).
+  - is_exhausted() is false while position < len()-transitions and latches true only once the cursor has stepped past the last sealed sample.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn clk_replay_serves_in_order_and_saturates() {
+        let seq = vec![
+            ClockReading::new(10, 1_000, 5),
+            ClockReading::new(20, 2_000, 6),
+            ClockReading::new(35, 3_500, 8),
+        ];
+        let clock = ReplayClock::new(seq.clone());
+
+        // Before any advance: cursor at 0, serving seq[0].
+        assert_eq!(clock.position(), 0);
+        assert_eq!(clock.len(), 3);
+        assert!(!clock.is_empty());
+        assert!(!clock.is_exhausted());
+        assert_eq!(clock.current(), ClockReading::new(10, 1_000, 5));
+        assert_eq!(clock.monotonic_ns(), 10);
+        assert_eq!(clock.wallclock_ns(), 1_000);
+        assert_eq!(clock.current_slot(), 5);
+
+        // advance() returns the newly-served reading and steps the cursor by one.
+        assert_eq!(clock.advance(), ClockReading::new(20, 2_000, 6));
+        assert_eq!(clock.position(), 1);
+        assert_eq!(clock.advance(), ClockReading::new(35, 3_500, 8));
+        assert_eq!(clock.position(), 2);
+        assert!(!clock.is_exhausted());
+
+        // Advancing past the end saturates on the final reading and latches exhaustion.
+        let last = ClockReading::new(35, 3_500, 8);
+        for _ in 0..5 {
+            assert_eq!(clock.advance(), last);
+        }
+        assert!(clock.is_exhausted());
+        assert_eq!(clock.position(), 2);
+        assert_eq!(clock.current(), last);
+        assert_eq!(clock.monotonic_ns(), 35);
+    }
+- leaf_id: clk_replay_reset_reproducible
+  responsibility: ReplayClock replay is byte-reproducible across independent clocks over the same sealed sequence, reset rewinds to the first reading, and empty sequences are rejected at construction.
+  signature: 'pub fn new(sequence: Vec<ClockReading>) -> Self; pub fn reset(&self); pub fn is_exhausted(&self) -> bool; pub fn position(&self) -> usize'
+  invariants:
+  - Two clocks built from the same sequence and advanced in lockstep serve identical current()/position() at every step, including past-end saturation.
+  - At step k the served reading equals sequence[min(k, len()-1)] (clamped index).
+  - reset() returns the cursor to position 0, clears is_exhausted(), and serves sequence[0] again.
+  - Constructing a ReplayClock from an empty Vec panics with a 'non-empty' message (constructor precondition).
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn clk_replay_reset_and_reproducible() {
+        let seq = vec![
+            ClockReading::new(1, 2, 3),
+            ClockReading::new(4, 5, 6),
+            ClockReading::new(7, 8, 9),
+        ];
+
+        // Two independent clocks over the same sealed sequence, advanced in
+        // lockstep past the end, must produce byte-identical streams (§19).
+        let a = ReplayClock::new(seq.clone());
+        let b = ReplayClock::new(seq.clone());
+        let mut expected_idx = 0usize;
+        for step in 0..(seq.len() + 3) {
+            if step > 0 {
+                a.advance();
+                b.advance();
+                expected_idx = (expected_idx + 1).min(seq.len() - 1);
+            }
+            assert_eq!(a.current(), seq[expected_idx]);
+            assert_eq!(a.current(), b.current());
+            assert_eq!(a.position(), b.position());
+        }
+
+        // After exhaustion, reset returns the cursor to the first reading and
+        // clears exhaustion.
+        assert!(a.is_exhausted());
+        a.reset();
+        assert_eq!(a.position(), 0);
+        assert!(!a.is_exhausted());
+        assert_eq!(a.current(), ClockReading::new(1, 2, 3));
+    }
+
+    #[test]
+    #[should_panic(expected = "non-empty")]
+    fn clk_replay_rejects_empty_sequence() {
+        let _ = ReplayClock::new(Vec::new());
+    }
+- leaf_id: clk_dtc_saturating_advance
+  responsibility: DeterministicTestClock accumulates advances exactly, saturates each field at u64::MAX without wrapping, supports outright set, and works behind the &dyn Clock seam.
+  signature: 'pub fn advance_monotonic(&self, delta_ns: u64) -> u64; pub fn advance_wallclock(&self, delta_ns: u64) -> u64; pub fn advance_slot(&self, delta_slots: u64) -> u64; pub fn set_monotonic_ns(&self, value: u64)'
+  invariants:
+  - advance_* returns the new running total and mutates the field in place; sequential advances accumulate exactly (sum of deltas from the start value).
+  - Each field saturates at u64::MAX on overflow and stays pinned there on further advances (no wraparound, §22).
+  - A zero delta advance is a pure read that leaves the value unchanged; set_* overwrites the field outright.
+  - A DeterministicTestClock is usable as &dyn Clock and the trait reads reflect prior mutations.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn clk_dtc_accumulates_then_saturates() {
+        let c = DeterministicTestClock::new(100, 200, 3);
+        assert_eq!(c.monotonic_ns(), 100);
+        assert_eq!(c.wallclock_ns(), 200);
+        assert_eq!(c.current_slot(), 3);
+
+        // advance returns the new running total and mutates in place.
+        assert_eq!(c.advance_monotonic(25), 125);
+        assert_eq!(c.advance_wallclock(50), 250);
+        assert_eq!(c.advance_slot(4), 7);
+        assert_eq!(c.monotonic_ns(), 125);
+        assert_eq!(c.wallclock_ns(), 250);
+        assert_eq!(c.current_slot(), 7);
+
+        // set overwrites the field outright.
+        c.set_monotonic_ns(1_000);
+        assert_eq!(c.monotonic_ns(), 1_000);
+
+        // Overflow contract: saturate at u64::MAX, never wrap (§22).
+        let d = DeterministicTestClock::new(u64::MAX - 5, u64::MAX, u64::MAX - 1);
+        assert_eq!(d.advance_monotonic(10), u64::MAX);
+        assert_eq!(d.advance_wallclock(1), u64::MAX);
+        assert_eq!(d.advance_slot(1), u64::MAX);
+        // Pinned after saturation.
+        assert_eq!(d.advance_monotonic(999), u64::MAX);
+        assert_eq!(d.monotonic_ns(), u64::MAX);
+
+        // Zero delta is a no-op read.
+        let z = DeterministicTestClock::zeroed();
+        assert_eq!(z.advance_slot(0), 0);
+        assert_eq!(z.current_slot(), 0);
+
+        // Usable behind the trait-object seam.
+        let dynref: &dyn Clock = &c;
+        assert_eq!(dynref.monotonic_ns(), 1_000);
+    }

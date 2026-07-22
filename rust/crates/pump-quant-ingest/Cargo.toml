@@ -1,0 +1,14 @@
+[package]
+name = "pump-quant-ingest"
+version = "0.1.0"
+edition = "2021"
+
+# Self-contained, std-only crate. No external dependencies by design:
+# base58 decoding and JSON scanning are implemented in-crate so the
+# provider-parsing boundary (pq-ingest, ARCHITECTURE §ingest) carries no
+# serde/bs58/simd-json supply-chain surface and stays fully deterministic (§22).
+[dependencies]
+
+[lib]
+name = "pump_quant_ingest"
+path = "src/lib.rs"

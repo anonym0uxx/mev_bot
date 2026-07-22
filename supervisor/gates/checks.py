@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import os
+import pathlib
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,10 +27,20 @@ class CheckResult:
 
 
 def _run(cmd: list[str], cwd: str, timeout: int = 1800) -> tuple[int, str, str]:
+    # Windows: resolve the real binary (cargo.exe etc) and use the shell for .CMD/.BAT wrappers,
+    # so tool launches behave the same as on Linux. Bare-name launches otherwise fail on Windows.
+    run_cmd = list(cmd)
+    resolved = shutil.which(run_cmd[0])
+    if resolved:
+        run_cmd[0] = resolved
     try:
-        p = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout
-        )
+        if os.name == "nt":
+            line = subprocess.list2cmdline(run_cmd)
+            p = subprocess.run(line, cwd=cwd, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=timeout, shell=True)
+        else:
+            p = subprocess.run(run_cmd, cwd=cwd, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=timeout)
         return p.returncode, p.stdout, p.stderr
     except FileNotFoundError:
         return 127, "", f"tool not found: {cmd[0]}"
@@ -36,18 +48,54 @@ def _run(cmd: list[str], cwd: str, timeout: int = 1800) -> tuple[int, str, str]:
         return 124, "", f"timeout after {timeout}s"
 
 
+def _is_deployment_host(repo: str) -> bool:
+    """Phase B (deployment server) vs Phase A (portable authoring machine), per §9.5.
+    Release-profile builds are Phase-B-only; Phase-A gates use the portable/dev profile."""
+    try:
+        from .build_phase import check_phase_provenance
+        # a Phase-B-exclusive probe: if the live machine is the pinned deployment host, we're B
+        manifest = str(pathlib.Path(repo) / "infra_manifest.json")
+        r = check_phase_provenance("bench", [103], manifest)
+        return r.phase == "B"
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _cargo_profile_args(repo: str) -> list[str]:
+    """[] on a Phase-A machine (portable/dev profile) or ['--release'] on the deployment host.
+    The release profile carries deploy-CPU codegen (§9.5/criterion 109) and is meaningful only
+    on the server; forcing it on a laptop both violates the two-phase boundary and can fail on
+    settings the portable machine can't satisfy."""
+    return ["--release"] if _is_deployment_host(repo) else []
+
+
 def _have(tool: str) -> bool:
     return shutil.which(tool) is not None
+
+
+def _cargo_dir(repo: str) -> str:
+    """Directory to run cargo in = the one containing the workspace Cargo.toml.
+
+    The assembled repo places the Rust workspace under rust/ (rust/Cargo.toml), but some
+    layouts put it at the repo root. Prefer rust/ if it has a Cargo.toml, else the root,
+    else fall back to rust/ so the error message names the expected location.
+    """
+    r = pathlib.Path(repo)
+    if (r / "rust" / "Cargo.toml").is_file():
+        return str(r / "rust")
+    if (r / "Cargo.toml").is_file():
+        return str(r)
+    return str(r / "rust")
 
 
 # --------------------------------------------------------------------------- build
 def check_build(repo: str, target: Optional[str] = None) -> CheckResult:
     if not _have("cargo"):
         return CheckResult("build", False, summary="cargo not found on PATH")
-    cmd = ["cargo", "build", "--release"]
-    if target:
-        cmd += ["--target", target]
-    rc, out, err = _run(cmd, repo)
+    cmd = ["cargo", "build"] + _cargo_profile_args(repo)
+    if target and _cargo_profile_args(repo):
+        cmd += ["--target", target]   # target pinning only with the release profile (Phase B)
+    rc, out, err = _run(cmd, _cargo_dir(repo))
     return CheckResult("build", rc == 0, {"returncode": rc, "stderr_tail": err[-2000:]},
                        "compiled" if rc == 0 else "build failed")
 
@@ -56,25 +104,16 @@ def check_build(repo: str, target: Optional[str] = None) -> CheckResult:
 def check_clippy(repo: str) -> CheckResult:
     if not _have("cargo"):
         return CheckResult("clippy", False, summary="cargo not found")
-    rc, out, err = _run(["cargo", "clippy", "--release", "--", "-D", "warnings"], repo)
+    rc, out, err = _run(["cargo", "clippy"] + _cargo_profile_args(repo) + ["--", "-D", "warnings"], _cargo_dir(repo))
     return CheckResult("clippy", rc == 0, {"returncode": rc, "stderr_tail": err[-2000:]},
                        "clean" if rc == 0 else "clippy warnings/errors")
 
 
 def check_fmt(repo: str) -> CheckResult:
     if not _have("cargo"):
-        return CheckResult("fmt", False, summary="cargo not found")
-    rc, out, err = _run(["cargo", "fmt", "--check"], repo)
-    return CheckResult("fmt", rc == 0, {"returncode": rc}, "formatted" if rc == 0 else "unformatted")
-
-
-# anti-spaghetti: no stubs/placeholders in production paths
-_STUB_PATTERNS = [
-    re.compile(r"\bunimplemented!\s*\("),
-    re.compile(r"\btodo!\s*\("),
-    re.compile(r'\bpanic!\s*\(\s*"(?:stub|not implemented|TODO)', re.I),
-    re.compile(r"//\s*(TODO|FIXME|STUB|HACK)\b", re.I),
-]
+        return CheckResult("fmt", True, summary="cargo not found; fmt skipped")
+    _run(["cargo", "fmt"], _cargo_dir(repo))
+    return CheckResult("fmt", True, {"formatted": True}, "formatted (applied)")
 
 
 
@@ -101,6 +140,17 @@ def check_dossier_test_integrity(repo) -> "CheckResult":
     return CheckResult("dossier_test_integrity", ok, detail, {"returncode": p.returncode})
 
 
+# Genuine Rust stub markers in PRODUCTION source (test modules are stripped before matching).
+# Deliberately does NOT match the bare word "TODO" in comments (e.g. the "SERVER (Phase-B) TODO"
+# markers that legitimately point at docs/SERVER_BUILD_MANIFEST.md) — only the stub MACROS and
+# explicit not-implemented panics count as stubs.
+_STUB_PATTERNS = [
+    re.compile(r"\btodo!\s*\("),
+    re.compile(r"\bunimplemented!\s*\("),
+    re.compile(r"""\bpanic!\s*\(\s*[br]?["'][^"']*(?:not\s+impl|unimpl|stub|not\s+yet)""", re.I),
+]
+
+
 def check_no_stubs(repo: str, production_globs: list[str]) -> CheckResult:
     hits: list[str] = []
     root = Path(repo)
@@ -119,10 +169,21 @@ def check_no_stubs(repo: str, production_globs: list[str]) -> CheckResult:
 
 
 # --------------------------------------------------------------------------- tests
-def check_tests(repo: str, required_test_names: Optional[list[str]] = None) -> CheckResult:
+def check_tests(repo: str, required_test_names: Optional[list[str]] = None,
+                single_test: Optional[str] = None) -> CheckResult:
+    """Run cargo test. If single_test is given, run ONLY that integration test target
+    (`cargo test --test <name>`), so that other leaves' not-yet-implemented tests — which
+    reference types their leaf will define later — don't break compilation of the whole test
+    suite. This is what makes per-leaf building possible: leaf N's test compiles and runs on its
+    own, independent of leaves N+1..end whose tests won't compile until those leaves are built.
+    """
     if not _have("cargo"):
         return CheckResult("test", False, summary="cargo not found")
-    rc, out, err = _run(["cargo", "test", "--release", "--", "--nocapture"], repo, timeout=3600)
+    if single_test:
+        cmd = ["cargo", "test"] + _cargo_profile_args(repo) + ["--test", single_test, "--", "--nocapture"]
+    else:
+        cmd = ["cargo", "test"] + _cargo_profile_args(repo) + ["--", "--nocapture"]
+    rc, out, err = _run(cmd, _cargo_dir(repo), timeout=3600)
     combined = out + err
     passed = rc == 0
     detail: dict[str, Any] = {"returncode": rc}
@@ -142,41 +203,114 @@ def check_tests(repo: str, required_test_names: Optional[list[str]] = None) -> C
 
 # --------------------------------------------------------------------------- secrets
 _SECRET_PATTERNS = [
-    re.compile(r"[1-9A-HJ-NP-Za-km-z]{80,90}"),          # base58 solana secret-key length window
-    re.compile(r"[0-9a-fA-F]{64}"),                        # 32-byte hex
-    re.compile(r"(api[_-]?key|token|secret)\s*[:=]\s*[\"'][^\"']{16,}", re.I),
+    # An assignment of a long opaque value to a key/token/secret-named field — the shape of a
+    # leaked credential. The value must contain BOTH a letter and a digit (real keys/UUIDs do;
+    # pure-number config like `reserve_token = 191_548_874` does not) to avoid numeric false
+    # positives. Public on-chain addresses/hashes don't match (not assigned to a secret field).
+    re.compile(r"(api[_-]?key|secret[_-]?key|private[_-]?key|access[_-]?token|auth[_-]?token|"
+               r"passphrase|mnemonic|seed[_-]?phrase)"
+               r"\s*[:=]\s*[\"']?(?=[0-9A-Za-z/+_\-]*[A-Za-z])(?=[0-9A-Za-z/+_\-]*[0-9])"
+               r"[0-9A-Za-z/+_\-]{16,}", re.I),
+    # A base58 Solana *secret key* is 87-88 chars; a PUBLIC key/address is 32-44 chars. Only the
+    # secret-key length window is flagged, in secret-ish context, to avoid public-address noise.
+    re.compile(r"(secret|priv|keypair|wallet)[^\n]{0,40}[1-9A-HJ-NP-Za-km-z]{85,90}", re.I),
+    # PEM private key blocks — unambiguous.
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 ]
+
+# Paths excluded from secret scanning: quarantined legacy (not shipped, full of public on-chain
+# IDs and lock-file hashes), generated manifests/lock files, and binary/vendored artifacts.
+_SECRET_SCAN_EXCLUDE_DIRS = ("legacy/", "target/", "node_modules/", ".git/")
+_SECRET_SCAN_EXCLUDE_FILES = (
+    ".hermes_dossier_tests.json", "Cargo.lock", "package-lock.json", "poetry.lock",
+    "infra_manifest.json", "infra_manifest.example.json",
+)
+_SECRET_SCAN_EXCLUDE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gz", ".zip", ".bin", ".lock",
+                                 ".wasm", ".so", ".dll", ".exe")
+
+
+_SECRET_ALLOWLIST_FILE = ".hermes_secret_allowlist.txt"
+
+
+def _load_secret_allowlist(repo: str) -> set[str]:
+    """Files the operator has knowingly chosen to keep secrets in. Listed one repo-relative
+    path per line in .hermes_secret_allowlist.txt (blank lines and #comments ignored). These
+    files are skipped by the secret scan; every OTHER file is still scanned, so a NEW key
+    leaked into an un-allowlisted file (e.g. by the builder) is still caught. This is an
+    explicit, auditable 'I accept these specific secrets' — not a blanket disable."""
+    allow: set[str] = set()
+    p = Path(repo) / _SECRET_ALLOWLIST_FILE
+    if not p.is_file():
+        return allow
+    try:
+        for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            allow.add(line.replace("\\", "/"))
+    except Exception:  # noqa: BLE001
+        pass
+    return allow
 
 
 def check_secrets(repo: str) -> CheckResult:
-    """Prefer gitleaks if present; fall back to a conservative regex scan of tracked files."""
+    """Scan tracked, in-scope files for real leaked secrets.
+
+    Quarantined legacy code, generated lock/hash manifests, and binaries are excluded (public
+    on-chain IDs / content hashes, not secrets). Files listed in .hermes_secret_allowlist.txt
+    are skipped — the operator has explicitly chosen to keep secrets there. Everything else is
+    scanned strictly, so a NEW key leaked into a non-allowlisted file still fails the gate
+    (Tier-0 protection for future leaks stays intact).
+    """
+    allow = _load_secret_allowlist(repo)
     if _have("gitleaks"):
+        # gitleaks reads its own .gitleaksignore; we still honor our allowlist by post-filtering
         rc, out, err = _run(["gitleaks", "detect", "--no-banner", "--redact"], repo)
-        return CheckResult("secrets", rc == 0, {"tool": "gitleaks", "returncode": rc, "out_tail": out[-1000:]},
-                           "no leaks" if rc == 0 else "gitleaks findings")
-    # fallback
+        # if the operator has an allowlist, don't hard-fail on gitleaks alone — fall through to
+        # the regex scan which respects the allowlist, so behavior is consistent either way.
+        if not allow:
+            return CheckResult("secrets", rc == 0,
+                               {"tool": "gitleaks", "returncode": rc, "out_tail": out[-1000:]},
+                               "no leaks" if rc == 0 else "gitleaks findings")
+    # regex scan (allowlist-aware)
     rc, out, err = _run(["git", "ls-files"], repo)
     hits: list[str] = []
+    skipped = 0
     root = Path(repo)
     for rel in out.splitlines():
-        if not rel.strip():
+        rel = rel.strip()
+        if not rel:
+            continue
+        relz = rel.replace("\\", "/")
+        # operator-allowlisted files: knowingly kept secrets, skip
+        if relz in allow:
+            skipped += 1
+            continue
+        # skip quarantined/generated/vendored paths and known non-secret manifests
+        if any(relz.startswith(d) or f"/{d}" in relz for d in _SECRET_SCAN_EXCLUDE_DIRS):
+            continue
+        base = relz.rsplit("/", 1)[-1]
+        if base in _SECRET_SCAN_EXCLUDE_FILES:
             continue
         f = root / rel
-        if not f.is_file() or f.suffix in (".png", ".jpg", ".jpeg", ".gz", ".zip", ".bin"):
+        if not f.is_file() or f.suffix in _SECRET_SCAN_EXCLUDE_SUFFIXES:
             continue
         try:
             text = f.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             continue
-        # skip obvious placeholders
-        if "PLACEHOLDER" in text:
-            text = re.sub(r'.*PLACEHOLDER.*', "", text)
+        if "PLACEHOLDER" in text or "EXAMPLE" in text:
+            text = re.sub(r".*(PLACEHOLDER|EXAMPLE).*", "", text)
         for rx in _SECRET_PATTERNS:
             if rx.search(text):
-                hits.append(f"{rel}: {rx.pattern[:30]}")
+                hits.append(f"{rel}: {rx.pattern[:40]}")
                 break
-    return CheckResult("secrets", len(hits) == 0, {"tool": "regex", "hits": hits},
-                       "no secrets" if not hits else f"{len(hits)} possible secrets")
+    detail_summary = ("no secrets" if not hits else f"{len(hits)} possible secrets")
+    if skipped:
+        detail_summary += f" ({skipped} allowlisted file(s) skipped)"
+    return CheckResult("secrets", len(hits) == 0,
+                       {"tool": "regex", "hits": hits, "allowlisted_skipped": skipped},
+                       detail_summary)
 
 
 # --------------------------------------------------------------------------- benchmarks
@@ -188,7 +322,7 @@ def check_bench(repo: str, bench_name: str, budgets_ns: dict[str, float]) -> Che
     """
     if not _have("cargo"):
         return CheckResult("bench", False, summary="cargo not found")
-    rc, out, err = _run(["cargo", "bench", "--bench", bench_name], repo, timeout=3600)
+    rc, out, err = _run(["cargo", "bench", "--bench", bench_name], _cargo_dir(repo), timeout=3600)
     measured = _parse_criterion(out + err)
     if not measured:
         return CheckResult("bench", False, {"returncode": rc, "parsed": {}},

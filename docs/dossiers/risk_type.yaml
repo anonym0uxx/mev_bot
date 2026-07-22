@@ -1,0 +1,250 @@
+component: risk_type
+constitution_refs: []
+spec: Independence-lock dossier for the `risk_type` module of pump-quant-strategy (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: rt_risk_score_bps
+  responsibility: Compute the composite behavioral-risk score as the saturating integer mean of four risk axes in bps.
+  signature: 'pub fn risk_score_bps(m: &RiskMeasures) -> u32'
+  invariants:
+  - Result equals (creator_ownership_bps.min(10_000) + (10_000-buyer_independence_bps.min(10_000)) + (10_000-cluster_adjusted_breadth_bps.min(10_000)) + wallet_concentration_bps.min(10_000)) / 4.
+  - Result is always in the closed range [0, 10_000].
+  - Inputs above 10_000 are clamped to 10_000 before averaging (saturating), so oversized values never inflate the score beyond 10_000.
+  - All-minimal-risk axes yield 0; all-maximal-risk axes yield 10_000; the clean baseline (500,9000,9000,500) yields exactly 750.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn measures(co: u32, bi: u32, br: u32, wc: u32) -> RiskMeasures {
+        RiskMeasures {
+            mechanically_sellable: true,
+            protocol_safe: true,
+            active_creator_dump: false,
+            exit_capacity_bps: 9_000,
+            creator_ownership_bps: co,
+            buyer_independence_bps: bi,
+            cluster_adjusted_breadth_bps: br,
+            wallet_concentration_bps: wc,
+            measure_completeness_bps: 9_000,
+        }
+    }
+
+    #[test]
+    fn risk_score_bps_is_saturating_mean_of_four_axes() {
+        // Concrete anchor from the module's own doctest math.
+        assert_eq!(risk_score_bps(&measures(1_000, 6_000, 5_000, 2_000)), 3_000);
+        // Clean baseline: (500 + 1000 + 1000 + 500)/4 = 750.
+        assert_eq!(risk_score_bps(&measures(500, 9_000, 9_000, 500)), 750);
+        // Maximal risk on every axis -> 10_000.
+        assert_eq!(risk_score_bps(&measures(10_000, 0, 0, 10_000)), 10_000);
+        // Minimal risk on every axis -> 0.
+        assert_eq!(risk_score_bps(&measures(0, 10_000, 10_000, 0)), 0);
+
+        // Saturation: out-of-range inputs are clamped to 10_000 before averaging.
+        let sat = risk_score_bps(&measures(50_000, 50_000, 50_000, 50_000));
+        // (10_000 + 0 + 0 + 10_000)/4 = 5_000.
+        assert_eq!(sat, 5_000);
+
+        // Exhaustive invariant sweep: formula match + bounds over a deterministic grid.
+        let inv = |x: u32| 10_000u32.saturating_sub(x.min(10_000));
+        for &co in &[0u32, 2_500, 7_500, 10_000, 40_000] {
+            for &bi in &[0u32, 3_000, 10_000, 40_000] {
+                for &br in &[0u32, 6_000, 10_000] {
+                    for &wc in &[0u32, 4_000, 10_000, 40_000] {
+                        let s = risk_score_bps(&measures(co, bi, br, wc));
+                        let expect = (co.min(10_000) + inv(bi) + inv(br) + wc.min(10_000)) / 4;
+                        assert_eq!(
+                            s, expect,
+                            "formula mismatch co={co} bi={bi} br={br} wc={wc}"
+                        );
+                        assert!(s <= 10_000, "out of range: {s}");
+                    }
+                }
+            }
+        }
+    }
+- leaf_id: rt_classify
+  responsibility: 'Grade a candidate into a RiskType via the fixed priority cascade: mechanical veto, research floor, gradeable floor, avoid score, else fragile.'
+  signature: 'pub fn classify_risk_type(m: &RiskMeasures, th: &RiskThresholds) -> RiskType'
+  invariants:
+  - Any mechanical fault (!protocol_safe OR !mechanically_sellable OR active_creator_dump OR exit_capacity_bps < min_exit_capacity_bps) forces Untradeable, dominating completeness and score.
+  - exit_capacity_bps exactly at min_exit_capacity_bps is NOT vetoed (strict less-than boundary).
+  - 'With no mechanical fault: completeness < research_completeness_bps => ResearchOnly; research floor <= completeness < gradeable_completeness_bps => Unknown.'
+  - 'With completeness >= gradeable floor: risk_score_bps >= avoid_score_bps => AvoidUnlessProven (inclusive), otherwise TradableButFragile.'
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn clean() -> RiskMeasures {
+        RiskMeasures {
+            mechanically_sellable: true,
+            protocol_safe: true,
+            active_creator_dump: false,
+            exit_capacity_bps: 9_000,
+            creator_ownership_bps: 500,
+            buyer_independence_bps: 9_000,
+            cluster_adjusted_breadth_bps: 9_000,
+            wallet_concentration_bps: 500,
+            measure_completeness_bps: 9_000,
+        }
+    }
+
+    #[test]
+    fn classify_risk_type_priority_cascade_is_exact() {
+        let th = RiskThresholds::test();
+
+        // Baseline clean, complete, low-score candidate -> TradableButFragile.
+        assert_eq!(
+            classify_risk_type(&clean(), &th),
+            RiskType::TradableButFragile
+        );
+
+        // (1) Mechanical vetoes each force Untradeable, dominating everything else.
+        let mut a = clean();
+        a.mechanically_sellable = false;
+        assert_eq!(classify_risk_type(&a, &th), RiskType::Untradeable);
+        let mut b = clean();
+        b.protocol_safe = false;
+        assert_eq!(classify_risk_type(&b, &th), RiskType::Untradeable);
+        let mut c = clean();
+        c.active_creator_dump = true;
+        assert_eq!(classify_risk_type(&c, &th), RiskType::Untradeable);
+        let mut d = clean();
+        d.exit_capacity_bps = th.min_exit_capacity_bps - 1;
+        assert_eq!(classify_risk_type(&d, &th), RiskType::Untradeable);
+        // Veto dominates even when completeness is below research floor.
+        let mut veto_dom = clean();
+        veto_dom.protocol_safe = false;
+        veto_dom.measure_completeness_bps = 0;
+        assert_eq!(classify_risk_type(&veto_dom, &th), RiskType::Untradeable);
+
+        // Boundary: exactly at min_exit_capacity is NOT vetoed.
+        let mut at = clean();
+        at.exit_capacity_bps = th.min_exit_capacity_bps;
+        assert_ne!(classify_risk_type(&at, &th), RiskType::Untradeable);
+
+        // (2) Completeness below research floor -> ResearchOnly.
+        let mut r = clean();
+        r.measure_completeness_bps = th.research_completeness_bps - 1;
+        assert_eq!(classify_risk_type(&r, &th), RiskType::ResearchOnly);
+
+        // (3) research <= completeness < gradeable -> Unknown.
+        let mut u = clean();
+        u.measure_completeness_bps = th.research_completeness_bps;
+        assert_eq!(classify_risk_type(&u, &th), RiskType::Unknown);
+        let mut u2 = clean();
+        u2.measure_completeness_bps = th.gradeable_completeness_bps - 1;
+        assert_eq!(classify_risk_type(&u2, &th), RiskType::Unknown);
+
+        // (4) At gradeable floor with high score -> AvoidUnlessProven.
+        let mut avoid = clean();
+        avoid.measure_completeness_bps = th.gradeable_completeness_bps;
+        avoid.creator_ownership_bps = 10_000;
+        avoid.buyer_independence_bps = 0;
+        avoid.cluster_adjusted_breadth_bps = 0;
+        avoid.wallet_concentration_bps = 10_000;
+        assert_eq!(risk_score_bps(&avoid), 10_000);
+        assert_eq!(classify_risk_type(&avoid, &th), RiskType::AvoidUnlessProven);
+
+        // Score exactly at avoid threshold -> AvoidUnlessProven (>= is inclusive).
+        let mut at_avoid = clean();
+        at_avoid.creator_ownership_bps = 7_000;
+        at_avoid.buyer_independence_bps = 3_000; // inv 7_000
+        at_avoid.cluster_adjusted_breadth_bps = 3_000; // inv 7_000
+        at_avoid.wallet_concentration_bps = 7_000;
+        assert_eq!(risk_score_bps(&at_avoid), 7_000);
+        assert_eq!(
+            classify_risk_type(&at_avoid, &th),
+            RiskType::AvoidUnlessProven
+        );
+    }
+- leaf_id: rt_treatments
+  responsibility: Produce the deterministic §26 competing-treatment set for a graded candidate, mapping each RiskType to its exact treatment bitset.
+  signature: 'pub fn recommend_treatments(risk_type: RiskType, m: &RiskMeasures, th: &RiskThresholds) -> TreatmentSet'
+  invariants:
+  - Untradeable and ResearchOnly each map to exactly {Reject} (len 1); Unknown maps to exactly {DelayedConfirmation, HigherConfidenceRequirement} in canonical order.
+  - AvoidUnlessProven maps to exactly 8 treatments, never contains Reject, and its first canonical treatment is ReducedSize.
+  - TradableButFragile yields the empty set when risk_score_bps < elevated_score_bps, and exactly {ReducedSize, StricterExitPressure, ShorterMaximumHold, FasterDeRisk} (len 4) when risk_score_bps >= elevated_score_bps.
+  - Reject is present in the returned set if and only if the grade is Untradeable or ResearchOnly.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn clean() -> RiskMeasures {
+        RiskMeasures {
+            mechanically_sellable: true,
+            protocol_safe: true,
+            active_creator_dump: false,
+            exit_capacity_bps: 9_000,
+            creator_ownership_bps: 500,
+            buyer_independence_bps: 9_000,
+            cluster_adjusted_breadth_bps: 9_000,
+            wallet_concentration_bps: 500,
+            measure_completeness_bps: 9_000,
+        }
+    }
+
+    #[test]
+    fn recommend_treatments_maps_each_grade_exactly() {
+        let th = RiskThresholds::test();
+        let m = clean();
+
+        // Untradeable and ResearchOnly both collapse to exactly {Reject}.
+        for rt in [RiskType::Untradeable, RiskType::ResearchOnly] {
+            let set = recommend_treatments(rt, &m, &th);
+            assert_eq!(set.treatments(), vec![Treatment::Reject]);
+            assert_eq!(set.len(), 1);
+            assert!(set.contains(Treatment::Reject));
+        }
+
+        // Unknown -> gather-more-evidence pair, canonical order, no Reject.
+        let unk = recommend_treatments(RiskType::Unknown, &m, &th);
+        assert_eq!(
+            unk.treatments(),
+            vec![
+                Treatment::DelayedConfirmation,
+                Treatment::HigherConfidenceRequirement
+            ]
+        );
+        assert!(!unk.contains(Treatment::Reject));
+
+        // AvoidUnlessProven -> full pricing menu of 8, never Reject.
+        let avoid = recommend_treatments(RiskType::AvoidUnlessProven, &m, &th);
+        assert_eq!(avoid.len(), 8);
+        assert!(!avoid.contains(Treatment::Reject));
+        assert!(avoid.contains(Treatment::DifferentEntryMode));
+        assert!(avoid.contains(Treatment::NoMoonbag));
+        // Canonical ordering: first recommended treatment is ReducedSize.
+        assert_eq!(avoid.treatments().first(), Some(&Treatment::ReducedSize));
+
+        // TradableButFragile with low score -> empty set (trade normally).
+        let low = clean();
+        assert!(risk_score_bps(&low) < th.elevated_score_bps);
+        let low_set = recommend_treatments(RiskType::TradableButFragile, &low, &th);
+        assert!(low_set.is_empty());
+        assert_eq!(low_set.len(), 0);
+
+        // TradableButFragile with elevated score -> exactly the 4-treatment pricing set.
+        let mut hi = clean();
+        hi.creator_ownership_bps = 5_000;
+        hi.buyer_independence_bps = 4_000; // inv 6_000
+        hi.cluster_adjusted_breadth_bps = 5_000; // inv 5_000
+        hi.wallet_concentration_bps = 4_000;
+        assert_eq!(risk_score_bps(&hi), 5_000);
+        assert!(risk_score_bps(&hi) >= th.elevated_score_bps);
+        let hi_set = recommend_treatments(RiskType::TradableButFragile, &hi, &th);
+        assert_eq!(hi_set.len(), 4);
+        assert!(hi_set.contains(Treatment::ReducedSize));
+        assert!(hi_set.contains(Treatment::StricterExitPressure));
+        assert!(hi_set.contains(Treatment::ShorterMaximumHold));
+        assert!(hi_set.contains(Treatment::FasterDeRisk));
+        assert!(!hi_set.contains(Treatment::Reject));
+
+        // Reject appears iff the grade is a no-live-participation grade.
+        for rt in [
+            RiskType::Untradeable,
+            RiskType::TradableButFragile,
+            RiskType::AvoidUnlessProven,
+            RiskType::ResearchOnly,
+            RiskType::Unknown,
+        ] {
+            let has_reject = recommend_treatments(rt, &hi, &th).contains(Treatment::Reject);
+            let should = matches!(rt, RiskType::Untradeable | RiskType::ResearchOnly);
+            assert_eq!(has_reject, should, "reject presence wrong for {rt:?}");
+        }
+    }

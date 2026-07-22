@@ -49,7 +49,8 @@ leaves:
       #[test]
       fn prop_peak_never_freezes() {
           let mut s = ScalpPositionState::open(1_000, 0);
-          for i in 0..10_000u64 {  // far beyond any internal buffer
+          for i in 0..10_000u64 {
+              // far beyond any internal buffer
               let ev = SwapEvent::test(1_000 + i, i * 1_000);
               s = apply_swap(&s, &ev);
           }
@@ -80,12 +81,21 @@ leaves:
     property_test: |
       #[test]
       fn prop_exemptions_absolute() {
-          for c in [ExitClass::Emergency, ExitClass::SellabilityFailure,
-                    ExitClass::RiskLimit, ExitClass::CircuitBreaker] {
+          for c in [
+              ExitClass::Emergency,
+              ExitClass::SellabilityFailure,
+              ExitClass::RiskLimit,
+              ExitClass::CircuitBreaker,
+          ] {
               assert!(!min_hold_blocks_exit(Lane::Scalp, 0, u64::MAX, c));
           }
           assert!(min_hold_blocks_exit(Lane::Scalp, 10, 20, ExitClass::Normal));
-          assert!(!min_hold_blocks_exit(Lane::Scalp, 20, 20, ExitClass::Normal));
+          assert!(!min_hold_blocks_exit(
+              Lane::Scalp,
+              20,
+              20,
+              ExitClass::Normal
+          ));
           assert!(!min_hold_blocks_exit(Lane::Scalp, 5, 0, ExitClass::Normal)); // zero min-hold legal
       }
     max_lines: 15
@@ -113,8 +123,10 @@ leaves:
           let sell = expected_landing(p, Side::Sell, 50, 30).unwrap();
           assert!(buy >= p && sell <= p);
           assert_eq!(expected_landing(p, Side::Buy, 0, 0).unwrap(), p);
-          assert!(expected_landing(u64::MAX, Side::Buy, 10_000, 10_000).is_none() ||
-                  expected_landing(u64::MAX, Side::Buy, 10_000, 10_000).unwrap() >= u64::MAX / 2);
+          assert!(
+              expected_landing(u64::MAX, Side::Buy, 10_000, 10_000).is_none()
+                  || expected_landing(u64::MAX, Side::Buy, 10_000, 10_000).unwrap() >= u64::MAX / 2
+          );
       }
     depends_on: []
     max_lines: 30
@@ -139,7 +151,12 @@ leaves:
       #[test]
       fn prop_covariates_not_in_cell_key() {
           let a = hazard_inputs(&ScalpPositionState::test(), &FlowState::test(), 9_000, 0);
-          let b = hazard_inputs(&ScalpPositionState::test(), &FlowState::test(), 1_000, 8_000);
+          let b = hazard_inputs(
+              &ScalpPositionState::test(),
+              &FlowState::test(),
+              1_000,
+              8_000,
+          );
           assert_eq!(a.cell_key(), b.cell_key()); // covariates differ, cell identical
           assert_ne!(a.conviction_fp, b.conviction_fp);
       }
@@ -163,11 +180,11 @@ leaves:
     property_test: |
       #[test]
       fn prop_rate_comparator() {
-          assert!(should_exit_on_rate(10, 100, 20, true, false));   // 10 < 80 -> exit
-          assert!(!should_exit_on_rate(90, 100, 20, true, true));   // 90 >= 80 -> hold
+          assert!(should_exit_on_rate(10, 100, 20, true, false)); // 10 < 80 -> exit
+          assert!(!should_exit_on_rate(90, 100, 20, true, true)); // 90 >= 80 -> hold
           assert!(!should_exit_on_rate(-5, 0, 0, true, false) == false); // negative hold vs 0 redeploy -> exit
-          assert!(should_exit_on_rate(0, 0, 0, false, true));       // stale -> baseline
-          assert!(!should_exit_on_rate(0, 0, 0, false, false));     // stale -> baseline
+          assert!(should_exit_on_rate(0, 0, 0, false, true)); // stale -> baseline
+          assert!(!should_exit_on_rate(0, 0, 0, false, false)); // stale -> baseline
       }
     depends_on: []
     max_lines: 15

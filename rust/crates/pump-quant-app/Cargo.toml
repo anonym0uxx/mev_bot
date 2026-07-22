@@ -1,0 +1,22 @@
+[package]
+name = "pump-quant-app"
+version = "0.1.0"
+edition = "2021"
+description = "Hermes nervous system: the deterministic continuous discovery->gate->scalp loop that composes the pump-quant crates into a running paper/replay trading engine. Union-not-intersection lane discovery, on-chain-confirmation-gated entry (social/narrative corroboration-tier only), reflection-enhances-discovery weight adaptation, and byte-deterministic replay. Live capital is Tier-0 human-gated and never authorized by this binary. (§22 integer-only outcome logic; §71 continuous discovery.)"
+
+[lib]
+name = "pump_quant_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pump-quant-app"
+path = "src/main.rs"
+
+[dependencies]
+pump-quant-domain = { path = "../pump-quant-domain" }
+pump-quant-watchlist = { path = "../pump-quant-watchlist" }
+pump-quant-narrative = { path = "../pump-quant-narrative" }
+pump-quant-strategy = { path = "../pump-quant-strategy" }
+pump-quant-simulator = { path = "../pump-quant-simulator" }
+pump-quant-evaluator = { path = "../pump-quant-evaluator" }
+pump-quant-memory = { path = "../pump-quant-memory" }

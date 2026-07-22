@@ -1,0 +1,12 @@
+[package]
+name = "pump-quant-journal"
+version = "0.1.0"
+edition = "2021"
+description = "Append-only durability codec for the pump-quant hot journal (§12): frame codec, bounded segments, sealed manifest index, crash-recovery scan. Pure integer byte/state logic, no I/O."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "pump_quant_journal"
+path = "src/lib.rs"
+
+[dependencies]

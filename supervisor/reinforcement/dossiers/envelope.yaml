@@ -1,0 +1,246 @@
+component: envelope
+constitution_refs: []
+spec: Independence-lock dossier for the `envelope` module of pump-quant-governance. Each leaf's property_test is the locked correctness authority over that leaf's public contract, verified to compile and pass against the committed Phase-A implementation. Decision logic is integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: env_pe_construct_validate
+  responsibility: Validate and construct a ParameterEnvelope, exposing correct bound/grid predicates.
+  signature: 'pub fn ParameterEnvelope::new(min: i128, max: i128, step: i128) -> Result<Self, EnvelopeError>; pub fn contains(&self, value: i128) -> bool; pub fn is_grid_value(&self, value: i128) -> bool; pub fn min(&self) -> i128; pub fn max(&self) -> i128; pub fn step(&self) -> i128'
+  invariants:
+  - step <= 0 is rejected with EnvelopeError::ZeroStep, checked before the min>max bounds check.
+  - min > max (with valid positive step) is rejected with EnvelopeError::InvertedBounds; a non-representable span (max-min overflows i128) is rejected with EnvelopeError::SpanNotRepresentable.
+  - contains(v) is true iff min <= v <= max (inclusive both ends).
+  - is_grid_value(v) is true iff v is in-envelope AND (v - min) % step == 0; a degenerate min==max envelope has exactly one grid value (min).
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn env_pe_construct_validate() {
+        // Rejections, most-specific-first: step<=0 checked before bounds.
+        assert_eq!(
+            ParameterEnvelope::new(0, 10, 0),
+            Err(EnvelopeError::ZeroStep)
+        );
+        assert_eq!(
+            ParameterEnvelope::new(0, 10, -5),
+            Err(EnvelopeError::ZeroStep)
+        );
+        // Inverted bounds with a valid positive step.
+        assert_eq!(
+            ParameterEnvelope::new(10, 5, 1),
+            Err(EnvelopeError::InvertedBounds)
+        );
+        // Full i128 span not representable in `max - min`.
+        assert_eq!(
+            ParameterEnvelope::new(i128::MIN, i128::MAX, 1),
+            Err(EnvelopeError::SpanNotRepresentable)
+        );
+
+        // Valid construction exposes exact accessors.
+        let env = ParameterEnvelope::new(-9, 9, 4).unwrap();
+        assert_eq!(env.min(), -9);
+        assert_eq!(env.max(), 9);
+        assert_eq!(env.step(), 4);
+
+        // contains is the inclusive [min,max] predicate.
+        assert!(env.contains(-9));
+        assert!(env.contains(9));
+        assert!(!env.contains(-10));
+        assert!(!env.contains(10));
+
+        // Grid points are min + k*step within [min,max]: -9,-5,-1,3,7.
+        assert!(env.is_grid_value(-9));
+        assert!(env.is_grid_value(-1));
+        assert!(env.is_grid_value(7));
+        // In-envelope but off-grid.
+        assert!(!env.is_grid_value(-8));
+        assert!(!env.is_grid_value(9));
+        // Off-grid because out-of-envelope.
+        assert!(!env.is_grid_value(11));
+
+        // Degenerate single-point envelope: only min is a grid value.
+        let point = ParameterEnvelope::new(100, 100, 1).unwrap();
+        assert!(point.contains(100));
+        assert!(point.is_grid_value(100));
+        assert!(!point.contains(101));
+    }
+- leaf_id: env_pe_enforce_classify
+  responsibility: Classify a proposed online change as Accepted/Snapped/Clamped/Rejected and compute the enforced value.
+  signature: 'pub fn ParameterEnvelope::enforce(&self, proposed: i128, current: i128, mode: EnforcementMode) -> EnvelopeDecision'
+  invariants:
+  - In-envelope on-grid proposals are Accepted with value == proposed; in-envelope off-grid proposals are Snapped to the nearest grid point with ties resolving toward min.
+  - Out-of-envelope under Clamp yields Clamped pinned to an in-envelope grid boundary (min below, largest grid <= max above); under Reject yields Rejected with value == current.
+  - Any non-Rejected outcome returns a value that is both in-envelope (contains) and on-grid (is_grid_value).
+  - A Rejected outcome occurs only for an out-of-envelope proposal under EnforcementMode::Reject and returns exactly `current`.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn env_pe_enforce_classify() {
+        // Grid points 0,4,8 (min=0,max=10,step=4); 10 is in-bounds but off-grid.
+        let env = ParameterEnvelope::new(0, 10, 4).unwrap();
+        let current = 4;
+
+        let cases: &[(i128, EnforcementMode, ChangeOutcome, i128)] = &[
+            (0, EnforcementMode::Clamp, ChangeOutcome::Accepted, 0),
+            (8, EnforcementMode::Reject, ChangeOutcome::Accepted, 8),
+            (3, EnforcementMode::Clamp, ChangeOutcome::Snapped, 4),
+            (5, EnforcementMode::Reject, ChangeOutcome::Snapped, 4),
+            // Ties resolve toward min.
+            (2, EnforcementMode::Clamp, ChangeOutcome::Snapped, 0),
+            (6, EnforcementMode::Clamp, ChangeOutcome::Snapped, 4),
+            // In-bounds above the top grid point 8 snaps down to 8.
+            (10, EnforcementMode::Clamp, ChangeOutcome::Snapped, 8),
+            // Below min.
+            (-3, EnforcementMode::Clamp, ChangeOutcome::Clamped, 0),
+            (-3, EnforcementMode::Reject, ChangeOutcome::Rejected, 4),
+            // Above max clamps to largest grid <= max = 8.
+            (99, EnforcementMode::Clamp, ChangeOutcome::Clamped, 8),
+            (99, EnforcementMode::Reject, ChangeOutcome::Rejected, 4),
+        ];
+        for &(proposed, mode, exp_outcome, exp_value) in cases {
+            let d = env.enforce(proposed, current, mode);
+            assert_eq!(d.outcome, exp_outcome, "proposed={proposed} mode={mode:?}");
+            assert_eq!(d.value, exp_value, "proposed={proposed} mode={mode:?}");
+        }
+
+        // Invariant sweep: a non-Rejected result is always in-envelope AND on grid;
+        // a Rejected result returns exactly `current` and only for crossings.
+        let envelopes = [
+            ParameterEnvelope::new(0, 10, 1).unwrap(),
+            ParameterEnvelope::new(0, 10, 3).unwrap(),
+            ParameterEnvelope::new(-50, 50, 7).unwrap(),
+            ParameterEnvelope::new(-9, 9, 4).unwrap(),
+        ];
+        for env in envelopes {
+            let cur = env.min();
+            let mut proposed = env.min() - 20;
+            while proposed <= env.max() + 20 {
+                for mode in [EnforcementMode::Clamp, EnforcementMode::Reject] {
+                    let d = env.enforce(proposed, cur, mode);
+                    match d.outcome {
+                        ChangeOutcome::Rejected => {
+                            assert_eq!(d.value, cur);
+                            assert!(!env.contains(proposed));
+                            assert_eq!(mode, EnforcementMode::Reject);
+                        }
+                        _ => {
+                            assert!(env.contains(d.value));
+                            assert!(env.is_grid_value(d.value));
+                        }
+                    }
+                }
+                proposed += 1;
+            }
+        }
+    }
+- leaf_id: env_pr_register
+  responsibility: Register a governed dimension under capacity/dedup/in-envelope guards, snapping the initial value to grid.
+  signature: 'pub fn ParameterRegistry::register(&mut self, dimension: DimensionId, envelope: ParameterEnvelope, initial: i128) -> Result<(), RegistryError>'
+  invariants:
+  - An initial value outside the envelope is rejected with InitialOutOfEnvelope; an in-envelope initial is stored snapped to the grid (so stored current is always a legal grid value).
+  - Re-registering an existing DimensionId returns DuplicateDimension and does not mutate state; registering beyond the fixed capacity returns CapacityExceeded.
+  - Entries are kept sorted ascending by DimensionId for deterministic iteration via parameters().
+  - current()/envelope() return Some for registered dimensions and None for unknown ones; a rejected registration leaves len() unchanged.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn env_pr_register() {
+        let mut reg = ParameterRegistry::new(2);
+        assert!(reg.is_empty());
+        assert_eq!(reg.capacity(), 2);
+        assert_eq!(reg.len(), 0);
+
+        let env = ParameterEnvelope::new(0, 100, 5).unwrap();
+
+        // Initial off-grid value is snapped to the grid on registration: 12 -> 10.
+        reg.register(DimensionId(7), env, 12).unwrap();
+        assert_eq!(reg.current(DimensionId(7)), Some(10));
+        assert_eq!(reg.len(), 1);
+        assert!(!reg.is_empty());
+
+        // Duplicate dimension is rejected without mutating state.
+        assert_eq!(
+            reg.register(DimensionId(7), env, 0),
+            Err(RegistryError::DuplicateDimension)
+        );
+        assert_eq!(reg.len(), 1);
+
+        // Initial outside the envelope is rejected.
+        assert_eq!(
+            reg.register(DimensionId(8), env, 999),
+            Err(RegistryError::InitialOutOfEnvelope)
+        );
+        assert_eq!(reg.len(), 1);
+
+        // Fill capacity, then the next distinct dimension exceeds it.
+        reg.register(DimensionId(3), env, 0).unwrap();
+        assert_eq!(reg.len(), 2);
+        assert_eq!(
+            reg.register(DimensionId(9), env, 0),
+            Err(RegistryError::CapacityExceeded)
+        );
+        assert_eq!(reg.len(), 2);
+
+        // Entries are kept sorted by dimension id for deterministic iteration.
+        let dims: Vec<u32> = reg.parameters().iter().map(|p| p.dimension.0).collect();
+        assert_eq!(dims, vec![3, 7]);
+
+        // Envelope/current lookups: known vs unknown dimension.
+        assert_eq!(reg.envelope(DimensionId(3)), Some(env));
+        assert_eq!(reg.current(DimensionId(3)), Some(0));
+        assert_eq!(reg.current(DimensionId(42)), None);
+        assert_eq!(reg.envelope(DimensionId(42)), None);
+    }
+- leaf_id: env_pr_propose
+  responsibility: Apply a fast-path online change to a registered dimension, persisting the enforced value except on Rejected.
+  signature: 'pub fn ParameterRegistry::propose(&mut self, dimension: DimensionId, proposed: i128, mode: EnforcementMode) -> Result<EnvelopeDecision, RegistryError>'
+  invariants:
+  - On Accepted/Snapped/Clamped the stored current is updated to the enforced decision value; on Rejected the stored current is left unchanged.
+  - The returned EnvelopeDecision matches the dimension envelope's enforce() semantics against the live current value (e.g. in-envelope off-grid -> Snapped to grid, above-max Clamp -> top grid value).
+  - Proposing on an unregistered dimension returns UnknownDimension and creates no state.
+  - current() after each successful propose reflects exactly the persisted decision value.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn env_pr_propose() {
+        let mut reg = ParameterRegistry::new(4);
+        let env = ParameterEnvelope::new(0, 100, 5).unwrap();
+        reg.register(DimensionId(7), env, 12).unwrap();
+        assert_eq!(reg.current(DimensionId(7)), Some(10));
+
+        // In-envelope off-grid: snapped, current advances to grid value 25.
+        let d = reg
+            .propose(DimensionId(7), 23, EnforcementMode::Clamp)
+            .unwrap();
+        assert_eq!((d.outcome, d.value), (ChangeOutcome::Snapped, 25));
+        assert_eq!(reg.current(DimensionId(7)), Some(25));
+
+        // Reject leaves current untouched (envelope crossing needs the slow path).
+        let d = reg
+            .propose(DimensionId(7), 10_000, EnforcementMode::Reject)
+            .unwrap();
+        assert_eq!(d.outcome, ChangeOutcome::Rejected);
+        assert_eq!(d.value, 25);
+        assert_eq!(reg.current(DimensionId(7)), Some(25));
+
+        // Clamp above max pins to the top grid value (100 is on grid) and persists.
+        let d = reg
+            .propose(DimensionId(7), 10_000, EnforcementMode::Clamp)
+            .unwrap();
+        assert_eq!((d.outcome, d.value), (ChangeOutcome::Clamped, 100));
+        assert_eq!(reg.current(DimensionId(7)), Some(100));
+
+        // In-envelope on-grid: accepted verbatim.
+        let d = reg
+            .propose(DimensionId(7), 40, EnforcementMode::Reject)
+            .unwrap();
+        assert_eq!((d.outcome, d.value), (ChangeOutcome::Accepted, 40));
+        assert_eq!(reg.current(DimensionId(7)), Some(40));
+
+        // Unknown dimension errors and does not create state.
+        assert_eq!(
+            reg.propose(DimensionId(42), 0, EnforcementMode::Clamp),
+            Err(RegistryError::UnknownDimension)
+        );
+        assert_eq!(reg.current(DimensionId(42)), None);
+    }

@@ -1,0 +1,194 @@
+component: setup_archetype
+constitution_refs: []
+spec: Independence-lock dossier for the `setup_archetype` module of pump-quant-strategy (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: sa_classify_untradeable_precedence
+  responsibility: A mechanically-unsellable or exit-starved candidate always classifies as UntradeableTrap regardless of any bullish signal.
+  signature: 'pub fn classify_archetype(f: &ArchetypeFeatures, th: &ClassifierThresholds) -> SetupArchetype'
+  invariants:
+  - mechanically_sellable == false => UntradeableTrap, even with strong attention/structure/bundle signals present.
+  - exit_capacity_bps strictly < th.min_exit_capacity_bps => UntradeableTrap.
+  - exit_capacity_bps == th.min_exit_capacity_bps passes the trap gate (>= is the tradeable boundary), yielding a non-trap label.
+  - A sellable candidate with exit_capacity_bps >= th.min_exit_capacity_bps and no other signal falls through to Unknown, never UntradeableTrap.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn base() -> ArchetypeFeatures {
+        ArchetypeFeatures {
+            mechanically_sellable: true,
+            exit_capacity_bps: 8_000,
+            token_age_secs: 100_000,
+            migration: MigrationPhase::PreMigration,
+            bundle_sniper_bps: 0,
+            cluster_share_bps: 0,
+            creator_ownership_bps: 0,
+            creator_recycle: false,
+            independent_buyers: 0,
+            attention_velocity: 0,
+            livestream_active: false,
+            community_score_bps: 0,
+            social_stunt_bps: 0,
+            platform_visibility_bps: 0,
+            structure: StructureState::None,
+            rotation_inflow: 0,
+        }
+    }
+
+    #[test]
+    fn untradeable_trap_dominates_every_bullish_reading() {
+        let th = ClassifierThresholds::test();
+
+        let mut f = base();
+        f.mechanically_sellable = false;
+        f.attention_velocity = 100_000;
+        f.structure = StructureState::BreakoutRetest;
+        f.bundle_sniper_bps = 9_999;
+        assert_eq!(classify_archetype(&f, &th), SetupArchetype::UntradeableTrap);
+
+        let mut g = base();
+        g.exit_capacity_bps = th.min_exit_capacity_bps - 1;
+        assert_eq!(classify_archetype(&g, &th), SetupArchetype::UntradeableTrap);
+
+        let mut h = base();
+        h.exit_capacity_bps = th.min_exit_capacity_bps;
+        assert_eq!(classify_archetype(&h, &th), SetupArchetype::Unknown);
+
+        assert_eq!(classify_archetype(&base(), &th), SetupArchetype::Unknown);
+    }
+- leaf_id: sa_classify_cascade_order
+  responsibility: 'The classifier resolves as a fixed-priority first-match cascade: manipulation traps > market structure > migration phase > attention/social launch signals.'
+  signature: 'pub fn classify_archetype(f: &ArchetypeFeatures, th: &ClassifierThresholds) -> SetupArchetype'
+  invariants:
+  - bundle_sniper_bps >= th.bundle_trap_bps => BundleSniperTrap even when a distinctive structure and migration edge co-occur.
+  - cluster_share_bps >= th.cluster_pump_bps => WalletClusterPump, outranking structure and migration.
+  - A distinctive StructureState (e.g. ActiveContinuation) outranks migration phase and attention signals.
+  - MigrationEdge outranks livestream/attention launch archetypes (=> MigrationMomentum); all signals strictly below their gates fall through to Unknown.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    fn base() -> ArchetypeFeatures {
+        ArchetypeFeatures {
+            mechanically_sellable: true,
+            exit_capacity_bps: 8_000,
+            token_age_secs: 100_000,
+            migration: MigrationPhase::PreMigration,
+            bundle_sniper_bps: 0,
+            cluster_share_bps: 0,
+            creator_ownership_bps: 0,
+            creator_recycle: false,
+            independent_buyers: 0,
+            attention_velocity: 0,
+            livestream_active: false,
+            community_score_bps: 0,
+            social_stunt_bps: 0,
+            platform_visibility_bps: 0,
+            structure: StructureState::None,
+            rotation_inflow: 0,
+        }
+    }
+
+    #[test]
+    fn priority_cascade_first_match_wins() {
+        let th = ClassifierThresholds::test();
+
+        let mut f = base();
+        f.bundle_sniper_bps = th.bundle_trap_bps;
+        f.structure = StructureState::ActiveContinuation;
+        f.migration = MigrationPhase::MigrationEdge;
+        assert_eq!(
+            classify_archetype(&f, &th),
+            SetupArchetype::BundleSniperTrap
+        );
+
+        let mut g = base();
+        g.cluster_share_bps = th.cluster_pump_bps;
+        g.structure = StructureState::Reclaim;
+        assert_eq!(
+            classify_archetype(&g, &th),
+            SetupArchetype::WalletClusterPump
+        );
+
+        let mut h = base();
+        h.structure = StructureState::ActiveContinuation;
+        h.migration = MigrationPhase::MigrationEdge;
+        h.attention_velocity = 100_000;
+        assert_eq!(
+            classify_archetype(&h, &th),
+            SetupArchetype::ActiveContinuation
+        );
+
+        let mut m = base();
+        m.migration = MigrationPhase::MigrationEdge;
+        m.attention_velocity = 100_000;
+        m.livestream_active = true;
+        assert_eq!(
+            classify_archetype(&m, &th),
+            SetupArchetype::MigrationMomentum
+        );
+
+        let mut u = base();
+        u.bundle_sniper_bps = th.bundle_trap_bps - 1;
+        u.cluster_share_bps = th.cluster_pump_bps - 1;
+        u.attention_velocity = th.attention_shock - 1;
+        assert_eq!(classify_archetype(&u, &th), SetupArchetype::Unknown);
+    }
+- leaf_id: sa_label_stable
+  responsibility: SetupArchetype::label projects each archetype to its stable, distinct u16 discriminant consumed downstream as ThesisInputs.archetype.
+  signature: pub fn label(self) -> u16
+  invariants:
+  - 'Pinned discriminants: FreshMintFlow=0, BundleSniperTrap=7, MigrationMomentum=8, UntradeableTrap=21, Unknown=22.'
+  - All 23 archetype labels are pairwise distinct.
+  - Labels are dense over the range 0..=22 (every value hit exactly once).
+  - label() is a pure deterministic projection — repeated calls on the same variant return the identical value.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn labels_are_stable_and_distinct() {
+        assert_eq!(SetupArchetype::FreshMintFlow.label(), 0);
+        assert_eq!(SetupArchetype::CleanOrganicBreadth.label(), 1);
+        assert_eq!(SetupArchetype::BundleSniperTrap.label(), 7);
+        assert_eq!(SetupArchetype::MigrationMomentum.label(), 8);
+        assert_eq!(SetupArchetype::UntradeableTrap.label(), 21);
+        assert_eq!(SetupArchetype::Unknown.label(), 22);
+
+        let all = [
+            SetupArchetype::FreshMintFlow,
+            SetupArchetype::CleanOrganicBreadth,
+            SetupArchetype::CtAttentionShock,
+            SetupArchetype::PumpLiveStream,
+            SetupArchetype::CreatorCultOrCommunity,
+            SetupArchetype::DevRecycleRisk,
+            SetupArchetype::WalletClusterPump,
+            SetupArchetype::BundleSniperTrap,
+            SetupArchetype::MigrationMomentum,
+            SetupArchetype::PostMigrationRevival,
+            SetupArchetype::SocialStuntOrMeta,
+            SetupArchetype::PlatformVisibilitySpike,
+            SetupArchetype::HighRiskTradableImpulse,
+            SetupArchetype::ActiveContinuation,
+            SetupArchetype::BreakoutRetest,
+            SetupArchetype::FailedBreakdownReversal,
+            SetupArchetype::Reclaim,
+            SetupArchetype::CompressionExpansion,
+            SetupArchetype::MeanReversionSnap,
+            SetupArchetype::LiquidityDislocation,
+            SetupArchetype::CapitalRotationScalp,
+            SetupArchetype::UntradeableTrap,
+            SetupArchetype::Unknown,
+        ];
+        assert_eq!(all.len(), 23);
+
+        let mut seen = [false; 23];
+        for a in all {
+            let l = a.label() as usize;
+            assert!(l < 23, "label {l} out of range");
+            assert!(!seen[l], "duplicate label {l}");
+            seen[l] = true;
+        }
+        assert!(seen.iter().all(|&b| b), "labels not dense over 0..=22");
+
+        assert_eq!(
+            SetupArchetype::Reclaim.label(),
+            SetupArchetype::Reclaim.label()
+        );
+    }

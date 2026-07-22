@@ -1,0 +1,153 @@
+component: metrics
+constitution_refs: []
+spec: Independence-lock dossier for the `metrics` module of pump-quant-evaluator (constitution-gap capability). Each leaf's property_test locks that leaf's public contract, verified against the committed Phase-A implementation. Integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: cvar_tail_shortfall
+  responsibility: 'Compute CVaR/tail-loss over reconciled returns: worst k=ceil(n*alpha/10000) returns, reporting VaR boundary and mean-of-tail shortfall.'
+  signature: 'pub fn cvar(returns_bps: &[i64], alpha_bps: u32) -> Option<CvarReport>'
+  invariants:
+  - 'tail_n == clamp(ceil(n*alpha_bps/10000), 1, n): 10 returns at alpha=2000 gives tail_n=2; alpha=100 over 3 returns gives tail_n=1 (at least one).'
+  - 'cvar_bps <= var_bps: the mean of the worst tail is never better than the tail boundary (least-bad-in-tail).'
+  - 'Order-independent: permuting the input yields an identical CvarReport (function sorts a copy).'
+  - Empty input or alpha_bps==0 yields None; no tail is defined.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn gd_cvar_tail_shortfall() {
+        // 10 returns, worst 20% (alpha=2000) -> ceil(10*2000/10000)=2 worst.
+        let returns = vec![-900i64, -800, -100, 0, 100, 200, 300, 400, 500, 1_000];
+        let r = cvar(&returns, 2_000).unwrap();
+        assert_eq!(r.tail_n, 2);
+        assert_eq!(r.alpha_bps, 2_000);
+        assert_eq!(r.var_bps, -800); // boundary = least-bad in tail = max of tail
+        assert_eq!(r.cvar_bps, -850); // mean(-900, -800)
+                                      // cvar <= var (shortfall no better than boundary).
+        assert!(r.cvar_bps <= r.var_bps);
+
+        // Order-independence: shuffled input yields identical report.
+        let shuffled = vec![1_000i64, -100, 500, -900, 300, 0, 400, -800, 200, 100];
+        assert_eq!(cvar(&shuffled, 2_000).unwrap(), r);
+
+        // Min one in tail: tiny alpha still selects the single worst.
+        let small = vec![-500i64, 100, 200];
+        let s = cvar(&small, 100).unwrap();
+        assert_eq!(s.tail_n, 1);
+        assert_eq!(s.var_bps, -500);
+        assert_eq!(s.cvar_bps, -500);
+
+        // Rejection/edge: empty and zero-alpha yield None.
+        assert!(cvar(&[], 500).is_none());
+        assert!(cvar(&[100, 200], 0).is_none());
+    }
+- leaf_id: profit_factor_ratio
+  responsibility: Compute gross profit factor sum(wins)*10000/sum(|losses|) in bps, with distinct sentinels for no-losses and empty inputs.
+  signature: 'pub fn profit_factor(returns_bps: &[i64]) -> ProfitFactor'
+  invariants:
+  - 'Bps value == sum(r>0)*10000/sum(|r<0|): wins 400 over losses 200 gives Bps(20000) (2.0x).'
+  - Zero-valued returns are neither win nor loss and do not change the ratio.
+  - Equal total wins and losses gives exactly Bps(10000) (break-even 1.0x).
+  - No negative returns yields NoLosses (including all-zero input); empty slice yields Empty.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn gd_profit_factor_ratio() {
+        // wins = 100+300 = 400, losses = 200. PF = 400*10000/200 = 20000 (2.0x).
+        let returns = vec![100i64, -200, 300, 0];
+        assert_eq!(profit_factor(&returns), ProfitFactor::Bps(20_000));
+
+        // Zeros are neither win nor loss; adding them does not change the ratio.
+        let with_zeros = vec![0i64, 100, -200, 0, 300, 0];
+        assert_eq!(profit_factor(&with_zeros), ProfitFactor::Bps(20_000));
+
+        // Break-even: equal wins and losses -> exactly 10_000 bps (1.0x).
+        assert_eq!(profit_factor(&[300i64, -300]), ProfitFactor::Bps(10_000));
+
+        // No losing returns -> NoLosses (denominator zero), even for all-zero input.
+        assert_eq!(profit_factor(&[100i64, 200]), ProfitFactor::NoLosses);
+        assert_eq!(profit_factor(&[0i64, 0]), ProfitFactor::NoLosses);
+
+        // Rejection/edge: empty input -> Empty.
+        assert_eq!(profit_factor(&[]), ProfitFactor::Empty);
+    }
+- leaf_id: brier_score
+  responsibility: Compute integer Brier score mean((p-o)^2) in ppm over reconciled (predicted_ppm, occurred) prediction rows.
+  signature: 'pub fn brier_score_ppm(preds: &[PredictionRow]) -> Option<u32>'
+  invariants:
+  - Perfect forecaster (p=1e6 when occurred, p=0 when not) scores exactly 0.
+  - Maximally wrong (p=1e6 & not occurred, p=0 & occurred) scores exactly 1_000_000.
+  - Constant p=0.5 scores 250_000 ppm irrespective of outcomes ((0.5)^2 rescaled).
+  - Result is always within [0, 1_000_000]; empty sample yields None.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn gd_brier_score() {
+        // Perfect forecaster: p=1 on occur, p=0 on non-occur -> 0.
+        let perfect = vec![
+            PredictionRow::new(1_000_000, true),
+            PredictionRow::new(0, false),
+        ];
+        assert_eq!(brier_score_ppm(&perfect), Some(0));
+
+        // Maximally wrong: p=1 & not occurred, p=0 & occurred -> (1)^2 each -> 1.0.
+        let worst = vec![
+            PredictionRow::new(1_000_000, false),
+            PredictionRow::new(0, true),
+        ];
+        assert_eq!(brier_score_ppm(&worst), Some(1_000_000));
+
+        // Always 0.5: (0.5)^2 = 0.25 regardless of outcome -> 250_000 ppm.
+        let half = vec![
+            PredictionRow::new(500_000, true),
+            PredictionRow::new(500_000, false),
+        ];
+        let b = brier_score_ppm(&half).unwrap();
+        assert_eq!(b, 250_000);
+        // Bounded within [0, 1_000_000].
+        assert!(b <= 1_000_000);
+
+        // Rejection/edge: empty sample -> None.
+        assert_eq!(brier_score_ppm(&[]), None);
+    }
+- leaf_id: calibration_error
+  responsibility: Partition predictions into n_bins equal-width bins and report count-weighted ECE and worst-bin MCE calibration gaps in ppm.
+  signature: 'pub fn calibration_error(preds: &[PredictionRow], n_bins: u32) -> Option<CalibrationReport>'
+  invariants:
+  - Perfectly calibrated data (p=1e6 occurs, p=0 does not) yields ece_ppm==0 and mce_ppm==0.
+  - n reports the total prediction count and occupied_bins the number of non-empty bins (4 preds at p=0.9 occupy exactly 1 bin).
+  - A single bin with gap g yields both ece_ppm==g and mce_ppm==g (0.9 never-occurring -> 900_000 each).
+  - ece_ppm <= mce_ppm always (ECE is a count-weighted mean of per-bin gaps); empty sample yields None.
+  reference_pattern: property_test is the sole correctness authority; authored and self-verified to compile and pass against the committed implementation.
+  property_test: |
+    #[test]
+    fn gd_calibration_error() {
+        // Perfectly calibrated: bin at 1.0 occurs, bin at 0.0 does not -> zero gaps.
+        let good = vec![
+            PredictionRow::new(1_000_000, true),
+            PredictionRow::new(0, false),
+        ];
+        let rg = calibration_error(&good, 10).unwrap();
+        assert_eq!(rg.n, 2);
+        assert_eq!(rg.occupied_bins, 2);
+        assert_eq!(rg.ece_ppm, 0);
+        assert_eq!(rg.mce_ppm, 0);
+
+        // Miscalibrated: predict 0.9 four times, never occurs -> gap 0.9 in one bin.
+        let bad = vec![
+            PredictionRow::new(900_000, false),
+            PredictionRow::new(900_000, false),
+            PredictionRow::new(900_000, false),
+            PredictionRow::new(900_000, false),
+        ];
+        let rb = calibration_error(&bad, 10).unwrap();
+        assert_eq!(rb.n, 4);
+        assert_eq!(rb.occupied_bins, 1);
+        assert_eq!(rb.ece_ppm, 900_000);
+        assert_eq!(rb.mce_ppm, 900_000);
+        // ECE is a count-weighted mean of per-bin gaps, so never exceeds MCE.
+        assert!(rb.ece_ppm <= rb.mce_ppm);
+
+        // Rejection/edge: empty sample -> None.
+        assert!(calibration_error(&[], 10).is_none());
+    }

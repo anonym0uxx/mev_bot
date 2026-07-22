@@ -41,6 +41,7 @@ _STOPWORDS = {
     "hard_components", "one_shot", "net_sol", "take_profit", "max_hold",
     "stop_loss", "min_hold", "target_cpu", "overflow_checks", "opt_level",
     "codegen_units", "panic_abort", "lint_allow", "json_schema",
+    "human_gate_required", "human_gate", "tier0_gate",
 }
 
 

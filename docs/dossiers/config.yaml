@@ -1,0 +1,115 @@
+component: config
+constitution_refs: []
+spec: Independence-lock dossier for the `config` module of pump-quant-app. Each leaf's property_test is the locked correctness authority over that leaf's public contract, verified to compile and pass against the committed Phase-A implementation. Decision logic is integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: cfg_apply
+  responsibility: Apply a single key=value override to the parameter envelope, validating the key and coercing the value into the field's domain (with min-1 clamps where required).
+  signature: 'pub fn apply(&mut self, key: &str, value: i64) -> Result<(), ConfigError>'
+  invariants:
+  - A recognized key with an in-domain value returns Ok(()) and mutates exactly that named field to the coerced value.
+  - An unrecognized key returns Err(ConfigError::UnknownKey(key)) and mutates no field.
+  - A negative value applied to an unsigned/usize field returns Err(ConfigError::OutOfRange(key, value)).
+  - Fields with a positivity floor (gate_impact_den, confirmed_capacity_mult, reflect_every_ticks) clamp a 0 input up to 1 rather than storing 0.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn apply_valid_override_mutates_named_field() {
+        let mut cfg = Config::dev_portable();
+        assert_eq!(cfg.apply("promote_k", 3), Ok(()));
+        assert_eq!(cfg.promote_k, 3);
+        assert_eq!(cfg.apply("gate_expected_move_bps", 777), Ok(()));
+        assert_eq!(cfg.gate_expected_move_bps, 777);
+    }
+
+    #[test]
+    fn apply_unknown_key_is_rejected() {
+        let mut cfg = Config::dev_portable();
+        let e = cfg.apply("no_such_key", 1).unwrap_err();
+        assert_eq!(e, ConfigError::UnknownKey("no_such_key".to_string()));
+    }
+
+    #[test]
+    fn apply_negative_into_unsigned_is_out_of_range() {
+        let mut cfg = Config::dev_portable();
+        let e = cfg.apply("promote_min_rank", -5).unwrap_err();
+        assert_eq!(
+            e,
+            ConfigError::OutOfRange("promote_min_rank".to_string(), -5)
+        );
+    }
+
+    #[test]
+    fn apply_clamps_denominator_and_mult_to_minimum_one() {
+        let mut cfg = Config::dev_portable();
+        assert_eq!(cfg.apply("gate_impact_den", 0), Ok(()));
+        assert_eq!(cfg.gate_impact_den, 1);
+        assert_eq!(cfg.apply("confirmed_capacity_mult", 0), Ok(()));
+        assert_eq!(cfg.confirmed_capacity_mult, 1);
+    }
+- leaf_id: cfg_parse
+  responsibility: Parse a dependency-free key=value config document over the dev_portable base, ignoring comments/blank lines, applying and validating every override, and reporting the offending 1-based line on syntax errors.
+  signature: 'pub fn from_str_over_default(text: &str) -> Result<Self, ConfigError>'
+  invariants:
+  - Comment (#) and blank lines are skipped; listed keys override their field while every unmentioned field retains its dev_portable default.
+  - A line that is not `key = <base-10 integer>` returns Err(ConfigError::Syntax(n)) carrying the 1-based line number.
+  - An unknown key in the document propagates as Err(ConfigError::UnknownKey(key)).
+  - fill_mode integer codes map onto the FillModeCfg variant (e.g. 1 -> OptimisticCeiling).
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn parse_applies_overrides_and_keeps_defaults() {
+        let doc = "# a comment\npromote_k = 3\ngate_expected_move_bps = 777\nfill_mode = 1\n";
+        let cfg = Config::from_str_over_default(doc).expect("parse");
+        assert_eq!(cfg.promote_k, 3);
+        assert_eq!(cfg.gate_expected_move_bps, 777);
+        assert_eq!(cfg.fill_mode, FillModeCfg::OptimisticCeiling);
+        assert_eq!(
+            cfg.watchlist_capacity,
+            Config::dev_portable().watchlist_capacity
+        );
+    }
+
+    #[test]
+    fn parse_syntax_error_reports_one_based_line() {
+        let e = Config::from_str_over_default("promote_k = 2\nbroken line\n").unwrap_err();
+        assert_eq!(e, ConfigError::Syntax(2));
+    }
+
+    #[test]
+    fn parse_unknown_key_propagates() {
+        let e = Config::from_str_over_default("no_such_key = 1").unwrap_err();
+        assert_eq!(e, ConfigError::UnknownKey("no_such_key".to_string()));
+    }
+- leaf_id: cfg_validate
+  responsibility: Reject an internally inconsistent parameter envelope before it can drive any discovery/gate/scalp/reflection decision.
+  signature: pub fn validate(&self) -> Result<(), ConfigError>
+  invariants:
+  - The dev_portable envelope is internally consistent and validates Ok(()).
+  - A reflect weight floor greater than the ceiling returns Err(ConfigError::Inconsistent("weight floor exceeds ceiling")).
+  - promote_k == 0 returns Err(ConfigError::Inconsistent("promote_k must be positive")).
+  - Validation returns the first binding inconsistency, checking floor/ceiling before promote_k.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn validate_accepts_dev_portable() {
+        assert_eq!(Config::dev_portable().validate(), Ok(()));
+    }
+
+    #[test]
+    fn validate_rejects_floor_above_ceiling() {
+        let mut cfg = Config::dev_portable();
+        cfg.reflect_weight_floor_bp = 30_000;
+        cfg.reflect_weight_ceiling_bp = 10_000;
+        let e = cfg.validate().unwrap_err();
+        assert_eq!(e, ConfigError::Inconsistent("weight floor exceeds ceiling"));
+    }
+
+    #[test]
+    fn validate_rejects_zero_promote_k() {
+        let mut cfg = Config::dev_portable();
+        cfg.promote_k = 0;
+        let e = cfg.validate().unwrap_err();
+        assert_eq!(e, ConfigError::Inconsistent("promote_k must be positive"));
+    }
