@@ -168,6 +168,11 @@ pub struct Exit {
     pub reason: ExitReason,
     /// Whether the position is now fully closed.
     pub closed: bool,
+    /// Maximum favorable excursion over the position's life, bps of entry
+    /// (peak/entry − 1). Feeds §48 MFE-capture efficiency and §49 convexity rows.
+    pub mfe_bps: i64,
+    /// Maximum adverse excursion, bps of entry (trough/entry − 1; ≤ 0).
+    pub mae_bps: i64,
 }
 
 /// One held position, integer/fixed-point.
@@ -189,9 +194,28 @@ struct HeldPosition {
     /// Bit i set once tranche i has been taken.
     tranche_mask: u8,
     took_first_sell: bool,
+    /// Lowest price seen since entry (MAE tracking; §48 excursion rows).
+    trough_price_fp: u64,
+    /// Meta-saturation exit pressure (§21.4 third consumption limb): when set, the
+    /// stall window and trail cap are HALVED — a saturating category tightens its
+    /// open positions' exits without vetoing them.
+    pressure: bool,
+    /// Whether the probe→confirm scale-in has already fired (§33: one-shot).
+    scaled: bool,
 }
 
 impl HeldPosition {
+    /// (MFE, MAE) in signed bps of entry: peak/entry−1 and trough/entry−1.
+    fn excursions_bps(&self) -> (i64, i64) {
+        let m = |p: u64| -> i64 {
+            if self.entry_price_fp == 0 {
+                return 0;
+            }
+            ((u128::from(p) * 10_000 / u128::from(self.entry_price_fp)) as i64) - 10_000
+        };
+        (m(self.peak_price_fp), m(self.trough_price_fp))
+    }
+
     fn mult_bps(&self, price_fp: u64) -> u32 {
         if self.entry_price_fp == 0 {
             return 10_000;
@@ -199,12 +223,19 @@ impl HeldPosition {
         ((u128::from(price_fp) * 10_000) / u128::from(self.entry_price_fp)) as u32
     }
 
-    /// Vol-scaled trailing width: widens as the position runs (bps).
+    /// Vol-scaled trailing width: widens as the position runs (bps). Under
+    /// meta-saturation pressure the cap halves — a saturating category gives a
+    /// winner less room before the trail takes it (§21.4).
     fn trail_bps(&self, p: &LifecycleParams) -> u32 {
         let peak_mult = self.mult_bps(self.peak_price_fp);
         let excess = peak_mult.saturating_sub(10_000);
         let scaled = excess / p.trail_k_div.max(1);
-        scaled.clamp(p.trail_base_bps, p.trail_max_bps)
+        let max = if self.pressure {
+            (p.trail_max_bps / 2).max(p.trail_base_bps)
+        } else {
+            p.trail_max_bps
+        };
+        scaled.clamp(p.trail_base_bps.min(max), max)
     }
 
     /// Net lamports realized by selling `frac_bps` of the ORIGINAL size at
@@ -305,8 +336,38 @@ impl ScalpLifecycle {
                 last_high_tick: tick,
                 tranche_mask: 0,
                 took_first_sell: false,
+                trough_price_fp: entry_price_fp,
+                pressure: false,
+                scaled: false,
             },
         );
+        true
+    }
+
+    /// Apply meta-saturation exit pressure to an open position (§21.4): halves the
+    /// stall window and trail cap from now on. Idempotent; no-op when not held.
+    pub fn apply_pressure(&mut self, mint: &[u8; 32]) {
+        if let Some(pos) = self.open.get_mut(mint) {
+            pos.pressure = true;
+        }
+    }
+
+    /// One-shot probe→confirm **scale-in** (§33 Layer 1 / crit 75): add
+    /// `add_lamports` of size and `add_cost_lamports` of entry cost to an open
+    /// position at the current mark. Fires at most once per position (the probe
+    /// opened it; deterministic confirmation scales it to target); refused after
+    /// any tranche has been sold (never re-risk a de-risking position). Returns
+    /// whether the scale-in was applied.
+    pub fn scale_in(&mut self, mint: &[u8; 32], add_lamports: u64, add_cost_lamports: u64) -> bool {
+        let Some(pos) = self.open.get_mut(mint) else {
+            return false;
+        };
+        if pos.scaled || pos.tranche_mask != 0 || pos.remaining_bps != 10_000 {
+            return false;
+        }
+        pos.scaled = true;
+        pos.size_lamports = pos.size_lamports.saturating_add(add_lamports);
+        pos.cost_lamports = pos.cost_lamports.saturating_add(add_cost_lamports);
         true
     }
 
@@ -330,6 +391,9 @@ impl ScalpLifecycle {
         if price_fp > pos.peak_price_fp {
             pos.peak_price_fp = price_fp;
             pos.last_high_tick = tick;
+        }
+        if price_fp < pos.trough_price_fp {
+            pos.trough_price_fp = price_fp;
         }
         // Capture the previous print and advance it unconditionally, BEFORE any
         // trigger can early-return — the precursor must always compare consecutive
@@ -366,7 +430,12 @@ impl ScalpLifecycle {
         // P2 thesis-invalidation: CVD rolled over, or a stall while in profit.
         let cvd_dead = pos.cvd_peak > 0
             && pos.cvd < pos.cvd_peak.saturating_mul(i128::from(p.cvd_hold_frac_bps)) / 10_000;
-        let stalled = mult > 10_000 && tick.saturating_sub(pos.last_high_tick) >= p.stall_ticks;
+        let stall_window = if pos.pressure {
+            (p.stall_ticks / 2).max(1)
+        } else {
+            p.stall_ticks
+        };
+        let stalled = mult > 10_000 && tick.saturating_sub(pos.last_high_tick) >= stall_window;
         if cvd_dead || stalled {
             return Some(self.close(mint, mult, ExitReason::ThesisInvalidation));
         }
@@ -380,31 +449,40 @@ impl ScalpLifecycle {
             let frac = recover_frac.min(pos.remaining_bps);
             pos.tranche_mask |= 0b001;
             let net = pos.realize(frac, mult, &p);
+            let (mfe_bps, mae_bps) = pos.excursions_bps();
             return Some(Exit {
                 mint: *mint,
                 net_lamports: net,
                 reason: ExitReason::TakeProfitLadder,
                 closed: pos.remaining_bps == 0,
+                mfe_bps,
+                mae_bps,
             });
         }
         if mult >= p.tp2_bps && (pos.tranche_mask & 0b010) == 0 {
             pos.tranche_mask |= 0b010;
             let net = pos.realize(p.tp2_frac_bps, mult, &p);
+            let (mfe_bps, mae_bps) = pos.excursions_bps();
             return Some(Exit {
                 mint: *mint,
                 net_lamports: net,
                 reason: ExitReason::TakeProfitLadder,
                 closed: pos.remaining_bps == 0,
+                mfe_bps,
+                mae_bps,
             });
         }
         if mult >= p.tp3_bps && (pos.tranche_mask & 0b100) == 0 {
             pos.tranche_mask |= 0b100;
             let net = pos.realize(p.tp3_frac_bps, mult, &p);
+            let (mfe_bps, mae_bps) = pos.excursions_bps();
             return Some(Exit {
                 mint: *mint,
                 net_lamports: net,
                 reason: ExitReason::TakeProfitLadder,
                 closed: pos.remaining_bps == 0,
+                mfe_bps,
+                mae_bps,
             });
         }
 
@@ -469,12 +547,15 @@ impl ScalpLifecycle {
     /// Realize the entire remaining position at `mult_bps` and remove it.
     fn close(&mut self, mint: &[u8; 32], mult_bps: u32, reason: ExitReason) -> Exit {
         let mut pos = self.open.remove(mint).expect("close on an open position");
+        let (mfe_bps, mae_bps) = pos.excursions_bps();
         let net = pos.realize(pos.remaining_bps, mult_bps, &self.params);
         Exit {
             mint: *mint,
             net_lamports: net,
             reason,
             closed: true,
+            mfe_bps,
+            mae_bps,
         }
     }
 }

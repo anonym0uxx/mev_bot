@@ -167,6 +167,14 @@ impl SocialEarn {
     pub fn earned_len(&self) -> usize {
         self.earned.len()
     }
+
+    /// The accumulated reconciled calls (bounded rolling window) — the raw evidence
+    /// the D1–D10 determinant computation folds into the source-quality ledger at
+    /// the reflection cadence (§29.8). Read-only.
+    #[must_use]
+    pub fn reconciled_calls(&self) -> &[SocialCall] {
+        &self.reconciled
+    }
 }
 
 #[cfg(test)]

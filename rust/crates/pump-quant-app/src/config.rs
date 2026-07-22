@@ -148,6 +148,12 @@ pub struct Config {
     pub dd_tier3_bp: u32,
     /// Probe-only fraction (bps of deployable) used in the deepest drawdown tier.
     pub probe_f_bp: u32,
+    /// Probe fraction of the arbitrated size opened immediately (§33 probe→confirm→
+    /// scale); the remainder scales in on deterministic confirmation.
+    pub probe_frac_bp: u32,
+    /// §23 arbitration floor: candidates whose conditional expected net SOL is
+    /// below this never win a slot.
+    pub arb_min_expected_net_lamports: i64,
 
     // ---- toxicity gate (VPIN-X, §21.7) ----
     /// Bucket-cap floor, lamports (dust spam cannot manufacture buckets).
@@ -307,6 +313,8 @@ impl Config {
             dd_tier2_bp: 3_000,                       // −30% dd → quarter fraction
             dd_tier3_bp: 5_000,                       // −50% dd → probe-only survival
             probe_f_bp: 50,
+            probe_frac_bp: 4_000, // open 40% as the probe; scale to full on confirmation
+            arb_min_expected_net_lamports: 0,
 
             vpin_v_min_lamports: 250_000_000, // ≈ one retail clip (0.25 SOL)
             vpin_v_max_lamports: 20_000_000_000, // ≤ ~25% of a full curve per bucket
@@ -407,6 +415,8 @@ impl Config {
             "dd_tier2_bp" => self.dd_tier2_bp = bp(value)?,
             "dd_tier3_bp" => self.dd_tier3_bp = bp(value)?,
             "probe_f_bp" => self.probe_f_bp = bp(value)?,
+            "probe_frac_bp" => self.probe_frac_bp = bp(value)?.max(1),
+            "arb_min_expected_net_lamports" => self.arb_min_expected_net_lamports = value,
             "vpin_v_min_lamports" => self.vpin_v_min_lamports = nonneg(value)?.max(1),
             "vpin_v_max_lamports" => self.vpin_v_max_lamports = nonneg(value)?.max(1),
             "vpin_min_buckets" => self.vpin_min_buckets = sz(value)?.max(1),

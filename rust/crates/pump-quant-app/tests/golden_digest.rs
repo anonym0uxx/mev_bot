@@ -87,11 +87,16 @@ fn drive() -> pump_quant_app::engine::Report {
 /// Filled journal record. Fewer, properly-sized positions now net MORE
 /// (+5_017_234 vs +2_979_624). From here this value is again the frozen tripwire —
 /// any future move that is not a deliberate re-pin is a regression (§22, §54).
-const GOLDEN_DIGEST: u64 = 6_031_070_496_308_012_732;
-const GOLDEN_NET_LAMPORTS: i128 = 5_017_234;
+// Re-pin #3 (ledger-closure batch): config-hash-seeded digest, §23 expected-net
+// arbitration, §33 probe→confirm→scale, §32 thesis exits, §21.7 authenticity +
+// phase exit-cost law, §27 creator credibility, §21.3 regime consumption. Three
+// concentrated admits now net +6_443_936 (arc: 2_979_624 → 5_017_234 → 6_443_936 —
+// every discipline layer raised realized net on the same tape).
+const GOLDEN_DIGEST: u64 = 14_667_389_057_808_178_738;
+const GOLDEN_NET_LAMPORTS: i128 = 6_443_936;
 const GOLDEN_PROMOTED: u64 = 576;
-const GOLDEN_ADMITTED: u64 = 6;
-const GOLDEN_REJECTED: u64 = 570;
+const GOLDEN_ADMITTED: u64 = 3;
+const GOLDEN_REJECTED: u64 = 573;
 
 #[test]
 fn golden_digest_is_stable() {

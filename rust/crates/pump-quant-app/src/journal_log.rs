@@ -147,6 +147,16 @@ impl DecisionJournal {
         Self::default()
     }
 
+    /// Fold an arbitrary seed (e.g. the canonical strategy-config hash, §19/§56.2)
+    /// into the rolling digest BEFORE any decision is recorded, so two runs under
+    /// different configs can never share a digest. Call once, at construction time.
+    pub fn seed(&mut self, seed: u64) {
+        for b in seed.to_le_bytes() {
+            self.hash ^= u64::from(b);
+            self.hash = self.hash.wrapping_mul(FNV_PRIME);
+        }
+    }
+
     /// Append a decision: fold it into the rolling digest and retain it (evicting
     /// the oldest once `RECENT_CAP` is reached).
     pub fn record(&mut self, d: Decision) {

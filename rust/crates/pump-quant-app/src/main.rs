@@ -107,6 +107,10 @@ fn parse_events(text: &str) -> Result<Vec<AppEvent>, String> {
         let num = |s: &str| s.parse::<i64>().map_err(|_| err("bad integer"));
         let ev = match f[0] {
             "tick" => AppEvent::Tick,
+            "migrate" if f.len() == 3 => AppEvent::Migration {
+                mint: mint(f[1])?,
+                slot: num(f[2])?.max(0) as u64,
+            },
             "trade" if f.len() == 8 => AppEvent::MarketTrade {
                 mint: mint(f[1])?,
                 price_fp: f[2].parse::<i128>().map_err(|_| err("bad price_fp"))?,

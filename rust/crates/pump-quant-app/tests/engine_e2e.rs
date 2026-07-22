@@ -539,6 +539,31 @@ fn admissible_stream(tag: u8) -> Vec<AppEvent> {
     ev
 }
 
+/// A deep, admissible market (100-SOL pool, 200-SOL proven depth) so bankroll-
+/// derived sizes are small relative to the venue (the §34.4/§21.7 exit-cost law
+/// correctly vetoes bankroll-scale sizes against toy-sized pools).
+fn deep_admissible_stream(tag: u8) -> Vec<AppEvent> {
+    let m = mint(tag);
+    let mut ev = Vec::new();
+    for i in 0..6u64 {
+        ev.push(AppEvent::MarketTrade {
+            mint: m,
+            price_fp: 1_000_000_000 + (i as i128) * 1_000_000,
+            quote_lamports: 500_000,
+            liquidity_lamports: 100_000_000_000,
+            signed_base: 1_000_000,
+            buyer_entity: i,
+            age_slots: 30,
+        });
+    }
+    ev.push(AppEvent::OnchainConfirm {
+        mint: m,
+        sellable_depth_lamports: 200_000_000_000,
+    });
+    ev.push(AppEvent::Tick);
+    ev
+}
+
 #[test]
 fn bankroll_sizing_scales_with_capital_and_respects_the_floor() {
     // The same market, three bankrolls: sizes derive from deployable capital
@@ -550,7 +575,7 @@ fn bankroll_sizing_scales_with_capital_and_respects_the_floor() {
             .unwrap();
         cfg.apply("gate_base_fixed_lamports", 1_000).unwrap(); // wide band: x_min small
         let mut e = Engine::new(cfg, RunMode::Paper);
-        for ev in admissible_stream(0x91) {
+        for ev in deep_admissible_stream(0x91) {
             e.tick(ev);
         }
         let r = e.report();
@@ -576,7 +601,7 @@ fn bankroll_size_is_proportional_to_deployable_capital() {
             .unwrap();
         cfg.apply("gate_base_fixed_lamports", 1_000).unwrap();
         let mut e = Engine::new(cfg, RunMode::Paper);
-        for ev in admissible_stream(0x92) {
+        for ev in deep_admissible_stream(0x92) {
             e.tick(ev);
         }
         // pump then flow-rollover close in profit
@@ -584,7 +609,7 @@ fn bankroll_size_is_proportional_to_deployable_capital() {
             mint: mint(0x92),
             price_fp: 1_500_000_000,
             quote_lamports: 500_000,
-            liquidity_lamports: 100_000_000,
+            liquidity_lamports: 100_000_000_000,
             signed_base: 1_000_000,
             buyer_entity: 9,
             age_slots: 31,
@@ -593,7 +618,7 @@ fn bankroll_size_is_proportional_to_deployable_capital() {
             mint: mint(0x92),
             price_fp: 1_480_000_000,
             quote_lamports: 2_000_000,
-            liquidity_lamports: 100_000_000,
+            liquidity_lamports: 100_000_000_000,
             signed_base: -4_000_000,
             buyer_entity: 10,
             age_slots: 32,

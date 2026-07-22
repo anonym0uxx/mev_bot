@@ -41,6 +41,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod analytics;
 pub mod attention;
 pub mod config;
 pub mod engine;
@@ -48,9 +49,12 @@ pub mod event;
 pub mod gate;
 pub mod journal_log;
 pub mod lane;
+pub mod market_context;
 pub mod position;
 pub mod reflect;
 pub mod scalp;
+pub mod screen;
+pub mod shadow;
 pub mod social_earn;
 pub mod social_ingest;
 pub mod token_ingest;

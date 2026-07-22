@@ -13,13 +13,17 @@
 //! Every step is a pure function of prior state and the event, so the same event
 //! stream always produces the same decisions and the same net-SOL (§22, §54).
 
+use crate::analytics::ReflectionAnalytics;
 use crate::config::Config;
 use crate::event::AppEvent;
 use crate::gate::{decide, Confirmation, GateDecision, GateReject};
 use crate::journal_log::{Decision, DecisionJournal};
 use crate::lane::{NarrativeLane, NumericEmitGate, NumericLane, Regime, SocialLane, WalletLane};
+use crate::market_context::MarketContext;
 use crate::position::{Exit, ExitReason, LifecycleParams, ScalpLifecycle};
 use crate::reflect::reflect;
+use crate::screen::{creator_credibility_haircut_bp, FlowScreen, WalletScreen};
+use crate::shadow::{ChallengerStanding, ExitTournament};
 use crate::toxicity::{
     vpin_exit_escalates, vpin_size_mult_bp, VpinParams, VpinState, VpinThresholds,
 };
@@ -30,6 +34,7 @@ use crate::social_earn::{SocialEarn, SocialEarnParams};
 use crate::social_ingest::{ledger_quality, to_mention, SourceQualityPolicy};
 use pump_quant_domain::ids::Mint as DomainMint;
 use pump_quant_evaluator::evaluator_stats::{Lane as EvalLane, ReconTrade};
+use pump_quant_ingest::social_parse::fnv1a_64;
 use pump_quant_ingest::social_parse::parse_social_event;
 use pump_quant_ingest::social_source::SocialSource;
 use pump_quant_market_state::creator::{CreatorEvent, CreatorState, CreatorStateReducer};
@@ -38,8 +43,16 @@ use pump_quant_market_state::meta::{
 };
 use pump_quant_narrative::narrative::nv_meta_emergence;
 use pump_quant_social::ledger::SourceQualityLedger;
+use pump_quant_strategy::economic_gate::{
+    effective_fixed_lamports, round_trip_cost_bps, ImpactCurve,
+};
+use pump_quant_strategy::entry_arbitration::{arbitrate, ArbitrationParams, EntryCandidate};
 use pump_quant_strategy::probe_ladder::{
     deployable_capital, derive_survival_floor, wallet_floor_guard, FloorVerdict,
+};
+use pump_quant_strategy::thesis::{
+    build_thesis, evaluate_thesis, forced_action, FeatureObservation, ForcedAction, Thesis,
+    ThesisCondition, ThesisInputs, ThesisState, ThesisVerdict,
 };
 use pump_quant_watchlist::candidate::{Candidate, Features, Lane as WlLane};
 use pump_quant_watchlist::lane_ingest::ingest_union;
@@ -83,6 +96,18 @@ impl ReconAccum {
             .saturating_add(self.failed as i128);
         self.gross.saturating_sub(costs)
     }
+}
+
+/// A gate-approved, fully-priced candidate awaiting §23 slot arbitration.
+#[derive(Clone, Copy, Debug)]
+struct PendingEntry {
+    lane: WlLane,
+    mint: [u8; 32],
+    entry_price: u64,
+    size: u64,
+    entry_cost: u64,
+    /// Conditional expected net SOL for the slot (size × priced move − cost load).
+    expected_net: i128,
 }
 
 /// Index of an evaluator lane into the running-accumulator array.
@@ -214,7 +239,7 @@ pub struct Engine {
     /// net-SOL to the right discovery weight (§29.9), the total attributes back to
     /// the market's social callers (§82), and the entry spend releases the
     /// committed-risk budget.
-    open_lane: BTreeMap<[u8; 32], (WlLane, i128, u64)>,
+    open_lane: BTreeMap<[u8; 32], (WlLane, i128, u64, u64, u64)>,
 
     /// The paper bankroll (§33 Layer 1, delta-§1): realized-only accounting.
     /// `balance = initial + realized_cum`, floored at zero; every sizing limit
@@ -241,6 +266,36 @@ pub struct Engine {
     /// not be invisible until someone else trades them); entries expire after
     /// `creation_ttl_ticks` unless the market earns real flow. Bounded (§99).
     creations: BTreeMap<[u8; 32], u64>,
+
+    /// Reflection/report analytics (§47/§48/§49/§50/§51/§54): per-trade returns,
+    /// MFE rows, PRFS reject forward-marking, convexity events, retirement,
+    /// Layer-2 sizing recommendation, D1–D10 fold, VOI queue. Bounded rings.
+    analytics: ReflectionAnalytics,
+    /// §48 exit-policy shadow tournament: 8 pre-registered challengers race the
+    /// incumbent on the same admits/swaps. Report-only — adoption is an operator
+    /// config change inside the §56.2 envelope, never self-applied.
+    tournament: ExitTournament,
+    /// §21.7 flow-authenticity screen: entity-dedup wash/HHI per mint. Sizing
+    /// channel only (single entry point), plus the extreme-fabrication gate.
+    flow_screen: FlowScreen,
+    /// §28 smart-money follow screen (lagged-shadow law) fed from buyer entities.
+    wallet_screen: WalletScreen,
+    /// §21.3/§28/§21.7 market context: regime reducer, per-mint cluster-adjusted
+    /// breadth, curve→pool phase, phase-correct executable exit cost.
+    context: MarketContext,
+    /// Per-mint entry thesis (§32): built at open from entry evidence, evaluated
+    /// per swap; deterministic invalidation forces the exit. Bounded with opens.
+    theses: BTreeMap<[u8; 32], Thesis>,
+    /// mint → creator entity (from TokenMetadata), for the credibility haircut.
+    mint_creator: BTreeMap<[u8; 32], u64>,
+    /// creator → (lifetime launches, window start tick, launches in window).
+    creator_launches: BTreeMap<u64, (u32, u64, u32)>,
+    /// §56.11 retirement flags per watchlist lane (capital-ineligible when true).
+    retired: [bool; 4],
+    /// Envelope-clamped Layer-2 sizing recommendation (bps), None until earned.
+    f_recommended: Option<u32>,
+    /// Regime summary flag consumed by sizing (refreshed at reflection cadence).
+    regime_rug_elevated: bool,
 
     /// Reused per-tick discovery scratch: the union of all four lanes' emissions.
     /// Cleared (not freed) each tick so steady-state discovery does not re-allocate
@@ -303,6 +358,12 @@ impl Engine {
         // with f_base and the total risk budget), never the raw confirmed-set bound.
         let positions = ScalpLifecycle::new(lifecycle_params, cfg.max_concurrent_positions);
         let bankroll_hwm = cfg.bankroll_initial_lamports;
+        // §19: fold the full strategy-config identity into the decision digest so
+        // two runs under different configs can never share a digest. The Debug
+        // encoding of the Copy config struct is deterministic for a fixed build.
+        let mut journal = DecisionJournal::new();
+        journal.seed(fnv1a_64(format!("{cfg:?}").as_bytes()));
+        let tournament = ExitTournament::new(lifecycle_params);
         Self {
             cfg,
             mode,
@@ -317,7 +378,7 @@ impl Engine {
             confirmed: BTreeMap::new(),
             lane_perf: LanePerformance::new(),
             recon: [ReconAccum::default(); 2],
-            journal: DecisionJournal::new(),
+            journal,
             attention: AttentionField::new(AttentionParams::standard()),
             ledger: SourceQualityLedger::with_capacity(4_096),
             quality_policy: SourceQualityPolicy::conservative(),
@@ -334,6 +395,17 @@ impl Engine {
             bankroll_hwm,
             vpin: BTreeMap::new(),
             creations: BTreeMap::new(),
+            analytics: ReflectionAnalytics::new(),
+            tournament,
+            flow_screen: FlowScreen::new(),
+            wallet_screen: WalletScreen::new(),
+            context: MarketContext::new(),
+            theses: BTreeMap::new(),
+            mint_creator: BTreeMap::new(),
+            creator_launches: BTreeMap::new(),
+            retired: [false; 4],
+            f_recommended: None,
+            regime_rug_elevated: false,
             scratch: Vec::new(),
             promoted: 0,
             admitted: 0,
@@ -432,6 +504,29 @@ impl Engine {
                 if !self.mint_category.is_empty() {
                     self.route_category_flow(*mint.as_bytes(), signed_base);
                 }
+                // Market context (§21.3 regime + §28 cluster breadth + phase) and the
+                // flow/wallet screens (§21.7 authenticity, §28 lagged-shadow feed).
+                self.context.on_trade(
+                    mint.as_bytes(),
+                    buyer_entity,
+                    signed_base >= 0,
+                    quote_lamports,
+                    signed_base.unsigned_abs(),
+                    liquidity_lamports,
+                );
+                self.flow_screen.record(
+                    mint.as_bytes(),
+                    buyer_entity,
+                    signed_base >= 0,
+                    quote_lamports,
+                );
+                self.wallet_screen.record(
+                    buyer_entity,
+                    mint.as_bytes(),
+                    signed_base >= 0,
+                    quote_lamports,
+                    self.now,
+                );
                 // VPIN-X toxicity accumulation (§21.7): fold the swap's exact-sign
                 // quote volume into the mint's volume-clocked buckets. O(1) amortized;
                 // bounded map with deterministic eviction (§99).
@@ -461,21 +556,35 @@ impl Engine {
                         -i128::from(quote_lamports)
                     };
                     let price_u = u64::try_from(price_fp.max(0)).unwrap_or(u64::MAX);
+                    self.tournament
+                        .on_trade(mint.as_bytes(), price_u, signed_quote, self.now);
                     if let Some(exit) =
                         self.positions
                             .on_trade(mint.as_bytes(), price_u, signed_quote, self.now)
                     {
                         self.book_exit(exit);
                     } else if self.positions.has(mint.as_bytes()) {
-                        // VPIN exit escalation: the extreme sell-dominant tier is a
-                        // distributed multi-swap dump the single-print rug-precursor
-                        // cannot see — force the thesis-invalidation exit (§21.7/§32).
-                        let vp = self.vpin_params();
-                        let reading = self
-                            .vpin
-                            .get(mint.as_bytes())
-                            .and_then(|v| v.reading(self.now, &vp));
-                        if vpin_exit_escalates(reading, &self.vpin_thresholds()) {
+                        // §33 probe→confirm scale-in (one-shot; scale_in refuses after
+                        // any de-risking): in profit + authentic flow ⇒ full target.
+                        if price_fp > 0 {
+                            let (auth, _) = self.flow_screen.authenticity(mint.as_bytes());
+                            if auth >= 8_000 {
+                                if let Some((_, _, _, add, add_cost)) =
+                                    self.open_lane.get(mint.as_bytes()).copied()
+                                {
+                                    if add > 0
+                                        && self.positions.scale_in(mint.as_bytes(), add, add_cost)
+                                    {
+                                        if let Some(e) = self.open_lane.get_mut(mint.as_bytes()) {
+                                            e.3 = 0;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // §32 thesis evaluation: deterministic invalidation forces the
+                        // exit; no score may override it.
+                        if self.thesis_forces_exit(mint.as_bytes()) {
                             if let Some(exit) = self.positions.close_at(
                                 mint.as_bytes(),
                                 price_u,
@@ -483,9 +592,32 @@ impl Engine {
                             ) {
                                 self.book_exit(exit);
                             }
+                        } else {
+                            // VPIN exit escalation: the extreme sell-dominant tier is a
+                            // distributed multi-swap dump the single-print rug-precursor
+                            // cannot see — force the thesis-invalidation exit (§21.7/§32).
+                            let vp = self.vpin_params();
+                            let reading = self
+                                .vpin
+                                .get(mint.as_bytes())
+                                .and_then(|v| v.reading(self.now, &vp));
+                            if vpin_exit_escalates(reading, &self.vpin_thresholds()) {
+                                if let Some(exit) = self.positions.close_at(
+                                    mint.as_bytes(),
+                                    price_u,
+                                    ExitReason::ThesisInvalidation,
+                                ) {
+                                    self.book_exit(exit);
+                                }
+                            }
                         }
                     }
                 }
+            }
+            AppEvent::Migration { mint, .. } => {
+                // Curve→pool phase flip (§21.7 phase asymmetry): exit-cost pricing and
+                // future hazard conditioning consult the phase from here on.
+                self.context.on_migration(mint.as_bytes());
             }
             AppEvent::NarrativeSample {
                 mint,
@@ -583,6 +715,31 @@ impl Engine {
             }
         }
         self.mint_category.insert(mint, category_id);
+        // §27/§70.9 creator-credibility evidence: lifetime + windowed launch counts.
+        if first_sighting {
+            self.context.on_launch();
+            if self.mint_creator.len() >= cap && !self.mint_creator.contains_key(&mint) {
+                if let Some(&victim) = self.mint_creator.keys().next() {
+                    self.mint_creator.remove(&victim);
+                }
+            }
+            self.mint_creator.insert(mint, creator);
+            if self.creator_launches.len() >= cap && !self.creator_launches.contains_key(&creator) {
+                if let Some(&victim) = self.creator_launches.keys().next() {
+                    self.creator_launches.remove(&victim);
+                }
+            }
+            let e = self
+                .creator_launches
+                .entry(creator)
+                .or_insert((0, self.now, 0));
+            e.0 = e.0.saturating_add(1);
+            if self.now.saturating_sub(e.1) > CREATOR_SERIAL_WINDOW_TICKS {
+                e.1 = self.now;
+                e.2 = 0;
+            }
+            e.2 = e.2.saturating_add(1);
+        }
         // A decoded creation immediately creates a discovery candidate (§23/§21.1):
         // record the sighting so `evaluate` surfaces a CreationSniper candidate while
         // it is fresh. The gate still requires on-chain confirmation — this only
@@ -836,7 +993,11 @@ impl Engine {
             self.cfg.promote_min_rank,
         );
 
-        // 4-5. Gate then paper-scalp each promotion.
+        // 4-5. Gate every promotion, then allocate the scarce slots by CONDITIONAL
+        // EXPECTED NET SOL (§23 arbitration — never promotion order), and open the
+        // winners. Forgone candidates are journaled with their opportunity cost
+        // implicit in the arbitration record, never silently dropped.
+        let mut pending: Vec<PendingEntry> = Vec::new();
         for cand in promoted {
             self.promoted += 1;
             let rank = self.watchlist.rank_of(&cand, self.now);
@@ -845,7 +1006,62 @@ impl Engine {
                 lane: cand.lane as u8,
                 rank,
             });
-            self.gate_and_scalp(cand);
+            if let Some(pe) = self.gate_evaluate(cand) {
+                pending.push(pe);
+            }
+        }
+        if !pending.is_empty() {
+            let slots = (self
+                .cfg
+                .max_concurrent_positions
+                .saturating_sub(self.positions.len())) as u32;
+            let floor = derive_survival_floor(
+                self.cfg.bankroll_initial_lamports,
+                self.cfg.floor_fraction_bps,
+            );
+            let deployable = deployable_capital(self.bankroll_balance(), floor);
+            let risk_budget =
+                u128::from(deployable) * u128::from(self.cfg.total_risk_cap_bp) / 10_000;
+            let exposure_cap = risk_budget.saturating_sub(self.bankroll_committed);
+            let cands: Vec<EntryCandidate> = pending
+                .iter()
+                .enumerate()
+                .map(|(i, p)| EntryCandidate {
+                    candidate_id: i as u64,
+                    entry_mode: p.lane as u16,
+                    archetype: 0,
+                    regime: 0,
+                    expected_net_sol_lamports: i64::try_from(p.expected_net).unwrap_or(i64::MAX),
+                    size_lamports: p.entry_cost,
+                })
+                .collect();
+            let outcome = arbitrate(
+                &cands,
+                &ArbitrationParams {
+                    max_slots: slots,
+                    exposure_cap_lamports: u64::try_from(exposure_cap).unwrap_or(u64::MAX),
+                    min_expected_net_lamports: self.cfg.arb_min_expected_net_lamports,
+                },
+            );
+            let mut awarded = [false; 64];
+            for award in &outcome.awarded {
+                let idx = award.candidate_id as usize;
+                if idx < pending.len() && idx < awarded.len() {
+                    awarded[idx] = true;
+                }
+            }
+            for (i, p) in pending.iter().enumerate() {
+                if i < awarded.len() && awarded[i] {
+                    self.open_pending(p);
+                } else {
+                    self.rejected += 1;
+                    self.journal.record(Decision::Rejected {
+                        mint: p.mint,
+                        reason: REJECT_ARBITRATION,
+                    });
+                    self.record_reject_sample(REJECT_ARBITRATION, p.mint);
+                }
+            }
         }
 
         // 6. Reflection cadence: realized net-SOL reshapes discovery weights.
@@ -868,9 +1084,18 @@ impl Engine {
                 self.book_exit(e);
             }
         }
+        if !self.tournament.is_empty() {
+            let numeric = &self.numeric;
+            self.tournament.on_tick(self.now, &|m| {
+                numeric.latest_price_fp(DomainMint::from_bytes(*m))
+            });
+        }
     }
 
-    fn gate_and_scalp(&mut self, cand: Candidate) {
+    /// Evaluate one promoted candidate through every gate and sizing law, WITHOUT
+    /// opening: returns the fully-priced pending entry for §23 arbitration, or
+    /// journals the reject and returns None. Opening happens after arbitration.
+    fn gate_evaluate(&mut self, cand: Candidate) -> Option<PendingEntry> {
         let mint_bytes = cand.mint.bytes();
         let domain_mint = DomainMint::from_bytes(mint_bytes);
         let numeric_feats = self.numeric.features_for(domain_mint);
@@ -888,8 +1113,29 @@ impl Engine {
                 numeric: numeric_feats.unwrap_or_default(),
             });
 
+        // §56.11: a retired lane's candidates stay research-visible but are
+        // capital-ineligible.
+        if self.retired[cand.lane.index()] {
+            self.rejected += 1;
+            self.journal.record(Decision::Rejected {
+                mint: mint_bytes,
+                reason: REJECT_LANE_RETIRED,
+            });
+            return None;
+        }
         match decide(&cand, confirmation, &self.cfg) {
             GateDecision::Admit(band) => {
+                // §21.7 extreme fabrication signature — the only authenticity gate.
+                let (_, fabricated) = self.flow_screen.authenticity(&mint_bytes);
+                if fabricated {
+                    self.rejected += 1;
+                    self.journal.record(Decision::Rejected {
+                        mint: mint_bytes,
+                        reason: REJECT_FABRICATED_FLOW,
+                    });
+                    self.record_reject_sample(REJECT_FABRICATED_FLOW, mint_bytes);
+                    return None;
+                }
                 // ---- VPIN extreme tier (the one binary veto): a distributed,
                 // sell-dominant dump in progress. Graded tiers only shrink size.
                 let vp = self.vpin_params();
@@ -904,7 +1150,8 @@ impl Engine {
                         mint: mint_bytes,
                         reason: REJECT_VPIN_TOXIC,
                     });
-                    return;
+                    self.record_reject_sample(REJECT_VPIN_TOXIC, mint_bytes);
+                    return None;
                 }
                 // ---- Concurrency cap (§33: jointly sized with the risk fractions —
                 // max_concurrent × f_base ≈ total_risk_cap). Journaled, never silent.
@@ -914,7 +1161,7 @@ impl Engine {
                         mint: mint_bytes,
                         reason: REJECT_MAX_CONCURRENT,
                     });
-                    return;
+                    return None;
                 }
                 // ---- Bankroll chain (§33 Layer 1 / delta-§1): every limit derives
                 // from deployable = balance − survival_floor. Start with ANY SOL
@@ -935,11 +1182,17 @@ impl Engine {
                         mint: mint_bytes,
                         reason: REJECT_INSUFFICIENT_BANKROLL,
                     });
-                    return;
+                    return None;
                 }
                 // ---- Per-position fraction (drawdown-ratcheted) × reduce-only
                 // haircuts: creator/category × VPIN toxicity × tape regime.
-                let f_eff = self.dd_f_eff_bp(balance);
+                let mut f_eff = self.dd_f_eff_bp(balance);
+                // §33 Layer-2 controller: the sizing validator's survival-constrained
+                // recommendation may only move f INSIDE the [probe_f, f_base] envelope
+                // (§56.2), and never above the drawdown-ratcheted fraction.
+                if let Some(rec) = self.f_recommended {
+                    f_eff = f_eff.min(rec.clamp(self.cfg.probe_f_bp, self.cfg.f_base_bp));
+                }
                 let regime = self.numeric.regime_of(
                     domain_mint,
                     self.cfg.roll_trend_bp,
@@ -950,10 +1203,38 @@ impl Engine {
                 } else {
                     10_000
                 };
+                // §21.7 single-channel authenticity multiplier (phase-weighted) and
+                // §27 creator-credibility haircut — both reduce-only.
+                let is_pool = self.context.is_pool(&mint_bytes);
+                let auth_mult = self.flow_screen.size_mult_bp(&mint_bytes, is_pool);
+                let cred_mult = match self
+                    .mint_creator
+                    .get(&mint_bytes)
+                    .and_then(|c| self.creator_launches.get(c))
+                {
+                    Some(&(lifetime, _, in_window)) => creator_credibility_haircut_bp(
+                        lifetime,
+                        in_window,
+                        CREATOR_SERIAL_THRESHOLD,
+                    ),
+                    None => 10_000,
+                };
+                // §21.3 regime consumption: elevated market-wide rug rate shrinks size.
+                let rug_mult: u32 = if self.regime_rug_elevated {
+                    REGIME_RUG_HAIRCUT_BP
+                } else {
+                    10_000
+                };
                 let haircut_bp = (u128::from(self.size_haircut_bps(&mint_bytes))
                     * u128::from(vpin_mult)
                     / 10_000
                     * u128::from(regime_mult)
+                    / 10_000
+                    * u128::from(auth_mult)
+                    / 10_000
+                    * u128::from(cred_mult)
+                    / 10_000
+                    * u128::from(rug_mult)
                     / 10_000) as u32;
                 let raw = u128::from(deployable) * u128::from(f_eff) / 10_000;
                 let sized = (raw * u128::from(haircut_bp) / 10_000)
@@ -983,7 +1264,8 @@ impl Engine {
                             mint: mint_bytes,
                             reason: REJECT_BELOW_COST_FLOOR,
                         });
-                        return;
+                        self.record_reject_sample(REJECT_BELOW_COST_FLOOR, mint_bytes);
+                        return None;
                     }
                 };
                 // ---- Survival-floor guard (strategy leaf pl_wallet_floor): the
@@ -1000,29 +1282,55 @@ impl Engine {
                         mint: mint_bytes,
                         reason: REJECT_WALLET_FLOOR,
                     });
-                    return;
+                    return None;
                 }
-                // Entry price is the market's latest decoded print; the position is
-                // then managed FORWARD per-swap by the exit lifecycle (§24). Entry
-                // cost (principal + entry fee + tip) is what the principal-recovery
-                // tranche must clear, and what commits against the risk budget.
+                // §34.4/§21.7 phase-correct exit-cost law: if the executable exit side
+                // already consumes the priced move, the trade is a structural loss.
+                if let Some(exit_cost) = self.context.exit_cost_bps(&mint_bytes, size) {
+                    if exit_cost
+                        > self
+                            .cfg
+                            .gate_expected_move_bps
+                            .saturating_mul(EXIT_COST_VETO_MULT)
+                    {
+                        self.rejected += 1;
+                        self.journal.record(Decision::Rejected {
+                            mint: mint_bytes,
+                            reason: REJECT_EXIT_COST,
+                        });
+                        self.record_reject_sample(REJECT_EXIT_COST, mint_bytes);
+                        return None;
+                    }
+                }
+                // Fully priced: hand to §23 arbitration. Expected net per slot =
+                // size × priced move − the round-trip cost load — conditional
+                // expected net SOL, never raw discovery score.
                 let entry_price = self.numeric.latest_price_fp(domain_mint).unwrap_or(0);
-                if entry_price > 0
-                    && self
-                        .positions
-                        .open(mint_bytes, entry_price, size, entry_cost, self.now)
-                {
-                    self.admitted += 1;
-                    self.bankroll_committed = self
-                        .bankroll_committed
-                        .saturating_add(u128::from(entry_cost));
-                    self.open_lane
-                        .insert(mint_bytes, (cand.lane, 0, entry_cost));
-                    self.journal.record(Decision::Admitted {
-                        mint: mint_bytes,
-                        size_lamports: size,
-                    });
+                if entry_price == 0 {
+                    return None;
                 }
+                // Priced with the SAME §34.4 economics the gate admitted under, so a
+                // size the band declared viable ranks with a non-negative expected
+                // net (move − round-trip cost at this size), in lamports.
+                let eff_fixed = effective_fixed_lamports(
+                    self.cfg.gate_base_fixed_lamports,
+                    self.cfg.gate_fail_rate_bps,
+                )
+                .unwrap_or(self.cfg.gate_base_fixed_lamports);
+                let impact = ImpactCurve::linear_test(self.cfg.gate_impact_den);
+                let rt_bps =
+                    round_trip_cost_bps(size, eff_fixed, self.cfg.gate_protocol_bps, &impact)
+                        .unwrap_or(u32::MAX);
+                let edge_bps = i128::from(self.cfg.gate_expected_move_bps) - i128::from(rt_bps);
+                let expected_net = i128::from(size).saturating_mul(edge_bps) / 10_000;
+                Some(PendingEntry {
+                    lane: cand.lane,
+                    mint: mint_bytes,
+                    entry_price,
+                    size,
+                    entry_cost,
+                    expected_net,
+                })
             }
             GateDecision::Reject(reason) => {
                 self.rejected += 1;
@@ -1030,7 +1338,105 @@ impl Engine {
                     mint: mint_bytes,
                     reason: reject_code(reason),
                 });
+                self.record_reject_sample(reject_code(reason), mint_bytes);
+                None
             }
+        }
+    }
+
+    /// Feed a gate rejection into the PRFS forward-marking ring (§47c) at the
+    /// mint's latest decoded price.
+    fn record_reject_sample(&mut self, gate_code: u8, mint: [u8; 32]) {
+        if let Some(price) = self.numeric.latest_price_fp(DomainMint::from_bytes(mint)) {
+            self.analytics
+                .record_reject(gate_code, mint, price, self.now);
+        }
+    }
+
+    /// §32 thesis check for an open position: build the live observations (OFI,
+    /// CVD sign) and evaluate the stored deterministic thesis. True = forced exit.
+    fn thesis_forces_exit(&mut self, mint: &[u8; 32]) -> bool {
+        let Some(thesis) = self.theses.get(mint) else {
+            return false;
+        };
+        let Some(f) = self.numeric.features_for(DomainMint::from_bytes(*mint)) else {
+            return false;
+        };
+        // buy_pressure_bp is the OFI-derived 0..10_000 scale (5_000 = balanced).
+        let obs = [
+            FeatureObservation {
+                feature_id: THESIS_FEAT_OFI,
+                value_fp: i64::from(f.buy_pressure_bp),
+                completeness_bps: 10_000,
+                observed_ts_ns: self.now,
+            },
+            FeatureObservation {
+                feature_id: THESIS_FEAT_CVD,
+                value_fp: if f.buy_pressure_bp >= 5_000 { 1 } else { -1 },
+                completeness_bps: 10_000,
+                observed_ts_ns: self.now,
+            },
+        ];
+        let verdict = evaluate_thesis(thesis, &ThesisState { observations: &obs }, self.now);
+        let force = forced_action(verdict) == ForcedAction::ForceExit;
+        if force || verdict == ThesisVerdict::Invalidated {
+            self.theses.remove(mint);
+        }
+        force
+    }
+
+    /// Open one arbitration winner (§23): probe-sized entry (§33 probe→confirm→
+    /// scale), full-target risk commitment, thesis registration (§32), shadow-
+    /// tournament mirror (§48), and the Admitted journal record.
+    fn open_pending(&mut self, e: &PendingEntry) {
+        let probe = ((u128::from(e.size) * u128::from(self.cfg.probe_frac_bp)) / 10_000) as u64;
+        let probe = probe.max(1).min(e.size);
+        let scale_add = e.size - probe;
+        let probe_cost =
+            ((u128::from(e.entry_cost) * u128::from(probe)) / u128::from(e.size.max(1))) as u64;
+        let scale_cost = e.entry_cost.saturating_sub(probe_cost);
+        if self
+            .positions
+            .open(e.mint, e.entry_price, probe, probe_cost, self.now)
+        {
+            self.admitted += 1;
+            self.bankroll_committed = self
+                .bankroll_committed
+                .saturating_add(u128::from(e.entry_cost));
+            self.open_lane
+                .insert(e.mint, (e.lane, 0, e.entry_cost, scale_add, scale_cost));
+            self.tournament
+                .open(e.mint, e.entry_price, e.size, e.entry_cost, self.now);
+            // §32: the entry thesis, compiled from the registered v0 feature schema
+            // (OFI stays net-buy; CVD sign stays positive), slot-stamped.
+            let thesis = build_thesis(&ThesisInputs {
+                entry_mode: e.lane as u16,
+                archetype: 0,
+                entry_ts_ns: self.now,
+                required: Vec::new(),
+                invalidation: vec![
+                    ThesisCondition {
+                        feature_id: THESIS_FEAT_OFI,
+                        direction: pump_quant_strategy::thesis::Direction::AtLeast,
+                        threshold_fp: 5_000,
+                        min_completeness_bps: 5_000,
+                        freshness_bound_ns: u64::MAX,
+                    },
+                    ThesisCondition {
+                        feature_id: THESIS_FEAT_CVD,
+                        direction: pump_quant_strategy::thesis::Direction::AtLeast,
+                        threshold_fp: 0,
+                        min_completeness_bps: 5_000,
+                        freshness_bound_ns: u64::MAX,
+                    },
+                ],
+                evidence_refs: vec![fnv1a_64(&e.mint)],
+            });
+            self.theses.insert(e.mint, thesis);
+            self.journal.record(Decision::Admitted {
+                mint: e.mint,
+                size_lamports: e.size,
+            });
         }
     }
 
@@ -1042,7 +1448,7 @@ impl Engine {
     /// high-water mark, and attribute the market's total realized net back to its
     /// social callers (§82).
     fn book_exit(&mut self, e: Exit) {
-        let lane = self.open_lane.get(&e.mint).map(|(l, _, _)| *l);
+        let lane = self.open_lane.get(&e.mint).map(|(l, _, _, _, _)| *l);
         if let Some(lane) = lane {
             self.lane_perf
                 .record(lane, i64::try_from(e.net_lamports).unwrap_or(i64::MAX));
@@ -1063,15 +1469,57 @@ impl Engine {
         // Realized-only bankroll accounting: every exit's net folds in immediately
         // (partial tranches included) — marks never do (§33).
         self.bankroll_realized = self.bankroll_realized.saturating_add(e.net_lamports);
-        if let Some((_, acc, _)) = self.open_lane.get_mut(&e.mint) {
+        if let Some((_, acc, _, _, _)) = self.open_lane.get_mut(&e.mint) {
             *acc = acc.saturating_add(e.net_lamports);
         }
+        // §21.3: a rug-precursor exit is a market-wide collapse observation.
+        if e.reason == ExitReason::RugPrecursor {
+            self.context.on_rug_precursor();
+        }
         if e.closed {
-            if let Some((_, total, entry_spend)) = self.open_lane.remove(&e.mint) {
+            if let Some((lane_w, total, entry_spend, _, _)) = self.open_lane.remove(&e.mint) {
                 self.bankroll_committed = self
                     .bankroll_committed
                     .saturating_sub(u128::from(entry_spend));
                 self.social_earn.record_outcome(&e.mint, total);
+                self.theses.remove(&e.mint);
+                // §47/§48/§49 analytics: the whole position's realized row + the
+                // exit-policy convexity event + the §52 naive-baseline counterfactual.
+                self.analytics.record_trade(
+                    lane_w.index(),
+                    e.reason.code(),
+                    total,
+                    entry_spend,
+                    e.mfe_bps,
+                    e.mae_bps,
+                );
+                let realized_bps = if entry_spend > 0 {
+                    (total.saturating_mul(10_000) / i128::from(entry_spend)) as i64
+                } else {
+                    0
+                };
+                self.analytics.record_convexity(
+                    11, // RuleKind::ExitPolicy discriminant slot (stable app-side code)
+                    u64::from(e.reason.code()),
+                    false,
+                    realized_bps,
+                    realized_bps,
+                    e.mfe_bps,
+                );
+                let baseline = (u128::from(entry_spend)
+                    * u128::from(self.cfg.gate_expected_move_bps)
+                    / 10_000) as i128
+                    - (u128::from(entry_spend)
+                        * u128::from(self.cfg.entry_fee_bps + self.cfg.exit_fee_bps)
+                        / 10_000) as i128
+                    - i128::from(self.cfg.entry_tip_lamports)
+                    - i128::from(self.cfg.exit_tip_lamports);
+                self.analytics.record_baseline(baseline);
+                // §48 tournament pairing: the incumbent's realized net closes the pair.
+                let numeric = &self.numeric;
+                self.tournament.incumbent_closed(&e.mint, total, &|m| {
+                    numeric.latest_price_fp(DomainMint::from_bytes(*m))
+                });
             }
             // The drawdown ratchet's reference updates on realized closes only —
             // immune to mark manipulation by construction.
@@ -1103,6 +1551,28 @@ impl Engine {
         // §29.9 reflection cadence). Off the hot path; a no-op until social calls
         // have been attributed to realized markets.
         self.social_earn.reconcile();
+        // §29.8: fold the D1–D10 determinant bundles from the reconciled calls into
+        // the source-quality ledger — the classification path is now LIVE (was the
+        // last dead loop in the social stack).
+        self.analytics.fold_social_quality(
+            self.social_earn.reconciled_calls(),
+            &[],
+            &mut self.ledger,
+        );
+        // §47c PRFS: mark rejected candidates forward at current prices; §33 L2:
+        // refresh the envelope-clamped sizing recommendation; §56.11: retirement.
+        {
+            let numeric = &self.numeric;
+            self.analytics.reflect(self.now, &|m| {
+                numeric.latest_price_fp(DomainMint::from_bytes(*m))
+            });
+        }
+        self.f_recommended = self
+            .analytics
+            .sizing_recommendation(self.cfg.probe_f_bp, self.cfg.f_base_bp);
+        self.retired = self.analytics.retirement_verdicts();
+        // §21.3 regime summary consumption (sizing haircut when rugs are elevated).
+        self.regime_rug_elevated = self.context.regime_summary().rug_elevated;
         // Recompute the category rank/size adjustments from the on-chain rotation
         // since the last reflection (strengthened, never created, by attention
         // breadth). Off the hot path; a no-op until categories have been fed.
@@ -1239,6 +1709,19 @@ impl Engine {
             }
         }
         self.meta_prev = Some(snap);
+        // §21.4 third consumption limb: a SATURATING category tightens its open
+        // positions' exits (halved stall/trail cap) — pressure, never a veto.
+        if !self.category_rank_adj.is_empty() {
+            let saturating: Vec<[u8; 32]> = self
+                .mint_category
+                .iter()
+                .filter(|(_, cat)| self.category_rank_adj.get(cat).is_some_and(|&adj| adj < 0))
+                .map(|(m, _)| *m)
+                .collect();
+            for m in saturating {
+                self.positions.apply_pressure(&m);
+            }
+        }
     }
 
     /// Whether the attention field shows accelerating *breadth* across a category's
@@ -1322,6 +1805,36 @@ impl Engine {
         self.creators.get(mint).map(|r| r.snapshot())
     }
 
+    /// The §54 analytics block (CVaR, profit factor, top-k excision, PRFS gate
+    /// ledgers, convexity rule ledgers, MFE capture, baseline comparison).
+    #[must_use]
+    pub fn analytics_report(&self) -> crate::analytics::AnalyticsReport {
+        self.analytics.report()
+    }
+
+    /// §48 exit-policy tournament standings (report-only; adoption is an operator
+    /// config change inside the §56.2 envelope).
+    #[must_use]
+    pub fn tournament_standings(&self) -> Vec<ChallengerStanding> {
+        self.tournament.standings()
+    }
+
+    /// §56.10 VOI-ranked open research queue.
+    #[must_use]
+    pub fn voi_queue(&self) -> Vec<(u64, i128)> {
+        self.analytics.voi_ranking()
+    }
+
+    /// §28 lagged-shadow followable verdict for a buyer entity (telemetry seam —
+    /// the event vocabulary does not yet carry wallet ids on WalletAction).
+    #[must_use]
+    pub fn wallet_followable(&self, entity: u64) -> bool {
+        let numeric = &self.numeric;
+        self.wallet_screen.followable(entity, &|m, _slot| {
+            numeric.latest_price_fp(DomainMint::from_bytes(*m))
+        })
+    }
+
     /// The current signed discovery-rank adjustment (bps over a 10_000 base) for a
     /// category, if it is rotating: positive = emerging, negative = saturating.
     /// `None` when the category is not currently rotating. Telemetry seam.
@@ -1347,6 +1860,39 @@ const REJECT_INSUFFICIENT_BANKROLL: u8 = 5;
 const REJECT_MAX_CONCURRENT: u8 = 6;
 const REJECT_BELOW_COST_FLOOR: u8 = 7;
 const REJECT_WALLET_FLOOR: u8 = 8;
+/// Extreme fabrication signature on the mint's flow (§21.7 law — the ONLY
+/// authenticity-driven discovery-adjacent gate; graded authenticity only sizes).
+const REJECT_FABRICATED_FLOW: u8 = 9;
+/// Phase-correct executable exit cost exceeds the priced expected move (§34.4 —
+/// a trade whose exit side already eats the edge is a structural loss).
+const REJECT_EXIT_COST: u8 = 10;
+/// Slot lost in expected-net arbitration (§23 — the forgone candidate and its
+/// opportunity cost are journaled, never silently dropped).
+const REJECT_ARBITRATION: u8 = 11;
+/// The discovering lane is retired (§56.11 sequential-evidence retirement):
+/// discovery continues as research, capital eligibility is suspended.
+const REJECT_LANE_RETIRED: u8 = 12;
+
+/// Creator serial-deploy window (ticks) and launch-count threshold for the
+/// §27/§70.9 credibility haircut (3 launches inside ~2 minutes = serial deployer).
+const CREATOR_SERIAL_WINDOW_TICKS: u64 = 300;
+const CREATOR_SERIAL_THRESHOLD: u32 = 3;
+/// Regime consumption (§21.3): sizing haircut applied when the market-wide
+/// rug/collapse rate is Elevated+ (reduce-only, never a veto).
+const REGIME_RUG_HAIRCUT_BP: u32 = 7_000;
+/// §34.4 exit-cost structural-veto multiple: the phase-correct executable exit
+/// cost may not exceed this multiple of the priced expected move. The economic
+/// gate already prices round-trip viability with the SAME fee/failure config, and
+/// the v0 phase model carries its own fixed failure/retry load — so this backstop
+/// only fires on genuinely structural phase mispricing (e.g. a size that is a
+/// large fraction of the curve reserve: impact alone ⇒ cost ≫ move), never on the
+/// ordinary cost load. 10× the priced move ⇒ fires around ≳30% exit impact.
+const EXIT_COST_VETO_MULT: u32 = 10;
+
+/// Thesis feature ids (§32: conditions compile from the registered feature
+/// schema — these two ARE the v0 schema): 1 = numeric-lane OFI bps, 2 = CVD sign.
+const THESIS_FEAT_OFI: u32 = 1;
+const THESIS_FEAT_CVD: u32 = 2;
 
 /// Which evaluator lane a watchlist discovery lane reconciles into (mirrors
 /// `scalp::eval_lane`): sniper/early discovery is `Early`; active/graduation

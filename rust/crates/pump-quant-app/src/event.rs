@@ -185,6 +185,17 @@ pub enum AppEvent {
         slot: u64,
     },
 
+    /// The market migrated from its bonding curve to a pool (graduation). Flips the
+    /// market's venue-mechanics **phase** (§21.7 phase asymmetry / §24 hold-horizon:
+    /// curve and pool are never pooled into one model): exit-cost pricing, hazard
+    /// conditioning, and lifecycle parameters consult the phase from this point on.
+    Migration {
+        /// The graduated market.
+        mint: Mint,
+        /// Slot of the migration (caller-supplied time).
+        slot: u64,
+    },
+
     /// Advance the logical clock by one tick. Recency decay, TTL pruning and the
     /// reflection cadence are all measured in ticks — never wall-clock.
     Tick,
@@ -201,7 +212,8 @@ impl AppEvent {
             | AppEvent::WalletAction { mint, .. }
             | AppEvent::OnchainConfirm { mint, .. }
             | AppEvent::TokenMetadata { mint, .. }
-            | AppEvent::CreatorAction { mint, .. } => Some(*mint),
+            | AppEvent::CreatorAction { mint, .. }
+            | AppEvent::Migration { mint, .. } => Some(*mint),
             AppEvent::Tick => None,
         }
     }

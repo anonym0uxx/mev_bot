@@ -24,3 +24,7 @@ pump-quant-strategy = { path = "../pump-quant-strategy" }
 pump-quant-simulator = { path = "../pump-quant-simulator" }
 pump-quant-evaluator = { path = "../pump-quant-evaluator" }
 pump-quant-memory = { path = "../pump-quant-memory" }
+pump-quant-signals = { path = "../pump-quant-signals" }
+pump-quant-wallet-graph = { path = "../pump-quant-wallet-graph" }
+pump-quant-protocol = { path = "../pump-quant-protocol" }
+pump-quant-governance = { path = "../pump-quant-governance" }
