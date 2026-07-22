@@ -511,3 +511,182 @@ fn numeric_lane_discovers_buy_flow_not_sell_flow() {
         "net sell flow / bearish divergence is never self-authorized (§21.7)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Batch C: dynamic bankroll sizing (§33), VPIN-X toxicity, staleness gates.
+// ---------------------------------------------------------------------------
+
+/// An admissible one-market scenario: rising buy flow + on-chain confirm + a tick.
+fn admissible_stream(tag: u8) -> Vec<AppEvent> {
+    let m = mint(tag);
+    let mut ev = Vec::new();
+    for i in 0..6u64 {
+        ev.push(AppEvent::MarketTrade {
+            mint: m,
+            price_fp: 1_000_000_000 + (i as i128) * 1_000_000,
+            quote_lamports: 500_000,
+            liquidity_lamports: 100_000_000,
+            signed_base: 1_000_000,
+            buyer_entity: i,
+            age_slots: 30,
+        });
+    }
+    ev.push(AppEvent::OnchainConfirm {
+        mint: m,
+        sellable_depth_lamports: 200_000_000,
+    });
+    ev.push(AppEvent::Tick);
+    ev
+}
+
+#[test]
+fn bankroll_sizing_scales_with_capital_and_respects_the_floor() {
+    // The same market, three bankrolls: sizes derive from deployable capital
+    // (start with ANY amount of SOL), and a bankroll at/below the survival floor
+    // refuses to trade at all — the floor is never risked (§33/delta-§1).
+    let admitted_size = |bankroll: u64| -> Option<u64> {
+        let mut cfg = Config::dev_portable();
+        cfg.apply("bankroll_initial_lamports", bankroll as i64)
+            .unwrap();
+        cfg.apply("gate_base_fixed_lamports", 1_000).unwrap(); // wide band: x_min small
+        let mut e = Engine::new(cfg, RunMode::Paper);
+        for ev in admissible_stream(0x91) {
+            e.tick(ev);
+        }
+        let r = e.report();
+        (r.admitted >= 1).then_some(r.ticks).map(|_| r.admitted)
+    };
+    // 10 SOL and 100 SOL both admit; 0.4 SOL (< 0.5-SOL floor) cannot deploy.
+    assert_eq!(admitted_size(10_000_000_000), Some(1), "10 SOL trades");
+    assert_eq!(admitted_size(100_000_000_000), Some(1), "100 SOL trades");
+    assert_eq!(
+        admitted_size(400_000_000),
+        None,
+        "a bankroll below the survival floor refuses (deployable = 0)"
+    );
+}
+
+#[test]
+fn bankroll_size_is_proportional_to_deployable_capital() {
+    // Scale-invariance: 10× the bankroll ⇒ 10× the deployed size (until the band
+    // or risk caps bind) — verified through realized net magnitude.
+    let net_for = |bankroll: u64| -> i128 {
+        let mut cfg = Config::dev_portable();
+        cfg.apply("bankroll_initial_lamports", bankroll as i64)
+            .unwrap();
+        cfg.apply("gate_base_fixed_lamports", 1_000).unwrap();
+        let mut e = Engine::new(cfg, RunMode::Paper);
+        for ev in admissible_stream(0x92) {
+            e.tick(ev);
+        }
+        // pump then flow-rollover close in profit
+        e.tick(AppEvent::MarketTrade {
+            mint: mint(0x92),
+            price_fp: 1_500_000_000,
+            quote_lamports: 500_000,
+            liquidity_lamports: 100_000_000,
+            signed_base: 1_000_000,
+            buyer_entity: 9,
+            age_slots: 31,
+        });
+        e.tick(AppEvent::MarketTrade {
+            mint: mint(0x92),
+            price_fp: 1_480_000_000,
+            quote_lamports: 2_000_000,
+            liquidity_lamports: 100_000_000,
+            signed_base: -4_000_000,
+            buyer_entity: 10,
+            age_slots: 32,
+        });
+        e.report().net_lamports
+    };
+    let small = net_for(4_000_000_000); // 4 SOL → deployable 2 SOL
+    let large = net_for(40_000_000_000); // 40 SOL → deployable 20 SOL
+    assert!(small > 0 && large > 0, "both bankrolls profit on the pump");
+    assert!(
+        large > small * 5,
+        "10× bankroll deploys ~10× size ⇒ much larger realized net ({large} vs {small})"
+    );
+}
+
+#[test]
+fn vpin_sell_dump_vetoes_admission() {
+    // The complementarity that earns VPIN its place: a distributed dump executed in
+    // MANY small sells scrolls out of the 64-trade CVD/OFI ring once a burst of tiny
+    // buys follows — the sign-agreement gate re-qualifies — but the VOLUME-clocked
+    // VPIN buckets still hold the dump (volume-time memory), read extreme
+    // sell-dominant, and veto the admission (§21.7).
+    let mut cfg = Config::dev_portable();
+    cfg.apply("vpin_v_min_lamports", 1_000).unwrap();
+    cfg.apply("vpin_v_max_lamports", 1_000).unwrap();
+    let mut e = Engine::new(cfg, RunMode::Paper);
+    let m = mint(0x93);
+    // 70 small sells: 42_000 quote lamports of distribution (42 all-sell buckets).
+    for i in 0..70u64 {
+        e.tick(AppEvent::MarketTrade {
+            mint: m,
+            price_fp: 1_000_000_000 - (i as i128) * 100_000,
+            quote_lamports: 600,
+            liquidity_lamports: 100_000_000,
+            signed_base: -10_000,
+            buyer_entity: i % 7,
+            age_slots: 30,
+        });
+    }
+    // 66 tiny-quote buys with big base: the trade ring now holds ONLY buys (CVD>0,
+    // OFI strongly positive, price rising -> the lane gate re-qualifies)...
+    for i in 0..66u64 {
+        e.tick(AppEvent::MarketTrade {
+            mint: m,
+            price_fp: 995_000_000 + (i as i128) * 500_000,
+            quote_lamports: 50,
+            liquidity_lamports: 100_000_000,
+            signed_base: 1_000_000,
+            buyer_entity: i % 9,
+            age_slots: 31,
+        });
+    }
+    e.tick(AppEvent::OnchainConfirm {
+        mint: m,
+        sellable_depth_lamports: 200_000_000,
+    });
+    e.tick(AppEvent::Tick);
+    let r = e.report();
+    // ...but the VPIN ring is still 13 sell / 3 buy buckets: extreme + sell-dominant.
+    assert_eq!(
+        r.admitted, 0,
+        "sell-dominant VPIN extreme tier vetoes admission"
+    );
+    assert!(r.rejected >= 1, "the veto is journaled, never silent");
+}
+
+#[test]
+fn stale_confirmation_no_longer_authorizes() {
+    // A confirm proven long ago is not depth now (§34.3). Fast-cycling positions
+    // (1-tick stall, 2-tick max hold) re-admit every few ticks while the confirm is
+    // fresh; with a 5-tick confirm TTL the re-admission stream STOPS, while a
+    // 1000-tick TTL keeps re-admitting off the same stale proof.
+    let run = |confirm_ttl: i64| -> u64 {
+        let mut cfg = Config::dev_portable();
+        cfg.apply("confirm_ttl_ticks", confirm_ttl).unwrap();
+        cfg.apply("lane_evidence_ttl_ticks", 1_000).unwrap(); // isolate the confirm TTL
+        cfg.apply("lc_stall_ticks", 1).unwrap();
+        cfg.apply("lc_max_hold_ticks", 2).unwrap();
+        let mut e = Engine::new(cfg, RunMode::Paper);
+        for ev in admissible_stream(0x94) {
+            e.tick(ev);
+        }
+        for _ in 0..24 {
+            e.tick(AppEvent::Tick);
+        }
+        e.report().admitted
+    };
+    let short = run(5);
+    let long = run(1_000);
+    assert!(short >= 1, "fresh confirm admits at least once");
+    assert!(
+        long > short,
+        "a stale confirm stops authorizing re-entry under the short TTL ({short}) \
+         while the long TTL keeps re-admitting ({long})"
+    );
+}

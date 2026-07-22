@@ -62,6 +62,84 @@ fn ofi_to_pressure_bp(ofi_bps: Option<i32>) -> u32 {
     }
 }
 
+/// The tape's momentum/reversion regime from the Roll-measure serial-covariance
+/// sign — the **#1 crypto short-horizon predictor** (Easley et al., SSRN 4814346;
+/// Roll 1984). On a bonding curve the sign of `cov(Δp_t, Δp_{t−1})` is an
+/// impact-weighted run/alternation statistic: positive = one-sided flow (TREND),
+/// negative = side alternation / churn (REVERT — also the matched-wash signature,
+/// which usefully forces the strict playbook).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Regime {
+    /// Positive serial covariance: momentum playbook (current gates unchanged).
+    Trend,
+    /// Deadband / insufficient tape: default playbook.
+    Neutral,
+    /// Negative serial covariance: raised entry bar + reduced size (Kaminski–Lo —
+    /// momentum-following components only earn their keep under positive ρ).
+    Revert,
+}
+
+/// Minimum nonzero price deltas before the Roll estimator is trusted; below this
+/// the tape is noise and the regime stays [`Regime::Neutral`] (fail-safe).
+const ROLL_MIN_NONZERO_DELTAS: usize = 16;
+
+/// Lag-1 (uncentered) autocorrelation of trade-price changes over the ring, in bps
+/// of [−10_000, 10_000]: `10_000 × Σ Δᵢ·Δᵢ₋₁ / Σ Δᵢ²` (i128; truncation toward
+/// zero biases toward Neutral — fail-safe). `None` on insufficient nonzero deltas.
+#[must_use]
+fn roll_rho_bp(trades: &[TradeEvent]) -> Option<i64> {
+    if trades.len() < 3 {
+        return None;
+    }
+    let mut cov_num: i128 = 0;
+    let mut den: i128 = 0;
+    let mut prev_delta: Option<i128> = None;
+    let mut nonzero = 0usize;
+    for w in trades.windows(2) {
+        let d = w[1].price_fp - w[0].price_fp;
+        if d != 0 {
+            nonzero += 1;
+        }
+        den = den.saturating_add(d.saturating_mul(d));
+        if let Some(pd) = prev_delta {
+            cov_num = cov_num.saturating_add(d.saturating_mul(pd));
+        }
+        prev_delta = Some(d);
+    }
+    if nonzero < ROLL_MIN_NONZERO_DELTAS || den == 0 {
+        return None;
+    }
+    Some(((cov_num.saturating_mul(10_000)) / den) as i64)
+}
+
+/// Classify a rho reading against operator deadband edges into a [`Regime`].
+#[inline]
+#[must_use]
+fn classify_regime(rho_bp: Option<i64>, trend_bp: i64, revert_bp: i64) -> Regime {
+    match rho_bp {
+        Some(r) if r >= trend_bp => Regime::Trend,
+        Some(r) if r <= revert_bp => Regime::Revert,
+        _ => Regime::Neutral,
+    }
+}
+
+/// The operator gate the numeric lane's emission consults (§102 named, config-fed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NumericEmitGate {
+    /// Baseline minimum OFI (bps) to emit a self-authorizing candidate.
+    pub ofi_min_bp: u32,
+    /// Raised OFI bar under [`Regime::Revert`] (the regime is breaking — only a
+    /// violent imbalance qualifies; Kaminski–Lo value-destruction case otherwise).
+    pub revert_ofi_min_bp: u32,
+    /// Regime deadband edge for TREND (rho bps ≥ this).
+    pub roll_trend_bp: i64,
+    /// Regime deadband edge for REVERT (rho bps ≤ this; negative).
+    pub roll_revert_bp: i64,
+    /// Evidence freshness TTL (ticks): a mint whose last decoded trade is older
+    /// emits nothing — dead tapes must not keep ranking (§29.6/§34.3 staleness law).
+    pub evidence_ttl_ticks: u64,
+}
+
 /// The documented source→ranking-lane bijection (see module docs).
 #[must_use]
 pub const fn wl_lane_for(kind: LaneKind) -> WlLane {
@@ -182,11 +260,21 @@ impl NumericLane {
         })
     }
 
+    /// The tape regime for a mint (Roll-sign over its trade ring). [`Regime::Neutral`]
+    /// for an untracked mint or an insufficient tape.
+    #[must_use]
+    pub fn regime_of(&self, mint: DomainMint, trend_bp: i64, revert_bp: i64) -> Regime {
+        match self.obs.get(mint.as_bytes()) {
+            Some(o) => classify_regime(roll_rho_bp(&o.trades), trend_bp, revert_bp),
+            None => Regime::Neutral,
+        }
+    }
+
     /// Emit one candidate per bullish-flow mint with an integer discovery score.
     #[must_use]
-    pub fn emit(&self, now: u64, ofi_min_bp: u32) -> Vec<Candidate> {
+    pub fn emit(&self, now: u64, gate: &NumericEmitGate) -> Vec<Candidate> {
         let mut out = Vec::with_capacity(self.obs.len());
-        self.emit_into(&mut out, now, ofi_min_bp);
+        self.emit_into(&mut out, now, gate);
         out
     }
 
@@ -194,16 +282,23 @@ impl NumericLane {
     /// genuinely bullish into `buf`.
     ///
     /// **Sign-agreement gate (§21.7 CVD/OFI/VWAP combined, wash-robust).** A numeric
-    /// candidate is emitted only when order-flow imbalance clears `ofi_min_bp`, the
-    /// cumulative volume delta is net-buy, and price is NOT diverging bearishly from
-    /// flow (buy-pressure exhaustion). Fades, exhaustion, and sub-[`NUMERIC_MIN_TRADES`]
-    /// sparse tapes emit nothing — the lane discovers real buy *flow*, never price
-    /// alone. Score is monotone in imbalance strength × liquidity magnitude × buyer
-    /// breadth; integer, saturating (§22). Reused buffer ⇒ alloc-free steady state.
-    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64, ofi_min_bp: u32) {
+    /// candidate is emitted only when order-flow imbalance clears the regime's OFI
+    /// bar (baseline in TREND/NEUTRAL, raised under REVERT — a mean-reverting tape
+    /// only qualifies on a violent imbalance, Kaminski–Lo), the cumulative volume
+    /// delta is net-buy, price is NOT diverging bearishly from flow (exhaustion),
+    /// **and the evidence is fresh** — a mint whose last decoded trade is older than
+    /// `evidence_ttl_ticks` emits nothing (dead tapes must not keep ranking, §34.3).
+    /// Sub-[`NUMERIC_MIN_TRADES`] sparse tapes emit nothing. Score is monotone in
+    /// imbalance strength × liquidity magnitude × buyer breadth; integer, saturating
+    /// (§22). Reused buffer ⇒ alloc-free steady state.
+    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64, gate: &NumericEmitGate) {
         buf.reserve(self.obs.len());
         for (k, o) in &self.obs {
             if o.trades.len() < NUMERIC_MIN_TRADES {
+                continue;
+            }
+            // Staleness law: dead evidence never ranks.
+            if now.saturating_sub(o.last_tick) > gate.evidence_ttl_ticks {
                 continue;
             }
             let ofi_bp = order_flow_imbalance_bps(&o.trades).unwrap_or(0);
@@ -211,8 +306,18 @@ impl NumericLane {
             let first = o.trades.first().map_or(0, |t| t.price_fp);
             let last = o.trades.last().map_or(0, |t| t.price_fp);
             let divergence = classify_divergence(last - first, cvd);
+            let regime = classify_regime(
+                roll_rho_bp(&o.trades),
+                gate.roll_trend_bp,
+                gate.roll_revert_bp,
+            );
+            let required_ofi = if regime == Regime::Revert {
+                gate.revert_ofi_min_bp
+            } else {
+                gate.ofi_min_bp
+            };
             let bullish = ofi_bp >= 0
-                && (ofi_bp as u32) >= ofi_min_bp
+                && (ofi_bp as u32) >= required_ofi
                 && cvd > 0
                 && divergence != CvdDivergence::Bearish;
             if !bullish {
@@ -245,6 +350,7 @@ struct NarrativeObs {
     prior_active: u64,
     new_mentions: u64,
     samples: u32,
+    last_tick: u64,
 }
 
 /// The narrative / attention-velocity lane. Uses the real `pump_quant_narrative`
@@ -263,8 +369,8 @@ impl NarrativeLane {
         Self::default()
     }
 
-    /// Ingest a narrative sample.
-    pub fn observe(&mut self, mint: DomainMint, prior_active: u64, new_mentions: u64) {
+    /// Ingest a narrative sample at logical `now` (freshness stamp).
+    pub fn observe(&mut self, mint: DomainMint, prior_active: u64, new_mentions: u64, now: u64) {
         let key = *mint.as_bytes();
         if !self.obs.contains_key(&key) && self.obs.len() >= LANE_TRACK_CAP {
             evict_weakest_narrative(&mut self.obs);
@@ -273,16 +379,24 @@ impl NarrativeLane {
         e.prior_active = prior_active;
         e.new_mentions = e.new_mentions.saturating_add(new_mentions);
         e.samples = e.samples.saturating_add(1);
+        e.last_tick = now;
     }
 
     /// Emit one candidate per tracked mint. Score comes from `nv_candidate_score`
     /// with the lifecycle stage inferred from the virality coefficient against the
     /// operator-supplied band edges (`stage_hi_fp` ≥ `stage_lo_fp`, both in the
-    /// narrative crate's fixed-point unit) — no band edge is baked in.
+    /// narrative crate's fixed-point unit) — no band edge is baked in. Evidence
+    /// older than `ttl_ticks` emits nothing (staleness law, §29.6/§34.3).
     #[must_use]
-    pub fn emit(&self, now: u64, stage_hi_fp: u64, stage_lo_fp: u64) -> Vec<Candidate> {
+    pub fn emit(
+        &self,
+        now: u64,
+        stage_hi_fp: u64,
+        stage_lo_fp: u64,
+        ttl_ticks: u64,
+    ) -> Vec<Candidate> {
         let mut out = Vec::with_capacity(self.obs.len());
-        self.emit_into(&mut out, now, stage_hi_fp, stage_lo_fp);
+        self.emit_into(&mut out, now, stage_hi_fp, stage_lo_fp, ttl_ticks);
         out
     }
 
@@ -293,9 +407,13 @@ impl NarrativeLane {
         now: u64,
         stage_hi_fp: u64,
         stage_lo_fp: u64,
+        ttl_ticks: u64,
     ) {
         buf.reserve(self.obs.len());
         for (k, o) in &self.obs {
+            if now.saturating_sub(o.last_tick) > ttl_ticks {
+                continue;
+            }
             let virality = nv_virality_coeff(o.prior_active, o.new_mentions).unwrap_or(0);
             // Stage/divergence inferred deterministically from the configured
             // virality bands (in the narrative leaf's fixed-point unit).
@@ -328,7 +446,8 @@ impl NarrativeLane {
 /// The social lane: quality-weighted call accumulation. Corroboration-tier.
 #[derive(Clone, Debug, Default)]
 pub struct SocialLane {
-    obs: BTreeMap<[u8; 32], u64>,
+    /// mint → (summed quality weight, last observation tick).
+    obs: BTreeMap<[u8; 32], (u64, u64)>,
 }
 
 impl SocialLane {
@@ -338,30 +457,37 @@ impl SocialLane {
         Self::default()
     }
 
-    /// Ingest a scored social call. Weak sources contribute proportionally less.
-    pub fn observe(&mut self, mint: DomainMint, source_quality_bp: u32) {
+    /// Ingest a scored social call at logical `now`. Weak sources contribute
+    /// proportionally less.
+    pub fn observe(&mut self, mint: DomainMint, source_quality_bp: u32, now: u64) {
         let key = *mint.as_bytes();
         if !self.obs.contains_key(&key) && self.obs.len() >= LANE_TRACK_CAP {
-            if let Some((&weakest, _)) = self.obs.iter().min_by_key(|(_, &v)| v) {
+            if let Some((&weakest, _)) = self.obs.iter().min_by_key(|(_, &(v, _))| v) {
                 self.obs.remove(&weakest);
             }
         }
-        let e = self.obs.entry(key).or_insert(0);
-        *e = e.saturating_add(source_quality_bp as u64);
+        let e = self.obs.entry(key).or_insert((0, now));
+        e.0 = e.0.saturating_add(source_quality_bp as u64);
+        e.1 = now;
     }
 
-    /// Emit one candidate per tracked mint. Score is the summed quality weight.
+    /// Emit one candidate per FRESH tracked mint. Score is the summed quality
+    /// weight; evidence older than `ttl_ticks` emits nothing — one call long ago
+    /// must not rank a mint forever (staleness law, §29.6/§34.3).
     #[must_use]
-    pub fn emit(&self, now: u64) -> Vec<Candidate> {
+    pub fn emit(&self, now: u64, ttl_ticks: u64) -> Vec<Candidate> {
         let mut out = Vec::with_capacity(self.obs.len());
-        self.emit_into(&mut out, now);
+        self.emit_into(&mut out, now, ttl_ticks);
         out
     }
 
-    /// Append one candidate per tracked mint into `buf` (see [`Self::emit`]).
-    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64) {
+    /// Append one candidate per fresh tracked mint into `buf` (see [`Self::emit`]).
+    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64, ttl_ticks: u64) {
         buf.reserve(self.obs.len());
-        for (k, &w) in &self.obs {
+        for (k, &(w, last)) in &self.obs {
+            if now.saturating_sub(last) > ttl_ticks {
+                continue;
+            }
             buf.push(Candidate::new(
                 WlMint::new(*k),
                 WlLane::CreationSniper,
@@ -376,7 +502,8 @@ impl SocialLane {
 /// The wallet / smart-money lane: cumulative followable size. Corroboration-tier.
 #[derive(Clone, Debug, Default)]
 pub struct WalletLane {
-    obs: BTreeMap<[u8; 32], u64>,
+    /// mint → (cumulative followable lamports, last observation tick).
+    obs: BTreeMap<[u8; 32], (u64, u64)>,
 }
 
 impl WalletLane {
@@ -386,36 +513,42 @@ impl WalletLane {
         Self::default()
     }
 
-    /// Ingest a smart-money action; only followable wallets contribute.
-    pub fn observe(&mut self, mint: DomainMint, followable: bool, size_lamports: u64) {
+    /// Ingest a smart-money action at logical `now`; only followable wallets
+    /// contribute.
+    pub fn observe(&mut self, mint: DomainMint, followable: bool, size_lamports: u64, now: u64) {
         if !followable {
             return;
         }
         let key = *mint.as_bytes();
         if !self.obs.contains_key(&key) && self.obs.len() >= LANE_TRACK_CAP {
-            if let Some((&weakest, _)) = self.obs.iter().min_by_key(|(_, &v)| v) {
+            if let Some((&weakest, _)) = self.obs.iter().min_by_key(|(_, &(v, _))| v) {
                 self.obs.remove(&weakest);
             }
         }
-        let e = self.obs.entry(key).or_insert(0);
-        *e = e.saturating_add(size_lamports);
+        let e = self.obs.entry(key).or_insert((0, now));
+        e.0 = e.0.saturating_add(size_lamports);
+        e.1 = now;
     }
 
-    /// Emit one candidate per tracked mint. Score is cumulative followable size,
-    /// compressed to a decade then scaled by the operator-supplied `score_scale` so
-    /// it is comparable with the other lanes' score magnitudes — the cross-lane
-    /// weight is a config field, not a baked-in constant.
+    /// Emit one candidate per FRESH tracked mint. Score is cumulative followable
+    /// size, compressed to a decade then scaled by the operator-supplied
+    /// `score_scale` so it is comparable with the other lanes' score magnitudes —
+    /// the cross-lane weight is a config field, not a baked-in constant. Evidence
+    /// older than `ttl_ticks` emits nothing (staleness law).
     #[must_use]
-    pub fn emit(&self, now: u64, score_scale: u64) -> Vec<Candidate> {
+    pub fn emit(&self, now: u64, score_scale: u64, ttl_ticks: u64) -> Vec<Candidate> {
         let mut out = Vec::with_capacity(self.obs.len());
-        self.emit_into(&mut out, now, score_scale);
+        self.emit_into(&mut out, now, score_scale, ttl_ticks);
         out
     }
 
-    /// Append one candidate per tracked mint into `buf` (see [`Self::emit`]).
-    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64, score_scale: u64) {
+    /// Append one candidate per fresh tracked mint into `buf` (see [`Self::emit`]).
+    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64, score_scale: u64, ttl_ticks: u64) {
         buf.reserve(self.obs.len());
-        for (k, &size) in &self.obs {
+        for (k, &(size, last)) in &self.obs {
+            if now.saturating_sub(last) > ttl_ticks {
+                continue;
+            }
             buf.push(Candidate::new(
                 WlMint::new(*k),
                 WlLane::GraduationTransition,

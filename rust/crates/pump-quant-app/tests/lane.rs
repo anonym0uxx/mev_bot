@@ -26,7 +26,7 @@ fn numeric_score_is_ofi_times_liqdecade_times_buyers() {
             0,
         );
     }
-    let cands = l.emit(5, 1_000);
+    let cands = l.emit(5, &test_gate());
     assert_eq!(cands.len(), 1);
     let c = cands[0];
     // OFI = 10_000 bps (all buys); liq decade(100_000_000) = 9; buyers = 3.
@@ -34,6 +34,17 @@ fn numeric_score_is_ofi_times_liqdecade_times_buyers() {
     assert_eq!(c.discovered_at, 5);
     assert_eq!(c.features.buy_pressure_bp, 10_000);
     assert_eq!(c.features.unique_buyers, 3);
+}
+
+/// The default numeric emit gate used across these scoring-contract tests.
+fn test_gate() -> pump_quant_app::lane::NumericEmitGate {
+    pump_quant_app::lane::NumericEmitGate {
+        ofi_min_bp: 1_000,
+        revert_ofi_min_bp: 2_500,
+        roll_trend_bp: 1_500,
+        roll_revert_bp: -1_500,
+        evidence_ttl_ticks: 100,
+    }
 }
 
 #[test]
@@ -51,24 +62,31 @@ fn numeric_buy_pressure_reflects_sell_flow() {
 #[test]
 fn social_score_is_summed_quality_weight() {
     let mut l = SocialLane::new();
-    l.observe(mint(3), 5_000);
-    l.observe(mint(3), 5_000);
-    let c = l.emit(1);
+    l.observe(mint(3), 5_000, 1);
+    l.observe(mint(3), 5_000, 1);
+    let c = l.emit(1, 100);
     assert_eq!(c.len(), 1);
     assert_eq!(c[0].discovery_score, 10_000);
+    // Staleness law: the same evidence past its TTL emits nothing.
+    assert!(
+        l.emit(200, 100).is_empty(),
+        "stale social evidence never ranks"
+    );
 }
 
 #[test]
 fn wallet_score_scales_with_config_and_ignores_unfollowable() {
     let mut l = WalletLane::new();
-    l.observe(mint(4), false, 9_999_999); // ignored: not followable
-    l.observe(mint(4), true, 1_000_000); // decade(1_000_000) = 7
-    let a = l.emit(1, 100);
+    l.observe(mint(4), false, 9_999_999, 1); // ignored: not followable
+    l.observe(mint(4), true, 1_000_000, 1); // decade(1_000_000) = 7
+    let a = l.emit(1, 100, 100);
     assert_eq!(a.len(), 1, "only the followable action is tracked");
     assert_eq!(a[0].discovery_score, 7 * 100);
     // The cross-lane scale is a config value: doubling it doubles the score.
-    let b = l.emit(1, 200);
+    let b = l.emit(1, 200, 100);
     assert_eq!(b[0].discovery_score, 7 * 200);
+    // Staleness law: expired wallet evidence emits nothing.
+    assert!(l.emit(200, 100, 100).is_empty());
 }
 
 #[test]
@@ -76,8 +94,8 @@ fn narrative_stage_bands_are_config_driven_and_fade_capped() {
     let fp1 = pump_quant_narrative::narrative::FP_ONE;
     let mut l = NarrativeLane::new();
     // virality = new/prior * FP_ONE = 400/10 = 40 * FP_ONE  -> above any sane hi band.
-    l.observe(mint(5), 10, 400);
-    let hot = l.emit(1, 2 * fp1, fp1);
+    l.observe(mint(5), 10, 400, 1);
+    let hot = l.emit(1, 2 * fp1, fp1, 100);
     assert_eq!(hot.len(), 1);
     // Pre-confirmation (money_confirmed = false) the narrative score is fade-capped.
     assert!(hot[0].discovery_score > 0);
@@ -88,6 +106,6 @@ fn narrative_stage_bands_are_config_driven_and_fade_capped() {
 
     // Raising the band edges above the observed virality demotes the inferred stage,
     // which cannot raise the score — proving the edges actually drive classification.
-    let cold = l.emit(1, 1_000 * fp1, 500 * fp1);
+    let cold = l.emit(1, 1_000 * fp1, 500 * fp1, 100);
     assert!(cold[0].discovery_score <= hot[0].discovery_score);
 }

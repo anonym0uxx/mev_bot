@@ -34,10 +34,13 @@ pub enum Decision {
     Admitted { mint: [u8; 32], size_lamports: u64 },
     /// The gate rejected a candidate; `reason` is a stable small code.
     Rejected { mint: [u8; 32], reason: u8 },
-    /// A paper scalp realized a signed net PnL.
+    /// A paper scalp realized a signed net PnL. `reason` is the stable
+    /// [`crate::position::ExitReason::code`] that fired the exit (0 = legacy/unknown),
+    /// so exit-policy attribution (§48/§49) survives into the journal.
     Filled {
         mint: [u8; 32],
         net_pnl_lamports: i128,
+        reason: u8,
     },
     /// A reflection pass moved a lane weight.
     Reweighted {
@@ -84,10 +87,12 @@ impl Decision {
             Decision::Filled {
                 mint,
                 net_pnl_lamports,
+                reason,
             } => {
                 push_bytes(buf, &mint);
                 // Signed 128-bit PnL as two's-complement bytes: exact, sign-stable.
                 push_bytes(buf, &net_pnl_lamports.to_le_bytes());
+                buf.push(reason);
             }
             Decision::Reweighted {
                 lane,

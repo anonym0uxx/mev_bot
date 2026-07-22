@@ -54,6 +54,7 @@ pub mod scalp;
 pub mod social_earn;
 pub mod social_ingest;
 pub mod token_ingest;
+pub mod toxicity;
 
 pub use config::{Config, ConfigError, FillModeCfg};
 pub use engine::{Engine, Report, RunMode};

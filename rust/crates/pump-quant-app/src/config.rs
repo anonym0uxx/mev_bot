@@ -111,6 +111,113 @@ pub struct Config {
     /// Impact `k` (bps) for the simulator's constant-product impact model.
     pub sim_impact_k_bps: u32,
 
+    // ---- bankroll / dynamic sizing (§33 Layer 1, delta-§1) ----
+    /// Verified starting bankroll, lamports. ANY amount: every sizing limit below
+    /// derives from `deployable = bankroll − survival_floor`, so the same config
+    /// serves 0.75, 2, 10 or 100 SOL (scale-invariant until the per-market cost
+    /// floor x_min carves out the venue-viability region).
+    pub bankroll_initial_lamports: u64,
+    /// Survival-floor fraction of the verified starting balance, bps. The floor is
+    /// `max(0.5 SOL, fraction × start)` (delta-§1) and is NEVER risked or spent.
+    pub floor_fraction_bps: u32,
+    /// Per-position fraction of deployable capital, bps (pre-haircut). Deep-
+    /// fractional Kelly: ≈quarter-Kelly of the WORST still-positive calibration
+    /// (research doc), so growth stays positive under every plausible live edge.
+    pub f_base_bp: u32,
+    /// Total at-risk cap across ALL open positions, bps of deployable capital.
+    /// Correlated-cluster bound: memecoin positions rug together, so the total cap
+    /// — not per-position f — is the binding instrument.
+    pub total_risk_cap_bp: u32,
+    /// Hard cap on concurrently open positions (jointly consistent with the two
+    /// fractions above: max_concurrent × f_base ≈ total_risk_cap).
+    pub max_concurrent_positions: usize,
+    /// Small-bankroll escape valve: promotion of a sub-fraction size UP to x_min is
+    /// permitted only when x_min ≤ this fraction (bps) of deployable capital —
+    /// below the worst-calibration Kelly, far below its growth-zero crossing.
+    pub x_min_promote_cap_bp: u32,
+    /// Promotion to x_min is refused when the corroboration haircut is below this
+    /// (a trade the risk tiers marked down must never be sized UP).
+    pub promote_min_haircut_bp: u32,
+    /// Drawdown ratchet tiers vs the realized high-water mark, bps: past tier1 the
+    /// per-position fraction halves, past tier2 it quarters, past tier3 only the
+    /// probe fraction trades (Grossman–Zhou surplus shape, step-quantized).
+    pub dd_tier1_bp: u32,
+    /// Second drawdown tier (see `dd_tier1_bp`).
+    pub dd_tier2_bp: u32,
+    /// Third drawdown tier: survival mode.
+    pub dd_tier3_bp: u32,
+    /// Probe-only fraction (bps of deployable) used in the deepest drawdown tier.
+    pub probe_f_bp: u32,
+
+    // ---- toxicity gate (VPIN-X, §21.7) ----
+    /// Bucket-cap floor, lamports (dust spam cannot manufacture buckets).
+    pub vpin_v_min_lamports: u64,
+    /// Bucket-cap ceiling, lamports.
+    pub vpin_v_max_lamports: u64,
+    /// Completed buckets before VPIN is trusted.
+    pub vpin_min_buckets: usize,
+    /// Ticks without a completed bucket after which VPIN is absent.
+    pub vpin_stale_ticks: u64,
+    /// Graded-haircut onset (bps VPIN, sell-leaning flow only).
+    pub vpin_warn_bp: u32,
+    /// Deep-haircut tier (bps VPIN).
+    pub vpin_toxic_bp: u32,
+    /// Extreme tier: veto/exit-escalation with sell dominance (bps VPIN).
+    pub vpin_veto_bp: u32,
+    /// Sell share (bps) above which the extreme tier vetoes and escalates exits.
+    pub vpin_sell_dom_bp: u32,
+
+    // ---- tape regime (Roll-sign, §21.7) ----
+    /// Regime deadband: rho (bps) at/above which the tape is TREND.
+    pub roll_trend_bp: i64,
+    /// Regime deadband: rho (bps) at/below which the tape is REVERT (negative).
+    pub roll_revert_bp: i64,
+    /// Raised numeric-lane OFI bar under REVERT (only a violent imbalance — the
+    /// regime breaking — qualifies for a momentum entry on a mean-reverting tape).
+    pub revert_ofi_min_bp: u32,
+    /// Entry-size multiplier under REVERT (bps of 10_000; ≤ identity).
+    pub revert_size_mult_bp: u32,
+
+    // ---- evidence staleness (§29.6/§34.3) ----
+    /// Discovery-lane evidence TTL, ticks: evidence older than this emits nothing
+    /// (dead tapes and week-old calls must not keep ranking).
+    pub lane_evidence_ttl_ticks: u64,
+    /// On-chain confirmation TTL, ticks: a confirm older than this no longer
+    /// authorizes entry (depth proven long ago is not depth now).
+    pub confirm_ttl_ticks: u64,
+    /// Discovery score granted to a fresh creation sighting (CreationSniper lane).
+    pub creation_score: u64,
+    /// Ticks a creation sighting stays discoverable before it must earn flow.
+    pub creation_ttl_ticks: u64,
+
+    // ---- held-position exit lifecycle (crit-102: every trigger operator-set) ----
+    /// Catastrophic hard stop below entry, bps drawdown.
+    pub lc_hard_sl_bps: u32,
+    /// Minimum trailing width from peak, bps.
+    pub lc_trail_base_bps: u32,
+    /// Trail widening divisor: trail grows with (peak−1×)/k.
+    pub lc_trail_k_div: u32,
+    /// Maximum trailing width, bps.
+    pub lc_trail_max_bps: u32,
+    /// Principal-recovery tranche trigger, mult bps of entry.
+    pub lc_tp1_bps: u32,
+    /// Second tranche trigger, mult bps.
+    pub lc_tp2_bps: u32,
+    /// Second tranche size, bps of original position.
+    pub lc_tp2_frac_bps: u32,
+    /// Third tranche trigger, mult bps.
+    pub lc_tp3_bps: u32,
+    /// Third tranche size, bps of original position.
+    pub lc_tp3_frac_bps: u32,
+    /// Thesis-invalidation: exit when CVD falls to this fraction (bps) of its peak.
+    pub lc_cvd_hold_frac_bps: u32,
+    /// Runner stall window, ticks (no new high while in profit).
+    pub lc_stall_ticks: u64,
+    /// Conditional max hold, ticks (binds only when not advancing).
+    pub lc_max_hold_ticks: u64,
+    /// Rug-precursor single-swap drop trigger, bps.
+    pub lc_precursor_drop_bps: u32,
+
     // ---- meta-rotation / creator-state (corroboration-tier) ----
     /// Taxonomy version the meta-rotation reducer stamps on its snapshots, and the
     /// version an incoming `TokenMetadata` must match to be merged into factual
@@ -189,6 +296,51 @@ impl Config {
             exit_tip_lamports: 10_000,
             sim_impact_k_bps: 50,
 
+            bankroll_initial_lamports: 2_000_000_000, // 2 SOL start; ANY amount works
+            floor_fraction_bps: 5_000,                // floor = max(0.5 SOL, 50% of start)
+            f_base_bp: 150,                           // 1.5% of deployable per position
+            total_risk_cap_bp: 450,                   // ≤4.5% of deployable at risk total
+            max_concurrent_positions: 3,              // 3 × 150bp = 450bp (consistent)
+            x_min_promote_cap_bp: 400,                // promote to x_min only ≤4% of deployable
+            promote_min_haircut_bp: 8_000,            // never promote a risk-faded trade
+            dd_tier1_bp: 1_500,                       // −15% dd → half fraction
+            dd_tier2_bp: 3_000,                       // −30% dd → quarter fraction
+            dd_tier3_bp: 5_000,                       // −50% dd → probe-only survival
+            probe_f_bp: 50,
+
+            vpin_v_min_lamports: 250_000_000, // ≈ one retail clip (0.25 SOL)
+            vpin_v_max_lamports: 20_000_000_000, // ≤ ~25% of a full curve per bucket
+            vpin_min_buckets: 8,
+            vpin_stale_ticks: 150,
+            vpin_warn_bp: 6_500,
+            vpin_toxic_bp: 8_000,
+            vpin_veto_bp: 9_000,
+            vpin_sell_dom_bp: 6_000,
+
+            roll_trend_bp: 1_500,
+            roll_revert_bp: -1_500,
+            revert_ofi_min_bp: 2_500, // 2.5× the baseline OFI bar under REVERT
+            revert_size_mult_bp: 5_000, // half size under REVERT
+
+            lane_evidence_ttl_ticks: 100, // matches the watchlist TTL
+            confirm_ttl_ticks: 200,
+            creation_score: 1_000,
+            creation_ttl_ticks: 50,
+
+            lc_hard_sl_bps: 3_500,
+            lc_trail_base_bps: 2_200,
+            lc_trail_k_div: 4,
+            lc_trail_max_bps: 12_000,
+            lc_tp1_bps: 13_500,
+            lc_tp2_bps: 25_000,
+            lc_tp2_frac_bps: 3_000,
+            lc_tp3_bps: 50_000,
+            lc_tp3_frac_bps: 3_000,
+            lc_cvd_hold_frac_bps: 4_500,
+            lc_stall_ticks: 25,
+            lc_max_hold_ticks: 300,
+            lc_precursor_drop_bps: 3_000,
+
             meta_taxonomy_version: 0, // matches meta::TAXONOMY_V0
             meta_max_categories: 64,
             meta_max_creators_per_cat: 256,
@@ -244,6 +396,46 @@ impl Config {
             "entry_tip_lamports" => self.entry_tip_lamports = nonneg(value)?,
             "exit_tip_lamports" => self.exit_tip_lamports = nonneg(value)?,
             "sim_impact_k_bps" => self.sim_impact_k_bps = bp(value)?,
+            "bankroll_initial_lamports" => self.bankroll_initial_lamports = nonneg(value)?,
+            "floor_fraction_bps" => self.floor_fraction_bps = bp(value)?,
+            "f_base_bp" => self.f_base_bp = bp(value)?,
+            "total_risk_cap_bp" => self.total_risk_cap_bp = bp(value)?,
+            "max_concurrent_positions" => self.max_concurrent_positions = sz(value)?.max(1),
+            "x_min_promote_cap_bp" => self.x_min_promote_cap_bp = bp(value)?,
+            "promote_min_haircut_bp" => self.promote_min_haircut_bp = bp(value)?,
+            "dd_tier1_bp" => self.dd_tier1_bp = bp(value)?,
+            "dd_tier2_bp" => self.dd_tier2_bp = bp(value)?,
+            "dd_tier3_bp" => self.dd_tier3_bp = bp(value)?,
+            "probe_f_bp" => self.probe_f_bp = bp(value)?,
+            "vpin_v_min_lamports" => self.vpin_v_min_lamports = nonneg(value)?.max(1),
+            "vpin_v_max_lamports" => self.vpin_v_max_lamports = nonneg(value)?.max(1),
+            "vpin_min_buckets" => self.vpin_min_buckets = sz(value)?.max(1),
+            "vpin_stale_ticks" => self.vpin_stale_ticks = nonneg(value)?,
+            "vpin_warn_bp" => self.vpin_warn_bp = bp(value)?,
+            "vpin_toxic_bp" => self.vpin_toxic_bp = bp(value)?,
+            "vpin_veto_bp" => self.vpin_veto_bp = bp(value)?,
+            "vpin_sell_dom_bp" => self.vpin_sell_dom_bp = bp(value)?,
+            "roll_trend_bp" => self.roll_trend_bp = value,
+            "roll_revert_bp" => self.roll_revert_bp = value,
+            "revert_ofi_min_bp" => self.revert_ofi_min_bp = bp(value)?,
+            "revert_size_mult_bp" => self.revert_size_mult_bp = bp(value)?,
+            "lane_evidence_ttl_ticks" => self.lane_evidence_ttl_ticks = nonneg(value)?.max(1),
+            "confirm_ttl_ticks" => self.confirm_ttl_ticks = nonneg(value)?.max(1),
+            "creation_score" => self.creation_score = nonneg(value)?,
+            "creation_ttl_ticks" => self.creation_ttl_ticks = nonneg(value)?,
+            "lc_hard_sl_bps" => self.lc_hard_sl_bps = bp(value)?,
+            "lc_trail_base_bps" => self.lc_trail_base_bps = bp(value)?,
+            "lc_trail_k_div" => self.lc_trail_k_div = bp(value)?.max(1),
+            "lc_trail_max_bps" => self.lc_trail_max_bps = bp(value)?,
+            "lc_tp1_bps" => self.lc_tp1_bps = bp(value)?,
+            "lc_tp2_bps" => self.lc_tp2_bps = bp(value)?,
+            "lc_tp2_frac_bps" => self.lc_tp2_frac_bps = bp(value)?,
+            "lc_tp3_bps" => self.lc_tp3_bps = bp(value)?,
+            "lc_tp3_frac_bps" => self.lc_tp3_frac_bps = bp(value)?,
+            "lc_cvd_hold_frac_bps" => self.lc_cvd_hold_frac_bps = bp(value)?,
+            "lc_stall_ticks" => self.lc_stall_ticks = nonneg(value)?.max(1),
+            "lc_max_hold_ticks" => self.lc_max_hold_ticks = nonneg(value)?.max(1),
+            "lc_precursor_drop_bps" => self.lc_precursor_drop_bps = bp(value)?,
             "meta_taxonomy_version" => self.meta_taxonomy_version = bp(value)?,
             "meta_max_categories" => self.meta_max_categories = sz(value)?.max(1),
             "meta_max_creators_per_cat" => self.meta_max_creators_per_cat = sz(value)?.max(1),
@@ -322,6 +514,45 @@ impl Config {
             return Err(ConfigError::Inconsistent(
                 "creator_fade_sold_bps exceeds 100%",
             ));
+        }
+        // Bankroll-fraction sanity: fractions are of-deployable and must be ≤ 100%;
+        // promotion must stay inside the total risk budget; drawdown tiers ascend.
+        if self.f_base_bp > 10_000 || self.total_risk_cap_bp > 10_000 {
+            return Err(ConfigError::Inconsistent("bankroll fraction exceeds 100%"));
+        }
+        if self.x_min_promote_cap_bp > self.total_risk_cap_bp {
+            return Err(ConfigError::Inconsistent(
+                "x_min_promote_cap_bp exceeds total_risk_cap_bp",
+            ));
+        }
+        if !(self.dd_tier1_bp <= self.dd_tier2_bp && self.dd_tier2_bp <= self.dd_tier3_bp) {
+            return Err(ConfigError::Inconsistent("drawdown tiers must ascend"));
+        }
+        // Toxicity tiers ascend and stay in bps range.
+        if !(self.vpin_warn_bp <= self.vpin_toxic_bp && self.vpin_toxic_bp <= self.vpin_veto_bp)
+            || self.vpin_veto_bp > 10_000
+        {
+            return Err(ConfigError::Inconsistent(
+                "vpin tiers must ascend within bps",
+            ));
+        }
+        if self.vpin_v_min_lamports > self.vpin_v_max_lamports {
+            return Err(ConfigError::Inconsistent(
+                "vpin bucket floor exceeds ceiling",
+            ));
+        }
+        // Regime deadband must be a real band; REVERT can only reduce size.
+        if self.roll_revert_bp >= self.roll_trend_bp {
+            return Err(ConfigError::Inconsistent("roll regime deadband inverted"));
+        }
+        if self.revert_size_mult_bp > 10_000 {
+            return Err(ConfigError::Inconsistent(
+                "revert_size_mult_bp exceeds 100%",
+            ));
+        }
+        // Take-profit ladder must ascend.
+        if !(self.lc_tp1_bps <= self.lc_tp2_bps && self.lc_tp2_bps <= self.lc_tp3_bps) {
+            return Err(ConfigError::Inconsistent("take-profit ladder must ascend"));
         }
         Ok(())
     }

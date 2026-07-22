@@ -74,6 +74,12 @@ pub struct LifecycleParams {
     pub first_sell_penalty_bps: u32,
     /// Fixed tip (lamports) charged per sell tranche.
     pub tip_lamports: u64,
+    /// Adversarial exit impairment (bps of gross proceeds) applied to EVERY sell —
+    /// the §38 Mode-C severity threading: 0 under SignalReplay/OptimisticCeiling,
+    /// the configured retry-slippage under AdversarialRealistic, doubled under
+    /// AdversarialPessimistic. Keeps paper net-SOL from compounding optimism into
+    /// the sizing and reflection loops.
+    pub exit_impair_bps: u32,
 }
 
 impl LifecycleParams {
@@ -98,6 +104,7 @@ impl LifecycleParams {
             fee_bps: 100,
             first_sell_penalty_bps: 150,
             tip_lamports: 10_000,
+            exit_impair_bps: 0, // Mode A/B default; engine sets from cfg.fill_mode
         }
     }
 }
@@ -209,7 +216,10 @@ impl HeldPosition {
             return 0;
         }
         let notional = u128::from(self.size_lamports) * u128::from(frac_bps) / 10_000;
-        let gross = notional * u128::from(mult_bps) / 10_000;
+        let mut gross = notional * u128::from(mult_bps) / 10_000;
+        // §38 adversarial impairment: every sell pays the configured extra slippage
+        // under Mode C (0 in Modes A/B), so paper proceeds are execution-honest.
+        gross -= gross * u128::from(p.exit_impair_bps.min(10_000)) / 10_000;
         let fee = gross * u128::from(p.fee_bps) / 10_000;
         let penalty = if self.took_first_sell {
             0
@@ -425,6 +435,18 @@ impl ScalpLifecycle {
             out.push(self.close(&mint, mult, ExitReason::TimeStop));
         }
         out
+    }
+
+    /// Force-exit one held position at the given mark (fixed-point price), booking
+    /// it under `reason` — the engine's escalation seam (e.g. the VPIN extreme
+    /// sell-dominant tier: a distributed multi-swap dump the single-print
+    /// rug-precursor cannot see). `None` when no position is held on `mint`.
+    pub fn close_at(&mut self, mint: &[u8; 32], price_fp: u64, reason: ExitReason) -> Option<Exit> {
+        if !self.open.contains_key(mint) {
+            return None;
+        }
+        let mult = self.open[mint].mult_bps(price_fp);
+        Some(self.close(mint, mult, reason))
     }
 
     /// Force-close every remaining open position at its last-known multiple (end of

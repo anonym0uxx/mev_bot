@@ -77,20 +77,21 @@ fn drive() -> pump_quant_app::engine::Report {
     eng.report()
 }
 
-/// The byte-exact outcome of [`drive`], frozen. **Deliberately re-pinned** when the
-/// engine moved from a one-shot fixed-move fill to the real held-position exit
-/// lifecycle (§24): admitted markets now open a position that is managed forward
-/// per-swap (principal-recovery ladder, vol-scaled trailing, thesis/rug/time exits)
-/// over the scenario's pump-then-dump price wave, closing and freeing slots. This is
-/// a *behavioural* re-pin, not an optimization: the prior value (17194072179380622382,
-/// net 3_766_464, admitted 288) belonged to the one-shot model. From here this value
-/// is again the frozen tripwire — any future move that is not a deliberate
-/// re-pin is a regression (§22, §54).
-const GOLDEN_DIGEST: u64 = 13_612_654_632_551_201_076;
-const GOLDEN_NET_LAMPORTS: i128 = 2_979_624;
+/// The byte-exact outcome of [`drive`], frozen. **Deliberately re-pinned twice**:
+/// first when the engine moved from a one-shot fill to the held-position exit
+/// lifecycle (§24; prior pin 13612654632551201076, admitted 16, net 2_979_624),
+/// then when Batch C landed dynamic bankroll sizing + risk budgets (§33 — sizes now
+/// derive from deployable capital under a 3-position concurrency cap, and refused
+/// admits are JOURNALED, hence rejected 570), evidence-staleness gates (§34.3),
+/// VPIN-X toxicity + Roll-regime multipliers, and the exit-reason field in every
+/// Filled journal record. Fewer, properly-sized positions now net MORE
+/// (+5_017_234 vs +2_979_624). From here this value is again the frozen tripwire —
+/// any future move that is not a deliberate re-pin is a regression (§22, §54).
+const GOLDEN_DIGEST: u64 = 6_031_070_496_308_012_732;
+const GOLDEN_NET_LAMPORTS: i128 = 5_017_234;
 const GOLDEN_PROMOTED: u64 = 576;
-const GOLDEN_ADMITTED: u64 = 16;
-const GOLDEN_REJECTED: u64 = 288;
+const GOLDEN_ADMITTED: u64 = 6;
+const GOLDEN_REJECTED: u64 = 570;
 
 #[test]
 fn golden_digest_is_stable() {
