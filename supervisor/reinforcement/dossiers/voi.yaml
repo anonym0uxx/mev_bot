@@ -1,0 +1,157 @@
+component: voi
+constitution_refs: []
+spec: Independence-lock dossier for the `voi` module of pump-quant-memory. Each leaf's property_test is the locked correctness authority over that leaf's public contract, verified to compile and pass against the committed Phase-A implementation. Decision logic is integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: voi_score_formula
+  responsibility: 'Compute the deterministic integer VOI score of a single hypothesis in lamports: gross = impact * prob_bps/10_000 * half_life/REF_HALF_LIFE_SECS, then subtract cost, with saturating overflow.'
+  signature: 'pub fn voi_score(h: &Hypothesis) -> i128'
+  invariants:
+  - At the reference half-life, gross = expected_impact_lamports * prob_true_bps / 10_000; VOI = gross - cost_to_test_lamports (all integer, truncating toward zero).
+  - prob_true_bps == 0 forces gross to 0, so the score equals exactly the negation of cost_to_test_lamports.
+  - Halving edge_half_life_secs relative to REF_HALF_LIFE_SECS halves the gross term; negative expected_impact_lamports yields a negative gross term.
+  - When the three-way product impact*prob*half_life overflows i128 the gross term saturates to i128::MAX for non-negative impact (and i128::MIN for negative impact), rather than wrapping.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn voi_score_formula_and_edges() {
+        fn mk(
+            id: u64,
+            impact: i128,
+            prob_bps: i64,
+            cost: u64,
+            half_life: u64,
+        ) -> pump_quant_memory::rows::Hypothesis {
+            pump_quant_memory::rows::Hypothesis {
+                id: pump_quant_memory::rows::HypothesisId(id),
+                schema_version: 1,
+                statement_hash: [0u8; 32],
+                expected_impact_lamports: impact,
+                prob_true_bps: prob_bps,
+                cost_to_test_lamports: cost,
+                edge_half_life_secs: half_life,
+                status: pump_quant_memory::rows::InferenceState::Hypothesis,
+            }
+        }
+        let refh = REF_HALF_LIFE_SECS as u64;
+        // 50% of 1 SOL at reference half-life, minus 0.1 SOL cost => 0.4 SOL.
+        assert_eq!(
+            voi_score(&mk(1, 1_000_000_000, 5_000, 100_000_000, refh)),
+            400_000_000
+        );
+        // Zero probability collapses gross to 0 => voi is exactly minus the cost.
+        assert_eq!(
+            voi_score(&mk(2, 5_000_000_000, 0, 42_000_000, refh)),
+            -42_000_000
+        );
+        // Half the reference half-life halves the gross value.
+        assert_eq!(
+            voi_score(&mk(3, 1_000_000_000, 10_000, 0, refh / 2)),
+            500_000_000
+        );
+        // Negative impact (fade) yields negative gross dominated further by cost.
+        assert_eq!(
+            voi_score(&mk(4, -1_000_000_000, 8_000, 10_000_000, refh)),
+            -810_000_000
+        );
+        // Positive three-way-product overflow saturates gross to i128::MAX.
+        assert_eq!(voi_score(&mk(5, i128::MAX, 10_000, 0, 0)), i128::MAX);
+    }
+- leaf_id: voi_rank_order
+  responsibility: 'Rank a slice of hypotheses into a total, deterministic order: descending VOI score, ties broken by ascending HypothesisId, carrying each computed score.'
+  signature: 'pub fn rank(hypotheses: &[Hypothesis]) -> Vec<RankedHypothesis>'
+  invariants:
+  - Output length equals input length and each RankedHypothesis.score equals voi_score of the corresponding input hypothesis.
+  - Entries are ordered by strictly non-increasing score.
+  - Hypotheses with equal score appear in ascending HypothesisId order, giving a total deterministic order.
+  - An empty input slice produces an empty output vector.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn rank_orders_descending_score_then_ascending_id() {
+        fn mk(id: u64, impact: i128, prob_bps: i64, cost: u64) -> pump_quant_memory::rows::Hypothesis {
+            pump_quant_memory::rows::Hypothesis {
+                id: pump_quant_memory::rows::HypothesisId(id),
+                schema_version: 1,
+                statement_hash: [0u8; 32],
+                expected_impact_lamports: impact,
+                prob_true_bps: prob_bps,
+                cost_to_test_lamports: cost,
+                edge_half_life_secs: REF_HALF_LIFE_SECS as u64,
+                status: pump_quant_memory::rows::InferenceState::Hypothesis,
+            }
+        }
+        let hs = vec![
+            mk(1, 1_000_000_000, 5_000, 100_000_000), // 400M
+            mk(2, 2_000_000_000, 2_500, 0),           // 500M
+            mk(3, 500_000_000, 10_000, 50_000_000),   // 450M
+            mk(4, -1_000_000_000, 8_000, 10_000_000), // -810M
+            mk(5, 0, 10_000, 0),                      // 0
+        ];
+        let ranked = rank(&hs);
+        let order: Vec<u64> = ranked.iter().map(|r| r.id.0).collect();
+        assert_eq!(order, vec![2, 3, 1, 5, 4]);
+        assert_eq!(ranked[0].score, 500_000_000);
+        assert_eq!(ranked[4].score, -810_000_000);
+
+        // Ties (all score 0) break by ascending id.
+        let ties = vec![
+            mk(8, 0, 10_000, 0),
+            mk(3, 0, 10_000, 0),
+            mk(6, 0, 10_000, 0),
+        ];
+        let tie_order: Vec<u64> = rank(&ties).iter().map(|r| r.id.0).collect();
+        assert_eq!(tie_order, vec![3, 6, 8]);
+
+        // Empty input ranks to empty.
+        assert!(rank(&[]).is_empty());
+    }
+- leaf_id: voi_rank_open
+  responsibility: Rank only the open (unresolved) hypotheses, excluding validated, rejected, and expired states from the research queue before ranking.
+  signature: 'pub fn rank_open(hypotheses: &[Hypothesis]) -> Vec<RankedHypothesis>'
+  invariants:
+  - Hypotheses whose status.is_open() is false (ValidatedInference, RejectedInference, ExpiredInference) are excluded from the output entirely.
+  - Open states (Observation, Hypothesis, ProvisionalInference, RegimeSpecificInference) are retained and ranked by the same descending-score/ascending-id order as rank.
+  - Output length equals the count of open hypotheses in the input.
+  - An input containing only closed hypotheses yields an empty output vector.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn rank_open_excludes_closed_states() {
+        fn mk(
+            id: u64,
+            impact: i128,
+            status: pump_quant_memory::rows::InferenceState,
+        ) -> pump_quant_memory::rows::Hypothesis {
+            pump_quant_memory::rows::Hypothesis {
+                id: pump_quant_memory::rows::HypothesisId(id),
+                schema_version: 1,
+                statement_hash: [0u8; 32],
+                expected_impact_lamports: impact,
+                prob_true_bps: 10_000,
+                cost_to_test_lamports: 0,
+                edge_half_life_secs: REF_HALF_LIFE_SECS as u64,
+                status,
+            }
+        }
+        use pump_quant_memory::rows::InferenceState as S;
+        let hs = vec![
+            mk(1, 2_000_000_000, S::ValidatedInference),    // closed
+            mk(2, 1_000_000_000, S::Hypothesis),            // open
+            mk(3, 500_000_000, S::RejectedInference),       // closed
+            mk(4, 100_000_000, S::ProvisionalInference),    // open
+            mk(5, 9_000_000_000, S::ExpiredInference),      // closed
+            mk(6, 300_000_000, S::RegimeSpecificInference), // open
+        ];
+        let order: Vec<u64> = rank_open(&hs).iter().map(|r| r.id.0).collect();
+        // Only open ids survive, ranked by descending impact: 2 (1 SOL), 6 (0.3), 4 (0.1).
+        assert_eq!(order, vec![2, 6, 4]);
+
+        // All-closed input yields an empty open queue.
+        let closed = vec![
+            mk(7, 5_000_000_000, S::RejectedInference),
+            mk(8, 5_000_000_000, S::ValidatedInference),
+        ];
+        assert!(rank_open(&closed).is_empty());
+    }

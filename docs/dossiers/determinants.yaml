@@ -1,0 +1,264 @@
+component: determinants
+constitution_refs: []
+spec: Independence-lock dossier for the `determinants` module of pump-quant-social. Each leaf's property_test is the locked correctness authority over that leaf's public contract, verified to compile and pass against the committed Phase-A implementation. Decision logic is integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: dt_d1_reconciled_markouts
+  responsibility: D1 blends four horizon markouts per call then decay-averages across calls into the ground-truth markout score.
+  signature: 'pub fn d1_reconciled_markouts(samples: &[MarkoutSample], horizon_weights: [i64; 4], half_life_ns: u64) -> DeterminantScore'
+  invariants:
+  - A single call that doubled at every horizon yields value_bps == 10_000 with sample_size == 1.
+  - 'Equal-age mixed samples average by markout: a +100% and a -50% call give value_bps == 2_500.'
+  - 'Time decay downweights stale calls: a fresh +100% call (weight 10_000) and a one-half-life-old -50% call (weight 5_000) give value_bps == 5_000.'
+  - Empty input returns DeterminantScore::empty() (value_bps 0, sample_size 0, confidence_bps 0); confidence tracks sample size via CONF_HALF_SAT_MARKOUT (n=1 -> 476, n=2 -> 909).
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn dt_d1_markouts_prop() {
+        const HL: u64 = 1_000_000_000;
+        // Single call doubled at every horizon -> +10_000, n=1, conf=10000*1/21=476.
+        let one = [MarkoutSample {
+            price_at_call: 100,
+            price_5m: 200,
+            price_30m: 200,
+            price_2h: 200,
+            price_24h: 200,
+            age_ns: 0,
+        }];
+        let s = d1_reconciled_markouts(&one, [1, 1, 1, 1], HL);
+        assert_eq!(s.value_bps, 10_000);
+        assert_eq!(s.sample_size, 1);
+        assert_eq!(s.confidence_bps, 476);
+
+        // +100% and -50% equal age -> mean(10000,-5000)=2500, n=2, conf=10000*2/22=909.
+        let two = [
+            MarkoutSample {
+                price_at_call: 100,
+                price_5m: 200,
+                price_30m: 200,
+                price_2h: 200,
+                price_24h: 200,
+                age_ns: 0,
+            },
+            MarkoutSample {
+                price_at_call: 100,
+                price_5m: 50,
+                price_30m: 50,
+                price_2h: 50,
+                price_24h: 50,
+                age_ns: 0,
+            },
+        ];
+        let s2 = d1_reconciled_markouts(&two, [1, 1, 1, 1], HL);
+        assert_eq!(s2.value_bps, 2_500);
+        assert_eq!(s2.sample_size, 2);
+        assert_eq!(s2.confidence_bps, 909);
+
+        // Decay: fresh +100% weighs 10000, stale -50% (one half-life) weighs 5000.
+        // (10000*10000 + (-5000)*5000)/15000 = 5000.
+        let dec = [
+            MarkoutSample {
+                price_at_call: 100,
+                price_5m: 200,
+                price_30m: 200,
+                price_2h: 200,
+                price_24h: 200,
+                age_ns: 0,
+            },
+            MarkoutSample {
+                price_at_call: 100,
+                price_5m: 50,
+                price_30m: 50,
+                price_2h: 50,
+                price_24h: 50,
+                age_ns: HL,
+            },
+        ];
+        assert_eq!(
+            d1_reconciled_markouts(&dec, [1, 1, 1, 1], HL).value_bps,
+            5_000
+        );
+
+        // Rejection/edge: empty input -> empty score.
+        let e = d1_reconciled_markouts(&[], [1, 1, 1, 1], HL);
+        assert_eq!(e.value_bps, 0);
+        assert_eq!(e.sample_size, 0);
+        assert_eq!(e.confidence_bps, 0);
+    }
+- leaf_id: dt_d3_selection_control
+  responsibility: D3 returns the decay-weighted mean excess markout of calls over their matched controls (the mandatory selection-control gate).
+  signature: 'pub fn d3_selection_control(samples: &[SelectionSample], half_life_ns: u64) -> DeterminantScore'
+  invariants:
+  - 'value_bps is the mean of per-call (call_markout - control_markout): (4000, -1000) gives 1_500.'
+  - A pure-selection account where call == control shows exactly zero excess regardless of the absolute markout level.
+  - sample_size equals the number of samples and confidence uses CONF_HALF_SAT_SELECTION (n=2 -> 740).
+  - Empty input returns DeterminantScore::empty() (value_bps 0, sample_size 0, confidence_bps 0).
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn dt_d3_selection_prop() {
+        const HL: u64 = 1_000_000_000;
+        // excess = (5000-1000, 2000-3000) = (4000,-1000) age0 -> mean 1500.
+        // conf = 10000*2/(2+25) = 740.
+        let samples = [
+            SelectionSample {
+                call_markout_bps: 5_000,
+                control_markout_bps: 1_000,
+                age_ns: 0,
+            },
+            SelectionSample {
+                call_markout_bps: 2_000,
+                control_markout_bps: 3_000,
+                age_ns: 0,
+            },
+        ];
+        let s = d3_selection_control(&samples, HL);
+        assert_eq!(s.value_bps, 1_500);
+        assert_eq!(s.sample_size, 2);
+        assert_eq!(s.confidence_bps, 740);
+
+        // Pure-selection account (call == control) -> exactly zero excess regardless of level.
+        let selection_only: Vec<SelectionSample> = (0..10)
+            .map(|i| SelectionSample {
+                call_markout_bps: 3_000 + i * 100,
+                control_markout_bps: 3_000 + i * 100,
+                age_ns: 0,
+            })
+            .collect();
+        let z = d3_selection_control(&selection_only, HL);
+        assert_eq!(z.value_bps, 0);
+        assert_eq!(z.sample_size, 10);
+
+        // Edge: empty -> empty score.
+        let e = d3_selection_control(&[], HL);
+        assert_eq!(e.value_bps, 0);
+        assert_eq!(e.sample_size, 0);
+        assert_eq!(e.confidence_bps, 0);
+    }
+- leaf_id: dt_d5_skin_in_game
+  responsibility: D5 scores wallet-graph skin-in-the-game (buy-before-call minus 2x distribute-into-call) and raises the paid-shill-suspect flag.
+  signature: 'pub fn d5_skin_in_game(ev: &SkinInGameEvidence, shill_threshold_bps: i64) -> D5Result'
+  invariants:
+  - Aligned accumulation (buy 8/10, no dumping) gives value_bps == 8_000 and shill_suspect == false.
+  - 'Dumping weighs 2x: buy 2/10, dump 5/10 gives value_bps == clamp(2000 - 2*5000) == -8_000 and shill_suspect == true.'
+  - 'shill_suspect uses strict >: a dump_share exactly equal to shill_threshold_bps is NOT flagged.'
+  - total_calls == 0 returns DeterminantScore::empty() and shill_suspect == false even when wallet edges are present.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn dt_d5_skin_prop() {
+        // Aligned accumulation: buy 8/10 -> 8000, no dumping -> value 8000, not suspect.
+        let aligned = SkinInGameEvidence {
+            funding_edges: 3,
+            timing_edges: 1,
+            metadata_reuse_edges: 0,
+            buy_before_call: 8,
+            distribute_into_call: 0,
+            total_calls: 10,
+        };
+        let ra = d5_skin_in_game(&aligned, 3_000);
+        assert_eq!(ra.score.value_bps, 8_000);
+        assert_eq!(ra.score.sample_size, 10);
+        assert!(!ra.shill_suspect);
+
+        // Dumping: buy 2->2000, dump 5->5000; value=clamp(2000-2*5000)=-8000; dump 5000>3000 -> suspect.
+        let dumping = SkinInGameEvidence {
+            funding_edges: 0,
+            timing_edges: 0,
+            metadata_reuse_edges: 0,
+            buy_before_call: 2,
+            distribute_into_call: 5,
+            total_calls: 10,
+        };
+        let rd = d5_skin_in_game(&dumping, 3_000);
+        assert_eq!(rd.score.value_bps, -8_000);
+        assert!(rd.shill_suspect);
+
+        // Threshold boundary: dump_share exactly at threshold is NOT suspect (strict >).
+        let at_thresh = SkinInGameEvidence {
+            funding_edges: 0,
+            timing_edges: 0,
+            metadata_reuse_edges: 0,
+            buy_before_call: 0,
+            distribute_into_call: 3,
+            total_calls: 10,
+        };
+        let rt = d5_skin_in_game(&at_thresh, 3_000);
+        assert!(!rt.shill_suspect);
+
+        // Edge: no covered calls -> empty score, not suspect.
+        let empty = SkinInGameEvidence {
+            funding_edges: 5,
+            timing_edges: 5,
+            metadata_reuse_edges: 5,
+            buy_before_call: 0,
+            distribute_into_call: 0,
+            total_calls: 0,
+        };
+        let re = d5_skin_in_game(&empty, 3_000);
+        assert_eq!(re.score.value_bps, 0);
+        assert_eq!(re.score.sample_size, 0);
+        assert_eq!(re.score.confidence_bps, 0);
+        assert!(!re.shill_suspect);
+    }
+- leaf_id: dt_d6_integrity
+  responsibility: 'D6 scores track-record integrity: neutral minus deleted-losing-call share, minus a capped per-edit penalty, plus a disclosure bonus, re-centred to neutral.'
+  signature: 'pub fn d6_integrity(ev: &IntegrityEvidence) -> DeterminantScore'
+  invariants:
+  - Clean record with disclosure yields value_bps == 6_500 (10000 - 0 - 0 + 1500 - 5000) and confidence 3_333 for 10 calls via CONF_HALF_SAT_MARKOUT.
+  - Full scrubbing of losing calls with no disclosure yields value_bps == -5_000 (10000 - 10000 + 0 - 5000).
+  - 'The per-edit penalty is capped at 3_000 bps: 20 edits give value_bps == 2_000 rather than the uncapped -4000.'
+  - total_calls == 0 returns DeterminantScore::empty() (value_bps 0, sample_size 0, confidence_bps 0).
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn dt_d6_integrity_prop() {
+        // Clean record with disclosure: 10000 - 0 - 0 + 1500 - 5000(recentre) = 6500.
+        // conf = 10000*10/(10+20) = 3333.
+        let clean = IntegrityEvidence {
+            deleted_losing_calls: 0,
+            total_losing_calls: 4,
+            edit_count: 0,
+            total_calls: 10,
+            disclosure_present: true,
+        };
+        let c = d6_integrity(&clean);
+        assert_eq!(c.value_bps, 6_500);
+        assert_eq!(c.sample_size, 10);
+        assert_eq!(c.confidence_bps, 3_333);
+
+        // Full scrubber, no disclosure: 10000 - 10000 - 0 + 0 - 5000 = -5000.
+        let scrubber = IntegrityEvidence {
+            deleted_losing_calls: 4,
+            total_losing_calls: 4,
+            edit_count: 0,
+            total_calls: 10,
+            disclosure_present: false,
+        };
+        assert_eq!(d6_integrity(&scrubber).value_bps, -5_000);
+
+        // Edit penalty is capped at 3000: 20 edits * 300 = 6000 -> capped 3000.
+        // 10000 - 0 - 3000 + 0 - 5000 = 2000.
+        let edited = IntegrityEvidence {
+            deleted_losing_calls: 0,
+            total_losing_calls: 4,
+            edit_count: 20,
+            total_calls: 10,
+            disclosure_present: false,
+        };
+        assert_eq!(d6_integrity(&edited).value_bps, 2_000);
+
+        // Edge: no calls -> empty score.
+        let empty = IntegrityEvidence {
+            deleted_losing_calls: 0,
+            total_losing_calls: 0,
+            edit_count: 0,
+            total_calls: 0,
+            disclosure_present: true,
+        };
+        let e = d6_integrity(&empty);
+        assert_eq!(e.value_bps, 0);
+        assert_eq!(e.sample_size, 0);
+        assert_eq!(e.confidence_bps, 0);
+    }

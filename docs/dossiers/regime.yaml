@@ -1,0 +1,191 @@
+component: regime
+constitution_refs: []
+spec: Independence-lock dossier for the `regime` module of pump-quant-market-state. Each leaf's property_test is the locked correctness authority over that leaf's public contract, verified to compile and pass against the committed Phase-A implementation. Decision logic is integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: rg_classify_sol_shock_bands
+  responsibility: classify buckets SOL price change into a signed Skew with the documented boundary inclusivity and reports None when the SOL feed is absent
+  signature: 'pub fn classify(obs: &RegimeObservation, th: &RegimeThresholds) -> MarketRegimeState'
+  invariants:
+  - 'Boundaries are inclusive on the stressed side: bps <= strong_down => StrongDown, bps <= down => Down, bps >= strong_up => StrongUp, bps >= up => Up, else Neutral'
+  - 'With default thresholds (-1000,-300,300,1000): -1000->StrongDown, -300->Down, 299->Neutral, 300->Up, 1000->StrongUp'
+  - A None sol_price_change_bps input classifies sol_price_shock as None (UNKNOWN, never a fabricated default)
+  - The skew is derived purely from the signed bps and the threshold tuple with no clock/float/RNG
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn rg_classify_sol_shock_bands() {
+        let th = RegimeThresholds::default();
+        let mk = |bps: i64| {
+            classify(
+                &RegimeObservation {
+                    sol_price_change_bps: Some(bps),
+                    ..RegimeObservation::default()
+                },
+                &th,
+            )
+            .sol_price_shock
+        };
+        assert_eq!(mk(-1000), Some(Skew::StrongDown));
+        assert_eq!(mk(-999), Some(Skew::Down));
+        assert_eq!(mk(-300), Some(Skew::Down));
+        assert_eq!(mk(-299), Some(Skew::Neutral));
+        assert_eq!(mk(0), Some(Skew::Neutral));
+        assert_eq!(mk(299), Some(Skew::Neutral));
+        assert_eq!(mk(300), Some(Skew::Up));
+        assert_eq!(mk(999), Some(Skew::Up));
+        assert_eq!(mk(1000), Some(Skew::StrongUp));
+        assert_eq!(
+            classify(&RegimeObservation::default(), &th).sol_price_shock,
+            None
+        );
+    }
+- leaf_id: rg_classify_ratio_components
+  responsibility: classify derives graduation-rate, route-degradation, and rug-rate from integer ratios and returns None (UNKNOWN) when the denominator is zero or the denominator source is unknown
+  signature: 'pub fn classify(obs: &RegimeObservation, th: &RegimeThresholds) -> MarketRegimeState'
+  invariants:
+  - graduation_rate = graduations*1e4/launches bucketed; launches==0 => None (undefined ratio, not a level)
+  - route_degradation = failures*1e4/attempts bucketed; attempts==0 => None
+  - rug_collapse_rate is Some only when live_markets is Some and > 0; None or Some(0) live_markets => None
+  - 'Bucketing is half-open [low,elevated,high): 2000bps>=1500 => High, 3000bps in [2000,5000) => Elevated, 1000bps in [500,2000) => Normal'
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn rg_classify_ratio_components() {
+        let th = RegimeThresholds::default();
+        let obs = RegimeObservation {
+            launches: 100,
+            graduations: 20,
+            ..RegimeObservation::default()
+        };
+        assert_eq!(classify(&obs, &th).graduation_rate, Some(RegimeLevel::High));
+        let obs0 = RegimeObservation {
+            launches: 0,
+            graduations: 5,
+            ..RegimeObservation::default()
+        };
+        assert_eq!(classify(&obs0, &th).graduation_rate, None);
+        let obsr = RegimeObservation {
+            route_attempts: 10,
+            route_failures: 3,
+            ..RegimeObservation::default()
+        };
+        assert_eq!(
+            classify(&obsr, &th).route_degradation,
+            Some(RegimeLevel::Elevated)
+        );
+        let obsr0 = RegimeObservation {
+            route_attempts: 0,
+            route_failures: 0,
+            ..RegimeObservation::default()
+        };
+        assert_eq!(classify(&obsr0, &th).route_degradation, None);
+        let obsrug = RegimeObservation {
+            rugs: 100,
+            live_markets: Some(1000),
+            ..RegimeObservation::default()
+        };
+        assert_eq!(
+            classify(&obsrug, &th).rug_collapse_rate,
+            Some(RegimeLevel::Normal)
+        );
+        let obsrug_none = RegimeObservation {
+            rugs: 100,
+            live_markets: None,
+            ..RegimeObservation::default()
+        };
+        assert_eq!(classify(&obsrug_none, &th).rug_collapse_rate, None);
+        let obsrug0 = RegimeObservation {
+            rugs: 5,
+            live_markets: Some(0),
+            ..RegimeObservation::default()
+        };
+        assert_eq!(classify(&obsrug0, &th).rug_collapse_rate, None);
+    }
+- leaf_id: rg_classify_liquidity_inverted
+  responsibility: classify maps liquidity_index into an INVERTED-stress RegimeLevel (lower depth = higher stress) and stamps the threshold version, with None when liquidity is unobserved
+  signature: 'pub fn classify(obs: &RegimeObservation, th: &RegimeThresholds) -> MarketRegimeState'
+  invariants:
+  - 'Liquidity is inverted stress: idx>=high => Low stress, [elevated,high) => Normal, [low,elevated) => Elevated, <low => High stress'
+  - 'With default bands (100,1000,10000): 50->High, 100->Elevated, 1000->Normal, 10000->Low'
+  - An unobserved (None) liquidity_index classifies liquidity_regime as None
+  - The produced state.version equals the thresholds' version field
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn rg_classify_liquidity_inverted() {
+        let th = RegimeThresholds::default();
+        let mk = |idx: u64| {
+            classify(
+                &RegimeObservation {
+                    liquidity_index: Some(idx),
+                    ..RegimeObservation::default()
+                },
+                &th,
+            )
+            .liquidity_regime
+        };
+        assert_eq!(mk(50), Some(RegimeLevel::High));
+        assert_eq!(mk(100), Some(RegimeLevel::Elevated));
+        assert_eq!(mk(1000), Some(RegimeLevel::Normal));
+        assert_eq!(mk(10000), Some(RegimeLevel::Low));
+        assert_eq!(
+            classify(&RegimeObservation::default(), &th).liquidity_regime,
+            None
+        );
+        assert_eq!(classify(&RegimeObservation::default(), &th).version, 0);
+    }
+- leaf_id: rg_reducer_accounting
+  responsibility: MarketRegimeReducer accumulates market events into exact integer counters (splitting route attempts from failures), leaves unset external scalars as None, and its classify equals classify(observation)
+  signature: 'pub fn ingest(&mut self, ev: &MarketEvent); pub fn observation(&self) -> RegimeObservation; pub fn classify(&self, th: &RegimeThresholds) -> MarketRegimeState'
+  invariants:
+  - Each event increments exactly its own counter; RouteAttempt increments route_attempts always and route_failures only when succeeded==false
+  - External scalars never ingested (sol_price_change_bps, median_priority_fee, slot_fullness_bps, liquidity_index) remain None; set_* fields reflect the set value
+  - reducer.classify(th) == classify(&reducer.observation(), th) for all thresholds
+  - Derived launch_velocity of 10 launches under default bands (5,50,200) is Normal
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn rg_reducer_accounting() {
+        let mut r = MarketRegimeReducer::new();
+        for _ in 0..10 {
+            r.ingest(&MarketEvent::Launch);
+        }
+        for _ in 0..3 {
+            r.ingest(&MarketEvent::Graduation);
+        }
+        for _ in 0..7 {
+            r.ingest(&MarketEvent::Buy);
+        }
+        for _ in 0..3 {
+            r.ingest(&MarketEvent::Sell);
+        }
+        for _ in 0..2 {
+            r.ingest(&MarketEvent::Rug);
+        }
+        r.ingest(&MarketEvent::RouteAttempt { succeeded: true });
+        r.ingest(&MarketEvent::RouteAttempt { succeeded: false });
+        r.ingest(&MarketEvent::RouteAttempt { succeeded: true });
+        r.ingest(&MarketEvent::RouteAttempt { succeeded: false });
+        r.ingest(&MarketEvent::RouteAttempt { succeeded: true });
+        r.set_live_markets(100);
+
+        let obs = r.observation();
+        assert_eq!(obs.launches, 10);
+        assert_eq!(obs.graduations, 3);
+        assert_eq!(obs.buys, 7);
+        assert_eq!(obs.sells, 3);
+        assert_eq!(obs.rugs, 2);
+        assert_eq!(obs.route_attempts, 5);
+        assert_eq!(obs.route_failures, 2);
+        assert_eq!(obs.live_markets, Some(100));
+        assert_eq!(obs.sol_price_change_bps, None);
+        assert_eq!(obs.median_priority_fee, None);
+        assert_eq!(obs.slot_fullness_bps, None);
+        assert_eq!(obs.liquidity_index, None);
+
+        let th = RegimeThresholds::default();
+        assert_eq!(r.classify(&th), classify(&obs, &th));
+        assert_eq!(r.classify(&th).launch_velocity, RegimeLevel::Normal);
+    }

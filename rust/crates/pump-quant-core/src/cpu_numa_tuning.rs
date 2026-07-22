@@ -297,6 +297,12 @@ pub enum OsErr {
 /// The mockable OS-tuning surface. The server implements this over the Windows
 /// APIs; tests implement it with a mock. Every setter returns the OS's *observed*
 /// value so the caller can verify the request actually took effect.
+///
+/// SERVER (Phase-B) TODO — see `docs/SERVER_BUILD_MANIFEST.md` task #1: the real
+/// `impl OsTune` over `SetThreadGroupAffinity` / `SetPriorityClass` /
+/// `timeBeginPeriod` / `VirtualLock` is a deployment-box deliverable, intentionally
+/// absent on the laptop. Only `MockOs` exists here. The contract the Windows impl
+/// must satisfy is locked by `dossier_cpu_numa_tuning_cn_os_apply`.
 pub trait OsTune {
     /// Set thread affinity; returns the affinity the OS reports afterwards.
     fn set_affinity(&mut self, th: ThreadId, aff: GroupAffinity) -> Result<GroupAffinity, OsErr>;

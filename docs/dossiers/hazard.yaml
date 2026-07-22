@@ -1,0 +1,124 @@
+component: hazard
+constitution_refs: []
+spec: Independence-lock dossier for the `hazard` module of pump-quant-simulator. Each leaf's property_test is the locked correctness authority over that leaf's public contract, verified to compile and pass against the committed Phase-A implementation. Decision logic is integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: hz_observe_bounded
+  responsibility: Accumulate per-phase observations while enforcing the hard phase-count memory bound with an explicit rejection.
+  signature: 'pub fn observe(&mut self, phase_id: u16, events: u64, trials: u64) -> Result<(), HazardError>'
+  invariants:
+  - Observing a brand-new phase when the phase set is already at max_phases returns Err(HazardError::PhaseCapacityExceeded) and does not mutate state.
+  - Observing an already-present phase always succeeds, even when the phase set is full, and adds events/trials onto the existing counts.
+  - max_phases is clamped to at least 1 in the constructor, so a store built with max_phases=0 still admits exactly one phase.
+  - phase_count() never exceeds the effective (clamped) max_phases.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn hz_observe_bounded_enforces_capacity_and_accumulates() {
+        let mut h = PartialPooledHazard::new(1_000, 3, 2);
+        assert!(h.observe(1, 1, 10).is_ok());
+        assert!(h.observe(2, 1, 10).is_ok());
+        assert_eq!(h.phase_count(), 2);
+        // A third NEW phase exceeds the cap: explicit error, no silent drop.
+        assert_eq!(h.observe(3, 1, 10), Err(HazardError::PhaseCapacityExceeded));
+        assert_eq!(h.phase_count(), 2);
+        // Accumulating into an existing phase is allowed even when full.
+        assert!(h.observe(1, 2, 5).is_ok());
+        let e = h.estimate(1);
+        assert_eq!(e.events, 3);
+        assert_eq!(e.trials, 15);
+        // max_phases is clamped to >= 1.
+        let mut h2 = PartialPooledHazard::new(0, 1, 0);
+        assert!(h2.observe(7, 0, 0).is_ok());
+        assert_eq!(h2.observe(8, 0, 0), Err(HazardError::PhaseCapacityExceeded));
+        assert_eq!(h2.phase_count(), 1);
+    }
+- leaf_id: hz_global_bps
+  responsibility: Compute the pooled global hazard rate across all phases in bps, falling back to the prior when no trials exist.
+  signature: pub fn global_bps(&self) -> u32
+  invariants:
+  - With zero total trials the result equals the (construction-clamped) prior_bps.
+  - prior_bps is clamped to BPS_ONE (10_000) at construction, so an over-large prior reports as 10_000 when no trials exist.
+  - With trials present the result equals total_events * 10_000 / total_trials (integer floor).
+  - The rate is capped at BPS_ONE (10_000) even when events exceed trials.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn hz_global_bps_pooled_rate_and_prior_fallback() {
+        // No trials -> prior rate.
+        let empty = PartialPooledHazard::new(2_500, 10, 8);
+        assert_eq!(empty.global_bps(), 2_500);
+        // Prior is clamped to BPS_ONE at construction.
+        let clamped = PartialPooledHazard::new(50_000, 10, 8);
+        assert_eq!(clamped.global_bps(), 10_000);
+        // Pooled rate = total_events * 10000 / total_trials.
+        let mut h = PartialPooledHazard::new(0, 10, 8);
+        h.observe(1, 1, 2).unwrap();
+        h.observe(2, 8, 10).unwrap();
+        assert_eq!(h.global_bps(), 7_500); // 9*10000/12
+                                           // Events exceeding trials cap the rate at BPS_ONE.
+        let mut hi = PartialPooledHazard::new(0, 10, 8);
+        hi.observe(1, 20, 10).unwrap();
+        assert_eq!(hi.global_bps(), 10_000);
+    }
+- leaf_id: hz_estimate_shrinkage
+  responsibility: Produce a single phase's partial-pooled hazard estimate, shrinking the phase raw rate toward the global rate by pseudo-count k.
+  signature: 'pub fn estimate(&self, phase_id: u16) -> HazardEstimate'
+  invariants:
+  - For an observed phase, hazard_bps == (events*10_000 + k*global_bps) / (trials + k) (integer floor), and events/trials/phase_id echo the stored counts and id.
+  - An unseen phase collapses to the global rate (fully pooled) and reports events=0, trials=0.
+  - When k=0 and the phase is unseen (0/0), the estimate falls back to the global rate rather than dividing by zero.
+  - hazard_bps is capped at BPS_ONE (10_000).
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn hz_estimate_partial_pool_shrinkage() {
+        let mut h = PartialPooledHazard::new(2_000, 10, 8);
+        h.observe(1, 1, 2).unwrap();
+        h.observe(2, 8, 10).unwrap();
+        // global = 7500
+        // phase 1: (1*10000 + 10*7500)/(2+10) = 85000/12 = 7083 (floor)
+        let e1 = h.estimate(1);
+        assert_eq!(e1.hazard_bps, 7_083);
+        assert_eq!(e1.events, 1);
+        assert_eq!(e1.trials, 2);
+        assert_eq!(e1.phase_id, 1);
+        // phase 2: (8*10000 + 10*7500)/(10+10) = 155000/20 = 7750
+        assert_eq!(h.estimate(2).hazard_bps, 7_750);
+        // Unseen phase collapses to the global rate with zero counts.
+        let u = h.estimate(99);
+        assert_eq!(u.hazard_bps, 7_500);
+        assert_eq!(u.events, 0);
+        assert_eq!(u.trials, 0);
+        // k = 0 with an unseen phase is 0/0 -> falls back to global (= prior here).
+        let z = PartialPooledHazard::new(4_000, 0, 4);
+        assert_eq!(z.estimate(7).hazard_bps, 4_000);
+    }
+- leaf_id: hz_estimate_all_sorted
+  responsibility: Emit hazard estimates for every observed phase in deterministic ascending phase-id order, consistent with per-phase estimate().
+  signature: pub fn estimate_all(&self) -> Vec<HazardEstimate>
+  invariants:
+  - The returned phase_ids are exactly the observed phases in strictly ascending order (deterministic iteration).
+  - The vector length equals phase_count().
+  - Each entry's hazard_bps equals estimate(phase_id).hazard_bps for that phase.
+  - The estimates are consistent with the global rate computed from all accumulated counts.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn hz_estimate_all_sorted_and_matches_per_phase() {
+        let mut h = PartialPooledHazard::new(1_000, 4, 8);
+        h.observe(5, 2, 4).unwrap();
+        h.observe(1, 0, 4).unwrap();
+        h.observe(3, 4, 4).unwrap();
+        let all = h.estimate_all();
+        let ids: Vec<u16> = all.iter().map(|e| e.phase_id).collect();
+        assert_eq!(ids, vec![1, 3, 5], "deterministic ascending phase order");
+        assert_eq!(all.len(), 3);
+        // Each aggregated entry matches the single-phase estimate.
+        for e in &all {
+            assert_eq!(e.hazard_bps, h.estimate(e.phase_id).hazard_bps);
+        }
+        // global = (2+0+4)*10000/(4+4+4) = 60000/12 = 5000
+        assert_eq!(h.global_bps(), 5_000);
+    }

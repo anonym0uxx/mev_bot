@@ -1,0 +1,251 @@
+component: narrative
+constitution_refs: []
+spec: Independence-lock dossier for the `narrative` module of pump-quant-narrative. Each leaf's property_test is the locked correctness authority over that leaf's public contract, verified to compile and pass against the committed Phase-A implementation. Decision logic is integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: nv_candidate_score
+  responsibility: Fuse narrative leaves into one bounded [0,1000] corroboration-tier candidate score, applying the fade-first hard cap when money is unconfirmed.
+  signature: 'pub fn nv_candidate_score(stage: LifecycleStage, divergence: AttentionMoneyDivergence, virality_coeff_fp: u64, pre_legibility_fp: u64, money_confirmed: bool) -> u64'
+  invariants:
+  - Result is always in [0, 1000]; component ceilings (stage<=350, divergence<=300, virality<=200, prelegibility<=150) sum to exactly 1000.
+  - When money_confirmed is false the result is hard-capped at 500 (narrative alone never dominates); when true it is uncapped.
+  - Virality points saturate at 200 for coeff>=2.0*FP_ONE and pre-legibility points cap at 150 with input clamped to FP_ONE.
+  - 'Stage/divergence contributions are the fixed point ceilings: Emergence 350, Virality 300, Formation/Saturation 100, Decay 0; Confirmed 300, AttentionLeads 200, MoneyLeads 120, Saturating 0.'
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn nv_cs_confirmed_max_and_fade_cap() {
+        let inputs = (
+            LifecycleStage::Emergence,
+            AttentionMoneyDivergence::Confirmed,
+            2 * FP_ONE,
+            FP_ONE,
+        );
+        // 350 + 300 + 200 + 150 = 1000, confirmed => uncapped.
+        assert_eq!(
+            nv_candidate_score(inputs.0, inputs.1, inputs.2, inputs.3, true),
+            1000
+        );
+        // Same inputs unconfirmed => fade-first hard cap at 500.
+        assert_eq!(
+            nv_candidate_score(inputs.0, inputs.1, inputs.2, inputs.3, false),
+            500
+        );
+    }
+
+    #[test]
+    fn nv_cs_component_arithmetic_and_bands() {
+        // Virality 300 + MoneyLeads 120 + virality(1.0 -> 100) + prelegibility(0.5 -> 75) = 595.
+        assert_eq!(
+            nv_candidate_score(
+                LifecycleStage::Virality,
+                AttentionMoneyDivergence::MoneyLeads,
+                FP_ONE,
+                FP_ONE / 2,
+                true
+            ),
+            595
+        );
+        // Virality band saturates at 200; pre-legibility clamps input to FP_ONE (=>150).
+        // Formation 100 + AttentionLeads 200 + 200 + 150 = 650.
+        assert_eq!(
+            nv_candidate_score(
+                LifecycleStage::Formation,
+                AttentionMoneyDivergence::AttentionLeads,
+                10 * FP_ONE,
+                10 * FP_ONE,
+                true
+            ),
+            650
+        );
+        // All-zero components.
+        assert_eq!(
+            nv_candidate_score(
+                LifecycleStage::Decay,
+                AttentionMoneyDivergence::Saturating,
+                0,
+                0,
+                true
+            ),
+            0
+        );
+        // Unconfirmed but already below cap is untouched: Formation 100 only.
+        assert_eq!(
+            nv_candidate_score(
+                LifecycleStage::Formation,
+                AttentionMoneyDivergence::Saturating,
+                0,
+                0,
+                false
+            ),
+            100
+        );
+    }
+- leaf_id: nv_lifecycle_stage
+  responsibility: Deterministic ordered classifier mapping an attention series plus virality coefficient to the narrative's lifecycle stage.
+  signature: 'pub fn nv_lifecycle_stage(series: &AttentionSeries, virality_coeff_fp: u64, formation_level: u64) -> LifecycleStage'
+  invariants:
+  - 'Rules are evaluated first-match-wins in a fixed order: velocity<0 => Decay before any other check.'
+  - level<formation_level (strict) => Formation even when the virality coefficient is super-critical; level==formation_level is not below the floor.
+  - virality_coeff_fp>=FP_ONE with acceleration>=0 selects Virality (accel==0 boundary qualifies) and takes precedence over Emergence.
+  - 'With velocity>=0, at-or-above floor and not viral: acceleration>0 => Emergence, else (accel<=0) => Saturation; the mapping is total.'
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    fn s(level: u64, velocity: i64, acceleration: i64) -> AttentionSeries {
+        AttentionSeries {
+            level,
+            velocity,
+            acceleration,
+        }
+    }
+
+    #[test]
+    fn nv_ls_ordered_rule_precedence() {
+        // Rule 1: negative velocity => Decay, even when viral & above floor.
+        assert_eq!(
+            nv_lifecycle_stage(&s(1000, -1, 9), 3 * FP_ONE, 100),
+            LifecycleStage::Decay
+        );
+        // Rule 2: below floor => Formation, even with viral coeff.
+        assert_eq!(
+            nv_lifecycle_stage(&s(10, 2, 2), 5 * FP_ONE, 100),
+            LifecycleStage::Formation
+        );
+        // Rule 3: coeff >= FP_ONE and accel >= 0 => Virality (accel==0 boundary qualifies).
+        assert_eq!(
+            nv_lifecycle_stage(&s(500, 20, 0), FP_ONE, 100),
+            LifecycleStage::Virality
+        );
+        // Rule 4: accel > 0 but not viral => Emergence.
+        assert_eq!(
+            nv_lifecycle_stage(&s(500, 20, 5), FP_ONE - 1, 100),
+            LifecycleStage::Emergence
+        );
+        // Rule 5: above floor, non-negative velocity, accel <= 0, not viral => Saturation.
+        assert_eq!(
+            nv_lifecycle_stage(&s(500, 20, -3), 0, 100),
+            LifecycleStage::Saturation
+        );
+    }
+
+    #[test]
+    fn nv_ls_boundaries() {
+        // level == floor is NOT below floor (strict <), zero velocity/accel, not viral => Saturation.
+        assert_eq!(
+            nv_lifecycle_stage(&s(100, 0, 0), 0, 100),
+            LifecycleStage::Saturation
+        );
+        // Viral precedence over Emergence when both accel>0 and viral.
+        assert_eq!(
+            nv_lifecycle_stage(&s(500, 20, 8), 2 * FP_ONE, 100),
+            LifecycleStage::Virality
+        );
+        // Coeff one below FP_ONE with accel>=0 is not viral -> Emergence path.
+        assert_eq!(
+            nv_lifecycle_stage(&s(500, 1, 1), FP_ONE - 1, 100),
+            LifecycleStage::Emergence
+        );
+    }
+- leaf_id: nv_attention_series
+  responsibility: Compute the newest level and the first (velocity) and second (acceleration) discrete differences of an attention series over an integer window, or None when input is insufficient.
+  signature: 'pub fn nv_attention_series(samples: &[u64], window: usize) -> Option<AttentionSeries>'
+  invariants:
+  - Returns None when window==0 or when samples.len() < 2*window+1; otherwise Some with the newest sample as level.
+  - velocity = samples[n-1] - samples[n-1-window] and acceleration = velocity - (samples[n-1-window] - samples[n-1-2*window]), computed via saturating i64 differences.
+  - A constant series yields velocity==0 and acceleration==0.
+  - 'The need = 2*window+1 boundary is inclusive: exactly need samples yields Some.'
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn nv_as_derivatives_computed() {
+        // window 1, need 3 samples. levels: [10, 30, 45]
+        // last=45, mid=30, first=10; velocity=15, velocity_prev=20, accel=-5.
+        let out = nv_attention_series(&[10, 30, 45], 1).unwrap();
+        assert_eq!(
+            out,
+            AttentionSeries {
+                level: 45,
+                velocity: 15,
+                acceleration: -5
+            }
+        );
+
+        // window 2, need 5 samples. [0, 0, 100, 0, 400]
+        // last=400 (idx4), mid=samples[4-2]=100, first=samples[4-4]=0.
+        // velocity=400-100=300, velocity_prev=100-0=100, accel=200.
+        let out2 = nv_attention_series(&[0, 0, 100, 0, 400], 2).unwrap();
+        assert_eq!(
+            out2,
+            AttentionSeries {
+                level: 400,
+                velocity: 300,
+                acceleration: 200
+            }
+        );
+    }
+
+    #[test]
+    fn nv_as_rejects_insufficient_or_zero_window() {
+        // window 0 => None.
+        assert_eq!(nv_attention_series(&[1, 2, 3, 4, 5], 0), None);
+        // window 1 needs 3 samples; only 2 given => None.
+        assert_eq!(nv_attention_series(&[10, 20], 1), None);
+        // exactly need boundary (3 samples, window 1) => Some.
+        assert!(nv_attention_series(&[5, 5, 5], 1).is_some());
+        // constant series => zero velocity and acceleration.
+        let flat = nv_attention_series(&[7, 7, 7], 1).unwrap();
+        assert_eq!(
+            flat,
+            AttentionSeries {
+                level: 7,
+                velocity: 0,
+                acceleration: 0
+            }
+        );
+    }
+- leaf_id: nv_platform_lead
+  responsibility: Classify the lead/lag between two platforms' integer first-mention instants into MainstreamLeads / CryptoLeads / Simultaneous / NoData with a symmetric tolerance deadband.
+  signature: 'pub fn nv_platform_lead(mainstream_first: Option<u64>, crypto_first: Option<u64>, tolerance: u64) -> PlatformLead'
+  invariants:
+  - Either input None yields NoData (absence never becomes zero-lag).
+  - When crypto_first later than mainstream by gap>tolerance => MainstreamLeads(gap); when mainstream later by gap>tolerance => CryptoLeads(gap).
+  - A gap <= tolerance (inclusive), including equal instants, yields Simultaneous.
+  - The returned gap equals the absolute difference of the two instants (saturating into u64).
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn nv_pl_lead_directions_and_tolerance() {
+        // crypto_first(100) later than mainstream(40), gap 60 > tol 10 => MainstreamLeads(60).
+        assert_eq!(
+            nv_platform_lead(Some(40), Some(100), 10),
+            PlatformLead::MainstreamLeads(60)
+        );
+        // mainstream(200) later than crypto(150), gap 50 > tol 10 => CryptoLeads(50).
+        assert_eq!(
+            nv_platform_lead(Some(200), Some(150), 10),
+            PlatformLead::CryptoLeads(50)
+        );
+        // gap within tolerance => Simultaneous (boundary: gap == tolerance).
+        assert_eq!(
+            nv_platform_lead(Some(40), Some(50), 10),
+            PlatformLead::Simultaneous
+        );
+        // equal instants => Simultaneous.
+        assert_eq!(
+            nv_platform_lead(Some(77), Some(77), 0),
+            PlatformLead::Simultaneous
+        );
+    }
+
+    #[test]
+    fn nv_pl_missing_data_is_nodata() {
+        assert_eq!(nv_platform_lead(None, Some(10), 5), PlatformLead::NoData);
+        assert_eq!(nv_platform_lead(Some(10), None, 5), PlatformLead::NoData);
+        assert_eq!(nv_platform_lead(None, None, 5), PlatformLead::NoData);
+        // gap just over tolerance flips from Simultaneous to a lead.
+        assert_eq!(
+            nv_platform_lead(Some(0), Some(11), 10),
+            PlatformLead::MainstreamLeads(11)
+        );
+    }

@@ -1,0 +1,241 @@
+component: micro
+constitution_refs: []
+spec: Independence-lock dossier for the `micro` module of pump-quant-features. Each leaf's property_test is the locked correctness authority over that leaf's public contract, verified to compile and pass against the committed Phase-A implementation. Decision logic is integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: mc_classify_divergence
+  responsibility: Classify CVD/price divergence into Confirmation/Bearish/Bullish/Neutral from the signs of a price change and a CVD change.
+  signature: 'pub fn classify_divergence(price_delta_fp: i128, cvd_delta: i128) -> CvdDivergence'
+  invariants:
+  - Flat price (price_delta_fp == 0) always yields Neutral regardless of cvd_delta.
+  - Same-direction moves (price up & cvd>0, or price down & cvd<0) yield Confirmation.
+  - Price up with cvd_delta <= 0 yields Bearish (buy-pressure exhaustion); price down with cvd_delta >= 0 yields Bullish (sell-pressure exhaustion).
+  - 'The function is total: every (price_delta_fp, cvd_delta) pair maps to exactly one CvdDivergence variant and depends only on the two signs.'
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn mc_classify_divergence_props() {
+        // Same-sign price & CVD -> Confirmation (both branches).
+        assert_eq!(classify_divergence(5, 5), CvdDivergence::Confirmation);
+        assert_eq!(classify_divergence(-5, -5), CvdDivergence::Confirmation);
+        // Price up, CVD not confirming (<=0) -> Bearish (exhaustion).
+        assert_eq!(classify_divergence(5, 0), CvdDivergence::Bearish);
+        assert_eq!(classify_divergence(5, -3), CvdDivergence::Bearish);
+        // Price down, CVD not confirming (>=0) -> Bullish.
+        assert_eq!(classify_divergence(-5, 0), CvdDivergence::Bullish);
+        assert_eq!(classify_divergence(-5, 2), CvdDivergence::Bullish);
+        // Flat price -> Neutral regardless of CVD.
+        assert_eq!(classify_divergence(0, 9), CvdDivergence::Neutral);
+        assert_eq!(classify_divergence(0, -9), CvdDivergence::Neutral);
+        assert_eq!(classify_divergence(0, 0), CvdDivergence::Neutral);
+
+        // Total function: exactly one classification per input; exhaustiveness sweep.
+        for pd in -3i128..=3 {
+            for cd in -3i128..=3 {
+                let got = classify_divergence(pd, cd);
+                let expected = if pd > 0 {
+                    if cd > 0 {
+                        CvdDivergence::Confirmation
+                    } else {
+                        CvdDivergence::Bearish
+                    }
+                } else if pd < 0 {
+                    if cd < 0 {
+                        CvdDivergence::Confirmation
+                    } else {
+                        CvdDivergence::Bullish
+                    }
+                } else {
+                    CvdDivergence::Neutral
+                };
+                assert_eq!(got, expected, "pd={pd} cd={cd}");
+            }
+        }
+    }
+- leaf_id: mc_cvd_velocity_per_sec
+  responsibility: Compute CVD delta velocity in quote-units per second between two samples, rejecting non-positive time bases.
+  signature: 'pub fn cvd_velocity_per_sec(cvd_from: i128, from_ts_ns: u64, cvd_to: i128, to_ts_ns: u64) -> Option<i128>'
+  invariants:
+  - Returns None whenever to_ts_ns <= from_ts_ns (no positive time base), for both equal and inverted timestamps.
+  - For dt of exactly one second (1e9 ns) the returned rate equals the raw CVD delta (cvd_to - cvd_from), including negative and zero deltas.
+  - 'Division is integer truncation toward zero: delta 3 over 2s yields Some(1); a zero delta over positive time yields Some(0).'
+  - Sign of the result follows the sign of (cvd_to - cvd_from) for positive dt.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn mc_cvd_velocity_props() {
+        // delta 500 over 2s -> 250 quote/sec.
+        assert_eq!(cvd_velocity_per_sec(0, 0, 500, 2_000_000_000), Some(250));
+        // Negative delta over 1s.
+        assert_eq!(
+            cvd_velocity_per_sec(100, 0, -900, 1_000_000_000),
+            Some(-1000)
+        );
+        // Non-positive time base -> None (equal and inverted).
+        assert_eq!(cvd_velocity_per_sec(0, 5, 10, 5), None);
+        assert_eq!(cvd_velocity_per_sec(0, 6, 10, 5), None);
+        // Zero delta over positive time -> Some(0).
+        assert_eq!(cvd_velocity_per_sec(42, 0, 42, 3_000_000_000), Some(0));
+        // Truncating integer division toward zero: delta 3 over 2s.
+        // 3 * 1e9 / 2e9 = 1 (truncated).
+        assert_eq!(cvd_velocity_per_sec(0, 0, 3, 2_000_000_000), Some(1));
+        // Rate is invariant under equal time scaling when delta scales with dt:
+        // delta d over exactly 1s always equals d.
+        for d in [-1000i128, -7, 0, 1, 999, 1_000_000] {
+            // dt = exactly 1 second (1e9 ns) -> rate equals the delta itself.
+            assert_eq!(cvd_velocity_per_sec(0, 1_000, d, 1_000_001_000), Some(d));
+        }
+    }
+- leaf_id: mc_flow_accounting
+  responsibility: 'Accumulate signed order-flow: cumulative volume delta, base-unit order-flow imbalance, and normalized imbalance in basis points.'
+  signature: 'pub fn cumulative_volume_delta(trades: &[TradeEvent]) -> i128; pub fn order_flow_imbalance_base(trades: &[TradeEvent]) -> i128; pub fn order_flow_imbalance_bps(trades: &[TradeEvent]) -> Option<i32>'
+  invariants:
+  - CVD is the sum of signed quote flow (+quote for Buy, -quote for Sell); OFI base is the sum of signed base flow; both are 0 for an empty slice.
+  - order_flow_imbalance_bps returns None exactly when total base volume is zero (empty slice), and Some otherwise.
+  - 'When defined, bps = (buy_base - sell_base) * 10_000 / (buy_base + sell_base) and always lies in [-10_000, 10_000]: all-buy -> 10_000, all-sell -> -10_000, balanced -> 0.'
+  - The concrete sample (buy 10/quote 100, sell 4/quote 44, buy 6/quote 60) yields CVD 116, OFI base 12, and 6000 bps.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    fn te(
+        id: u64,
+        ts: u64,
+        price: i128,
+        base: u64,
+        quote: u64,
+        buy: bool,
+    ) -> pump_quant_features::types::TradeEvent {
+        pump_quant_features::types::TradeEvent {
+            event_id: id,
+            ts_ns: ts,
+            price_fp: to_price_fp(price),
+            base_qty: base,
+            quote_qty: quote,
+            side: if buy {
+                pump_quant_features::types::Side::Buy
+            } else {
+                pump_quant_features::types::Side::Sell
+            },
+        }
+    }
+
+    #[test]
+    fn mc_flow_accounting_props() {
+        let s = [
+            te(1, 1, 10, 10, 100, true),
+            te(2, 2, 11, 4, 44, false),
+            te(3, 3, 10, 6, 60, true),
+        ];
+        // CVD = +100 - 44 + 60 = 116.
+        assert_eq!(cumulative_volume_delta(&s), 116);
+        // OFI base = +10 - 4 + 6 = 12.
+        assert_eq!(order_flow_imbalance_base(&s), 12);
+        // buy base 16, sell base 4, net 12, total 20 -> 6000 bps.
+        assert_eq!(order_flow_imbalance_bps(&s), Some(6000));
+
+        // Empty slice: CVD/OFI are 0; bps undefined -> None.
+        assert_eq!(cumulative_volume_delta(&[]), 0);
+        assert_eq!(order_flow_imbalance_base(&[]), 0);
+        assert_eq!(order_flow_imbalance_bps(&[]), None);
+
+        // All-buy: bps saturates at +10_000; all-sell: -10_000.
+        let all_buy = [te(1, 1, 10, 5, 50, true), te(2, 2, 10, 3, 30, true)];
+        assert_eq!(order_flow_imbalance_bps(&all_buy), Some(10_000));
+        let all_sell = [te(1, 1, 10, 5, 50, false), te(2, 2, 10, 3, 30, false)];
+        assert_eq!(order_flow_imbalance_bps(&all_sell), Some(-10_000));
+
+        // Perfectly balanced base volume -> 0 bps (net zero, total nonzero).
+        let balanced = [te(1, 1, 10, 7, 70, true), te(2, 2, 10, 7, 70, false)];
+        assert_eq!(order_flow_imbalance_bps(&balanced), Some(0));
+
+        // bps is always within [-10_000, 10_000] and sign matches CVD's base net.
+        assert!(order_flow_imbalance_bps(&s).unwrap().abs() <= 10_000);
+    }
+- leaf_id: mc_rolling_window
+  responsibility: 'Maintain the memory-bounded RollingFlowWindow state machine: config validation, monotonic-time enforcement, time+capacity eviction, and O(1) incremental aggregates.'
+  signature: 'impl RollingFlowWindow { pub fn new(window_ns: u64, capacity: usize) -> Result<Self, FeatureError>; pub fn push(&mut self, t: TradeEvent) -> Result<(), FeatureError>; pub fn cvd(&self) -> i128; pub fn ofi_base(&self) -> i128; pub fn ofi_bps(&self) -> Option<i32>; pub fn len(&self) -> usize }'
+  invariants:
+  - new() returns FeatureError::InvalidConfiguration when window_ns == 0 or capacity == 0.
+  - push rejects a trade whose ts_ns is strictly less than the previous newest with FeatureError::NonMonotonicTimestamp{previous_ns, offending_ns} and leaves all aggregates and length unchanged.
+  - After each push the window retains only trades with ts_ns > newest_ts - window_ns (time eviction) and at most `capacity` trades (capacity eviction drops oldest).
+  - The incremental aggregates (cvd, ofi_base, buy/sell base, ofi_bps) always equal a from-scratch recompute over the retained set; an empty window reports cvd 0, len 0, ofi_bps None.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    fn te(
+        id: u64,
+        ts: u64,
+        price: i128,
+        base: u64,
+        quote: u64,
+        buy: bool,
+    ) -> pump_quant_features::types::TradeEvent {
+        pump_quant_features::types::TradeEvent {
+            event_id: id,
+            ts_ns: ts,
+            price_fp: to_price_fp(price),
+            base_qty: base,
+            quote_qty: quote,
+            side: if buy {
+                pump_quant_features::types::Side::Buy
+            } else {
+                pump_quant_features::types::Side::Sell
+            },
+        }
+    }
+
+    #[test]
+    fn mc_rolling_window_props() {
+        // Zero window or zero capacity is rejected.
+        assert_eq!(
+            RollingFlowWindow::new(0, 10).unwrap_err(),
+            pump_quant_features::types::FeatureError::InvalidConfiguration
+        );
+        assert_eq!(
+            RollingFlowWindow::new(100, 0).unwrap_err(),
+            pump_quant_features::types::FeatureError::InvalidConfiguration
+        );
+
+        // Time eviction: pushing at ts=100 with window 100 evicts everything ts<=0.
+        let mut w = RollingFlowWindow::new(100, 10).unwrap();
+        w.push(te(1, 0, 10, 10, 100, true)).unwrap();
+        w.push(te(2, 50, 11, 4, 44, false)).unwrap();
+        w.push(te(3, 100, 10, 6, 60, true)).unwrap();
+        assert_eq!(w.len(), 2);
+        // Retained {sell 44, buy 60}: cvd = 16, ofi_base = 6-4 = 2.
+        assert_eq!(w.cvd(), 16);
+        assert_eq!(w.ofi_base(), 2);
+        assert_eq!(w.buy_base(), 6);
+        assert_eq!(w.sell_base(), 4);
+        assert_eq!(w.ofi_bps(), Some(2000));
+        assert!(!w.is_empty());
+
+        // Non-monotonic timestamp is rejected and leaves state unchanged.
+        let mut w2 = RollingFlowWindow::new(100, 10).unwrap();
+        w2.push(te(1, 10, 10, 1, 10, true)).unwrap();
+        let err = w2.push(te(2, 9, 10, 1, 10, true)).unwrap_err();
+        assert_eq!(
+            err,
+            pump_quant_features::types::FeatureError::NonMonotonicTimestamp {
+                previous_ns: 10,
+                offending_ns: 9,
+            }
+        );
+        assert_eq!(w2.len(), 1);
+        assert_eq!(w2.cvd(), 10);
+
+        // Capacity eviction: hard cap 2 drops the oldest even when in-window.
+        let mut w3 = RollingFlowWindow::new(1_000_000, 2).unwrap();
+        w3.push(te(1, 1, 10, 10, 100, true)).unwrap();
+        w3.push(te(2, 2, 10, 5, 50, false)).unwrap();
+        w3.push(te(3, 3, 10, 7, 70, true)).unwrap();
+        assert_eq!(w3.len(), 2);
+        // Retained {sell 50, buy 70}: cvd = 20.
+        assert_eq!(w3.cvd(), 20);
+
+        // Empty window has zero aggregates.
+        let w4 = RollingFlowWindow::new(100, 10).unwrap();
+        assert!(w4.is_empty());
+        assert_eq!(w4.len(), 0);
+        assert_eq!(w4.cvd(), 0);
+        assert_eq!(w4.ofi_bps(), None);
+    }

@@ -7,6 +7,7 @@
 // tests/ are a separate crate, so the implementation must be `pub` and reachable here.
 #![allow(
     unused_imports,
+    dead_code,
     clippy::manual_range_contains,
     clippy::bool_comparison,
     clippy::nonminimal_bool

@@ -57,6 +57,20 @@ COMPONENT_CRATE = {
     "evaluator_stats": "pump-quant-evaluator",
     "cpu_numa_tuning": "pump-quant-core",
     "safety_integrity": "pump-quant-strategy",
+    "clock": "pump-quant-clock",
+    "config": "pump-quant-app",
+    "determinants": "pump-quant-social",
+    "envelope": "pump-quant-governance",
+    "hazard": "pump-quant-simulator",
+    "lifecycle": "pump-quant-domain",
+    "manifest": "pump-quant-journal",
+    "micro": "pump-quant-features",
+    "narrative": "pump-quant-narrative",
+    "rank": "pump-quant-watchlist",
+    "regime": "pump-quant-market-state",
+    "smart_money": "pump-quant-wallet-graph",
+    "types": "pump-quant-canonical",
+    "voi": "pump-quant-memory",
 }
 DEFAULT_CRATE = "pump-quant-core"
 
@@ -71,6 +85,7 @@ HEADER = (
     "// tests/ are a separate crate, so the implementation must be `pub` and reachable here.\n"
     "#![allow(\n"
     "    unused_imports,\n"
+    "    dead_code,\n"
     "    clippy::manual_range_contains,\n"
     "    clippy::bool_comparison,\n"
     "    clippy::nonminimal_bool\n"

@@ -1,0 +1,162 @@
+component: rank
+constitution_refs: []
+spec: Independence-lock dossier for the `rank` module of pump-quant-watchlist. Each leaf's property_test is the locked correctness authority over that leaf's public contract, verified to compile and pass against the committed Phase-A implementation. Decision logic is integer/deterministic (§22).
+invariants: []
+adversarial_checks: []
+leaves:
+- leaf_id: wr_recency_factor
+  responsibility: Compute the linear fixed-point recency-decay factor for a candidate given its discovery time, the current logical tick, and the TTL horizon.
+  signature: 'pub fn recency_factor(discovered_at: u64, now: u64, ttl_ticks: u64) -> u64'
+  invariants:
+  - At age 0 (now == discovered_at, or now < discovered_at via saturating subtraction) the factor equals RECENCY_ONE; a future-dated discovery is treated as brand-new, never negative.
+  - At age >= ttl_ticks the factor is exactly 0, and ttl_ticks == 0 always returns 0 (lane disabled).
+  - For 0 < age < ttl the factor equals the exact integer closed form RECENCY_ONE * (ttl_ticks - age) / ttl_ticks.
+  - The factor is monotonic non-increasing in age across the whole [0, ttl] horizon.
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    fn mk_cand_unused() {}
+
+    #[test]
+    fn wr_recency_factor_props() {
+        // Full recency at age 0 (now == discovered_at).
+        assert_eq!(recency_factor(0, 0, 100), RECENCY_ONE);
+        assert_eq!(recency_factor(50, 50, 100), RECENCY_ONE);
+        // Zero at exactly TTL and beyond.
+        assert_eq!(recency_factor(0, 100, 100), 0);
+        assert_eq!(recency_factor(0, 250, 100), 0);
+        // ttl == 0 disables the lane.
+        assert_eq!(recency_factor(0, 0, 0), 0);
+        // Future discovery (now < discovered_at) saturates age to 0 => full, never negative.
+        assert_eq!(recency_factor(500, 100, 1000), RECENCY_ONE);
+        // Exact closed form + monotonic non-increasing across the whole horizon.
+        let ttl = 1000u64;
+        let mut prev = u64::MAX;
+        for age in 0..=ttl {
+            let r = recency_factor(0, age, ttl);
+            let expected = if age >= ttl {
+                0
+            } else {
+                ((RECENCY_ONE as u128) * ((ttl - age) as u128) / (ttl as u128)) as u64
+            };
+            assert_eq!(r, expected, "closed form mismatch at age {age}");
+            assert!(r <= prev, "recency must not increase with age at {age}");
+            prev = r;
+        }
+        // Spot value.
+        assert_eq!(recency_factor(0, 250, 1000), 750_000);
+    }
+- leaf_id: wr_score_rank
+  responsibility: Compose a candidate's comparable u64 rank as discovery_score x recency x lane weight in saturating fixed-point.
+  signature: 'pub fn score_rank(candidate: &Candidate, now: u64, params: RankParams, weights: &LaneWeights) -> u64'
+  invariants:
+  - Rank equals the exact integer pipeline (discovery_score * recency / RECENCY_ONE) * weight_bp / WEIGHT_ONE, using the weight of the candidate's own lane.
+  - A candidate whose recency has decayed to 0 (age >= ttl) ranks exactly 0 regardless of discovery_score.
+  - When the u128 product exceeds u64::MAX the result saturates to u64::MAX without wrapping.
+  - 'Per-lane weight is applied: overriding one lane''s weight changes only candidates in that lane.'
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    fn mk_cand(
+        score: u64,
+        discovered_at: u64,
+        lane: pump_quant_watchlist::candidate::Lane,
+    ) -> pump_quant_watchlist::candidate::Candidate {
+        pump_quant_watchlist::candidate::Candidate::new(
+            pump_quant_watchlist::candidate::Mint::new([0u8; 32]),
+            lane,
+            score,
+            discovered_at,
+            pump_quant_watchlist::candidate::Features::default(),
+        )
+    }
+
+    #[test]
+    fn wr_score_rank_props() {
+        let weights = LaneWeights::from_defaults();
+        let params = RankParams::new(1000);
+
+        // ActiveMarketScalp = 1.0x. age 250 => recency 750_000.
+        // 1_000_000 * 750_000 / 1e6 * 10_000 / 10_000 = 750_000.
+        let c = mk_cand(
+            1_000_000,
+            0,
+            pump_quant_watchlist::candidate::Lane::ActiveMarketScalp,
+        );
+        assert_eq!(score_rank(&c, 250, params, &weights), 750_000);
+
+        // EarlyConfirmation = 1.2x, fresh (recency 1e6): 1_000_000 * 12_000 / 10_000 = 1_200_000.
+        let c2 = mk_cand(
+            1_000_000,
+            0,
+            pump_quant_watchlist::candidate::Lane::EarlyConfirmation,
+        );
+        assert_eq!(score_rank(&c2, 0, params, &weights), 1_200_000);
+
+        // CreationSniper = 0.8x, half decayed. score 2_000_000, age 500 => recency 500_000.
+        // 2_000_000 * 500_000 / 1e6 = 1_000_000; * 8_000 / 10_000 = 800_000.
+        let c3 = mk_cand(
+            2_000_000,
+            0,
+            pump_quant_watchlist::candidate::Lane::CreationSniper,
+        );
+        assert_eq!(score_rank(&c3, 500, params, &weights), 800_000);
+
+        // Decayed to 0 => rank 0 regardless of score.
+        let params2 = RankParams::new(100);
+        let c4 = mk_cand(
+            9_999_999,
+            0,
+            pump_quant_watchlist::candidate::Lane::EarlyConfirmation,
+        );
+        assert_eq!(score_rank(&c4, 100, params2, &weights), 0);
+        assert_eq!(score_rank(&c4, 5000, params2, &weights), 0);
+
+        // Saturates into u64::MAX without wrapping.
+        let mut w2 = LaneWeights::from_defaults();
+        w2.set(
+            pump_quant_watchlist::candidate::Lane::ActiveMarketScalp,
+            60_000,
+        ); // 6x
+        let params3 = RankParams::new(10);
+        let big = mk_cand(
+            u64::MAX,
+            0,
+            pump_quant_watchlist::candidate::Lane::ActiveMarketScalp,
+        );
+        assert_eq!(score_rank(&big, 0, params3, &w2), u64::MAX);
+    }
+- leaf_id: wr_lane_weights
+  responsibility: Hold and override per-lane ranking multipliers in basis points, seeded from each lane's documented prior.
+  signature: 'impl LaneWeights { pub fn from_defaults() -> Self; pub fn get(&self, lane: Lane) -> u32; pub fn set(&mut self, lane: Lane, weight_bp: u32); }'
+  invariants:
+  - 'from_defaults seeds each lane with its documented prior: CreationSniper 8_000, EarlyConfirmation 12_000, GraduationTransition 11_000, ActiveMarketScalp WEIGHT_ONE (10_000).'
+  - get returns exactly the value most recently set for that lane (round-trip fidelity).
+  - set mutates only the targeted lane; every other lane's weight is unchanged.
+  - 'Separate LaneWeights instances share no state: mutating one leaves a freshly-defaulted one intact.'
+  reference_pattern: property_test is the sole correctness authority for this leaf; it was authored and verified to compile and pass against the committed implementation (no separate reference snippet).
+  property_test: |
+    #[test]
+    fn wr_lane_weights_props() {
+        let cs = pump_quant_watchlist::candidate::Lane::CreationSniper;
+        let ec = pump_quant_watchlist::candidate::Lane::EarlyConfirmation;
+        let gt = pump_quant_watchlist::candidate::Lane::GraduationTransition;
+        let ams = pump_quant_watchlist::candidate::Lane::ActiveMarketScalp;
+
+        // from_defaults seeds each lane's documented prior exactly.
+        let mut w = LaneWeights::from_defaults();
+        assert_eq!(w.get(cs), 8_000);
+        assert_eq!(w.get(ec), 12_000);
+        assert_eq!(w.get(gt), 11_000);
+        assert_eq!(w.get(ams), WEIGHT_ONE);
+
+        // set overrides exactly the targeted lane and get echoes it back.
+        w.set(cs, WEIGHT_ONE);
+        assert_eq!(w.get(cs), WEIGHT_ONE);
+        // Every other lane is unaffected by the override.
+        assert_eq!(w.get(ec), 12_000);
+        assert_eq!(w.get(gt), 11_000);
+        assert_eq!(w.get(ams), WEIGHT_ONE);
+
+        // A second independent instance is unchanged (no shared state).
+        let fresh = LaneWeights::from_defaults();
+        assert_eq!(fresh.get(cs), 8_000);
+    }
