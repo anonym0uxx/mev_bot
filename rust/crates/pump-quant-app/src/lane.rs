@@ -128,30 +128,39 @@ impl NumericLane {
     /// Emit one candidate per tracked mint with an integer discovery score.
     #[must_use]
     pub fn emit(&self, now: u64) -> Vec<Candidate> {
-        self.obs
-            .iter()
-            .map(|(k, o)| {
-                let feats = Features {
-                    liquidity_lamports: o.liquidity_lamports,
-                    buy_pressure_bp: buy_pressure_bp(o.buy_base, o.sell_base),
-                    unique_buyers: o.buyer_bitset.count_ones(),
-                    age_slots: o.age_slots,
-                };
-                // Score = buy-pressure(bps) × liquidity-decade × buyer breadth.
-                // Monotone in each input, saturating, integer-only.
-                let liq_decade = decade(o.liquidity_lamports);
-                let score = (feats.buy_pressure_bp as u64)
-                    .saturating_mul(liq_decade)
-                    .saturating_mul((feats.unique_buyers as u64).max(1));
-                Candidate::new(
-                    WlMint::new(*k),
-                    WlLane::ActiveMarketScalp,
-                    score,
-                    now,
-                    feats,
-                )
-            })
-            .collect()
+        let mut out = Vec::with_capacity(self.obs.len());
+        self.emit_into(&mut out, now);
+        out
+    }
+
+    /// Append one candidate per tracked mint into `buf` (see [`Self::emit`]).
+    ///
+    /// The engine drives this every tick over a reused buffer, so steady-state
+    /// discovery allocates nothing here; `emit` is the owning convenience wrapper.
+    /// The emitted candidates are byte-identical to `emit`'s.
+    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64) {
+        buf.reserve(self.obs.len());
+        for (k, o) in &self.obs {
+            let feats = Features {
+                liquidity_lamports: o.liquidity_lamports,
+                buy_pressure_bp: buy_pressure_bp(o.buy_base, o.sell_base),
+                unique_buyers: o.buyer_bitset.count_ones(),
+                age_slots: o.age_slots,
+            };
+            // Score = buy-pressure(bps) × liquidity-decade × buyer breadth.
+            // Monotone in each input, saturating, integer-only.
+            let liq_decade = decade(o.liquidity_lamports);
+            let score = (feats.buy_pressure_bp as u64)
+                .saturating_mul(liq_decade)
+                .saturating_mul((feats.unique_buyers as u64).max(1));
+            buf.push(Candidate::new(
+                WlMint::new(*k),
+                WlLane::ActiveMarketScalp,
+                score,
+                now,
+                feats,
+            ));
+        }
     }
 }
 
@@ -197,36 +206,47 @@ impl NarrativeLane {
     /// narrative crate's fixed-point unit) — no band edge is baked in.
     #[must_use]
     pub fn emit(&self, now: u64, stage_hi_fp: u64, stage_lo_fp: u64) -> Vec<Candidate> {
-        self.obs
-            .iter()
-            .map(|(k, o)| {
-                let virality = nv_virality_coeff(o.prior_active, o.new_mentions).unwrap_or(0);
-                // Stage/divergence inferred deterministically from the configured
-                // virality bands (in the narrative leaf's fixed-point unit).
-                let stage = if virality >= stage_hi_fp {
-                    LifecycleStage::Virality
-                } else if virality >= stage_lo_fp {
-                    LifecycleStage::Emergence
-                } else {
-                    LifecycleStage::Formation
-                };
-                let score = nv_candidate_score(
-                    stage,
-                    AttentionMoneyDivergence::AttentionLeads,
-                    virality,
-                    0,
-                    // fade-first: pre-confirmation the narrative score is capped.
-                    false,
-                );
-                Candidate::new(
-                    WlMint::new(*k),
-                    WlLane::EarlyConfirmation,
-                    score,
-                    now,
-                    Features::default(),
-                )
-            })
-            .collect()
+        let mut out = Vec::with_capacity(self.obs.len());
+        self.emit_into(&mut out, now, stage_hi_fp, stage_lo_fp);
+        out
+    }
+
+    /// Append one candidate per tracked mint into `buf` (see [`Self::emit`]).
+    pub fn emit_into(
+        &self,
+        buf: &mut Vec<Candidate>,
+        now: u64,
+        stage_hi_fp: u64,
+        stage_lo_fp: u64,
+    ) {
+        buf.reserve(self.obs.len());
+        for (k, o) in &self.obs {
+            let virality = nv_virality_coeff(o.prior_active, o.new_mentions).unwrap_or(0);
+            // Stage/divergence inferred deterministically from the configured
+            // virality bands (in the narrative leaf's fixed-point unit).
+            let stage = if virality >= stage_hi_fp {
+                LifecycleStage::Virality
+            } else if virality >= stage_lo_fp {
+                LifecycleStage::Emergence
+            } else {
+                LifecycleStage::Formation
+            };
+            let score = nv_candidate_score(
+                stage,
+                AttentionMoneyDivergence::AttentionLeads,
+                virality,
+                0,
+                // fade-first: pre-confirmation the narrative score is capped.
+                false,
+            );
+            buf.push(Candidate::new(
+                WlMint::new(*k),
+                WlLane::EarlyConfirmation,
+                score,
+                now,
+                Features::default(),
+            ));
+        }
     }
 }
 
@@ -258,18 +278,23 @@ impl SocialLane {
     /// Emit one candidate per tracked mint. Score is the summed quality weight.
     #[must_use]
     pub fn emit(&self, now: u64) -> Vec<Candidate> {
-        self.obs
-            .iter()
-            .map(|(k, &w)| {
-                Candidate::new(
-                    WlMint::new(*k),
-                    WlLane::CreationSniper,
-                    w,
-                    now,
-                    Features::default(),
-                )
-            })
-            .collect()
+        let mut out = Vec::with_capacity(self.obs.len());
+        self.emit_into(&mut out, now);
+        out
+    }
+
+    /// Append one candidate per tracked mint into `buf` (see [`Self::emit`]).
+    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64) {
+        buf.reserve(self.obs.len());
+        for (k, &w) in &self.obs {
+            buf.push(Candidate::new(
+                WlMint::new(*k),
+                WlLane::CreationSniper,
+                w,
+                now,
+                Features::default(),
+            ));
+        }
     }
 }
 
@@ -307,22 +332,28 @@ impl WalletLane {
     /// weight is a config field, not a baked-in constant.
     #[must_use]
     pub fn emit(&self, now: u64, score_scale: u64) -> Vec<Candidate> {
-        self.obs
-            .iter()
-            .map(|(k, &size)| {
-                Candidate::new(
-                    WlMint::new(*k),
-                    WlLane::GraduationTransition,
-                    decade(size).saturating_mul(score_scale),
-                    now,
-                    Features::default(),
-                )
-            })
-            .collect()
+        let mut out = Vec::with_capacity(self.obs.len());
+        self.emit_into(&mut out, now, score_scale);
+        out
+    }
+
+    /// Append one candidate per tracked mint into `buf` (see [`Self::emit`]).
+    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64, score_scale: u64) {
+        buf.reserve(self.obs.len());
+        for (k, &size) in &self.obs {
+            buf.push(Candidate::new(
+                WlMint::new(*k),
+                WlLane::GraduationTransition,
+                decade(size).saturating_mul(score_scale),
+                now,
+                Features::default(),
+            ));
+        }
     }
 }
 
 /// Buy pressure in basis points: `buy / (buy + sell)`, integer, 10_000 = 100%.
+#[inline]
 #[must_use]
 fn buy_pressure_bp(buy: u128, sell: u128) -> u32 {
     let total = buy.saturating_add(sell);
@@ -334,15 +365,16 @@ fn buy_pressure_bp(buy: u128, sell: u128) -> u32 {
 
 /// A coarse base-10 magnitude of a lamport quantity (0 → 0, 1..9 → 1, 10..99 → 2 …).
 /// Keeps liquidity/size comparable across many orders of magnitude without a float.
+///
+/// Equivalent to the digit-count loop it replaces (`0 → 0`, otherwise
+/// `floor(log10 v) + 1`) but branch-free via the intrinsic: `checked_ilog10`
+/// returns `None` only for `v == 0`, mapping to `0`, and `Some(floor(log10 v))`
+/// otherwise, to which we add one for the digit count. Byte-identical for all
+/// `u64` (§22), just without the per-call division loop.
+#[inline]
 #[must_use]
 fn decade(v: u64) -> u64 {
-    let mut n = v;
-    let mut d = 0u64;
-    while n > 0 {
-        d += 1;
-        n /= 10;
-    }
-    d
+    v.checked_ilog10().map_or(0, |x| x as u64 + 1)
 }
 
 fn evict_weakest_numeric(obs: &mut BTreeMap<[u8; 32], NumericObs>) {
