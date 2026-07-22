@@ -72,12 +72,15 @@ impl AttentionParams {
     /// small but real amount of weighted attention before "emergence"; a zero
     /// deadband treats any strictly-positive velocity as rising; and a `FP_ONE/16`
     /// age step fully legibilizes a narrative over ~16 windows. The live-chat
-    /// weights (§29.6 stream/comment structure): each distinct genuine chatter
-    /// adds one attention unit (the same floor a single mention carries), and a
-    /// broadcaster call adds a quarter of the formation floor — enough to pull a
-    /// watched stream's coin toward Formation faster, NEVER enough to reach
-    /// Virality without organic level, and always still behind the §29
-    /// fade-first cap until money confirms.
+    /// weights (§29.6 stream/comment structure), chosen as a BREADTH-GATED law
+    /// (§102 rationale, not fake precision): a broadcaster call alone is HALF
+    /// the formation evidence (`live_broadcaster_weight = formation_level/2`),
+    /// and only genuine distinct-chatter breadth may complete it — at
+    /// `live_chatter_weight = 6`, roughly nine distinct non-echo chatters
+    /// inside the live window close the gap. Thin chat behind a broadcaster
+    /// call stays sub-formation; a raid of coordinated echoes counts zero
+    /// (echo-excluded breadth). The §29 fade-first cap still binds until money
+    /// confirms, so live attention can rank but never authorize.
     #[must_use]
     pub const fn standard() -> Self {
         Self {
@@ -91,8 +94,8 @@ impl AttentionParams {
             formation_level: 100,
             divergence_threshold: 0,
             age_step_fp: FP_ONE / 16,
-            live_chatter_weight: 1,
-            live_broadcaster_weight: 25,
+            live_chatter_weight: 6,
+            live_broadcaster_weight: 50,
         }
     }
 }

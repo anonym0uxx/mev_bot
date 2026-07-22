@@ -323,6 +323,15 @@ pub struct Config {
     /// thin sample returns is NOT confirmation (§6.4): the engine additionally
     /// requires the screen's minimum swap sample before consulting this bar.
     pub scale_confirm_auth_min_bp: u32,
+    /// §71 union-preservation quota: of `promote_k` promotion slots per tick,
+    /// reserve up to this many for the highest-ranked CORROBORATION-tier
+    /// candidates (non-numeric lanes) when raw rank would let the numeric lane
+    /// monopolize the board. Discovery is a union, not an intersection — a lane
+    /// that can never reach the gate is a lane that does not exist. Authority is
+    /// unchanged: corroboration candidates still face the full gate (fade-first
+    /// §29 — most reject without on-chain proof; promotion is cheap, entry
+    /// is not).
+    pub promote_corroboration_quota: usize,
     /// Minimum realized fills a lane must accumulate before its OWN realized
     /// per-trade return replaces the configured cold-start prior in conditional
     /// expectancy (§24 hierarchical partial pooling: below the gate the cell
@@ -450,6 +459,7 @@ impl Config {
             baseline_min_trades: 32,           // no small-n verdicts (§46)
 
             scale_confirm_auth_min_bp: 8_000, // evidence-backed authenticity bar
+            promote_corroboration_quota: 2,   // §71: 2 of 8 slots for non-numeric evidence
             expectancy_min_lane_trades: 8,    // §24 minimum-effective-sample gate
         }
     }
@@ -568,6 +578,7 @@ impl Config {
             "baseline_margin_lamports" => self.baseline_margin_lamports = value,
             "baseline_min_trades" => self.baseline_min_trades = bp(value)?,
             "scale_confirm_auth_min_bp" => self.scale_confirm_auth_min_bp = bp(value)?,
+            "promote_corroboration_quota" => self.promote_corroboration_quota = sz(value)?,
             "expectancy_min_lane_trades" => {
                 self.expectancy_min_lane_trades = bp(value)?.max(1);
             }

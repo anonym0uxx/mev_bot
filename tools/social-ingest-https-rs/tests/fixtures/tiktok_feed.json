@@ -1,0 +1,8 @@
+{"videos": [
+  {"id": "777001", "author": {"uniqueId": "memelord"}, "desc": "this $WIF coin is insane EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "hashtags": [{"name": "solana"}, {"name": "memecoin"}], "stats": {"diggCount": 12000, "shareCount": 800, "commentCount": 300}},
+  {"aweme_id": 888002, "author": {"nickname": "nickfallback"}, "description": "provider B shape $BONK", "challenges": ["pumpfun", "crypto"], "diggCount": 5, "shareCount": 1, "commentCount": 2},
+  {"id": "777001", "author": {"uniqueId": "memelord"}, "desc": "dup video seen again", "stats": {"diggCount": 1}}
+ ]}
+{"data": [
+  {"id": "999003", "authorName": "duetguy", "title": "duet reacting to $WIF", "isDuet": true, "stats": {"diggCount": 50, "shareCount": 1, "commentCount": 2}}
+ ]}

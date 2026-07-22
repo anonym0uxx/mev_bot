@@ -1,0 +1,3 @@
+# Build artifacts only — Cargo.lock and vendor/ ARE committed (offline,
+# reproducible, registry-free builds; see README "Vendored dependencies").
+/target

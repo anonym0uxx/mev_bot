@@ -279,11 +279,15 @@ fn decay_unseats_the_stale_squatter_and_earns() {
     let mut acfg = Config::dev_portable();
     acfg.promote_k = 1;
     acfg.watchlist_ttl_ticks = 12; // fast board turnover: rank reflects CURRENT evidence
+    // Isolate the DECAY law: the §71 corroboration quota (a separate law with
+    // its own A/B in golden_digest.rs) would rescue this tape in both arms.
+    acfg.promote_corroboration_quota = 0;
     let (armed, _) = drive_squatter(acfg);
 
     let mut ncfg = Config::dev_portable();
     ncfg.promote_k = 1;
     ncfg.watchlist_ttl_ticks = 12;
+    ncfg.promote_corroboration_quota = 0;
     ncfg.narrative_decay_bp = 10_000; // decay neutralized
     ncfg.narrative_decay_floor = 0;
     let (neut, _) = drive_squatter(ncfg);

@@ -84,6 +84,29 @@ FADE, and put the real weight on the upstream sources (Telegram, on-chain money)
 the *derivative* of distinct-originator mentions before the wave. Full write-up:
 project doc **SOCIAL INGESTION STRATEGY — polling playbook**.
 
+## Rust lanes are PRIMARY (twitch + twitterapi + tiktok + firecrawl)
+
+The capture edge now runs in Rust wherever that is feasible without heavy
+SDKs; the Python files in this folder stay as **reference + fallback** — the
+executable spec each Rust twin is byte-tested against, and the quick tool for
+probing a new vendor before a Rust port:
+
+| Lane | PRIMARY | Fallback / reference |
+|---|---|---|
+| Twitch chat | [`../social-ingest-rs`](../social-ingest-rs) `pq-twitch-capture` (zero deps, plain TCP) | — (no Python twin) |
+| X (twitterapi.io) | [`../social-ingest-https-rs`](../social-ingest-https-rs) `pq-social-capture twitterapi` | `twitterapi_stream.py` |
+| TikTok | `pq-social-capture tiktok` | `tiktok_stream.py` |
+| Firecrawl web | `pq-social-capture firecrawl` | `firecrawl_stream.py` |
+| **Telegram** | **`telegram_stream.py` (Python stays PRIMARY)** | — |
+
+Telegram stays Python by design: MTProto needs a heavy SDK (Telethon in
+Python; grammers + tokio in Rust), which violates the Rust lanes'
+minimal-dependency rule — and it is the one push-based lane, so the Rust
+rewrite would buy the least. It remains a measurement-gated future option.
+All lanes, either language, speak the identical NDJSON contract, so `run_all.py`
+fan-in and the probe work unchanged. Same env vars, same `sources.yaml`, same
+flags; the Rust lanes add `--replay <fixture>` for deterministic offline tests.
+
 ## Twitch (Rust lane)
 
 Twitch chat is the one social lane that needs no TLS (plain-TCP IRC, anonymous

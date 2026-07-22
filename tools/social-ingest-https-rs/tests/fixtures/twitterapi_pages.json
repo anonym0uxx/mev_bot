@@ -1,0 +1,11 @@
+{"tweets": [
+  {"id": 1946001111, "author": {"userName": "cryptoKOL"}, "text": "send it $WIF EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "likeCount": 420, "retweetCount": 69, "replyCount": 12, "isReply": false},
+  {"id": "1946002222", "author": {"userName": "echoAcct"}, "text": "RT $WIF to the moon 🚀", "likeCount": 2.9, "retweetCount": -3, "replyCount": null, "retweeted_tweet": {"id": "1946001111"}},
+  {"id": "1946003333", "author": {}, "text": "quote pumping \"hard\"", "likeCount": "7", "replyCount": 1, "quoted_tweet": {"id": "x"}}
+ ],
+ "has_next_page": true, "next_cursor": "pg2"}
+{"tweets": [
+  {"id": "1946002222", "author": {"userName": "echoAcct"}, "text": "RT $WIF to the moon 🚀", "likeCount": 3, "retweeted_tweet": {"id": "y"}},
+  {"id": "1946004444", "author": {"userName": "replyGuy"}, "text": "replying about $BONK", "isReply": true, "likeCount": 0, "retweetCount": 0, "replyCount": 0}
+ ],
+ "has_next_page": false, "next_cursor": ""}

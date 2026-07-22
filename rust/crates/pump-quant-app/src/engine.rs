@@ -1113,6 +1113,29 @@ impl Engine {
             );
         }
         let unioned = ingest_union(self.scratch.iter().copied(), &self.weights);
+        // §71 union preservation: the capacity-bounded board is rank-evicted, and
+        // numeric scores (~10^5) structurally evict the fade-capped (§29, ≤10^3)
+        // corroboration lanes at INSERTION — so collect the corroboration tier
+        // from the pre-insertion union here (lanes re-emit every tick while
+        // their evidence lives, so no extra state is needed).
+        let mut corrob: Vec<Candidate> = unioned
+            .values()
+            .filter(|c| c.lane != WlLane::ActiveMarketScalp)
+            .copied()
+            .collect();
+        // Gate-viability first (§18 promotion economy): an UNCONFIRMED
+        // corroboration candidate cannot clear the gate's on-chain-confirmation
+        // requirement — promoting it burns the quota slot on a guaranteed
+        // reject (research-visible via PRFS, but never an entry). Confirmed
+        // corroboration evidence — attention WITH money proof — takes the slot
+        // first; unconfirmed candidates fill only what remains.
+        corrob.sort_by(|a, b| {
+            let ca = self.confirmed.contains_key(&a.mint.bytes());
+            let cb = self.confirmed.contains_key(&b.mint.bytes());
+            cb.cmp(&ca)
+                .then_with(|| b.discovery_score.cmp(&a.discovery_score))
+                .then_with(|| a.mint.cmp(&b.mint))
+        });
         for cand in unioned.values() {
             // Corroboration-tier meta-rotation reweight: an on-chain-emerging
             // category raises its mints' rank, a saturating one fades them. Identity
@@ -1125,13 +1148,46 @@ impl Engine {
         // 2. Recency prune.
         self.watchlist.prune(self.now);
 
-        // 3. Promote the top-ranked survivors to the gate.
-        let promoted = promote_top(
+        // 3. Promote the top-ranked survivors to the gate — with the §71
+        // union-preservation quota: raw rank lets the numeric lane's scores
+        // (imbalance × liquidity × breadth, ~10^5) monopolize every slot over
+        // the fade-capped corroboration lanes (≤10^3 by §29 design), turning
+        // the union into a de-facto intersection. Reserve up to
+        // `promote_corroboration_quota` slots for the best non-numeric
+        // candidates by replacing the LOWEST-ranked numeric winners. Rank is
+        // not authority: these candidates still face the full gate.
+        let mut promoted = promote_top(
             &self.watchlist,
             self.now,
             self.cfg.promote_k,
             self.cfg.promote_min_rank,
         );
+        let quota = self.cfg.promote_corroboration_quota.min(self.cfg.promote_k);
+        if quota > 0 {
+            let have = promoted
+                .iter()
+                .filter(|c| c.lane != WlLane::ActiveMarketScalp)
+                .count();
+            if have < quota {
+                let mut extras: Vec<Candidate> = Vec::new();
+                for cand in &corrob {
+                    if extras.len() + have >= quota {
+                        break;
+                    }
+                    if cand.discovery_score > 0 && !promoted.iter().any(|p| p.mint == cand.mint) {
+                        extras.push(*cand);
+                    }
+                }
+                // Replace the lowest-ranked winners (the TAIL of the rank-
+                // ordered promote list) so the tick's gate workload stays at
+                // promote_k: drop the tail FIRST, then append the extras —
+                // popping per-push would evict the extras themselves.
+                if !extras.is_empty() {
+                    promoted.truncate(self.cfg.promote_k.saturating_sub(extras.len()));
+                    promoted.extend(extras);
+                }
+            }
+        }
 
         // 4-5. Gate every promotion, then allocate the scarce slots by CONDITIONAL
         // EXPECTED NET SOL (§23 arbitration — never promotion order), and open the

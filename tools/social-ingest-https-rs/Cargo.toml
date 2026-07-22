@@ -1,0 +1,31 @@
+[package]
+name = "pq-social-capture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "pq_social_capture"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pq-social-capture"
+path = "src/main.rs"
+
+# §67 removable adapter: ONE direct dependency. Every capture lane here needs
+# HTTPS, so unlike the plain-TCP Twitch lane (../social-ingest-rs, zero deps)
+# this binary carries exactly one crate: `ureq`, a small blocking HTTP client
+# with rustls TLS — no tokio, no serde, no hyper. JSON emission and parsing are
+# hand-rolled in the same audited style as social-ingest-rs/src/emit.rs.
+#
+# `default-features = false, features = ["tls"]` drops ureq's gzip lane
+# (flate2) — the APIs we poll return small JSON — keeping the tree minimal.
+# `proxy-from-env` (a zero-dependency feature) matches the Python twins:
+# `urllib.request` honors HTTPS_PROXY by default, so the Rust lane must too.
+#
+# NOTE: the crates.io registry is not reachable from the build environment this
+# lane was authored in (egress-blocked), so the full dependency tree is vendored
+# under ./vendor from the upstream GitHub release tags and pinned via
+# .cargo/config.toml source replacement. See README "Vendored dependencies".
+[dependencies]
+ureq = { version = "2.12.1", default-features = false, features = ["tls", "proxy-from-env"] }

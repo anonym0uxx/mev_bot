@@ -17,8 +17,8 @@ fn mint(tag: u64) -> Mint {
     Mint::from_bytes(b)
 }
 
-fn drive() -> pump_quant_app::engine::Report {
-    let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
+fn drive(cfg: Config) -> pump_quant_app::engine::Report {
+    let mut eng = Engine::new(cfg, RunMode::Replay);
     // 512 mints against a capacity-64 watchlist => heavy full-path eviction.
     // Extended (ledger-refinement batch) with three §21.5/§21.6/§29.6 cohorts —
     // see the cohort blocks after the wave below.
@@ -145,6 +145,59 @@ fn drive() -> pump_quant_app::engine::Report {
                 });
             }
         }
+        // ---- live-stream cohort: a coin WATCHED ON STREAM right now. Its
+        // on-chain flow is balanced (below the numeric-lane discovery bar), so
+        // WITHOUT the live-chat attention structure it is never discovered —
+        // the §29.6 opportunity shape the Twitch lane exists to catch.
+        let s_mult_bp: u64 = [10_000, 12_000, 15_000, 18_000, 20_000, 19_000][round as usize];
+        let st = mint(4_000);
+        let sbase = 1_000_000_000i128 * s_mult_bp as i128 / 10_000;
+        for i in 0..8u64 {
+            let selling = round == 5;
+            eng.tick(AppEvent::MarketTrade {
+                mint: st,
+                price_fp: sbase + (i as i128) * 500_000,
+                quote_lamports: 700_000,
+                liquidity_lamports: 500_000_000,
+                signed_base: if selling {
+                    -800_000
+                } else if i % 2 == 0 {
+                    500_000
+                } else {
+                    -480_000
+                },
+                buyer_entity: 400 + i % 7,
+                age_slots: 10,
+            });
+        }
+        if round == 0 {
+            eng.tick(AppEvent::OnchainConfirm {
+                mint: st,
+                sellable_depth_lamports: 500_000_000,
+            });
+        }
+        // The stream chat (deterministic batch per round): the broadcaster names
+        // ticker + mint, distinct chatters spam the ticker.
+        {
+            use pump_quant_ingest::social_source::{MockSocialSource, RawSocialPayload};
+            let mint_b58 = "BmoVsKix7SdPJwY9PRDsX3jDux3rr78RHEycUwWod4qM";
+            let ts0 = 1_000_000_000u64 + round * 60_000_000_000;
+            let mut batch = vec![RawSocialPayload::new(
+                format!("{{\"platform\":\"twitch\",\"author\":\"streamer\",\"community\":\"streamer\",\"text\":\"$LIVE {mint_b58} full send\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false}}").into_bytes(),
+                ts0,
+            )];
+            // The chat SNOWBALLS as the coin pumps (4, 8, 12, 16, ... distinct
+            // chatters per round): rising live attention = positive velocity.
+            let n_chat = (4 + round * 4).min(16);
+            for c in 0..n_chat {
+                batch.push(RawSocialPayload::new(
+                    format!("{{\"platform\":\"twitch\",\"author\":\"chat{c}\",\"community\":\"streamer\",\"text\":\"$LIVE lfg {c}\",\"likes\":0,\"reposts\":0,\"replies\":0,\"echo\":false}}").into_bytes(),
+                    ts0 + (c + 1) * 1_000_000,
+                ));
+            }
+            let mut src = MockSocialSource::new().with_batch(batch);
+            eng.ingest_social(&mut src);
+        }
         for _ in 0..12 {
             eng.tick(AppEvent::Tick);
         }
@@ -175,6 +228,19 @@ fn drive() -> pump_quant_app::engine::Report {
 // +8_785_954 (arc: 2_979_624 → 5_017_234 → 6_443_936 → 8_785_954). The per-law
 // causal deltas are pinned separately in `batch_e_laws.rs` A/B tests — each law
 // strictly out-earns its own absence on its hazard tape.
+// Re-pin #6 (Twitch/live-stream batch): the tape gained a live-stream cohort —
+// a coin whose on-chain flow sits BELOW the numeric discovery bar but which is
+// being watched on stream (broadcaster call + snowballing distinct chat, fed
+// through ingest_social with the capture lane's exact NDJSON) — and the §71
+// union-preservation quota landed: building the Twitch lane exposed that raw
+// rank let numeric scores (~10^5) monopolize every promotion slot over the
+// fade-capped (§29, ≤10^3) corroboration lanes, a de-facto intersection. With
+// 2 of 8 slots reserved for gate-viable corroboration evidence, the streamed
+// coin is discovered, admitted, and rides: net 8_785_954 → **12_550_767**
+// (arc: 2_979_624 → 5_017_234 → 6_443_936 → 8_785_954 → 12_550_767). The
+// quota's causal delta is pinned by `corroboration_quota_earns_on_this_tape`
+// below; the twitch-vs-x arms tie BY DESIGN (§29.8: no per-platform trust in
+// the quality path) — the Twitch-specific laws are pinned in attention/e2e.
 // Re-pin #5 (Phase-A alignment batch): SEED-ONLY re-pin — every decision-level
 // constant below is UNCHANGED (same promoted/admitted/rejected/net on the same
 // tape). The digest moved solely because the §19 config-identity seed gained
@@ -182,17 +248,17 @@ fn drive() -> pump_quant_app::engine::Report {
 // while the fail-open holes they close (neutral-prior scale-in, stale numeric
 // snapshots, unknown exit cost, uncross-checked confirm depth) were repaired
 // without changing any golden decision — the tape never exercised the holes.
-const GOLDEN_DIGEST: u64 = 322_429_513_361_490_336;
-const GOLDEN_NET_LAMPORTS: i128 = 8_785_954;
-const GOLDEN_PROMOTED: u64 = 432;
-const GOLDEN_ADMITTED: u64 = 15;
-const GOLDEN_REJECTED: u64 = 417;
+const GOLDEN_DIGEST: u64 = 16_905_668_354_419_895_265;
+const GOLDEN_NET_LAMPORTS: i128 = 12_550_767;
+const GOLDEN_PROMOTED: u64 = 504;
+const GOLDEN_ADMITTED: u64 = 17;
+const GOLDEN_REJECTED: u64 = 487;
 /// Zombie-cohort promotions the §21.5 screen must remove (visible activity).
-const GOLDEN_UNIVERSE_FILTERED: u64 = 144;
+const GOLDEN_UNIVERSE_FILTERED: u64 = 72;
 
 #[test]
 fn golden_digest_is_stable() {
-    let r = drive();
+    let r = drive(Config::dev_portable());
     // Print for inspection (`cargo test -- --nocapture`).
     println!(
         "GOLDEN ticks={} promoted={} admitted={} rejected={} net={} digest={} per_lane={:?} weights={:?}",
@@ -200,7 +266,7 @@ fn golden_digest_is_stable() {
         r.per_lane_net, r.final_weights
     );
     // Determinism: identical inputs reproduce the identical report.
-    let r2 = drive();
+    let r2 = drive(Config::dev_portable());
     assert_eq!(r, r2, "same events -> identical report");
     // Frozen golden outcome: optimizations must be behaviour-preserving.
     assert_eq!(
@@ -217,5 +283,22 @@ fn golden_digest_is_stable() {
     assert_eq!(
         r.universe_filtered, GOLDEN_UNIVERSE_FILTERED,
         "§21.5 screen activity drifted"
+    );
+}
+
+/// The §71 quota's causal lamports on THIS tape: identical events, quota 2 vs
+/// quota 0 (the pre-quota engine). The streamed coin is only reachable through
+/// the reserved corroboration slots, and it pays.
+#[test]
+fn corroboration_quota_earns_on_this_tape() {
+    let with_quota = drive(Config::dev_portable());
+    let mut cfg0 = Config::dev_portable();
+    cfg0.promote_corroboration_quota = 0;
+    let without = drive(cfg0);
+    assert!(
+        with_quota.net_lamports > without.net_lamports,
+        "the union-preservation quota must strictly out-earn its absence ({} vs {})",
+        with_quota.net_lamports,
+        without.net_lamports
     );
 }

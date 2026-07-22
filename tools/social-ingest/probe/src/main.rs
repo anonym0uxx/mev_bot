@@ -30,6 +30,7 @@ fn platform_name(p: SocialPlatform) -> &'static str {
         SocialPlatform::TikTok => "TikTok",
         SocialPlatform::Telegram => "Telegram",
         SocialPlatform::Web => "Web",
+        SocialPlatform::Twitch => "Twitch",
     }
 }
 
