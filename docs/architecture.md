@@ -1,234 +1,94 @@
-# pump-quant Architecture (v6 — Rust)
+# ARCHITECTURE — Hermes pump-quant bot (Phase-A laptop build, as shipped)
 
-> Last updated: 2026-03-29. TypeScript engine retired. Rust binary is sole runtime.
+Authoritative map of the Rust workspace as committed on `bot-build`. 22 crates, 45 dossiers,
+179 locked property tests, 1389 total tests, whole-workspace gate green (fmt · clippy
+`--all-targets -D warnings` · build · test · `materialize_tests.py --verify`). All outcome
+logic is integer/fixed-point and deterministic (§22); no floating point, wall-clock, RNG, or
+IO in any decision path. Live IO, real OS tuning, key signing, and fund movement are Phase-B
+(server) — see `docs/SERVER_BUILD_MANIFEST.md`.
 
----
+## The workspace (rust/crates), by role
 
-## System Overview
+### Data & determinism spine
+- **pump-quant-domain** — core value/identity types (Mint, Lamports, Slot, lifecycle state
+  machine, evidence stages). Dossier: `lifecycle`.
+- **pump-quant-clock** — the determinism seam: a `Clock` a live impl and a `ReplayClock` share,
+  plus deterministic tie-breaking. Dossier: `clock`.
+- **pump-quant-journal** — durable event journal: framing, checksums, manifest, recovery/replay
+  scan. Dossier: `manifest`.
+- **pump-quant-canonical** — provenance & dual-timeline canonicalization of observations.
+  Dossier: `types`.
+- **pump-quant-ingest** — portable ingest/decode plumbing (live socket is Phase-B).
+- **pump-quant-protocol** — pump.fun / PumpSwap AMM decode + constant-product math + instruction
+  build; account-discriminator **identity verification with fail-closed decode** and a
+  **versioned protocol registry**. Dossier: `decode`.
+- **pump-quant-market-state** — market regime, breadth, meta-rotation, creator-state reducers.
+  Dossier: `regime`.
+- **pump-quant-features** — point-in-time feature store: bars, microstructure (OFI/CVD/VWAP),
+  and the **§21.6 market-structure** family. Dossiers: `micro`, `market_structure`.
+- **pump-quant-wallet-graph** — smart-money classification, deployer credibility, funding/
+  family graphs, leakage-safe holdouts. Dossier: `smart_money`.
+- **pump-quant-core** — deterministic primitives: fixed-point AMM math, lock-free structures,
+  shred decode/FEC/reassemble/parity, the reducer world-state, replay parity, latency, the
+  **cpu_numa_tuning** planner (portable; OsTune Windows impl is Phase-B), and **memory_pressure**
+  load-shedding (MemorySampler seam is Phase-B). Dossiers: fixedpoint, lockfree, reducer,
+  replay, shred, cpu_numa_tuning, memory_pressure.
 
-```
-  External Sources                    pump-quant Rust Binary
-  ─────────────────                   ──────────────────────────────────────────
+### Decision & discovery
+- **pump-quant-signals** — entry/graduation/velocity/discount scorers, launch-coverage audit,
+  **ActiveMarketUniverse selector** (criterion 90), setup-family classifier, **§70.10 anti-bundle
+  fee-plausibility floor**. Dossiers: setup_classifier, active_market_universe, fee_plausibility.
+- **pump-quant-narrative** — attention-velocity layer: virality, meta-emergence, candidate score,
+  **10-class catalyst classifier**, **attention-decay** and **attention-state** models.
+  Dossiers: narrative, catalyst_classifier, attention_decay, attention_state.
+- **pump-quant-watchlist** — union-not-intersection candidate ranking, per-lane performance,
+  promotion. Dossier: `rank`.
+- **pump-quant-strategy** — the decision core: economic gate / size band, exit ladder, scalp
+  position, safety-integrity contracts, **survival-floor + deployable-capital derivation**,
+  **capital-derived probe/exposure sizing**, **§23 entry arbitration**, **setup-archetype** and
+  **risk-type** classifiers. Dossiers: economic_gate, exit_ladder, scalp_position,
+  safety_integrity, entry_arbitration, setup_archetype, risk_type.
+- **pump-quant-execution** — route policy, bundle assembly, sell-ladder escalation, circuit
+  breaker, fill reconciliation, incident gate (live send is Phase-B).
 
-  pump.fun chain ──── Helius WS ─────► feeds::helius        50ms avg latency
-                                        ↓ FeedEvent::Trade   PRIMARY TRIGGER
-  pump.fun WS ─────── PumpPortal ────► feeds::pumpportal    120ms avg latency
-                                        ↓ FeedEvent::Trade   STATE SYNC / DEDUP
-  Bitquery gQL ─────── CoreCast WS ──► feeds::corecast      80ms avg latency
-                      (4 subs,          ↓ FeedEvent::
-                       1 connection)       CreatorSell       signer match
-                                          Migration          Raydium graduation
-                                          LpRemoval          rug detection
-                                          NewToken           creator_map prewarm
+### Determinism / verification / research
+- **pump-quant-replay** — the §19 replay driver: max-speed / real-time / scaled / step-by-obs /
+  break-on modes, composing clock + journal parity. Dossier: `driver`.
+- **pump-quant-simulator** — paper/backtest fill engine (modes A/B/C), terminal-loss policy,
+  capacity, hazard estimation, calibration. Dossier: `hazard`.
+- **pump-quant-evaluator** — frozen evaluator: net-SOL reconciliation, MFE/MAE, top-k excision,
+  inactivity labelling, plus **log-utility sizing validation**, **entry-zone taxonomy**,
+  **Benjamini-Hochberg FDR**, **PBO/CSCV overfitting** diagnostics, the **§54 trading-metrics
+  suite** (CVaR/profit-factor/…), **per-trade edge decomposition**, and the **convexity
+  ledger**. Dossiers: evaluator_stats, sizing_validator, entry_zone, fdr, overfitting, metrics,
+  edge_decomposition, convexity_ledger.
 
-                                               │
-                                               ▼
-                                    ┌──────────────────────┐
-                                    │  engine::hot_path    │
-                                    │                      │
-                                    │  MintMap cache       │  Helius correlation
-                                    │  PreWarmMap          │  50ms pre-signal
-                                    │  creator_map         │  Arc<RwLock<HashMap>>
-                                    │  monotonic clock     │  no syscall/event
-                                    │  stack bs58 decode   │  no heap/event
-                                    └──────────┬───────────┘
-                                               │
-                                    ┌──────────▼───────────┐
-                                    │   Gate Stack         │
-                                    │                      │
-                                    │  1. TriggerSize      │
-                                    │  2. VsolRange        │
-                                    │  3. PreTriggerVol    │
-                                    │  4. BuyMomentum      │
-                                    │  5. SellPressure     │
-                                    │  6. VsolDelta        │
-                                    │  7. Concentration    │  adversarial wallets
-                                    │  8. TimeOfDay        │  blocked/boosted hrs
-                                    └──────────┬───────────┘
-                                               │
-                                    ┌──────────▼───────────┐
-                                    │   Scorer             │
-                                    │                      │
-                                    │  momentum * weight   │
-                                    │  + volume * weight   │
-                                    │  + curve * weight    │
-                                    │  * ToD multiplier    │
-                                    │  - concentration     │
-                                    │  + corecast bonus    │
-                                    └──────────┬───────────┘
-                                               │ score ≥ threshold
-                                    ┌──────────▼───────────┐
-                                    │  PositionManager     │
-                                    │                      │
-                                    │  open()              │  tiered sizing
-                                    │  tick() @ 50ms       │  momentum decay
-                                    │  force_close()       │  migration/rug
-                                    │  on_creator_sell()   │   30s TTL
-                                    │                      │
-                                    │  Safety:             │
-                                    │  daily_loss_cap      │
-                                    │  consec_sl_breaker   │  3 SL → 180s pause
-                                    │  min_hold_ms = 500   │
-                                    └──────────┬───────────┘
-                                               │
-                              ┌────────────────┴──────────────────┐
-                              │ PAPER_MODE=true                    │ PAPER_MODE=false
-                              ▼                                    ▼
-                   persistence::paper_logger            tx::executor
-                   mev_paper_trades.jsonl               BlockhashCache (30s TTL)
-                   camelCase TS-compatible              Jito bundle or direct RPC
-                   MFE/MAE/exitReason/fees              priority_fee_sol config
-```
+### Research / governance / memory / social
+- **pump-quant-governance** — parameter-envelope guards, source lifecycle, canonical hashing,
+  and the versioned **infrastructure manifest** structure. Dossier: `envelope`.
+- **pump-quant-memory** — experiment store, VOI ranking, sealed-experiment hashing, schema.
+  Dossier: `voi`.
+- **pump-quant-social** — social-source quality ledger, determinant scoring, amplification,
+  copy-echo detection. Dossier: `determinants`.
 
----
+### The nervous system (spine binary)
+- **pump-quant-app** — the continuous **discovery → gate → scalp → reflect** loop that composes
+  the crates under one deterministic logical clock: four union-not-intersection discovery lanes,
+  the corroboration gate (on-chain confirmation + numeric evidence required; social/narrative/
+  wallet never authorise alone), paper scalps through the simulator, reflection-enhances-discovery
+  weight adaptation, and a byte-deterministic decision journal. `RunMode` has no `Live` variant —
+  live capital is Tier-0 human-gated. Dossier: `config`.
 
-## Feed Timing Model
+## Build-integrity model
+Each dossier under `supervisor/reinforcement/dossiers/<component>.yaml` defines leaves whose
+`property_test` is materialized by `scripts/materialize_tests.py` into a SHA-locked
+`rust/crates/<crate>/tests/dossier_<component>_<leaf>.rs`. The builder implements *against* tests
+it cannot edit (`.claude/settings.json` denies edits; `--verify` re-hashes in CI). This is the
+"builder cannot grade its own homework" guarantee, now covering 45 components / 179 leaves.
 
-```
-  Token created on chain
-          │
-          │  ~5ms    ShredStream (future, pending Jito whitelist)
-          │  ~50ms   Helius logsSubscribe  ◄── PRIMARY TRIGGER
-          │  ~80ms   Bitquery CoreCast     ◄── creator sell / migration / rug
-          │  ~120ms  PumpPortal WebSocket  ◄── state sync + dedup
-          │
-          ▼
-  hot_path receives Helius event → checks MintMap → if pre-warmed → evaluate gates
-  If PumpPortal event arrives later for same mint → deduplicated, state synced
-```
-
-**Helius lead advantage:** 50ms avg pre-signal on 96.6% of events (966/1000 in first session).
-This means the engine evaluates gate conditions before PumpPortal confirms — faster entry on qualifying setups.
-
----
-
-## CoreCast Stream Map
-
-```
-  Bitquery WS Connection (1 connection = 4/5 stream cap used)
-  ├── Subscription id=1  DEXTrades (pump.fun program)
-  │     → parse signer → match creator_map → FeedEvent::CreatorSell
-  │
-  ├── Subscription id=2  DEXTrades (Raydium program 675kPX9...)
-  │     → token migrated to AMM → FeedEvent::Migration
-  │     → hot_path::on_migration() → force_close open position
-  │
-  ├── Subscription id=3  TokenSupplyUpdates
-  │     → PostBalance < PreBalance × 0.5 → LP burned → FeedEvent::LpRemoval
-  │     → hot_path::on_lp_removal() → force_close open position
-  │
-  └── Subscription id=4  Instructions (pump.fun create)
-        → new token launch → FeedEvent::NewToken
-        → pre-warms creator_map before PumpPortal fires
-```
-
----
-
-## Safety / Circuit Breakers
-
-```
-  Daily loss cap
-  ├── Paper: 5.0 SOL
-  └── Live:  0.18 SOL
-        → auto-pause trading for rest of UTC day on breach
-
-  Consecutive stop-loss circuit breaker
-  └── 3 consecutive SL exits → 180s trading pause
-        → auto-resume after cooldown
-        → logged + Telegram alert
-
-  Feed health monitor (HealthMonitor — AtomicU64 per feed)
-  └── Feed stale > 45s → auto-pause + Telegram alert
-        → resume on feed reconnect
-
-  Min hold before exit
-  └── 500ms minimum — prevents immediate flip-exit noise
-
-  Creator sell TTL
-  └── 30s — force-exit if creator sells within 30s of entry
-
-  Migration / LP removal
-  └── Immediate force-exit on Raydium graduation or LP burn
-```
-
----
-
-## Persistence Schema
-
-### JSONL — `data/mev_paper_trades.jsonl`
-```json
-{
-  "mint": "...",
-  "entryPriceLamports": 1000000,
-  "exitPriceLamports": 1050000,
-  "pnlSol": 0.00312,
-  "netPnlSol": 0.00198,
-  "feesSol": 0.000114,
-  "mfeSol": 0.00420,
-  "maeSol": -0.00050,
-  "exitReason": "take_profit",
-  "holdMs": 287,
-  "isPaper": true,
-  "triggerSource": "helius",
-  "preTriggerVolume5s": 3.2,
-  "entryTimestampMs": 1711670400000,
-  "exitTimestampMs": 1711670400287
-}
-```
-
-### SQLite — `data/pump-quant.db`
-Tables: `raw_events`, `token_state`, `feature_snapshots`, `candidate_packets`, `trade_intents`, `orders`, `positions`, `config_versions`, `replay_runs`, `health_events`, `learning_ledger`, `state_transitions`, `config_changes`
-
----
-
-## HTTP API — `:9421`
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/health` | GET | Feed status, staleness, trading_paused |
-| `/api/stats` | GET | trades_seen, gates_passed, WR, PnL, migrations_seen, lp_removals_seen, new_tokens_seen, creator_sells_seen |
-| `/api/control/pause` | POST | Pause trading |
-| `/api/control/resume` | POST | Resume trading |
-
----
-
-## Process Management
-
-```
-  ensure-single-daemon.sh   ← called at every startup path
-  ├── kills TS daemon (node dist/daemon) if somehow alive
-  ├── kills TS supervisor (run-daemon.sh)
-  ├── kills ALL pump-quant Rust processes
-  ├── kills run-rust-daemon.sh supervisor
-  ├── removes stale PID file
-  └── optionally starts fresh Rust daemon (--start flag)
-       writes PID to data/pump-quant.pid
-
-  Startup paths that call ensure-single-daemon.sh:
-  ├── scripts/run-rust-daemon.sh      (supervisor loop)
-  ├── scripts/cutover-to-rust.sh      (migration script)
-  ├── scripts/pump-quant-rust.service (systemd ExecStartPre)
-  └── HEARTBEAT.md restart command    (heartbeat crash recovery)
-```
-
----
-
-## Monitoring Flow (Heartbeat)
-
-```
-  Every heartbeat (OpenClaw cron):
-  1. PAPER_MODE=true node scripts/rust-status.js
-     ├── GET :9421/api/stats  (session + all-time PnL, WR, fees)
-     ├── GET :9421/api/health (feed staleness, trading_paused)
-     ├── parse data/mev_paper_trades.jsonl (trade history)
-     ├── parse data/heartbeat-trade-state.json (delta tracking)
-     └── emit structured report to Telegram
-
-  Report sections:
-  ├── Engine header (mode, uptime)
-  ├── Session P&L (WR, gross, net, exit breakdown, fee drag)
-  ├── Overall P&L (all-time)
-  ├── Feed & Latency (PumpPortal/Helius staleness, throughput, gate pass %)
-  ├── Stream Events (migrations, LP removals, new tokens, creator sells)
-  └── Alerts (feed down, WR critical, PnL breach, fee drag >5%)
-```
+## Phase boundary (what is intentionally NOT here)
+The 14 server-deferred criteria (Windows-native runtime, Helius LaserStream live socket, PGO /
+deploy-CPU pinning, the real `OsTune` and `MemorySampler` implementations, live-chain
+reconciliation, key signing / fund movement) are Phase-B. Each has its portable logic + a trait
+seam already built and tested here; the server implements the trait and satisfies the named
+locked test. See `docs/SERVER_BUILD_MANIFEST.md`.
