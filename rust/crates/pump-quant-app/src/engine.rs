@@ -22,12 +22,18 @@ use crate::reflect::reflect;
 use crate::scalp::scalp;
 
 use crate::attention::{AttentionField, AttentionParams};
+use crate::event::CreatorActionKind;
 use crate::social_earn::{SocialEarn, SocialEarnParams};
 use crate::social_ingest::{ledger_quality, to_mention, SourceQualityPolicy};
 use pump_quant_domain::ids::Mint as DomainMint;
 use pump_quant_evaluator::evaluator_stats::{Lane as EvalLane, ReconTrade};
 use pump_quant_ingest::social_parse::parse_social_event;
 use pump_quant_ingest::social_source::SocialSource;
+use pump_quant_market_state::creator::{CreatorEvent, CreatorState, CreatorStateReducer};
+use pump_quant_market_state::meta::{
+    rotation_between, CategoryEvent, CategoryEventKind, MetaRotationReducer, MetaRotationState,
+};
+use pump_quant_narrative::narrative::nv_meta_emergence;
 use pump_quant_social::ledger::SourceQualityLedger;
 use pump_quant_watchlist::candidate::{Candidate, Features, Lane as WlLane};
 use pump_quant_watchlist::lane_ingest::ingest_union;
@@ -80,6 +86,18 @@ const fn accum_index(lane: EvalLane) -> usize {
         EvalLane::Early => 1,
     }
 }
+
+/// Per-creator linked-cluster tracking bound (§99/§102). Small by design: a
+/// creator funding more than this many distinct sybil clusters is already
+/// maximally suspect, so the count saturates as a lower bound past here rather
+/// than growing an unbounded set.
+const CREATOR_LINKED_CLUSTER_CAP: usize = 64;
+
+/// Maximum size fade (bps of 10_000) that creator *distribution* alone may apply.
+/// A fully-distributed creator caps the haircut here — it can shrink size, never
+/// veto a trade the on-chain gate already admitted (§22 behavioral-risk clause:
+/// creator ownership is never an automatic binary reject).
+const MAX_CREATOR_FADE_BPS: u32 = 5_000;
 
 /// How the engine is allowed to act. The laptop build supports only paper and
 /// replay; live capital is a Tier-0 human-gated world this type cannot express, so
@@ -148,6 +166,26 @@ pub struct Engine {
     /// that supersedes the PUBLIC_BURNED baseline. Fed by the attributed social path.
     social_earn: SocialEarn,
 
+    /// On-chain **narrative-category** measures (launches / flow / creators /
+    /// graduations per category) — the factual `MetaRotationState` layer (§21.4).
+    /// Fed only by `TokenMetadata` (launches) and category-attributed `MarketTrade`
+    /// flow, so a run with no `TokenMetadata` leaves it empty and decision-neutral.
+    meta: MetaRotationReducer,
+    /// The previous category snapshot, for the reflection-cadence rotation diff.
+    meta_prev: Option<MetaRotationState>,
+    /// mint → its on-chain-assigned category id (forward-only, non-retroactive;
+    /// §81). Bounded (§99). Empty until `TokenMetadata` is ingested — its emptiness
+    /// is the O(1) fast-path guard that keeps the golden hot path byte-identical.
+    mint_category: BTreeMap<[u8; 32], u64>,
+    /// mint → its creator-state reducer (creator position / distribution). Bounded
+    /// (§99), fed only by `CreatorAction`. Empty until ingested.
+    creators: BTreeMap<[u8; 32], CreatorStateReducer>,
+    /// category id → signed discovery-rank adjustment (bps over a 10_000 base):
+    /// positive for an on-chain-emerging category, negative (fade) for a saturating
+    /// one. Recomputed at the reflection cadence; empty until categories rotate, so
+    /// discovery ranking is byte-identical for any run that never feeds meta.
+    category_rank_adj: BTreeMap<u64, i64>,
+
     /// Reused per-tick discovery scratch: the union of all four lanes' emissions.
     /// Cleared (not freed) each tick so steady-state discovery does not re-allocate
     /// (§99: its capacity is bounded by the number of tracked mints, which the lanes
@@ -166,6 +204,12 @@ impl Engine {
         let weights = LaneWeights::from_defaults();
         let params = RankParams::new(cfg.watchlist_ttl_ticks);
         let watchlist = WatchlistState::new(cfg.watchlist_capacity, params, weights);
+        // Build the meta reducer from config BEFORE `cfg` is moved into the struct.
+        let meta = MetaRotationReducer::new(
+            cfg.meta_taxonomy_version,
+            cfg.meta_max_categories,
+            cfg.meta_max_creators_per_cat,
+        );
         Self {
             cfg,
             mode,
@@ -185,6 +229,11 @@ impl Engine {
             ledger: SourceQualityLedger::with_capacity(4_096),
             quality_policy: SourceQualityPolicy::conservative(),
             social_earn: SocialEarn::new(SocialEarnParams::standard()),
+            meta,
+            meta_prev: None,
+            mint_category: BTreeMap::new(),
+            creators: BTreeMap::new(),
+            category_rank_adj: BTreeMap::new(),
             scratch: Vec::new(),
             promoted: 0,
             admitted: 0,
@@ -222,6 +271,16 @@ impl Engine {
                     age_slots,
                     self.now,
                 );
+                // On-chain-led category flow: a trade contributes to per-category
+                // MetaRotationState measures ONLY if its mint has a known (on-chain-
+                // assigned) category. Guarded by an O(1) `is_empty` check first, so a
+                // run that never ingests `TokenMetadata` pays a single branch and is
+                // byte-identical to one before this layer (the golden hot path).
+                // Unknown-category trades are NOT silently bucketed into UNCLASSIFIED
+                // (§6.4 UNKNOWN discipline).
+                if !self.mint_category.is_empty() {
+                    self.route_category_flow(*mint.as_bytes(), signed_base);
+                }
             }
             AppEvent::NarrativeSample {
                 mint,
@@ -241,8 +300,131 @@ impl Engine {
                 mint,
                 sellable_depth_lamports,
             } => self.confirm(*mint.as_bytes(), sellable_depth_lamports),
+            AppEvent::TokenMetadata {
+                mint,
+                category_id,
+                taxonomy_version,
+                creator,
+                slot,
+            } => self.observe_token_metadata(
+                *mint.as_bytes(),
+                category_id,
+                taxonomy_version,
+                creator,
+                slot,
+            ),
+            AppEvent::CreatorAction { mint, kind, slot } => {
+                self.observe_creator_action(*mint.as_bytes(), kind, slot)
+            }
             AppEvent::Tick => self.evaluate(),
         }
+    }
+
+    /// Attribute one decoded trade's signed base flow to its category's on-chain
+    /// measures (a `Buy` if net-buy, else a `Sell`). Called only for mints with a
+    /// known category. `|signed_base|` is the base-volume proxy for quote flow, and
+    /// the logical tick is the time-safe slot. Off the golden path (§21.4).
+    fn route_category_flow(&mut self, mint: [u8; 32], signed_base: i64) {
+        let Some(&cat) = self.mint_category.get(&mint) else {
+            return;
+        };
+        let quote_lamports = signed_base.unsigned_abs();
+        let kind = if signed_base >= 0 {
+            CategoryEventKind::Buy { quote_lamports }
+        } else {
+            CategoryEventKind::Sell { quote_lamports }
+        };
+        self.meta.ingest(&CategoryEvent {
+            category_id: cat,
+            kind,
+            slot: self.now,
+        });
+    }
+
+    /// Record an on-chain-led category assignment for a market (§21.4, §85). The
+    /// launch is counted once, at first sighting, and only when the assignment's
+    /// taxonomy version matches the reducer's — a mismatch is left UNKNOWN, never
+    /// retroactively remapped (§81). The mint→category map always takes the latest
+    /// assignment (forward-only) and is bounded (§99).
+    fn observe_token_metadata(
+        &mut self,
+        mint: [u8; 32],
+        category_id: u64,
+        taxonomy_version: u32,
+        creator: u64,
+        slot: u64,
+    ) {
+        let first_sighting = !self.mint_category.contains_key(&mint);
+        // Bounded (§99): evict the lexicographically-smallest tracked mint when the
+        // map is full (deterministic; matches the confirmed-set bound multiple).
+        let cap = self
+            .cfg
+            .watchlist_capacity
+            .saturating_mul(self.cfg.confirmed_capacity_mult)
+            .max(1);
+        if first_sighting && self.mint_category.len() >= cap {
+            if let Some(&victim) = self.mint_category.keys().next() {
+                self.mint_category.remove(&victim);
+            }
+        }
+        self.mint_category.insert(mint, category_id);
+        // Count the launch once, iff the taxonomy matches (on-chain-led factual
+        // state may only be populated by a matching-version assignment, §85).
+        if first_sighting && taxonomy_version == self.cfg.meta_taxonomy_version {
+            self.meta.ingest(&CategoryEvent {
+                category_id,
+                kind: CategoryEventKind::Launch { creator },
+                slot,
+            });
+        }
+    }
+
+    /// Fold one creator-attributed action into the market's `CreatorState` reducer,
+    /// creating it on first sighting. Bounded (§99): a new market beyond
+    /// `creator_track_cap` evicts the lexicographically-smallest tracked market.
+    fn observe_creator_action(&mut self, mint: [u8; 32], kind: CreatorActionKind, slot: u64) {
+        let cap = self.cfg.creator_track_cap.max(1);
+        if !self.creators.contains_key(&mint) && self.creators.len() >= cap {
+            if let Some(&victim) = self.creators.keys().next() {
+                self.creators.remove(&victim);
+            }
+        }
+        let reducer = self
+            .creators
+            .entry(mint)
+            .or_insert_with(|| CreatorStateReducer::new(CREATOR_LINKED_CLUSTER_CAP));
+        let ev = match kind {
+            CreatorActionKind::Init {
+                initial_tokens,
+                total_supply,
+            } => CreatorEvent::Init {
+                initial_tokens,
+                total_supply,
+                slot,
+            },
+            CreatorActionKind::Buy {
+                tokens,
+                quote_lamports,
+            } => CreatorEvent::Buy {
+                tokens,
+                quote_lamports,
+                slot,
+            },
+            CreatorActionKind::Sell {
+                tokens,
+                quote_lamports,
+            } => CreatorEvent::Sell {
+                tokens,
+                quote_lamports,
+                slot,
+            },
+            CreatorActionKind::LinkedBuy { cluster, tokens } => CreatorEvent::LinkedBuy {
+                cluster,
+                tokens,
+                slot,
+            },
+        };
+        reducer.ingest(&ev);
     }
 
     /// Drain one batch from a live social [`SocialSource`] and apply it to the
@@ -354,7 +536,12 @@ impl Engine {
         }
         let unioned = ingest_union(self.scratch.iter().copied(), &self.weights);
         for cand in unioned.values() {
-            self.watchlist.insert(*cand, self.now);
+            // Corroboration-tier meta-rotation reweight: an on-chain-emerging
+            // category raises its mints' rank, a saturating one fades them. Identity
+            // (byte-for-byte) until categories rotate, so the golden path is
+            // unchanged; reorders promotion only — never authorizes entry (§29/§71).
+            let adjusted = self.apply_meta_rank(*cand);
+            self.watchlist.insert(adjusted, self.now);
         }
 
         // 2. Recency prune.
@@ -404,11 +591,17 @@ impl Engine {
             GateDecision::Admit(band) => {
                 self.admitted += 1;
                 let depth = confirmation.map(|c| c.sellable_depth_lamports).unwrap_or(0);
+                // Corroboration-tier size haircut from creator distribution +
+                // category saturation. 10_000 (identity) until either is fed, so the
+                // admitted size — and the journal it feeds — is byte-identical on the
+                // golden path. Only ever reduces size, never vetoes (§22).
+                let size_mult_bps = self.size_haircut_bps(&mint_bytes);
                 let result = scalp(
                     cand.lane,
                     &band,
                     self.cfg.gate_expected_move_bps,
                     depth,
+                    size_mult_bps,
                     &self.cfg,
                 );
                 self.journal.record(Decision::Admitted {
@@ -447,6 +640,10 @@ impl Engine {
         // §29.9 reflection cadence). Off the hot path; a no-op until social calls
         // have been attributed to realized markets.
         self.social_earn.reconcile();
+        // Recompute the category rank/size adjustments from the on-chain rotation
+        // since the last reflection (strengthened, never created, by attention
+        // breadth). Off the hot path; a no-op until categories have been fed.
+        self.update_meta_rotation();
         let deltas = reflect(&self.lane_perf, &mut self.weights, &self.cfg);
         for d in &deltas {
             if d.before_bp != d.after_bp {
@@ -518,6 +715,153 @@ impl Engine {
     #[must_use]
     pub fn earned_source_quality(&self, source_id: u64) -> Option<u32> {
         self.social_earn.quality_bps_for(source_id)
+    }
+
+    /// Apply the corroboration-tier meta-rotation rank adjustment to a candidate:
+    /// an on-chain-emerging category multiplicatively *raises* its mints' discovery
+    /// score (bounded by `meta_rank_bonus_bp`), a saturating category *fades* them
+    /// (bounded by `meta_saturation_haircut_bp`). Returns the candidate **unchanged**
+    /// whenever its mint has no known category or its category is not rotating —
+    /// which is always true for a run that never ingests `TokenMetadata`, so the
+    /// discovery ranking is byte-identical (the golden acceptance gate). Reorders
+    /// promotion only; the gate still requires on-chain confirmation (§29/§71, §85).
+    fn apply_meta_rank(&self, mut cand: Candidate) -> Candidate {
+        let Some(&cat) = self.mint_category.get(&cand.mint.bytes()) else {
+            return cand;
+        };
+        let Some(&adj_bps) = self.category_rank_adj.get(&cat) else {
+            return cand;
+        };
+        // Multiplicative over a 10_000 base; clamped ≥ 0 so a haircut can zero a
+        // score but never invert it. u128 intermediate (§22 explicit overflow).
+        let factor = (10_000i64 + adj_bps).max(0) as u128;
+        cand.discovery_score = (u128::from(cand.discovery_score) * factor / 10_000) as u64;
+        cand
+    }
+
+    /// Recompute the per-category discovery-rank/size adjustments from the on-chain
+    /// `MetaRotationState` diff since the last reflection, **strengthened but never
+    /// created** by attention-breadth meta-emergence (on-chain-led, §85). Off the
+    /// hot path (§29.9). A no-op that leaves `category_rank_adj` empty until
+    /// categories have actually been fed and rotated — so a run without
+    /// `TokenMetadata` never adjusts a score or a size (golden-safe).
+    fn update_meta_rotation(&mut self) {
+        let snap = self.meta.snapshot();
+        if let Some(prev) = &self.meta_prev {
+            let rotations = rotation_between(prev, &snap, self.cfg.meta_min_share_bps);
+            self.category_rank_adj.clear();
+            for r in &rotations {
+                if r.emerging {
+                    // On-chain emergence is the primary signal; attention breadth
+                    // confirming it earns the full bonus, on-chain alone earns half
+                    // (real, but weaker conviction — §29.7c corroboration).
+                    let full = i64::from(self.cfg.meta_rank_bonus_bp);
+                    let bonus = if self.category_attention_emerging(r.category_id) {
+                        full
+                    } else {
+                        full / 2
+                    };
+                    if bonus != 0 {
+                        self.category_rank_adj.insert(r.category_id, bonus);
+                    }
+                } else if r.saturating {
+                    let haircut = i64::from(self.cfg.meta_saturation_haircut_bp);
+                    if haircut != 0 {
+                        self.category_rank_adj.insert(r.category_id, -haircut);
+                    }
+                }
+            }
+        }
+        self.meta_prev = Some(snap);
+    }
+
+    /// Whether the attention field shows accelerating *breadth* across a category's
+    /// mints — the [`nv_meta_emergence`] breadth test over the read-only attention
+    /// velocities of every mint currently assigned to `category_id`. Read-only and
+    /// on-chain-led: this only ever *strengthens* an on-chain rotation, it never
+    /// creates one. `false` when the attention field is empty or the category has no
+    /// tracked mints.
+    fn category_attention_emerging(&self, category_id: u64) -> bool {
+        if self.attention.is_empty() {
+            return false;
+        }
+        let mut velocities: Vec<i64> = Vec::new();
+        for (mint, &cat) in &self.mint_category {
+            if cat == category_id {
+                if let Some(v) = self.attention.velocity_of(mint) {
+                    velocities.push(v);
+                }
+            }
+        }
+        if velocities.is_empty() {
+            return false;
+        }
+        nv_meta_emergence(
+            &velocities,
+            self.cfg.meta_accel_threshold,
+            self.cfg.meta_min_breadth,
+        )
+        .emerging
+    }
+
+    /// The corroboration-tier size multiplier (bps of 10_000, always ≤ 10_000) for
+    /// an admitted market: a graded haircut composed from creator distribution (the
+    /// creator has sold more than `creator_fade_sold_bps` of peak) and category
+    /// saturation. Returns 10_000 (identity) when nothing is known about the market
+    /// — so a run without creator or category data sizes exactly as before (golden-
+    /// safe). NEVER zero-on-known-risk as a veto: creator fade is capped at
+    /// `MAX_CREATOR_FADE_BPS` (§22 behavioral-risk clause).
+    fn size_haircut_bps(&self, mint: &[u8; 32]) -> u32 {
+        let mut mult: u64 = 10_000;
+        // (1) Creator-distribution fade: once the creator has sold more than the
+        // configured fraction of peak, fade size linearly with the excess, capped.
+        if let Some(reducer) = self.creators.get(mint) {
+            if let Some(sold) = reducer.snapshot().sold_fraction_of_peak_bps {
+                if sold > self.cfg.creator_fade_sold_bps {
+                    let excess = sold - self.cfg.creator_fade_sold_bps;
+                    let span = 10_000u64
+                        .saturating_sub(self.cfg.creator_fade_sold_bps)
+                        .max(1);
+                    let fade =
+                        u64::from(MAX_CREATOR_FADE_BPS).saturating_mul(excess.min(span)) / span;
+                    mult = mult.saturating_sub(fade);
+                }
+            }
+        }
+        // (2) Category-saturation fade: reuse the negative discovery adjustment a
+        // saturating category already carries (single source of truth), applied
+        // proportionally to whatever size (1) left.
+        if let Some(&cat) = self.mint_category.get(mint) {
+            if let Some(&adj) = self.category_rank_adj.get(&cat) {
+                if adj < 0 {
+                    let hair = (adj.unsigned_abs()).min(10_000);
+                    mult = mult.saturating_sub(mult.saturating_mul(hair) / 10_000);
+                }
+            }
+        }
+        mult.min(10_000) as u32
+    }
+
+    /// The current on-chain `MetaRotationState` snapshot — per-category launches,
+    /// flow, creators and graduations (research-plane telemetry seam, §21.4).
+    #[must_use]
+    pub fn meta_snapshot(&self) -> MetaRotationState {
+        self.meta.snapshot()
+    }
+
+    /// The creator-state snapshot for a market, if the creator lane has seen it
+    /// (position, distribution, sold-fraction-of-peak). Telemetry seam.
+    #[must_use]
+    pub fn creator_state(&self, mint: &[u8; 32]) -> Option<CreatorState> {
+        self.creators.get(mint).map(|r| r.snapshot())
+    }
+
+    /// The current signed discovery-rank adjustment (bps over a 10_000 base) for a
+    /// category, if it is rotating: positive = emerging, negative = saturating.
+    /// `None` when the category is not currently rotating. Telemetry seam.
+    #[must_use]
+    pub fn category_rank_adjustment(&self, category_id: u64) -> Option<i64> {
+        self.category_rank_adj.get(&category_id).copied()
     }
 }
 

@@ -106,6 +106,37 @@ pub struct Config {
     /// Impact `k` (bps) for the simulator's constant-product impact model.
     pub sim_impact_k_bps: u32,
 
+    // ---- meta-rotation / creator-state (corroboration-tier) ----
+    /// Taxonomy version the meta-rotation reducer stamps on its snapshots, and the
+    /// version an incoming `TokenMetadata` must match to be merged into factual
+    /// state (a mismatch is flagged UNKNOWN, never retroactively remapped — §81).
+    pub meta_taxonomy_version: u32,
+    /// Max distinct narrative categories tracked before overflow completeness (§99).
+    pub meta_max_categories: usize,
+    /// Max distinct creators retained per category (§99).
+    pub meta_max_creators_per_cat: usize,
+    /// Max distinct markets whose creator state is tracked before weakest-evict (§99).
+    pub creator_track_cap: usize,
+    /// Minimum launch share (bps) a category must hold before it is eligible for the
+    /// saturation classification in `rotation_between` (§102, no silent magic).
+    pub meta_min_share_bps: u64,
+    /// Per-token attention-velocity threshold above which a token counts as
+    /// *accelerating* for category meta-emergence breadth (§21.4).
+    pub meta_accel_threshold: i64,
+    /// Minimum count of accelerating tokens for a category to be attention-emergent
+    /// (breadth, never a single token — §29.7c).
+    pub meta_min_breadth: u32,
+    /// Max multiplicative discovery-rank bonus (bps over a 10_000 base) an on-chain-
+    /// emerging category grants its mints. Corroboration-tier: reorders promotion
+    /// only; the gate still requires on-chain confirmation (§29/§71).
+    pub meta_rank_bonus_bp: u32,
+    /// Max multiplicative discovery-rank haircut (bps) a saturating category applies
+    /// to its mints (fade-first). Bounded at 100% by `validate`.
+    pub meta_saturation_haircut_bp: u32,
+    /// Creator sold-fraction-of-peak (bps) above which a *graded* size haircut
+    /// begins. Never a binary reject (§22 behavioral-risk clause). Bounded ≤100%.
+    pub creator_fade_sold_bps: u64,
+
     // ---- reflection / adaptation ----
     /// Cadence, in ticks, at which the reflection pass runs (net-SOL → weights).
     pub reflect_every_ticks: u64,
@@ -152,6 +183,17 @@ impl Config {
             exit_tip_lamports: 10_000,
             sim_impact_k_bps: 50,
 
+            meta_taxonomy_version: 0, // matches meta::TAXONOMY_V0
+            meta_max_categories: 64,
+            meta_max_creators_per_cat: 256,
+            creator_track_cap: 4_096,          // matches the lane track cap
+            meta_min_share_bps: 1_000,         // ≥10% launch share to count as "meaningful"
+            meta_accel_threshold: 0, // any strictly-positive attention velocity accelerates
+            meta_min_breadth: 3,     // ≥3 accelerating tokens = category breadth
+            meta_rank_bonus_bp: 2_000, // up to +20% rank for an emerging category
+            meta_saturation_haircut_bp: 2_000, // up to −20% rank for a saturating one
+            creator_fade_sold_bps: 5_000, // fade size once creator has sold >50% of peak
+
             reflect_every_ticks: 50,
             reflect_weight_step_bp: 250,
             reflect_weight_floor_bp: 2_000,
@@ -195,6 +237,16 @@ impl Config {
             "entry_tip_lamports" => self.entry_tip_lamports = nonneg(value)?,
             "exit_tip_lamports" => self.exit_tip_lamports = nonneg(value)?,
             "sim_impact_k_bps" => self.sim_impact_k_bps = bp(value)?,
+            "meta_taxonomy_version" => self.meta_taxonomy_version = bp(value)?,
+            "meta_max_categories" => self.meta_max_categories = sz(value)?.max(1),
+            "meta_max_creators_per_cat" => self.meta_max_creators_per_cat = sz(value)?.max(1),
+            "creator_track_cap" => self.creator_track_cap = sz(value)?.max(1),
+            "meta_min_share_bps" => self.meta_min_share_bps = nonneg(value)?,
+            "meta_accel_threshold" => self.meta_accel_threshold = value,
+            "meta_min_breadth" => self.meta_min_breadth = bp(value)?,
+            "meta_rank_bonus_bp" => self.meta_rank_bonus_bp = bp(value)?,
+            "meta_saturation_haircut_bp" => self.meta_saturation_haircut_bp = bp(value)?,
+            "creator_fade_sold_bps" => self.creator_fade_sold_bps = nonneg(value)?,
             "reflect_every_ticks" => self.reflect_every_ticks = nonneg(value)?.max(1),
             "reflect_weight_step_bp" => self.reflect_weight_step_bp = bp(value)?,
             "reflect_weight_floor_bp" => self.reflect_weight_floor_bp = bp(value)?,
@@ -250,6 +302,18 @@ impl Config {
         if self.watchlist_capacity == 0 {
             return Err(ConfigError::Inconsistent(
                 "watchlist_capacity must be positive",
+            ));
+        }
+        // A rank/size haircut can never remove more than the whole score/size (100%).
+        if self.meta_saturation_haircut_bp > 10_000 {
+            return Err(ConfigError::Inconsistent(
+                "meta_saturation_haircut_bp exceeds 100%",
+            ));
+        }
+        // The creator-fade trigger is a fraction of peak sold, so it lives in [0,100%].
+        if self.creator_fade_sold_bps > 10_000 {
+            return Err(ConfigError::Inconsistent(
+                "creator_fade_sold_bps exceeds 100%",
             ));
         }
         Ok(())

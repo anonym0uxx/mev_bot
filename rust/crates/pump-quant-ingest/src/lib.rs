@@ -34,3 +34,4 @@ pub mod social_parse;
 pub mod social_source;
 pub mod source_registry;
 pub mod submission_surface;
+pub mod token_metadata_parse;

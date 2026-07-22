@@ -3,7 +3,7 @@
 
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, RunMode};
-use pump_quant_app::event::AppEvent;
+use pump_quant_app::event::{AppEvent, CreatorActionKind};
 use pump_quant_domain::ids::Mint as DomainMint;
 
 fn mint(tag: u8) -> DomainMint {
@@ -221,5 +221,198 @@ fn social_source_earns_quality_from_realized_outcomes() {
     assert!(
         eng.earned_source_quality(source_id).is_some(),
         "a source whose called market realized an outcome earns a reconciled grade"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// MetaRotationState + CreatorState wiring (corroboration-tier, on-chain-led).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn token_metadata_and_creator_action_alone_never_admit() {
+    // Category assignment + creator activity are corroboration-tier: on their own,
+    // with no numeric flow and no on-chain confirmation, they can never authorise
+    // capital (§29/§71). They still feed the factual layer.
+    let mut e = Engine::new(Config::dev_portable(), RunMode::Paper);
+    let m = mint(0x51);
+    e.tick(AppEvent::TokenMetadata {
+        mint: m,
+        category_id: 1,
+        taxonomy_version: 0,
+        creator: 7,
+        slot: 1,
+    });
+    e.tick(AppEvent::CreatorAction {
+        mint: m,
+        kind: CreatorActionKind::Init {
+            initial_tokens: 1_000,
+            total_supply: 10_000,
+        },
+        slot: 1,
+    });
+    e.tick(AppEvent::CreatorAction {
+        mint: m,
+        kind: CreatorActionKind::Buy {
+            tokens: 200,
+            quote_lamports: 5_000,
+        },
+        slot: 2,
+    });
+    for _ in 0..8 {
+        e.tick(AppEvent::Tick);
+    }
+    let r = e.report();
+    assert_eq!(
+        r.admitted, 0,
+        "category + creator evidence never self-authorizes capital"
+    );
+    // But the factual/creator layers ARE live (not a dead reducer).
+    assert!(
+        e.meta_snapshot().total_launches >= 1,
+        "TokenMetadata fed the factual category layer (launch counted)"
+    );
+    assert!(
+        e.creator_state(m.as_bytes()).is_some(),
+        "CreatorAction fed the creator-state reducer"
+    );
+}
+
+#[test]
+fn creator_distribution_fades_size_but_never_vetoes() {
+    // Same admissible numeric+confirm scenario, run with and without a creator who
+    // distributes (sells >50% of peak). The distributing run must still ADMIT
+    // (never a binary reject, §22) but deploy a smaller size → a different, smaller
+    // realized outcome.
+    let run = |with_creator_dump: bool| -> pump_quant_app::engine::Report {
+        // A *wide* viability band (low fixed cost) so `x_min << x_cost` and the
+        // graded haircut has room to reduce size within the band. With the default
+        // fixed cost the band collapses to a single point (x_min == x_cost) and any
+        // corroboration-tier haircut is correctly a no-op (never sizes below viable).
+        let mut cfg = Config::dev_portable();
+        cfg.gate_base_fixed_lamports = 1_000;
+        let mut e = Engine::new(cfg, RunMode::Paper);
+        let m = mint(0x62);
+        if with_creator_dump {
+            e.tick(AppEvent::CreatorAction {
+                mint: m,
+                kind: CreatorActionKind::Init {
+                    initial_tokens: 1_000_000,
+                    total_supply: 10_000_000,
+                },
+                slot: 1,
+            });
+            e.tick(AppEvent::CreatorAction {
+                mint: m,
+                kind: CreatorActionKind::Sell {
+                    tokens: 900_000, // 90% of peak → past the 50% fade trigger
+                    quote_lamports: 1_000_000,
+                },
+                slot: 2,
+            });
+        }
+        for i in 0..5 {
+            e.tick(AppEvent::MarketTrade {
+                mint: m,
+                liquidity_lamports: 100_000_000,
+                signed_base: 1_000_000,
+                buyer_entity: i,
+                age_slots: 30,
+            });
+        }
+        e.tick(AppEvent::OnchainConfirm {
+            mint: m,
+            sellable_depth_lamports: 200_000_000,
+        });
+        for _ in 0..6 {
+            e.tick(AppEvent::Tick);
+        }
+        e.report()
+    };
+    let baseline = run(false);
+    let faded = run(true);
+    assert!(baseline.admitted >= 1, "baseline market is admissible");
+    assert_eq!(
+        faded.admitted, baseline.admitted,
+        "creator distribution fades size, never vetoes the admit (§22 behavioral-risk)"
+    );
+    assert_ne!(
+        faded.journal_digest, baseline.journal_digest,
+        "the size haircut changed the realized decision (the wiring is live)"
+    );
+    assert!(
+        faded.net_lamports < baseline.net_lamports,
+        "a distributing creator earns a smaller deployed size → smaller realized net"
+    );
+}
+
+#[test]
+fn fed_meta_path_is_live_and_deterministic() {
+    let drive = || -> pump_quant_app::engine::Report {
+        let mut e = Engine::new(Config::dev_portable(), RunMode::Replay);
+        for tag in [0x71u8, 0x72, 0x73] {
+            e.tick(AppEvent::TokenMetadata {
+                mint: mint(tag),
+                category_id: 1,
+                taxonomy_version: 0,
+                creator: u64::from(tag),
+                slot: 1,
+            });
+        }
+        for round in 0..4u64 {
+            for tag in [0x71u8, 0x72, 0x73] {
+                let m = mint(tag);
+                for i in 0..4u64 {
+                    e.tick(AppEvent::MarketTrade {
+                        mint: m,
+                        liquidity_lamports: 80_000_000,
+                        signed_base: 2_000_000,
+                        buyer_entity: (i + round) % 7,
+                        age_slots: 20,
+                    });
+                }
+                e.tick(AppEvent::OnchainConfirm {
+                    mint: m,
+                    sellable_depth_lamports: 150_000_000,
+                });
+            }
+            for _ in 0..60 {
+                e.tick(AppEvent::Tick); // cross the reflection cadence (50) each round
+            }
+        }
+        e.report()
+    };
+    let r1 = drive();
+    let r2 = drive();
+    assert_eq!(r1, r2, "the fed meta/creator path is byte-deterministic");
+
+    // Inspect the factual layer directly: launches + category-attributed flow.
+    let mut e = Engine::new(Config::dev_portable(), RunMode::Replay);
+    for tag in [0x71u8, 0x72, 0x73] {
+        let m = mint(tag);
+        e.tick(AppEvent::TokenMetadata {
+            mint: m,
+            category_id: 1,
+            taxonomy_version: 0,
+            creator: u64::from(tag),
+            slot: 1,
+        });
+        for i in 0..4u64 {
+            e.tick(AppEvent::MarketTrade {
+                mint: m,
+                liquidity_lamports: 80_000_000,
+                signed_base: 2_000_000,
+                buyer_entity: i,
+                age_slots: 20,
+            });
+        }
+    }
+    let snap = e.meta_snapshot();
+    assert_eq!(snap.total_launches, 3, "three category-1 launches recorded");
+    let cat1 = snap
+        .category(1)
+        .expect("category 1 present in the snapshot");
+    assert!(
+        cat1.buy_quote > 0,
+        "category flow accumulated from the attributed on-chain trades"
     );
 }

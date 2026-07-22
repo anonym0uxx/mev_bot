@@ -17,6 +17,7 @@ pump-quant-domain = { path = "../pump-quant-domain" }
 pump-quant-ingest = { path = "../pump-quant-ingest" }
 pump-quant-watchlist = { path = "../pump-quant-watchlist" }
 pump-quant-narrative = { path = "../pump-quant-narrative" }
+pump-quant-market-state = { path = "../pump-quant-market-state" }
 pump-quant-social = { path = "../pump-quant-social" }
 pump-quant-strategy = { path = "../pump-quant-strategy" }
 pump-quant-simulator = { path = "../pump-quant-simulator" }

@@ -139,6 +139,30 @@ impl AttentionField {
         self.obs.len()
     }
 
+    /// The current attention *velocity* (engagement velocity) for a mint, if the
+    /// field is tracking it — a **non-mutating** read used by the category
+    /// meta-emergence aggregation ([`pump_quant_narrative::narrative::nv_meta_emergence`]).
+    ///
+    /// Recomputes [`nv_attention_state`] over the stored mentions and existing level
+    /// series **without appending a new sample**, so it never perturbs the
+    /// deterministic [`Self::emit_into`] path or the per-mint state. `None` for an
+    /// untracked mint (UNKNOWN, §6.4). Deterministic: a pure function of the stored
+    /// series and each mint's measured `latest_ns` — no clock (§22).
+    #[must_use]
+    pub fn velocity_of(&self, mint: &[u8; 32]) -> Option<i64> {
+        let a = self.obs.get(mint)?;
+        let state = nv_attention_state(
+            &a.mentions,
+            a.latest_ns,
+            self.params.window_1m_ns,
+            self.params.window_5m_ns,
+            &a.levels,
+            self.params.series_window,
+            self.params.freshness_full_ns,
+        );
+        Some(state.engagement_velocity)
+    }
+
     /// Record one narrative [`Mention`] against a mint (from the social pipeline).
     ///
     /// Bounded (§99): a new mint beyond `track_cap` evicts the mint with the fewest
@@ -371,5 +395,21 @@ mod tests {
             buf
         };
         assert_eq!(build(), build());
+    }
+
+    #[test]
+    fn velocity_of_is_non_mutating_and_none_for_untracked() {
+        let mut f = AttentionField::new(AttentionParams::standard());
+        let mint = [3u8; 32];
+        // Untracked mint → UNKNOWN.
+        assert_eq!(f.velocity_of(&mint), None);
+        for i in 0..8u64 {
+            f.observe(mint, mention(1_000 + i * 10, i, 500, false));
+        }
+        // Reading velocity must not perturb subsequent emits (idempotent read).
+        let v1 = f.velocity_of(&mint);
+        let v2 = f.velocity_of(&mint);
+        assert_eq!(v1, v2, "repeated reads are stable (non-mutating)");
+        assert!(v1.is_some(), "a tracked mint has a defined velocity");
     }
 }

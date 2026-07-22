@@ -15,7 +15,7 @@ use std::process::ExitCode;
 
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, RunMode};
-use pump_quant_app::event::AppEvent;
+use pump_quant_app::event::{AppEvent, CreatorActionKind};
 use pump_quant_domain::ids::Mint as DomainMint;
 
 fn main() -> ExitCode {
@@ -131,6 +131,47 @@ fn parse_events(text: &str) -> Result<Vec<AppEvent>, String> {
             "confirm" if f.len() == 3 => AppEvent::OnchainConfirm {
                 mint: mint(f[1])?,
                 sellable_depth_lamports: num(f[2])?.max(0) as u64,
+            },
+            // Factual, on-chain-led category assignment (the classifier ran upstream;
+            // the journal carries the resolved integer id, §85).
+            "tokenmeta" if f.len() == 6 => AppEvent::TokenMetadata {
+                mint: mint(f[1])?,
+                category_id: num(f[2])?.max(0) as u64,
+                taxonomy_version: num(f[3])?.max(0) as u32,
+                creator: num(f[4])?.max(0) as u64,
+                slot: num(f[5])?.max(0) as u64,
+            },
+            "creator_init" if f.len() == 5 => AppEvent::CreatorAction {
+                mint: mint(f[1])?,
+                kind: CreatorActionKind::Init {
+                    initial_tokens: num(f[2])?.max(0) as u64,
+                    total_supply: num(f[3])?.max(0) as u64,
+                },
+                slot: num(f[4])?.max(0) as u64,
+            },
+            "creator_buy" if f.len() == 5 => AppEvent::CreatorAction {
+                mint: mint(f[1])?,
+                kind: CreatorActionKind::Buy {
+                    tokens: num(f[2])?.max(0) as u64,
+                    quote_lamports: num(f[3])?.max(0) as u64,
+                },
+                slot: num(f[4])?.max(0) as u64,
+            },
+            "creator_sell" if f.len() == 5 => AppEvent::CreatorAction {
+                mint: mint(f[1])?,
+                kind: CreatorActionKind::Sell {
+                    tokens: num(f[2])?.max(0) as u64,
+                    quote_lamports: num(f[3])?.max(0) as u64,
+                },
+                slot: num(f[4])?.max(0) as u64,
+            },
+            "creator_link" if f.len() == 5 => AppEvent::CreatorAction {
+                mint: mint(f[1])?,
+                kind: CreatorActionKind::LinkedBuy {
+                    cluster: num(f[2])?.max(0) as u64,
+                    tokens: num(f[3])?.max(0) as u64,
+                },
+                slot: num(f[4])?.max(0) as u64,
             },
             other => return Err(err(&format!("unknown or malformed event '{other}'"))),
         };
