@@ -18,8 +18,8 @@ use crate::event::AppEvent;
 use crate::gate::{decide, Confirmation, GateDecision, GateReject};
 use crate::journal_log::{Decision, DecisionJournal};
 use crate::lane::{NarrativeLane, NumericLane, SocialLane, WalletLane};
+use crate::position::{Exit, LifecycleParams, ScalpLifecycle};
 use crate::reflect::reflect;
-use crate::scalp::scalp;
 
 use crate::attention::{AttentionField, AttentionParams};
 use crate::event::CreatorActionKind;
@@ -186,6 +186,17 @@ pub struct Engine {
     /// discovery ranking is byte-identical for any run that never feeds meta.
     category_rank_adj: BTreeMap<u64, i64>,
 
+    /// The held-position **exit lifecycle** (§24): admitted markets open a position
+    /// here and are managed forward per-swap (trailing / thesis / rug-precursor /
+    /// ladder / time-stop) instead of booking a one-shot fill. Empty until a market
+    /// is admitted.
+    positions: ScalpLifecycle,
+    /// Open-position attribution: mint → (discovering lane, net realized so far).
+    /// Read when an exit books, removed when the position fully closes; carries the
+    /// lane so realized net-SOL reflects to the right discovery weight (§29.9) and
+    /// the total attributes back to the market's social callers (§82) on close.
+    open_lane: BTreeMap<[u8; 32], (WlLane, i128)>,
+
     /// Reused per-tick discovery scratch: the union of all four lanes' emissions.
     /// Cleared (not freed) each tick so steady-state discovery does not re-allocate
     /// (§99: its capacity is bounded by the number of tracked mints, which the lanes
@@ -210,6 +221,20 @@ impl Engine {
             cfg.meta_max_categories,
             cfg.meta_max_creators_per_cat,
         );
+        // The exit-lifecycle cost model is tied to the operator's fee/tip config so
+        // paper net-SOL is consistent with the gate's economics; the trigger scales
+        // are §102 named constants (project design doc). Concurrency is bounded to
+        // the confirmed-set size (§99) — no more open scalps than confirmed markets.
+        let lifecycle_params = LifecycleParams {
+            fee_bps: cfg.exit_fee_bps,
+            tip_lamports: cfg.exit_tip_lamports,
+            ..LifecycleParams::standard()
+        };
+        let position_cap = cfg
+            .watchlist_capacity
+            .saturating_mul(cfg.confirmed_capacity_mult)
+            .max(1);
+        let positions = ScalpLifecycle::new(lifecycle_params, position_cap);
         Self {
             cfg,
             mode,
@@ -234,6 +259,8 @@ impl Engine {
             mint_category: BTreeMap::new(),
             creators: BTreeMap::new(),
             category_rank_adj: BTreeMap::new(),
+            positions,
+            open_lane: BTreeMap::new(),
             scratch: Vec::new(),
             promoted: 0,
             admitted: 0,
@@ -258,6 +285,8 @@ impl Engine {
         match ev {
             AppEvent::MarketTrade {
                 mint,
+                price_fp,
+                quote_lamports,
                 liquidity_lamports,
                 signed_base,
                 buyer_entity,
@@ -265,6 +294,8 @@ impl Engine {
             } => {
                 self.numeric.observe(
                     mint,
+                    price_fp,
+                    quote_lamports,
                     liquidity_lamports,
                     signed_base,
                     buyer_entity,
@@ -280,6 +311,23 @@ impl Engine {
                 // (§6.4 UNKNOWN discipline).
                 if !self.mint_category.is_empty() {
                     self.route_category_flow(*mint.as_bytes(), signed_base);
+                }
+                // Held-position lifecycle (§24 per-swap management): advance any open
+                // scalp on this market and book an exit if a trigger fires. Guarded by
+                // an O(1) `is_empty` so a run holding nothing pays only one branch.
+                if !self.positions.is_empty() {
+                    let signed_quote = if signed_base >= 0 {
+                        i128::from(quote_lamports)
+                    } else {
+                        -i128::from(quote_lamports)
+                    };
+                    let price_u = u64::try_from(price_fp.max(0)).unwrap_or(u64::MAX);
+                    if let Some(exit) =
+                        self.positions
+                            .on_trade(mint.as_bytes(), price_u, signed_quote, self.now)
+                    {
+                        self.book_exit(exit);
+                    }
                 }
             }
             AppEvent::NarrativeSample {
@@ -504,7 +552,8 @@ impl Engine {
         // steady state allocates no per-tick lane vectors; the union then dedups by
         // mint. Disjoint field borrows keep this a single pass with no clones.
         self.scratch.clear();
-        self.numeric.emit_into(&mut self.scratch, self.now);
+        self.numeric
+            .emit_into(&mut self.scratch, self.now, self.cfg.numeric_ofi_min_bp);
         self.narrative.emit_into(
             &mut self.scratch,
             self.now,
@@ -573,6 +622,20 @@ impl Engine {
         if self.now % self.cfg.reflect_every_ticks == 0 {
             self.run_reflection();
         }
+
+        // 7. Held-position time-stops (§24(e): the clock is a backstop, not the
+        // trigger). Close any open scalp that has stopped advancing past its max
+        // hold. Empty until a market is admitted. Disjoint borrows: `positions`
+        // mutates while `numeric` is read for the mark price.
+        if !self.positions.is_empty() {
+            let numeric = &self.numeric;
+            let exits = self.positions.on_tick(self.now, &|m| {
+                numeric.latest_price_fp(DomainMint::from_bytes(*m))
+            });
+            for e in exits {
+                self.book_exit(e);
+            }
+        }
     }
 
     fn gate_and_scalp(&mut self, cand: Candidate) {
@@ -589,41 +652,35 @@ impl Engine {
 
         match decide(&cand, confirmation, &self.cfg) {
             GateDecision::Admit(band) => {
-                self.admitted += 1;
-                let depth = confirmation.map(|c| c.sellable_depth_lamports).unwrap_or(0);
-                // Corroboration-tier size haircut from creator distribution +
-                // category saturation. 10_000 (identity) until either is fed, so the
-                // admitted size — and the journal it feeds — is byte-identical on the
-                // golden path. Only ever reduces size, never vetoes (§22).
+                // Size within the admitted band, then apply the corroboration-tier
+                // creator/category haircut (10_000 = identity; only ever reduces).
                 let size_mult_bps = self.size_haircut_bps(&mint_bytes);
-                let result = scalp(
-                    cand.lane,
-                    &band,
-                    self.cfg.gate_expected_move_bps,
-                    depth,
-                    size_mult_bps,
-                    &self.cfg,
-                );
-                self.journal.record(Decision::Admitted {
-                    mint: mint_bytes,
-                    size_lamports: result.size_lamports,
-                });
-                self.journal.record(Decision::Filled {
-                    mint: mint_bytes,
-                    net_pnl_lamports: result.net_pnl_lamports,
-                });
-                // Attribute realized net-SOL to the discovering lane for reflection.
-                self.lane_perf.record(
-                    cand.lane,
-                    i64::try_from(result.net_pnl_lamports).unwrap_or(i64::MAX),
-                );
-                // Fold the reconciliation trade into the bounded running accountant.
-                self.recon[accum_index(result.recon.lane)].add(&result.recon);
-                // Attribute this realized outcome back to any social sources that
-                // called this market, so their quality is earned from ground truth
-                // (§82). A market no source called records nothing.
-                self.social_earn
-                    .record_outcome(&mint_bytes, result.net_pnl_lamports);
+                let size = (u128::from(band.x_cost) * u128::from(size_mult_bps) / 10_000) as u64;
+                let size = size.clamp(band.x_min, band.x_max);
+                // Entry price is the market's latest decoded print; the position is
+                // then managed FORWARD per-swap by the exit lifecycle (§24) — no
+                // one-shot fixed-move fill. Entry cost (principal + entry fee + tip)
+                // is what the principal-recovery tranche must clear.
+                let entry_price = self.numeric.latest_price_fp(domain_mint).unwrap_or(0);
+                let entry_fee =
+                    (u128::from(size) * u128::from(self.cfg.entry_fee_bps) / 10_000) as u64;
+                let entry_cost = size
+                    .saturating_add(entry_fee)
+                    .saturating_add(self.cfg.entry_tip_lamports);
+                // Open the managed position. A market already holding an open scalp
+                // (or the concurrency cap) refuses a second — no double-admit.
+                if entry_price > 0
+                    && self
+                        .positions
+                        .open(mint_bytes, entry_price, size, entry_cost, self.now)
+                {
+                    self.admitted += 1;
+                    self.open_lane.insert(mint_bytes, (cand.lane, 0));
+                    self.journal.record(Decision::Admitted {
+                        mint: mint_bytes,
+                        size_lamports: size,
+                    });
+                }
             }
             GateDecision::Reject(reason) => {
                 self.rejected += 1;
@@ -632,6 +689,55 @@ impl Engine {
                     reason: reject_code(reason),
                 });
             }
+        }
+    }
+
+    /// Book one realized exit from the held-position lifecycle: journal it, fold its
+    /// net into the running per-lane reconciliation (the report's net-SOL) and the
+    /// lane-performance accountant (reflection weights), and — when the position
+    /// fully closes — attribute the market's total realized net back to its social
+    /// callers (§82) and drop its attribution entry.
+    fn book_exit(&mut self, e: Exit) {
+        let lane = self.open_lane.get(&e.mint).map(|(l, _)| *l);
+        if let Some(lane) = lane {
+            self.lane_perf
+                .record(lane, i64::try_from(e.net_lamports).unwrap_or(i64::MAX));
+            let recon = ReconTrade {
+                lane: eval_lane_of(lane),
+                gross_lamports: e.net_lamports,
+                fees: 0,
+                tips: 0,
+                failed_costs: 0,
+            };
+            self.recon[accum_index(recon.lane)].add(&recon);
+        }
+        self.journal.record(Decision::Filled {
+            mint: e.mint,
+            net_pnl_lamports: e.net_lamports,
+        });
+        if let Some((_, acc)) = self.open_lane.get_mut(&e.mint) {
+            *acc = acc.saturating_add(e.net_lamports);
+        }
+        if e.closed {
+            if let Some((_, total)) = self.open_lane.remove(&e.mint) {
+                self.social_earn.record_outcome(&e.mint, total);
+            }
+        }
+    }
+
+    /// Force-close every still-open position at its last-known mark (end of run), so
+    /// the reported net-SOL is complete. Idempotent: after it runs the lifecycle is
+    /// empty, so a second call books nothing.
+    fn finalize(&mut self) {
+        if self.positions.is_empty() {
+            return;
+        }
+        let numeric = &self.numeric;
+        let exits = self
+            .positions
+            .force_close_all(&|m| numeric.latest_price_fp(DomainMint::from_bytes(*m)));
+        for e in exits {
+            self.book_exit(e);
         }
     }
 
@@ -673,9 +779,12 @@ impl Engine {
         self.report()
     }
 
-    /// Snapshot the current report without consuming the engine.
-    #[must_use]
-    pub fn report(&self) -> Report {
+    /// The end-of-run report. **Finalizes first**: any still-open held position is
+    /// force-closed at its last mark so the reported net-SOL is complete (§24 — a
+    /// scalp is only realized when it closes). Idempotent — after finalize the
+    /// lifecycle is empty, so calling `report` again yields the same numbers.
+    pub fn report(&mut self) -> Report {
+        self.finalize();
         let scalp_net = self.recon[accum_index(EvalLane::Scalp)].net();
         let early_net = self.recon[accum_index(EvalLane::Early)].net();
         let mut per_lane_net = [(WlLane::CreationSniper, 0i64); WlLane::COUNT];
@@ -871,5 +980,16 @@ const fn reject_code(r: GateReject) -> u8 {
         GateReject::NeedsOnchainConfirmation => 1,
         GateReject::NoNumericConfirmation => 2,
         GateReject::EconomicallyUnviable => 3,
+    }
+}
+
+/// Which evaluator lane a watchlist discovery lane reconciles into (mirrors
+/// `scalp::eval_lane`): sniper/early discovery is `Early`; active/graduation
+/// scalping is `Scalp`. Used to route held-position exit net-SOL into the right
+/// running accountant.
+const fn eval_lane_of(lane: WlLane) -> EvalLane {
+    match lane {
+        WlLane::CreationSniper | WlLane::EarlyConfirmation => EvalLane::Early,
+        WlLane::GraduationTransition | WlLane::ActiveMarketScalp => EvalLane::Scalp,
     }
 }

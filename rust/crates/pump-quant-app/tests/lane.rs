@@ -9,16 +9,27 @@ fn mint(tag: u8) -> Mint {
 }
 
 #[test]
-fn numeric_score_is_buypressure_times_liqdecade_times_buyers() {
+fn numeric_score_is_ofi_times_liqdecade_times_buyers() {
     let mut l = NumericLane::new();
-    // Three all-buy prints from distinct entities at 100M liquidity (decade 9).
+    // Three all-buy prints from distinct entities at 100M liquidity (decade 9),
+    // with rising price (flow-confirmed). observe = (mint, price_fp, quote, liq,
+    // signed_base, buyer, age, now).
     for e in 1..=3u64 {
-        l.observe(mint(1), 100_000_000, 1_000_000, e, 20, 0);
+        l.observe(
+            mint(1),
+            1_000_000_000 + (e as i128) * 1_000_000,
+            1_000_000,
+            100_000_000,
+            1_000_000,
+            e,
+            20,
+            0,
+        );
     }
-    let cands = l.emit(5);
+    let cands = l.emit(5, 1_000);
     assert_eq!(cands.len(), 1);
     let c = cands[0];
-    // buy_pressure = 10_000 bps (all buys); liq decade(100_000_000) = 9; buyers = 3.
+    // OFI = 10_000 bps (all buys); liq decade(100_000_000) = 9; buyers = 3.
     assert_eq!(c.discovery_score, 10_000 * 9 * 3);
     assert_eq!(c.discovered_at, 5);
     assert_eq!(c.features.buy_pressure_bp, 10_000);
@@ -28,10 +39,12 @@ fn numeric_score_is_buypressure_times_liqdecade_times_buyers() {
 #[test]
 fn numeric_buy_pressure_reflects_sell_flow() {
     let mut l = NumericLane::new();
-    l.observe(mint(2), 10_000_000, 600, 1, 0, 0); // buy 600
-    l.observe(mint(2), 10_000_000, -400, 2, 0, 0); // sell 400
+    l.observe(mint(2), 1_000_000_000, 600, 10_000_000, 600, 1, 0, 0); // buy 600
+    l.observe(mint(2), 1_000_000_000, 400, 10_000_000, -400, 2, 0, 0); // sell 400
     let f = l.features_for(mint(2)).unwrap();
-    // 600 / (600+400) = 6000 bps.
+    // OFI (600-400)/(600+400) = 2_000 bps, mapped onto the 0..10_000 pressure scale
+    // (5_000 = balanced) = 6_000 — the same value the old buy-share proxy reported,
+    // now sourced from wash-robust signed flow.
     assert_eq!(f.buy_pressure_bp, 6_000);
 }
 

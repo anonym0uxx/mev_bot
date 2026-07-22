@@ -24,9 +24,19 @@ fn drive() -> pump_quant_app::engine::Report {
     for round in 0..6u64 {
         for m in 0..n {
             let mt = mint(m);
+            // A deterministic pump-then-dump price wave (bps of a 1e9 base) so the
+            // held-position lifecycle is actually exercised: positions open, take the
+            // principal-recovery tranche near the top, and trail/hard-stop out on the
+            // way down — freeing slots for later admits. Integer, fixed (§22).
+            let round_mult_bp: u64 =
+                [10_000, 12_000, 15_000, 13_000, 10_000, 8_500][round as usize];
             for i in 0..3u64 {
                 eng.tick(AppEvent::MarketTrade {
                     mint: mt,
+                    price_fp: (1_000_000_000i128 * round_mult_bp as i128 / 10_000)
+                        + (i as i128) * 1_000_000
+                        + (m as i128) * 1_000,
+                    quote_lamports: 400_000 + (m % 13) * 1_000,
                     liquidity_lamports: 50_000_000 + m * 1000 + round * 7,
                     signed_base: 500_000 + (m as i64 % 13) * 1000 - (i as i64 * 100),
                     buyer_entity: (m + i) % 97,
@@ -67,15 +77,19 @@ fn drive() -> pump_quant_app::engine::Report {
     eng.report()
 }
 
-/// The byte-exact outcome of [`drive`], frozen. This value was produced by the
-/// pre-optimization engine and re-verified, unchanged, after the latency work
-/// (scratch-buffer discovery, alloc-free watchlist merge, memoized weakest-entry
-/// eviction, `ilog10` decade). Any future change that moves it is a behavioural
-/// change, not an optimization — this test is the tripwire (§22, §54).
-const GOLDEN_DIGEST: u64 = 17_194_072_179_380_622_382;
-const GOLDEN_NET_LAMPORTS: i128 = 3_766_464;
+/// The byte-exact outcome of [`drive`], frozen. **Deliberately re-pinned** when the
+/// engine moved from a one-shot fixed-move fill to the real held-position exit
+/// lifecycle (§24): admitted markets now open a position that is managed forward
+/// per-swap (principal-recovery ladder, vol-scaled trailing, thesis/rug/time exits)
+/// over the scenario's pump-then-dump price wave, closing and freeing slots. This is
+/// a *behavioural* re-pin, not an optimization: the prior value (17194072179380622382,
+/// net 3_766_464, admitted 288) belonged to the one-shot model. From here this value
+/// is again the frozen tripwire — any future move that is not a deliberate
+/// re-pin is a regression (§22, §54).
+const GOLDEN_DIGEST: u64 = 13_612_654_632_551_201_076;
+const GOLDEN_NET_LAMPORTS: i128 = 2_979_624;
 const GOLDEN_PROMOTED: u64 = 576;
-const GOLDEN_ADMITTED: u64 = 288;
+const GOLDEN_ADMITTED: u64 = 16;
 const GOLDEN_REJECTED: u64 = 288;
 
 #[test]

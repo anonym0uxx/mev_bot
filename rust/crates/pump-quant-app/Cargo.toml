@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 pump-quant-domain = { path = "../pump-quant-domain" }
+pump-quant-features = { path = "../pump-quant-features" }
 pump-quant-ingest = { path = "../pump-quant-ingest" }
 pump-quant-watchlist = { path = "../pump-quant-watchlist" }
 pump-quant-narrative = { path = "../pump-quant-narrative" }

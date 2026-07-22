@@ -48,6 +48,7 @@ pub mod event;
 pub mod gate;
 pub mod journal_log;
 pub mod lane;
+pub mod position;
 pub mod reflect;
 pub mod scalp;
 pub mod social_earn;

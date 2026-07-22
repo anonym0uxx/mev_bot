@@ -1,0 +1,54 @@
+
+============================================================================
+SCENARIO: NO wash (clean tape) — isolates path/exit effects
+----------------------------------------------------------------------------
+Q1  Signal IC (Spearman vs fwd return) + net-SOL of trades it takes:
+    proxy     IC=+0.2501  <-- current proxy
+    cvd       IC=+0.2501
+    ofi       IC=+0.2501
+    vwap_dev  IC=+0.2483
+    combo     IC=+0.2351
+
+Q2  net SOL by ENTRY x EXIT (lamports):
+    entry  exit        trades        mean   win%      CVaR5%          TOTAL
+    proxy  fixed        10708       45860   71.3    -1055042      491068803
+    proxy  lifecycle    10708      104187   59.7     -394050     1115634069
+    cvd    fixed        10708       45860   71.3    -1055042      491068803
+    cvd    lifecycle    10708      104187   59.7     -394050     1115634069
+    ofi    fixed        10708       45860   71.3    -1055042      491068803
+    ofi    lifecycle    10708      104187   59.7     -394050     1115634069
+    vwap   fixed        12510       36000   70.2    -1055042      450357592
+    vwap   lifecycle    12510       94048   57.8     -404674     1176542961
+    combo  fixed        10190       49257   71.8    -1055042      501925671
+    combo  lifecycle    10190      106904   60.0     -392801     1089349230
+
+    baseline (proxy+fixed) TOTAL   =       491068803
+    FULL     (combo+lifecycle)     =      1089349230   delta=+598280427
+    left-tail CVaR5%: baseline=-1055042  full=-392801
+
+============================================================================
+SCENARIO: WITH wash trading (manipulated pumps) — realistic pump.fun
+----------------------------------------------------------------------------
+Q1  Signal IC (Spearman vs fwd return) + net-SOL of trades it takes:
+    proxy     IC=+0.1960  <-- current proxy
+    cvd       IC=+0.2504
+    ofi       IC=+0.2504
+    vwap_dev  IC=+0.2485
+    combo     IC=+0.2396
+
+Q2  net SOL by ENTRY x EXIT (lamports):
+    entry  exit        trades        mean   win%      CVaR5%          TOTAL
+    proxy  fixed        22025       -9253   64.4    -1055042     -203792921
+    proxy  lifecycle    22025       61162   53.9     -413942     1347087334
+    cvd    fixed        10817       44042   71.3    -1055042      476403946
+    cvd    lifecycle    10817      108640   61.2     -385414     1175163525
+    ofi    fixed        10817       44042   71.3    -1055042      476403946
+    ofi    lifecycle    10817      108640   61.2     -385414     1175163525
+    vwap   fixed        12639       30824   69.6    -1055042      389580658
+    vwap   lifecycle    12639       98118   59.3     -394221     1240114452
+    combo  fixed        10322       46706   71.6    -1055042      482097613
+    combo  lifecycle    10322      111634   61.5     -384205     1152291286
+
+    baseline (proxy+fixed) TOTAL   =      -203792921
+    FULL     (combo+lifecycle)     =      1152291286   delta=+1356084206
+    left-tail CVaR5%: baseline=-1055042  full=-384205

@@ -60,6 +60,11 @@ pub struct Config {
     pub promote_min_rank: u64,
 
     // ---- discovery lane scoring ----
+    /// Minimum order-flow imbalance (bps, 0..=10_000) the numeric lane requires
+    /// before it will emit a self-authorizing candidate: real net-buy conviction,
+    /// not marginal noise (§21.7 sign-agreement gate). Operator-tunable; higher =
+    /// only stronger buy flow is discovered.
+    pub numeric_ofi_min_bp: u32,
     /// Cross-lane scale applied to the wallet lane's cumulative-size score so it is
     /// comparable with the other lanes' score magnitudes. Operator-tunable weight —
     /// it governs which mints the wallet lane pushes toward promotion.
@@ -164,6 +169,7 @@ impl Config {
             promote_k: 8,
             promote_min_rank: 1,
 
+            numeric_ofi_min_bp: 1_000, // ≥10% net-buy imbalance to discover on flow
             wallet_score_scale: 100,
             narrative_stage_hi_fp: 2 * pump_quant_narrative::narrative::FP_ONE,
             narrative_stage_lo_fp: pump_quant_narrative::narrative::FP_ONE,
@@ -218,6 +224,7 @@ impl Config {
             "watchlist_ttl_ticks" => self.watchlist_ttl_ticks = nonneg(value)?,
             "promote_k" => self.promote_k = sz(value)?,
             "promote_min_rank" => self.promote_min_rank = nonneg(value)?,
+            "numeric_ofi_min_bp" => self.numeric_ofi_min_bp = bp(value)?,
             "wallet_score_scale" => self.wallet_score_scale = nonneg(value)?,
             "narrative_stage_hi_fp" => self.narrative_stage_hi_fp = nonneg(value)?,
             "narrative_stage_lo_fp" => self.narrative_stage_lo_fp = nonneg(value)?,

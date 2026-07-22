@@ -22,6 +22,8 @@ fn scenario() -> Vec<AppEvent> {
     for i in 0..5 {
         ev.push(AppEvent::MarketTrade {
             mint: a,
+            price_fp: 1_000_000_000 + (i as i128) * 1_000_000,
+            quote_lamports: 500_000,
             liquidity_lamports: 100_000_000,
             signed_base: 1_000_000,
             buyer_entity: i,
@@ -196,11 +198,13 @@ fn social_source_earns_quality_from_realized_outcomes() {
     assert_eq!(eng.earned_source_quality(source_id), None);
 
     // The same market accrues real numeric flow + an on-chain confirmation, so it
-    // becomes admissible and is scalped — a realized outcome the earn loop attributes
-    // back to the caller and reconciles at the reflection cadence.
+    // becomes admissible; the held-position lifecycle (§24) then manages it forward
+    // and realizes an outcome the earn loop attributes back to the caller (§82).
     for i in 0..5 {
         eng.tick(AppEvent::MarketTrade {
             mint: mkt,
+            price_fp: 1_000_000_000 + (i as i128) * 1_000_000,
+            quote_lamports: 500_000,
             liquidity_lamports: 100_000_000,
             signed_base: 1_000_000,
             buyer_entity: i,
@@ -210,6 +214,29 @@ fn social_source_earns_quality_from_realized_outcomes() {
     eng.tick(AppEvent::OnchainConfirm {
         mint: mkt,
         sellable_depth_lamports: 200_000_000,
+    });
+    // One evaluation tick promotes + admits: the position OPENS here.
+    eng.tick(AppEvent::Tick);
+    // The market pumps past the principal-recovery target (a ladder tranche banks),
+    // then order flow rolls over hard — the thesis-invalidation exit closes the
+    // remainder at a profit: a realized favorable outcome for the caller.
+    eng.tick(AppEvent::MarketTrade {
+        mint: mkt,
+        price_fp: 1_420_000_000,
+        quote_lamports: 500_000,
+        liquidity_lamports: 100_000_000,
+        signed_base: 1_000_000,
+        buyer_entity: 5,
+        age_slots: 31,
+    });
+    eng.tick(AppEvent::MarketTrade {
+        mint: mkt,
+        price_fp: 1_400_000_000,
+        quote_lamports: 2_000_000,
+        liquidity_lamports: 100_000_000,
+        signed_base: -4_000_000,
+        buyer_entity: 6,
+        age_slots: 32,
     });
     let reflect_ticks = Config::dev_portable().reflect_every_ticks + 2;
     for _ in 0..reflect_ticks {
@@ -313,6 +340,8 @@ fn creator_distribution_fades_size_but_never_vetoes() {
         for i in 0..5 {
             e.tick(AppEvent::MarketTrade {
                 mint: m,
+                price_fp: 1_000_000_000 + (i as i128) * 1_000_000,
+                quote_lamports: 500_000,
                 liquidity_lamports: 100_000_000,
                 signed_base: 1_000_000,
                 buyer_entity: i,
@@ -323,9 +352,28 @@ fn creator_distribution_fades_size_but_never_vetoes() {
             mint: m,
             sellable_depth_lamports: 200_000_000,
         });
-        for _ in 0..6 {
-            e.tick(AppEvent::Tick);
-        }
+        // Admit (position opens), then a pump past the principal-recovery target and
+        // a flow rollover close the position AT A PROFIT — so realized net scales
+        // with the deployed size and the creator haircut is visible in net SOL.
+        e.tick(AppEvent::Tick);
+        e.tick(AppEvent::MarketTrade {
+            mint: m,
+            price_fp: 1_500_000_000,
+            quote_lamports: 500_000,
+            liquidity_lamports: 100_000_000,
+            signed_base: 1_000_000,
+            buyer_entity: 5,
+            age_slots: 31,
+        });
+        e.tick(AppEvent::MarketTrade {
+            mint: m,
+            price_fp: 1_480_000_000,
+            quote_lamports: 2_000_000,
+            liquidity_lamports: 100_000_000,
+            signed_base: -4_000_000,
+            buyer_entity: 6,
+            age_slots: 32,
+        });
         e.report()
     };
     let baseline = run(false);
@@ -364,6 +412,10 @@ fn fed_meta_path_is_live_and_deterministic() {
                 for i in 0..4u64 {
                     e.tick(AppEvent::MarketTrade {
                         mint: m,
+                        price_fp: 1_000_000_000
+                            + (round as i128) * 4_000_000
+                            + (i as i128) * 1_000_000,
+                        quote_lamports: 800_000,
                         liquidity_lamports: 80_000_000,
                         signed_base: 2_000_000,
                         buyer_entity: (i + round) % 7,
@@ -399,6 +451,8 @@ fn fed_meta_path_is_live_and_deterministic() {
         for i in 0..4u64 {
             e.tick(AppEvent::MarketTrade {
                 mint: m,
+                price_fp: 1_000_000_000 + (i as i128) * 1_000_000,
+                quote_lamports: 800_000,
                 liquidity_lamports: 80_000_000,
                 signed_base: 2_000_000,
                 buyer_entity: i,
@@ -414,5 +468,46 @@ fn fed_meta_path_is_live_and_deterministic() {
     assert!(
         cat1.buy_quote > 0,
         "category flow accumulated from the attributed on-chain trades"
+    );
+}
+
+#[test]
+fn numeric_lane_discovers_buy_flow_not_sell_flow() {
+    // Real trade-flow microstructure with a sign-agreement gate (§21.7): a mint whose
+    // flow is net-SELL (or price rising against falling CVD = bearish divergence) is
+    // confirmed on-chain but must NEVER be self-authorized — the numeric lane
+    // discovers genuine buy *flow*, not price. A parallel buy-flow mint IS admitted.
+    let run = |buy: bool| -> pump_quant_app::engine::Report {
+        let mut e = Engine::new(Config::dev_portable(), RunMode::Paper);
+        let m = mint(0x77);
+        let sign = if buy { 1i64 } else { -1i64 };
+        for i in 0..6u64 {
+            e.tick(AppEvent::MarketTrade {
+                mint: m,
+                price_fp: 1_000_000_000 + (i as i128) * 1_000_000, // price rising either way
+                quote_lamports: 500_000,
+                liquidity_lamports: 100_000_000,
+                signed_base: sign * 1_000_000,
+                buyer_entity: i,
+                age_slots: 30,
+            });
+        }
+        e.tick(AppEvent::OnchainConfirm {
+            mint: m,
+            sellable_depth_lamports: 200_000_000,
+        });
+        for _ in 0..6 {
+            e.tick(AppEvent::Tick);
+        }
+        e.report()
+    };
+    assert!(
+        run(true).admitted >= 1,
+        "genuine buy flow (OFI+CVD agree, price-confirmed) is admitted"
+    );
+    assert_eq!(
+        run(false).admitted,
+        0,
+        "net sell flow / bearish divergence is never self-authorized (§21.7)"
     );
 }

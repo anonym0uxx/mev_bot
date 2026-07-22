@@ -25,6 +25,10 @@
 
 use crate::event::LaneKind;
 use pump_quant_domain::ids::Mint as DomainMint;
+use pump_quant_features::micro::{
+    classify_divergence, cumulative_volume_delta, order_flow_imbalance_bps, CvdDivergence,
+};
+use pump_quant_features::types::{Side, TradeEvent};
 use pump_quant_narrative::narrative::{
     nv_candidate_score, nv_virality_coeff, AttentionMoneyDivergence, LifecycleStage,
 };
@@ -34,6 +38,29 @@ use std::collections::BTreeMap;
 /// Bound on how many distinct mints a single lane tracks before it evicts the
 /// weakest (§99 bounded state). Set high enough that laptop replays never hit it.
 const LANE_TRACK_CAP: usize = 4_096;
+
+/// Max recent trades retained per mint for microstructure (§57/§99). A small ring:
+/// CVD/OFI/VWAP over the last N swaps is the scalping horizon, and a bounded ring
+/// keeps per-mint state O(1) and the emit hot path cache-friendly.
+const NUMERIC_RING_CAP: usize = 64;
+
+/// Minimum trades before the numeric microstructure is trusted. With fewer than
+/// this, CVD/OFI/divergence are pure noise on a sparse tape (§21.7 thin-market
+/// degradation clause), so the lane emits nothing rather than a spurious score.
+const NUMERIC_MIN_TRADES: usize = 3;
+
+/// Map order-flow imbalance (bps, −10_000..=10_000, or `None` on empty flow) onto
+/// the shared 0..=10_000 buy-pressure scale (5_000 = balanced) so the `Features`
+/// contract keeps meaning while being sourced from wash-robust *signed* flow rather
+/// than the old buy/(buy+sell) share that a manipulator can inflate (§21.7).
+#[inline]
+#[must_use]
+fn ofi_to_pressure_bp(ofi_bps: Option<i32>) -> u32 {
+    match ofi_bps {
+        Some(b) => ((i64::from(b) + 10_000) / 2) as u32,
+        None => 0,
+    }
+}
 
 /// The documented source→ranking-lane bijection (see module docs).
 #[must_use]
@@ -53,20 +80,24 @@ pub fn to_wl_mint(m: DomainMint) -> WlMint {
     WlMint::new(*m.as_bytes())
 }
 
-/// Per-mint numeric microstructure accumulator.
-#[derive(Clone, Copy, Debug, Default)]
+/// Per-mint numeric microstructure accumulator: a bounded ring of recent decoded
+/// swaps plus the O(1) scalar context the discovery score needs. The ring is what
+/// the real `features::micro` CVD / OFI / VWAP-divergence functions fold over.
+#[derive(Clone, Debug, Default)]
 struct NumericObs {
     liquidity_lamports: u64,
-    buy_base: u128,
-    sell_base: u128,
     buyer_bitset: u64,
     age_slots: u32,
     last_tick: u64,
+    /// Bounded ring of recent trades (oldest→newest), cap = [`NUMERIC_RING_CAP`].
+    trades: Vec<TradeEvent>,
 }
 
-/// The on-chain numeric lane: signed flow, liquidity and buyer breadth. This is the
-/// only self-authorizing lane. Its discovery score is monotonic in net buy pressure
-/// and liquidity, both integer.
+/// The on-chain numeric lane: real trade-flow microstructure (CVD, order-flow
+/// imbalance, CVD/price divergence) over a bounded per-mint trade ring. This is the
+/// only self-authorizing lane, and it now discovers on *signed* flow — wash-robust,
+/// exhaustion-aware — instead of the old buy/(buy+sell) share a manipulator could
+/// fake (§21.7). Every derived quantity is integer/fixed-point (§22).
 #[derive(Clone, Debug, Default)]
 pub struct NumericLane {
     obs: BTreeMap<[u8; 32], NumericObs>,
@@ -79,10 +110,15 @@ impl NumericLane {
         Self::default()
     }
 
-    /// Ingest a decoded swap.
+    /// Ingest a decoded swap: append it to the mint's bounded trade ring and refresh
+    /// the scalar context. `price_fp` is fixed-point (PRICE_SCALE), `quote_lamports`
+    /// the swap's quote volume (signed into CVD by `signed_base`'s sign).
+    #[allow(clippy::too_many_arguments)]
     pub fn observe(
         &mut self,
         mint: DomainMint,
+        price_fp: i128,
+        quote_lamports: u64,
         liquidity_lamports: u64,
         signed_base: i64,
         buyer_entity: u64,
@@ -93,18 +129,26 @@ impl NumericLane {
         e.liquidity_lamports = liquidity_lamports;
         e.age_slots = age_slots;
         e.last_tick = now;
-        if signed_base >= 0 {
-            e.buy_base = e
-                .buy_base
-                .saturating_add(signed_base.unsigned_abs() as u128);
-        } else {
-            e.sell_base = e
-                .sell_base
-                .saturating_add(signed_base.unsigned_abs() as u128);
-        }
         // Cheap deterministic buyer-breadth proxy: fold the entity id into a 64-bit
         // set so `unique_buyers` grows without an unbounded per-mint collection.
         e.buyer_bitset |= 1u64 << (buyer_entity % 64);
+        let side = if signed_base >= 0 {
+            Side::Buy
+        } else {
+            Side::Sell
+        };
+        // Bounded ring (§57/§99): drop the oldest when full.
+        if e.trades.len() >= NUMERIC_RING_CAP {
+            e.trades.remove(0);
+        }
+        e.trades.push(TradeEvent {
+            event_id: now,
+            ts_ns: now,
+            price_fp,
+            base_qty: signed_base.unsigned_abs(),
+            quote_qty: quote_lamports,
+            side,
+        });
     }
 
     fn entry(&mut self, key: [u8; 32]) -> &mut NumericObs {
@@ -114,51 +158,82 @@ impl NumericLane {
         self.obs.entry(key).or_default()
     }
 
-    /// The numeric feature snapshot for a mint, if the lane has seen it.
+    /// The most recent trade price (fixed-point, PRICE_SCALE) the lane holds for a
+    /// mint, if any — the entry / mark price the held-position lifecycle tracks
+    /// against. Narrowed to `u64` (saturating) for the strategy protection leaf;
+    /// realistic AMM prices in PRICE_SCALE units are well within `u64`.
+    #[must_use]
+    pub fn latest_price_fp(&self, mint: DomainMint) -> Option<u64> {
+        self.obs
+            .get(mint.as_bytes())
+            .and_then(|o| o.trades.last())
+            .map(|t| u64::try_from(t.price_fp.max(0)).unwrap_or(u64::MAX))
+    }
+
+    /// The numeric feature snapshot for a mint, if the lane has seen it. Buy-pressure
+    /// is now the OFI-derived (signed, wash-robust) value on the shared scale.
     #[must_use]
     pub fn features_for(&self, mint: DomainMint) -> Option<Features> {
         self.obs.get(mint.as_bytes()).map(|o| Features {
             liquidity_lamports: o.liquidity_lamports,
-            buy_pressure_bp: buy_pressure_bp(o.buy_base, o.sell_base),
+            buy_pressure_bp: ofi_to_pressure_bp(order_flow_imbalance_bps(&o.trades)),
             unique_buyers: o.buyer_bitset.count_ones(),
             age_slots: o.age_slots,
         })
     }
 
-    /// Emit one candidate per tracked mint with an integer discovery score.
+    /// Emit one candidate per bullish-flow mint with an integer discovery score.
     #[must_use]
-    pub fn emit(&self, now: u64) -> Vec<Candidate> {
+    pub fn emit(&self, now: u64, ofi_min_bp: u32) -> Vec<Candidate> {
         let mut out = Vec::with_capacity(self.obs.len());
-        self.emit_into(&mut out, now);
+        self.emit_into(&mut out, now, ofi_min_bp);
         out
     }
 
-    /// Append one candidate per tracked mint into `buf` (see [`Self::emit`]).
+    /// Append one self-authorizing candidate per mint whose real trade flow is
+    /// genuinely bullish into `buf`.
     ///
-    /// The engine drives this every tick over a reused buffer, so steady-state
-    /// discovery allocates nothing here; `emit` is the owning convenience wrapper.
-    /// The emitted candidates are byte-identical to `emit`'s.
-    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64) {
+    /// **Sign-agreement gate (§21.7 CVD/OFI/VWAP combined, wash-robust).** A numeric
+    /// candidate is emitted only when order-flow imbalance clears `ofi_min_bp`, the
+    /// cumulative volume delta is net-buy, and price is NOT diverging bearishly from
+    /// flow (buy-pressure exhaustion). Fades, exhaustion, and sub-[`NUMERIC_MIN_TRADES`]
+    /// sparse tapes emit nothing — the lane discovers real buy *flow*, never price
+    /// alone. Score is monotone in imbalance strength × liquidity magnitude × buyer
+    /// breadth; integer, saturating (§22). Reused buffer ⇒ alloc-free steady state.
+    pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64, ofi_min_bp: u32) {
         buf.reserve(self.obs.len());
         for (k, o) in &self.obs {
-            let feats = Features {
-                liquidity_lamports: o.liquidity_lamports,
-                buy_pressure_bp: buy_pressure_bp(o.buy_base, o.sell_base),
-                unique_buyers: o.buyer_bitset.count_ones(),
-                age_slots: o.age_slots,
-            };
-            // Score = buy-pressure(bps) × liquidity-decade × buyer breadth.
-            // Monotone in each input, saturating, integer-only.
+            if o.trades.len() < NUMERIC_MIN_TRADES {
+                continue;
+            }
+            let ofi_bp = order_flow_imbalance_bps(&o.trades).unwrap_or(0);
+            let cvd = cumulative_volume_delta(&o.trades);
+            let first = o.trades.first().map_or(0, |t| t.price_fp);
+            let last = o.trades.last().map_or(0, |t| t.price_fp);
+            let divergence = classify_divergence(last - first, cvd);
+            let bullish = ofi_bp >= 0
+                && (ofi_bp as u32) >= ofi_min_bp
+                && cvd > 0
+                && divergence != CvdDivergence::Bearish;
+            if !bullish {
+                continue;
+            }
+            let breadth = u64::from(o.buyer_bitset.count_ones()).max(1);
             let liq_decade = decade(o.liquidity_lamports);
-            let score = (feats.buy_pressure_bp as u64)
+            let score = (ofi_bp as u64)
                 .saturating_mul(liq_decade)
-                .saturating_mul((feats.unique_buyers as u64).max(1));
+                .saturating_mul(breadth);
             buf.push(Candidate::new(
                 WlMint::new(*k),
                 WlLane::ActiveMarketScalp,
                 score,
                 now,
-                feats,
+                Features {
+                    liquidity_lamports: o.liquidity_lamports,
+                    buy_pressure_bp: ofi_to_pressure_bp(Some(ofi_bp)),
+                    unique_buyers: o.buyer_bitset.count_ones(),
+                    age_slots: o.age_slots,
+                },
             ));
         }
     }
@@ -352,17 +427,6 @@ impl WalletLane {
     }
 }
 
-/// Buy pressure in basis points: `buy / (buy + sell)`, integer, 10_000 = 100%.
-#[inline]
-#[must_use]
-fn buy_pressure_bp(buy: u128, sell: u128) -> u32 {
-    let total = buy.saturating_add(sell);
-    if total == 0 {
-        return 0;
-    }
-    ((buy.saturating_mul(10_000)) / total) as u32
-}
-
 /// A coarse base-10 magnitude of a lamport quantity (0 → 0, 1..9 → 1, 10..99 → 2 …).
 /// Keeps liquidity/size comparable across many orders of magnitude without a float.
 ///
@@ -378,7 +442,9 @@ fn decade(v: u64) -> u64 {
 }
 
 fn evict_weakest_numeric(obs: &mut BTreeMap<[u8; 32], NumericObs>) {
-    if let Some((&weakest, _)) = obs.iter().min_by_key(|(_, o)| o.buy_base) {
+    // Weakest = fewest observed trades (least microstructure evidence). Deterministic
+    // and cheap; the cap is high enough that laptop replays rarely reach here (§99).
+    if let Some((&weakest, _)) = obs.iter().min_by_key(|(_, o)| o.trades.len()) {
         obs.remove(&weakest);
     }
 }

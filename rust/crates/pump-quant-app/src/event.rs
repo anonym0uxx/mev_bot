@@ -96,6 +96,14 @@ pub enum AppEvent {
     MarketTrade {
         /// The market this trade hit.
         mint: Mint,
+        /// Reserve-derived execution price of this print, fixed-point in
+        /// `pump_quant_features::types::PRICE_SCALE` (1e9) units. Feeds VWAP and
+        /// CVD/price-divergence — the real microstructure the numeric lane scores on
+        /// (§21.7). Integer/fixed-point only (§22).
+        price_fp: i128,
+        /// Quote (lamport) volume of this print. Signed by `signed_base`'s sign into
+        /// CVD (cumulative volume delta) — the primary order-flow-intent proxy.
+        quote_lamports: u64,
         /// Pool quote-reserve depth after the trade, in lamports.
         liquidity_lamports: u64,
         /// Signed base volume of this print (positive = buy, negative = sell).
