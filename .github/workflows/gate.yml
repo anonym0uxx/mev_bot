@@ -44,6 +44,9 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install Python deps (pyyaml for dossier verify)
+        run: python -m pip install --quiet pyyaml
+
       - name: Format check
         working-directory: rust
         run: cargo fmt --all -- --check
