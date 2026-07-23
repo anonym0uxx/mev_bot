@@ -1931,3 +1931,25 @@ re-pinned to net 1,406,102 — the honest representative reference. On that cost
 cost-derived targets marginally OUT-EARN the fixed ladder (+12,620), so constitution and evidence now
 agree. The old 12.55M headline was an artifact of understated costs and must not be cited as live edge.
 Per-law A/B attribution lives in tests/audit_wave2_laws.rs; the re-pin history is in tests/golden_digest.rs._
+
+_Amendment A-5 (2026-07-23, human-directed): Discord is a named REAL-TIME ALPHA-CALL social source
+under §29 (narrative/social) and §6.6 (auxiliary intelligence). Paid alpha rooms the operator
+subscribes to are ingested via a passive, read-only Discord Gateway lane ([S] server; capture code
+laptop-built + fixture-tested in tools/stream-capture-rs). Constitutional placement and laws:
+(1) **SocialPlatform::Discord** (code 8, horizon rank 0 — earliest tier), consumed through the SAME
+parse→ingest→attention path as every other social lane; (2) **AlphaCall discovery lane** — Discord-
+discovered candidates attribute their realized net-SOL to a distinct §71.2 discovery lane so
+reflection can measure whether each PAID ROOM earns its keep (per-source ROI ledger, §29 D-ledger
+spirit) and up/down-weight or retire it; (3) **Designated-caller weight** — a mention from a known
+paid-room caller OR a curated Twitter follow (is_designated_caller) carries elevated attention
+weight, breadth-gated exactly like the §29.6 broadcaster law (one caller = half-formation; genuine
+distinct corroboration completes it), never a blank multiplier; (4) **Alpha is actionable for EXITS**
+— a designated-caller bearish/sell/exit call on a HELD position raises exit pressure REDUCE-ONLY
+(§29.5), never adds or authorizes; (5) **Corroboration-tier, inviolable (§29.8/§6.6)** — Discord
+alpha alone (no on-chain confirmation + numeric microstructure) can NEVER admit an entry; it raises
+rank/earliness and informs exits, but the on-chain + MinimumEconomicTradeGate still fires. Pinned by
+tests/alpha_laws.rs (D2–D5) and the adm=0 invariant. Golden re-pin #14: digest 9156528138145267483,
+net 1,864,780 (+458,678 — an early designated-caller call surfaced a real winner that still passed
+the gate). Operational posture (docs/DISCORD_SOURCE.md): user-token capture is passive, invisible-
+presence, read-only, live-Gateway-only (no REST history scraping), single connection — the safe
+posture for a legitimately-subscribed account; no multi-account rotation / proxy evasion is built._

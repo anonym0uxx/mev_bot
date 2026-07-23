@@ -19,10 +19,10 @@
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pq_stream_capture::{fees, helius_ws, pumpportal_ws, webhook_listener, ws};
+use pq_stream_capture::{discord_gateway, fees, helius_ws, pumpportal_ws, webhook_listener, ws};
 
 const USAGE: &str = "usage: pq-stream-capture \
-<helius-ws|pumpportal|webhook-listener|fee-sampler|selfcheck> [flags...]\n\
+<helius-ws|pumpportal|discord-gateway|webhook-listener|fee-sampler|selfcheck> [flags...]\n\
   helius-ws         Helius Enhanced WS: transactionSubscribe (Developer plan+)\n\
                     + accountSubscribe + slotSubscribe heartbeat.\n\
                     --accounts-file f  --programs p1,p2  --commitment level\n\
@@ -30,6 +30,11 @@ const USAGE: &str = "usage: pq-stream-capture \
                          HELIUS_WS_URL (optional base override)\n\
   pumpportal        PumpPortal data WS: subscribeNewToken + subscribeMigration\n\
                     (+ subscribeTokenTrade from --watch-file). No auth.\n\
+  discord-gateway   PASSIVE read-only Discord Gateway v10 (paid alpha rooms):\n\
+                    invisible presence, only IDENTIFY/RESUME/HEARTBEAT sent,\n\
+                    zero REST. --token-kind user|bot --guilds --channels\n\
+                    --callers --allowlist-file. env: DISCORD_USER_TOKEN or\n\
+                    DISCORD_BOT_TOKEN (per token-kind; exit 3 if missing)\n\
   webhook-listener  Helius enhanced-webhook receiver on loopback (put a\n\
                     TLS-terminating reverse proxy in front). --bind addr\n\
                     env: WEBHOOK_AUTH_SECRET (required, exit 3 if missing)\n\
@@ -95,6 +100,8 @@ fn selfcheck() -> u8 {
         ("WEBHOOK_AUTH_SECRET", "webhook-listener"),
         ("RPC_URLS", "fee-sampler"),
         ("PUMPPORTAL_WS_URL", "pumpportal (optional override)"),
+        ("DISCORD_USER_TOKEN", "discord-gateway (--token-kind user)"),
+        ("DISCORD_BOT_TOKEN", "discord-gateway (--token-kind bot)"),
     ] {
         let status = match std::env::var(var) {
             Ok(v) if !v.trim().is_empty() => "set",
@@ -124,6 +131,7 @@ fn main() -> ExitCode {
     let code = match sub {
         "helius-ws" => helius_ws::run(rest, now_ms),
         "pumpportal" => pumpportal_ws::run(rest, now_ms),
+        "discord-gateway" => discord_gateway::run(rest, now_ms),
         "webhook-listener" => webhook_listener::run(rest, now_ms),
         "fee-sampler" => fees::run(rest, now_ms),
         "selfcheck" => selfcheck(),

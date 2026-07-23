@@ -544,11 +544,24 @@ impl AttentionDecayParams {
     }
 }
 
+/// Per-mint social accumulator: summed quality weight, last observation tick, and
+/// whether the mint was surfaced by a DESIGNATED-caller ALPHA room (LAW D1). The
+/// alpha flag is STICKY — once a paid Discord room calls a mint, that mint's
+/// realized net SOL is attributed to the independent `AlphaCall` discovery lane so
+/// the room earns its keep separately from the open social-caller firehose (§71
+/// reflection integrity). It never touches ranking (both lanes present as the
+/// `CreationSniper` archetype); it only tags the net-SOL attribution key.
+#[derive(Clone, Copy, Debug, Default)]
+struct SocialObs {
+    quality: u64,
+    last: u64,
+    alpha: bool,
+}
+
 /// The social lane: quality-weighted call accumulation. Corroboration-tier.
 #[derive(Clone, Debug, Default)]
 pub struct SocialLane {
-    /// mint → (summed quality weight, last observation tick).
-    obs: BTreeMap<[u8; 32], (u64, u64)>,
+    obs: BTreeMap<[u8; 32], SocialObs>,
 }
 
 impl SocialLane {
@@ -559,17 +572,33 @@ impl SocialLane {
     }
 
     /// Ingest a scored social call at logical `now`. Weak sources contribute
-    /// proportionally less.
+    /// proportionally less. Presents as the open `SocialCaller` discovery lane.
     pub fn observe(&mut self, mint: DomainMint, source_quality_bp: u32, now: u64) {
+        self.observe_lane(mint, source_quality_bp, now, false);
+    }
+
+    /// LAW D1: ingest a scored call from a DESIGNATED-caller Discord ALPHA room —
+    /// identical accumulation, but the mint is marked alpha-sourced so it emits on
+    /// the independent `AlphaCall` discovery lane (sticky; §71 reflection integrity).
+    pub fn observe_alpha(&mut self, mint: DomainMint, source_quality_bp: u32, now: u64) {
+        self.observe_lane(mint, source_quality_bp, now, true);
+    }
+
+    fn observe_lane(&mut self, mint: DomainMint, source_quality_bp: u32, now: u64, alpha: bool) {
         let key = *mint.as_bytes();
         if !self.obs.contains_key(&key) && self.obs.len() >= LANE_TRACK_CAP {
-            if let Some((&weakest, _)) = self.obs.iter().min_by_key(|(_, &(v, _))| v) {
+            if let Some((&weakest, _)) = self.obs.iter().min_by_key(|(_, o)| o.quality) {
                 self.obs.remove(&weakest);
             }
         }
-        let e = self.obs.entry(key).or_insert((0, now));
-        e.0 = e.0.saturating_add(source_quality_bp as u64);
-        e.1 = now;
+        let e = self.obs.entry(key).or_insert(SocialObs {
+            quality: 0,
+            last: now,
+            alpha: false,
+        });
+        e.quality = e.quality.saturating_add(source_quality_bp as u64);
+        e.last = now;
+        e.alpha |= alpha;
     }
 
     /// Emit one candidate per FRESH tracked mint. Score is the summed quality
@@ -583,21 +612,29 @@ impl SocialLane {
     }
 
     /// Append one candidate per fresh tracked mint into `buf` (see [`Self::emit`]).
+    /// An alpha-sourced mint (LAW D1) carries the `AlphaCall` discovery lane; every
+    /// other social call carries `SocialCaller`. Both present as `CreationSniper`,
+    /// so ranking is unchanged — only the net-SOL attribution key differs.
     pub fn emit_into(&self, buf: &mut Vec<Candidate>, now: u64, ttl_ticks: u64) {
         buf.reserve(self.obs.len());
-        for (k, &(w, last)) in &self.obs {
-            if now.saturating_sub(last) > ttl_ticks {
+        for (k, o) in &self.obs {
+            if now.saturating_sub(o.last) > ttl_ticks {
                 continue;
             }
+            let discovery_lane = if o.alpha {
+                DiscoveryLane::AlphaCall
+            } else {
+                DiscoveryLane::SocialCaller
+            };
             buf.push(
                 Candidate::new(
                     WlMint::new(*k),
                     WlLane::CreationSniper,
-                    w,
+                    o.quality,
                     now,
                     Features::default(),
                 )
-                .with_discovery_lane(DiscoveryLane::SocialCaller),
+                .with_discovery_lane(discovery_lane),
             );
         }
     }

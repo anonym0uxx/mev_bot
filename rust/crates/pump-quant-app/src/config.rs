@@ -490,7 +490,50 @@ pub struct Config {
     /// as before (small-bankroll promotion valve or hard refuse), byte-identical.
     /// Default OFF: a new spend channel, report-only until an operator flips it.
     pub probe_budget_enable: bool,
+
+    // ---- §29 Discord paid-alpha lane (Wave-3 LAWs D1–D5) ----
+    /// LAW D1 master switch: treat the `SocialPlatform::Discord` capture lane as a
+    /// realtime designated-caller ALPHA channel. When true, a Discord-discovered
+    /// mint routes to the independent `DiscoveryLane::AlphaCall` (index 5) instead
+    /// of the open `SocialCaller` firehose — so reflection attributes a paid room's
+    /// realized net SOL distinctly (§71 reflection integrity) — and the room is
+    /// bound as the mint's alpha source for the §29.8 per-source outcome ledger
+    /// (LAW D5). Off = Discord calls behave exactly like any other social caller,
+    /// byte-identical. Default ON: a correctness/attribution wiring — it changes NO
+    /// capital decision (the discovery lane never participates in ranking or the
+    /// gate; alpha alone still cannot admit, LAW D4), only WHICH lane earns the
+    /// attribution, so the golden net/counts are unchanged by it on any tape.
+    pub alpha_call_lane_enable: bool,
+    /// LAW D2 master switch: a mention from an `is_designated_caller` author — a
+    /// paid Discord alpha room OR a curated followed key account (X) — carries an
+    /// elevated attention weight. BREADTH-GATED like the live-broadcaster law
+    /// (§29.6), never a blank multiplier: each DISTINCT designated caller adds
+    /// `designated_caller_weight`, and echo/coordinated repeats add zero. Off =
+    /// designated callers weigh like any other mention, byte-identical. Default ON:
+    /// the "known paid-alpha caller / followed key account is high signal" law.
+    pub designated_caller_enable: bool,
+    /// LAW D2 weight: attention units each DISTINCT designated caller adds to the
+    /// weighted level while the call is fresh. Defaulted to half the attention
+    /// formation floor ([`DESIGNATED_CALLER_WEIGHT_DEFAULT`]) so a LONE caller is
+    /// half-formation (below the emergence floor on its own) and only genuine
+    /// distinct corroboration — a second independent designated caller, or organic
+    /// breadth — completes formation (§29 fade-first, §102 rationale).
+    pub designated_caller_weight: u64,
+    /// LAW D3 master switch: a designated-caller call the sentiment brain marks
+    /// BEARISH (a sell / exit / dump signal) on a HELD position raises reduce-only
+    /// exit pressure (§29.5) — it halves the position's stall window and trail cap
+    /// (the existing meta-saturation exit-pressure machinery), accelerating the
+    /// exit. It NEVER adds, authorizes, or sizes up — alpha is actionable for EXITS
+    /// too, within the reduce-only law. Off = a bearish alpha call informs nothing
+    /// on a held position, byte-identical. Default ON: a protective correctness law.
+    pub alpha_exit_pressure_enable: bool,
 }
+
+/// LAW D2 default designated-caller attention weight: half the standard attention
+/// formation floor (`formation_level = 100`), so one caller is half-formation and
+/// genuine distinct corroboration completes it. Mirrors the live-broadcaster
+/// half-formation choice (§29.6/§102) — a documented scale, not fake precision.
+pub const DESIGNATED_CALLER_WEIGHT_DEFAULT: u64 = 50;
 
 /// §24 LAW 2 default: profit margin over the measured cost floor is 1.5× the
 /// round-trip cost. Named const (§102).
@@ -681,6 +724,20 @@ impl Config {
             deployer_screen_enable: false,
             fee_floor_enable: false,
             probe_budget_enable: false,
+
+            // Wave-3 §29 Discord paid-alpha lane (LAWs D1–D5). All three switchable
+            // laws are DEFAULT ON — they are correctness/attribution (D1: route a
+            // paid room to its own AlphaCall lane; the discovery lane never ranks,
+            // so no capital decision changes) and protective/high-signal laws (D2:
+            // a known paid-alpha caller is high signal, breadth-gated; D3: a bearish
+            // alpha sell call accelerates a HELD exit, reduce-only). D4 (alpha alone
+            // can never admit) is a pinned invariant with no toggle; D5 (per-room
+            // net-SOL ledger) rides on D1's binding. Each law's causal effect is
+            // proven on its own hazard tape in alpha_laws.rs.
+            alpha_call_lane_enable: true,
+            designated_caller_enable: true,
+            designated_caller_weight: DESIGNATED_CALLER_WEIGHT_DEFAULT,
+            alpha_exit_pressure_enable: true,
         }
     }
 
@@ -792,6 +849,10 @@ impl Config {
             "deployer_screen_enable" => self.deployer_screen_enable = value != 0,
             "fee_floor_enable" => self.fee_floor_enable = value != 0,
             "probe_budget_enable" => self.probe_budget_enable = value != 0,
+            "alpha_call_lane_enable" => self.alpha_call_lane_enable = value != 0,
+            "designated_caller_enable" => self.designated_caller_enable = value != 0,
+            "designated_caller_weight" => self.designated_caller_weight = nonneg(value)?,
+            "alpha_exit_pressure_enable" => self.alpha_exit_pressure_enable = value != 0,
             "reflect_every_ticks" => self.reflect_every_ticks = nonneg(value)?.max(1),
             "reflect_weight_step_bp" => self.reflect_weight_step_bp = bp(value)?,
             "reflect_weight_floor_bp" => self.reflect_weight_floor_bp = bp(value)?,

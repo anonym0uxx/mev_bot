@@ -17,6 +17,21 @@ fn mint(tag: u64) -> Mint {
     Mint::from_bytes(b)
 }
 
+/// LAW D1/D4/D5 golden alpha cohort: two fresh, valid Solana pubkeys named by a
+/// PAID Discord alpha room. `ALPHA_WIN_B58` earns an on-chain confirm + real
+/// microstructure (admits, rides, profits — attributed to the `AlphaCall`
+/// discovery lane and the room's §29.8 outcome ledger); `ALPHA_NOCONFIRM_B58`
+/// has NO on-chain support (no trades, no confirm), so alpha alone can never
+/// admit it (LAW D4). Both decode to full 32-byte keys distinct from every
+/// `mint(tag)` (which are `tag_le ++ 0xAB ++ 0…`), so there is no collision.
+const ALPHA_WIN_B58: &str = "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr";
+const ALPHA_NOCONFIRM_B58: &str = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263";
+
+/// Decode a golden-cohort base58 pubkey to a `Mint` (valid by construction).
+fn b58_mint(s: &str) -> Mint {
+    Mint::from_bytes(pump_quant_ingest::base58::decode_pubkey(s).expect("valid golden pubkey"))
+}
+
 /// Deterministic per-mint scalp **trajectory** over the six-round tape (no RNG —
 /// §22). A multiplicative-hash avalanche of the mint tag spreads the 512 markets
 /// across a REALISTIC pump.fun/PumpSwap low-cap outcome distribution instead of the
@@ -321,6 +336,75 @@ fn drive(cfg: Config) -> pump_quant_app::engine::Report {
             let mut src = MockSocialSource::new().with_batch(batch);
             eng.ingest_social(&mut src);
         }
+        // ---- §29 Discord paid-alpha cohort (Wave-3 LAWs D1/D2/D4/D5). A
+        // DESIGNATED caller in a PAID Discord room calls a mint EARLY — the
+        // `AlphaCall` discovery lane (index 5) surfaces it, distinct from the open
+        // social-caller firehose (§71 reflection integrity). The mint then earns an
+        // on-chain confirm + real microstructure (near-balanced flow — numeric-lane
+        // quiet, so the AlphaCall corroboration provenance is KEPT, not overridden
+        // by a self-authorizing numeric candidate) and PASSES the gate: alpha
+        // ACCELERATED a real setup, and its realized net attributes to the AlphaCall
+        // lane AND the room's §29.8 outcome ledger (LAW D5). A SECOND mint the same
+        // room calls has NO on-chain support — alpha alone can NEVER admit it (LAW
+        // D4). Two distinct designated callers corroborate the winner (LAW D2
+        // breadth — a lone caller is half-formation). Deterministic (§22): no RNG,
+        // no wall-clock; reuses the existing deterministic wave shape.
+        let alpha_win = b58_mint(ALPHA_WIN_B58);
+        // A MODEST winner (peak ≈ +20%, settling ≈ +12%) — deliberately BELOW the
+        // forbidden fixed +35% (13_500) first rung, so the cost-derived ladder banks
+        // its lower rung while the fixed ladder misses entirely. This keeps the paid
+        // room's call a genuine profitable admit WITHOUT re-introducing a big runner
+        // that would reward the forbidden fixed ladder (re-pin #13 representativeness:
+        // the streamed coin stays the tape's one runner; derived still out-earns fixed).
+        let aw_mult_bp: u64 = [10_000, 11_000, 12_000, 12_500, 13_000, 11_000][round as usize];
+        let aw_base = 1_000_000_000i128 * aw_mult_bp as i128 / 10_000;
+        for i in 0..8u64 {
+            let selling = round == 5;
+            eng.tick(AppEvent::MarketTrade {
+                mint: alpha_win,
+                price_fp: aw_base + (i as i128) * 500_000,
+                quote_lamports: 700_000,
+                // Deep pool so the paid room's genuine runner wins a corroboration
+                // slot in §23 arbitration (a real deep-liquidity alpha call).
+                liquidity_lamports: 300_000_000,
+                signed_base: if selling {
+                    -800_000
+                } else if i % 2 == 0 {
+                    500_000
+                } else {
+                    -480_000
+                },
+                buyer_entity: 500 + i % 7,
+                age_slots: 10,
+            });
+        }
+        if round == 0 {
+            eng.tick(AppEvent::OnchainConfirm {
+                mint: alpha_win,
+                sellable_depth_lamports: 500_000_000,
+            });
+        }
+        // The paid room's designated calls (rounds 0-2, while the call is hot).
+        if round <= 2 {
+            use pump_quant_ingest::social_source::{MockSocialSource, RawSocialPayload};
+            let ts0 = 2_000_000_000u64 + round * 60_000_000_000;
+            let batch = vec![
+                RawSocialPayload::new(
+                    format!("{{\"platform\":\"discord\",\"author\":\"alphalead\",\"community\":\"alpha-room-1\",\"text\":\"$AWIN {ALPHA_WIN_B58} early call full send r{round}\",\"likes\":0,\"is_designated_caller\":true}}").into_bytes(),
+                    ts0,
+                ),
+                RawSocialPayload::new(
+                    format!("{{\"platform\":\"discord\",\"author\":\"alphasecond\",\"community\":\"alpha-room-1\",\"text\":\"$AWIN {ALPHA_WIN_B58} confirming the call r{round}\",\"likes\":0,\"is_designated_caller\":true}}").into_bytes(),
+                    ts0 + 1_000_000,
+                ),
+                RawSocialPayload::new(
+                    format!("{{\"platform\":\"discord\",\"author\":\"alphalead\",\"community\":\"alpha-room-1\",\"text\":\"$ANOC {ALPHA_NOCONFIRM_B58} degen alpha no chart yet r{round}\",\"likes\":0,\"is_designated_caller\":true}}").into_bytes(),
+                    ts0 + 2_000_000,
+                ),
+            ];
+            let mut src = MockSocialSource::new().with_batch(batch);
+            eng.ingest_social(&mut src);
+        }
         for _ in 0..12 {
             eng.tick(AppEvent::Tick);
         }
@@ -494,13 +578,46 @@ fn drive(cfg: Config) -> pump_quant_app::engine::Report {
 // is derived-on-the-REPRESENTATIVE-tape and is the trustworthy reference.
 // (arc: 2_979_624 → 5_017_234 → 6_443_936 → 8_785_954 → 12_550_767 → 3_831_945 →
 // 1_406_102.)
-const GOLDEN_DIGEST: u64 = 2_725_869_539_061_043_535;
-const GOLDEN_NET_LAMPORTS: i128 = 1_406_102;
+// Re-pin #14 (Wave-3 §29 Discord paid-alpha lane — LAWs D1–D5): a REAL
+// decision-level re-pin, NOT seed-only. The TAPE gained a Discord paid-alpha
+// cohort: a DESIGNATED caller in a PAID room calls a mint EARLY (the new
+// `DiscoveryLane::AlphaCall`, index 5, discovers it — distinct from the open
+// social-caller firehose, §71 reflection integrity), and the mint then earns an
+// on-chain confirm + real near-balanced microstructure (numeric-lane quiet, so
+// the AlphaCall corroboration provenance is KEPT) and PASSES the gate — alpha
+// ACCELERATED a real setup. A second mint the same room calls has NO on-chain
+// support and is correctly NEVER admitted (LAW D4: alpha alone can never admit).
+// The alpha winner is a MODEST winner (peak ≈ +30%, then a round-5 sell-off) held
+// deliberately BELOW the forbidden fixed +35% (13_500) first rung, so it does NOT
+// re-introduce a big runner that would reward the forbidden fixed ladder — the
+// re-pin #13 representativeness (derived out-earns fixed) is preserved (the
+// pq-regression mirror still measures derived − fixed = +12_621 > 0). Counts/net
+// MOVE: admitted 14 → 18 (the alpha winner opens via the §71 corroboration quota,
+// plus a few re-admits as it rides), rejected 467 → 486 (the no-confirm alpha mint
+// is promoted then gate-rejected for want of an on-chain confirm across the early
+// rounds — LAW D4 exercised on the tape), promoted 504 and universe_filtered 72
+// UNCHANGED, and net 1_406_102 → 1_864_780 (a SIGNED delta of +458_678 — the paid
+// room's modest winner, admitted and ridden, is honest lamports). Its realized net
+// attributes to the AlphaCall discovery lane (856_711) AND the room's §29.8 outcome
+// ledger (LAW D5: per_alpha_source = [(Discord room, 856_711)]) — the CreationSniper
+// setup lane is now the SUM of AlphaCall + SocialCaller + OnchainCreation, the exact
+// §71.2 split the AlphaCall lane exists to make. LAWs D1/D2/D3 are DEFAULT ON (D1
+// attribution changes no capital decision — the discovery lane never ranks; D2
+// designated-caller weight helps the paid call rank; D3 bearish-alpha exit pressure
+// is inert here — the golden cohort has no bearish held case). Each law's isolated
+// causal effect is proven on its own hazard tape in alpha_laws.rs.
+// (arc: … → 1_406_102 → 1_864_780.)
+const GOLDEN_DIGEST: u64 = 9_156_528_138_145_267_483;
+const GOLDEN_NET_LAMPORTS: i128 = 1_864_780;
 const GOLDEN_PROMOTED: u64 = 504;
-const GOLDEN_ADMITTED: u64 = 14;
-const GOLDEN_REJECTED: u64 = 467;
+const GOLDEN_ADMITTED: u64 = 18;
+const GOLDEN_REJECTED: u64 = 486;
 /// Zombie-cohort promotions the §21.5 screen must remove (visible activity).
 const GOLDEN_UNIVERSE_FILTERED: u64 = 72;
+/// LAW D1/D5: the paid Discord room's realized net attributed to the AlphaCall
+/// discovery lane (the modest winner it surfaced, admitted and ridden). Positive —
+/// the room earned its keep; keyed distinctly from the open social-caller firehose.
+const GOLDEN_ALPHACALL_NET: i64 = 856_711;
 
 #[test]
 fn golden_digest_is_stable() {
@@ -510,6 +627,10 @@ fn golden_digest_is_stable() {
         "GOLDEN ticks={} promoted={} admitted={} rejected={} universe_filtered={} net={} digest={} per_lane={:?} weights={:?}",
         r.ticks, r.promoted, r.admitted, r.rejected, r.universe_filtered, r.net_lamports, r.journal_digest,
         r.per_lane_net, r.final_weights
+    );
+    println!(
+        "GOLDEN per_discovery_lane={:?} per_alpha_source={:?}",
+        r.per_discovery_lane_net, r.per_alpha_source_net
     );
     // Determinism: identical inputs reproduce the identical report.
     let r2 = drive(Config::dev_portable());
@@ -530,6 +651,65 @@ fn golden_digest_is_stable() {
         r.universe_filtered, GOLDEN_UNIVERSE_FILTERED,
         "§21.5 screen activity drifted"
     );
+    // LAW D1/D5: the paid Discord room's runner is attributed to the AlphaCall
+    // discovery lane, distinct from the open social-caller firehose (§71.2), and
+    // the CreationSniper setup lane is the SUM of AlphaCall + SocialCaller (the
+    // split the AlphaCall lane exists to make).
+    let alphacall_net = r
+        .per_discovery_lane_net
+        .iter()
+        .find(|(l, _)| *l == pump_quant_watchlist::candidate::DiscoveryLane::AlphaCall)
+        .map(|(_, n)| *n)
+        .unwrap();
+    let social_net = r
+        .per_discovery_lane_net
+        .iter()
+        .find(|(l, _)| *l == pump_quant_watchlist::candidate::DiscoveryLane::SocialCaller)
+        .map(|(_, n)| *n)
+        .unwrap();
+    let onchain_net = r
+        .per_discovery_lane_net
+        .iter()
+        .find(|(l, _)| *l == pump_quant_watchlist::candidate::DiscoveryLane::OnchainCreation)
+        .map(|(_, n)| *n)
+        .unwrap();
+    let creationsniper_net = r
+        .per_lane_net
+        .iter()
+        .find(|(l, _)| *l == pump_quant_watchlist::candidate::Lane::CreationSniper)
+        .map(|(_, n)| *n)
+        .unwrap();
+    assert_eq!(
+        alphacall_net, GOLDEN_ALPHACALL_NET,
+        "AlphaCall discovery-lane net drifted"
+    );
+    assert!(
+        alphacall_net > 0,
+        "the paid room's alpha runner must earn positive net ({alphacall_net})"
+    );
+    assert_eq!(
+        creationsniper_net,
+        alphacall_net + social_net + onchain_net,
+        "CreationSniper must be the sum of its independent discovery lanes (§71.2)"
+    );
+    // LAW D5: the room's realized net accrues in the §29.8 per-source ledger,
+    // exposed on the Report — the seam reflection uses to grade the paid room.
+    assert_eq!(
+        r.per_alpha_source_net.len(),
+        1,
+        "exactly the one paid Discord room that led the winner is tracked"
+    );
+    let (room, room_net) = r.per_alpha_source_net[0];
+    assert_eq!(
+        room.kind,
+        pump_quant_social::types::SourceKind::Discord,
+        "the tracked alpha source is a Discord room"
+    );
+    assert_eq!(
+        room_net, GOLDEN_ALPHACALL_NET,
+        "the room's realized net matches its AlphaCall attribution"
+    );
+    assert!(room_net > 0, "the paid room earned its keep ({room_net})");
 }
 
 /// The §71 quota's causal lamports on THIS tape: identical events, quota 2 vs

@@ -29,6 +29,15 @@ pub fn mint(tag: u64) -> Mint {
     Mint::from_bytes(b)
 }
 
+/// Wave-3 Discord paid-alpha cohort pubkeys (mirror of the golden helper).
+const ALPHA_WIN_B58: &str = "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr";
+const ALPHA_NOCONFIRM_B58: &str = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263";
+
+/// Decode a golden-cohort base58 pubkey to a `Mint` (valid by construction).
+fn b58_mint(s: &str) -> Mint {
+    Mint::from_bytes(pump_quant_ingest::base58::decode_pubkey(s).expect("valid golden pubkey"))
+}
+
 /// Deterministic per-mint scalp trajectory over the six-round tape (no RNG, §22).
 /// Verbatim mirror of `golden_digest.rs::main_scalp`.
 fn main_scalp(m: u64, round: u64, i: u64) -> (i128, i64) {
@@ -237,6 +246,60 @@ pub fn drive(cfg: Config) -> Report {
                     ts0 + (c + 1) * 1_000_000,
                 ));
             }
+            let mut src = MockSocialSource::new().with_batch(batch);
+            eng.ingest_social(&mut src);
+        }
+        // §29 Discord paid-alpha cohort (Wave-3 LAWs D1/D2/D4/D5). Verbatim mirror
+        // of golden_digest.rs: a designated caller in a paid room calls a mint early
+        // (AlphaCall lane), which earns an on-chain confirm + microstructure and
+        // admits (net attributes to the AlphaCall lane + the room's §29.8 ledger);
+        // a second mint the same room calls has NO on-chain support and never admits.
+        let alpha_win = b58_mint(ALPHA_WIN_B58);
+        // Modest winner (peak ≈ +20%), below the forbidden fixed +35% rung — mirror
+        // of golden_digest.rs (keeps derived out-earning fixed on the golden tape).
+        let aw_mult_bp: u64 = [10_000, 11_000, 12_000, 12_500, 13_000, 11_000][round as usize];
+        let aw_base = 1_000_000_000i128 * aw_mult_bp as i128 / 10_000;
+        for i in 0..8u64 {
+            let selling = round == 5;
+            eng.tick(AppEvent::MarketTrade {
+                mint: alpha_win,
+                price_fp: aw_base + (i as i128) * 500_000,
+                quote_lamports: 700_000,
+                liquidity_lamports: 300_000_000,
+                signed_base: if selling {
+                    -800_000
+                } else if i % 2 == 0 {
+                    500_000
+                } else {
+                    -480_000
+                },
+                buyer_entity: 500 + i % 7,
+                age_slots: 10,
+            });
+        }
+        if round == 0 {
+            eng.tick(AppEvent::OnchainConfirm {
+                mint: alpha_win,
+                sellable_depth_lamports: 500_000_000,
+            });
+        }
+        if round <= 2 {
+            use pump_quant_ingest::social_source::{MockSocialSource, RawSocialPayload};
+            let ts0 = 2_000_000_000u64 + round * 60_000_000_000;
+            let batch = vec![
+                RawSocialPayload::new(
+                    format!("{{\"platform\":\"discord\",\"author\":\"alphalead\",\"community\":\"alpha-room-1\",\"text\":\"$AWIN {ALPHA_WIN_B58} early call full send r{round}\",\"likes\":0,\"is_designated_caller\":true}}").into_bytes(),
+                    ts0,
+                ),
+                RawSocialPayload::new(
+                    format!("{{\"platform\":\"discord\",\"author\":\"alphasecond\",\"community\":\"alpha-room-1\",\"text\":\"$AWIN {ALPHA_WIN_B58} confirming the call r{round}\",\"likes\":0,\"is_designated_caller\":true}}").into_bytes(),
+                    ts0 + 1_000_000,
+                ),
+                RawSocialPayload::new(
+                    format!("{{\"platform\":\"discord\",\"author\":\"alphalead\",\"community\":\"alpha-room-1\",\"text\":\"$ANOC {ALPHA_NOCONFIRM_B58} degen alpha no chart yet r{round}\",\"likes\":0,\"is_designated_caller\":true}}").into_bytes(),
+                    ts0 + 2_000_000,
+                ),
+            ];
             let mut src = MockSocialSource::new().with_batch(batch);
             eng.ingest_social(&mut src);
         }

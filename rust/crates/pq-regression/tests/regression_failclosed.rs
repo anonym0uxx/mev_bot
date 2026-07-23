@@ -285,6 +285,7 @@ fn live_chatter_breadth_is_bounded_and_deterministic() {
                     aggregator: false,
                     bearish: false,
                     mainstream: false,
+                    designated_caller: false,
                 },
             );
         }

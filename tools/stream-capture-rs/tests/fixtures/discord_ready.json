@@ -1,0 +1,1 @@
+{"op":0,"s":1,"t":"READY","d":{"v":10,"user":{"id":"100000000000000001","username":"operatorself","global_name":"Operator","bot":false},"session_id":"a1b2c3d4e5f6072839405162738495a0","resume_gateway_url":"wss://gateway-us-east1-b.discord.gg","guilds":[{"id":"555000000000000001","unavailable":true}],"application":{"id":"100000000000000001","flags":0}}}

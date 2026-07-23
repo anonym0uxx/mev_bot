@@ -15,6 +15,7 @@ no tungstenite.
 |---|---|---|---|
 | `helius-ws` | Enhanced WebSocket: `transactionSubscribe` (+ `accountSubscribe`, `slotSubscribe` heartbeat) | `HELIUS_API_KEY` (required, exit 3 if missing); `HELIUS_WS_URL` (optional base override, e.g. `wss://beta.helius-rpc.com`) | **Developer+** for `transactionSubscribe`; account/slot subs work on all plans |
 | `pumpportal` | PumpPortal `wss://pumpportal.fun/api/data`: `subscribeNewToken` + `subscribeMigration` (+ `subscribeTokenTrade` via `--watch-file`) | none (`PUMPPORTAL_WS_URL` override for testing only) | n/a (free; one socket per process, per PumpPortal's rules) |
+| `discord-gateway` | **Passive** Discord Gateway v10 (`wss://gateway.discord.gg/?v=10&encoding=json`): live MESSAGE_CREATE capture from the operator's paid alpha rooms, invisible presence | `DISCORD_USER_TOKEN` or `DISCORD_BOT_TOKEN` (per `--token-kind`; required, exit 3 if the selected one is missing); `DISCORD_GATEWAY_URL` (optional override, testing) | n/a (Discord, not Helius) |
 | `webhook-listener` | Helius **enhanced webhooks** (whale / address-activity) | `WEBHOOK_AUTH_SECRET` (required, exit 3 if missing) | **all plans** (webhooks are plan-independent) |
 | `fee-sampler` | `getPriorityFeeEstimate` + `getRecentPrioritizationFees` → `fee_calibration_v1` records | `RPC_URLS` (comma-separated priority list) or `HELIUS_API_KEY` fallback; neither → exit 3 | fee API costs **1 credit/call** (any paid plan; the standard method works on any provider) |
 | `selfcheck` | codec self-tests + env status (set/missing only — values never printed) | — | — |
@@ -30,6 +31,73 @@ headers are counted 401s. The listener ACKs `200 ok` immediately after reading
 the body — Helius retries only 3× before dropping a delivery — and only then
 parses/emits. Deliveries are deduped by transaction signature (bounded ring,
 8192).
+
+## Discord Gateway lane (passive alpha capture)
+
+`discord-gateway` is a **passive, read-only** Discord Gateway v10 client that
+monitors paid alpha servers the operator **legitimately subscribes to** and
+captures the live message push. The whole design is "behave exactly like a
+normal, well-behaved client" — that posture is what keeps a legit account in
+good standing; it is **not** an evasion tool.
+
+**Passive / invisible / read-only — and why it is the safe stance.** A legit
+paid account is flagged when it behaves like a *scraper*, not when it reads
+messages it is entitled to. So this lane:
+
+* sends only three Gateway ops, ever — `IDENTIFY` (op 2), `RESUME` (op 6),
+  `HEARTBEAT` (op 1). It never sends a message, typing indicator, reaction, or
+  any presence update beyond the single `invisible` IDENTIFY.
+* makes **zero REST calls** — no message-history fetch. History scraping is
+  exactly the access pattern that trips detection; we consume only the live
+  Gateway push, which is what a normal client at rest does.
+* identifies with `presence.status = "invisible"` — a first-class Discord
+  feature, the supported "incognito" posture: the account shows offline to the
+  room while still receiving messages.
+* keeps the socket warm with Gateway op-1 heartbeats only. It deliberately does
+  **not** send RFC 6455 WS pings (the shared client can, but this lane does not
+  drive it) — a real Discord client heartbeats at the Gateway layer, so adding
+  WS pings would be an atypical fingerprint. It still auto-replies to server
+  pings, which is normal.
+
+**User vs. bot token (`--token-kind user|bot`, default `user`).** Both tokens
+go **raw** into `IDENTIFY.token` for the Gateway — the `Bot ` prefix is only for
+REST `Authorization` headers, which this lane does not use. In practice a **bot
+usually cannot be added to a paid alpha room** (that needs the server owner's
+invite/Manage-Server), so capturing a room the *operator* pays for is typically
+a **user token**. `MESSAGE_CONTENT` is a privileged intent for bots but is
+present-by-default for user tokens. Choosing `bot` reads `DISCORD_BOT_TOKEN`;
+`user` reads `DISCORD_USER_TOKEN`; the selected-but-missing token is fail-closed
+exit 3.
+
+**Config — allowlist and callers.** Only the operator's rooms are captured;
+everything else is dropped before emit.
+
+* `--guilds id,id` / `--channels id,id` — allowlisted server / channel ids. An
+  empty dimension imposes no constraint on that dimension, so configure at
+  least one.
+* `--callers id,id` — author ids of the high-signal alpha callers; their
+  messages are tagged `"is_designated_caller":true`.
+* `--allowlist-file f` — one entry per line, `guild:<id>` / `channel:<id>` /
+  `caller:<id>`, `#` comments allowed; composes with the CLI flags.
+* `--client-os` / `--client-browser` / `--client-device` — the IDENTIFY
+  `properties` fingerprint (default `Windows` / `Discord Client` / `desktop`, a
+  plausible normal-client identity, not a spoof of a specific victim).
+* `--heartbeat-jitter-seed N` — optional deterministic first-heartbeat jitter
+  (see "Reconnect / staleness").
+
+**Env:** `DISCORD_USER_TOKEN` **or** `DISCORD_BOT_TOKEN` (per `--token-kind`);
+`DISCORD_GATEWAY_URL` overrides the endpoint for local testing only. Tokens are
+read from env, never flags, and are **never printed** (including by
+`selfcheck`, which reports only set/missing).
+
+**What this deliberately does NOT do (out of scope by design):**
+
+* **No REST history scraping** — no `GET /channels/:id/messages`, no backfill;
+  live Gateway push only.
+* **No multi-account rotation** — one process, one account, one socket.
+* **No proxy cycling / IP rotation / evasion** of any kind.
+* **No fake activity** — no typing, no reactions, no presence churn, no
+  visible online status. Invisible and silent is the entire posture.
 
 ## Server-only gRPC build
 
@@ -68,6 +136,11 @@ the WS lane here can only log the gap it cannot replay
 {"lane":"helius_ws","recv_unix_ms":...,"sub":"transaction|account|slot","raw":<params.result untouched>}
 {"lane":"pumpportal","recv_unix_ms":...,"raw":<frame payload verbatim>}
 {"lane":"helius_webhook","recv_unix_ms":...,"raw":<enhanced tx object untouched>}
+{"lane":"discord","recv_unix_ms":...,"raw":<MESSAGE_CREATE `d` payload untouched>}
+{"lane":"discord_alpha","platform":"discord","guild_id":...,"channel_id":...,"author_id":...,
+ "author":<username>,"community":<channel or guild id>,"content":<msg text>,
+ "is_designated_caller":true|false,"ts":<snowflake→unix ms>,
+ "cashtags":["WIF",...],"mints":["<base58 pubkey>",...]}
 {"lane":"whale","recv_unix_ms":...,"sig":...,"slot":...,"ts":...,"kind":"SWAP|TRANSFER|...",
  "wallets":[...],"mints":[...],"native_moved_lamports":N,
  "largest_token_move":{"mint":...,"amount":<raw number text>}|null}
@@ -91,6 +164,19 @@ no slot notification (mainnet slots tick ~400 ms), `pumpportal` after 60 s of
 total silence. WS has no replay: gap width is logged on resume; replay is the
 gRPC lane's job.
 
+`discord-gateway` runs the **Gateway** heartbeat/resume state machine on top of
+the same reconnect ladder: it reads `heartbeat_interval` from HELLO (op 10),
+beats with op 1 carrying the last sequence `s`, tracks HEARTBEAT_ACK (op 11) and
+force-reconnects a **zombie** connection (a heartbeat un-ACKed for `interval *
+1.5`); it resumes with op 6 on op 7 RECONNECT / op 9 resumable and re-IDENTIFYs
+on op 9 non-resumable, and its staleness watchdog fires after 120 s with no
+Gateway frame at all. First-heartbeat jitter: the Discord docs jitter the first
+beat by `interval * random[0,1)` to de-sync fleets; this crate is
+RNG-free/deterministic, so the default sends the first beat at the full interval
+(the natural cadence boundary — safe for a single client) and
+`--heartbeat-jitter-seed N` gives a deterministic fraction `N/1000` of the
+interval instead.
+
 ## Vendored dependencies (build offline)
 
 crates.io is not reachable from the authoring environment. To build/test,
@@ -111,12 +197,17 @@ tree are NEVER committed.
 
 ## Tests
 
-`cargo test` — 122 tests, no network except webhook loopback: RFC 6455 codec
+`cargo test` — 182 tests, no network except webhook loopback: RFC 6455 codec
 vectors (masked/unmasked/fragmented/control, 125/126/127 length boundaries,
 adversarial truncation at every byte offset must need-more, never panic;
 byte-bomb declared lengths rejected before allocation), SHA-1 RFC 3174
 vectors incl. the million-'a' message, handshake accept vector, fixture-driven
 classification/normalization for every lane, RPC failover state machine on a
 mock transport, integer-exact percentiles, loopback webhook auth/dedupe/413
-flow. `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check`
-both clean.
+flow. The Discord Gateway lane adds 48 tests: opcode/dispatch routing, the
+IDENTIFY bitmask (`33281`)/invisible-presence/raw-token shape, RESUME-vs-
+re-IDENTIFY on op 7 vs op 9, snowflake→unix decode, heartbeat seq + zombie
+deadline (`interval * 1.5`), allowlist filtering, designated-caller tagging,
+cashtag+mint extraction, dedupe idempotency, the exact `discord_alpha` key set,
+missing-token→exit-3, and frame-parser fuzz (truncated/garbage never panics).
+`cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` both clean.

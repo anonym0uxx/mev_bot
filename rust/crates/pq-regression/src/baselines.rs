@@ -17,37 +17,38 @@
 
 /// Byte-exact decision-journal digest of the golden tape under
 /// `Config::dev_portable`. The primary determinism fingerprint (§22/§54).
-pub const GOLDEN_DIGEST: u64 = 2_725_869_539_061_043_535;
+pub const GOLDEN_DIGEST: u64 = 9_156_528_138_145_267_483;
 /// Realized net-SOL (lamports) on the golden tape (§24-compliant cost-derived).
-pub const GOLDEN_NET_LAMPORTS: i128 = 1_406_102;
+pub const GOLDEN_NET_LAMPORTS: i128 = 1_864_780;
 /// Candidates promoted to the gate.
 pub const GOLDEN_PROMOTED: u64 = 504;
 /// Candidates admitted by the gate.
-pub const GOLDEN_ADMITTED: u64 = 14;
+pub const GOLDEN_ADMITTED: u64 = 18;
 /// Candidates rejected by the gate.
-pub const GOLDEN_REJECTED: u64 = 467;
+pub const GOLDEN_REJECTED: u64 = 486;
 /// Zombie-cohort promotions the §21.5 universe screen removes (visible activity).
 pub const GOLDEN_UNIVERSE_FILTERED: u64 = 72;
 
 /// Net-SOL on the golden tape with the §24 cost-derived ladder DISABLED — i.e.
 /// the forbidden fixed 13_500/25_000/50_000 ladder. Pinned so the §24 reversal's
-/// decision-level effect (derived out-earns fixed here by +12_620) can never be
-/// silently dead-coded. Source: golden_digest.rs re-pin #13 note.
-pub const GOLDEN_NET_FIXED_LADDER: i128 = 1_393_482;
+/// decision-level effect (derived out-earns fixed here by +12_621) can never be
+/// silently dead-coded. Source: golden_digest.rs re-pin #13/#14 notes.
+pub const GOLDEN_NET_FIXED_LADDER: i128 = 1_852_159;
 
 /// The margin by which the §24 cost-derived default out-earns the forbidden fixed
 /// ladder on the representative golden tape (re-pin #13: "derived now marginally
-/// OUT-earns fixed (+12_620), the pathology inverted"). Mirror of
-/// `GOLDEN_NET_LAMPORTS - GOLDEN_NET_FIXED_LADDER`; the manifest test proves the
-/// identity so a drift in either net is caught here too.
-pub const GOLDEN_DERIVED_MINUS_FIXED: i128 = 12_620;
+/// OUT-earns fixed", preserved through the re-pin #14 Discord alpha cohort — the
+/// modest alpha winner peaks BELOW the fixed +35% rung so it never rewards the
+/// forbidden ladder). Mirror of `GOLDEN_NET_LAMPORTS - GOLDEN_NET_FIXED_LADDER`;
+/// the manifest test proves the identity so a drift in either net is caught here.
+pub const GOLDEN_DERIVED_MINUS_FIXED: i128 = 12_621;
 
-/// The full net-SOL re-pin ARC narrated in `golden_digest.rs` (re-pins #1→#13).
+/// The full net-SOL re-pin ARC narrated in `golden_digest.rs` (re-pins #1→#14).
 /// The LAST element is the live [`GOLDEN_NET_LAMPORTS`]; the manifest test proves
 /// that identity, so an undocumented golden re-pin that forgot to extend the arc,
 /// or a net drift, fails against this mirror. Source: the "(arc: …)" annotations.
 pub const GOLDEN_NET_ARC: &[i128] = &[
-    2_979_624, 5_017_234, 6_443_936, 8_785_954, 12_550_767, 3_831_945, 1_406_102,
+    2_979_624, 5_017_234, 6_443_936, 8_785_954, 12_550_767, 3_831_945, 1_406_102, 1_864_780,
 ];
 
 /// The single REAL decision-level signed delta re-pin #12 recorded on the
@@ -87,6 +88,12 @@ pub const LAW_BOOL_DEFAULTS: &[(&str, bool)] = &[
     ("fee_floor_enable", false),
     // §33 probe-budget sizing — OFF.
     ("probe_budget_enable", false),
+    // §29 Discord paid-alpha lane (Wave-3 LAW D1) — attribution/correctness, ON.
+    ("alpha_call_lane_enable", true),
+    // §29 designated-caller attention weight (Wave-3 LAW D2) — high-signal, ON.
+    ("designated_caller_enable", true),
+    // §29.5 bearish-alpha reduce-only exit pressure (Wave-3 LAW D3) — protective, ON.
+    ("alpha_exit_pressure_enable", true),
 ];
 
 /// A pinned integer law parameter that gates a batch-E law's behaviour:

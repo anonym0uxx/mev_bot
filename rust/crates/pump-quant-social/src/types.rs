@@ -73,3 +73,81 @@ pub enum SourceState {
     /// Not enough reconciled evidence to classify — the fade-first default.
     InsufficientSample,
 }
+
+/// The platform KIND of a social source (§29 provenance), so realized-outcome
+/// attribution never collapses two sources that merely share a numeric id.
+///
+/// A `source_id: u64` alone is ambiguous across platforms — a Discord room and an
+/// X account can both hash to the same `u64`. Pairing the id with its kind in a
+/// [`SourceRef`] keeps a paid Discord ALPHA room's realized net SOL distinct from
+/// every other source, which is what lets reflection up/down-weight or retire that
+/// specific room (§29.8). The discriminant `code` is intentionally aligned with
+/// the ingest `SocialPlatform::code`, but this crate stays dependency-free so the
+/// alignment is documented, not a compile-time coupling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SourceKind {
+    /// Twitter / X account (incl. the curated-follow designated-caller set).
+    X,
+    /// TikTok creator.
+    TikTok,
+    /// Telegram call channel.
+    Telegram,
+    /// General web / news source.
+    Web,
+    /// Twitch live-stream broadcaster.
+    Twitch,
+    /// Pump.fun venue-native commenter.
+    Pump,
+    /// Aggregator surface (e.g. CoinGecko).
+    Aggregator,
+    /// Discord alpha room (paid/curated designated-caller community).
+    Discord,
+}
+
+impl SourceKind {
+    /// Stable journalling code, aligned with `SocialPlatform::code` in the ingest
+    /// crate (X=1 … Aggregator=7, Discord=8). Total; never panics.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        match self {
+            SourceKind::X => 1,
+            SourceKind::TikTok => 2,
+            SourceKind::Telegram => 3,
+            SourceKind::Web => 4,
+            SourceKind::Twitch => 5,
+            SourceKind::Pump => 6,
+            SourceKind::Aggregator => 7,
+            SourceKind::Discord => 8,
+        }
+    }
+}
+
+/// A fully-qualified social source identity: a [`SourceKind`] plus a per-source /
+/// per-room id (e.g. an account id, or the FNV hash of a Discord room name).
+///
+/// This is the realized-outcome attribution key (§29.8/§71): keying on the pair
+/// keeps a Discord alpha room's net SOL separate from an X account that happens to
+/// share the same numeric id. `Copy` + total `Ord` so it is a deterministic map
+/// key with no hashing randomness (§22).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SourceRef {
+    /// The platform kind of the source.
+    pub kind: SourceKind,
+    /// The per-source / per-room id within that kind.
+    pub id: u64,
+}
+
+impl SourceRef {
+    /// Construct a source reference from its kind and per-source id.
+    #[must_use]
+    pub const fn new(kind: SourceKind, id: u64) -> Self {
+        Self { kind, id }
+    }
+
+    /// A Discord alpha-room source keyed by a per-room id (convenience for the
+    /// lane the engine will feed).
+    #[must_use]
+    pub const fn discord(room_id: u64) -> Self {
+        Self::new(SourceKind::Discord, room_id)
+    }
+}

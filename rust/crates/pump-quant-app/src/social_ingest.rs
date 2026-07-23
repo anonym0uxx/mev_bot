@@ -54,6 +54,16 @@ pub fn to_mention(ev: &SocialEvent) -> Mention {
 /// streamer speaking in their own channel); `echo_or_coordinated` folds the
 /// event's echo flag with the caller-computed coordination verdict so neither
 /// reposts nor copy-paste blasts ever count as live-chat breadth.
+///
+/// LAW D1/D2 (§29): a `SocialPlatform::Discord` alpha room is a realtime
+/// designated-caller channel — its calls are marked `designated_caller` (the
+/// elevated attention-weight provenance, D2), the same flag a curated followed X
+/// account carries. `designated_caller` is the normalized event's
+/// `is_designated_caller` (uniform across platforms), so it is set for BOTH a
+/// Discord room and a curated X follow — structural provenance, never a
+/// per-platform trust weight (§29.8). A coordinated copy-paste blast can never
+/// masquerade as a designated call: the distinct-caller breadth gate excludes
+/// echo/coordinated mentions in the attention field.
 #[must_use]
 pub fn provenance_of(ev: &SocialEvent, is_coordinated: bool) -> MentionProvenance {
     let realtime = ev.platform == SocialPlatform::Twitch;
@@ -71,6 +81,10 @@ pub fn provenance_of(ev: &SocialEvent, is_coordinated: bool) -> MentionProvenanc
         aggregator: ev.aggregator_listed || ev.platform == SocialPlatform::Aggregator,
         bearish: is_bearish(ev),
         mainstream,
+        // LAW D2 §29: a designated caller (paid Discord alpha room / curated X
+        // follow) is high signal — the `is_designated_caller` capture flag, uniform
+        // across platforms. Never assumed: absent ⇒ false (fade-first, §29.8).
+        designated_caller: ev.is_designated_caller,
     }
 }
 

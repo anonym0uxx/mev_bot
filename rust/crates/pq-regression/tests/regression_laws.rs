@@ -41,6 +41,9 @@ fn bool_field(cfg: &Config, key: &str) -> Option<bool> {
         "deployer_screen_enable" => cfg.deployer_screen_enable,
         "fee_floor_enable" => cfg.fee_floor_enable,
         "probe_budget_enable" => cfg.probe_budget_enable,
+        "alpha_call_lane_enable" => cfg.alpha_call_lane_enable,
+        "designated_caller_enable" => cfg.designated_caller_enable,
+        "alpha_exit_pressure_enable" => cfg.alpha_exit_pressure_enable,
         _ => return None,
     })
 }
@@ -119,6 +122,15 @@ fn law_toggle_flips() -> Vec<(&'static str, fn(&mut Config))> {
         }),
         ("probe_budget_enable", |c| {
             c.probe_budget_enable = !c.probe_budget_enable
+        }),
+        ("alpha_call_lane_enable", |c| {
+            c.alpha_call_lane_enable = !c.alpha_call_lane_enable
+        }),
+        ("designated_caller_enable", |c| {
+            c.designated_caller_enable = !c.designated_caller_enable
+        }),
+        ("alpha_exit_pressure_enable", |c| {
+            c.alpha_exit_pressure_enable = !c.alpha_exit_pressure_enable
         }),
         ("universe_age_exempt_slots", |c| {
             c.universe_age_exempt_slots = c.universe_age_exempt_slots.wrapping_add(1)

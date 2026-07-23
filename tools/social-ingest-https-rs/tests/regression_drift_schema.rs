@@ -71,25 +71,37 @@ fn birdeye_drift_sentinel_fires_on_perturbed_ohlcv_fixture() {
 
     // … perturb the fixture by RENAMING a key in the item's object (a genuine
     // key-set change, not a reorder). Re-fingerprint the same lane path.
-    let perturbed_text = fixture_text("birdeye_ohlcv.json").replace("\"unixTime\"", "\"unix_time\"");
+    let perturbed_text =
+        fixture_text("birdeye_ohlcv.json").replace("\"unixTime\"", "\"unix_time\"");
     let perturbed = json::parse(&perturbed_text).unwrap();
     let p_kind = birdeye::classify(&perturbed).expect("still classifies");
     let p_target = birdeye::shape_target(p_kind, &perturbed).expect("shape target");
     let p_hash = shape_hash(p_target).expect("hashable object");
 
-    assert_ne!(base_hash, p_hash, "renaming a key MUST change the shape hash");
+    assert_ne!(
+        base_hash, p_hash,
+        "renaming a key MUST change the shape hash"
+    );
 
     // The sentinel: first observation is baseline (no drift), the perturbed
     // one fires with the OLD hash returned — exactly the SCHEMA_DRIFT trigger.
     let mut sentinel = Sentinel::default();
-    assert_eq!(sentinel.observe_shape(base_hash), None, "first obs is baseline");
+    assert_eq!(
+        sentinel.observe_shape(base_hash),
+        None,
+        "first obs is baseline"
+    );
     assert_eq!(
         sentinel.observe_shape(p_hash),
         Some(base_hash),
         "drift must fire, returning the prior hash"
     );
     // And a re-observation of the SAME perturbed shape is NOT drift again.
-    assert_eq!(sentinel.observe_shape(p_hash), None, "stable shape is not re-drift");
+    assert_eq!(
+        sentinel.observe_shape(p_hash),
+        None,
+        "stable shape is not re-drift"
+    );
 }
 
 #[test]
@@ -115,7 +127,11 @@ fn coingecko_drift_sentinel_fires_on_perturbed_markets_fixture() {
 
     let mut sentinel = Sentinel::default();
     assert_eq!(sentinel.observe_shape(base_hash), None);
-    assert_eq!(sentinel.observe_shape(p_hash), Some(base_hash), "drift fires");
+    assert_eq!(
+        sentinel.observe_shape(p_hash),
+        Some(base_hash),
+        "drift fires"
+    );
 }
 
 #[test]
@@ -138,10 +154,19 @@ fn drift_replay_is_loud_on_stderr_and_keeps_emitting() {
         ("coingecko", "coingecko_drift.json"),
     ] {
         let out = run(&[lane, "--replay", &fixture_path(fixture)]);
-        assert!(out.status.success(), "{lane} drift must not kill the lane: {out:?}");
+        assert!(
+            out.status.success(),
+            "{lane} drift must not kill the lane: {out:?}"
+        );
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.contains("SCHEMA_DRIFT"), "{lane} drift must be loud: {stderr}");
-        assert!(!stdout_lines(&out).is_empty(), "{lane} keeps emitting through drift");
+        assert!(
+            stderr.contains("SCHEMA_DRIFT"),
+            "{lane} drift must be loud: {stderr}"
+        );
+        assert!(
+            !stdout_lines(&out).is_empty(),
+            "{lane} keeps emitting through drift"
+        );
     }
 }
 
@@ -154,8 +179,14 @@ fn birdeye_required_source_fails_closed_exit_3_without_key() {
     let out = run(&["birdeye", "--ohlcv-watch", "does-not-exist.txt"]);
     assert_eq!(out.status.code(), Some(3), "fail-closed exit code");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("BIRDEYE_API_KEY"), "names the missing key: {stderr}");
-    assert!(stderr.contains("REQUIRED") && stderr.contains("6.7"), "cites §6.7: {stderr}");
+    assert!(
+        stderr.contains("BIRDEYE_API_KEY"),
+        "names the missing key: {stderr}"
+    );
+    assert!(
+        stderr.contains("REQUIRED") && stderr.contains("6.7"),
+        "cites §6.7: {stderr}"
+    );
     assert!(out.stdout.is_empty(), "no data lines on refusal");
 }
 

@@ -37,6 +37,13 @@ pub struct Event<'a> {
     /// The single "not an originator" signal (reply / retweet / forward /
     /// quote / duet). Reach is not alpha; the core judges, not the edge.
     pub echo: bool,
+    /// Whether this event comes from a DESIGNATED caller — a curated X follow
+    /// (the twitterapi curated-follow lane) or a Discord alpha room. Emitted as
+    /// `"is_designated_caller":true` ONLY when set, so a non-designated event is
+    /// byte-identical to the legacy line and the deterministic core reads absence
+    /// as `false` (§29 provenance; the same field the Discord lane emits). Reach
+    /// is still not alpha — the core judges whether a designated source earns.
+    pub is_designated_caller: bool,
 }
 
 /// Append `s` to `out` with JSON string escaping: `"` and `\` are backslash-
@@ -92,6 +99,14 @@ pub fn event_line(ev: &Event<'_>, observed_at_ns: u64) -> String {
     out.push_str(if ev.echo { "true" } else { "false" });
     out.push_str(",\"observed_at_ns\":");
     out.push_str(&observed_at_ns.to_string());
+    // Designated-caller provenance is emitted only when true: a non-designated
+    // line stays byte-identical to the legacy schema, and the core reads an absent
+    // field as `false` (§29; mirrors `aggregator_listed`'s omit-when-false in the
+    // coingecko lane). Trailing lane fields (coingecko/pump) strip the closing
+    // brace and re-append, so keeping this before `}` preserves that convention.
+    if ev.is_designated_caller {
+        out.push_str(",\"is_designated_caller\":true");
+    }
     out.push('}');
     out
 }
@@ -143,6 +158,7 @@ mod tests {
             reposts: 69,
             replies: 12,
             echo: true,
+            is_designated_caller: false,
         };
         assert_eq!(
             event_line(&ev, 42),
@@ -150,6 +166,33 @@ mod tests {
              \"text\":\"$WIF up\",\"likes\":420,\"reposts\":69,\"replies\":12,\
              \"echo\":true,\"observed_at_ns\":42}"
         );
+    }
+
+    #[test]
+    fn designated_caller_field_emitted_only_when_true() {
+        let base = Event {
+            platform: "discord",
+            author: "alpharoom",
+            community: "vip",
+            text: "$WIF send",
+            likes: 0,
+            reposts: 0,
+            replies: 0,
+            echo: false,
+            is_designated_caller: true,
+        };
+        assert_eq!(
+            event_line(&base, 7),
+            "{\"platform\":\"discord\",\"author\":\"alpharoom\",\"community\":\"vip\",\
+             \"text\":\"$WIF send\",\"likes\":0,\"reposts\":0,\"replies\":0,\
+             \"echo\":false,\"observed_at_ns\":7,\"is_designated_caller\":true}"
+        );
+        // False -> byte-identical to the legacy schema (field omitted entirely).
+        let off = Event {
+            is_designated_caller: false,
+            ..base
+        };
+        assert!(!event_line(&off, 7).contains("is_designated_caller"));
     }
 
     #[test]
@@ -163,6 +206,7 @@ mod tests {
             reposts: 0,
             replies: 0,
             echo: false,
+            is_designated_caller: false,
         };
         let line = event_line(&ev, 0);
         assert!(line.contains("\\\"\\\\\\n\\u0000"));

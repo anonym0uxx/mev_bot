@@ -74,13 +74,10 @@ fn decode_frame_never_panics_on_hostile_bytes() {
         if buf.len() >= 2 {
             buf[1] = rng.byte(); // random mask bit + 7-bit length marker
         }
-        match decode_frame(&buf) {
-            Ok(Some(f)) => {
-                // A decoded frame must have consumed at least the 2-byte head
-                // and no more than the buffer it was handed.
-                assert!(f.consumed >= 2 && f.consumed <= buf.len(), "consumed OOB");
-            }
-            Ok(None) | Err(_) => {}
+        if let Ok(Some(f)) = decode_frame(&buf) {
+            // A decoded frame must have consumed at least the 2-byte head
+            // and no more than the buffer it was handed.
+            assert!(f.consumed >= 2 && f.consumed <= buf.len(), "consumed OOB");
         }
     }
 }
@@ -144,10 +141,15 @@ fn assert_every_prefix_is_need_more(wire: &[u8], expect_len: usize) {
     for cut in 0..wire.len() {
         match decode_frame(&wire[..cut]) {
             Ok(None) => {}
-            other => panic!("prefix cut={cut}/{} must be need-more, got {other:?}", wire.len()),
+            other => panic!(
+                "prefix cut={cut}/{} must be need-more, got {other:?}",
+                wire.len()
+            ),
         }
     }
-    let f = decode_frame(wire).expect("full decode ok").expect("full frame");
+    let f = decode_frame(wire)
+        .expect("full decode ok")
+        .expect("full frame");
     assert_eq!(f.payload.len(), expect_len);
     assert_eq!(f.consumed, wire.len());
 }
@@ -207,7 +209,10 @@ fn oversized_declared_length_is_byte_bomb_err_before_allocation() {
     }
     // A 16-bit non-minimal length and a 64-bit MSB-set length are also clean
     // Errs, never panics.
-    assert!(decode_frame(&[0x82, 126, 0x00, 0x10]).is_err(), "non-minimal 16-bit");
+    assert!(
+        decode_frame(&[0x82, 126, 0x00, 0x10]).is_err(),
+        "non-minimal 16-bit"
+    );
     let mut msb = vec![0x82u8, 127];
     msb.extend_from_slice(&(1u64 << 63).to_be_bytes());
     assert!(decode_frame(&msb).is_err(), "64-bit MSB set");
@@ -218,7 +223,7 @@ fn control_frame_invariants_hold_under_encode_decode_roundtrip() {
     // Oversized / fragmented control frames must be refused at ENCODE time and
     // rejected at DECODE time — a regression that let one through would corrupt
     // the ping/pong/close path.
-    assert!(encode_frame(true, OP_PING, &vec![0u8; 126], None).is_err());
+    assert!(encode_frame(true, OP_PING, &[0u8; 126], None).is_err());
     assert!(encode_frame(false, OP_PING, b"x", None).is_err());
     // A hand-built fragmented (FIN=0) ping must decode to Err.
     let bad = [0x09u8, 0x01, 0x00]; // FIN=0, opcode=ping, len=1, one byte
@@ -265,16 +270,15 @@ fn webhook_auth_predicate_rejects_missing_and_wrong_secret() {
     // requests and assert that predicate — hermetic, no socket.
     let secret = "s3cret";
     let cases: [(Option<&str>, bool); 4] = [
-        (None, true),           // missing → reject
-        (Some("wrong"), true),  // wrong → reject
-        (Some("s3cretX"), true),// near-miss → reject
-        (Some("s3cret"), false),// exact → accept
+        (None, true),            // missing → reject
+        (Some("wrong"), true),   // wrong → reject
+        (Some("s3cretX"), true), // near-miss → reject
+        (Some("s3cret"), false), // exact → accept
     ];
     for (auth, should_reject) in cases {
         let auth_header = auth.map_or(String::new(), |a| format!("Authorization: {a}\r\n"));
-        let raw = format!(
-            "POST /hook HTTP/1.1\r\nHost: t\r\n{auth_header}Content-Length: 2\r\n\r\n[]"
-        );
+        let raw =
+            format!("POST /hook HTTP/1.1\r\nHost: t\r\n{auth_header}Content-Length: 2\r\n\r\n[]");
         let mut reader = std::io::BufReader::new(std::io::Cursor::new(raw.into_bytes()));
         let req = read_request(&mut reader).expect("well-formed request parses");
         let rejected = req.authorization.as_deref() != Some(secret);
@@ -334,7 +338,11 @@ fn rpc_all_providers_failing_is_a_clean_err_not_a_panic() {
     };
     let res = pool.call(&mock, 0, "getSlot", "[]");
     assert!(res.is_err(), "every provider failing is an Err");
-    assert_eq!(mock.calls.borrow().len(), 2, "both providers were tried once");
+    assert_eq!(
+        mock.calls.borrow().len(),
+        2,
+        "both providers were tried once"
+    );
 }
 
 // ------------------------------- 5. fail-closed per lane (CLI, exit 3)
@@ -356,14 +364,21 @@ fn every_credentialed_lane_fails_closed_with_exit_3() {
     // distinct capability-loss exit code 3 and emit NO data on stdout. A
     // regression that turned any lane fail-open would flip one of these.
     let lanes: [&[&str]; 3] = [
-        &["helius-ws", "--programs", "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"],
+        &[
+            "helius-ws",
+            "--programs",
+            "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+        ],
         &["webhook-listener"],
         &["fee-sampler", "--once"],
     ];
     for lane in lanes {
         let out = run_scrubbed(lane);
         assert_eq!(out.status.code(), Some(3), "lane {lane:?} must exit 3");
-        assert!(out.stdout.is_empty(), "lane {lane:?} leaked stdout on refusal");
+        assert!(
+            out.stdout.is_empty(),
+            "lane {lane:?} leaked stdout on refusal"
+        );
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(
             err.contains("ARMING_FAILED") || err.contains("WEBHOOK_AUTH_SECRET"),

@@ -271,6 +271,30 @@ task #1.
   required).
 - **Enablement condition:** proxy + secret provisioned, webhook created, lag/loss journaled.
 
+## §12 Discord paid-alpha capture lane (named source — constitution §29/§6.6, Amendment A-5)
+
+- **Constitutional status:** named real-time alpha-call source. Paid alpha rooms → actionable
+  alpha at corroboration tier (AlphaCall discovery lane + designated-caller weight + reduce-only
+  exit calls; alpha-alone can never admit). Spec: docs/DISCORD_SOURCE.md.
+- **Phase-A interface (BUILT + tested):** `pq-stream-capture discord-gateway` — passive read-only
+  Discord Gateway v10 client (48 tests); `SocialPlatform::Discord` + `DiscoveryLane::AlphaCall` +
+  designated-caller weight + per-room `SourceOutcomeLedger` wired in pump-quant-app (re-pin #14,
+  A/B-pinned in tests/alpha_laws.rs).
+- **Required production step:** provide `DISCORD_USER_TOKEN` (dedicated throwaway account
+  subscribed to the paid rooms; bot token usually can't be added to provider-run rooms),
+  configure the guild/channel allowlist for the operator-named rooms + designated-caller
+  author-ids, run under the supervisor.
+- **Server measurement required:** per-room realized net-SOL (ROI — is each paid room worth it),
+  call→confirm lead time, delivery gap/reconnect stats; account-health monitoring.
+- **Failure behaviour (fail-open):** outage/rate-limit/ban → lane stops emitting and alerts the
+  operator; absent alpha is ABSENCE, never a halt; nothing from this lane populates canonical
+  state or authorizes an entry (§29.8/§6.6 — on-chain gate always fires).
+- **Posture:** passive, invisible-presence, live-Gateway-only (no REST history scraping), single
+  connection; no multi-account rotation / proxy evasion (out of scope by design). User-token
+  automation violates Discord ToS — operator-accepted risk; use a dedicated account.
+- **Enablement condition:** `DISCORD_USER_TOKEN` provisioned + allowlist configured + first
+  per-room ROI epoch journaled.
+
 ---
 
 *Nothing in this manifest is self-enabling. Each item requires its stated adapter,

@@ -7,6 +7,7 @@
 //! pq-social-capture twitterapi [--class firehose|amplifier|list] [--sources f]
 //!                              [--query q] [--type Latest|Top] [--pages n]
 //!                              [--watch secs] [--replay fixture.json]
+//!                              [--follow file] [--authors ids]
 //! pq-social-capture tiktok     [--hashtag h] [--sources f] [--watch secs]
 //!                              [--replay fixture.json]
 //! pq-social-capture firecrawl  [--url u] [--sources f] [--watch secs]
@@ -53,6 +54,8 @@ const USAGE: &str = "usage: pq-social-capture \
 <twitterapi|tiktok|firecrawl|pump|coingecko|birdeye|sentiment-enrich> [flags...]\n\
   twitterapi  --class firehose|amplifier|list  --sources f  --query q\n\
               --type Latest|Top  --pages n  --watch secs  --replay fixture\n\
+              --follow file  --authors ids  (curated designated-caller set:\n\
+              tweets from these handles/user-ids are tagged is_designated_caller)\n\
   tiktok      --hashtag h  --sources f  --watch secs  --replay fixture\n\
   firecrawl   --url u      --sources f  --watch secs  --replay fixture\n\
   pump        --mints-file f  --interval-secs n  --live-list  --once\n\

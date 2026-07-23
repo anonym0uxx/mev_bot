@@ -106,6 +106,7 @@ pub fn page_event<'a>(domain: &'a str, markdown: &'a str) -> emit::Event<'a> {
         reposts: 0,
         replies: 0,
         echo: false,
+        is_designated_caller: false,
     }
 }
 

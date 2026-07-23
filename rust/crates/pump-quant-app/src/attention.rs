@@ -97,6 +97,20 @@ pub struct AttentionParams {
     /// mainstream attention leads its crypto pickup — added to the pre-legibility
     /// score before the fade-first candidate score (bounded to `FP_ONE`).
     pub platform_lead_runway_fp: u64,
+
+    // ---- §29 designated-caller attention weight (Wave-3 LAW D2) ----
+    /// When true, the emit path adds a BREADTH-GATED designated-caller bonus to the
+    /// weighted attention level: each DISTINCT designated caller (paid Discord alpha
+    /// room / curated followed key account) that named the mint while the call is
+    /// fresh adds `designated_caller_weight`. Echo/coordinated repeats never reach
+    /// the distinct-caller set (fade-first, §29), and a FRESH high-confidence
+    /// bearish reading suppresses the bonus (never amplify a sell call). Off =
+    /// designated callers weigh like any other mention, byte-identical.
+    pub designated_caller_enable: bool,
+    /// Attention units each DISTINCT designated caller adds while fresh — half the
+    /// formation floor by default, so a lone caller is half-formation and genuine
+    /// distinct corroboration completes it (§29 fade-first; see `standard()`).
+    pub designated_caller_weight: u64,
 }
 
 impl AttentionParams {
@@ -144,6 +158,15 @@ impl AttentionParams {
             platform_lead_enable: false,
             platform_lead_tolerance_ns: 60_000_000_000,
             platform_lead_runway_fp: FP_ONE / 2,
+            // §29 LAW D2 — default OFF in `standard()` (the engine flips it from
+            // `Config::designated_caller_enable`, which is default ON, exactly like
+            // the class/platform-lead switches). The weight is HALF the formation
+            // floor (`formation_level / 2 = 50`): one designated caller is half the
+            // emergence evidence, and only genuine distinct corroboration (a second
+            // independent caller, or organic breadth) completes formation — the
+            // same breadth-gated shape as `live_broadcaster_weight`.
+            designated_caller_enable: false,
+            designated_caller_weight: 50,
         }
     }
 }
@@ -159,6 +182,12 @@ impl Default for AttentionParams {
 /// already maximal breadth evidence at Twitch-chat scale; past it the count is
 /// a lower bound, exactly like the creator linked-cluster cap.
 const LIVE_CHATTER_CAP: usize = 16;
+
+/// LAW D2 bound on distinct designated callers tracked per mint (§99). A dozen
+/// distinct paid-room / curated-follow callers naming one mint is already maximal
+/// corroboration; past it the count saturates as a lower bound, exactly like the
+/// live-chatter and creator linked-cluster caps.
+const DESIGNATED_CALLER_CAP: usize = 12;
 
 /// Provenance of one mention, derived at the ingest seam from the normalized
 /// event — a PARALLEL channel that reaches into the field's internal state
@@ -195,6 +224,13 @@ pub struct MentionProvenance {
     /// PRECEDES crypto pickup is the front-runnable pre-legibility window. Purely
     /// structural provenance (§29.8 — never a per-platform trust weight).
     pub mainstream: bool,
+    /// LAW D2 (§29): the mention originates from a DESIGNATED caller — a paid
+    /// Discord alpha room OR a curated followed key account (`is_designated_caller`
+    /// on the normalized event, uniform across platforms). A known paid-alpha
+    /// caller is high signal, so a fresh designated call adds elevated attention —
+    /// BREADTH-GATED (each distinct caller half-forms; echoes add zero), never a
+    /// blank multiplier and never self-authorizing (the §29 fade cap still binds).
+    pub designated_caller: bool,
 }
 
 /// Per-mint accumulated attention state.
@@ -232,6 +268,15 @@ struct MintAttn {
     /// Earliest instant (ns) a CRYPTO-SOCIAL (X/Telegram/Twitch/Pump) mention
     /// named this mint (0 = never) — the §70.7 crypto-social first-mention front.
     crypto_first_ns: u64,
+    /// LAW D2: distinct DESIGNATED-caller ids (paid Discord room / curated follow)
+    /// that named this mint — echo-excluded breadth, bounded/saturating (§99), the
+    /// same shape as `live_chatters`. Its length × `designated_caller_weight` is the
+    /// designated-caller attention bonus.
+    designated_callers: Vec<u64>,
+    /// LAW D2: latest instant (ns) a designated caller named this mint (0 = never).
+    /// While fresh (within the 5-minute window) the designated-caller bonus applies;
+    /// a stale designated call fades exactly like a stale broadcaster call.
+    designated_seen_ns: u64,
 }
 
 /// The bounded, per-mint social attention field. Fed by [`Self::observe`] from the
@@ -367,6 +412,21 @@ impl AttentionField {
         if prov.bearish {
             a.bearish_seen_ns = a.bearish_seen_ns.max(mention.ts_ns);
         }
+        // LAW D2: a DESIGNATED caller (paid Discord room / curated follow) records
+        // its freshness and its distinct-caller breadth — echo/coordinated repeats
+        // add zero (fade-first, §29), and the distinct set is bounded (§99), the
+        // same shape as the live-chatter breadth. Recorded unconditionally (cheap,
+        // bounded); only READ when the designated-caller law is enabled, so the
+        // no-designated path stays byte-identical.
+        if prov.designated_caller {
+            a.designated_seen_ns = a.designated_seen_ns.max(mention.ts_ns);
+            if !prov.echo_or_coordinated
+                && a.designated_callers.len() < DESIGNATED_CALLER_CAP
+                && !a.designated_callers.contains(&prov.author_id)
+            {
+                a.designated_callers.push(prov.author_id);
+            }
+        }
         // §70.7 first-mention fronts (min = earliest). A mainstream (TikTok/Web)
         // mention advances the mainstream front; every other social channel
         // (crypto-native: X/Telegram/Twitch/Pump) advances the crypto front.
@@ -446,7 +506,26 @@ impl AttentionField {
             } else {
                 0
             };
-            let level = base_level.saturating_add(live_bonus);
+            // LAW D2 designated-caller weight: while a designated call is fresh (and
+            // no fresh bearish reading suppresses it — never amplify a sell call),
+            // each DISTINCT designated caller adds `designated_caller_weight` through
+            // the SAME model everything else uses (virality, stage, divergence, and
+            // the §29 fade cap all still bind downstream, so alpha ranks but never
+            // authorizes). One caller is half-formation; a second distinct caller
+            // (or organic breadth) completes it. Off / no designated call ⇒ zero,
+            // so `level == base_level + live_bonus` exactly — byte-identical.
+            let designated_fresh = a.designated_seen_ns > 0
+                && now_ns.saturating_sub(a.designated_seen_ns) < params.window_5m_ns;
+            let designated_bonus: u64 =
+                if params.designated_caller_enable && designated_fresh && !bearish_fresh {
+                    (a.designated_callers.len() as u64)
+                        .saturating_mul(params.designated_caller_weight)
+                } else {
+                    0
+                };
+            let level = base_level
+                .saturating_add(live_bonus)
+                .saturating_add(designated_bonus);
 
             // Append to the bounded level series (oldest→newest).
             if a.levels.len() >= params.series_cap {
@@ -819,6 +898,7 @@ mod twitch_tests {
                 aggregator: false,
                 bearish: false,
                 mainstream: false,
+                designated_caller: false,
             },
         );
         let mut p = Vec::new();
@@ -853,6 +933,7 @@ mod twitch_tests {
                     aggregator: false,
                     bearish: false,
                     mainstream: false,
+                    designated_caller: false,
                 },
             );
         }
@@ -871,6 +952,7 @@ mod twitch_tests {
                     aggregator: false,
                     bearish: false,
                     mainstream: false,
+                    designated_caller: false,
                 },
             );
         }
@@ -905,6 +987,7 @@ mod twitch_tests {
                     aggregator: false,
                     bearish: false,
                     mainstream: false,
+                    designated_caller: false,
                 },
             );
         }

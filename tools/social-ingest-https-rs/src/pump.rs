@@ -223,6 +223,7 @@ impl Reply {
             reposts: 0,
             replies: 0,
             echo: false,
+            is_designated_caller: false,
         }
     }
 

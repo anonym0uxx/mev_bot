@@ -94,6 +94,13 @@ pub enum SocialPlatform {
     /// surfaced to the whole market. Never earliness; feeds the pre-legibility
     /// clock and aggregator-sentiment corroboration.
     Aggregator,
+    /// Discord alpha rooms (paid/curated caller communities): a DESIGNATED-caller
+    /// surface, structurally as EARLY as a Telegram call channel — an alpha room
+    /// posts the call before X/TikTok amplify it. Captured by a `[S]` Discord
+    /// adapter that flags each designated call with `is_designated_caller`
+    /// ([`SocialEvent::is_designated_caller`]); whether a paid room actually earns
+    /// net SOL is measured downstream (§29.8), never assumed here.
+    Discord,
 }
 
 impl SocialPlatform {
@@ -108,6 +115,7 @@ impl SocialPlatform {
             "twitch" => Some(Self::Twitch),
             "pump" => Some(Self::Pump),
             "coingecko" | "aggregator" => Some(Self::Aggregator),
+            "discord" | "discord_alpha" => Some(Self::Discord),
             _ => None,
         }
     }
@@ -123,6 +131,7 @@ impl SocialPlatform {
             Self::Twitch => 5,
             Self::Pump => 6,
             Self::Aggregator => 7,
+            Self::Discord => 8,
         }
     }
 
@@ -144,8 +153,10 @@ impl SocialPlatform {
             // as Telegram call channels (both sit at the unlegible front of the
             // shill pipeline). Equal rank = equal tier, never a tradeable weight.
             // Venue-native replies sit with the real-time push tier: the coin
-            // page is where the FIRST off-chain reaction lands.
-            Self::Telegram | Self::Twitch | Self::Pump => 0,
+            // page is where the FIRST off-chain reaction lands. A Discord alpha
+            // room is a designated-caller push channel — it fires the call at the
+            // same unlegible front, so it shares the earliest tier.
+            Self::Telegram | Self::Twitch | Self::Pump | Self::Discord => 0,
             Self::X => 1,
             Self::TikTok => 2,
             // Aggregator listings share the legibility tier with the general
@@ -199,6 +210,13 @@ pub struct SocialEvent {
     /// §783 legibility clock. `false` means "no aggregator evidence in this
     /// event", never "not listed".
     pub aggregator_listed: bool,
+    /// Whether this event originates from a DESIGNATED caller — a curated X
+    /// follow (the `twitterapi` curated-follow lane) or a Discord alpha room —
+    /// so the engine's shared designated-caller weight applies uniformly across
+    /// platforms (§29 provenance). Parsed from the normalized
+    /// `"is_designated_caller"` NDJSON field; **absent means `false`** (a source
+    /// is not designated until a capture lane says so — never defaulted true).
+    pub is_designated_caller: bool,
 }
 
 /// Sentinel for an ABSENT sentiment annotation (§6.4: unknown stays unknown;
@@ -388,6 +406,13 @@ pub fn parse_social_event(raw: &[u8], observed_at_ns: u64) -> Option<SocialEvent
         .get("aggregator_listed")
         .and_then(|b| b.as_bool())
         .unwrap_or(false);
+    // Optional designated-caller provenance (§29): a curated X follow or a Discord
+    // alpha room stamps this true. Absent → false (mirrors `aggregator_listed`);
+    // a source is never assumed designated (fade-first, §29.8).
+    let is_designated_caller = v
+        .get("is_designated_caller")
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false);
 
     Some(SocialEvent {
         platform,
@@ -408,6 +433,7 @@ pub fn parse_social_event(raw: &[u8], observed_at_ns: u64) -> Option<SocialEvent
         sentiment_bp,
         sentiment_conf_bp,
         aggregator_listed,
+        is_designated_caller,
     })
 }
 
@@ -491,5 +517,54 @@ mod tests {
         assert_eq!(a, b);
         assert!(a.is_echo);
         assert_eq!(a.community_id, fnv1a_64(b"alpha-chan"));
+    }
+
+    #[test]
+    fn discord_from_tag_code_and_horizon() {
+        // Both accepted spellings resolve to Discord.
+        assert_eq!(
+            SocialPlatform::from_tag("discord"),
+            Some(SocialPlatform::Discord)
+        );
+        assert_eq!(
+            SocialPlatform::from_tag("discord_alpha"),
+            Some(SocialPlatform::Discord)
+        );
+        // Stable journalling code, append-only after Aggregator (7).
+        assert_eq!(SocialPlatform::Discord.code(), 8);
+        // Alpha rooms are an EARLY designated-caller push channel: rank 0, the same
+        // unlegible-front tier as Telegram / Twitch / Pump (equal tier, not a weight).
+        assert_eq!(SocialPlatform::Discord.horizon_rank(), 0);
+        assert_eq!(
+            SocialPlatform::Discord.horizon_rank(),
+            SocialPlatform::Telegram.horizon_rank()
+        );
+    }
+
+    #[test]
+    fn designated_caller_parses_true_false_and_absent() {
+        let with = |flag: &str| {
+            let raw = format!(
+                r#"{{"platform":"discord","author":"alpharoom","text":"$WIF send",{flag}}}"#
+            );
+            parse_social_event(raw.as_bytes(), 1).unwrap()
+        };
+        // Explicit true.
+        assert!(with(r#""is_designated_caller":true"#).is_designated_caller);
+        // Explicit false.
+        assert!(!with(r#""is_designated_caller":false"#).is_designated_caller);
+        // Absent → false (fade-first: never assumed designated).
+        let raw = br#"{"platform":"discord","author":"alpharoom","text":"$WIF send"}"#;
+        let ev = parse_social_event(raw, 1).unwrap();
+        assert_eq!(ev.platform, SocialPlatform::Discord);
+        assert!(!ev.is_designated_caller);
+    }
+
+    #[test]
+    fn existing_platforms_default_designated_caller_false() {
+        // The additive field never perturbs a payload that omits it.
+        let raw = br#"{"platform":"x","author":"kolguy","text":"$WIF","likes":1}"#;
+        let ev = parse_social_event(raw, 1).unwrap();
+        assert!(!ev.is_designated_caller);
     }
 }

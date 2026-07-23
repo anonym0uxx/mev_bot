@@ -10,6 +10,8 @@
 //! * [`helius_ws`] — Helius Enhanced WebSocket (`transactionSubscribe` +
 //!   `accountSubscribe` + `slotSubscribe` heartbeat);
 //! * [`pumpportal_ws`] — PumpPortal new-token / migration / trade stream;
+//! * [`discord_gateway`] — passive, read-only Discord Gateway v10 client for
+//!   the operator's paid alpha rooms (invisible presence, no REST);
 //! * [`webhook_listener`] — pure-std HTTP listener for Helius enhanced
 //!   webhooks (whale lane), raw + normalized emission;
 //! * [`rpc`] — deterministic multi-provider JSON-RPC failover;
@@ -36,6 +38,7 @@
 
 pub mod backoff;
 pub mod dedupe;
+pub mod discord_gateway;
 pub mod emit;
 pub mod fees;
 pub mod helius_ws;

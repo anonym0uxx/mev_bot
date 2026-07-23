@@ -129,17 +129,27 @@ pub enum DiscoveryLane {
     /// Active on-chain numeric market flow (the self-authorizing lane). Presents
     /// as `ActiveMarketScalp`.
     ActiveMarket,
+    /// A DESIGNATED-caller alpha call — a curated X follow or a Discord alpha
+    /// room whose event carries `is_designated_caller` (§29). Structurally an
+    /// early call, so it presents as `CreationSniper` like [`Self::SocialCaller`],
+    /// but it is attributed as its OWN lane: a paid alpha room must earn its net
+    /// SOL independently of the open social-caller firehose (§71 reflection
+    /// integrity), so reflection can up/down-weight or retire the room on its own
+    /// realized outcome. Set explicitly at the emit seam via
+    /// [`Candidate::with_discovery_lane`]; never derived from a bare setup.
+    AlphaCall,
 }
 
 impl DiscoveryLane {
     /// Every discovery lane, in stable discriminant order. Fixed-size: the
     /// per-lane net-SOL ledger is sized from this (§99 bounded).
-    pub const ALL: [DiscoveryLane; 5] = [
+    pub const ALL: [DiscoveryLane; 6] = [
         DiscoveryLane::OnchainCreation,
         DiscoveryLane::SocialCaller,
         DiscoveryLane::NarrativeAttentionVelocity,
         DiscoveryLane::WalletSmartMoney,
         DiscoveryLane::ActiveMarket,
+        DiscoveryLane::AlphaCall,
     ];
 
     /// Number of discovery lanes; the fixed width of the per-lane ledger. §99.
@@ -155,6 +165,7 @@ impl DiscoveryLane {
             DiscoveryLane::NarrativeAttentionVelocity => 2,
             DiscoveryLane::WalletSmartMoney => 3,
             DiscoveryLane::ActiveMarket => 4,
+            DiscoveryLane::AlphaCall => 5,
         }
     }
 
@@ -163,7 +174,9 @@ impl DiscoveryLane {
     #[must_use]
     pub const fn setup_lane(self) -> Lane {
         match self {
-            DiscoveryLane::OnchainCreation | DiscoveryLane::SocialCaller => Lane::CreationSniper,
+            DiscoveryLane::OnchainCreation
+            | DiscoveryLane::SocialCaller
+            | DiscoveryLane::AlphaCall => Lane::CreationSniper,
             DiscoveryLane::NarrativeAttentionVelocity => Lane::EarlyConfirmation,
             DiscoveryLane::WalletSmartMoney => Lane::GraduationTransition,
             DiscoveryLane::ActiveMarket => Lane::ActiveMarketScalp,
@@ -173,9 +186,11 @@ impl DiscoveryLane {
     /// The default discovery lane for a bare setup archetype — used only when a
     /// [`Candidate`] is constructed without an explicit provenance (the inverse
     /// of [`Self::setup_lane`] on the canonical representative of each archetype).
-    /// Emit sites that need the precise lane (e.g. a social caller vs a creation
-    /// sighting, which share `CreationSniper`) override it with
-    /// [`Candidate::with_discovery_lane`].
+    /// Emit sites that need the precise lane (e.g. a social caller, an alpha-room
+    /// [`Self::AlphaCall`], and a creation sighting, which all share
+    /// `CreationSniper`) override it with [`Candidate::with_discovery_lane`].
+    /// `CreationSniper`'s canonical representative stays [`Self::OnchainCreation`],
+    /// so this mapping is unchanged by the alpha-call lane (additive).
     #[must_use]
     pub const fn from_setup(lane: Lane) -> Self {
         match lane {

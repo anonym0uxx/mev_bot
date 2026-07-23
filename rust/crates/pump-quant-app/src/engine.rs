@@ -60,6 +60,7 @@ use pump_quant_evaluator::reflection_cadence::{
 use pump_quant_features::market_structure::TrendStructure;
 use pump_quant_ingest::social_parse::fnv1a_64;
 use pump_quant_ingest::social_parse::parse_social_event;
+use pump_quant_ingest::social_parse::SocialPlatform;
 use pump_quant_ingest::social_source::SocialSource;
 use pump_quant_market_state::creator::{CreatorEvent, CreatorState, CreatorStateReducer};
 use pump_quant_market_state::meta::{
@@ -75,7 +76,8 @@ use pump_quant_signals::fee_plausibility::{
 use pump_quant_signals::launch_trajectory::FirstSlotTx;
 use pump_quant_signals::setup_classifier::{classify_setup, SetupThresholds};
 use pump_quant_simulator::capacity::CapacityPoint;
-use pump_quant_social::ledger::SourceQualityLedger;
+use pump_quant_social::ledger::{SourceOutcomeLedger, SourceQualityLedger};
+use pump_quant_social::types::SourceRef;
 use pump_quant_strategy::calibration_budget::{
     admit_calibration, CalibrationLedger, CalibrationRequest, RouteId,
 };
@@ -281,6 +283,14 @@ const SOCIAL_SEEN_CAP: usize = 8_192;
 /// wrong binding). 4096 matches the lane track caps.
 const CASHTAG_BIND_CAP: usize = 4_096;
 
+/// LAW D1/D5 bound on the mint→alpha-room binding table (§99). First-bind-wins
+/// under the cap; matches the lane track caps so a laptop replay never hits it.
+const ALPHA_SOURCE_BIND_CAP: usize = 4_096;
+/// LAW D5 capacity of the per-Discord-room realized-net-SOL ledger (§99). Ample
+/// for the operator's subscribed paid rooms; LRU-evicts the least-recently-updated
+/// room past the cap (a room that has not called in longest yields first).
+const ALPHA_SOURCE_LEDGER_CAP: usize = 256;
+
 /// Maximum size fade (bps of 10_000) that creator *distribution* alone may apply.
 /// A fully-distributed creator caps the haircut here — it can shrink size, never
 /// veto a trade the on-chain gate already admitted (§22 behavioral-risk clause:
@@ -325,6 +335,12 @@ pub struct Report {
     /// Mature-but-inactive candidates removed by the §21.5 universe screen at
     /// promotion (dead markets must not consume promotion slots or gate work).
     pub universe_filtered: u64,
+    /// LAW D5: realized net-SOL per Discord paid-alpha room ([`SourceRef::discord`]),
+    /// signed lamports, sorted by source for determinism (§22). The report-plane
+    /// readout reflection uses to measure whether each subscribed room earns its
+    /// keep and up/down-weight or flag it. Empty until a Discord-sourced position
+    /// closes, so a run with no paid-alpha attribution reports nothing here.
+    pub per_alpha_source_net: Vec<(SourceRef, i64)>,
 }
 
 /// The running engine.
@@ -494,6 +510,19 @@ pub struct Engine {
     /// attention field — attention-tier only, never a `SocialCall`: an inferred
     /// binding corroborates even more weakly than a named mint. Bounded (§99).
     cashtag_binds: BTreeMap<u64, [u8; 32]>,
+    /// LAW D1/D5: mint → the Discord ALPHA room ([`SourceRef::discord`]) that first
+    /// called it — the per-room net-SOL attribution binding (§29.8/§71). First-bind
+    /// wins, bounded (§99). Bound only while `alpha_call_lane_enable` is set; empty
+    /// otherwise, so a run with no Discord alpha is byte-identical. Read at
+    /// `book_exit` close to fold the realized net into [`Self::source_outcome`].
+    alpha_source: BTreeMap<[u8; 32], SourceRef>,
+    /// LAW D5: bounded per-source realized-net-SOL ledger (§29.8/§71/§74). Each paid
+    /// Discord room accrues its OWN realized net so reflection (report plane) can
+    /// measure whether the room earns its keep and up/down-weight or flag it. Fed at
+    /// `book_exit` close via [`Self::alpha_source`]; surfaced on the `Report`. A
+    /// report-plane accountant — it never gates, sizes, or ranks a decision, so
+    /// accumulating into it is byte-identical on every decision path.
+    source_outcome: SourceOutcomeLedger,
     /// Per-lane realized-return accumulator (Σ realized bps, fills) feeding the
     /// §24 conditional-expectancy shrinkage — EXPECTANCY_V1. Bounded by
     /// construction (4 lanes × two integers).
@@ -627,6 +656,11 @@ impl Engine {
                 // until an operator flips the config.
                 narrative_class_enable: cfg.narrative_class_enable,
                 platform_lead_enable: cfg.platform_lead_enable,
+                // LAW D2: thread the designated-caller switch + weight from config
+                // (default ON). Inert on any mint with no designated caller, so a
+                // run with no paid-alpha / curated-follow attention is byte-identical.
+                designated_caller_enable: cfg.designated_caller_enable,
+                designated_caller_weight: cfg.designated_caller_weight,
                 ..AttentionParams::standard()
             }),
             ledger: SourceQualityLedger::with_capacity(4_096),
@@ -661,6 +695,8 @@ impl Engine {
             social_seen: std::collections::BTreeSet::new(),
             social_seen_ring: std::collections::VecDeque::new(),
             cashtag_binds: BTreeMap::new(),
+            alpha_source: BTreeMap::new(),
+            source_outcome: SourceOutcomeLedger::with_capacity(ALPHA_SOURCE_LEDGER_CAP),
             lane_edge: [(0, 0); 4],
             structure,
             universe_filtered: 0,
@@ -1257,9 +1293,52 @@ impl Engine {
             // mention on a parallel channel — the shared `Mention` type (locked
             // by dossiers in two crates) is untouched.
             let prov = crate::social_ingest::provenance_of(ev, is_coordinated);
+            // LAW D1: a `Discord` alpha-room call routes to the independent
+            // `AlphaCall` discovery lane (and binds the room as the mint's alpha
+            // source for the LAW D5 ledger), so a paid room earns its net SOL
+            // distinctly from the open social-caller firehose (§71 reflection
+            // integrity). The discovery lane never participates in ranking or the
+            // gate, so this changes attribution ONLY — never a capital decision, and
+            // alpha alone still cannot admit (LAW D4). Off ⇒ Discord behaves like any
+            // other social caller, byte-identical.
+            let alpha_room =
+                self.cfg.alpha_call_lane_enable && ev.platform == SocialPlatform::Discord;
+            // LAW D3: a designated-caller call the sentiment brain marks BEARISH is a
+            // sell/exit/dump signal — on a HELD position it raises reduce-only exit
+            // pressure (never adds/authorizes). Evaluated per named mint below.
+            let alpha_bearish_exit = self.cfg.alpha_exit_pressure_enable
+                && ev.is_designated_caller
+                && crate::social_ingest::is_bearish(ev);
             for m in ev.mints() {
                 let now = self.now;
-                self.social.observe(DomainMint::from_bytes(*m), q, now);
+                // LAW D3: a designated SELL/EXIT call is a pure EXIT signal — it
+                // "never adds/authorizes" (§29.5 fade-first). It raises reduce-only
+                // exit pressure on a HELD position (halves the stall window + trail
+                // cap via the existing meta-saturation exit-pressure machinery) and
+                // does NOTHING else: no discovery-lane observation, no attention
+                // mention, no earn-loop call — a sell call must never rank, amplify,
+                // or authorize a coin for entry. A mint with no open position is
+                // simply untouched (inert unless capital is at risk). Off ⇒ the call
+                // is processed as an ordinary (bullish-treated) call.
+                if alpha_bearish_exit {
+                    if self.positions.has(m) {
+                        self.positions.apply_pressure(m);
+                    }
+                    continue;
+                }
+                if alpha_room {
+                    self.social
+                        .observe_alpha(DomainMint::from_bytes(*m), q, now);
+                    // LAW D5: bind the paid room (guild/channel/community id) as this
+                    // mint's alpha source — first-bind-wins, bounded (§99).
+                    if self.alpha_source.len() < ALPHA_SOURCE_BIND_CAP {
+                        self.alpha_source
+                            .entry(*m)
+                            .or_insert_with(|| SourceRef::discord(ev.community_id));
+                    }
+                } else {
+                    self.social.observe(DomainMint::from_bytes(*m), q, now);
+                }
                 self.attention.observe_tagged(*m, mention, &prov);
                 self.social_earn
                     .record_call(ev.author_id, *m, ev.observed_at_ns);
@@ -2539,6 +2618,16 @@ impl Engine {
                     .bankroll_committed
                     .saturating_sub(u128::from(entry_spend));
                 self.social_earn.record_outcome(&e.mint, total);
+                // LAW D5: fold the whole position's realized net into the paid
+                // Discord room that surfaced this mint — the per-source outcome
+                // ledger (§29.8/§71/§74) reflection reads to grade whether a room
+                // earns its keep. Saturating i128→i64 (§22): a lamport total beyond
+                // i64 range is physically impossible, and a LOSS must attribute as a
+                // loss (never wrap to a gain). Report plane only — no decision reads it.
+                if let Some(&src) = self.alpha_source.get(&e.mint) {
+                    let net_i64 = total.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+                    self.source_outcome.record(src, net_i64);
+                }
                 self.theses.remove(&e.mint);
                 // §47/§48/§49 analytics: the whole position's realized row + the
                 // exit-policy convexity event + the §52 naive-baseline counterfactual.
@@ -2749,6 +2838,19 @@ impl Engine {
         for (i, lane) in DiscoveryLane::ALL.into_iter().enumerate() {
             per_discovery_lane_net[i] = (lane, self.disc_perf.net_sol(lane));
         }
+        // LAW D5: per-Discord-room realized net-SOL, sorted (BTreeSet) for
+        // determinism. Only rooms with a reconciled outcome (a closed position)
+        // are reported — a bound-but-never-closed room has earned nothing to grade.
+        let mut alpha_srcs: std::collections::BTreeSet<SourceRef> =
+            std::collections::BTreeSet::new();
+        for &src in self.alpha_source.values() {
+            alpha_srcs.insert(src);
+        }
+        let per_alpha_source_net: Vec<(SourceRef, i64)> = alpha_srcs
+            .into_iter()
+            .filter(|&src| self.source_outcome.trade_count(src) > 0)
+            .map(|src| (src, self.source_outcome.net_sol(src)))
+            .collect();
         Report {
             ticks: self.now,
             promoted: self.promoted,
@@ -2760,6 +2862,7 @@ impl Engine {
             final_weights,
             journal_digest: self.journal.digest(),
             universe_filtered: self.universe_filtered,
+            per_alpha_source_net,
         }
     }
 
@@ -2767,6 +2870,13 @@ impl Engine {
     #[must_use]
     pub fn journal(&self) -> &DecisionJournal {
         &self.journal
+    }
+
+    /// LAW D5: the per-Discord-room realized-net-SOL ledger (§29.8/§71/§74) — the
+    /// report-plane accountant reflection reads to grade each paid room. Read-only.
+    #[must_use]
+    pub fn source_outcome_ledger(&self) -> &SourceOutcomeLedger {
+        &self.source_outcome
     }
 
     /// The numeric feature snapshot the engine currently holds for a mint, if any.

@@ -54,6 +54,7 @@ impl Video {
             reposts: self.reposts,
             replies: self.replies,
             echo: self.echo,
+            is_designated_caller: false,
         }
     }
 }
