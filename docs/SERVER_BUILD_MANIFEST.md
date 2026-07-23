@@ -198,6 +198,49 @@ task #1.
 - **Enablement condition:** live RPC simulation wired + divergence measurement journaled;
   human sign-off alongside §6 arming.
 
+## §10 Birdeye daily-candle backfill + token-data lane (REQUIRED source — constitution §6.7)
+
+- **Constitutional status:** REQUIRED. Amendment A-3 (§6.7) designates Birdeye the
+  provider of record for 1D OHLCV backfill/cross-check and token-data enrichment for the
+  §21.6 bar/market-structure family. This item is not optional at Phase-B activation.
+- **Phase-A interface:** `pump-quant-features::bar` (BarBuilder — own canonical flow stays
+  the PRIMARY bar source), `pump-quant-features::market_structure` (detectors the daily
+  bars condition), `pump-quant-app::structure` (engine wiring); the §21.6 MarketIntelCache
+  carry list defines the record shape every backfilled candle must arrive with.
+- **Required production adapter:** a `birdeye` capture subcommand in
+  `tools/social-ingest-https-rs` (`pq-social-capture` — same ureq+rustls, Cargo.lock-pinned,
+  budget-paced, shape-hash-drift-sentinel pattern as the `coingecko` lane) emitting
+  provenance-tagged candle + token-data records into MarketIntelCache:
+  - `GET public-api.birdeye.so/defi/v3/ohlcv?address=<mint>&type=1D&time_from=&time_to=`
+    (count mode, ≤5000 bars/call) — daily candles for watched/held/researched mints;
+  - `GET /defi/token_overview?address=<mint>` — liquidity, holders, trade counts, volume,
+    buy/sell pressure, price frames;
+  - `GET /defi/token_security?address=<mint>` — plan-tier-gated (Starter+); omit cleanly
+    on Standard tier, never fabricate.
+  - Headers: `X-API-KEY: $BIRDEYE_API_KEY`, `x-chain: solana`.
+- **Hardware/credential dependency:** `BIRDEYE_API_KEY` (operator env, never committed);
+  plan tier chosen by operator (token_security needs Starter+; re-verify tier gates at
+  activation against docs.birdeye.so — verified 2026-07).
+- **Server measurement required:** per-endpoint latency/freshness baselines; observed CU
+  and rate-limit budget vs plan ceiling; Birdeye 1D candles vs our own canonical daily
+  aggregation on overlapping windows (the §21.6 reconciliation status field) — divergence
+  distribution journaled before any backfilled bar is admitted as cross-check.
+- **Integration point:** MarketIntelCache enrichment ONLY (§6.6/§6.7). Backfilled daily
+  bars extend the §21.6 structure detectors' lookback beyond our own capture history;
+  token-data fields condition candle analysis as context features. Never a hot-path or
+  availability dependency; never populates canonical trades/reserves/market cap (§6.1
+  prohibition on Birdeye trade history as raw truth stands).
+- **Acceptance test:** fixture-tested parser (recorded Birdeye responses + drift fixture)
+  green on the laptop profile; golden digest unchanged (backfill is research-plane);
+  reconciliation divergence report journaled on first live epoch.
+- **Failure behaviour (fail-closed for claims, fail-open for flow):** outage, 429, or
+  schema drift → lane logs loudly and stops emitting; absent Birdeye data is ABSENCE
+  (bars simply not backfilled, features conditioned on shorter history), never a halt,
+  delay, or degradation of any strategy lane; stale/incomplete candles are rejected by
+  the §21.6 screens (missing/stale, wrong-pair, aggregation mismatch, artificial volume).
+- **Enablement condition:** `BIRDEYE_API_KEY` provisioned + adapter merged with fixture
+  tests + first reconciliation epoch journaled.
+
 ---
 
 *Nothing in this manifest is self-enabling. Each item requires its stated adapter,

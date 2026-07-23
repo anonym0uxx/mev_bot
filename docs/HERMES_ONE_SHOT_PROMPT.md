@@ -176,6 +176,8 @@ A ResearchArtifact may never be cast into RawObservation, CanonicalEvent, ChainS
 
 Adoption law: no external tool is integrated because it is popular, convenient, or marketed. Every proposed dependency requires an **external-tool evaluation record**: exact capability provided; whether the system already has it; hot-path relevance (never); measured latency; freshness; reliability; rate limits; failure behavior; cost; licensing; self-hostability; provenance; independent verifiability; strategic/dependence risk; expected net-SOL impact; and a validation method for that value hypothesis. **Build-internal rule:** where a capability is latency-sensitive, repeatedly invoked, decode/fingerprint/cluster/feature/market-state/risk-adjacent, or would expose critical logic to opaque services, implement it natively in Rust inside the existing architecture — but only when benchmarking shows internal implementation produces superior total-system value (network latency, serialization, retries, staleness, maintenance, and failure recovery included); internal-by-ideology is not the rule, internal-by-measurement is. Permitted external roles: discovery acceleration, candidate hypotheses, auxiliary metadata, offline research, MarketIntelCache/SocialIntelCache enrichment (timestamped, provenance-aware, freshness-bounded), prioritization of deeper canonical analysis. Prohibited: authorizing trades; overriding canonical data, the risk engine, source freshness, promotion gates, circuit breakers, sell-path validation, or reconciliation; becoming a hot-path or availability dependency of any strategy lane.
 
+6.7 **Birdeye required-source designation — daily-candle backfill and token data for candle analysis (human-directed amendment, 2026-07-23).** Birdeye Data Services is designated the system's **required** third-party provider of record for two capabilities, both consumed exclusively through MarketIntelCache under the 6.6 auxiliary-intelligence laws and the 21.6 carry list (provider, venue, pair identity, token identity, quote asset, interval, observation timestamp, data timestamp, retrieval latency, freshness, completeness, provenance, confidence, reconciliation status): **(a) 1D (daily) OHLCV candle backfill and cross-check** for the 21.6 bar and market-structure feature family — candle analysis over any horizon longer than the system's own canonical capture history MUST source its daily bars from Birdeye, wash/aggregation-screened per 21.6 before admission as cross-check; **(b) token-level data enrichment for candle analysis** (token overview: liquidity, holder counts, trade counts, volume, buy/sell pressure, price action across frames; token security fields where the plan tier permits) — context features that condition structure analysis, never authority. "Required" binds the BUILD, not the trade path: Phase-B server activation MUST stand this lane up (SERVER_BUILD_MANIFEST §10) and the external-tool evaluation record lives in `docs/BIRDEYE_SOURCE.md`; it does NOT elevate Birdeye's authority class. Birdeye remains auxiliary intelligence in full: the 6.1 prohibition on Birdeye trade history as an authoritative raw source stands unchanged; own canonical flow remains the primary bar source (21.6); Birdeye fields never populate canonical trades, reserves, balances, or market cap, never authorize entries, never gate exits, and the lane fails open as absence — a Birdeye outage, rate-limit, or schema drift never halts, delays, or degrades any strategy lane. Verified surface (2026-07; re-verify at activation): base `public-api.birdeye.so`; `GET /defi/v3/ohlcv` with `type=1D`, `time_from`/`time_to`, count mode up to 5000 bars; `GET /defi/token_overview`; `GET /defi/token_security` (Starter tier or above); auth header `X-API-KEY` (operator env `BIRDEYE_API_KEY`, never committed) plus `x-chain: solana`; budget-paced to the subscribed plan's compute-unit and request ceilings with CU-aware backoff and the standard shape-hash drift sentinel.
+
 ======================================================================
 7. EVIDENCE STATUS AND THE GRADUATION-COHORT CORRECTION
 ======================================================================
@@ -577,7 +579,7 @@ Consumption: MetaRotationState is served as TimedFeatures through MarketIntelCac
 
 21.5 **ActiveMarketUniverse (required — extends discovery beyond launches).** The scalp lane requires candidates from **already-active markets**, not only creations. Build a deterministic, computationally bounded active-market selector over tokens with live markets, using measurable criteria: recent transaction count, organic volume (wash-screened per Section 28), executable liquidity and depth stability, buyer/seller breadth, unique active participants, trade-size distribution, market age, cap range, price impact, spread, volatility, volume acceleration, liquidity velocity, route availability, sell reliability, source freshness, manipulation/creator/holder/concentration risk, bot/wash probability, expected strategy capacity, and expected net value after costs. Architecture: broad inexpensive screening → progressive filtering → deep analysis only for qualified candidates → event-driven reprioritization → removal on quality deterioration → dynamic compute allocation by expected opportunity value. Never inspect or trade every trending token; never spend equal compute on every market. External platforms (6.6) may shrink the initial search space; every execution-critical state is independently reconstructed through the authoritative pipeline. Qualification events create Candidates (Section 23) with `discovery_source = ActiveMarketQualification`, fully attributed and queryable like launch-discovered candidates.
 
-21.6 **Bar and market-structure feature family (required).** Build multi-timeframe bars (sub-minute to hourly) **primarily from our own canonical trade flow** — the only leakage-proof, wash-screenable source — with third-party candles admitted solely as backfill/cross-check through MarketIntelCache carrying: provider, venue, pair identity, token identity, quote asset, interval, observation timestamp, data timestamp, retrieval latency, freshness, completeness, provenance, confidence, reconciliation status. Deterministic market-structure features over these bars: compression/expansion, breakout and retest state, failed-breakdown/reclaim state, sweep-and-reclaim structure, wick/trade-size microstructure, buy/sell imbalance, drawdown/retrace state, volatility regime, time-of-day and token-age conditioning. Detect and reject: missing/stale candles, wrong-pair or duplicate markets, wrapped-token and quote-asset distortion, artificial volume, aggregation mismatch, look-ahead leakage, survivorship in chart reconstruction. **Chart-derived observations are compressed representations of underlying events and never stand alone:** every structure feature must bind to canonical transaction flow, liquidity state, participant breadth, and execution feasibility; a visually attractive pattern without independently validated on-chain support authorizes nothing.
+21.6 **Bar and market-structure feature family (required).** Build multi-timeframe bars (sub-minute to hourly) **primarily from our own canonical trade flow** — the only leakage-proof, wash-screenable source — with third-party candles admitted solely as backfill/cross-check through MarketIntelCache (Birdeye is the required provider of record for 1D-candle backfill and token-data enrichment — Section 6.7) carrying: provider, venue, pair identity, token identity, quote asset, interval, observation timestamp, data timestamp, retrieval latency, freshness, completeness, provenance, confidence, reconciliation status. Deterministic market-structure features over these bars: compression/expansion, breakout and retest state, failed-breakdown/reclaim state, sweep-and-reclaim structure, wick/trade-size microstructure, buy/sell imbalance, drawdown/retrace state, volatility regime, time-of-day and token-age conditioning. Detect and reject: missing/stale candles, wrong-pair or duplicate markets, wrapped-token and quote-asset distortion, artificial volume, aggregation mismatch, look-ahead leakage, survivorship in chart reconstruction. **Chart-derived observations are compressed representations of underlying events and never stand alone:** every structure feature must bind to canonical transaction flow, liquidity state, participant breadth, and execution feasibility; a visually attractive pattern without independently validated on-chain support authorizes nothing.
 
 21.7 **AMM order-flow and microstructure feature catalog (required as a research-gated catalog; each family is a hypothesis, none is assumed predictive, all admitted only through Section 46).** Memecoin venues are constant-product AMMs with **no central limit order book**, so classical LOB microstructure (bid/ask depth imbalance, resting-order absorption, footprint charts) does not transfer directly and must not be imported as if it did; what transfers is computed from decoded swap flow and reserve state. Build these as TimedFeatures over 21.6 bars and raw swap sequences, all wash/cluster-screened per Section 28 (manufactured volume corrupts every one of them):
 
@@ -1771,3 +1773,141 @@ surface map is a superset of the one-machine flow, not a replacement.
   header 114. Supervisor: materialize_tests.py renders dossier property tests into locked repo
   .rs files with hash-manifest --verify wired into task+milestone gates and CI; .claude settings
   deny dossier-test edits; seed HARD list includes economic_gate.
+
+---
+
+# §70 — CONSTITUTIONAL AMENDMENT A-1 (per §68): Narrative Formation & Attention-Velocity Alpha
+
+**Ratified addition. Binding as constitutional law. Extends §29 (social intelligence), §21.4
+(MetaRotationState), §28 (amplification/wallet graph) — never weakens them.**
+
+70.1 **Governing law — virality = attention = money, made early.** The system's earliest-narrative
+edge is the deterministic detection of the causal chain *attention → money* upstream of price and
+upstream of legibility. Attention `A` is an organic-weighted, authenticity-screened count of
+DISTINCT-ORIGINATOR mentions (echoes are not attention). The tradeable quantity is the DERIVATIVE:
+velocity `Ȧ` and acceleration `Ä`, not the level. Virality `V = Ȧ × distinct-originator-breadth ×
+cross-platform-spread × authenticity_weight`. Money `M` is reconciled on-chain confirmation (distinct
+smart-wallet entry rate + holder-growth acceleration + net inflow) BEFORE price momentum. The earliest
+edge exists iff `Ä > 0` AND `M` is beginning AND price has not yet moved AND the candidate is
+pre-legible (not yet surfaced by aggregators/terminals — the §29 pre-legibility doctrine, quantified).
+
+70.2 **Lead/lag is the signal.** Attention-leads-money ⇒ EARLIEST candidate; attention+money confirmed
++ pre-legible ⇒ strong-early; money-leads-attention ⇒ quiet accumulation (watch); decelerating /
+legible / echo-dominated ⇒ SATURATION ⇒ fade. Enter early lifecycle stages; fade late ones.
+
+70.3 **Guardrails (inviolable, inherited).** (a) Narrative features are CORROBORATION-TIER: they may
+never trigger an entry alone; on-chain confirmation + all existing admission gates are always
+required. This layer emits admission-gated CANDIDATES and FEATURES, never orders. (b) FADE-FIRST is
+preserved: high-attention + low-authenticity/low-breadth is a FADE signal, not a buy. (c) DETERMINISM
+(§22): the tradeable signal is integer attention-velocity + on-chain confirmation; any LLM narrative
+summarization is a ResearchArtifact only (§ si_no_llm_fact) and may label/route but never author a
+factual state or an order. (d) PROVENANCE + SIGNAL-HORIZON (§29): every attention event carries source,
+first-seen-earliest timing, and horizon class; never equate timing across sources.
+
+70.4 **Implementation — crate `pq-narrative` (deterministic, laptop-buildable, property-tested).**
+Seven leaves: `nv_attention_series` (level/velocity/acceleration over integer windows),
+`nv_virality_coeff`, `nv_attention_money_divergence` (AttentionLeads|Confirmed|MoneyLeads|Saturating),
+`nv_lifecycle_stage` (Formation|Emergence|Virality|Saturation|Decay), `nv_pre_legibility`,
+`nv_meta_emergence` (feeds MetaRotationState §21.4), `nv_candidate_score` (composite, admission-gated).
+Inputs: attention from pq-ingest/pq-social (authenticity + amplification graph); money from
+pq-wallet-graph/pq-market-state. Consumed by pq-strategy (admission-gated candidate features).
+
+70.5 **Permanence.** These narrative-catching capabilities are constitutional and locked by the
+`pq-narrative` deterministic property tests; they may only be changed by a further §68 amendment, and
+may never be silently removed. Acceptance criterion 115: pq-narrative present, all leaves property-
+tested, corroboration-tier + fade-first invariants enforced by test.
+
+_Amendment A-1 authored under operator directive (narrative-catching mandate). Coverage: leaf-backed
+laptop crate; live social ingestion remains [S] server per §29._
+
+## §70.6–70.10 — Amendment A-1 extension (field-grounded narrative refinements)
+
+70.6 **NarrativeClass taxonomy.** Every candidate carries `NarrativeClass ∈ {Trend, News, Tech, Culture}`;
+class governs source lead-lag, verification, and expected lifecycle. **Trend** (social-native meme; TikTok/
+IG origin): fastest, shortest-lived; edge = mainstream-social-leads-crypto-social lag; verify = organic
+engagement-velocity on the ORIGIN platform. **News** (event-driven): magnitude = event virality × mainstream/
+big-account interaction; verify = genuinely-viral mainstream event; ceiling must be priced. **Tech/Utility**
+(team-backed): slower, higher ceiling, team-reliant; verify = deployer credibility (§70.9). **Culture**
+(persistent figure/brand/animal): cyclical, recurring. `nv_class_classify` assigns class deterministically
+from source mix + content features; class conditions every downstream narrative computation.
+
+70.7 **Cross-platform propagation front (the earliest edge).** Attention propagates mainstream-social
+(TikTok/IG/mainstream news) → crypto-social (X/CT/Telegram) → on-chain money. The EARLIEST edge is detecting a
+narrative still UPSTREAM of crypto-social (present + accelerating on mainstream, not yet on CT). `nv_platform_lead`
+computes the propagation front and a `crypto_social_lag` metric = remaining pre-legibility runway. Maximal
+earliness = rising origin-platform velocity + zero/low CT presence. This directionalizes the §29 pre-legibility
+doctrine and the §70 pre-legibility gate.
+
+70.8 **Narrative ceiling (price it in).** `nv_narrative_ceiling` estimates the bounded attention CEILING of a
+candidate from class + origin-reach + emotional-charge magnitude, so conviction/sizing can price how big it is
+GOING to get (a national-event ceiling ≠ a niche-meme ceiling). Deterministic bounded integer estimate; feeds
+sizing conviction (§49) and `nv_candidate_score`; never bypasses admission gates or the wallet-survival floor.
+
+70.9 **Deployer credibility (Tech/Utility + rug defense).** Deterministic deployer-trust features, echo-safe and
+never LLM-authored: prior-CA count of the deployer (serial-deploy ⇒ distrust; joins §27 creator-recycle),
+CA-in-profile presence, key/mutual-follower reach, verified-partnership (counterparty-confirmed on-chain/social,
+NOT self-claimed website logos), and machine-detectable builder green-flags (GitHub presence, doxx signal). Low
+credibility ⇒ fade/veto for Tech class; high ⇒ admission bonus. Lives in `pq-wallet-graph` + `pq-narrative`.
+
+70.10 **Anti-bundle economic heuristic.** Global-fees-paid floor as a deterministic bundle/self-dealing filter:
+a token whose cumulative priority/tip fees are implausibly low for its apparent activity is bundle/wash-flagged
+(a deployer minimizes fees when it is the only real participant). Feeds `safety_integrity` + `economic_gate` as a
+fade/veto input. `pq-narrative` grows to 10 leaves: + `nv_class_classify`, `nv_platform_lead`, `nv_narrative_ceiling`.
+
+_A-1 extension: field-grounded (operator-provided practitioner transcript). Confirms and sharpens the
+attention-velocity spine; all additions remain corroboration-tier, fade-first, deterministic, on-chain-confirmed._
+
+---
+
+# §71 — CONSTITUTIONAL AMENDMENT A-2 (per §68): Continuous Candidate-Discovery & Watchlist Operating Mandate
+
+**Ratified. Binding operating character. Extends §56 (research loop), §62 (Continuous-Improvement
+Mandate), §24 (scalp), §70 (narrative). Never weakens the admission/gate discipline.**
+
+71.1 **Operating character (never idle).** The system operates as a continuously-scanning memecoin
+trader — Ansem/Orangie/BezScales-style always-hunting. At ALL times it scans every independent signal
+lane, surfaces coin candidates onto a live watchlist, and continuously pulls the top-ranked candidates
+through the MinimumEconomicTradeGate + scalp path to harvest net SOL. This continuous discovery→gate→
+scalp loop is the bot's DEFAULT operating state, not a periodic task; idleness is a defect.
+
+71.2 **Independent lanes — union, not intersection.** A candidate may enter the watchlist from ANY
+lane on its own; lanes need not agree: (a) streamed on-chain numerics (graduation/scalp scorer,
+volume/holder-growth velocity, smart-money accumulation via pq-wallet-graph), (b) socials (X/CT/TG
+attention-velocity, pq-social/pq-narrative), (c) alpha callers (SourceQualityLedger-weighted,
+fade-first), (d) narratives/meta-shifts (pq-narrative class + platform-lead + emergence;
+MetaRotationState), (e) numeric/microstructure candidates from bot infra. **Broad discovery,
+disciplined execution:** every candidate still passes on-chain confirmation + MinimumEconomicTradeGate
++ safety_integrity + wallet-survival-floor before any capital. Discovery casts wide; the gates keep
+only net-SOL-positive scalps. Social/caller/narrative lanes remain corroboration-tier and never
+authorize capital alone.
+
+71.3 **Watchlist engine — crate `pq-watchlist` (deterministic, laptop-buildable, property-tested).**
+Each lane emits `Candidate{ mint, lane, discovery_score, discovered_at, features }`. Leaves:
+`wl_candidate` (typed candidate + lane provenance), `wl_lane_ingest` (union multi-lane intake, dedup
+by mint keeping strongest lane evidence), `wl_state` (bounded max-N ranked set with TTL/decay +
+bounded eviction, memory-safe), `wl_rank` (rank by discovery_score × recency × per-lane weight),
+`wl_promote` (hand top candidates to the scalp-decision pipeline under gate discipline),
+`wl_lane_performance` (realized net-SOL attributed per discovery lane). All integer/deterministic.
+
+71.4 **Reflection enhances discovery (first-class, extends §56/§62).** The standing reflection/VOI
+loop MUST optimize DISCOVERY alongside strategy: measure realized net-SOL per discovery lane,
+up-weight profitable lanes, retire dead lanes, and continuously hypothesize + (via registered,
+sealed experiments) admit NEW discovery signals — never idle, always improving both WHAT it finds and
+HOW it scalps it, monotonically toward net SOL. Lane weights and new discovery signals are governed
+changes, never silent; live-capital impact stays human-gated (§5).
+
+71.5 **Permanence.** This operating mandate is constitutional; the `pq-watchlist` deterministic tests
+and the `pq-app` continuous never-idle loop lock the behavior. Acceptance criterion 116: `pq-watchlist`
+present + property-tested; `pq-app` implements a continuous discovery→gate→scalp loop that never idles;
+reflection includes per-lane net-SOL discovery optimization.
+
+_Amendment A-2: operator behavioral directive — the bot is a continuous net-SOL scalping trader, not a
+signal calculator. Live streaming/ingestion of each lane remains [S] server; the discovery/watchlist
+logic + loop are laptop-built and deterministic._
+
+_Amendment A-3 (2026-07-23, human-directed): Birdeye required-source designation — new Section 6.7.
+Birdeye is the required provider of record for 1D OHLCV candle backfill/cross-check and token-data
+enrichment for candle analysis (Section 21.6 family), consumed only through MarketIntelCache under the
+6.6 auxiliary laws; authority class unchanged (6.1 prohibition on Birdeye trade history as raw truth
+stands). Build obligation lives in SERVER_BUILD_MANIFEST §10; evaluation record in
+docs/BIRDEYE_SOURCE.md. Lane is [S] server (Phase-B); fail-open as absence._
