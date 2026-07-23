@@ -337,6 +337,47 @@ pub fn size_band(
 }
 
 // ---------------------------------------------------------------------------
+// Leaf: eg_operator_floor (criterion 112 / Amendment A-6)
+// ---------------------------------------------------------------------------
+
+/// Lift an admitted band's lower edge to the operator's ABSOLUTE minimum trade
+/// size (criterion 112 operator floor / Amendment A-6), preserving the band
+/// ordering `x_min <= x_cost <= x_max`.
+///
+/// The economic [`size_band`] computes the smallest *cost-viable* size `x_min`. The
+/// operator floor is a HARD policy minimum layered on top: no order below
+/// `min_trade_size_lamports` may ever be emitted, so the effective lower edge is
+///
+/// ```text
+///     effective_x_min = max(min_trade_size_lamports, x_min)
+/// ```
+///
+/// * If the effective floor still fits the market's impact/sellability bound
+///   (`<= x_max`), the band is admitted with the lifted `x_min` and `x_cost`
+///   re-clamped into the tightened band.
+/// * If the effective floor does NOT fit (`> x_max`) — the market cannot absorb a
+///   floor-sized clip within its depth/impact bound — the band collapses to
+///   [`SizeBand::refuse`]. We never emit a sub-floor order and never exceed `x_max`.
+///
+/// `min_trade_size_lamports == 0` disables the floor (identity on the input band),
+/// and a `Refuse` input is returned unchanged. Pure, integer, deterministic — this
+/// is applied at the band-assembly layer ABOVE the dossier-locked economic leaf, so
+/// the cost-viability contract of [`size_band`] is untouched.
+#[must_use]
+pub fn floor_size_band(band: SizeBand, min_trade_size_lamports: u64) -> SizeBand {
+    if min_trade_size_lamports == 0 || !matches!(band.verdict, Verdict::Admit) {
+        return band;
+    }
+    let effective_x_min = band.x_min.max(min_trade_size_lamports);
+    if effective_x_min > band.x_max {
+        // A floor-sized clip does not fit the market's depth/impact bound.
+        return SizeBand::refuse();
+    }
+    // `admit` re-clamps x_cost into [effective_x_min, x_max].
+    SizeBand::admit(effective_x_min, band.x_cost, band.x_max)
+}
+
+// ---------------------------------------------------------------------------
 // Integer helpers
 // ---------------------------------------------------------------------------
 

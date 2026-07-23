@@ -10,6 +10,20 @@ fn mint(tag: u8) -> DomainMint {
     DomainMint::from_bytes([tag; 32])
 }
 
+/// A `dev_portable` config funded well above the criterion-112 / A-6 0.1-SOL operator
+/// trade floor, for the functional discovery/gating/attribution tests that only need a
+/// position to OPEN on a shallow test market. The recalibrated default (2-SOL bankroll,
+/// f_base ≈ base bite of 0.1 SOL = the floor) correctly REFUSES a setup once a
+/// reduce-only flow haircut drops it below the floor — sound in production, but it
+/// blocks these tests, which are orthogonal to the sizing policy. A large bankroll
+/// lifts the base bite (~1 SOL) far above the floor so a lightly-haircut setup still
+/// clears x_min and admits (the shallow market then caps it at its x_max ≈ 0.1 SOL).
+fn funded_cfg() -> Config {
+    let mut cfg = Config::dev_portable();
+    cfg.bankroll_initial_lamports = 20_000_000_000; // 20 SOL ⇒ deployable ~15, base ~1 SOL
+    cfg
+}
+
 /// A stream where three mints are discovered by three different lanes; only the
 /// numeric-confirmed one is eligible for entry.
 fn scenario() -> Vec<AppEvent> {
@@ -18,13 +32,15 @@ fn scenario() -> Vec<AppEvent> {
     let c = mint(0xCC); // narrative only -> discovered, never admissible
     let mut ev = Vec::new();
 
-    // Numeric accumulation on A (buys), plus on-chain confirmation.
+    // Numeric accumulation on A (buys), plus on-chain confirmation. Deep pool so a
+    // ≥0.1-SOL floor clip (criterion 112 / A-6) has a low exit cost and clears the
+    // §34.4 exit-cost veto — a shallow 100M pool cannot absorb a 0.1-SOL exit.
     for i in 0..5 {
         ev.push(AppEvent::MarketTrade {
             mint: a,
             price_fp: 1_000_000_000 + (i as i128) * 1_000_000,
             quote_lamports: 500_000,
-            liquidity_lamports: 100_000_000,
+            liquidity_lamports: 2_000_000_000,
             signed_base: 1_000_000,
             buyer_entity: i,
             age_slots: 30,
@@ -32,7 +48,7 @@ fn scenario() -> Vec<AppEvent> {
     }
     ev.push(AppEvent::OnchainConfirm {
         mint: a,
-        sellable_depth_lamports: 200_000_000,
+        sellable_depth_lamports: 2_000_000_000,
     });
 
     // Loud social call on B and narrative burst on C — corroboration only.
@@ -64,7 +80,7 @@ fn union_not_intersection_all_three_are_discovered() {
 
 #[test]
 fn only_confirmed_numeric_candidate_is_admitted() {
-    let mut e = Engine::new(Config::dev_portable(), RunMode::Paper);
+    let mut e = Engine::new(funded_cfg(), RunMode::Paper);
     let r = e.run(&scenario());
     assert!(r.admitted >= 1, "the confirmed numeric mint is admissible");
     assert!(
@@ -109,11 +125,11 @@ fn behavior_is_config_driven_not_hardcoded() {
     // previously-admissible mint must now be refused.
     let ev = scenario();
 
-    let mut permissive = Engine::new(Config::dev_portable(), RunMode::Paper);
+    let mut permissive = Engine::new(funded_cfg(), RunMode::Paper);
     let r_perm = permissive.run(&ev);
     assert!(r_perm.admitted >= 1);
 
-    let mut cfg = Config::dev_portable();
+    let mut cfg = funded_cfg();
     cfg.apply("gate_margin_bps", 9_000).unwrap();
     let mut strict = Engine::new(cfg, RunMode::Paper);
     let r_strict = strict.run(&ev);
@@ -186,7 +202,7 @@ fn social_source_earns_quality_from_realized_outcomes() {
     let mkt = DomainMint::from_bytes(decode_pubkey(usdc).unwrap());
     let source_id = fnv1a_64(b"caller");
 
-    let mut eng = Engine::new(Config::dev_portable(), RunMode::Paper);
+    let mut eng = Engine::new(funded_cfg(), RunMode::Paper);
     let mut src = MockSocialSource::new().with_batch(vec![RawSocialPayload::new(
         format!(r#"{{"platform":"x","author":"caller","text":"early {usdc}","likes":10}}"#)
             .into_bytes(),
@@ -205,7 +221,7 @@ fn social_source_earns_quality_from_realized_outcomes() {
             mint: mkt,
             price_fp: 1_000_000_000 + (i as i128) * 1_000_000,
             quote_lamports: 500_000,
-            liquidity_lamports: 100_000_000,
+            liquidity_lamports: 2_000_000_000, // deep: a 0.1-SOL floor clip clears exit-cost
             signed_base: 1_000_000,
             buyer_entity: i,
             age_slots: 30,
@@ -213,7 +229,7 @@ fn social_source_earns_quality_from_realized_outcomes() {
     }
     eng.tick(AppEvent::OnchainConfirm {
         mint: mkt,
-        sellable_depth_lamports: 200_000_000,
+        sellable_depth_lamports: 2_000_000_000,
     });
     // One evaluation tick promotes + admits: the position OPENS here.
     eng.tick(AppEvent::Tick);
@@ -224,7 +240,7 @@ fn social_source_earns_quality_from_realized_outcomes() {
         mint: mkt,
         price_fp: 1_420_000_000,
         quote_lamports: 500_000,
-        liquidity_lamports: 100_000_000,
+        liquidity_lamports: 2_000_000_000,
         signed_base: 1_000_000,
         buyer_entity: 5,
         age_slots: 31,
@@ -233,7 +249,7 @@ fn social_source_earns_quality_from_realized_outcomes() {
         mint: mkt,
         price_fp: 1_400_000_000,
         quote_lamports: 2_000_000,
-        liquidity_lamports: 100_000_000,
+        liquidity_lamports: 2_000_000_000,
         signed_base: -4_000_000,
         buyer_entity: 6,
         age_slots: 32,
@@ -320,6 +336,16 @@ fn creator_distribution_fades_size_but_never_vetoes() {
         // corroboration-tier haircut is correctly a no-op (never sizes below viable).
         let mut cfg = Config::dev_portable();
         cfg.gate_base_fixed_lamports = 1_000;
+        // A-6: deep market + wide economics + a 7-SOL bankroll place BOTH arms in the
+        // free sizing regime (above the 0.1-SOL floor, below x_max ≈ 0.3 SOL, and below
+        // the 0.2-SOL two-bite split threshold — single-bite, no scale-in asymmetry), so
+        // the graded creator fade reduces the DEPLOYED size and the smaller net is
+        // visible. A shallow default market would clamp both arms to the floor.
+        cfg.gate_expected_move_bps = 1_800;
+        cfg.gate_protocol_bps = 450;
+        cfg.gate_margin_bps = 150;
+        cfg.gate_impact_den = 250_000;
+        cfg.bankroll_initial_lamports = 7_000_000_000; // base ~0.35 SOL
         let mut e = Engine::new(cfg, RunMode::Paper);
         let m = mint(0x62);
         if with_creator_dump {
@@ -346,7 +372,7 @@ fn creator_distribution_fades_size_but_never_vetoes() {
                 mint: m,
                 price_fp: 1_000_000_000 + (i as i128) * 1_000_000,
                 quote_lamports: 500_000,
-                liquidity_lamports: 100_000_000,
+                liquidity_lamports: 2_000_000_000, // deep: x_max bounded by economics, not depth
                 signed_base: 1_000_000,
                 buyer_entity: i,
                 age_slots: 30,
@@ -354,7 +380,7 @@ fn creator_distribution_fades_size_but_never_vetoes() {
         }
         e.tick(AppEvent::OnchainConfirm {
             mint: m,
-            sellable_depth_lamports: 200_000_000,
+            sellable_depth_lamports: 2_000_000_000,
         });
         // Admit (position opens), then a pump past the principal-recovery target and
         // a flow rollover close the position AT A PROFIT — so realized net scales
@@ -364,7 +390,7 @@ fn creator_distribution_fades_size_but_never_vetoes() {
             mint: m,
             price_fp: 1_500_000_000,
             quote_lamports: 500_000,
-            liquidity_lamports: 100_000_000,
+            liquidity_lamports: 2_000_000_000,
             signed_base: 1_000_000,
             buyer_entity: 5,
             age_slots: 31,
@@ -373,7 +399,7 @@ fn creator_distribution_fades_size_but_never_vetoes() {
             mint: m,
             price_fp: 1_480_000_000,
             quote_lamports: 2_000_000,
-            liquidity_lamports: 100_000_000,
+            liquidity_lamports: 2_000_000_000,
             signed_base: -4_000_000,
             buyer_entity: 6,
             age_slots: 32,
@@ -482,7 +508,7 @@ fn numeric_lane_discovers_buy_flow_not_sell_flow() {
     // confirmed on-chain but must NEVER be self-authorized — the numeric lane
     // discovers genuine buy *flow*, not price. A parallel buy-flow mint IS admitted.
     let run = |buy: bool| -> pump_quant_app::engine::Report {
-        let mut e = Engine::new(Config::dev_portable(), RunMode::Paper);
+        let mut e = Engine::new(funded_cfg(), RunMode::Paper);
         let m = mint(0x77);
         let sign = if buy { 1i64 } else { -1i64 };
         for i in 0..6u64 {
@@ -490,7 +516,7 @@ fn numeric_lane_discovers_buy_flow_not_sell_flow() {
                 mint: m,
                 price_fp: 1_000_000_000 + (i as i128) * 1_000_000, // price rising either way
                 quote_lamports: 500_000,
-                liquidity_lamports: 100_000_000,
+                liquidity_lamports: 2_000_000_000, // deep: a 0.1-SOL floor clip clears exit-cost
                 signed_base: sign * 1_000_000,
                 buyer_entity: i,
                 age_slots: 30,
@@ -498,7 +524,7 @@ fn numeric_lane_discovers_buy_flow_not_sell_flow() {
         }
         e.tick(AppEvent::OnchainConfirm {
             mint: m,
-            sellable_depth_lamports: 200_000_000,
+            sellable_depth_lamports: 2_000_000_000,
         });
         for _ in 0..6 {
             e.tick(AppEvent::Tick);
@@ -529,7 +555,9 @@ fn admissible_stream(tag: u8) -> Vec<AppEvent> {
             mint: m,
             price_fp: 1_000_000_000 + (i as i128) * 1_000_000,
             quote_lamports: 500_000,
-            liquidity_lamports: 100_000_000,
+            // Deep pool so a ≥0.1-SOL floor clip (criterion 112 / A-6) has a low exit
+            // cost and clears the §34.4 exit-cost veto (a 100M pool cannot absorb it).
+            liquidity_lamports: 2_000_000_000,
             signed_base: 1_000_000,
             buyer_entity: i,
             age_slots: 30,
@@ -537,7 +565,7 @@ fn admissible_stream(tag: u8) -> Vec<AppEvent> {
     }
     ev.push(AppEvent::OnchainConfirm {
         mint: m,
-        sellable_depth_lamports: 200_000_000,
+        sellable_depth_lamports: 2_000_000_000,
     });
     ev.push(AppEvent::Tick);
     ev
@@ -604,6 +632,11 @@ fn bankroll_size_is_proportional_to_deployable_capital() {
         cfg.apply("bankroll_initial_lamports", bankroll as i64)
             .unwrap();
         cfg.apply("gate_base_fixed_lamports", 1_000).unwrap();
+        // A-6: a deep impact curve so x_max (impact-bounded) is far above both arms'
+        // deployed size — the proportionality (10× bankroll ⇒ 10× size) is only visible
+        // while the band does NOT bind. With the default impact_den both arms would cap
+        // at x_max ≈ 0.15 SOL and the proportionality would vanish.
+        cfg.apply("gate_impact_den", 100_000_000).unwrap();
         let mut e = Engine::new(cfg, RunMode::Paper);
         for ev in deep_admissible_stream(0x92) {
             e.tick(ev);
@@ -629,8 +662,13 @@ fn bankroll_size_is_proportional_to_deployable_capital() {
         });
         e.report().net_lamports
     };
-    let small = net_for(4_000_000_000); // 4 SOL → deployable 2 SOL
-    let large = net_for(40_000_000_000); // 40 SOL → deployable 20 SOL
+    // A-6: both bankrolls sized so the deployed bite is ABOVE the 0.2-SOL two-bite
+    // split threshold (deployable × f_base × the ~0.5 flow haircut ≳ 0.5 SOL), so BOTH
+    // split probe+scale-in at the SAME 40% probe fraction — proportionality holds. (At
+    // the old 4-SOL bankroll the small arm sizes at the 0.1-SOL floor as a SINGLE bite
+    // while the large arm splits, breaking the 10×-size ⇒ 10×-net proportionality.)
+    let small = net_for(20_000_000_000); // 20 SOL → deployable 15, bite ~0.5 SOL
+    let large = net_for(200_000_000_000); // 200 SOL → deployable 150, bite ~5 SOL
     assert!(small > 0 && large > 0, "both bankrolls profit on the pump");
     assert!(
         large > small * 5,
@@ -696,7 +734,7 @@ fn stale_confirmation_no_longer_authorizes() {
     // fresh; with a 5-tick confirm TTL the re-admission stream STOPS, while a
     // 1000-tick TTL keeps re-admitting off the same stale proof.
     let run = |confirm_ttl: i64| -> u64 {
-        let mut cfg = Config::dev_portable();
+        let mut cfg = funded_cfg();
         cfg.apply("confirm_ttl_ticks", confirm_ttl).unwrap();
         cfg.apply("lane_evidence_ttl_ticks", 1_000).unwrap(); // isolate the confirm TTL
         cfg.apply("lc_stall_ticks", 1).unwrap();

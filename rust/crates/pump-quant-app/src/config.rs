@@ -117,6 +117,17 @@ pub struct Config {
     /// serves 0.75, 2, 10 or 100 SOL (scale-invariant until the per-market cost
     /// floor x_min carves out the venue-viability region).
     pub bankroll_initial_lamports: u64,
+    /// Operator-directed ABSOLUTE minimum size for EVERY individual order the engine
+    /// emits — initial entry, each probe, and each probe→confirm→scale-in add
+    /// (criterion 112 operator floor / Amendment A-6). No bet below this is ever
+    /// placed: the economic band's `x_min` is lifted to `max(this, x_min)`, a
+    /// risk/Kelly-arbitrated size below it is clamped UP to it (only if that still
+    /// fits every hard cap — else the trade is REFUSED, never shrunk), and a target
+    /// that cannot split into two ≥floor bites opens as a single ≥floor bite. Set to
+    /// `0` to disable the floor entirely (restores the pre-A-6 sub-`x_min`
+    /// paid-information probe path). NEVER hardcoded elsewhere — the engine reads
+    /// this field, and all other limits derive from the live bankroll, not this.
+    pub min_trade_size_lamports: u64,
     /// Survival-floor fraction of the verified starting balance, bps. The floor is
     /// `max(0.5 SOL, fraction × start)` (delta-§1) and is NEVER risked or spent.
     pub floor_fraction_bps: u32,
@@ -556,6 +567,14 @@ pub const CREATOR_DUMP_VETO_BP_DEFAULT: u64 = 6_000;
 /// 35% of peak distributed — a known extractor gets a lower bar. §102.
 pub const CREATOR_DUMP_VETO_STRICT_BP_DEFAULT: u64 = 3_500;
 
+/// Operator-directed absolute minimum trade size: 0.1 SOL in lamports (criterion
+/// 112 operator floor / Amendment A-6). Every individual order — initial entry,
+/// each probe, each scale-in add — is ≥ this; the engine NEVER emits a sub-0.1-SOL
+/// bet. Named const, §102. A `0` value disables the floor (legacy sub-`x_min`
+/// probe path re-enabled). This is a hard policy minimum layered ON TOP of the
+/// per-market economic `x_min`; it is a *starting default*, operator-overridable.
+pub const MIN_TRADE_SIZE_LAMPORTS_DEFAULT: u64 = 100_000_000;
+
 impl Config {
     /// A portable starting point for laptop dry-runs and tests.
     ///
@@ -592,15 +611,22 @@ impl Config {
             sim_impact_k_bps: 50,
 
             bankroll_initial_lamports: 2_000_000_000, // 2 SOL start; ANY amount works
-            floor_fraction_bps: 5_000,                // floor = max(0.5 SOL, 50% of start)
-            f_base_bp: 150,                           // 1.5% of deployable per position
-            total_risk_cap_bp: 450,                   // ≤4.5% of deployable at risk total
-            max_concurrent_positions: 3,              // 3 × 150bp = 450bp (consistent)
-            x_min_promote_cap_bp: 400,                // promote to x_min only ≤4% of deployable
-            promote_min_haircut_bp: 8_000,            // never promote a risk-faded trade
-            dd_tier1_bp: 1_500,                       // −15% dd → half fraction
-            dd_tier2_bp: 3_000,                       // −30% dd → quarter fraction
-            dd_tier3_bp: 5_000,                       // −50% dd → probe-only survival
+            // A-6 small-bankroll recalibration (criterion 112): on a 2 SOL start the
+            // survival floor is max(0.5 SOL, 25%×2) = 0.5 SOL ⇒ deployable 1.5 SOL,
+            // and a full-confidence base bite (f_base) is ≈0.1 SOL — the operator
+            // floor is the NATURAL base bite, and deep-fractional Kelly modulates
+            // ABOVE it (differentiating naturally as the bankroll compounds past ~3
+            // SOL). See MIN_TRADE_SIZE_LAMPORTS_DEFAULT and the A/B in the golden tape.
+            min_trade_size_lamports: MIN_TRADE_SIZE_LAMPORTS_DEFAULT, // 0.1 SOL hard floor
+            floor_fraction_bps: 2_500, // floor = max(0.5 SOL, 25% of start)
+            f_base_bp: 667,            // base bite ≈0.1 SOL on 1.5 deployable
+            total_risk_cap_bp: 2_100,  // fits 3× floor notional+fees (~0.303 SOL)
+            max_concurrent_positions: 3, // 3 × 667bp ≈ 2000bp; cap adds fee headroom
+            x_min_promote_cap_bp: 800, // 0.1 SOL = 6.67% deployable ⇒ cap must exceed
+            promote_min_haircut_bp: 8_000, // never promote a risk-faded trade
+            dd_tier1_bp: 1_500,        // −15% dd → half fraction
+            dd_tier2_bp: 3_000,        // −30% dd → quarter fraction
+            dd_tier3_bp: 5_000,        // −50% dd → probe-only survival
             probe_f_bp: 50,
             probe_frac_bp: 4_000, // open 40% as the probe; scale to full on confirmation
             arb_min_expected_net_lamports: 0,
@@ -779,6 +805,7 @@ impl Config {
             "exit_tip_lamports" => self.exit_tip_lamports = nonneg(value)?,
             "sim_impact_k_bps" => self.sim_impact_k_bps = bp(value)?,
             "bankroll_initial_lamports" => self.bankroll_initial_lamports = nonneg(value)?,
+            "min_trade_size_lamports" => self.min_trade_size_lamports = nonneg(value)?,
             "floor_fraction_bps" => self.floor_fraction_bps = bp(value)?,
             "f_base_bp" => self.f_base_bp = bp(value)?,
             "total_risk_cap_bp" => self.total_risk_cap_bp = bp(value)?,

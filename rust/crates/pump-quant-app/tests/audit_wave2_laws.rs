@@ -86,6 +86,18 @@ fn crater(eng: &mut Engine, top_mult: i128, n: u64) {
 /// of peak at the top, then the price craters. Armed: the dump forces the exit
 /// at the top; neutralized: the position rides the crater into the hard stop.
 fn drive_held_dump(cfg: Config) -> (Report, Engine) {
+    // A-6 sizing regime: exercise the §26 held-exit above the 0.1-SOL operator floor.
+    // Realistic wide-window economics (x_max ≈ 0.3 SOL, like the golden tape) + a
+    // bankroll that sizes the position well above the floor, so the held-exit vs
+    // ride-the-crater A/B is not clipped by the narrow default sizing window. The §26
+    // toggle under test is untouched — both arms share these overrides.
+    let mut cfg = cfg;
+    cfg.gate_expected_move_bps = 1_800;
+    cfg.gate_protocol_bps = 450;
+    cfg.gate_margin_bps = 150;
+    cfg.gate_base_fixed_lamports = 200_000;
+    cfg.gate_impact_den = 250_000;
+    cfg.bankroll_initial_lamports = 10_000_000_000; // 10 SOL ⇒ deployable 7.5, base ~0.5 SOL
     let mut eng = Engine::new(cfg, RunMode::Replay);
     // Deployer initializes holding the full supply (no sells yet — not a dump).
     eng.tick(AppEvent::CreatorAction {
@@ -768,6 +780,18 @@ fn pb_bar(eng: &mut Engine, prices: [i128; 8], entity0: u64) {
 /// in a controlled pullback holding the prior breakout level — but NO on-chain
 /// confirm. Leaves the decision to the gate.
 fn drive_pullback(cfg: Config) -> Report {
+    // A-6 sizing regime: exercise the §24 EntryMode pullback admission above the
+    // 0.1-SOL operator floor. Realistic wide-window economics (x_max ≈ 0.3 SOL) + a
+    // bankroll that sizes the pullback well above the floor, so a lightly-haircut
+    // active-market scalp still clears x_min rather than refusing below the floor. The
+    // entry_mode toggle under test is untouched — both arms share these overrides.
+    let mut cfg = cfg;
+    cfg.gate_expected_move_bps = 1_800;
+    cfg.gate_protocol_bps = 450;
+    cfg.gate_margin_bps = 150;
+    cfg.gate_base_fixed_lamports = 200_000;
+    cfg.gate_impact_den = 250_000;
+    cfg.bankroll_initial_lamports = 10_000_000_000; // 10 SOL ⇒ deployable 7.5, base ~0.5 SOL
     let mut eng = Engine::new(cfg, RunMode::Replay);
     pb_bar(&mut eng, [100, 90, 110, 95, 100, 105, 98, 100], 40); // low90 high110
     pb_bar(&mut eng, [105, 130, 120, 105, 125, 128, 122, 125], 41); // swing high 130

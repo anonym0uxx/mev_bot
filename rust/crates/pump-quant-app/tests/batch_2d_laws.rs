@@ -129,7 +129,18 @@ fn admitted_record_carries_band_and_provenance() {
 /// sub-x_min branch.
 fn drive_sub_xmin(probe_budget: bool) -> Engine {
     let mut cfg = Config::dev_portable();
-    cfg.bankroll_initial_lamports = 600_000_000; // 0.6 SOL: deployable ~0.1 SOL
+    // 0.52 SOL ⇒ deployable ~0.02 SOL (floor 0.5): with the recalibrated f_base=667 a
+    // base bite is ~1.3M lamports, comfortably BELOW the per-market economic x_min, so
+    // every viable candidate still lands on the sub-x_min branch. (The pre-A-6 0.6-SOL
+    // bankroll now sizes ABOVE x_min under f_base=667, so it no longer exercises this
+    // path — the deployable is lowered to preserve the sub-x_min regime the test needs.)
+    cfg.bankroll_initial_lamports = 520_000_000;
+    // The §33/§43 LAW 13 sub-x_min paid-information probe is a SUB-FLOOR bet, so the
+    // criterion-112 / A-6 operator floor switches it OFF whenever it is active. This
+    // test exercises the legacy sub-x_min path, so it explicitly disables the floor
+    // (min_trade_size = 0) — with the floor on, these tiny-bankroll candidates would
+    // instead REFUSE below the floor (deeper protection, correct), never probe.
+    cfg.min_trade_size_lamports = 0;
     cfg.probe_budget_enable = probe_budget;
     let mut eng = Engine::new(cfg, RunMode::Replay);
     for m in 0..6u64 {

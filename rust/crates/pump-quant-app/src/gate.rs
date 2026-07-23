@@ -20,7 +20,9 @@
 //! [`crate::config::Config`].
 
 use crate::config::Config;
-use pump_quant_strategy::economic_gate::{size_band, ImpactCurve, SizeBand, Verdict};
+use pump_quant_strategy::economic_gate::{
+    floor_size_band, size_band, ImpactCurve, SizeBand, Verdict,
+};
 use pump_quant_watchlist::candidate::{Candidate, Features};
 
 /// Why the gate refused a candidate.
@@ -85,6 +87,13 @@ pub fn decide(
         &impact,
         conf.sellable_depth_lamports,
     );
+
+    // Criterion 112 / A-6 operator floor: lift the band's lower edge to the absolute
+    // minimum trade size so the effective x_min is `max(min_trade_size, x_min)`. A
+    // market too thin to absorb a floor-sized clip (`effective x_min > x_max`)
+    // collapses to `Refuse` here — the engine never emits a sub-floor order and never
+    // exceeds x_max. Applied above the dossier-locked economic leaf.
+    let band = floor_size_band(band, cfg.min_trade_size_lamports);
 
     match band.verdict {
         Verdict::Admit => GateDecision::Admit(band),

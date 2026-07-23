@@ -118,6 +118,27 @@ fn universe_screen_refuses_dead_markets_and_keeps_the_lamports() {
 /// the entry at the configured structure haircut and so loses strictly less
 /// when the crash completes.
 fn drive_trap(cfg: Config) -> (Report, Engine) {
+    // A-6 sizing regime: exercise the §21.6 structure haircut above the 0.1-SOL
+    // operator floor. Realistic wide-window economics (x_max ≈ 0.3 SOL) + a 5-SOL
+    // bankroll place the base bite (~0.25 SOL) squarely in the FREE sizing regime —
+    // above the floor and below x_max — in BOTH arms, so the reduce-only haircut ratio
+    // is observable (a floor clamp-up would cancel it). The structure toggle under
+    // test (bar_trades_per_bar) is untouched.
+    let mut cfg = cfg;
+    cfg.gate_expected_move_bps = 1_800;
+    cfg.gate_protocol_bps = 450;
+    cfg.gate_margin_bps = 150;
+    cfg.gate_base_fixed_lamports = 200_000;
+    cfg.gate_impact_den = 250_000;
+    // 7 SOL ⇒ deployable 5.25, base ~0.35 SOL. Both arms land in the WINDOW where a
+    // bite (a) clears the 0.1-SOL floor without promotion (the 0.7 structure haircut is
+    // below the promote-min guard) AND (b) is below the 0.2-SOL two-bite split
+    // threshold, so BOTH open as a SINGLE full-size bite (no scale-in asymmetry). Neut
+    // (~0.175 SOL) and armed (~0.1225 SOL) then differ ONLY by the structure haircut:
+    // the ratio is observable and the smaller armed bite genuinely loses less on the
+    // trap. (A larger base makes neut split into probe+scale-in while armed stays a
+    // single bite, inverting the loss comparison — a floor/scale-in artifact.)
+    cfg.bankroll_initial_lamports = 7_000_000_000;
     let mut eng = Engine::new(cfg, RunMode::Replay);
     let mt = mint(9_000);
     // Six 8-trade bars: (H,L) = (200,190),(205,195),(185,175),(190,180),
@@ -221,6 +242,17 @@ fn structure_haircut_shrinks_the_exit_liquidity_trap() {
 /// full strength forever and squats the slot; with decay its rank fades and
 /// the fresh market is promoted, admitted, and earns.
 fn drive_squatter(cfg: Config) -> (Report, Engine) {
+    // A-6 sizing regime: the fresh market K must size ABOVE the 0.1-SOL operator floor
+    // to admit and earn once decay frees the slot. Realistic wide-window economics
+    // (x_max ≈ 0.3 SOL) + a 10-SOL bankroll size it well above the floor. The decay /
+    // promote-slot toggles under test are untouched — both arms share these overrides.
+    let mut cfg = cfg;
+    cfg.gate_expected_move_bps = 1_800;
+    cfg.gate_protocol_bps = 450;
+    cfg.gate_margin_bps = 150;
+    cfg.gate_base_fixed_lamports = 200_000;
+    cfg.gate_impact_den = 250_000;
+    cfg.bankroll_initial_lamports = 10_000_000_000; // 10 SOL ⇒ deployable 7.5, base ~0.5 SOL
     let mut eng = Engine::new(cfg, RunMode::Replay);
     let j = mint(9_100);
     let k = mint(9_200);

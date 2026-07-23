@@ -350,13 +350,17 @@ fn drive(cfg: Config) -> pump_quant_app::engine::Report {
         // breadth — a lone caller is half-formation). Deterministic (§22): no RNG,
         // no wall-clock; reuses the existing deterministic wave shape.
         let alpha_win = b58_mint(ALPHA_WIN_B58);
-        // A MODEST winner (peak ≈ +20%, settling ≈ +12%) — deliberately BELOW the
-        // forbidden fixed +35% (13_500) first rung, so the cost-derived ladder banks
-        // its lower rung while the fixed ladder misses entirely. This keeps the paid
-        // room's call a genuine profitable admit WITHOUT re-introducing a big runner
-        // that would reward the forbidden fixed ladder (re-pin #13 representativeness:
-        // the streamed coin stays the tape's one runner; derived still out-earns fixed).
-        let aw_mult_bp: u64 = [10_000, 11_000, 12_000, 12_500, 13_000, 11_000][round as usize];
+        // A MODEST winner (peak ≈ +30% round 4, settling to a ≈ +20% consolidation
+        // plateau round 5) — deliberately BELOW the forbidden fixed +35% (13_500)
+        // first rung, so the cost-derived ladder banks its lower rung while the fixed
+        // ladder misses entirely. Re-pin #15: the round-5 settle was lifted from a
+        // +10% near-round-trip (11_000) to this +20% plateau (12_000) — at realistic
+        // 0.1-SOL clips the deep give-back turned the AlphaCall re-admits net-negative
+        // (incoherent with LAW D1/D5); the plateau keeps the paid room a genuine MODEST
+        // profitable admit WITHOUT re-introducing a big runner that would reward the
+        // forbidden fixed ladder (re-pin #13 representativeness: the streamed coin stays
+        // the tape's one runner; derived still out-earns fixed).
+        let aw_mult_bp: u64 = [10_000, 11_000, 12_000, 12_500, 13_000, 12_000][round as usize];
         let aw_base = 1_000_000_000i128 * aw_mult_bp as i128 / 10_000;
         for i in 0..8u64 {
             let selling = round == 5;
@@ -607,17 +611,58 @@ fn drive(cfg: Config) -> pump_quant_app::engine::Report {
 // is inert here — the golden cohort has no bearish held case). Each law's isolated
 // causal effect is proven on its own hazard tape in alpha_laws.rs.
 // (arc: … → 1_406_102 → 1_864_780.)
-const GOLDEN_DIGEST: u64 = 9_156_528_138_145_267_483;
-const GOLDEN_NET_LAMPORTS: i128 = 1_864_780;
+// Re-pin #15 (0.1-SOL OPERATOR FLOOR + small-bankroll Kelly recalibration —
+// criterion 112 / Amendment A-6): a REAL decision-level re-pin, NOT seed-only. The
+// operator directed an ABSOLUTE minimum trade size of 0.1 SOL on EVERY individual
+// order (entry, each probe, each probe→confirm→scale-in add) and a Kelly/bankroll
+// recalibration so a small 2-SOL bankroll actually trades at-or-above the floor
+// instead of being blocked. Two coupled changes land here:
+//   1. FLOOR. A new `min_trade_size_lamports` config (default 100_000_000 = 0.1 SOL)
+//      lifts the economic band's `x_min` to `max(0.1 SOL, x_min)` (via the additive
+//      `economic_gate::floor_size_band`, applied in `gate::decide` ABOVE the dossier-
+//      locked `size_band` leaf). A risk/Kelly-arbitrated size below the floor is
+//      CLAMPED UP to it when the hard caps allow, else REFUSED; a market too thin to
+//      take a 0.1-SOL clip (`x_min > x_max`) refuses. Every emitted bite — probe and
+//      scale-in add — is ≥ 0.1 SOL (`open_pending` folds a sub-floor scale remainder
+//      into the initial bite). The sub-`x_min` paid-information probe (LAW 13) is a
+//      SUB-FLOOR bet, so it is switched OFF while the floor is active.
+//   2. RECALIBRATION. `Config::dev_portable` moves floor_fraction_bps 5_000→2_500
+//      (survival floor max(0.5 SOL, 25%×2 SOL)=0.5 SOL ⇒ deployable 1.5 SOL),
+//      f_base_bp 150→667 (base bite ≈0.1 SOL — the floor is the natural base bite),
+//      total_risk_cap_bp 450→2_100 (fits 3 concurrent floor notionals + fees, ~0.303
+//      SOL ≈ 15% of the 2-SOL bankroll on an all-positions rug), and
+//      x_min_promote_cap_bp 400→800 (0.1 SOL = 6.67% of deployable, so the promote
+//      cap MUST exceed that or the floor is unreachable — the key unblock).
+// The 2-SOL bankroll now ADMITS (admitted 13 > 0) and NO order is below 0.1 SOL
+// (pinned by the no-sub-floor invariant in sizing_floor_laws.rs). Counts/net MOVE:
+// admitted 18 → 13 (fewer, ~5× larger 0.1-SOL clips under the same 3-slot cap),
+// rejected 486 → 457, promoted 504 and universe_filtered 72 UNCHANGED, and net
+// 1_864_780 → 15_410_801 (a SIGNED delta of +13_546_021 — realistic 0.1-SOL clips
+// bank far more per admit, and the lower fixed-cost fraction at larger size lifts
+// per-trade efficiency). The paid-alpha cohort's round-5 settle was also lifted from
+// a +10% near-round-trip (11_000) to a +20% consolidation plateau (12_000): at tiny
+// pre-A-6 sizes the deep give-back only bled a marginal amount, but at realistic
+// 0.1-SOL clips the re-admits into that fade turned the AlphaCall lane NEGATIVE
+// (incoherent with LAW D1/D5 "the paid room earns its keep"). The +20% plateau — a
+// coherent "called winner consolidates and holds", consistent with the tape's own
+// `main_scalp` winner-settle model and the streamed runner's partial give-back —
+// keeps the alpha winner a MODEST positive contributor (AlphaCall 447_700, close to
+// its prior 856_711 role) WITHOUT reshaping it into a second runner, and its +30%
+// peak still sits BELOW the forbidden fixed +35% rung so cost-derived STILL out-earns
+// fixed (derived 15_410_801 − fixed 15_055_700 = +355_101 > 0). LAWs unchanged; the
+// §71 quota and §24 reversal wiring are re-measured, not altered.
+// (arc: … → 1_406_102 → 1_864_780 → 15_410_801.)
+const GOLDEN_DIGEST: u64 = 3_411_907_290_210_896_052;
+const GOLDEN_NET_LAMPORTS: i128 = 15_410_801;
 const GOLDEN_PROMOTED: u64 = 504;
-const GOLDEN_ADMITTED: u64 = 18;
-const GOLDEN_REJECTED: u64 = 486;
+const GOLDEN_ADMITTED: u64 = 13;
+const GOLDEN_REJECTED: u64 = 457;
 /// Zombie-cohort promotions the §21.5 screen must remove (visible activity).
 const GOLDEN_UNIVERSE_FILTERED: u64 = 72;
 /// LAW D1/D5: the paid Discord room's realized net attributed to the AlphaCall
 /// discovery lane (the modest winner it surfaced, admitted and ridden). Positive —
 /// the room earned its keep; keyed distinctly from the open social-caller firehose.
-const GOLDEN_ALPHACALL_NET: i64 = 856_711;
+const GOLDEN_ALPHACALL_NET: i64 = 447_700;
 
 #[test]
 fn golden_digest_is_stable() {

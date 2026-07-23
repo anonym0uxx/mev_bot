@@ -1953,3 +1953,27 @@ net 1,864,780 (+458,678 — an early designated-caller call surfaced a real winn
 the gate). Operational posture (docs/DISCORD_SOURCE.md): user-token capture is passive, invisible-
 presence, read-only, live-Gateway-only (no REST history scraping), single connection — the safe
 posture for a legitimately-subscribed account; no multi-account rotation / proxy evasion is built._
+
+_Amendment A-6 (2026-07-23, human-directed): ABSOLUTE MINIMUM TRADE SIZE — 0.1 SOL floor on every
+order. Config `min_trade_size_lamports` (default 100_000_000 = 0.1 SOL). No order the engine emits —
+initial entry, each probe→confirm→scale-in add, or any probe — is EVER below the floor; a 0.09-or-
+below bet is impossible by construction, pinned by the no-sub-floor invariant (tests/sizing_floor_laws.rs).
+This tightens criterion 112 (MinimumEconomicTradeGate): (1) the size band's x_min is lifted to
+max(min_trade_size_lamports, economic min_viable_size); (2) when the risk/Kelly-arbitrated size falls
+below the floor, it CLAMPS UP to the floor (the operator's minimum bite) if and only if that still fits
+every hard cap — total-risk cap, drawdown tier, max-concurrent, survival-floor/deployable remaining,
+and x_max — otherwise the trade is REFUSED (never shrunk below the floor, never sized above x_max);
+(3) a position that cannot be split into two ≥floor bites opens as a single ≥floor bite; (4) the §33
+sub-x_min paid-information probe path is switched OFF while the floor is active — no bet below 0.1,
+period, overriding criterion 112's sub-minimum-probe allowance. Small-bankroll recalibration (the
+2 SOL start is a config value, never hardcoded; all limits derive from the live bankroll which
+compounds from realized P&L only): floor_fraction 25% (survival floor 0.5 SOL → deployable 1.5 SOL),
+f_base 667bp (the 0.1 floor is the natural base bite; deep-fractional Kelly modulates ABOVE it and
+differentiates as the bankroll compounds), x_min_promote_cap 800bp (must exceed the floor's 6.67%-of-
+deployable so the floor is reachable — the key unblock), total_risk_cap 2100bp / max_concurrent 3
+(three concurrent 0.1-SOL bites; catastrophic all-rug ≈ 15% of bankroll, bounded by the drawdown
+tiers which refuse rather than emit a sub-floor order in deep drawdown). Golden re-pin #15: digest
+3411907290210896052, net 15,410,801 (the +13.5M vs re-pin #14 is a POSITION-SIZE effect — 0.1-SOL
+bites vs the prior ~0.015-SOL sizing on the same synthetic tape — NOT an edge gain; do not cite it as
+edge). The 2 SOL bankroll admits trades (does not block). Per-law A/B + the no-sub-floor invariant:
+tests/sizing_floor_laws.rs._

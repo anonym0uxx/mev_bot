@@ -10,8 +10,8 @@ engine, and never edits a `dossier_*` file, a golden digest, or a pinned constan
 Everything here is integer / deterministic, fast (< 30 s), and needs no network,
 no wall-clock, and no RNG (§22).
 
-At the pinned green HEAD: `cargo test --workspace` = **1908 passed / 0 failed**,
-golden digest `9156528138145267483` (net `1864780`), **191** dossiers intact.
+At the pinned green HEAD: `cargo test --workspace` = **all passed / 0 failed**,
+golden digest `3411907290210896052` (net `15410801`), **191** dossiers intact.
 
 ---
 
@@ -21,17 +21,17 @@ golden digest `9156528138145267483` (net `1864780`), **191** dossiers intact.
 
 | Baseline | Value | Guards |
 |---|---|---|
-| `GOLDEN_DIGEST` | `9156528138145267483` (hex `7f1285d40a047f1b`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
-| `GOLDEN_NET_LAMPORTS` | `1864780` | realized §24-compliant cost-derived net-SOL on the golden tape |
+| `GOLDEN_DIGEST` | `3411907290210896052` (hex `2f59879a779608b4`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
+| `GOLDEN_NET_LAMPORTS` | `15410801` | realized §24-compliant cost-derived net-SOL on the golden tape |
 | `GOLDEN_PROMOTED` | `504` | candidates promoted to the gate |
-| `GOLDEN_ADMITTED` | `18` | candidates admitted by the gate |
-| `GOLDEN_REJECTED` | `486` | candidates rejected by the gate |
+| `GOLDEN_ADMITTED` | `13` | candidates admitted by the gate |
+| `GOLDEN_REJECTED` | `457` | candidates rejected by the gate |
 | `GOLDEN_UNIVERSE_FILTERED` | `72` | §21.5 universe-screen removals (zombie cohort) |
-| `GOLDEN_NET_FIXED_LADDER` | `1852159` | net with the §24 cost-derived ladder DISABLED (forbidden fixed 13500/25000/50000 ladder) |
-| `GOLDEN_DERIVED_MINUS_FIXED` | `12621` | margin by which cost-derived out-earns the fixed ladder on the representative tape (re-pin #13, preserved through the re-pin #14 Discord alpha cohort) |
+| `GOLDEN_NET_FIXED_LADDER` | `15055700` | net with the §24 cost-derived ladder DISABLED (forbidden fixed 13500/25000/50000 ladder) |
+| `GOLDEN_DERIVED_MINUS_FIXED` | `355101` | margin by which cost-derived out-earns the fixed ladder on the representative tape (re-pin #13, preserved through re-pin #14's Discord alpha cohort and re-pin #15's 0.1-SOL operator floor + Kelly recalibration) |
 
 **Golden net re-pin arc** (`GOLDEN_NET_ARC`, mirrored from `golden_digest.rs`):
-`2979624 → 5017234 → 6443936 → 8785954 → 12550767 → 3831945 → 1406102 → 1864780`.
+`2979624 → 5017234 → 6443936 → 8785954 → 12550767 → 3831945 → 1406102 → 1864780 → 15410801`.
 The arc must terminate at `GOLDEN_NET_LAMPORTS`; re-pin #12's documented signed
 delta is `GOLDEN_ARC_REPIN12_DELTA` = `-8718822` (`3831945 - 12550767`).
 
@@ -100,8 +100,8 @@ Config-identity + defaults (`tests/regression_laws.rs`):
 - **every_law_toggle_is_in_the_strategy_identity_seed** — flipping ANY toggle moves
   the golden digest (the law is still part of the §19 strategy identity).
 - **derived_targets_reversal_moves_the_golden_net_off_the_fixed_ladder** — §24
-  default-ON produces the derived net (`1864780`); OFF falls back to the forbidden
-  fixed ladder (`1852159`), derived > fixed.
+  default-ON produces the derived net (`15410801`); OFF falls back to the forbidden
+  fixed ladder (`15055700`), derived > fixed.
 - **corroboration_quota_changes_golden_admissions_and_net** — §71 quota strictly
   out-earns its absence and changes admissions.
 - **universe_screen_toggle_changes_the_filtered_count** — §21.5 age screen moves

@@ -16,14 +16,28 @@ fn mint(tag: u64) -> Mint {
     Mint::from_bytes(b)
 }
 
-/// Deep, admissible flow for one mint: strong OFI, deep pool, broad entities.
+/// A `dev_portable` config funded above the criterion-112 / A-6 0.1-SOL operator
+/// floor. The recalibrated default 2-SOL bankroll sizes the base bite AT the floor,
+/// so a reduce-only flow haircut drops it below the floor and REFUSES (correct in
+/// production) — these admission-control tests are orthogonal to sizing, so a larger
+/// bankroll lifts the base bite above the floor and lets the confirmed setup admit.
+fn funded() -> Config {
+    let mut cfg = Config::dev_portable();
+    cfg.bankroll_initial_lamports = 20_000_000_000; // 20 SOL ⇒ base ~1 SOL, caps at x_max
+    cfg
+}
+
+/// Deep, admissible flow for one mint: strong OFI, deep pool, broad entities. The
+/// pool is deep enough (10 SOL of reserve) that a ≥0.1-SOL floor clip (criterion 112 /
+/// A-6) is a small fraction of the curve and clears the §34.4 exit-cost veto — a
+/// shallow 0.3-SOL curve cannot absorb a 0.1-SOL exit (~33% of reserve).
 fn feed_flow(eng: &mut Engine, mt: Mint, trades: u64) {
     for i in 0..trades {
         eng.tick(AppEvent::MarketTrade {
             mint: mt,
             price_fp: 1_000_000_000 + (i as i128) * 100_000,
             quote_lamports: 800_000,
-            liquidity_lamports: 300_000_000,
+            liquidity_lamports: 10_000_000_000,
             signed_base: 900_000 - (i as i64),
             buyer_entity: 10 + i % 9,
             age_slots: 12,
@@ -63,7 +77,7 @@ fn stale_numeric_snapshot_cannot_authorize_entry() {
 /// Control for the test above: identical stream WITHOUT the stale gap admits.
 #[test]
 fn fresh_numeric_snapshot_with_confirm_admits() {
-    let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
+    let mut eng = Engine::new(funded(), RunMode::Replay);
     let mt = mint(2);
     feed_flow(&mut eng, mt, 20);
     eng.tick(AppEvent::OnchainConfirm {
@@ -84,7 +98,7 @@ fn fresh_numeric_snapshot_with_confirm_admits() {
 #[test]
 fn inflated_depth_claim_buys_no_size() {
     let run = |claimed_depth: u64| -> Vec<u64> {
-        let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
+        let mut eng = Engine::new(funded(), RunMode::Replay);
         let mt = mint(3);
         feed_flow(&mut eng, mt, 20);
         eng.tick(AppEvent::OnchainConfirm {
@@ -104,9 +118,11 @@ fn inflated_depth_claim_buys_no_size() {
             })
             .collect()
     };
-    // Observed pool liquidity in feed_flow is 300M; claim 100× that.
-    let honest = run(300_000_000);
-    let inflated = run(30_000_000_000);
+    // Observed pool liquidity in feed_flow is 10 SOL; an honest claim at that depth vs
+    // a claim 100× beyond it must buy the SAME size — §15 cross-checks the asserted
+    // depth against observed liquidity, and the size band bounds both identically.
+    let honest = run(10_000_000_000);
+    let inflated = run(1_000_000_000_000);
     assert!(!honest.is_empty());
     assert_eq!(
         honest, inflated,

@@ -224,6 +224,37 @@ const PROBE_PER_ROUTE_CAP_LAMPORTS: u64 = 500_000_000;
 /// laptop build has one route; the per-route table has headroom for the live set.
 const PROBE_ROUTE_ID: u16 = 0;
 
+/// Split an entry `target` into `(probe, scale_in_add)` under the §33 probe→confirm→
+/// scale-in lifecycle, honoring the criterion-112 / A-6 operator floor so EVERY
+/// emitted bite is ≥ the floor.
+///
+/// * The probe is `max(min_trade_size, probe_frac_bp × target)`, capped at `target`.
+/// * The scale-in add is `target − probe`, taken only if it is itself ≥
+///   `min_trade_size`; otherwise it folds back into the probe and the whole target
+///   opens as a SINGLE ≥floor bite.
+///
+/// Consequences (with the floor active, i.e. `min_trade_size > 0`):
+/// * a `target` in `[floor, 2×floor)` cannot be split into two ≥floor bites, so it
+///   opens as one ≥floor bite — never a sub-floor probe;
+/// * a `target ≥ 2×floor` splits into a ≥floor probe now and a ≥floor scale-in add.
+///
+/// With the floor disabled (`min_trade_size == 0`) the probe keeps the legacy
+/// 1-lamport minimum and the remainder never folds — byte-identical to the pre-A-6
+/// behaviour. Pure, integer, deterministic. Callers pass a `target` already known to
+/// be ≥ the floor (the sizing stage guarantees it), so `probe ≥ floor` always holds.
+#[must_use]
+pub fn probe_scale_split(target: u64, probe_frac_bp: u32, min_trade_size: u64) -> (u64, u64) {
+    let probe_raw = ((u128::from(target) * u128::from(probe_frac_bp)) / 10_000) as u64;
+    let probe = probe_raw.max(min_trade_size.max(1)).min(target);
+    let scale_add = target - probe;
+    if scale_add > 0 && scale_add < min_trade_size {
+        // The remainder is a sub-floor clip: fold it into the initial bite.
+        (target, 0)
+    } else {
+        (probe, scale_add)
+    }
+}
+
 /// §51 LAW 14 BH-FDR family-wise significance level (ppm): 5%. Named (§102).
 const PROMOTION_ALPHA_PPM: u32 = 50_000;
 /// §51 LAW 14 PBO/CSCV overfitting block threshold (bps): 50%. Named (§102).
@@ -2029,24 +2060,28 @@ impl Engine {
                 let sized = (raw * u128::from(haircut_bp) / 10_000)
                     .min(u128::from(band.x_max))
                     .min(available_risk);
-                // ---- Refuse below x_min — never shrink and NEVER clamp up (§33/
-                // §34.4: a sub-x_min position is a guaranteed net loss, and clamping
-                // up would silently cancel the risk haircut). One bounded exception:
-                // the small-bankroll promotion valve — x_min may be TRADED (not
-                // clamped to) when it is a small fraction of deployable, the trade
-                // carries near-full confidence, and no drawdown tier is active.
+                // ---- Below effective x_min: CLAMP UP to the operator floor, or
+                // REFUSE if unsafe (criterion 112 / A-6). `band.x_min` is now the
+                // EFFECTIVE floor `max(min_trade_size, economic x_min)` (lifted in
+                // `gate::decide`). When the risk/Kelly-arbitrated size lands below it
+                // we promote UP to it — the operator's minimum bite — but ONLY if that
+                // still fits every HARD cap: no drawdown tier active (f_eff == f_base),
+                // the corroboration haircut is not risk-faded (never size UP a faded
+                // trade), and x_min fits the promote cap, the remaining risk budget,
+                // and x_max. If promoting would breach any hard cap → REFUSE (never
+                // shrink below the floor, never over-risk). The sub-x_min
+                // paid-information probe (§33/§43 LAW 13) is a SUB-FLOOR bet, so it is
+                // switched OFF whenever the floor is active (min_trade_size > 0); it
+                // survives only with the floor disabled (min_trade_size == 0), keeping
+                // the legacy path byte-identical and the golden tape coherent.
                 let size = if sized >= u128::from(band.x_min) {
                     sized as u64
                 } else {
-                    // §33/§43 LAW 13 sub-x_min probe-budget accounting: a size below
-                    // the economic cost floor is a guaranteed net loss AS A POSITION,
-                    // but its outcome is paid information. With probe-budget
-                    // accounting on, the spend routes through the calibration ledger
-                    // (per-route capped) and is LABELED as budgeted research — never
-                    // opened as a normal position — superseding the small-bankroll
-                    // promotion valve. Off = the valve/refuse logic below runs
-                    // unchanged (byte-identical, golden-safe).
-                    if self.cfg.probe_budget_enable {
+                    // §33/§43 LAW 13 sub-x_min probe-budget accounting (floor-gated):
+                    // only reachable when the operator floor is disabled. With the
+                    // floor active every emitted bite is ≥ the floor, so a sub-x_min
+                    // (hence sub-floor) probe can never fire.
+                    if self.cfg.probe_budget_enable && self.cfg.min_trade_size_lamports == 0 {
                         return self.account_sub_xmin_probe(mint_bytes, sized as u64);
                     }
                     let promote_cap =
@@ -2468,9 +2503,13 @@ impl Engine {
     /// scale), full-target risk commitment, thesis registration (§32), shadow-
     /// tournament mirror (§48), and the Admitted journal record.
     fn open_pending(&mut self, e: &PendingEntry) {
-        let probe = ((u128::from(e.size) * u128::from(self.cfg.probe_frac_bp)) / 10_000) as u64;
-        let probe = probe.max(1).min(e.size);
-        let scale_add = e.size - probe;
+        // Criterion 112 / A-6: split the target into a probe + scale-in add such that
+        // EVERY emitted bite is ≥ the operator floor (see [`probe_scale_split`]).
+        let (probe, scale_add) = probe_scale_split(
+            e.size,
+            self.cfg.probe_frac_bp,
+            self.cfg.min_trade_size_lamports,
+        );
         let probe_cost =
             ((u128::from(e.entry_cost) * u128::from(probe)) / u128::from(e.size.max(1))) as u64;
         let scale_cost = e.entry_cost.saturating_sub(probe_cost);

@@ -255,9 +255,12 @@ pub fn drive(cfg: Config) -> Report {
         // admits (net attributes to the AlphaCall lane + the room's §29.8 ledger);
         // a second mint the same room calls has NO on-chain support and never admits.
         let alpha_win = b58_mint(ALPHA_WIN_B58);
-        // Modest winner (peak ≈ +20%), below the forbidden fixed +35% rung — mirror
-        // of golden_digest.rs (keeps derived out-earning fixed on the golden tape).
-        let aw_mult_bp: u64 = [10_000, 11_000, 12_000, 12_500, 13_000, 11_000][round as usize];
+        // Modest winner (peak ≈ +30% round 4, settling to a ≈ +20% consolidation
+        // plateau round 5), below the forbidden fixed +35% rung — mirror of
+        // golden_digest.rs (re-pin #15: round-5 settle lifted 11_000→12_000 so the
+        // AlphaCall re-admits stay net-positive at realistic 0.1-SOL clips; keeps
+        // derived out-earning fixed on the golden tape).
+        let aw_mult_bp: u64 = [10_000, 11_000, 12_000, 12_500, 13_000, 12_000][round as usize];
         let aw_base = 1_000_000_000i128 * aw_mult_bp as i128 / 10_000;
         for i in 0..8u64 {
             let selling = round == 5;
