@@ -17,6 +17,11 @@
 //!                              [--contract-watch f] [--interval-secs n]
 //!                              [--budget-per-min n] [--once]
 //!                              [--replay fixture.json]
+//! pq-social-capture birdeye    [--ohlcv-watch f] [--overview-watch f]
+//!                              [--security-watch f] [--time-from s]
+//!                              [--time-to s] [--interval-secs n]
+//!                              [--budget-per-min n] [--once]
+//!                              [--replay fixture.json]
 //! ```
 //!
 //! Telegram is intentionally absent: MTProto requires a heavy SDK (grammers),
@@ -42,10 +47,10 @@
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pq_social_capture::{coingecko, firecrawl, pump, sentiment, tiktok, twitterapi};
+use pq_social_capture::{birdeye, coingecko, firecrawl, pump, sentiment, tiktok, twitterapi};
 
 const USAGE: &str = "usage: pq-social-capture \
-<twitterapi|tiktok|firecrawl|pump|coingecko|sentiment-enrich> [flags...]\n\
+<twitterapi|tiktok|firecrawl|pump|coingecko|birdeye|sentiment-enrich> [flags...]\n\
   twitterapi  --class firehose|amplifier|list  --sources f  --query q\n\
               --type Latest|Top  --pages n  --watch secs  --replay fixture\n\
   tiktok      --hashtag h  --sources f  --watch secs  --replay fixture\n\
@@ -57,6 +62,13 @@ const USAGE: &str = "usage: pq-social-capture \
               --interval-secs n  --budget-per-min n  --once  --replay fixture\n\
               (aggregator-LEGIBILITY lane, LATE tier; CG_API_KEY optional:\n\
               free Demo key -> x-cg-demo-api-key, absent -> keyless)\n\
+  birdeye     --ohlcv-watch mints-file  --overview-watch mints-file\n\
+              --security-watch mints-file  --time-from secs  --time-to secs\n\
+              --interval-secs n  --budget-per-min n  --once  --replay fixture\n\
+              (REQUIRED 1D-candle backfill + token-data lane, constitution\n\
+              \u{a7}6.7 — MARKET data, MarketIntel records, NOT SocialEvent;\n\
+              BIRDEYE_API_KEY required: missing key exits 3 fail-closed;\n\
+              token_security needs Starter+ plan, 401/403 disables that mode)\n\
   sentiment-enrich  [--replay responses.json] [--passthrough] [--require]\n\
               (stream FILTER, not a lane: NDJSON stdin -> same lines stdout\n\
               with sentiment_bp/sentiment_conf_bp/sentiment_model spliced in\n\
@@ -66,6 +78,7 @@ const USAGE: &str = "usage: pq-social-capture \
   poll). Env: TWITTERAPI_IO_KEY | TIKTOK_API_KEY + TIKTOK_API_BASE |\n\
   FIRECRAWL_API_KEY (same variables as the Python twins) |\n\
   CG_API_KEY (coingecko, optional) |\n\
+  BIRDEYE_API_KEY (birdeye, REQUIRED) + BIRDEYE_BUDGET_PER_MIN (optional) |\n\
   LLAMA_SERVER_URL + LLAMA_MODEL_ID (sentiment-enrich only).";
 
 /// Capture-boundary clock read — the ONE place wall time enters the pipeline
@@ -93,6 +106,7 @@ fn main() -> ExitCode {
         "firecrawl" => firecrawl::run(rest, now_ns),
         "pump" => pump::run(rest, now_ns),
         "coingecko" => coingecko::run(rest, now_ns),
+        "birdeye" => birdeye::run(rest, now_ns),
         // The brain seam is a FILTER, not a capture lane: it stamps nothing,
         // so the capture clock is not injected (its only time reads are
         // monotonic latency diagnostics on stderr).

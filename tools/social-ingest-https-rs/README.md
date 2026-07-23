@@ -1,9 +1,11 @@
-# `pq-social-capture` — Rust HTTPS `[S]` capture lanes (twitterapi / tiktok / firecrawl / pump / coingecko)
+# `pq-social-capture` — Rust HTTPS `[S]` capture lanes (twitterapi / tiktok / firecrawl / pump / coingecko / birdeye)
 
 Rust twins of the polling Python adapters in [`../social-ingest/`](../social-ingest),
 one subcommand per feasible platform, all emitting the identical normalized
 NDJSON contract (`normalize.py` schema + the Twitch lane's `observed_at_ns`
-capture stamp). Standalone Cargo project outside the workspace, sibling of the
+capture stamp) — plus one deliberate exception, the `birdeye` lane, which
+shares the transport/pacer/sentinel machinery but emits MarketIntel records
+(§6.7 market data, not social evidence — see its section below). Standalone Cargo project outside the workspace, sibling of the
 dependency-free Twitch lane [`../social-ingest-rs`](../social-ingest-rs).
 **One dependency: `ureq` (rustls TLS).** No tokio, no serde, no hyper — JSON is
 hand-rolled in the same audited style as the Twitch lane's `emit.rs`.
@@ -207,6 +209,80 @@ confidence maps the audience-size field it does publish:
 **1 `watchlist_portfolio_users` = 1 bp, saturating at 10 000**) and
 `"sentiment_model":"coingecko-votes-v1"`.
 
+## `birdeye` — the REQUIRED 1D-candle backfill + token-data lane (§6.7, MARKET data)
+
+**Constitutional status: REQUIRED source.** Amendment A-3 (constitution §6.7,
+human-directed 2026-07-23) designates Birdeye Data Services the provider of
+record for **1D OHLCV candle backfill/cross-check** and **token-data
+enrichment for candle analysis** (§21.6 bar/market-structure family). Build
+obligation: `docs/SERVER_BUILD_MANIFEST.md` §10; the §6.6 external-tool
+evaluation record is `docs/BIRDEYE_SOURCE.md`. "Required" binds the BUILD,
+not the trade path: Birdeye stays auxiliary intelligence, consumed only
+through **MarketIntelCache**, never authority — the §6.1 prohibition on
+Birdeye trade history as raw truth stands, own canonical flow remains the
+PRIMARY bar source, and the lane fails OPEN as absence (an outage, 429 or
+schema drift never halts, delays or degrades any strategy lane).
+
+**This is MARKET data, not social evidence.** Unlike every other lane in this
+binary, `birdeye` does NOT emit the SocialEvent NDJSON schema and never
+enters the §29 social plane. It emits three MarketIntel record kinds:
+
+| Record | Shape | Notes |
+|---|---|---|
+| `birdeye_ohlcv_1d_v1` | `{"record":"birdeye_ohlcv_1d_v1","mint":…,"observed_unix_ms":…,"bars":[{"t":unix_s,"o":…,"h":…,"l":…,"c":…,"v":…,"v_usd":…}],"provider":"birdeye","interval":"1D","quote":"usd"}` | every numeric value is the vendor's EXACT raw JSON token, passed through unmodified — no float math in our code, ever; `v_usd` only when the vendor stated it (§6.4); bars missing any of `unixTime`/`o`/`h`/`l`/`c`/`v` are skipped, never fabricated |
+| `birdeye_token_overview_v1` | `{"record":"birdeye_token_overview_v1","mint":…,"observed_unix_ms":…,"raw":<data object untouched>}` | §6.3 raw preservation: key order, number spellings and unknown fields survive verbatim — downstream MarketIntelCache carries the full §21.6 provenance list |
+| `birdeye_token_security_v1` | same shape as overview | plan-tier-gated (see below) |
+
+Three composable watch modes on ONE process sharing the global budget pacer
+(the coingecko lane's exact shape — the lane can run slower than the budget,
+never faster):
+
+```bash
+export BIRDEYE_API_KEY=...   # REQUIRED — missing key exits 3 (fail-closed)
+$B birdeye --ohlcv-watch mints.txt                     # /defi/v3/ohlcv, 1D range
+$B birdeye --overview-watch mints.txt                  # /defi/token_overview
+$B birdeye --security-watch mints.txt                  # /defi/token_security (Starter+)
+$B birdeye --ohlcv-watch mints.txt --overview-watch mints.txt \
+           --time-from 1750000000 --time-to 1753000000 --once   # probe pass
+$B birdeye --replay tests/fixtures/birdeye_ohlcv.json
+```
+
+| Mode | Endpoint | Notes |
+|---|---|---|
+| `--ohlcv-watch <mints-file>` | `GET /defi/v3/ohlcv?address=<mint>&type=1D&time_from=<t0>&time_to=<t1>&mode=range` | round-robin per mint; `t0`/`t1` from `--time-from`/`--time-to` (unix secs), default the last `BIRDEYE_DEFAULT_LOOKBACK_DAYS=30` days ending now; §6.7 mandates `1D` only (own flow owns sub-daily) |
+| `--overview-watch <mints-file>` | `GET /defi/token_overview?address=<mint>` | liquidity, holders, trade counts, volume, buy/sell pressure, price frames — all plan tiers |
+| `--security-watch <mints-file>` | `GET /defi/token_security?address=<mint>` | **Starter+ plan only**: a 401/403 here logs ONE loud "token_security unavailable on this plan tier — omitting (never fabricated)" and disables the mode for the session (fail-open as absence); the same key keeps serving the other endpoints |
+
+### Auth / tier / limits (researched 2026-07, docs.birdeye.so — re-verify at activation)
+
+Every call carries `X-API-KEY: $BIRDEYE_API_KEY` + `x-chain: solana`.
+**Fail-closed:** a missing key refuses to start with exit 3 (the pump lane's
+distinct capability-loss code) — a §6.7 REQUIRED source must never be polled
+keylessly into silent absence; a key REJECTED on ohlcv/overview
+(`AUTH_REJECTED`) exits 3 too. Plan tiers (Standard/Starter/Premium/
+Business) meter both request rate and **compute units per call** — the
+default budget is a conservative `BIRDEYE_BUDGET_PER_MIN=30` req/min (env
+var or `--budget-per-min` to override; flag wins) precisely because CU
+metering makes hot pacing expensive on small plans. `--interval-secs` is
+clamped UP to the budget floor, never down; 429s ride the shared backoff
+ladder with `Retry-After` respected. The same FNV-1a shape-hash
+`SCHEMA_DRIFT` + `STATUS_CLASS_DRIFT` sentinels as `pump`/`coingecko` watch
+each endpoint family; drift is loud on stderr and the lane keeps running on
+raw passthrough. Repeated identical responses are content-deduped
+(observation stamp masked), so an unchanged candle set is a quiet poll.
+
+### §21.6 reconciliation status of backfilled bars
+
+Backfilled daily bars are **`backfill-unreconciled`** until the server's
+first reconciliation epoch journals the divergence distribution of Birdeye
+1D candles vs our own canonical daily aggregation on overlapping windows
+(`docs/BIRDEYE_SOURCE.md`, Phase-B activation checklist #3–4). Only after
+that divergence report is journaled may backfilled bars carry
+`reconciliation status: cross-checked`; until then every consumer treats
+them accordingly, and the §21.6 screens (missing/stale, wrong-pair/
+duplicate, quote-asset distortion, artificial volume, aggregation mismatch,
+look-ahead, survivorship) gate admission either way.
+
 ## Env vars
 
 | Subcommand | Required env |
@@ -216,6 +292,7 @@ confidence maps the audience-size field it does publish:
 | `firecrawl` | `FIRECRAWL_API_KEY` (https://firecrawl.dev) |
 | `pump` | none — anonymous frontend reads (tier-3; revocation = exit 3) |
 | `coingecko` | `CG_API_KEY` optional — free Demo key → `x-cg-demo-api-key` header (~30 req/min, 10 000 calls/month); absent = keyless public access (IP-throttled, lower); the log states which is active |
+| `birdeye` | `BIRDEYE_API_KEY` **REQUIRED** (`X-API-KEY` header; missing = exit 3 fail-closed — §6.7 required source) + `BIRDEYE_BUDGET_PER_MIN` optional (default 30; `--budget-per-min` wins) |
 | `sentiment-enrich` | none required — `LLAMA_SERVER_URL` (default `http://127.0.0.1:8080`, the local llama.cpp server) + `LLAMA_MODEL_ID` (default `local-llm-v0`, the provenance tag) |
 
 ## Usage
@@ -252,7 +329,10 @@ Flags mirror the Python twins exactly: `twitterapi` takes
 `--url --sources --watch`. The twin-less `pump` lane takes
 `--mints-file --interval-secs --live-list --once`; the twin-less `coingecko`
 lane takes `--trending --category --contract-watch --interval-secs
---budget-per-min --once`.
+--budget-per-min --once`; the twin-less `birdeye` lane takes
+`--ohlcv-watch --overview-watch --security-watch --time-from --time-to
+--interval-secs --budget-per-min --once` (mints-file format = the pump
+lane's).
 
 ## Replay mode (deterministic, zero network)
 
@@ -269,6 +349,10 @@ $B coingecko  --replay tests/fixtures/coingecko_contract.json     # LISTED -> SE
 $B coingecko  --category pump-fun \
               --replay tests/fixtures/coingecko_markets.json      # category roster
 $B coingecko  --replay tests/fixtures/coingecko_drift.json        # SCHEMA_DRIFT demo
+$B birdeye    --replay tests/fixtures/birdeye_ohlcv.json          # 1D candle record
+$B birdeye    --replay tests/fixtures/birdeye_overview.json       # raw-preserved overview
+$B birdeye    --replay tests/fixtures/birdeye_security.json       # raw-preserved security
+$B birdeye    --replay tests/fixtures/birdeye_drift.json          # SCHEMA_DRIFT demo
 ```
 
 A fixture is a saved sequence of raw API responses (one JSON value per poll —
@@ -384,18 +468,24 @@ committed (37 MB of third-party source does not belong in the repo). `cargo buil
 cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
 ```
 
-149 tests: 116 unit (parsing, Python-coercion parity, YAML subset, dedupe
+183 tests: 141 unit (parsing, Python-coercion parity, YAML subset, dedupe
 ring, backoff ladder, urlencode parity, per-platform normalizers, pump
 shape-hash / challenge / status-class sentinels, pump budget-pacing math,
 coingecko budget/monthly-cap math, sentiment-bp/conf-bp mappings, trending /
 markets / contract normalizers, shape dispatch, optional-field emission,
-sentiment splice / strict-validation / prompt-escaping / line-cap mechanics)
-+ 33 integration (byte-exact replay per platform including both pump response
-shapes and all three coingecko surfaces, replay determinism, schema-drift
-survival, keyless refusal with the Python twins' exact messages, NDJSON
-round-trip + schema order incl. the pump trailing `mint` field and the
-coingecko optional-tail order; sentiment-enrich never-drop/never-reorder,
-fail-open absence for null/out-of-range/unreachable-server/oversize,
-`--require` loud exit, passthrough byte-identity, replay byte-determinism).
+sentiment splice / strict-validation / prompt-escaping / line-cap mechanics,
+birdeye budget/env resolution + time-range math, bar parsing with verbatim
+raw-token passthrough incl. exotic number spellings, raw-object preservation,
+shape dispatch/fingerprints, content-keyed dedupe, CLI validation)
++ 42 integration (byte-exact replay per platform including both pump response
+shapes, all three coingecko surfaces and all three birdeye record kinds,
+replay determinism, schema-drift survival, keyless refusal with the Python
+twins' exact messages, birdeye missing-key fail-closed exit 3 +
+malformed/truncated-fixture error-not-panic + MarketIntel-not-SocialEvent
+record-shape proof, NDJSON round-trip + schema order incl. the pump trailing
+`mint` field and the coingecko optional-tail order; sentiment-enrich
+never-drop/never-reorder, fail-open absence for
+null/out-of-range/unreachable-server/oversize, `--require` loud exit,
+passthrough byte-identity, replay byte-determinism).
 Tests never touch the network — the "unreachable server" tests point at a
 closed loopback port.

@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","method":"accountNotification","params":{"result":{"context":{"slot":347650003},"value":{"data":["dGVzdCBwb29sIGFjY291bnQgZGF0YQ==","base64"],"executable":false,"lamports":2039280,"owner":"pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA","rentEpoch":18446744073709551615,"space":300}},"subscription":3}}

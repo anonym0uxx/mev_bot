@@ -40,6 +40,12 @@ task #1.
 - **Phase-A interface:** `pump-quant-ingest::helius_parse` (message parsing, tested on
   fixtures) and `pump-quant-ingest::submission_surface`; canonicalization via
   `pump-quant-canonical`.
+- **LAPTOP-BUILT (2026-07-23):** two client lanes exist in-repo — `pq-stream-capture
+  helius-ws` (hand-rolled RFC6455/rustls WebSocket, transactionSubscribe/accountSubscribe/
+  slotSubscribe, reconnect + slot-staleness watchdog, raw-preserving NDJSON; 122 tests) and
+  `tools/stream-capture-rs/grpc-server-only/` (`pq-laserstream-grpc` on the official
+  `helius-laserstream` SDK — SERVER-BUILD-ONLY, compiles where crates.io is reachable).
+  See docs/HELIUS_INTEGRATION.md. Remaining here: credentials + soak, not code-from-zero.
 - **Required production adapter:** authenticated LaserStream (gRPC/WebSocket) client with
   reconnect/backpressure, feeding the parser's existing input type.
 - **Hardware/credential dependency:** Helius API key on a paid plan with LaserStream
@@ -78,6 +84,10 @@ task #1.
 - **Phase-A interface:** `pump-quant-canonical` (canonical observation/reducer types,
   deterministic tie-breaks via `pump-quant-clock::tie_break`);
   `pump-quant-ingest::canonical`.
+- **LAPTOP-BUILT (2026-07-23):** `pq-stream-capture` `rpc.rs` — deterministic-priority
+  multi-provider JSON-RPC with consec-error + EWMA-latency health scoring and re-probe,
+  state machine mock-transport-tested. Remaining here: live provider baselines + failover
+  parity evidence.
 - **Required production adapter:** multi-provider RPC client set with health scoring and
   deterministic failover among providers.
 - **Hardware/credential dependency:** at least two funded RPC provider accounts
@@ -162,6 +172,9 @@ task #1.
 
 - **Phase-A interface:** `pump-quant-execution::ex_tip_compute` (deterministic tip logic
   over supplied calibration inputs, dossier-tested with fixture data).
+- **LAPTOP-BUILT (2026-07-23):** `pq-stream-capture fee-sampler` — getPriorityFeeEstimate
+  (all levels) + getRecentPrioritizationFees → versioned `fee_calibration_v1` NDJSON with
+  integer percentiles. Remaining here: live epoch validated against §7 probe outcomes.
 - **Required production adapter:** live fee-market sampler (recent prioritization fees,
   tip landscape) writing versioned calibration records; CalibrationStore backing file/DB.
 - **Hardware/credential dependency:** live RPC access for fee sampling; probe results
@@ -240,6 +253,23 @@ task #1.
   the §21.6 screens (missing/stale, wrong-pair, aggregation mismatch, artificial volume).
 - **Enablement condition:** `BIRDEYE_API_KEY` provisioned + adapter merged with fixture
   tests + first reconciliation epoch journaled.
+
+## §11 Helius whale-webhook lane (discovery/corroboration tier — §6.6/§28)
+
+- **LAPTOP-BUILT (2026-07-23):** `pq-stream-capture webhook-listener` — pure-std HTTP
+  receiver (binds 127.0.0.1 behind a TLS-terminating reverse proxy; Helius requires an
+  https URL), authHeader verification (env `WEBHOOK_AUTH_SECRET`, fail-closed), ACK-in-1s-
+  then-process (Helius retries 3×1s then drops), signature dedupe ring, raw + normalized
+  whale NDJSON. Fixture-tested incl. loopback integration.
+- **Required production step:** create the webhook via `POST /v0/webhooks` (enhanced type,
+  SWAP/TRANSFER, whale address set ≤100k), point at the proxied listener, register the
+  address set from the wallet-cohort research plane.
+- **Server measurement required:** delivery lag distribution (confirmed→receipt), loss rate
+  vs LaserStream ground truth (the lane is lossy by design — corroboration only).
+- **Failure behaviour:** lost deliveries are corroboration ABSENCE, never a halt; nothing
+  from this lane populates canonical state or authorizes anything (§6.3/§6.4 re-resolution
+  required).
+- **Enablement condition:** proxy + secret provisioned, webhook created, lag/loss journaled.
 
 ---
 

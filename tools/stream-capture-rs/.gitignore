@@ -1,0 +1,5 @@
+# Build artifacts and the local-sandbox source replacement. Cargo.lock IS
+# committed (pins mirror ../social-ingest-https-rs); .cargo/ and any vendor
+# tree are NEVER committed (see README "Vendored dependencies").
+/target
+/.cargo

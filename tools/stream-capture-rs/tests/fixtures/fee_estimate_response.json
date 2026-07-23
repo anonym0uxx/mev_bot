@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"result":{"priorityFeeLevels":{"min":0.0,"low":1000.0,"medium":42007.0,"high":250000.0,"veryHigh":1500000.0,"unsafeMax":2000000000.0}}}

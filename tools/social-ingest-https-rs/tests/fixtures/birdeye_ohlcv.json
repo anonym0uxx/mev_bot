@@ -1,0 +1,43 @@
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+        "unixTime": 1750896000,
+        "type": "1D",
+        "currency": "usd",
+        "o": 1.0421,
+        "h": 1.1985,
+        "l": 0.9873,
+        "c": 1.1547,
+        "v": 182345678.123456,
+        "v_usd": 201234567.89
+      },
+      {
+        "address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+        "unixTime": 1750982400,
+        "type": "1D",
+        "currency": "usd",
+        "o": 1.1547,
+        "h": 1.3312,
+        "l": 1.1002,
+        "c": 1.2896,
+        "v": 240012345.5,
+        "v_usd": 293456701.02
+      },
+      {
+        "address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+        "unixTime": 1751068800,
+        "type": "1D",
+        "currency": "usd",
+        "o": 1.2896,
+        "h": 1.2901,
+        "l": 1.0455,
+        "c": 1.0788,
+        "v": 198765432.0,
+        "v_usd": 231098765.4
+      }
+    ]
+  }
+}

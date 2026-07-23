@@ -9,6 +9,13 @@
 //! stamp) on stdout. Telegram is deliberately NOT here: MTProto needs a heavy
 //! SDK (grammers), so that lane stays Python (see README).
 //!
+//! The one non-social lane living in this binary is [`birdeye`] — the §6.7
+//! REQUIRED 1D-candle backfill + token-data source. It shares the transport,
+//! pacer, sentinel and replay machinery but emits MarketIntel record kinds
+//! (`birdeye_ohlcv_1d_v1` / `birdeye_token_overview_v1` /
+//! `birdeye_token_security_v1`), NOT the SocialEvent schema: market data is
+//! not social evidence and never enters the §29 social plane.
+//!
 //! # Constitution discipline (binding)
 //! * **§22 determinism boundary.** The wall clock is read only in `main.rs` at
 //!   the capture edge; every module in this library is a pure function of its
@@ -27,6 +34,7 @@
 //!   remain sentiment-free.
 
 pub mod backoff;
+pub mod birdeye;
 pub mod coingecko;
 pub mod dedupe;
 pub mod emit;

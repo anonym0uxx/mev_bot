@@ -29,6 +29,8 @@ fn run(args: &[&str]) -> Output {
         .env_remove("TIKTOK_API_BASE")
         .env_remove("FIRECRAWL_API_KEY")
         .env_remove("CG_API_KEY")
+        .env_remove("BIRDEYE_API_KEY")
+        .env_remove("BIRDEYE_BUDGET_PER_MIN")
         .output()
         .expect("binary runs")
 }
@@ -557,6 +559,216 @@ fn coingecko_lines_round_trip_with_optional_field_order() {
                 keys.contains(&"sentiment_model"),
                 "{f}: model tag must accompany sentiment"
             );
+        }
+    }
+}
+
+// ------------------------------------------------------------------- birdeye
+
+/// Expected birdeye-lane output for birdeye_ohlcv.json: one saved
+/// `/defi/v3/ohlcv` response, three daily bars → ONE `birdeye_ohlcv_1d_v1`
+/// record. This lane emits MarketIntel records, NOT SocialEvent lines — no
+/// Python twin exists; the expected string is the hand-audited contract
+/// itself: mint from the items' `address` (base58 VERBATIM case), the
+/// synthetic replay stamp in MILLISECONDS, and every numeric value passed
+/// through as the vendor's exact raw token (§6.3 — no float math in our
+/// code, ever).
+const BIRDEYE_OHLCV_EXPECTED: &str = "{\"record\":\"birdeye_ohlcv_1d_v1\",\"mint\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\",\"observed_unix_ms\":1000,\"bars\":[{\"t\":1750896000,\"o\":1.0421,\"h\":1.1985,\"l\":0.9873,\"c\":1.1547,\"v\":182345678.123456,\"v_usd\":201234567.89},{\"t\":1750982400,\"o\":1.1547,\"h\":1.3312,\"l\":1.1002,\"c\":1.2896,\"v\":240012345.5,\"v_usd\":293456701.02},{\"t\":1751068800,\"o\":1.2896,\"h\":1.2901,\"l\":1.0455,\"c\":1.0788,\"v\":198765432.0,\"v_usd\":231098765.4}],\"provider\":\"birdeye\",\"interval\":\"1D\",\"quote\":\"usd\"}";
+
+#[test]
+fn birdeye_ohlcv_replay_is_byte_exact() {
+    let out = run(&["birdeye", "--replay", &fixture("birdeye_ohlcv.json")]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        stdout_lines(&out),
+        [BIRDEYE_OHLCV_EXPECTED],
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("replay: emitted 1 events"));
+}
+
+#[test]
+fn birdeye_overview_replay_preserves_the_raw_object_untouched() {
+    let out = run(&["birdeye", "--replay", &fixture("birdeye_overview.json")]);
+    assert!(out.status.success(), "{out:?}");
+    let lines = stdout_lines(&out);
+    assert_eq!(lines.len(), 1, "one saved response, one record");
+    // The emitted `raw` must be the fixture's `data` object VERBATIM — same
+    // key order, same number spellings, unknown fields intact (§6.3).
+    let fixture_text =
+        std::fs::read_to_string(fixture("birdeye_overview.json")).expect("fixture readable");
+    let page = json::parse(&fixture_text).expect("fixture is one JSON value");
+    let data = page.get("data").expect("fixture has data");
+    let expected = format!(
+        "{{\"record\":\"birdeye_token_overview_v1\",\
+         \"mint\":\"9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump\",\
+         \"observed_unix_ms\":1000,\"raw\":{}}}",
+        json::serialize(data)
+    );
+    assert_eq!(lines[0], expected);
+    // Spot-check raw preservation of vendor tokens through the whole pipe.
+    assert!(lines[0].contains("\"liquidity\":8234567.4321"));
+    assert!(lines[0].contains("\"holder\":152341"));
+    assert!(lines[0].contains("\"vBuy24hUSD\":118234567.06"));
+    assert!(lines[0].contains("\"circulatingSupply\":999992180.0"));
+}
+
+#[test]
+fn birdeye_security_replay_uses_honest_empty_mint() {
+    // token_security bodies carry no token address; in live mode the lane
+    // stamps the watched mint from the round-robin, in replay the fallback
+    // is the EMPTY string — honest absence, never a fabricated identity.
+    let out = run(&["birdeye", "--replay", &fixture("birdeye_security.json")]);
+    assert!(out.status.success(), "{out:?}");
+    let lines = stdout_lines(&out);
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].starts_with(
+        "{\"record\":\"birdeye_token_security_v1\",\"mint\":\"\",\
+         \"observed_unix_ms\":1000,\"raw\":{\"creatorAddress\":"
+    ));
+    assert!(lines[0].contains("\"top10HolderPercent\":0.2145"));
+    assert!(lines[0].contains("\"isToken2022\":false"));
+    assert!(
+        lines[0].contains("\"freezeAuthority\":null"),
+        "nulls preserved verbatim, never dropped or zero-faked"
+    );
+}
+
+#[test]
+fn birdeye_schema_drift_is_logged_and_survived() {
+    let out = run(&["birdeye", "--replay", &fixture("birdeye_drift.json")]);
+    assert!(
+        out.status.success(),
+        "drift must NOT kill the lane: {out:?}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("SCHEMA_DRIFT ohlcv: shape "),
+        "drift is loud on stderr: {stderr}"
+    );
+    assert!(stderr.contains(" -> "), "old AND new hash logged: {stderr}");
+    assert_eq!(
+        stdout_lines(&out).len(),
+        2,
+        "raw passthrough keeps emitting through the drift"
+    );
+}
+
+#[test]
+fn birdeye_replay_is_deterministic_across_runs() {
+    for f in [
+        "birdeye_ohlcv.json",
+        "birdeye_overview.json",
+        "birdeye_security.json",
+        "birdeye_drift.json",
+    ] {
+        let a = run(&["birdeye", "--replay", &fixture(f)]);
+        let b = run(&["birdeye", "--replay", &fixture(f)]);
+        assert_eq!(a.stdout, b.stdout, "byte-identical replays for {f} (§22)");
+        assert_eq!(a.stderr, b.stderr, "diagnostics deterministic for {f}");
+    }
+}
+
+#[test]
+fn birdeye_missing_key_fails_closed_with_exit_3() {
+    // §6.7 REQUIRED source: no BIRDEYE_API_KEY = refuse to start, loudly,
+    // with the distinct capability-loss exit code — before any file or
+    // socket is touched (the mints file named here does not even exist).
+    let out = run(&["birdeye", "--ohlcv-watch", "no-such-mints-file.txt"]);
+    assert_eq!(out.status.code(), Some(3), "fail-closed exit code");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("error: set BIRDEYE_API_KEY"),
+        "clear operator message: {stderr}"
+    );
+    assert!(
+        stderr.contains("REQUIRED") && stderr.contains("6.7"),
+        "cites the constitutional mandate: {stderr}"
+    );
+    assert!(out.stdout.is_empty(), "stdout stays NDJSON-only");
+}
+
+#[test]
+fn birdeye_without_mode_refuses_before_any_network() {
+    let out = run(&["birdeye"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains(
+        "error: birdeye needs at least one mode: --ohlcv-watch <mints-file> | \
+         --overview-watch <mints-file> | --security-watch <mints-file>"
+    ));
+    assert!(out.stdout.is_empty(), "stdout stays NDJSON-only");
+}
+
+#[test]
+fn birdeye_replay_malformed_and_truncated_error_without_panic() {
+    // A non-JSON file: parse error, exit 1, no panic, no stdout.
+    let manifest = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
+    let out = run(&["birdeye", "--replay", &manifest]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("replay failed: bad JSON"));
+    assert!(out.stdout.is_empty());
+
+    // A TRUNCATED response (connection died mid-body): same contract.
+    let path = std::env::temp_dir().join("pq_birdeye_truncated_fixture.json");
+    std::fs::write(
+        &path,
+        "{\"success\":true,\"data\":{\"items\":[{\"unixTime\":175",
+    )
+    .expect("temp fixture written");
+    let out = run(&["birdeye", "--replay", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1), "error, not panic");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("replay failed: bad JSON"));
+    assert!(out.stdout.is_empty());
+
+    // A missing fixture file: read error, exit 1.
+    let out = run(&["birdeye", "--replay", "no-such-fixture.json"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("replay failed:"));
+}
+
+#[test]
+fn birdeye_records_are_market_intel_not_social_events() {
+    for (f, expected_keys) in [
+        (
+            "birdeye_ohlcv.json",
+            vec![
+                "record",
+                "mint",
+                "observed_unix_ms",
+                "bars",
+                "provider",
+                "interval",
+                "quote",
+            ],
+        ),
+        (
+            "birdeye_overview.json",
+            vec!["record", "mint", "observed_unix_ms", "raw"],
+        ),
+        (
+            "birdeye_security.json",
+            vec!["record", "mint", "observed_unix_ms", "raw"],
+        ),
+    ] {
+        let out = run(&["birdeye", "--replay", &fixture(f)]);
+        assert!(out.status.success(), "{f}");
+        for line in stdout_lines(&out) {
+            let v = json::parse(&line).unwrap_or_else(|e| panic!("invalid JSON {line:?}: {e}"));
+            assert_eq!(json::serialize(&v), line, "round-trip drift in {f}");
+            let json::Value::Object(pairs) = &v else {
+                panic!("top level must be an object");
+            };
+            let keys: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+            assert_eq!(keys, expected_keys, "{f}: fixed record key order");
+            // MARKET data, not social evidence: none of the SocialEvent
+            // schema may appear at the top level (§29 plane separation).
+            for social in ["platform", "author", "community", "text", "echo"] {
+                assert!(
+                    !keys.contains(&social),
+                    "{f}: SocialEvent field {social} must not leak into MarketIntel"
+                );
+            }
         }
     }
 }

@@ -1,0 +1,34 @@
+{
+  "success": true,
+  "data": {
+    "address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+    "symbol": "FARTCOIN",
+    "name": "Fartcoin",
+    "decimals": 6,
+    "extensions": {
+      "coingeckoId": "fartcoin",
+      "website": "https://example.invalid/fartcoin",
+      "twitter": "https://x.com/FartCoinOfSOL"
+    },
+    "logoURI": "https://example.invalid/fartcoin.png",
+    "price": 1.1547,
+    "liquidity": 8234567.4321,
+    "lastTradeUnixTime": 1751068795,
+    "priceChange1hPercent": -0.42,
+    "priceChange24hPercent": 9.4,
+    "supply": 999992180.0,
+    "circulatingSupply": 999992180.0,
+    "mc": 1154690921.44,
+    "realMc": 1154690921.44,
+    "holder": 152341,
+    "trade24h": 128934,
+    "buy24h": 70012,
+    "sell24h": 58922,
+    "v24h": 182345678.123456,
+    "v24hUSD": 210567890.11,
+    "vBuy24hUSD": 118234567.06,
+    "vSell24hUSD": 92333323.05,
+    "uniqueWallet24h": 18452,
+    "numberMarkets": 14
+  }
+}

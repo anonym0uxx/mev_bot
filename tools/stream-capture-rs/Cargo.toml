@@ -1,0 +1,40 @@
+[package]
+name = "pq-stream-capture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "pq_stream_capture"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pq-stream-capture"
+path = "src/main.rs"
+
+# §67 removable adapter, minimal-dependency discipline (sibling of
+# ../social-ingest-https-rs, whose ONE dependency is `ureq`). This lane adds
+# push-stream capture, which HTTP polling cannot express, so the honest
+# minimal step up is: `ureq` (rustls TLS, for the JSON-RPC/fee lanes, exactly
+# as the HTTPS suite uses it) plus DIRECT use of the same `rustls` stack ureq
+# already carries — for the hand-rolled RFC 6455 WebSocket client in
+# `src/ws.rs`. No tokio, no serde, no tungstenite, no hyper: the WS framing,
+# HTTP/1.1 upgrade, SHA-1 handshake check and JSON are all hand-rolled in the
+# suite's audited style. `base64` and `getrandom` are already in ureq's tree
+# (via rustls/ring); depending on them directly adds ZERO new vendored code.
+#
+# Feature selections mirror the resolved graph of social-ingest-https-rs
+# (Cargo.lock pins copied from there): rustls with ring provider only,
+# ureq without gzip.
+#
+# NOTE: crates.io is not reachable from the build environment this lane was
+# authored in (egress-blocked); the dependency tree is vendored via an
+# UNCOMMITTED .cargo/config.toml source replacement. See README "Vendored
+# dependencies".
+[dependencies]
+ureq = { version = "2.12.1", default-features = false, features = ["tls", "proxy-from-env"] }
+rustls = { version = "0.23.39", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rustls-pki-types = { version = "1.15.1" }
+webpki-roots = { version = "0.26.11" }
+base64 = { version = "0.22.1" }
+getrandom = { version = "0.4.3" }
