@@ -339,6 +339,92 @@ pub enum RunMode {
     Replay,
 }
 
+/// Provenance of the engine's bankroll **base** — the lamport figure the entire
+/// sizing chain (survival floor → deployable capital → total-risk budget →
+/// per-position fraction) derives from, BEFORE realized P&L is folded in.
+///
+/// The operator's law (§33 Layer 1 / delta-§1; SERVER_BUILD_MANIFEST §7): **live
+/// trading must ALWAYS source the bankroll from the reconciled on-chain wallet
+/// balance; the config `bankroll_initial_lamports` is a PAPER/REPLAY seed ONLY.**
+/// This type makes that law *structural* rather than remembered: a paper seed and
+/// a live-reconciled balance are DIFFERENT variants, and only
+/// [`BankrollOrigin::LiveReconciled`] can satisfy the fail-closed
+/// [`require_live_verified`](BankrollOrigin::require_live_verified) guard a live
+/// order path must pass before it sizes anything. A future live wiring therefore
+/// *cannot* accidentally size off the config constant — the paper-seed variant
+/// hard-errors at the live guard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BankrollOrigin {
+    /// The config `bankroll_initial_lamports` seed. Paper/Replay ONLY — this
+    /// variant can NEVER back a live trade: [`require_live_verified`] errors on it.
+    ///
+    /// [`require_live_verified`]: BankrollOrigin::require_live_verified
+    PaperSeed(u64),
+    /// A bankroll base backed by the reconciled on-chain wallet balance (Phase-B).
+    /// The ONLY origin permitted to size a live order.
+    LiveReconciled(u64),
+}
+
+impl BankrollOrigin {
+    /// The base bankroll in lamports (before realized P&L is folded in). The
+    /// accessor is identical for both variants — the sizing chain reads the number
+    /// the same way regardless of provenance; provenance only gates whether *live*
+    /// sizing is permitted (see [`require_live_verified`](Self::require_live_verified)).
+    #[must_use]
+    #[inline]
+    pub fn seed_lamports(&self) -> u64 {
+        match self {
+            BankrollOrigin::PaperSeed(v) | BankrollOrigin::LiveReconciled(v) => *v,
+        }
+    }
+
+    /// Whether this origin is backed by the reconciled live wallet — the only kind
+    /// permitted to back live sizing. `false` for a paper/replay seed.
+    #[must_use]
+    #[inline]
+    pub fn is_live_verified(&self) -> bool {
+        matches!(self, BankrollOrigin::LiveReconciled(_))
+    }
+
+    /// FAIL-CLOSED live-sizing guard: return the reconciled balance for
+    /// [`LiveReconciled`](Self::LiveReconciled), and ERROR for
+    /// [`PaperSeed`](Self::PaperSeed). A live order path MUST call this before it
+    /// sizes anything — a paper/replay seed can never fund a live trade (§33 /
+    /// SERVER_BUILD_MANIFEST §7). Paper/replay themselves never call it (they size
+    /// off [`seed_lamports`](Self::seed_lamports) directly), so it is inert on the
+    /// golden path.
+    pub fn require_live_verified(&self) -> Result<u64, BankrollOriginError> {
+        match self {
+            BankrollOrigin::LiveReconciled(v) => Ok(*v),
+            BankrollOrigin::PaperSeed(_) => Err(BankrollOriginError::PaperSeedNotLive),
+        }
+    }
+}
+
+/// Why a live-sizing bankroll check was refused (fail-closed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BankrollOriginError {
+    /// A live order path tried to size off a PAPER/REPLAY config seed. Refused:
+    /// live sizing must source the bankroll from the reconciled on-chain wallet
+    /// balance via [`Engine::new_live_reconciled`] / [`Engine::set_live_bankroll`],
+    /// never from `bankroll_initial_lamports`.
+    PaperSeedNotLive,
+}
+
+impl std::fmt::Display for BankrollOriginError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BankrollOriginError::PaperSeedNotLive => write!(
+                f,
+                "bankroll origin is a paper/replay seed; live sizing requires a \
+                 reconciled on-chain wallet balance"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BankrollOriginError {}
+
 /// The end-of-run summary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Report {
@@ -452,6 +538,15 @@ pub struct Engine {
     /// committed-risk budget.
     open_lane: BTreeMap<[u8; 32], OpenAttribution>,
 
+    /// Provenance of the bankroll **base** (§33 Layer 1 / delta-§1; SERVER_BUILD_
+    /// MANIFEST §7). Paper/Replay carry a [`BankrollOrigin::PaperSeed`] built from
+    /// `cfg.bankroll_initial_lamports`; a Phase-B live arming REPLACES it with a
+    /// [`BankrollOrigin::LiveReconciled`] backed by the reconciled on-chain wallet
+    /// (via [`Engine::new_live_reconciled`] / [`Engine::set_live_bankroll`]). This
+    /// is the SINGLE source of the bankroll base: [`Engine::bankroll_balance`], the
+    /// survival floor, and the hwm all read `bankroll_origin.seed_lamports()`, so a
+    /// live path structurally cannot size off the paper config constant.
+    bankroll_origin: BankrollOrigin,
     /// The paper bankroll (§33 Layer 1, delta-§1): realized-only accounting.
     /// `balance = initial + realized_cum`, floored at zero; every sizing limit
     /// derives from `deployable = balance − survival_floor`. Marks are NEVER
@@ -603,8 +698,45 @@ pub struct Engine {
 
 impl Engine {
     /// Construct an engine under a validated config and a run mode.
+    ///
+    /// Paper/Replay ONLY: the bankroll base is seeded from
+    /// `cfg.bankroll_initial_lamports` as a [`BankrollOrigin::PaperSeed`], so
+    /// [`Self::bankroll_balance`] returns `seed + Σ realized` — byte-identical to
+    /// the pre-origin behaviour (the golden digest is unchanged). Live capital is
+    /// Phase-B and is armed through [`Self::new_live_reconciled`] /
+    /// [`Self::set_live_bankroll`], never this constructor.
     #[must_use]
     pub fn new(cfg: Config, mode: RunMode) -> Self {
+        let origin = BankrollOrigin::PaperSeed(cfg.bankroll_initial_lamports);
+        Self::with_origin(cfg, mode, origin)
+    }
+
+    /// **Phase-B live entry (fail-closed).** Construct an engine whose bankroll base
+    /// is the *reconciled on-chain wallet balance* — a [`BankrollOrigin::LiveReconciled`]
+    /// — NOT the config seed. This is the constructor the live reconcile layer
+    /// (SERVER_BUILD_MANIFEST §7) uses to arm live sizing: every limit then derives
+    /// from `wallet_balance_lamports`, and `cfg.bankroll_initial_lamports` is
+    /// ignored for sizing entirely (it remains only the paper/replay seed).
+    ///
+    /// Live arming MUST additionally gate every order on
+    /// [`BankrollOrigin::require_live_verified`] (fail-closed) before submission — a
+    /// paper seed can never back a live trade. Because there is no `Live` [`RunMode`]
+    /// yet (that variant is Phase-B), the engine is built under [`RunMode::Paper`]
+    /// fill semantics for now; the LiveReconciled *origin* is what a live order path
+    /// checks, and it will carry the `Live` mode once that variant lands.
+    #[must_use]
+    pub fn new_live_reconciled(cfg: Config, wallet_balance_lamports: u64) -> Self {
+        let origin = BankrollOrigin::LiveReconciled(wallet_balance_lamports);
+        Self::with_origin(cfg, RunMode::Paper, origin)
+    }
+
+    /// Construct an engine under a validated config, a run mode, and an explicit
+    /// [`BankrollOrigin`] — the single builder both the paper [`Self::new`] and the
+    /// Phase-B [`Self::new_live_reconciled`] delegate to, so the two paths share one
+    /// initialization and only the bankroll *base* differs. Private: the origin is
+    /// chosen by the entry point, never by the caller directly.
+    #[must_use]
+    fn with_origin(cfg: Config, mode: RunMode, bankroll_origin: BankrollOrigin) -> Self {
         let weights = LaneWeights::from_defaults();
         let params = RankParams::new(cfg.watchlist_ttl_ticks);
         let watchlist = WatchlistState::new(cfg.watchlist_capacity, params, weights);
@@ -654,7 +786,12 @@ impl Engine {
         // Concurrency: the operator's bankroll-consistent cap (§33 — jointly sized
         // with f_base and the total risk budget), never the raw confirmed-set bound.
         let positions = ScalpLifecycle::new(lifecycle_params, cfg.max_concurrent_positions);
-        let bankroll_hwm = cfg.bankroll_initial_lamports;
+        // The drawdown-ratchet hwm and the whole sizing chain read the bankroll
+        // base from the ORIGIN, never `cfg.bankroll_initial_lamports` directly. For
+        // Paper/Replay the origin is `PaperSeed(cfg.bankroll_initial_lamports)`, so
+        // `seed_lamports()` == the config value → byte-identical (golden digest
+        // unchanged); for a Phase-B live origin it is the reconciled wallet balance.
+        let bankroll_hwm = bankroll_origin.seed_lamports();
         // §19: fold the full strategy-config identity into the decision digest so
         // two runs under different configs can never share a digest. The Debug
         // encoding of the Copy config struct is deterministic for a fixed build.
@@ -704,6 +841,7 @@ impl Engine {
             category_rank_adj: BTreeMap::new(),
             positions,
             open_lane: BTreeMap::new(),
+            bankroll_origin,
             bankroll_realized: 0,
             bankroll_committed: 0,
             bankroll_hwm,
@@ -752,12 +890,37 @@ impl Engine {
         }
     }
 
-    /// The current realized paper balance, lamports: `initial + Σ realized`,
-    /// floored at zero (§33 realized-only accounting; marks never count).
+    /// The current realized balance, lamports: `base + Σ realized`, floored at zero
+    /// (§33 realized-only accounting; marks never count). The `base` is the bankroll
+    /// ORIGIN's seed — `cfg.bankroll_initial_lamports` for a Paper/Replay
+    /// [`BankrollOrigin::PaperSeed`], or the reconciled on-chain wallet balance for a
+    /// Phase-B [`BankrollOrigin::LiveReconciled`]. Reading the base from the origin
+    /// (not the config directly) is what makes a live path structurally unable to
+    /// size off the paper seed.
     #[must_use]
     pub fn bankroll_balance(&self) -> u64 {
-        let b = i128::from(self.cfg.bankroll_initial_lamports) + self.bankroll_realized;
+        let b = i128::from(self.bankroll_origin.seed_lamports()) + self.bankroll_realized;
         b.clamp(0, i128::from(u64::MAX)) as u64
+    }
+
+    /// The bankroll origin (base provenance). A live order path reads this and gates
+    /// on [`BankrollOrigin::require_live_verified`] (fail-closed) before sizing.
+    #[must_use]
+    pub fn bankroll_origin(&self) -> BankrollOrigin {
+        self.bankroll_origin
+    }
+
+    /// **Phase-B live seam (fail-closed).** REPLACE the bankroll base with a
+    /// [`BankrollOrigin::LiveReconciled`] backed by the reconciled on-chain wallet
+    /// balance — the ONLY way to move the base off the paper seed on an already-built
+    /// engine. The live reconcile layer (SERVER_BUILD_MANIFEST §7) calls this on each
+    /// reconcile so the whole sizing chain tracks the real wallet; the drawdown hwm is
+    /// re-based to the reconciled balance so the ratchet measures live drawdown, not a
+    /// stale paper seed. A live order path MUST still gate on
+    /// [`BankrollOrigin::require_live_verified`] before every submission.
+    pub fn set_live_bankroll(&mut self, reconciled_wallet_balance_lamports: u64) {
+        self.bankroll_origin = BankrollOrigin::LiveReconciled(reconciled_wallet_balance_lamports);
+        self.bankroll_hwm = self.bankroll_origin.seed_lamports();
     }
 
     /// The effective per-position fraction (bps of deployable) after the drawdown
@@ -1649,8 +1812,12 @@ impl Engine {
                 .cfg
                 .max_concurrent_positions
                 .saturating_sub(self.positions.len())) as u32;
+            // Floor basis = the bankroll ORIGIN's seed (not the config seed): for
+            // Paper/Replay that IS `cfg.bankroll_initial_lamports` (byte-identical),
+            // for a Phase-B live origin it is the reconciled wallet — so the survival
+            // floor scales with the real wallet, never the paper constant.
             let floor = derive_survival_floor(
-                self.cfg.bankroll_initial_lamports,
+                self.bankroll_origin.seed_lamports(),
                 self.cfg.floor_fraction_bps,
             );
             let deployable = deployable_capital(self.bankroll_balance(), floor);
@@ -1952,9 +2119,11 @@ impl Engine {
                 // ---- Bankroll chain (§33 Layer 1 / delta-§1): every limit derives
                 // from deployable = balance − survival_floor. Start with ANY SOL
                 // amount — the fractions are scale-invariant; the per-market cost
-                // floor x_min carves out what the venue can economically serve.
+                // floor x_min carves out what the venue can economically serve. The
+                // floor basis is the bankroll ORIGIN's seed (paper seed for
+                // Paper/Replay — byte-identical; reconciled wallet for a live origin).
                 let floor = derive_survival_floor(
-                    self.cfg.bankroll_initial_lamports,
+                    self.bankroll_origin.seed_lamports(),
                     self.cfg.floor_fraction_bps,
                 );
                 let balance = self.bankroll_balance();

@@ -112,10 +112,19 @@ pub struct Config {
     pub sim_impact_k_bps: u32,
 
     // ---- bankroll / dynamic sizing (§33 Layer 1, delta-§1) ----
-    /// Verified starting bankroll, lamports. ANY amount: every sizing limit below
-    /// derives from `deployable = bankroll − survival_floor`, so the same config
-    /// serves 0.75, 2, 10 or 100 SOL (scale-invariant until the per-market cost
-    /// floor x_min carves out the venue-viability region).
+    /// PAPER/REPLAY starting-bankroll SEED ONLY, lamports — NEVER the live bankroll.
+    /// Live trading sources the bankroll base from the reconciled on-chain wallet
+    /// balance (Phase-B; SERVER_BUILD_MANIFEST §7), armed through
+    /// [`Engine::new_live_reconciled`](crate::engine::Engine::new_live_reconciled) /
+    /// [`Engine::set_live_bankroll`](crate::engine::Engine::set_live_bankroll); this
+    /// config constant can never back a live order. The engine makes that structural
+    /// via [`BankrollOrigin`](crate::engine::BankrollOrigin): Paper/Replay carry a
+    /// `PaperSeed(this)`, a live path carries a `LiveReconciled(wallet)`, and live
+    /// sizing must pass the fail-closed `require_live_verified()` guard — which errors
+    /// on a paper seed. ANY amount for paper/replay: every sizing limit derives from
+    /// `deployable = bankroll − survival_floor`, so the same config serves 0.75, 2,
+    /// 10 or 100 SOL (scale-invariant until the per-market cost floor x_min carves out
+    /// the venue-viability region).
     pub bankroll_initial_lamports: u64,
     /// Operator-directed ABSOLUTE minimum size for EVERY individual order the engine
     /// emits — initial entry, each probe, and each probe→confirm→scale-in add

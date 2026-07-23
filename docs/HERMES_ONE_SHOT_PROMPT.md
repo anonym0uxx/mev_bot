@@ -1977,3 +1977,16 @@ tiers which refuse rather than emit a sub-floor order in deep drawdown). Golden 
 bites vs the prior ~0.015-SOL sizing on the same synthetic tape — NOT an edge gain; do not cite it as
 edge). The 2 SOL bankroll admits trades (does not block). Per-law A/B + the no-sub-floor invariant:
 tests/sizing_floor_laws.rs._
+
+_Amendment A-7 (2026-07-23, human-directed): LIVE BANKROLL IS SOURCED FROM THE RECONCILED ON-CHAIN
+WALLET BALANCE — NEVER a config constant (enforces §33 "verified starting bankroll", fail-closed). The
+config `bankroll_initial_lamports` is a PAPER/REPLAY seed ONLY. The engine carries a `BankrollOrigin`:
+`PaperSeed(cfg)` for Paper/Replay, `LiveReconciled(wallet_balance)` for live (Phase-B). The ENTIRE
+sizing chain — survival floor → deployable → risk budget → per-position fraction → drawdown hwm —
+derives from the origin's balance, so a live engine sizes off the real wallet (proven: a 2-SOL config
+seed + a 7-SOL reconciled balance sizes off 7 SOL end-to-end). Fail-closed guard `require_live_verified()`
+ERRORS on a `PaperSeed` — a paper seed can never back a live order; Phase-B live arming MUST initialize
+the bankroll from the reconciled wallet (SERVER_BUILD_MANIFEST §7) and continuously reconcile against it.
+Paper/replay path is byte-identical (golden digest unchanged 3411907290210896052). Pinned:
+tests/bankroll_origin.rs. This is a Tier-0-adjacent safety invariant: the bot must always know its true
+capital from chain truth, never from an asserted constant._

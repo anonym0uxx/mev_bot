@@ -166,7 +166,17 @@ task #1.
   cap provably not exceeded in the journal.
 - **Failure behaviour (fail-closed):** budget exhausted or reconciliation mismatch →
   probes stop; no fallback to estimates presented as measurements.
-- **Enablement condition:** human funds the wallets and approves the probe budget.
+- **LIVE BANKROLL SOURCING (Tier-0-adjacent, constitution §33 / Amendment A-7):** the live
+  bankroll is initialized from and continuously reconciled against the on-chain wallet
+  balance — NEVER the `bankroll_initial_lamports` config seed (that value is paper/replay
+  only). The engine's Phase-B live entry (`Engine::new_live_reconciled` / `set_live_bankroll`)
+  must be seeded from the reconciled wallet balance, and `require_live_verified()` (which
+  fail-closes on a paper seed) must pass before any live order. The entire sizing chain
+  (survival floor → deployable → risk budget → per-position fraction → drawdown hwm) then
+  derives from real chain capital. A live arm attempted off a paper seed is refused by
+  construction (`tests/bankroll_origin.rs`).
+- **Enablement condition:** human funds the wallets and approves the probe budget; the live
+  bankroll reconciler is wired to the on-chain balance before arming.
 
 ## §8 Fee / priority-fee / tip calibration (CalibrationStore, §38)
 
