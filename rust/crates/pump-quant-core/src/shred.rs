@@ -160,12 +160,13 @@ pub fn decode_header(bytes: &[u8]) -> Result<ShredHeader, ShredErr> {
     if bytes.len() < HEADER_LEN {
         return Err(ShredErr::Short);
     }
-    // All reads below are within `HEADER_LEN <= bytes.len()`.
-    let slot = u64::from_le_bytes(bytes[OFF_SLOT..OFF_SLOT + 8].try_into().unwrap());
-    let index = u32::from_le_bytes(bytes[OFF_INDEX..OFF_INDEX + 4].try_into().unwrap());
+    // All reads below are within `HEADER_LEN <= bytes.len()`. Each subslice has
+    // exactly the array width, so `try_into` is infallible here.
+    let slot = u64::from_le_bytes(bytes[OFF_SLOT..OFF_SLOT + 8].try_into().unwrap()); // LINT-ALLOW(hot_panic): infallible fixed-width subslice (len pre-checked)
+    let index = u32::from_le_bytes(bytes[OFF_INDEX..OFF_INDEX + 4].try_into().unwrap()); // LINT-ALLOW(hot_panic): infallible fixed-width subslice (len pre-checked)
     let shred_type = ShredType::from_u8(bytes[OFF_TYPE]).ok_or(ShredErr::Type)?;
-    let fec_set_index = u32::from_le_bytes(bytes[OFF_FEC..OFF_FEC + 4].try_into().unwrap());
-    let payload_len = u16::from_le_bytes(bytes[OFF_PLEN..OFF_PLEN + 2].try_into().unwrap());
+    let fec_set_index = u32::from_le_bytes(bytes[OFF_FEC..OFF_FEC + 4].try_into().unwrap()); // LINT-ALLOW(hot_panic): infallible fixed-width subslice (len pre-checked)
+    let payload_len = u16::from_le_bytes(bytes[OFF_PLEN..OFF_PLEN + 2].try_into().unwrap()); // LINT-ALLOW(hot_panic): infallible fixed-width subslice (len pre-checked)
 
     let header = ShredHeader {
         slot,

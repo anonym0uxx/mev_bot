@@ -197,6 +197,12 @@ pub const HEAVY_PRIOR_MULT_BPS: u32 = 8_000;
 /// screens, not this fold (§27).
 pub const CREDIBILITY_FLOOR_BPS: u32 = 5_000;
 
+/// §70.9/§27 class-conditioned strict multiplier (bps): a deployer the §27
+/// creator classifier labels a KNOWN EXTRACTOR (`SerialRug`/`VolumeFarmer`)
+/// earns an extra 40% haircut on top of the prior-CA / serial fold — a known
+/// extractor's next launch is priced as the recycle it usually is (§70.9).
+pub const EXTRACTOR_STRICT_MULT_BPS: u32 = 6_000;
+
 // ===========================================================================================
 // FlowScreen — §21.7 entity-dedup authenticity
 // ===========================================================================================
@@ -728,6 +734,37 @@ pub fn creator_credibility_haircut_bp(
     }
     if prior_launches >= HEAVY_PRIOR_LAUNCHES {
         mult = mult * u64::from(HEAVY_PRIOR_MULT_BPS) / BPS;
+    }
+    let mult = u32::try_from(mult).unwrap_or(CREDIBILITY_BASELINE_BPS);
+    mult.max(CREDIBILITY_FLOOR_BPS)
+}
+
+/// §70.9 deployer-credibility screen (Batch-2c LAW 10): a reduce-only size
+/// multiplier (bps) folding the wallet-graph [`DeployerCredibility`] feature
+/// bundle — prior-CA count and the serial-deploy burst flag — CLASS-CONDITIONED
+/// by the §27 creator classifier's known-extractor verdict.
+///
+/// * `serial_deploy_flag` → ×[`SERIAL_DEPLOYER_MULT_BPS`] (serial funnel);
+/// * `prior_ca_count ≥` [`HEAVY_PRIOR_LAUNCHES`] → ×[`HEAVY_PRIOR_MULT_BPS`]
+///   (recycle-farm prior, §70.9 prior-CA count);
+/// * `is_known_extractor` → ×[`EXTRACTOR_STRICT_MULT_BPS`] (the class fold);
+/// * combined multiplicatively, floored at [`CREDIBILITY_FLOOR_BPS`] — a
+///   haircut input, never a veto (hard exclusion belongs to the rug-cluster
+///   screens, §27). Pure/deterministic (§22).
+#[must_use]
+pub fn deployer_screen_haircut_bp(
+    cred: &pump_quant_wallet_graph::deployer_credibility::DeployerCredibility,
+    is_known_extractor: bool,
+) -> u32 {
+    let mut mult: u64 = u64::from(CREDIBILITY_BASELINE_BPS);
+    if cred.serial_deploy_flag {
+        mult = mult * u64::from(SERIAL_DEPLOYER_MULT_BPS) / BPS;
+    }
+    if cred.prior_ca_count >= HEAVY_PRIOR_LAUNCHES {
+        mult = mult * u64::from(HEAVY_PRIOR_MULT_BPS) / BPS;
+    }
+    if is_known_extractor {
+        mult = mult * u64::from(EXTRACTOR_STRICT_MULT_BPS) / BPS;
     }
     let mult = u32::try_from(mult).unwrap_or(CREDIBILITY_BASELINE_BPS);
     mult.max(CREDIBILITY_FLOOR_BPS)

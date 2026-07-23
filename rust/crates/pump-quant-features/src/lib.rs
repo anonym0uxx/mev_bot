@@ -16,6 +16,11 @@
 //!   (constitution 21.6): compression/expansion, breakout-and-retest,
 //!   failed-breakdown/reclaim, sweep-and-reclaim, and swing-trend structure, all
 //!   pure integer functions over the [`bar::Bar`] sequences the builder emits.
+//! * [`structure_ext`] — the additive remainder of the §21.6 bar/market-structure
+//!   detector family: drawdown/retrace state, a graded volatility regime (with an
+//!   explicit high tail), per-bar wick/rejection microstructure, and info-time
+//!   conditioning (token age, time-of-day), plus a [`structure_ext::realized_vol_bps`]
+//!   helper the execution engine consumes to scale stops — all pure integer.
 //! * [`micro`] — an integer AMM order-flow / microstructure feature catalog
 //!   (constitution 21.7): CVD, delta velocity, order-flow imbalance, VWAP /
 //!   anchored VWAP, trade-size distribution & large-print detection, swap-arrival
@@ -38,5 +43,6 @@
 pub mod bar;
 pub mod market_structure;
 pub mod micro;
+pub mod structure_ext;
 pub mod timed_feature;
 pub mod types;

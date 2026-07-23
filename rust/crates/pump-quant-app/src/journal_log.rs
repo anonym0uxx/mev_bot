@@ -30,8 +30,22 @@ const RECENT_CAP: usize = 4_096;
 pub enum Decision {
     /// A candidate was promoted to the gate at a given rank.
     Promoted { mint: [u8; 32], lane: u8, rank: u64 },
-    /// The gate admitted a candidate at a chosen size.
-    Admitted { mint: [u8; 32], size_lamports: u64 },
+    /// The gate admitted a candidate at a chosen size, with the §34.4 provenance
+    /// of that decision: the economic size band `[x_min, x_cost, x_max]` the size
+    /// was clamped within, the attempt/fail-rate multiplier (bps) that inflated the
+    /// per-attempt fixed cost, and the round-trip impact cost (bps) measured at the
+    /// admitted size — the exact inputs computed at admit, folded so the journal
+    /// record is a complete, replayable account of WHY this size was admitted, not
+    /// just THAT it was (§34.4 DecisionRecord completeness).
+    Admitted {
+        mint: [u8; 32],
+        size_lamports: u64,
+        x_min: u64,
+        x_cost: u64,
+        x_max: u64,
+        fail_rate_bps: u32,
+        rt_cost_bps: u32,
+    },
     /// The gate rejected a candidate; `reason` is a stable small code.
     Rejected { mint: [u8; 32], reason: u8 },
     /// A paper scalp realized a signed net PnL. `reason` is the stable
@@ -48,6 +62,18 @@ pub enum Decision {
         before_bp: u32,
         after_bp: u32,
     },
+    /// A sub-`x_min` calibration probe (§33/§43): NOT a position — a size below
+    /// the economic cost floor whose outcome is *paid information*, routed through
+    /// the calibration budget and labeled as budgeted research expenditure.
+    /// `cost_lamports` is the accounted research spend, `measurement_id` names the
+    /// measurement it funds. Recorded INSTEAD of `Admitted` when probe-budget
+    /// accounting is on, so the journal never conflates a research probe with a
+    /// profit-seeking position.
+    Probe {
+        mint: [u8; 32],
+        cost_lamports: u64,
+        measurement_id: u32,
+    },
 }
 
 impl Decision {
@@ -59,6 +85,7 @@ impl Decision {
             Decision::Rejected { .. } => 3,
             Decision::Filled { .. } => 4,
             Decision::Reweighted { .. } => 5,
+            Decision::Probe { .. } => 6,
         }
     }
 
@@ -76,9 +103,19 @@ impl Decision {
             Decision::Admitted {
                 mint,
                 size_lamports,
+                x_min,
+                x_cost,
+                x_max,
+                fail_rate_bps,
+                rt_cost_bps,
             } => {
                 push_bytes(buf, &mint);
                 push_u64(buf, size_lamports);
+                push_u64(buf, x_min);
+                push_u64(buf, x_cost);
+                push_u64(buf, x_max);
+                push_u64(buf, u64::from(fail_rate_bps));
+                push_u64(buf, u64::from(rt_cost_bps));
             }
             Decision::Rejected { mint, reason } => {
                 push_bytes(buf, &mint);
@@ -102,6 +139,15 @@ impl Decision {
                 buf.push(lane);
                 push_u64(buf, before_bp as u64);
                 push_u64(buf, after_bp as u64);
+            }
+            Decision::Probe {
+                mint,
+                cost_lamports,
+                measurement_id,
+            } => {
+                push_bytes(buf, &mint);
+                push_u64(buf, cost_lamports);
+                push_u64(buf, u64::from(measurement_id));
             }
         }
     }

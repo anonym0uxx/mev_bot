@@ -26,11 +26,16 @@
 //! Bounded state (§99): at most [`STRUCT_TRACK_CAP`] mints, each holding one
 //! open bar, a fixed ring of closed bars, and a fixed activity ring.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use pump_quant_features::bar::{Bar, BarBuilder, BarSpec};
-use pump_quant_features::market_structure::{swing_structure, TrendStructure};
+use pump_quant_features::market_structure::{
+    swing_highs, swing_lows, swing_structure, TrendStructure,
+};
+use pump_quant_features::structure_ext::realized_vol_bps;
 use pump_quant_features::types::{Side, TradeEvent};
+use pump_quant_signals::setup_classifier::MarketState;
+use pump_quant_strategy::entry_mode_leaves::PullbackFeatures;
 
 /// Closed bars retained per mint. `swing_structure` needs `left+right+1` bars to
 /// find one pivot; 8 bars give a two-pivot history at neighborhood 1 while
@@ -56,8 +61,12 @@ pub const STRUCT_TRACK_CAP: usize = 4_096;
 struct MintMicro {
     /// Trade-count-clock bar builder (see module docs).
     builder: BarBuilder,
-    /// Closed bars, oldest first, at most [`BARS_CAP`].
-    bars: Vec<Bar>,
+    /// Closed bars, oldest first, at most [`BARS_CAP`]. A [`VecDeque`] so the
+    /// per-trade `record()` path evicts the oldest closed bar in O(1)
+    /// (`pop_front`) rather than the O(n) `Vec::remove(0)` memmove (O4). Readers
+    /// obtain a single contiguous ordered `&[Bar]` for the frozen `swing_*` /
+    /// `realized_vol_bps` folds via [`MintMicro::with_bars`].
+    bars: VecDeque<Bar>,
     /// Per-mint trade counter — the bar clock and the event-id source.
     n_trades: u64,
     /// Recent (tick, entity, quote_lamports) samples, a fixed ring.
@@ -66,6 +75,27 @@ struct MintMicro {
     activity_len: u64,
     /// Last logical tick this mint was touched (eviction recency).
     last_touch: u64,
+}
+
+impl MintMicro {
+    /// Call `f` with the closed-bar ring as a single contiguous ordered
+    /// (oldest→newest) `&[Bar]`. Zero-copy when the deque is already contiguous
+    /// (`as_slices().0`); when it has physically wrapped, its bounded
+    /// (≤ [`BARS_CAP`]) contents are cloned once into a small buffer. The slice is
+    /// byte-identical to what the old `Vec` presented, so every structure readout —
+    /// and the golden digest — is unchanged.
+    #[inline]
+    fn with_bars<R>(&self, f: impl FnOnce(&[Bar]) -> R) -> R {
+        let (a, b) = self.bars.as_slices();
+        if b.is_empty() {
+            f(a)
+        } else {
+            let mut buf: Vec<Bar> = Vec::with_capacity(a.len() + b.len());
+            buf.extend_from_slice(a);
+            buf.extend_from_slice(b);
+            f(&buf)
+        }
+    }
 }
 
 /// One canonical trade observation for the fold — the §21.7 leakage-relevant
@@ -149,8 +179,8 @@ impl StructureState {
                 interval_ns: tpb,
                 epoch_ns: 0,
             })
-            .expect("interval clamped >= 1"),
-            bars: Vec::with_capacity(BARS_CAP),
+            .expect("interval clamped >= 1"), // LINT-ALLOW(hot_panic): documented-infallible — `trades_per_bar` is clamped `.max(1)`, so BarSpec::Time interval is always ≥ 1
+            bars: VecDeque::with_capacity(BARS_CAP),
             n_trades: 0,
             activity: [(0, 0, 0); ACTIVITY_RING],
             activity_len: 0,
@@ -170,10 +200,11 @@ impl StructureState {
         };
         e.n_trades = e.n_trades.saturating_add(1);
         if let Ok(Some(closed)) = e.builder.push(t) {
+            // Bounded ring (§99): O(1) front-eviction on the per-trade path (O4).
             if e.bars.len() == BARS_CAP {
-                e.bars.remove(0);
+                e.bars.pop_front();
             }
-            e.bars.push(closed);
+            e.bars.push_back(closed);
         }
         let idx = (e.activity_len % ACTIVITY_RING as u64) as usize;
         e.activity[idx] = (now, buyer_entity, quote_lamports);
@@ -187,10 +218,164 @@ impl StructureState {
     pub fn trend(&self, mint: &[u8; 32], min_bars: usize) -> TrendStructure {
         match self.mints.get(mint) {
             Some(m) if m.bars.len() >= min_bars.max(SWING_NEIGHBORHOOD * 2 + 1) => {
-                swing_structure(&m.bars, SWING_NEIGHBORHOOD, SWING_NEIGHBORHOOD)
+                m.with_bars(|bars| swing_structure(bars, SWING_NEIGHBORHOOD, SWING_NEIGHBORHOOD))
             }
             _ => TrendStructure::Undefined,
         }
+    }
+
+    /// §24 LAW 6: realized volatility (bps) over the mint's most recent `window`
+    /// closed bars, via `pump_quant_features::structure_ext::realized_vol_bps`. A
+    /// fixed-length window keeps the value comparable across markets (the helper
+    /// grows with window length). `None` until at least two bars have closed.
+    #[must_use]
+    pub fn recent_vol_bps(&self, mint: &[u8; 32], window: usize) -> Option<i128> {
+        let m = self.mints.get(mint)?;
+        let n = m.bars.len();
+        if n < 2 {
+            return None;
+        }
+        let start = n.saturating_sub(window.max(2));
+        m.with_bars(|bars| realized_vol_bps(&bars[start..]))
+    }
+
+    /// §25 LAW 4: reconstruct the integer [`MarketState`] the setup-archetype
+    /// classifier consumes, from the mint's closed bars. `None` until at least two
+    /// bars have closed (a single bar has no prior window / structural level).
+    ///
+    /// The current window is the most recent closed bar; the prior window is the
+    /// bar before it (for the compression proxy). Structural levels are the last
+    /// swing pivot before the current bar, falling back to the prior bars' max
+    /// high / min low when no pivot exists. The anchored VWAP and the net CVD are
+    /// folded from the last `window` bars' quote/flow. All integer / fixed-point
+    /// (§22); prices saturate into `u64` (realistic AMM prices are well within
+    /// range). Reduce-only consumption: the state authorizes nothing — it only
+    /// discriminates the archetype tag.
+    #[must_use]
+    pub fn market_state(&self, mint: &[u8; 32], window: usize) -> Option<MarketState> {
+        let m = self.mints.get(mint)?;
+        let n = m.bars.len();
+        if n < 2 {
+            return None;
+        }
+        Some(m.with_bars(|bars| {
+            let cur = &bars[n - 1];
+            let prior = &bars[n - 2];
+            let head = &bars[..n - 1];
+            let sh = swing_highs(bars, SWING_NEIGHBORHOOD, SWING_NEIGHBORHOOD);
+            let sl = swing_lows(bars, SWING_NEIGHBORHOOD, SWING_NEIGHBORHOOD);
+            let prior_high = sh
+                .last()
+                .map(|&i| bars[i].high_fp)
+                .or_else(|| head.iter().map(|b| b.high_fp).max())
+                .unwrap_or(0);
+            let prior_low = sl
+                .last()
+                .map(|&i| bars[i].low_fp)
+                .or_else(|| head.iter().map(|b| b.low_fp).min())
+                .unwrap_or(0);
+            let start = n.saturating_sub(window.max(2));
+            let mut num: i128 = 0;
+            let mut den: i128 = 0;
+            let mut cvd: i128 = 0;
+            for b in &bars[start..] {
+                num = num.saturating_add(b.close_fp.saturating_mul(i128::from(b.base_volume)));
+                den = den.saturating_add(i128::from(b.base_volume));
+                cvd = cvd
+                    .saturating_add(i128::from(b.buy_base_volume))
+                    .saturating_sub(i128::from(b.sell_base_volume));
+            }
+            let vwap_fp = if den > 0 { num / den } else { cur.close_fp };
+            MarketState {
+                price_open_fp: to_state_price(cur.open_fp),
+                price_fp: to_state_price(cur.close_fp),
+                high_extreme_fp: to_state_price(cur.high_fp),
+                low_extreme_fp: to_state_price(cur.low_fp),
+                prior_high_fp: to_state_price(prior_high),
+                prior_low_fp: to_state_price(prior_low),
+                vwap_fp: to_state_price(vwap_fp),
+                cvd_delta: cvd,
+                range_bps: bar_range_bps(cur),
+                prior_range_bps: bar_range_bps(prior),
+            }
+        }))
+    }
+
+    /// §24 LAW 11: reconstruct the [`PullbackFeatures`] the
+    /// `detect_pullback_continuation` EntryMode leaf consumes, from the mint's
+    /// closed bars. `None` until the swing structure is defined (≥ `min_bars`,
+    /// itself ≥ `2·neighborhood+1`).
+    ///
+    /// * `uptrend_confirmed` / `structure_intact` come from the §21.6 swing-
+    ///   structure classification (a higher-high/higher-low tape is an uptrend; a
+    ///   lower-high/lower-low tape breaks the structure).
+    /// * The retest LEVEL is the last swing high strictly below the peak (the
+    ///   broken resistance now acting as support); `retest_level_holding` and
+    ///   `retest_hold_bars` measure whether the recent bars hold at/above it.
+    /// * `pullback_depth_bps` is the retrace from the peak high to the recent
+    ///   trough low, in bps of the peak; `pullback_sell_volume_bps` is the sell
+    ///   share of recent bar base volume. All integer / fixed-point (§22).
+    #[must_use]
+    pub fn pullback_features(&self, mint: &[u8; 32], min_bars: usize) -> Option<PullbackFeatures> {
+        let m = self.mints.get(mint)?;
+        let n = m.bars.len();
+        if n < min_bars.max(SWING_NEIGHBORHOOD * 2 + 1) {
+            return None;
+        }
+        Some(m.with_bars(|bars| {
+            let trend = swing_structure(bars, SWING_NEIGHBORHOOD, SWING_NEIGHBORHOOD);
+            let uptrend_confirmed = trend == TrendStructure::Uptrend;
+            let structure_intact = trend != TrendStructure::Downtrend;
+            let peak = bars.iter().map(|b| b.high_fp).max().unwrap_or(0);
+            // Retest level: the last swing high strictly below the peak (broken
+            // resistance retested), else the peak itself (degenerate — nothing held).
+            let sh = swing_highs(bars, SWING_NEIGHBORHOOD, SWING_NEIGHBORHOOD);
+            let level = sh
+                .iter()
+                .rev()
+                .map(|&i| bars[i].high_fp)
+                .find(|&h| h < peak)
+                .unwrap_or(peak);
+            let cur = &bars[n - 1];
+            let retest_level_holding = cur.close_fp >= level;
+            // Consecutive most-recent bars whose low holds at/above the retest level.
+            let mut hold: u32 = 0;
+            for b in bars.iter().rev() {
+                if b.low_fp >= level {
+                    hold = hold.saturating_add(1);
+                } else {
+                    break;
+                }
+            }
+            let look = n.min(4);
+            let recent = &bars[n - look..];
+            let trough = recent.iter().map(|b| b.low_fp).min().unwrap_or(cur.low_fp);
+            let pullback_depth_bps = if peak > 0 {
+                (((peak - trough).max(0).saturating_mul(10_000)) / peak)
+                    .clamp(0, i128::from(u32::MAX)) as u32
+            } else {
+                0
+            };
+            let mut buy: u128 = 0;
+            let mut sell: u128 = 0;
+            for b in recent {
+                buy = buy.saturating_add(u128::from(b.buy_base_volume));
+                sell = sell.saturating_add(u128::from(b.sell_base_volume));
+            }
+            let denom = buy.saturating_add(sell);
+            let pullback_sell_volume_bps = sell
+                .saturating_mul(10_000)
+                .checked_div(denom)
+                .map_or(0, |v| v.min(u128::from(u32::MAX)) as u32);
+            PullbackFeatures {
+                uptrend_confirmed,
+                structure_intact,
+                retest_level_holding,
+                retest_hold_bars: hold,
+                pullback_depth_bps,
+                pullback_sell_volume_bps,
+            }
+        }))
     }
 
     /// Aggregates of the trades within the last `window_ticks` logical ticks
@@ -219,6 +404,27 @@ impl StructureState {
         w.entities = seen_n as u32;
         w
     }
+}
+
+/// Saturating conversion of a fixed-point price (`i128`) into the classifier's
+/// `u64` price field: negatives (never a real price) clamp to 0, huge values to
+/// `u64::MAX`. Deterministic, integer (§22).
+#[inline]
+#[must_use]
+fn to_state_price(v: i128) -> u64 {
+    v.clamp(0, i128::from(u64::MAX)) as u64
+}
+
+/// A bar's high-low range as basis points of its open price, saturating into
+/// `u32`. Zero when the open is non-positive (degenerate bar). §22.
+#[inline]
+#[must_use]
+fn bar_range_bps(b: &Bar) -> u32 {
+    if b.open_fp <= 0 {
+        return 0;
+    }
+    let range = (b.high_fp - b.low_fp).max(0);
+    ((range.saturating_mul(10_000)) / b.open_fp).clamp(0, i128::from(u32::MAX)) as u32
 }
 
 #[cfg(test)]

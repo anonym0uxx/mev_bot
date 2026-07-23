@@ -1,0 +1,16 @@
+[package]
+name = "pq-research-runner"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+
+# §62 experiment_run artifact: the supervisor auto-discovers this binary at
+# target/release/pq-research-runner. It replays a sealed recorded experiment and
+# emits the ablation + baseline report. Thin wrapper over the library leaves.
+[[bin]]
+name = "pq-research-runner"
+path = "src/main.rs"
+
+[dependencies]
+pump-quant-evaluator = { path = "../pump-quant-evaluator" }

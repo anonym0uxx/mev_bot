@@ -41,15 +41,21 @@
 
 #![forbid(unsafe_code)]
 
+pub mod ablation_replay;
 pub mod analytics;
 pub mod attention;
 pub mod authority;
 pub mod config;
+pub mod curve_authenticity;
 pub mod engine;
 pub mod event;
+pub mod extraction_risk;
+pub mod feature_admit;
 pub mod gate;
+pub mod hazard_scaffold;
 pub mod journal_log;
 pub mod lane;
+pub mod live_status;
 pub mod market_context;
 pub mod position;
 pub mod reflect;

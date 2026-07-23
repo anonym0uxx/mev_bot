@@ -40,13 +40,18 @@
 //! bounded (§99): every ring below has a named cap and evicts its OLDEST entry.
 //! Everything here runs at reflection cadence or report time — off the hot path.
 
+use pump_quant_evaluator::convexity_enrich::{event_from_mark, ConvexityMark};
 use pump_quant_evaluator::convexity_ledger::{
     build_ledger, ConvexityEvent, RuleId, RuleKind, RuleLedger,
 };
 use pump_quant_evaluator::edge_decomposition::{aggregate_edge, ComponentValue, PerTradeEdge};
 use pump_quant_evaluator::evaluator_stats::{
     mfe_capture, prfs_fold, topk_excision, ArchetypeKey, Excision, ExcursionRow, GateId,
-    GateLedger, Lane, MfeReport, PrfsSample, TradeId,
+    GateLedger, Lane, MfeReport, PrfsSample, Side, TradeId,
+};
+use pump_quant_evaluator::exit_markout::{
+    exit_markout_cells, foregone_upside, ExitMarkoutRow, ExitReason as MarkoutReason,
+    ForegoneUpside, MarkoutCellNs, MANDATED_HORIZONS_NS,
 };
 use pump_quant_evaluator::metrics::{
     cvar, median_return_bps, profit_factor, CvarReport, ProfitFactor,
@@ -93,6 +98,21 @@ const PRFS_SAMPLE_CAP: usize = 4096;
 /// Convexity event ring capacity (§99): haircut/veto/exit observations kept
 /// for the §49 rule ledgers.
 const CONVEXITY_RING_CAP: usize = 1024;
+
+/// §47/§54 LAW 17 pending post-exit markout ring capacity (§99): exits awaiting
+/// their forward price samples. Evicts the oldest pending exit past the cap.
+const MARKOUT_PENDING_CAP: usize = 1024;
+/// §47/§54 LAW 17 folded markout-sample ring capacity (§99): the post-exit price
+/// observations the markout-cell / foregone-upside tables are computed over.
+const MARKOUT_ROW_CAP: usize = 4096;
+/// §47 LAW 17 tick→ns quantum: each logical replay tick is one 250ms step, so the
+/// mandated markout horizons (250ms/1s/5s/30s/5m) land on integer tick offsets
+/// `[1, 4, 20, 120, 1200]`. Deterministic, integer (§22) — a replay carries no
+/// wall-clock, so the info-time horizon is derived from the event-stream tick.
+const MARKOUT_TICK_NS: u64 = 250_000_000;
+/// The mandated markout horizons expressed in ticks (`MANDATED_HORIZONS_NS /
+/// MARKOUT_TICK_NS`), in ascending order — the forward-sample checkpoints.
+const MARKOUT_HORIZON_TICKS: [u64; 5] = [1, 4, 20, 120, 1200];
 
 /// Logical-tick duration in seconds for PRFS horizon accounting. The app's
 /// tick is the ~1 s engine cadence tick, so tick deltas ARE seconds; PRFS
@@ -304,6 +324,9 @@ struct TradeRecord {
     mfe_bps: i64,
     /// Max adverse excursion, bps.
     mae_bps: i64,
+    /// §25 derived setup archetype (0 = None / classifier off) — the excursion
+    /// grouping key (§54 per-archetype MFE capture).
+    archetype: u16,
 }
 
 /// One pending gate rejection awaiting its PRFS forward mark (§47).
@@ -317,6 +340,8 @@ struct RejectRecord {
     price_fp: u64,
     /// Logical tick of the rejection.
     tick: u64,
+    /// §25 derived setup archetype of the rejected candidate (0 = None).
+    archetype: u16,
 }
 
 // ============================================================================
@@ -349,6 +374,19 @@ pub struct AnalyticsReport {
     pub edge_residual_lamports: i128,
     /// MFE/MAE distribution + capture efficiency for the default archetype.
     pub mfe_capture: MfeReport,
+    /// §25 LAW 4: number of DISTINCT setup archetypes tagged across the realized
+    /// trade ring. `1` (or `0`, empty ring) when the classifier is off — every
+    /// row is the all-0 `None` bucket; `≥2` once the classifier tags distinct
+    /// families, the audit evidence that `archetype:0` is no longer a stub.
+    pub distinct_archetypes: u32,
+    /// §25 LAW 4: the sorted DISTINCT setup-archetype ids present in the realized
+    /// trade ring — `[0]` with the classifier off, the real derived families once
+    /// on (the direct proof the stub is replaced).
+    pub archetypes: Vec<u16>,
+    /// §25 LAW 4: number of DISTINCT setup archetypes tagged across the pending
+    /// gate-rejection ring (the reject-sample side of the same tagging). `≤1`
+    /// with the classifier off.
+    pub distinct_reject_archetypes: u32,
     /// All-time realized trade count.
     pub trades: u32,
     /// All-time §52 baseline (buy-every-confirm shadow) trade count.
@@ -357,6 +395,14 @@ pub struct AnalyticsReport {
     pub baseline_net_lamports: i128,
     /// All-time live-policy net, lamports (the figure the baseline must lose to).
     pub live_net_lamports: i128,
+    /// §47/§54 LAW 17 post-exit markout cells, one per `(ExitReason, horizon_ns)`
+    /// bucket populated over the run — the fine-grained exit ruler at the mandated
+    /// 250ms/1s/5s/30s/5m horizons. Empty until exits have been marked forward.
+    pub markout_cells: Vec<MarkoutCellNs>,
+    /// §47 LAW 17 per-`(ExitReason, horizon_ns)` foregone-upside / loss-avoided
+    /// aggregate over the same post-exit samples — the two-sided over-/under-exit
+    /// ruler. Empty until exits have been marked forward.
+    pub foregone_upside: Vec<ForegoneUpside>,
 }
 
 // ============================================================================
@@ -385,6 +431,39 @@ pub struct ReflectionAnalytics {
     baseline_trades: u32,
     /// All-time §52 baseline net, lamports (saturating).
     baseline_net_lamports: i128,
+    /// §47 LAW 17 exits awaiting forward markout samples (cap
+    /// [`MARKOUT_PENDING_CAP`], oldest evicted).
+    markout_pending: VecDeque<PendingMarkout>,
+    /// §47 LAW 17 folded post-exit markout samples (cap [`MARKOUT_ROW_CAP`]).
+    markout_rows: VecDeque<ExitMarkoutRow>,
+}
+
+/// §47 LAW 17 one exit awaiting its post-exit forward price samples: the fill
+/// price it closed at, the tick it closed on, its reason, and which horizon
+/// checkpoints have already been sampled.
+#[derive(Clone, Copy, Debug)]
+struct PendingMarkout {
+    mint: [u8; 32],
+    exit_price: u64,
+    exit_tick: u64,
+    reason: MarkoutReason,
+    /// Index of the next unsampled checkpoint in [`MARKOUT_HORIZON_TICKS`].
+    next_idx: usize,
+}
+
+/// §47 LAW 17: map an app [`crate::position::ExitReason`] code onto the evaluator's
+/// coarser markout reason bucket. Take-profit/into-strength are harvests;
+/// stops/rug/thesis are protective; time is the time-stop; force/creator-dump are
+/// discretionary/manual closes.
+fn markout_reason_from_code(code: u8) -> MarkoutReason {
+    match code {
+        4 | 9 => MarkoutReason::TakeProfit, // TakeProfitLadder, IntoStrength
+        2 | 3 => MarkoutReason::StopLoss,   // HardStop, ThesisInvalidation
+        5 => MarkoutReason::TrailingStop,   // TrailingStop
+        6 => MarkoutReason::TimeStop,       // TimeStop
+        1 => MarkoutReason::LiquidityAbort, // RugPrecursor
+        _ => MarkoutReason::Manual,         // ForceClose, CreatorDump, unknown
+    }
 }
 
 impl ReflectionAnalytics {
@@ -401,6 +480,8 @@ impl ReflectionAnalytics {
             convexity: VecDeque::with_capacity(CONVEXITY_RING_CAP),
             baseline_trades: 0,
             baseline_net_lamports: 0,
+            markout_pending: VecDeque::with_capacity(MARKOUT_PENDING_CAP),
+            markout_rows: VecDeque::with_capacity(MARKOUT_ROW_CAP),
         }
     }
 
@@ -408,6 +489,7 @@ impl ReflectionAnalytics {
     /// net lamports, deployed size, and the excursion extremes in bps. The
     /// per-trade return is derived as `net · 10_000 / size` (bps of deployed
     /// size, `size` floored at 1). Oldest record evicted past the ring cap.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_trade(
         &mut self,
         lane_idx: usize,
@@ -416,6 +498,7 @@ impl ReflectionAnalytics {
         size_lamports: u64,
         mfe_bps: i64,
         mae_bps: i64,
+        archetype: u16,
     ) {
         // The reason code is journal metadata for future per-reason splits; it
         // does not alter any statistic here, so it is folded and dropped.
@@ -433,10 +516,22 @@ impl ReflectionAnalytics {
             return_bps,
             mfe_bps,
             mae_bps,
+            archetype,
         });
         self.next_trade_id = self.next_trade_id.saturating_add(1);
         self.total_trades = self.total_trades.saturating_add(1);
         self.live_net_lamports = self.live_net_lamports.saturating_add(net_lamports);
+    }
+
+    /// §52 LAW 16: the retained realized trades as `(net_lamports, return_bps,
+    /// lane_idx)` triples, oldest first — the tape the deterministic baseline
+    /// FAMILY replays over. Bounded by the trade ring cap. Report-only.
+    #[must_use]
+    pub fn realized_trade_tape(&self) -> Vec<(i128, i64, u8)> {
+        self.trades
+            .iter()
+            .map(|t| (t.net_lamports, t.return_bps, t.lane_idx))
+            .collect()
     }
 
     /// Fold one §52 baseline-book outcome (the engine's naive buy-every-confirm
@@ -449,7 +544,14 @@ impl ReflectionAnalytics {
     /// Fold one gate rejection for §47 PRFS forward marking: the gate code,
     /// the mint, its fixed-point price at rejection, and the tick. Oldest
     /// pending mark evicted past the ring cap.
-    pub fn record_reject(&mut self, gate_code: u8, mint: [u8; 32], price_fp: u64, tick: u64) {
+    pub fn record_reject(
+        &mut self,
+        gate_code: u8,
+        mint: [u8; 32],
+        price_fp: u64,
+        tick: u64,
+        archetype: u16,
+    ) {
         if self.rejects.len() >= REJECT_RING_CAP {
             self.rejects.pop_front();
         }
@@ -458,6 +560,7 @@ impl ReflectionAnalytics {
             mint,
             price_fp,
             tick,
+            archetype,
         });
     }
 
@@ -485,6 +588,87 @@ impl ReflectionAnalytics {
             realized_bps,
             mfe_bps,
         });
+    }
+
+    /// §49 LAW 15: fold one REAL (non-degenerate) convexity event built through the
+    /// [`pump_quant_evaluator::convexity_enrich`] layer from an observed mark — a
+    /// veto (counterfactual-vs-zero), a haircut (reduced-vs-full size), or a
+    /// full-participation allow. Unlike [`Self::record_convexity`], the caller
+    /// supplies the semantic mark and the enrich layer constructs the correctly-
+    /// signed two-sided event, so a suppression is never recorded degenerate
+    /// (counterfactual == realized). Oldest event evicted past the ring cap.
+    pub fn record_convexity_mark(&mut self, mark: &ConvexityMark) {
+        if self.convexity.len() >= CONVEXITY_RING_CAP {
+            self.convexity.pop_front();
+        }
+        self.convexity.push_back(event_from_mark(mark));
+    }
+
+    /// §47 LAW 17: register a closed exit for post-exit markout sampling. The
+    /// `reason_code` is the app exit-reason journal code; `exit_price` the fill
+    /// price it closed at (0 ⇒ unpriceable, skipped — never a fabricated mark).
+    /// Oldest pending exit evicted past the ring cap.
+    pub fn record_exit_markout(
+        &mut self,
+        mint: [u8; 32],
+        exit_price: u64,
+        tick: u64,
+        reason_code: u8,
+    ) {
+        if exit_price == 0 {
+            return;
+        }
+        if self.markout_pending.len() >= MARKOUT_PENDING_CAP {
+            self.markout_pending.pop_front();
+        }
+        self.markout_pending.push_back(PendingMarkout {
+            mint,
+            exit_price,
+            exit_tick: tick,
+            reason: markout_reason_from_code(reason_code),
+            next_idx: 0,
+        });
+    }
+
+    /// §47 LAW 17 forward-marking pass: for every pending exit, sample the current
+    /// price at each mandated horizon checkpoint whose tick offset has elapsed,
+    /// emitting one [`ExitMarkoutRow`] (a closed long is a `Side::Sell`) per newly
+    /// crossed horizon. A pending exit whose feed is dark at a due checkpoint is
+    /// skipped for that horizon (no fabricated mark) but stays until its last
+    /// horizon; once every checkpoint is sampled or passed it is retired. Info-time
+    /// is the event-stream tick (`now_tick`), never wall-clock. Deterministic.
+    pub fn mark_forward_markouts(
+        &mut self,
+        now_tick: u64,
+        latest_price_fp: &dyn Fn(&[u8; 32]) -> Option<u64>,
+    ) {
+        let mut kept: VecDeque<PendingMarkout> =
+            VecDeque::with_capacity(self.markout_pending.len());
+        while let Some(mut p) = self.markout_pending.pop_front() {
+            let elapsed = now_tick.saturating_sub(p.exit_tick);
+            while p.next_idx < MARKOUT_HORIZON_TICKS.len()
+                && elapsed >= MARKOUT_HORIZON_TICKS[p.next_idx]
+            {
+                let horizon_ns = MARKOUT_HORIZON_TICKS[p.next_idx] * MARKOUT_TICK_NS;
+                if let Some(later) = latest_price_fp(&p.mint) {
+                    if self.markout_rows.len() >= MARKOUT_ROW_CAP {
+                        self.markout_rows.pop_front();
+                    }
+                    self.markout_rows.push_back(ExitMarkoutRow {
+                        reason: p.reason,
+                        side: Side::Sell,
+                        exit_price: p.exit_price,
+                        horizon_ns,
+                        later_price: later,
+                    });
+                }
+                p.next_idx += 1;
+            }
+            if p.next_idx < MARKOUT_HORIZON_TICKS.len() {
+                kept.push_back(p);
+            }
+        }
+        self.markout_pending = kept;
     }
 
     /// Reflection-cadence pass (§47): mark pending rejections forward against
@@ -629,7 +813,7 @@ impl ReflectionAnalytics {
             .iter()
             .map(|t| ExcursionRow {
                 key: ArchetypeKey {
-                    id: DEFAULT_ARCHETYPE_ID,
+                    id: u64::from(t.archetype),
                 },
                 mfe_bps: t.mfe_bps,
                 mae_bps: t.mae_bps,
@@ -653,10 +837,39 @@ impl ReflectionAnalytics {
                     id: DEFAULT_ARCHETYPE_ID,
                 },
             ),
+            distinct_archetypes: {
+                let mut seen: Vec<u16> = self.trades.iter().map(|t| t.archetype).collect();
+                seen.sort_unstable();
+                seen.dedup();
+                seen.len() as u32
+            },
+            archetypes: {
+                let mut seen: Vec<u16> = self.trades.iter().map(|t| t.archetype).collect();
+                seen.sort_unstable();
+                seen.dedup();
+                seen
+            },
+            distinct_reject_archetypes: {
+                let mut seen: Vec<u16> = Vec::new();
+                for r in &self.rejects {
+                    if !seen.contains(&r.archetype) {
+                        seen.push(r.archetype);
+                    }
+                }
+                seen.len() as u32
+            },
             trades: self.total_trades,
             baseline_trades: self.baseline_trades,
             baseline_net_lamports: self.baseline_net_lamports,
             live_net_lamports: self.live_net_lamports,
+            markout_cells: {
+                let rows: Vec<ExitMarkoutRow> = self.markout_rows.iter().copied().collect();
+                exit_markout_cells(&rows, &MANDATED_HORIZONS_NS)
+            },
+            foregone_upside: {
+                let rows: Vec<ExitMarkoutRow> = self.markout_rows.iter().copied().collect();
+                foregone_upside(&rows, &MANDATED_HORIZONS_NS)
+            },
         }
     }
 
@@ -889,11 +1102,12 @@ mod tests {
                 1_000_000_000,
                 12_000 + i as i64,
                 -1_500,
+                0,
             );
         }
         a.record_baseline(-10_000_000);
         a.record_baseline(4_000_000);
-        a.record_reject(9, [7u8; 32], 1_000_000, 0);
+        a.record_reject(9, [7u8; 32], 1_000_000, 0, 0);
         a.record_convexity(0, 1, true, -4_000, 0, 500);
         a.record_convexity(10, 2, false, 9_000, 8_000, 12_000);
         a.reflect(PRFS_MARK_DELAY_TICKS, &|_| Some(2_100_000));
@@ -917,7 +1131,7 @@ mod tests {
     fn rings_are_bounded_and_evict_oldest() {
         let mut a = ReflectionAnalytics::new();
         for i in 0..(TRADE_RING_CAP + 5) {
-            a.record_trade(0, 1, i as i128, 1_000, 0, 0);
+            a.record_trade(0, 1, i as i128, 1_000, 0, 0, 0);
         }
         assert_eq!(a.trades.len(), TRADE_RING_CAP);
         // Oldest ids evicted: the front of the ring is trade id 5.
@@ -926,7 +1140,7 @@ mod tests {
         assert_eq!(a.report().trades, (TRADE_RING_CAP + 5) as u32);
 
         for i in 0..(REJECT_RING_CAP + 3) {
-            a.record_reject(1, [0u8; 32], 1_000, i as u64);
+            a.record_reject(1, [0u8; 32], 1_000, i as u64, 0);
         }
         assert_eq!(a.rejects.len(), REJECT_RING_CAP);
 
@@ -939,7 +1153,7 @@ mod tests {
     #[test]
     fn prfs_reject_is_marked_forward() {
         let mut a = ReflectionAnalytics::new();
-        a.record_reject(9, [7u8; 32], 1_000_000, 0);
+        a.record_reject(9, [7u8; 32], 1_000_000, 0, 0);
         // Too young: nothing marked yet.
         a.reflect(PRFS_MARK_DELAY_TICKS - 1, &|_| Some(2_100_000));
         assert!(a.report().prfs_gates.is_empty());
@@ -963,7 +1177,7 @@ mod tests {
     #[test]
     fn prfs_dark_feed_expires_without_fabrication() {
         let mut a = ReflectionAnalytics::new();
-        a.record_reject(3, [9u8; 32], 500_000, 0);
+        a.record_reject(3, [9u8; 32], 500_000, 0, 0);
         a.reflect(PRFS_EXPIRE_TICKS, &|_| None);
         assert!(a.rejects.is_empty(), "dark feed pending mark dropped");
         assert!(
@@ -976,10 +1190,10 @@ mod tests {
     fn sizing_recommendation_clamps_and_gates_on_sample() {
         let mut a = ReflectionAnalytics::new();
         for _ in 0..(SIZING_MIN_TRADES - 1) {
-            a.record_trade(0, 1, 50_000_000, 1_000_000_000, 0, 0);
+            a.record_trade(0, 1, 50_000_000, 1_000_000_000, 0, 0, 0);
         }
         assert_eq!(a.sizing_recommendation(200, 800), None, "below min sample");
-        a.record_trade(0, 1, 50_000_000, 1_000_000_000, 0, 0);
+        a.record_trade(0, 1, 50_000_000, 1_000_000_000, 0, 0, 0);
         // All-positive returns: the unconstrained optimum is the grid ceiling,
         // so both clamp edges must bind.
         let low = a.sizing_recommendation(200, 800);
@@ -997,8 +1211,8 @@ mod tests {
         // Lane 2 bleeds 0.1 SOL a trade for 40 trades: CUSUM deficit crosses
         // 2 SOL after the §56.11 learning horizon. Lane 0 earns.
         for _ in 0..40 {
-            a.record_trade(2, 2, -100_000_000, 1_000_000_000, 0, -3_500);
-            a.record_trade(0, 4, 50_000_000, 1_000_000_000, 4_000, -500);
+            a.record_trade(2, 2, -100_000_000, 1_000_000_000, 0, -3_500, 0);
+            a.record_trade(0, 4, 50_000_000, 1_000_000_000, 4_000, -500, 0);
         }
         assert_eq!(a.retirement_verdicts(), [false, false, true, false]);
     }

@@ -90,7 +90,11 @@ fn main() -> ExitCode {
     };
 
     let mut engine = Engine::new(cfg, mode);
-    let report = engine.run(&events);
+    // §60/§62 LAW 21: drive the engine loop, emitting the canonical
+    // `data/live_status.json` artifact periodically (best-effort; a status-write
+    // failure never aborts the run).
+    let status_path = std::path::Path::new("data/live_status.json");
+    let (report, _status_writes) = engine.run_with_status(&events, status_path, 64);
 
     println!("mode              {:?}", engine.mode());
     println!("ticks             {}", report.ticks);
@@ -160,8 +164,13 @@ fn write_trade_jsonl(
             Decision::Admitted {
                 mint,
                 size_lamports,
+                x_min,
+                x_cost,
+                x_max,
+                fail_rate_bps,
+                rt_cost_bps,
             } => format!(
-                "{{\"t\":\"admitted\",\"mint\":\"{}\",\"size_lamports\":{size_lamports}}}",
+                "{{\"t\":\"admitted\",\"mint\":\"{}\",\"size_lamports\":{size_lamports},\"x_min\":{x_min},\"x_cost\":{x_cost},\"x_max\":{x_max},\"fail_rate_bps\":{fail_rate_bps},\"rt_cost_bps\":{rt_cost_bps}}}",
                 hex32(&mint)
             ),
             Decision::Rejected { mint, reason } => format!(
@@ -182,6 +191,14 @@ fn write_trade_jsonl(
                 after_bp,
             } => format!(
                 "{{\"t\":\"reweighted\",\"lane\":{lane},\"before_bp\":{before_bp},\"after_bp\":{after_bp}}}"
+            ),
+            Decision::Probe {
+                mint,
+                cost_lamports,
+                measurement_id,
+            } => format!(
+                "{{\"t\":\"probe\",\"mint\":\"{}\",\"cost_lamports\":{cost_lamports},\"measurement_id\":{measurement_id}}}",
+                hex32(&mint)
             ),
         };
         out.push_str(&line);

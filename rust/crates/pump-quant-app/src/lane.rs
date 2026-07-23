@@ -32,8 +32,10 @@ use pump_quant_features::types::{Side, TradeEvent};
 use pump_quant_narrative::narrative::{
     nv_candidate_score, nv_virality_coeff, AttentionMoneyDivergence, LifecycleStage,
 };
-use pump_quant_watchlist::candidate::{Candidate, Features, Lane as WlLane, Mint as WlMint};
-use std::collections::BTreeMap;
+use pump_quant_watchlist::candidate::{
+    Candidate, DiscoveryLane, Features, Lane as WlLane, Mint as WlMint,
+};
+use std::collections::{BTreeMap, VecDeque};
 
 /// Bound on how many distinct mints a single lane tracks before it evicts the
 /// weakest (§99 bounded state). Set high enough that laptop replays never hit it.
@@ -141,6 +143,7 @@ pub struct NumericEmitGate {
 }
 
 /// The documented source→ranking-lane bijection (see module docs).
+#[inline]
 #[must_use]
 pub const fn wl_lane_for(kind: LaneKind) -> WlLane {
     match kind {
@@ -153,6 +156,7 @@ pub const fn wl_lane_for(kind: LaneKind) -> WlLane {
 
 /// Convert a domain mint (32 bytes) to the watchlist's mint newtype. Both wrap the
 /// same 32-byte identity; this is a total, lossless re-tag.
+#[inline]
 #[must_use]
 pub fn to_wl_mint(m: DomainMint) -> WlMint {
     WlMint::new(*m.as_bytes())
@@ -168,7 +172,39 @@ struct NumericObs {
     age_slots: u32,
     last_tick: u64,
     /// Bounded ring of recent trades (oldest→newest), cap = [`NUMERIC_RING_CAP`].
-    trades: Vec<TradeEvent>,
+    /// A [`VecDeque`] so `observe()` — the single hottest path (once per decoded
+    /// swap) — evicts the oldest in O(1) (`pop_front`) instead of the O(n) memmove
+    /// a `Vec::remove(0)` incurred (O1 hot-path fix). Readers that need a single
+    /// contiguous ordered slice for the `features::micro` folds obtain one via
+    /// [`NumericObs::with_ordered`] — at most one bounded copy, once per emit,
+    /// paid on the cold(er) read path rather than the hot decode path.
+    trades: VecDeque<TradeEvent>,
+}
+
+impl NumericObs {
+    /// Call `f` with the trade ring as a single contiguous ordered (oldest→newest)
+    /// `&[TradeEvent]` slice. When the deque is already contiguous this is
+    /// zero-copy (`as_slices().0`); when it has wrapped, the (bounded, ≤
+    /// [`NUMERIC_RING_CAP`]) contents are copied once into a stack buffer. The
+    /// resulting slice is byte-identical to what the old `Vec` presented, so every
+    /// derived quantity — and the golden digest — is unchanged.
+    #[inline]
+    fn with_ordered<R>(&self, f: impl FnOnce(&[TradeEvent]) -> R) -> R {
+        let (a, b) = self.trades.as_slices();
+        if b.is_empty() {
+            // Contiguous (includes the empty deque): hand the fold the slice directly.
+            f(a)
+        } else {
+            // Wrapped ⇒ `a` (the front run) is non-empty, so `a[0]` is a valid seed
+            // for the fixed stack scratch; every used cell is overwritten below.
+            let mut buf = [a[0]; NUMERIC_RING_CAP];
+            let split = a.len();
+            let n = split + b.len();
+            buf[..split].copy_from_slice(a);
+            buf[split..n].copy_from_slice(b);
+            f(&buf[..n])
+        }
+    }
 }
 
 /// The on-chain numeric lane: real trade-flow microstructure (CVD, order-flow
@@ -215,11 +251,13 @@ impl NumericLane {
         } else {
             Side::Sell
         };
-        // Bounded ring (§57/§99): drop the oldest when full.
+        // Bounded ring (§57/§99): drop the oldest when full. `pop_front` is O(1)
+        // on the `VecDeque` (vs the old `Vec::remove(0)` O(n) memmove) — this is the
+        // single hottest path, run once per decoded swap (O1).
         if e.trades.len() >= NUMERIC_RING_CAP {
-            e.trades.remove(0);
+            e.trades.pop_front();
         }
-        e.trades.push(TradeEvent {
+        e.trades.push_back(TradeEvent {
             event_id: now,
             ts_ns: now,
             price_fp,
@@ -244,7 +282,7 @@ impl NumericLane {
     pub fn latest_price_fp(&self, mint: DomainMint) -> Option<u64> {
         self.obs
             .get(mint.as_bytes())
-            .and_then(|o| o.trades.last())
+            .and_then(|o| o.trades.back())
             .map(|t| u64::try_from(t.price_fp.max(0)).unwrap_or(u64::MAX))
     }
 
@@ -265,7 +303,7 @@ impl NumericLane {
     pub fn features_for(&self, mint: DomainMint) -> Option<Features> {
         self.obs.get(mint.as_bytes()).map(|o| Features {
             liquidity_lamports: o.liquidity_lamports,
-            buy_pressure_bp: ofi_to_pressure_bp(order_flow_imbalance_bps(&o.trades)),
+            buy_pressure_bp: ofi_to_pressure_bp(o.with_ordered(order_flow_imbalance_bps)),
             unique_buyers: o.buyer_bitset.count_ones(),
             age_slots: o.age_slots,
         })
@@ -276,7 +314,7 @@ impl NumericLane {
     #[must_use]
     pub fn regime_of(&self, mint: DomainMint, trend_bp: i64, revert_bp: i64) -> Regime {
         match self.obs.get(mint.as_bytes()) {
-            Some(o) => classify_regime(roll_rho_bp(&o.trades), trend_bp, revert_bp),
+            Some(o) => classify_regime(o.with_ordered(roll_rho_bp), trend_bp, revert_bp),
             None => Regime::Neutral,
         }
     }
@@ -312,16 +350,19 @@ impl NumericLane {
             if now.saturating_sub(o.last_tick) > gate.evidence_ttl_ticks {
                 continue;
             }
-            let ofi_bp = order_flow_imbalance_bps(&o.trades).unwrap_or(0);
-            let cvd = cumulative_volume_delta(&o.trades);
-            let first = o.trades.first().map_or(0, |t| t.price_fp);
-            let last = o.trades.last().map_or(0, |t| t.price_fp);
-            let divergence = classify_divergence(last - first, cvd);
-            let regime = classify_regime(
-                roll_rho_bp(&o.trades),
-                gate.roll_trend_bp,
-                gate.roll_revert_bp,
-            );
+            // One contiguous materialization per mint per emit (O1): all four
+            // `micro`/Roll folds read the same ordered slice, so the numbers — and
+            // the digest — are byte-identical to the old `Vec`-slice reads.
+            let (ofi_bp, cvd, divergence, regime) = o.with_ordered(|trades| {
+                let ofi_bp = order_flow_imbalance_bps(trades).unwrap_or(0);
+                let cvd = cumulative_volume_delta(trades);
+                let first = trades.first().map_or(0, |t| t.price_fp);
+                let last = trades.last().map_or(0, |t| t.price_fp);
+                let divergence = classify_divergence(last - first, cvd);
+                let regime =
+                    classify_regime(roll_rho_bp(trades), gate.roll_trend_bp, gate.roll_revert_bp);
+                (ofi_bp, cvd, divergence, regime)
+            });
             let required_ofi = if regime == Regime::Revert {
                 gate.revert_ofi_min_bp
             } else {
@@ -339,18 +380,21 @@ impl NumericLane {
             let score = (ofi_bp as u64)
                 .saturating_mul(liq_decade)
                 .saturating_mul(breadth);
-            buf.push(Candidate::new(
-                WlMint::new(*k),
-                WlLane::ActiveMarketScalp,
-                score,
-                now,
-                Features {
-                    liquidity_lamports: o.liquidity_lamports,
-                    buy_pressure_bp: ofi_to_pressure_bp(Some(ofi_bp)),
-                    unique_buyers: o.buyer_bitset.count_ones(),
-                    age_slots: o.age_slots,
-                },
-            ));
+            buf.push(
+                Candidate::new(
+                    WlMint::new(*k),
+                    WlLane::ActiveMarketScalp,
+                    score,
+                    now,
+                    Features {
+                        liquidity_lamports: o.liquidity_lamports,
+                        buy_pressure_bp: ofi_to_pressure_bp(Some(ofi_bp)),
+                        unique_buyers: o.buyer_bitset.count_ones(),
+                        age_slots: o.age_slots,
+                    },
+                )
+                .with_discovery_lane(DiscoveryLane::ActiveMarket),
+            );
         }
     }
 }
@@ -454,13 +498,16 @@ impl NarrativeLane {
             if score < decay.floor {
                 continue;
             }
-            buf.push(Candidate::new(
-                WlMint::new(*k),
-                WlLane::EarlyConfirmation,
-                score,
-                now,
-                Features::default(),
-            ));
+            buf.push(
+                Candidate::new(
+                    WlMint::new(*k),
+                    WlLane::EarlyConfirmation,
+                    score,
+                    now,
+                    Features::default(),
+                )
+                .with_discovery_lane(DiscoveryLane::NarrativeAttentionVelocity),
+            );
         }
     }
 }
@@ -542,13 +589,16 @@ impl SocialLane {
             if now.saturating_sub(last) > ttl_ticks {
                 continue;
             }
-            buf.push(Candidate::new(
-                WlMint::new(*k),
-                WlLane::CreationSniper,
-                w,
-                now,
-                Features::default(),
-            ));
+            buf.push(
+                Candidate::new(
+                    WlMint::new(*k),
+                    WlLane::CreationSniper,
+                    w,
+                    now,
+                    Features::default(),
+                )
+                .with_discovery_lane(DiscoveryLane::SocialCaller),
+            );
         }
     }
 }
@@ -584,6 +634,17 @@ impl WalletLane {
         e.1 = now;
     }
 
+    /// Cumulative followable smart-money inflow (lamports) tracked for a mint, or
+    /// `0` when untracked. §70.1: only *followable* wallet entries accumulate here
+    /// (the `observe` filter), so this is the monotone smart-wallet-entry / net-
+    /// inflow component the composite money proxy folds in ahead of price momentum
+    /// (§70.1 M = smart-wallet entry + holder growth + net inflow). Read-only; no
+    /// wall-clock (§22).
+    #[must_use]
+    pub fn inflow_of(&self, mint: DomainMint) -> u64 {
+        self.obs.get(mint.as_bytes()).map_or(0, |&(size, _)| size)
+    }
+
     /// Emit one candidate per FRESH tracked mint. Score is cumulative followable
     /// size, compressed to a decade then scaled by the operator-supplied
     /// `score_scale` so it is comparable with the other lanes' score magnitudes —
@@ -603,13 +664,16 @@ impl WalletLane {
             if now.saturating_sub(last) > ttl_ticks {
                 continue;
             }
-            buf.push(Candidate::new(
-                WlMint::new(*k),
-                WlLane::GraduationTransition,
-                decade(size).saturating_mul(score_scale),
-                now,
-                Features::default(),
-            ));
+            buf.push(
+                Candidate::new(
+                    WlMint::new(*k),
+                    WlLane::GraduationTransition,
+                    decade(size).saturating_mul(score_scale),
+                    now,
+                    Features::default(),
+                )
+                .with_discovery_lane(DiscoveryLane::WalletSmartMoney),
+            );
         }
     }
 }

@@ -49,6 +49,7 @@
 
 pub mod canonical;
 pub mod envelope;
+pub mod experiment_registry;
 pub mod hashing;
 pub mod lifecycle;
 pub mod manifest;

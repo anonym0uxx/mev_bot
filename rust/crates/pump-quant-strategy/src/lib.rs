@@ -10,6 +10,7 @@ pub mod calibration_budget;
 pub mod capital_allocator;
 pub mod emergency_action;
 pub mod entry_arbitration;
+pub mod entry_mode_leaves;
 pub mod exit_cost_model;
 pub mod feature_admission;
 pub mod hazard_estimator;

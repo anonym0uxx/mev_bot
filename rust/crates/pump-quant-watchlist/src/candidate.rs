@@ -98,6 +98,95 @@ impl Lane {
     }
 }
 
+/// The independent §71.2 discovery lane that surfaced a candidate — a
+/// provenance tag **distinct from** the setup-archetype [`Lane`].
+///
+/// Responsibility: name the ACTUAL ingest lane that observed a mint, so realized
+/// net-SOL can be attributed to the lane that earned it. Two different discovery
+/// lanes can present as the SAME setup archetype — an on-chain creation sighting
+/// and a social caller both surface as [`Lane::CreationSniper`]; a narrative
+/// blast and a live attention-velocity reading both surface as
+/// [`Lane::EarlyConfirmation`]. Keying `wl_lane_performance` on the setup
+/// archetype alone therefore cross-contaminates per-lane learning (a losing
+/// social caller taints a winning creation sniper). This enum separates the
+/// independent lanes so reflection keys on the real provenance (§71 reflection
+/// integrity). Ordering is stable; it never participates in ranking (that keys
+/// on [`Lane`]).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum DiscoveryLane {
+    /// A fresh on-chain creation sighting (a decoded launch), before anyone
+    /// trades or shills it. Presents as `CreationSniper`.
+    OnchainCreation,
+    /// A social-source caller / mention (calls, shills). Presents as
+    /// `CreationSniper`.
+    SocialCaller,
+    /// The narrative + live attention-velocity field (`virality = attention =
+    /// money`). Presents as `EarlyConfirmation`.
+    NarrativeAttentionVelocity,
+    /// Smart-money / wallet-graph followable activity. Presents as
+    /// `GraduationTransition`.
+    WalletSmartMoney,
+    /// Active on-chain numeric market flow (the self-authorizing lane). Presents
+    /// as `ActiveMarketScalp`.
+    ActiveMarket,
+}
+
+impl DiscoveryLane {
+    /// Every discovery lane, in stable discriminant order. Fixed-size: the
+    /// per-lane net-SOL ledger is sized from this (§99 bounded).
+    pub const ALL: [DiscoveryLane; 5] = [
+        DiscoveryLane::OnchainCreation,
+        DiscoveryLane::SocialCaller,
+        DiscoveryLane::NarrativeAttentionVelocity,
+        DiscoveryLane::WalletSmartMoney,
+        DiscoveryLane::ActiveMarket,
+    ];
+
+    /// Number of discovery lanes; the fixed width of the per-lane ledger. §99.
+    pub const COUNT: usize = Self::ALL.len();
+
+    /// Dense array index (0..[`DiscoveryLane::COUNT`]) for bounded per-lane
+    /// accounting. §99.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            DiscoveryLane::OnchainCreation => 0,
+            DiscoveryLane::SocialCaller => 1,
+            DiscoveryLane::NarrativeAttentionVelocity => 2,
+            DiscoveryLane::WalletSmartMoney => 3,
+            DiscoveryLane::ActiveMarket => 4,
+        }
+    }
+
+    /// The setup archetype [`Lane`] this discovery lane presents as (many-to-one:
+    /// creation-sighting and social-caller both present as `CreationSniper`).
+    #[must_use]
+    pub const fn setup_lane(self) -> Lane {
+        match self {
+            DiscoveryLane::OnchainCreation | DiscoveryLane::SocialCaller => Lane::CreationSniper,
+            DiscoveryLane::NarrativeAttentionVelocity => Lane::EarlyConfirmation,
+            DiscoveryLane::WalletSmartMoney => Lane::GraduationTransition,
+            DiscoveryLane::ActiveMarket => Lane::ActiveMarketScalp,
+        }
+    }
+
+    /// The default discovery lane for a bare setup archetype — used only when a
+    /// [`Candidate`] is constructed without an explicit provenance (the inverse
+    /// of [`Self::setup_lane`] on the canonical representative of each archetype).
+    /// Emit sites that need the precise lane (e.g. a social caller vs a creation
+    /// sighting, which share `CreationSniper`) override it with
+    /// [`Candidate::with_discovery_lane`].
+    #[must_use]
+    pub const fn from_setup(lane: Lane) -> Self {
+        match lane {
+            Lane::CreationSniper => DiscoveryLane::OnchainCreation,
+            Lane::EarlyConfirmation => DiscoveryLane::NarrativeAttentionVelocity,
+            Lane::GraduationTransition => DiscoveryLane::WalletSmartMoney,
+            Lane::ActiveMarketScalp => DiscoveryLane::ActiveMarket,
+        }
+    }
+}
+
 /// Fixed-point feature snapshot captured at discovery time.
 ///
 /// Responsibility: carry the small, bounded set of decoded on-chain quantities
@@ -125,8 +214,14 @@ pub struct Features {
 pub struct Candidate {
     /// The discovered token.
     pub mint: Mint,
-    /// The lane that made this observation.
+    /// The setup-archetype lane that made this observation (ranking / evidence
+    /// weight key).
     pub lane: Lane,
+    /// The independent §71.2 discovery lane provenance (net-SOL attribution key).
+    /// Defaulted from `lane` in [`Candidate::new`]; set precisely at the emit
+    /// seam via [`Candidate::with_discovery_lane`] when two lanes share an
+    /// archetype. Never participates in ranking (§71 reflection integrity).
+    pub discovery_lane: DiscoveryLane,
     /// Raw discovery score in caller-defined fixed-point units. Ranking is
     /// monotonic in this value; larger means stronger raw signal. §22.
     pub discovery_score: u64,
@@ -152,10 +247,23 @@ impl Candidate {
         Self {
             mint,
             lane,
+            discovery_lane: DiscoveryLane::from_setup(lane),
             discovery_score,
             discovered_at,
             features,
         }
+    }
+
+    /// Tag this candidate with its precise §71.2 discovery-lane provenance,
+    /// overriding the archetype-derived default. Used at the ingest/emit seam so
+    /// that two lanes sharing a setup archetype (creation-sighting vs
+    /// social-caller; narrative vs attention-velocity) attribute their realized
+    /// net-SOL independently. Pure, `const`, does not touch ranking fields. §22.
+    #[inline]
+    #[must_use]
+    pub const fn with_discovery_lane(mut self, discovery_lane: DiscoveryLane) -> Self {
+        self.discovery_lane = discovery_lane;
+        self
     }
 
     /// The strength of this record's lane evidence, used to break ties when the

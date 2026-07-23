@@ -24,6 +24,13 @@ except Exception as e:  # noqa: BLE001
     print(f"[ci_gate] cannot import supervisor package: {e}")
     sys.exit(2)
 
+# soak_gate lives beside this script in scripts/; import by path-adjacency.
+try:
+    import soak_gate
+except Exception:  # noqa: BLE001
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import soak_gate  # type: ignore
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -50,11 +57,30 @@ def main() -> int:
     else:
         print(f"[ci_gate] secrets: WARN (allowed by repo policy, not failing) — {r.detail}")
 
-    # hot-path lint (criterion 109 bans)
-    r = check_hotpath_lint(repo, None, None)
-    print(f"[ci_gate] hot-path lint: {'ok' if r.passed else 'FAIL'} — {r.detail}")
+    # hot-path lint (criterion 109 bans). The hot/money globs come from the
+    # committed rust/lint_rules.yaml (authoritative, explicit — NOT a silent code
+    # default), falling back to the real-crate built-ins if that file is absent.
+    from supervisor.gates.hotpath_lint import load_glob_config
+    hot_globs, money_globs = load_glob_config(repo)
+    r = check_hotpath_lint(repo, hot_globs, money_globs)
+    scope = (f"hot={len(hot_globs)} money={len(money_globs)} globs from lint_rules.yaml"
+             if hot_globs and money_globs else "built-in real-crate globs")
+    print(f"[ci_gate] hot-path lint ({scope}): {'ok' if r.passed else 'FAIL'} — {r.summary}")
     if not r.passed:
         failures.append("hot-path-lint")
+
+    # steady-state RSS-trend soak (§99 / §57 memory-safety mandate) — the PORTABLE PROXY for the
+    # server-side long-soak (which stays SERVER-DEFERRED). Bounded workload; asserts steady-state
+    # RSS does not trend upward. Fast and deterministic; fails the gate on a suspected leak.
+    try:
+        soak = soak_gate.run_soak()
+        print(f"[ci_gate] soak (RSS-trend, portable proxy): "
+              f"{'ok' if soak.passed else 'FAIL'} — {soak.summary()}")
+        if not soak.passed:
+            failures.append("soak-rss-trend")
+    except Exception as e:  # noqa: BLE001
+        print(f"[ci_gate] soak gate error: {e}")
+        failures.append("soak-rss-trend")
 
     # dossier presence: any constitution-declared hard component without a dossier fails closed
     try:

@@ -36,6 +36,7 @@
 
 pub mod curve;
 pub mod decode;
+pub mod errors;
 pub mod ix;
 pub mod pumpswap;
 pub mod pumpswap_event;

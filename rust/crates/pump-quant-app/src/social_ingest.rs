@@ -57,6 +57,12 @@ pub fn to_mention(ev: &SocialEvent) -> Mention {
 #[must_use]
 pub fn provenance_of(ev: &SocialEvent, is_coordinated: bool) -> MentionProvenance {
     let realtime = ev.platform == SocialPlatform::Twitch;
+    // §70.7 platform-lead: mainstream (non-crypto-native) surfaces are TikTok and
+    // the general web; the crypto-social channels (X / Telegram / Twitch / Pump)
+    // are the complement. Structural provenance only, never a per-platform trust
+    // weight (§29.8). Aggregator is the legibility tier (handled by `aggregator`),
+    // not a first-mention front, so it is neither mainstream nor crypto here.
+    let mainstream = ev.platform == SocialPlatform::TikTok || ev.platform == SocialPlatform::Web;
     MentionProvenance {
         realtime_chat: realtime,
         broadcaster: realtime && ev.community_id != 0 && ev.author_id == ev.community_id,
@@ -64,6 +70,7 @@ pub fn provenance_of(ev: &SocialEvent, is_coordinated: bool) -> MentionProvenanc
         echo_or_coordinated: ev.is_echo || is_coordinated,
         aggregator: ev.aggregator_listed || ev.platform == SocialPlatform::Aggregator,
         bearish: is_bearish(ev),
+        mainstream,
     }
 }
 

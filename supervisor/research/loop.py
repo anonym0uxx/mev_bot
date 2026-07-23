@@ -20,8 +20,100 @@ from typing import Callable, Optional
 
 from ..core.model_client import ModelClient, SchemaViolation
 from ..core.schemas import get_schema
-from ..store.evidence import EvidenceStore
+from ..store.evidence import EvidenceStore, BIAS_AUDIT_LABEL
 from ..console.escalate import EscalationChannel, Escalation
+
+
+# Default seed source shipped alongside the store (§45.1 documented finding inventory).
+_DEFAULT_KB_SEED = Path(__file__).resolve().parent.parent / "store" / "kb_seed.json"
+
+# §45.2 — the FIRST registered research experiment. Stable id so re-seeding is idempotent and the
+# knowledge-base query (§56.10) can find it before proposing anything new.
+BIAS_AUDIT_EXPERIMENT_ID = "EXP-45.2-ENRICHMENT-BIAS-AUDIT"
+
+
+def _bias_audit_hypothesis() -> dict:
+    """The §45.2 enrichment-selection bias audit, shaped for EvidenceStore.record_hypothesis.
+
+    §45.2: "The first registered research experiment must audit the enrichment-selection bias in
+    the historical 856-trade enriched subset (enrichment success plausibly correlates with token
+    liveliness, biasing all conclusions conditioned on it) and determine whether the April
+    conclusions survive full-population, missingness-aware analysis. Until then, every
+    graduation-cohort claim carries BIAS_AUDIT_REQUIRED."
+    """
+    return {
+        "hypothesis_id": BIAS_AUDIT_EXPERIMENT_ID,
+        "statement": (
+            f"[{BIAS_AUDIT_LABEL}] The April graduation-cohort conclusions drawn from the "
+            "enriched 856-trade subset survive a full-population, missingness-aware re-analysis; "
+            "i.e. enrichment-selection (enrichment success correlating with token liveliness) "
+            "does not materially bias the estimated edge."
+        ),
+        "causal_mechanism": (
+            "Enrichment succeeds more often on livelier tokens, so any statistic conditioned on "
+            "the enriched subset over-represents survivors and inflates apparent edge."
+        ),
+        "competing_explanations": [
+            "Enrichment success is independent of outcome (no selection effect).",
+            "Selection effect exists but is dominated by the fixed-cost sizing defect, not signal.",
+        ],
+        "disconfirming_evidence_sought": (
+            "Full-population re-run (including enrichment-failed trades) in which the graduation "
+            "edge collapses or reverses relative to the enriched-subset estimate."
+        ),
+        "expected_net_sol_impact": 0.0,
+        "prior_probability": 0.5,
+        "cost_to_test": "low",
+        "edge_half_life": "durable",
+        "inference_state": "Hypothesis",
+        "labels": BIAS_AUDIT_LABEL,
+    }
+
+
+def seed_knowledge_base(store: EvidenceStore, run_id: str,
+                        seed_source: str | Path | None = None) -> dict:
+    """§45.1 KB seeding + §45.2 first-experiment registration.
+
+    Reads the documented seed-finding inventory (a JSON list of prior repository findings, each
+    with full §45.1 provenance and an evidence-status label), records every finding into the
+    ResearchKnowledgeBase, and registers the §45.2 enrichment-bias audit as the FIRST KB
+    experiment — a BIAS_AUDIT_REQUIRED-labeled hypothesis row at the head of the VOI queue.
+
+    Laptop-operational and idempotent: re-running replaces the same finding/experiment rows by
+    stable id. Imported markdown conclusions are stored as claims, never verified facts (§45.1).
+    Returns a summary; raises with a clear message on a malformed seed source (never silently).
+    """
+    src = Path(seed_source) if seed_source is not None else _DEFAULT_KB_SEED
+    if not src.is_file():
+        raise FileNotFoundError(
+            f"KB seed source not found: {src} — pass the documented seed-finding inventory "
+            "(§45.1). A missing seed source is a seeding failure, not an empty knowledge base.")
+    try:
+        doc = json.loads(src.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{src}: invalid KB seed JSON: {e}") from e
+    findings = doc.get("findings", doc) if isinstance(doc, dict) else doc
+    if not isinstance(findings, list):
+        raise ValueError(f"{src}: seed source must contain a 'findings' list (§45.1)")
+
+    seeded_ids: list[str] = []
+    for i, finding in enumerate(findings):
+        if not isinstance(finding, dict):
+            raise ValueError(f"{src}: findings[{i}] is not an object")
+        res = store.record_seeded_finding(finding, created_run=run_id)
+        seeded_ids.append(res["id"])
+
+    # Register §45.2 as the first KB experiment (BIAS_AUDIT_REQUIRED-labeled hypothesis row).
+    audit = _bias_audit_hypothesis()
+    store.record_hypothesis(audit, created_run=run_id)
+
+    return {
+        "seed_source": str(src),
+        "findings_seeded": len(seeded_ids),
+        "finding_ids": seeded_ids,
+        "bias_audit_experiment_id": BIAS_AUDIT_EXPERIMENT_ID,
+        "bias_audit_label": BIAS_AUDIT_LABEL,
+    }
 
 
 @dataclass

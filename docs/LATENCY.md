@@ -107,3 +107,62 @@ The deploy target is an **EPYC 9655P** (Zen 5, 96 cores, AVX-512 + VNNI, ~384 MB
 
 Re-run `bench/` on the deploy CPU after these to capture the real deploy-box numbers; the
 laptop figures above exist only to prove the *algorithmic* deltas.
+
+## Phase-1 hot-path pass — bounded-ring & scratch-reuse (2026-07-23, `pump-quant-app`)
+
+A second behaviour-preserving pass, targeting per-call allocation and O(n) memmoves on the
+hottest paths. **Every change below is byte-identical on the golden tape**: the
+`pump-quant-app` golden-digest test (`GOLDEN_DIGEST = 2_725_869_539_061_043_535`,
+`net = 1_406_102`) was re-run after each edit and never moved, and the full workspace +
+191 dossier suite is unchanged. The changes only recycle memory / drop an O(n) shift — the
+decoded values, ordering, and journal bytes are identical.
+
+- **O1 — `lane.rs` `NumericObs.trades`** (`observe()`, once per decoded swap — the single
+  hottest path). Was `Vec<TradeEvent>` with `remove(0)` (O(n) memmove of ≤63 events on every
+  full-ring swap). Now `VecDeque<TradeEvent>` with `pop_front`/`push_back` (O(1)). The
+  `micro`/Roll folds that need one contiguous ordered slice get it via
+  `NumericObs::with_ordered` — zero-copy when the deque is contiguous, one bounded (≤64)
+  stack copy when wrapped, materialized **once per emit per mint** rather than per swap.
+
+- **O2 — `engine.rs` `evaluate()` per-tick temporaries.** `corrob`, `extras`, `pending`,
+  and `cands` were freshly allocated each tick; they are now reused struct-field scratch
+  buffers (`corrob_buf`/`extras_buf`/`pending_buf`/`cands_buf`), taken via `mem::take`,
+  `clear()`ed, filled in identical order, and restored at tick end. `extras` drains into
+  `promoted` via `append` (allocation retained). Steady-state `evaluate()` allocates no
+  per-tick promotion vectors.
+
+- **O3 — `engine.rs` `promote_top`.** The fresh per-tick `Vec` is returned by
+  `pump_quant_watchlist::promote::promote_top`, whose public signature lives in the (money-
+  glob, non-app) watchlist crate; an out-buffer overload there is outside app ownership, so
+  the app-side downstream allocations were the reusable target and are handled under O2. The
+  load-bearing `ingest_union` `BTreeMap` (min-key eviction feeding `watchlist.insert`) was
+  left untouched — swapping it would reorder insertion and move the digest.
+
+- **O4 — `structure.rs` closed-bar ring** (`record()`, once per closed bar). `Vec<Bar>`
+  with `remove(0)` (cap 8) → `VecDeque<Bar>` with `pop_front`/`push_back` (O(1)). The four
+  structure readers (`trend`, `recent_vol_bps`, `market_state`, `pullback_features`) obtain
+  a contiguous ordered `&[Bar]` for the frozen `swing_*`/`realized_vol_bps` folds via
+  `MintMicro::with_bars` — zero-copy when contiguous, one bounded (≤8) clone only when the
+  ring has physically wrapped.
+
+- **O5 — `position.rs` `on_tick`.** The per-tick `fired: Vec::new()` scan buffer is now a
+  reused `fired_buf` struct field (`mem::take` → `clear` → `drain` → restore), pre-sized to
+  `cap` (≤ max_concurrent_positions). `force_close_all`'s `keys().copied().collect()` was
+  left as-is: it is an end-of-run one-shot and already pre-sizes exactly via the
+  `ExactSizeIterator` `size_hint`.
+
+- **O6 — `#[inline]` on tiny app-crate hot helpers.** Added `#[inline]` to
+  `position.rs::mult_bps` (per-exit valuation) and `lane.rs::{wl_lane_for, to_wl_mint}`
+  (per-candidate re-tags). The other per-trade helpers (`decade`, `decade_u64`,
+  `to_state_price`, `bar_range_bps`, `ofi_to_pressure_bp`, `classify_regime`) already carried
+  `#[inline]`. The `pump-quant-features` crate is owned elsewhere and was not touched.
+
+### Behaviour proof (Phase-1)
+
+`cargo test -p pump-quant-app --test golden_digest` passes with the pre-existing pinned
+`GOLDEN_DIGEST`/`GOLDEN_NET_LAMPORTS` after **each** individual edit above, and the full
+`pump-quant-app` suite, the workspace suite, `clippy -D warnings`, `fmt --check`, and the
+191-dossier materialize-verify are all green. Because each edit only recycles memory or
+replaces an O(n) front-shift with an O(1) deque op — with the ordered sequence handed to the
+folds byte-identical — the transformations are behaviour-preserving by construction, not
+merely by observation.

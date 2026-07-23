@@ -319,7 +319,7 @@ impl RollingFlowWindow {
             let lo = newest.saturating_sub(self.window_ns);
             while let Some(front) = self.ring.front() {
                 if front.ts_ns <= lo {
-                    let old = self.ring.pop_front().expect("front checked");
+                    let old = self.ring.pop_front().expect("front checked"); // LINT-ALLOW(hot_panic): infallible — guarded by the enclosing `while let Some(front)`
                     self.remove_aggregates(&old);
                 } else {
                     break;

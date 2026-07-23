@@ -1,0 +1,32 @@
+[package]
+name = "pq-regression"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+description = "Hermes end-to-end regression harness: durable, fast, deterministic tripwires over the golden decision-journal digest, the newly-wired constitution-law toggles, the fail-closed invariants (no live variant, UNKNOWN-stays-UNKNOWN, bounded state), and the PumpSwap decoder panic-safety. Adds coverage only — pins nothing new about behaviour, mirrors the pinned baselines in one auditable manifest (see BASELINES.md and src/baselines.rs)."
+
+[lib]
+name = "pq_regression"
+path = "src/lib.rs"
+
+# The golden-tape mirror in `src/golden_tape.rs` drives the real engine, so the
+# engine crates are true (non-dev) dependencies of the library.
+[dependencies]
+pump-quant-app = { path = "../pump-quant-app" }
+pump-quant-ingest = { path = "../pump-quant-ingest" }
+pump-quant-domain = { path = "../pump-quant-domain" }
+
+# Consumed only by the regression test binaries (fail-closed / decoder / bounded-state /
+# execution-plane / evaluator / strategy law-presence invariants).
+[dev-dependencies]
+pump-quant-protocol = { path = "../pump-quant-protocol" }
+pump-quant-social = { path = "../pump-quant-social" }
+pump-quant-wallet-graph = { path = "../pump-quant-wallet-graph" }
+pump-quant-watchlist = { path = "../pump-quant-watchlist" }
+pump-quant-features = { path = "../pump-quant-features" }
+pump-quant-narrative = { path = "../pump-quant-narrative" }
+pump-quant-signals = { path = "../pump-quant-signals" }
+pump-quant-execution = { path = "../pump-quant-execution" }
+pump-quant-strategy = { path = "../pump-quant-strategy" }
+pump-quant-evaluator = { path = "../pump-quant-evaluator" }

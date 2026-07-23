@@ -50,6 +50,112 @@ use crate::hashing::{EvaluatorReleaseHash, StrategyHash};
 /// memory bound). Once full, the oldest entry is evicted.
 pub const TRANSITION_LOG_CAPACITY: usize = 64;
 
+/// Number of §16 observation-source-mix labels a [`SourceMixAssumptions`] bitset
+/// can carry (one bit per label). The constitution enumerates exactly eight §16
+/// labels (§16 / §53), so a `u8` holds the full set with no spare bits.
+pub const SOURCE_MIX_LABEL_COUNT: u32 = 8;
+
+/// §56.3 `SourceMixAssumptions` — the set of §16 observation-source-mix labels a
+/// strategy version's evidence was validated under, as a compact bitset (one bit
+/// per §16 label, in §16 declaration order, bit 0 = `HELIUS_LASERSTREAM_LIVE`).
+///
+/// Integer/§22: no float, no allocation, `Copy`. A strategy validated only under
+/// live LaserStream carries a different assumption set than one validated under a
+/// shadow/replay mix, and §16/§34.2 require that difference to be pinned so
+/// source-mix re-eligibility can be re-run when the active mix changes. Default
+/// is the empty set (no source-mix assumption asserted).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SourceMixAssumptions(pub u8);
+
+impl SourceMixAssumptions {
+    /// The empty assumption set.
+    pub const EMPTY: SourceMixAssumptions = SourceMixAssumptions(0);
+
+    /// The raw bitset.
+    #[inline]
+    pub fn bits(&self) -> u8 {
+        self.0
+    }
+
+    /// Whether the §16 label at `index` (`0..SOURCE_MIX_LABEL_COUNT`) is
+    /// asserted. Out-of-range indices are `false` (there is no ninth label).
+    #[inline]
+    pub fn contains_label(&self, index: u32) -> bool {
+        index < SOURCE_MIX_LABEL_COUNT && (self.0 & (1u8 << index)) != 0
+    }
+}
+
+/// §56.3 `ParameterEnvelope` reference — a digest identifying the registered
+/// parameter-envelope set (see [`crate::envelope::ParameterEnvelope`]) a strategy
+/// version is pinned to. A `u64` FNV-style digest (same shape as
+/// [`StrategyRecord::config_hash_fnv`]) keeps the record self-contained and §22
+/// integer-only rather than embedding the full per-dimension envelope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct EnvelopeRef(pub u64);
+
+/// §56.3 `CreatedBy` — the authority that created a strategy version. Enum, not a
+/// free string, so provenance is a closed set (§56.3 reproducibility). `code()`
+/// is append-only for audit stability.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CreatedBy {
+    /// Provenance not asserted (the fail-closed default).
+    #[default]
+    Unspecified,
+    /// The autonomous research organization (Hermes/GLM research loop).
+    AutonomousResearch,
+    /// Imported from legacy engine code/data as a candidate (§ MomentumEngine
+    /// import rule): evidence limitations apply.
+    LegacyImport,
+    /// A human operator registered the version directly.
+    Human,
+    /// Synthesized during deterministic replay / reconstruction.
+    Replay,
+}
+
+impl CreatedBy {
+    /// A stable, append-only numeric code for registry rows and audit.
+    pub fn code(&self) -> u8 {
+        match self {
+            CreatedBy::Unspecified => 0,
+            CreatedBy::AutonomousResearch => 1,
+            CreatedBy::LegacyImport => 2,
+            CreatedBy::Human => 3,
+            CreatedBy::Replay => 4,
+        }
+    }
+}
+
+/// §56.3 identity / lineage / creation metadata carried by every
+/// [`StrategyRecord`] in addition to its pinned identity hashes.
+///
+/// Bundled into one `Copy` struct so the richer constructor
+/// ([`StrategyRecord::new_with_lineage`]) stays within a sane argument count
+/// (§ clippy `too_many_arguments`) and so the whole §56.3 lineage block can be
+/// read/compared as a unit. Every field is `Option`/integer/enum and defaults to
+/// the fail-closed "nothing asserted" value, so the plain [`StrategyRecord::new`]
+/// constructor keeps its exact prior behavior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StrategyLineage {
+    /// §56.3 `ParentStrategyId`: the strategy hash this version derives from, or
+    /// `None` for a root (un-parented) version.
+    pub parent_strategy_id: Option<StrategyHash>,
+    /// §56.3 `RollbackTarget`: the parent strategy hash a rollback returns to,
+    /// or `None` when there is no defined rollback target.
+    pub rollback_target: Option<StrategyHash>,
+    /// §56.3 `ParameterEnvelope` reference, or `None` if not yet pinned.
+    pub envelope_ref: Option<EnvelopeRef>,
+    /// §56.3 `SourceMixAssumptions` the version was validated under.
+    pub source_mix_assumptions: SourceMixAssumptions,
+    /// §56.3 `ComplexityScore`: an integer complexity metric (§56 complexity
+    /// budget). Higher = more complex; `0` = unscored.
+    pub complexity_score: u32,
+    /// §56.3 `CreationTime`: a caller-supplied monotone creation-ordering value
+    /// (replay/injected-clock sequence, never a wall-clock read — §22).
+    pub created_at_seq: u64,
+    /// §56.3 `CreatedBy`: the creating authority.
+    pub created_by: CreatedBy,
+}
+
 /// Strategy promotion statuses (§56.3), exactly the constitution's
 /// authoritative fourteen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -325,6 +431,11 @@ pub struct StrategyRecord {
     status: PromotionStatus,
     /// `EntryMode` discriminant: the lane this record competes in.
     lane: u16,
+    /// §56.3 identity / lineage / creation metadata (parent, rollback target,
+    /// envelope reference, source-mix assumptions, complexity, creation meta).
+    /// Fixed at construction alongside the identity hashes — a changed lineage
+    /// is a *new* record, never a mutated one.
+    lineage: StrategyLineage,
     /// Bounded ring buffer of `(from_code, to_code, sequence)` transitions.
     transitions: Vec<(u8, u8, u64)>,
     /// Index of the oldest entry in the ring (0 while not yet wrapped).
@@ -343,6 +454,31 @@ impl StrategyRecord {
         feature_schema_version: u32,
         lane: u16,
     ) -> Self {
+        Self::new_with_lineage(
+            strategy_hash,
+            evaluator_hash,
+            config_hash_fnv,
+            protocol_registry_hash,
+            feature_schema_version,
+            lane,
+            StrategyLineage::default(),
+        )
+    }
+
+    /// Register a new strategy record with its full §56.3 lineage / creation
+    /// metadata. [`StrategyRecord::new`] is the special case with a
+    /// [`StrategyLineage::default`] (nothing asserted) — this preserves the
+    /// exact prior behavior of `new` while letting callers pin the §56.3
+    /// identity/lineage block at construction.
+    pub fn new_with_lineage(
+        strategy_hash: StrategyHash,
+        evaluator_hash: EvaluatorReleaseHash,
+        config_hash_fnv: u64,
+        protocol_registry_hash: u64,
+        feature_schema_version: u32,
+        lane: u16,
+        lineage: StrategyLineage,
+    ) -> Self {
         Self {
             strategy_hash,
             evaluator_hash,
@@ -351,6 +487,7 @@ impl StrategyRecord {
             feature_schema_version,
             status: PromotionStatus::ResearchCandidate,
             lane,
+            lineage,
             transitions: Vec::with_capacity(TRANSITION_LOG_CAPACITY),
             transitions_head: 0,
         }
@@ -389,6 +526,49 @@ impl StrategyRecord {
     /// The lane (`EntryMode` discriminant) this record competes in.
     pub fn lane(&self) -> u16 {
         self.lane
+    }
+
+    /// The full §56.3 identity/lineage/creation metadata block (immutable).
+    pub fn lineage(&self) -> StrategyLineage {
+        self.lineage
+    }
+
+    /// §56.3 `ParentStrategyId`: the strategy hash this version derives from,
+    /// or `None` for a root version (immutable).
+    pub fn parent_strategy_id(&self) -> Option<StrategyHash> {
+        self.lineage.parent_strategy_id
+    }
+
+    /// §56.3 `RollbackTarget`: the parent hash a rollback returns to, or `None`
+    /// (immutable).
+    pub fn rollback_target(&self) -> Option<StrategyHash> {
+        self.lineage.rollback_target
+    }
+
+    /// §56.3 `ParameterEnvelope` reference, or `None` if unpinned (immutable).
+    pub fn envelope_ref(&self) -> Option<EnvelopeRef> {
+        self.lineage.envelope_ref
+    }
+
+    /// §56.3 `SourceMixAssumptions` the version was validated under (immutable).
+    pub fn source_mix_assumptions(&self) -> SourceMixAssumptions {
+        self.lineage.source_mix_assumptions
+    }
+
+    /// §56.3 `ComplexityScore` (immutable).
+    pub fn complexity_score(&self) -> u32 {
+        self.lineage.complexity_score
+    }
+
+    /// §56.3 `CreationTime` — the caller-supplied monotone creation ordering
+    /// value (immutable, §22: never a wall-clock read).
+    pub fn created_at_seq(&self) -> u64 {
+        self.lineage.created_at_seq
+    }
+
+    /// §56.3 `CreatedBy` — the creating authority (immutable).
+    pub fn created_by(&self) -> CreatedBy {
+        self.lineage.created_by
     }
 
     /// Number of transitions currently retained in the bounded audit trail.
@@ -1146,5 +1326,93 @@ mod tests {
         assert_eq!(r.lane(), 7);
         assert_eq!(r.status(), PromotionStatus::ResearchCandidate);
         assert_eq!(r.transitions_len(), 0);
+    }
+
+    #[test]
+    fn new_defaults_lineage_to_nothing_asserted() {
+        // The plain constructor must keep its prior behavior: the §56.3 lineage
+        // block defaults to the fail-closed "nothing asserted" values.
+        let r = record();
+        assert_eq!(r.parent_strategy_id(), None);
+        assert_eq!(r.rollback_target(), None);
+        assert_eq!(r.envelope_ref(), None);
+        assert_eq!(r.source_mix_assumptions(), SourceMixAssumptions::EMPTY);
+        assert_eq!(r.complexity_score(), 0);
+        assert_eq!(r.created_at_seq(), 0);
+        assert_eq!(r.created_by(), CreatedBy::Unspecified);
+        assert_eq!(r.lineage(), StrategyLineage::default());
+    }
+
+    #[test]
+    fn new_with_lineage_pins_all_56_3_fields() {
+        let lineage = StrategyLineage {
+            parent_strategy_id: Some(StrategyHash([0x11; 32])),
+            rollback_target: Some(StrategyHash([0x22; 32])),
+            envelope_ref: Some(EnvelopeRef(0xDEAD_BEEF_0000_0001)),
+            source_mix_assumptions: SourceMixAssumptions(0b0000_1001),
+            complexity_score: 42,
+            created_at_seq: 7_777,
+            created_by: CreatedBy::AutonomousResearch,
+        };
+        let r = StrategyRecord::new_with_lineage(
+            StrategyHash([0xAB; 32]),
+            EvaluatorReleaseHash([0xCD; 32]),
+            0x1234_5678_9ABC_DEF0,
+            0x0FED_CBA9_8765_4321,
+            3,
+            7,
+            lineage,
+        );
+        // Identity hashes are unaffected by the added lineage fields.
+        assert_eq!(r.strategy_hash(), StrategyHash([0xAB; 32]));
+        assert_eq!(r.config_hash_fnv(), 0x1234_5678_9ABC_DEF0);
+        // Every §56.3 lineage field round-trips through its accessor.
+        assert_eq!(r.parent_strategy_id(), Some(StrategyHash([0x11; 32])));
+        assert_eq!(r.rollback_target(), Some(StrategyHash([0x22; 32])));
+        assert_eq!(r.envelope_ref(), Some(EnvelopeRef(0xDEAD_BEEF_0000_0001)));
+        assert_eq!(
+            r.source_mix_assumptions(),
+            SourceMixAssumptions(0b0000_1001)
+        );
+        assert_eq!(r.complexity_score(), 42);
+        assert_eq!(r.created_at_seq(), 7_777);
+        assert_eq!(r.created_by(), CreatedBy::AutonomousResearch);
+        assert_eq!(r.lineage(), lineage);
+        // Lineage is fixed identity: it is unchanged by promotion transitions.
+        let mut driver = StrategyLifecycle::new();
+        let mut r2 = r.clone();
+        advance_to(&mut driver, &mut r2, PromotionStatus::Champion);
+        assert_eq!(r2.lineage(), lineage);
+        assert_eq!(r2.status(), PromotionStatus::Champion);
+    }
+
+    #[test]
+    fn source_mix_assumptions_bitset() {
+        // Bit i is §16 label i; only in-range bits are readable, and there is
+        // no ninth label.
+        let a = SourceMixAssumptions(0b1000_0001); // labels 0 and 7 asserted
+        assert!(a.contains_label(0));
+        assert!(a.contains_label(7));
+        assert!(!a.contains_label(1));
+        assert!(!a.contains_label(SOURCE_MIX_LABEL_COUNT)); // out of range
+        assert_eq!(a.bits(), 0b1000_0001);
+        assert_eq!(SourceMixAssumptions::EMPTY.bits(), 0);
+        assert!(!SourceMixAssumptions::EMPTY.contains_label(0));
+    }
+
+    #[test]
+    fn created_by_codes_are_stable_and_unique() {
+        use std::collections::BTreeSet;
+        let all = [
+            CreatedBy::Unspecified,
+            CreatedBy::AutonomousResearch,
+            CreatedBy::LegacyImport,
+            CreatedBy::Human,
+            CreatedBy::Replay,
+        ];
+        let codes: BTreeSet<u8> = all.iter().map(|c| c.code()).collect();
+        assert_eq!(codes.len(), all.len());
+        assert_eq!(CreatedBy::Unspecified.code(), 0);
+        assert_eq!(CreatedBy::default(), CreatedBy::Unspecified);
     }
 }

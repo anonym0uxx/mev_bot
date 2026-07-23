@@ -91,6 +91,7 @@ fn score_with(bearish: bool, aggregator: bool) -> u64 {
                 echo_or_coordinated: false,
                 aggregator: aggregator && i == 7,
                 bearish: bearish && i == 7,
+                mainstream: false,
             },
         );
     }

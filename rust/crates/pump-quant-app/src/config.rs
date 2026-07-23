@@ -338,7 +338,180 @@ pub struct Config {
     /// operates on the fixed-constant baseline; above it, cell estimates shrink
     /// toward the prior in proportion to sample size).
     pub expectancy_min_lane_trades: u32,
+
+    // ---- §26 confirmed-creator-dump hard veto (operator-approved reversal) ----
+    /// Master switch for the §26 confirmed-creator-dump law. When true, a market
+    /// whose creator has distributed more than the configured fraction of peak is
+    /// a HARD pre-entry veto (a NEW reject code) AND forces the exit of any held
+    /// position attributed to that creator. Constitution reversal of the prior
+    /// "creator distribution is fade-only, never a veto" behaviour (§22 clause is
+    /// superseded by §26 for the *confirmed-dump* regime, operator-approved).
+    pub creator_dump_veto_enable: bool,
+    /// Sold-fraction-of-peak (bps of 10_000) at/above which a creator is a
+    /// CONFIRMED dump — a hard veto, not merely a size fade. Strictly higher than
+    /// `creator_fade_sold_bps` (the graded-fade trigger): fade below, veto above.
+    pub creator_dump_veto_bp: u64,
+    /// The stricter dump threshold (bps) applied when the §27 creator classifier
+    /// labels the deployer `SerialRug` or `VolumeFarmer` — a known extractor earns
+    /// a lower veto bar. Must be ≤ `creator_dump_veto_bp`.
+    pub creator_dump_veto_strict_bp: u64,
+
+    // ---- §24 cost-derived profit targets (Batch-2a LAW 2, operator-approved) ----
+    /// Master switch for the §24 cost-derived take-profit ladder. When true the
+    /// held position's tp1/tp2/tp3 multiples are DERIVED per-market from the
+    /// gate's measured `round_trip_cost_bps` plus a margin multiple (via
+    /// `pump_quant_strategy::exit_ladder::derive_target_bps`), and the tranche
+    /// COUNT is the cost-priced rung count from `exit_ladder::ladder_rungs` —
+    /// instead of the fixed 13_500/25_000/50_000 constants. Report-only until an
+    /// operator flips it (§56.2 envelope). Off = byte-identical prior behaviour.
+    pub derived_targets_enable: bool,
+    /// The margin multiple (bps of 10_000) applied to the measured round-trip cost
+    /// to size the profit margin ABOVE the cost floor: `margin = rt_cost ×
+    /// mult/10_000`. The derived tp1 move is then `rt_cost + margin` (§24).
+    pub target_margin_mult_bp: u32,
+    /// Lower clamp of the derived tp1 multiple (mult bps of entry, 10_000 = entry).
+    /// A tiny-cost market still aims for a real move — the §56.2 envelope floor.
+    pub target_floor_bp: u32,
+    /// Upper clamp of the derived tp1 multiple (mult bps of entry). A high-cost
+    /// outlier can never demand an impossible target — the §56.2 envelope ceiling.
+    pub target_ceiling_bp: u32,
+
+    // ---- §24(d) exit-into-strength (Batch-2a LAW 5) ----
+    /// Master switch for the §24(d) exit-into-strength law: while in profit, sell
+    /// the remainder INTO an authentic buy-side burst CLIMAX (peaked, not yet
+    /// exhausting) detected by `pump_quant_signals::microstructure::burst_phase`
+    /// over the position's own swap-arrival stream. Off = prior behaviour.
+    pub into_strength_exit_enable: bool,
+    /// Climax-strength threshold: the burst arrival-rate elevation multiple (bps of
+    /// 10_000) over baseline a recent window must clear before a plateau counts as
+    /// a genuine climax — `20_000` = 2× baseline (§24(d), not routine flow).
+    pub into_strength_climax_bp: u32,
+
+    // ---- §24 volatility-scaled stops/trail (Batch-2a LAW 6) ----
+    /// Master switch for the §24 vol-scaled stop/trail: the hard stop and trailing
+    /// width widen with the market's `pump_quant_features::structure_ext::
+    /// realized_vol_bps` over a fixed recent-bar window, always clamped INSIDE the
+    /// position's existing `[trail_base_bps, trail_max_bps]` envelope (never
+    /// outside floor/ceiling). Off = prior fixed stop/trail behaviour.
+    pub vol_stop_enable: bool,
+    /// Fraction (bps of 10_000) of the measured realized-vol bps added to the base
+    /// stop/trail width: `extra = realized_vol × scale/10_000` (§24).
+    pub vol_stop_scale_bp: u32,
+
+    // ---- §25 setup-archetype classifier (Batch-2b LAW 4) ----
+    /// Master switch for the §25 setup-archetype classifier. When true the engine
+    /// replaces the hardcoded `archetype:0` stub at admit with the
+    /// `pump_quant_signals::setup_classifier::classify_setup` output — the derived
+    /// §24 named scalp family (BreakoutRetest / FailedBreakdownReversal / Reclaim /
+    /// CompressionExpansion / ShortHorizonMeanReversion / OrderFlowDislocation) —
+    /// reconstructed from the bar/flow state already folded per mint. The
+    /// discriminator tags the entry thesis, the MFE/excursion samples, and the
+    /// reject samples so analytics can group by real setup family instead of a
+    /// single all-0 bucket. Default ON: this is a correctness wiring, `archetype:0`
+    /// is a stub. It does not alter any capital decision (arbitration, gate, and
+    /// exits do not read the archetype tag), only the analytics grouping.
+    pub setup_classifier_enable: bool,
+
+    // ---- §24 EntryMode leaves (Batch-2b LAW 11) ----
+    /// Master switch for the §24 EntryMode detector leaves
+    /// (`pump_quant_strategy::entry_mode_leaves`). When true, a candidate the
+    /// 4-lane gate would reject for want of a fresh on-chain confirmation is
+    /// admitted via the `detect_pullback_continuation` predicate — a controlled
+    /// pullback that holds a retest inside an established uptrend maps onto
+    /// active-market-scalp eligibility (the market is already live, its depth
+    /// already observed) — while `detect_narrative_confirmation` stays a dormant,
+    /// admission-gated predicate that never authorizes on its own. Off = prior
+    /// 4-lane behaviour, byte-identical. §56.2 envelope.
+    pub entry_mode_leaves_enable: bool,
+
+    // ---- §70.1 composite money proxy (Batch-2c LAW 7) ----
+    /// Master switch for the §70.1 composite money proxy M. When true the
+    /// attention field's `money_of` level is the composite `M = distinct
+    /// smart-wallet entry + holder-growth + net inflow` (folded BEFORE price
+    /// momentum) instead of the on-chain buy-pressure alone: the smart-wallet /
+    /// holder terms are ADDED to the existing OFI-derived buy-pressure, so a
+    /// market whose genuine wallet-entry / holder-growth LEADS its buy-pressure
+    /// registers rising money (and thus a Confirmed attention-money divergence)
+    /// earlier than buy-pressure alone would show. Default ON: this is a
+    /// correctness upgrade to the money proxy (§70.1), and it is a legitimate
+    /// lamports-moving law — the golden net is re-pinned to its measured value.
+    /// Off = the prior buy-pressure-only proxy, byte-identical.
+    pub money_proxy_enable: bool,
+
+    // ---- §70.6/§70.8 narrative class + ceiling (Batch-2c LAW 8) ----
+    /// Master switch for the §70.6/§70.8 narrative-class law. When true the
+    /// attention emit path derives each mint's `NarrativeClass` (via
+    /// `pump_quant_narrative::narrative::nv_class_classify` over the field's own
+    /// spike/longevity/breadth/platform-led state), conditions the corroboration
+    /// decay rate and the reach ceiling on that class (`nv_narrative_ceiling`),
+    /// and feeds the class-conditioned ceiling into the §49 sizing conviction
+    /// and the `nv_candidate_score`. Off = class-unconditioned scoring/sizing,
+    /// byte-identical. Default OFF: a new scoring/sizing behaviour, report-only
+    /// until an operator flips it (§56.2 envelope), matching the Batch-2a
+    /// precedent.
+    pub narrative_class_enable: bool,
+
+    // ---- §70.7 platform-lead / crypto-social-lag (Batch-2c LAW 9) ----
+    /// Master switch for the §70.7 platform-lead law (Signal-Horizon Matching,
+    /// §46). When true the attention field tracks per-mint mainstream-vs-crypto
+    /// first-mention instants (mainstream = TikTok/Web `SocialPlatform`s; crypto
+    /// = X/Telegram) and feeds `nv_platform_lead`'s mainstream→crypto propagation
+    /// front (`crypto_social_lag`) into the pre-legibility runway and the
+    /// candidate score — a mint with a mainstream lead over crypto pickup earns a
+    /// higher pre-legibility runway than one already crypto-saturated. Off =
+    /// no platform-lead runway, byte-identical. Default OFF: situational (needs
+    /// a mainstream-led mint) — report-only until an operator flips it.
+    pub platform_lead_enable: bool,
+
+    // ---- §70.9/§70.10 deployer credibility + fee-floor (Batch-2c LAW 10) ----
+    /// Master switch for the §70.9 deployer-credibility screen. When true the
+    /// pre-entry gate folds the wallet-graph `deployer_credibility`
+    /// (prior-CA / serial-deploy occupancy, class-conditioned via the §27
+    /// creator classifier) into a reduce-only size haircut at admit. Off = the
+    /// prior credibility fold only, byte-identical. Default OFF: protective /
+    /// situational — report-only until an operator flips it.
+    pub deployer_screen_enable: bool,
+    /// Master switch for the §70.10 anti-bundle first-slot fee-floor. When true
+    /// the gate folds `pump_quant_signals::fee_plausibility::
+    /// assess_first_slot_fee_floor` over the market's first-slot fee/tip record
+    /// (threaded through the parallel creation-fee channel) as a reduce/veto: an
+    /// implausibly-low cumulative fee footprint for the advertised activity fades
+    /// size, and a fully-saturated (bundle/wash) signature vetoes pre-entry.
+    /// Off = no fee-floor screen, byte-identical. Default OFF: protective —
+    /// report-only until an operator flips it.
+    pub fee_floor_enable: bool,
+    /// Master switch for the §33/§43 sub-x_min probe-budget accounting. When true,
+    /// a candidate sized BELOW the economic `x_min` cost floor is not opened as a
+    /// normal position; instead its cost is routed through the
+    /// `pump_quant_strategy::calibration_budget` ledger (per-route capped) and, if
+    /// admitted, journalled as budgeted paid-information — a research probe that
+    /// buys a measurement, never a profit claim. Once any calibration cap is
+    /// exhausted the probe is refused. Off = the sub-x_min branch behaves exactly
+    /// as before (small-bankroll promotion valve or hard refuse), byte-identical.
+    /// Default OFF: a new spend channel, report-only until an operator flips it.
+    pub probe_budget_enable: bool,
 }
+
+/// §24 LAW 2 default: profit margin over the measured cost floor is 1.5× the
+/// round-trip cost. Named const (§102).
+pub const TARGET_MARGIN_MULT_BP_DEFAULT: u32 = 15_000;
+/// §24/§56.2 LAW 2 default: derived tp1 never below +10% of entry (envelope floor).
+pub const TARGET_FLOOR_BP_DEFAULT: u32 = 11_000;
+/// §24/§56.2 LAW 2 default: derived tp1 never above 6× entry (envelope ceiling).
+pub const TARGET_CEILING_BP_DEFAULT: u32 = 60_000;
+/// §24(d) LAW 5 default: a genuine climax needs the recent arrival rate at ≥2×
+/// baseline. Named const (§102).
+pub const INTO_STRENGTH_CLIMAX_BP_DEFAULT: u32 = 20_000;
+/// §24 LAW 6 default: add 0.5× of the realized-vol bps to the base stop/trail,
+/// inside the envelope. Named const (§102).
+pub const VOL_STOP_SCALE_BP_DEFAULT: u32 = 5_000;
+
+/// §26 default: 60% of peak distributed is a confirmed dump (well above the
+/// graded-fade trigger). Named const, §102.
+pub const CREATOR_DUMP_VETO_BP_DEFAULT: u64 = 6_000;
+/// §26/§27 default: a classified serial-rug / volume-farmer deployer vetoes at
+/// 35% of peak distributed — a known extractor gets a lower bar. §102.
+pub const CREATOR_DUMP_VETO_STRICT_BP_DEFAULT: u64 = 3_500;
 
 impl Config {
     /// A portable starting point for laptop dry-runs and tests.
@@ -461,6 +634,53 @@ impl Config {
             scale_confirm_auth_min_bp: 8_000, // evidence-backed authenticity bar
             promote_corroboration_quota: 2,   // §71: 2 of 8 slots for non-numeric evidence
             expectancy_min_lane_trades: 8,    // §24 minimum-effective-sample gate
+
+            // §26 confirmed-creator-dump hard veto (operator-approved reversal).
+            creator_dump_veto_enable: true,
+            creator_dump_veto_bp: CREATOR_DUMP_VETO_BP_DEFAULT,
+            creator_dump_veto_strict_bp: CREATOR_DUMP_VETO_STRICT_BP_DEFAULT,
+
+            // Batch-2a exit/sizing mechanics. §24 cost-derived profit targets
+            // (LAW 2) is DEFAULT ON per the operator's "constitution wins" ruling
+            // on the §24 reversal (defect #3): fixed global TP constants
+            // (13_500/25_000/50_000) are FORBIDDEN as the live default — cost-
+            // derived targets MUST be the live behaviour. LAWs 5/6 (§24(d)
+            // exit-into-strength, vol-scaled stops) stay DEFAULT OFF (situational/
+            // protective — report-only until an operator flips them through the
+            // §56.2 envelope, per golden-arc discipline). Each law's causal value
+            // is proven on its own hazard tape in audit_wave2_laws.rs.
+            derived_targets_enable: true,
+            target_margin_mult_bp: TARGET_MARGIN_MULT_BP_DEFAULT,
+            target_floor_bp: TARGET_FLOOR_BP_DEFAULT,
+            target_ceiling_bp: TARGET_CEILING_BP_DEFAULT,
+            into_strength_exit_enable: false,
+            into_strength_climax_bp: INTO_STRENGTH_CLIMAX_BP_DEFAULT,
+            vol_stop_enable: false,
+            vol_stop_scale_bp: VOL_STOP_SCALE_BP_DEFAULT,
+
+            // Batch-2b: §25 archetype classifier ON (correctness wiring — the
+            // stub archetype:0 is replaced by the real derived family; no capital
+            // decision changes). §24 EntryMode leaves OFF (a new admission path —
+            // report-only until an operator flips it, exactly like the shadow
+            // tournament adoptions). Each law's causal value is proven on its own
+            // hazard tape in audit_wave2_laws.rs.
+            setup_classifier_enable: true,
+            entry_mode_leaves_enable: false,
+
+            // Batch-2c: §70.1 composite money proxy ON (correctness upgrade to
+            // the money proxy — a legitimate lamports-moving law; the golden net
+            // is re-pinned to its measured value). §70.6/§70.8 narrative class,
+            // §70.7 platform-lead, and §70.9/§70.10 deployer/fee-floor screens
+            // DEFAULT OFF (new scoring/sizing or protective behaviours —
+            // report-only until an operator flips them, matching the Batch-2a
+            // precedent). Each law's causal value is proven on its own hazard
+            // tape in audit_wave2_laws.rs.
+            money_proxy_enable: true,
+            narrative_class_enable: false,
+            platform_lead_enable: false,
+            deployer_screen_enable: false,
+            fee_floor_enable: false,
+            probe_budget_enable: false,
         }
     }
 
@@ -553,6 +773,25 @@ impl Config {
             "meta_rank_bonus_bp" => self.meta_rank_bonus_bp = bp(value)?,
             "meta_saturation_haircut_bp" => self.meta_saturation_haircut_bp = bp(value)?,
             "creator_fade_sold_bps" => self.creator_fade_sold_bps = nonneg(value)?,
+            "creator_dump_veto_enable" => self.creator_dump_veto_enable = value != 0,
+            "creator_dump_veto_bp" => self.creator_dump_veto_bp = nonneg(value)?,
+            "creator_dump_veto_strict_bp" => self.creator_dump_veto_strict_bp = nonneg(value)?,
+            "derived_targets_enable" => self.derived_targets_enable = value != 0,
+            "target_margin_mult_bp" => self.target_margin_mult_bp = bp(value)?,
+            "target_floor_bp" => self.target_floor_bp = bp(value)?,
+            "target_ceiling_bp" => self.target_ceiling_bp = bp(value)?,
+            "into_strength_exit_enable" => self.into_strength_exit_enable = value != 0,
+            "into_strength_climax_bp" => self.into_strength_climax_bp = bp(value)?,
+            "vol_stop_enable" => self.vol_stop_enable = value != 0,
+            "vol_stop_scale_bp" => self.vol_stop_scale_bp = bp(value)?,
+            "setup_classifier_enable" => self.setup_classifier_enable = value != 0,
+            "entry_mode_leaves_enable" => self.entry_mode_leaves_enable = value != 0,
+            "money_proxy_enable" => self.money_proxy_enable = value != 0,
+            "narrative_class_enable" => self.narrative_class_enable = value != 0,
+            "platform_lead_enable" => self.platform_lead_enable = value != 0,
+            "deployer_screen_enable" => self.deployer_screen_enable = value != 0,
+            "fee_floor_enable" => self.fee_floor_enable = value != 0,
+            "probe_budget_enable" => self.probe_budget_enable = value != 0,
             "reflect_every_ticks" => self.reflect_every_ticks = nonneg(value)?.max(1),
             "reflect_weight_step_bp" => self.reflect_weight_step_bp = bp(value)?,
             "reflect_weight_floor_bp" => self.reflect_weight_floor_bp = bp(value)?,
@@ -661,6 +900,19 @@ impl Config {
                 "creator_fade_sold_bps exceeds 100%",
             ));
         }
+        // §26 confirmed-dump veto: a fraction of peak sold, in [0,100%]; the strict
+        // (classified-extractor) bar must not exceed the base bar, and the veto
+        // must sit strictly above the graded fade (fade below, veto above).
+        if self.creator_dump_veto_bp > 10_000 {
+            return Err(ConfigError::Inconsistent(
+                "creator_dump_veto_bp exceeds 100%",
+            ));
+        }
+        if self.creator_dump_veto_strict_bp > self.creator_dump_veto_bp {
+            return Err(ConfigError::Inconsistent(
+                "creator_dump_veto_strict_bp exceeds creator_dump_veto_bp",
+            ));
+        }
         // Bankroll-fraction sanity: fractions are of-deployable and must be ≤ 100%;
         // promotion must stay inside the total risk budget; drawdown tiers ascend.
         if self.f_base_bp > 10_000 || self.total_risk_cap_bp > 10_000 {
@@ -699,6 +951,12 @@ impl Config {
         // Take-profit ladder must ascend.
         if !(self.lc_tp1_bps <= self.lc_tp2_bps && self.lc_tp2_bps <= self.lc_tp3_bps) {
             return Err(ConfigError::Inconsistent("take-profit ladder must ascend"));
+        }
+        // §24 LAW 2 derived-target envelope must be a real band (floor ≤ ceiling).
+        if self.target_floor_bp > self.target_ceiling_bp {
+            return Err(ConfigError::Inconsistent(
+                "target floor exceeds target ceiling",
+            ));
         }
         Ok(())
     }

@@ -6,7 +6,7 @@
 
 ![Rust](https://img.shields.io/badge/rust-1.85%2B-000000?style=for-the-badge&logo=rust&logoColor=white)
 ![Solana](https://img.shields.io/badge/Solana-mainnet-14F195?style=for-the-badge&logo=solana&logoColor=black)
-![Tests](https://img.shields.io/badge/tests-1500%2B%20passing-2ea44f?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-1900%2B%20passing-2ea44f?style=for-the-badge)
 ![Gate](https://img.shields.io/badge/portable--gate-green-2ea44f?style=for-the-badge)
 ![Determinism](https://img.shields.io/badge/floats%20in%20outcome%20paths-0-8250df?style=for-the-badge)
 
@@ -26,14 +26,14 @@
 | **Repository** | `anonym0uxx/mev_bot` on GitHub |
 | **Purpose** | Autonomously discover and scalp net-SOL-positive Solana memecoin opportunities under a mechanically-enforced risk constitution. |
 | **Objective function** | Maximize realized **net SOL** (SOL in minus SOL out, after all costs). Net SOL is the single scalar the system optimizes. |
-| **Primary language** | Rust (a 22-crate Cargo workspace) + a Python supervisor (Hermes). |
+| **Primary language** | Rust (a 25-crate Cargo workspace) + Rust capture-lane tools + a Python supervisor (Hermes). |
 | **Target market** | Solana memecoins on Pump.fun (bonding curve) and PumpSwap / Raydium (AMM pools). |
 | **Trading style** | High-frequency scalping — many small, fast, net-positive round trips; not long holds. |
 | **Determinism** | Integer/fixed-point only in outcome paths; no floating point, no wall-clock, no RNG in decisions. Byte-exact under replay. |
-| **Current phase** | **Phase-A (laptop) COMPLETE**: paper/replay only, fully built, gate-verified, and constitution-aligned. Phase-B (server: live streams, submission, keys, OS tuning) is enumerated in [`docs/SERVER_BUILD_MANIFEST.md`](docs/SERVER_BUILD_MANIFEST.md) and is not in this build. |
+| **Current phase** | **Phase-A (laptop) COMPLETE + ingestion plane laptop-built**: paper/replay engine fully built, gate-verified, constitution-aligned; the Phase-B stream/data-ingestion *code* (Helius LaserStream WS + gRPC, PumpPortal, whale webhooks, PumpSwap decode, Birdeye, RPC failover, fee sampler) is now built and fixture-tested so server bringup is keys + soak + tune, not code-from-zero. Deploy-hardware items (OS tuning, PGO, live submission, key custody) remain Phase-B — see [`docs/SERVER_BUILD_MANIFEST.md`](docs/SERVER_BUILD_MANIFEST.md). |
 | **Live capital** | Tier-0: key custody + enablement are human-held; no code path in this build signs or moves funds. Live execution (Phase-B) is autonomous under those human-held keys. Qualified strategies park in `AwaitingLiveCapability` — a missing-capability state, never a human-approval queue. |
-| **Tests** | 434 green workspace test binaries (1,500+ tests); 191 SHA-locked property tests across 50 dossiers (`scripts/materialize_tests.py --verify`). |
-| **CI gate** | `hermes-gate/portable-gate`: fmt + clippy(-D warnings) + build + test + dossier `--verify` + supervisor portable gate. |
+| **Tests** | ~1,942 workspace tests (0 failing) + a dedicated `pq-regression` invariant crate (50) + Rust capture-lane suites (134 stream-capture / 191 https / 23 twitch); 191 SHA-locked dossier property tests (`scripts/materialize_tests.py --verify`). |
+| **CI gate** | `hermes-gate/portable-gate`: fmt + clippy(-D warnings) + build + test + dossier `--verify` + supervisor portable gate + hot-path purity lint (enforcing the real hot crates) + memory soak gate. `scripts/regression_e2e.py` runs the whole repo end-to-end against pinned baselines. |
 | **Rust edition / MSRV** | edition 2021, rust-version 1.85. |
 
 ---
@@ -205,17 +205,26 @@ marks are valued at the hard-stop distance — never assumed flat. The configure
 cold-start prior only: per-lane realized returns graduate into conditional expectancy via partial
 pooling (EXPECTANCY_V1), and the §52 baseline is valued at the realized hold move on the same tape,
 so configuration can never manufacture edge or baseline evidence. These laws are pinned as tests
-(`tests/phase_a_alignment.rs`, `tests/batch_e_laws.rs`) alongside a golden determinism tape whose
-realized net rose 2,979,624 → 5,017,234 → 6,443,936 → 8,785,954 lamports across discipline re-pins —
-same market, more law, more kept lamports. The runner exports a trade JSONL and a config-identity
-ledger on request (`--trade-jsonl`, `--config-ledger`); both are secondary records, never
-authoritative over the journal digest or chain truth.
+(`tests/phase_a_alignment.rs`, `tests/batch_e_laws.rs`, `tests/audit_wave2_laws.rs`) alongside a
+golden determinism tape. Every law is A/B-attributed: it must strictly out-earn (or, for a protective
+law, strictly avoid loss beyond) its own absence on a tape containing exactly its hazard. **An honesty
+correction is baked into the current pin:** the constitution's §24 reversal (defect #3) makes
+cost-derived profit targets the live default and forbids the fixed global TP constants; honoring it
+exposed that the earlier golden tape modeled unrealistically low (~1.5%) round-trip cost, which
+inflated realized net. The tape was corrected to realistic pump.fun/PumpSwap scalp economics (~7%
+round-trip cost, dominated by fixed priority/tip on small clips; a realistic loser/small-winner/runner
+mix) and re-pinned to **net 1,406,102 lamports** — the honest representative reference, on which
+cost-derived targets marginally out-earn the forbidden fixed ladder. The earlier headline arc
+(2.98M → … → 12.55M) was an artifact of understated costs and is not cited as live edge. The runner
+exports a trade JSONL and a config-identity ledger on request (`--trade-jsonl`, `--config-ledger`);
+both are secondary records, never authoritative over the journal digest or chain truth.
 
 ---
 
-## Architecture — the 22 crates
+## Architecture — the crates
 
-The workspace is 22 crates grouped by role. Decision logic is pure and portable; every live-IO, OS, or
+The workspace is 25 crates grouped by role (plus the `tools/` Rust capture lanes, which sit off the
+deterministic hot path). Decision logic is pure and portable; every live-IO, OS, or
 hardware concern sits behind a mockable trait seam so the logic is testable off a wire. Full map:
 [`docs/ARCHITECTURE.md`](docs/architecture.md).
 
@@ -251,6 +260,17 @@ hardware concern sits behind a mockable trait seam so the logic is testable off 
 **The nervous system (spine binary)**
 - `pump-quant-app` — the continuous discovery → gate → scalp → reflect loop that composes the above under one deterministic logical clock. Its `RunMode` has no `Live` variant.
 
+**Evaluator/research binaries + regression net**
+- `pq-evaluator` — the frozen-evaluator CLI: reads decision/outcome JSONL, prints a graded net-SOL report with baseline-family + FDR/PBO promotion verdict and its own evaluator hash (supervisor TOFU-pin binds to it).
+- `pq-research-runner` — replays a sealed experiment and emits the ablation/baseline report (the §62 experiment-run artifact).
+- `pq-regression` — 50 end-to-end regression invariants (determinism/digest witness, per-law presence, fail-closed, decoder fuzz) that catch silent drift across the engine.
+
+**Ingestion plane (Rust capture lanes — `tools/`, off the deterministic hot path)**
+- `tools/stream-capture-rs` (`pq-stream-capture`) — hand-rolled RFC6455 WebSocket client (RFC-vector tested) driving the Helius Enhanced-WS lane (transaction/account/slot subscribe, reconnect + slot-staleness watchdog, raw-preserving NDJSON per §6.3), the PumpPortal free WS lane, a whale/address-activity webhook listener (corroboration-tier, §6.6/§28), deterministic multi-provider RPC failover, and a priority-fee sampler. A server-only sub-crate (`grpc-server-only/pq-laserstream-grpc`) wraps the official LaserStream SDK (from-slot replay).
+- `tools/social-ingest-https-rs` (`pq-social-capture`) — ureq+rustls capture for X / TikTok / Firecrawl / Pump replies / CoinGecko / **Birdeye** (1D OHLCV backfill + token data, the §6.7 required source) + a local-LLM sentiment enricher.
+- `tools/social-ingest-rs` — dependency-free Twitch IRC capture.
+- PumpSwap (Pump AMM) is decoded end-to-end in `pump-quant-protocol` (Pool/GlobalConfig accounts, buy/sell/create_pool instructions, anchor CPI Buy/Sell/CreatePool events with per-trade fee ground-truth).
+
 ## The Hermes supervisor
 
 Hermes is the **Python supervisor** that governs how this Rust engine is built and, later, operated. It is
@@ -276,7 +296,7 @@ which is why the dossier count is a proxy for how much of the system is proven, 
 
 ## Determinism and replay
 
-- 1389 workspace tests, all passing; 179 of them are the SHA-locked dossier property tests.
+- ~1942 workspace tests, all passing; 191 of them are the SHA-locked dossier property tests.
 - Byte-exact replay: the decision journal folds every promotion, gate verdict, fill, and reweight into a
   canonical rolling FNV-1a hash. Two runs over the same events produce the same digest. A single
   non-determinism bug (a stray wall-clock read, an unordered map used for an outcome) flips it.
@@ -318,11 +338,14 @@ cd mev_bot/rust
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --workspace
-cargo test  --workspace                                  # 1389 tests
+cargo test  --workspace                                  # ~1942 tests
 
 # Verify the dossier independence lock (needs pyyaml):
 python -m pip install pyyaml
-python ../scripts/materialize_tests.py --repo .. --verify # 179/179 intact
+python ../scripts/materialize_tests.py --repo .. --verify # 191/191 intact
+
+# Or run the whole repo end-to-end against pinned baselines (engine + capture suites + gates):
+python ../scripts/regression_e2e.py                       # single PASS/FAIL table, non-zero on any drift
 ```
 
 Run the nervous system in paper mode over a recorded event journal:
@@ -337,7 +360,8 @@ cargo run -p pump-quant-app -- paper config.txt events.txt
 ## Repository layout
 
 ```text
-rust/                        the 22-crate Cargo workspace (the pump-quant engine)
+rust/                        the 25-crate Cargo workspace (the pump-quant engine)
+tools/                       Rust capture lanes (stream-capture-rs, social-ingest-https-rs, social-ingest-rs)
   crates/pump-quant-*         domain, core, strategy, evaluator, app, and the rest
 supervisor/                  Hermes — the Python governance/build supervisor
   reinforcement/dossiers/     45 component contracts (the correctness authority)
@@ -347,11 +371,48 @@ docs/                        ARCHITECTURE.md · SERVER_BUILD_MANIFEST.md · the 
 .github/workflows/gate.yml   the portable-gate CI workflow
 ```
 
+## Phase-B server bringup (deployment box)
+
+Phase-A is provable off a live wire; Phase-B is where the deployment server turns the built-and-tested
+ingestion + execution seams on. Because the ingestion *code* is already laptop-built and fixture-tested,
+server bringup is credentials + measurement, not new construction. The ordered manifest is
+[`docs/SERVER_BUILD_MANIFEST.md`](docs/SERVER_BUILD_MANIFEST.md); the Helius product map is
+[`docs/HELIUS_INTEGRATION.md`](docs/HELIUS_INTEGRATION.md).
+
+1. **Clone + build the workspace and capture lanes** on the deploy box (Windows-native target), then build
+   the server-only gRPC lane (`tools/stream-capture-rs/grpc-server-only`, needs crates.io reachable):
+   `cargo build --release`.
+2. **Provision credentials as environment variables (never committed):**
+   `HELIUS_API_KEY` (LaserStream mainnet gRPC requires the Helius **Business plan — $499/mo**; the
+   Enhanced-WS `transactionSubscribe` lane works from Developer, and webhooks/Sender work on all plans),
+   `RPC_URLS` (comma-separated failover priority), `WEBHOOK_AUTH_SECRET` (+ a TLS-terminating reverse proxy
+   for the whale webhook), `BIRDEYE_API_KEY` (§6.7 required source; token-security fields need Starter+),
+   plus the social keys (`TWITTERAPI_IO_KEY`, `TIKTOK_API_KEY`/`_BASE`, `FIRECRAWL_API_KEY`, `CG_API_KEY`,
+   `TELEGRAM_*`) and `LLAMA_SERVER_URL` for the local-LLM sentiment enricher.
+3. **Stand up the streams** (LaserStream gRPC as primary canonical ingest, Enhanced-WS as the verified
+   fallback, PumpPortal free WS, RPC failover) and **soak-measure** the manifest's acceptance evidence:
+   §2 sequence-gap stats, §4 failover parity, §8 fee-calibration epoch vs probes, §10 Birdeye
+   reconciliation epoch, §11 webhook lag/loss.
+4. **Deploy-hardware tuning** (§1/§5): OsTune Windows affinity/VirtualLock/timer, deploy-CPU-pinned codegen
+   (`RUSTFLAGS -C target-cpu=znver5`, never `native` on a build box), replay-corpus PGO, and the p50/p99/p999
+   latency budgets — all against the criterion-103 budget on deployment-identical hardware.
+5. **Execution + Tier-0** (§6/§7/§9, human-gated): the Sender submission client under the signing boundary,
+   operator-funded probe wallets, live sell-path `simulateTransaction`, then the autonomous lifecycle
+   shadow → Mode-C calibration → ProbeReadinessGate → minimum probe → reconciled scale. Key custody and
+   funding are human actions no agent tool can perform.
+
+Hermes (the Python supervisor) reads this repository — this README and the constitution in `docs/` — as
+ground truth for what to build and verify next.
+
 ## Status
 
-Phase-A (laptop) is complete: 22 crates, 45 dossiers, 179 locked property tests, 1389 tests passing, the
-portable gate green in CI. The next step is bringing the workspace to the deployment box and executing the
-Phase-B server manifest. Live trading remains behind the Tier-0 human gate.
+Phase-A (laptop) is complete and the Phase-B ingestion plane is laptop-built: 25 workspace crates + 3 Rust
+capture-lane tools, 191 SHA-locked dossier property tests, ~1,942 workspace tests passing (0 failing), the
+portable gate + hot-path lint + memory soak gate green, and an end-to-end regression runner over the whole
+repo. The engine is aligned to the constitution end-to-end (all §1–§71 sections and acceptance criteria
+1–114 audited; the wired laws are per-law A/B-attributed). The next step is bringing the workspace to the
+deployment box and executing the Phase-B server manifest above. Live trading remains behind the Tier-0
+human gate.
 
 ---
 

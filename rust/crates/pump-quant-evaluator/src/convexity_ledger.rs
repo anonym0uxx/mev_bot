@@ -269,6 +269,178 @@ pub fn build_ledger(events: &[ConvexityEvent], runner_threshold_bps: i64) -> Vec
     out
 }
 
+// ---------------------------------------------------------------------------
+// Launch-family convexity-preservation audit sink (constitution §21.7,
+// criterion 104).
+//
+// The launch-sale-trajectory + creation-window feature families
+// (`pump_quant_signals::launch_trajectory`) are recorded empirical priors that
+// **never veto alone** and only *downweight* or contribute to a *veto*; criterion
+// 104 mandates an audit sink that records, per family and per direction, the
+// counterfactual-vs-realized effect of every such decision so the priors can be
+// re-measured rather than assumed. The general `build_ledger` above scores the
+// full §49 suppression-rule set keyed by `RuleId`; this is the narrower,
+// always-live per-family recording API the launch families write to as decisions
+// are made (an online accumulator rather than a batch fold). Bounded by
+// construction: the key space is the finite (family × direction) cross-product.
+// ---------------------------------------------------------------------------
+
+/// A launch-competition feature family whose convexity effect is audited
+/// (§21.7 / criterion 104).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ConvexityFamily {
+    /// Launch-sale trajectory family (MemeTrans-class sale-phase evidence).
+    LaunchSaleTrajectory,
+    /// Creation-window competition family (first-slot adverse-selection meter).
+    CreationWindowCompetition,
+}
+
+/// The direction of a launch-family decision's effect on a position (§21.7:
+/// these families downweight or contribute to a veto — they never fully admit
+/// on their own).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FamilyEffect {
+    /// The family reduced (downweighted) the position's size/confidence.
+    Downweight,
+    /// The family contributed to a veto (removed the exposure).
+    Veto,
+}
+
+/// One launch-family decision to record: which family acted, in which
+/// direction, and the counterfactual-vs-realized outcome it produced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FamilyDecision {
+    /// The family that acted.
+    pub family: ConvexityFamily,
+    /// The direction of its effect.
+    pub effect: FamilyEffect,
+    /// Net outcome, bps, of the FULL un-downweighted / un-vetoed position (the
+    /// counterfactual).
+    pub counterfactual_bps: i64,
+    /// Net outcome, bps, actually realized under the family's action (≈ 0 for a
+    /// veto that removed the position; the downweighted outcome otherwise).
+    pub realized_bps: i64,
+}
+
+impl FamilyDecision {
+    /// Constructor / golden-vector helper.
+    pub fn new(
+        family: ConvexityFamily,
+        effect: FamilyEffect,
+        counterfactual_bps: i64,
+        realized_bps: i64,
+    ) -> Self {
+        FamilyDecision {
+            family,
+            effect,
+            counterfactual_bps,
+            realized_bps,
+        }
+    }
+}
+
+/// The folded record for one (family, direction) key: how many decisions and the
+/// accumulated counterfactual / realized bps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FamilyRecord {
+    /// The family this record scores.
+    pub family: ConvexityFamily,
+    /// The effect direction this record scores.
+    pub effect: FamilyEffect,
+    /// Number of decisions folded into this record.
+    pub n: u32,
+    /// Sum over decisions of the full-position counterfactual (bps).
+    pub counterfactual_sum_bps: i128,
+    /// Sum over decisions of the realized outcome under the family's action (bps).
+    pub realized_sum_bps: i128,
+}
+
+impl FamilyRecord {
+    /// Net convexity effect of this family/direction (bps): realized minus
+    /// counterfactual. Positive means the family's action *improved* the
+    /// outcome versus the full position (downside avoided); negative means it
+    /// cost upside (a runner suppressed).
+    pub fn effect_bps(&self) -> i128 {
+        self.realized_sum_bps - self.counterfactual_sum_bps
+    }
+}
+
+/// Maximum (family × direction) records the ledger can hold. There are two
+/// families and two directions, so four keys is the exact, provably-bounded
+/// ceiling (§57: no unbounded growth).
+pub const CONVEXITY_PRESERVATION_CAPACITY: usize = 4;
+
+/// Launch-family convexity-preservation audit sink (§21.7 / criterion 104).
+///
+/// Records each launch-family decision's downweight/veto effect keyed by
+/// (family, direction), folding counterfactual-vs-realized bp and the decision
+/// count. Bounded by construction to [`CONVEXITY_PRESERVATION_CAPACITY`] keys.
+/// Pure and deterministic: no floats, no wall-clock, no RNG; grouping is a
+/// `BTreeMap` over a stable, finite key so output order is stable.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConvexityPreservationLedger {
+    entries: BTreeMap<(ConvexityFamily, FamilyEffect), FamilyRecord>,
+}
+
+impl ConvexityPreservationLedger {
+    /// An empty ledger.
+    pub fn new() -> Self {
+        ConvexityPreservationLedger {
+            entries: BTreeMap::new(),
+        }
+    }
+
+    /// Record one launch-family decision, folding it into its (family,
+    /// direction) record. Idempotent on structure — a repeated key updates the
+    /// existing record in place rather than growing the map, so the ledger can
+    /// never exceed [`CONVEXITY_PRESERVATION_CAPACITY`] keys.
+    pub fn record(&mut self, d: FamilyDecision) {
+        let entry = self
+            .entries
+            .entry((d.family, d.effect))
+            .or_insert(FamilyRecord {
+                family: d.family,
+                effect: d.effect,
+                n: 0,
+                counterfactual_sum_bps: 0,
+                realized_sum_bps: 0,
+            });
+        entry.n += 1;
+        entry.counterfactual_sum_bps += d.counterfactual_bps as i128;
+        entry.realized_sum_bps += d.realized_bps as i128;
+    }
+
+    /// The folded record for one (family, direction) key, if any decisions have
+    /// been recorded for it.
+    pub fn record_for(
+        &self,
+        family: ConvexityFamily,
+        effect: FamilyEffect,
+    ) -> Option<&FamilyRecord> {
+        self.entries.get(&(family, effect))
+    }
+
+    /// All folded records in a deterministic order (by family, then direction).
+    pub fn records(&self) -> Vec<FamilyRecord> {
+        self.entries.values().copied().collect()
+    }
+
+    /// Number of distinct (family, direction) records held.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether nothing has been recorded yet.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Total decisions folded across every record.
+    pub fn total_decisions(&self) -> u32 {
+        self.entries.values().map(|r| r.n).sum()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,5 +540,193 @@ mod tests {
         assert_eq!(top_count(100, 1), 1);
         assert_eq!(top_count(100, 10), 10);
         assert_eq!(top_count(3, 100), 3);
+    }
+}
+
+#[cfg(test)]
+mod launch_family_tests {
+    use super::*;
+
+    #[test]
+    fn empty_ledger_is_empty() {
+        let led = ConvexityPreservationLedger::new();
+        assert!(led.is_empty());
+        assert_eq!(led.len(), 0);
+        assert_eq!(led.total_decisions(), 0);
+        assert!(led.records().is_empty());
+        assert_eq!(
+            led.record_for(ConvexityFamily::LaunchSaleTrajectory, FamilyEffect::Veto),
+            None
+        );
+    }
+
+    #[test]
+    fn record_folds_counterfactual_realized_and_count() {
+        let mut led = ConvexityPreservationLedger::new();
+        // Two downweight decisions for the same family fold into one record.
+        led.record(FamilyDecision::new(
+            ConvexityFamily::LaunchSaleTrajectory,
+            FamilyEffect::Downweight,
+            8_000, // full-position counterfactual
+            5_000, // realized after downweight
+        ));
+        led.record(FamilyDecision::new(
+            ConvexityFamily::LaunchSaleTrajectory,
+            FamilyEffect::Downweight,
+            -4_000, // a loser: downweighting saved downside
+            -1_000,
+        ));
+        assert_eq!(led.len(), 1); // one (family, direction) key
+        let rec = led
+            .record_for(
+                ConvexityFamily::LaunchSaleTrajectory,
+                FamilyEffect::Downweight,
+            )
+            .unwrap();
+        assert_eq!(rec.n, 2);
+        assert_eq!(rec.counterfactual_sum_bps, 4_000); // 8000 + (-4000)
+        assert_eq!(rec.realized_sum_bps, 4_000); // 5000 + (-1000)
+                                                 // Net effect: realized - counterfactual = 0 here.
+        assert_eq!(rec.effect_bps(), 0);
+        assert_eq!(led.total_decisions(), 2);
+    }
+
+    #[test]
+    fn family_and_direction_are_distinct_keys() {
+        let mut led = ConvexityPreservationLedger::new();
+        led.record(FamilyDecision::new(
+            ConvexityFamily::LaunchSaleTrajectory,
+            FamilyEffect::Veto,
+            10_000,
+            0,
+        ));
+        led.record(FamilyDecision::new(
+            ConvexityFamily::LaunchSaleTrajectory,
+            FamilyEffect::Downweight,
+            10_000,
+            6_000,
+        ));
+        led.record(FamilyDecision::new(
+            ConvexityFamily::CreationWindowCompetition,
+            FamilyEffect::Veto,
+            -3_000,
+            0,
+        ));
+        // 3 distinct keys; never exceeds the bounded ceiling.
+        assert_eq!(led.len(), 3);
+        assert!(led.len() <= CONVEXITY_PRESERVATION_CAPACITY);
+        // A veto that removed a +10000 runner cost the whole upside.
+        let veto = led
+            .record_for(ConvexityFamily::LaunchSaleTrajectory, FamilyEffect::Veto)
+            .unwrap();
+        assert_eq!(veto.effect_bps(), -10_000);
+        // A veto that removed a -3000 loser preserved the downside.
+        let saved = led
+            .record_for(
+                ConvexityFamily::CreationWindowCompetition,
+                FamilyEffect::Veto,
+            )
+            .unwrap();
+        assert_eq!(saved.effect_bps(), 3_000);
+    }
+
+    #[test]
+    fn records_are_deterministically_ordered_and_bounded() {
+        let mut led = ConvexityPreservationLedger::new();
+        // Insert in a jumbled order across all four keys, twice each.
+        for _ in 0..2 {
+            led.record(FamilyDecision::new(
+                ConvexityFamily::CreationWindowCompetition,
+                FamilyEffect::Veto,
+                1,
+                0,
+            ));
+            led.record(FamilyDecision::new(
+                ConvexityFamily::LaunchSaleTrajectory,
+                FamilyEffect::Downweight,
+                1,
+                1,
+            ));
+            led.record(FamilyDecision::new(
+                ConvexityFamily::CreationWindowCompetition,
+                FamilyEffect::Downweight,
+                1,
+                1,
+            ));
+            led.record(FamilyDecision::new(
+                ConvexityFamily::LaunchSaleTrajectory,
+                FamilyEffect::Veto,
+                1,
+                0,
+            ));
+        }
+        // All four keys present, at the exact bounded ceiling, no growth.
+        assert_eq!(led.len(), CONVEXITY_PRESERVATION_CAPACITY);
+        assert_eq!(led.total_decisions(), 8);
+        let recs = led.records();
+        // Deterministic order: family (enum order) then direction (enum order).
+        let keys: Vec<(ConvexityFamily, FamilyEffect)> =
+            recs.iter().map(|r| (r.family, r.effect)).collect();
+        assert_eq!(
+            keys,
+            vec![
+                (
+                    ConvexityFamily::LaunchSaleTrajectory,
+                    FamilyEffect::Downweight
+                ),
+                (ConvexityFamily::LaunchSaleTrajectory, FamilyEffect::Veto),
+                (
+                    ConvexityFamily::CreationWindowCompetition,
+                    FamilyEffect::Downweight
+                ),
+                (
+                    ConvexityFamily::CreationWindowCompetition,
+                    FamilyEffect::Veto
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn recording_is_order_independent() {
+        let d1 = FamilyDecision::new(
+            ConvexityFamily::LaunchSaleTrajectory,
+            FamilyEffect::Downweight,
+            7_000,
+            3_000,
+        );
+        let d2 = FamilyDecision::new(
+            ConvexityFamily::LaunchSaleTrajectory,
+            FamilyEffect::Downweight,
+            -2_000,
+            -500,
+        );
+        let mut a = ConvexityPreservationLedger::new();
+        a.record(d1);
+        a.record(d2);
+        let mut b = ConvexityPreservationLedger::new();
+        b.record(d2);
+        b.record(d1);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn effect_bps_signs_downside_saved_and_upside_lost() {
+        let mut led = ConvexityPreservationLedger::new();
+        // Downweighted a runner: realized < counterfactual → negative (cost).
+        led.record(FamilyDecision::new(
+            ConvexityFamily::CreationWindowCompetition,
+            FamilyEffect::Downweight,
+            12_000,
+            4_000,
+        ));
+        let rec = led
+            .record_for(
+                ConvexityFamily::CreationWindowCompetition,
+                FamilyEffect::Downweight,
+            )
+            .unwrap();
+        assert_eq!(rec.effect_bps(), -8_000);
+        assert_eq!(rec.n, 1);
     }
 }

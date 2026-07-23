@@ -56,8 +56,25 @@ use std::collections::{BTreeMap, VecDeque};
 // Named constants (§102 — each with its rationale).
 // ============================================================================
 
-/// Number of pre-registered challengers: the full 2×2×2 factorial.
-const K_CHALLENGERS: usize = 8;
+/// Pre-registered challengers: the full 2×2×2 factorial over the three legacy
+/// exit levers (indices 0..8) PLUS two Batch-2a single-axis challengers appended
+/// at 8 and 9 — the §24(d) exit-into-strength arm and the §24 volatility-scaled
+/// stop arm. Each appended challenger inherits every incumbent parameter and
+/// toggles ONLY its one new axis, so its pair edge attributes cleanly to that law
+/// (§56.1, no post-hoc fishing).
+const K_CHALLENGERS: usize = 10;
+/// Size of the legacy 2×2×2 factorial block (challengers 0..8).
+const K_FACTORIAL: usize = 8;
+/// Challenger index of the §24(d) exit-into-strength arm.
+const IDX_INTO_STRENGTH: usize = 8;
+/// Challenger index of the §24 volatility-scaled-stop arm.
+const IDX_VOL_STOP: usize = 9;
+/// The §24(d) challenger's climax-strength threshold (bps of 10_000 over baseline
+/// arrival): 2× baseline = a genuine plateaued climax, not routine flow.
+const INTO_STRENGTH_CLIMAX_BP: u32 = 20_000;
+/// The §24 vol-stop challenger's scale: 0.5× of the realized-vol bps added to the
+/// base stop/trail width, inside the envelope.
+const VOL_STOP_SCALE_BP: u32 = 5_000;
 
 /// Tight trailing width, bps: harvest earlier, give back less off the peak.
 const TRAIL_TIGHT_BPS: u32 = 1_500;
@@ -299,21 +316,32 @@ impl ExitTournament {
     pub fn new(incumbent: LifecycleParams) -> Self {
         let challengers = std::array::from_fn(|i| {
             let mut params = incumbent;
-            params.trail_base_bps = if i & 0b001 == 0 {
-                TRAIL_TIGHT_BPS
-            } else {
-                TRAIL_WIDE_BPS
-            };
-            params.tp1_bps = if i & 0b010 == 0 {
-                TP1_ARM_EARLY_BPS
-            } else {
-                TP1_ARM_LATE_BPS
-            };
-            params.max_hold_ticks = if i & 0b100 == 0 {
-                HOLD_SHORT_TICKS
-            } else {
-                HOLD_LONG_TICKS
-            };
+            if i < K_FACTORIAL {
+                // Legacy 2×2×2 factorial over trail width × TP1 arm × hold length.
+                params.trail_base_bps = if i & 0b001 == 0 {
+                    TRAIL_TIGHT_BPS
+                } else {
+                    TRAIL_WIDE_BPS
+                };
+                params.tp1_bps = if i & 0b010 == 0 {
+                    TP1_ARM_EARLY_BPS
+                } else {
+                    TP1_ARM_LATE_BPS
+                };
+                params.max_hold_ticks = if i & 0b100 == 0 {
+                    HOLD_SHORT_TICKS
+                } else {
+                    HOLD_LONG_TICKS
+                };
+            } else if i == IDX_INTO_STRENGTH {
+                // §24(d) exit-into-strength arm: incumbent params + the new axis.
+                params.into_strength_exit_enable = true;
+                params.into_strength_climax_bp = INTO_STRENGTH_CLIMAX_BP;
+            } else if i == IDX_VOL_STOP {
+                // §24 volatility-scaled-stop arm: incumbent params + the new axis.
+                params.vol_stop_enable = true;
+                params.vol_stop_scale_bp = VOL_STOP_SCALE_BP;
+            }
             Challenger {
                 params,
                 book: ScalpLifecycle::new(params, SHADOW_CONCURRENCY_CAP),
@@ -357,6 +385,7 @@ impl ExitTournament {
         size_lamports: u64,
         entry_cost_lamports: u64,
         tick: u64,
+        vol_bps: u32,
     ) {
         self.note_price(mint, entry_price_fp);
         self.total_size_lamports = self
@@ -374,6 +403,10 @@ impl ExitTournament {
                 entry_cost_lamports,
                 tick,
             );
+            // §24 LAW 6: arm the recent-window volatility on the shadow book so the
+            // vol-stop challenger scales its stop from the same measurement the live
+            // path used (no derived TP ladder in shadow — that is a live-only law).
+            c.book.arm_context(&mint, vol_bps, None);
         }
     }
 
@@ -574,7 +607,7 @@ mod tests {
     /// the market marked at `mark_px` and the incumbent netting `inc_net`.
     /// Challengers force-close at the mark.
     fn run_pair(t: &mut ExitTournament, i: u64, mark_px: u64, inc_net: i128) {
-        t.open(mint(i), ENTRY, SIZE, SIZE, i);
+        t.open(mint(i), ENTRY, SIZE, SIZE, i, 0);
         t.incumbent_closed(&mint(i), inc_net, &|_| Some(mark_px));
     }
 
@@ -592,15 +625,16 @@ mod tests {
         let t = ExitTournament::new(LifecycleParams::standard());
         let s = t.standings();
         assert_eq!(s.len(), K_CHALLENGERS);
-        // All 8 combinations present exactly once.
-        let mut combos: Vec<(u32, u32, u64)> = s
+        // The first 8 challengers form the 2×2×2 factorial: all combinations once.
+        let factorial = &s[..K_FACTORIAL];
+        let mut combos: Vec<(u32, u32, u64)> = factorial
             .iter()
             .map(|c| (c.trail_base_bps, c.tp1_bps, c.max_hold_ticks))
             .collect();
         combos.sort_unstable();
         combos.dedup();
-        assert_eq!(combos.len(), K_CHALLENGERS);
-        for c in &s {
+        assert_eq!(combos.len(), K_FACTORIAL);
+        for c in factorial {
             assert!(matches!(c.trail_base_bps, TRAIL_TIGHT_BPS | TRAIL_WIDE_BPS));
             assert!(matches!(c.tp1_bps, TP1_ARM_EARLY_BPS | TP1_ARM_LATE_BPS));
             assert!(matches!(
@@ -609,7 +643,29 @@ mod tests {
             ));
             assert_eq!(c.verdict, TournamentVerdict::Racing);
         }
+        // Challengers 8 and 9 are the Batch-2a single-axis arms: they inherit every
+        // incumbent parameter (so trail/tp1/hold read as the incumbent's), and only
+        // their new exit axis differs — verified behaviourally in audit_wave2_laws.
+        let inc = LifecycleParams::standard();
+        for c in &s[K_FACTORIAL..] {
+            assert_eq!(c.trail_base_bps, inc.trail_base_bps);
+            assert_eq!(c.tp1_bps, inc.tp1_bps);
+            assert_eq!(c.max_hold_ticks, inc.max_hold_ticks);
+            assert_eq!(c.verdict, TournamentVerdict::Racing);
+        }
         assert!(t.is_empty());
+    }
+
+    #[test]
+    fn appended_challengers_arm_only_their_axis() {
+        let t = ExitTournament::new(LifecycleParams::standard());
+        // The exit-into-strength arm toggles ONLY its axis; the vol-stop arm too.
+        let is_arm = &t.challengers[IDX_INTO_STRENGTH];
+        assert!(is_arm.params.into_strength_exit_enable);
+        assert!(!is_arm.params.vol_stop_enable);
+        let vs_arm = &t.challengers[IDX_VOL_STOP];
+        assert!(vs_arm.params.vol_stop_enable);
+        assert!(!vs_arm.params.into_strength_exit_enable);
     }
 
     #[test]
@@ -643,7 +699,7 @@ mod tests {
     #[test]
     fn challenger_close_first_pairs_from_pending() {
         let mut t = ExitTournament::new(LifecycleParams::standard());
-        t.open(mint(0), ENTRY, SIZE, SIZE, 0);
+        t.open(mint(0), ENTRY, SIZE, SIZE, 0, 0);
         // A −40% single print: the rug precursor closes ALL shadow books.
         t.on_trade(&mint(0), 1_100_000, 500_000, 1);
         t.on_trade(&mint(0), 660_000, -900_000, 2);
@@ -674,7 +730,7 @@ mod tests {
             assert_eq!(c.pairs, PAIRS_MIN);
         }
         // A dropped challenger takes no further admits.
-        t.open(mint(9_999), ENTRY, SIZE, SIZE, 1_000);
+        t.open(mint(9_999), ENTRY, SIZE, SIZE, 1_000, 0);
         assert!(t.is_empty(), "dropped challengers refuse new admits");
     }
 
@@ -701,11 +757,14 @@ mod tests {
         for i in 0..u64::from(PAIRS_TRUNCATE) {
             run_pair(&mut t, i, 1_000_000, tie_net);
         }
-        for c in &t.standings() {
+        let s = t.standings();
+        for c in &s {
             assert_eq!(c.verdict, TournamentVerdict::Racing);
             assert_eq!(c.pairs, 0, "SPRT ledger reset at truncation");
             assert_eq!(c.sprt_millinats, 0);
-            // Params survive the reset.
+        }
+        // Params survive the reset (factorial block keeps its tight/wide arms).
+        for c in &s[..K_FACTORIAL] {
             assert!(matches!(c.trail_base_bps, TRAIL_TIGHT_BPS | TRAIL_WIDE_BPS));
         }
     }
@@ -717,7 +776,7 @@ mod tests {
             for i in 0..60u64 {
                 let px = if i % 3 == 0 { 900_000 } else { 1_150_000 };
                 let inc = if i % 3 == 0 { -40_000_000 } else { 30_000_000 };
-                t.open(mint(i), ENTRY, SIZE, SIZE, i * 10);
+                t.open(mint(i), ENTRY, SIZE, SIZE, i * 10, 0);
                 t.on_trade(&mint(i), 1_050_000, 250_000, i * 10 + 1);
                 t.on_tick(i * 10 + 2, &|_| Some(px));
                 t.incumbent_closed(&mint(i), inc, &|_| Some(px));
@@ -733,7 +792,7 @@ mod tests {
         // Open + rug-close many mints WITHOUT ever reporting a live close:
         // pending outcomes and price marks must stay capped.
         for i in 0..(PENDING_CLOSED_CAP as u64 + 40) {
-            t.open(mint(i), ENTRY, SIZE, SIZE, i * 3);
+            t.open(mint(i), ENTRY, SIZE, SIZE, i * 3, 0);
             t.on_trade(&mint(i), 1_100_000, 500_000, i * 3 + 1);
             t.on_trade(&mint(i), 660_000, -900_000, i * 3 + 2);
         }

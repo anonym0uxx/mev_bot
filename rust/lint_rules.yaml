@@ -1,0 +1,57 @@
+# Hot-path constitution lint scope + extra rules (criterion 109 / §24).
+#
+# This file is the AUTHORITATIVE, committed source of the hot/money lint scope,
+# so the enforcement is an explicit data decision — not a silent code default
+# that can (and did) point at crates which do not exist, matching zero files and
+# making the whole lint a no-op. `supervisor/gates/hotpath_lint.py` reads
+# `hot_globs` / `money_globs` from here; `scripts/ci_gate.py` passes them
+# explicitly. Globs are repo-relative and `**`-recursive.
+#
+# The bans themselves (async/tokio/serde_json/float/syscall-clock/sleep/
+# alloc-macros/panic on the hot path; float casts in money crates; Linux-isms +
+# /tmp everywhere) are defined in code. A banned token inside a `//`/`/* */`
+# comment or a `#[cfg(test)]` module is NOT a violation (matcher tightening, not
+# a ban relaxation). A provably-safe hit carries an inline
+# `LINT-ALLOW(rule_id): reason` — counted and reported, never silent.
+
+# HOT — the latency-critical decision path. The pure integer crates the hot loop
+# calls into. No async/await, no floats (quantize only at boundary adapters), no
+# panics-by-construction here.
+hot_globs:
+  - "rust/crates/pump-quant-core/src/**/*.rs"
+  - "rust/crates/pump-quant-signals/src/**/*.rs"
+  - "rust/crates/pump-quant-features/src/**/*.rs"
+  - "rust/crates/pump-quant-protocol/src/**/*.rs"
+  # --- app hot modules (hand-off COMPLETE) ---
+  # The app owner annotated the three legitimate, provably-safe hits with an inline
+  # LINT-ALLOW (cold-init / guarded, not real hot-loop defects), so the app's hot
+  # modules are now IN the enforced HOT set:
+  #   - engine.rs   format!("{cfg:?}") cold one-shot config-identity seed
+  #                                                 -> LINT-ALLOW(hot_alloc_fmt)
+  #   - position.rs .expect() after a checked `open.remove` on a known-open position
+  #                                                 -> LINT-ALLOW(hot_panic)
+  #   - structure.rs .expect("interval clamped >= 1") documented-infallible bar spec
+  #                                                 -> LINT-ALLOW(hot_panic)
+  - "rust/crates/pump-quant-app/src/engine.rs"
+  - "rust/crates/pump-quant-app/src/lane.rs"
+  - "rust/crates/pump-quant-app/src/attention.rs"
+  - "rust/crates/pump-quant-app/src/position.rs"
+  - "rust/crates/pump-quant-app/src/structure.rs"
+
+# MONEY — every crate that computes or carries money / outcome quantities, where
+# an `as f32`/`as f64` cast is a §22 integrity violation.
+money_globs:
+  - "rust/crates/pump-quant-core/src/**/*.rs"
+  - "rust/crates/pump-quant-strategy/src/**/*.rs"
+  - "rust/crates/pump-quant-evaluator/src/**/*.rs"
+  - "rust/crates/pump-quant-domain/src/**/*.rs"
+  - "rust/crates/pump-quant-market-state/src/**/*.rs"
+  - "rust/crates/pump-quant-features/src/**/*.rs"
+  - "rust/crates/pump-quant-simulator/src/**/*.rs"
+  - "rust/crates/pump-quant-narrative/src/**/*.rs"
+  - "rust/crates/pump-quant-wallet-graph/src/**/*.rs"
+  - "rust/crates/pump-quant-watchlist/src/**/*.rs"
+  - "rust/crates/pump-quant-memory/src/**/*.rs"
+
+# Optional additional data-defined rules (same schema as the built-ins). None yet.
+rules: []

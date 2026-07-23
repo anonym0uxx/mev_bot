@@ -23,9 +23,11 @@ use crate::lane::{
     WalletLane,
 };
 use crate::market_context::MarketContext;
-use crate::position::{Exit, ExitReason, LifecycleParams, ScalpLifecycle};
+use crate::position::{DerivedTargets, Exit, ExitReason, LifecycleParams, ScalpLifecycle};
 use crate::reflect::reflect;
-use crate::screen::{creator_credibility_haircut_bp, FlowScreen, WalletScreen};
+use crate::screen::{
+    creator_credibility_haircut_bp, deployer_screen_haircut_bp, FlowScreen, WalletScreen,
+};
 use crate::shadow::{ChallengerStanding, ExitTournament};
 use crate::structure::StructureState;
 use crate::toxicity::{
@@ -34,13 +36,27 @@ use crate::toxicity::{
 
 use crate::attention::{AttentionField, AttentionParams};
 use crate::event::CreatorActionKind;
+use crate::extraction_risk::ExtractionRiskLedger;
+use crate::hazard_scaffold::HazardScaffold;
 use crate::social_earn::{SocialEarn, SocialEarnParams};
 use crate::social_ingest::{ledger_quality, to_mention, SourceQualityPolicy};
 use pump_quant_domain::ids::Mint as DomainMint;
 use pump_quant_evaluator::baseline_destruction::{
     baseline_destruction, Competitor, DestructionVerdict,
 };
+use pump_quant_evaluator::baseline_family::{
+    run_family, BaselineResult, FamilyParams, FeeModel, TapeEvent,
+};
+use pump_quant_evaluator::convexity_enrich::{ConvexityMark, SizeFraction};
+use pump_quant_evaluator::convexity_ledger::{RuleId, RuleKind};
 use pump_quant_evaluator::evaluator_stats::{Lane as EvalLane, ReconTrade};
+use pump_quant_evaluator::fdr::Hypothesis;
+use pump_quant_evaluator::promotion_verdict::{
+    promotion_verdict, PromotionBlockReason, PromotionStatisticalVerdict,
+};
+use pump_quant_evaluator::reflection_cadence::{
+    reflect_mints, MintId, MintReflection, MintSwaps, ReflectionCadence,
+};
 use pump_quant_features::market_structure::TrendStructure;
 use pump_quant_ingest::social_parse::fnv1a_64;
 use pump_quant_ingest::social_parse::parse_social_event;
@@ -53,22 +69,43 @@ use pump_quant_narrative::narrative::nv_meta_emergence;
 use pump_quant_signals::active_market_universe::{
     passes_broad_screen, MarketObservation, ScreenCriteria,
 };
+use pump_quant_signals::fee_plausibility::{
+    assess_fee_floor, cumulative_fees_lamports, FeeFloorConfig, FeeFloorStatus,
+};
+use pump_quant_signals::launch_trajectory::FirstSlotTx;
+use pump_quant_signals::setup_classifier::{classify_setup, SetupThresholds};
 use pump_quant_simulator::capacity::CapacityPoint;
 use pump_quant_social::ledger::SourceQualityLedger;
+use pump_quant_strategy::calibration_budget::{
+    admit_calibration, CalibrationLedger, CalibrationRequest, RouteId,
+};
 use pump_quant_strategy::economic_gate::{
     effective_fixed_lamports, round_trip_cost_bps, ImpactCurve,
 };
 use pump_quant_strategy::entry_arbitration::{arbitrate, ArbitrationParams, EntryCandidate};
+use pump_quant_strategy::entry_mode_leaves::{
+    detect_narrative_confirmation, detect_pullback_continuation, NarrativeConfirmationFeatures,
+    NarrativeConfirmationParams, PullbackParams, SuggestedLane,
+};
+use pump_quant_strategy::hazard_estimator::{HazardEstimate, ShrinkError};
 use pump_quant_strategy::probe_ladder::{
     deployable_capital, derive_survival_floor, wallet_floor_guard, FloorVerdict,
 };
+use pump_quant_strategy::safety_integrity::QuoteMint;
+use pump_quant_strategy::scalp_position::{CellKey, Phase};
 use pump_quant_strategy::thesis::{
     build_thesis, evaluate_thesis, forced_action, FeatureObservation, ForcedAction, Thesis,
     ThesisCondition, ThesisInputs, ThesisState, ThesisVerdict,
 };
-use pump_quant_watchlist::candidate::{Candidate, Features, Lane as WlLane};
+use pump_quant_wallet_graph::creator_classifier::{
+    classify_creator, CreatorClass, CreatorInputs, CreatorThresholds,
+};
+use pump_quant_wallet_graph::deployer_credibility::{
+    compute_deployer_credibility, DeployerCredibilityConfig, PriorLaunch, SocialReachInput,
+};
+use pump_quant_watchlist::candidate::{Candidate, DiscoveryLane, Features, Lane as WlLane};
 use pump_quant_watchlist::lane_ingest::ingest_union;
-use pump_quant_watchlist::lane_performance::LanePerformance;
+use pump_quant_watchlist::lane_performance::{DiscoveryLanePerformance, LanePerformance};
 use pump_quant_watchlist::promote::promote_top;
 use pump_quant_watchlist::rank::{LaneWeights, RankParams};
 use pump_quant_watchlist::state::WatchlistState;
@@ -116,6 +153,11 @@ impl ReconAccum {
 #[derive(Clone, Copy, Debug)]
 struct OpenAttribution {
     lane: WlLane,
+    /// §71.2 independent discovery-lane provenance — the net-SOL attribution key
+    /// (distinct from the setup-archetype `lane` above).
+    discovery_lane: DiscoveryLane,
+    /// §25 derived setup archetype tagged onto the MFE/excursion sample at exit.
+    archetype: u16,
     realized_acc: i128,
     entry_spend: u64,
     scale_add: u64,
@@ -127,12 +169,30 @@ struct OpenAttribution {
 #[derive(Clone, Copy, Debug)]
 struct PendingEntry {
     lane: WlLane,
+    /// §71.2 independent discovery-lane provenance carried to the open position.
+    discovery_lane: DiscoveryLane,
+    /// §25 derived setup archetype (0 = None / classifier off), classified from
+    /// the market/flow state at admit — the discriminator the thesis, MFE
+    /// excursion samples, and reject samples are tagged with.
+    archetype: u16,
     mint: [u8; 32],
     entry_price: u64,
     size: u64,
     entry_cost: u64,
     /// Conditional expected net SOL for the slot (size × priced move − cost load).
     expected_net: i128,
+    /// §24 LAW 2: the measured round-trip cost (bps) at this size, computed at
+    /// admit and threaded to the held position so its take-profit ladder is
+    /// derived from the market's own cost floor rather than fixed constants.
+    round_trip_cost_bps: u32,
+    /// §34.4 DecisionRecord provenance: the economic size band `[x_min, x_cost,
+    /// x_max]` (net of fees/tips/expected-failure/margin) the admitted size was
+    /// clamped within — threaded from the gate's `Admit` verdict into the
+    /// journal's Admitted record so the band that justified the size is recorded,
+    /// not just the size.
+    x_min: u64,
+    x_cost: u64,
+    x_max: u64,
 }
 
 /// Index of an evaluator lane into the running-accumulator array.
@@ -142,6 +202,41 @@ const fn accum_index(lane: EvalLane) -> usize {
         EvalLane::Early => 1,
     }
 }
+
+/// §24 LAW 6 fixed recent-bar window over which realized volatility is measured
+/// to scale the stop/trail (comparable across markets — the helper grows with
+/// window length, so a FIXED length is mandatory, §102).
+const VOL_STOP_WINDOW_BARS: usize = 4;
+
+/// §33/§43 LAW 13 sub-x_min probe-budget caps (lamports). Named (§102). Generous
+/// research-spend envelope: paid-information probes are data-acquisition costs, so
+/// the ledger bounds cumulative spend rather than gating a single small probe.
+const PROBE_LIFETIME_CAP_LAMPORTS: u64 = 1_000_000_000;
+/// Per-probe cap — a single sub-x_min probe may not spend more than this.
+const PROBE_PER_TRADE_CAP_LAMPORTS: u64 = 50_000_000;
+/// Per-day cap on cumulative probe spend.
+const PROBE_DAILY_CAP_LAMPORTS: u64 = 200_000_000;
+/// §39 per-route cap: cumulative probe spend on any one submission route.
+const PROBE_PER_ROUTE_CAP_LAMPORTS: u64 = 500_000_000;
+/// The single paper submission route probes are accounted against (§39). The
+/// laptop build has one route; the per-route table has headroom for the live set.
+const PROBE_ROUTE_ID: u16 = 0;
+
+/// §51 LAW 14 BH-FDR family-wise significance level (ppm): 5%. Named (§102).
+const PROMOTION_ALPHA_PPM: u32 = 50_000;
+/// §51 LAW 14 PBO/CSCV overfitting block threshold (bps): 50%. Named (§102).
+const PROMOTION_PBO_THRESHOLD_BPS: u32 = 5_000;
+
+/// §47a LAW 18 terminal-state δT (ticks of info-time): a mint with no trade for
+/// this many ticks at the reflection cadence is labeled terminal (dead). Named
+/// (§102); the units are logical replay ticks (info-time, never wall-clock).
+const TERMINAL_DELTA_T_TICKS: u64 = 240;
+/// §47a LAW 18 monotonic δT criterion version — every terminal label carries it
+/// so a label made under one δT is never silently conflated with another.
+const TERMINAL_CADENCE_VERSION: u32 = 1;
+/// §47a/§99 LAW 18 bound on the per-mint last-activity table (deterministic
+/// eviction of the lexicographically-smallest tracked mint past capacity).
+const LAST_TRADE_TABLE_CAP: usize = 8_192;
 
 /// Per-creator linked-cluster tracking bound (§99/§102). Small by design: a
 /// creator funding more than this many distinct sybil clusters is already
@@ -216,8 +311,13 @@ pub struct Report {
     pub rejected: u64,
     /// Total realized net-SOL across all paper scalps, lamports (the objective).
     pub net_lamports: i128,
-    /// Realized net-SOL per source lane, lamports.
+    /// Realized net-SOL per setup-archetype source lane, lamports.
     pub per_lane_net: [(WlLane, i64); WlLane::COUNT],
+    /// §71.2 realized net-SOL per INDEPENDENT discovery lane, lamports — the
+    /// reflection-integrity readout that separates a creation-sighting from a
+    /// social caller (both `CreationSniper`) and narrative from attention-velocity
+    /// (both `EarlyConfirmation`).
+    pub per_discovery_lane_net: [(DiscoveryLane, i64); DiscoveryLane::COUNT],
     /// Final adapted lane weights, bps.
     pub final_weights: [(WlLane, u32); WlLane::COUNT],
     /// Canonical digest of the decision journal (determinism fingerprint).
@@ -248,6 +348,12 @@ pub struct Engine {
     confirmed: BTreeMap<[u8; 32], (u64, u64)>,
 
     lane_perf: LanePerformance,
+    /// §71.2 realized net-SOL keyed on the ACTUAL discovery lane (not the setup
+    /// archetype) — the reflection-integrity ledger. Positions attribute here in
+    /// `book_exit`; a creation-sighting and a social caller that both present as
+    /// `CreationSniper` land in DISTINCT slots so per-lane learning is not
+    /// cross-contaminated.
+    disc_perf: DiscoveryLanePerformance,
     /// Running net-SOL reconciliation per evaluator lane (Scalp=0, Early=1); bounded.
     recon: [ReconAccum; 2],
     journal: DecisionJournal,
@@ -336,6 +442,15 @@ pub struct Engine {
     /// §21.7 flow-authenticity screen: entity-dedup wash/HHI per mint. Sizing
     /// channel only (single entry point), plus the extreme-fabrication gate.
     flow_screen: FlowScreen,
+    /// §105 (CRITERION 105) per-mint decayed LPI/wash extraction-risk covariate —
+    /// REPORT / hazard-scaffold plane ONLY. Never read by a sizing/gating/promotion
+    /// decision and never journaled, so it is byte-identical on the golden path.
+    extraction_risk: ExtractionRiskLedger,
+    /// §100 (CRITERION 100) per-CellKey hold-horizon hazard scaffold, fed from
+    /// realized paper-fill outcomes (phase-separated: curve vs pool never pooled).
+    /// REPORT plane ONLY — it does NOT replace the live §24(e) time-stop, and is
+    /// never journaled, so accumulating fills is byte-identical on the golden path.
+    hazard_scaffold: HazardScaffold,
     /// §28 smart-money follow screen (lagged-shadow law) fed from buyer entities.
     wallet_screen: WalletScreen,
     /// §21.3/§28/§21.7 market context: regime reducer, per-mint cluster-adjusted
@@ -348,6 +463,15 @@ pub struct Engine {
     mint_creator: BTreeMap<[u8; 32], u64>,
     /// creator → (lifetime launches, window start tick, launches in window).
     creator_launches: BTreeMap<u64, (u32, u64, u32)>,
+    /// §70.10 first-slot fee footprint per mint → (cumulative priority+tip
+    /// lamports, activity count) — the anti-bundle fee-floor input. This is a
+    /// PARALLEL channel fed by [`Self::observe_first_slot_fees`], NOT an
+    /// `AppEvent` field: the decoded event vocabulary (`event.rs`) is dossier-
+    /// locked (additive-only), and threading a new field through `TokenMetadata`
+    /// would perturb the locked event shape, so the first-slot fee record is
+    /// carried alongside instead (server-side decode seam). Bounded (§99); empty
+    /// until fed, so a run without first-slot fees is byte-identical.
+    first_slot_fees: BTreeMap<[u8; 32], (u128, u64)>,
     /// §56.11 retirement flags per watchlist lane (capital-ineligible when true).
     retired: [bool; 4],
     /// Envelope-clamped Layer-2 sizing recommendation (bps), None until earned.
@@ -380,12 +504,37 @@ pub struct Engine {
     /// Count of mature-but-inactive candidates the §21.5 universe screen removed
     /// at promotion (dead markets must not consume promotion slots or gate work).
     universe_filtered: u64,
+    /// §33/§43 LAW 13 calibration-budget ledger: accounts sub-`x_min` probe spend
+    /// (paid information) against per-trade / daily / lifetime / per-route caps.
+    /// Inert unless `probe_budget_enable` is set — a run that opens no sub-x_min
+    /// probe never mutates it, so the golden tape is byte-identical.
+    calibration: CalibrationLedger,
+    /// Count of sub-`x_min` probes admitted as budgeted paid-information (LAW 13),
+    /// distinct from `admitted` positions — a probe is never a position.
+    probes_budgeted: u64,
+    /// §47a LAW 18 per-mint last-trade tick (info-time), bounded
+    /// ([`LAST_TRADE_TABLE_CAP`]) — the swap-recency the terminal-state cadence
+    /// reflects over. Keyed by mint bytes; the reflection keys by `MintId`.
+    last_trade_tick: BTreeMap<[u8; 32], u64>,
+    /// §47a LAW 18 latest terminal-state reflection (per-mint dead/alive labels at
+    /// the versioned δT), refreshed each reflection cadence. Report-only.
+    terminal_reflections: Vec<MintReflection>,
 
     /// Reused per-tick discovery scratch: the union of all four lanes' emissions.
     /// Cleared (not freed) each tick so steady-state discovery does not re-allocate
     /// (§99: its capacity is bounded by the number of tracked mints, which the lanes
     /// already cap). Holds no state between ticks — purely a scratch buffer.
     scratch: Vec<Candidate>,
+
+    /// Reused per-tick promotion-arbitration scratch (O2). Each is cleared (not
+    /// freed) each tick via `mem::take`/`clear`, so steady-state `evaluate()`
+    /// allocates no per-tick promotion vectors. They hold no state between ticks —
+    /// content and ordering are identical to the old per-tick locals, so the golden
+    /// digest is unchanged. Capacity is bounded by `promote_k` / tracked mints.
+    corrob_buf: Vec<Candidate>,
+    extras_buf: Vec<Candidate>,
+    pending_buf: Vec<PendingEntry>,
+    cands_buf: Vec<EntryCandidate>,
 
     promoted: u64,
     admitted: u64,
@@ -437,6 +586,10 @@ impl Engine {
             first_sell_penalty_bps: LifecycleParams::standard().first_sell_penalty_bps,
             tip_lamports: cfg.exit_tip_lamports,
             exit_impair_bps,
+            into_strength_exit_enable: cfg.into_strength_exit_enable,
+            into_strength_climax_bp: cfg.into_strength_climax_bp,
+            vol_stop_enable: cfg.vol_stop_enable,
+            vol_stop_scale_bp: cfg.vol_stop_scale_bp,
         };
         // Concurrency: the operator's bankroll-consistent cap (§33 — jointly sized
         // with f_base and the total risk budget), never the raw confirmed-set bound.
@@ -446,7 +599,7 @@ impl Engine {
         // two runs under different configs can never share a digest. The Debug
         // encoding of the Copy config struct is deterministic for a fixed build.
         let mut journal = DecisionJournal::new();
-        journal.seed(fnv1a_64(format!("{cfg:?}").as_bytes()));
+        journal.seed(fnv1a_64(format!("{cfg:?}").as_bytes())); // LINT-ALLOW(hot_alloc_fmt): cold one-shot config-identity digest seed at Engine::new, never the per-tick hot path (§19)
         let tournament = ExitTournament::new(lifecycle_params);
         // Bar clock interval from config, read BEFORE `cfg` moves into the struct.
         let structure = StructureState::new(cfg.bar_trades_per_bar);
@@ -463,9 +616,19 @@ impl Engine {
             watchlist,
             confirmed: BTreeMap::new(),
             lane_perf: LanePerformance::new(),
+            disc_perf: DiscoveryLanePerformance::new(),
             recon: [ReconAccum::default(); 2],
             journal,
-            attention: AttentionField::new(AttentionParams::standard()),
+            attention: AttentionField::new(AttentionParams {
+                // §70.6/§70.8 LAW 8 + §70.7 LAW 9: thread the operator flags into
+                // the attention emit path. Both default OFF, so a dev-portable /
+                // golden run keeps the exact `standard()` params (byte-identical);
+                // the emit path is class-unconditioned and platform-runway-free
+                // until an operator flips the config.
+                narrative_class_enable: cfg.narrative_class_enable,
+                platform_lead_enable: cfg.platform_lead_enable,
+                ..AttentionParams::standard()
+            }),
             ledger: SourceQualityLedger::with_capacity(4_096),
             quality_policy: SourceQualityPolicy::conservative(),
             social_earn: SocialEarn::new(SocialEarnParams::standard()),
@@ -484,11 +647,14 @@ impl Engine {
             analytics: ReflectionAnalytics::new(),
             tournament,
             flow_screen: FlowScreen::new(),
+            extraction_risk: ExtractionRiskLedger::new(),
+            hazard_scaffold: HazardScaffold::new(),
             wallet_screen: WalletScreen::new(),
             context: MarketContext::new(),
             theses: BTreeMap::new(),
             mint_creator: BTreeMap::new(),
             creator_launches: BTreeMap::new(),
+            first_slot_fees: BTreeMap::new(),
             retired: [false; 4],
             f_recommended: None,
             regime_rug_elevated: false,
@@ -498,7 +664,21 @@ impl Engine {
             lane_edge: [(0, 0); 4],
             structure,
             universe_filtered: 0,
+            calibration: CalibrationLedger::new_with_route_cap(
+                PROBE_LIFETIME_CAP_LAMPORTS,
+                PROBE_PER_TRADE_CAP_LAMPORTS,
+                PROBE_DAILY_CAP_LAMPORTS,
+                PROBE_PER_ROUTE_CAP_LAMPORTS,
+                0,
+            ),
+            probes_budgeted: 0,
+            last_trade_tick: BTreeMap::new(),
+            terminal_reflections: Vec::new(),
             scratch: Vec::new(),
+            corrob_buf: Vec::new(),
+            extras_buf: Vec::new(),
+            pending_buf: Vec::new(),
+            cands_buf: Vec::new(),
             promoted: 0,
             admitted: 0,
             rejected: 0,
@@ -564,6 +744,57 @@ impl Engine {
         self.now
     }
 
+    /// §60/§62 LAW 21 canonical live-status snapshot (report-only): a bounded,
+    /// deterministic view of the running engine — info-time is the event-stream
+    /// tick (never wall-clock). Reads live counters directly WITHOUT finalizing, so
+    /// it can be sampled mid-run without force-closing open positions.
+    #[must_use]
+    pub fn live_status(&self) -> crate::live_status::LiveStatus {
+        crate::live_status::LiveStatus {
+            info_time_tick: self.now,
+            promoted: self.promoted,
+            admitted: self.admitted,
+            rejected: self.rejected,
+            open_positions: self.positions.len() as u64,
+            net_realized_lamports: self.bankroll_realized,
+            universe_filtered: self.universe_filtered,
+            probes_budgeted: self.probes_budgeted,
+            probe_spend_lamports: self.calibration.spent_lifetime,
+            journal_digest: self.journal.digest(),
+        }
+    }
+
+    /// §60/§62 LAW 21: drive an event stream, writing the canonical live-status
+    /// artifact to `status_path` every `every_ticks` events and once more at the
+    /// end, then produce the final report. The periodic snapshots are taken
+    /// pre-finalize (live, mid-run). Status writes are BEST-EFFORT: a failed write
+    /// is reported to stderr but never aborts the run (a status artifact is
+    /// telemetry, not a trading authority). Returns the number of successful status
+    /// writes alongside the report.
+    pub fn run_with_status(
+        &mut self,
+        events: &[AppEvent],
+        status_path: &std::path::Path,
+        every_ticks: u64,
+    ) -> (Report, u64) {
+        let every = every_ticks.max(1);
+        let mut writes = 0u64;
+        let mut write = |st: crate::live_status::LiveStatus| match st.write_to_path(status_path) {
+            Ok(()) => writes += 1,
+            Err(e) => eprintln!("live_status write failed: {e}"),
+        };
+        for (i, &ev) in events.iter().enumerate() {
+            self.tick(ev);
+            // Plain modulo, not `is_multiple_of`, to honour the workspace MSRV 1.85.
+            #[allow(clippy::manual_is_multiple_of)]
+            if (i as u64 + 1) % every == 0 {
+                write(self.live_status());
+            }
+        }
+        write(self.live_status());
+        (self.report(), writes)
+    }
+
     /// Feed one event.
     pub fn tick(&mut self, ev: AppEvent) {
         match ev {
@@ -586,6 +817,20 @@ impl Engine {
                     age_slots,
                     self.now,
                 );
+                // §47a LAW 18: record the mint's last-trade info-time (tick) for the
+                // terminal-state reflection cadence. Bounded (§99): a new mint past
+                // capacity evicts the lexicographically-smallest tracked mint.
+                {
+                    let m = *mint.as_bytes();
+                    if !self.last_trade_tick.contains_key(&m)
+                        && self.last_trade_tick.len() >= LAST_TRADE_TABLE_CAP
+                    {
+                        if let Some(&victim) = self.last_trade_tick.keys().next() {
+                            self.last_trade_tick.remove(&victim);
+                        }
+                    }
+                    self.last_trade_tick.insert(m, self.now);
+                }
                 // On-chain-led category flow: a trade contributes to per-category
                 // MetaRotationState measures ONLY if its mint has a known (on-chain-
                 // assigned) category. Guarded by an O(1) `is_empty` check first, so a
@@ -784,7 +1029,10 @@ impl Engine {
                 slot,
             ),
             AppEvent::CreatorAction { mint, kind, slot } => {
-                self.observe_creator_action(*mint.as_bytes(), kind, slot)
+                let m = *mint.as_bytes();
+                self.observe_creator_action(m, kind, slot);
+                // §26 held-position limb: a confirmed dump forces the exit now.
+                self.enforce_creator_dump_exit(&m);
             }
             AppEvent::Tick => self.evaluate(),
         }
@@ -1116,13 +1364,16 @@ impl Engine {
             self.creations
                 .retain(|_, &mut seen| now.saturating_sub(seen) <= ttl);
             for (mint, &seen) in &self.creations {
-                self.scratch.push(Candidate::new(
-                    pump_quant_watchlist::candidate::Mint::new(*mint),
-                    WlLane::CreationSniper,
-                    self.cfg.creation_score,
-                    seen,
-                    Features::default(),
-                ));
+                self.scratch.push(
+                    Candidate::new(
+                        pump_quant_watchlist::candidate::Mint::new(*mint),
+                        WlLane::CreationSniper,
+                        self.cfg.creation_score,
+                        seen,
+                        Features::default(),
+                    )
+                    .with_discovery_lane(DiscoveryLane::OnchainCreation),
+                );
             }
         }
         // Social attention-velocity candidates (the full `virality = attention =
@@ -1134,13 +1385,33 @@ impl Engine {
         if !self.attention.is_empty() {
             let numeric = &self.numeric;
             let confirmed = &self.confirmed;
+            let wallet = &self.wallet;
+            let money_proxy_enable = self.cfg.money_proxy_enable;
             self.attention.emit_into(
                 &mut self.scratch,
                 self.now,
                 |m| {
-                    numeric
-                        .features_for(DomainMint::from_bytes(*m))
-                        .map_or(0, |f| u64::from(f.buy_pressure_bp))
+                    let dm = DomainMint::from_bytes(*m);
+                    let feats = numeric.features_for(dm);
+                    // Price-momentum term: the OFI-derived buy-pressure (the prior
+                    // proxy in its entirety).
+                    let buy_pressure = feats.map_or(0, |f| u64::from(f.buy_pressure_bp));
+                    if !money_proxy_enable {
+                        return buy_pressure;
+                    }
+                    // §70.1 composite money proxy M: fold the distinct-smart-wallet-
+                    // entry / net-inflow term (followable wallet inflow, decade-
+                    // compressed × weight) and the holder-growth term (unique on-chain
+                    // buyers × weight) in AHEAD of price momentum, then add the
+                    // buy-pressure momentum tail. Both folded terms are non-negative,
+                    // so when a mint has neither wallet inflow nor holders the
+                    // composite equals `buy_pressure` exactly. Integer/saturating (§22).
+                    let holders = feats.map_or(0, |f| u64::from(f.unique_buyers));
+                    let inflow_decade = decade_u64(wallet.inflow_of(dm));
+                    inflow_decade
+                        .saturating_mul(MONEY_PROXY_WALLET_WEIGHT)
+                        .saturating_add(holders.saturating_mul(MONEY_PROXY_HOLDER_WEIGHT))
+                        .saturating_add(buy_pressure)
                 },
                 |m| confirmed.contains_key(m),
             );
@@ -1151,11 +1422,16 @@ impl Engine {
         // corroboration lanes at INSERTION — so collect the corroboration tier
         // from the pre-insertion union here (lanes re-emit every tick while
         // their evidence lives, so no extra state is needed).
-        let mut corrob: Vec<Candidate> = unioned
-            .values()
-            .filter(|c| c.lane != WlLane::ActiveMarketScalp)
-            .copied()
-            .collect();
+        // Reused scratch (O2): identical contents/order to the old per-tick
+        // `collect`, so the digest is unchanged; only the allocation is recycled.
+        let mut corrob = std::mem::take(&mut self.corrob_buf);
+        corrob.clear();
+        corrob.extend(
+            unioned
+                .values()
+                .filter(|c| c.lane != WlLane::ActiveMarketScalp)
+                .copied(),
+        );
         // Gate-viability first (§18 promotion economy): an UNCONFIRMED
         // corroboration candidate cannot clear the gate's on-chain-confirmation
         // requirement — promoting it burns the quota slot on a guaranteed
@@ -1202,7 +1478,10 @@ impl Engine {
                 .filter(|c| c.lane != WlLane::ActiveMarketScalp)
                 .count();
             if have < quota {
-                let mut extras: Vec<Candidate> = Vec::new();
+                // Reused scratch (O2): `drain` below empties it while retaining the
+                // allocation, so it is restored to `self` at tick end alloc-free.
+                let mut extras = std::mem::take(&mut self.extras_buf);
+                extras.clear();
                 for cand in &corrob {
                     if extras.len() + have >= quota {
                         break;
@@ -1217,8 +1496,11 @@ impl Engine {
                 // popping per-push would evict the extras themselves.
                 if !extras.is_empty() {
                     promoted.truncate(self.cfg.promote_k.saturating_sub(extras.len()));
-                    promoted.extend(extras);
+                    // `append` drains `extras` into `promoted` (same order as the old
+                    // `extend(extras)`) while retaining `extras`' allocation for reuse.
+                    promoted.append(&mut extras);
                 }
+                self.extras_buf = extras;
             }
         }
 
@@ -1226,7 +1508,9 @@ impl Engine {
         // EXPECTED NET SOL (§23 arbitration — never promotion order), and open the
         // winners. Forgone candidates are journaled with their opportunity cost
         // implicit in the arbitration record, never silently dropped.
-        let mut pending: Vec<PendingEntry> = Vec::new();
+        // Reused scratch (O2): cleared, then filled in the same order as before.
+        let mut pending = std::mem::take(&mut self.pending_buf);
+        pending.clear();
         for cand in promoted {
             // §21.5 active-market-universe screen, applied at the cheapest
             // possible stage: a MATURE mint whose recent tape shows no genuine
@@ -1263,18 +1547,17 @@ impl Engine {
             let risk_budget =
                 u128::from(deployable) * u128::from(self.cfg.total_risk_cap_bp) / 10_000;
             let exposure_cap = risk_budget.saturating_sub(self.bankroll_committed);
-            let cands: Vec<EntryCandidate> = pending
-                .iter()
-                .enumerate()
-                .map(|(i, p)| EntryCandidate {
-                    candidate_id: i as u64,
-                    entry_mode: p.lane as u16,
-                    archetype: 0,
-                    regime: 0,
-                    expected_net_sol_lamports: i64::try_from(p.expected_net).unwrap_or(i64::MAX),
-                    size_lamports: p.entry_cost,
-                })
-                .collect();
+            // Reused scratch (O2): identical mapping/order to the old `collect`.
+            let mut cands = std::mem::take(&mut self.cands_buf);
+            cands.clear();
+            cands.extend(pending.iter().enumerate().map(|(i, p)| EntryCandidate {
+                candidate_id: i as u64,
+                entry_mode: p.lane as u16,
+                archetype: p.archetype,
+                regime: 0,
+                expected_net_sol_lamports: i64::try_from(p.expected_net).unwrap_or(i64::MAX),
+                size_lamports: p.entry_cost,
+            }));
             let outcome = arbitrate(
                 &cands,
                 &ArbitrationParams {
@@ -1302,7 +1585,12 @@ impl Engine {
                     self.record_reject_sample(REJECT_ARBITRATION, p.mint);
                 }
             }
+            self.cands_buf = cands;
         }
+        // Restore reused scratch (O2) for next tick — allocation retained, contents
+        // dropped; no state crosses the tick boundary.
+        self.pending_buf = pending;
+        self.corrob_buf = corrob;
 
         // 6. Reflection cadence: realized net-SOL reshapes discovery weights.
         // (Plain modulo, not `is_multiple_of`, to honour the workspace MSRV 1.85.)
@@ -1405,6 +1693,20 @@ impl Engine {
     /// Evaluate one promoted candidate through every gate and sizing law, WITHOUT
     /// opening: returns the fully-priced pending entry for §23 arbitration, or
     /// journals the reject and returns None. Opening happens after arbitration.
+    /// §94 quote-mint resolution for a market. The engine has always priced in
+    /// SOL lamports; until a pool decode threads the true quote mint through here,
+    /// this returns the SOL default so every SOL-quoted market is byte-identical
+    /// (golden-safe). When pool decoding is wired, this becomes the sole authority
+    /// for the quote mint — a decode that fails yields [`QuoteMint::Undecoded`],
+    /// which the gate refuses (fail-closed), and a USDC pool yields the reachable
+    /// [`QuoteMint::Usdc`] path.
+    #[inline]
+    fn resolve_quote_mint(&self, _mint: &[u8; 32]) -> QuoteMint {
+        QuoteMint::Sol {
+            decimals: SOL_QUOTE_DECIMALS,
+        }
+    }
+
     fn gate_evaluate(&mut self, cand: Candidate) -> Option<PendingEntry> {
         let mint_bytes = cand.mint.bytes();
         let domain_mint = DomainMint::from_bytes(mint_bytes);
@@ -1439,6 +1741,16 @@ impl Engine {
                     numeric,
                 }
             });
+        // §24 LAW 11 EntryMode leaves: with the detectors enabled, a controlled
+        // pullback that holds a retest in an established uptrend
+        // (`detect_pullback_continuation`) makes an ALREADY-LIVE market eligible
+        // for an active-market scalp without a fresh on-chain confirm — its
+        // sellable depth is the freshly-observed pool liquidity. This only ADDS a
+        // synthetic confirmation when no real one exists; it never relaxes the
+        // economic gate. The narrative-confirmation leaf stays dormant/admission-
+        // gated (§28) and authorizes nothing on its own.
+        let confirmation = confirmation
+            .or_else(|| self.entry_mode_confirmation(&cand, &mint_bytes, numeric_feats));
 
         // §56.11: a retired lane's candidates stay research-visible but are
         // capital-ineligible.
@@ -1453,7 +1765,17 @@ impl Engine {
         match decide(&cand, confirmation, &self.cfg) {
             GateDecision::Admit(band) => {
                 // §21.7 extreme fabrication signature — the only authenticity gate.
-                let (_, fabricated) = self.flow_screen.authenticity(&mint_bytes);
+                let (auth_bps, fabricated) = self.flow_screen.authenticity(&mint_bytes);
+                // §105 REPORT-plane extraction-risk accumulation (never feeds a
+                // decision, never journaled): fold the decayed wash-strength
+                // covariate (10_000 − authenticity) for evidenced flow. A neutral
+                // prior (no auth evidence) contributes nothing. This write only
+                // mutates the report-only ledger, so the golden digest is unchanged.
+                if self.flow_screen.has_auth_evidence(&mint_bytes) {
+                    let wash_strength = 10_000u32.saturating_sub(auth_bps);
+                    self.extraction_risk
+                        .observe(mint_bytes, u64::from(wash_strength), self.now);
+                }
                 if fabricated {
                     self.rejected += 1;
                     self.journal.record(Decision::Rejected {
@@ -1461,6 +1783,33 @@ impl Engine {
                         reason: REJECT_FABRICATED_FLOW,
                     });
                     self.record_reject_sample(REJECT_FABRICATED_FLOW, mint_bytes);
+                    return None;
+                }
+                // §26 confirmed-creator-dump HARD VETO (operator-approved reversal):
+                // a market whose deployer is in a confirmed distribution is refused
+                // pre-entry — the prior "creator distribution is fade-only, never a
+                // veto" behaviour is reversed for the confirmed-dump regime.
+                if self.creator_dump_active(&mint_bytes) {
+                    self.rejected += 1;
+                    self.journal.record(Decision::Rejected {
+                        mint: mint_bytes,
+                        reason: REJECT_CREATOR_DUMP,
+                    });
+                    self.record_reject_sample(REJECT_CREATOR_DUMP, mint_bytes);
+                    return None;
+                }
+                // §70.10 anti-bundle fee-floor (LAW 10): a fully-saturated
+                // (near-zero cumulative fee) first-slot footprint for the
+                // advertised activity is a manufactured/wash launch — veto
+                // pre-entry. A merely-low footprint fades size later (below).
+                let (fee_floor_veto, _fee_fade) = self.fee_floor_verdict(&mint_bytes);
+                if fee_floor_veto {
+                    self.rejected += 1;
+                    self.journal.record(Decision::Rejected {
+                        mint: mint_bytes,
+                        reason: REJECT_FEE_FLOOR,
+                    });
+                    self.record_reject_sample(REJECT_FEE_FLOOR, mint_bytes);
                     return None;
                 }
                 // ---- VPIN extreme tier (the one binary veto): a distributed,
@@ -1546,6 +1895,21 @@ impl Engine {
                     ),
                     None => 10_000,
                 };
+                // §70.9 deployer-credibility screen (LAW 10, reduce-only): the
+                // wallet-graph deployer_credibility bundle (prior-CA + serial-
+                // deploy burst), CLASS-CONDITIONED by the §27 known-extractor
+                // verdict. Identity when the screen is off or nothing is known
+                // about the deployer (golden-safe).
+                let deployer_mult: u32 = if self.cfg.deployer_screen_enable {
+                    self.deployer_screen_mult_bp(&mint_bytes)
+                } else {
+                    10_000
+                };
+                // §70.10 fee-floor GRADED fade (LAW 10, reduce-only): a low-but-
+                // not-vetoed first-slot footprint shrinks size proportionally. The
+                // fully-saturated signature already vetoed above.
+                let (_veto, fee_fade_bps) = self.fee_floor_verdict(&mint_bytes);
+                let fee_mult: u32 = 10_000u32.saturating_sub(fee_fade_bps.min(10_000));
                 // §21.3 regime consumption: elevated market-wide rug rate shrinks size.
                 let rug_mult: u32 = if self.regime_rug_elevated {
                     REGIME_RUG_HAIRCUT_BP
@@ -1574,6 +1938,10 @@ impl Engine {
                     / 10_000
                     * u128::from(cred_mult)
                     / 10_000
+                    * u128::from(deployer_mult)
+                    / 10_000
+                    * u128::from(fee_mult)
+                    / 10_000
                     * u128::from(rug_mult)
                     / 10_000
                     * u128::from(struct_mult)
@@ -1591,6 +1959,17 @@ impl Engine {
                 let size = if sized >= u128::from(band.x_min) {
                     sized as u64
                 } else {
+                    // §33/§43 LAW 13 sub-x_min probe-budget accounting: a size below
+                    // the economic cost floor is a guaranteed net loss AS A POSITION,
+                    // but its outcome is paid information. With probe-budget
+                    // accounting on, the spend routes through the calibration ledger
+                    // (per-route capped) and is LABELED as budgeted research — never
+                    // opened as a normal position — superseding the small-bankroll
+                    // promotion valve. Off = the valve/refuse logic below runs
+                    // unchanged (byte-identical, golden-safe).
+                    if self.cfg.probe_budget_enable {
+                        return self.account_sub_xmin_probe(mint_bytes, sized as u64);
+                    }
                     let promote_cap =
                         u128::from(deployable) * u128::from(self.cfg.x_min_promote_cap_bp) / 10_000;
                     let promotable = f_eff == self.cfg.f_base_bp
@@ -1664,9 +2043,28 @@ impl Engine {
                 )
                 .unwrap_or(self.cfg.gate_base_fixed_lamports);
                 let impact = ImpactCurve::linear_test(self.cfg.gate_impact_den);
-                let rt_bps =
-                    round_trip_cost_bps(size, eff_fixed, self.cfg.gate_protocol_bps, &impact)
-                        .unwrap_or(u32::MAX);
+                // §94 quote-mint-parametric cost. Defaults to SOL, so `rt_bps` is
+                // byte-identical to the pre-§94 path for every SOL-quoted market;
+                // an UNDECODED quote fails closed here (never priced as assumed-SOL).
+                let quote = self.resolve_quote_mint(&mint_bytes);
+                let rt_bps = match round_trip_cost_bps_quoted(
+                    size,
+                    eff_fixed,
+                    self.cfg.gate_protocol_bps,
+                    &impact,
+                    quote,
+                ) {
+                    Some(bps) => bps,
+                    None => {
+                        self.rejected += 1;
+                        self.journal.record(Decision::Rejected {
+                            mint: mint_bytes,
+                            reason: REJECT_UNDECODED_QUOTE,
+                        });
+                        self.record_reject_sample(REJECT_UNDECODED_QUOTE, mint_bytes);
+                        return None;
+                    }
+                };
                 // §24/§10-directive conditional expectancy: the configured move is
                 // a COLD-START PRIOR only. Once a lane accumulates the configured
                 // minimum of realized fills, its own realized per-trade return is
@@ -1675,13 +2073,38 @@ impl Engine {
                 // manufacture a fixed edge for every candidate forever.
                 let edge_bps = self.conditional_edge_bps(cand.lane) - i128::from(rt_bps);
                 let expected_net = i128::from(size).saturating_mul(edge_bps) / 10_000;
+                // §49 LAW 15 haircut convexity (reduced-vs-full size): when the
+                // reduce-only multipliers shrank the size below the full §33
+                // fraction, record a two-sided event whose counterfactual is the
+                // full-size priced edge and whose realized side is that edge scaled
+                // by the applied size fraction — the slice actually taken, never a
+                // phantom all-or-nothing.
+                if haircut_bp < 10_000 {
+                    let full_cf = edge_bps.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+                    self.analytics
+                        .record_convexity_mark(&ConvexityMark::Haircut {
+                            rule: RuleId::new(
+                                RuleKind::ConfidenceReducer,
+                                cand.lane.index() as u64,
+                            ),
+                            full_counterfactual_bps: full_cf,
+                            applied: SizeFraction::new(u64::from(haircut_bp), 10_000),
+                            mfe_bps: full_cf.max(0),
+                        });
+                }
                 Some(PendingEntry {
                     lane: cand.lane,
+                    discovery_lane: cand.discovery_lane,
+                    archetype: self.classify_archetype(&mint_bytes),
                     mint: mint_bytes,
                     entry_price,
                     size,
                     entry_cost,
                     expected_net,
+                    round_trip_cost_bps: rt_bps,
+                    x_min: band.x_min,
+                    x_cost: band.x_cost,
+                    x_max: band.x_max,
                 })
             }
             GateDecision::Reject(reason) => {
@@ -1696,12 +2119,187 @@ impl Engine {
         }
     }
 
+    /// §33/§43 LAW 13: account a sub-`x_min` candidate as a budgeted calibration
+    /// probe (paid information) instead of opening it as a position. Routes the
+    /// intended (sub-floor) spend through the calibration ledger under the paper
+    /// route; on admission the spend is journalled as a labeled [`Decision::Probe`]
+    /// and the research counter advances; on refusal (any cap exhausted) it is a
+    /// below-cost-floor rejection (reuses code 7 — no new reject code). Always
+    /// returns `None`: a probe is never a pending position.
+    fn account_sub_xmin_probe(
+        &mut self,
+        mint: [u8; 32],
+        intended_spend: u64,
+    ) -> Option<PendingEntry> {
+        let req = CalibrationRequest {
+            cost_lamports: intended_spend.max(1),
+            day: 0,
+            measurement_id: Some(fnv1a_64(&mint) as u32),
+            route: Some(RouteId(PROBE_ROUTE_ID)),
+        };
+        match admit_calibration(&self.calibration, &req) {
+            Ok((updated, label)) => {
+                self.calibration = updated;
+                self.probes_budgeted += 1;
+                self.journal.record(Decision::Probe {
+                    mint,
+                    cost_lamports: label.research_cost_lamports,
+                    measurement_id: label.measurement_id,
+                });
+            }
+            Err(_) => {
+                self.rejected += 1;
+                self.journal.record(Decision::Rejected {
+                    mint,
+                    reason: REJECT_BELOW_COST_FLOOR,
+                });
+                self.record_reject_sample(REJECT_BELOW_COST_FLOOR, mint);
+            }
+        }
+        None
+    }
+
+    /// §43 LAW 13 probe-budget telemetry (report-only): lifetime probe spend
+    /// (lamports) accounted through the calibration ledger and the count of
+    /// budgeted paid-information probes admitted. A probe is never a position, so
+    /// this is disjoint from the admitted-position count.
+    #[must_use]
+    pub fn probe_budget_report(&self) -> (u64, u64) {
+        (self.calibration.spent_lifetime, self.probes_budgeted)
+    }
+
     /// Feed a gate rejection into the PRFS forward-marking ring (§47c) at the
-    /// mint's latest decoded price.
+    /// mint's latest decoded price, and (§49 LAW 15) record the rejection as a
+    /// two-sided VETO convexity event (counterfactual-vs-zero): the full
+    /// unsuppressed position's signed counterfactual vs the realized zero (nothing
+    /// was taken), so a veto is scored on the loss it avoided AND the upside it
+    /// forwent — never a degenerate self-cancelling event.
     fn record_reject_sample(&mut self, gate_code: u8, mint: [u8; 32]) {
+        let cf = self.veto_counterfactual_bps(&mint);
+        self.analytics.record_convexity_mark(&ConvexityMark::Veto {
+            rule: RuleId::new(RuleKind::Veto, u64::from(gate_code)),
+            counterfactual_bps: cf,
+            mfe_bps: cf.max(0),
+        });
         if let Some(price) = self.numeric.latest_price_fp(DomainMint::from_bytes(mint)) {
+            let archetype = self.classify_archetype(&mint);
             self.analytics
-                .record_reject(gate_code, mint, price, self.now);
+                .record_reject(gate_code, mint, price, self.now, archetype);
+        }
+    }
+
+    /// §49 LAW 15 signed veto counterfactual (bps): the magnitude is the market's
+    /// recent realized volatility over the vol-stop window (or the configured
+    /// expected move when no bars exist yet), signed by the recent swing structure
+    /// — a downtrend at veto time means the full position would have taken the
+    /// downside (negative counterfactual = loss avoided), otherwise it would have
+    /// had upside exposure (positive = upside forgone). Honest and deterministic:
+    /// observed structure, never a fabricated forward price.
+    fn veto_counterfactual_bps(&self, mint: &[u8; 32]) -> i64 {
+        let mag = self
+            .structure
+            .recent_vol_bps(mint, VOL_STOP_WINDOW_BARS)
+            .map(|v| v.clamp(0, i128::from(i64::MAX)) as i64)
+            .filter(|&v| v > 0)
+            .unwrap_or_else(|| i64::from(self.cfg.gate_expected_move_bps));
+        match self.structure.trend(mint, self.cfg.structure_min_bars) {
+            TrendStructure::Downtrend => -mag,
+            _ => mag,
+        }
+    }
+
+    /// §24 LAW 11: the EntryMode detector leaves' contribution to admission. When
+    /// `entry_mode_leaves_enable` is set, map the strategy predicates onto the
+    /// engine's lane selection via the `SuggestedLane` discriminant mirror:
+    ///
+    /// * `detect_pullback_continuation` → **active-market-scalp eligibility**: a
+    ///   controlled pullback holding a retest inside a confirmed uptrend admits an
+    ///   already-live market (sellable depth = observed pool liquidity) even
+    ///   without a fresh `OnchainConfirm` — the setup the 4-lane confirm-gated
+    ///   logic misses. Returns a synthetic [`Confirmation`] for [`decide`].
+    /// * `detect_narrative_confirmation` → **dormant / admission-gated** (§28):
+    ///   the narrative feature family is not admitted in laptop replay, so the
+    ///   predicate returns `dormant` and authorizes nothing — the candidate stays
+    ///   gated on real on-chain confirmation.
+    ///
+    /// `None` when the law is off, the lane does not map, or the detector is not
+    /// eligible — in which case the gate's original confirmation stands.
+    #[must_use]
+    fn entry_mode_confirmation(
+        &self,
+        cand: &Candidate,
+        mint: &[u8; 32],
+        numeric_feats: Option<Features>,
+    ) -> Option<Confirmation> {
+        if !self.cfg.entry_mode_leaves_enable {
+            return None;
+        }
+        match cand.lane {
+            WlLane::ActiveMarketScalp => {
+                let numeric = numeric_feats?;
+                if numeric.liquidity_lamports == 0 {
+                    return None;
+                }
+                let pf = self
+                    .structure
+                    .pullback_features(mint, self.cfg.structure_min_bars)?;
+                let sig = detect_pullback_continuation(&pf, &PullbackParams::test());
+                if sig.eligible && sig.suggested_lane == SuggestedLane::ActiveMarketScalp {
+                    Some(Confirmation {
+                        sellable_depth_lamports: numeric.liquidity_lamports,
+                        numeric,
+                    })
+                } else {
+                    None
+                }
+            }
+            WlLane::EarlyConfirmation => {
+                // §28 dormant/admission-gated: the narrative feature family is not
+                // admitted in laptop replay, so the predicate is inert and never
+                // synthesizes authority. Evaluated here so the leaf is genuinely
+                // wired (it is a no-op decision-wise, exactly as §28 requires).
+                let numeric = numeric_feats.unwrap_or_default();
+                let nf = NarrativeConfirmationFeatures {
+                    narrative_velocity: 0,
+                    confirming_independent_buyers: 0,
+                    confirming_net_inflow: 0,
+                    mechanically_sellable: numeric.liquidity_lamports > 0,
+                };
+                let sig =
+                    detect_narrative_confirmation(&nf, &NarrativeConfirmationParams::test(), false);
+                if sig.eligible
+                    && sig.suggested_lane == SuggestedLane::EarlyConfirmation
+                    && numeric.liquidity_lamports > 0
+                {
+                    Some(Confirmation {
+                        sellable_depth_lamports: numeric.liquidity_lamports,
+                        numeric,
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// §25 LAW 4: derive the setup archetype for a mint at admit/reject from its
+    /// folded bar/flow state via `pump_quant_signals::setup_classifier`. Returns
+    /// `0` (the `None` family) when the classifier is disabled or the bar state is
+    /// not yet reconstructable. Pure read of already-folded state; authorizes
+    /// nothing and changes no capital decision — it is the analytics/thesis
+    /// discriminator only (§25).
+    #[must_use]
+    fn classify_archetype(&self, mint: &[u8; 32]) -> u16 {
+        if !self.cfg.setup_classifier_enable {
+            return 0;
+        }
+        match self
+            .structure
+            .market_state(mint, self.cfg.structure_min_bars)
+        {
+            Some(state) => classify_setup(&state, &SetupThresholds::neutral()).archetype_id(),
+            None => 0,
         }
     }
 
@@ -1741,6 +2339,52 @@ impl Engine {
         force
     }
 
+    /// §24 LAW 2: derive the per-market take-profit ladder from the gate's measured
+    /// round-trip cost. The tp1 move is `derive_target_bps(rt_cost, margin, None)`
+    /// where `margin = rt_cost × target_margin_mult_bp/10_000`
+    /// (`pump_quant_strategy::exit_ladder::derive_target_bps`); tp2/tp3 stack the
+    /// same move and every rung is clamped into the `[target_floor_bp,
+    /// target_ceiling_bp]` envelope (§56.2). The tranche COUNT is the cost-priced
+    /// rung count from `exit_ladder::ladder_rungs`, clamped to the ladder's 3 slots.
+    /// `None` when the law is off (fixed constants) or the cost is unpriceable.
+    fn derive_targets(&self, size: u64, rt_bps: u32) -> Option<DerivedTargets> {
+        if !self.cfg.derived_targets_enable {
+            return None;
+        }
+        let margin = ((u64::from(rt_bps) * u64::from(self.cfg.target_margin_mult_bp)) / 10_000)
+            .min(u64::from(u32::MAX)) as u32;
+        let mv = pump_quant_strategy::exit_ladder::derive_target_bps(rt_bps, margin, None)?;
+        let floor = self.cfg.target_floor_bp;
+        let ceiling = self.cfg.target_ceiling_bp.max(floor);
+        let clamp = |k: u32| -> u32 {
+            (10_000u32.saturating_add(mv.saturating_mul(k))).clamp(floor, ceiling)
+        };
+        // Cost-priced rung count: each rung must clear the full fixed cost with the
+        // gate's margin; the impact ceiling bounds the rest (criterion 112).
+        let eff_fixed = effective_fixed_lamports(
+            self.cfg.gate_base_fixed_lamports,
+            self.cfg.gate_fail_rate_bps,
+        )
+        .unwrap_or(self.cfg.gate_base_fixed_lamports);
+        let curve =
+            pump_quant_strategy::exit_ladder::ImpactCurve::linear_test(self.cfg.gate_impact_den);
+        let rungs = pump_quant_strategy::exit_ladder::ladder_rungs(
+            size,
+            self.cfg.gate_expected_move_bps.max(1),
+            eff_fixed,
+            self.cfg.gate_margin_bps.max(1),
+            &curve,
+        )
+        .len()
+        .clamp(1, 3) as u8;
+        Some(DerivedTargets {
+            tp1_bps: clamp(1),
+            tp2_bps: clamp(2),
+            tp3_bps: clamp(3),
+            rungs,
+        })
+    }
+
     /// Open one arbitration winner (§23): probe-sized entry (§33 probe→confirm→
     /// scale), full-target risk commitment, thesis registration (§32), shadow-
     /// tournament mirror (§48), and the Admitted journal record.
@@ -1763,6 +2407,8 @@ impl Engine {
                 e.mint,
                 OpenAttribution {
                     lane: e.lane,
+                    discovery_lane: e.discovery_lane,
+                    archetype: e.archetype,
                     realized_acc: 0,
                     entry_spend: e.entry_cost,
                     scale_add,
@@ -1770,13 +2416,30 @@ impl Engine {
                     entry_price: e.entry_price,
                 },
             );
-            self.tournament
-                .open(e.mint, e.entry_price, e.size, e.entry_cost, self.now);
+            // §24 LAW 6: the recent-window realized volatility that scales the
+            // stop/trail, and §24 LAW 2: the per-market cost-derived take-profit
+            // ladder — both computed once, at admit, and armed on the position and
+            // its shadow challengers (the vol-stop challenger needs `vol_bps` even
+            // when the incumbent's global switch is off).
+            let vol_bps = self
+                .structure
+                .recent_vol_bps(&e.mint, VOL_STOP_WINDOW_BARS)
+                .map_or(0, |v| v.clamp(0, i128::from(u32::MAX)) as u32);
+            let derived = self.derive_targets(e.size, e.round_trip_cost_bps);
+            self.positions.arm_context(&e.mint, vol_bps, derived);
+            self.tournament.open(
+                e.mint,
+                e.entry_price,
+                e.size,
+                e.entry_cost,
+                self.now,
+                vol_bps,
+            );
             // §32: the entry thesis, compiled from the registered v0 feature schema
             // (OFI stays net-buy; CVD sign stays positive), slot-stamped.
             let thesis = build_thesis(&ThesisInputs {
                 entry_mode: e.lane as u16,
-                archetype: 0,
+                archetype: e.archetype,
                 entry_ts_ns: self.now,
                 required: Vec::new(),
                 invalidation: vec![
@@ -1801,6 +2464,15 @@ impl Engine {
             self.journal.record(Decision::Admitted {
                 mint: e.mint,
                 size_lamports: e.size,
+                x_min: e.x_min,
+                x_cost: e.x_cost,
+                x_max: e.x_max,
+                // §34.4 attempt/fail-rate multiplier and impact provenance — the
+                // exact inputs that produced the admitted size, already computed at
+                // admit (the fail-rate that inflated the fixed cost, the measured
+                // round-trip impact cost at this size).
+                fail_rate_bps: self.cfg.gate_fail_rate_bps,
+                rt_cost_bps: e.round_trip_cost_bps,
             });
         }
     }
@@ -1813,10 +2485,16 @@ impl Engine {
     /// high-water mark, and attribute the market's total realized net back to its
     /// social callers (§82).
     fn book_exit(&mut self, e: Exit) {
-        let lane = self.open_lane.get(&e.mint).map(|a| a.lane);
-        if let Some(lane) = lane {
-            self.lane_perf
-                .record(lane, i64::try_from(e.net_lamports).unwrap_or(i64::MAX));
+        let attribution = self
+            .open_lane
+            .get(&e.mint)
+            .map(|a| (a.lane, a.discovery_lane));
+        if let Some((lane, discovery_lane)) = attribution {
+            let net = i64::try_from(e.net_lamports).unwrap_or(i64::MAX);
+            self.lane_perf.record(lane, net);
+            // §71.2 reflection integrity: attribute realized net-SOL to the ACTUAL
+            // discovery lane, so lanes sharing a setup archetype learn independently.
+            self.disc_perf.record(discovery_lane, net);
             let recon = ReconTrade {
                 lane: eval_lane_of(lane),
                 gross_lamports: e.net_lamports,
@@ -1831,6 +2509,13 @@ impl Engine {
             net_pnl_lamports: e.net_lamports,
             reason: e.reason.code(),
         });
+        // §47/§54 LAW 17: register this exit for post-exit markout sampling at its
+        // fill mark; the forward samples are taken at the mandated ns horizons on
+        // the reflection cadence. Report-only — never touches the journal digest.
+        if let Some(exit_px) = self.numeric.latest_price_fp(DomainMint::from_bytes(e.mint)) {
+            self.analytics
+                .record_exit_markout(e.mint, exit_px, self.now, e.reason.code());
+        }
         // Realized-only bankroll accounting: every exit's net folds in immediately
         // (partial tranches included) — marks never do (§33).
         self.bankroll_realized = self.bankroll_realized.saturating_add(e.net_lamports);
@@ -1843,8 +2528,13 @@ impl Engine {
         }
         if e.closed {
             if let Some(att) = self.open_lane.remove(&e.mint) {
-                let (lane_w, total, entry_spend, entry_price) =
-                    (att.lane, att.realized_acc, att.entry_spend, att.entry_price);
+                let (lane_w, total, entry_spend, entry_price, archetype) = (
+                    att.lane,
+                    att.realized_acc,
+                    att.entry_spend,
+                    att.entry_price,
+                    att.archetype,
+                );
                 self.bankroll_committed = self
                     .bankroll_committed
                     .saturating_sub(u128::from(entry_spend));
@@ -1852,6 +2542,7 @@ impl Engine {
                 self.theses.remove(&e.mint);
                 // §47/§48/§49 analytics: the whole position's realized row + the
                 // exit-policy convexity event + the §52 naive-baseline counterfactual.
+                // §25 LAW 4: the row is tagged with the derived setup archetype.
                 self.analytics.record_trade(
                     lane_w.index(),
                     e.reason.code(),
@@ -1859,19 +2550,43 @@ impl Engine {
                     entry_spend,
                     e.mfe_bps,
                     e.mae_bps,
+                    archetype,
                 );
                 let realized_bps = if entry_spend > 0 {
                     (total.saturating_mul(10_000) / i128::from(entry_spend)) as i64
                 } else {
                     0
                 };
-                self.analytics.record_convexity(
-                    11, // RuleKind::ExitPolicy discriminant slot (stable app-side code)
-                    u64::from(e.reason.code()),
-                    false,
-                    realized_bps,
-                    realized_bps,
-                    e.mfe_bps,
+                // §49 LAW 15: the exit-policy event as a full-participation ALLOW
+                // built through the enrich layer — the position was allowed to run
+                // to its exit, so the ledger credits realized-vs-MFE (not a
+                // degenerate self-cancelling pair). Vetoes and haircuts are recorded
+                // as their own two-sided (counterfactual-vs-zero / reduced-vs-full)
+                // events at the reject and admit sites.
+                self.analytics
+                    .record_convexity_mark(&ConvexityMark::Allowed {
+                        rule: RuleId::new(RuleKind::ExitPolicy, u64::from(e.reason.code())),
+                        realized_bps,
+                        mfe_bps: e.mfe_bps,
+                    });
+                // §100 REPORT-plane hazard scaffolding: fold this paper fill into
+                // its phase-separated per-CellKey accumulator. The hazard event is
+                // "the position hit its §24(e) time-stop". This ONLY updates the
+                // report-plane scaffold (never the live time-stop, never journaled),
+                // so the golden decision path is byte-identical.
+                let hz_phase = if self.context.is_pool(&e.mint) {
+                    Phase::Pool
+                } else {
+                    Phase::Curve
+                };
+                self.hazard_scaffold.record_fill(
+                    CellKey {
+                        archetype,
+                        phase: hz_phase,
+                        catalyst: 0,
+                        regime: 0,
+                    },
+                    e.reason == ExitReason::TimeStop,
                 );
                 // §24 EXPECTANCY_V1: fold this fill's realized return into the
                 // lane's conditional-expectancy cell (paper-realized — a ranking
@@ -1951,6 +2666,31 @@ impl Engine {
                 numeric.latest_price_fp(DomainMint::from_bytes(*m))
             });
         }
+        // §47/§54 LAW 17: mark closed exits forward at the mandated ns horizons
+        // (info-time = the event-stream tick), folding the post-exit markout cells
+        // and foregone-upside per ExitReason. Report-only.
+        {
+            let numeric = &self.numeric;
+            self.analytics.mark_forward_markouts(self.now, &|m| {
+                numeric.latest_price_fp(DomainMint::from_bytes(*m))
+            });
+        }
+        // §47a LAW 18: reflect every tracked mint's terminal state at the versioned
+        // δT cadence — a mint silent for ≥ δT ticks of info-time is labeled dead,
+        // each label stamped with the criterion version. Report-only.
+        {
+            let cadence = ReflectionCadence::new(TERMINAL_DELTA_T_TICKS, TERMINAL_CADENCE_VERSION);
+            let mints: Vec<MintSwaps> = self
+                .last_trade_tick
+                .iter()
+                .map(|(m, &last)| MintSwaps {
+                    mint: MintId(fnv1a_64(m)),
+                    swap_ts_ns: vec![last],
+                    window_end_ns: self.now,
+                })
+                .collect();
+            self.terminal_reflections = reflect_mints(cadence, &mints);
+        }
         self.f_recommended = self
             .analytics
             .sizing_recommendation(self.cfg.probe_f_bp, self.cfg.f_base_bp);
@@ -2004,6 +2744,11 @@ impl Engine {
             per_lane_net[i] = (lane, self.lane_perf.net_sol(lane));
             final_weights[i] = (lane, self.weights.get(lane));
         }
+        let mut per_discovery_lane_net =
+            [(DiscoveryLane::OnchainCreation, 0i64); DiscoveryLane::COUNT];
+        for (i, lane) in DiscoveryLane::ALL.into_iter().enumerate() {
+            per_discovery_lane_net[i] = (lane, self.disc_perf.net_sol(lane));
+        }
         Report {
             ticks: self.now,
             promoted: self.promoted,
@@ -2011,6 +2756,7 @@ impl Engine {
             rejected: self.rejected,
             net_lamports: scalp_net.saturating_add(early_net),
             per_lane_net,
+            per_discovery_lane_net,
             final_weights,
             journal_digest: self.journal.digest(),
             universe_filtered: self.universe_filtered,
@@ -2173,7 +2919,157 @@ impl Engine {
                 }
             }
         }
+        // (3) §70.8/§49 narrative-class sizing conviction (LAW 8, reduce-only): a
+        // fast, low-ceiling narrative (News/Trend) sizes down; a durable, high-
+        // ceiling one (Tech/Culture) keeps full conviction. Read from the derived
+        // class the attention field carries for the mint. Identity when the class
+        // law is off or the mint is untracked (unknown stays unknown, §6.4) — so
+        // the golden path is byte-identical.
+        if self.cfg.narrative_class_enable {
+            if let Some(class) = self.attention.narrative_class_of(mint) {
+                let conv = u64::from(crate::attention::narrative_class_conviction_bp(class));
+                mult = mult.saturating_mul(conv) / 10_000;
+            }
+        }
         mult.min(10_000) as u32
+    }
+
+    /// §26 (operator-approved reversal): whether the deployer of `mint` is in a
+    /// CONFIRMED distribution — has sold at/above the veto fraction of peak. Unlike
+    /// the graded `size_haircut_bps` fade, this is a hard binary the pre-entry gate
+    /// and the held-position lifecycle both consult. When the §27 creator classifier
+    /// labels the deployer a known extractor (`SerialRug`/`VolumeFarmer`) the
+    /// stricter (lower) veto bar applies. A market with no creator distribution
+    /// evidence is never a dump (unknown stays unknown, §6.4).
+    fn creator_dump_active(&self, mint: &[u8; 32]) -> bool {
+        if !self.cfg.creator_dump_veto_enable {
+            return false;
+        }
+        let Some(reducer) = self.creators.get(mint) else {
+            return false;
+        };
+        let snap = reducer.snapshot();
+        let Some(sold) = snap.sold_fraction_of_peak_bps else {
+            return false;
+        };
+        let threshold = if self.creator_is_known_extractor(mint, &snap) {
+            self.cfg.creator_dump_veto_strict_bp
+        } else {
+            self.cfg.creator_dump_veto_bp
+        };
+        sold >= threshold
+    }
+
+    /// Consult the §27 creator classifier over the point-in-time deployer integers
+    /// the app plane maintains (prior-launch / serial-window occupancy from
+    /// `creator_launches`, distribution intensity from the creator-state reducer).
+    /// Returns true only for the extractive archetypes `SerialRug`/`VolumeFarmer`.
+    /// Unknowable inputs (resolved-terminal outcomes, survival, retention, copycat
+    /// similarity) are left at zero, so a thin history yields `Unknown` (§6.4) and
+    /// never tightens the bar on speculation.
+    fn creator_is_known_extractor(&self, mint: &[u8; 32], snap: &CreatorState) -> bool {
+        let Some(creator) = self.mint_creator.get(mint) else {
+            return false;
+        };
+        let (lifetime, _, in_window) = self
+            .creator_launches
+            .get(creator)
+            .copied()
+            .unwrap_or((0, 0, 0));
+        let dump_intensity_bps =
+            u32::try_from(snap.sold_fraction_of_peak_bps.unwrap_or(0)).unwrap_or(u32::MAX);
+        let inputs = CreatorInputs {
+            prior_launch_count: lifetime,
+            resolved_launch_count: 0,
+            rugged_launch_count: 0,
+            max_launches_in_window: in_window,
+            dump_intensity_bps,
+            median_survival_secs: 0,
+            community_retention_bps: 0,
+            streamer_launch_ratio_bps: 0,
+            copycat_similarity_bps: 0,
+        };
+        matches!(
+            classify_creator(&inputs, &CreatorThresholds::test()),
+            CreatorClass::SerialRug | CreatorClass::VolumeFarmer
+        )
+    }
+
+    /// §70.9 deployer-credibility screen (LAW 10): the reduce-only size multiplier
+    /// (bps) for a market's deployer, from the wallet-graph deployer_credibility
+    /// bundle CLASS-CONDITIONED by the §27 known-extractor verdict. Identity
+    /// (10_000) when the deployer is unknown (§6.4). The point-in-time prior-launch
+    /// slot list is reconstructed from the app plane's tracked launch counts
+    /// (`creator_launches`: lifetime + windowed occupancy) — `in_window` launches
+    /// clustered in the recent serial window, the remainder spread before it — so
+    /// `compute_deployer_credibility` recovers the prior-CA count and serial-deploy
+    /// burst deterministically.
+    fn deployer_screen_mult_bp(&self, mint: &[u8; 32]) -> u32 {
+        let Some(creator) = self.mint_creator.get(mint) else {
+            return 10_000;
+        };
+        let Some(&(lifetime, window_start, in_window)) = self.creator_launches.get(creator) else {
+            return 10_000;
+        };
+        if lifetime == 0 {
+            return 10_000;
+        }
+        let window = CREATOR_SERIAL_WINDOW_TICKS.max(1);
+        let decision_slot = self.now.saturating_add(1);
+        let mut launches: Vec<PriorLaunch> = Vec::with_capacity(lifetime as usize);
+        // Recent cluster inside the serial window (drives the serial-deploy burst).
+        for i in 0..in_window.min(lifetime) {
+            launches.push(PriorLaunch {
+                slot: window_start.saturating_add(u64::from(i)),
+            });
+        }
+        // Older launches, one per window width before the recent cluster, so they
+        // count toward prior-CA without manufacturing a false recent burst.
+        let older = lifetime.saturating_sub(in_window);
+        for i in 0..older {
+            launches.push(PriorLaunch {
+                slot: window_start.saturating_sub((u64::from(i) + 1).saturating_mul(window)),
+            });
+        }
+        let cfg = DeployerCredibilityConfig {
+            serial_window_slots: window,
+            serial_threshold: CREATOR_SERIAL_THRESHOLD,
+        };
+        let cred = compute_deployer_credibility(
+            &launches,
+            decision_slot,
+            &[],
+            &SocialReachInput::default(),
+            &cfg,
+        );
+        let extractor = self
+            .creators
+            .get(mint)
+            .map(|r| self.creator_is_known_extractor(mint, &r.snapshot()))
+            .unwrap_or(false);
+        deployer_screen_haircut_bp(&cred, extractor)
+    }
+
+    /// §26 held-position limb (operator-approved reversal): once the deployer of a
+    /// held market has distributed past the veto threshold, force the exit of that
+    /// position at the current mark (or raise exit pressure when the mark is
+    /// UNKNOWN, §38). The confirmed-dump regime overrides the prior "creator
+    /// distribution is never a veto" fade.
+    fn enforce_creator_dump_exit(&mut self, mint: &[u8; 32]) {
+        if !self.creator_dump_active(mint) || !self.positions.has(mint) {
+            return;
+        }
+        match self.numeric.latest_price_fp(DomainMint::from_bytes(*mint)) {
+            Some(price) if price > 0 => {
+                if let Some(exit) = self
+                    .positions
+                    .close_at(mint, price, ExitReason::CreatorDump)
+                {
+                    self.book_exit(exit);
+                }
+            }
+            _ => self.positions.apply_pressure(mint),
+        }
     }
 
     /// The current on-chain `MetaRotationState` snapshot — per-category launches,
@@ -2195,6 +3091,88 @@ impl Engine {
     #[must_use]
     pub fn analytics_report(&self) -> crate::analytics::AnalyticsReport {
         self.analytics.report()
+    }
+
+    /// §105 (CRITERION 105) REPORT / hazard-scaffold plane readout: the mint's
+    /// decayed LPI/wash extraction-risk covariate (a `manip_history_fp`-style bps
+    /// figure, 0 for an untracked mint), evaluated at the current logical tick.
+    /// This is a pure report-plane observable — it is NOT consulted by any sizing,
+    /// gating, or promotion decision, which is why accumulating it leaves the
+    /// golden decision path byte-identical.
+    #[must_use]
+    pub fn extraction_risk_fp(&self, mint: &[u8; 32]) -> u32 {
+        self.extraction_risk.manip_history_fp(mint, self.now)
+    }
+
+    /// §105 number of mints currently carrying an extraction-risk covariate
+    /// (bounded state readout, report-plane only).
+    #[must_use]
+    pub fn extraction_risk_tracked(&self) -> usize {
+        self.extraction_risk.tracked()
+    }
+
+    /// §100 (CRITERION 100) REPORT / hazard-scaffold plane readout: the hierarchical
+    /// hold-horizon hazard estimate for a conditioning cell, shrunk toward its
+    /// phase-separated parent (a starved cell defaults to `baseline_bps`). This is a
+    /// pure report-plane observable built from realized paper fills — it does NOT
+    /// drive the live §24(e) time-stop, which is why it leaves the golden path
+    /// byte-identical. `k` is the shrink pseudo-count; `min_effective_sample` the
+    /// baseline gate.
+    pub fn cell_hazard(
+        &self,
+        cell: CellKey,
+        k: u32,
+        min_effective_sample: u32,
+        baseline_bps: u32,
+    ) -> Result<HazardEstimate, ShrinkError> {
+        self.hazard_scaffold
+            .cell_hazard(cell, k, min_effective_sample, baseline_bps)
+    }
+
+    /// §100 number of hazard cells currently tracked (bounded, report-plane only).
+    #[must_use]
+    pub fn hazard_cells_tracked(&self) -> usize {
+        self.hazard_scaffold.tracked()
+    }
+
+    /// §101 (CRITERION 101) REPORT-plane curve-analytic authenticity margin (bps)
+    /// for a mint: `observed_appreciation − supported`, where the supported move is
+    /// priced under the phase-selected model. The mint's phase (curve vs pool) is
+    /// read from the market context. `use_curve_analytic = false` (the default
+    /// behaviour) reproduces the reserve/impact estimator byte-for-byte; `true`
+    /// opts the CURVE phase into the distinct curve-analytic model. This is a pure
+    /// report-plane observable — it never drives the live authenticity screen, so
+    /// the golden decision path is unchanged (and no `Config` field is added, which
+    /// would otherwise move the §19 config-identity digest seed).
+    #[must_use]
+    pub fn curve_authenticity_margin_bps(
+        &self,
+        mint: &[u8; 32],
+        observed_appreciation_bps: u64,
+        net_inflow: u64,
+        reserve: u64,
+        use_curve_analytic: bool,
+    ) -> i128 {
+        let phase = if self.context.is_pool(mint) {
+            Phase::Pool
+        } else {
+            Phase::Curve
+        };
+        crate::curve_authenticity::authenticity_margin_bps(
+            observed_appreciation_bps,
+            phase,
+            use_curve_analytic,
+            net_inflow,
+            reserve,
+        )
+    }
+
+    /// §47a LAW 18 terminal-state reflections (report-only): the per-mint dead/
+    /// alive labels from the most recent reflection cadence, each stamped with the
+    /// δT criterion version. A mint is keyed by `MintId(fnv1a_64(mint_bytes))`.
+    #[must_use]
+    pub fn terminal_reflections(&self) -> &[MintReflection] {
+        &self.terminal_reflections
     }
 
     /// §55 capacity-curve report over the mandated size grid (0.01–1.00 SOL) at
@@ -2226,7 +3204,48 @@ impl Engine {
         } else {
             ((u128::from(hwm - balance) * 10_000) / u128::from(hwm)) as u32
         };
-        crate::authority::promotion_readiness(&self.cfg, defeats, dd_bp < self.cfg.dd_tier3_bp)
+        crate::authority::promotion_readiness(
+            &self.cfg,
+            defeats,
+            dd_bp < self.cfg.dd_tier3_bp,
+            self.promotion_stat_verdict(),
+        )
+    }
+
+    /// §51 LAW 14 statistical promotion verdict (report-only, CONSULTED): the
+    /// combined FDR + PBO/CSCV gate over the current challenger evidence. With no
+    /// reconciled trades there is no promotion candidate, so the gate reports
+    /// `Clear` and defers to the evidence-sufficiency probe gate; once trades exist
+    /// it consults the exit-tournament challenger family — each challenger a
+    /// hypothesis (p-value proxy from its SPRT log-likelihood ratio) and the
+    /// laptop's non-block-structured challenger returns the CSCV matrix. That matrix
+    /// is inadmissible on the laptop, so the §51 gate fails CLOSED (overfitting that
+    /// cannot be measured is not a silent pass) — consulted, never ignored.
+    #[must_use]
+    pub fn promotion_stat_verdict(&self) -> PromotionStatisticalVerdict {
+        let a = self.analytics.report();
+        if a.trades == 0 {
+            return PromotionStatisticalVerdict {
+                fdr_blocks: false,
+                pbo_blocks: false,
+                pbo_bps: Some(0),
+                reason: PromotionBlockReason::Clear,
+            };
+        }
+        let standings = self.tournament.standings();
+        let family: Vec<Hypothesis> = standings
+            .iter()
+            .enumerate()
+            .map(|(i, s)| Hypothesis::new(i as u64, sprt_llr_to_p_ppm(s.sprt_millinats)))
+            .collect();
+        let perf: Vec<Vec<i64>> = standings.iter().map(|s| vec![s.sprt_millinats]).collect();
+        promotion_verdict(
+            &family,
+            PROMOTION_ALPHA_PPM,
+            0,
+            &perf,
+            PROMOTION_PBO_THRESHOLD_BPS,
+        )
     }
 
     /// Per-lane conditional-expectancy telemetry: (Σ realized bps, fills,
@@ -2260,11 +3279,57 @@ impl Engine {
         if a.trades < self.cfg.baseline_min_trades || a.baseline_trades == 0 {
             return None;
         }
+        // §52 LAW 16: the live policy's realized net vs the WHOLE deterministic
+        // baseline family (family-wise margin), not just the single buy-every-
+        // confirm-hold shadow — every family member competes, plus the analytics'
+        // running buy-and-hold shadow as the pre-existing anchor.
+        let mut competitors: Vec<Competitor> = self
+            .baseline_family_report()
+            .iter()
+            .map(|r| Competitor::baseline(r.net_lamports))
+            .collect();
+        competitors.push(Competitor::baseline(a.baseline_net_lamports));
         Some(baseline_destruction(
             a.live_net_lamports,
-            &[Competitor::baseline(a.baseline_net_lamports)],
+            &competitors,
             i128::from(self.cfg.baseline_margin_lamports),
         ))
+    }
+
+    /// §52 LAW 16 baseline FAMILY net-SOL vector (report-only): each deterministic
+    /// naive baseline (random-eligible / buy-every-launch / threshold-only /
+    /// fixed-TP-SL / hold-to-death) reconciled over the SAME realized-trade tape and
+    /// the SAME per-entry fee model. The family-wise-margin verdict runs against ALL
+    /// of these; this exposes the full vector for the promotion review.
+    #[must_use]
+    pub fn baseline_family_report(&self) -> Vec<BaselineResult> {
+        let tape = self.baseline_family_tape();
+        let fee = FeeModel::new(u128::from(self.cfg.entry_tip_lamports));
+        run_family(&tape, &fee, &FamilyParams::default_params())
+    }
+
+    /// §52 LAW 16: assemble the baseline-family tape from the retained realized
+    /// trades. Each realized opportunity is a `TapeEvent` whose entry the baselines
+    /// re-decide; the outcome each entered event realizes is the trade's OWN
+    /// realized net — the only counterfactual the laptop can honestly claim without
+    /// a separate price-path replay — so the family differs by WHICH events each
+    /// naive rule enters, never by a fabricated price path.
+    fn baseline_family_tape(&self) -> Vec<TapeEvent> {
+        self.analytics
+            .realized_trade_tape()
+            .into_iter()
+            .enumerate()
+            .map(|(i, (net, ret, lane_idx))| {
+                TapeEvent::test(
+                    i as u64,
+                    true,          // every realized opportunity was an eligible entry
+                    lane_idx == 0, // the creation-sniper lane == a fresh launch entry
+                    ret,           // decision score = realized per-trade return, bps
+                    net,           // hold-to-death proxy = realized net
+                    net,           // fixed-TP/SL proxy = realized net
+                )
+            })
+            .collect()
     }
 
     /// §48 exit-policy tournament standings (report-only; adoption is an operator
@@ -2278,6 +3343,52 @@ impl Engine {
     #[must_use]
     pub fn voi_queue(&self) -> Vec<(u64, i128)> {
         self.analytics.voi_ranking()
+    }
+
+    /// §70.10 first-slot fee ingestion (Batch-2c LAW 10): record a market's
+    /// first-slot fee/tip footprint for the anti-bundle fee-floor screen. A
+    /// PARALLEL channel to the decoded `AppEvent` stream (the event vocabulary is
+    /// dossier-locked / additive-only, so first-slot fees are threaded here rather
+    /// than on `TokenMetadata`). Folds the cumulative `priority + tip` lamports and
+    /// the tx count into a bounded per-mint record; repeated calls accumulate.
+    /// Bounded (§99): a new mint beyond the confirmed-set capacity evicts the
+    /// lexicographically-smallest tracked mint (deterministic). Inert unless
+    /// `fee_floor_enable` is set — a run that never calls this is byte-identical.
+    pub fn observe_first_slot_fees(&mut self, mint: &[u8; 32], txs: &[FirstSlotTx]) {
+        let cap = self
+            .cfg
+            .watchlist_capacity
+            .saturating_mul(self.cfg.confirmed_capacity_mult)
+            .max(1);
+        if !self.first_slot_fees.contains_key(mint) && self.first_slot_fees.len() >= cap {
+            if let Some(&victim) = self.first_slot_fees.keys().next() {
+                self.first_slot_fees.remove(&victim);
+            }
+        }
+        let add_fees = cumulative_fees_lamports(txs);
+        let e = self.first_slot_fees.entry(*mint).or_insert((0, 0));
+        e.0 = e.0.saturating_add(add_fees);
+        e.1 = e.1.saturating_add(txs.len() as u64);
+    }
+
+    /// §70.10 whether the market's first-slot fee footprint is a fully-saturated
+    /// (bundle/wash) signature that VETOES pre-entry, versus merely a graded fade.
+    /// Returns `(veto, fade_bps)`: `veto` fires only when the fee-floor law is on,
+    /// the footprint is `ImplausiblyLow`, AND the fade is at/above the veto bar.
+    /// `(false, 0)` when the law is off or no fee record exists (unknown stays
+    /// unknown, §6.4) — so the golden path is untouched.
+    fn fee_floor_verdict(&self, mint: &[u8; 32]) -> (bool, u32) {
+        if !self.cfg.fee_floor_enable {
+            return (false, 0);
+        }
+        let Some(&(fees, count)) = self.first_slot_fees.get(mint) else {
+            return (false, 0);
+        };
+        let r = assess_fee_floor(fees, count, &FeeFloorConfig::neutral());
+        if r.status != FeeFloorStatus::ImplausiblyLow {
+            return (false, 0);
+        }
+        (r.fade_bps >= FEE_FLOOR_VETO_FADE_BP, r.fade_bps)
     }
 
     /// §28 lagged-shadow followable verdict for a buyer entity (telemetry seam —
@@ -2296,6 +3407,28 @@ impl Engine {
     #[must_use]
     pub fn category_rank_adjustment(&self, category_id: u64) -> Option<i64> {
         self.category_rank_adj.get(&category_id).copied()
+    }
+}
+
+/// §51 LAW 14: map a challenger's SPRT log-likelihood ratio (milli-nats) to a
+/// p-value proxy in ppm for the promotion FDR family. Monotone and deterministic:
+/// stronger evidence the challenger beats the incumbent (more positive LLR) → a
+/// smaller p; non-positive evidence → a large p. Integer-only (§22).
+const fn sprt_llr_to_p_ppm(llr_millinats: i64) -> u32 {
+    if llr_millinats <= 0 {
+        900_000
+    } else {
+        let dec = if llr_millinats > 500_000 {
+            500_000u32
+        } else {
+            llr_millinats as u32
+        };
+        let p = 500_000u32.saturating_sub(dec);
+        if p == 0 {
+            1
+        } else {
+            p
+        }
     }
 }
 
@@ -2327,6 +3460,28 @@ const REJECT_ARBITRATION: u8 = 11;
 /// The discovering lane is retired (§56.11 sequential-evidence retirement):
 /// discovery continues as research, capital eligibility is suspended.
 const REJECT_LANE_RETIRED: u8 = 12;
+/// §26 confirmed-creator-dump HARD VETO (operator-approved reversal): the
+/// deployer has distributed past the config veto threshold — refuse pre-entry.
+const REJECT_CREATOR_DUMP: u8 = 13;
+/// §70.10 anti-bundle fee-floor VETO (Batch-2c LAW 10): the market's first-slot
+/// fee footprint is a fully-saturated bundle/wash signature — refuse pre-entry.
+const REJECT_FEE_FLOOR: u8 = 14;
+/// §94/§18.2 UNKNOWN-fails-closed: the market's quote mint could not be decoded,
+/// so its round-trip cost cannot be priced without silently assuming SOL — refuse.
+/// Never fires while quote resolution defaults to SOL (all golden markets are
+/// SOL-quoted), so the golden path is byte-identical.
+const REJECT_UNDECODED_QUOTE: u8 = 15;
+
+/// §94 default quote decimals for a SOL-quoted market (lamports = 9 decimals).
+/// The engine's economic gate has always priced in SOL lamports; making the
+/// quote mint explicit (defaulting here) leaves every SOL-quoted golden market
+/// byte-identical while opening the parametric USDC path.
+const SOL_QUOTE_DECIMALS: u32 = 9;
+/// §70.10 fee-floor veto bar (bps of fade): an `ImplausiblyLow` footprint whose
+/// fade reaches this is a manufactured/wash launch (near-zero cumulative fees for
+/// the advertised activity) — a veto, not merely a fade. Below it the footprint
+/// only shrinks size. 9_000 bps ⇒ intensity ≤ 10% of the plausible floor.
+const FEE_FLOOR_VETO_FADE_BP: u32 = 9_000;
 
 /// Creator serial-deploy window (ticks) and launch-count threshold for the
 /// §27/§70.9 credibility haircut (3 launches inside ~2 minutes = serial deployer).
@@ -2349,6 +3504,52 @@ const EXIT_COST_VETO_MULT: u32 = 10;
 const THESIS_FEAT_OFI: u32 = 1;
 const THESIS_FEAT_CVD: u32 = 2;
 
+/// §70.1 composite money proxy weights (§102 named scales). The smart-wallet-
+/// entry / net-inflow term is decade-compressed (0..≈20) before this weight, and
+/// the holder-growth term is a raw on-chain buyer count (0..64); both are chosen
+/// so a genuine wallet-entry / holder-growth lead registers rising money against
+/// the 0..10_000 buy-pressure momentum tail without swamping it — the composite
+/// LEADS on wallet/holder evidence (§70.1) yet momentum still contributes.
+const MONEY_PROXY_WALLET_WEIGHT: u64 = 500;
+const MONEY_PROXY_HOLDER_WEIGHT: u64 = 200;
+
+/// Coarse base-10 magnitude of a lamport quantity (0 → 0, else floor(log10)+1),
+/// mirroring `lane::decade` — keeps the smart-money inflow term comparable across
+/// orders of magnitude without a float (§22). Branch-free via the intrinsic.
+#[inline]
+#[must_use]
+fn decade_u64(v: u64) -> u64 {
+    v.checked_ilog10().map_or(0, |x| x as u64 + 1)
+}
+
+/// §94 quote-mint-parametric round-trip cost (bps). `size` / `eff_fixed` are in
+/// the quote's base units; the bps ratio is decimals-invariant, so a decoded SOL
+/// or USDC quote yields the SAME bps the SOL-assumed `round_trip_cost_bps`
+/// produced (the golden path is byte-identical for the default SOL quote).
+///
+/// Returns:
+/// * `Some(bps)` for a decoded quote — **byte-identical** to the pre-§94 expression
+///   `round_trip_cost_bps(..).unwrap_or(u32::MAX)` (an unpriceable inner cost still
+///   saturates to `u32::MAX`, exactly as before — that is a cost, not a refusal).
+/// * `None` ONLY for an UNDECODED quote — §18.2 UNKNOWN fails closed: refuse rather
+///   than price against an assumed-SOL cost.
+#[inline]
+#[must_use]
+fn round_trip_cost_bps_quoted(
+    size: u64,
+    eff_fixed: u64,
+    protocol_bps: u32,
+    impact: &ImpactCurve,
+    quote: QuoteMint,
+) -> Option<u32> {
+    match quote {
+        QuoteMint::Sol { .. } | QuoteMint::Usdc { .. } => {
+            Some(round_trip_cost_bps(size, eff_fixed, protocol_bps, impact).unwrap_or(u32::MAX))
+        }
+        QuoteMint::Undecoded => None,
+    }
+}
+
 /// Which evaluator lane a watchlist discovery lane reconciles into (mirrors
 /// `scalp::eval_lane`): sniper/early discovery is `Early`; active/graduation
 /// scalping is `Scalp`. Used to route held-position exit net-SOL into the right
@@ -2357,5 +3558,83 @@ const fn eval_lane_of(lane: WlLane) -> EvalLane {
     match lane {
         WlLane::CreationSniper | WlLane::EarlyConfirmation => EvalLane::Early,
         WlLane::GraduationTransition | WlLane::ActiveMarketScalp => EvalLane::Scalp,
+    }
+}
+
+#[cfg(test)]
+mod criterion_94_quote_mint {
+    //! §94 quote-mint parametrization: the SOL path is byte-identical to the
+    //! pre-§94 cost expression (digest-safe), the USDC path is reachable, and an
+    //! undecoded quote refuses (fail-closed).
+    use super::{round_trip_cost_bps, round_trip_cost_bps_quoted, ImpactCurve, QuoteMint};
+    use pump_quant_strategy::safety_integrity::{round_trip_cost_quote, Market};
+
+    /// The default SOL quote reproduces `round_trip_cost_bps(..).unwrap_or(MAX)`
+    /// EXACTLY across a spread of sizes/fixed costs — this is why threading the
+    /// quote mint (defaulting to SOL) leaves the golden digest unchanged.
+    #[test]
+    fn sol_quote_is_byte_identical_to_legacy_bps() {
+        let impact = ImpactCurve::linear_test(1_000_000);
+        for &size in &[0u64, 1, 1_000, 50_000, 10_000_000] {
+            for &fixed in &[0u64, 5_000, 250_000] {
+                for &protocol_bps in &[0u32, 30, 250] {
+                    let legacy =
+                        round_trip_cost_bps(size, fixed, protocol_bps, &impact).unwrap_or(u32::MAX);
+                    let sol = round_trip_cost_bps_quoted(
+                        size,
+                        fixed,
+                        protocol_bps,
+                        &impact,
+                        QuoteMint::Sol { decimals: 9 },
+                    );
+                    assert_eq!(sol, Some(legacy), "SOL path must equal the legacy cost");
+                }
+            }
+        }
+    }
+
+    /// An UNDECODED quote is refused (None) — the gate never prices against an
+    /// assumed-SOL cost (§18.2 UNKNOWN fails closed).
+    #[test]
+    fn undecoded_quote_refuses() {
+        let impact = ImpactCurve::linear_test(1_000_000);
+        assert_eq!(
+            round_trip_cost_bps_quoted(50_000, 5_000, 30, &impact, QuoteMint::Undecoded),
+            None,
+        );
+    }
+
+    /// The USDC-quoted path is reachable (returns a priced cost, not a refusal)
+    /// and, at the bps layer, equals the SOL bps (the ratio is decimals-invariant).
+    #[test]
+    fn usdc_quote_is_reachable() {
+        let impact = ImpactCurve::linear_test(1_000_000);
+        let sol =
+            round_trip_cost_bps_quoted(50_000, 5_000, 30, &impact, QuoteMint::Sol { decimals: 9 });
+        let usdc =
+            round_trip_cost_bps_quoted(50_000, 5_000, 30, &impact, QuoteMint::Usdc { decimals: 6 });
+        assert!(usdc.is_some(), "USDC path must be reachable, not refused");
+        assert_eq!(usdc, sol, "bps cost is a scale-free ratio across quotes");
+    }
+
+    /// The parametric absolute-cost leaf IS decimals-sensitive: for the same
+    /// whole-token fixed cost, a 9-decimal SOL quote and a 6-decimal USDC quote
+    /// produce DIFFERENT absolute round-trip costs, and an undecoded quote refuses.
+    /// This is the reachable USDC-quoted unit case the engine now dispatches to.
+    #[test]
+    fn usdc_absolute_cost_differs_from_sol_by_decimals() {
+        let mkt = Market {
+            fee_bps: 30,
+            fixed_cost_whole: 1,
+        };
+        let sol = round_trip_cost_quote(50_000, &mkt, QuoteMint::Sol { decimals: 9 });
+        let usdc = round_trip_cost_quote(50_000, &mkt, QuoteMint::Usdc { decimals: 6 });
+        let undecoded = round_trip_cost_quote(50_000, &mkt, QuoteMint::Undecoded);
+        assert_eq!(undecoded, None, "undecoded quote must refuse");
+        assert!(sol.is_some() && usdc.is_some());
+        // 1 whole token = 10^9 base units (SOL) vs 10^6 (USDC): the fixed leg alone
+        // differs by 1000×, so the absolute costs cannot be equal.
+        assert_ne!(sol, usdc, "decimals must parametrize the absolute cost");
+        assert!(sol.unwrap() > usdc.unwrap());
     }
 }

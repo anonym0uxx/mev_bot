@@ -124,3 +124,65 @@ fn combine_mix_labels_rules() {
         Some(MixLabel::DualOrMultiFeedRecorded)
     );
 }
+
+#[test]
+fn shadow_recorded_single_label_is_preserved() {
+    // A row produced purely in shadow mode keeps its LIVE_SHADOW_RECORDED label
+    // (even repeated), exactly as any single-source label is preserved.
+    assert_eq!(
+        combine_mix_labels(&[MixLabel::LiveShadowRecorded]),
+        Some(MixLabel::LiveShadowRecorded)
+    );
+    assert_eq!(
+        combine_mix_labels(&[MixLabel::LiveShadowRecorded, MixLabel::LiveShadowRecorded]),
+        Some(MixLabel::LiveShadowRecorded)
+    );
+}
+
+#[test]
+fn shadow_recorded_is_absorbing_over_live_feeds() {
+    // §16 safe-direction lattice: a shadow contribution taints the whole record
+    // — it must NOT collapse to DualOrMultiFeedRecorded (which would overclaim
+    // live fidelity). Shadow wins regardless of which/how many live feeds also
+    // contributed, and regardless of ordering.
+    assert_eq!(
+        combine_mix_labels(&[
+            MixLabel::HeliusLaserStreamLive,
+            MixLabel::LiveShadowRecorded
+        ]),
+        Some(MixLabel::LiveShadowRecorded)
+    );
+    assert_eq!(
+        combine_mix_labels(&[
+            MixLabel::LiveShadowRecorded,
+            MixLabel::HeliusLaserStreamLive
+        ]),
+        Some(MixLabel::LiveShadowRecorded)
+    );
+    assert_eq!(
+        combine_mix_labels(&[
+            MixLabel::JitoTransitionalLive,
+            MixLabel::SuccessorShredLive,
+            MixLabel::LiveShadowRecorded,
+            MixLabel::CanonicalRpcRepair
+        ]),
+        Some(MixLabel::LiveShadowRecorded)
+    );
+}
+
+#[test]
+fn shadow_recorded_has_no_originating_source() {
+    // LIVE_SHADOW_RECORDED is a recording-mode label, not a feed source, so no
+    // SourceId maps to it: every SourceId yields something other than shadow.
+    for id in [
+        SourceId::JitoShredStream,
+        SourceId::SuccessorShred,
+        SourceId::HeliusWsLogs,
+        SourceId::HeliusLaserStream,
+        SourceId::HeliusProviderReplay,
+        SourceId::CanonicalRpc,
+        SourceId::ReconciledExecution,
+    ] {
+        assert_ne!(mix_label_for(id), Some(MixLabel::LiveShadowRecorded));
+    }
+}

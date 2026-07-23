@@ -86,8 +86,8 @@ pub fn analyze_sale_trajectory(
     if txs.is_empty() {
         return out;
     }
-    let first_ts = txs.iter().map(|t| t.ts_ms).min().unwrap();
-    let last_ts = txs.iter().map(|t| t.ts_ms).max().unwrap();
+    let first_ts = txs.iter().map(|t| t.ts_ms).min().unwrap(); // LINT-ALLOW(hot_panic): infallible — `txs.is_empty()` returned above
+    let last_ts = txs.iter().map(|t| t.ts_ms).max().unwrap(); // LINT-ALLOW(hot_panic): infallible — `txs.is_empty()` returned above
     out.duration_ms = last_ts - first_ts;
     out.tx_count = txs.len() as u32;
 

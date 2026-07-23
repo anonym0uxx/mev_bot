@@ -132,7 +132,8 @@ CREATE TABLE IF NOT EXISTS hypotheses (
                                    'ValidatedInference','RejectedInference',
                                    'ExpiredInference','RegimeSpecificInference')),
     created_run                   TEXT,
-    updated_at                    REAL
+    updated_at                    REAL,
+    labels                        TEXT DEFAULT ''     -- §45.2: e.g. 'BIAS_AUDIT_REQUIRED'
 );
 CREATE TABLE IF NOT EXISTS reconciled_outcomes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -145,6 +146,43 @@ CREATE TABLE IF NOT EXISTS reconciled_outcomes (
     evidence_status TEXT,
     created_at      REAL
 );
+-- §45.1 ResearchKnowledgeBase seeding: every finding imported from prior repository
+-- evidence preserves its full provenance and an explicit evidence-status label. Imported
+-- markdown conclusions are NEVER presented as verified facts (§45.1) — `conclusion` is the
+-- raw claim text and `status` is the honest reproduction label; nothing here is edge until
+-- reproduced through the frozen-evaluator pipeline.
+CREATE TABLE IF NOT EXISTS seeded_findings (
+    id                       TEXT PRIMARY KEY,   -- stable finding key (source+claim slug)
+    source_file              TEXT,               -- §45.1: source document
+    finding_date             TEXT,               -- §45.1: date of the finding
+    dataset                  TEXT,               -- §45.1: dataset / trade corpus
+    sample_size              INTEGER,            -- §45.1: sample size (n)
+    strategy_version         TEXT,               -- §45.1: strategy version
+    cost_assumptions         TEXT,               -- §45.1: cost assumptions in force
+    known_bias               TEXT,               -- §45.1: known bias
+    known_missingness        TEXT,               -- §45.1: known missingness
+    chain_reconciled         INTEGER,            -- §45.1: whether chain-reconciled (0/1)
+    reproducible             TEXT,               -- §45.1: whether reproducible (yes/no/unknown)
+    subsequently_contradicted INTEGER,           -- §45.1: whether later contradicted (0/1)
+    status                   TEXT NOT NULL       -- §45.1 evidence-status enum (CHECK below)
+        CHECK (status IN ('REPRODUCED','PARTIALLY_REPRODUCED','UNREPRODUCED',
+                          'BIASED_SAMPLE','SUPERSEDED','FALSIFIED','UNKNOWN')),
+    conclusion               TEXT,               -- raw imported claim; never a verified fact
+    labels                   TEXT,               -- json array, e.g. ["HISTORICAL_CANDIDATE","BIAS_AUDIT_REQUIRED"]
+    created_run              TEXT,
+    imported_at              REAL
+);
+-- §56.5 RootCauseEngine — persisted classifications so the reflection report aggregates
+-- DISTRIBUTIONS, not anecdotes. `evidence_ref` links each classification to its source record
+-- (reconciled_outcome id, journal/exit row, or gate_result). §43 names this table.
+CREATE TABLE IF NOT EXISTS root_cause_classifications (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id       TEXT,
+    evidence_ref TEXT,          -- linked source record (e.g. 'reconciled:12', 'gate:<task>')
+    root_cause   TEXT,          -- one of ROOT_CAUSE_CLASSES (§56.5)
+    detail       TEXT,          -- json: the classifier's matched field + raw evidence echo
+    created_at   REAL
+);
 """
 
 # Constitution §56.10 inference ladder — the only states a hypothesis may occupy.
@@ -152,6 +190,21 @@ VALID_INFERENCE_STATES: tuple[str, ...] = (
     "Observation", "Hypothesis", "ProvisionalInference", "ValidatedInference",
     "RejectedInference", "ExpiredInference", "RegimeSpecificInference",
 )
+
+# Constitution §45.1 evidence-status enum — the ONLY reproduction labels a seeded knowledge-base
+# finding may carry. Quoted verbatim from the one-shot prompt (§45.1):
+#   "status ∈ {REPRODUCED, PARTIALLY_REPRODUCED, UNREPRODUCED, BIASED_SAMPLE, SUPERSEDED,
+#              FALSIFIED, UNKNOWN}"
+# Imported markdown conclusions are never presented as verified facts (§45.1): a finding is edge
+# only once REPRODUCED through the frozen-evaluator pipeline (§44/§56).
+SEEDED_FINDING_STATES: tuple[str, ...] = (
+    "REPRODUCED", "PARTIALLY_REPRODUCED", "UNREPRODUCED",
+    "BIASED_SAMPLE", "SUPERSEDED", "FALSIFIED", "UNKNOWN",
+)
+
+# §45.2 mandates that until the enrichment-selection bias audit clears, every graduation-cohort
+# claim carries this label. It is stamped on the first registered KB experiment's hypothesis row.
+BIAS_AUDIT_LABEL: str = "BIAS_AUDIT_REQUIRED"
 
 
 @dataclass
@@ -168,7 +221,24 @@ class EvidenceStore:
         self._db = sqlite3.connect(self.path)
         self._db.execute("PRAGMA journal_mode=WAL;")
         self._db.executescript(SCHEMA)
+        self._migrate()
         self._db.commit()
+
+    def _migrate(self) -> None:
+        """Additive, idempotent migrations for stores created by an earlier schema.
+
+        `CREATE TABLE IF NOT EXISTS` never adds columns to a table that already exists, so any
+        column added after a store was first created must be back-filled here. Only additive
+        `ADD COLUMN` with a default is used — no destructive change, no data loss — consistent
+        with the evidence store's append-only, reproducible-audit design.
+        """
+        def _cols(table: str) -> set[str]:
+            return {r[1] for r in self._db.execute(f"PRAGMA table_info({table})").fetchall()}
+        # §45.2: hypotheses.labels carries BIAS_AUDIT_REQUIRED on the first KB experiment.
+        if "hypotheses" in {r[0] for r in self._db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}:
+            if "labels" not in _cols("hypotheses"):
+                self._db.execute("ALTER TABLE hypotheses ADD COLUMN labels TEXT DEFAULT ''")
 
     # -------------------------------------------------------------------- runs
     def start_run(self, run_id: str, constitution_hash: str, version: str, note: str = "") -> None:
@@ -475,16 +545,19 @@ class EvidenceStore:
         comp = hyp.get("competing_explanations", [])
         if not isinstance(comp, list):
             raise ValueError("competing_explanations must be a list (§56.10)")
+        labels = hyp.get("labels", "")
+        if isinstance(labels, (list, tuple)):
+            labels = ",".join(str(x) for x in labels)
         self._db.execute(
-            "INSERT OR REPLACE INTO hypotheses VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO hypotheses VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (hid, hyp.get("statement", ""), hyp.get("causal_mechanism", ""),
              json.dumps(comp), hyp.get("disconfirming_evidence_sought", ""),
              float(hyp.get("expected_net_sol_impact", 0.0)),
              float(hyp.get("prior_probability", 0.0)),
              hyp.get("cost_to_test", "unknown"), hyp.get("edge_half_life", "unknown"),
-             state, created_run, time.time()))
+             state, created_run, time.time(), str(labels)))
         self._db.commit()
-        return {"recorded": True, "id": hid, "inference_state": state}
+        return {"recorded": True, "id": hid, "inference_state": state, "labels": str(labels)}
 
     def set_inference_state(self, hypothesis_id: str, state: str) -> dict:
         """Move a hypothesis along the §56.10 inference ladder. Validated; never silent."""
@@ -503,14 +576,14 @@ class EvidenceStore:
         row = self._db.execute(
             "SELECT id,statement,causal_mechanism,competing_explanations,"
             "disconfirming_evidence_sought,expected_net_sol_impact,prior_probability,"
-            "cost_to_test,edge_half_life,inference_state,created_run,updated_at "
+            "cost_to_test,edge_half_life,inference_state,created_run,updated_at,labels "
             "FROM hypotheses WHERE id=?", (hypothesis_id,)).fetchone()
         if not row:
             return None
         cols = ["id", "statement", "causal_mechanism", "competing_explanations",
                 "disconfirming_evidence_sought", "expected_net_sol_impact",
                 "prior_probability", "cost_to_test", "edge_half_life",
-                "inference_state", "created_run", "updated_at"]
+                "inference_state", "created_run", "updated_at", "labels"]
         d = dict(zip(cols, row))
         try:
             d["competing_explanations"] = json.loads(d["competing_explanations"] or "[]")
@@ -521,7 +594,7 @@ class EvidenceStore:
     def list_hypotheses(self, inference_state: str = "", limit: int = 500) -> list[dict]:
         q = ("SELECT id,statement,causal_mechanism,competing_explanations,"
              "disconfirming_evidence_sought,expected_net_sol_impact,prior_probability,"
-             "cost_to_test,edge_half_life,inference_state,created_run,updated_at "
+             "cost_to_test,edge_half_life,inference_state,created_run,updated_at,labels "
              "FROM hypotheses")
         args: tuple = ()
         if inference_state:
@@ -534,7 +607,7 @@ class EvidenceStore:
         cols = ["id", "statement", "causal_mechanism", "competing_explanations",
                 "disconfirming_evidence_sought", "expected_net_sol_impact",
                 "prior_probability", "cost_to_test", "edge_half_life",
-                "inference_state", "created_run", "updated_at"]
+                "inference_state", "created_run", "updated_at", "labels"]
         out = []
         for row in self._db.execute(q, args).fetchall():
             d = dict(zip(cols, row))
@@ -584,6 +657,132 @@ class EvidenceStore:
             (key, json.dumps({"value": value[:500], "source": source, "by": by,
                               "at": now}), now, now))
         self._db.commit()
+
+    # ------------------------------------------- seeded findings (§45.1 KB seeding)
+    def record_seeded_finding(self, finding: dict[str, Any], created_run: str = "") -> dict:
+        """Persist one prior-evidence finding into the ResearchKnowledgeBase (§45.1).
+
+        `finding` preserves the §45.1 provenance fields (source_file, date, dataset,
+        sample_size, strategy_version, cost_assumptions, known_bias, known_missingness,
+        chain_reconciled, reproducible, subsequently_contradicted) plus a `status` in
+        SEEDED_FINDING_STATES and the raw `conclusion` text. The conclusion is stored as a
+        claim, never as verified fact — reproduction is proven only through the pipeline.
+        """
+        fid = finding.get("id")
+        if not fid:
+            raise ValueError("seeded finding requires a stable 'id'")
+        status = finding.get("status", "UNKNOWN")
+        if status not in SEEDED_FINDING_STATES:
+            raise ValueError(f"invalid seeded-finding status {status!r}; "
+                             f"must be one of {SEEDED_FINDING_STATES} (§45.1)")
+        labels = finding.get("labels", [])
+        if not isinstance(labels, list):
+            labels = [str(labels)]
+        self._db.execute(
+            "INSERT OR REPLACE INTO seeded_findings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (fid, finding.get("source_file", ""), finding.get("date", finding.get("finding_date", "")),
+             finding.get("dataset", ""),
+             int(finding.get("sample_size", 0) or 0), finding.get("strategy_version", ""),
+             finding.get("cost_assumptions", ""), finding.get("known_bias", ""),
+             finding.get("known_missingness", ""),
+             1 if finding.get("chain_reconciled") else 0,
+             str(finding.get("reproducible", "unknown")),
+             1 if finding.get("subsequently_contradicted") else 0,
+             status, finding.get("conclusion", ""), json.dumps(labels),
+             created_run, time.time()))
+        self._db.commit()
+        return {"recorded": True, "id": fid, "status": status, "labels": labels}
+
+    def set_finding_status(self, finding_id: str, status: str) -> dict:
+        """Transition a seeded finding's reproduction status (§45.1). Validated; never silent.
+
+        The legitimate lifecycle is UNREPRODUCED/UNKNOWN → {REPRODUCED, PARTIALLY_REPRODUCED,
+        FALSIFIED, BIASED_SAMPLE, SUPERSEDED} as the audit runs; any target must be a member of
+        the §45.1 enum.
+        """
+        if status not in SEEDED_FINDING_STATES:
+            raise ValueError(f"invalid seeded-finding status {status!r}; "
+                             f"must be one of {SEEDED_FINDING_STATES} (§45.1)")
+        cur = self._db.execute(
+            "UPDATE seeded_findings SET status=? WHERE id=?", (status, finding_id))
+        self._db.commit()
+        if cur.rowcount == 0:
+            return {"ok": False, "reason": f"no seeded finding with id '{finding_id}'"}
+        return {"ok": True, "id": finding_id, "status": status}
+
+    def get_seeded_finding(self, finding_id: str) -> Optional[dict]:
+        row = self._db.execute(
+            "SELECT id,source_file,finding_date,dataset,sample_size,strategy_version,"
+            "cost_assumptions,known_bias,known_missingness,chain_reconciled,reproducible,"
+            "subsequently_contradicted,status,conclusion,labels,created_run,imported_at "
+            "FROM seeded_findings WHERE id=?", (finding_id,)).fetchone()
+        return self._finding_row(row) if row else None
+
+    def list_seeded_findings(self, status: str = "", limit: int = 500) -> list[dict]:
+        q = ("SELECT id,source_file,finding_date,dataset,sample_size,strategy_version,"
+             "cost_assumptions,known_bias,known_missingness,chain_reconciled,reproducible,"
+             "subsequently_contradicted,status,conclusion,labels,created_run,imported_at "
+             "FROM seeded_findings")
+        args: tuple = ()
+        if status:
+            if status not in SEEDED_FINDING_STATES:
+                raise ValueError(f"invalid seeded-finding status filter {status!r}")
+            q += " WHERE status=?"
+            args = (status,)
+        q += " ORDER BY imported_at ASC, id ASC LIMIT ?"
+        args = args + (limit,)
+        return [self._finding_row(r) for r in self._db.execute(q, args).fetchall()]
+
+    @staticmethod
+    def _finding_row(row: tuple) -> dict:
+        cols = ["id", "source_file", "finding_date", "dataset", "sample_size",
+                "strategy_version", "cost_assumptions", "known_bias", "known_missingness",
+                "chain_reconciled", "reproducible", "subsequently_contradicted", "status",
+                "conclusion", "labels", "created_run", "imported_at"]
+        d = dict(zip(cols, row))
+        d["chain_reconciled"] = bool(d["chain_reconciled"])
+        d["subsequently_contradicted"] = bool(d["subsequently_contradicted"])
+        try:
+            d["labels"] = json.loads(d["labels"] or "[]")
+        except json.JSONDecodeError:
+            d["labels"] = []
+        return d
+
+    # ---------------------------------------- root-cause classifications (§56.5)
+    def record_root_cause(self, run_id: str, evidence_ref: str, root_cause: str,
+                          detail: dict[str, Any] | None = None) -> int:
+        """Persist one §56.5 root-cause classification linked to its source record.
+
+        Aggregated later into DISTRIBUTIONS (never anecdotes) for the reflection report.
+        Validation of `root_cause` against ROOT_CAUSE_CLASSES lives in the classifier
+        (supervisor/analysis/root_cause.py) to keep the store free of the taxonomy import.
+        """
+        cur = self._db.execute(
+            "INSERT INTO root_cause_classifications (run_id,evidence_ref,root_cause,detail,"
+            "created_at) VALUES (?,?,?,?,?)",
+            (run_id, evidence_ref, root_cause, json.dumps(detail or {}), time.time()))
+        self._db.commit()
+        return cur.lastrowid
+
+    def list_root_causes(self, run_id: str = "", limit: int = 2000) -> list[dict]:
+        q = ("SELECT id,run_id,evidence_ref,root_cause,detail,created_at "
+             "FROM root_cause_classifications")
+        args: tuple = ()
+        if run_id:
+            q += " WHERE run_id=?"
+            args = (run_id,)
+        q += " ORDER BY created_at ASC, id ASC LIMIT ?"
+        args = args + (limit,)
+        cols = ["id", "run_id", "evidence_ref", "root_cause", "detail", "created_at"]
+        out = []
+        for r in self._db.execute(q, args).fetchall():
+            d = dict(zip(cols, r))
+            try:
+                d["detail"] = json.loads(d["detail"] or "{}")
+            except json.JSONDecodeError:
+                pass
+            out.append(d)
+        return out
 
     def close(self) -> None:
         self._db.close()

@@ -8,3 +8,6 @@ name = "pump_quant_execution"
 path = "src/lib.rs"
 
 [dependencies]
+# §36 6-class failure taxonomy (FailureClass6 / classify_failure6) consumed by the
+# builder-quarantine circuit breaker (criterion 78). Pure, std-only, no I/O.
+pump-quant-protocol = { path = "../pump-quant-protocol" }

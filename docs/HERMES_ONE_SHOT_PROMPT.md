@@ -1911,3 +1911,23 @@ enrichment for candle analysis (Section 21.6 family), consumed only through Mark
 6.6 auxiliary laws; authority class unchanged (6.1 prohibition on Birdeye trade history as raw truth
 stands). Build obligation lives in SERVER_BUILD_MANIFEST §10; evaluation record in
 docs/BIRDEYE_SOURCE.md. Lane is [S] server (Phase-B); fail-open as absence._
+
+_Amendment A-4 (2026-07-23, human-directed): §24 defect-#3 reversal is LIVE — cost-derived profit
+targets are the ENGINE DEFAULT, not an opt-in. This resolves criterion-102 named defect #3 (§24
+hardcoded-parameter law): fixed global take-profit percentages (the legacy tp1 13,500 / tp2 25,000 /
+tp3 50,000 bp constants) are PROHIBITED as the live default. Profit targets and partial-exit rung
+count are derived per market and per size from the gate's own measured round-trip cost floor
+(round_trip_cost_bps) plus configured margin (config `target_margin_mult_bp`), clamped inside the
+§56.2 floor/ceiling envelope (`target_floor_bp`/`target_ceiling_bp`); rung count is cost-priced via
+exit_ladder::ladder_rungs (§34.4/criterion 112 — a clip too small to carry multiple rungs above the
+fixed-cost floor exits in one). `derived_targets_enable` defaults TRUE in the canonical config; the
+fixed constants survive only as a config-flippable fallback for challenger A/B, never as the default.
+IMPORTANT for Hermes (do not misread): honoring this reversal DROPPED the golden reference net on the
+old synthetic tape (12,550,767 → 3,831,945) because that tape modeled unrealistically low (~1.5%)
+round-trip cost, which structurally rewarded the forbidden aggressive fixed ladder. The golden tape
+was therefore corrected to model REALISTIC pump.fun/PumpSwap scalp economics (~7% round-trip cost,
+dominated by fixed priority/tip on small clips; realistic loser/small-winner/runner outcome mix),
+re-pinned to net 1,406,102 — the honest representative reference. On that cost-realistic tape
+cost-derived targets marginally OUT-EARN the fixed ladder (+12,620), so constitution and evidence now
+agree. The old 12.55M headline was an artifact of understated costs and must not be cited as live edge.
+Per-law A/B attribution lives in tests/audit_wave2_laws.rs; the re-pin history is in tests/golden_digest.rs._

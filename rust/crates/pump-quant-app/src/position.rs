@@ -30,8 +30,13 @@
 //! * **Bounded (§99).** Open positions are capped; the manager evicts nothing
 //!   silently — a position is only removed when it CLOSES.
 
+use pump_quant_signals::microstructure::{burst_phase, BurstPhase};
 use pump_quant_strategy::exit_ladder::protection_level_fp;
 use std::collections::BTreeMap;
+
+/// §24(d) LAW 5: length of the bounded recent-gap ring whose max is the climax
+/// detector's slow-baseline arrival reference (§99 fixed per-position footprint).
+const ARR_RING: usize = 8;
 
 /// Named lifecycle parameters (§102 — each a documented scale, not a magic number).
 /// Multiples are bps of entry price (`10_000` = 1.0× = break-even); fractions are
@@ -80,6 +85,19 @@ pub struct LifecycleParams {
     /// AdversarialPessimistic. Keeps paper net-SOL from compounding optimism into
     /// the sizing and reflection loops.
     pub exit_impair_bps: u32,
+    /// §24(d) LAW 5: arm the exit-into-strength trigger (sell into a buy-side burst
+    /// climax while in profit). Per-position so shadow challengers can carry it
+    /// independently of the incumbent (§48 pre-registered axis).
+    pub into_strength_exit_enable: bool,
+    /// §24(d) LAW 5: burst arrival-rate elevation multiple (bps of 10_000) over
+    /// baseline that a plateaued recent window must clear to count as a climax.
+    pub into_strength_climax_bp: u32,
+    /// §24 LAW 6: arm the volatility-scaled stop/trail (widen the hard stop and
+    /// trailing width with realized vol, inside the envelope). Per-position.
+    pub vol_stop_enable: bool,
+    /// §24 LAW 6: fraction (bps of 10_000) of the position's realized-vol bps added
+    /// to the base stop/trail width before the envelope clamp.
+    pub vol_stop_scale_bp: u32,
 }
 
 impl LifecycleParams {
@@ -105,6 +123,10 @@ impl LifecycleParams {
             first_sell_penalty_bps: 150,
             tip_lamports: 10_000,
             exit_impair_bps: 0, // Mode A/B default; engine sets from cfg.fill_mode
+            into_strength_exit_enable: false, // LAW 5 off by default; operator/challenger arms
+            into_strength_climax_bp: 20_000, // 2× baseline arrival = a genuine climax
+            vol_stop_enable: false, // LAW 6 off by default
+            vol_stop_scale_bp: 5_000, // 0.5× realized-vol added to base stop/trail
         }
     }
 }
@@ -132,6 +154,12 @@ pub enum ExitReason {
     TimeStop,
     /// Forced close at end of run (no trigger fired first).
     ForceClose,
+    /// §26 confirmed creator-dump hard exit — the deployer distributed past the
+    /// veto threshold while the position was held (operator-approved reversal).
+    CreatorDump,
+    /// §24(d) exit-into-strength — sold the remainder INTO an authentic buy-side
+    /// burst climax while in profit (harvest the buyers, not the exhaustion).
+    IntoStrength,
 }
 
 impl ExitReason {
@@ -152,8 +180,27 @@ impl ExitReason {
             ExitReason::TrailingStop => 5,
             ExitReason::TimeStop => 6,
             ExitReason::ForceClose => 7,
+            ExitReason::CreatorDump => 8,
+            ExitReason::IntoStrength => 9,
         }
     }
+}
+
+/// §24 LAW 2 per-market derived take-profit ladder, computed once at admit from
+/// the gate's measured round-trip cost (via `exit_ladder::derive_target_bps`) and
+/// the cost-priced rung count (via `exit_ladder::ladder_rungs`). Replaces the
+/// fixed tp1/tp2/tp3 multiples for the position it is armed on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DerivedTargets {
+    /// Tranche-1 target, mult bps of entry (10_000 = break-even).
+    pub tp1_bps: u32,
+    /// Tranche-2 target, mult bps.
+    pub tp2_bps: u32,
+    /// Tranche-3 target, mult bps.
+    pub tp3_bps: u32,
+    /// Cost-priced rung COUNT (1..=3): tranches beyond this are disabled — a
+    /// position too small to carry a rung above the fixed-cost floor takes fewer.
+    pub rungs: u8,
 }
 
 /// One realized (partial or full) exit event.
@@ -202,6 +249,22 @@ struct HeldPosition {
     pressure: bool,
     /// Whether the probe→confirm scale-in has already fired (§33: one-shot).
     scaled: bool,
+    /// §24 LAW 2 per-market derived take-profit ladder (None = use the fixed
+    /// `LifecycleParams` tp1/tp2/tp3). Armed at admit via [`ScalpLifecycle::arm_context`].
+    derived: Option<DerivedTargets>,
+    /// §24 LAW 6 realized volatility of the recent bar window at admit, bps —
+    /// scales the hard stop / trail width inside the envelope.
+    vol_bps: u32,
+    /// §24(d) LAW 5 swap-arrival tracking (for `burst_phase`): logical tick of the
+    /// previous swap, the previous inter-swap gap, and a bounded ring of the recent
+    /// inter-swap gaps whose MAX is the slow-baseline reference (truncation-free,
+    /// unlike an integer EMA of small gaps).
+    last_tick: u64,
+    prior_gap: u64,
+    gap_ring: [u64; ARR_RING],
+    gap_ring_len: u64,
+    /// Swaps observed (the climax detector needs a short baseline first).
+    trades_seen: u64,
 }
 
 impl HeldPosition {
@@ -216,6 +279,7 @@ impl HeldPosition {
         (m(self.peak_price_fp), m(self.trough_price_fp))
     }
 
+    #[inline]
     fn mult_bps(&self, price_fp: u64) -> u32 {
         if self.entry_price_fp == 0 {
             return 10_000;
@@ -236,6 +300,62 @@ impl HeldPosition {
             p.trail_max_bps
         };
         scaled.clamp(p.trail_base_bps.min(max), max)
+    }
+
+    /// §24 LAW 6: the effective (trail, hard_sl) after volatility scaling, clamped
+    /// INSIDE the position's `[trail_base_bps, trail_max_bps]` envelope (never
+    /// outside floor/ceiling — §56.2). When `vol_stop_enable` is off this is the
+    /// unscaled `(base_trail, p.hard_sl_bps)`, byte-identical to prior behaviour.
+    fn protection_widths(&self, p: &LifecycleParams) -> (u32, u32) {
+        let base_trail = self.trail_bps(p);
+        if !p.vol_stop_enable {
+            return (base_trail, p.hard_sl_bps);
+        }
+        let extra = ((u64::from(self.vol_bps) * u64::from(p.vol_stop_scale_bp)) / 10_000) as u32;
+        let floor = p.trail_base_bps.min(p.trail_max_bps);
+        let ceil = p.trail_max_bps;
+        let trail = base_trail.saturating_add(extra).clamp(floor, ceil);
+        // A volatile market gets a WIDER hard stop (more room for noise), never
+        // tighter than the base and never past the envelope ceiling.
+        let hard_sl = p
+            .hard_sl_bps
+            .saturating_add(extra)
+            .clamp(p.hard_sl_bps.min(ceil), ceil);
+        (trail, hard_sl)
+    }
+
+    /// §24(d) LAW 5: whether the current swap sits at an authentic buy-side burst
+    /// CLIMAX while in profit — `pump_quant_signals::microstructure::burst_phase`
+    /// over the position's own swap-arrival stream (recent gap vs the prior gap vs
+    /// a slow-decaying baseline gap). Deterministic integer rates (§22).
+    fn buy_climax(
+        &self,
+        price_fp: u64,
+        signed_quote: i128,
+        tick: u64,
+        p: &LifecycleParams,
+    ) -> bool {
+        // In profit and this swap is a net buy — the "into strength" precondition
+        // (the burst-arrival plateau below supplies the "climax", not exhaustion).
+        if self.mult_bps(price_fp) <= 10_000 || signed_quote <= 0 {
+            return false;
+        }
+        if self.trades_seen < 3 {
+            return false; // need a baseline before a climax can be defined
+        }
+        const RATE_SCALE: u64 = 1_000_000;
+        let recent_gap = tick.saturating_sub(self.last_tick).max(1);
+        // Baseline = the slowest recent inter-swap gap (max over the ring): a climax
+        // is the recent arrival rate strongly elevated over that slow baseline.
+        let base_gap = self.gap_ring.iter().copied().max().unwrap_or(1).max(1);
+        let recent = RATE_SCALE / recent_gap;
+        let prior = RATE_SCALE / self.prior_gap.max(1);
+        let baseline = RATE_SCALE / base_gap;
+        let mult = (u64::from(p.into_strength_climax_bp) / 10_000).max(1);
+        matches!(
+            burst_phase(recent, prior, baseline, mult),
+            BurstPhase::Climax
+        )
     }
 
     /// Net lamports realized by selling `frac_bps` of the ORIGINAL size at
@@ -275,6 +395,11 @@ pub struct ScalpLifecycle {
     open: BTreeMap<[u8; 32], HeldPosition>,
     params: LifecycleParams,
     cap: usize,
+    /// Reused per-tick scratch for the `on_tick` time-stop scan (O5): the mints
+    /// whose time-stop fired this tick. Cleared (not freed) each call via
+    /// `mem::take`, so the per-tick exit scan allocates nothing in steady state.
+    /// Bounded by `cap` (≤ max_concurrent_positions). No state crosses ticks.
+    fired_buf: Vec<[u8; 32]>,
 }
 
 impl ScalpLifecycle {
@@ -285,6 +410,7 @@ impl ScalpLifecycle {
             open: BTreeMap::new(),
             params,
             cap: cap.max(1),
+            fired_buf: Vec::with_capacity(cap.max(1)),
         }
     }
 
@@ -339,9 +465,29 @@ impl ScalpLifecycle {
                 trough_price_fp: entry_price_fp,
                 pressure: false,
                 scaled: false,
+                derived: None,
+                vol_bps: 0,
+                last_tick: tick,
+                prior_gap: 0,
+                gap_ring: [0; ARR_RING],
+                gap_ring_len: 0,
+                trades_seen: 0,
             },
         );
         true
+    }
+
+    /// §24 LAW 2 / LAW 6 admit-time context: arm the per-market derived take-profit
+    /// ladder (`derived`, computed by the engine from the gate's measured round-trip
+    /// cost) and record the recent-window realized volatility (`vol_bps`) used to
+    /// scale the stop/trail. Idempotent-safe; a no-op when `mint` is not held. When
+    /// `derived` is `None` and `vol_bps` is `0` the position is byte-identical to one
+    /// never armed (the off-by-default path).
+    pub fn arm_context(&mut self, mint: &[u8; 32], vol_bps: u32, derived: Option<DerivedTargets>) {
+        if let Some(pos) = self.open.get_mut(mint) {
+            pos.vol_bps = vol_bps;
+            pos.derived = derived;
+        }
     }
 
     /// Apply meta-saturation exit pressure to an open position (§21.4): halves the
@@ -395,6 +541,19 @@ impl ScalpLifecycle {
         if price_fp < pos.trough_price_fp {
             pos.trough_price_fp = price_fp;
         }
+        // §24(d) LAW 5: evaluate the buy-side burst climax against the CURRENT
+        // swap-arrival gaps, THEN advance the gap/baseline track (so "climax" is a
+        // plateau of this swap's arrival vs the prior swap's, over the baseline).
+        let climax =
+            p.into_strength_exit_enable && pos.buy_climax(price_fp, signed_quote, tick, &p);
+        let recent_gap = tick.saturating_sub(pos.last_tick);
+        // Record this gap in the bounded ring (its max is the baseline reference).
+        let slot = (pos.gap_ring_len as usize) % ARR_RING;
+        pos.gap_ring[slot] = recent_gap;
+        pos.gap_ring_len = pos.gap_ring_len.saturating_add(1);
+        pos.prior_gap = recent_gap;
+        pos.last_tick = tick;
+        pos.trades_seen = pos.trades_seen.saturating_add(1);
         // Capture the previous print and advance it unconditionally, BEFORE any
         // trigger can early-return — the precursor must always compare consecutive
         // prints (a stale prev after a ladder tranche would blind it).
@@ -412,19 +571,27 @@ impl ScalpLifecycle {
         }
 
         // P1 hard stop + P4 trailing, via the strategy protection leaf (whole-life).
-        let trail = pos.trail_bps(&p);
-        let protect =
-            protection_level_fp(pos.peak_price_fp, pos.entry_price_fp, trail, p.hard_sl_bps);
+        // §24 LAW 6: the trail/hard-stop widths are volatility-scaled inside the
+        // envelope (identity when `vol_stop_enable` is off).
+        let (trail, hard_sl) = pos.protection_widths(&p);
+        let protect = protection_level_fp(pos.peak_price_fp, pos.entry_price_fp, trail, hard_sl);
         if price_fp <= protect {
             // Distinguish the hard stop (at/below entry−hard_sl) from the trail.
             let hard_level =
-                protection_level_fp(pos.entry_price_fp, pos.entry_price_fp, 0, p.hard_sl_bps);
+                protection_level_fp(pos.entry_price_fp, pos.entry_price_fp, 0, hard_sl);
             let reason = if price_fp <= hard_level {
                 ExitReason::HardStop
             } else {
                 ExitReason::TrailingStop
             };
             return Some(self.close(mint, mult, reason));
+        }
+
+        // §24(d) LAW 5 exit-into-strength: an authentic buy-side climax while in
+        // profit — sell the remainder INTO the buyers (harvest strength rather than
+        // wait for exhaustion). Terminal; ranks below the protective stops above.
+        if climax {
+            return Some(self.close(mint, mult, ExitReason::IntoStrength));
         }
 
         // P2 thesis-invalidation: CVD rolled over, or a stall while in profit.
@@ -441,7 +608,15 @@ impl ScalpLifecycle {
         }
 
         // P3 principal-recovery ladder (partial tranches; position stays open).
-        if mult >= p.tp1_bps && (pos.tranche_mask & 0b001) == 0 {
+        // §24 LAW 2: when a per-market DERIVED ladder is armed, its cost-derived
+        // tp1/tp2/tp3 multiples and cost-priced rung COUNT replace the fixed
+        // constants; tranches beyond the rung count are disabled. Off = the fixed
+        // 3-rung ladder, byte-identical to prior behaviour.
+        let (t1, t2, t3, max_rungs) = match pos.derived {
+            Some(d) => (d.tp1_bps, d.tp2_bps, d.tp3_bps, d.rungs),
+            None => (p.tp1_bps, p.tp2_bps, p.tp3_bps, 3u8),
+        };
+        if max_rungs >= 1 && mult >= t1 && (pos.tranche_mask & 0b001) == 0 {
             // Sell the fraction that recovers principal+cost at this multiple.
             let recover_frac = ((u128::from(pos.cost_lamports) * 10_000)
                 / (u128::from(pos.size_lamports).max(1) * u128::from(mult) / 10_000).max(1))
@@ -459,7 +634,7 @@ impl ScalpLifecycle {
                 mae_bps,
             });
         }
-        if mult >= p.tp2_bps && (pos.tranche_mask & 0b010) == 0 {
+        if max_rungs >= 2 && mult >= t2 && (pos.tranche_mask & 0b010) == 0 {
             pos.tranche_mask |= 0b010;
             let net = pos.realize(p.tp2_frac_bps, mult, &p);
             let (mfe_bps, mae_bps) = pos.excursions_bps();
@@ -472,7 +647,7 @@ impl ScalpLifecycle {
                 mae_bps,
             });
         }
-        if mult >= p.tp3_bps && (pos.tranche_mask & 0b100) == 0 {
+        if max_rungs >= 3 && mult >= t3 && (pos.tranche_mask & 0b100) == 0 {
             pos.tranche_mask |= 0b100;
             let net = pos.realize(p.tp3_frac_bps, mult, &p);
             let (mfe_bps, mae_bps) = pos.excursions_bps();
@@ -497,7 +672,10 @@ impl ScalpLifecycle {
         latest_price_fp: &dyn Fn(&[u8; 32]) -> Option<u64>,
     ) -> Vec<Exit> {
         let p = self.params;
-        let mut fired: Vec<[u8; 32]> = Vec::new();
+        // Reused scratch (O5): identical contents/order to the old per-tick `Vec`
+        // (BTreeMap iteration order), so exits fire in the same order — digest-safe.
+        let mut fired = std::mem::take(&mut self.fired_buf);
+        fired.clear();
         for (mint, pos) in self.open.iter() {
             let not_advancing = tick.saturating_sub(pos.last_high_tick) >= p.stall_ticks;
             let aged = tick.saturating_sub(pos.entry_tick) >= p.max_hold_ticks;
@@ -506,7 +684,7 @@ impl ScalpLifecycle {
             }
         }
         let mut out = Vec::with_capacity(fired.len());
-        for mint in fired {
+        for mint in fired.drain(..) {
             // §38: a position whose mark is UNKNOWN may never be valued at an
             // assumed-flat price — the predeclared terminal rule values it at
             // the hard-stop distance below entry (conservative, fail-closed).
@@ -515,6 +693,7 @@ impl ScalpLifecycle {
                 .unwrap_or(10_000_u32.saturating_sub(p.hard_sl_bps));
             out.push(self.close(&mint, mult, ExitReason::TimeStop));
         }
+        self.fired_buf = fired;
         out
     }
 
@@ -552,7 +731,7 @@ impl ScalpLifecycle {
 
     /// Realize the entire remaining position at `mult_bps` and remove it.
     fn close(&mut self, mint: &[u8; 32], mult_bps: u32, reason: ExitReason) -> Exit {
-        let mut pos = self.open.remove(mint).expect("close on an open position");
+        let mut pos = self.open.remove(mint).expect("close on an open position"); // LINT-ALLOW(hot_panic): infallible — every caller (on_tick/close_at/force_close_all) checks open membership before close()
         let (mfe_bps, mae_bps) = pos.excursions_bps();
         let net = pos.realize(pos.remaining_bps, mult_bps, &self.params);
         Exit {

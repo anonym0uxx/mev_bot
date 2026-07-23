@@ -22,6 +22,7 @@
 
 use crate::config::{Config, FillModeCfg};
 use pump_quant_evaluator::evidence_status::EvidenceStatus;
+use pump_quant_evaluator::promotion_verdict::{PromotionBlockReason, PromotionStatisticalVerdict};
 use pump_quant_governance::canonical::CanonicalValue;
 use pump_quant_governance::hashing::{strategy_hash, StrategyHash};
 use pump_quant_governance::strategy_registry::{
@@ -58,8 +59,16 @@ pub struct PromotionReadiness {
     /// The governance probe gate's verdict over that grade (`Err` = first
     /// failed criterion; a paper run ALWAYS fails at least one).
     pub probe_gate: Result<(), ProbeCriterion>,
+    /// §51 combined FDR + PBO/CSCV statistical promotion verdict, CONSULTED as a
+    /// hard-blocker: a challenger family that does not survive Benjamini–Hochberg
+    /// FDR correction or is at/above the PBO overfitting threshold (or whose CSCV
+    /// matrix is inadmissible) blocks promotion regardless of the other criteria.
+    /// Report-only, but never ignored — it gates `live_probe_eligible` and, when it
+    /// is the binding constraint, surfaces in `blocked_on`.
+    pub stat_verdict: PromotionStatisticalVerdict,
     /// True only when the fill model is Mode C AND the §52 baseline verdict
-    /// defeats AND the probe gate passes — i.e. never on a pure laptop run.
+    /// defeats AND the probe gate passes AND the §51 statistical gate does not
+    /// block — i.e. never on a pure laptop run.
     pub live_probe_eligible: bool,
     /// The single most actionable blocker, as a stable label.
     pub blocked_on: &'static str,
@@ -75,6 +84,7 @@ pub fn promotion_readiness(
     cfg: &Config,
     baselines_defeated: bool,
     drawdown_within_limits: bool,
+    stat_verdict: PromotionStatisticalVerdict,
 ) -> PromotionReadiness {
     let (evidence_status, fill_model) = evidence_of(cfg.fill_mode);
     let grade = EvidenceGrade {
@@ -92,10 +102,22 @@ pub fn promotion_readiness(
     };
     let probe_gate = gate.evaluate(&grade);
     let mode_c = matches!(fill_model, FillModelClass::CalibratedAdversarial);
-    let live_probe_eligible = mode_c && baselines_defeated && probe_gate.is_ok();
+    let stat_blocks = stat_verdict.blocks();
+    let live_probe_eligible = mode_c && baselines_defeated && probe_gate.is_ok() && !stat_blocks;
     let blocked_on = if !mode_c {
         // §38: only Mode C may support movement toward live probe.
         "mode_c_required"
+    } else if stat_blocks {
+        // §51: a challenger that does not survive FDR or is overfit under PBO is
+        // blocked BEFORE evidence-sufficiency — a statistically unsound edge is
+        // not worth promoting even with clean data. Consulted, never ignored.
+        match stat_verdict.reason {
+            PromotionBlockReason::FdrOnly => "promotion_verdict:fdr",
+            PromotionBlockReason::PboOnly => "promotion_verdict:pbo",
+            PromotionBlockReason::Both => "promotion_verdict:fdr_pbo",
+            // `stat_blocks` is true, so `Clear` is unreachable here; map defensively.
+            PromotionBlockReason::Clear => "promotion_verdict:blocked",
+        }
     } else if let Err(c) = probe_gate {
         match c {
             ProbeCriterion::SequentialEdge => "probe_gate:sequential_edge",
@@ -114,6 +136,7 @@ pub fn promotion_readiness(
         fill_model,
         grade,
         probe_gate,
+        stat_verdict,
         live_probe_eligible,
         blocked_on,
     }
@@ -158,12 +181,22 @@ pub fn strategy_identity(cfg: &Config) -> StrategyIdentity {
 mod tests {
     use super::*;
 
+    /// A non-blocking §51 verdict (nothing to promote / statistically clean).
+    fn clear_stat() -> PromotionStatisticalVerdict {
+        PromotionStatisticalVerdict {
+            fdr_blocks: false,
+            pbo_blocks: false,
+            pbo_bps: Some(0),
+            reason: PromotionBlockReason::Clear,
+        }
+    }
+
     #[test]
     fn optimistic_ceiling_is_never_probe_eligible() {
         let mut cfg = Config::dev_portable();
         cfg.fill_mode = FillModeCfg::OptimisticCeiling;
         // Even with every laptop-attestable criterion at its best...
-        let r = promotion_readiness(&cfg, true, true);
+        let r = promotion_readiness(&cfg, true, true, clear_stat());
         assert!(!r.live_probe_eligible);
         assert_eq!(r.blocked_on, "mode_c_required");
         assert_eq!(r.evidence_status, EvidenceStatus::Paper);
@@ -173,13 +206,66 @@ mod tests {
     fn mode_c_paper_still_fails_probe_gate_fail_closed() {
         let mut cfg = Config::dev_portable();
         cfg.fill_mode = FillModeCfg::AdversarialRealistic;
-        let r = promotion_readiness(&cfg, true, true);
+        let r = promotion_readiness(&cfg, true, true, clear_stat());
         // Mode C clears the fill-model law, but the laptop cannot attest
         // sequential live edge / sell reliability / reconciled trades — the
         // probe gate must fail closed, never silently pass.
         assert!(!r.live_probe_eligible);
         assert!(r.probe_gate.is_err());
         assert!(r.blocked_on.starts_with("probe_gate:"));
+    }
+
+    // ------------------------------------------------------------------------
+    // LAW 14 (§51): the FDR/PBO promotion verdict is a CONSULTED hard-blocker.
+    // ------------------------------------------------------------------------
+    use pump_quant_evaluator::fdr::Hypothesis;
+    use pump_quant_evaluator::promotion_verdict::promotion_verdict;
+
+    /// A family whose candidate is not among the BH-FDR discoveries trips the §51
+    /// gate; even under Mode C with baselines defeated and drawdown clean, the
+    /// readiness report must BLOCK promotion and name the statistical gate as the
+    /// binding reason — proving the verdict is consulted, not ignored.
+    #[test]
+    fn fdr_trip_blocks_promotion_in_readiness() {
+        let mut cfg = Config::dev_portable();
+        cfg.fill_mode = FillModeCfg::AdversarialRealistic;
+        // candidate 2 (p = 0.5) is not a BH discovery at alpha 5% -> FDR blocks;
+        // the skilled perf matrix keeps PBO at 0, so the block is FDR-only.
+        let fam = vec![Hypothesis::new(1, 5_000), Hypothesis::new(2, 500_000)];
+        let perf = vec![
+            vec![100, 100, 100, 100],
+            vec![10, 10, 10, 10],
+            vec![20, 20, 20, 20],
+            vec![30, 30, 30, 30],
+        ];
+        let v = promotion_verdict(&fam, 50_000, 2, &perf, 5_000);
+        assert!(v.blocks() && v.fdr_blocks && !v.pbo_blocks);
+        let blocked = promotion_readiness(&cfg, true, true, v);
+        assert!(!blocked.live_probe_eligible);
+        assert_eq!(blocked.blocked_on, "promotion_verdict:fdr");
+        assert!(blocked.stat_verdict.blocks());
+
+        // Same everything, but a CLEAR statistical verdict: the §51 gate no longer
+        // binds and the report falls through to the evidence-sufficiency gate —
+        // the A/B that proves the statistical gate is what blocked above.
+        let clear = promotion_readiness(&cfg, true, true, clear_stat());
+        assert!(clear.blocked_on.starts_with("probe_gate:"));
+        assert!(!clear.stat_verdict.blocks());
+    }
+
+    /// An inadmissible CSCV matrix fails the PBO gate closed and blocks promotion —
+    /// overfitting that cannot even be measured is not a silent pass (§51).
+    #[test]
+    fn pbo_inadmissible_blocks_promotion_in_readiness() {
+        let mut cfg = Config::dev_portable();
+        cfg.fill_mode = FillModeCfg::AdversarialRealistic;
+        let fam = vec![Hypothesis::new(1, 5_000)];
+        // single-row perf -> TooFewTrials -> pbo_blocks, pbo_bps None (fail closed).
+        let v = promotion_verdict(&fam, 50_000, 1, &[vec![1, 2]], 5_000);
+        assert!(v.pbo_blocks && v.pbo_bps.is_none());
+        let r = promotion_readiness(&cfg, true, true, v);
+        assert!(!r.live_probe_eligible);
+        assert!(r.blocked_on.starts_with("promotion_verdict:"));
     }
 
     #[test]

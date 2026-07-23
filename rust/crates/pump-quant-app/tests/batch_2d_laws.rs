@@ -1,0 +1,286 @@
+//! Batch-2d law attribution (LAWs 12–21): records + report-plane hooks. Each test
+//! proves its law — an A/B where the law changes a decision (LAW 13), a
+//! presence/shape assertion where the law is a record or report-plane hook
+//! (LAWs 12, 15, 16, 17, 18). LAWs 14/19/20/21 are proven by unit tests co-located
+//! with their code (authority.rs, feature_admit.rs, ablation_replay.rs,
+//! live_status.rs). Determinism (§22) makes every comparison exact.
+
+use pump_quant_app::config::Config;
+use pump_quant_app::engine::{Engine, RunMode};
+use pump_quant_app::event::AppEvent;
+use pump_quant_app::journal_log::Decision;
+use pump_quant_domain::ids::Mint;
+
+fn mint(tag: u64) -> Mint {
+    let mut b = [0u8; 32];
+    b[..8].copy_from_slice(&tag.to_le_bytes());
+    b[8] = 0xAB;
+    Mint::from_bytes(b)
+}
+
+const PRICE_SCALE: i128 = 10_000_000;
+
+/// Emit `n` rising net-buy trades for one mint (opens a long thesis on confirm).
+fn pump(eng: &mut Engine, tag: u64, base_mult: i128, n: u64, liq: u64) {
+    for i in 0..n {
+        eng.tick(AppEvent::MarketTrade {
+            mint: mint(tag),
+            price_fp: (base_mult + i as i128) * PRICE_SCALE,
+            quote_lamports: 800_000,
+            liquidity_lamports: liq,
+            signed_base: 900_000 - (i as i64),
+            buyer_entity: 40 + i % 7,
+            age_slots: 12,
+        });
+    }
+}
+
+/// Drive a multi-mint tape that opens and exits positions under `cfg`.
+fn drive_positions(cfg: Config) -> Engine {
+    let mut eng = Engine::new(cfg, RunMode::Replay);
+    for round in 0..3u64 {
+        for m in 0..6u64 {
+            pump(&mut eng, m, 100 + round as i128 * 20, 24, 400_000_000);
+            eng.tick(AppEvent::OnchainConfirm {
+                mint: mint(m),
+                sellable_depth_lamports: 500_000_000,
+            });
+        }
+        for _ in 0..40 {
+            eng.tick(AppEvent::Tick);
+        }
+        // A crash so held positions actually exit (trailing/hard stop).
+        for m in 0..6u64 {
+            for i in 0..12u64 {
+                eng.tick(AppEvent::MarketTrade {
+                    mint: mint(m),
+                    price_fp: (150 - i as i128 * 6) * PRICE_SCALE,
+                    quote_lamports: 800_000,
+                    liquidity_lamports: 400_000_000,
+                    signed_base: -900_000,
+                    buyer_entity: 40 + i % 7,
+                    age_slots: 12,
+                });
+            }
+        }
+        for _ in 0..40 {
+            eng.tick(AppEvent::Tick);
+        }
+    }
+    eng
+}
+
+// ============================================================================
+// LAW 12 (§34.4): the Admitted journal record carries the size band, the
+// attempt/fail-rate multiplier, and the impact provenance.
+// ============================================================================
+#[test]
+fn admitted_record_carries_band_and_provenance() {
+    let cfg = Config::dev_portable();
+    let fail_rate = cfg.gate_fail_rate_bps;
+    let mut eng = drive_positions(cfg);
+    let _ = eng.report();
+    let admits: Vec<_> = eng
+        .journal()
+        .recent()
+        .filter_map(|d| match *d {
+            Decision::Admitted {
+                mint: _,
+                size_lamports,
+                x_min,
+                x_cost,
+                x_max,
+                fail_rate_bps,
+                rt_cost_bps,
+            } => Some((
+                size_lamports,
+                x_min,
+                x_cost,
+                x_max,
+                fail_rate_bps,
+                rt_cost_bps,
+            )),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !admits.is_empty(),
+        "the tape must open at least one position"
+    );
+    for (size, x_min, x_cost, x_max, fr, rt) in admits {
+        // The band is well-ordered and the admitted size lies within it.
+        assert!(x_min <= x_cost && x_cost <= x_max, "band must be ordered");
+        assert!(size >= x_min && size <= x_max, "size within admitted band");
+        // The fail-rate multiplier is the config value that inflated the fixed cost.
+        assert_eq!(fr, fail_rate, "fail-rate provenance recorded");
+        // Impact provenance: a real round-trip cost was measured at the admitted size.
+        assert!(rt > 0, "round-trip impact provenance recorded");
+    }
+}
+
+// ============================================================================
+// LAW 13 (§33/§43): sub-x_min probes route through the calibration budget and
+// are journal-labeled as budgeted paid-information — NOT opened raw as positions.
+// A/B: budget-accounted+labeled (ON) vs opened/rejected raw (OFF).
+// ============================================================================
+
+/// A tiny-bankroll tape: deployable is small enough that the §33 sizing lands
+/// BELOW the economic x_min cost floor, so every viable candidate hits the
+/// sub-x_min branch.
+fn drive_sub_xmin(probe_budget: bool) -> Engine {
+    let mut cfg = Config::dev_portable();
+    cfg.bankroll_initial_lamports = 600_000_000; // 0.6 SOL: deployable ~0.1 SOL
+    cfg.probe_budget_enable = probe_budget;
+    let mut eng = Engine::new(cfg, RunMode::Replay);
+    for m in 0..6u64 {
+        pump(&mut eng, m, 100, 24, 400_000_000);
+        eng.tick(AppEvent::OnchainConfirm {
+            mint: mint(m),
+            sellable_depth_lamports: 500_000_000,
+        });
+    }
+    for _ in 0..30 {
+        eng.tick(AppEvent::Tick);
+    }
+    eng
+}
+
+#[test]
+fn sub_xmin_probe_is_budget_accounted_and_labeled_vs_raw() {
+    // ON: sub-x_min candidates route through the calibration budget → labeled
+    // Probe records + accounted spend, and are NOT opened as positions.
+    let mut on = drive_sub_xmin(true);
+    let ron = on.report();
+    let (spend_on, probes_on) = on.probe_budget_report();
+    let probe_records = on
+        .journal()
+        .recent()
+        .filter(|d| matches!(**d, Decision::Probe { .. }))
+        .count();
+
+    // OFF: the sub-x_min branch behaves as before (promotion valve or refuse) —
+    // no probe accounting, no Probe labels.
+    let mut off = drive_sub_xmin(false);
+    let roff = off.report();
+    let (spend_off, probes_off) = off.probe_budget_report();
+    let probe_records_off = off
+        .journal()
+        .recent()
+        .filter(|d| matches!(**d, Decision::Probe { .. }))
+        .count();
+
+    // The law fired: sub-x_min candidates were budget-accounted and labeled.
+    assert!(
+        probes_on > 0 && spend_on > 0,
+        "probe-budget ON must account paid-information probes (probes={probes_on}, spend={spend_on})"
+    );
+    assert!(probe_records > 0, "ON must journal labeled Probe records");
+    // And the OFF arm did NONE of that.
+    assert_eq!(probes_off, 0, "probe-budget OFF accounts no probes");
+    assert_eq!(spend_off, 0, "probe-budget OFF spends nothing");
+    assert_eq!(probe_records_off, 0, "OFF journals no Probe labels");
+    // A probe is never a position: the ON arm opened no more than the OFF arm.
+    assert!(
+        ron.admitted <= roff.admitted,
+        "probes replace raw opens/refusals, never add positions (on={}, off={})",
+        ron.admitted,
+        roff.admitted
+    );
+}
+
+// ============================================================================
+// LAW 15 (§49): vetoes and haircuts now produce NON-degenerate convexity ledger
+// events (counterfactual-vs-zero / reduced-vs-full), not a self-cancelling pair.
+// ============================================================================
+#[test]
+fn vetoes_and_haircuts_produce_nondegenerate_convexity() {
+    let mut eng = drive_positions(Config::dev_portable());
+    let _ = eng.report();
+    let rules = eng.analytics_report().convexity_rules;
+    assert!(!rules.is_empty(), "convexity ledger must be populated");
+    // At least one rule ledger folds a suppression (veto or haircut) whose net
+    // convexity is non-zero — i.e. counterfactual != realized (non-degenerate).
+    let nondegenerate = rules
+        .iter()
+        .any(|r| r.suppressed_n > 0 && r.net_convexity_bps() != 0);
+    assert!(
+        nondegenerate,
+        "a veto or haircut must record a non-degenerate (counterfactual != realized) event; rules={rules:?}"
+    );
+}
+
+// ============================================================================
+// LAW 16 (§52): baseline_verdict runs the whole deterministic baseline FAMILY,
+// and the family net-SOL vector is reported.
+// ============================================================================
+#[test]
+fn baseline_family_vector_is_reported() {
+    let mut cfg = Config::dev_portable();
+    cfg.baseline_min_trades = 1;
+    let mut eng = drive_positions(cfg);
+    let _ = eng.report();
+    let family = eng.baseline_family_report();
+    // The full 5-baseline family net-SOL vector (random-eligible / buy-every-launch
+    // / threshold-only / fixed-TP-SL / hold-to-death).
+    assert_eq!(family.len(), 5, "the full baseline family must be reported");
+    // The family-wise-margin verdict runs against ALL of them.
+    assert!(
+        eng.baseline_verdict().is_some(),
+        "past the small-n guard a family verdict must exist"
+    );
+}
+
+// ============================================================================
+// LAW 17 (§47/§54): post-exit markout cells + foregone-upside per ExitReason are
+// present in the AnalyticsReport after a run.
+// ============================================================================
+#[test]
+fn markout_cells_and_foregone_present_per_exit_reason() {
+    let mut eng = drive_positions(Config::dev_portable());
+    let _ = eng.report();
+    let a = eng.analytics_report();
+    assert!(
+        !a.markout_cells.is_empty(),
+        "post-exit markout cells must be present after a run"
+    );
+    assert!(
+        !a.foregone_upside.is_empty(),
+        "foregone-upside aggregates must be present after a run"
+    );
+    // Cells are keyed by (ExitReason, horizon): the mandated horizons appear.
+    let horizons: std::collections::BTreeSet<u64> =
+        a.markout_cells.iter().map(|c| c.horizon_ns).collect();
+    assert!(
+        !horizons.is_empty(),
+        "cells carry mandated ns horizons, got {horizons:?}"
+    );
+}
+
+// ============================================================================
+// LAW 18 (§47a): a dead mint gets a terminal label at the versioned δT.
+// ============================================================================
+#[test]
+fn dead_mint_gets_terminal_label_at_versioned_delta_t() {
+    let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
+    // A mint trades briefly, then goes silent forever.
+    pump(&mut eng, 7, 100, 6, 400_000_000);
+    // Advance well past the terminal δT (240 ticks) with no further trades for it.
+    for _ in 0..300 {
+        eng.tick(AppEvent::Tick);
+    }
+    let refs = eng.terminal_reflections();
+    assert!(
+        !refs.is_empty(),
+        "the reflection cadence must have produced terminal labels"
+    );
+    // Every reflection carries the versioned δT criterion (version 1).
+    assert!(
+        refs.iter().all(|r| r.criterion_version == 1),
+        "labels stamped with the δT criterion version"
+    );
+    // The silent mint is labeled dead.
+    assert!(
+        refs.iter().any(|r| r.is_dead()),
+        "a mint silent past δT must be labeled terminal"
+    );
+}

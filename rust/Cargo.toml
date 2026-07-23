@@ -26,6 +26,9 @@ members = [
     "crates/pump-quant-watchlist",
     "crates/pump-quant-replay",
     "crates/pump-quant-app",
+    "crates/pq-evaluator",
+    "crates/pq-research-runner",
+    "crates/pq-regression",
 ]
 
 [workspace.package]

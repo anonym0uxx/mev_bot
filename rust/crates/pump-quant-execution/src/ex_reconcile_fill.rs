@@ -22,6 +22,49 @@
 //! - Overflow: all arithmetic is done in `i128`, which cannot overflow for any
 //!   pair of `u64` lamport magnitudes.
 
+/// Minimum reconciliation granularity in lamports (criterion 102, §102).
+///
+/// This is the legacy fixed tolerance (`0.0001 SOL = 100_000 lamports`), now
+/// demoted from a hard-coded passthrough to the **floor** of a bankroll-scaled
+/// granularity: even a tiny bankroll never reconciles finer than this, because
+/// sub-100k-lamport dust deltas are below the noise floor of fee/rent rounding.
+pub const RECON_GRANULARITY_FLOOR_LAMPORTS: u64 = 100_000;
+
+/// Maximum reconciliation granularity in lamports (criterion 102, §102).
+///
+/// Caps the tolerance so that a very large bankroll does not widen the
+/// discrepancy band so far that a genuine mis-fill is masked. `0.05 SOL`.
+pub const RECON_GRANULARITY_CEIL_LAMPORTS: u64 = 50_000_000;
+
+/// Fraction of bankroll (in basis points) used as the reconciliation
+/// granularity before the floor/ceiling clamp (criterion 102, §102).
+///
+/// `10 bps = 0.1%`: the reconciliation tolerance tracks position scale, so the
+/// absolute discrepancy band grows with the capital at risk rather than staying
+/// pinned to a fixed lamport count that is too coarse for small trades and too
+/// tight for large ones.
+pub const RECON_GRANULARITY_BPS: u64 = 10;
+
+/// Deterministic, bankroll-derived reconciliation granularity in lamports
+/// (criterion 102 defect #10).
+///
+/// Replaces the fixed legacy `100_000`-lamport tolerance with a value that
+/// scales with `bankroll_lamports`: `bankroll * RECON_GRANULARITY_BPS / 10_000`,
+/// clamped to `[RECON_GRANULARITY_FLOOR_LAMPORTS, RECON_GRANULARITY_CEIL_LAMPORTS]`.
+///
+/// Properties (see tests): monotonic non-decreasing in bankroll, floored, and
+/// ceiled. Integer-only; the intermediate product is widened to `u128` so no
+/// `u64` bankroll can overflow the multiply.
+#[must_use]
+pub fn recon_granularity_lamports(bankroll_lamports: u64) -> u64 {
+    let raw = (u128::from(bankroll_lamports) * u128::from(RECON_GRANULARITY_BPS)) / 10_000;
+    let raw = u64::try_from(raw).unwrap_or(u64::MAX);
+    raw.clamp(
+        RECON_GRANULARITY_FLOOR_LAMPORTS,
+        RECON_GRANULARITY_CEIL_LAMPORTS,
+    )
+}
+
 /// The logged (estimated) side of a trade, as recorded on the hot path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExpectedFill {
@@ -151,6 +194,32 @@ pub fn reconcile_fill(expected: ExpectedFill, onchain: OnchainFill) -> ReconResu
         onchain.buy_confirmed,
         onchain.sell_confirmed,
     )
+}
+
+/// Reconcile a logged trade using a **bankroll-derived** discrepancy tolerance
+/// (criterion 102 defect #10).
+///
+/// Identical to [`reconcile_fill`] except the tolerance is not taken from
+/// `expected.tolerance_lamports` (the legacy fixed `100_000` passthrough) but
+/// computed from `bankroll_lamports` via [`recon_granularity_lamports`], so the
+/// reconciliation granularity scales with the capital at risk. The supplied
+/// `expected.tolerance_lamports` is ignored on this path.
+///
+/// This is the entry point the reconciler should use once a bankroll figure is
+/// available; [`reconcile_fill`] is retained for callers that carry an explicit
+/// tolerance.
+#[must_use]
+pub fn reconcile_fill_with_bankroll(
+    expected: ExpectedFill,
+    onchain: OnchainFill,
+    bankroll_lamports: u64,
+) -> ReconResult {
+    let granularity = recon_granularity_lamports(bankroll_lamports);
+    let expected = ExpectedFill {
+        tolerance_lamports: i128::from(granularity),
+        ..expected
+    };
+    reconcile_fill(expected, onchain)
 }
 
 /// Build a non-computed (zero P&L) terminal result.

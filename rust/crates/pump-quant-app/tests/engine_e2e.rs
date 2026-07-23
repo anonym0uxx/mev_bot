@@ -307,9 +307,12 @@ fn token_metadata_and_creator_action_alone_never_admit() {
 #[test]
 fn creator_distribution_fades_size_but_never_vetoes() {
     // Same admissible numeric+confirm scenario, run with and without a creator who
-    // distributes (sells >50% of peak). The distributing run must still ADMIT
-    // (never a binary reject, §22) but deploy a smaller size → a different, smaller
-    // realized outcome.
+    // distributes in the SUB-VETO fade band (sells >50% of peak but below the §26
+    // confirmed-dump veto threshold). This run must still ADMIT — below the §26
+    // veto bar creator distribution remains a graded size fade, never a binary
+    // reject — but deploy a smaller size → a different, smaller realized outcome.
+    // (The confirmed-dump regime ABOVE the veto threshold is the operator-approved
+    // §26 reversal, proven in `audit_wave2_laws.rs`.)
     let run = |with_creator_dump: bool| -> pump_quant_app::engine::Report {
         // A *wide* viability band (low fixed cost) so `x_min << x_cost` and the
         // graded haircut has room to reduce size within the band. With the default
@@ -331,7 +334,8 @@ fn creator_distribution_fades_size_but_never_vetoes() {
             e.tick(AppEvent::CreatorAction {
                 mint: m,
                 kind: CreatorActionKind::Sell {
-                    tokens: 900_000, // 90% of peak → past the 50% fade trigger
+                    tokens: 550_000, // 55% of peak: past the 50% fade trigger,
+                    // below the 60% §26 confirmed-dump veto bar → fade, not veto.
                     quote_lamports: 1_000_000,
                 },
                 slot: 2,

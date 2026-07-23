@@ -31,8 +31,41 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-# criteria that may only be certified on the deployment hardware
-PHASE_B_EXCLUSIVE_CRITERIA = {103, 109}   # latency budgets + Rust perf law (hardware-measured)
+# Criteria that may ONLY be certified on the deployment hardware, in whole.
+#
+# Criterion 109 (the Rust performance-engineering law) is deliberately NOT here:
+# it is a SPLIT criterion. Marking all of 109 Phase-B-exclusive masked its
+# Phase-A-obligatory clauses (zero-alloc harness, hot-path purity lint,
+# unsafe-dossier, money-wrap) — clauses that MUST pass at authoring time on any
+# host and may not hide behind the deployment-hardware boundary. Only 109's
+# deploy-hardware clauses (deploy-CPU codegen, PGO, Windows tuning, latency
+# budgets, submission warmth) are Phase-B, and those are gated by clause
+# ([`PHASE_B_EXCLUSIVE_CLAUSES_109`]) and by the Phase-B gate names below —
+# never by the bare criterion number. Criterion 103 (latency budgets) remains
+# wholly deployment-hardware.
+PHASE_B_EXCLUSIVE_CRITERIA = {103}
+
+# Criterion 109 clause split (§9.5 two-phase boundary, criterion 113).
+#
+# Phase-B (deployment-hardware) clauses of 109 — certified only on the pinned
+# server, where the measurement is meaningful.
+PHASE_B_EXCLUSIVE_CLAUSES_109 = frozenset({
+    "deploy_cpu_codegen",   # target-CPU codegen / native feature selection
+    "pgo",                  # profile-guided optimization
+    "windows_tuning",       # Windows-native OS tuning (VirtualLock, affinity, MMCSS)
+    "latency_budgets",      # measured microsecond latency budgets
+    "submission_warmth",    # warm-submission-path timing
+})
+
+# Phase-A (authoring-time-obligatory) clauses of 109 — MUST pass at authoring
+# time on ANY host; they are NOT deferrable behind the Phase-B boundary. These
+# are the clauses the blanket 109→Phase-B mapping used to mask.
+PHASE_A_OBLIGATORY_CLAUSES_109 = frozenset({
+    "zero_alloc_harness",   # zero-allocation harness assertion
+    "hot_path_purity_lint", # the hot-path purity lint (this repo's hotpath_lint)
+    "unsafe_dossier",       # unsafe-block dossier/justification
+    "money_wrap",           # money-type wrapper / no-float-cast integrity
+})
 
 # gate names that imply hardware-specific measurement
 PHASE_B_GATES = {"bench", "latency", "pgo", "tuning", "endpoint_warmth"}
@@ -122,6 +155,17 @@ def criterion_is_phase_b(criterion: int) -> bool:
     return criterion in PHASE_B_EXCLUSIVE_CRITERIA
 
 
+def clause_109_is_phase_b(clause: str) -> bool:
+    """A deploy-hardware clause of criterion 109 (certifiable only on the server)."""
+    return (clause or "").strip().lower() in PHASE_B_EXCLUSIVE_CLAUSES_109
+
+
+def clause_109_is_phase_a_obligatory(clause: str) -> bool:
+    """A Phase-A authoring-time-obligatory clause of criterion 109 (must pass on
+    any host; never deferred behind the Phase-B boundary)."""
+    return (clause or "").strip().lower() in PHASE_A_OBLIGATORY_CLAUSES_109
+
+
 def gate_is_phase_b(gate_name: str) -> bool:
     g = (gate_name or "").lower()
     return any(k in g for k in PHASE_B_GATES)
@@ -131,13 +175,25 @@ def check_phase_provenance(gate_name: str,
                            criteria_touched: list[int],
                            manifest_path: str | Path,
                            pinned_sha: str = "",
+                           clauses_109: list[str] | None = None,
                            _measure=measure_machine) -> PhaseCheckResult:
     """Phase-B-exclusive work requires: a declared deployment host (manifest), a matching
     operator pin when one exists in the store, and — decisively — the LIVE-MEASURED machine
     being that host. Phase-A work passes anywhere. `_measure` is injectable for tests only.
+
+    Criterion 109 is split (§9.5): its DEPLOY-hardware clauses force Phase-B, but its
+    Phase-A-obligatory clauses do NOT — so passing 109 in `criteria_touched` no longer
+    blanket-defers it. Callers that know they are certifying a specific 109 deploy clause
+    (deploy-CPU codegen, PGO, Windows tuning, latency budgets, submission warmth) pass it in
+    `clauses_109` to keep that clause fail-closed to the server; the Phase-A clauses are left
+    to their own authoring-time gates. Deploy work is additionally caught by the Phase-B gate
+    names, so nothing hardware-measured slips through unmetered.
     """
-    needs_hw = gate_is_phase_b(gate_name) or any(
-        criterion_is_phase_b(c) for c in criteria_touched)
+    needs_hw = (
+        gate_is_phase_b(gate_name)
+        or any(criterion_is_phase_b(c) for c in criteria_touched)
+        or any(clause_109_is_phase_b(cl) for cl in (clauses_109 or []))
+    )
 
     live = _measure()
 

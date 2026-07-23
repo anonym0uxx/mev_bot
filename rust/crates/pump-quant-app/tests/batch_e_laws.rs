@@ -32,6 +32,7 @@ fn admitted_sizes(eng: &Engine, tag: u64) -> Vec<u64> {
             Decision::Admitted {
                 mint,
                 size_lamports,
+                ..
             } if mint == b => Some(size_lamports),
             _ => None,
         })
@@ -279,8 +280,8 @@ fn decay_unseats_the_stale_squatter_and_earns() {
     let mut acfg = Config::dev_portable();
     acfg.promote_k = 1;
     acfg.watchlist_ttl_ticks = 12; // fast board turnover: rank reflects CURRENT evidence
-    // Isolate the DECAY law: the §71 corroboration quota (a separate law with
-    // its own A/B in golden_digest.rs) would rescue this tape in both arms.
+                                   // Isolate the DECAY law: the §71 corroboration quota (a separate law with
+                                   // its own A/B in golden_digest.rs) would rescue this tape in both arms.
     acfg.promote_corroboration_quota = 0;
     let (armed, _) = drive_squatter(acfg);
 

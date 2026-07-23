@@ -25,13 +25,21 @@
 //! - [`ex_route_policy`] — MEV-aware route selection.
 //! - [`ex_bundle_assemble`] — Jito bundle ordering / validation.
 //! - [`ex_circuit_breaker`] — RPC circuit-breaker backoff state machine.
+//! - [`ex_builder_quarantine`] — builder-quarantine circuit breaker (criterion 78):
+//!   folds §36 classified failures and quarantines a builder after N construction
+//!   strikes; the gate a submitter must consult before any build/live use.
+//! - [`ex_construction_gate`] — construction validation gate (criteria 77/113):
+//!   deterministic fixture-parity + decode-round-trip rungs, live-state
+//!   simulation deferred to Phase-B behind a trait.
 //! - [`si_incident_gate`] — incident-branch remediation admission gate
 //!   (model output must pass sell-simulation + signing before reaching chain;
 //!   the deterministic exit path is proven model-independent).
 
 pub mod ex_blockhash_cache;
+pub mod ex_builder_quarantine;
 pub mod ex_bundle_assemble;
 pub mod ex_circuit_breaker;
+pub mod ex_construction_gate;
 pub mod ex_reconcile_fill;
 pub mod ex_route_policy;
 pub mod ex_sell_ladder_escalate;

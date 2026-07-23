@@ -20,6 +20,11 @@
 //! * [`deployer_credibility`] — Section 27 / §70.9 point-in-time
 //!   deployer-credibility features (prior-CA count, serial-deploy flag,
 //!   key / mutual-follower reach, verified-partnership vs self-claimed).
+//! * [`creator_classifier`] — Section 27 creator-classification taxonomy: a
+//!   deterministic archetype label (serial rug, volume farmer, short-lived
+//!   runner, community builder, streamer meta, copycat, unknown) over the
+//!   already-measured deployer/creator components, failing to `Unknown` on thin
+//!   evidence (§6.4).
 //!
 //! # Determinism and arithmetic law (Section 22)
 //!
@@ -35,6 +40,7 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod creator_classifier;
 pub mod deployer_credibility;
 pub mod smart_money;
 pub mod tier1_hot_summary;

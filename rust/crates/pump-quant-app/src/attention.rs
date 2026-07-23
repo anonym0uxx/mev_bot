@@ -25,10 +25,13 @@
 
 use pump_quant_narrative::attention_state::{nv_attention_state, Mention};
 use pump_quant_narrative::narrative::{
-    nv_attention_money_divergence, nv_candidate_score, nv_lifecycle_stage, nv_pre_legibility,
-    nv_virality_coeff, AttentionSeries, FP_ONE,
+    nv_attention_money_divergence, nv_candidate_score, nv_class_classify, nv_lifecycle_stage,
+    nv_narrative_ceiling, nv_platform_lead, nv_pre_legibility, nv_virality_coeff, AttentionSeries,
+    ClassFeatures, NarrativeClass, PlatformLead, FP_ONE,
 };
-use pump_quant_watchlist::candidate::{Candidate, Features, Lane as WlLane, Mint as WlMint};
+use pump_quant_watchlist::candidate::{
+    Candidate, DiscoveryLane, Features, Lane as WlLane, Mint as WlMint,
+};
 use std::collections::BTreeMap;
 
 /// Named tuning for the attention field (§102 — each a documented scale, not a
@@ -62,6 +65,38 @@ pub struct AttentionParams {
     pub live_chatter_weight: u64,
     /// Attention units a fresh broadcaster call adds (see `standard()` rationale).
     pub live_broadcaster_weight: u64,
+
+    // ---- §70.6/§70.8 narrative class + ceiling (Batch-2c LAW 8) ----
+    /// When true, the emit path derives the mint's [`NarrativeClass`] (via
+    /// `nv_class_classify`) and conditions the corroboration score on the
+    /// class-specific reach ceiling (`nv_narrative_ceiling`): durable classes
+    /// (Culture/Tech) retain rank (decay slower) while fast classes (News/Trend)
+    /// fade — a class-conditioned decay/ceiling. Off = class-unconditioned,
+    /// byte-identical.
+    pub narrative_class_enable: bool,
+    /// Spike-ratio threshold (fixed-point over `FP_ONE`) separating a sharp
+    /// event-shock narrative from a steady build in [`nv_class_classify`].
+    pub class_spike_threshold_fp: u64,
+    /// Longevity (windows persisted) at/above which a narrative is durable
+    /// (Culture/Tech) in [`nv_class_classify`].
+    pub class_long_threshold: u32,
+    /// Source-breadth threshold separating a broad Tech build from a durable
+    /// Culture narrative in [`nv_class_classify`].
+    pub class_tech_breadth: u32,
+
+    // ---- §70.7 platform-lead / crypto-social-lag (Batch-2c LAW 9) ----
+    /// When true, the emit path reads the mint's mainstream-vs-crypto
+    /// first-mention instants, classifies the lead (`nv_platform_lead`), and adds
+    /// a pre-legibility runway when mainstream attention LEADS crypto pickup (the
+    /// front-runnable window, §46/§70.7). Off = no platform runway, byte-identical.
+    pub platform_lead_enable: bool,
+    /// Deadband (ns) inside which two first-mention instants are Simultaneous
+    /// rather than a lead (`nv_platform_lead` tolerance).
+    pub platform_lead_tolerance_ns: u64,
+    /// Pre-legibility runway (fixed-point over `FP_ONE`) granted to a mint whose
+    /// mainstream attention leads its crypto pickup — added to the pre-legibility
+    /// score before the fade-first candidate score (bounded to `FP_ONE`).
+    pub platform_lead_runway_fp: u64,
 }
 
 impl AttentionParams {
@@ -96,6 +131,19 @@ impl AttentionParams {
             age_step_fp: FP_ONE / 16,
             live_chatter_weight: 6,
             live_broadcaster_weight: 50,
+            // §70.6/§70.8 LAW 8 — default OFF (class-unconditioned). Thresholds
+            // (§102): a 3× spike is a sharp event shock; 8 persisted windows is a
+            // durable narrative; 6 independent sources is a broad build.
+            narrative_class_enable: false,
+            class_spike_threshold_fp: 3 * FP_ONE,
+            class_long_threshold: 8,
+            class_tech_breadth: 6,
+            // §70.7 LAW 9 — default OFF (no platform runway). A 1-minute deadband
+            // matches the attention cadence; a mainstream lead grants half a full
+            // pre-legibility window of runway (§46 front-run window).
+            platform_lead_enable: false,
+            platform_lead_tolerance_ns: 60_000_000_000,
+            platform_lead_runway_fp: FP_ONE / 2,
         }
     }
 }
@@ -141,6 +189,12 @@ pub struct MentionProvenance {
     /// suppresses the live-chat enthusiasm bonus while fresh; it never blocks
     /// tracking and never becomes negative market evidence on its own (§29.5).
     pub bearish: bool,
+    /// The mention originated on a MAINSTREAM (non-crypto-native) platform —
+    /// TikTok / general Web — as opposed to the crypto-social channels (X /
+    /// Telegram / Twitch / Pump). §70.7 platform-lead: mainstream attention that
+    /// PRECEDES crypto pickup is the front-runnable pre-legibility window. Purely
+    /// structural provenance (§29.8 — never a per-platform trust weight).
+    pub mainstream: bool,
 }
 
 /// Per-mint accumulated attention state.
@@ -172,6 +226,12 @@ struct MintAttn {
     /// (0 = never). While fresh (within the 5-minute window) the live-chat
     /// bonus is suppressed.
     bearish_seen_ns: u64,
+    /// Earliest instant (ns) a MAINSTREAM (TikTok/Web) mention named this mint
+    /// (0 = never) — the §70.7 mainstream first-mention front.
+    mainstream_first_ns: u64,
+    /// Earliest instant (ns) a CRYPTO-SOCIAL (X/Telegram/Twitch/Pump) mention
+    /// named this mint (0 = never) — the §70.7 crypto-social first-mention front.
+    crypto_first_ns: u64,
 }
 
 /// The bounded, per-mint social attention field. Fed by [`Self::observe`] from the
@@ -230,6 +290,26 @@ impl AttentionField {
         Some(state.engagement_velocity)
     }
 
+    /// The mint's derived [`NarrativeClass`] (§70.6/§70.8), if the field is
+    /// tracking it — a **non-mutating** read for the engine's §49 sizing
+    /// conviction. Recomputes the attention state and class over the stored
+    /// series without appending a sample, so it never perturbs the deterministic
+    /// emit path. `None` for an untracked mint (UNKNOWN, §6.4).
+    #[must_use]
+    pub fn narrative_class_of(&self, mint: &[u8; 32]) -> Option<NarrativeClass> {
+        let a = self.obs.get(mint)?;
+        let state = nv_attention_state(
+            &a.mentions,
+            a.latest_ns,
+            self.params.window_1m_ns,
+            self.params.window_5m_ns,
+            &a.levels,
+            self.params.series_window,
+            self.params.freshness_full_ns,
+        );
+        Some(classify_mint(a, state.unique_sources, &self.params))
+    }
+
     /// Record one narrative [`Mention`] against a mint (from the social pipeline).
     ///
     /// Bounded (§99): a new mint beyond `track_cap` evicts the mint with the fewest
@@ -286,6 +366,24 @@ impl AttentionField {
         }
         if prov.bearish {
             a.bearish_seen_ns = a.bearish_seen_ns.max(mention.ts_ns);
+        }
+        // §70.7 first-mention fronts (min = earliest). A mainstream (TikTok/Web)
+        // mention advances the mainstream front; every other social channel
+        // (crypto-native: X/Telegram/Twitch/Pump) advances the crypto front.
+        // Recorded unconditionally (cheap, bounded); only READ when the platform-
+        // lead law is enabled, so the no-platform-lead path stays byte-identical.
+        if prov.mainstream {
+            a.mainstream_first_ns = if a.mainstream_first_ns == 0 {
+                mention.ts_ns
+            } else {
+                a.mainstream_first_ns.min(mention.ts_ns)
+            };
+        } else {
+            a.crypto_first_ns = if a.crypto_first_ns == 0 {
+                mention.ts_ns
+            } else {
+                a.crypto_first_ns.min(mention.ts_ns)
+            };
         }
     }
 
@@ -400,26 +498,125 @@ impl AttentionField {
             // §783 legibility clock — LIVE at last: once an aggregator lists
             // the coin, the pre-legibility earliness bonus is cut by the model
             // itself (previously hardcoded `false` awaiting this source).
-            let pre_leg = nv_pre_legibility(
+            let mut pre_leg = nv_pre_legibility(
                 state.unique_sources,
                 state.source_concentration,
                 age_windows,
                 a.aggregator_seen,
                 params.age_step_fp,
             );
+            // §70.7 LAW 9 platform-lead runway: when mainstream (TikTok/Web)
+            // attention LEADS crypto pickup, the mainstream→crypto lag is a
+            // front-runnable pre-legibility window — add the configured runway to
+            // the earliness score (bounded to FP_ONE). A crypto-saturated mint
+            // (crypto led, or simultaneous, or no data) earns no runway. Off =
+            // byte-identical (the runway term is skipped entirely).
+            if params.platform_lead_enable {
+                let mainstream_first = nz(a.mainstream_first_ns);
+                let crypto_first = nz(a.crypto_first_ns);
+                if let PlatformLead::MainstreamLeads(_) = nv_platform_lead(
+                    mainstream_first,
+                    crypto_first,
+                    params.platform_lead_tolerance_ns,
+                ) {
+                    pre_leg = pre_leg
+                        .saturating_add(params.platform_lead_runway_fp)
+                        .min(FP_ONE);
+                }
+            }
             let money_confirmed = is_confirmed(mint);
-            let score = nv_candidate_score(stage, divergence, virality, pre_leg, money_confirmed);
+            let mut score =
+                nv_candidate_score(stage, divergence, virality, pre_leg, money_confirmed);
+
+            // §70.6/§70.8 LAW 8 narrative class + ceiling: derive the class from
+            // the mint's spike/longevity/breadth/platform-led state and condition
+            // the corroboration score on the class reach ceiling — durable classes
+            // (Culture/Tech) retain rank, fast classes (News/Trend) fade. The
+            // fade-first cap is RE-APPLIED so class conditioning never lifts an
+            // unconfirmed candidate over the §29 cap. Off = byte-identical.
+            if params.narrative_class_enable {
+                let class = classify_mint(a, state.unique_sources, params);
+                score = nv_narrative_ceiling(class, score, FP_ONE);
+                if !money_confirmed {
+                    score = score.min(500);
+                }
+            }
 
             if score > 0 {
-                buf.push(Candidate::new(
-                    WlMint::new(*mint),
-                    WlLane::EarlyConfirmation,
-                    score,
-                    now_tick,
-                    Features::default(),
-                ));
+                buf.push(
+                    Candidate::new(
+                        WlMint::new(*mint),
+                        WlLane::EarlyConfirmation,
+                        score,
+                        now_tick,
+                        Features::default(),
+                    )
+                    .with_discovery_lane(DiscoveryLane::NarrativeAttentionVelocity),
+                );
             }
         }
+    }
+}
+
+/// `0 → None`, else `Some(v)` — a 0 first-mention instant means "never seen"
+/// (§29.5 absence stays absence, never a zero-lag), so `nv_platform_lead` reads
+/// it as `NoData` rather than an instant at time 0.
+#[inline]
+fn nz(v: u64) -> Option<u64> {
+    if v == 0 {
+        None
+    } else {
+        Some(v)
+    }
+}
+
+/// Derive a mint's [`NarrativeClass`] from its accumulated attention state
+/// (§70.6/§70.8): the spike ratio (peak/baseline weighted level), the
+/// mainstream-led flag (§70.7 fronts), longevity (windows persisted) and source
+/// breadth. Pure/deterministic; a mint with too few level samples reads a
+/// neutral (unity) spike, so a young narrative classes by longevity/breadth.
+fn classify_mint(a: &MintAttn, unique_sources: u32, params: &AttentionParams) -> NarrativeClass {
+    // Spike ratio (fixed-point): peak level over the baseline (earliest nonzero)
+    // level. A flat/insufficient series reads FP_ONE (no spike).
+    let peak = a.levels.iter().copied().max().unwrap_or(0);
+    let baseline = a.levels.iter().copied().find(|&l| l > 0).unwrap_or(0);
+    let spike_ratio_fp = if baseline == 0 {
+        FP_ONE
+    } else {
+        ((peak as u128 * FP_ONE as u128) / baseline as u128).min(u64::MAX as u128) as u64
+    };
+    // Mainstream-led: a mainstream front exists and precedes (or exists without)
+    // the crypto front.
+    let mainstream_led = a.mainstream_first_ns > 0
+        && (a.crypto_first_ns == 0 || a.mainstream_first_ns < a.crypto_first_ns);
+    let features = ClassFeatures {
+        spike_ratio_fp,
+        mainstream_led,
+        longevity_windows: a.levels.len() as u32,
+        source_breadth: unique_sources,
+    };
+    nv_class_classify(
+        &features,
+        params.class_spike_threshold_fp,
+        params.class_long_threshold,
+        params.class_tech_breadth,
+    )
+}
+
+/// The class-conditioned sizing conviction multiplier (bps of 10_000) for a
+/// [`NarrativeClass`] (§49/§70.8): a durable, high-ceiling narrative earns full
+/// conviction (identity), a fast, low-ceiling one is sized down — reduce-only
+/// (never a boost above 100%, §56.2). Pure/deterministic (§22). The engine folds
+/// this into `size_haircut_bps` when the narrative-class law is enabled.
+#[must_use]
+pub fn narrative_class_conviction_bp(class: NarrativeClass) -> u32 {
+    match class {
+        // Ceiling table order (News 2× < Trend 5× < Tech 8× < Culture 12×): the
+        // lower the reach ceiling, the more conservative the size.
+        NarrativeClass::News => 6_000,
+        NarrativeClass::Trend => 8_000,
+        NarrativeClass::Tech => 10_000,
+        NarrativeClass::Culture => 10_000,
     }
 }
 
@@ -621,6 +818,7 @@ mod twitch_tests {
                 echo_or_coordinated: false,
                 aggregator: false,
                 bearish: false,
+                mainstream: false,
             },
         );
         let mut p = Vec::new();
@@ -654,6 +852,7 @@ mod twitch_tests {
                     echo_or_coordinated: true,
                     aggregator: false,
                     bearish: false,
+                    mainstream: false,
                 },
             );
         }
@@ -671,6 +870,7 @@ mod twitch_tests {
                     echo_or_coordinated: false,
                     aggregator: false,
                     bearish: false,
+                    mainstream: false,
                 },
             );
         }
@@ -704,6 +904,7 @@ mod twitch_tests {
                     echo_or_coordinated: false,
                     aggregator: false,
                     bearish: false,
+                    mainstream: false,
                 },
             );
         }
