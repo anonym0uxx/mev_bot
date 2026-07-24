@@ -47,6 +47,35 @@
 //! [`reflect`] is retained as exactly the previous behaviour and is what an
 //! unarmed engine gets, so the disarmed path is byte-identical to the pre-LAW-B7
 //! engine.
+//!
+//! ## Why this law ships DISARMED
+//!
+//! The mechanism above is correct; the economics are not proven. A pre-registered,
+//! two-sided experiment (`tests/brain_reflect_twosided.rs`) built a tape with
+//! genuine lane-level setup decay under real promotion-slot contention — the
+//! decayed and healthy markets share a byte-identical price prefix, so the §18 gate
+//! and §23 arbitration cannot separate them and only the episodic record can — and
+//! its mirror image in which the flag is a FALSE positive. The armed arm gained
+//! +26_697_249 lamports on the true-positive tape and lost −21_009_674 on the
+//! false-positive one: a 1.27× asymmetry against a pre-registered 3× bar, with the
+//! gain itself below one minimum trade size. On neighbouring market shapes the sign
+//! inverts — the armed arm does BETTER when its flag is wrong.
+//!
+//! The structural reason is that lane weight is not the binding constraint.
+//! §24 conditional expectancy (`Engine::conditional_edge_bps`) already conditions
+//! §23 slot arbitration on each setup lane's realized mean return; arbitration, not
+//! rank, decides which promoted candidate takes a position slot, and the incumbent
+//! activates at `expectancy_min_lane_trades` = 8 realized lane trades while this law
+//! needs `brain_decay_min_sample` = 12 pooled conditioned episodes before it may
+//! speak at all. By the time the brain is permitted an opinion, the incumbent has
+//! had one for at least four trades — on a lever closer to the decision. What is
+//! left for a rank downweight to do is permute a queue the allocator re-sorts
+//! anyway, and that permutation's sign is noise.
+//!
+//! For this law to earn it would need a market where a lane's realized MEAN return
+//! stays healthy (so §24 keeps funding it) while its conditioned setup classes
+//! bleed AND the promotion queue — not the slot allocator — is what excludes the
+//! better alternative. That configuration was searched for and not found.
 
 use crate::config::Config;
 use pump_quant_watchlist::candidate::Lane;

@@ -665,7 +665,26 @@ pub struct Config {
     /// *setups* apply an ADDITIONAL downweight inside the §56.2 envelope when
     /// those setups have decayed on our own realized evidence. There is no
     /// up-weight path (§29.5/§46 — recall may shrink conviction, never inflate
-    /// it). Default OFF: see `tests/brain_strategy.rs` for the A/B.
+    /// it).
+    ///
+    /// **DEFAULT OFF, and the decision is pre-registered and two-sided.**
+    /// `tests/brain_reflect_twosided.rs` states the acceptance rule BEFORE any
+    /// measurement and then runs it: a happy path (genuine lane decay under real
+    /// promotion-slot contention, with the decayed and healthy markets
+    /// INDISTINGUISHABLE at admit), an unhappy path (the same tape with the two
+    /// forward cohorts' shapes swapped, so the flag is a false positive), and the
+    /// golden tape as the neutral control. Measured: the happy-path gain is
+    /// +26_697_249 lamports on a 479_556_343 base — below the pre-registered
+    /// materiality bar of one 0.1-SOL bite — against a false-positive cost of
+    /// −21_009_674, a 1.27× asymmetry versus the pre-registered 3× bar. Worse, the
+    /// SIGN of the effect is not governed by whether the flag was right: on
+    /// neighbouring market shapes the armed arm gains on the FALSE-positive tape and
+    /// is flat on the true-positive one. It is a reshuffle, not an edge, because
+    /// §24 conditional expectancy already conditions §23 slot arbitration on each
+    /// lane's realized mean return and activates at `expectancy_min_lane_trades` = 8
+    /// — fewer trades than `brain_decay_min_sample` = 12 requires before this law
+    /// may speak at all. See also `tests/brain_strategy.rs` for the mechanism-level
+    /// unit A/B.
     pub brain_reflect_enable: bool,
     /// LAW B7 extra downweight step applied to a lane whose conditioned setups
     /// have decayed, bps. Bounded by the same §56.2 floor as the base step, so an

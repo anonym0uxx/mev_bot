@@ -734,7 +734,15 @@ fn drive(cfg: Config) -> pump_quant_app::engine::Report {
 //   * LAW B7 — an optional, reduce-only, envelope-bounded brain downweight in
 //     `reflect`. DEFAULT OFF: the A/B is exactly neutral (delta 0 net) on the
 //     golden tape AND on a purpose-built decayed-lane tape, at every step from
-//     250 bp to the full envelope. It did not earn, so it is not armed.
+//     250 bp to the full envelope. It did not earn, so it is not armed. (Re-tested
+//     since, under a PRE-REGISTERED two-sided rule, on a tape where the mechanism
+//     genuinely does act — `tests/brain_reflect_twosided.rs`. It still does not
+//     earn: +26_697_249 on the true-positive tape against −21_009_674 on its
+//     false-positive mirror, a 1.27x asymmetry versus the pre-registered 3x bar,
+//     with the sign inverting across neighbouring market shapes. Golden-tape
+//     neutrality is now asserted directly by
+//     `b7_armed_reflection_is_exactly_neutral_on_this_tape` below. Default
+//     unchanged, so this digest is unchanged.)
 //   * LAW B8 — brain-grounded exit-challenger PROPOSALS derived from the recall
 //     distribution of the setups that paid (median winner hold → time stop, p75
 //     MFE → target, median winner heat → trail). Report-only, single-axis,
@@ -933,6 +941,75 @@ fn brain_haircut_is_exactly_neutral_on_this_tape() {
     );
     assert_eq!(armed.admitted, off.admitted);
     assert_eq!(armed.rejected, off.rejected);
+}
+
+/// **LAW B7 leg (c): the NEUTRAL path.** Arming the brain-informed, reduce-only
+/// lane downweight on the golden tape must change EXACTLY nothing.
+///
+/// The golden tape's conditioned setup classes are all POSITIVE, so
+/// `brain_analysis::lane_decay` flags no lane and `reflect_with_brain` degenerates
+/// to `reflect`. This is leg (c) of the pre-registered LAW B7 decision rule (see
+/// `tests/brain_reflect_twosided.rs`): a protective law that perturbed the golden
+/// path in the ABSENCE of the hazard it targets would be disqualified whatever its
+/// hazard-tape economics, so the neutrality is asserted here on the real golden
+/// tape rather than on a copy of it.
+///
+/// Only the JOURNAL DIGEST is exempt, and for one reason that is not a behaviour
+/// change: §19 folds the whole `Config`'s strategy identity into the journal seed,
+/// so flipping any config field necessarily re-seeds it.
+#[test]
+fn b7_armed_reflection_is_exactly_neutral_on_this_tape() {
+    let off = drive(Config::dev_portable());
+    let mut on_cfg = Config::dev_portable();
+    on_cfg.brain_reflect_enable = true;
+    let armed = drive(on_cfg);
+    println!(
+        "B7-on-golden: off_net={} armed_net={} off_w={:?} armed_w={:?}",
+        off.net_lamports, armed.net_lamports, off.final_weights, armed.final_weights
+    );
+    assert_eq!(
+        armed.net_lamports, off.net_lamports,
+        "LAW B7 must be EXACTLY neutral on the golden tape (leg (c))"
+    );
+    assert_eq!(armed.admitted, off.admitted, "admissions unchanged");
+    assert_eq!(armed.rejected, off.rejected, "rejections unchanged");
+    assert_eq!(armed.promoted, off.promoted, "promotions unchanged");
+    assert_eq!(
+        armed.universe_filtered, off.universe_filtered,
+        "§21.5 screen unchanged"
+    );
+    assert_eq!(
+        armed.per_lane_net, off.per_lane_net,
+        "attribution unchanged"
+    );
+    assert_eq!(
+        armed.final_weights, off.final_weights,
+        "no lane weight may move: an empty decay flag set is byte-identical to the \
+         pre-LAW-B7 reflection pass"
+    );
+    // Not vacuous: the tape really does exercise the reflection pass.
+    assert_ne!(
+        off.final_weights,
+        [
+            (
+                pump_quant_watchlist::candidate::Lane::CreationSniper,
+                pump_quant_watchlist::candidate::Lane::CreationSniper.default_weight_bp()
+            ),
+            (
+                pump_quant_watchlist::candidate::Lane::EarlyConfirmation,
+                pump_quant_watchlist::candidate::Lane::EarlyConfirmation.default_weight_bp()
+            ),
+            (
+                pump_quant_watchlist::candidate::Lane::GraduationTransition,
+                pump_quant_watchlist::candidate::Lane::GraduationTransition.default_weight_bp()
+            ),
+            (
+                pump_quant_watchlist::candidate::Lane::ActiveMarketScalp,
+                pump_quant_watchlist::candidate::Lane::ActiveMarketScalp.default_weight_bp()
+            ),
+        ],
+        "the golden tape must actually run reflection, else this neutrality is vacuous"
+    );
 }
 
 /// LAW B1/B2 are DEFAULT ON and must be decision-inert: enabling the whole memory

@@ -11,7 +11,8 @@
 //!   estimate for a verdict the brain refused to give;
 //! * **B7** the brain-informed lane reweight is reduce-only, envelope-bounded and
 //!   fail-closed — and its A/B is recorded here honestly, including the fact that
-//!   it did not earn on any tape we have;
+//!   it did not earn (the pre-registered two-sided experiment that decides the
+//!   default lives in `tests/brain_reflect_twosided.rs`);
 //! * **B8** exit proposals fail closed at small n and never auto-adopt;
 //! * **B9** recall is an additional promotion blocker and never a promotion
 //!   licence — and the §56 retirement flags retire nothing.
@@ -550,9 +551,12 @@ fn lane_decay_flags_the_runner_carried_lane_and_fails_closed() {
 ///
 /// The armed arm is expected to be reduce-only and envelope-bounded; whether it
 /// EARNS is an empirical question and the answer is printed, asserted only where
-/// a law (not a hope) binds. See the module docs and the build report: on every
-/// tape available it is exactly neutral, which is why
-/// `brain_reflect_enable` defaults OFF.
+/// a law (not a hope) binds. On THIS tape it is exactly neutral (the flagged lane's
+/// weight moves but no admission does). The definitive, pre-registered two-sided
+/// experiment — a tape where the mechanism genuinely CAN act, plus its
+/// false-positive mirror image and the golden neutral control — lives in
+/// `tests/brain_reflect_twosided.rs`; it is why `brain_reflect_enable` still
+/// defaults OFF.
 #[test]
 fn reflect_ab_armed_vs_neutral() {
     for decayed in [true, false] {
