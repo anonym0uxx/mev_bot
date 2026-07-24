@@ -21,6 +21,12 @@
 //!   explicit high tail), per-bar wick/rejection microstructure, and info-time
 //!   conditioning (token age, time-of-day), plus a [`structure_ext::realized_vol_bps`]
 //!   helper the execution engine consumes to scale stops — all pure integer.
+//! * [`holder_growth`] — the §70.1 holder-growth **acceleration** estimator: a
+//!   bounded per-mint holder-count series reduced to a first difference (growth
+//!   rate) and a second difference (acceleration) in basis points, selected
+//!   point-in-time (`ts_ns <= as_of_ns`) and returning `None` — never a
+//!   fabricated neutral `0` — below its documented sample/spacing/staleness
+//!   gates (constitution 6.4, 20, 99).
 //! * [`micro`] — an integer AMM order-flow / microstructure feature catalog
 //!   (constitution 21.7): CVD, delta velocity, order-flow imbalance, VWAP /
 //!   anchored VWAP, trade-size distribution & large-print detection, swap-arrival
@@ -41,6 +47,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bar;
+pub mod holder_growth;
 pub mod market_structure;
 pub mod micro;
 pub mod structure_ext;

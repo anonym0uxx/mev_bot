@@ -66,13 +66,27 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let cfg = match Config::from_str_over_default(&cfg_text) {
+    let mut cfg = match Config::from_str_over_default(&cfg_text) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("bad config: {e}");
             return ExitCode::from(1);
         }
     };
+    // LAW B6: the strategy-analysis artifact ships beside `live_status.json` at the
+    // same conventional location, exactly as that artifact's path is a binary
+    // convention rather than a config default. Setting it HERE (not in
+    // `Config::dev_portable`) keeps the §19 config identity — and therefore the
+    // golden digest — a property of the STRATEGY rather than of where this binary
+    // happens to drop telemetry. An operator who names a path in the config keeps
+    // theirs.
+    if cfg.brain_analysis_path.is_empty() {
+        if let Some(p) =
+            pump_quant_app::config::CfgPath::from_str_checked("data/brain_analysis.json")
+        {
+            cfg.brain_analysis_path = p;
+        }
+    }
 
     let events_text = match std::fs::read_to_string(&args[3]) {
         Ok(t) => t,
@@ -90,6 +104,31 @@ fn main() -> ExitCode {
     };
 
     let mut engine = Engine::new(cfg, mode);
+    // LAW B5: arm the episodic journal when the operator configured a path. The
+    // memory is ADVISORY — a store that will not open is reported and the run
+    // continues memory-only, because refusing to trade over a missing journal
+    // would be a strictly worse failure than trading without recall.
+    if cfg.brain_enable && cfg.brain_persist_enable && !cfg.brain_path.is_empty() {
+        match engine.attach_brain_store(pump_quant_app::brain::AppBlobStore::File(
+            pump_quant_brain::persist::FileBlobStore,
+        )) {
+            Ok(report) => println!(
+                "brain              restored {} episodes ({} snapshot, {} journal){}",
+                report.admitted(),
+                report.snapshot_admitted,
+                report.journal_admitted,
+                if report.saw_damage() {
+                    " [DAMAGE SEEN — see corrupt/truncated counters]"
+                } else {
+                    ""
+                }
+            ),
+            Err(e) => eprintln!(
+                "brain persistence disarmed: cannot open {} ({e})",
+                cfg.brain_path.as_str()
+            ),
+        }
+    }
     // §60/§62 LAW 21: drive the engine loop, emitting the canonical
     // `data/live_status.json` artifact periodically (best-effort; a status-write
     // failure never aborts the run).
@@ -110,6 +149,28 @@ fn main() -> ExitCode {
         println!("  weight {lane:?}: {w} bp");
     }
     println!("journal_digest    {:#018x}", report.journal_digest);
+    // LAW B6: say where the strategy-analysis artifact went, and what it is
+    // currently nominating for the §56 review (report-only — a nomination retires
+    // nothing; see `brain_analysis` and `pump_quant_governance::retirement_review`).
+    if cfg.brain_analysis_enable && !cfg.brain_analysis_path.is_empty() {
+        let analysis = engine.brain_analysis();
+        println!(
+            "brain_analysis    {} ({} setup classes, {} retirement nominations)",
+            cfg.brain_analysis_path.as_str(),
+            analysis.setup_classes.len(),
+            analysis.retirement_flags.len()
+        );
+        for f in &analysis.retirement_flags {
+            println!(
+                "  nominate {} {} — {} (n={}, net={})",
+                f.subject.name(),
+                f.key,
+                f.reason,
+                f.n,
+                f.realized_net_lamports
+            );
+        }
+    }
     // §38 evidence law: every emitted report is labeled with the fill model
     // that produced it. Modes A/B are NOT promotion evidence — say so.
     let readiness = engine.promotion_readiness();
@@ -127,6 +188,52 @@ fn main() -> ExitCode {
     println!("blocked_on        {}", readiness.blocked_on);
     println!("strategy_hash     {}", identity.strategy_hash.to_hex());
     println!("config_fnv        {:#018x}", identity.config_fnv);
+
+    // LAWs B1/B2 episodic-memory readouts (report plane; never a decision).
+    println!(
+        "brain_episodes    {} (recall known {} / unknown {})",
+        report.brain_episodes_recorded, report.brain_recall_known, report.brain_recall_unknown
+    );
+    if report.brain_haircuts_applied > 0 || report.brain_vetoes > 0 {
+        println!(
+            "brain_reduce_only {} haircuts, {} vetoes",
+            report.brain_haircuts_applied, report.brain_vetoes
+        );
+    }
+    for c in &report.brain_setup_classes {
+        println!(
+            "  setup class sig={:#034x} phase={} meta={} lane={} n={} median_net={} win_rate={} bp",
+            c.signature,
+            c.venue_phase_code,
+            c.meta_category_id,
+            c.discovery_lane_code,
+            c.n_matched,
+            c.median_net_lamports,
+            c.win_rate_bp
+        );
+    }
+    for m in &report.brain_meta_state {
+        println!(
+            "  meta {} saturation={} net={} breadth={} launches={}",
+            m.meta_category_id,
+            m.saturation_code,
+            m.aggregate_net_lamports,
+            m.participant_breadth,
+            m.episode_count
+        );
+    }
+    for a in &report.brain_author_records {
+        println!(
+            "  author {} n={} median_net={} win_rate={} bp",
+            a.author_id, a.n_markouts, a.median_net_lamports, a.win_rate_bp
+        );
+    }
+    // LAW B5: collapse the journal tail so the next start restores from a snapshot.
+    if cfg.brain_enable && cfg.brain_persist_enable && !cfg.brain_path.is_empty() {
+        if let Err(e) = engine.snapshot_brain() {
+            eprintln!("brain snapshot failed (journal is still intact): {e}");
+        }
+    }
 
     // Optional JSONL exports (§40: never authoritative over chain/journal).
     if let Some(path) = trade_jsonl {

@@ -26,6 +26,7 @@ members = [
     "crates/pump-quant-watchlist",
     "crates/pump-quant-replay",
     "crates/pump-quant-app",
+    "crates/pump-quant-brain",
     "crates/pq-evaluator",
     "crates/pq-research-runner",
     "crates/pq-regression",
@@ -47,6 +48,8 @@ overflow-checks = false
 # money/fixed-point & outcome-controlling crates keep overflow checks in release —
 # silent money wrap is prohibited (§22). Plumbing crates (clock, journal, canonical,
 # governance, social) inherit the workspace default.
+[profile.release.package.pump-quant-brain]
+overflow-checks = true
 [profile.release.package.pump-quant-core]
 overflow-checks = true
 [profile.release.package.pump-quant-strategy]

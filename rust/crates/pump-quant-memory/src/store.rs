@@ -5,26 +5,39 @@
 //! and expose the deterministic operations governance needs — insert, lookup, and
 //! the sealed-experiment lifecycle.
 //!
-//! Persistence is out of scope `[S]`: this store is the authoritative in-process
-//! representation; flushing/spilling to a live DB is a server responsibility and
-//! is modelled by [`PersistenceSink`], which this crate never calls. Per §57's
-//! precedence (durability first), when a table is full the store **rejects** the
-//! insert with [`StoreError::CapacityExceeded`] rather than evicting reconciled
-//! evidence — silent eviction of sealed research data is prohibited.
+//! Persistence is **in** scope and durable: this store is the authoritative
+//! in-process representation, and [`crate::persist`] gives it a crash-safe local
+//! journal + snapshot with zero third-party dependencies. [`PersistenceSink`] is
+//! the boundary an operator plugs a destination into — it is really called (see
+//! [`QuantMemoryStore::flush`]), and [`crate::persist::BlobSink`] is the shipped
+//! local implementation. Per §57's precedence (durability first), when a table is
+//! full the store **rejects** the insert with [`StoreError::CapacityExceeded`]
+//! rather than evicting reconciled evidence — silent eviction of sealed research
+//! data is prohibited, on insert and on restore alike.
 
 use crate::experiment::ExperimentError;
+use crate::persist::PersistError;
 use crate::rows::{
     AmplificationEdge, CallMarkout, CategoryAssignment, Experiment, ExperimentId, ExperimentResult,
     Hypothesis, MetaCategory, MetaRotationSnapshot, SocialCall, SourceQualityEntry,
 };
 
-/// Out-of-scope persistence boundary (§29.9 persistence is `[S]`). Declared so the
-/// store's contract is explicit; **no method of this crate ever calls it** — the
-/// live sink is provided server-side. Modelling I/O behind a trait and never
-/// invoking it keeps the crate deterministic (§22).
+/// The store's persistence boundary (§29.9).
+///
+/// Unlike the declared-and-never-called stub this replaces, implementations of
+/// this trait are actually invoked — by [`QuantMemoryStore::flush`] — so research
+/// memory reaches a device instead of only a type signature. The receiver is
+/// `&mut self` and the result is fallible because a sink that can neither advance
+/// its own state nor fail is a fiction about I/O.
+///
+/// [`crate::persist::BlobSink`] is the in-crate implementation: a local,
+/// dependency-free, atomically-written blob. A server may supply another.
 pub trait PersistenceSink {
-    /// Durably persist a fully-formed store snapshot. Never called in-crate.
-    fn flush_snapshot(&self, store: &QuantMemoryStore);
+    /// Durably persist a fully-formed store snapshot.
+    ///
+    /// # Errors
+    /// Whatever the underlying destination reports.
+    fn flush_snapshot(&mut self, store: &QuantMemoryStore) -> Result<(), PersistError>;
 }
 
 /// Errors returned by store operations.

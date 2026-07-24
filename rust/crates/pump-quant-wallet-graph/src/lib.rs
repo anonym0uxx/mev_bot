@@ -25,6 +25,13 @@
 //!   runner, community builder, streamer meta, copycat, unknown) over the
 //!   already-measured deployer/creator components, failing to `Unknown` on thin
 //!   evidence (§6.4).
+//! * [`creator_ledger`] — Section 27 / §29.9 **survived-migration creator
+//!   ledger**: a bounded, point-in-time record of per-creator launch outcomes
+//!   (launched → migrated → survived the horizon un-rugged) that makes the
+//!   `Proven` track record reachable at all, gated behind a named-const minimum
+//!   of survived launches, zero observed rugs, and an untruncated history —
+//!   thin or incomplete evidence stays `Unknown`, never optimistically
+//!   `Proven` (§6.4).
 //!
 //! # Determinism and arithmetic law (Section 22)
 //!
@@ -41,6 +48,7 @@
 #![forbid(unsafe_code)]
 
 pub mod creator_classifier;
+pub mod creator_ledger;
 pub mod deployer_credibility;
 pub mod smart_money;
 pub mod tier1_hot_summary;

@@ -17,11 +17,17 @@
 //! * **§22** — the whole crate is deterministic and float-free in every
 //!   outcome-controlling path: integer / fixed-point (lamports, basis points,
 //!   seconds) only, explicit overflow discipline, stable iteration order, and no
-//!   I/O, wall-clock, RNG, or network (live persistence and streaming are
-//!   out-of-scope `[S]` server responsibilities — modelled behind traits and
-//!   never called here).
+//!   wall-clock, RNG, or network. All I/O is confined to [`persist`], fenced
+//!   behind the [`persist::BlobStore`] trait, and every persistence property is
+//!   proven against [`persist::MemBlobStore`] without touching a filesystem.
 //! * **§57** — every table is memory-bounded with a durability-first overflow
-//!   contract (reject at capacity, never silently drop reconciled evidence).
+//!   contract (reject at capacity, never silently drop reconciled evidence) —
+//!   enforced identically on insert and on restore.
+//!
+//! …and the memory survives a restart ([`persist`]): an append-only checksummed
+//! journal plus atomically-written snapshots, `std` only, no database, no
+//! third-party crate, restoring through the same capacity and sealing contracts
+//! the live store enforces.
 //!
 //! No `f32`/`f64` appears anywhere in this crate.
 
@@ -30,6 +36,7 @@
 
 pub mod experiment;
 pub mod hashing;
+pub mod persist;
 pub mod rows;
 pub mod schema;
 pub mod store;

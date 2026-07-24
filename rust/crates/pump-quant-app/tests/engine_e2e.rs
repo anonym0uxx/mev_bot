@@ -281,7 +281,7 @@ fn token_metadata_and_creator_action_alone_never_admit() {
     e.tick(AppEvent::TokenMetadata {
         mint: m,
         category_id: 1,
-        taxonomy_version: 0,
+        taxonomy_version: 1,
         creator: 7,
         slot: 1,
     });
@@ -431,7 +431,10 @@ fn fed_meta_path_is_live_and_deterministic() {
             e.tick(AppEvent::TokenMetadata {
                 mint: mint(tag),
                 category_id: 1,
-                taxonomy_version: 0,
+                // v1 is the shipped taxonomy version (see `META_TAXONOMY_VERSION_DEFAULT`);
+                // an assignment stamped with any other version is left UNKNOWN, never
+                // retroactively remapped (criterion 81).
+                taxonomy_version: 1,
                 creator: u64::from(tag),
                 slot: 1,
             });
@@ -474,7 +477,10 @@ fn fed_meta_path_is_live_and_deterministic() {
         e.tick(AppEvent::TokenMetadata {
             mint: m,
             category_id: 1,
-            taxonomy_version: 0,
+            // v1 is the shipped taxonomy version (see `META_TAXONOMY_VERSION_DEFAULT`);
+            // an assignment stamped with any other version is left UNKNOWN, never
+            // retroactively remapped (criterion 81).
+            taxonomy_version: 1,
             creator: u64::from(tag),
             slot: 1,
         });

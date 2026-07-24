@@ -42,6 +42,70 @@ impl FillModeCfg {
     }
 }
 
+/// §99/§102 bound on the operator-supplied brain persistence path. A fixed-size
+/// inline buffer keeps [`Config`] `Copy` (the whole envelope is a value type, and
+/// the §19 strategy-identity digest folds its `Debug` encoding), so a path can be
+/// carried without dragging an allocation into the config plane.
+pub const BRAIN_PATH_CAP: usize = 96;
+
+/// An operator-supplied filesystem path, inline and `Copy`.
+///
+/// Only the brain's LAW B5 journal/snapshot base path uses this today. `Debug`
+/// renders the path as a string rather than 96 bytes so the §19 config-identity
+/// seed stays compact and human-auditable.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct CfgPath {
+    bytes: [u8; BRAIN_PATH_CAP],
+    len: u8,
+}
+
+impl CfgPath {
+    /// The empty path — persistence disarmed.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            bytes: [0u8; BRAIN_PATH_CAP],
+            len: 0,
+        }
+    }
+
+    /// Build from a string, refusing anything longer than [`BRAIN_PATH_CAP`]
+    /// (§18: a truncated path is a wrong path, so it fails loud instead).
+    #[must_use]
+    pub fn from_str_checked(s: &str) -> Option<Self> {
+        let b = s.as_bytes();
+        if b.len() > BRAIN_PATH_CAP {
+            return None;
+        }
+        let mut bytes = [0u8; BRAIN_PATH_CAP];
+        bytes[..b.len()].copy_from_slice(b);
+        Some(Self {
+            bytes,
+            // `b.len() <= BRAIN_PATH_CAP <= u8::MAX`, so the cast is exact.
+            len: b.len() as u8,
+        })
+    }
+
+    /// Whether the path is unset.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The path as a string slice. Always valid UTF-8: the only constructor takes
+    /// a `&str` and copies whole bytes.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or("")
+    }
+}
+
+impl fmt::Debug for CfgPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.as_str())
+    }
+}
+
 /// The full parameter envelope the engine runs under.
 ///
 /// All fields are integers or fixed-point basis points — no floating point ever
@@ -547,6 +611,71 @@ pub struct Config {
     /// too, within the reduce-only law. Off = a bearish alpha call informs nothing
     /// on a held position, byte-identical. Default ON: a protective correctness law.
     pub alpha_exit_pressure_enable: bool,
+
+    // ---- brain: episodic recall memory (LAWs B1–B5) ----
+    /// LAW B1/B2 master switch for the episodic memory plane. ON records an
+    /// [`crate::brain::BrainEntry`] fingerprint at every admit, seals an `Episode`
+    /// at every completed trade, and produces the reflection-cadence recall
+    /// readout. It touches NO capital decision on its own — the digest moves only
+    /// through the §19 config-identity seed, never through a different size, gate
+    /// or exit. Off ⇒ the plane is never queried and never written.
+    pub brain_enable: bool,
+    /// §46 minimum matched episodes before recall may produce an estimate at all.
+    /// Below it the verdict is structurally `Unknown` and LAW B4 pins that an
+    /// `Unknown` changes nothing.
+    pub brain_min_sample: u32,
+    /// §102 stage-1 Hamming radius defining "a setup like this".
+    pub brain_recall_max_distance: u32,
+    /// LAW B3 master switch for the **reduce-only** recall haircut. ON lets a
+    /// `Known` recall verdict over a historically-bleeding setup class shrink — or,
+    /// past the veto bar, refuse — an entry the rest of the chain would have taken.
+    /// It can NEVER enlarge size (§29.5): the verdict type has no boost variant.
+    /// Off ⇒ recall is still computed and reported, but never acted on, which is
+    /// what makes the A/B a clean isolation of the law rather than of the work.
+    pub brain_haircut_enable: bool,
+    /// LAW B3 haircut bar: a class whose decisive win rate is at or below this
+    /// (with a negative median net) is faded. Bps.
+    pub brain_haircut_win_rate_bp: u32,
+    /// LAW B3 veto bar: at or below this decisive win rate the class is refused
+    /// outright. Must not exceed [`Config::brain_haircut_win_rate_bp`] (validated).
+    pub brain_veto_win_rate_bp: u32,
+    /// LAW B3 reduce-only size multiplier applied to a faded class, bps of 10_000.
+    /// Validated ≤ 10_000 — a "haircut" that grew size would be a contradiction.
+    pub brain_haircut_mult_bp: u32,
+    /// LAW B5: arm durable persistence of the episodic journal at
+    /// [`Config::brain_path`]. Off (or an empty path) ⇒ the index is memory-only.
+    pub brain_persist_enable: bool,
+    /// LAW B5 base path for the episodic snapshot + append-only journal; the
+    /// engine appends `.snapshot` / `.journal`. Empty ⇒ persistence disarmed.
+    pub brain_path: CfgPath,
+
+    // ---- brain: strategy-analysis export + brain-informed reflection ----
+    /// LAW B6 master switch for the `brain_analysis_v1` strategy-analysis export
+    /// ([`crate::brain_analysis`]). ON writes the bounded JSON artifact alongside
+    /// `live_status.json` at the same info-time cadence. REPORT PLANE ONLY: the
+    /// artifact is produced from already-realized state and is never read back by
+    /// any decision, so the switch cannot move a fill.
+    pub brain_analysis_enable: bool,
+    /// LAW B6 path for the strategy-analysis export. Empty ⇒ no file is written
+    /// (`Engine::brain_analysis_json` still works — the artifact is a pure
+    /// function of engine state, and the filesystem is only one of its sinks).
+    pub brain_analysis_path: CfgPath,
+    /// LAW B7 master switch for the **reduce-only** brain-informed lane
+    /// reweighting in [`crate::reflect`]. ON lets conditioned recall over a lane's
+    /// *setups* apply an ADDITIONAL downweight inside the §56.2 envelope when
+    /// those setups have decayed on our own realized evidence. There is no
+    /// up-weight path (§29.5/§46 — recall may shrink conviction, never inflate
+    /// it). Default OFF: see `tests/brain_strategy.rs` for the A/B.
+    pub brain_reflect_enable: bool,
+    /// LAW B7 extra downweight step applied to a lane whose conditioned setups
+    /// have decayed, bps. Bounded by the same §56.2 floor as the base step, so an
+    /// armed reflection can still never drive a lane to zero.
+    pub brain_reflect_step_bp: u32,
+    /// LAW B7 §46 sample floor for a lane-decay flag: the SUM of matched episodes
+    /// across a lane's conditioned setup classes must reach this before any
+    /// downweight (or any [`crate::brain_analysis`] retirement flag) may bind.
+    /// Fail-closed — below it there is no flag at all, not a weak one.
+    pub brain_decay_min_sample: u32,
 }
 
 /// LAW D2 default designated-caller attention weight: half the standard attention
@@ -554,6 +683,20 @@ pub struct Config {
 /// genuine distinct corroboration completes it. Mirrors the live-broadcaster
 /// half-formation choice (§29.6/§102) — a documented scale, not fake precision.
 pub const DESIGNATED_CALLER_WEIGHT_DEFAULT: u64 = 50;
+
+/// §21.4 / criterion 81 default meta-taxonomy version: `1`, matching
+/// [`pump_quant_market_state::meta::TAXONOMY_V1`].
+///
+/// v0 matched every lexical needle as a naive substring and therefore assigned
+/// "Fair Launch"→AI (`ai` in `fair`), "Catalyst"→Animal (`cat`), "Bottom
+/// Signal"→AI (`bot`), "Bullish Chain"→Animal (`bull`), "Starter Pack"→Celebrity
+/// (`star`) and "Magazine"→Political (`maga`). `category_id` is a **brain recall
+/// filter key**, so each of those pools a token with the wrong meta's episodes
+/// and silently corrupts every conditioned recall estimate keyed on it. v1 adopts
+/// the word-boundary discipline. The fix is FORWARD only: v0 stays frozen as the
+/// historical record, and an incoming assignment stamped `0` no longer matches
+/// this version so it is left UNKNOWN rather than retroactively remapped (§81).
+pub const META_TAXONOMY_VERSION_DEFAULT: u32 = pump_quant_market_state::meta::TAXONOMY_VERSION_V1;
 
 /// §24 LAW 2 default: profit margin over the measured cost floor is 1.5× the
 /// round-trip cost. Named const (§102).
@@ -673,7 +816,11 @@ impl Config {
             lc_max_hold_ticks: 300,
             lc_precursor_drop_bps: 3_000,
 
-            meta_taxonomy_version: 0, // matches meta::TAXONOMY_V0
+            // Matches `meta::TAXONOMY_V1` — the word-boundary-disciplined lexicon.
+            // v0's naive substring matching mis-assigned ordinary English into the
+            // brain's recall filter key; the fix ships FORWARD under a bumped version
+            // and v0 stays frozen as the historical record (criterion 81).
+            meta_taxonomy_version: crate::config::META_TAXONOMY_VERSION_DEFAULT,
             meta_max_categories: 64,
             meta_max_creators_per_cat: 256,
             creator_track_cap: 4_096,          // matches the lane track cap
@@ -773,6 +920,39 @@ impl Config {
             designated_caller_enable: true,
             designated_caller_weight: DESIGNATED_CALLER_WEIGHT_DEFAULT,
             alpha_exit_pressure_enable: true,
+
+            // Brain (LAWs B1–B5). B1/B2/B5 are DEFAULT ON: they are pure
+            // record/readout laws that touch no capital decision, and the operator
+            // asked for a memory that is actually populated rather than an
+            // opt-in that is never switched on. B3 — the only law here that can
+            // move lamports — is DEFAULT OFF: on the representative golden tape it
+            // is exactly neutral (13 admits generate far too few episodes to reach
+            // the §46 sample floor, so every admit-time recall is `Unknown`), and a
+            // law that has not demonstrated it earns must not be armed by default.
+            // Its causal value is proven on its own hazard tape in brain_laws.rs;
+            // arming it is a deliberate operator config change (§56.2).
+            brain_enable: true,
+            brain_min_sample: crate::brain::BRAIN_MIN_SAMPLE_DEFAULT,
+            brain_recall_max_distance: crate::brain::BRAIN_RECALL_MAX_DISTANCE_DEFAULT,
+            brain_haircut_enable: false,
+            brain_haircut_win_rate_bp: crate::brain::BRAIN_HAIRCUT_WIN_RATE_BP_DEFAULT,
+            brain_veto_win_rate_bp: crate::brain::BRAIN_VETO_WIN_RATE_BP_DEFAULT,
+            brain_haircut_mult_bp: crate::brain::BRAIN_HAIRCUT_MULT_BP_DEFAULT,
+            brain_persist_enable: false,
+            brain_path: CfgPath::empty(),
+            // LAW B6: the export is report-plane and inert, so it is ON by
+            // default; the PATH is empty, so nothing is written unless an
+            // operator names a sink. `Engine::brain_analysis_json()` is always
+            // available regardless (tests and the evaluator take that seam).
+            brain_analysis_enable: true,
+            brain_analysis_path: CfgPath::empty(),
+            // LAW B7: DEFAULT OFF. The A/B on the golden tape and on the
+            // purpose-built decayed-lane tape did not earn (see
+            // `tests/brain_strategy.rs`), and §56 forbids arming a decision-plane
+            // law that has not paid for itself.
+            brain_reflect_enable: false,
+            brain_reflect_step_bp: crate::reflect::BRAIN_REFLECT_STEP_BP_DEFAULT,
+            brain_decay_min_sample: crate::brain_analysis::BRAIN_DECAY_MIN_SAMPLE_DEFAULT,
         }
     }
 
@@ -889,6 +1069,14 @@ impl Config {
             "designated_caller_enable" => self.designated_caller_enable = value != 0,
             "designated_caller_weight" => self.designated_caller_weight = nonneg(value)?,
             "alpha_exit_pressure_enable" => self.alpha_exit_pressure_enable = value != 0,
+            "brain_enable" => self.brain_enable = value != 0,
+            "brain_min_sample" => self.brain_min_sample = bp(value)?.max(1),
+            "brain_recall_max_distance" => self.brain_recall_max_distance = bp(value)?,
+            "brain_haircut_enable" => self.brain_haircut_enable = value != 0,
+            "brain_haircut_win_rate_bp" => self.brain_haircut_win_rate_bp = bp(value)?,
+            "brain_veto_win_rate_bp" => self.brain_veto_win_rate_bp = bp(value)?,
+            "brain_haircut_mult_bp" => self.brain_haircut_mult_bp = bp(value)?,
+            "brain_persist_enable" => self.brain_persist_enable = value != 0,
             "reflect_every_ticks" => self.reflect_every_ticks = nonneg(value)?.max(1),
             "reflect_weight_step_bp" => self.reflect_weight_step_bp = bp(value)?,
             "reflect_weight_floor_bp" => self.reflect_weight_floor_bp = bp(value)?,
@@ -918,15 +1106,46 @@ impl Config {
             "expectancy_min_lane_trades" => {
                 self.expectancy_min_lane_trades = bp(value)?.max(1);
             }
+            "brain_analysis_enable" => self.brain_analysis_enable = value != 0,
+            "brain_reflect_enable" => self.brain_reflect_enable = value != 0,
+            "brain_reflect_step_bp" => self.brain_reflect_step_bp = bp(value)?,
+            "brain_decay_min_sample" => self.brain_decay_min_sample = bp(value)?.max(1),
             other => return Err(ConfigError::UnknownKey(other.to_string())),
         }
         Ok(())
     }
 
+    /// Apply a single `key = <path>` override for the small set of PATH-valued
+    /// keys. Returns `Err` on an unknown key or a path longer than
+    /// [`BRAIN_PATH_CAP`] (a truncated path is a wrong path — it fails loud, §18).
+    pub fn apply_path(&mut self, key: &str, value: &str) -> Result<(), ConfigError> {
+        match key {
+            "brain_path" => {
+                self.brain_path = CfgPath::from_str_checked(value)
+                    .ok_or_else(|| ConfigError::PathTooLong(key.to_string()))?;
+            }
+            "brain_analysis_path" => {
+                self.brain_analysis_path = CfgPath::from_str_checked(value)
+                    .ok_or_else(|| ConfigError::PathTooLong(key.to_string()))?;
+            }
+            other => return Err(ConfigError::UnknownKey(other.to_string())),
+        }
+        Ok(())
+    }
+
+    /// Whether `key` is one of the PATH-valued keys handled by
+    /// [`Config::apply_path`] rather than the integer [`Config::apply`].
+    #[must_use]
+    pub fn is_path_key(key: &str) -> bool {
+        matches!(key, "brain_path" | "brain_analysis_path")
+    }
+
     /// Parse a dependency-free config document over a `dev_portable()` base.
     ///
     /// Grammar: one `key = value` per line; `#` starts a comment; blank lines are
-    /// ignored; `value` is a base-10 integer. Every override is validated.
+    /// ignored; `value` is a base-10 integer, EXCEPT for the small closed set of
+    /// path-valued keys ([`Config::is_path_key`]) whose value is taken verbatim
+    /// after trimming. Every override is validated.
     pub fn from_str_over_default(text: &str) -> Result<Self, ConfigError> {
         let mut cfg = Self::dev_portable();
         for (lineno, raw) in text.lines().enumerate() {
@@ -938,6 +1157,10 @@ impl Config {
                 .split_once('=')
                 .ok_or(ConfigError::Syntax(lineno + 1))?;
             let key = k.trim();
+            if Self::is_path_key(key) {
+                cfg.apply_path(key, v.trim())?;
+                continue;
+            }
             let val: i64 = v
                 .trim()
                 .parse()
@@ -1055,6 +1278,51 @@ impl Config {
                 "target floor exceeds target ceiling",
             ));
         }
+        // LAW B3 is REDUCE-ONLY (§29.5/§56.2): a recall "haircut" that grew size
+        // would invert the whole law, so the multiplier lives in [0, 100%].
+        if self.brain_haircut_mult_bp > 10_000 {
+            return Err(ConfigError::Inconsistent(
+                "brain_haircut_mult_bp exceeds 100% (LAW B3 is reduce-only)",
+            ));
+        }
+        // The veto bar is strictly harsher evidence than the haircut bar: a class
+        // bad enough to refuse is by definition bad enough to fade.
+        if self.brain_veto_win_rate_bp > self.brain_haircut_win_rate_bp {
+            return Err(ConfigError::Inconsistent(
+                "brain_veto_win_rate_bp exceeds brain_haircut_win_rate_bp",
+            ));
+        }
+        // Win rates are rates.
+        if self.brain_haircut_win_rate_bp > 10_000 {
+            return Err(ConfigError::Inconsistent(
+                "brain_haircut_win_rate_bp exceeds 100%",
+            ));
+        }
+        // §46: an estimate over fewer than one episode is not an estimate.
+        if self.brain_min_sample == 0 {
+            return Err(ConfigError::Inconsistent(
+                "brain_min_sample must be positive (§46 fail-closed)",
+            ));
+        }
+        // §46/§56 LAW B7: a decay flag over a zero sample is not evidence, it is a
+        // coin flip with a §-citation. The floor is structural, not advisory.
+        if self.brain_decay_min_sample == 0 {
+            return Err(ConfigError::Inconsistent(
+                "brain_decay_min_sample must be positive (§46 fail-closed)",
+            ));
+        }
+        // §56.2 LAW B7: the brain downweight lives INSIDE the reflection envelope.
+        // A step wider than the envelope itself could jump the floor in one pass,
+        // which is exactly the unbounded adaptation the envelope exists to forbid.
+        if self.brain_reflect_step_bp
+            > self
+                .reflect_weight_ceiling_bp
+                .saturating_sub(self.reflect_weight_floor_bp)
+        {
+            return Err(ConfigError::Inconsistent(
+                "brain_reflect_step_bp exceeds the §56.2 reflection envelope width",
+            ));
+        }
         Ok(())
     }
 }
@@ -1068,6 +1336,9 @@ pub enum ConfigError {
     UnknownKey(String),
     /// A value outside the field's representable/allowed range.
     OutOfRange(String, i64),
+    /// A path-valued key's value exceeded [`BRAIN_PATH_CAP`]. Refused rather than
+    /// truncated: a truncated path is a *different* path (§18 fail-loud).
+    PathTooLong(String),
     /// The envelope is internally inconsistent.
     Inconsistent(&'static str),
 }
@@ -1078,6 +1349,9 @@ impl fmt::Display for ConfigError {
             ConfigError::Syntax(n) => write!(f, "config syntax error on line {n}"),
             ConfigError::UnknownKey(k) => write!(f, "unknown config key: {k}"),
             ConfigError::OutOfRange(k, v) => write!(f, "value {v} out of range for {k}"),
+            ConfigError::PathTooLong(k) => {
+                write!(f, "path value for {k} exceeds {BRAIN_PATH_CAP} bytes")
+            }
             ConfigError::Inconsistent(m) => write!(f, "inconsistent config: {m}"),
         }
     }

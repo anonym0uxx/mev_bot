@@ -24,11 +24,28 @@
 //!
 //! Memory-bounded: every function is a pure fold over caller-owned slices; the
 //! crate holds no growing state of its own.
+//!
+//! ## Two narrative axes (do not conflate them)
+//! * [`narrative::NarrativeClass`] — how a narrative *behaves*: decay speed and
+//!   reach ceiling (trend / news / tech / culture). Consumed by
+//!   [`narrative::nv_narrative_ceiling`].
+//! * [`narrative_family::NarrativeFamily`] — what a token is *about*: the
+//!   subject-matter family (animal / political / celebrity / tech / derivative /
+//!   stream / seasonal), classified only from deterministic lexical and
+//!   launch-metadata evidence, and `Unclassified` whenever that evidence is
+//!   absent (§6.4 — under-claiming beats fabricating).
 
 pub mod attention_decay;
 pub mod attention_state;
 pub mod catalyst_classifier;
 pub mod narrative;
+pub mod narrative_family;
+
+pub use narrative_family::{
+    nv_family_classify, nv_family_classify_default, FamilyClassification, FamilyEvidence,
+    FamilyEvidenceLane, FamilyLexicon, MatchMode, NarrativeFamily, Needle,
+    FAMILY_DERIVATIVE_SIMILARITY_BPS, FAMILY_LEXICON_V1, FAMILY_LEXICON_VERSION,
+};
 
 pub use narrative::{
     nv_attention_money_divergence, nv_attention_series, nv_candidate_score, nv_class_classify,

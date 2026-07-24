@@ -564,6 +564,247 @@ impl ExitTournament {
     }
 }
 
+// ============================================================================
+// LAW B8 — brain-grounded challenger PROPOSALS (report-only).
+// ============================================================================
+
+/// §102 lower bound on a proposed conditional hold, ticks. A time stop below one
+/// minute of information time (150 ticks ≈ 60 s at 400 ms/tick) is not an exit
+/// policy, it is a latency artefact.
+pub const PROPOSAL_HOLD_MIN_TICKS: u64 = 150;
+/// §102 upper bound on a proposed conditional hold, ticks (≈ 40 minutes). Past
+/// this the position is a swing trade and belongs to a different law than §24.
+pub const PROPOSAL_HOLD_MAX_TICKS: u64 = 6_000;
+/// §102 lower bound on a proposed TP1 principal-recovery arm, mult bps. Below
+/// 1.05× the trim does not clear its own round-trip cost (§18).
+pub const PROPOSAL_TP1_MIN_BPS: u32 = 10_500;
+/// §102 upper bound on a proposed TP1 arm, mult bps (3×). A first trim that far
+/// out is not principal recovery.
+pub const PROPOSAL_TP1_MAX_BPS: u32 = 30_000;
+/// §102 lower bound on a proposed trailing width, bps.
+pub const PROPOSAL_TRAIL_MIN_BPS: u32 = 500;
+/// §102 upper bound on a proposed trailing width, bps.
+pub const PROPOSAL_TRAIL_MAX_BPS: u32 = 6_000;
+
+/// §24/§102 share of a winner's p75 maximum favourable excursion to place the
+/// proposed first trim at: 60%.
+///
+/// Placing TP1 *at* the p75 MFE would fill on roughly a quarter of winners and
+/// never on the rest — a target you reach one time in four is not a
+/// principal-recovery arm, it is a lottery ticket. 60% of the p75 excursion sits
+/// comfortably inside the body of the winning distribution while still being
+/// meaningfully further out than the incumbent's fixed arm, which is exactly the
+/// hypothesis worth pre-registering.
+pub const PROPOSAL_TP1_MFE_SHARE_BP: u64 = 6_000;
+
+/// §24/§102 slack over a winner's median adverse excursion for the proposed trail:
+/// 150%.
+///
+/// A trailing stop set exactly at the heat winners historically took would have
+/// stopped out half of them. The proposal is therefore 1.5× that heat — wide
+/// enough that the median winner survives it, tight enough to be a genuinely
+/// different hypothesis from a fixed width.
+pub const PROPOSAL_TRAIL_MAE_SLACK_BP: u64 = 15_000;
+
+/// §99 bound on emitted proposals per export (three axes × two venue phases).
+pub const PROPOSAL_CAP: usize = 6;
+
+/// Which exit lever a proposal addresses. One axis per proposal — a challenger
+/// that moves three levers at once cannot attribute its edge to any of them
+/// (§56.1, no post-hoc fishing).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ProposalAxis {
+    /// Conditional max hold, ticks — derived from the median hold of WINNERS.
+    TimeStopTicks,
+    /// TP1 principal-recovery arm, mult bps — derived from winners' p75 MFE.
+    Tp1Bps,
+    /// Trailing width, bps — derived from winners' median adverse excursion.
+    TrailBps,
+}
+
+impl ProposalAxis {
+    /// Stable label for the report.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::TimeStopTicks => "time_stop_ticks",
+            Self::Tp1Bps => "tp1_bps",
+            Self::TrailBps => "trail_bps",
+        }
+    }
+}
+
+/// One brain-grounded challenger **proposal**.
+///
+/// # What this is, and what it is emphatically not
+///
+/// The §48 tournament grid is a fixed 2×2×2 factorial chosen by research, and it
+/// is fixed for a good reason: a challenger set that moves with the data is a
+/// challenger set that has been fitted to the data, and its SPRT verdict means
+/// nothing. So the brain does not get to edit the grid.
+///
+/// What it gets to do is *propose*. A proposal is a parameter value the episodic
+/// record says is worth pre-registering — "your winners' median hold is 900 ticks
+/// and your incumbent time stop is 420, so a longer stop is a hypothesis your own
+/// data generated". An operator promotes a proposal into the pre-registered grid
+/// through the §56.2 config envelope, at which point it races the incumbent under
+/// the existing SPRT machinery like every other challenger. Nothing here adopts
+/// anything, and there is no code path from a proposal to a live exit parameter.
+///
+/// Fail-closed: no proposal is emitted below the sample floor, and none is emitted
+/// when the derived value equals the incumbent's (that is not a challenger).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExitProposal {
+    /// The single lever this proposal moves.
+    pub axis: ProposalAxis,
+    /// [`pump_quant_brain::fingerprint::VenuePhase::ordinal`] the evidence came
+    /// from (§100: curve and pool exit behaviour are never pooled).
+    pub venue_phase_code: u8,
+    /// The proposed value (ticks for `TimeStopTicks`, bps otherwise).
+    pub value: u64,
+    /// The incumbent's current value on the same axis, for the diff.
+    pub incumbent_value: u64,
+    /// Winning episodes the derivation stood on. Always ≥ the sample floor.
+    pub derived_from_n: u32,
+}
+
+/// Nearest-rank order statistic over a sorted slice at `num/den` (e.g. 3/4 for
+/// p75). Integer only; empty ⇒ `0`.
+fn order_stat_u64(sorted: &[u64], num: usize, den: usize) -> u64 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let idx = (sorted.len().saturating_mul(num) / den).min(sorted.len() - 1);
+    sorted[idx]
+}
+
+/// Nearest-rank order statistic over a sorted `i64` slice.
+fn order_stat_i64(sorted: &[i64], num: usize, den: usize) -> i64 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let idx = (sorted.len().saturating_mul(num) / den).min(sorted.len() - 1);
+    sorted[idx]
+}
+
+/// LAW B8: derive pre-registration candidates for the §48 grid from the recall
+/// distribution of the setups that actually PAID.
+///
+/// The cohort is every admitted episode in `phase` whose realized net is strictly
+/// positive — the best-performing setups, taken as a cohort rather than as a
+/// single fingerprint class, because a single class rarely clears a sample floor
+/// worth trusting and pooling within one venue phase is exactly the pooling §100
+/// permits.
+///
+/// Three derivations, each on one axis:
+///
+/// * **time stop** ← winners' median hold. If half our winners were still working
+///   at tick 900, a stop at 420 was cutting them.
+/// * **TP1 arm** ← [`PROPOSAL_TP1_MFE_SHARE_BP`] of winners' p75 MFE. Where the
+///   good trades actually went, discounted so the arm is reachable.
+/// * **trail width** ← [`PROPOSAL_TRAIL_MAE_SLACK_BP`] of winners' median adverse
+///   excursion. How much heat a winner has to be allowed to take.
+///
+/// Fail-closed: fewer than `min_sample` winners ⇒ an EMPTY vector, not a
+/// low-confidence guess. Every derived value is clamped into a named envelope, so
+/// a pathological tape cannot propose a two-tick time stop.
+///
+/// Sorted by `(venue_phase, axis)` — total and independent of index order.
+#[must_use]
+pub fn brain_exit_proposals(
+    index: &pump_quant_brain::recall::EpisodicIndex,
+    incumbent: &LifecycleParams,
+    phase: pump_quant_brain::fingerprint::VenuePhase,
+    min_sample: u32,
+    tick_ns: u64,
+) -> Vec<ExitProposal> {
+    if tick_ns == 0 {
+        return Vec::new();
+    }
+    let mut holds: Vec<u64> = Vec::new();
+    let mut mfes: Vec<i64> = Vec::new();
+    let mut maes: Vec<i64> = Vec::new();
+    for e in index.iter_oldest_first() {
+        if e.context().venue_phase != phase {
+            continue;
+        }
+        let o = e.outcome();
+        if !o.was_admitted || o.realized_net_lamports <= 0 {
+            continue;
+        }
+        holds.push(o.hold_duration_ns);
+        mfes.push(o.mfe_bps);
+        maes.push(o.mae_bps.saturating_abs());
+    }
+    let n = u32::try_from(holds.len()).unwrap_or(u32::MAX);
+    if n < min_sample {
+        // §46: below the floor there is no proposal, not a weak one.
+        return Vec::new();
+    }
+    holds.sort_unstable();
+    mfes.sort_unstable();
+    maes.sort_unstable();
+
+    let phase_code = phase.ordinal();
+    let mut out: Vec<ExitProposal> = Vec::new();
+
+    // --- time stop ---------------------------------------------------------
+    let median_hold_ns = order_stat_u64(&holds, 1, 2);
+    let hold_ticks =
+        (median_hold_ns / tick_ns).clamp(PROPOSAL_HOLD_MIN_TICKS, PROPOSAL_HOLD_MAX_TICKS);
+    if hold_ticks != incumbent.max_hold_ticks {
+        out.push(ExitProposal {
+            axis: ProposalAxis::TimeStopTicks,
+            venue_phase_code: phase_code,
+            value: hold_ticks,
+            incumbent_value: incumbent.max_hold_ticks,
+            derived_from_n: n,
+        });
+    }
+
+    // --- TP1 arm -----------------------------------------------------------
+    let p75_mfe = order_stat_i64(&mfes, 3, 4).max(0);
+    let tp1 = u32::try_from(
+        10_000u64
+            .saturating_add((p75_mfe as u64).saturating_mul(PROPOSAL_TP1_MFE_SHARE_BP) / 10_000),
+    )
+    .unwrap_or(PROPOSAL_TP1_MAX_BPS)
+    .clamp(PROPOSAL_TP1_MIN_BPS, PROPOSAL_TP1_MAX_BPS);
+    if tp1 != incumbent.tp1_bps {
+        out.push(ExitProposal {
+            axis: ProposalAxis::Tp1Bps,
+            venue_phase_code: phase_code,
+            value: u64::from(tp1),
+            incumbent_value: u64::from(incumbent.tp1_bps),
+            derived_from_n: n,
+        });
+    }
+
+    // --- trailing width ----------------------------------------------------
+    let median_mae = order_stat_i64(&maes, 1, 2).max(0);
+    let trail =
+        u32::try_from((median_mae as u64).saturating_mul(PROPOSAL_TRAIL_MAE_SLACK_BP) / 10_000)
+            .unwrap_or(PROPOSAL_TRAIL_MAX_BPS)
+            .clamp(PROPOSAL_TRAIL_MIN_BPS, PROPOSAL_TRAIL_MAX_BPS);
+    if trail != incumbent.trail_base_bps {
+        out.push(ExitProposal {
+            axis: ProposalAxis::TrailBps,
+            venue_phase_code: phase_code,
+            value: u64::from(trail),
+            incumbent_value: u64::from(incumbent.trail_base_bps),
+            derived_from_n: n,
+        });
+    }
+
+    out.sort_by(|a, b| {
+        a.venue_phase_code
+            .cmp(&b.venue_phase_code)
+            .then(a.axis.cmp(&b.axis))
+    });
+    out.truncate(PROPOSAL_CAP);
+    out
+}
+
 /// `|median|` of the incumbent net ring (even lengths average the two central
 /// elements, integer division). Zero for an empty ring.
 fn median_abs(nets: &VecDeque<i128>) -> i128 {

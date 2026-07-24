@@ -14,6 +14,11 @@
 //! stream always produces the same decisions and the same net-SOL (§22, §54).
 
 use crate::analytics::ReflectionAnalytics;
+use crate::brain::{
+    burst_phase_of, discovery_lane_of, exit_reason_of, narrative_class_of, platform_of,
+    range_state_of, AppBlobStore, BrainAuthorRecord, BrainEntry, BrainMetaState, BrainPlane,
+    BrainSetupClass, BrainSizeVerdict, BRAIN_BURST_BASELINE_MULT, BRAIN_TICK_NS,
+};
 use crate::config::Config;
 use crate::event::AppEvent;
 use crate::gate::{decide, Confirmation, GateDecision, GateReject};
@@ -23,8 +28,12 @@ use crate::lane::{
     WalletLane,
 };
 use crate::market_context::MarketContext;
+use crate::measured_state::{
+    brain_creator_class, brain_meta_saturation, brain_narrative_class, MeasuredState, MetaTotals,
+    META_PHASE_NEUTRAL,
+};
 use crate::position::{DerivedTargets, Exit, ExitReason, LifecycleParams, ScalpLifecycle};
-use crate::reflect::reflect;
+use crate::reflect::reflect_with_brain;
 use crate::screen::{
     creator_credibility_haircut_bp, deployer_screen_haircut_bp, FlowScreen, WalletScreen,
 };
@@ -40,6 +49,10 @@ use crate::extraction_risk::ExtractionRiskLedger;
 use crate::hazard_scaffold::HazardScaffold;
 use crate::social_earn::{SocialEarn, SocialEarnParams};
 use crate::social_ingest::{ledger_quality, to_mention, SourceQualityPolicy};
+use crate::social_plane::{
+    CallerTrustRow, FollowRecoRow, LensScoreRow, RefreshAt, SocialCallEvidence, SocialEvidenceRow,
+    SocialPlane, SocialSupportRow, SupportNeed, UnfollowRow,
+};
 use pump_quant_domain::ids::Mint as DomainMint;
 use pump_quant_evaluator::baseline_destruction::{
     baseline_destruction, Competitor, DestructionVerdict,
@@ -65,8 +78,10 @@ use pump_quant_ingest::social_source::SocialSource;
 use pump_quant_market_state::creator::{CreatorEvent, CreatorState, CreatorStateReducer};
 use pump_quant_market_state::meta::{
     rotation_between, CategoryEvent, CategoryEventKind, MetaRotationReducer, MetaRotationState,
+    CATEGORY_UNCLASSIFIED,
 };
 use pump_quant_narrative::narrative::nv_meta_emergence;
+use pump_quant_narrative::narrative_family::NarrativeFamily;
 use pump_quant_signals::active_market_universe::{
     passes_broad_screen, MarketObservation, ScreenCriteria,
 };
@@ -102,6 +117,7 @@ use pump_quant_strategy::thesis::{
 use pump_quant_wallet_graph::creator_classifier::{
     classify_creator, CreatorClass, CreatorInputs, CreatorThresholds,
 };
+use pump_quant_wallet_graph::creator_ledger::CreatorTrack;
 use pump_quant_wallet_graph::deployer_credibility::{
     compute_deployer_credibility, DeployerCredibilityConfig, PriorLaunch, SocialReachInput,
 };
@@ -165,6 +181,13 @@ struct OpenAttribution {
     scale_add: u64,
     scale_cost: u64,
     entry_price: u64,
+    /// LAW B1: the episodic capture taken AT ADMIT — the setup fingerprint and its
+    /// context, frozen before the position opened. Carried here (rather than
+    /// recomputed at exit) is the whole no-look-ahead guarantee: nothing that
+    /// happens after the entry can reach this value.
+    brain: Option<BrainEntry>,
+    /// LAW B1: the entry tick, so the sealed episode carries a real hold duration.
+    entry_tick: u64,
 }
 
 /// A gate-approved, fully-priced candidate awaiting §23 slot arbitration.
@@ -195,6 +218,9 @@ struct PendingEntry {
     x_min: u64,
     x_cost: u64,
     x_max: u64,
+    /// LAW B1: the entry-time episodic capture, computed inside the gate from
+    /// strictly pre-entry state. `None` when the brain plane is disabled.
+    brain: Option<BrainEntry>,
 }
 
 /// Index of an evaluator lane into the running-accumulator array.
@@ -458,6 +484,68 @@ pub struct Report {
     /// keep and up/down-weight or flag it. Empty until a Discord-sourced position
     /// closes, so a run with no paid-alpha attribution reports nothing here.
     pub per_alpha_source_net: Vec<(SourceRef, i64)>,
+
+    // ---- brain: episodic recall memory readouts (LAW B2, report plane only) ----
+    /// LAW B1: immutable episodes sealed this run — one per completed trade, each
+    /// fingerprinted from the state captured AT ADMIT (never at exit).
+    pub brain_episodes_recorded: u64,
+    /// LAW B2/B4: admit-time recalls that produced an estimate (`Known`).
+    pub brain_recall_known: u64,
+    /// LAW B2/B4: admit-time recalls that refused to (`Unknown` — empty index, out
+    /// of radius, or below the §46 sample floor). A large ratio here against a
+    /// small `brain_recall_known` is the honest signal that the memory is still
+    /// too thin to have an opinion, and LAW B4 pins that it changed nothing.
+    pub brain_recall_unknown: u64,
+    /// LAW B3: reduce-only size haircuts recall actually applied (0 unless
+    /// `brain_haircut_enable`).
+    pub brain_haircuts_applied: u64,
+    /// LAW B3: entries recall refused outright (0 unless `brain_haircut_enable`).
+    pub brain_vetoes: u64,
+    /// LAW B2: the strongest recalled setup classes the engine ACTUALLY traded,
+    /// conditioned by venue phase × meta category × discovery lane, with their
+    /// realized median net and sample size. Bounded; classes recall declines to
+    /// speak about are absent rather than guessed at.
+    pub brain_setup_classes: Vec<BrainSetupClass>,
+    /// LAW B2: current lifecycle state of each tracked meta — "what is the state
+    /// of the meta this week", answered from the brain's own timeline.
+    pub brain_meta_state: Vec<BrainMetaState>,
+    /// LAW B2: measured per-author track records over attributed markouts — "who
+    /// called this, and do they actually earn". Fail-closed: an author below the
+    /// sample floor is omitted, never shown with a flattering two-trade record.
+    pub brain_author_records: Vec<BrainAuthorRecord>,
+
+    // ---- social abstraction plane (REPORT ONLY — see `social_plane`) --------
+    /// §29.8/§34.3 the FRESH social evidence chain: for every social datum still
+    /// inside the engine's evidence TTL, which platform carried it, which author
+    /// originated it, whether they are designated, their EARNED trust tier and
+    /// operator-set exposure, and when we last saw them say it. Evidence past the
+    /// TTL is DROPPED from this list, never carried forward at its last value.
+    pub social_evidence: Vec<SocialEvidenceRow>,
+    /// "Does this coin have strong social support, or is it a staged crowd?" —
+    /// per watched mint, either a trust-weighted breadth score or an explicit
+    /// refusal that structurally carries no number (§46).
+    pub social_support: Vec<SocialSupportRow>,
+    /// What the Phase-B capture layer should go and fetch to sharpen the support
+    /// estimates — a specific work list (poll this platform, build a record for
+    /// this author, set this source's §28 exposure), not "more data please".
+    pub social_support_needs: Vec<SupportNeed>,
+    /// "Who should I be following that I am not?" — ranked by lead-time-weighted
+    /// REALIZED attribution. RESEARCH ONLY: this crate has no posting or
+    /// engagement capability and none may be added (§110).
+    pub follow_recommendations: Vec<FollowRecoRow>,
+    /// "Who am I following that I should not be?" — followed authors whose
+    /// attributed contribution has gone strictly negative over a real sample.
+    pub unfollow_candidates: Vec<UnfollowRow>,
+    /// Earned trust standing of the callers we are actually acting on. Trust is
+    /// earned ONLY from realized net SOL; follower counts are structurally
+    /// unreachable from the data the trust module reads (§28).
+    pub caller_trust: Vec<CallerTrustRow>,
+    /// "Which style is actually paying for us?" — realized per-lens performance,
+    /// PHASE-SEPARATED (§100: there is no phase-pooled statistic, by design).
+    pub lens_scoreboard: Vec<LensScoreRow>,
+    /// The best-paying lens per venue phase, `(venue_phase_code, lens_code)`.
+    /// Empty when no lens clears the sample floor with a positive median.
+    pub best_paying_lens: Vec<(u8, u8)>,
 }
 
 /// The running engine.
@@ -691,6 +779,31 @@ pub struct Engine {
     pending_buf: Vec<PendingEntry>,
     cands_buf: Vec<EntryCandidate>,
 
+    /// LAWs B1–B5: the episodic recall memory plane. Bounded (§99) and, unless
+    /// `brain_haircut_enable` arms LAW B3, strictly decision-inert: it records what
+    /// happened and answers what happened last time, and nothing else.
+    brain: BrainPlane,
+
+    /// The four MEASURED estimators behind the fingerprint fields the engine used
+    /// to fabricate: §70.1 holder-growth acceleration, §29.9 creator track record,
+    /// §21.4 meta lifecycle phase, §21.4 narrative family. Each refuses below its
+    /// own evidence floor and the seam collapses that refusal onto the documented
+    /// NEUTRAL bucket — never onto a fabricated measurement (see
+    /// [`crate::measured_state`] for the two fields whose ladder cannot represent
+    /// the refusal). Fed from the engine's own on-chain observations plus two
+    /// parallel capture seams; empty until fed, so an unfed run is byte-identical
+    /// to one before this layer existed. Bounded (§99), report/fingerprint plane
+    /// only — nothing here gates, sizes, or ranks.
+    measured: MeasuredState,
+
+    /// The §28/§29.8/§110 SOCIAL ABSTRACTION plane: earned source trust, mint
+    /// social-support scoring, follow / unfollow recommendation, and the realized
+    /// style-lens scoreboard, plus the provenance chain every social datum carries.
+    /// REPORT PLANE ONLY — no promotion, ranking, sizing or gate path reads it, and
+    /// it is never journaled, so it is byte-identical on the golden path. Bounded
+    /// (§99). Fed from the same social calls the brain's ledger already ingests.
+    social_plane: SocialPlane,
+
     promoted: u64,
     admitted: u64,
     rejected: u64,
@@ -884,6 +997,9 @@ impl Engine {
             extras_buf: Vec::new(),
             pending_buf: Vec::new(),
             cands_buf: Vec::new(),
+            brain: BrainPlane::new(cfg.brain_min_sample, cfg.brain_recall_max_distance),
+            measured: MeasuredState::new(),
+            social_plane: SocialPlane::new(),
             promoted: 0,
             admitted: 0,
             rejected: 0,
@@ -994,6 +1110,108 @@ impl Engine {
         }
     }
 
+    /// LAW B6: the per-alpha-source realized ledger, sorted for determinism.
+    /// Shared by [`Self::report`] and the strategy-analysis export so the two can
+    /// never disagree about which rooms have earned an outcome.
+    fn alpha_source_net_rows(&self) -> Vec<(SourceRef, i64)> {
+        let mut srcs: std::collections::BTreeSet<SourceRef> = std::collections::BTreeSet::new();
+        for &src in self.alpha_source.values() {
+            srcs.insert(src);
+        }
+        srcs.into_iter()
+            .filter(|&src| self.source_outcome.trade_count(src) > 0)
+            .map(|src| (src, self.source_outcome.net_sol(src)))
+            .collect()
+    }
+
+    /// LAW B6: the `brain_analysis_v1` strategy-analysis artifact for the CURRENT
+    /// engine state (report plane only).
+    ///
+    /// Info-time is the event-stream tick projected onto the brain's nanosecond
+    /// axis, never a wall-clock read, so two replays of one tape build identical
+    /// artifacts (§22/§54). Reads live state WITHOUT finalizing, so it can be
+    /// sampled mid-run exactly like [`Self::live_status`].
+    #[must_use]
+    pub fn brain_analysis(&self) -> crate::brain_analysis::BrainAnalysis {
+        let alpha = self.alpha_source_net_rows();
+        crate::brain_analysis::build(&crate::brain_analysis::AnalysisInputs {
+            info_time_ns: self.now.saturating_mul(crate::brain::BRAIN_TICK_NS),
+            tick: self.now,
+            brain: &self.brain,
+            social: &self.social_plane,
+            lane_perf: &self.lane_perf,
+            disc_perf: &self.disc_perf,
+            alpha_source_net: &alpha,
+            min_sample: self.cfg.brain_min_sample,
+            decay_min_sample: self.cfg.brain_decay_min_sample,
+        })
+    }
+
+    /// LAW B6: the strategy-analysis artifact as canonical JSON, without touching
+    /// a filesystem. The seam tests and the evaluator consume — a research
+    /// consumer should never have to stand up a temp directory to read what the
+    /// brain thinks.
+    #[must_use]
+    pub fn brain_analysis_json(&self) -> String {
+        self.brain_analysis().to_canonical_json()
+    }
+
+    /// LAW B6/B7: every traded setup class with its full conditioned verdict,
+    /// refusals included (report plane). The seam the export, the lane-decay flag
+    /// set and the promotion evidence all read, so the three can never disagree
+    /// about what the brain currently believes.
+    #[must_use]
+    pub fn brain_conditioned_classes(&self) -> Vec<crate::brain::ConditionedClass> {
+        self.brain.conditioned_classes()
+    }
+
+    /// LAW B9: the episodic-recall evidence the promotion report consults.
+    ///
+    /// Counts conditioned-negative setup classes over the §46 decay floor and the
+    /// standing §56 retirement nominations. Fail-closed: with the brain disarmed
+    /// or its index thin, every count is zero and the evidence blocks nothing.
+    #[must_use]
+    pub fn recall_evidence(&self) -> crate::authority::RecallEvidence {
+        if !self.cfg.brain_enable {
+            return crate::authority::RecallEvidence::none();
+        }
+        let classes = self.brain.conditioned_classes();
+        let mut examined = 0u32;
+        let mut negative = 0u32;
+        for c in &classes {
+            let Some(stats) = c.verdict.stats() else {
+                continue;
+            };
+            examined = examined.saturating_add(1);
+            if crate::brain_analysis::is_conditioned_negative(
+                stats,
+                self.cfg.brain_decay_min_sample,
+            ) {
+                negative = negative.saturating_add(1);
+            }
+        }
+        let alpha = self.alpha_source_net_rows();
+        let flags = crate::brain_analysis::retirement_flags(
+            &crate::brain_analysis::AnalysisInputs {
+                info_time_ns: self.now.saturating_mul(crate::brain::BRAIN_TICK_NS),
+                tick: self.now,
+                brain: &self.brain,
+                social: &self.social_plane,
+                lane_perf: &self.lane_perf,
+                disc_perf: &self.disc_perf,
+                alpha_source_net: &alpha,
+                min_sample: self.cfg.brain_min_sample,
+                decay_min_sample: self.cfg.brain_decay_min_sample,
+            },
+            &classes,
+        );
+        crate::authority::RecallEvidence {
+            classes_examined: examined,
+            conditioned_negative: negative,
+            retirement_flags: u32::try_from(flags.len()).unwrap_or(u32::MAX),
+        }
+    }
+
     /// §60/§62 LAW 21: drive an event stream, writing the canonical live-status
     /// artifact to `status_path` every `every_ticks` events and once more at the
     /// end, then produce the final report. The periodic snapshots are taken
@@ -1019,10 +1237,30 @@ impl Engine {
             #[allow(clippy::manual_is_multiple_of)]
             if (i as u64 + 1) % every == 0 {
                 write(self.live_status());
+                self.write_brain_analysis();
             }
         }
         write(self.live_status());
+        self.write_brain_analysis();
         (self.report(), writes)
+    }
+
+    /// LAW B6: write the strategy-analysis artifact alongside the live status, at
+    /// the same info-time cadence.
+    ///
+    /// Best-effort, exactly like the status write: the artifact is telemetry for a
+    /// research consumer, never a trading authority, so a failed write is reported
+    /// and the loop continues. A disarmed switch or an empty path is a silent
+    /// no-op — the artifact is a pure function of engine state and the filesystem
+    /// is only one of its sinks.
+    fn write_brain_analysis(&self) {
+        if !self.cfg.brain_analysis_enable || self.cfg.brain_analysis_path.is_empty() {
+            return;
+        }
+        let path = std::path::Path::new(self.cfg.brain_analysis_path.as_str());
+        if let Err(e) = self.brain_analysis().write_to_path(path) {
+            eprintln!("brain_analysis write failed: {e}");
+        }
     }
 
     /// Feed one event.
@@ -1212,10 +1450,19 @@ impl Engine {
                     }
                 }
             }
-            AppEvent::Migration { mint, .. } => {
+            AppEvent::Migration { mint, slot } => {
                 // Curve→pool phase flip (§21.7 phase asymmetry): exit-cost pricing and
                 // future hazard conditioning consult the phase from here on.
                 self.context.on_migration(mint.as_bytes());
+                // §29.9: graduation is the FIRST half of the survival evidence the
+                // creator track record is built from (the second half is simply
+                // elapsed slots with no rug). Recorded only when the launch itself
+                // was observed — an unknown launch is left unknown (§6.4).
+                let m = *mint.as_bytes();
+                self.measured.observe_slot(slot);
+                if let Some(&creator) = self.mint_creator.get(&m) {
+                    let _ = self.measured.record_migration(creator, fnv1a_64(&m), slot);
+                }
             }
             AppEvent::NarrativeSample {
                 mint,
@@ -1340,7 +1587,15 @@ impl Engine {
                 e.2 = 0;
             }
             e.2 = e.2.saturating_add(1);
+            // §29.9: the launch fact enters the creator ledger, keyed on the CHAIN
+            // slot the metadata was decoded at (not the logical tick — the survival
+            // horizon is a chain-slot quantity). This, plus `Migration` and the
+            // confirmed-dump rug fact, is what makes `CreatorClass::Proven`
+            // reachable at all; before this the class was structurally unreachable
+            // and the fingerprint could only ever say Unknown/Serial/Toxic.
+            let _ = self.measured.record_launch(creator, fnv1a_64(&mint), slot);
         }
+        self.measured.observe_slot(slot);
         // A decoded creation immediately creates a discovery candidate (§23/§21.1):
         // record the sighting so `evaluate` surfaces a CreationSniper candidate while
         // it is fresh. The gate still requires on-chain confirmation — this only
@@ -1412,6 +1667,16 @@ impl Engine {
             },
         };
         reducer.ingest(&ev);
+        self.measured.observe_slot(slot);
+        // §29.9: a CONFIRMED creator distribution (the same hard binary the §26
+        // veto reads) is the rug/LP-pull fact the creator ledger scores on. The
+        // ledger keeps only the FIRST such observation per launch, so re-observing
+        // a live dump on every subsequent action cannot inflate the record.
+        if self.creator_dump_active(&mint) {
+            if let Some(&creator) = self.mint_creator.get(&mint) {
+                let _ = self.measured.record_rug(creator, fnv1a_64(&mint), slot);
+            }
+        }
     }
 
     /// Drain one batch from a live social [`SocialSource`] and apply it to the
@@ -1536,6 +1801,45 @@ impl Engine {
                 self.attention.observe_tagged(*m, mention, &prov);
                 self.social_earn
                     .record_call(ev.author_id, *m, ev.observed_at_ns);
+                // LAW B2: the same call also lands in the brain's social ledger, so
+                // "who called this mint" is answerable and — once the position
+                // closes and the realized net is attributed back as a markout —
+                // "does that author actually earn" becomes a MEASURED track record
+                // rather than a follower count. Report plane only.
+                // The call is stamped with the ENGINE's information time, not the
+                // payload's `observed_at_ns`: the episodic index, the meta timeline
+                // and the social ledger must share ONE time axis or a markout can
+                // never be matched back to the call that preceded it. The capture
+                // lane's stamp comes off a different clock entirely (§20/§22 — the
+                // logical tick is the only information time this engine has).
+                if self.cfg.brain_enable {
+                    let platform = platform_of(ev.platform);
+                    let call_id = self.brain.record_call(
+                        fnv1a_64(m),
+                        ev.author_id,
+                        platform,
+                        now.saturating_mul(BRAIN_TICK_NS),
+                        ev.engagement,
+                        ev.is_designated_caller,
+                    );
+                    // §29.8/§34.3 PROVENANCE: the same call is stamped with its
+                    // EVIDENCE CLASS — platform, author, designated flag, earned
+                    // trust tier and the information time it was observed at — and
+                    // its content digest is bound to the issued call id so the
+                    // support estimator can tell BREADTH (independent originators)
+                    // from ECHO (one post relayed). Report plane only: nothing in
+                    // `social_plane` is read by promotion, ranking, sizing or the
+                    // gate.
+                    self.social_plane.record_call(SocialCallEvidence {
+                        mint_id: fnv1a_64(m),
+                        author_id: ev.author_id,
+                        platform,
+                        designated: ev.is_designated_caller,
+                        now_tick: now,
+                        call_id,
+                        content_digest: ev.content_hash,
+                    });
+                }
                 applied += 1;
             }
             // Learn cashtag→mint bindings from events that name BOTH (first bind
@@ -2208,7 +2512,7 @@ impl Engine {
                 } else {
                     10_000
                 };
-                let haircut_bp = (u128::from(self.size_haircut_bps(&mint_bytes))
+                let base_haircut_bp = (u128::from(self.size_haircut_bps(&mint_bytes))
                     * u128::from(vpin_mult)
                     / 10_000
                     * u128::from(regime_mult)
@@ -2226,6 +2530,65 @@ impl Engine {
                     * u128::from(struct_mult)
                     / 10_000) as u32;
                 let raw = u128::from(deployable) * u128::from(f_eff) / 10_000;
+                // ---- LAWs B1/B3: the episodic capture and the reduce-only recall
+                // verdict. The fingerprint's round-trip-cost field is measured at the
+                // PRE-BRAIN size (`raw` under the existing reduce-only chain), so the
+                // brain's own haircut can never feed back into the fingerprint it
+                // queries with — a feedback loop there would make the law
+                // self-referential and its A/B meaningless.
+                let brain_entry: Option<BrainEntry> = if self.cfg.brain_enable {
+                    let pre_brain_size = (raw * u128::from(base_haircut_bp) / 10_000)
+                        .min(u128::from(band.x_max))
+                        .min(available_risk) as u64;
+                    let pre_fixed = effective_fixed_lamports(
+                        self.cfg.gate_base_fixed_lamports,
+                        self.cfg.gate_fail_rate_bps,
+                    )
+                    .unwrap_or(self.cfg.gate_base_fixed_lamports);
+                    let pre_impact = ImpactCurve::linear_test(self.cfg.gate_impact_den);
+                    // An UNDECODED quote yields no cost; the entry is rejected for
+                    // that reason further down regardless, so the `0` fallback here
+                    // can never reach a decision (§18.2 fails closed below).
+                    let pre_rt = round_trip_cost_bps_quoted(
+                        pre_brain_size,
+                        pre_fixed,
+                        self.cfg.gate_protocol_bps,
+                        &pre_impact,
+                        self.resolve_quote_mint(&mint_bytes),
+                    )
+                    .unwrap_or(0);
+                    Some(self.brain_entry_at_admit(&mint_bytes, cand.discovery_lane, pre_rt))
+                } else {
+                    None
+                };
+                // The verdict is COMPUTED in both arms of the A/B (identical work,
+                // identical counters) and only ACTED ON when `brain_haircut_enable`
+                // is set — so the A/B isolates the law, not the bookkeeping.
+                let brain_verdict = match &brain_entry {
+                    Some(e) => self.brain.size_verdict(
+                        e,
+                        self.cfg.brain_haircut_enable,
+                        self.cfg.brain_haircut_win_rate_bp,
+                        self.cfg.brain_veto_win_rate_bp,
+                        self.cfg.brain_haircut_mult_bp,
+                    ),
+                    None => BrainSizeVerdict::Identity,
+                };
+                if brain_verdict == BrainSizeVerdict::Veto {
+                    self.rejected += 1;
+                    self.journal.record(Decision::Rejected {
+                        mint: mint_bytes,
+                        reason: REJECT_BRAIN_BLED,
+                    });
+                    self.record_reject_sample(REJECT_BRAIN_BLED, mint_bytes);
+                    return None;
+                }
+                // Reduce-only composition: `mult_bp()` is structurally ≤ 10_000, so
+                // this product can only ever shrink the size the rest of the chain
+                // arrived at (§29.5). With the law disarmed it is exactly 10_000 and
+                // `haircut_bp == base_haircut_bp` bit-for-bit.
+                let haircut_bp = (u128::from(base_haircut_bp) * u128::from(brain_verdict.mult_bp())
+                    / 10_000) as u32;
                 let sized = (raw * u128::from(haircut_bp) / 10_000)
                     .min(u128::from(band.x_max))
                     .min(available_risk);
@@ -2388,6 +2751,7 @@ impl Engine {
                     x_min: band.x_min,
                     x_cost: band.x_cost,
                     x_max: band.x_max,
+                    brain: brain_entry,
                 })
             }
             GateDecision::Reject(reason) => {
@@ -2586,6 +2950,216 @@ impl Engine {
         }
     }
 
+    /// **LAW B1 — the entry-time episodic capture point.**
+    ///
+    /// Quantize the market state into a [`BrainEntry`] using ONLY facts that exist
+    /// before the position opens. This function is called exactly once per admit,
+    /// inside [`Self::gate_evaluate`], and its result is carried forward on the
+    /// pending entry and then the open position until the exit books.
+    ///
+    /// Why it must be here and nowhere else: a fingerprint computed at exit would
+    /// be a function of the price path it is supposed to predict. Recall over such
+    /// fingerprints would look spectacular in backtest and be worth nothing live —
+    /// it would be reading the answer off the back of the card. Every input below
+    /// is a `&self` read of state the engine already had at admit; there is no path
+    /// from a post-entry event into this value, and
+    /// `brain_laws::b1_fingerprint_has_no_look_ahead` pins that by mutating the
+    /// entire post-entry price path and asserting the recorded fingerprint is
+    /// byte-identical.
+    ///
+    /// `rt_bps` is the round-trip cost measured at the PRE-brain size, so LAW B3's
+    /// own action can never feed back into the fingerprint it queries with.
+    fn brain_entry_at_admit(
+        &self,
+        mint: &[u8; 32],
+        discovery_lane: DiscoveryLane,
+        rt_bps: u32,
+    ) -> BrainEntry {
+        use pump_quant_brain::episode::EpisodeContext;
+        use pump_quant_brain::fingerprint::{
+            signed_decade, CreatorClass as BrainCreatorClass, MetaSaturationState,
+            SetupFingerprint, SetupInputs, TrendStructure as BrainTrend, VenuePhase,
+        };
+
+        let domain_mint = DomainMint::from_bytes(*mint);
+        let feats = self.numeric.features_for(domain_mint).unwrap_or_default();
+        let mint_id = fnv1a_64(mint);
+
+        // Order-flow imbalance: the lane's 0..=10_000 buy-pressure scale re-centred
+        // on the balanced midpoint and rescaled to signed bps (§21.7).
+        let ofi_bps = (i64::from(feats.buy_pressure_bp) - i64::from(PRESSURE_BALANCED_BP)) * 2;
+
+        // Bar-derived structure: CVD decade, swing trend, range compression.
+        let state = self
+            .structure
+            .market_state(mint, self.cfg.structure_min_bars);
+        let cvd_decade = state.map_or(0, |s| signed_decade(s.cvd_delta));
+        let range_state = state.map_or(pump_quant_brain::fingerprint::RangeState::Normal, |s| {
+            range_state_of(u64::from(s.range_bps), u64::from(s.prior_range_bps))
+        });
+        let trend_structure = match self.structure.trend(mint, self.cfg.structure_min_bars) {
+            TrendStructure::Uptrend => BrainTrend::Up,
+            TrendStructure::Downtrend => BrainTrend::Down,
+            // Range and Undefined both collapse to the neutral middle: "no dominant
+            // swing direction" and "not enough swings to say" are the same bucket
+            // for similarity purposes (§6.4 — absence is not a third direction).
+            TrendStructure::Range | TrendStructure::Undefined => BrainTrend::Range,
+        };
+
+        // §21.7 burst lifecycle: recent arrival intensity against a longer baseline.
+        let short = self
+            .structure
+            .activity(mint, self.now, self.cfg.universe_window_ticks);
+        let long = self.structure.activity(
+            mint,
+            self.now,
+            self.cfg
+                .universe_window_ticks
+                .saturating_mul(BRAIN_BURST_BASELINE_MULT),
+        );
+        let burst_phase = burst_phase_of(short.trades, long.trades, BRAIN_BURST_BASELINE_MULT);
+
+        let realized_vol_bps = self
+            .structure
+            .recent_vol_bps(mint, VOL_STOP_WINDOW_BARS)
+            .map_or(0i64, |v| v.clamp(0, i128::from(i64::MAX)) as i64);
+
+        let venue_phase = if self.context.is_pool(mint) {
+            VenuePhase::Pool
+        } else {
+            VenuePhase::Curve
+        };
+
+        // §21.4 attention / narrative. Absent attention is a zero velocity and an
+        // Unclassified narrative — the neutral buckets, never a fabricated reading.
+        let attention_velocity_bps = self.attention.velocity_of(mint).unwrap_or(0);
+        // §21.4 narrative identity. TWO independent axes feed one nominal field:
+        //   1. the MEASURED launch-metadata family (`nv_family_classify`), which
+        //      spans all eight brain slots — Animal / Seasonal / Stream included —
+        //      and is a pure function of decoded launch metadata; and
+        //   2. the attention plane's four-way `NarrativeClass`, which keeps owning
+        //      the §70.6/§70.8 conviction-CEILING semantics and is unchanged.
+        // The measured family WINS when it exists and is not `Unclassified`,
+        // because it is the finer, evidence-stamped axis; otherwise the historical
+        // four-way crosswalk applies; otherwise `Unclassified` — a refusal this
+        // nominal field CAN carry, so no fabrication is needed here (§6.4).
+        let narrative_class = match self.measured.family_of(mint) {
+            Some(c) if c.family != NarrativeFamily::Unclassified => brain_narrative_class(c.family),
+            _ => narrative_class_of(self.attention.narrative_class_of(mint)),
+        };
+
+        // §21.7 flow authenticity — already a neutral prior when unevidenced.
+        let (authenticity_bps, _fabricated) = self.flow_screen.authenticity(mint);
+
+        // §29.9 creator class. `Proven` used to be UNREACHABLE from app state; the
+        // launch → migration → survival ledger now makes it reachable, so the
+        // cascade is:
+        //   1. a CONFIRMED live dump right now ⇒ Toxic. A fact about the present
+        //      dominates a track record about the past, and it is also the fresher
+        //      observation — the ledger's own rug fact is fed from this same signal
+        //      but only lands once per launch.
+        //   2. the MEASURED ledger verdict when it speaks (Proven / Toxic / Serial).
+        //   3. the app's lifetime-launch-count heuristic ⇒ Serial.
+        //   4. Unknown. `CreatorClass::Unknown` is a real nominal slot, so the
+        //      refusal is representable and nothing is fabricated (§6.4).
+        let creator = self.mint_creator.get(mint).copied();
+        let ledger_track =
+            creator.map_or(CreatorTrack::Unknown, |c| self.measured.creator_track(c));
+        let creator_class = if self.creator_dump_active(mint) {
+            BrainCreatorClass::Toxic
+        } else if ledger_track != CreatorTrack::Unknown {
+            brain_creator_class(ledger_track)
+        } else if creator
+            .and_then(|c| self.creator_launches.get(&c))
+            .is_some_and(|&(lifetime, _, _)| lifetime >= CREATOR_SERIAL_THRESHOLD)
+        {
+            BrainCreatorClass::Serial
+        } else {
+            BrainCreatorClass::Unknown
+        };
+
+        // §21.4 meta identity + lifecycle position. The category space is u64 in the
+        // app and u32 in the brain; the low half is the fold (categories are dense
+        // small ids, so this is lossless in practice and monotone regardless).
+        let category = self.mint_category.get(mint).copied();
+        let meta_category_id = category.map_or(0u32, |c| (c & 0xFFFF_FFFF) as u32);
+        // Lifecycle position. The MEASURED phase wins when the tracker will speak
+        // (it is the only path to `Decaying` — participation and activity both
+        // falling off a prior peak, i.e. "new entrants are exit liquidity"); the
+        // rotation-verdict heuristic is the fallback.
+        //
+        // HONEST LIMITATION (§6.4): `MetaSaturationState` is an ORDINAL lifecycle
+        // with no UNKNOWN variant, and `Emerging` is ordinal 0 — which is also the
+        // "this mint has no category at all" default below. So "no category",
+        // "category with too few samples to phase" and "genuinely emerging meta"
+        // all collapse into ONE fingerprint code. That is a real loss the ladder
+        // cannot express and the app cannot fix from this side of the boundary;
+        // it is stated rather than papered over.
+        let measured_phase = category.and_then(|c| self.measured.meta_phase_of(c, self.now));
+        let meta_saturation_state = match measured_phase {
+            Some(p) => brain_meta_saturation(p),
+            None => match category.and_then(|c| self.category_rank_adj.get(&c)) {
+                Some(&adj) if adj > 0 => MetaSaturationState::Emerging,
+                Some(_) => MetaSaturationState::Saturated,
+                // A known category with no rotation verdict is running but not
+                // rotating: broad participation, attention flat-to-rising.
+                None if category.is_some() => MetaSaturationState::Hot,
+                None => META_PHASE_NEUTRAL,
+            },
+        };
+
+        let inputs = SetupInputs {
+            ofi_bps,
+            cvd_decade,
+            trend_structure,
+            range_state,
+            burst_phase,
+            realized_vol_bps,
+            liquidity_decade: signed_decade(i128::from(feats.liquidity_lamports)),
+            buyer_breadth: feats.unique_buyers,
+            token_age_ns: u64::from(feats.age_slots).saturating_mul(BRAIN_TICK_NS),
+            venue_phase,
+            attention_velocity_bps,
+            narrative_class,
+            authenticity_bps: i64::from(authenticity_bps),
+            // §70.1 holder-growth ACCELERATION, measured by the leaf estimator over
+            // the captured holder series as known at this instant. The estimator
+            // fails closed (fewer than three usable samples, a stale interval, or a
+            // zero base count ⇒ `None`), and the refusal collapses onto the
+            // ladder's neutral rung.
+            //
+            // HONEST LIMITATION (§6.4): `HOLDER_GROWTH_ACCEL_EDGES_BPS` has no
+            // UNKNOWN rung, so "never captured" and "measured exactly zero
+            // acceleration" are the SAME fingerprint code once collapsed. The
+            // distinction survives on `MeasuredState::holder_growth_accel_bps`
+            // (which returns `Option`) for any caller that needs it; the
+            // fingerprint cannot carry it.
+            holder_growth_accel_bps: self
+                .measured
+                .holder_growth_accel_input(mint_id, self.now.saturating_mul(BRAIN_TICK_NS)),
+            creator_class,
+            meta_category_id,
+            meta_saturation_state,
+            designated_caller_present: self.brain.designated_caller_present(mint_id),
+            round_trip_cost_bps: i64::from(rt_bps),
+            info_time_ns: self.now.saturating_mul(BRAIN_TICK_NS),
+        };
+
+        BrainEntry {
+            fingerprint: SetupFingerprint::from_inputs(&inputs),
+            context: EpisodeContext {
+                mint_id,
+                venue_phase,
+                meta_category_id,
+                discovery_lane: discovery_lane_of(discovery_lane),
+                info_time_ns: self.now.saturating_mul(BRAIN_TICK_NS),
+                // The engine's logical tick IS the replay anchor (§22: no wall clock,
+                // no chain slot on the laptop build).
+                slot: self.now,
+            },
+        }
+    }
+
     /// §32 thesis check for an open position: build the live observations (OFI,
     /// CVD sign) and evaluate the stored deterministic thesis. True = forced exit.
     fn thesis_forces_exit(&mut self, mint: &[u8; 32]) -> bool {
@@ -2701,8 +3275,15 @@ impl Engine {
                     scale_add,
                     scale_cost,
                     entry_price: e.entry_price,
+                    brain: e.brain,
+                    entry_tick: self.now,
                 },
             );
+            // LAW B1/B2: remember the setup CLASS that was actually traded, so the
+            // reflection sweep can go back and ask what that class paid.
+            if let Some(be) = &e.brain {
+                self.brain.on_admit(be);
+            }
             // §24 LAW 6: the recent-window realized volatility that scales the
             // stop/trail, and §24 LAW 2: the per-market cost-derived take-profit
             // ladder — both computed once, at admit, and armed on the position and
@@ -2822,6 +3403,27 @@ impl Engine {
                     att.entry_price,
                     att.archetype,
                 );
+                // ---- LAW B1: seal the completed trade as an immutable episode.
+                // The fingerprint and context are the ADMIT-TIME capture carried on
+                // the open position; ONLY the outcome comes from here. Recomputing
+                // the fingerprint at this point would make it a function of the very
+                // price path it is meant to predict — the single most expensive
+                // mistake available in episodic memory, and the reason the capture
+                // lives in the gate. The realized net also becomes a markout for
+                // every author who called this mint (§82), which is what turns
+                // "who called it" into "who actually earns".
+                if let Some(be) = &att.brain {
+                    self.brain.record_exit(
+                        be,
+                        total,
+                        self.now
+                            .saturating_sub(att.entry_tick)
+                            .saturating_mul(BRAIN_TICK_NS),
+                        exit_reason_of(e.reason),
+                        e.mfe_bps,
+                        e.mae_bps,
+                    );
+                }
                 self.bankroll_committed = self
                     .bankroll_committed
                     .saturating_sub(u128::from(entry_spend));
@@ -2998,7 +3600,39 @@ impl Engine {
         // since the last reflection (strengthened, never created, by attention
         // breadth). Off the hot path; a no-op until categories have been fed.
         self.update_meta_rotation();
-        let deltas = reflect(&self.lane_perf, &mut self.weights, &self.cfg);
+        // ---- LAW B2: grounded reflection. Snapshot the meta lifecycle onto the
+        // brain's timeline, then re-query recall for the setup classes the engine
+        // ACTUALLY traded (conditioned by phase × meta × lane) and cache the answer
+        // for the report. Both are pure reads of already-realized state — no
+        // decision, no journal entry, no digest contribution.
+        if self.cfg.brain_enable {
+            self.record_brain_meta_snapshots();
+            self.brain.refresh_reflection();
+            // §28/§29.8/§110 social abstraction readouts + the §34.3 staleness
+            // sweep. Pure reads of already-realized state; report plane only.
+            self.refresh_social_plane();
+        }
+        // §21.4 meta LIFECYCLE: sample every tracked category's factual on-chain
+        // health onto the phase tracker. This is what makes `Decaying` reachable —
+        // the app's rotation vocabulary (emerging / saturating / running) has no
+        // way to express a meta whose participation and activity are BOTH falling
+        // off a prior peak, which is precisely the state in which new entrants are
+        // exit liquidity. Report/fingerprint plane only.
+        self.record_meta_phase_samples();
+        // LAW B7: build the reduce-only lane-decay flag set from conditioned
+        // recall. Computed ONLY when the law is armed — a disarmed engine does not
+        // pay the recall pass, and `reflect_with_brain` under an empty flag set is
+        // byte-identical to the pre-LAW-B7 `reflect`. Fail-closed inside
+        // `lane_decay`: a lane below `brain_decay_min_sample` is never flagged.
+        let decay = if self.cfg.brain_enable && self.cfg.brain_reflect_enable {
+            crate::brain_analysis::lane_decay(
+                &self.brain.conditioned_classes(),
+                self.cfg.brain_decay_min_sample,
+            )
+        } else {
+            crate::reflect::LaneDecay::none()
+        };
+        let deltas = reflect_with_brain(&self.lane_perf, &mut self.weights, &self.cfg, &decay);
         for d in &deltas {
             if d.before_bp != d.after_bp {
                 self.journal.record(Decision::Reweighted {
@@ -3017,6 +3651,203 @@ impl Engine {
         for c in survivors {
             self.watchlist.insert(c, self.now);
         }
+    }
+
+    /// LAW B2: push one [`pump_quant_brain::meta_timeline::MetaSnapshot`] per
+    /// tracked category onto the brain's lifecycle timeline, so "what is the state
+    /// of the meta this week" is answerable from measured history rather than from
+    /// the single most recent reducer snapshot.
+    ///
+    /// The lifecycle label is the engine's own rotation verdict (emerging /
+    /// saturating), the net is the category's realized on-chain net flow, and the
+    /// breadth is its distinct-creator count. All already computed; this only
+    /// records them against information time.
+    fn record_brain_meta_snapshots(&mut self) {
+        use pump_quant_brain::fingerprint::MetaSaturationState;
+        let Some(snap) = self.meta_prev.clone() else {
+            return;
+        };
+        let now_ns = self.now.saturating_mul(BRAIN_TICK_NS);
+        for cat in &snap.categories {
+            let saturation = match self.category_rank_adj.get(&cat.category_id) {
+                Some(&adj) if adj > 0 => MetaSaturationState::Emerging,
+                Some(_) => MetaSaturationState::Saturated,
+                None => MetaSaturationState::Hot,
+            };
+            self.brain.record_meta_snapshot(
+                (cat.category_id & 0xFFFF_FFFF) as u32,
+                now_ns,
+                saturation,
+                cat.net_flow,
+                cat.unique_creators,
+                u32::try_from(cat.launches).unwrap_or(u32::MAX),
+            );
+        }
+    }
+
+    /// Rebuild the social abstraction readouts (§28/§29.8/§110) and run the
+    /// §34.3 staleness sweep over the provenance ledger.
+    ///
+    /// The watched set is the CURRENT watchlist, in the engine's own deterministic
+    /// order, so the support verdicts describe the mints the operator is actually
+    /// looking at rather than the whole social firehose. Everything here is a pure
+    /// read: no journal entry, no decision, no digest contribution.
+    fn refresh_social_plane(&mut self) {
+        let watched: Vec<u64> = self
+            .watchlist
+            .entries()
+            .keys()
+            .map(|m| fnv1a_64(&m.bytes()))
+            .collect();
+        let now = self.now;
+        let as_of_ns = now.saturating_mul(BRAIN_TICK_NS);
+        let ttl = self.cfg.lane_evidence_ttl_ticks;
+        let min_sample = self.cfg.brain_min_sample;
+        // Disjoint borrows: the plane mutates while the brain's indexes are read.
+        let brain = &self.brain;
+        self.social_plane.refresh(
+            brain.index(),
+            brain.social(),
+            RefreshAt {
+                watched: &watched,
+                now_tick: now,
+                as_of_ns,
+                ttl_ticks: ttl,
+                min_sample,
+            },
+        );
+    }
+
+    /// The §28/§29.8/§110 social abstraction plane (read-only inspection seam).
+    #[must_use]
+    pub const fn social_plane(&self) -> &SocialPlane {
+        &self.social_plane
+    }
+
+    /// §28 operator judgement: set how PUBLIC a source is. Never inferred — "how
+    /// many other people read this account" is not observable from our own
+    /// realized outcomes, so it is an operator input or it is `Niche`.
+    pub fn set_source_exposure(
+        &mut self,
+        author_id: u64,
+        exposure: pump_quant_brain::trust::SourceExposure,
+    ) {
+        let _ = self.social_plane.set_exposure(author_id, exposure);
+    }
+
+    /// §110 record that the OPERATOR follows `author_id`. This records a fact for
+    /// the recommendation engine to reason about; it performs no social action —
+    /// there is no outbound social capability in this binary.
+    pub fn record_operator_follow(&mut self, author_id: u64) -> bool {
+        self.social_plane.follow(author_id)
+    }
+
+    /// §110 record that the OPERATOR no longer follows `author_id`.
+    pub fn record_operator_unfollow(&mut self, author_id: u64) -> bool {
+        self.social_plane.unfollow(author_id)
+    }
+
+    /// The REFLECTION OUTPUT's capture work list: the specific external evidence
+    /// that would sharpen the current social-support estimates.
+    ///
+    /// This is the brain telling the Phase-B capture layer what to go and fetch —
+    /// "poll Telegram for this mint", "build a track record for author X", "the
+    /// operator must set author Y's §28 exposure before we lean on them" — rather
+    /// than a vague request for more data. Refreshed at the reflection cadence and
+    /// bounded (§99). Polling it costs one clone and changes nothing.
+    #[must_use]
+    pub fn capture_work_list(&self) -> Vec<SupportNeed> {
+        self.social_plane.needs()
+    }
+
+    /// §21.4 / criterion 83: push one factual meta-health sample per tracked
+    /// category onto the lifecycle phase tracker.
+    ///
+    /// All three measures are DECODED ON-CHAIN FACTS — criterion 83 forbids social
+    /// interpretation from populating factual meta state, so none of these may come
+    /// from the attention plane:
+    ///
+    /// * `participation` — NEW distinct creators launching into the category this
+    ///   interval (the breadth axis §21.4 calls "broad participation").
+    /// * `attention` — trade events attributed to the category this interval. This
+    ///   is an ACTIVITY level, not a social attention score, and it is named
+    ///   `attention` only because that is the tracker's field name.
+    /// * `realized_outcome_bps` — the interval's measured flow imbalance in bps of
+    ///   gross flow. An interval with no flow yields `None` and the sample is
+    ///   SKIPPED rather than recorded with a fabricated zero (§6.4).
+    ///
+    /// Note these are **per-interval deltas**, not the reducer's cumulative
+    /// totals: the phase classifier detects a peak-and-decline, and a monotone
+    /// cumulative counter can never decline, so feeding the totals directly would
+    /// leave `Decaying` exactly as unreachable as it was before this wiring. See
+    /// [`crate::measured_state::MeasuredState::record_meta_interval`].
+    ///
+    /// Sampled on the engine's logical tick, which is the reflection cadence, so
+    /// the spacing is regular by construction.
+    fn record_meta_phase_samples(&mut self) {
+        if self.mint_category.is_empty() {
+            return;
+        }
+        let snap = self.meta.snapshot();
+        let now = self.now;
+        for cat in &snap.categories {
+            // UNCLASSIFIED is not a meta; it is the absence of one.
+            if cat.category_id == CATEGORY_UNCLASSIFIED {
+                continue;
+            }
+            self.measured.record_meta_interval(
+                cat.category_id,
+                now,
+                MetaTotals {
+                    unique_creators: u64::from(cat.unique_creators),
+                    buy_quote: cat.buy_quote,
+                    sell_quote: cat.sell_quote,
+                    buy_count: cat.buy_count,
+                    sell_count: cat.sell_count,
+                },
+            );
+        }
+    }
+
+    /// LAWs B1/B2/B5: the episodic memory plane (read-only inspection seam).
+    #[must_use]
+    pub const fn brain(&self) -> &BrainPlane {
+        &self.brain
+    }
+
+    /// LAW B5: arm durable episodic persistence against `store`, rooted at the
+    /// operator's `brain_path`, restoring whatever snapshot + journal are already
+    /// there. Call BEFORE driving events — it replaces the live index with the
+    /// restored one.
+    ///
+    /// Returns the restore report (how much came off the snapshot vs the journal,
+    /// and whether any damage was seen) so an operator can tell a clean restart
+    /// from a recovered crash.
+    ///
+    /// # Errors
+    /// Propagates [`pump_quant_brain::persist::PersistError`] — a store whose magic
+    /// or format version does not match is refused rather than silently ignored.
+    pub fn attach_brain_store(
+        &mut self,
+        store: AppBlobStore,
+    ) -> Result<pump_quant_brain::persist::RestoreReport, pump_quant_brain::persist::PersistError>
+    {
+        let base = std::path::PathBuf::from(self.cfg.brain_path.as_str());
+        self.brain.attach(store, &base)
+    }
+
+    /// LAW B5: write an episodic snapshot now, collapsing the journal tail.
+    ///
+    /// # Errors
+    /// Propagates [`pump_quant_brain::persist::PersistError`].
+    pub fn snapshot_brain(&mut self) -> Result<(), pump_quant_brain::persist::PersistError> {
+        self.brain.snapshot_now()
+    }
+
+    /// LAW B5: detach and return the blob store, disarming persistence. The proof
+    /// harness uses this to hand the same buffer to a "restarted" engine.
+    pub fn detach_brain_store(&mut self) -> AppBlobStore {
+        self.brain.detach()
     }
 
     /// Drive a whole event stream and produce the report.
@@ -3049,16 +3880,15 @@ impl Engine {
         // LAW D5: per-Discord-room realized net-SOL, sorted (BTreeSet) for
         // determinism. Only rooms with a reconciled outcome (a closed position)
         // are reported — a bound-but-never-closed room has earned nothing to grade.
-        let mut alpha_srcs: std::collections::BTreeSet<SourceRef> =
-            std::collections::BTreeSet::new();
-        for &src in self.alpha_source.values() {
-            alpha_srcs.insert(src);
+        let per_alpha_source_net: Vec<(SourceRef, i64)> = self.alpha_source_net_rows();
+        // LAW B2: `finalize()` above just booked every still-open position, so the
+        // cached reflection readout is one cadence stale. Refresh it once here so
+        // the end-of-run report answers over the COMPLETE episodic history rather
+        // than over history as of the last reflection tick. A pure read.
+        if self.cfg.brain_enable {
+            self.brain.refresh_reflection();
+            self.refresh_social_plane();
         }
-        let per_alpha_source_net: Vec<(SourceRef, i64)> = alpha_srcs
-            .into_iter()
-            .filter(|&src| self.source_outcome.trade_count(src) > 0)
-            .map(|src| (src, self.source_outcome.net_sol(src)))
-            .collect();
         Report {
             ticks: self.now,
             promoted: self.promoted,
@@ -3071,6 +3901,22 @@ impl Engine {
             journal_digest: self.journal.digest(),
             universe_filtered: self.universe_filtered,
             per_alpha_source_net,
+            brain_episodes_recorded: self.brain.episodes_recorded(),
+            brain_recall_known: self.brain.recall_known(),
+            brain_recall_unknown: self.brain.recall_unknown(),
+            brain_haircuts_applied: self.brain.haircuts_applied(),
+            brain_vetoes: self.brain.vetoes(),
+            brain_setup_classes: self.brain.setup_classes(),
+            brain_meta_state: self.brain.meta_state(),
+            brain_author_records: self.brain.author_records(self.cfg.brain_min_sample),
+            social_evidence: self.social_plane.evidence_rows(),
+            social_support: self.social_plane.support_rows(),
+            social_support_needs: self.social_plane.needs(),
+            follow_recommendations: self.social_plane.follow_rows(),
+            unfollow_candidates: self.social_plane.unfollow_rows(),
+            caller_trust: self.social_plane.trust_rows(),
+            lens_scoreboard: self.social_plane.lens_rows(),
+            best_paying_lens: self.social_plane.best_paying_lens(),
         }
     }
 
@@ -3522,11 +4368,15 @@ impl Engine {
         } else {
             ((u128::from(hwm - balance) * 10_000) / u128::from(hwm)) as u32
         };
-        crate::authority::promotion_readiness(
+        // LAW B9: recall is consulted as an ADDITIONAL fail-closed criterion,
+        // applied last so it can never mask the §38/§51/§64 blockers, and one-
+        // directional so it can only ever remove eligibility (§46/§51).
+        crate::authority::promotion_readiness_with_recall(
             &self.cfg,
             defeats,
             dd_bp < self.cfg.dd_tier3_bp,
             self.promotion_stat_verdict(),
+            self.recall_evidence(),
         )
     }
 
@@ -3657,10 +4507,109 @@ impl Engine {
         self.tournament.standings()
     }
 
+    /// LAW B8: brain-grounded challenger PROPOSALS for the §48 grid (report-only).
+    ///
+    /// Derived from the recall distribution of the setups that actually paid, one
+    /// axis at a time, phase-separated (§100). These are **pre-registration
+    /// candidates**, not challengers: nothing here edits the fixed 2×2×2 grid, and
+    /// there is no code path from a proposal to a live exit parameter. An operator
+    /// promotes one into the grid through the §56.2 config envelope, after which it
+    /// races under the existing SPRT machinery like everything else.
+    ///
+    /// Fail-closed: an empty vector until the winners cohort clears
+    /// `brain_decay_min_sample` in a venue phase.
+    #[must_use]
+    pub fn exit_proposals(&self) -> Vec<crate::shadow::ExitProposal> {
+        if !self.cfg.brain_enable {
+            return Vec::new();
+        }
+        let mut out: Vec<crate::shadow::ExitProposal> = Vec::new();
+        for phase in [
+            pump_quant_brain::fingerprint::VenuePhase::Curve,
+            pump_quant_brain::fingerprint::VenuePhase::Pool,
+        ] {
+            out.extend(crate::shadow::brain_exit_proposals(
+                self.brain.index(),
+                self.positions.params(),
+                phase,
+                self.cfg.brain_decay_min_sample,
+                crate::brain::BRAIN_TICK_NS,
+            ));
+        }
+        out
+    }
+
     /// §56.10 VOI-ranked open research queue.
     #[must_use]
     pub fn voi_queue(&self) -> Vec<(u64, i128)> {
         self.analytics.voi_ranking()
+    }
+
+    /// §70.1 holder-count ingestion: record one observed holder count for `mint`
+    /// at the engine's current information time.
+    ///
+    /// A PARALLEL channel to the decoded [`AppEvent`] stream, for the same reason
+    /// the first-slot fee record is one: holder count is an **account-state** fact
+    /// (an RPC / indexer read of distinct non-zero balances), not a swap-stream
+    /// fact, and the decoded event vocabulary is dossier-locked / additive-only.
+    ///
+    /// The holder-growth ACCELERATION estimator needs three usable samples spaced
+    /// at least `HOLDER_MIN_INTERVAL_NS` apart and no more than
+    /// `HOLDER_MAX_INTERVAL_NS` apart; below that it refuses and the fingerprint
+    /// takes the neutral rung. Feeding this changes no capital decision — the
+    /// holder field is a fingerprint/report input only. A run that never calls it
+    /// is byte-identical to one before this layer existed.
+    ///
+    /// Returns whether the sample landed (a non-advancing information time is
+    /// dropped — §20).
+    pub fn observe_holder_count(&mut self, mint: &[u8; 32], holder_count: u64) -> bool {
+        let ns = self.now.saturating_mul(BRAIN_TICK_NS);
+        self.measured
+            .record_holder_count(fnv1a_64(mint), holder_count, ns)
+    }
+
+    /// §21.4 launch-metadata ingestion: classify and remember `mint`'s narrative
+    /// FAMILY from its decoded launch metadata.
+    ///
+    /// A PARALLEL channel for the same dossier-lock reason as above: the decoded
+    /// [`AppEvent::TokenMetadata`] carries only the resolved integer `category_id`
+    /// (strings never cross the engine boundary — §22/§85), so the family
+    /// classifier runs at the `[S]`-adjacent seam and its verdict is handed in
+    /// here.
+    ///
+    /// This is a SEPARATE axis from the attention plane's four-way
+    /// `NarrativeClass`, which keeps owning the §70.6/§70.8 conviction-ceiling
+    /// semantics. The family owns the brain fingerprint's eight-slot nominal
+    /// identity, and it is the only path to the Animal / Stream / Seasonal slots.
+    /// First classification wins (a launch's family is a launch-time fact, §81).
+    ///
+    /// `live_stream_active` and `derivative_similarity_bps` are `None` when the
+    /// corresponding lane was not observed at all — `None` never becomes a family.
+    /// Report/fingerprint plane only: nothing here gates, sizes, or ranks.
+    pub fn observe_launch_metadata(
+        &mut self,
+        mint: &[u8; 32],
+        name: &str,
+        symbol: &str,
+        live_stream_active: Option<bool>,
+        derivative_similarity_bps: Option<u32>,
+    ) -> NarrativeFamily {
+        self.measured
+            .classify_family(
+                *mint,
+                name,
+                symbol,
+                live_stream_active,
+                derivative_similarity_bps,
+            )
+            .family
+    }
+
+    /// The four MEASURED estimators behind the fingerprint's formerly-fabricated
+    /// fields (read-only inspection seam).
+    #[must_use]
+    pub const fn measured(&self) -> &MeasuredState {
+        &self.measured
     }
 
     /// §70.10 first-slot fee ingestion (Batch-2c LAW 10): record a market's
@@ -3789,6 +4738,13 @@ const REJECT_FEE_FLOOR: u8 = 14;
 /// Never fires while quote resolution defaults to SOL (all golden markets are
 /// SOL-quoted), so the golden path is byte-identical.
 const REJECT_UNDECODED_QUOTE: u8 = 15;
+
+/// LAW B3 (§29.5/§46): episodic recall returned a `Known` verdict over a setup
+/// class that historically BLED — negative median realized net AND a decisive win
+/// rate at or below the veto bar. Refused pre-entry. This code can only ever appear
+/// with `brain_haircut_enable` armed; the fail-closed law (B4) guarantees an
+/// `Unknown` verdict can never reach it.
+const REJECT_BRAIN_BLED: u8 = 16;
 
 /// §94 default quote decimals for a SOL-quoted market (lamports = 9 decimals).
 /// The engine's economic gate has always priced in SOL lamports; making the

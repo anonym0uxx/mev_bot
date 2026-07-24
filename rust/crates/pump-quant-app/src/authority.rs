@@ -47,6 +47,59 @@ pub fn evidence_of(mode: FillModeCfg) -> (EvidenceStatus, FillModelClass) {
     (EvidenceStatus::Paper, class)
 }
 
+/// LAW B9 — **recall as a promotion INPUT**, never as the promotion verdict.
+///
+/// # Why this is here and why it is deliberately weak
+///
+/// §51 (FDR + PBO/CSCV) and §52 (baselines) are the promotion authority, and
+/// nothing about episodic recall is allowed to substitute for either. Recall is a
+/// sample the strategy generated for itself, on markets it chose, at times it
+/// chose — the single most overfit-prone evidence in the building. Promoting on it
+/// would be the exact failure §51 exists to catch.
+///
+/// But the reverse direction is free. If the strategy's own conditioned setup
+/// classes are *negative* over a real sample, that is not a reason to promote it
+/// and never could be; surfacing it as a **reported blocker** can only ever make
+/// promotion harder, which is the direction fail-closed always permits. So this
+/// type is additive and one-directional: it can add a blocker, and there is no
+/// field on it that could clear one.
+///
+/// Fail-closed by construction: [`RecallEvidence::none`] is the state of an engine
+/// with no brain, and it blocks nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecallEvidence {
+    /// Conditioned setup classes examined at the reflection cadence.
+    pub classes_examined: u32,
+    /// Of those, how many are conditioned-NEGATIVE over a sample that cleared the
+    /// §46 decay floor (see [`crate::brain_analysis::is_conditioned_negative`]).
+    pub conditioned_negative: u32,
+    /// Retirement-review nominations standing against this strategy right now
+    /// (§56 INPUT — see [`crate::brain_analysis::retirement_flags`]).
+    pub retirement_flags: u32,
+}
+
+impl RecallEvidence {
+    /// No recall evidence at all — an engine with the brain disarmed, or one whose
+    /// index is still too thin to have an opinion. Blocks nothing.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            classes_examined: 0,
+            conditioned_negative: 0,
+            retirement_flags: 0,
+        }
+    }
+
+    /// Whether recall has something disqualifying to say. `true` requires an
+    /// actual conditioned-negative class: a bare retirement flag (which may rest
+    /// on an aggregate rather than a conditioned distribution) is REPORTED but
+    /// does not block on its own.
+    #[must_use]
+    pub const fn blocks(&self) -> bool {
+        self.conditioned_negative > 0
+    }
+}
+
 /// The engine's honest promotion-readiness report (report-only; §64).
 #[derive(Clone, Debug)]
 pub struct PromotionReadiness {
@@ -72,6 +125,11 @@ pub struct PromotionReadiness {
     pub live_probe_eligible: bool,
     /// The single most actionable blocker, as a stable label.
     pub blocked_on: &'static str,
+    /// LAW B9: the episodic-recall evidence standing against this strategy.
+    /// Reported always; it BLOCKS only when a conditioned setup class is negative
+    /// over a real sample, and it is consulted LAST so it can never mask the §38 /
+    /// §51 / §64 labels that existed before it.
+    pub recall_evidence: RecallEvidence,
 }
 
 /// Build the fail-closed promotion readiness from the pieces the engine can
@@ -85,6 +143,40 @@ pub fn promotion_readiness(
     baselines_defeated: bool,
     drawdown_within_limits: bool,
     stat_verdict: PromotionStatisticalVerdict,
+) -> PromotionReadiness {
+    promotion_readiness_with_recall(
+        cfg,
+        baselines_defeated,
+        drawdown_within_limits,
+        stat_verdict,
+        RecallEvidence::none(),
+    )
+}
+
+/// LAW B9: [`promotion_readiness`] with the episodic-recall evidence consulted as
+/// an ADDITIONAL fail-closed criterion.
+///
+/// The recall check is applied **last**, after every pre-existing gate, so:
+///
+/// * every `blocked_on` label that existed before this law still binds first and
+///   still reads identically — recall cannot mask a §38 fill-model failure or a
+///   §51 statistical block;
+/// * recall can only ever REMOVE eligibility (`live_probe_eligible` is `&&`-ed
+///   with `!recall.blocks()`), never grant it — it is additive to the fail-closed
+///   criteria in the only direction fail-closed allows;
+/// * `RecallEvidence::none()` (no brain, or a brain too thin to speak) reproduces
+///   the pre-law behaviour exactly, which is what makes [`promotion_readiness`] a
+///   safe delegation.
+///
+/// It is emphatically NOT a substitute for the §51 verdict or the §52 baselines:
+/// a strategy with clean recall still fails everything it failed before.
+#[must_use]
+pub fn promotion_readiness_with_recall(
+    cfg: &Config,
+    baselines_defeated: bool,
+    drawdown_within_limits: bool,
+    stat_verdict: PromotionStatisticalVerdict,
+    recall: RecallEvidence,
 ) -> PromotionReadiness {
     let (evidence_status, fill_model) = evidence_of(cfg.fill_mode);
     let grade = EvidenceGrade {
@@ -103,7 +195,9 @@ pub fn promotion_readiness(
     let probe_gate = gate.evaluate(&grade);
     let mode_c = matches!(fill_model, FillModelClass::CalibratedAdversarial);
     let stat_blocks = stat_verdict.blocks();
-    let live_probe_eligible = mode_c && baselines_defeated && probe_gate.is_ok() && !stat_blocks;
+    let recall_blocks = recall.blocks();
+    let live_probe_eligible =
+        mode_c && baselines_defeated && probe_gate.is_ok() && !stat_blocks && !recall_blocks;
     let blocked_on = if !mode_c {
         // §38: only Mode C may support movement toward live probe.
         "mode_c_required"
@@ -127,6 +221,12 @@ pub fn promotion_readiness(
             ProbeCriterion::DataHealth => "probe_gate:data_health",
             ProbeCriterion::MinReconciledTrades => "probe_gate:min_reconciled_trades",
         }
+    } else if recall_blocks {
+        // LAW B9, consulted LAST: every pre-existing gate passed and the only
+        // thing still standing against this strategy is its own realized episodic
+        // record. Reported as a blocker, never as a verdict — §51/§52 remain the
+        // authority and this label can only ever appear after they are clean.
+        "recall:conditioned_negative"
     } else {
         // Every deterministic gate passed; only live adapters are missing.
         "awaiting_live_capability"
@@ -139,6 +239,7 @@ pub fn promotion_readiness(
         stat_verdict,
         live_probe_eligible,
         blocked_on,
+        recall_evidence: recall,
     }
 }
 
@@ -266,6 +367,82 @@ mod tests {
         let r = promotion_readiness(&cfg, true, true, v);
         assert!(!r.live_probe_eligible);
         assert!(r.blocked_on.starts_with("promotion_verdict:"));
+    }
+
+    // ------------------------------------------------------------------------
+    // LAW B9 (§46/§51/§64): recall is an ADDITIONAL blocker, consulted last.
+    // ------------------------------------------------------------------------
+
+    /// The empty evidence an engine with no brain carries must reproduce the
+    /// pre-law report exactly — same eligibility, same label.
+    #[test]
+    fn empty_recall_evidence_changes_nothing() {
+        let mut cfg = Config::dev_portable();
+        cfg.fill_mode = FillModeCfg::AdversarialRealistic;
+        let a = promotion_readiness(&cfg, true, true, clear_stat());
+        let b =
+            promotion_readiness_with_recall(&cfg, true, true, clear_stat(), RecallEvidence::none());
+        assert_eq!(a.blocked_on, b.blocked_on);
+        assert_eq!(a.live_probe_eligible, b.live_probe_eligible);
+        assert!(!b.recall_evidence.blocks());
+    }
+
+    /// Recall NEVER masks a pre-existing blocker: with a §38 fill-model failure
+    /// AND conditioned-negative recall, the report still names the fill model.
+    #[test]
+    fn recall_never_masks_an_earlier_blocker() {
+        let mut cfg = Config::dev_portable();
+        cfg.fill_mode = FillModeCfg::OptimisticCeiling;
+        let ev = RecallEvidence {
+            classes_examined: 6,
+            conditioned_negative: 3,
+            retirement_flags: 2,
+        };
+        let r = promotion_readiness_with_recall(&cfg, true, true, clear_stat(), ev);
+        assert_eq!(r.blocked_on, "mode_c_required");
+        assert!(!r.live_probe_eligible);
+        // …and the evidence is still REPORTED, so a reviewer sees both.
+        assert_eq!(r.recall_evidence.conditioned_negative, 3);
+    }
+
+    /// Recall is one-directional: it can only ever REMOVE eligibility. Clean
+    /// recall on an otherwise-blocked run does not clear anything.
+    #[test]
+    fn recall_can_only_subtract_eligibility() {
+        let mut cfg = Config::dev_portable();
+        cfg.fill_mode = FillModeCfg::AdversarialRealistic;
+        // Blocked by the probe gate (a paper run always is).
+        let blocked = promotion_readiness(&cfg, true, true, clear_stat());
+        assert!(!blocked.live_probe_eligible);
+        let with_clean_recall = promotion_readiness_with_recall(
+            &cfg,
+            true,
+            true,
+            clear_stat(),
+            RecallEvidence {
+                classes_examined: 40,
+                conditioned_negative: 0,
+                retirement_flags: 0,
+            },
+        );
+        assert!(
+            !with_clean_recall.live_probe_eligible,
+            "clean recall is not evidence FOR promotion (§51 is the authority)"
+        );
+        assert_eq!(with_clean_recall.blocked_on, blocked.blocked_on);
+    }
+
+    /// A retirement flag alone does not block — it may rest on an aggregate
+    /// rather than a conditioned distribution, and §56 nominations are inputs to
+    /// a governed review, not verdicts.
+    #[test]
+    fn a_bare_retirement_flag_is_reported_but_does_not_block() {
+        let ev = RecallEvidence {
+            classes_examined: 9,
+            conditioned_negative: 0,
+            retirement_flags: 4,
+        };
+        assert!(!ev.blocks());
     }
 
     #[test]

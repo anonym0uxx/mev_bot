@@ -7,7 +7,7 @@
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::AppEvent;
-use pump_quant_app::token_ingest::to_token_metadata_v0;
+use pump_quant_app::token_ingest::to_token_metadata_v1;
 use pump_quant_ingest::pumpportal_parse::{parse_pumpportal_create, parse_pumpportal_migration};
 use pump_quant_ingest::social_source::{MockSocialSource, RawSocialPayload};
 
@@ -87,7 +87,7 @@ fn pumpportal_create_reaches_creation_discovery() {
         "{{\"signature\":\"x\",\"mint\":\"{MINT_B58}\",\"txType\":\"create\",\"name\":\"Based Coin\",\"symbol\":\"BASED\",\"traderPublicKey\":\"{MINT_B58}\"}}"
     );
     let raw = parse_pumpportal_create(j.as_bytes()).expect("create parses");
-    let ev = to_token_metadata_v0(&raw);
+    let ev = to_token_metadata_v1(&raw);
     let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
     eng.tick(ev);
     for _ in 0..2 {

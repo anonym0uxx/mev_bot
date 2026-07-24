@@ -28,6 +28,38 @@ pub type Bps = i64;
 /// never reads a wall clock (§22). Deterministic ordering key.
 pub type TimestampNs = u64;
 
+/// Give a bounded tag enum a stable, explicit `u8` wire ordinal and its partial
+/// inverse.
+///
+/// The ordinals are written out one-by-one rather than derived from declaration
+/// order, because they are an **on-disk contract** (see [`crate::persist`]):
+/// reordering the variants must not silently reinterpret already-written bytes
+/// (§56.9). `from_ordinal` is total — an unknown byte yields `None` and is
+/// counted as corruption rather than guessed at.
+macro_rules! wire_ordinal {
+    ($name:ident { $($variant:ident => $ord:literal),+ $(,)? }) => {
+        impl $name {
+            /// Stable on-disk ordinal of this variant (§56.9). Never renumber.
+            #[must_use]
+            pub const fn ordinal(self) -> u8 {
+                match self {
+                    $($name::$variant => $ord,)+
+                }
+            }
+
+            /// Inverse of [`Self::ordinal`]; `None` for a byte this build does not
+            /// know (fail-closed — an unknown tag is never coerced to a default).
+            #[must_use]
+            pub const fn from_ordinal(ordinal: u8) -> Option<Self> {
+                match ordinal {
+                    $($ord => Some($name::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
 macro_rules! id_newtype {
     ($(#[$m:meta])* $name:ident) => {
         $(#[$m])*
@@ -102,6 +134,16 @@ pub enum InferenceState {
     /// Valid only within a specific market regime.
     RegimeSpecificInference,
 }
+
+wire_ordinal!(InferenceState {
+    Observation => 0,
+    Hypothesis => 1,
+    ProvisionalInference => 2,
+    ValidatedInference => 3,
+    RejectedInference => 4,
+    ExpiredInference => 5,
+    RegimeSpecificInference => 6,
+});
 
 impl InferenceState {
     /// True when the hypothesis is still an *open research question* (§56.10): it
@@ -207,6 +249,13 @@ pub enum LifecycleTiming {
     Unknown,
 }
 
+wire_ordinal!(LifecycleTiming {
+    PreFlow => 0,
+    WithFlow => 1,
+    PostPeak => 2,
+    Unknown => 3,
+});
+
 /// Source classification states of the `SocialSourceQualityLedger` (§29.8). Never
 /// bullish/bearish by default; never permanent from one call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -228,6 +277,17 @@ pub enum SourceClassification {
     /// Not enough data — the default entry state.
     InsufficientSample,
 }
+
+wire_ordinal!(SourceClassification {
+    PreFlowAlpha => 0,
+    FlowAmplifier => 1,
+    LateExitLiquidityPromoter => 2,
+    PaidShillSuspect => 3,
+    EngagementFarm => 4,
+    CopyEchoAccount => 5,
+    OrganicCommunityNode => 6,
+    InsufficientSample => 7,
+});
 
 /// One attributable social/alpha call: account × token × timestamp × content hash
 /// (§29.8). Raw text never enters — only the content hash and scored fields.
@@ -260,6 +320,13 @@ pub enum MarkoutHorizon {
     /// +24 hours.
     H24,
 }
+
+wire_ordinal!(MarkoutHorizon {
+    M5 => 0,
+    M30 => 1,
+    H2 => 2,
+    H24 => 3,
+});
 
 /// A reconciled forward-executable return for a single call at a single horizon
 /// (§29.8 D1, the ground-truth determinant). Return is fixed-point basis points,
@@ -310,6 +377,13 @@ pub enum EdgeKind {
     Forward,
 }
 
+wire_ordinal!(EdgeKind {
+    Quote => 0,
+    Reply => 1,
+    Repost => 2,
+    Forward => 3,
+});
+
 /// A timestamped directed edge in the amplification graph (§29.7): who amplified
 /// whom, when, and how.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,6 +415,13 @@ pub enum MetaLifecycle {
     /// Losing share.
     Dying,
 }
+
+wire_ordinal!(MetaLifecycle {
+    Emerging => 0,
+    Accelerating => 1,
+    Saturating => 2,
+    Dying => 3,
+});
 
 /// A row of `meta_categories` (§21.4 / §29.9): a named narrative meta and its
 /// current lifecycle state.

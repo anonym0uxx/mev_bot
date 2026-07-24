@@ -133,7 +133,11 @@ CREATE TABLE IF NOT EXISTS hypotheses (
                                    'ExpiredInference','RegimeSpecificInference')),
     created_run                   TEXT,
     updated_at                    REAL,
-    labels                        TEXT DEFAULT ''     -- §45.2: e.g. 'BIAS_AUDIT_REQUIRED'
+    labels                        TEXT DEFAULT '',    -- §45.2: e.g. 'BIAS_AUDIT_REQUIRED'
+    -- §68/§111: the record this hypothesis was derived FROM. Empty for a model-proposed
+    -- hypothesis; for a brain-grounded one it is a 'brain*:<tick>/<row key>' ref that
+    -- `evidence_ref_resolves` can check against the brain tables below.
+    evidence_ref                  TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS reconciled_outcomes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -183,7 +187,105 @@ CREATE TABLE IF NOT EXISTS root_cause_classifications (
     detail       TEXT,          -- json: the classifier's matched field + raw evidence echo
     created_at   REAL
 );
+-- ---------------------------------------------------------------------------------------
+-- Brain evidence (`brain_analysis_v1`, emitted by the Rust engine). Persisting the artifact
+-- makes every brain-grounded hypothesis AUDITABLE and REPRODUCIBLE: the hypothesis carries an
+-- evidence_ref of the form 'brain_setup:<tick>/<sig>/<phase>' and that ref resolves here
+-- (§68/§111 — a model claim is not evidence; a stored row is).
+--
+-- NULLABILITY IS LOAD-BEARING. A `confidence='unknown'` row is a REFUSAL: the engine declined
+-- to estimate because evidence was thin. Its estimate columns are SQL NULL — never 0. Any
+-- writer here that coerces a Python None to 0 destroys the system's core safety property, so
+-- `ingest_brain_analysis` passes the loader's Optional[int] straight through, untouched.
+CREATE TABLE IF NOT EXISTS brain_snapshots (
+    run_id            TEXT,
+    tick              INTEGER,
+    info_time_ns      INTEGER,
+    schema_version    INTEGER,
+    episodes_total    INTEGER,
+    episodes_admitted INTEGER,
+    setup_classes_known   INTEGER,   -- counts of rows, not estimates: never null
+    setup_classes_unknown INTEGER,
+    lenses_known          INTEGER,
+    lenses_unknown        INTEGER,
+    source_path       TEXT,
+    ingested_at       REAL,
+    PRIMARY KEY (run_id, tick)
+);
+CREATE TABLE IF NOT EXISTS brain_setup_classes (
+    run_id              TEXT,
+    tick                INTEGER,
+    signature           TEXT,        -- u128 as a decimal STRING (exact; never float-rounded)
+    venue_phase         TEXT,
+    meta_category       INTEGER,
+    discovery_lane      TEXT,
+    confidence          TEXT,        -- 'known' | 'unknown'
+    unknown_reason      TEXT,        -- NULL when known
+    n                   INTEGER,     -- NULL on a refusal
+    median_net_lamports INTEGER,     -- NULL on a refusal
+    mean_net_lamports   INTEGER,     -- NULL on a refusal
+    win_rate_bp         INTEGER,     -- NULL on a refusal
+    p25_net_lamports    INTEGER,     -- NULL on a refusal
+    p75_net_lamports    INTEGER,     -- NULL on a refusal
+    median_hold_ns      INTEGER,     -- NULL on a refusal
+    nearest_distance    INTEGER,     -- NULL on a refusal
+    PRIMARY KEY (run_id, tick, signature, venue_phase)
+);
+-- Meta saturation state at the snapshot tick. Persisted so a "reduce exposure to a decaying
+-- meta" hypothesis has a row its evidence_ref ('brain_meta:<tick>/<category>') resolves to.
+CREATE TABLE IF NOT EXISTS brain_meta_state (
+    run_id                   TEXT,
+    tick                     INTEGER,
+    meta_category            INTEGER,
+    phase                    TEXT,   -- emerging|hot|saturated|decaying|unknown
+    n                        INTEGER,
+    participation_decline_bp INTEGER,
+    outcome_decline_bp       INTEGER,
+    PRIMARY KEY (run_id, tick, meta_category)
+);
+-- Engine NOMINATIONS for retirement. A nomination is not a retirement (§56 sequential
+-- retirement needs the §51 FDR/PBO and §52 baseline verdicts) — the row records the ask.
+CREATE TABLE IF NOT EXISTS brain_retirement_flags (
+    run_id               TEXT,
+    tick                 INTEGER,
+    subject              TEXT,       -- lane|archetype|setup_class|source
+    key                  TEXT,
+    reason               TEXT,
+    n                    INTEGER,
+    realized_net_lamports INTEGER,
+    PRIMARY KEY (run_id, tick, subject, key)
+);
+CREATE TABLE IF NOT EXISTS brain_caller_trust (
+    run_id      TEXT,
+    tick        INTEGER,
+    author_id   INTEGER,
+    platform    TEXT,                -- NULL when the engine has no platform for the author
+    tier        TEXT,                -- unproven|watch|trusted|demoted
+    score_bp    INTEGER,             -- NULL when unproven (a refusal, not a zero score)
+    n_markouts  INTEGER,             -- NULL when unproven
+    exposure    TEXT,
+    PRIMARY KEY (run_id, tick, author_id)
+);
+CREATE TABLE IF NOT EXISTS brain_follow_reco (
+    run_id                  TEXT,
+    tick                    INTEGER,
+    author_id               INTEGER,
+    direction               TEXT,    -- 'follow' | 'unfollow'
+    platform                TEXT,
+    n_calls                 INTEGER,
+    realized_net_attributed INTEGER,
+    median_lead_ns          INTEGER, -- NULL for an unfollow row: the artifact does not carry it
+    trust_tier              TEXT,    -- NULL for an unfollow row: likewise not carried
+    PRIMARY KEY (run_id, tick, author_id, direction)
+);
 """
+
+# Brain-evidence tables, in ingest order. Named once so the migration, the ingest, and the
+# per-(run_id, tick) replace-before-insert all agree on the set.
+BRAIN_TABLES: tuple[str, ...] = (
+    "brain_snapshots", "brain_setup_classes", "brain_meta_state",
+    "brain_retirement_flags", "brain_caller_trust", "brain_follow_reco",
+)
 
 # Constitution §56.10 inference ladder — the only states a hypothesis may occupy.
 VALID_INFERENCE_STATES: tuple[str, ...] = (
@@ -234,11 +336,18 @@ class EvidenceStore:
         """
         def _cols(table: str) -> set[str]:
             return {r[1] for r in self._db.execute(f"PRAGMA table_info({table})").fetchall()}
+        tables = {r[0] for r in self._db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         # §45.2: hypotheses.labels carries BIAS_AUDIT_REQUIRED on the first KB experiment.
-        if "hypotheses" in {r[0] for r in self._db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}:
+        if "hypotheses" in tables:
             if "labels" not in _cols("hypotheses"):
                 self._db.execute("ALTER TABLE hypotheses ADD COLUMN labels TEXT DEFAULT ''")
+            # §68/§111: brain-grounded hypotheses cite the artifact row they came from. Added
+            # after `labels` so the column order matches a freshly-created SCHEMA table exactly
+            # (record_hypothesis inserts positionally).
+            if "evidence_ref" not in _cols("hypotheses"):
+                self._db.execute(
+                    "ALTER TABLE hypotheses ADD COLUMN evidence_ref TEXT DEFAULT ''")
 
     # -------------------------------------------------------------------- runs
     def start_run(self, run_id: str, constitution_hash: str, version: str, note: str = "") -> None:
@@ -391,8 +500,17 @@ class EvidenceStore:
         """True only if `ref` names a real record already in this store.
 
         Accepted forms: 'gate:<task_or_milestone>', 'experiment:<id>', 'artifact:<name>',
-        'benchmark:<component>/<metric>', 'criterion:<n>'. Anything else — including a
-        model's prose — does not resolve, and intake rejects the proposal.
+        'benchmark:<component>/<metric>', 'criterion:<n>', and the brain-evidence family
+        (§68/§111) written by `ingest_brain_analysis`:
+
+          brain:<tick>                              -> the snapshot itself
+          brain_setup:<tick>/<signature>/<phase>    -> one setup-class row
+          brain_meta:<tick>/<meta_category>         -> one meta-state row
+          brain_retire:<tick>/<subject>/<key>       -> one retirement NOMINATION row
+          brain_caller:<tick>/<author_id>           -> one caller trust / follow-reco row
+
+        Anything else — including a model's prose — does not resolve, and intake rejects the
+        proposal.
         """
         if not ref or ":" not in ref:
             return False
@@ -426,6 +544,8 @@ class EvidenceStore:
                     return True
                 return bool(self._db.execute(
                     "SELECT 1 FROM gate_results WHERE task_id=? LIMIT 1", (val,)).fetchone())
+            if kind.startswith("brain"):
+                return self._brain_ref_resolves(kind, val)
         except Exception:  # noqa: BLE001  (a broken query must not admit a proposal)
             return False
         return False
@@ -549,15 +669,17 @@ class EvidenceStore:
         if isinstance(labels, (list, tuple)):
             labels = ",".join(str(x) for x in labels)
         self._db.execute(
-            "INSERT OR REPLACE INTO hypotheses VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO hypotheses VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (hid, hyp.get("statement", ""), hyp.get("causal_mechanism", ""),
              json.dumps(comp), hyp.get("disconfirming_evidence_sought", ""),
              float(hyp.get("expected_net_sol_impact", 0.0)),
              float(hyp.get("prior_probability", 0.0)),
              hyp.get("cost_to_test", "unknown"), hyp.get("edge_half_life", "unknown"),
-             state, created_run, time.time(), str(labels)))
+             state, created_run, time.time(), str(labels),
+             str(hyp.get("evidence_ref", ""))))
         self._db.commit()
-        return {"recorded": True, "id": hid, "inference_state": state, "labels": str(labels)}
+        return {"recorded": True, "id": hid, "inference_state": state, "labels": str(labels),
+                "evidence_ref": str(hyp.get("evidence_ref", ""))}
 
     def set_inference_state(self, hypothesis_id: str, state: str) -> dict:
         """Move a hypothesis along the §56.10 inference ladder. Validated; never silent."""
@@ -576,14 +698,14 @@ class EvidenceStore:
         row = self._db.execute(
             "SELECT id,statement,causal_mechanism,competing_explanations,"
             "disconfirming_evidence_sought,expected_net_sol_impact,prior_probability,"
-            "cost_to_test,edge_half_life,inference_state,created_run,updated_at,labels "
-            "FROM hypotheses WHERE id=?", (hypothesis_id,)).fetchone()
+            "cost_to_test,edge_half_life,inference_state,created_run,updated_at,labels,"
+            "evidence_ref FROM hypotheses WHERE id=?", (hypothesis_id,)).fetchone()
         if not row:
             return None
         cols = ["id", "statement", "causal_mechanism", "competing_explanations",
                 "disconfirming_evidence_sought", "expected_net_sol_impact",
                 "prior_probability", "cost_to_test", "edge_half_life",
-                "inference_state", "created_run", "updated_at", "labels"]
+                "inference_state", "created_run", "updated_at", "labels", "evidence_ref"]
         d = dict(zip(cols, row))
         try:
             d["competing_explanations"] = json.loads(d["competing_explanations"] or "[]")
@@ -783,6 +905,183 @@ class EvidenceStore:
                 pass
             out.append(d)
         return out
+
+    # ------------------------------------------------ brain evidence (`brain_analysis_v1`)
+    def _brain_ref_resolves(self, kind: str, val: str) -> bool:
+        """Resolve one 'brain*:' evidence_ref against the persisted artifact rows.
+
+        Existence-only, unscoped by run — the same idiom as the 'gate:'/'artifact:' kinds
+        above. A ref whose tick was never ingested does not resolve, so a hypothesis quoting
+        a brain row the store has never seen cannot pass amendment intake.
+        """
+        parts = val.split("/", 2)
+        try:
+            tick = int(parts[0], 10)
+        except ValueError:
+            return False
+        if kind == "brain":
+            return bool(self._db.execute(
+                "SELECT 1 FROM brain_snapshots WHERE tick=? LIMIT 1", (tick,)).fetchone())
+        if kind == "brain_setup" and len(parts) == 3:
+            return bool(self._db.execute(
+                "SELECT 1 FROM brain_setup_classes WHERE tick=? AND signature=? AND "
+                "venue_phase=? LIMIT 1", (tick, parts[1], parts[2])).fetchone())
+        if kind == "brain_meta" and len(parts) == 2:
+            try:
+                cat = int(parts[1], 10)
+            except ValueError:
+                return False
+            return bool(self._db.execute(
+                "SELECT 1 FROM brain_meta_state WHERE tick=? AND meta_category=? LIMIT 1",
+                (tick, cat)).fetchone())
+        if kind == "brain_retire" and len(parts) == 3:
+            return bool(self._db.execute(
+                "SELECT 1 FROM brain_retirement_flags WHERE tick=? AND subject=? AND key=? "
+                "LIMIT 1", (tick, parts[1], parts[2])).fetchone())
+        if kind == "brain_caller" and len(parts) == 2:
+            try:
+                author = int(parts[1], 10)
+            except ValueError:
+                return False
+            row = self._db.execute(
+                "SELECT 1 FROM brain_caller_trust WHERE tick=? AND author_id=? LIMIT 1",
+                (tick, author)).fetchone()
+            if row:
+                return True
+            return bool(self._db.execute(
+                "SELECT 1 FROM brain_follow_reco WHERE tick=? AND author_id=? LIMIT 1",
+                (tick, author)).fetchone())
+        return False
+
+    def ingest_brain_analysis(self, run_id: str, analysis: Any) -> int:
+        """Persist one parsed `brain_analysis_v1` artifact. Returns the number of rows written.
+
+        `analysis` is a `supervisor.store.brain_analysis.BrainAnalysis`. It is taken as an
+        object rather than a dict so the refusal semantics survive the trip: an estimate that
+        the engine refused to make arrives here as `None` and is written as SQL NULL.
+
+        NOTHING in this method may substitute a value for a None. There is no `or 0`, no
+        `int(x or 0)`, no COALESCE. A refusal is stored as a refusal, or the whole evidence
+        chain becomes a fiction.
+
+        Idempotent per (run_id, tick): the tick's rows are cleared and rewritten, so
+        re-ingesting the same artifact leaves exactly the same table contents (and a shrunken
+        re-emission cannot leave stale rows behind).
+        """
+        tick = int(analysis.tick)
+        for table in BRAIN_TABLES:
+            self._db.execute(f"DELETE FROM {table} WHERE run_id=? AND tick=?", (run_id, tick))
+
+        known_c = len(analysis.known_setup_classes())
+        known_l = len(analysis.known_lenses())
+        self._db.execute(
+            "INSERT INTO brain_snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (run_id, tick, int(analysis.info_time_ns), int(analysis.schema_version),
+             int(analysis.episodes_total), int(analysis.episodes_admitted),
+             known_c, len(analysis.setup_classes) - known_c,
+             known_l, len(analysis.lens_scoreboard) - known_l,
+             str(analysis.source_path), time.time()))
+        rows = 1
+
+        for c in analysis.setup_classes:
+            self._db.execute(
+                "INSERT INTO brain_setup_classes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (run_id, tick, str(c.signature), c.venue_phase, c.meta_category,
+                 c.discovery_lane, c.confidence, c.unknown_reason,
+                 c.n, c.median_net_lamports, c.mean_net_lamports, c.win_rate_bp,
+                 c.p25_net_lamports, c.p75_net_lamports, c.median_hold_ns, c.nearest_distance))
+            rows += 1
+        for m in analysis.meta_state:
+            self._db.execute(
+                "INSERT INTO brain_meta_state VALUES (?,?,?,?,?,?,?)",
+                (run_id, tick, m.meta_category, m.phase, m.n,
+                 m.participation_decline_bp, m.outcome_decline_bp))
+            rows += 1
+        for f in analysis.retirement_flags:
+            self._db.execute(
+                "INSERT INTO brain_retirement_flags VALUES (?,?,?,?,?,?,?)",
+                (run_id, tick, f.subject, f.key, f.reason, f.n, f.realized_net_lamports))
+            rows += 1
+        for t in analysis.caller_trust:
+            self._db.execute(
+                "INSERT INTO brain_caller_trust VALUES (?,?,?,?,?,?,?,?)",
+                (run_id, tick, t.author_id, t.platform, t.tier,
+                 t.score_bp, t.n_markouts, t.exposure))
+            rows += 1
+        for fr in analysis.follow_recommendations:
+            self._db.execute(
+                "INSERT OR REPLACE INTO brain_follow_reco VALUES (?,?,?,?,?,?,?,?,?)",
+                (run_id, tick, fr.author_id, "follow", fr.platform, fr.n_calls,
+                 fr.realized_net_attributed, fr.median_lead_ns, fr.trust_tier))
+            rows += 1
+        for u in analysis.unfollow_candidates:
+            # median_lead_ns / trust_tier are NOT carried on an unfollow row by the artifact.
+            # They are written NULL — "the artifact did not say" — never 0 and never ''.
+            self._db.execute(
+                "INSERT OR REPLACE INTO brain_follow_reco VALUES (?,?,?,?,?,?,?,?,?)",
+                (run_id, tick, u.author_id, "unfollow", u.platform, u.n_calls,
+                 u.realized_net_attributed, None, None))
+            rows += 1
+        self._db.commit()
+        return rows
+
+    def latest_brain_snapshot(self, run_id: str = "") -> Optional[dict]:
+        q = ("SELECT run_id,tick,info_time_ns,schema_version,episodes_total,episodes_admitted,"
+             "setup_classes_known,setup_classes_unknown,lenses_known,lenses_unknown,"
+             "source_path,ingested_at FROM brain_snapshots")
+        args: tuple = ()
+        if run_id:
+            q += " WHERE run_id=?"
+            args = (run_id,)
+        q += " ORDER BY tick DESC LIMIT 1"
+        row = self._db.execute(q, args).fetchone()
+        if not row:
+            return None
+        cols = ["run_id", "tick", "info_time_ns", "schema_version", "episodes_total",
+                "episodes_admitted", "setup_classes_known", "setup_classes_unknown",
+                "lenses_known", "lenses_unknown", "source_path", "ingested_at"]
+        return dict(zip(cols, row))
+
+    # Column order per brain table, for the generic reader below.
+    _BRAIN_COLS: dict[str, list[str]] = {
+        "brain_setup_classes": [
+            "run_id", "tick", "signature", "venue_phase", "meta_category", "discovery_lane",
+            "confidence", "unknown_reason", "n", "median_net_lamports", "mean_net_lamports",
+            "win_rate_bp", "p25_net_lamports", "p75_net_lamports", "median_hold_ns",
+            "nearest_distance"],
+        "brain_meta_state": [
+            "run_id", "tick", "meta_category", "phase", "n", "participation_decline_bp",
+            "outcome_decline_bp"],
+        "brain_retirement_flags": [
+            "run_id", "tick", "subject", "key", "reason", "n", "realized_net_lamports"],
+        "brain_caller_trust": [
+            "run_id", "tick", "author_id", "platform", "tier", "score_bp", "n_markouts",
+            "exposure"],
+        "brain_follow_reco": [
+            "run_id", "tick", "author_id", "direction", "platform", "n_calls",
+            "realized_net_attributed", "median_lead_ns", "trust_tier"],
+    }
+
+    def list_brain_rows(self, table: str, run_id: str = "",
+                        tick: Optional[int] = None, limit: int = 2000) -> list[dict]:
+        """Read back persisted brain rows. NULLs come back as Python None, unchanged."""
+        cols = self._BRAIN_COLS.get(table)
+        if cols is None:
+            raise ValueError(f"unknown brain table {table!r}; have {sorted(self._BRAIN_COLS)}")
+        q = f"SELECT {','.join(cols)} FROM {table}"
+        clauses: list[str] = []
+        args: list[Any] = []
+        if run_id:
+            clauses.append("run_id=?")
+            args.append(run_id)
+        if tick is not None:
+            clauses.append("tick=?")
+            args.append(int(tick))
+        if clauses:
+            q += " WHERE " + " AND ".join(clauses)
+        q += f" ORDER BY {cols[1]} ASC, {cols[2]} ASC LIMIT ?"
+        args.append(limit)
+        return [dict(zip(cols, r)) for r in self._db.execute(q, tuple(args)).fetchall()]
 
     def close(self) -> None:
         self._db.close()

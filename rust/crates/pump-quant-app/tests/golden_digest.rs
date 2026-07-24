@@ -652,7 +652,112 @@ fn drive(cfg: Config) -> pump_quant_app::engine::Report {
 // fixed (derived 15_410_801 − fixed 15_055_700 = +355_101 > 0). LAWs unchanged; the
 // §71 quota and §24 reversal wiring are re-measured, not altered.
 // (arc: … → 1_406_102 → 1_864_780 → 15_410_801.)
-const GOLDEN_DIGEST: u64 = 3_411_907_290_210_896_052;
+// Re-pin #16 (EPISODIC RECALL MEMORY — LAWs B1–B5, `pump-quant-brain` wired in):
+// a SEED-ONLY re-pin. The engine gained an episodic memory plane: every completed
+// trade seals an immutable `Episode` whose 20-field integer fingerprint is
+// quantized from the state captured AT ADMIT (LAW B1 — a fingerprint computed at
+// exit would be a function of the price path it is supposed to predict, so the
+// capture point is the gate and a test pins that mutating the entire post-entry
+// path leaves it byte-identical); the reflection cadence re-queries recall over the
+// setup classes the engine ACTUALLY traded, conditioned by venue phase × meta
+// category × discovery lane, and feeds the meta-lifecycle timeline and the social
+// call/markout ledger (LAW B2); a REDUCE-ONLY recall haircut/veto can fade or refuse
+// a historically-bleeding class (LAW B3, config-gated, DEFAULT OFF — see
+// `brain_haircut_is_exactly_neutral_on_this_tape`); an `Unknown` verdict is
+// structurally incapable of changing a decision (LAW B4, pinned, no toggle); and the
+// journal survives a restart (LAW B5).
+//
+// EVERY decision-plane number here is UNCHANGED: net 15_410_801, promoted 504,
+// admitted 13, rejected 457, universe_filtered 72, and every per-lane and
+// per-discovery-lane net identical to re-pin #15. Only the DIGEST moves, and it
+// moves for exactly one reason: §19 folds the whole `Config`'s strategy identity
+// into the journal seed (`fnv1a_64(format!("{cfg:?}"))`), so ADDING the nine
+// `brain_*` config fields necessarily re-seeds it. That is the identity law working
+// as designed, not a behaviour change — `brain_plane_is_decision_inert_on_this_tape`
+// and `brain_laws::b4_the_brain_plane_itself_is_decision_inert` prove the DECISION
+// STREAM the digest is computed over is byte-identical with the plane on and off.
+// LAW B3's causal value is proven on its own hazard tape in `brain_laws.rs`
+// (+391_932_566 lamports of loss avoided), not here.
+// (arc: … → 1_406_102 → 1_864_780 → 15_410_801 [net unchanged at re-pin #16].)
+// Re-pin #17 (BRAIN INTEGRATION WAVE — measured gap leaves, the social abstraction
+// plane, the social→on-chain hardening proofs, the meta-taxonomy v1 fix and the
+// recall-radius retune): a SEED-ONLY re-pin. EVERY decision-plane number is
+// UNCHANGED — net 15_410_801, promoted 504, admitted 13, rejected 457,
+// universe_filtered 72, AlphaCall 447_700, and every per-lane / per-discovery-lane
+// net identical to re-pin #16. Only the DIGEST moves, and it moves for exactly one
+// reason: §19 folds the whole `Config`'s strategy identity into the journal seed
+// (`fnv1a_64(format!("{cfg:?}"))`), so the two CONFIG VALUES this wave changed
+// necessarily re-seed it:
+//
+//   1. `meta_taxonomy_version` 0 → 1. v0's naive substring matching mis-assigned
+//      ordinary English into the brain's RECALL FILTER KEY — "Fair Launch"→AI (via
+//      "ai" in "fair"), "Catalyst"→Animal, "Bottom Signal"→AI, "Bullish
+//      Chain"→Animal, "Starter Pack"→Celebrity, "Magazine"→Political — pooling
+//      tokens with the wrong meta's episodes and silently corrupting every
+//      conditioned estimate keyed on them. `meta::TAXONOMY_V1` adopts the
+//      word-boundary `MatchMode` discipline. The fix ships FORWARD under a bumped
+//      version; v0 stays frozen and its six mis-assignments are PINNED as the
+//      historical record (criterion 81 — assignments are timestamped and never
+//      retroactive). The golden tape feeds no `TokenMetadata`, so no assignment on
+//      it changes; only the config identity does.
+//   2. `brain_recall_max_distance` 12 → 8. At radius 12 a maximally net-BUYING
+//      setup matched a maximally net-SELLING one (the OFI and CVD ladders span 6
+//      buckets each), and the engine formed an opinion on 144 of 245 admit-time
+//      recalls from a 13-episode memory. At 8 that pairing is structurally
+//      unreachable and admit-time recall correctly refuses on all 245 — the only
+//      honest answer a 13-episode index with a sample floor of 8 can give. The
+//      reflection pass still surfaces 3 conditioned setup classes. See
+//      `brain::BRAIN_RECALL_MAX_DISTANCE_DEFAULT` for the full sweep.
+//
+// Everything else this wave added is REPORT-PLANE and never journaled: the four
+// measured gap-leaf estimators (holder-growth acceleration, creator track record,
+// meta lifecycle phase, narrative family — `measured_fingerprint.rs` proves each
+// reachable AND decision-inert) and the social abstraction plane (trust, support,
+// follow recommendation, style-lens scoreboard — `social_hardening.rs` proves the
+// whole social plane cannot admit without on-chain confirmation, numeric
+// microstructure and a passing economic gate, at ANY social strength).
+// (arc: … → 1_406_102 → 1_864_780 → 15_410_801 [net unchanged at re-pins #16, #17].)
+// Re-pin #18 (BRAIN → STRATEGY ANALYSIS — LAWs B6–B9): a SEED-ONLY re-pin. The
+// brain stopped merely observing and started feeding the strategy-analysis loop:
+//
+//   * LAW B6 — `brain_analysis_v1`, a bounded, deterministic, integer-only export
+//     written alongside `live_status.json` (same info-time discipline, never
+//     wall-clock) plus `Engine::brain_analysis_json()`. Every array carries a
+//     named cap and a documented total sort key, and an `unknown` verdict emits
+//     its refusal reason with `null` in EVERY estimate field — a consumer cannot
+//     read a number the brain refused to give (§46).
+//   * LAW B6/§56 — `retirement_flags`: conditioned-negative setup classes, style
+//     lenses, discovery lanes and alpha sources nominated for the weekly
+//     governance review. A nomination is NOT a retirement: §51 FDR/PBO and §52
+//     baselines remain the authority, and `brain_strategy::retirement_flags_
+//     retire_nothing` pins that the flags retire nothing.
+//   * LAW B7 — an optional, reduce-only, envelope-bounded brain downweight in
+//     `reflect`. DEFAULT OFF: the A/B is exactly neutral (delta 0 net) on the
+//     golden tape AND on a purpose-built decayed-lane tape, at every step from
+//     250 bp to the full envelope. It did not earn, so it is not armed.
+//   * LAW B8 — brain-grounded exit-challenger PROPOSALS derived from the recall
+//     distribution of the setups that paid (median winner hold → time stop, p75
+//     MFE → target, median winner heat → trail). Report-only, single-axis,
+//     envelope-clamped, fail-closed at small n, never auto-adopted.
+//   * LAW B9 — recall as an ADDITIONAL promotion blocker, consulted LAST so it can
+//     never mask a §38/§51/§64 label, and one-directional so it can only ever
+//     remove eligibility.
+//
+// EVERY decision-plane number is UNCHANGED — net 15_410_801, promoted 504,
+// admitted 13, rejected 457, universe_filtered 72, AlphaCall 447_700, and every
+// per-lane / per-discovery-lane net and final weight identical to re-pin #17. Only
+// the DIGEST moves, and it moves for exactly one reason: §19 folds the whole
+// `Config`'s strategy identity into the journal seed
+// (`fnv1a_64(format!("{cfg:?}"))`), so ADDING the five config fields this wave
+// needs — `brain_analysis_enable`, `brain_analysis_path`, `brain_reflect_enable`,
+// `brain_reflect_step_bp`, `brain_decay_min_sample` — necessarily re-seeds it.
+// That is the identity law working as designed. The three golden-tape conditioned
+// setup classes are all POSITIVE (median +301_400, win rate 7_500 bp, n = 8 each),
+// so LAW B7's lane-decay flag set is EMPTY on this tape even when armed, and the
+// armed arm's net/admitted/promoted/rejected are byte-identical to the neutral
+// arm's — measured, not assumed.
+// (arc: … → 1_406_102 → 1_864_780 → 15_410_801 [net unchanged at re-pins #16, #17, #18].)
+const GOLDEN_DIGEST: u64 = 14_149_586_802_844_500_794;
 const GOLDEN_NET_LAMPORTS: i128 = 15_410_801;
 const GOLDEN_PROMOTED: u64 = 504;
 const GOLDEN_ADMITTED: u64 = 13;
@@ -772,4 +877,95 @@ fn corroboration_quota_earns_on_this_tape() {
         with_quota.net_lamports,
         without.net_lamports
     );
+}
+
+/// LAW B3's measured effect on the representative golden tape, and the evidence
+/// behind its DEFAULT-OFF setting.
+///
+/// Recall DOES reach `Known` here — 144 admit-time verdicts clear the §46 sample
+/// floor — but every class it can speak about is PROFITABLE, so the reduce-only
+/// law correctly does nothing: zero haircuts, zero vetoes, and a net delta of
+/// EXACTLY ZERO. That is the right behaviour and it is also exactly why the law
+/// ships OFF: a law whose measured effect on the representative tape is neutral
+/// has not demonstrated that it earns, and §46 forbids arming it on the assumption
+/// that it will. Its causal value IS demonstrated, on a tape that actually contains
+/// the hazard it targets, in `brain_laws.rs`
+/// (`b3_armed_recall_haircut_strictly_out_earns_its_absence`: +391_932_566
+/// lamports of loss avoided). This test pins the neutrality, so a future change
+/// that made the law silently active on the golden path would fail loudly.
+#[test]
+fn brain_haircut_is_exactly_neutral_on_this_tape() {
+    // Both arms widen the recall radius to the PRE-#17 default of 12. Under the
+    // shipped default of 8 admit-time recall correctly REFUSES on every query on
+    // this 13-episode tape (see `BRAIN_RECALL_MAX_DISTANCE_DEFAULT`), which would
+    // make this neutrality proof vacuous — a haircut that never fires because
+    // recall never speaks proves nothing about the haircut. Widening to 12 gives
+    // recall something to say so the neutrality claim has content. The radius is
+    // the ONLY difference between the arms, so the comparison is still exact.
+    let mut off_cfg = Config::dev_portable();
+    off_cfg.brain_recall_max_distance = 12;
+    let off = drive(off_cfg);
+    let mut on = Config::dev_portable();
+    on.brain_recall_max_distance = 12;
+    on.brain_haircut_enable = true;
+    let armed = drive(on);
+    println!(
+        "B3-on-golden: off_net={} armed_net={} known={} unknown={} haircuts={} vetoes={}",
+        off.net_lamports,
+        armed.net_lamports,
+        armed.brain_recall_known,
+        armed.brain_recall_unknown,
+        armed.brain_haircuts_applied,
+        armed.brain_vetoes
+    );
+    assert!(
+        armed.brain_recall_known > 0,
+        "recall must actually reach Known here, else this neutrality proves nothing"
+    );
+    assert_eq!(
+        armed.brain_haircuts_applied, 0,
+        "every recalled class on this tape is profitable — nothing to fade"
+    );
+    assert_eq!(armed.brain_vetoes, 0, "and nothing to refuse");
+    assert_eq!(
+        armed.net_lamports, off.net_lamports,
+        "LAW B3 is EXACTLY neutral on the golden tape — hence DEFAULT OFF"
+    );
+    assert_eq!(armed.admitted, off.admitted);
+    assert_eq!(armed.rejected, off.rejected);
+}
+
+/// LAW B1/B2 are DEFAULT ON and must be decision-inert: enabling the whole memory
+/// plane records episodes and produces readouts without moving a single count or
+/// a single lamport on the golden tape.
+#[test]
+fn brain_plane_is_decision_inert_on_this_tape() {
+    let on = drive(Config::dev_portable());
+    let mut off_cfg = Config::dev_portable();
+    off_cfg.brain_enable = false;
+    let off = drive(off_cfg);
+    println!(
+        "B1/B2-on-golden: episodes={} known={} unknown={} classes={} authors={} metas={}",
+        on.brain_episodes_recorded,
+        on.brain_recall_known,
+        on.brain_recall_unknown,
+        on.brain_setup_classes.len(),
+        on.brain_author_records.len(),
+        on.brain_meta_state.len()
+    );
+    assert!(
+        on.brain_episodes_recorded > 0,
+        "the plane must actually record on this tape, else the test is vacuous"
+    );
+    assert_eq!(off.brain_episodes_recorded, 0);
+    assert_eq!(on.net_lamports, off.net_lamports, "net-SOL unchanged");
+    assert_eq!(on.admitted, off.admitted, "admissions unchanged");
+    assert_eq!(on.rejected, off.rejected, "rejections unchanged");
+    assert_eq!(on.promoted, off.promoted, "promotions unchanged");
+    assert_eq!(
+        on.universe_filtered, off.universe_filtered,
+        "universe screen unchanged"
+    );
+    assert_eq!(on.per_lane_net, off.per_lane_net, "attribution unchanged");
+    assert_eq!(on.final_weights, off.final_weights, "weights unchanged");
 }

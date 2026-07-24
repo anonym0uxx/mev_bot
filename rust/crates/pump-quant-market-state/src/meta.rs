@@ -36,9 +36,56 @@ use crate::common::{ratio_bps, signed_ratio_bps, BoundedMap, BoundedSet, Complet
 pub struct CategoryDef {
     /// Stable category id (used as the [`EntityId`] key in the reducer).
     pub id: EntityId,
-    /// Lowercase-ASCII keyword needles; a case-insensitive substring match of
-    /// any needle in the name or symbol assigns the token to this category.
-    pub keywords: &'static [&'static str],
+    /// Lowercase-ASCII needles, each carrying the mode it is allowed to match
+    /// under; a case-insensitive hit of any needle in the name or symbol
+    /// assigns the token to this category.
+    pub needles: &'static [CategoryNeedle],
+}
+
+/// How a category needle is allowed to match a name/symbol field.
+///
+/// ## Responsibility
+/// v0 matched every needle as a naive substring, which mis-categorizes ordinary
+/// English: `"Fair Launch"` hits `ai`, `"Catalyst"` hits `cat`, `"Bottom
+/// Signal"` hits `bot`, `"Bullish Chain"` hits `bull`, `"Starter Pack"` hits
+/// `star`. Because [`CategoryAssignment::category_id`] is a *recall filter key*
+/// downstream, a mis-assignment pools a token with the wrong meta's episodes
+/// and silently corrupts every conditioned estimate keyed on it. This enum is
+/// the fix, mirroring the word-boundary discipline already proven in
+/// `pump_quant_narrative::narrative_family::MatchMode`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CategoryMatchMode {
+    /// Matches anywhere inside the field. Reserved for needles long and
+    /// distinctive enough that an incidental hit is not a realistic concern.
+    Substring,
+    /// Must match at a word boundary: start/end of the field, or adjacent to a
+    /// non-alphanumeric byte. Required for short or English-common needles.
+    Word,
+}
+
+/// One category needle and the mode it is allowed to match under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CategoryNeedle {
+    /// Lowercase-ASCII needle text.
+    pub text: &'static str,
+    /// How it is allowed to match.
+    pub mode: CategoryMatchMode,
+}
+
+/// Shorthand for a substring needle.
+const fn sub(text: &'static str) -> CategoryNeedle {
+    CategoryNeedle {
+        text,
+        mode: CategoryMatchMode::Substring,
+    }
+}
+
+/// Shorthand for a word-boundary needle.
+const fn word(text: &'static str) -> CategoryNeedle {
+    CategoryNeedle {
+        text,
+        mode: CategoryMatchMode::Word,
+    }
 }
 
 /// A versioned category taxonomy for the classifier.
@@ -61,39 +108,161 @@ pub struct CategoryTaxonomy {
 /// silently bucketed (§6.4 UNKNOWN discipline).
 pub const CATEGORY_UNCLASSIFIED: EntityId = 0;
 
+/// Version stamp of [`TAXONOMY_V0`] — the historical, naive-substring lexicon.
+pub const TAXONOMY_VERSION_V0: u32 = 0;
+
+/// Version stamp of [`TAXONOMY_V1`] — the word-boundary-disciplined lexicon.
+pub const TAXONOMY_VERSION_V1: u32 = 1;
+
 /// A deterministic v0 taxonomy covering the constitution's named rotation
 /// examples (animals, political, celebrity, AI) plus a few common memecoin
 /// tropes. Illustrative and versioned; production supplies the live taxonomy.
 ///
-/// Constitution: §21.4 (documented rotation sequences).
+/// **Frozen historical record (criterion 81).** Every needle here matches as a
+/// naive substring, which is exactly the behaviour that produced the known
+/// mis-assignments enumerated on [`CategoryMatchMode`]. It is left bit-identical
+/// on purpose: assignments already stamped `taxonomy_version = 0` keep their
+/// meaning, and re-running v0 must reproduce them. New assignments use
+/// [`TAXONOMY_V1`]; the fix is forward, never retroactive.
+///
+/// Constitution: §21.4 (documented rotation sequences), criterion 81.
 pub const TAXONOMY_V0: CategoryTaxonomy = CategoryTaxonomy {
-    version: 0,
+    version: TAXONOMY_VERSION_V0,
     categories: &[
         CategoryDef {
             id: 1,
-            keywords: &[
-                "dog", "doge", "shib", "inu", "cat", "pepe", "frog", "animal", "bull", "bear",
+            needles: &[
+                sub("dog"),
+                sub("doge"),
+                sub("shib"),
+                sub("inu"),
+                sub("cat"),
+                sub("pepe"),
+                sub("frog"),
+                sub("animal"),
+                sub("bull"),
+                sub("bear"),
             ],
         },
         CategoryDef {
             id: 2,
-            keywords: &[
-                "trump",
-                "biden",
-                "maga",
-                "election",
-                "president",
-                "political",
-                "potus",
+            needles: &[
+                sub("trump"),
+                sub("biden"),
+                sub("maga"),
+                sub("election"),
+                sub("president"),
+                sub("political"),
+                sub("potus"),
             ],
         },
         CategoryDef {
             id: 3,
-            keywords: &["musk", "elon", "taylor", "celeb", "kanye", "star"],
+            needles: &[
+                sub("musk"),
+                sub("elon"),
+                sub("taylor"),
+                sub("celeb"),
+                sub("kanye"),
+                sub("star"),
+            ],
         },
         CategoryDef {
             id: 4,
-            keywords: &["ai", "gpt", "agent", "neural", "llm", "bot", "model"],
+            needles: &[
+                sub("ai"),
+                sub("gpt"),
+                sub("agent"),
+                sub("neural"),
+                sub("llm"),
+                sub("bot"),
+                sub("model"),
+            ],
+        },
+    ],
+};
+
+/// The v1 taxonomy: the same four categories and the same **stable ids**, with
+/// every short or English-common needle demoted to
+/// [`CategoryMatchMode::Word`].
+///
+/// ## Responsibility
+/// Fix-forward for the v0 substring defect (see [`CategoryMatchMode`]). Ids are
+/// deliberately unchanged so a v0-stamped assignment and a v1-stamped assignment
+/// of the *same* token remain directly comparable; only the version stamp and the
+/// matching discipline move. The six proven v0 mis-classifications — `Fair
+/// Launch`, `Catalyst`, `Bottom Signal`, `Bullish Chain`, `Starter Pack`, and
+/// `Magazine` — all resolve to [`CATEGORY_UNCLASSIFIED`] here, which is the
+/// honest answer: no lexical evidence, so no category (§6.4).
+///
+/// Word-boundary needles: `ai`, `cat`, `bot`, `star`, `bull`, `bear`, `inu`,
+/// `llm`, `maga`, `elon`, `gpt`. Each is either two-to-four bytes or a common
+/// English infix (`fair`/`chain`, `catalyst`, `bottom`/`robot`, `starter`,
+/// `bullish`, `bearing`, `minute`, `magazine`, `melon`). Long, distinctive
+/// needles (`doge`, `pepe`, `neural`, `president`, …) keep
+/// [`CategoryMatchMode::Substring`] because an incidental hit is not a realistic
+/// concern and substring matching preserves compound-word recall
+/// (`pepekingdom`, `dogecoin`).
+///
+/// `dog` deliberately stays a substring: unlike `cat` it has essentially no
+/// high-frequency English carrier word in ticker space, while compound animal
+/// tickers (`dogwifhat`, `dogbrain`) are exactly the population the Animal
+/// category exists to catch.
+///
+/// Constitution: §21.4, criterion 81 (non-retroactive versioned assignment),
+/// §102 (every needle and its mode is a named, reviewable constant).
+pub const TAXONOMY_V1: CategoryTaxonomy = CategoryTaxonomy {
+    version: TAXONOMY_VERSION_V1,
+    categories: &[
+        CategoryDef {
+            id: 1,
+            needles: &[
+                sub("dog"),
+                sub("doge"),
+                sub("shib"),
+                word("inu"),
+                word("cat"),
+                sub("pepe"),
+                sub("frog"),
+                sub("animal"),
+                word("bull"),
+                word("bear"),
+            ],
+        },
+        CategoryDef {
+            id: 2,
+            needles: &[
+                sub("trump"),
+                sub("biden"),
+                word("maga"),
+                sub("election"),
+                sub("president"),
+                sub("political"),
+                sub("potus"),
+            ],
+        },
+        CategoryDef {
+            id: 3,
+            needles: &[
+                sub("musk"),
+                word("elon"),
+                sub("taylor"),
+                sub("celeb"),
+                sub("kanye"),
+                word("star"),
+            ],
+        },
+        CategoryDef {
+            id: 4,
+            needles: &[
+                word("ai"),
+                word("gpt"),
+                sub("agent"),
+                sub("neural"),
+                word("llm"),
+                word("bot"),
+                sub("model"),
+            ],
         },
     ],
 };
@@ -136,12 +305,9 @@ pub fn classify_category(
     taxonomy: &CategoryTaxonomy,
     slot: u64,
 ) -> CategoryAssignment {
-    let name_lc = ascii_lowercase(name);
-    let symbol_lc = ascii_lowercase(symbol);
-
     for cat in taxonomy.categories {
-        for needle in cat.keywords {
-            if name_lc.contains(needle) || symbol_lc.contains(needle) {
+        for needle in cat.needles {
+            if category_needle_matches(name, needle) || category_needle_matches(symbol, needle) {
                 return CategoryAssignment {
                     category_id: cat.id,
                     assigned_at_slot: slot,
@@ -158,17 +324,64 @@ pub fn classify_category(
     }
 }
 
-/// ASCII-lowercase a string into an owned `String`.
-///
-/// Off the hot path (meta rotation is a research-plane build per §29.2), so a
-/// single allocation here is acceptable; the hot-path no-alloc law (§22 hot
-/// path) does not apply to this subsystem.
-fn ascii_lowercase(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        out.push(ch.to_ascii_lowercase());
+/// Whether `b` is an ASCII alphanumeric byte (a "word" byte for boundary
+/// purposes). Non-ASCII bytes count as non-word, so a needle adjacent to
+/// multi-byte text still matches at a boundary.
+const fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+}
+
+/// ASCII-case-insensitive test of whether `hay[at..]` starts with `needle`.
+fn starts_with_ci(hay: &[u8], at: usize, needle: &[u8]) -> bool {
+    let Some(slice) = hay.get(at..at + needle.len()) else {
+        return false;
+    };
+    for (h, n) in slice.iter().zip(needle.iter()) {
+        if !h.eq_ignore_ascii_case(n) {
+            return false;
+        }
     }
-    out
+    true
+}
+
+/// Whether `needle` occurs in `hay` under its [`CategoryMatchMode`],
+/// ASCII-case-insensitively.
+///
+/// Allocation-free: the haystack is scanned in place with byte-wise case folding
+/// rather than being lowercased into a new buffer, so the classifier no longer
+/// allocates at all. An empty needle never matches (it would otherwise fire on
+/// every token). Panic-free on any input, including non-ASCII/multi-byte text.
+#[must_use]
+pub fn category_needle_matches(hay: &str, needle: &CategoryNeedle) -> bool {
+    let n = needle.text.as_bytes();
+    let h = hay.as_bytes();
+    if n.is_empty() || n.len() > h.len() {
+        return false;
+    }
+    let last_start = h.len() - n.len();
+    let mut i = 0usize;
+    while i <= last_start {
+        if starts_with_ci(h, i, n) {
+            match needle.mode {
+                CategoryMatchMode::Substring => return true,
+                CategoryMatchMode::Word => {
+                    let before_ok = match i.checked_sub(1).and_then(|p| h.get(p)) {
+                        Some(b) => !is_word_byte(*b),
+                        None => true,
+                    };
+                    let after_ok = match h.get(i + n.len()) {
+                        Some(b) => !is_word_byte(*b),
+                        None => true,
+                    };
+                    if before_ok && after_ok {
+                        return true;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Per-category on-chain factual accumulator.

@@ -3,9 +3,10 @@
 
 use pump_quant_market_state::common::Completeness;
 use pump_quant_market_state::meta::{
-    category_flow_imbalance_bps, classify_category, rotation_between, CategoryEvent,
-    CategoryEventKind, CategoryMeasures, MetaRotationReducer, MetaRotationState,
-    CATEGORY_UNCLASSIFIED, TAXONOMY_V0,
+    category_flow_imbalance_bps, category_needle_matches, classify_category, rotation_between,
+    CategoryEvent, CategoryEventKind, CategoryMatchMode, CategoryMeasures, CategoryNeedle,
+    MetaRotationReducer, MetaRotationState, CATEGORY_UNCLASSIFIED, TAXONOMY_V0, TAXONOMY_V1,
+    TAXONOMY_VERSION_V0, TAXONOMY_VERSION_V1,
 };
 
 #[test]
@@ -247,4 +248,124 @@ fn property_shares_sum_bounded_and_rotation_covers_union() {
             }
         }
     }
+}
+
+// ===========================================================================
+// TAXONOMY v0 → v1: the word-boundary fix, applied FORWARD under a version bump
+// (criterion 81 — assignments are timestamped and never retroactive).
+//
+// `category_id` is a brain RECALL FILTER KEY: a mis-assignment pools a token with
+// the wrong meta's episodes and silently corrupts every conditioned estimate keyed
+// on it. v0's naive substring matching mis-categorizes ordinary English. v0 is
+// pinned here AS THE HISTORICAL RECORD (so a replay of a v0-stamped assignment
+// still reproduces it), and v1 is pinned as the fix.
+// ===========================================================================
+
+/// The six proven v0 mis-classifications: `(name, symbol, wrong v0 category)`.
+/// Every one is an incidental English substring hit — `fair`→`ai`, `catalyst`→
+/// `cat`, `bottom`→`bot`, `bullish`→`bull`, `starter`→`star`, `magazine`→`maga`.
+const V0_MISCLASSIFICATIONS: &[(&str, &str, u64)] = &[
+    ("Fair Launch", "FAIR", 4),   // "ai" inside "fair"      → AI
+    ("Catalyst", "CTLY", 1),      // "cat" inside "catalyst" → Animal
+    ("Bottom Signal", "BTM", 4),  // "bot" inside "bottom"   → AI
+    ("Bullish Chain", "BLCH", 1), // "bull" inside "bullish" → Animal
+    ("Starter Pack", "STRP", 3),  // "star" inside "starter" → Celebrity
+    ("Magazine Coin", "MAGZ", 2), // "maga" inside "magazine"→ Political
+];
+
+#[test]
+fn v0_substring_misclassifications_are_pinned_as_the_historical_record() {
+    // v0 is FROZEN. These are wrong, they are known to be wrong, and they must
+    // keep reproducing exactly — a v0-stamped assignment on disk means this.
+    for &(name, symbol, wrong) in V0_MISCLASSIFICATIONS {
+        let a = classify_category(name, symbol, &TAXONOMY_V0, 7);
+        assert_eq!(
+            a.category_id, wrong,
+            "v0 must stay bit-identical: {name} historically assigned {wrong}"
+        );
+        assert_eq!(a.taxonomy_version, TAXONOMY_VERSION_V0);
+    }
+}
+
+#[test]
+fn v1_word_boundary_discipline_fixes_every_named_misclassification() {
+    for &(name, symbol, wrong) in V0_MISCLASSIFICATIONS {
+        let a = classify_category(name, symbol, &TAXONOMY_V1, 7);
+        assert_eq!(
+            a.category_id, CATEGORY_UNCLASSIFIED,
+            "v1 must not assign {name} (v0 wrongly said {wrong}); no lexical \
+             evidence means UNCLASSIFIED (§6.4), never a guess"
+        );
+        assert_eq!(
+            a.taxonomy_version, TAXONOMY_VERSION_V1,
+            "the fix ships under a BUMPED version, never as a rewrite of v0"
+        );
+    }
+}
+
+#[test]
+fn v1_still_assigns_every_genuine_category_hit() {
+    // The fix must not cost recall on real hits: a word-boundary needle still
+    // fires at a boundary, and long distinctive needles still match as substrings.
+    let cases: &[(&str, &str, u64)] = &[
+        ("Bull Run", "BULL", 1),      // word("bull") at a boundary
+        ("Cat Coin", "CAT", 1),       // word("cat") at a boundary
+        ("DogeToTheMoon", "DOGE", 1), // sub("doge") inside a compound
+        ("dogwifhat", "WIF", 1),      // sub("dog") — compound animal ticker
+        ("Shiba Inu", "INU", 1),      // word("inu") at a boundary
+        ("TrumpWin2024", "MAGA", 2),  // word("maga") == whole symbol
+        ("Elon To Mars", "ELON", 3),  // word("elon") at a boundary
+        ("Starlord Star", "STAR", 3), // word("star") — symbol boundary hit
+        ("AI Agent", "AI", 4),        // word("ai") at a boundary
+        ("Neural Net", "NRL", 4),     // sub("neural")
+        ("bot army", "BOT", 4),       // word("bot") at a boundary
+    ];
+    for &(name, symbol, want) in cases {
+        assert_eq!(
+            classify_category(name, symbol, &TAXONOMY_V1, 1).category_id,
+            want,
+            "v1 must still assign {name}/{symbol} to {want}"
+        );
+    }
+}
+
+#[test]
+fn v1_keeps_stable_ids_and_only_moves_the_version_stamp() {
+    // Ids are stable ACROSS versions (criterion 81): a v0 and a v1 assignment of
+    // the same unambiguous token are directly comparable; only the stamp differs.
+    for (name, symbol) in [("DogeToTheMoon", "DOGE"), ("Neural Net", "NRL")] {
+        let v0 = classify_category(name, symbol, &TAXONOMY_V0, 3);
+        let v1 = classify_category(name, symbol, &TAXONOMY_V1, 3);
+        assert_eq!(v0.category_id, v1.category_id);
+        assert_eq!(v0.taxonomy_version, 0);
+        assert_eq!(v1.taxonomy_version, 1);
+        assert_eq!(v0.assigned_at_slot, v1.assigned_at_slot);
+    }
+}
+
+#[test]
+fn needle_match_modes_are_exactly_substring_vs_word_boundary() {
+    let s = CategoryNeedle {
+        text: "ai",
+        mode: CategoryMatchMode::Substring,
+    };
+    let w = CategoryNeedle {
+        text: "ai",
+        mode: CategoryMatchMode::Word,
+    };
+    assert!(category_needle_matches("fair", &s));
+    assert!(!category_needle_matches("fair", &w));
+    assert!(category_needle_matches("AI", &w), "case-insensitive");
+    assert!(category_needle_matches("ai-agent", &w), "hyphen boundary");
+    assert!(category_needle_matches("the ai", &w), "trailing boundary");
+    assert!(!category_needle_matches("aid", &w));
+    // Non-ASCII bytes are non-word, so a needle adjacent to them still matches.
+    assert!(category_needle_matches("\u{2728}ai\u{2728}", &w));
+    // Empty needle never fires; over-long needle never fires; no panics.
+    let empty = CategoryNeedle {
+        text: "",
+        mode: CategoryMatchMode::Word,
+    };
+    assert!(!category_needle_matches("anything", &empty));
+    assert!(!category_needle_matches("a", &w));
 }

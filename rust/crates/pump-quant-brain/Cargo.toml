@@ -1,0 +1,12 @@
+[package]
+name = "pump-quant-brain"
+version = "0.1.0"
+edition = "2021"
+description = "Episodic recall memory: integer setup fingerprints, bounded episode index, microsecond fail-closed recall, meta-lifecycle timeline, social call track records, realized-net social trust, coordination-aware social support, lead-time follow recommendation, measurable style archetypes, and crash-safe local persistence (constitution 21.4, 22, 28, 46, 57, 99, 100, 102, 110)."
+license = "MIT"
+
+[lib]
+name = "pump_quant_brain"
+path = "src/lib.rs"
+
+[dependencies]

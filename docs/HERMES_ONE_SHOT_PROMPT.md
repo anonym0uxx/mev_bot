@@ -1978,15 +1978,83 @@ bites vs the prior ~0.015-SOL sizing on the same synthetic tape — NOT an edge 
 edge). The 2 SOL bankroll admits trades (does not block). Per-law A/B + the no-sub-floor invariant:
 tests/sizing_floor_laws.rs._
 
-_Amendment A-7 (2026-07-23, human-directed): LIVE BANKROLL IS SOURCED FROM THE RECONCILED ON-CHAIN
-WALLET BALANCE — NEVER a config constant (enforces §33 "verified starting bankroll", fail-closed). The
-config `bankroll_initial_lamports` is a PAPER/REPLAY seed ONLY. The engine carries a `BankrollOrigin`:
-`PaperSeed(cfg)` for Paper/Replay, `LiveReconciled(wallet_balance)` for live (Phase-B). The ENTIRE
-sizing chain — survival floor → deployable → risk budget → per-position fraction → drawdown hwm —
-derives from the origin's balance, so a live engine sizes off the real wallet (proven: a 2-SOL config
-seed + a 7-SOL reconciled balance sizes off 7 SOL end-to-end). Fail-closed guard `require_live_verified()`
-ERRORS on a `PaperSeed` — a paper seed can never back a live order; Phase-B live arming MUST initialize
-the bankroll from the reconciled wallet (SERVER_BUILD_MANIFEST §7) and continuously reconcile against it.
-Paper/replay path is byte-identical (golden digest unchanged 3411907290210896052). Pinned:
-tests/bankroll_origin.rs. This is a Tier-0-adjacent safety invariant: the bot must always know its true
-capital from chain truth, never from an asserted constant._
+_Amendment A-8 (2026-07-23, human-directed): THE BRAIN — local episodic recall memory. Hermes gains a
+deterministic, integer-only episodic memory (`pump-quant-brain`) so it can reason like a principal quant:
+"what happened last time a coin looked like this, does this match a past meta, did this candle setup earn,
+who called it and do they earn." Design law: **integer feature fingerprints, never LLM/text embeddings** —
+20 engine-computed features (OFI, CVD, trend/range/burst structure, realized vol, liquidity, breadth,
+attention velocity, narrative class, authenticity, creator class, meta state, cost) quantized through
+monotone named-const ladders into a packed u128 signature (thermometer for ordinals, one-hot for nominals,
+so Hamming distance IS the ordinal distance), recalled by two-stage integer popcount + weighted-L1 in
+microseconds. This preserves §22 determinism and §54 replay parity, which float embeddings and approximate
+vector search cannot, and keeps the strategy on our own machine (§6.6) with zero third-party dependency.
+Binding safety laws: (1) **fail-closed at small n** — a recall verdict below `min_sample` (§46 small-n
+guard), out of radius, or from an empty index is `Unknown`, and `Unknown` carries NO estimate field, so
+reading a number out of thin evidence is structurally impossible, not merely discouraged; (2) **phase
+separation is unrepresentable to violate** — no API path pools pre-migration curve markets with
+post-migration pool markets (§100); (3) **admitted-only** — rejected setups' structural zeros never enter
+an estimate; (4) **entry-time fingerprint** — the setup signature is captured at admit, never at exit, so
+recall can never be look-ahead-contaminated (pinned by a divergent-path test); (5) **REDUCE-ONLY
+consumption** — recall may shrink or refuse a trade but has no size-up path (`BrainSizeVerdict` has no
+`Boost` variant), because sizing up on historical winners is where episodic recall overfits; (6) an
+`Unknown` verdict can never change a decision (pinned by byte-identical decision-stream comparison).
+Persistence: append-only journal + atomic snapshot, pure-std, no database — crash-safe (truncation at every
+byte offset survivable, corrupt frames skipped with resync, newer-schema records refused), and the same
+idiom closes the prior RAM-only gap in `pump-quant-memory` (sealed experiments restore sealed, §56.9;
+capacity overflow refuses rather than evicting sealed evidence, §57). Admission status under §46: the
+reduce-only haircut (`brain_haircut_enable`) is **DEFAULT OFF** — it is exactly neutral on the
+representative tape (every class it can speak about there is profitable), and a feature is never armed on
+the assumption it will earn. It is proven to earn where the lane-pooled expectancy estimator is
+structurally blind — a bleeding SETUP inside a profitable LANE — worth +391,932,566 lamports of loss
+avoided on that hazard tape. Recording/reflection/persistence (B1/B2/B5) are decision-inert and default ON.
+Golden re-pin #16 (digest 12735838403143967945) is SEED-ONLY: net/promoted/admitted/rejected/filtered all
+unchanged; the digest moved solely because §19 seeds the journal from the config identity and new config
+fields were added. Spec: docs/BRAIN_SYSTEM.md; laws pinned in tests/brain_laws.rs._
+
+_Amendment A-9 (2026-07-24, human-directed): SOCIAL COGNITION LAYER + SOCIAL→ON-CHAIN HARDENING. The brain
+gains four abstraction faculties so Hermes reasons like a principal memecoin quant rather than a scorer:
+(1) **SocialSupport** — "does this coin have real social support?" measured as distinct-ORIGINATOR breadth
+(echoes are not support), trust-weighted, cross-platform spread (single-platform concentration is a
+coordination smell), the VELOCITY of support (the derivative, not the level), minus an echo/coordination
+penalty; fail-closed Unknown below a minimum of distinct originators. It also emits `support_inputs_needed`
+— the brain STATES its information needs (which platforms/authors to query) and never fabricates them.
+(2) **SocialTrust** — trust is earned EXCLUSIVELY from realized net SOL on attributable calls. Follower
+count, engagement, badges and self-claimed win rate are not merely ignored, they are STRUCTURALLY
+UNREACHABLE from the trust path (it reads only realized markouts), because those are precisely what a
+manipulator purchases. Integer partial pooling shrinks thin samples toward a prior whose positive side is
+capped and negative side uncapped (an estimator may be pessimistic for free, never optimistic for free);
+time-decay returns a stale reputation to the prior; §28 public-burned exposure is OPERATOR-SET and demotes
+only positive scores (being crowded is not a defence against losing money). (3) **FollowRecommendation** —
+authors whose calls PRECEDED our realized winners, weighted by lead time (a call after we were already in
+is a witness, not a signal), ranked and fail-closed; plus unfollow candidates whose attribution decayed
+negative. **Recommendation only: no posting, engagement, or promotional capability exists or may be added
+(criterion 110).** (4) **TraderArchetype style lenses** (EarlyRotation / FlowScalper / Sniper /
+ConvictionSize) — measurable weight+filter profiles over the fingerprint, NOT imitations of any individual;
+a lens is only ever validated against OUR OWN realized net SOL, and `best_paying_lens` returns None rather
+than crowning a least-bad loser. **All four faculties are REPORT-PLANE: proven decision-inert by
+byte-identical journal-digest comparison.**
+**Hardening law (social → deterministic):** every social-derived quantity reaching a decision surface
+carries its provenance (platform, author, earned trust tier, operator exposure, freshness) — there is no
+constructor accepting a bare anonymous social scalar; a social input past its TTL is DROPPED, never carried
+forward at its last value (§34.3/§29.6); and the whole social plane is bound by the end-to-end authority
+proof: a sweep of 3 social strengths × 4 failing on-chain positions asserts admitted==0 in every cell, with
+the strongest form proving that ten callers with EARNED realized trust, operator-followed and
+exposure-marked, still cannot admit a market lacking on-chain confirmation, numeric microstructure, or a
+viable economic band. Social makes Hermes faster and better-targeted; raw on-chain numbers authorize.
+**Gap closes:** holder-growth acceleration, creator survived-migration ledger (CreatorClass::Proven now
+reachable, fail-closed on truncated history), meta Decaying phase (peak-and-decline over per-interval
+deltas — cumulative counters can never exhibit decline, a defect caught and fixed in build), and an
+additive NarrativeFamily axis (kept separate from NarrativeClass, which retains ceiling semantics). Two
+declared gaps were assessed and correctly DECLINED: brain_path in the §19 seed (the journal path selects
+which corpus is recalled, so it genuinely is run identity) and info-time re-basing of social stamps (mixing
+capture wall-clock with information time injects a latency-signed bias, not noise).
+**Taxonomy defect fixed forward:** TAXONOMY_V0's naive substring matching mis-assigned live tokens
+("Fair Launch"→AI via "ai", "Catalyst"→Animal via "cat", "Bottom Signal"→AI via "bot", "Magazine"→Political
+via "maga"); because category_id is a brain recall FILTER KEY, mis-assignment pools tokens with the wrong
+meta's episodes and corrupts conditioned recall. TAXONOMY_V1 adopts word-boundary matching for short
+English-carrier needles. V0 is FROZEN and pinned as historical record — assignments are timestamped and
+never retroactive (criterion 81); the fix is forward-only under a bumped taxonomy_version.
+**Recall radius** tightened 12→8: at radius 12 a maximally net-BUYING setup matched a maximally
+net-SELLING one with all other fields identical. Golden re-pin #17 (digest 6048521563741174523) is
+SEED-ONLY — net 15,410,801 and every count unchanged; only two config VALUES moved. Spec:
+docs/BRAIN_SYSTEM.md; laws pinned in tests/{social_hardening,measured_fingerprint,brain_laws}.rs._

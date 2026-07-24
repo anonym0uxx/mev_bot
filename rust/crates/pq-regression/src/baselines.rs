@@ -17,7 +17,21 @@
 
 /// Byte-exact decision-journal digest of the golden tape under
 /// `Config::dev_portable`. The primary determinism fingerprint (§22/§54).
-pub const GOLDEN_DIGEST: u64 = 3_411_907_290_210_896_052;
+///
+/// Re-pin #18 (brain → strategy analysis, LAWs B6–B9) moved this and NOTHING
+/// else: §19 folds the whole `Config`'s strategy identity into the journal seed,
+/// and this wave ADDED five config fields — `brain_analysis_enable`,
+/// `brain_analysis_path`, `brain_reflect_enable`, `brain_reflect_step_bp`,
+/// `brain_decay_min_sample` — which necessarily re-seeds it. Every decision-plane
+/// number below is unchanged from re-pin #17, which is the proof that the whole
+/// wave (the `brain_analysis_v1` export, the §56 retirement-review nominations,
+/// the brain-grounded exit proposals and recall-as-promotion-blocker) is
+/// decision-inert, and that LAW B7's reduce-only lane downweight — which SHIPS OFF
+/// because its A/B was exactly neutral — changes nothing while disarmed.
+///
+/// (Re-pin #17 moved it for two config VALUES: `meta_taxonomy_version` 0 → 1 and
+/// `brain_recall_max_distance` 12 → 8.)
+pub const GOLDEN_DIGEST: u64 = 14_149_586_802_844_500_794;
 /// Realized net-SOL (lamports) on the golden tape (§24-compliant cost-derived).
 pub const GOLDEN_NET_LAMPORTS: i128 = 15_410_801;
 /// Candidates promoted to the gate.
@@ -97,6 +111,22 @@ pub const LAW_BOOL_DEFAULTS: &[(&str, bool)] = &[
     ("designated_caller_enable", true),
     // §29.5 bearish-alpha reduce-only exit pressure (Wave-3 LAW D3) — protective, ON.
     ("alpha_exit_pressure_enable", true),
+    // Episodic recall memory plane (LAWs B1/B2/B5) — record + readout only, ON.
+    ("brain_enable", true),
+    // §29.5/§46 reduce-only recall haircut/veto (LAW B3) — EXACTLY neutral on the
+    // golden tape (every recalled class there is profitable), so it ships OFF and
+    // earns its keep only on its own hazard tape (+391_932_566 lamports there).
+    ("brain_haircut_enable", false),
+    // LAW B5 durable episodic journal — operator opt-in (needs a path), OFF.
+    ("brain_persist_enable", false),
+    // LAW B6 `brain_analysis_v1` strategy-analysis export — report-plane and
+    // decision-inert, so ON; the PATH is empty by default, so nothing is written
+    // until an operator names a sink.
+    ("brain_analysis_enable", true),
+    // LAW B7 reduce-only brain-informed lane downweight — the A/B was EXACTLY
+    // neutral (delta 0 net) on the golden tape and on a purpose-built decayed-lane
+    // tape at every step from 250 bp to the full §56.2 envelope, so it ships OFF.
+    ("brain_reflect_enable", false),
 ];
 
 /// A pinned integer law parameter that gates a batch-E law's behaviour:
@@ -115,6 +145,20 @@ pub const LAW_INT_DEFAULTS: &[(&str, i64)] = &[
     ("narrative_decay_floor", 4),
     // §71 union-preservation corroboration quota (reserved promotion slots).
     ("promote_corroboration_quota", 2),
+    // §21.4 / criterion 81 meta-taxonomy version stamped on category assignments.
+    // Re-pin #17 bumped this 0 → 1 (word-boundary needle matching); a v0-stamped
+    // assignment no longer matches and is left UNKNOWN rather than remapped.
+    ("meta_taxonomy_version", 1),
+    // §46 LAW B4 sample floor below which recall is structurally Unknown.
+    ("brain_min_sample", 8),
+    // §102 LAW B3 similarity radius defining "a setup like this". Re-pin #17
+    // narrowed this 12 → 8: at 12 the OFI and CVD ladders (6 buckets each) let a
+    // maximally net-BUYING setup match a maximally net-SELLING one.
+    ("brain_recall_max_distance", 8),
+    // §29.5 LAW B3 haircut / veto win-rate bars and the reduce-only factor (bps).
+    ("brain_haircut_win_rate_bp", 3_500),
+    ("brain_veto_win_rate_bp", 1_500),
+    ("brain_haircut_mult_bp", 5_000),
 ];
 
 // ===========================================================================

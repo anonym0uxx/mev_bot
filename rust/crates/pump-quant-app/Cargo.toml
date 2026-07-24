@@ -28,3 +28,4 @@ pump-quant-signals = { path = "../pump-quant-signals" }
 pump-quant-wallet-graph = { path = "../pump-quant-wallet-graph" }
 pump-quant-protocol = { path = "../pump-quant-protocol" }
 pump-quant-governance = { path = "../pump-quant-governance" }
+pump-quant-brain = { path = "../pump-quant-brain" }

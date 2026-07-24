@@ -23,6 +23,13 @@
 //!   canonical authority class is fixed at construction and is never mutated by
 //!   a transition (§18.8: measurements "may never change canonical authority").
 //!
+//! * [`retirement_review`] — the §56 sequential-retirement boundary: a
+//!   *nomination* produced from episodic evidence is an agenda item, and
+//!   [`retirement_review::ReviewOutcome::Retire`] is reachable only through
+//!   [`retirement_review::review`] with the §51 statistical verdict AND the §52
+//!   baseline verdict both concurring. There is no code path from episodic
+//!   evidence alone to a retirement.
+//!
 //! * [`hashing`] — reproducible [`hashing::StrategyHash`] and
 //!   [`hashing::EvaluatorReleaseHash`]: a stable, domain-separated digest of a
 //!   [`canonical::CanonicalValue`] configuration, built on a from-scratch,
@@ -53,5 +60,6 @@ pub mod experiment_registry;
 pub mod hashing;
 pub mod lifecycle;
 pub mod manifest;
+pub mod retirement_review;
 pub mod sha256;
 pub mod strategy_registry;

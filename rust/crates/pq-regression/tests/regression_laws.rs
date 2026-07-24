@@ -44,6 +44,11 @@ fn bool_field(cfg: &Config, key: &str) -> Option<bool> {
         "alpha_call_lane_enable" => cfg.alpha_call_lane_enable,
         "designated_caller_enable" => cfg.designated_caller_enable,
         "alpha_exit_pressure_enable" => cfg.alpha_exit_pressure_enable,
+        "brain_enable" => cfg.brain_enable,
+        "brain_haircut_enable" => cfg.brain_haircut_enable,
+        "brain_persist_enable" => cfg.brain_persist_enable,
+        "brain_analysis_enable" => cfg.brain_analysis_enable,
+        "brain_reflect_enable" => cfg.brain_reflect_enable,
         _ => return None,
     })
 }
@@ -57,6 +62,12 @@ fn int_field(cfg: &Config, key: &str) -> Option<i64> {
         "narrative_decay_bp" => i64::from(cfg.narrative_decay_bp),
         "narrative_decay_floor" => cfg.narrative_decay_floor as i64,
         "promote_corroboration_quota" => cfg.promote_corroboration_quota as i64,
+        "meta_taxonomy_version" => i64::from(cfg.meta_taxonomy_version),
+        "brain_min_sample" => i64::from(cfg.brain_min_sample),
+        "brain_recall_max_distance" => i64::from(cfg.brain_recall_max_distance),
+        "brain_haircut_win_rate_bp" => i64::from(cfg.brain_haircut_win_rate_bp),
+        "brain_veto_win_rate_bp" => i64::from(cfg.brain_veto_win_rate_bp),
+        "brain_haircut_mult_bp" => i64::from(cfg.brain_haircut_mult_bp),
         _ => return None,
     })
 }
@@ -147,6 +158,16 @@ fn law_toggle_flips() -> Vec<(&'static str, fn(&mut Config))> {
         }),
         ("promote_corroboration_quota", |c| {
             c.promote_corroboration_quota = 0
+        }),
+        // LAWs B6/B7 (brain -> strategy analysis). Both are report-plane or
+        // default-OFF, so their DECISION effect is nil by design; they must still
+        // live inside the §19 config-identity seed, which is exactly what this
+        // test proves.
+        ("brain_analysis_enable", |c| {
+            c.brain_analysis_enable = !c.brain_analysis_enable
+        }),
+        ("brain_reflect_enable", |c| {
+            c.brain_reflect_enable = !c.brain_reflect_enable
         }),
     ]
 }

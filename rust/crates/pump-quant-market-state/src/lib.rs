@@ -23,6 +23,14 @@
 //!   deterministic, time-safe **category-assignment classifier v0** (§21.4;
 //!   criterion 81 "category assignments are timestamped and never
 //!   retroactive").
+//! * [`meta_phase`] — the meta **lifecycle phase** axis (§21.4), including the
+//!   decay detection the two-snapshot rotation diff cannot express: a bounded
+//!   per-category series of participation / attention / realized-outcome
+//!   samples reduced to a peak-relative classifier over a bounded window, so a
+//!   meta that has rolled over from its peak can be *named*
+//!   ([`meta_phase::MetaPhase::Decaying`]) instead of silently reading as
+//!   healthy. Refuses with `None` below its sample floor and for states the
+//!   measures do not name (§6.4).
 //!
 //! ## Constitution invariants honored here (§22)
 //! * **No `f32`/`f64` anywhere in outcome logic** — every derived quantity is
@@ -46,6 +54,7 @@ pub mod breadth;
 pub mod common;
 pub mod creator;
 pub mod meta;
+pub mod meta_phase;
 pub mod regime;
 
 pub use common::{ratio_bps, signed_ratio_bps, BoundedMap, BoundedSet, Completeness, EntityId};

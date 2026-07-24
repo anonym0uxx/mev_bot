@@ -11,7 +11,7 @@ Everything here is integer / deterministic, fast (< 30 s), and needs no network,
 no wall-clock, and no RNG (§22).
 
 At the pinned green HEAD: `cargo test --workspace` = **all passed / 0 failed**,
-golden digest `3411907290210896052` (net `15410801`), **191** dossiers intact.
+golden digest `14149586802844500794` (net `15410801`), **191** dossiers intact.
 
 ---
 
@@ -21,7 +21,7 @@ golden digest `3411907290210896052` (net `15410801`), **191** dossiers intact.
 
 | Baseline | Value | Guards |
 |---|---|---|
-| `GOLDEN_DIGEST` | `3411907290210896052` (hex `2f59879a779608b4`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
+| `GOLDEN_DIGEST` | `14149586802844500794` (hex `c45d6e3abe1a033a`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
 | `GOLDEN_NET_LAMPORTS` | `15410801` | realized §24-compliant cost-derived net-SOL on the golden tape |
 | `GOLDEN_PROMOTED` | `504` | candidates promoted to the gate |
 | `GOLDEN_ADMITTED` | `13` | candidates admitted by the gate |
@@ -69,6 +69,11 @@ Booleans (`LAW_BOOL_DEFAULTS`): a silent default flip is itself a regression.
 | `alpha_call_lane_enable` | `true` | §29 Discord paid-alpha lane (Wave-3 LAW D1) |
 | `designated_caller_enable` | `true` | §29 designated-caller attention weight (Wave-3 LAW D2) |
 | `alpha_exit_pressure_enable` | `true` | §29.5 bearish-alpha reduce-only exit pressure (Wave-3 LAW D3) |
+| `brain_enable` | `true` | episodic recall memory plane (LAWs B1/B2/B5) — record + readout, decision-inert |
+| `brain_haircut_enable` | `false` | §29.5/§46 reduce-only recall haircut/veto (LAW B3) — EXACTLY neutral on the golden tape, so OFF by default |
+| `brain_persist_enable` | `false` | LAW B5 durable episodic journal — operator opt-in (needs `brain_path`) |
+| `brain_analysis_enable` | `true` | LAW B6 `brain_analysis_v1` strategy-analysis export — report-plane and decision-inert, so ON; `brain_analysis_path` is empty by default so nothing is written until an operator names a sink |
+| `brain_reflect_enable` | `false` | LAW B7 reduce-only brain-informed lane downweight — A/B EXACTLY neutral (delta 0 net) on the golden tape and on a purpose-built decayed-lane tape at every step up to the full §56.2 envelope, so it ships OFF |
 
 Integers (`LAW_INT_DEFAULTS`):
 
@@ -80,6 +85,12 @@ Integers (`LAW_INT_DEFAULTS`):
 | `narrative_decay_bp` | `9330` | §29.6 attention/narrative decay rate |
 | `narrative_decay_floor` | `4` | §29.6 decay floor |
 | `promote_corroboration_quota` | `2` | §71 union-preservation corroboration slots |
+| `brain_min_sample` | `8` | §46 LAW B4 sample floor below which recall is structurally `Unknown` |
+| `brain_recall_max_distance` | `8` | §102 LAW B3 similarity radius defining "a setup like this". Re-pin #17 narrowed this 12 → 8: the OFI and CVD ladders span 6 buckets each, so at 12 a maximally net-BUYING setup matched a maximally net-SELLING one |
+| `meta_taxonomy_version` | `1` | §21.4 / criterion 81 taxonomy version stamped on category assignments. Re-pin #17 bumped this 0 → 1 (word-boundary needle matching fixes six proven v0 substring mis-assignments); v0 stays frozen as the historical record and a v0-stamped assignment is left UNKNOWN, never retroactively remapped |
+| `brain_haircut_win_rate_bp` | `3500` | §29.5 LAW B3 haircut bar (decisive win rate) |
+| `brain_veto_win_rate_bp` | `1500` | §29.5 LAW B3 veto bar (decisive win rate) |
+| `brain_haircut_mult_bp` | `5000` | §29.5/§56.2 LAW B3 reduce-only size factor (≤ 10000 by validation) |
 
 ---
 

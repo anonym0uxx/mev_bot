@@ -414,6 +414,16 @@ impl ScalpLifecycle {
         }
     }
 
+    /// The incumbent exit parameters this manager runs under (read-only).
+    ///
+    /// The §48 tournament and the LAW B8 proposal derivation both need to diff
+    /// against the LIVE policy; reading it back from the single owner is the only
+    /// way those two can never disagree about what the incumbent actually is.
+    #[must_use]
+    pub const fn params(&self) -> &LifecycleParams {
+        &self.params
+    }
+
     /// Whether any position is open (an empty manager books nothing).
     #[must_use]
     pub fn is_empty(&self) -> bool {
