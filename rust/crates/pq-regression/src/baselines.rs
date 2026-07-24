@@ -18,20 +18,27 @@
 /// Byte-exact decision-journal digest of the golden tape under
 /// `Config::dev_portable`. The primary determinism fingerprint (§22/§54).
 ///
-/// Re-pin #18 (brain → strategy analysis, LAWs B6–B9) moved this and NOTHING
-/// else: §19 folds the whole `Config`'s strategy identity into the journal seed,
-/// and this wave ADDED five config fields — `brain_analysis_enable`,
-/// `brain_analysis_path`, `brain_reflect_enable`, `brain_reflect_step_bp`,
-/// `brain_decay_min_sample` — which necessarily re-seeds it. Every decision-plane
-/// number below is unchanged from re-pin #17, which is the proof that the whole
-/// wave (the `brain_analysis_v1` export, the §56 retirement-review nominations,
-/// the brain-grounded exit proposals and recall-as-promotion-blocker) is
-/// decision-inert, and that LAW B7's reduce-only lane downweight — which SHIPS OFF
-/// because its A/B was exactly neutral — changes nothing while disarmed.
+/// Re-pin #19 (§70.1 continuous holder accounting) moved this and NOTHING else:
+/// §19 folds the whole `Config`'s strategy identity into the journal seed, and
+/// this wave ADDED one config field — `money_proxy_holder_flow_enable` — which
+/// necessarily re-seeds it. Every decision-plane number below is unchanged from
+/// re-pin #18, which is the proof that the whole wave (the per-mint holder ledger
+/// folded from decoded swap flow, its `Exact`/`DeltaOnly`/`Incomplete` basis
+/// gating, the watch-time sampling into the §70.1 acceleration estimator, the
+/// real fingerprint value at admit, and the open-book holder trajectory on the
+/// report) is decision-inert. The one decision-affecting switch — the money-proxy
+/// holder term that would replace the `unique_buyers` bitset popcount — SHIPS OFF
+/// because it measures exactly ZERO lamports on this tape and on both sides of a
+/// purpose-built two-sided A/B. Isolation was measured, not assumed: ablating the
+/// holder fold while keeping the config field reproduces this digest byte for
+/// byte.
+///
+/// (Re-pin #18 moved it for five ADDED brain-analysis / brain-reflect config
+/// fields, also seed-only.)
 ///
 /// (Re-pin #17 moved it for two config VALUES: `meta_taxonomy_version` 0 → 1 and
 /// `brain_recall_max_distance` 12 → 8.)
-pub const GOLDEN_DIGEST: u64 = 14_149_586_802_844_500_794;
+pub const GOLDEN_DIGEST: u64 = 6_234_587_619_693_007_457;
 /// Realized net-SOL (lamports) on the golden tape (§24-compliant cost-derived).
 pub const GOLDEN_NET_LAMPORTS: i128 = 15_410_801;
 /// Candidates promoted to the gate.
@@ -95,6 +102,9 @@ pub const LAW_BOOL_DEFAULTS: &[(&str, bool)] = &[
     ("entry_mode_leaves_enable", false),
     // §70.1 composite money proxy — legitimate lamports-moving law, ON.
     ("money_proxy_enable", true),
+    // §70.1 holder term from the continuous holder ledger — DEFAULT OFF, its
+    // two-sided A/B measured exactly zero lamports (re-pin #19).
+    ("money_proxy_holder_flow_enable", false),
     // §70.6/§70.8 narrative class + ceiling — new scoring, OFF.
     ("narrative_class_enable", false),
     // §70.7 platform-lead / crypto-social-lag — new scoring, OFF.

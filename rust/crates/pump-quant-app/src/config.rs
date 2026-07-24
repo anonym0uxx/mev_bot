@@ -522,6 +522,37 @@ pub struct Config {
     /// Off = the prior buy-pressure-only proxy, byte-identical.
     pub money_proxy_enable: bool,
 
+    /// §70.1 holder term source: use the CONTINUOUS holder count folded from our
+    /// own decoded swap flow ([`crate::holder_flow`]) instead of the
+    /// `Features::unique_buyers` bitset popcount.
+    ///
+    /// The bitset it replaces is a 64-bit set indexed by `entity % 64`: it
+    /// saturates at 64, it collides, and — decisively — it is **monotone
+    /// non-decreasing**, because a bit once set is never cleared. It therefore
+    /// cannot observe DISTRIBUTION at all. The folded holder count rises when
+    /// holders broaden and FALLS when they exit, which is what makes an
+    /// attention-vs-money divergence able to distinguish "the crowd is arriving"
+    /// from "the crowd is being sold to".
+    ///
+    /// Read only when [`Self::money_proxy_enable`] is also true. The term is
+    /// consulted at GROWTH tier ([`crate::holder_flow::HolderReading::growth_level`]),
+    /// so `Exact` and `DeltaOnly` readings both qualify — §70.1 asks for holder
+    /// *growth*, a derivative, which a delta-only basis supports — while an
+    /// `Incomplete` (entity-cap-truncated) reading, an untracked mint, or a
+    /// zero-evidence ledger falls back EXPLICITLY to the prior `unique_buyers`
+    /// term rather than fabricating one.
+    ///
+    /// The term is clamped to
+    /// [`crate::engine::MONEY_PROXY_HOLDER_TERM_CAP`] so its dynamic range is
+    /// identical to the 0..64 bitset it replaces and
+    /// `MONEY_PROXY_HOLDER_WEIGHT` stays calibrated against the 0..10_000
+    /// buy-pressure momentum tail.
+    ///
+    /// **Default OFF.** This is the wave's one decision-affecting change and it
+    /// did not clear its pre-registered A/B bar on the tapes tested — see
+    /// `tests/holder_flow.rs::ab_*`. Off = the prior bitset term, byte-identical.
+    pub money_proxy_holder_flow_enable: bool,
+
     // ---- §70.6/§70.8 narrative class + ceiling (Batch-2c LAW 8) ----
     /// Master switch for the §70.6/§70.8 narrative-class law. When true the
     /// attention emit path derives each mint's `NarrativeClass` (via
@@ -920,6 +951,7 @@ impl Config {
             // precedent). Each law's causal value is proven on its own hazard
             // tape in audit_wave2_laws.rs.
             money_proxy_enable: true,
+            money_proxy_holder_flow_enable: false,
             narrative_class_enable: false,
             platform_lead_enable: false,
             deployer_screen_enable: false,
@@ -1079,6 +1111,9 @@ impl Config {
             "setup_classifier_enable" => self.setup_classifier_enable = value != 0,
             "entry_mode_leaves_enable" => self.entry_mode_leaves_enable = value != 0,
             "money_proxy_enable" => self.money_proxy_enable = value != 0,
+            "money_proxy_holder_flow_enable" => {
+                self.money_proxy_holder_flow_enable = value != 0;
+            }
             "narrative_class_enable" => self.narrative_class_enable = value != 0,
             "platform_lead_enable" => self.platform_lead_enable = value != 0,
             "deployer_screen_enable" => self.deployer_screen_enable = value != 0,

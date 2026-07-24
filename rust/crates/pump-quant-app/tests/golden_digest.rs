@@ -764,8 +764,49 @@ fn drive(cfg: Config) -> pump_quant_app::engine::Report {
 // so LAW B7's lane-decay flag set is EMPTY on this tape even when armed, and the
 // armed arm's net/admitted/promoted/rejected are byte-identical to the neutral
 // arm's — measured, not assumed.
-// (arc: … → 1_406_102 → 1_864_780 → 15_410_801 [net unchanged at re-pins #16, #17, #18].)
-const GOLDEN_DIGEST: u64 = 14_149_586_802_844_500_794;
+// (arc: … → 1_406_102 → 1_864_780 → 15_410_801 [net unchanged at re-pins #16, #17, #18, #19].)
+// Re-pin #19 (§70.1 CONTINUOUS HOLDER ACCOUNTING): a SEED-ONLY re-pin. Holder-growth
+// capture stopped being a seam nobody called and became a STREAM:
+//
+//   * `holder_flow.rs` — a per-mint `entity -> net base position` ledger folded from
+//     OUR OWN decoded swaps (`buyer_entity` + `signed_base`), so the holder count is
+//     canonical §6.1 evidence with zero added latency and no third-party dependency.
+//     Birdeye/DAS holder counts stay strictly corroboration-tier (§6.6); the old
+//     `Engine::observe_holder_count` seam is demoted to exactly that in its docs.
+//   * The OBSERVATION-WINDOW LAW, enforced in the type: a mint watched from its
+//     creation event is `Exact`, a mint discovered mid-life is `DeltaOnly`, an
+//     over-cap ledger is `Incomplete`. `HolderReading`'s count is private and its
+//     accessors are basis-gated, so a LEVEL consumer structurally cannot read a
+//     delta-only or truncated count, while a GROWTH consumer (§70.1 wants a second
+//     derivative) legitimately reads `DeltaOnly`. The `Exact` claim is falsifiable
+//     by evidence — a sell from an untracked position proves a pre-window holder —
+//     and the basis lattice only ever moves toward less confidence.
+//   * WATCH: folded on every `MarketTrade` for every mint, admitted or not, and
+//     sampled into `pump_quant_features::holder_growth` on a 3-tick (1.2 s) cadence
+//     — the smallest whole-tick cadence at or above the estimator's 1 s minimum
+//     interval, asserted at compile time. ANALYZE: the fingerprint's
+//     `holder_growth_accel_bps` now receives a REAL measured value where before it
+//     took the neutral rung on literally every admit. ENTER/HOLD: the open book's
+//     holder trajectory rides out on `Report::holder_trajectory`.
+//   * §3 — the money-proxy holder term (`money_proxy_holder_flow_enable`) replaces
+//     the `unique_buyers` bitset popcount (which saturates at 64, collides on
+//     `entity % 64`, and is MONOTONE NON-DECREASING, so it cannot see distribution
+//     at all). DEFAULT OFF: it measures EXACTLY ZERO lamports on this tape and on
+//     both sides of a purpose-built two-sided A/B, and `tests/holder_flow.rs`
+//     establishes that the zero is an UNREACHABILITY result — the whole §70.1
+//     composite money proxy is inert on those tapes — rather than an efficacy
+//     result. It did not earn, so it is not armed.
+//
+// EVERY decision-plane number is UNCHANGED — net 15_410_801, promoted 504,
+// admitted 13, rejected 457, universe_filtered 72, AlphaCall 447_700, and every
+// per-lane / per-discovery-lane net and final weight identical to re-pin #18. Only
+// the DIGEST moves, and it moves for exactly one reason: §19 folds the whole
+// `Config`'s strategy identity into the journal seed, so ADDING the single config
+// field this wave needs — `money_proxy_holder_flow_enable` — necessarily re-seeds
+// it. Measured, not assumed: ablating the holder fold while KEEPING the config
+// field reproduces this digest byte for byte, which isolates the drift to the seed.
+// (arc: … → 1_406_102 → 1_864_780 → 15_410_801 [net unchanged at re-pins #16, #17, #18, #19].)
+const GOLDEN_DIGEST: u64 = 6_234_587_619_693_007_457;
 const GOLDEN_NET_LAMPORTS: i128 = 15_410_801;
 const GOLDEN_PROMOTED: u64 = 504;
 const GOLDEN_ADMITTED: u64 = 13;
@@ -1045,4 +1086,54 @@ fn brain_plane_is_decision_inert_on_this_tape() {
     );
     assert_eq!(on.per_lane_net, off.per_lane_net, "attribution unchanged");
     assert_eq!(on.final_weights, off.final_weights, "weights unchanged");
+}
+
+/// §70.1 re-pin #19: the armed holder-flow money term is EXACTLY neutral here.
+///
+/// The wave's one decision-affecting switch, measured on the representative tape
+/// rather than argued about. The continuous holder stream itself runs in BOTH
+/// arms (it is unconditional — that is what "constant stream" means); only the
+/// §70.1 money-proxy TERM is toggled. Zero lamports of difference is why it ships
+/// off. See `tests/holder_flow.rs::ab_*` for the two-sided purpose-built A/B and
+/// for the proof that the composite money proxy is unreachable on those tapes.
+#[test]
+fn holder_flow_money_term_is_exactly_neutral_on_this_tape() {
+    let off = drive(Config::dev_portable());
+    let mut on_cfg = Config::dev_portable();
+    on_cfg.money_proxy_holder_flow_enable = true;
+    let armed = drive(on_cfg);
+    println!(
+        "HOLDER-FLOW-on-golden: off_net={} armed_net={} off_adm={} armed_adm={}",
+        off.net_lamports, armed.net_lamports, off.admitted, armed.admitted
+    );
+    assert_eq!(
+        armed.net_lamports, off.net_lamports,
+        "the §70.1 holder term must be EXACTLY neutral on the golden tape"
+    );
+    assert_eq!(armed.admitted, off.admitted, "admissions unchanged");
+    assert_eq!(armed.rejected, off.rejected, "rejections unchanged");
+    assert_eq!(armed.promoted, off.promoted, "promotions unchanged");
+    assert_eq!(
+        armed.per_lane_net, off.per_lane_net,
+        "attribution unchanged"
+    );
+    // NOT vacuous: the holder stream really is populated on this tape, so a term
+    // that mattered would have had something to say.
+    let mut probe = Engine::new(Config::dev_portable(), RunMode::Replay);
+    probe.tick(AppEvent::MarketTrade {
+        mint: mint(7),
+        price_fp: 1_000_000_000,
+        quote_lamports: 400_000,
+        liquidity_lamports: 120_000_000,
+        signed_base: 500_000,
+        buyer_entity: 3,
+        age_slots: 12,
+    });
+    assert_eq!(
+        probe
+            .holder_reading(mint(7).as_bytes())
+            .and_then(|r| r.growth_level()),
+        Some(1),
+        "the watch-time holder fold must be live on the golden engine"
+    );
 }

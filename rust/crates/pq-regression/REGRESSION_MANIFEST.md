@@ -11,7 +11,7 @@ Everything here is integer / deterministic, fast (< 30 s), and needs no network,
 no wall-clock, and no RNG (§22).
 
 At the pinned green HEAD: `cargo test --workspace` = **all passed / 0 failed**,
-golden digest `14149586802844500794` (net `15410801`), **191** dossiers intact.
+golden digest `6234587619693007457` (net `15410801`), **191** dossiers intact.
 
 ---
 
@@ -21,7 +21,7 @@ golden digest `14149586802844500794` (net `15410801`), **191** dossiers intact.
 
 | Baseline | Value | Guards |
 |---|---|---|
-| `GOLDEN_DIGEST` | `14149586802844500794` (hex `c45d6e3abe1a033a`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
+| `GOLDEN_DIGEST` | `6234587619693007457` (hex `5685b46868d99261`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
 | `GOLDEN_NET_LAMPORTS` | `15410801` | realized §24-compliant cost-derived net-SOL on the golden tape |
 | `GOLDEN_PROMOTED` | `504` | candidates promoted to the gate |
 | `GOLDEN_ADMITTED` | `13` | candidates admitted by the gate |
@@ -61,6 +61,7 @@ Booleans (`LAW_BOOL_DEFAULTS`): a silent default flip is itself a regression.
 | `setup_classifier_enable` | `true` | §25 setup-archetype classifier |
 | `entry_mode_leaves_enable` | `false` | §24 EntryMode pullback-continuation leaves |
 | `money_proxy_enable` | `true` | §70.1 composite money proxy |
+| `money_proxy_holder_flow_enable` | `false` | §70.1 holder term sourced from the continuous holder ledger (`holder_flow`) instead of the `unique_buyers` bitset popcount — OFF, its two-sided A/B measured exactly zero lamports (re-pin #19) |
 | `narrative_class_enable` | `false` | §70.6/§70.8 narrative class + ceiling |
 | `platform_lead_enable` | `false` | §70.7 platform-lead / crypto-social-lag |
 | `deployer_screen_enable` | `false` | §70.9 deployer credibility screen |

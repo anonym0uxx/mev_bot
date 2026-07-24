@@ -47,6 +47,7 @@ use crate::attention::{AttentionField, AttentionParams};
 use crate::event::CreatorActionKind;
 use crate::extraction_risk::ExtractionRiskLedger;
 use crate::hazard_scaffold::HazardScaffold;
+use crate::holder_flow::{HolderCountBasis, HolderFlow, HolderReading};
 use crate::social_earn::{SocialEarn, SocialEarnParams};
 use crate::social_ingest::{ledger_quality, to_mention, SourceQualityPolicy};
 use crate::social_plane::{
@@ -546,6 +547,61 @@ pub struct Report {
     /// The best-paying lens per venue phase, `(venue_phase_code, lens_code)`.
     /// Empty when no lens clears the sample floor with a positive median.
     pub best_paying_lens: Vec<(u8, u8)>,
+
+    /// §70.1 the running HOLDER TRAJECTORY of every position still open when the
+    /// run ended — the "enter / hold" limb of the continuous holder stream.
+    ///
+    /// Captured BEFORE [`Engine::report`]'s finalize sweep force-closes the book,
+    /// so it answers "what were this position's holders doing while we held it",
+    /// which is the question a distribution-aware exit would ask. Sorted by mint
+    /// for determinism (§22). REPORT PLANE ONLY: nothing here is read by a gate,
+    /// a size, a rank or an exit — see [`HolderTrajectoryRow`] for why the
+    /// obvious §24 exit law is a documented seam rather than an armed rule.
+    pub holder_trajectory: Vec<HolderTrajectoryRow>,
+}
+
+/// One open position's §70.1 holder trajectory at end of run (report plane).
+///
+/// Every number here carries its [`HolderCountBasis`], and the two count fields
+/// are `Option` for the same structural reason the reading's accessors are: a
+/// level consumer gets `None` unless the basis is `Exact`, and a growth consumer
+/// gets `None` under `Incomplete`. A consumer literally cannot read a truncated
+/// or delta-only count as if it were a holder level (§6.4).
+///
+/// ## The §24 exit-pressure seam, deliberately NOT armed
+///
+/// A held position whose holder count is *declining* is a textbook §24
+/// distribution signal, and [`Self::accel_bps`] plus [`Self::growth_level`] are
+/// exactly the inputs such a law would read. It is not wired, because arming an
+/// untested exit is worse than not having one: the unhappy path (a transient
+/// holder dip inside a healthy consolidation, which is extremely common on a
+/// pump.fun curve where two or three entities dominate early breadth) would cut
+/// winners, and this wave did not have the budget for the two-sided A/B that
+/// would settle it. The data is exposed so the test can be built; the rule is
+/// not armed on the strength of its plausibility.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HolderTrajectoryRow {
+    /// The market held.
+    pub mint: [u8; 32],
+    /// What kind of number this row's counts are.
+    pub basis: HolderCountBasis,
+    /// Absolute holder count — `Some` only under [`HolderCountBasis::Exact`].
+    pub level: Option<u64>,
+    /// Growth-tier count — `Some` under `Exact` and `DeltaOnly`, `None` under
+    /// `Incomplete`.
+    pub growth_level: Option<u64>,
+    /// The raw tracked count with no basis gate, explicitly a LOWER BOUND.
+    pub lower_bound: u64,
+    /// §70.1 holder-growth acceleration over the sampled series as known now, or
+    /// `None` where the estimator refuses (thin series, stale interval, zero
+    /// base) or the basis does not admit a growth reading.
+    pub accel_bps: Option<i64>,
+    /// The most recent first difference (holder growth rate), same refusal rules.
+    pub growth_bps: Option<i64>,
+    /// Distinct entities in the mint's ledger.
+    pub entities_tracked: u32,
+    /// Entity arrivals refused by the per-mint cap. Non-zero ⇒ `Incomplete`.
+    pub truncated: u64,
 }
 
 /// The running engine.
@@ -660,6 +716,15 @@ pub struct Engine {
     /// not be invisible until someone else trades them); entries expire after
     /// `creation_ttl_ticks` unless the market earns real flow. Bounded (§99).
     creations: BTreeMap<[u8; 32], u64>,
+
+    /// §70.1 CONTINUOUS holder accounting, folded from our own decoded swap flow
+    /// ([`crate::holder_flow`]). Updated on EVERY `MarketTrade` — for every mint
+    /// we watch, not only the ones that reach the gate — so the holder series is
+    /// already populated by the time a candidate faces admission. This is the
+    /// stream that replaced the never-called `observe_holder_count` seam; the
+    /// third-party (Birdeye/DAS) holder count stays corroboration-tier (§6.6) and
+    /// never populates it. Bounded (§99).
+    holder_flow: HolderFlow,
 
     /// Reflection/report analytics (§47/§48/§49/§50/§51/§54): per-trade returns,
     /// MFE rows, PRFS reject forward-marking, convexity events, retirement,
@@ -960,6 +1025,7 @@ impl Engine {
             bankroll_hwm,
             vpin: BTreeMap::new(),
             creations: BTreeMap::new(),
+            holder_flow: HolderFlow::new(),
             analytics: ReflectionAnalytics::new(),
             tournament,
             flow_screen: FlowScreen::new(),
@@ -1299,6 +1365,36 @@ impl Engine {
                     }
                     self.last_trade_tick.insert(m, self.now);
                 }
+                // §70.1 CONTINUOUS HOLDER ACCOUNTING — the WATCH phase.
+                //
+                // Folded for EVERY decoded swap on EVERY mint, not just admitted
+                // ones, so that by the time a candidate reaches the gate its holder
+                // series already exists. This is the canonical (§6.1) derivation:
+                // the holder count comes from the `buyer_entity` + `signed_base` we
+                // decoded ourselves, never from a third-party holder endpoint (§6.6
+                // keeps Birdeye/DAS strictly corroboration-tier).
+                //
+                // The fold returns a sample only on the bounded
+                // `HOLDER_SAMPLE_INTERVAL_TICKS` cadence: the §70.1 acceleration
+                // estimator refuses comparison points closer than its 1 s minimum
+                // interval, so sampling per-swap would push samples that are simply
+                // dropped for a non-advancing information time. Three ticks
+                // (1.2 s at BRAIN_TICK_NS) is the smallest whole-tick cadence at or
+                // above that floor — asserted at compile time in `holder_flow`.
+                {
+                    let ns = self.now.saturating_mul(BRAIN_TICK_NS);
+                    let fold = self.holder_flow.observe_swap(
+                        mint.as_bytes(),
+                        buyer_entity,
+                        signed_base,
+                        self.now,
+                        ns,
+                    );
+                    if let Some(count) = fold.sample {
+                        self.measured
+                            .record_holder_count(fnv1a_64(mint.as_bytes()), count, ns);
+                    }
+                }
                 // On-chain-led category flow: a trade contributes to per-category
                 // MetaRotationState measures ONLY if its mint has a known (on-chain-
                 // assigned) category. Guarded by an O(1) `is_empty` check first, so a
@@ -1609,6 +1705,15 @@ impl Engine {
             // Sighting time is the engine's logical tick (the TTL clock); the
             // on-chain `slot` stays on the meta-rotation record below.
             self.creations.insert(mint, self.now);
+            // §70.1 observation-window law: a mint we start watching AT ITS
+            // CREATION has an empty holder set at t0, so every subsequent
+            // holder-creating trade is inside our window and the folded count is
+            // an ABSOLUTE one (`HolderCountBasis::Exact`). A mint discovered any
+            // other way is `DeltaOnly` — we know the change, not the base. The
+            // claim is only honoured if it lands before the first folded swap, and
+            // it stays falsifiable afterwards (a sell from an untracked position
+            // proves a pre-window holder and demotes it).
+            self.holder_flow.note_creation(&mint, self.now);
         }
         // Count the launch once, iff the taxonomy matches (on-chain-led factual
         // state may only be populated by a matching-version assignment, §85).
@@ -1963,7 +2068,9 @@ impl Engine {
             let numeric = &self.numeric;
             let confirmed = &self.confirmed;
             let wallet = &self.wallet;
+            let holder_flow = &self.holder_flow;
             let money_proxy_enable = self.cfg.money_proxy_enable;
+            let holder_flow_term = self.cfg.money_proxy_holder_flow_enable;
             self.attention.emit_into(
                 &mut self.scratch,
                 self.now,
@@ -1978,12 +2085,38 @@ impl Engine {
                     }
                     // §70.1 composite money proxy M: fold the distinct-smart-wallet-
                     // entry / net-inflow term (followable wallet inflow, decade-
-                    // compressed × weight) and the holder-growth term (unique on-chain
-                    // buyers × weight) in AHEAD of price momentum, then add the
-                    // buy-pressure momentum tail. Both folded terms are non-negative,
-                    // so when a mint has neither wallet inflow nor holders the
-                    // composite equals `buy_pressure` exactly. Integer/saturating (§22).
-                    let holders = feats.map_or(0, |f| u64::from(f.unique_buyers));
+                    // compressed × weight) and the holder-growth term in AHEAD of
+                    // price momentum, then add the buy-pressure momentum tail. Both
+                    // folded terms are non-negative, so when a mint has neither
+                    // wallet inflow nor holders the composite equals `buy_pressure`
+                    // exactly. Integer/saturating (§22).
+                    //
+                    // HOLDER TERM. The legacy term is `Features::unique_buyers` — a
+                    // popcount over a 64-bit bitset indexed by `entity % 64`. It is
+                    // a coarse BREADTH proxy, not a holder count: it saturates at
+                    // 64, entities collide, and it is MONOTONE NON-DECREASING, so it
+                    // structurally cannot observe distribution. When
+                    // `money_proxy_holder_flow_enable` is armed the term instead
+                    // reads the CONTINUOUS holder count folded from our own decoded
+                    // flow, which rises on broadening and falls on distribution.
+                    //
+                    // Trustworthiness is enforced by the reading's basis, not
+                    // assumed: `growth_level()` yields a number only for `Exact` and
+                    // `DeltaOnly` — §70.1 wants holder-growth acceleration, a
+                    // DERIVATIVE, and a delta-only basis measures exactly that — and
+                    // refuses under `Incomplete`, where the entity cap has truncated
+                    // both the level and the rate. On refusal (untracked mint or
+                    // `Incomplete`) the term falls back EXPLICITLY to the legacy
+                    // bitset value rather than fabricating a zero.
+                    let bitset_holders = feats.map_or(0, |f| u64::from(f.unique_buyers));
+                    let holders = if holder_flow_term {
+                        holder_flow
+                            .reading(m)
+                            .and_then(|r| r.growth_level())
+                            .map_or(bitset_holders, |h| h.min(MONEY_PROXY_HOLDER_TERM_CAP))
+                    } else {
+                        bitset_holders
+                    };
                     let inflow_decade = decade_u64(wallet.inflow_of(dm));
                     inflow_decade
                         .saturating_mul(MONEY_PROXY_WALLET_WEIGHT)
@@ -3122,11 +3255,19 @@ impl Engine {
             attention_velocity_bps,
             narrative_class,
             authenticity_bps: i64::from(authenticity_bps),
-            // §70.1 holder-growth ACCELERATION, measured by the leaf estimator over
-            // the captured holder series as known at this instant. The estimator
-            // fails closed (fewer than three usable samples, a stale interval, or a
-            // zero base count ⇒ `None`), and the refusal collapses onto the
-            // ladder's neutral rung.
+            // §70.1 holder-growth ACCELERATION — the ANALYZE limb of the continuous
+            // holder stream. The series behind this is no longer a seam nobody
+            // called: it is folded from OUR OWN decoded swap flow on every
+            // `MarketTrade` for every watched mint (`holder_flow`), sampled into
+            // the leaf estimator on the `HOLDER_SAMPLE_INTERVAL_TICKS` cadence, and
+            // read here point-in-time-safely as known at this instant. On a tape
+            // with genuine holder broadening this field now carries a REAL,
+            // non-neutral value at admit; before this wave it was the neutral rung
+            // on literally every admit.
+            //
+            // The estimator still fails closed (fewer than three usable samples, a
+            // stale interval, or a zero base count ⇒ `None`), and the refusal
+            // collapses onto the ladder's neutral rung.
             //
             // HONEST LIMITATION (§6.4): `HOLDER_GROWTH_ACCEL_EDGES_BPS` has no
             // UNKNOWN rung, so "never captured" and "measured exactly zero
@@ -3863,6 +4004,10 @@ impl Engine {
     /// scalp is only realized when it closes). Idempotent — after finalize the
     /// lifecycle is empty, so calling `report` again yields the same numbers.
     pub fn report(&mut self) -> Report {
+        // §70.1 ENTER/HOLD limb: snapshot the holder trajectory of the still-open
+        // book BEFORE `finalize()` force-closes it, otherwise the answer is always
+        // "no positions were open".
+        let holder_trajectory = self.holder_trajectory_rows();
         self.finalize();
         let scalp_net = self.recon[accum_index(EvalLane::Scalp)].net();
         let early_net = self.recon[accum_index(EvalLane::Early)].net();
@@ -3917,7 +4062,58 @@ impl Engine {
             caller_trust: self.social_plane.trust_rows(),
             lens_scoreboard: self.social_plane.lens_rows(),
             best_paying_lens: self.social_plane.best_paying_lens(),
+            holder_trajectory,
         }
+    }
+
+    /// §70.1 holder trajectory of every currently-open position, sorted by mint.
+    ///
+    /// `open_lane` is a `BTreeMap`, so iteration is already mint-sorted and the
+    /// rows are deterministic without a sort (§22). A pure read.
+    fn holder_trajectory_rows(&self) -> Vec<HolderTrajectoryRow> {
+        let as_of_ns = self.now.saturating_mul(BRAIN_TICK_NS);
+        self.open_lane
+            .keys()
+            .filter_map(|m| {
+                let r = self.holder_flow.reading(m)?;
+                // The acceleration is only meaningful where the basis admits a
+                // growth reading; under `Incomplete` the sampled series itself is
+                // truncated, so the estimate is suppressed rather than shown with a
+                // caveat nobody will read (§6.4).
+                let est = if r.basis().admits_growth() {
+                    self.measured.holder_estimate(fnv1a_64(m), as_of_ns)
+                } else {
+                    None
+                };
+                Some(HolderTrajectoryRow {
+                    mint: *m,
+                    basis: r.basis(),
+                    level: r.level(),
+                    growth_level: r.growth_level(),
+                    lower_bound: r.lower_bound(),
+                    accel_bps: est.map(|e| e.accel_bps),
+                    growth_bps: est.map(|e| e.growth_bps),
+                    entities_tracked: r.entities_tracked(),
+                    truncated: r.truncated(),
+                })
+            })
+            .collect()
+    }
+
+    /// §70.1 read-only view of the continuous holder-accounting plane — the
+    /// inspection seam for the report plane and the proof suite. Never a decision
+    /// input on its own: decision consumers go through
+    /// [`HolderReading`]'s basis-gated accessors.
+    #[must_use]
+    pub const fn holder_flow(&self) -> &HolderFlow {
+        &self.holder_flow
+    }
+
+    /// §70.1 the current holder reading for one mint, or `None` when the mint has
+    /// no folded flow. See [`HolderReading`] for the basis gating.
+    #[must_use]
+    pub fn holder_reading(&self, mint: &[u8; 32]) -> Option<HolderReading> {
+        self.holder_flow.reading(mint)
     }
 
     /// The decision journal, for inspection or persistence.
@@ -4545,20 +4741,28 @@ impl Engine {
         self.analytics.voi_ranking()
     }
 
-    /// §70.1 holder-count ingestion: record one observed holder count for `mint`
-    /// at the engine's current information time.
+    /// §6.6 CORROBORATION-TIER holder-count ingestion: record one THIRD-PARTY
+    /// observed holder count for `mint` at the engine's current information time.
     ///
-    /// A PARALLEL channel to the decoded [`AppEvent`] stream, for the same reason
-    /// the first-slot fee record is one: holder count is an **account-state** fact
-    /// (an RPC / indexer read of distinct non-zero balances), not a swap-stream
-    /// fact, and the decoded event vocabulary is dossier-locked / additive-only.
+    /// **This is no longer how the §70.1 holder series is populated.** The
+    /// production series is folded continuously from our own decoded swap flow
+    /// ([`crate::holder_flow`], wired on every `MarketTrade`) — canonical §6.1
+    /// evidence with no third-party dependency and no added latency. This seam
+    /// remains only as an optional corroboration channel for an operator who
+    /// wants to cross-check the folded count against an RPC/indexer read of
+    /// distinct non-zero balances; it must never be the *only* source of the
+    /// field, and a Birdeye/DAS count fed here is corroboration, not authority.
+    ///
+    /// Samples pushed here land in the SAME series as the folded ones, so a
+    /// caller mixing the two is mixing an absolute third-party level with our
+    /// observation-window count and gets whatever that mixture deserves. In
+    /// practice: either feed this or let the fold do it, not both.
     ///
     /// The holder-growth ACCELERATION estimator needs three usable samples spaced
     /// at least `HOLDER_MIN_INTERVAL_NS` apart and no more than
     /// `HOLDER_MAX_INTERVAL_NS` apart; below that it refuses and the fingerprint
     /// takes the neutral rung. Feeding this changes no capital decision — the
-    /// holder field is a fingerprint/report input only. A run that never calls it
-    /// is byte-identical to one before this layer existed.
+    /// holder field is a fingerprint/report input only.
     ///
     /// Returns whether the sample landed (a non-advancing information time is
     /// dropped — §20).
@@ -4786,6 +4990,20 @@ const THESIS_FEAT_CVD: u32 = 2;
 /// LEADS on wallet/holder evidence (§70.1) yet momentum still contributes.
 const MONEY_PROXY_WALLET_WEIGHT: u64 = 500;
 const MONEY_PROXY_HOLDER_WEIGHT: u64 = 200;
+
+/// §70.1/§102 dynamic-range clamp on the holder term when it is sourced from the
+/// continuous holder ledger (`money_proxy_holder_flow_enable`).
+///
+/// The legacy term is a popcount over a 64-bit bitset, so it lives in `0..=64` by
+/// construction, and `MONEY_PROXY_HOLDER_WEIGHT` was calibrated against that range
+/// so the holder term contributes `0..=12_800` against a `0..=10_000`
+/// buy-pressure momentum tail. The folded holder count is bounded only by
+/// `holder_flow::HOLDER_ENTITY_CAP` (512), which would let the holder term reach
+/// ~102_400 and swamp both momentum and the wallet-inflow term. Clamping at the
+/// bitset's own ceiling changes the term's INFORMATION (a real, collision-free,
+/// non-monotone count) without changing its SCALE, so the arming is a swap of
+/// measurement quality and not a silent reweighting of the composite.
+pub const MONEY_PROXY_HOLDER_TERM_CAP: u64 = 64;
 
 /// Coarse base-10 magnitude of a lamport quantity (0 → 0, else floor(log10)+1),
 /// mirroring `lane::decade` — keeps the smart-money inflow term comparable across
