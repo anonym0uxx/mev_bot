@@ -2093,3 +2093,54 @@ off every armed decision path (live sizing uses UNCONDITIONED recall by design).
 (within-class dispersion −9,544 bp against a 2,000 bp bar, null arm 9 bp) is real and has not reached
 the money; the resolution is holder-feed coverage at Phase-B, NOT further representation refinement.
 Golden re-pin #21 (digest 3604954302921337343) is config-seed-only; every decision number unchanged._
+
+## §51.1 / §56.9 — Amendment A-11 extension (THESIS DISCIPLINE — the study artifact and the arbiter rule)
+
+_Amendment A-11 (2026-07-25, human-directed): THESIS DISCIPLINE — BINDING ON EVERY SURFACE. §51 already
+requires experiment pre-registration and the preservation of negatives in the RESEARCH plane. A-11
+extends that discipline to **every strategy, law, thesis, parameter default, or algorithm change
+proposed by any surface — Hermes, the supervisor, the research plane, or the authoring surface — and
+makes the written artifact itself mandatory.** (1) **THE STUDY ARTIFACT IS REQUIRED BEFORE ANY DEFAULT
+MOVES.** No strategy or thesis may change a shipped default until a written study exists in `docs/`,
+referenced from the commit that implements it, carrying these sections in this order: the MANDATE
+(what was asked, verbatim in intent); the PRE-REGISTERED RULE, written before any number was measured
+and quoted in the artifact; the METHOD (tapes/corpora, what was held fixed, what competing effects were
+neutralized and why); the FINDINGS as a per-tape numeric table, not prose; the VERDICT taken
+leg-by-leg against each pre-registered condition; WHAT CHANGED in the repo; and the GREEN-GATE list.
+An idea with no artifact is not a candidate, however good it sounds. (2) **TWO-SIDED OR IT DOES NOT
+COUNT.** Every protective or predictive law is tested on a HAPPY path and a MIRROR built by flipping
+ONE boolean in the SAME generator, byte-identical up to and including the moment of decision, so the
+two are indistinguishable when the engine must act. A law whose only counter-tape is one on which it
+is inert by construction has a VACUOUS mirror and is refused a pass on that leg — the amendment that
+adds the missing false-positive tape may only ever make a law HARDER to arm. (3) **THE ARBITER RULE —
+the lesson that cost the most to learn, and the one most likely to be violated by a confident agent.**
+A tape, corpus, or fixture authored FOR a hypothesis may demonstrate that a MECHANISM is real, but it
+may **NEVER** be the arbiter of whether that law ships. Promotion is decided on PRE-EXISTING tapes
+reused verbatim — generators authored before the hypothesis existed. **Where the purpose-built fixture
+and the pre-existing corpus disagree, the pre-existing corpus wins and the law stays DISARMED**, and
+the disagreement itself is recorded as the fitted-to-fixture signature it is. A parameter value that
+wins on its own fixture while harming the representative corpus is overfitting no matter how strong
+its theory or how clean its asymmetry. (4) **PROMOTION BARS, all of which must hold:** MATERIALITY —
+the gain exceeds one 0.1 SOL bite (`min_trade_size_lamports`) judged ABSOLUTELY on corpora whose book
+is large relative to a bite, and RELATIVELY where it is not, **with the book size and the choice of
+basis stated explicitly in the artifact** (a corpus whose entire book is smaller than one bite cannot
+support an absolute bar, and silently applying one there is a reporting defect); NO HAZARD HARM — no
+pre-existing corpus gives back more than a bite, and no positive book is flipped negative; ASYMMETRY —
+happy gain ÷ |mirror loss| ≥ 3, reported as a trivial pass when the mirror loss is ≤ 0 rather than
+dressed as a large ratio; NO FITTING — every corpus is pre-existing or mechanically composed, never
+tuned to a result. (5) **DEFAULT DISARMED.** A law ships OFF unless it earns its default under (3)
+and (4). The operator's hope that a thesis earns, the elegance of its mechanism, and the strength of
+its external-research pedigree are **not evidence** and never substitute for a measured net-SOL result.
+(6) **HONEST NEGATIVES ARE PUBLISHED, NEVER BURIED.** A thesis that fails gets the SAME artifact, the
+same rigor, and the same commit as one that succeeds; a study that concludes "no change" is a
+completed deliverable, not a failure to deliver. Negative results are never deleted, downgraded to a
+comment, or quietly dropped from a summary. (7) **A DISARMED-BUT-KEPT LEVER MUST SHIP ITS HARM GUARD.**
+Any lever retained after failing must carry a test that PINS the measured harm at the settings its own
+fixture favoured, so that arming it on that fixture's numbers trips a loud, explicit failure rather
+than sliding in silently — and the artifact must name the SPECIFIC live measurement that would justify
+arming it. (8) **BINDING ON HERMES.** Every strategy Hermes proposes, tunes, or tests live follows this
+discipline, with live/replay evidence replacing synthetic corpora wherever it exists (live evidence
+outranks any tape); the artifact is written to `docs/` AND registered in the evidence store under its
+ExperimentId per §51, and no live default moves without it. Hermes may not weaken, reinterpret, or
+"streamline" A-11 — under §68/§111 it may only PROPOSE amendments, and a proposal to relax these bars
+requires the same artifact and the operator's approval._
