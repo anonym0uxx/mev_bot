@@ -104,16 +104,19 @@ refuses and reports rather than evicting sealed evidence (§57 durability-first)
 | **B4** | An `Unknown` verdict can never change a decision. Pinned by comparing the full journalled decision stream with the brain on vs off — byte identity required. | invariant |
 | **B5** | Episodes persist and restore; recall verdicts byte-identical across a simulated restart; a fresh store restores to an empty fail-closed brain (a restart never manufactures evidence). | durability |
 
-### B3 is DEFAULT OFF, and that is the honest result
+### B3 is ARMED (default ON) — it earned its default in the re-pin #21 sweep
 
 On the representative golden tape the haircut is **exactly neutral**: recall reaches
 `Known` 144 times, but every class it can speak about is profitable, so a reduce-only law
-correctly does nothing. Under §46 a feature does not get armed on the assumption it will
-earn, so `brain_haircut_enable` defaults **off**.
+correctly does nothing — no harm on the tape where it cannot help. It earns its default off
+tape: across the re-pin #21 (2^3-law) permutation sweep its **worst-case hazard delta is 0**
+— it never makes any tape worse — and it adds **+296,536,625 lamports on the union tape**.
+Under §46 a protective feature that cannot lose and demonstrably avoids loss has earned its
+arming, so `brain_haircut_enable` defaults **on (ARMED)**.
 
 It *does* earn where it should. On a hazard tape carrying a bleeding setup class **inside
 an otherwise profitable discovery lane**, armed vs neutral is **+293,235,710 vs
-−98,696,856 lamports — ~0.39 SOL of loss avoided.**
+−98,696,856 lamports — +391,932,566 lamports (~0.39 SOL) of loss avoided.**
 
 That construction is the real finding: a single-bleeding-setup tape proves nothing,
 because the existing per-lane expectancy estimator (EXPECTANCY_V1) already refuses that
@@ -122,12 +125,14 @@ structurally blind — discriminating a bad *setup* inside a good *lane*.** That
 precise niche this system occupies, and the reason to keep it.
 
 ## Known gaps (stated, not estimated — §6.4)
-`holder_growth_accel` is always 0 (no holder second-derivative estimator exists yet);
-`CreatorClass::Proven` and `MetaSaturationState::Decaying` are unreachable (no
-survived-migration ledger / no decay vocabulary in the app); the app's 4-class narrative
-taxonomy maps injectively into the brain's 8 nominal slots. Each is left unpopulated
-rather than approximated. `brain_recall_max_distance` defaults to 12, which pools
-aggressively — an operator arming B3 should tune it down (the hazard tape needed 3).
+The app's 4-class narrative taxonomy maps injectively into the brain's 8 nominal slots; the
+unused slots are left unpopulated rather than approximated. `brain_recall_max_distance`
+defaults to **8** (tightened from 12 — see "Gap closes" below); the non-shipped hazard
+generator tightens it further to 3 to force the bleeding-class match.
+
+(The gaps once listed here — `holder_growth_accel` always 0, and `CreatorClass::Proven` /
+`MetaSaturationState::Decaying` unreachable — are now **closed**; see "Gap closes and one
+production defect" below.)
 
 ---
 

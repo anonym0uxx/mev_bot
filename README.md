@@ -213,7 +213,7 @@ cost-derived profit targets the live default and forbids the fixed global TP con
 exposed that the earlier golden tape modeled unrealistically low (~1.5%) round-trip cost, which
 inflated realized net. The tape was corrected to realistic pump.fun/PumpSwap scalp economics (~7%
 round-trip cost, dominated by fixed priority/tip on small clips; a realistic loser/small-winner/runner
-mix) and re-pinned to **net 1,406,102 lamports** — the honest representative reference, on which
+mix) and re-pinned to **net 15,410,801 lamports** — the honest representative reference, on which
 cost-derived targets marginally out-earn the forbidden fixed ladder. The earlier headline arc
 (2.98M → … → 12.55M) was an artifact of understated costs and is not cited as live edge. The runner
 exports a trade JSONL and a config-identity ledger on request (`--trade-jsonl`, `--config-ledger`);
