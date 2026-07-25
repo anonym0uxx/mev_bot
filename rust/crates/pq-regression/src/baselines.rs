@@ -18,6 +18,21 @@
 /// Byte-exact decision-journal digest of the golden tape under
 /// `Config::dev_portable`. The primary determinism fingerprint (§22/§54).
 ///
+/// Re-pin #21 (LAW B3 `brain_haircut_enable` ARMED BY DEFAULT) moved this and
+/// NOTHING else, for the same seed-only reason as #19 and #20: §19 folds the whole
+/// `Config`'s strategy identity into the journal seed, so CHANGING the value of a
+/// config field necessarily re-seeds it. This is the first DEFAULT FLIP in the brain
+/// programme and it is the output of a pre-registered rule, not an opinion:
+/// `pump-quant-app/tests/law_permutation_sweep.rs` measures all EIGHT combinations of
+/// {LAW B3, LAW B7, §21.7 concentration} on TEN tapes and B3-alone is the unique
+/// configuration clearing every leg — +296_536_625 lamports on a union tape carrying
+/// all three hazards (bar 100_000_000), a WORST delta of exactly 0 across all nine
+/// hazard tapes, +391_932_566 on its own hazard tape against a NEGATIVE loss on a
+/// maximal false-positive mirror, and EXACT neutrality here. Every decision-plane
+/// number below is unchanged from re-pin #20, which is the proof the flip is
+/// golden-neutral. LAW B7 and the concentration law FAILED the same rule and stay
+/// OFF.
+///
 /// Re-pin #20 (§21.7/§70.1 holder DISTRIBUTION-SHAPE law) moved this and NOTHING
 /// else, for the same seed-only reason as #19: the wave ADDED one config field —
 /// `holder_concentration_enable` — and §19 folds the whole `Config`'s strategy
@@ -49,7 +64,7 @@
 ///
 /// (Re-pin #17 moved it for two config VALUES: `meta_taxonomy_version` 0 → 1 and
 /// `brain_recall_max_distance` 12 → 8.)
-pub const GOLDEN_DIGEST: u64 = 12_080_844_907_577_912_056;
+pub const GOLDEN_DIGEST: u64 = 3_604_954_302_921_337_343;
 /// Realized net-SOL (lamports) on the golden tape (§24-compliant cost-derived).
 pub const GOLDEN_NET_LAMPORTS: i128 = 15_410_801;
 /// Candidates promoted to the gate.
@@ -139,10 +154,12 @@ pub const LAW_BOOL_DEFAULTS: &[(&str, bool)] = &[
     ("alpha_exit_pressure_enable", true),
     // Episodic recall memory plane (LAWs B1/B2/B5) — record + readout only, ON.
     ("brain_enable", true),
-    // §29.5/§46 reduce-only recall haircut/veto (LAW B3) — EXACTLY neutral on the
-    // golden tape (every recalled class there is profitable), so it ships OFF and
-    // earns its keep only on its own hazard tape (+391_932_566 lamports there).
-    ("brain_haircut_enable", false),
+    // §29.5/§46 reduce-only recall haircut/veto (LAW B3) — ARMED since re-pin #21.
+    // EXACTLY neutral on the golden tape (every recalled class there is profitable),
+    // materially positive wherever the hazard it targets exists (+391_932_566 on its
+    // own hazard tape, +296_536_625 on the three-hazard union tape), and not a
+    // lamport of loss on ANY of the nine hazard tapes in the 2^3 law sweep.
+    ("brain_haircut_enable", true),
     // LAW B5 durable episodic journal — operator opt-in (needs a path), OFF.
     ("brain_persist_enable", false),
     // LAW B6 `brain_analysis_v1` strategy-analysis export — report-plane and

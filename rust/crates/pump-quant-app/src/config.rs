@@ -1007,17 +1007,32 @@ impl Config {
             // Brain (LAWs B1–B5). B1/B2/B5 are DEFAULT ON: they are pure
             // record/readout laws that touch no capital decision, and the operator
             // asked for a memory that is actually populated rather than an
-            // opt-in that is never switched on. B3 — the only law here that can
-            // move lamports — is DEFAULT OFF: on the representative golden tape it
-            // is exactly neutral (13 admits generate far too few episodes to reach
-            // the §46 sample floor, so every admit-time recall is `Unknown`), and a
-            // law that has not demonstrated it earns must not be armed by default.
-            // Its causal value is proven on its own hazard tape in brain_laws.rs;
-            // arming it is a deliberate operator config change (§56.2).
+            // opt-in that is never switched on.
+            //
+            // B3 — the only law here that can move lamports — is now DEFAULT ON as
+            // of re-pin #21, and the decision is the OUTPUT of a pre-registered
+            // rule rather than an opinion. `tests/law_permutation_sweep.rs` measures
+            // ALL EIGHT combinations of {B3, B7, §21.7 concentration} on ten tapes
+            // and B3-alone is the unique configuration that clears every leg:
+            //   * union tape (all three hazards on one engine): +296_536_625
+            //     lamports against a 100_000_000 materiality bar;
+            //   * WORST delta across all nine hazard tapes: exactly 0 — B3 does not
+            //     lose a lamport on any tape measured, including both sides of
+            //     every other law's two-sided pair;
+            //   * its own two-sided pair: +391_932_566 on the hazard tape against a
+            //     NEGATIVE loss (+350_288_025) on the maximal false-positive mirror,
+            //     so the 3× asymmetry bar passes without needing the ratio;
+            //   * the golden tape is EXACTLY neutral — net / admitted / rejected /
+            //     promoted / universe_filtered all unchanged (13 admits generate too
+            //     few episodes to clear the §46 sample floor, so every admit-time
+            //     recall there is `Unknown` and LAW B4 makes that a structural no-op).
+            // The law is reduce-only (§29.5 — the verdict type has no boost variant)
+            // and fail-closed (LAW B4), so arming it is bounded on the downside by
+            // construction as well as by measurement.
             brain_enable: true,
             brain_min_sample: crate::brain::BRAIN_MIN_SAMPLE_DEFAULT,
             brain_recall_max_distance: crate::brain::BRAIN_RECALL_MAX_DISTANCE_DEFAULT,
-            brain_haircut_enable: false,
+            brain_haircut_enable: true,
             brain_haircut_win_rate_bp: crate::brain::BRAIN_HAIRCUT_WIN_RATE_BP_DEFAULT,
             brain_veto_win_rate_bp: crate::brain::BRAIN_VETO_WIN_RATE_BP_DEFAULT,
             brain_haircut_mult_bp: crate::brain::BRAIN_HAIRCUT_MULT_BP_DEFAULT,

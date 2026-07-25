@@ -11,7 +11,7 @@ Everything here is integer / deterministic, fast (< 30 s), and needs no network,
 no wall-clock, and no RNG (§22).
 
 At the pinned green HEAD: `cargo test --workspace` = **all passed / 0 failed**,
-golden digest `12080844907577912056` (net `15410801`), **191** dossiers intact.
+golden digest `3604954302921337343` (net `15410801`), **191** dossiers intact.
 
 ### Brain representation state (no baseline of its own — recorded so a future re-pin knows where it started)
 
@@ -31,6 +31,22 @@ digest: both are report/representation plane, and
 `golden_digest.rs::the_concentration_parallel_stream_is_decision_inert_on_this_tape`
 is the exercised-vs-not A/B that proves it.
 
+**Measured caveat (re-pin #21, recorded so it is not rediscovered):** the schema-2
+information gain does **not** currently reach the decision plane in lamports, and
+that is measured rather than argued.
+`pump-quant-app/tests/law_permutation_sweep.rs::law_b3_under_schema_one_versus_schema_two`
+censuses the `F_HOLDER_GROWTH_VELOCITY` bucket over every episode the engine seals
+on all ten tapes: on seven of the ten it takes a **single** value (the neutral
+rung), so it contributes exactly `0` to every Hamming and every weighted distance
+and the schema-2 index ranks **identically** to schema 1 there. Replaying LAW B3's
+own hazard tape under both representations yields `0` differing verdicts out of 48
+queries and the identical `+391932566` lamports. Separately, the concentration-band
+conditioner is structurally **not on LAW B3's path** — `BrainPlane::recall`, the only
+call `size_verdict` makes, is deliberately unconditioned; the band reaches a decision
+only through `conditioned_classes` → `brain_analysis::lane_decay` → LAW B7, which is
+OFF. So the schema-2 wave's IQR gain is real as an information claim and currently
+worth **zero lamports** on every tape this repo can drive.
+
 ---
 
 ## Pinned baselines (mirror of `src/baselines.rs`)
@@ -39,7 +55,7 @@ is the exercised-vs-not A/B that proves it.
 
 | Baseline | Value | Guards |
 |---|---|---|
-| `GOLDEN_DIGEST` | `12080844907577912056` (hex `a7a7c86fb6c4aaf8`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
+| `GOLDEN_DIGEST` | `3604954302921337343` (hex `32075ed6b12469ff`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
 | `GOLDEN_NET_LAMPORTS` | `15410801` | realized §24-compliant cost-derived net-SOL on the golden tape |
 | `GOLDEN_PROMOTED` | `504` | candidates promoted to the gate |
 | `GOLDEN_ADMITTED` | `13` | candidates admitted by the gate |
@@ -90,7 +106,7 @@ Booleans (`LAW_BOOL_DEFAULTS`): a silent default flip is itself a regression.
 | `designated_caller_enable` | `true` | §29 designated-caller attention weight (Wave-3 LAW D2) |
 | `alpha_exit_pressure_enable` | `true` | §29.5 bearish-alpha reduce-only exit pressure (Wave-3 LAW D3) |
 | `brain_enable` | `true` | episodic recall memory plane (LAWs B1/B2/B5) — record + readout, decision-inert |
-| `brain_haircut_enable` | `false` | §29.5/§46 reduce-only recall haircut/veto (LAW B3) — EXACTLY neutral on the golden tape, so OFF by default |
+| `brain_haircut_enable` | `true` | §29.5/§46 reduce-only recall haircut/veto (LAW B3) — ARMED since re-pin #21. The 2^3 law sweep (`law_permutation_sweep.rs`, 8 configurations x 10 tapes) makes B3-alone the unique configuration clearing a pre-registered rule: `+296536625` on a three-hazard union tape (bar `100000000`), a WORST delta of exactly `0` across all nine hazard tapes, `+391932566` on its own hazard tape against a NEGATIVE loss on a maximal false-positive mirror, and EXACT neutrality on the golden tape (digest-only re-pin) |
 | `brain_persist_enable` | `false` | LAW B5 durable episodic journal — operator opt-in (needs `brain_path`) |
 | `brain_analysis_enable` | `true` | LAW B6 `brain_analysis_v1` strategy-analysis export — report-plane and decision-inert, so ON; `brain_analysis_path` is empty by default so nothing is written until an operator names a sink |
 | `brain_reflect_enable` | `false` | LAW B7 reduce-only brain-informed lane downweight — A/B EXACTLY neutral (delta 0 net) on the golden tape and on a purpose-built decayed-lane tape at every step up to the full §56.2 envelope, so it ships OFF |
