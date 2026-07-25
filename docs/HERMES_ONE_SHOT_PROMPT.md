@@ -2058,3 +2058,38 @@ never retroactive (criterion 81); the fix is forward-only under a bumped taxonom
 net-SELLING one with all other fields identical. Golden re-pin #17 (digest 6048521563741174523) is
 SEED-ONLY — net 15,410,801 and every count unchanged; only two config VALUES moved. Spec:
 docs/BRAIN_SYSTEM.md; laws pinned in tests/{social_hardening,measured_fingerprint,brain_laws}.rs._
+
+_Amendment A-10 (2026-07-25, human-directed): HOLDER PLANE + THE FIRST ARMED BRAIN LAW. (1) Holder
+accounting is a CONTINUOUS STREAM derived from our own decoded swap flow (§6.1) — never a third-party
+count (Birdeye/DAS stay corroboration-tier, §6.6) — folded per swap for every mint that trades.
+(2) **Basis discipline, enforced in the type:** a reading is `Exact` only if a creation sighting
+preceded the first swap, and is permanently falsified by any pre-window seller; otherwise `DeltaOnly`
+or `Incomplete`. Growth/trajectory is valid under DeltaOnly; **concentration is a LEVEL quantity valid
+ONLY under Exact**, because a delta-only denominator is the observed subset and overstates every share
+by an unbounded amount. Measured coverage is BINARY — 100% with a creation sighting, 0% without — which
+is why concentration was REFUSED as a brain fingerprint field (the ladder has no UNKNOWN rung, so a
+delta-only market would encode as if it had MEASURED neutral concentration) and instead rides the
+RecallFilter as a PARALLEL band dimension costing zero signature bits; an Unknown band is unpinnable
+through every door. (3) Holder distribution shape (top-N share, normalized HHI, whale dominance,
+early-top-10 capture, bundle/sniper counts, flip ratio) is a research-grounded family (MemeTrans
+arXiv 2602.13480: holding concentration is the 2nd most important feature group, first-10 buyers held
+~17pp more supply in high-risk tokens; arXiv 2512.00377 whale-dominance form; arXiv 2601.08641
+bundle/sniper/bump definitions) consumed REDUCE-ONLY at the gate, and per the constitution's own rule
+it is a prior and NEVER a standalone veto — the veto is conjunctive, requiring independent
+corroboration from the §21.7 authenticity screen, which measures a different quantity. (4) **LAW B3
+(episodic-recall reduce-only sizing) is ARMED** — the first and only brain law to earn its default,
+by winning an 8-configuration net-SOL permutation sweep under a rule pre-registered before
+measurement (+296,536,625 lamports on the union hazard tape; worst-case delta EXACTLY 0 across all
+nine hazard tapes). B7 (reflect) and the concentration gate law remain DISARMED, having failed their
+own two-sided rules (asymmetry 1.27× and 1.39× against a 3× bar) even under the sharper schema-2
+representation. B3 × concentration are measured exactly DISJOINT — zero mint overlap, interaction
+term zero — so the §21.7 "authenticity enters the sizing chain exactly once" concern does not
+materialize for that pair. (5) **Stated honestly and binding on future work: B3's earning was measured
+under a NON-SHIPPED config** (arbitration expectancy floor neutralized, recall radius 3 vs the shipped
+8); at shipped settings on the golden tape it is exactly neutral. It must be RE-VALIDATED on the first
+live replay corpus and DISARMED if it does not reproduce. (6) **The schema-2 representation earns zero
+lamports today** — the trajectory field is constant on 8 of 10 laptop tapes and the band conditioner is
+off every armed decision path (live sizing uses UNCONDITIONED recall by design). The information gain
+(within-class dispersion −9,544 bp against a 2,000 bp bar, null arm 9 bp) is real and has not reached
+the money; the resolution is holder-feed coverage at Phase-B, NOT further representation refinement.
+Golden re-pin #21 (digest 3604954302921337343) is config-seed-only; every decision number unchanged._
