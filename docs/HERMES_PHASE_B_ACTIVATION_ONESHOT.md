@@ -294,6 +294,57 @@ server measurement before the affected path may arm. Activate in this order:
    `ex_reconcile_fill` closes submission → confirmed fill; every attempt is journaled.
    Submission refuses to arm without a configured signer (§3).
 
+
+### 4b. PRICE IS A STREAM, NEVER A POLL — and what actually costs net SOL here
+
+**The invariant, because it decides the whole design.** On an AMM pool or a bonding curve, price is
+a **pure deterministic function of reserves** (or of curve position), and reserves change **only
+when a swap lands**. There is no price movement between swaps. Therefore the decoded swap stream is
+not an approximation of a price feed — **it IS the price feed, and it is the earliest view of every
+price change that will ever exist.** A poller would report the same number, later. Polling is
+strictly dominated: identical information, added latency, added cost, and a new way to be wrong.
+
+**So: never add an RPC/HTTP price poller to the decision path.** Not "for safety", not as a
+fallback, not as a cross-check on a held position. Criterion 97 makes per-swap event-driven position
+state (not RPC polling) LAW, and the engine already implements it — every decoded swap advances the
+held-position lifecycle and can book an exit on that same event, with no clock in between. **If you
+ever feel the need for a price poller, the real problem is FEED COVERAGE — fix that instead.** RPC
+is for account/state reads, confirmation, and reconciliation; it is never price discovery in the hot
+path.
+
+**What actually costs net SOL here, in priority order — optimize these, not the cadence:**
+
+1. **COVERAGE — a swap you never saw is an exit trigger that never fired.** This is the single
+   largest risk in the whole price path, and the only one that can silently cost you a position.
+   Run ≥ 2 independent live feeds into the canonicalizer (LaserStream primary, Enhanced-WS
+   independent fallback, PumpPortal), with sequence-gap detection and reconnect/gap-repair
+   accounting. **Zero unexplained gaps is the acceptance bar (manifest §2).** A detected gap is
+   UNKNOWN state — refuse and repair; never interpolate a price across it, and never present a
+   gap-filled series as observed.
+2. **TRIGGER → SUBMISSION LATENCY.** The exit decision is microseconds; what costs money is the
+   transaction. **Exit skeletons and partial-exit ladders are pre-armed AT ENTRY** (criterion 103) so
+   a reversal never finds you building a transaction from scratch. Measure and CI-gate the
+   trigger→submission budget on deployment hardware.
+3. **DECIDE AT EXPECTED LANDING STATE, NEVER AT OBSERVATION STATE.** Landing is slot-bounded
+   (~400 ms); assume no sub-slot fills anywhere. Every scalp decision prices the observation plus the
+   measured latency-distribution drift plus impact (criterion 103). A decision that is correct at
+   observation state and stale at landing is a loss you chose.
+4. **STALENESS FAILS CLOSED.** If the stream is stale or absent, refuse or halt — never silently
+   fall back to a polled read and present it as live (§2.3, §6). Absence is UNKNOWN, not a number.
+
+**Legitimate periodic reads, all strictly OFF the hot decision path:** wallet-balance reconciliation
+(the live bankroll read), fill/confirmation reconciliation, the Birdeye 1D-candle epoch
+(corroboration tier, §6.7), and cost/usage monitors. None of these may ever feed a price into an
+entry or exit decision.
+
+**Current state you are inheriting:** the `pump-quant-app` binary is today a **paper/replay runner
+that reads events from a file** — the engine is already fully event-driven, but the live
+socket → engine wiring is YOUR Phase-B work (§4 items 3 and 8). Wire the decoded swap stream
+directly into `AppEvent::MarketTrade` so the held-position lifecycle advances on every swap, and
+drive `AppEvent::Tick` from a monotonic clock for the time-based backstops only (the conditional
+time stop) — **never let a tick be the thing that discovers a price change.**
+
+---
 ---
 
 ## 5. GO-LIVE: the autonomous lifecycle (constitution §64)
