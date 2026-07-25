@@ -64,7 +64,7 @@
 ///
 /// (Re-pin #17 moved it for two config VALUES: `meta_taxonomy_version` 0 → 1 and
 /// `brain_recall_max_distance` 12 → 8.)
-pub const GOLDEN_DIGEST: u64 = 3_604_954_302_921_337_343;
+pub const GOLDEN_DIGEST: u64 = 8_413_891_310_981_713_968;
 /// Realized net-SOL (lamports) on the golden tape (§24-compliant cost-derived).
 pub const GOLDEN_NET_LAMPORTS: i128 = 15_410_801;
 /// Candidates promoted to the gate.

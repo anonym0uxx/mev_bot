@@ -307,6 +307,24 @@ pub struct Config {
     pub lc_max_hold_ticks: u64,
     /// Rug-precursor single-swap drop trigger, bps.
     pub lc_precursor_drop_bps: u32,
+    /// §32 thesis-exit FLOW PERSISTENCE: the number of CONSECUTIVE adverse
+    /// order-flow observations required before the thesis force-exit fires.
+    ///
+    /// `1` reproduces the historical behaviour exactly — exit on the FIRST flow
+    /// sign-flip. The research case for `> 1` (arXiv 2606.16269, the
+    /// Lillo–Mike–Farmer sign-autocorrelation relation `γ = α − 1`) is that trade
+    /// signs are long-memory because metaorder lengths are Pareto-distributed, so
+    /// a SINGLE sign flip is close to the least informative read of the flow
+    /// process — the information lives in a persistent same-signed RUN. Kaminski
+    /// & Lo (*J. Financial Markets* 18:234–254) give the complementary result: a
+    /// stop rule earns its keep only when the trigger predicts PERSISTENT adverse
+    /// drift, and is otherwise a pure negative "stopping premium".
+    ///
+    /// Counted in ADVERSE OBSERVATIONS (event time), never wall-clock ticks — the
+    /// persistence the cited literature measures is an event-time property, and
+    /// wall-clock bucketing destroys it. Any non-adverse observation resets the
+    /// run to zero, so this is a run-length gate, not a delay timer.
+    pub thesis_persist_obs: u32,
 
     // ---- meta-rotation / creator-state (corroboration-tier) ----
     /// Taxonomy version the meta-rotation reducer stamps on its snapshots, and the
@@ -896,6 +914,9 @@ impl Config {
             lc_stall_ticks: 25,
             lc_max_hold_ticks: 300,
             lc_precursor_drop_bps: 3_000,
+            // 1 == exit on the first adverse flow observation (historical behaviour).
+            // Any change here must be earned on the two-sided flow-noise tape.
+            thesis_persist_obs: 1,
 
             // Matches `meta::TAXONOMY_V1` — the word-boundary-disciplined lexicon.
             // v0's naive substring matching mis-assigned ordinary English into the
@@ -1134,6 +1155,9 @@ impl Config {
             "lc_stall_ticks" => self.lc_stall_ticks = nonneg(value)?.max(1),
             "lc_max_hold_ticks" => self.lc_max_hold_ticks = nonneg(value)?.max(1),
             "lc_precursor_drop_bps" => self.lc_precursor_drop_bps = bp(value)?,
+            "thesis_persist_obs" => {
+                self.thesis_persist_obs = u32::try_from(nonneg(value)?).unwrap_or(1).max(1);
+            }
             "meta_taxonomy_version" => self.meta_taxonomy_version = bp(value)?,
             "meta_max_categories" => self.meta_max_categories = sz(value)?.max(1),
             "meta_max_creators_per_cat" => self.meta_max_creators_per_cat = sz(value)?.max(1),

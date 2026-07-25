@@ -112,7 +112,7 @@ laptop figures above exist only to prove the *algorithmic* deltas.
 
 A second behaviour-preserving pass, targeting per-call allocation and O(n) memmoves on the
 hottest paths. **Every change below is byte-identical on the golden tape**: the
-`pump-quant-app` golden-digest test (`GOLDEN_DIGEST = 3_604_954_302_921_337_343`,
+`pump-quant-app` golden-digest test (`GOLDEN_DIGEST = 8_413_891_310_981_713_968`,
 `net = 15_410_801`) was re-run after each edit and never moved, and the full workspace +
 191 dossier suite is unchanged. The changes only recycle memory / drop an O(n) shift — the
 decoded values, ordering, and journal bytes are identical.

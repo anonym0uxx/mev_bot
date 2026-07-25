@@ -796,6 +796,11 @@ pub struct Engine {
     /// Per-mint entry thesis (§32): built at open from entry evidence, evaluated
     /// per swap; deterministic invalidation forces the exit. Bounded with opens.
     theses: BTreeMap<[u8; 32], Thesis>,
+    /// §32 flow-persistence run length: consecutive ADVERSE flow observations per
+    /// held mint. Bounded by the open-position set (§99) — an entry only exists
+    /// while a thesis does, is reset the moment flow is non-adverse, and is
+    /// removed when the position closes.
+    thesis_adverse: BTreeMap<[u8; 32], u32>,
     /// mint → creator entity (from TokenMetadata), for the credibility haircut.
     mint_creator: BTreeMap<[u8; 32], u64>,
     /// creator → (lifetime launches, window start tick, launches in window).
@@ -1077,6 +1082,7 @@ impl Engine {
             wallet_screen: WalletScreen::new(),
             context: MarketContext::new(),
             theses: BTreeMap::new(),
+            thesis_adverse: BTreeMap::new(),
             mint_creator: BTreeMap::new(),
             creator_launches: BTreeMap::new(),
             first_slot_fees: BTreeMap::new(),
@@ -3547,10 +3553,28 @@ impl Engine {
         ];
         let verdict = evaluate_thesis(thesis, &ThesisState { observations: &obs }, self.now);
         let force = forced_action(verdict) == ForcedAction::ForceExit;
-        if force || verdict == ThesisVerdict::Invalidated {
-            self.theses.remove(mint);
+        // §32 FLOW PERSISTENCE (`thesis_persist_obs`). A single adverse print is the
+        // least informative read of a long-memory sign process (arXiv 2606.16269);
+        // the exit demands a RUN of `k` consecutive adverse observations in event
+        // time. `k == 1` is byte-identical to the historical first-flip behaviour:
+        // the run reaches 1 on the same observation that used to force the exit.
+        let k = self.cfg.thesis_persist_obs.max(1);
+        if !force {
+            // Flow recovered — the adverse run is broken, not merely paused.
+            self.thesis_adverse.remove(mint);
+            if verdict == ThesisVerdict::Invalidated {
+                self.theses.remove(mint);
+            }
+            return false;
         }
-        force
+        let run = self.thesis_adverse.entry(*mint).or_insert(0);
+        *run = run.saturating_add(1);
+        if *run >= k {
+            self.thesis_adverse.remove(mint);
+            self.theses.remove(mint);
+            return true;
+        }
+        false
     }
 
     /// §24 LAW 2: derive the per-market take-profit ladder from the gate's measured
@@ -3796,6 +3820,8 @@ impl Engine {
                     self.source_outcome.record(src, net_i64);
                 }
                 self.theses.remove(&e.mint);
+                // §99 bounded state: the flow-persistence run dies with the position.
+                self.thesis_adverse.remove(&e.mint);
                 // §47/§48/§49 analytics: the whole position's realized row + the
                 // exit-policy convexity event + the §52 naive-baseline counterfactual.
                 // §25 LAW 4: the row is tagged with the derived setup archetype.
