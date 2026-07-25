@@ -319,6 +319,17 @@ pub struct BrainSetupClass {
     pub nearest_distance: u32,
     /// `episode_id` of the nearest matched episode — the operator's audit anchor.
     pub nearest_episode_id: u64,
+    /// §21.7 the PARALLEL-STREAM concentration code this class's recall was
+    /// conditioned on ([`pump_quant_brain::concentration::ConcentrationReading::filter_code`]).
+    ///
+    /// `0` = the class was entered under a refused (`Unknown`) reading, so the
+    /// conditioner was inert and this row's statistics pool every band exactly as
+    /// they did before the channel existed. A non-zero code says the opposite:
+    /// these statistics are drawn ONLY from episodes in the same band. The
+    /// operator readout renders it through
+    /// [`pump_quant_brain::concentration::concentration_code_label`], which has no
+    /// path from `0` to a band name.
+    pub concentration_code: u8,
 }
 
 /// LAW B6: one traded setup class together with the **full** conditioned recall
@@ -341,6 +352,14 @@ pub struct ConditionedClass {
     pub meta_category_id: u32,
     /// Discovery lane the recall was conditioned on.
     pub discovery_lane: BrainLane,
+    /// §21.7 the parallel-stream conditioning code the class was ENTERED under
+    /// ([`pump_quant_brain::concentration::ConcentrationReading::filter_code`]).
+    ///
+    /// Non-zero ⇒ the class's `verdict` was conditioned on that band and the
+    /// estimate is band-local. `0` ⇒ the reading was refused, the conditioner was
+    /// inert, the verdict pools bands exactly as it did before this channel
+    /// existed, and the export renders `"unknown"` — never a band.
+    pub concentration_code: u8,
     /// The conditioned verdict: an estimate, or a refusal that carries none.
     pub verdict: RecallVerdict,
 }
@@ -387,6 +406,23 @@ struct TradedClass {
     venue_phase: VenuePhase,
     meta_category_id: u32,
     discovery_lane: BrainLane,
+    /// §21.7 the parallel-stream conditioning CODE the class was entered under.
+    ///
+    /// Part of the dedup key on purpose: the same signature entered at a `broad`
+    /// float and at an `extreme` one are DIFFERENT conditioning contexts and must
+    /// not be folded into one row, or the readout would silently pool the two.
+    ///
+    /// The CODE and not the whole `ConcentrationReading`, for a reason worth
+    /// stating: two mints can refuse for different reasons (`Untracked` vs
+    /// `DeltaOnlyBasis`) while conditioning identically — both are inert. Keying on
+    /// the reading would split those into separate rows whose only difference is a
+    /// label nobody conditions on, and would let one mint's refusal reason be
+    /// displayed against another mint's class. Keying on the code cannot: every
+    /// refusal is [`pump_quant_brain::concentration::CONCENTRATION_CODE_UNKNOWN`],
+    /// so an all-refusal world dedups exactly as it did before this channel
+    /// existed. Cardinality stays bounded (§99) at
+    /// [`pump_quant_brain::concentration::CONCENTRATION_CODE_COUNT`] = 5.
+    concentration_code: u8,
 }
 
 /// The engine's episodic memory plane.
@@ -644,6 +680,7 @@ impl BrainPlane {
             venue_phase: entry.context.venue_phase,
             meta_category_id: entry.context.meta_category_id,
             discovery_lane: entry.context.discovery_lane,
+            concentration_code: entry.context.concentration.filter_code(),
         };
         if self.traded.contains(&class) {
             return;
@@ -823,7 +860,12 @@ impl BrainPlane {
         for class in &self.traded {
             let filter = RecallFilter::for_phase(class.venue_phase)
                 .with_meta_category(class.meta_category_id)
-                .with_discovery_lane(class.discovery_lane);
+                .with_discovery_lane(class.discovery_lane)
+                // §21.7 the parallel stream joins the conditioning key. Inert for a
+                // refused reading (code 0), so a class entered without a measurable
+                // float recalls byte-identically to before this channel existed;
+                // band-local when the reading exists, which is the whole point.
+                .with_concentration_code(class.concentration_code);
             let verdict =
                 self.index()
                     .recall_conditioned(&class.fingerprint, &self.params, &filter);
@@ -835,6 +877,7 @@ impl BrainPlane {
                 venue_phase_code: class.venue_phase.ordinal(),
                 meta_category_id: class.meta_category_id,
                 discovery_lane_code: class.discovery_lane.ordinal(),
+                concentration_code: class.concentration_code,
                 n_matched: stats.n_matched,
                 median_net_lamports: stats.median_net_lamports,
                 win_rate_bp: stats.win_rate_bp,
@@ -850,6 +893,10 @@ impl BrainPlane {
                 .cmp(&a.n_matched)
                 .then(b.median_net_lamports.cmp(&a.median_net_lamports))
                 .then(a.signature.cmp(&b.signature))
+                // The signature alone stopped being a unique key when the parallel
+                // stream joined the conditioning: one signature can now appear once
+                // per band. The code completes the order (§22 determinism).
+                .then(a.concentration_code.cmp(&b.concentration_code))
         });
         out.truncate(BRAIN_REPORT_CLASS_CAP);
         self.classes = out;
@@ -882,12 +929,16 @@ impl BrainPlane {
             .map(|class| {
                 let filter = RecallFilter::for_phase(class.venue_phase)
                     .with_meta_category(class.meta_category_id)
-                    .with_discovery_lane(class.discovery_lane);
+                    .with_discovery_lane(class.discovery_lane)
+                    // Same key as `refresh_reflection`, parallel stream included —
+                    // the two readouts must never condition differently.
+                    .with_concentration_code(class.concentration_code);
                 ConditionedClass {
                     signature: class.fingerprint.signature(),
                     venue_phase: class.venue_phase,
                     meta_category_id: class.meta_category_id,
                     discovery_lane: class.discovery_lane,
+                    concentration_code: class.concentration_code,
                     verdict: self.index().recall_conditioned(
                         &class.fingerprint,
                         &self.params,
@@ -903,6 +954,9 @@ impl BrainPlane {
                 .then(a.discovery_lane.ordinal().cmp(&b.discovery_lane.ordinal()))
                 .then(a.meta_category_id.cmp(&b.meta_category_id))
                 .then(a.signature.cmp(&b.signature))
+                // …then the band, which is what makes this a total order now that a
+                // signature can appear once per band (§22).
+                .then(a.concentration_code.cmp(&b.concentration_code))
         });
         out
     }
@@ -1130,6 +1184,7 @@ mod tests {
     use pump_quant_brain::fingerprint::{BurstPhase, RangeState, SetupInputs};
 
     fn entry(inputs: &SetupInputs, mint_id: u64) -> BrainEntry {
+        let (concentration, concentration_trajectory) = EpisodeContext::disarmed_concentration();
         BrainEntry {
             fingerprint: SetupFingerprint::from_inputs(inputs),
             context: EpisodeContext {
@@ -1139,6 +1194,8 @@ mod tests {
                 discovery_lane: BrainLane::NewMint,
                 info_time_ns: inputs.info_time_ns,
                 slot: 0,
+                concentration,
+                concentration_trajectory,
             },
         }
     }

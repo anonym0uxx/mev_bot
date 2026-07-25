@@ -202,11 +202,15 @@ fn main() -> ExitCode {
     }
     for c in &report.brain_setup_classes {
         println!(
-            "  setup class sig={:#034x} phase={} meta={} lane={} n={} median_net={} win_rate={} bp",
+            "  setup class sig={:#034x} phase={} meta={} lane={} conc={} n={} median_net={} \
+             win_rate={} bp",
             c.signature,
             c.venue_phase_code,
             c.meta_category_id,
             c.discovery_lane_code,
+            // §21.7 the parallel stream. `unknown` means the estimate pools every
+            // float shape; a band name means it is local to that band.
+            pump_quant_brain::concentration::concentration_code_label(c.concentration_code),
             c.n_matched,
             c.median_net_lamports,
             c.win_rate_bp

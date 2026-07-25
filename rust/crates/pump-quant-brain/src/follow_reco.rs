@@ -784,6 +784,18 @@ pub fn confidence_bp(n_calls: u32, tier: TrustTier) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Neutral parallel-stream values for the fixtures here: explicit REFUSALS,
+    /// never a fabricated band.
+    const DISARMED_LEVEL: crate::concentration::ConcentrationReading =
+        crate::concentration::ConcentrationReading::Unknown(
+            crate::concentration::ConcentrationUnknown::Disarmed,
+        );
+    /// See [`DISARMED_LEVEL`].
+    const DISARMED_TRAJECTORY: crate::concentration::ConcentrationTrajectory =
+        crate::concentration::ConcentrationTrajectory::Unknown(
+            crate::concentration::TrajectoryUnknown::Disarmed,
+        );
     use crate::episode::{DiscoveryLane, EpisodeContext, EpisodeOutcome, ExitReason};
     use crate::fingerprint::{SetupFingerprint, SetupInputs};
     use crate::social_recall::{CallMarkout, CallRecord};
@@ -818,6 +830,8 @@ mod tests {
                 discovery_lane: DiscoveryLane::SocialCall,
                 info_time_ns: t,
                 slot: id,
+                concentration: DISARMED_LEVEL,
+                concentration_trajectory: DISARMED_TRAJECTORY,
             },
             EpisodeOutcome {
                 realized_net_lamports: net,

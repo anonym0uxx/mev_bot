@@ -69,6 +69,17 @@
 //! into "the OFI bucket differs by one". A quant can read it, dispute it, and
 //! reweight it. Opaque similarity in a system that risks money is not a feature.
 //!
+//! …and it is also why a signal whose COVERAGE is thin must not become a
+//! fingerprint dimension. A fingerprint field is mandatory for every episode and
+//! none of the ladders carries an UNKNOWN rung, so a thin-coverage field would park
+//! most episodes in a fabricated neutral bucket and make "unmeasured" read as
+//! "measured-low". Holder-distribution shape is exactly such a signal — it is a
+//! LEVEL quantity and needs an `Exact` holder basis — so it rides beside the
+//! signature as a [`concentration`] parallel stream and enters recall only as an
+//! **optional conditioner** that sharpens where data exists and silently declines
+//! where it does not. Broad-coverage derivatives (holder-growth velocity and
+//! acceleration) go in the fingerprint; thin-coverage levels never do.
+//!
 //! **4. Zero third-party dependency and zero data exfiltration.** The whole
 //! workspace has no external crates and this one keeps it that way: `std` only. No
 //! model file, no vector database, no API key, no third party learning which mints
@@ -121,6 +132,7 @@
 #![forbid(unsafe_code)]
 
 pub mod archetype;
+pub mod concentration;
 pub mod episode;
 pub mod fingerprint;
 pub mod follow_reco;

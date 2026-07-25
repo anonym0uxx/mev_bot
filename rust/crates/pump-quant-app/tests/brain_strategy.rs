@@ -503,6 +503,10 @@ fn lane_decay_flags_the_runner_carried_lane_and_fails_closed() {
         venue_phase: VenuePhase::Curve,
         meta_category_id: 0,
         discovery_lane: lane,
+        // §21.7 the refusal code: lane decay is a LANE statistic and must not
+        // change shape with the parallel stream. Set explicitly rather than
+        // defaulted so the assertion below is about the lane, not the band.
+        concentration_code: pump_quant_brain::concentration::CONCENTRATION_CODE_UNKNOWN,
         verdict: v,
     };
 
@@ -644,6 +648,7 @@ fn shadow_proposals_derive_from_the_winners_distribution() {
         venue_phase: VenuePhase::Curve,
         ..SetupInputs::default()
     };
+    let conc = EpisodeContext::disarmed_concentration();
     let entry = BrainEntry {
         fingerprint: SetupFingerprint::from_inputs(&inputs),
         context: EpisodeContext {
@@ -653,6 +658,8 @@ fn shadow_proposals_derive_from_the_winners_distribution() {
             discovery_lane: DiscoveryLane::NewMint,
             info_time_ns: 0,
             slot: 0,
+            concentration: conc.0,
+            concentration_trajectory: conc.1,
         },
     };
     let mut plane = BrainPlane::new(8, 8);
@@ -926,4 +933,141 @@ fn split_objects(s: &str) -> Vec<String> {
         }
     }
     out
+}
+
+// ===========================================================================
+// §21.7 — the concentration PARALLEL STREAM in the strategy export.
+//
+// The band is not a fingerprint field and never becomes one. It reaches the
+// artifact by a different road: it rides on `EpisodeContext`, joins the recall
+// FILTER key, and is published beside each class so a consumer can tell a
+// band-local estimate from a pooled one. These three tests pin the artifact end
+// of that road — the vocabulary, the refusal discipline, and the nomination key.
+// ===========================================================================
+
+/// **The closed vocabulary, and the refusal.** Every exported class carries a
+/// `concentration_band` drawn from the brain's label table, and on a tape with no
+/// creation sightings — no `Exact` holder basis anywhere, which is the ordinary
+/// case — every one of them is `"unknown"`. Not `"broad"`, which is what a
+/// fingerprint field would have been forced to say.
+#[test]
+fn the_export_labels_every_class_with_its_concentration_band() {
+    const VOCAB: [&str; 5] = ["unknown", "broad", "moderate", "concentrated", "extreme"];
+
+    let mut e = drive(Config::dev_portable(), true);
+    let _ = e.report();
+    let a = e.brain_analysis();
+    assert!(
+        !a.setup_classes.is_empty(),
+        "this tape must produce classes, or the assertions below are vacuous"
+    );
+    for c in &a.setup_classes {
+        assert!(
+            VOCAB.contains(&c.concentration_band),
+            "band token {:?} is outside the closed vocabulary",
+            c.concentration_band
+        );
+        assert_eq!(
+            c.concentration_band, "unknown",
+            "no mint on this tape reaches an Exact holder basis, so every class \
+             must REFUSE a band rather than be assigned one"
+        );
+    }
+
+    let j = a.to_canonical_json();
+    assert!(j.contains("\"concentration_band\":\"unknown\""));
+    for band in ["broad", "moderate", "concentrated", "extreme"] {
+        assert!(
+            !j.contains(&format!("\"concentration_band\":\"{band}\"")),
+            "the artifact invented the band {band} on a tape that measured none"
+        );
+    }
+}
+
+/// **The renderer can emit a band, and cannot invent one.** Built directly from
+/// rows rather than from the engine, because the point under test is the render
+/// contract: a `Known` band prints its name, a refusal prints `"unknown"`, and the
+/// two are distinguishable in the artifact.
+#[test]
+fn a_class_row_renders_a_known_band_and_a_refusal_as_unknown() {
+    use pump_quant_app::brain_analysis::{BrainAnalysis, ClassRow};
+    use pump_quant_brain::concentration::{
+        concentration_code_label, ConcentrationReading, ConcentrationShape,
+    };
+
+    let row = |sig: u128, band: &'static str| ClassRow {
+        signature: sig,
+        venue_phase: "curve",
+        meta_category: 7,
+        discovery_lane: "new_mint",
+        concentration_band: band,
+        stats: None,
+        unknown_reason: Some("empty_index"),
+    };
+
+    // The label comes off a real reading, not off a string literal, so this also
+    // pins the app's rendering to the brain's table.
+    let extreme = ConcentrationReading::Known(ConcentrationShape::from_bands(3, 0, 0));
+    assert_eq!(extreme.band_label(), "extreme");
+    assert_eq!(concentration_code_label(extreme.filter_code()), "extreme");
+
+    let a = BrainAnalysis {
+        info_time_ns: 1,
+        tick: 1,
+        episodes_total: 0,
+        episodes_admitted: 0,
+        setup_classes: vec![row(1, extreme.band_label()), row(2, "unknown")],
+        lens_scoreboard: Vec::new(),
+        best_paying_lens: None,
+        meta_state: Vec::new(),
+        past_meta_matches: Vec::new(),
+        caller_trust: Vec::new(),
+        follow_recommendations: Vec::new(),
+        unfollow_candidates: Vec::new(),
+        support_inputs_needed: Vec::new(),
+        retirement_flags: Vec::new(),
+    };
+    let j = a.to_canonical_json();
+    assert!(j.contains("\"concentration_band\":\"extreme\""));
+    assert!(j.contains("\"concentration_band\":\"unknown\""));
+    // …and the field is never `null`: it is a LABEL, and the refusal token is a
+    // label too, so a consumer branches on one type rather than two.
+    assert!(!j.contains("\"concentration_band\":null"));
+}
+
+/// **The nomination key names the band its evidence came from.** Two classes can
+/// share a signature and differ only in the float shape they were entered under;
+/// handing governance one key for both would let a §56 reviewer retire the wrong
+/// scope. The suffix is unconditional, `unknown` included, so the key has one shape.
+#[test]
+fn retirement_flag_keys_carry_the_band_the_evidence_came_from() {
+    const VOCAB: [&str; 5] = ["unknown", "broad", "moderate", "concentrated", "extreme"];
+
+    let mut e = drive(Config::dev_portable(), true);
+    let _ = e.report();
+    let flags = e.brain_analysis().retirement_flags;
+    let mut seen_setup_class = false;
+    for f in &flags {
+        if f.subject != FlagSubject::SetupClass {
+            continue;
+        }
+        seen_setup_class = true;
+        let (sig, band) = f
+            .key
+            .split_once('@')
+            .unwrap_or_else(|| panic!("setup-class key {} carries no band", f.key));
+        assert!(
+            sig.parse::<u128>().is_ok(),
+            "the key must still lead with the signature: {}",
+            f.key
+        );
+        assert!(VOCAB.contains(&band), "band token {band} is not vocabulary");
+        // The nomination itself is unchanged — the key is metadata for the
+        // reviewer, and a nomination still cannot become a retirement.
+        assert_eq!(f.as_nomination().n, f.n);
+    }
+    assert!(
+        seen_setup_class,
+        "this tape must nominate at least one setup class"
+    );
 }

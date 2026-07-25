@@ -97,6 +97,10 @@
 //! meta category and discovery lane are the optional pins on top of that mandatory
 //! one.
 
+use crate::concentration::{
+    clamp_band, ConcentrationReading, BAND_COUNT, CONCENTRATION_CODE_COUNT,
+    CONCENTRATION_CODE_UNKNOWN,
+};
 use crate::episode::{DiscoveryLane, Episode};
 use crate::fingerprint::{
     signature_hamming, weighted_distance, FeatureWeights, SetupFingerprint, VenuePhase,
@@ -186,6 +190,23 @@ pub const FK_LANE_MASK: u64 = 0xFF;
 pub const FK_META_SHIFT: u32 = 32;
 /// Mask (pre-shift) of the exact meta-category id inside the packed filter key.
 pub const FK_META_MASK: u64 = 0xFFFF_FFFF;
+/// Bit offset of the [`crate::concentration`] parallel-stream code inside the
+/// packed filter key (schema 2). Sits in the previously-unused `16..32` window, so
+/// no existing field moved.
+pub const FK_CONCENTRATION_SHIFT: u32 = 16;
+/// Mask (pre-shift) of the concentration code. Four bits hold
+/// [`crate::concentration::CONCENTRATION_CODE_COUNT`] `= 5` codes with room to
+/// spare.
+pub const FK_CONCENTRATION_MASK: u64 = 0xF;
+
+/// Compile-time proof that the concentration code fits its window and that the
+/// window does not overlap the meta or lane fields (§102).
+const _: () = assert!(
+    (CONCENTRATION_CODE_COUNT as u64) <= FK_CONCENTRATION_MASK + 1
+        && FK_CONCENTRATION_SHIFT >= FK_LANE_SHIFT + 8
+        && FK_CONCENTRATION_SHIFT + 4 <= FK_META_SHIFT,
+    "the concentration filter-key window must fit and must not overlap another field"
+);
 
 /// Pack an episode's filterable context into one contiguous `u64`.
 ///
@@ -200,17 +221,23 @@ pub fn pack_filter_key(e: &Episode) -> u64 {
     (u64::from(ctx.venue_phase.ordinal()) << FK_VENUE_SHIFT)
         | (u64::from(e.outcome().was_admitted) << FK_ADMITTED_SHIFT)
         | (u64::from(ctx.discovery_lane.ordinal()) << FK_LANE_SHIFT)
+        | (u64::from(ctx.concentration.filter_code()) << FK_CONCENTRATION_SHIFT)
         | (u64::from(ctx.meta_category_id) << FK_META_SHIFT)
 }
 
 /// Which episodes a recall is allowed to see.
 ///
 /// The venue phase is **mandatory** — see the module docs on constitution 100.
+/// Meta category, discovery lane and the [`crate::concentration`] band are optional
+/// pins layered on top of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecallFilter {
     venue_phase: VenuePhase,
     meta_category_id: Option<u32>,
     discovery_lane: Option<DiscoveryLane>,
+    /// The query's concentration filter code, pinned **only** when the query
+    /// carried a `Known` reading. `None` means the conditioner is inert.
+    concentration_code: Option<u8>,
 }
 
 impl RecallFilter {
@@ -221,6 +248,7 @@ impl RecallFilter {
             venue_phase: query.venue_phase(),
             meta_category_id: None,
             discovery_lane: None,
+            concentration_code: None,
         }
     }
 
@@ -231,6 +259,7 @@ impl RecallFilter {
             venue_phase,
             meta_category_id: None,
             discovery_lane: None,
+            concentration_code: None,
         }
     }
 
@@ -266,12 +295,108 @@ impl RecallFilter {
         self.discovery_lane
     }
 
+    /// **The optional concentration conditioner** — the correct way to consume a
+    /// thin-coverage signal (schema 2).
+    ///
+    /// Pins the query's holder-concentration band, but *only* if the query carried
+    /// a `Known` reading. The resulting pin matches an episode when **both** sides
+    /// are `Known` and agree on the band, and on nothing else. Concretely:
+    ///
+    /// | query | candidate | conditioner |
+    /// |---|---|---|
+    /// | `Unknown` | anything | **inert** — the pin is never set |
+    /// | `Known(b)` | `Unknown` | **excluded** |
+    /// | `Known(b)` | `Known(b)` | passes |
+    /// | `Known(b)` | `Known(c != b)` | excluded |
+    ///
+    /// ## Why an unmeasured candidate is EXCLUDED and not waved through
+    ///
+    /// An earlier revision of this conditioner carried an escape code that let an
+    /// `Unknown` candidate pass an armed pin, on the reasoning that a thin-coverage
+    /// conditioner should not destroy recall. That is wrong, and it is wrong in
+    /// this codebase's own terms.
+    ///
+    /// A conditioned estimate is *published with its band* — `ClassRow`'s
+    /// `concentration_band`, the reflection readout's `concentration_code`. If the
+    /// sample behind an estimate labelled `extreme` also contains episodes whose
+    /// band was never measured, then the label is a claim the sample does not
+    /// support, and a consumer reading it cannot tell a band-local distribution
+    /// from a pooled one. That is precisely the §6.4 failure the whole parallel
+    /// stream exists to avoid — it merely moves it from the fingerprint (where a
+    /// refusal would collapse onto a neutral rung) into the estimate (where a
+    /// refusal collapses into the pool). `refresh_reflection` already states the
+    /// governing rule: *a refusal is free and a pooled estimate is a lie*.
+    ///
+    /// The escape hatch also bought less than it appeared to. It cannot raise the
+    /// count of *band-labelled* evidence, only dilute it; when the corpus is mostly
+    /// `Unknown` — which is the world, see the measured coverage — an "armed"
+    /// recall under the escape hatch returned essentially the unconditioned pool
+    /// wearing a band label. Excluding instead means such a query **refuses**,
+    /// which is the correct and honest output.
+    ///
+    /// So the pin is now an ordinary mask pin, structurally identical to the meta
+    /// and lane pins, and costs the hot loop nothing at all: it folds into the same
+    /// `and`/`cmp` (see [`Self::key_mask_and_expect`]).
+    ///
+    /// Passing an `Unknown` reading is explicitly a no-op rather than an error:
+    /// "condition on this if you can" is the caller's actual intent, and forcing
+    /// the caller to branch would just move the same decision somewhere less
+    /// visible. Note the asymmetry that survives, and must: a caller can decline to
+    /// condition, but **cannot pin the filter ON `Unknown`** — there is no
+    /// constructor that sets the code to [`CONCENTRATION_CODE_UNKNOWN`], so
+    /// "show me the episodes whose band nobody measured" is unaskable, and
+    /// `Unknown` can never act as a band.
+    #[must_use]
+    pub const fn with_concentration(mut self, reading: &ConcentrationReading) -> Self {
+        self.concentration_code = match reading {
+            ConcentrationReading::Known(_) => Some(reading.filter_code()),
+            ConcentrationReading::Unknown(_) => None,
+        };
+        self
+    }
+
+    /// Pin the conditioner directly to a band ordinal in `0..BAND_COUNT`.
+    ///
+    /// The band-ordinal front door for callers that carry a band rather than a
+    /// whole reading (the strategy export re-conditions from a stored code). The
+    /// ordinal is clamped by [`crate::concentration::clamp_band`] and then offset
+    /// by one, so **no input to this function can produce
+    /// [`CONCENTRATION_CODE_UNKNOWN`]** — an out-of-range band saturates into the
+    /// top band, it never silently becomes "unmeasured" (§22/§6.4).
+    #[must_use]
+    pub const fn with_concentration_band(mut self, band: u8) -> Self {
+        self.concentration_code = Some(1 + clamp_band(band));
+        self
+    }
+
+    /// Pin the conditioner from a packed filter code, as stored on an episode.
+    ///
+    /// [`CONCENTRATION_CODE_UNKNOWN`] and any out-of-range code leave the
+    /// conditioner **inert** — a stored refusal must not be re-read as a band, and
+    /// a corrupt code must not become one either.
+    #[must_use]
+    pub const fn with_concentration_code(mut self, code: u8) -> Self {
+        self.concentration_code = if code == CONCENTRATION_CODE_UNKNOWN || code > BAND_COUNT {
+            None
+        } else {
+            Some(code)
+        };
+        self
+    }
+
+    /// The pinned concentration filter code, or `None` when the conditioner is
+    /// inert. A code is never a share and cannot be read as one.
+    #[must_use]
+    pub const fn concentration_code(&self) -> Option<u8> {
+        self.concentration_code
+    }
+
     /// Compile this filter into a single `(mask, expect)` pair.
     ///
     /// Every enabled pin contributes its bits to `mask` and its value to `expect`,
-    /// so the whole filter — phase, admitted-only, meta, lane — collapses to one
-    /// `and` and one `cmp` in the hot loop. Building it is done once per recall,
-    /// outside the scan.
+    /// so the whole filter — phase, admitted-only, meta, lane, concentration —
+    /// collapses to one `and` and one `cmp` in the hot loop. Building it is done
+    /// once per recall, outside the scan.
     #[must_use]
     pub fn key_mask_and_expect(&self, require_admitted: bool) -> (u64, u64) {
         let mut mask = FK_VENUE_MASK << FK_VENUE_SHIFT;
@@ -288,10 +413,18 @@ impl RecallFilter {
             mask |= FK_LANE_MASK << FK_LANE_SHIFT;
             expect |= u64::from(lane.ordinal()) << FK_LANE_SHIFT;
         }
+        // The §21.7 parallel-stream pin. Absent ⇒ contributes no bits, so an
+        // unconditioned recall is bit-identical to one taken before this channel
+        // existed. Present ⇒ an exact-match pin like every other one here, which
+        // is what excludes both the disagreeing bands AND the unmeasured episodes.
+        if let Some(code) = self.concentration_code {
+            mask |= FK_CONCENTRATION_MASK << FK_CONCENTRATION_SHIFT;
+            expect |= u64::from(code) << FK_CONCENTRATION_SHIFT;
+        }
         (mask, expect)
     }
 
-    /// Integer-only test of a packed filter key — one `and` and one `cmp`.
+    /// Integer-only test of a packed filter key against the compiled pins.
     #[must_use]
     pub fn accepts_key(&self, key: u64, require_admitted: bool) -> bool {
         let (mask, expect) = self.key_mask_and_expect(require_admitted);
@@ -665,6 +798,10 @@ impl EpisodicIndex {
         // from the ring geometry rather than read out of the `Episode` record. So
         // this loop touches only the two hot arrays: no `Episode` load, no pointer
         // chasing, one `xor`, one `count_ones`, one `and`, one `cmp` per slot.
+        // The §21.7 concentration conditioner is folded into this same pair: it is
+        // an ordinary exact-match pin, so an armed conditioner costs the loop
+        // literally nothing over an unarmed one, and an unarmed one contributes no
+        // bits at all.
         let (mask, expect) = filter.key_mask_and_expect(params.require_admitted);
         let mut in_scope = 0u64;
         let mut nearest_in_scope = u32::MAX;
@@ -885,6 +1022,18 @@ pub fn order_stat_u64(sorted: &[u64], pct: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Neutral parallel-stream values for the fixtures here: explicit REFUSALS,
+    /// never a fabricated band.
+    const DISARMED_LEVEL: crate::concentration::ConcentrationReading =
+        crate::concentration::ConcentrationReading::Unknown(
+            crate::concentration::ConcentrationUnknown::Disarmed,
+        );
+    /// See [`DISARMED_LEVEL`].
+    const DISARMED_TRAJECTORY: crate::concentration::ConcentrationTrajectory =
+        crate::concentration::ConcentrationTrajectory::Unknown(
+            crate::concentration::TrajectoryUnknown::Disarmed,
+        );
     use crate::episode::{DiscoveryLane, Episode, EpisodeContext, EpisodeOutcome, ExitReason};
     use crate::fingerprint::{SetupInputs, TrendStructure};
 
@@ -910,6 +1059,32 @@ mod tests {
         meta: u32,
         lane: DiscoveryLane,
     ) -> Episode {
+        ep_conc(
+            id,
+            f,
+            net,
+            hold,
+            admitted,
+            phase,
+            meta,
+            lane,
+            DISARMED_LEVEL,
+        )
+    }
+
+    /// [`ep`] carrying an explicit parallel-stream concentration reading.
+    #[allow(clippy::too_many_arguments)]
+    fn ep_conc(
+        id: u64,
+        f: SetupFingerprint,
+        net: i128,
+        hold: u64,
+        admitted: bool,
+        phase: VenuePhase,
+        meta: u32,
+        lane: DiscoveryLane,
+        concentration: crate::concentration::ConcentrationReading,
+    ) -> Episode {
         Episode::new(
             id,
             f,
@@ -920,6 +1095,8 @@ mod tests {
                 discovery_lane: lane,
                 info_time_ns: id * 1_000,
                 slot: id,
+                concentration,
+                concentration_trajectory: DISARMED_TRAJECTORY,
             },
             EpisodeOutcome {
                 realized_net_lamports: net,
@@ -1802,6 +1979,8 @@ mod tests {
                 discovery_lane: DiscoveryLane::NewMint,
                 info_time_ns: 0,
                 slot: 0,
+                concentration: DISARMED_LEVEL,
+                concentration_trajectory: DISARMED_TRAJECTORY,
             },
             EpisodeOutcome::rejected(),
         );
@@ -1831,5 +2010,287 @@ mod tests {
         }
         assert!(idx.get_by_episode_id(1).is_none(), "evicted");
         assert!(idx.get_by_episode_id(6).is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // The OPTIONAL concentration conditioner (schema 2 parallel stream)
+    // -----------------------------------------------------------------------
+
+    fn known_level(top10_band: u8) -> crate::concentration::ConcentrationReading {
+        crate::concentration::ConcentrationReading::Known(
+            crate::concentration::ConcentrationShape::from_bands(top10_band, 0, 0),
+        )
+    }
+
+    /// Build an index of `n` identical setups whose only difference is the
+    /// parallel-stream concentration band, assigned by `band_of_i`.
+    fn conc_index(n: u64, band_of_i: impl Fn(u64) -> Option<u8>) -> EpisodicIndex {
+        let mut idx = EpisodicIndex::with_capacity(256);
+        for i in 1..=n {
+            let level = match band_of_i(i) {
+                Some(b) => known_level(b),
+                None => DISARMED_LEVEL,
+            };
+            idx.push(ep_conc(
+                i,
+                fp(600, 10, VenuePhase::Curve),
+                (i as i128) * 1_000,
+                1_000,
+                true,
+                VenuePhase::Curve,
+                1,
+                DiscoveryLane::NewMint,
+                level,
+            ))
+            .expect("monotone");
+        }
+        idx
+    }
+
+    /// An `Unknown` QUERY leaves the conditioner completely inert: the estimate is
+    /// byte-identical to the unconditioned one. A thin-coverage signal must cost
+    /// nothing when it is absent.
+    #[test]
+    fn an_unknown_query_makes_the_conditioner_a_no_op() {
+        let idx = conc_index(20, |i| Some((i % 4) as u8));
+        let q = fp(600, 10, VenuePhase::Curve);
+        let params = RecallParams::default();
+        let plain = idx.recall(&q, &params);
+        let conditioned = idx.recall_conditioned(
+            &q,
+            &params,
+            &RecallFilter::for_query(&q).with_concentration(&DISARMED_LEVEL),
+        );
+        assert_eq!(plain, conditioned, "an Unknown query must not filter");
+        assert!(plain.is_known());
+    }
+
+    /// An `Unknown` CANDIDATE is EXCLUDED by an armed conditioner, and a corpus of
+    /// nothing but unmeasured episodes therefore **refuses** rather than returning
+    /// the pooled estimate under a band label.
+    ///
+    /// This is the load-bearing half of the design: `Unknown` is a band episodes
+    /// carry and the filter never matches on. A pooled estimate wearing a band it
+    /// cannot support is worse than no estimate (§46/§6.4).
+    #[test]
+    fn unknown_candidates_are_excluded_by_an_armed_conditioner() {
+        // Every episode is Unknown; the query is Known.
+        let idx = conc_index(20, |_| None);
+        let q = fp(600, 10, VenuePhase::Curve);
+        let params = RecallParams::default();
+        let filter = RecallFilter::for_query(&q).with_concentration(&known_level(2));
+        let conditioned = idx.recall_conditioned(&q, &params, &filter);
+        assert!(
+            idx.recall(&q, &params).is_known(),
+            "the unconditioned pool must be answerable, or this proves nothing"
+        );
+        assert!(
+            !conditioned.is_known(),
+            "a band-pinned query over an all-unmeasured corpus must refuse"
+        );
+        assert_eq!(
+            conditioned,
+            RecallVerdict::Unknown(RecallUnknown::NoEpisodeInScope),
+            "and the refusal must name the reason, carrying no estimate"
+        );
+    }
+
+    /// The filter cannot be pinned ON `Unknown` through ANY public constructor:
+    /// not from a refused reading, not from a band ordinal (however corrupt), not
+    /// from a stored code. "Show me the episodes nobody measured" is unaskable.
+    #[test]
+    fn the_unknown_band_is_unpinnable_through_every_door() {
+        let q = fp(600, 10, VenuePhase::Curve);
+        let base = RecallFilter::for_query(&q);
+
+        // Door 1: a refused reading → inert, never code 0 as a pin.
+        assert_eq!(
+            base.with_concentration(&DISARMED_LEVEL)
+                .concentration_code(),
+            None
+        );
+
+        // Door 2: a band ordinal, including out-of-range ones, always lands on a
+        // real band code in `1..=BAND_COUNT`.
+        for band in 0u8..=255 {
+            let code = base
+                .with_concentration_band(band)
+                .concentration_code()
+                .expect("a band pin is always armed");
+            assert!(
+                (1..=BAND_COUNT).contains(&code),
+                "band {band} produced code {code}"
+            );
+            assert_ne!(code, CONCENTRATION_CODE_UNKNOWN);
+        }
+
+        // Door 3: a stored code. `Unknown` and every corrupt code go inert rather
+        // than becoming a band.
+        assert_eq!(
+            base.with_concentration_code(CONCENTRATION_CODE_UNKNOWN)
+                .concentration_code(),
+            None
+        );
+        for code in (BAND_COUNT + 1)..=255 {
+            assert_eq!(
+                base.with_concentration_code(code).concentration_code(),
+                None
+            );
+        }
+        for code in 1..=BAND_COUNT {
+            assert_eq!(
+                base.with_concentration_code(code).concentration_code(),
+                Some(code)
+            );
+        }
+    }
+
+    /// When BOTH sides carry a reading and they disagree, the candidate is
+    /// filtered. That is the entire value the conditioner adds.
+    #[test]
+    fn disagreeing_known_bands_are_filtered_out() {
+        // Ten episodes in band 0, ten in band 3, nothing Unknown.
+        let idx = conc_index(20, |i| Some(if i <= 10 { 0 } else { 3 }));
+        let q = fp(600, 10, VenuePhase::Curve);
+        let params = RecallParams::default();
+        let plain = idx.recall(&q, &params).stats().map(|s| s.n_matched);
+        assert_eq!(plain, Some(20));
+
+        for band in [0u8, 3] {
+            let filter = RecallFilter::for_query(&q).with_concentration(&known_level(band));
+            let v = idx.recall_conditioned(&q, &params, &filter);
+            assert_eq!(
+                v.stats().map(|s| s.n_matched),
+                Some(10),
+                "band {band} must see only its own half"
+            );
+        }
+        // A band nobody is in refuses rather than silently returning the pooled
+        // estimate (§46: the sample floor is the guard, not a fallback).
+        let filter = RecallFilter::for_query(&q).with_concentration(&known_level(1));
+        assert!(!idx.recall_conditioned(&q, &params, &filter).is_known());
+    }
+
+    /// The conditioner partitions cleanly: an armed query sees **exactly** its own
+    /// band — not the other bands, and not the unmeasured episodes.
+    #[test]
+    fn the_conditioner_partition_is_exactly_the_band() {
+        // 8 in band 0, 8 in band 2, 8 Unknown.
+        let idx = conc_index(24, |i| {
+            if i <= 8 {
+                Some(0)
+            } else if i <= 16 {
+                Some(2)
+            } else {
+                None
+            }
+        });
+        let q = fp(600, 10, VenuePhase::Curve);
+        let params = RecallParams {
+            min_sample: 4,
+            ..RecallParams::default()
+        };
+        assert_eq!(
+            idx.recall(&q, &params).stats().map(|s| s.n_matched),
+            Some(24),
+            "unconditioned, all 24 are in scope"
+        );
+        for band in [0u8, 2] {
+            let filter = RecallFilter::for_query(&q).with_concentration(&known_level(band));
+            assert_eq!(
+                idx.recall_conditioned(&q, &params, &filter)
+                    .stats()
+                    .map(|s| s.n_matched),
+                Some(8),
+                "band {band} must see its own 8 and nothing else — not the other \
+                 band's 8, not the 8 unmeasured"
+            );
+            // The band-ordinal door must compile to the identical partition.
+            let by_band = RecallFilter::for_query(&q).with_concentration_band(band);
+            assert_eq!(
+                idx.recall_conditioned(&q, &params, &by_band),
+                idx.recall_conditioned(&q, &params, &filter),
+            );
+        }
+    }
+
+    /// `accepts_key` and the stage-1 hot loop must agree, or the fast path is
+    /// silently a different filter from the documented one.
+    #[test]
+    fn accepts_key_agrees_with_the_hot_loop_gate() {
+        let q = fp(600, 10, VenuePhase::Curve);
+        for band in [0u8, 1, 2, 3] {
+            let filter = RecallFilter::for_query(&q).with_concentration(&known_level(band));
+            for cand in [None, Some(0u8), Some(1), Some(2), Some(3)] {
+                let level = match cand {
+                    Some(b) => known_level(b),
+                    None => DISARMED_LEVEL,
+                };
+                let e = ep_conc(
+                    1,
+                    q,
+                    0,
+                    0,
+                    true,
+                    VenuePhase::Curve,
+                    1,
+                    DiscoveryLane::NewMint,
+                    level,
+                );
+                let key = pack_filter_key(&e);
+                // EXACT agreement only: an unmeasured candidate (`None`) is
+                // excluded, exactly like a disagreeing band.
+                let expected = cand == Some(band);
+                assert_eq!(
+                    filter.accepts_key(key, true),
+                    expected,
+                    "band {band} vs candidate {cand:?}"
+                );
+            }
+        }
+    }
+
+    /// The concentration code occupies its own window: packing it must not
+    /// disturb venue, admitted, lane or meta.
+    #[test]
+    fn the_concentration_code_does_not_collide_with_another_filter_field() {
+        let q = fp(600, 10, VenuePhase::Curve);
+        let base = ep_conc(
+            1,
+            q,
+            0,
+            0,
+            true,
+            VenuePhase::Pool,
+            0xDEAD_BEEF,
+            DiscoveryLane::WhaleFollow,
+            DISARMED_LEVEL,
+        );
+        let with_band = ep_conc(
+            1,
+            q,
+            0,
+            0,
+            true,
+            VenuePhase::Pool,
+            0xDEAD_BEEF,
+            DiscoveryLane::WhaleFollow,
+            known_level(3),
+        );
+        let ka = pack_filter_key(&base);
+        let kb = pack_filter_key(&with_band);
+        let other = !(FK_CONCENTRATION_MASK << FK_CONCENTRATION_SHIFT);
+        assert_eq!(
+            ka & other,
+            kb & other,
+            "only the concentration window moved"
+        );
+        assert_ne!(ka, kb);
+        // Every mandatory pin still reads the same on both.
+        let f = RecallFilter::for_phase(VenuePhase::Pool)
+            .with_meta_category(0xDEAD_BEEF)
+            .with_discovery_lane(DiscoveryLane::WhaleFollow);
+        assert!(f.accepts_key(ka, true));
+        assert!(f.accepts_key(kb, true));
     }
 }

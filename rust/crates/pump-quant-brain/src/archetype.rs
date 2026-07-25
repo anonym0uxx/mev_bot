@@ -77,9 +77,10 @@ use crate::episode::DiscoveryLane;
 use crate::fingerprint::{
     unweighted_distance, weighted_distance, FeatureWeights, SetupFingerprint, VenuePhase,
     FIELD_COUNT, F_ATTENTION_VELOCITY, F_AUTHENTICITY, F_BURST_PHASE, F_BUYER_BREADTH,
-    F_CREATOR_CLASS, F_CVD_DECADE, F_DESIGNATED_CALLER, F_HOLDER_GROWTH_ACCEL, F_LIQUIDITY_DECADE,
-    F_META_CATEGORY, F_META_SATURATION, F_NARRATIVE_CLASS, F_OFI, F_RANGE_STATE, F_REALIZED_VOL,
-    F_ROUND_TRIP_COST, F_TIME_OF_DAY, F_TOKEN_AGE, F_TREND_STRUCTURE, F_VENUE_PHASE,
+    F_CREATOR_CLASS, F_CVD_DECADE, F_DESIGNATED_CALLER, F_HOLDER_GROWTH_ACCEL,
+    F_HOLDER_GROWTH_VELOCITY, F_LIQUIDITY_DECADE, F_META_CATEGORY, F_META_SATURATION,
+    F_NARRATIVE_CLASS, F_OFI, F_RANGE_STATE, F_REALIZED_VOL, F_ROUND_TRIP_COST, F_TIME_OF_DAY,
+    F_TOKEN_AGE, F_TREND_STRUCTURE, F_VENUE_PHASE,
 };
 use crate::recall::{
     order_stat_i128, order_stat_u64, EpisodicIndex, RecallFilter, RecallParams, RecallStats,
@@ -334,6 +335,7 @@ impl StyleLens {
                 w[F_NARRATIVE_CLASS] = 6;
                 w[F_AUTHENTICITY] = 5;
                 w[F_HOLDER_GROWTH_ACCEL] = 7;
+                w[F_HOLDER_GROWTH_VELOCITY] = 7;
                 w[F_CREATOR_CLASS] = 2;
                 w[F_META_CATEGORY] = 9;
                 w[F_META_SATURATION] = 9;
@@ -356,6 +358,7 @@ impl StyleLens {
                 w[F_NARRATIVE_CLASS] = 1;
                 w[F_AUTHENTICITY] = 1;
                 w[F_HOLDER_GROWTH_ACCEL] = 2;
+                w[F_HOLDER_GROWTH_VELOCITY] = 2;
                 w[F_CREATOR_CLASS] = 1;
                 w[F_META_CATEGORY] = 2;
                 w[F_META_SATURATION] = 2;
@@ -378,6 +381,7 @@ impl StyleLens {
                 w[F_NARRATIVE_CLASS] = 5;
                 w[F_AUTHENTICITY] = 2;
                 w[F_HOLDER_GROWTH_ACCEL] = 2;
+                w[F_HOLDER_GROWTH_VELOCITY] = 2;
                 w[F_CREATOR_CLASS] = 9;
                 w[F_META_CATEGORY] = 5;
                 w[F_META_SATURATION] = 4;
@@ -400,6 +404,7 @@ impl StyleLens {
                 w[F_NARRATIVE_CLASS] = 5;
                 w[F_AUTHENTICITY] = 9;
                 w[F_HOLDER_GROWTH_ACCEL] = 7;
+                w[F_HOLDER_GROWTH_VELOCITY] = 7;
                 w[F_CREATOR_CLASS] = 5;
                 w[F_META_CATEGORY] = 6;
                 w[F_META_SATURATION] = 7;
@@ -748,6 +753,18 @@ pub fn best_paying_lens(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Neutral parallel-stream values for the fixtures here: explicit REFUSALS,
+    /// never a fabricated band.
+    const DISARMED_LEVEL: crate::concentration::ConcentrationReading =
+        crate::concentration::ConcentrationReading::Unknown(
+            crate::concentration::ConcentrationUnknown::Disarmed,
+        );
+    /// See [`DISARMED_LEVEL`].
+    const DISARMED_TRAJECTORY: crate::concentration::ConcentrationTrajectory =
+        crate::concentration::ConcentrationTrajectory::Unknown(
+            crate::concentration::TrajectoryUnknown::Disarmed,
+        );
     use crate::episode::{Episode, EpisodeContext, EpisodeOutcome, ExitReason};
     use crate::fingerprint::{
         BurstPhase, CreatorClass, MetaSaturationState, NarrativeClass, RangeState, SetupInputs,
@@ -832,6 +849,8 @@ mod tests {
                 discovery_lane: DiscoveryLane::NewMint,
                 info_time_ns: id * 1_000_000,
                 slot: id,
+                concentration: DISARMED_LEVEL,
+                concentration_trajectory: DISARMED_TRAJECTORY,
             },
             EpisodeOutcome {
                 realized_net_lamports: net,
@@ -1224,6 +1243,8 @@ mod tests {
                     discovery_lane: DiscoveryLane::NewMint,
                     info_time_ns: i,
                     slot: i,
+                    concentration: DISARMED_LEVEL,
+                    concentration_trajectory: DISARMED_TRAJECTORY,
                 },
                 EpisodeOutcome::rejected(),
             );

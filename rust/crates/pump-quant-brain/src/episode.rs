@@ -23,12 +23,25 @@
 //! flattering, meaningless "low variance". Rejected episodes remain in the index
 //! because *how often this setup appears* is a separate, real question.
 
+use crate::concentration::{ConcentrationReading, ConcentrationTrajectory};
 use crate::fingerprint::{SetupFingerprint, VenuePhase};
 
 /// Wire/schema version of the episode record (constitution 56 versioned memory).
 /// Bumped whenever the field set or its encoding changes; [`crate::persist`]
 /// refuses to load a record whose version it does not understand.
-pub const EPISODE_SCHEMA_VERSION: u16 = 1;
+///
+/// * **1** — the original 20-field fingerprint.
+/// * **2** — adds the holder-growth VELOCITY fingerprint field
+///   ([`crate::fingerprint::F_HOLDER_GROWTH_VELOCITY`], which changes both the
+///   bucket-vector width and [`crate::fingerprint::SIGNATURE_BITS`]) and the
+///   [`crate::concentration`] parallel stream on [`EpisodeContext`].
+///
+/// A schema bump **invalidates the persisted corpus**, and that is the intended
+/// behaviour, not a regrettable side effect: a schema-1 bucket vector reinterpreted
+/// under schema 2 would silently shift every field's meaning. Old records are
+/// REFUSED — by [`crate::recall::EpisodicIndex::push`] on the way in, and by
+/// [`crate::persist::decode_episode`] on the way off disk — never reinterpreted.
+pub const EPISODE_SCHEMA_VERSION: u16 = 2;
 
 /// Which discovery lane surfaced this token (constitution 29.9). Nominal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -147,6 +160,43 @@ pub struct EpisodeContext {
     pub info_time_ns: u64,
     /// Solana slot at decision time — the replay anchor.
     pub slot: u64,
+    /// **PARALLEL STREAM (schema 2).** The holder-distribution LEVEL the episode
+    /// was entered under, banded — or the explicit reason none was available.
+    ///
+    /// Deliberately *not* a fingerprint field. See [`crate::concentration`] for the
+    /// full argument; the short version is that a concentration share needs an
+    /// `Exact` holder basis, `Exact` is rare, and the fingerprint has no UNKNOWN
+    /// rung — so a thin-coverage level inside the signature would fabricate a
+    /// neutral bucket for the majority of episodes and make "unknown"
+    /// indistinguishable from "measured-low".
+    ///
+    /// Carried here so every episode records the shape it was entered under, which
+    /// is what makes the recall conditioner possible at all. `Unknown` is never
+    /// collapsed into a numeric bucket.
+    pub concentration: ConcentrationReading,
+    /// **PARALLEL STREAM (schema 2).** Which way, and how fast, the *tracked
+    /// cohort's internal* concentration was moving at decision time.
+    ///
+    /// A derivative, and therefore valid on a delta-only ledger where the absolute
+    /// level is not — a distinct type from [`Self::concentration`] so the two can
+    /// never be substituted for one another.
+    pub concentration_trajectory: ConcentrationTrajectory,
+}
+
+impl EpisodeContext {
+    /// The neutral parallel-stream pair: both channels explicitly `Unknown` with
+    /// the `Disarmed` reason.
+    ///
+    /// For call sites that do not run the holder plane at all (tests, the archetype
+    /// exemplars, restore paths for a producer that never measured). It returns
+    /// REFUSALS, not zeros — there is no way to get a band out of this.
+    #[must_use]
+    pub const fn disarmed_concentration() -> (ConcentrationReading, ConcentrationTrajectory) {
+        (
+            ConcentrationReading::Unknown(crate::concentration::ConcentrationUnknown::Disarmed),
+            ConcentrationTrajectory::Unknown(crate::concentration::TrajectoryUnknown::Disarmed),
+        )
+    }
 }
 
 /// What the episode paid.
@@ -291,6 +341,7 @@ mod tests {
     use crate::fingerprint::{SetupFingerprint, SetupInputs};
 
     fn ctx() -> EpisodeContext {
+        let (concentration, concentration_trajectory) = EpisodeContext::disarmed_concentration();
         EpisodeContext {
             mint_id: 7,
             venue_phase: VenuePhase::Curve,
@@ -298,6 +349,8 @@ mod tests {
             discovery_lane: DiscoveryLane::NewMint,
             info_time_ns: 1_000,
             slot: 99,
+            concentration,
+            concentration_trajectory,
         }
     }
 
@@ -308,6 +361,26 @@ mod tests {
         assert_eq!(e.schema_version(), EPISODE_SCHEMA_VERSION);
         assert_eq!(e.episode_id(), 1);
         assert_eq!(e.context().mint_id, 7);
+    }
+
+    /// The schema-2 bump is load-bearing: a persisted schema-1 corpus must be
+    /// REFUSED, never reinterpreted under the new field layout.
+    #[test]
+    fn the_schema_version_is_two_and_one_is_no_longer_current() {
+        assert_eq!(EPISODE_SCHEMA_VERSION, 2);
+        let fp = SetupFingerprint::from_inputs(&SetupInputs::default());
+        let stale = Episode::with_schema_version(1, 1, fp, ctx(), EpisodeOutcome::rejected());
+        assert_ne!(stale.schema_version(), EPISODE_SCHEMA_VERSION);
+    }
+
+    /// The parallel stream defaults to REFUSALS, not to a fabricated neutral band.
+    #[test]
+    fn the_disarmed_parallel_stream_carries_no_number() {
+        let (level, traj) = EpisodeContext::disarmed_concentration();
+        assert!(!level.is_known());
+        assert_eq!(level.shape(), None);
+        assert!(!traj.is_known());
+        assert_eq!(traj.shape(), None);
     }
 
     #[test]

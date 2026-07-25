@@ -4,11 +4,41 @@
 //! # What this module is
 //!
 //! At the instant the engine is deciding whether to take a trade it already holds
-//! ~20 integer descriptors of the situation: order-flow imbalance, CVD, trend and
+//! ~21 integer descriptors of the situation: order-flow imbalance, CVD, trend and
 //! range structure, burst phase, realized vol, liquidity, buyer breadth, token age,
 //! venue phase, attention velocity, narrative class, authenticity, holder-growth
-//! acceleration, creator class, meta category and saturation, whether a designated
-//! caller is present, the round-trip cost, and the information-time-of-day.
+//! acceleration **and holder-growth velocity**, creator class, meta category and
+//! saturation, whether a designated caller is present, the round-trip cost, and the
+//! information-time-of-day.
+//!
+//! # Why both holder-growth derivatives, and why no holder *level*
+//!
+//! Until schema 2 the fingerprint encoded exactly one holder quantity — the SECOND
+//! derivative, [`F_HOLDER_GROWTH_ACCEL`]. That is an information loss the index
+//! cannot recover from: a market broadening fast and steadily (large velocity, zero
+//! acceleration) produced a **bit-identical** signature to one that was completely
+//! flat (zero velocity, zero acceleration), and those two markets have different
+//! forward distributions. Schema 2 adds [`F_HOLDER_GROWTH_VELOCITY`], the FIRST
+//! derivative, which `pump_quant_features::holder_growth` already computes on the
+//! way to the second one (`HolderGrowthEstimate::growth_bps`) — so the field costs
+//! no new estimator, only bits.
+//!
+//! Both are *derivatives*, and that is the whole reason they are allowed in here.
+//! `pump_quant_app::holder_flow::HolderCountBasis` gates what the holder ledger can
+//! honestly report: derivatives are valid under `DeltaOnly` (the lower-bound base
+//! biases the relative rate, and the bias partially cancels in a difference — a
+//! documented, signed bias), while LEVEL quantities — concentration shares — require
+//! `Exact`, which needs a creation sighting before the first swap and is permanently
+//! falsified by any pre-window seller. `Exact` is rare.
+//!
+//! This fingerprint has **no UNKNOWN rung** on any ladder: a refusal collapses onto
+//! the neutral bucket, so "not measured" and "measured neutral" are the same code.
+//! For a broad-coverage derivative that is a small, bounded cost. For a
+//! thin-coverage LEVEL it would be a §6.4 violation dressed as a feature — most
+//! episodes would sit in a fabricated neutral bucket and the estimator would read
+//! "unknown" as "measured-low". Concentration therefore rides **beside** the
+//! signature as a parallel stream ([`crate::concentration`]), never inside it, in
+//! exactly the way `MentionProvenance` rides beside a dossier-locked `Mention`.
 //!
 //! This module folds those into two artefacts:
 //!
@@ -61,7 +91,7 @@
 use crate::hash::mix_u32;
 
 /// Number of fields in a fingerprint (constitution 102).
-pub const FIELD_COUNT: usize = 20;
+pub const FIELD_COUNT: usize = 21;
 
 /// Hamming cost charged when two [`FieldKind::Nominal`] fields differ: one-hot
 /// codes differ in exactly two bit positions (constitution 102).
@@ -344,6 +374,42 @@ pub const AUTHENTICITY_EDGES_BPS: [i64; 4] = [2_500, 5_000, 7_500, 9_000];
 /// Holder-growth *acceleration* ladder, signed basis points (constitution 21.4).
 pub const HOLDER_GROWTH_ACCEL_EDGES_BPS: [i64; 4] = [-500, 0, 500, 2_000];
 
+/// Holder-growth *velocity* ladder, signed basis points of relative holder growth
+/// per `pump_quant_features::holder_growth::HOLDER_GROWTH_NORM_NS` (one minute)
+/// — the FIRST derivative (constitution 21.4 / 70.1, schema 2).
+///
+/// Six rungs, chosen so the ladder brackets the neutral point on BOTH sides and
+/// then spans the range a real launch actually traverses:
+///
+/// | bucket | band (bp/min) | reading |
+/// |---|---|---|
+/// | 0 | `< -500`        | holders leaving faster than 5%/min — active exodus |
+/// | 1 | `[-500, 0)`     | mild contraction |
+/// | 2 | `[0, 500)`      | flat to slow growth — the NEUTRAL rung |
+/// | 3 | `[500, 2_000)`  | steady broadening, 5–20%/min |
+/// | 4 | `[2_000, 7_500)`| fast broadening, 20–75%/min |
+/// | 5 | `>= 7_500`      | explosive broadening |
+///
+/// The inner three edges `[-500, 0, 500]` are deliberately the SAME magnitudes the
+/// acceleration ladder uses for its inner rungs, so a reader comparing the two
+/// holder fields is comparing like with like; the two upper edges continue the
+/// `4 x` geometric spacing already established by [`ATTENTION_VELOCITY_EDGES_BPS`]
+/// (`500 -> 2_000 -> 7_500`), which is the other window-over-window growth-rate
+/// ladder in this table. A velocity ladder must be signed and must straddle zero,
+/// because "holders are leaving" is a different market from "holders are flat",
+/// and an unsigned ladder would fold both onto bucket 0.
+pub const HOLDER_GROWTH_VELOCITY_EDGES_BPS: [i64; 5] = [-500, 0, 500, 2_000, 7_500];
+
+/// Compile-time proof that the two holder-derivative ladders agree on their shared
+/// inner edges (§102: a relationship between named constants is checked, not
+/// remembered in prose).
+const _: () = assert!(
+    HOLDER_GROWTH_VELOCITY_EDGES_BPS[0] == HOLDER_GROWTH_ACCEL_EDGES_BPS[0]
+        && HOLDER_GROWTH_VELOCITY_EDGES_BPS[1] == HOLDER_GROWTH_ACCEL_EDGES_BPS[1]
+        && HOLDER_GROWTH_VELOCITY_EDGES_BPS[2] == HOLDER_GROWTH_ACCEL_EDGES_BPS[2],
+    "the holder velocity and acceleration ladders must share their inner edges"
+);
+
 /// Expected round-trip cost ladder in basis points — fee plus spread plus expected
 /// slippage, both ways (constitution 24). This is the hurdle every edge must clear.
 pub const ROUND_TRIP_COST_EDGES_BPS: [i64; 5] = [50, 100, 200, 400, 800];
@@ -492,6 +558,14 @@ pub const F_DESIGNATED_CALLER: usize = 17;
 pub const F_ROUND_TRIP_COST: usize = 18;
 /// Field index: information-time-of-day block.
 pub const F_TIME_OF_DAY: usize = 19;
+/// Field index: holder-growth VELOCITY — the first derivative (schema 2).
+///
+/// Appended rather than slotted next to [`F_HOLDER_GROWTH_ACCEL`] on purpose: the
+/// `F_*` indices are the stable names every consumer (weights,
+/// [`crate::archetype::StyleLens`], the persisted bucket vector) keys on, and
+/// renumbering nineteen of them to gain adjacency in one table would be churn with
+/// a silent-mis-index failure mode. The table is data; adjacency is cosmetic.
+pub const F_HOLDER_GROWTH_VELOCITY: usize = 20;
 
 /// The authoritative field table. `bit_offset` values are the running sum of
 /// `bit_width`; `tests::field_table_layout_is_consistent` proves it, so the table
@@ -637,12 +711,31 @@ pub const FIELD_SPECS: [FieldSpec; FIELD_COUNT] = [
         bit_offset: 92,
         bit_width: 7,
     },
+    FieldSpec {
+        name: "holder_growth_velocity",
+        kind: FieldKind::Ordinal,
+        levels: 6,
+        bit_offset: 99,
+        bit_width: 5,
+    },
 ];
 
 /// Total number of packed signature bits actually used (constitution 102).
 /// The remaining `128 - SIGNATURE_BITS` bits are always zero in every fingerprint,
 /// so they can never contribute to a Hamming distance.
-pub const SIGNATURE_BITS: u32 = 99;
+///
+/// Schema 1 used 99 bits, leaving 29 free. Schema 2 spends five of them on
+/// [`F_HOLDER_GROWTH_VELOCITY`] (six ordinal levels ⇒ `levels - 1 = 5` thermometer
+/// bits), leaving **24**. The headroom is checked against the `u128` at compile
+/// time below, not argued in prose.
+pub const SIGNATURE_BITS: u32 = 104;
+
+/// Compile-time proof that the packed signature still fits one `u128` with the
+/// unused high bits provably zero (§102).
+const _: () = assert!(
+    SIGNATURE_BITS <= 128,
+    "the packed signature must fit a single u128"
+);
 
 /// Encode one field's bucket into its window of the packed signature.
 ///
@@ -702,6 +795,13 @@ pub struct SetupInputs {
     pub authenticity_bps: i64,
     /// Second derivative of holder count, signed basis points.
     pub holder_growth_accel_bps: i64,
+    /// FIRST derivative of holder count — the time-normalized relative growth
+    /// RATE, signed basis points per minute (schema 2). This is
+    /// `pump_quant_features::holder_growth::HolderGrowthEstimate::growth_bps`,
+    /// which the acceleration estimator already produces; see the module docs for
+    /// why a market growing fast-and-steady must not be fingerprint-identical to a
+    /// flat one.
+    pub holder_growth_velocity_bps: i64,
     /// Creator prior-behaviour class.
     pub creator_class: CreatorClass,
     /// Exact meta-category identifier (mixed down to a slot for the signature; the
@@ -738,6 +838,7 @@ impl Default for SetupInputs {
             narrative_class: NarrativeClass::Unclassified,
             authenticity_bps: 0,
             holder_growth_accel_bps: 0,
+            holder_growth_velocity_bps: 0,
             creator_class: CreatorClass::Unknown,
             meta_category_id: 0,
             meta_saturation_state: MetaSaturationState::Emerging,
@@ -783,6 +884,14 @@ pub const W_NARRATIVE_CLASS: u32 = 3;
 pub const W_AUTHENTICITY: u32 = 3;
 /// Default weight, holder-growth acceleration (constitution 102).
 pub const W_HOLDER_GROWTH_ACCEL: u32 = 3;
+/// Default weight, holder-growth velocity (constitution 102).
+///
+/// Equal to [`W_HOLDER_GROWTH_ACCEL`] deliberately. There is no evidence in hand
+/// that either derivative dominates the other, and picking an asymmetric pair
+/// would be a fitted parameter wearing a named-const costume. The two together
+/// weigh 6 — the same as [`W_OFI`] — so the holder family as a whole is now on par
+/// with order flow rather than a rounding error next to it.
+pub const W_HOLDER_GROWTH_VELOCITY: u32 = 3;
 /// Default weight, creator class (constitution 102).
 pub const W_CREATOR_CLASS: u32 = 2;
 /// Default weight, meta category (constitution 102).
@@ -823,6 +932,7 @@ impl Default for FeatureWeights {
         w[F_NARRATIVE_CLASS] = W_NARRATIVE_CLASS;
         w[F_AUTHENTICITY] = W_AUTHENTICITY;
         w[F_HOLDER_GROWTH_ACCEL] = W_HOLDER_GROWTH_ACCEL;
+        w[F_HOLDER_GROWTH_VELOCITY] = W_HOLDER_GROWTH_VELOCITY;
         w[F_CREATOR_CLASS] = W_CREATOR_CLASS;
         w[F_META_CATEGORY] = W_META_CATEGORY;
         w[F_META_SATURATION] = W_META_SATURATION;
@@ -896,6 +1006,10 @@ impl SetupFingerprint {
         buckets[F_HOLDER_GROWTH_ACCEL] = ladder_bucket(
             inputs.holder_growth_accel_bps,
             &HOLDER_GROWTH_ACCEL_EDGES_BPS,
+        );
+        buckets[F_HOLDER_GROWTH_VELOCITY] = ladder_bucket(
+            inputs.holder_growth_velocity_bps,
+            &HOLDER_GROWTH_VELOCITY_EDGES_BPS,
         );
         buckets[F_CREATOR_CLASS] = inputs.creator_class.ordinal();
         buckets[F_META_CATEGORY] = meta_category_slot(inputs.meta_category_id);
@@ -1058,6 +1172,7 @@ mod tests {
             narrative_class: NarrativeClass::Animal,
             authenticity_bps: 8_000,
             holder_growth_accel_bps: 900,
+            holder_growth_velocity_bps: 2_500,
             creator_class: CreatorClass::Proven,
             meta_category_id: 42,
             meta_saturation_state: MetaSaturationState::Hot,
@@ -1112,7 +1227,119 @@ mod tests {
         check("attention", &ATTENTION_VELOCITY_EDGES_BPS);
         check("authenticity", &AUTHENTICITY_EDGES_BPS);
         check("holder", &HOLDER_GROWTH_ACCEL_EDGES_BPS);
+        check("holder_velocity", &HOLDER_GROWTH_VELOCITY_EDGES_BPS);
         check("cost", &ROUND_TRIP_COST_EDGES_BPS);
+    }
+
+    /// THE REASON THIS FIELD EXISTS (schema 2).
+    ///
+    /// Under schema 1 the only holder quantity in the signature was the SECOND
+    /// derivative, so a market broadening fast and steadily and a market that was
+    /// completely flat produced the identical signature. That is a genuine
+    /// information loss in the similarity index, and this test is the refutable
+    /// statement of it: with the velocity field present the two are separated by
+    /// exactly the ordinal distance between their velocity rungs, and by nothing
+    /// else.
+    #[test]
+    fn steady_fast_growth_is_no_longer_identical_to_flat() {
+        // Both have ZERO acceleration. One is growing at 30%/min, the other is
+        // not growing at all. Every other field is identical.
+        let mut fast = probe();
+        fast.holder_growth_accel_bps = 0;
+        fast.holder_growth_velocity_bps = 3_000; // bucket 4
+        let mut flat = probe();
+        flat.holder_growth_accel_bps = 0;
+        flat.holder_growth_velocity_bps = 0; // bucket 2
+
+        let a = SetupFingerprint::from_inputs(&fast);
+        let b = SetupFingerprint::from_inputs(&flat);
+
+        assert_eq!(
+            a.buckets()[F_HOLDER_GROWTH_ACCEL],
+            b.buckets()[F_HOLDER_GROWTH_ACCEL],
+            "the acceleration rung is the same — that is the premise"
+        );
+        assert_eq!(a.buckets()[F_HOLDER_GROWTH_VELOCITY], 4);
+        assert_eq!(b.buckets()[F_HOLDER_GROWTH_VELOCITY], 2);
+        assert_ne!(
+            a.signature(),
+            b.signature(),
+            "schema 1 collapsed these two markets onto one code"
+        );
+        // The separation is EXACTLY the ordinal gap, no more: the thermometer
+        // encoding has not leaked into any neighbouring field's window.
+        assert_eq!(signature_hamming(a.signature(), b.signature()), 2);
+        assert_eq!(
+            weighted_distance(&a, &b, &FeatureWeights::default()),
+            2 * u64::from(W_HOLDER_GROWTH_VELOCITY)
+        );
+    }
+
+    /// The two holder derivatives are INDEPENDENT axes: moving one must not move
+    /// the other's bucket. If they were redundant the field would be paying five
+    /// bits for nothing.
+    #[test]
+    fn holder_velocity_and_acceleration_are_independent_axes() {
+        let base = probe();
+        let mut vel_only = base;
+        vel_only.holder_growth_velocity_bps = 9_000;
+        let mut accel_only = base;
+        accel_only.holder_growth_accel_bps = -900;
+
+        let b = SetupFingerprint::from_inputs(&base);
+        let v = SetupFingerprint::from_inputs(&vel_only);
+        let a = SetupFingerprint::from_inputs(&accel_only);
+
+        assert_eq!(
+            b.buckets()[F_HOLDER_GROWTH_ACCEL],
+            v.buckets()[F_HOLDER_GROWTH_ACCEL],
+            "moving velocity must not move the acceleration rung"
+        );
+        assert_eq!(
+            b.buckets()[F_HOLDER_GROWTH_VELOCITY],
+            a.buckets()[F_HOLDER_GROWTH_VELOCITY],
+            "moving acceleration must not move the velocity rung"
+        );
+        assert_ne!(
+            b.buckets()[F_HOLDER_GROWTH_VELOCITY],
+            v.buckets()[F_HOLDER_GROWTH_VELOCITY]
+        );
+        assert_ne!(
+            b.buckets()[F_HOLDER_GROWTH_ACCEL],
+            a.buckets()[F_HOLDER_GROWTH_ACCEL]
+        );
+    }
+
+    /// The velocity ladder must be SIGNED and straddle zero: "holders are leaving"
+    /// is a different market from "holders are flat", and an unsigned ladder would
+    /// fold both onto bucket 0.
+    #[test]
+    fn holder_velocity_ladder_straddles_zero() {
+        let b = |v: i64| ladder_bucket(v, &HOLDER_GROWTH_VELOCITY_EDGES_BPS);
+        assert_eq!(b(-10_000), 0, "exodus");
+        assert_eq!(b(-100), 1, "mild contraction");
+        assert_eq!(b(0), 2, "the neutral rung — a refusal collapses here");
+        assert_eq!(b(499), 2);
+        assert_eq!(b(500), 3);
+        assert_eq!(b(2_000), 4);
+        assert_eq!(b(7_500), 5);
+        assert_eq!(b(i64::MAX), 5, "saturates, never wraps");
+        assert!(
+            b(-1) < b(0),
+            "a shrinking holder base must rank below a flat one"
+        );
+    }
+
+    /// The bit budget, stated as an assertion rather than a claim in a comment.
+    #[test]
+    fn schema_two_spent_five_of_the_twenty_nine_free_bits() {
+        const SCHEMA_ONE_BITS: u32 = 99;
+        assert_eq!(
+            SIGNATURE_BITS - SCHEMA_ONE_BITS,
+            u32::from(FIELD_SPECS[F_HOLDER_GROWTH_VELOCITY].bit_width)
+        );
+        assert_eq!(SIGNATURE_BITS, 104);
+        assert_eq!(128 - SIGNATURE_BITS, 24, "bits still free for a schema 3");
     }
 
     #[test]

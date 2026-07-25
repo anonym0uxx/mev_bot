@@ -98,6 +98,17 @@
 //! construction — the input is [`crate::holder_flow`]'s already-bounded ledger
 //! (§99/§57).
 
+use std::collections::BTreeMap;
+
+use pump_quant_brain::concentration::{
+    ConcentrationReading as BrainReading, ConcentrationShape as BrainShape,
+    ConcentrationTrajectory as BrainTrajectory, ConcentrationUnknown as BrainUnknown,
+    TrajectoryShape as BrainTrajectoryShape, TrajectoryUnknown as BrainTrajectoryUnknown,
+};
+use pump_quant_features::holder_growth::{
+    HOLDER_GROWTH_NORM_NS, HOLDER_MAX_INTERVAL_NS, HOLDER_MIN_INTERVAL_NS,
+};
+
 use crate::holder_flow::{HolderCountBasis, HolderFlow, HolderShapeRef, EARLY_ROSTER_CAP};
 
 /// Basis-point scale (100% == 10 000 bps), shared by every ratio here (§22).
@@ -627,6 +638,484 @@ pub fn concentration_of_shape(shape: &HolderShapeRef<'_>) -> ConcentrationVerdic
     })
 }
 
+// ===========================================================================
+// THE PARALLEL STREAM: internal concentration, sampled continuously
+// ===========================================================================
+//
+// Everything above this line is a LEVEL: a share of the true float, and therefore
+// gated on `HolderCountBasis::Exact`. Everything below it is a DERIVATIVE of the
+// TRACKED COHORT'S OWN internal distribution, which is a different quantity with a
+// different basis requirement, and it is kept in different types so the two can
+// never be confused for one another.
+
+/// Compile-time proof that this module's bars and the brain's conditioning bands
+/// agree (§102). If either side moves, the build breaks rather than the recall
+/// conditioner and the sizing law quietly disagreeing about "concentrated".
+const _: () = assert!(
+    pump_quant_brain::concentration::TOP10_BAND_EDGES_BPS[1] == TOP10_HAIRCUT_BPS
+        && pump_quant_brain::concentration::TOP10_BAND_EDGES_BPS[2] == TOP10_VETO_BPS
+        && pump_quant_brain::concentration::WHALE_DOMINANCE_BAND_EDGES_BPS[1]
+            == WHALE_DOMINANCE_HAIRCUT_BPS
+        && pump_quant_brain::concentration::WHALE_DOMINANCE_BAND_EDGES_BPS[2]
+            == WHALE_DOMINANCE_VETO_BPS
+        && pump_quant_brain::concentration::EARLY_TOP10_BAND_EDGES_BPS[0]
+            == EARLY_TOP10_EQUAL_SHARE_BPS
+        && pump_quant_brain::concentration::EARLY_TOP10_BAND_EDGES_BPS[1]
+            == EARLY_TOP10_HAIRCUT_BPS
+        && pump_quant_brain::concentration::EARLY_TOP10_BAND_EDGES_BPS[2] == EARLY_TOP10_VETO_BPS,
+    "the brain's concentration bands must be the app's own published bars"
+);
+
+/// §99/§57 bound on mints carrying a concentration-trajectory series.
+///
+/// Matches [`crate::holder_flow::HOLDER_FLOW_MINT_CAP`] so the two planes cannot
+/// disagree about which mints exist.
+pub const TRAJECTORY_MINT_CAP: usize = crate::holder_flow::HOLDER_FLOW_MINT_CAP;
+
+/// §99 ring capacity of one mint's internal-concentration series.
+///
+/// Eight samples at the [`crate::holder_flow::HOLDER_SAMPLE_INTERVAL_TICKS`]
+/// cadence (1.2 s) reaches back ~9.6 s of information time — comfortably past the
+/// estimator's one-second minimum spacing while keeping the per-mint footprint at
+/// a fixed 96 bytes. Oldest-evicted.
+pub const TRAJECTORY_SERIES_CAP: usize = 8;
+
+/// Minimum samples before a trajectory is a measurement rather than a single
+/// reading wearing a direction (§6.4). Two: a change needs two points.
+pub const TRAJECTORY_MIN_SAMPLES: usize = 2;
+
+/// The tracked cohort's INTERNAL distribution statistic at one instant.
+///
+/// Every number here has the tracked supply — *our own* ledger's `Σ net`, which we
+/// know exactly — as its denominator. That is what makes it computable on a
+/// delta-only basis: we are not claiming a share of the float, we are describing
+/// the shape of the positions we actually watched being built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InternalConcentration {
+    /// Herfindahl over tracked shares, rescaled so perfect equality is `0` and
+    /// total capture is `10_000` — the same normalization
+    /// [`ConcentrationMetrics::hhi_normalized_bps`] uses.
+    ///
+    /// The SIZE-NORMALIZED form is used on purpose. A raw top-N share falls
+    /// mechanically every time a new entity joins the tracked cohort, so its
+    /// trajectory on any live market would measure arrival rather than
+    /// distribution. Normalizing by `1/n` is the standard adjustment for exactly
+    /// that confound — it does not abolish it, and that limitation is stated here
+    /// rather than buried.
+    pub hhi_normalized_bps: u32,
+    /// Entities with a strictly positive tracked position at this instant.
+    pub holders: u32,
+}
+
+/// Why an internal-concentration reading could not be taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InternalUnknown {
+    /// The mint has no holder ledger at all.
+    Untracked,
+    /// [`HolderCountBasis::Incomplete`]: the ledger is cap-truncated, so even the
+    /// TRACKED cohort is not fully observed and its internal distribution is
+    /// biased in an unbounded direction. This is the one basis the trajectory
+    /// refuses — note it does **not** refuse `DeltaOnly`.
+    IncompleteBasis,
+    /// Fewer than [`MIN_ENTITIES_FOR_SHAPE`] tracked entities.
+    ThinLedger,
+    /// Tracked supply is zero: every observed position has been fully exited.
+    NoTrackedSupply,
+}
+
+/// The tracked cohort's internal concentration, or a labelled refusal.
+///
+/// Deliberately NOT [`ConcentrationVerdict`]: that type carries shares of the
+/// float and is `Exact`-only. Keeping them as separate types is what makes it
+/// impossible to feed a delta-only internal statistic into a consumer that asked
+/// for a float share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InternalVerdict {
+    /// A reading over the tracked cohort.
+    Known(InternalConcentration),
+    /// No reading, and why.
+    Unknown(InternalUnknown),
+}
+
+impl InternalVerdict {
+    /// The reading, or `None`. The only way to reach a number.
+    #[must_use]
+    pub const fn reading(&self) -> Option<InternalConcentration> {
+        match self {
+            Self::Known(m) => Some(*m),
+            Self::Unknown(_) => None,
+        }
+    }
+
+    /// Why the reading was declined, or `None`.
+    #[must_use]
+    pub const fn unknown_reason(&self) -> Option<InternalUnknown> {
+        match self {
+            Self::Known(_) => None,
+            Self::Unknown(u) => Some(*u),
+        }
+    }
+}
+
+/// The tracked cohort's internal concentration for `mint`.
+///
+/// **The basis gate here is `admits_growth`, not `admits_level`** — the load-bearing
+/// difference from [`concentration_of`]. The reasoning, stated so it can be
+/// attacked:
+///
+/// * the denominator is our own tracked supply, which we know exactly, so there is
+///   no unknown-denominator problem the way there is for a float share;
+/// * every BUY enters this ledger by construction (a buyer becomes tracked at the
+///   moment they buy), so supply moving INTO an entity is always observed;
+/// * the unobserved mass — pre-window holders' pre-existing stacks — is an
+///   *unchanging* omission from the denominator, so it biases the LEVEL without
+///   driving the CHANGE.
+///
+/// What it therefore does **not** license: reading the number as the float's
+/// concentration. It is the tracked cohort's shape, and it says so in its type.
+/// Under `Incomplete` even that fails, because arrivals past the entity cap are
+/// dropped entirely, so the cohort itself is a biased sample of the cohort.
+#[must_use]
+pub fn internal_concentration_of(flow: &HolderFlow, mint: &[u8; 32]) -> InternalVerdict {
+    let Some(shape) = flow.shape(mint) else {
+        return InternalVerdict::Unknown(InternalUnknown::Untracked);
+    };
+    internal_concentration_of_shape(&shape)
+}
+
+/// [`internal_concentration_of`] over an already-borrowed shape view.
+///
+/// `O(n)` over the mint's bounded entity ledger, allocation-free.
+#[must_use]
+pub fn internal_concentration_of_shape(shape: &HolderShapeRef<'_>) -> InternalVerdict {
+    if !shape.basis.admits_growth() {
+        return InternalVerdict::Unknown(InternalUnknown::IncompleteBasis);
+    }
+    let entities_tracked = u32::try_from(shape.positions.len()).unwrap_or(u32::MAX);
+    if entities_tracked < MIN_ENTITIES_FOR_SHAPE {
+        return InternalVerdict::Unknown(InternalUnknown::ThinLedger);
+    }
+
+    let mut supply: u128 = 0;
+    let mut holders: u32 = 0;
+    for p in shape.positions {
+        let net = p.net();
+        if net == 0 {
+            continue;
+        }
+        holders = holders.saturating_add(1);
+        supply = supply.saturating_add(u128::from(net));
+    }
+    if supply == 0 {
+        return InternalVerdict::Unknown(InternalUnknown::NoTrackedSupply);
+    }
+
+    let share_bps = |v: u128| -> u128 { (v.saturating_mul(BPS) / supply).min(BPS) };
+    let mut hhi_acc: u128 = 0;
+    for p in shape.positions {
+        if p.net() == 0 {
+            continue;
+        }
+        let s = share_bps(u128::from(p.net()));
+        hhi_acc = hhi_acc.saturating_add(s.saturating_mul(s));
+    }
+    let hhi_bps = (hhi_acc / BPS).min(BPS);
+
+    // Same normalization as `ConcentrationMetrics::hhi_normalized_bps`: perfect
+    // equality is 0, total capture is 10 000.
+    let hhi_normalized_bps = if holders <= 1 {
+        10_000
+    } else {
+        let min_hhi = 10_000u128 / u128::from(holders);
+        let den = 10_000u128.saturating_sub(min_hhi);
+        let num = hhi_bps.saturating_sub(min_hhi).saturating_mul(BPS);
+        match num.checked_div(den) {
+            Some(v) => u32::try_from(v.min(BPS)).unwrap_or(10_000),
+            None => 10_000,
+        }
+    };
+
+    InternalVerdict::Known(InternalConcentration {
+        hhi_normalized_bps,
+        holders,
+    })
+}
+
+/// One sampled point of a mint's internal-concentration series (§20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct TrajectorySample {
+    ts_ns: u64,
+    hhi_normalized_bps: u32,
+}
+
+/// One mint's bounded internal-concentration series.
+#[derive(Debug, Clone)]
+struct TrajectorySeries {
+    buf: [TrajectorySample; TRAJECTORY_SERIES_CAP],
+    start: usize,
+    len: usize,
+    last_ts_ns: u64,
+    last_tick: u64,
+}
+
+impl TrajectorySeries {
+    const fn new(now: u64) -> Self {
+        Self {
+            buf: [TrajectorySample {
+                ts_ns: 0,
+                hhi_normalized_bps: 0,
+            }; TRAJECTORY_SERIES_CAP],
+            start: 0,
+            len: 0,
+            last_ts_ns: 0,
+            last_tick: now,
+        }
+    }
+
+    /// Append one sample, dropping any that would move information time backwards
+    /// (§20) and evicting oldest-first at capacity (§99).
+    fn push(&mut self, sample: TrajectorySample) {
+        if self.len > 0 && sample.ts_ns < self.last_ts_ns {
+            return;
+        }
+        if self.len < TRAJECTORY_SERIES_CAP {
+            let idx = (self.start + self.len) % TRAJECTORY_SERIES_CAP;
+            if let Some(slot) = self.buf.get_mut(idx) {
+                *slot = sample;
+                self.len += 1;
+            }
+        } else if let Some(slot) = self.buf.get_mut(self.start) {
+            *slot = sample;
+            self.start = (self.start + 1) % TRAJECTORY_SERIES_CAP;
+        }
+        self.last_ts_ns = sample.ts_ns;
+    }
+
+    fn at_rev(&self, i: usize) -> Option<TrajectorySample> {
+        if i >= self.len {
+            return None;
+        }
+        let idx = (self.start + self.len - 1 - i) % TRAJECTORY_SERIES_CAP;
+        self.buf.get(idx).copied()
+    }
+
+    /// The signed rate of change of normalized internal concentration as known at
+    /// `as_of_ns`, in bps per `norm_ns`.
+    ///
+    /// Returns `None` — never a fabricated zero — when fewer than
+    /// [`TRAJECTORY_MIN_SAMPLES`] usable samples exist at or before the cutoff, or
+    /// when no pair is spaced at least `min_interval_ns` apart, or when the pair
+    /// spans more than `max_interval_ns` (an unobserved gap is not a measurement).
+    fn rate_as_of(&self, as_of_ns: u64) -> Option<i64> {
+        if self.len < TRAJECTORY_MIN_SAMPLES {
+            return None;
+        }
+        // Newest sample at or before the cutoff.
+        let mut i = 0usize;
+        let newest = loop {
+            let s = self.at_rev(i)?;
+            if s.ts_ns <= as_of_ns {
+                break s;
+            }
+            i += 1;
+        };
+        // Oldest sample at least `min_interval_ns` older, but not so old that the
+        // gap exceeds the staleness ceiling.
+        let cutoff = newest.ts_ns.checked_sub(HOLDER_MIN_INTERVAL_NS)?;
+        let mut j = i + 1;
+        let oldest = loop {
+            let s = self.at_rev(j)?;
+            if s.ts_ns <= cutoff {
+                break s;
+            }
+            j += 1;
+        };
+        let dt = newest.ts_ns.checked_sub(oldest.ts_ns)?;
+        if dt == 0 || dt > HOLDER_MAX_INTERVAL_NS {
+            return None;
+        }
+        // (delta bps) * norm_ns / dt, entirely in i128 then clamped (§22).
+        let delta = i128::from(newest.hhi_normalized_bps) - i128::from(oldest.hhi_normalized_bps);
+        let num = delta.checked_mul(i128::from(HOLDER_GROWTH_NORM_NS))?;
+        let v = num / i128::from(dt);
+        Some(if v > i128::from(i64::MAX) {
+            i64::MAX
+        } else if v < i128::from(i64::MIN) {
+            i64::MIN
+        } else {
+            v as i64
+        })
+    }
+}
+
+/// The continuous concentration-TRAJECTORY plane (§21.7/§70.1).
+///
+/// Concentration used to be derived once, on demand, at admit — a point reading
+/// with no history, which can answer "is this concentrated?" but not "is it
+/// concentrATING?". Those are different questions and the second one is the one a
+/// scalper actually has an edge on. This tracker turns the reading into a stream:
+/// it is folded on the same bounded cadence as the holder-count sample, so a
+/// trajectory exists by the time a decision needs one.
+///
+/// Bounded by construction: [`TRAJECTORY_MINT_CAP`] mints of
+/// [`TRAJECTORY_SERIES_CAP`] samples each, with least-recently-updated eviction
+/// (ties by the smaller mint key — a pure function of state, no clock, no
+/// insertion-order dependence).
+#[derive(Debug, Clone)]
+pub struct ConcentrationTrajectoryPlane {
+    mints: BTreeMap<[u8; 32], TrajectorySeries>,
+    mint_cap: usize,
+    evictions: u64,
+}
+
+impl Default for ConcentrationTrajectoryPlane {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ConcentrationTrajectoryPlane {
+    /// An empty plane at the named-const bound.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_capacity(TRAJECTORY_MINT_CAP)
+    }
+
+    /// An empty plane with an explicit mint bound (clamped to at least 1).
+    #[must_use]
+    pub fn with_capacity(mint_cap: usize) -> Self {
+        Self {
+            mints: BTreeMap::new(),
+            mint_cap: mint_cap.max(1),
+            evictions: 0,
+        }
+    }
+
+    /// Mints carrying a series.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.mints.len()
+    }
+
+    /// Whether no mint carries a series.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.mints.is_empty()
+    }
+
+    /// Series evicted by [`TRAJECTORY_MINT_CAP`].
+    #[must_use]
+    pub const fn evictions(&self) -> u64 {
+        self.evictions
+    }
+
+    /// Fold one internal-concentration observation for `mint`.
+    ///
+    /// Called by the engine on the holder-sample cadence, so the `O(n)` derivation
+    /// runs once per 1.2 s of information time per mint rather than once per swap.
+    /// A refused reading pushes nothing — the series records measurements only, so
+    /// a gap in it is a genuine gap and never an interpolated zero (§6.4).
+    pub fn observe(&mut self, mint: &[u8; 32], verdict: InternalVerdict, now: u64, ns: u64) {
+        let Some(reading) = verdict.reading() else {
+            return;
+        };
+        if !self.mints.contains_key(mint) {
+            if self.mints.len() >= self.mint_cap {
+                if let Some(victim) = self.evict_key() {
+                    self.mints.remove(&victim);
+                    self.evictions = self.evictions.saturating_add(1);
+                }
+            }
+            if self.mints.len() >= self.mint_cap {
+                return;
+            }
+            self.mints.insert(*mint, TrajectorySeries::new(now));
+        }
+        let Some(s) = self.mints.get_mut(mint) else {
+            return;
+        };
+        s.last_tick = now;
+        s.push(TrajectorySample {
+            ts_ns: ns,
+            hhi_normalized_bps: reading.hhi_normalized_bps,
+        });
+    }
+
+    /// The point-in-time concentration trajectory for `mint` as known at
+    /// `as_of_ns`, in the brain's parallel-stream type (§20).
+    ///
+    /// `basis` is the mint's current holder basis; `Incomplete` refuses here for
+    /// the same reason [`internal_concentration_of_shape`] refuses.
+    #[must_use]
+    pub fn trajectory_as_of(
+        &self,
+        mint: &[u8; 32],
+        basis: Option<HolderCountBasis>,
+        as_of_ns: u64,
+    ) -> BrainTrajectory {
+        let Some(basis) = basis else {
+            return BrainTrajectory::Unknown(BrainTrajectoryUnknown::Untracked);
+        };
+        if !basis.admits_growth() {
+            return BrainTrajectory::Unknown(BrainTrajectoryUnknown::IncompleteBasis);
+        }
+        let Some(series) = self.mints.get(mint) else {
+            return BrainTrajectory::Unknown(BrainTrajectoryUnknown::ThinLedger);
+        };
+        match series.rate_as_of(as_of_ns) {
+            Some(rate) => BrainTrajectory::Known(BrainTrajectoryShape::from_rate_bps(rate)),
+            None => BrainTrajectory::Unknown(BrainTrajectoryUnknown::InsufficientHistory),
+        }
+    }
+
+    /// The raw signed rate for `mint` (bps of normalized internal concentration
+    /// per minute), for the REPORT plane. `None` when no rate is measurable.
+    #[must_use]
+    pub fn rate_as_of(&self, mint: &[u8; 32], as_of_ns: u64) -> Option<i64> {
+        self.mints.get(mint)?.rate_as_of(as_of_ns)
+    }
+
+    /// The eviction victim: least-recently-updated series, ties by smaller mint
+    /// key. A pure function of state (§22 determinism).
+    fn evict_key(&self) -> Option<[u8; 32]> {
+        let mut best: Option<([u8; 32], u64)> = None;
+        for (k, s) in &self.mints {
+            let replace = match best {
+                None => true,
+                Some((bk, bt)) => s.last_tick < bt || (s.last_tick == bt && *k < bk),
+            };
+            if replace {
+                best = Some((*k, s.last_tick));
+            }
+        }
+        best.map(|(k, _)| k)
+    }
+}
+
+/// Band a `Known` concentration reading into the brain's parallel-stream type,
+/// mapping each refusal REASON across rather than collapsing them all into one.
+///
+/// The one-for-one arm correspondence is what
+/// `tests::every_app_refusal_reason_maps_to_its_own_brain_arm` pins.
+#[must_use]
+pub fn brain_reading_of(verdict: &ConcentrationVerdict) -> BrainReading {
+    match verdict {
+        ConcentrationVerdict::Known(m) => BrainReading::Known(BrainShape::from_bps(
+            m.top10_share_bps,
+            m.whale_dominance_bps,
+            m.early_top10_share_bps,
+        )),
+        ConcentrationVerdict::Unknown(u) => BrainReading::Unknown(match u {
+            ConcentrationUnknown::Disarmed => BrainUnknown::Disarmed,
+            ConcentrationUnknown::Untracked => BrainUnknown::Untracked,
+            ConcentrationUnknown::DeltaOnlyBasis => BrainUnknown::DeltaOnlyBasis,
+            ConcentrationUnknown::IncompleteBasis => BrainUnknown::IncompleteBasis,
+            ConcentrationUnknown::ThinLedger => BrainUnknown::ThinLedger,
+            ConcentrationUnknown::NoTrackedSupply => BrainUnknown::NoTrackedSupply,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,5 +1254,248 @@ mod tests {
         for tier in [ConcentrationRisk::Haircut, ConcentrationRisk::Veto] {
             assert!(tier.size_mult_bp() < 10_000, "{tier:?} must reduce");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // THE PARALLEL STREAM
+    // -----------------------------------------------------------------------
+
+    /// An Exact-basis ledger and a delta-only one built from the SAME flow. The
+    /// level refuses on the second; the internal statistic does not. This is the
+    /// coverage asymmetry that motivates the whole design, as code.
+    #[test]
+    fn the_internal_statistic_reads_where_the_level_refuses() {
+        let mut exact = HolderFlow::new();
+        exact.note_creation(&M, 0);
+        let mut delta = HolderFlow::new(); // no creation sighting ⇒ DeltaOnly
+        for e in 0..40u64 {
+            exact.observe_swap_aged(&M, e, 1_000, 0, 0, Some(100));
+            delta.observe_swap_aged(&M, e, 1_000, 0, 0, Some(100));
+        }
+        assert!(concentration_of(&exact, &M).is_known());
+        assert_eq!(
+            concentration_of(&delta, &M).unknown_reason(),
+            Some(ConcentrationUnknown::DeltaOnlyBasis),
+            "a float share needs an Exact basis"
+        );
+        // …but the tracked cohort's own shape is observable on both, identically:
+        // the two ledgers hold the same positions, so the same internal number.
+        let a = internal_concentration_of(&exact, &M)
+            .reading()
+            .expect("exact");
+        let b = internal_concentration_of(&delta, &M)
+            .reading()
+            .expect("delta-only is admitted for a derivative");
+        assert_eq!(a, b);
+        assert_eq!(a.hhi_normalized_bps, 0, "forty equal holders");
+        assert_eq!(a.holders, 40);
+    }
+
+    /// The one basis the internal statistic still refuses: a truncated ledger, in
+    /// which the tracked cohort is itself a biased sample of the tracked cohort.
+    #[test]
+    fn a_truncated_ledger_refuses_even_the_internal_statistic() {
+        let mut hf = HolderFlow::with_caps(4, 25);
+        hf.note_creation(&M, 0);
+        for e in 0..40u64 {
+            hf.observe_swap_aged(&M, e, 1_000, 0, 0, Some(100));
+        }
+        assert_eq!(
+            internal_concentration_of(&hf, &M).unknown_reason(),
+            Some(InternalUnknown::IncompleteBasis)
+        );
+        assert_eq!(internal_concentration_of(&hf, &M).reading(), None);
+    }
+
+    /// A whale accumulating raises the internal inequality; the crowd arriving
+    /// lowers it. Direction, on a delta-only ledger, is the product.
+    #[test]
+    fn the_internal_statistic_moves_with_the_shape_not_the_size() {
+        let mut hf = HolderFlow::new(); // DeltaOnly throughout
+        for e in 0..30u64 {
+            hf.observe_swap_aged(&M, e, 1_000, 0, 0, Some(100));
+        }
+        let flat = internal_concentration_of(&hf, &M)
+            .reading()
+            .expect("readable")
+            .hhi_normalized_bps;
+        // A whale accumulates hard.
+        hf.observe_swap_aged(&M, 0, 500_000, 1, 1_000_000_000, Some(100));
+        let whale = internal_concentration_of(&hf, &M)
+            .reading()
+            .expect("readable")
+            .hhi_normalized_bps;
+        assert!(whale > flat, "{whale} must exceed {flat}");
+        // Then a broad crowd arrives at the whale's own size, diluting it.
+        for e in 30..60u64 {
+            hf.observe_swap_aged(&M, e, 20_000, 2, 2_000_000_000, Some(100));
+        }
+        let diluted = internal_concentration_of(&hf, &M)
+            .reading()
+            .expect("readable")
+            .hhi_normalized_bps;
+        assert!(diluted < whale, "{diluted} must fall back below {whale}");
+    }
+
+    /// A single sample is not a trajectory (§6.4). The plane says
+    /// `InsufficientHistory` rather than `Flat`.
+    #[test]
+    fn one_sample_is_not_a_trajectory() {
+        let mut hf = HolderFlow::new();
+        for e in 0..30u64 {
+            hf.observe_swap_aged(&M, e, 1_000, 0, 0, Some(100));
+        }
+        let mut plane = ConcentrationTrajectoryPlane::new();
+        plane.observe(&M, internal_concentration_of(&hf, &M), 0, 0);
+        let t = plane.trajectory_as_of(&M, Some(HolderCountBasis::DeltaOnly), 0);
+        assert_eq!(
+            t.unknown_reason(),
+            Some(BrainTrajectoryUnknown::InsufficientHistory)
+        );
+        assert_eq!(t.shape(), None, "a refusal carries no direction");
+    }
+
+    /// Two samples spanning the minimum interval, with the whale accumulating in
+    /// between, must read `Concentrating` on a DELTA-ONLY ledger — which is the
+    /// claim this whole sub-feature rests on.
+    #[test]
+    fn a_delta_only_ledger_yields_a_concentrating_trajectory() {
+        use pump_quant_brain::concentration::TrajectoryDirection;
+        let mut hf = HolderFlow::new(); // DeltaOnly
+        for e in 0..30u64 {
+            hf.observe_swap_aged(&M, e, 1_000, 0, 0, Some(100));
+        }
+        let mut plane = ConcentrationTrajectoryPlane::new();
+        plane.observe(&M, internal_concentration_of(&hf, &M), 0, 0);
+        // One minute later, one entity has taken over.
+        let t1 = 60 * HOLDER_MIN_INTERVAL_NS;
+        hf.observe_swap_aged(&M, 0, 500_000, 1, t1, Some(100));
+        plane.observe(&M, internal_concentration_of(&hf, &M), 1, t1);
+
+        assert_eq!(
+            hf.reading(&M).map(|r| r.basis()),
+            Some(HolderCountBasis::DeltaOnly),
+            "the premise: this is the basis a float share refuses"
+        );
+        let t = plane.trajectory_as_of(&M, Some(HolderCountBasis::DeltaOnly), t1);
+        assert_eq!(
+            t.shape().map(BrainTrajectoryShape::direction),
+            Some(TrajectoryDirection::Concentrating)
+        );
+        assert!(plane.rate_as_of(&M, t1).unwrap_or(0) > 0);
+    }
+
+    /// The dispersing direction is reachable too — otherwise the signal would be
+    /// one-sided and its "direction" would be a constant wearing a name.
+    #[test]
+    fn the_dispersing_direction_is_reachable() {
+        use pump_quant_brain::concentration::TrajectoryDirection;
+        let mut hf = HolderFlow::new();
+        // Start dominated by one entity.
+        hf.observe_swap_aged(&M, 0, 1_000_000, 0, 0, Some(100));
+        for e in 1..30u64 {
+            hf.observe_swap_aged(&M, e, 100, 0, 0, Some(100));
+        }
+        let mut plane = ConcentrationTrajectoryPlane::new();
+        plane.observe(&M, internal_concentration_of(&hf, &M), 0, 0);
+        // A broad crowd arrives at real size.
+        let t1 = 60 * HOLDER_MIN_INTERVAL_NS;
+        for e in 30..120u64 {
+            hf.observe_swap_aged(&M, e, 40_000, 1, t1, Some(100));
+        }
+        plane.observe(&M, internal_concentration_of(&hf, &M), 1, t1);
+        let t = plane.trajectory_as_of(&M, Some(HolderCountBasis::DeltaOnly), t1);
+        assert_eq!(
+            t.shape().map(BrainTrajectoryShape::direction),
+            Some(TrajectoryDirection::Dispersing)
+        );
+        assert!(plane.rate_as_of(&M, t1).unwrap_or(0) < 0);
+    }
+
+    /// The plane is bounded and its eviction is a pure function of state (§99/§22).
+    #[test]
+    fn the_trajectory_plane_is_bounded_and_evicts_deterministically() {
+        let mut plane = ConcentrationTrajectoryPlane::with_capacity(3);
+        let reading = InternalVerdict::Known(InternalConcentration {
+            hhi_normalized_bps: 100,
+            holders: 30,
+        });
+        for i in 0..10u8 {
+            let mut m = [0u8; 32];
+            m[0] = i;
+            plane.observe(&m, reading, u64::from(i), u64::from(i) * 1_000);
+        }
+        assert_eq!(plane.len(), 3, "hard bound");
+        assert_eq!(plane.evictions(), 7);
+        // Deterministic: the same fold order reproduces the same survivor set.
+        let mut again = ConcentrationTrajectoryPlane::with_capacity(3);
+        for i in 0..10u8 {
+            let mut m = [0u8; 32];
+            m[0] = i;
+            again.observe(&m, reading, u64::from(i), u64::from(i) * 1_000);
+        }
+        assert_eq!(
+            plane.mints.keys().collect::<Vec<_>>(),
+            again.mints.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// A refused reading pushes NOTHING, so a gap in the series is a genuine gap
+    /// and never an interpolated zero (§6.4).
+    #[test]
+    fn a_refused_reading_is_not_sampled() {
+        let mut plane = ConcentrationTrajectoryPlane::new();
+        plane.observe(
+            &M,
+            InternalVerdict::Unknown(InternalUnknown::ThinLedger),
+            0,
+            0,
+        );
+        assert!(plane.is_empty());
+        assert_eq!(plane.rate_as_of(&M, 0), None);
+    }
+
+    /// Every app-side refusal reason maps to its OWN brain-side arm. Collapsing
+    /// them would destroy the one thing an `Unknown` is for: saying why.
+    #[test]
+    fn every_app_refusal_reason_maps_to_its_own_brain_arm() {
+        let arms = [
+            ConcentrationUnknown::Disarmed,
+            ConcentrationUnknown::Untracked,
+            ConcentrationUnknown::DeltaOnlyBasis,
+            ConcentrationUnknown::IncompleteBasis,
+            ConcentrationUnknown::ThinLedger,
+            ConcentrationUnknown::NoTrackedSupply,
+        ];
+        let mut seen = Vec::new();
+        for a in arms {
+            let mapped = brain_reading_of(&ConcentrationVerdict::Unknown(a))
+                .unknown_reason()
+                .expect("an Unknown maps to an Unknown");
+            assert!(
+                !seen.contains(&mapped),
+                "two app reasons collapsed onto {mapped:?}"
+            );
+            seen.push(mapped);
+        }
+        assert_eq!(seen.len(), arms.len());
+    }
+
+    /// A `Known` verdict bands across without ever producing a number from an
+    /// `Unknown`, and the bands honour the module's own published bars.
+    #[test]
+    fn a_known_verdict_bands_across_to_the_brain() {
+        let hf = equal_ledger(40);
+        let v = concentration_of(&hf, &M);
+        let banded = brain_reading_of(&v);
+        let shape = banded.shape().expect("Known bands across");
+        // Ten of forty equal holders is 2 500 bp ⇒ top-10 band 1 (at the low edge).
+        assert_eq!(shape.top10_band(), 1);
+        assert_eq!(shape.whale_dominance_band(), 0, "equal weight ⇒ no whale");
+        // And an Unknown yields nothing, by any route.
+        let u = brain_reading_of(&ConcentrationVerdict::Unknown(
+            ConcentrationUnknown::DeltaOnlyBasis,
+        ));
+        assert_eq!(u.shape(), None);
     }
 }

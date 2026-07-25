@@ -73,6 +73,7 @@ use std::io::Write;
 use pump_quant_brain::archetype::{
     archetype_performance, best_paying_lens, StyleLens, ARCHETYPE_MIN_SAMPLE, STYLE_LENSES,
 };
+use pump_quant_brain::concentration::concentration_code_label;
 use pump_quant_brain::episode::DiscoveryLane as BrainLane;
 use pump_quant_brain::fingerprint::{MetaSaturationState, VenuePhase};
 use pump_quant_brain::meta_timeline::{MetaMatchParams, MetaSnapshot, META_MAX_MATCHES_DEFAULT};
@@ -311,6 +312,20 @@ pub struct ClassRow {
     pub meta_category: u32,
     /// Conditioning discovery lane.
     pub discovery_lane: &'static str,
+    /// §21.7 the holder-distribution band the class was entered under, and — when
+    /// it is not `"unknown"` — the band this row's statistics are **local to**.
+    ///
+    /// A refusal renders `"unknown"`, never a band. The token comes from
+    /// [`pump_quant_brain::concentration::concentration_code_label`], which has no
+    /// path from the refusal code to a band name, so this field cannot fabricate a
+    /// shape the ledger never supported (§6.4).
+    ///
+    /// The two readings are genuinely different claims and a consumer must not
+    /// conflate them: `"unknown"` means the sample pools every band (the
+    /// conditioner was inert); a band name means the sample contains episodes of
+    /// that band and **no others** — not the other bands, and not the unmeasured
+    /// ones.
+    pub concentration_band: &'static str,
     /// `None` for a refusal; the refusal reason travels in `unknown_reason`.
     pub stats: Option<RecallStats>,
     /// `Some(label)` exactly when `stats` is `None`.
@@ -626,6 +641,7 @@ fn class_rows(classes: &[ConditionedClass]) -> Vec<ClassRow> {
             venue_phase: venue_phase_name(c.venue_phase),
             meta_category: c.meta_category_id,
             discovery_lane: brain_lane_name(c.discovery_lane),
+            concentration_band: concentration_code_label(c.concentration_code),
             stats: c.verdict.stats().copied(),
             unknown_reason: match c.verdict {
                 RecallVerdict::Known(_) => None,
@@ -643,6 +659,9 @@ fn class_rows(classes: &[ConditionedClass]) -> Vec<ClassRow> {
         bn.cmp(&an)
             .then(bm.cmp(&am))
             .then(a.signature.cmp(&b.signature))
+            // A signature can now appear once per concentration band, so it is no
+            // longer a unique key; the band token completes the total order (§22).
+            .then(a.concentration_band.cmp(b.concentration_band))
     });
     out.truncate(ANALYSIS_CLASS_CAP);
     out
@@ -1092,9 +1111,25 @@ pub fn retirement_flags(
         if !is_conditioned_negative(stats, floor) {
             continue;
         }
+        // §21.7 the nomination's KEY carries the band it was earned under.
+        //
+        // Two nominations can now share a signature and differ only in the band the
+        // evidence came from, and they are genuinely different subjects: "this setup
+        // bleeds when the float is in few hands" is a retirement case, "this setup
+        // bleeds, pooled over every float shape" is a different and weaker one. A
+        // bare signature key would collapse them, hand governance two identical
+        // keys, and let the §56 reviewer act on the wrong scope.
+        //
+        // The band suffix is appended UNCONDITIONALLY, `unknown` included, so the
+        // key format is one shape rather than two and a consumer never has to
+        // guess whether a missing suffix means "unmeasured" or "old artifact".
+        let mut key = String::with_capacity(48);
+        key.push_str(&c.signature.to_string());
+        key.push('@');
+        key.push_str(concentration_code_label(c.concentration_code));
         out.push(RetirementFlag {
             subject: FlagSubject::SetupClass,
-            key: c.signature.to_string(),
+            key,
             reason: REASON_CONDITIONED_NEGATIVE,
             n: stats.n_matched,
             realized_net_lamports: narrow_i64(stats.median_net_lamports),
@@ -1310,6 +1345,12 @@ impl BrainAnalysis {
             o.push_str(&c.meta_category.to_string());
             o.push_str(",\"discovery_lane\":");
             push_str_json(&mut o, c.discovery_lane);
+            // §21.7 the parallel stream. Always emitted, always a token from the
+            // closed vocabulary, `"unknown"` for a refusal — the same refusal
+            // discipline the estimate fields keep, on a field that is a LABEL
+            // rather than a number and so cannot be `null`.
+            o.push_str(",\"concentration_band\":");
+            push_str_json(&mut o, c.concentration_band);
             o.push_str(",\"confidence\":");
             push_str_json(
                 &mut o,

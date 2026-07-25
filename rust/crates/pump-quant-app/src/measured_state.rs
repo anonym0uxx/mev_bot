@@ -91,6 +91,17 @@ use pump_quant_wallet_graph::{TokenId, WalletId};
 /// can still see it. The engine's fingerprint call site cannot.
 pub const HOLDER_ACCEL_NEUTRAL_BPS: i64 = 0;
 
+/// §6.4 neutral input for `holder_growth_velocity_bps` when the estimator refuses.
+///
+/// `HOLDER_GROWTH_VELOCITY_EDGES_BPS = [-500, 0, 500, 2_000, 7_500]`, so `0` lands
+/// in the bucket spanning `[0, 500)` — the ladder's "flat to slow growth" rung,
+/// and the same neutral position [`HOLDER_ACCEL_NEUTRAL_BPS`] takes on its own
+/// ladder. Both refusals therefore collapse onto the middle of their ladders
+/// rather than onto an extreme, which is the conservative choice: a refusal must
+/// not look like evidence of an exodus, and it must not look like evidence of an
+/// explosion either.
+pub const HOLDER_VELOCITY_NEUTRAL_BPS: i64 = 0;
+
 /// §6.4 neutral input for `meta_saturation_state` when the phase tracker refuses.
 ///
 /// **Honest limitation.** [`MetaSaturationState`] is an ORDINAL lifecycle with no
@@ -325,6 +336,36 @@ impl MeasuredState {
     pub fn holder_growth_accel_input(&self, mint_id: MintKey, as_of_ns: u64) -> i64 {
         self.holder_growth_accel_bps(mint_id, as_of_ns)
             .unwrap_or(HOLDER_ACCEL_NEUTRAL_BPS)
+    }
+
+    /// The measured holder-growth VELOCITY for `mint_id` as known at `as_of_ns`,
+    /// or `None` when the estimator refuses.
+    ///
+    /// This is the FIRST derivative — `HolderGrowthEstimate::growth_bps`, the
+    /// quantity the acceleration estimator already computes on its way to the
+    /// second difference. No new estimator, no new sampling, no new failure mode:
+    /// velocity is `None` exactly when acceleration is `None`, because they come
+    /// out of the same three comparison points.
+    #[must_use]
+    pub fn holder_growth_velocity_bps(&self, mint_id: MintKey, as_of_ns: u64) -> Option<i64> {
+        self.holder_estimate(mint_id, as_of_ns)
+            .map(|e| e.growth_bps)
+    }
+
+    /// The fingerprint input for holder-growth velocity: the measured rate, or the
+    /// ladder's neutral rung when there is no measurement.
+    ///
+    /// Same honest limitation as [`HOLDER_ACCEL_NEUTRAL_BPS`] and for the same
+    /// structural reason — `HOLDER_GROWTH_VELOCITY_EDGES_BPS` has no UNKNOWN rung,
+    /// so a never-measured mint and a genuinely-flat one land on the same code.
+    /// That cost is bounded and accepted for a broad-coverage DERIVATIVE; it is
+    /// exactly the cost that made a thin-coverage LEVEL (concentration)
+    /// unacceptable as a fingerprint field. The distinction survives here on the
+    /// `Option`-returning accessor above.
+    #[must_use]
+    pub fn holder_growth_velocity_input(&self, mint_id: MintKey, as_of_ns: u64) -> i64 {
+        self.holder_growth_velocity_bps(mint_id, as_of_ns)
+            .unwrap_or(HOLDER_VELOCITY_NEUTRAL_BPS)
     }
 
     /// Number of mints with a holder series (bounded by the tracker capacity).

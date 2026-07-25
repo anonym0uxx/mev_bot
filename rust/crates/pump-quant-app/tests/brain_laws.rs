@@ -25,7 +25,7 @@ use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, Report, RunMode};
 use pump_quant_app::event::AppEvent;
 use pump_quant_app::journal_log::Decision;
-use pump_quant_brain::fingerprint::SetupFingerprint;
+use pump_quant_brain::fingerprint::{SetupFingerprint, FIELD_COUNT};
 use pump_quant_brain::persist::MemBlobStore;
 use pump_quant_domain::ids::Mint;
 use pump_quant_ingest::social_source::{MockSocialSource, RawSocialPayload};
@@ -624,7 +624,7 @@ fn b3_armed_recall_haircut_strictly_out_earns_its_absence() {
     );
     // Class-level audit: the two setup classes recall separates, and what each paid.
     {
-        let mut seen: Vec<([u8; 20], i128, usize)> = Vec::new();
+        let mut seen: Vec<([u8; FIELD_COUNT], i128, usize)> = Vec::new();
         for e in neng.brain().index().iter_oldest_first() {
             let b = *e.fingerprint().buckets();
             match seen.iter_mut().find(|(x, _, _)| *x == b) {
@@ -643,7 +643,7 @@ fn b3_armed_recall_haircut_strictly_out_earns_its_absence() {
         // forbids across phases and the same error across setups.
         for i in 0..seen.len() {
             for j in (i + 1)..seen.len() {
-                let d: u32 = (0..20)
+                let d: u32 = (0..FIELD_COUNT)
                     .map(|k| u32::from(seen[i].0[k].abs_diff(seen[j].0[k])))
                     .sum();
                 eprintln!("B3   ordinal-L1 distance class{i} vs class{j} = {d}");

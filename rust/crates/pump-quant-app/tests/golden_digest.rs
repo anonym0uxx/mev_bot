@@ -106,7 +106,12 @@ fn main_scalp(m: u64, round: u64, i: u64) -> (i128, i64) {
     (price_fp, signed_base)
 }
 
-fn drive(cfg: Config) -> pump_quant_app::engine::Report {
+/// Drive the golden tape and hand back the ENGINE, un-reported.
+///
+/// Split out from [`drive`] so a test can exercise the report-plane machinery
+/// (the §21.7 parallel stream, the strategy export) against the same tape and
+/// then check that the journal digest did not move.
+fn drive_eng(cfg: Config) -> Engine {
     // ---- Cost-realism: model a REALISTIC low-cap Solana memecoin scalp round-trip.
     // The default `dev_portable` economics (protocol 100 bps, fixed 50k lamports,
     // impact_den 1e6) yield a ~150–190 bps round-trip — far too cheap, which
@@ -413,7 +418,11 @@ fn drive(cfg: Config) -> pump_quant_app::engine::Report {
             eng.tick(AppEvent::Tick);
         }
     }
-    eng.report()
+    eng
+}
+
+fn drive(cfg: Config) -> pump_quant_app::engine::Report {
+    drive_eng(cfg).report()
 }
 
 /// The byte-exact outcome of [`drive`], frozen. **Deliberately re-pinned twice**:
@@ -1260,4 +1269,79 @@ fn holder_concentration_is_exactly_neutral_on_this_tape() {
         probe2.holder_concentration(m2.as_bytes()).is_known(),
         "and a creation-first ledger on the SAME engine must produce one"
     );
+}
+
+/// **§21.7 — the concentration PARALLEL STREAM is decision-inert on this tape.**
+///
+/// The stream touches three planes this wave: it is maintained continuously on the
+/// holder-sample cadence, it is recorded on every episode at admit, and it joins
+/// the recall FILTER key that the reflection readout and the strategy export
+/// condition on. None of those may move a decision, and this is the A/B that
+/// proves it rather than asserting it.
+///
+/// The comparison is *exercised vs not*: one arm drives the tape and reports; the
+/// other drives the same tape, exercises the whole parallel-stream surface —
+/// trajectory queries, reflection refresh, the conditioned-class recall, the full
+/// `brain_analysis_v1` render — and only then reports. Every journal counter,
+/// including the digest, must be byte-identical.
+///
+/// It also pins the honest half of the coverage result: on a tape with no creation
+/// sightings, NO mint reaches an `Exact` holder basis, so every episode records a
+/// REFUSED band. A fingerprint field would have been forced to call all of them
+/// "neutral"; the parallel stream calls them `unknown`, and the export says so.
+#[test]
+fn the_concentration_parallel_stream_is_decision_inert_on_this_tape() {
+    // Arm A: nothing exercised.
+    let plain = drive(Config::dev_portable());
+
+    // Arm B: the whole parallel-stream + export surface exercised BEFORE the
+    // report is taken, so any feedback into a decision would land in the digest.
+    let mut e = drive_eng(Config::dev_portable());
+    let json = e.brain_analysis_json();
+    let analysis = e.brain_analysis();
+    let exercised = e.report();
+
+    assert_eq!(
+        plain.journal_digest, exercised.journal_digest,
+        "exercising the parallel stream moved the journal digest"
+    );
+    assert_eq!(plain.net_lamports, exercised.net_lamports);
+    assert_eq!(plain.admitted, exercised.admitted);
+    assert_eq!(plain.promoted, exercised.promoted);
+    assert_eq!(plain.rejected, exercised.rejected);
+    assert_eq!(plain.universe_filtered, exercised.universe_filtered);
+    assert_eq!(plain.journal_digest, GOLDEN_DIGEST);
+
+    // …and the coverage fact, reported rather than barred.
+    let bands: std::collections::BTreeSet<&str> = analysis
+        .setup_classes
+        .iter()
+        .map(|c| c.concentration_band)
+        .collect();
+    println!(
+        "PARALLEL-STREAM-on-golden: classes={} bands={:?} report_rows={} \
+         reflection_classes={}",
+        analysis.setup_classes.len(),
+        bands,
+        exercised.holder_trajectory.len(),
+        exercised.brain_setup_classes.len()
+    );
+    assert!(
+        bands.iter().all(|b| *b == "unknown"),
+        "no mint on this tape reaches an Exact holder basis, so every class must \
+         REFUSE a band: {bands:?}"
+    );
+    assert!(json.contains("\"concentration_band\":\"unknown\""));
+    for band in ["broad", "moderate", "concentrated", "extreme"] {
+        assert!(
+            !json.contains(&format!("\"concentration_band\":\"{band}\"")),
+            "the artifact invented band {band} on a tape that measured none"
+        );
+    }
+    // Every reflection row agrees: code 0 is the refusal, and it is what conditions
+    // (i.e. does not condition) the estimate behind the row.
+    assert!(exercised
+        .brain_setup_classes
+        .iter()
+        .all(|c| c.concentration_code == 0));
 }

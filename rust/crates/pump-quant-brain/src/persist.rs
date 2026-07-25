@@ -65,6 +65,10 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use crate::concentration::{
+    ConcentrationReading, ConcentrationShape, ConcentrationTrajectory, ConcentrationUnknown,
+    TrajectoryDirection, TrajectoryShape, TrajectoryUnknown,
+};
 use crate::episode::{
     DiscoveryLane, Episode, EpisodeContext, EpisodeOutcome, ExitReason, EPISODE_SCHEMA_VERSION,
 };
@@ -76,7 +80,21 @@ use crate::recall::{EpisodicIndex, IndexError};
 pub const MAGIC: [u8; 8] = *b"HRMBRAIN";
 
 /// On-disk format version. Bumped on any framing or record-layout change.
-pub const FORMAT_VERSION: u32 = 1;
+///
+/// * **1** — schema-1 episodes, 118-byte records.
+/// * **2** — schema-2 episodes: the bucket vector gained the holder-growth
+///   VELOCITY field and [`EpisodeContext`] gained the [`crate::concentration`]
+///   parallel stream, so [`EPISODE_WIRE_LEN`] moved 118 → 126.
+///
+/// This is the OUTER refusal: [`parse_header`] rejects a whole store written by a
+/// build with a different `FORMAT_VERSION`, so a schema-1 corpus is refused at the
+/// first byte rather than record by record. The inner refusal
+/// ([`decode_episode`] checking [`EPISODE_SCHEMA_VERSION`]) still stands, so a
+/// hand-mixed file cannot smuggle a stale record through either. **The persisted
+/// corpus is invalidated by this bump, deliberately** — a schema-1 bucket vector
+/// reinterpreted under schema 2 would shift every field's meaning silently, which
+/// is strictly worse than losing the corpus.
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Header length in bytes: magic + format version + capacity.
 pub const HEADER_LEN: usize = 8 + 4 + 8;
@@ -85,7 +103,17 @@ pub const HEADER_LEN: usize = 8 + 4 + 8;
 pub const FRAME_HEADER_LEN: usize = 4 + 8;
 
 /// Fixed serialized length of one [`Episode`] payload (constitution 102).
-pub const EPISODE_WIRE_LEN: usize = 118;
+///
+/// `2` schema + `8` id + `16` signature + [`FIELD_COUNT`] buckets + `30` context
+/// + `7` parallel stream + `42` outcome.
+pub const EPISODE_WIRE_LEN: usize = 2 + 8 + 16 + FIELD_COUNT + 30 + 7 + 42;
+
+/// Compile-time proof that the declared wire length matches the field layout the
+/// encoder writes (§102 — the relationship is checked, not remembered).
+const _: () = assert!(
+    EPISODE_WIRE_LEN == 126,
+    "schema 2 episode records are 126 bytes"
+);
 
 /// Largest payload the reader will believe. Anything larger is treated as
 /// corruption rather than as an allocation instruction — a length field is
@@ -347,6 +375,47 @@ pub fn encode_episode(e: &Episode) -> Vec<u8> {
     b.push(ctx.discovery_lane.ordinal());
     b.extend_from_slice(&ctx.info_time_ns.to_le_bytes());
     b.extend_from_slice(&ctx.slot.to_le_bytes());
+    // ---- the parallel stream, 7 bytes (schema 2) -------------------------
+    // LEVEL: [tag, a, b, c]. `tag = 0` ⇒ Unknown and `a` is the reason ordinal
+    // (`b`/`c` are zero padding); `tag = 1` ⇒ Known and `a`/`b`/`c` are the three
+    // bands. There is deliberately no encoding in which an Unknown carries a band.
+    match ctx.concentration.shape() {
+        Some(s) => {
+            b.push(1);
+            b.push(s.top10_band());
+            b.push(s.whale_dominance_band());
+            b.push(s.early_top10_band());
+        }
+        None => {
+            b.push(0);
+            b.push(
+                ctx.concentration
+                    .unknown_reason()
+                    .unwrap_or(ConcentrationUnknown::Disarmed)
+                    .ordinal(),
+            );
+            b.push(0);
+            b.push(0);
+        }
+    }
+    // TRAJECTORY: [tag, a, b] with the same discipline.
+    match ctx.concentration_trajectory.shape() {
+        Some(t) => {
+            b.push(1);
+            b.push(t.direction().ordinal());
+            b.push(t.magnitude_band());
+        }
+        None => {
+            b.push(0);
+            b.push(
+                ctx.concentration_trajectory
+                    .unknown_reason()
+                    .unwrap_or(TrajectoryUnknown::Disarmed)
+                    .ordinal(),
+            );
+            b.push(0);
+        }
+    }
     let out = e.outcome();
     b.extend_from_slice(&out.realized_net_lamports.to_le_bytes());
     b.extend_from_slice(&out.hold_duration_ns.to_le_bytes());
@@ -440,6 +509,36 @@ pub fn decode_episode(payload: &[u8]) -> Option<Episode> {
     let info_time_ns = r.u64()?;
     let slot = r.u64()?;
 
+    // ---- the parallel stream (schema 2). An unknown tag or an out-of-range
+    // ordinal rejects the whole record; it is never coerced to a neutral band.
+    let concentration = match r.u8()? {
+        0 => {
+            let reason = ConcentrationUnknown::from_ordinal(r.u8()?)?;
+            let _pad = r.take(2)?;
+            ConcentrationReading::Unknown(reason)
+        }
+        1 => {
+            let top10 = r.u8()?;
+            let whale = r.u8()?;
+            let early = r.u8()?;
+            ConcentrationReading::Known(ConcentrationShape::from_bands(top10, whale, early))
+        }
+        _ => return None,
+    };
+    let concentration_trajectory = match r.u8()? {
+        0 => {
+            let reason = TrajectoryUnknown::from_ordinal(r.u8()?)?;
+            let _pad = r.take(1)?;
+            ConcentrationTrajectory::Unknown(reason)
+        }
+        1 => {
+            let direction = TrajectoryDirection::from_ordinal(r.u8()?)?;
+            let magnitude = r.u8()?;
+            ConcentrationTrajectory::Known(TrajectoryShape::from_parts(direction, magnitude))
+        }
+        _ => return None,
+    };
+
     let realized_net_lamports = r.i128()?;
     let hold_duration_ns = r.u64()?;
     let exit_reason = ExitReason::from_ordinal(r.u8()?)?;
@@ -462,6 +561,8 @@ pub fn decode_episode(payload: &[u8]) -> Option<Episode> {
             discovery_lane,
             info_time_ns,
             slot,
+            concentration,
+            concentration_trajectory,
         },
         EpisodeOutcome {
             realized_net_lamports,
@@ -864,6 +965,30 @@ mod tests {
                 discovery_lane: DiscoveryLane::from_ordinal((i % 6) as u8).expect("in range"),
                 info_time_ns: i * 1_000_000_000,
                 slot: i * 3,
+                // Cycle the parallel stream through BOTH shapes and every reason
+                // ordinal, so the round-trip test actually exercises the
+                // Known/Unknown discrimination rather than one arm of it.
+                concentration: if i.is_multiple_of(2) {
+                    ConcentrationReading::Known(ConcentrationShape::from_bands(
+                        (i % 4) as u8,
+                        ((i / 2) % 4) as u8,
+                        ((i / 4) % 4) as u8,
+                    ))
+                } else {
+                    ConcentrationReading::Unknown(
+                        ConcentrationUnknown::from_ordinal((i % 6) as u8).expect("in range"),
+                    )
+                },
+                concentration_trajectory: if i.is_multiple_of(3) {
+                    ConcentrationTrajectory::Known(TrajectoryShape::from_parts(
+                        TrajectoryDirection::from_ordinal((i % 3) as u8).expect("in range"),
+                        (i % 4) as u8,
+                    ))
+                } else {
+                    ConcentrationTrajectory::Unknown(
+                        TrajectoryUnknown::from_ordinal((i % 5) as u8).expect("in range"),
+                    )
+                },
             },
             EpisodeOutcome {
                 realized_net_lamports: (i as i128 % 21 - 10) * 1_000_000,
@@ -929,16 +1054,89 @@ mod tests {
         );
     }
 
+    /// Schema-2 record layout, as named offsets so the corruption tests below say
+    /// what they are corrupting rather than counting bytes in a comment.
+    /// `2 + 8 + 16 + FIELD_COUNT` puts the context at 47.
+    const OFF_LANE: usize = 2 + 8 + 16 + FIELD_COUNT + 8 + 1 + 4;
+    /// Tag byte of the parallel stream's LEVEL channel.
+    const OFF_CONC_TAG: usize = OFF_LANE + 1 + 8 + 8;
+    /// Reason/band byte immediately after [`OFF_CONC_TAG`].
+    const OFF_CONC_A: usize = OFF_CONC_TAG + 1;
+    /// Tag byte of the parallel stream's TRAJECTORY channel.
+    const OFF_TRAJ_TAG: usize = OFF_CONC_TAG + 4;
+    /// The `was_admitted` flag — the final byte of the record.
+    const OFF_ADMITTED: usize = EPISODE_WIRE_LEN - 1;
+
     #[test]
     fn decode_rejects_unknown_enum_ordinals() {
         let mut bytes = encode_episode(&make_episode(2));
-        // Offset 59 is the discovery-lane ordinal.
-        bytes[59] = 200;
-        assert!(decode_episode(&bytes).is_none());
+        bytes[OFF_LANE] = 200;
+        assert!(decode_episode(&bytes).is_none(), "discovery lane");
         let mut bytes = encode_episode(&make_episode(2));
-        // Offset 117 is the was_admitted flag; only 0 and 1 are legal.
-        bytes[117] = 7;
-        assert!(decode_episode(&bytes).is_none());
+        bytes[OFF_ADMITTED] = 7;
+        assert!(decode_episode(&bytes).is_none(), "was_admitted");
+    }
+
+    /// The parallel stream fails closed on the wire too: a tag that is neither
+    /// Known nor Unknown, and an out-of-range refusal reason, both reject the
+    /// whole record rather than defaulting into a band (§6.4).
+    #[test]
+    fn decode_rejects_a_malformed_parallel_stream() {
+        // `make_episode(1)` is odd ⇒ its LEVEL channel is Unknown (tag 0).
+        let mut bytes = encode_episode(&make_episode(1));
+        bytes[OFF_CONC_TAG] = 9;
+        assert!(decode_episode(&bytes).is_none(), "unknown level tag");
+
+        let mut bytes = encode_episode(&make_episode(1));
+        bytes[OFF_CONC_A] = 200;
+        assert!(
+            decode_episode(&bytes).is_none(),
+            "out-of-range refusal reason"
+        );
+
+        let mut bytes = encode_episode(&make_episode(1));
+        bytes[OFF_TRAJ_TAG] = 9;
+        assert!(decode_episode(&bytes).is_none(), "unknown trajectory tag");
+    }
+
+    /// A schema-1 record must be REFUSED, not reinterpreted: the bucket vector
+    /// widened and every offset after it moved, so a "best effort" load would
+    /// silently shift every field's meaning.
+    #[test]
+    fn a_stale_schema_record_is_refused_rather_than_reinterpreted() {
+        let mut bytes = encode_episode(&make_episode(4));
+        bytes[0..2].copy_from_slice(&1u16.to_le_bytes());
+        assert!(decode_episode(&bytes).is_none(), "schema 1 must not load");
+        // And the whole-store refusal: a schema-1 header is rejected outright.
+        let mut old_header = header(16_384);
+        old_header[8..12].copy_from_slice(&1u32.to_le_bytes());
+        assert!(matches!(
+            parse_header(&old_header),
+            Err(PersistError::UnsupportedFormat { found: 1, .. })
+        ));
+    }
+
+    /// A `Known` band survives a round trip and an `Unknown` reason survives it
+    /// too — neither is coerced into the other.
+    #[test]
+    fn the_parallel_stream_round_trips_both_arms() {
+        // Even ⇒ Known level; odd ⇒ Unknown level.
+        let known = make_episode(2);
+        let back = decode_episode(&encode_episode(&known)).expect("round trip");
+        assert_eq!(back.context().concentration, known.context().concentration);
+        assert!(back.context().concentration.is_known());
+
+        let unknown = make_episode(1);
+        let back = decode_episode(&encode_episode(&unknown)).expect("round trip");
+        assert_eq!(
+            back.context().concentration.unknown_reason(),
+            unknown.context().concentration.unknown_reason()
+        );
+        assert_eq!(back.context().concentration.shape(), None);
+        assert_eq!(
+            back.context().concentration_trajectory,
+            unknown.context().concentration_trajectory
+        );
     }
 
     #[test]

@@ -48,9 +48,11 @@ use crate::event::CreatorActionKind;
 use crate::extraction_risk::ExtractionRiskLedger;
 use crate::hazard_scaffold::HazardScaffold;
 use crate::holder_concentration::{
-    concentration_of, ConcentrationRisk, ConcentrationUnknown, ConcentrationVerdict,
-    TOP10_HAIRCUT_BPS,
+    brain_reading_of, concentration_of, internal_concentration_of, ConcentrationRisk,
+    ConcentrationTrajectoryPlane, ConcentrationUnknown, ConcentrationVerdict, TOP10_HAIRCUT_BPS,
 };
+use pump_quant_brain::concentration::ConcentrationTrajectory as BrainTrajectory;
+
 use crate::holder_flow::{HolderCountBasis, HolderFlow, HolderReading};
 use crate::social_earn::{SocialEarn, SocialEarnParams};
 use crate::social_ingest::{ledger_quality, to_mention, SourceQualityPolicy};
@@ -616,6 +618,21 @@ pub struct HolderTrajectoryRow {
     /// basis discipline as everything else here — under a delta-only or truncated
     /// ledger it is `Unknown` with the reason and no estimate.
     pub concentration: ConcentrationVerdict,
+    /// §21.7 the CONCENTRATION TRAJECTORY of the tracked cohort — is the float
+    /// under this open position gathering into fewer hands, or spreading out?
+    ///
+    /// The row above answers "how concentrated is it", and answers it `Unknown` on
+    /// almost every real market because a share of the float needs an `Exact`
+    /// holder basis. This one answers "which way is it moving", and it ANSWERS —
+    /// because the tracked cohort's internal distribution has a denominator we
+    /// know exactly, so its change is observable on a delta-only ledger. A
+    /// separate field of a separate type, so a direction can never be misread as a
+    /// share.
+    pub concentration_trajectory: BrainTrajectory,
+    /// The raw signed rate behind [`Self::concentration_trajectory`], in bps of
+    /// normalized internal concentration per minute. `None` when no rate is
+    /// measurable — never a fabricated zero.
+    pub concentration_rate_bps: Option<i64>,
 }
 
 /// The running engine.
@@ -739,6 +756,17 @@ pub struct Engine {
     /// third-party (Birdeye/DAS) holder count stays corroboration-tier (§6.6) and
     /// never populates it. Bounded (§99).
     holder_flow: HolderFlow,
+
+    /// §21.7 CONTINUOUS concentration TRAJECTORY — the parallel stream.
+    ///
+    /// The holder ledger's *absolute* distribution is a level and needs an `Exact`
+    /// basis, so it stays a point derivation. The tracked cohort's *internal*
+    /// concentration is a derivative of a denominator we know exactly, so it is
+    /// readable on the delta-only ledgers that make up almost the whole tape — and
+    /// a derivative is only meaningful as a series. This plane keeps that series,
+    /// folded on the same bounded cadence as the holder-count sample. Bounded
+    /// (§99). Report and brain-context only; no decision reads it.
+    conc_trajectory: ConcentrationTrajectoryPlane,
 
     /// Reflection/report analytics (§47/§48/§49/§50/§51/§54): per-trade returns,
     /// MFE rows, PRFS reject forward-marking, convexity events, retirement,
@@ -1040,6 +1068,7 @@ impl Engine {
             vpin: BTreeMap::new(),
             creations: BTreeMap::new(),
             holder_flow: HolderFlow::new(),
+            conc_trajectory: ConcentrationTrajectoryPlane::new(),
             analytics: ReflectionAnalytics::new(),
             tournament,
             flow_screen: FlowScreen::new(),
@@ -1414,6 +1443,29 @@ impl Engine {
                     if let Some(count) = fold.sample {
                         self.measured
                             .record_holder_count(fnv1a_64(mint.as_bytes()), count, ns);
+                        // …and, on the SAME bounded cadence, fold the tracked
+                        // cohort's INTERNAL concentration into its own series
+                        // (§21.7 parallel stream).
+                        //
+                        // Concentration used to be a point reading derived on
+                        // demand at admit. A point reading can answer "is this
+                        // concentrated?" but not "is it concentratING?", and the
+                        // second question is the one with a tradeable answer. The
+                        // derivation is `O(n)` over a bounded ledger and runs once
+                        // per 1.2 s of information time per mint — the same cost
+                        // discipline the holder sample already pays, reusing the
+                        // same compile-time-proven cadence rather than inventing a
+                        // second one.
+                        //
+                        // Note this is the INTERNAL statistic, gated on
+                        // `admits_growth` and therefore live on the delta-only
+                        // ledgers where the absolute share refuses. It is a
+                        // different quantity in a different type and can never be
+                        // read as a share of the float.
+                        let internal =
+                            internal_concentration_of(&self.holder_flow, mint.as_bytes());
+                        self.conc_trajectory
+                            .observe(mint.as_bytes(), internal, self.now, ns);
                     }
                 }
                 // On-chain-led category flow: a trade contributes to per-category
@@ -3396,6 +3448,28 @@ impl Engine {
             holder_growth_accel_bps: self
                 .measured
                 .holder_growth_accel_input(mint_id, self.now.saturating_mul(BRAIN_TICK_NS)),
+            // §70.1 holder-growth VELOCITY — the FIRST derivative (schema 2).
+            //
+            // Under schema 1 the fingerprint carried only the second derivative, so
+            // a market broadening fast and steadily (large velocity, zero
+            // acceleration) was BIT-IDENTICAL to a completely flat one. Those are
+            // different markets with different forward distributions, and the
+            // similarity index could not see the difference.
+            //
+            // The value comes off the SAME estimate the acceleration does — the
+            // holder-growth estimator computes both first differences on its way to
+            // the second — so this field adds no estimator, no sampling and no new
+            // refusal path. It is `None` exactly when acceleration is `None`.
+            //
+            // Same honest §6.4 limitation, same reason: the ladder has no UNKNOWN
+            // rung, so "never captured" and "measured flat" share a code. That is
+            // the bounded price of a BROAD-COVERAGE derivative, and it is precisely
+            // the price that made a thin-coverage LEVEL unacceptable here —
+            // concentration rides beside the signature instead
+            // (`EpisodeContext::concentration`), never inside it.
+            holder_growth_velocity_bps: self
+                .measured
+                .holder_growth_velocity_input(mint_id, self.now.saturating_mul(BRAIN_TICK_NS)),
             creator_class,
             meta_category_id,
             meta_saturation_state,
@@ -3415,6 +3489,30 @@ impl Engine {
                 // The engine's logical tick IS the replay anchor (§22: no wall clock,
                 // no chain slot on the laptop build).
                 slot: self.now,
+                // ---- THE PARALLEL STREAM (schema 2) -------------------------
+                // The holder-distribution shape the episode was entered under,
+                // recorded BESIDE the signature rather than inside it. It is a
+                // LEVEL and needs an `Exact` holder basis, so on most episodes it
+                // is an explicit `Unknown(reason)` — which is the point. Recording
+                // the refusal, with its reason, is what lets the optional recall
+                // conditioner sharpen where the data exists and decline where it
+                // does not. Collapsing it into a numeric bucket, as a fingerprint
+                // field would have to, is the §6.4 failure this avoids.
+                //
+                // This is the REPORT-plane derivation (`holder_concentration`),
+                // not the decision-plane one, because what the episode records is
+                // the EVIDENCE the market presented, not whether some law happened
+                // to be armed when it did. The brain is decision-inert.
+                concentration: brain_reading_of(&self.holder_concentration(mint)),
+                // …and the DERIVATIVE half, which is valid on the delta-only
+                // ledgers the level refuses. Maintained continuously by
+                // `conc_trajectory` on the holder-sample cadence, so what lands
+                // here is a trajectory rather than a point reading.
+                concentration_trajectory: self.conc_trajectory.trajectory_as_of(
+                    mint,
+                    self.holder_flow.reading(mint).map(|r| r.basis()),
+                    self.now.saturating_mul(BRAIN_TICK_NS),
+                ),
             },
         }
     }
@@ -4214,6 +4312,12 @@ impl Engine {
                     entities_tracked: r.entities_tracked(),
                     truncated: r.truncated(),
                     concentration: concentration_of(&self.holder_flow, m),
+                    concentration_trajectory: self.conc_trajectory.trajectory_as_of(
+                        m,
+                        Some(r.basis()),
+                        as_of_ns,
+                    ),
+                    concentration_rate_bps: self.conc_trajectory.rate_as_of(m, as_of_ns),
                 })
             })
             .collect()
@@ -4226,6 +4330,32 @@ impl Engine {
     #[must_use]
     pub const fn holder_flow(&self) -> &HolderFlow {
         &self.holder_flow
+    }
+
+    /// §21.7 the CONCENTRATION TRAJECTORY of the tracked cohort for one mint, as
+    /// known at the current information time — the parallel stream's derivative
+    /// half.
+    ///
+    /// Always derived, regardless of any config switch, for the same reason
+    /// [`Self::holder_concentration`] is: an operator asking which way a float is
+    /// moving is asking about the EVIDENCE, not about whether some law happens to
+    /// be armed. Never a decision input.
+    #[must_use]
+    pub fn concentration_trajectory(&self, mint: &[u8; 32]) -> BrainTrajectory {
+        self.conc_trajectory.trajectory_as_of(
+            mint,
+            self.holder_flow.reading(mint).map(|r| r.basis()),
+            self.now.saturating_mul(BRAIN_TICK_NS),
+        )
+    }
+
+    /// The raw signed rate behind [`Self::concentration_trajectory`], in bps of
+    /// normalized internal concentration per minute. `None` when no rate is
+    /// measurable — never a fabricated zero (§6.4).
+    #[must_use]
+    pub fn concentration_rate_bps(&self, mint: &[u8; 32]) -> Option<i64> {
+        self.conc_trajectory
+            .rate_as_of(mint, self.now.saturating_mul(BRAIN_TICK_NS))
     }
 
     /// §70.1 the current holder reading for one mint, or `None` when the mint has

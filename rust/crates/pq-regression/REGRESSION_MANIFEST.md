@@ -13,6 +13,24 @@ no wall-clock, and no RNG (§22).
 At the pinned green HEAD: `cargo test --workspace` = **all passed / 0 failed**,
 golden digest `12080844907577912056` (net `15410801`), **191** dossiers intact.
 
+### Brain representation state (no baseline of its own — recorded so a future re-pin knows where it started)
+
+The episodic fingerprint is at **schema 2**: `SIGNATURE_BITS = 104`
+(`EPISODE_SCHEMA_VERSION = 2`), schema 1's 99 bits plus the 5-bit
+`F_HOLDER_GROWTH_VELOCITY` thermometer — the first derivative of holder growth,
+adopted against the pre-registered laws V1/V2/V3 in
+`pump-quant-brain/tests/schema2_information_gain.rs`. 24 of the `u128`'s bits
+remain free for a schema 3.
+
+Holder **concentration** deliberately spends **none** of them. It rides as a
+§21.7 parallel stream on `EpisodeContext` and enters recall only through the
+`RecallFilter` key, which is not the signature — so the band costs zero signature
+bits, forces no migration, and can carry a first-class `Unknown` that the filter
+never matches on. Neither the stream nor the velocity field moves the golden
+digest: both are report/representation plane, and
+`golden_digest.rs::the_concentration_parallel_stream_is_decision_inert_on_this_tape`
+is the exercised-vs-not A/B that proves it.
+
 ---
 
 ## Pinned baselines (mirror of `src/baselines.rs`)
