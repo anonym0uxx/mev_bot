@@ -105,14 +105,36 @@
 //! bias in the `DeltaOnly` growth reading; it is not corrected here because any
 //! correction would require the unknown pre-window base, i.e. a fabrication.
 //!
+//! # The DISTRIBUTION-SHAPE extension (§21.7 / §70.1)
+//!
+//! The count is only half of what the ledger knows. Each tracked entity also
+//! carries its **gross traded base volume** and the **market age in slots at its
+//! first observed buy**, and each mint carries a bounded roster of the first
+//! [`EARLY_ROSTER_CAP`] distinct entities ever seen buying it. Those three
+//! additions are what let [`crate::holder_concentration`] derive the *shape* of
+//! the holder distribution — concentration, early-buyer capture, bundle/sniper
+//! presence and flip (bump/wash) behaviour — rather than only its size.
+//!
+//! They are recorded here, in the fold, because they are **first-sighting**
+//! facts: an entity's first-buy slot cannot be reconstructed after the fact from
+//! a position snapshot, and the arrival ORDER of the first ten buyers is gone the
+//! moment the ledger is sorted by entity id. The fold is the only place that sees
+//! them, so the fold is where they are captured (§20: information is not
+//! retroactive).
+//!
+//! Nothing in this extension moves the holder count, so every count-consuming
+//! law is byte-identical across it.
+//!
 //! # Bounds (§99/§57)
 //!
 //! [`HOLDER_ENTITY_CAP`] entities per mint and [`HOLDER_FLOW_MINT_CAP`] mints,
 //! both hard. Entities live in a per-mint sorted `Vec` (binary search on the hot
 //! path, insertion only on a genuinely new entity), so the per-mint footprint is
-//! a flat 16 bytes per tracked entity. A new mint at capacity evicts the
-//! least-recently-traded record (ties broken by the smaller mint key), which is a
-//! pure function of state — no clock, no insertion-order dependence.
+//! a flat 32 bytes per tracked entity ([`EntityPos`]) plus the
+//! [`EARLY_ROSTER_CAP`]-entry early roster — 16 KiB + 80 B per mint, 8 MiB across
+//! the mint cap. A new mint at capacity evicts the least-recently-traded record
+//! (ties broken by the smaller mint key), which is a pure function of state — no
+//! clock, no insertion-order dependence.
 //!
 //! # Purity
 //!
@@ -140,6 +162,33 @@ pub const HOLDER_ENTITY_CAP: usize = 512;
 /// `512 * 512 * 16 B = 4 MiB`. A new mint at capacity evicts the
 /// least-recently-traded record.
 pub const HOLDER_FLOW_MINT_CAP: usize = 512;
+
+/// §99 bound on the per-mint EARLY-BUYER roster: the first N distinct entities
+/// ever observed buying a mint, in arrival order.
+///
+/// Ten, because ten is the cohort MemeTrans (arXiv 2602.13480) measures: its
+/// `early_top10_hold_pct` feature is the share of supply held by the launch's
+/// **first ten buyers**, and the paper's headline concentration effect is that
+/// this cohort held **~17 percentage points MORE** supply in high-risk launches
+/// than in low-risk ones. A roster of exactly the measured cohort size keeps the
+/// derived feature comparable to the published effect instead of being a
+/// differently-shaped number wearing its name (§102).
+pub const EARLY_ROSTER_CAP: usize = 10;
+
+/// Market age in slots that means "the creation slot itself" — a purchase that
+/// landed in the same slot the mint was created in.
+///
+/// arXiv 2601.08641 defines a **bundle bot** as a non-creator purchase inside the
+/// *creation block*; that is age zero by construction.
+pub const CREATION_SLOT_AGE: u32 = 0;
+
+/// Slots after creation inside which a first buy is a **sniper**, not a human.
+///
+/// arXiv 2601.08641 places sniper-bot purchases within the **first 1–5 blocks**
+/// (~0.4–2 s at Solana's ~400 ms slot), explicitly below human reaction time. The
+/// window is taken at the upper end of the published range so the classification
+/// is inclusive of the whole documented cohort rather than a slice of it.
+pub const SNIPER_SLOT_WINDOW: u32 = 5;
 
 /// Minimum logical ticks between two holder samples pushed into the §70.1
 /// acceleration estimator (§20 / §102).
@@ -340,13 +389,78 @@ pub struct HolderFold {
     pub truncated: bool,
 }
 
+/// One tracked entity's position and traded footprint inside one mint's ledger.
+///
+/// `net` is the accounting quantity the holder count is folded from; `gross` and
+/// `first_buy_age_slots` are the distribution-shape additions (see the module
+/// docs) and are read only by [`crate::holder_concentration`]. Every field is
+/// private with a `#[must_use]` accessor so a consumer cannot reach a raw number
+/// without going through the type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntityPos {
+    entity: u64,
+    /// Net tracked base position; saturates at zero, never negative.
+    net: u64,
+    /// Gross base quantity this entity has traded on this mint (buys plus
+    /// sells, saturating) — the numerator of the flip / bump-bot ratio.
+    gross: u64,
+    /// Market age in slots at this entity's FIRST observed buy. Meaningful only
+    /// when `bought && age_known`.
+    first_buy_age_slots: u32,
+    /// This entity has been observed BUYING at least once. False for an entity
+    /// recorded only by a pre-window sell (§6.4 — a seller we never saw buy is
+    /// not an observed early buyer).
+    bought: bool,
+    /// The first buy carried real slot evidence. A swap that arrives with no age
+    /// evidence leaves this false, and the entity is then classified as neither
+    /// bundle nor sniper rather than as "age 0" (§6.4 — unknown is not zero).
+    age_known: bool,
+}
+
+impl EntityPos {
+    /// The §28 entity-deduplicated actor id.
+    #[must_use]
+    pub const fn entity(&self) -> u64 {
+        self.entity
+    }
+
+    /// Net tracked base position (0 = seen, currently not a holder).
+    #[must_use]
+    pub const fn net(&self) -> u64 {
+        self.net
+    }
+
+    /// Gross base quantity traded (buys + sells).
+    #[must_use]
+    pub const fn gross(&self) -> u64 {
+        self.gross
+    }
+
+    /// Whether this entity has ever been observed buying.
+    #[must_use]
+    pub const fn has_bought(&self) -> bool {
+        self.bought
+    }
+
+    /// Market age in slots at the entity's first observed buy, or `None` when it
+    /// has never been seen buying or the buy carried no age evidence.
+    #[must_use]
+    pub const fn first_buy_age_slots(&self) -> Option<u32> {
+        if self.bought && self.age_known {
+            Some(self.first_buy_age_slots)
+        } else {
+            None
+        }
+    }
+}
+
 /// One mint's holder ledger.
 #[derive(Debug, Clone)]
 struct MintHolders {
-    /// `entity -> net base position`, sorted by entity (binary search).
+    /// `entity -> position record`, sorted by entity (binary search).
     /// A retained entry with position `0` means "seen, currently not a holder" —
     /// which is what makes a re-entry a genuine `+1` and a repeated exit a no-op.
-    entities: Vec<(u64, u64)>,
+    entities: Vec<EntityPos>,
     /// Entities with a strictly positive position.
     live: u64,
     basis: HolderCountBasis,
@@ -357,6 +471,18 @@ struct MintHolders {
     last_tick: u64,
     /// Tick of the last sample handed to the estimator; `None` before the first.
     last_sample_tick: Option<u64>,
+    /// The first [`EARLY_ROSTER_CAP`] distinct entities observed BUYING this
+    /// mint, in arrival order (§102 — the MemeTrans early-top-10 cohort).
+    early: Vec<u64>,
+    /// Distinct entities whose first observed buy landed in the creation slot
+    /// (arXiv 2601.08641 bundle-bot definition).
+    bundle_entities: u32,
+    /// Distinct entities whose first observed buy landed inside
+    /// [`SNIPER_SLOT_WINDOW`] slots after creation but not in the creation slot.
+    sniper_entities: u32,
+    /// Distinct entities whose first observed buy carried slot evidence at all —
+    /// the honest denominator for the two counters above (§6.4).
+    aged_first_buys: u32,
 }
 
 impl MintHolders {
@@ -371,6 +497,28 @@ impl MintHolders {
             last_ns: ns,
             last_tick: now,
             last_sample_tick: None,
+            early: Vec::new(),
+            bundle_entities: 0,
+            sniper_entities: 0,
+            aged_first_buys: 0,
+        }
+    }
+
+    /// Record an entity's FIRST observed buy: the early roster, the bundle /
+    /// sniper classification, and the aged denominator. Called exactly once per
+    /// entity per mint, from the buy branch of the fold.
+    fn note_first_buy(&mut self, entity: u64, age_slots: Option<u32>) {
+        if self.early.len() < EARLY_ROSTER_CAP {
+            self.early.push(entity);
+        }
+        let Some(age) = age_slots else {
+            return; // §6.4: no slot evidence ⇒ no classification, not "slot 0".
+        };
+        self.aged_first_buys = self.aged_first_buys.saturating_add(1);
+        if age == CREATION_SLOT_AGE {
+            self.bundle_entities = self.bundle_entities.saturating_add(1);
+        } else if age <= SNIPER_SLOT_WINDOW {
+            self.sniper_entities = self.sniper_entities.saturating_add(1);
         }
     }
 
@@ -395,6 +543,30 @@ impl MintHolders {
             Some(t) => now.saturating_sub(t) >= HOLDER_SAMPLE_INTERVAL_TICKS,
         }
     }
+}
+
+/// A borrowed view of one mint's distribution-shape evidence.
+///
+/// Returned by [`HolderFlow::shape`]. The `basis` travels with the evidence
+/// precisely so a consumer cannot forget it: every quantity behind this view is a
+/// **level** quantity computed over the entities we happened to observe, and
+/// under anything weaker than [`HolderCountBasis::Exact`] that observation set is
+/// a SUBSET of the true holder set, which biases every share UPWARD.
+#[derive(Debug, Clone, Copy)]
+pub struct HolderShapeRef<'a> {
+    /// What kind of observation set the positions below are (§6.4).
+    pub basis: HolderCountBasis,
+    /// Tracked entity records, sorted by entity id.
+    pub positions: &'a [EntityPos],
+    /// The first [`EARLY_ROSTER_CAP`] distinct entities seen buying, in arrival
+    /// order.
+    pub early: &'a [u64],
+    /// Distinct entities whose first buy landed in the creation slot.
+    pub bundle_entities: u32,
+    /// Distinct entities whose first buy landed inside [`SNIPER_SLOT_WINDOW`].
+    pub sniper_entities: u32,
+    /// Distinct entities whose first buy carried slot evidence at all.
+    pub aged_first_buys: u32,
 }
 
 /// The continuous per-mint holder-accounting plane (§70.1).
@@ -493,6 +665,11 @@ impl HolderFlow {
     /// exactly as it arrives on [`crate::event::AppEvent::MarketTrade`]. `now` is
     /// the engine's logical tick and `ns` the derived information time; neither is
     /// read from a clock here.
+    ///
+    /// This form carries **no slot evidence**, so no entity folded through it can
+    /// ever be classified bundle or sniper (§6.4 — absent evidence is not slot
+    /// zero). Production folds through [`HolderFlow::observe_swap_aged`], which
+    /// supplies the market age the swap arrived with.
     pub fn observe_swap(
         &mut self,
         mint: &[u8; 32],
@@ -500,6 +677,24 @@ impl HolderFlow {
         signed_base: i64,
         now: u64,
         ns: u64,
+    ) -> HolderFold {
+        self.observe_swap_aged(mint, entity, signed_base, now, ns, None)
+    }
+
+    /// [`HolderFlow::observe_swap`] with the swap's market age in slots.
+    ///
+    /// `age_slots` is the age carried on the decoded swap. `Some(0)` means the
+    /// print landed in the creation slot (a bundle, per arXiv 2601.08641);
+    /// `Some(a <= SNIPER_SLOT_WINDOW)` a sniper; `None` means the swap carried no
+    /// age evidence and the entity is classified as neither.
+    pub fn observe_swap_aged(
+        &mut self,
+        mint: &[u8; 32],
+        entity: u64,
+        signed_base: i64,
+        now: u64,
+        ns: u64,
+        age_slots: Option<u32>,
     ) -> HolderFold {
         let entity_cap = self.entity_cap;
         let claimed_exact = self.creation_seen.remove(mint).is_some();
@@ -533,15 +728,32 @@ impl HolderFlow {
         // ---- the accounting (§70.1; see the module table) --------------------
         if signed_base > 0 {
             let qty = signed_base.unsigned_abs();
-            match m.entities.binary_search_by_key(&entity, |(e, _)| *e) {
+            match m.entities.binary_search_by_key(&entity, |e| e.entity) {
                 Ok(pos) => {
+                    let mut first_buy = false;
                     if let Some(slot) = m.entities.get_mut(pos) {
-                        if slot.1 == 0 {
+                        if slot.net == 0 {
                             // Re-entry after a full exit is a genuine new holder.
                             m.live = m.live.saturating_add(1);
                             fold.delta = 1;
                         }
-                        slot.1 = slot.1.saturating_add(qty);
+                        slot.net = slot.net.saturating_add(qty);
+                        slot.gross = slot.gross.saturating_add(qty);
+                        if !slot.bought {
+                            // First BUY by an entity we had only seen selling (a
+                            // pre-window holder). Its first-buy slot is real
+                            // evidence about this entity even though the ledger
+                            // already knew the id.
+                            slot.bought = true;
+                            if let Some(age) = age_slots {
+                                slot.first_buy_age_slots = age;
+                                slot.age_known = true;
+                            }
+                            first_buy = true;
+                        }
+                    }
+                    if first_buy {
+                        m.note_first_buy(entity, age_slots);
                     }
                 }
                 Err(pos) => {
@@ -554,36 +766,48 @@ impl HolderFlow {
                         m.basis = m.basis.worst(HolderCountBasis::Incomplete);
                         fold.truncated = true;
                     } else {
-                        m.entities.insert(pos, (entity, qty));
+                        m.entities.insert(
+                            pos,
+                            EntityPos {
+                                entity,
+                                net: qty,
+                                gross: qty,
+                                first_buy_age_slots: age_slots.unwrap_or(0),
+                                bought: true,
+                                age_known: age_slots.is_some(),
+                            },
+                        );
                         m.live = m.live.saturating_add(1);
                         fold.delta = 1;
+                        m.note_first_buy(entity, age_slots);
                     }
                 }
             }
         } else if signed_base < 0 {
             let qty = signed_base.unsigned_abs();
-            match m.entities.binary_search_by_key(&entity, |(e, _)| *e) {
+            match m.entities.binary_search_by_key(&entity, |e| e.entity) {
                 Ok(pos) => {
                     let mut exited = false;
                     if let Some(slot) = m.entities.get_mut(pos) {
-                        if slot.1 == 0 {
+                        slot.gross = slot.gross.saturating_add(qty);
+                        if slot.net == 0 {
                             // Already fully exited (or a pre-window holder we have
                             // already accounted): another sell tells us nothing new.
                             exited = false;
                             m.unattributed_exits = m.unattributed_exits.saturating_add(1);
                             m.basis = m.basis.worst(HolderCountBasis::DeltaOnly);
-                        } else if qty >= slot.1 {
+                        } else if qty >= slot.net {
                             // Full exit. Positions saturate at zero — a sell larger
                             // than what we tracked means pre-window inventory, which
                             // also falsifies any exactness claim.
-                            if qty > slot.1 {
+                            if qty > slot.net {
                                 m.basis = m.basis.worst(HolderCountBasis::DeltaOnly);
                             }
-                            slot.1 = 0;
+                            slot.net = 0;
                             exited = true;
                         } else {
                             // Partial sell: still a holder.
-                            slot.1 -= qty;
+                            slot.net -= qty;
                         }
                     }
                     if exited {
@@ -604,7 +828,17 @@ impl HolderFlow {
                         m.basis = m.basis.worst(HolderCountBasis::Incomplete);
                         fold.truncated = true;
                     } else {
-                        m.entities.insert(pos, (entity, 0));
+                        m.entities.insert(
+                            pos,
+                            EntityPos {
+                                entity,
+                                net: 0,
+                                gross: qty,
+                                first_buy_age_slots: 0,
+                                bought: false,
+                                age_known: false,
+                            },
+                        );
                     }
                 }
             }
@@ -622,6 +856,27 @@ impl HolderFlow {
     #[must_use]
     pub fn reading(&self, mint: &[u8; 32]) -> Option<HolderReading> {
         self.mints.get(mint).map(MintHolders::reading)
+    }
+
+    /// A borrowed view of `mint`'s DISTRIBUTION-SHAPE inputs, or `None` when
+    /// untracked.
+    ///
+    /// Deliberately raw and deliberately basis-carrying: this is the *evidence*,
+    /// not a verdict. Nothing here is safe to consume as a level without first
+    /// clearing the basis gate, which is exactly what
+    /// [`crate::holder_concentration::concentration_of`] does — and it is the only
+    /// intended consumer. Borrowed rather than owned so the per-admit derivation
+    /// allocates nothing.
+    #[must_use]
+    pub fn shape(&self, mint: &[u8; 32]) -> Option<HolderShapeRef<'_>> {
+        self.mints.get(mint).map(|m| HolderShapeRef {
+            basis: m.basis,
+            positions: &m.entities,
+            early: &m.early,
+            bundle_entities: m.bundle_entities,
+            sniper_entities: m.sniper_entities,
+            aged_first_buys: m.aged_first_buys,
+        })
     }
 
     /// The eviction victim: least-recently-traded ledger, ties by smaller mint

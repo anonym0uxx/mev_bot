@@ -55,6 +55,7 @@ pub mod extraction_risk;
 pub mod feature_admit;
 pub mod gate;
 pub mod hazard_scaffold;
+pub mod holder_concentration;
 pub mod holder_flow;
 pub mod journal_log;
 pub mod lane;

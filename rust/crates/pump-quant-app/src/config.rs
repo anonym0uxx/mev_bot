@@ -553,6 +553,37 @@ pub struct Config {
     /// `tests/holder_flow.rs::ab_*`. Off = the prior bitset term, byte-identical.
     pub money_proxy_holder_flow_enable: bool,
 
+    // ---- §21.7/§70.1 holder-concentration (distribution-shape) law ----
+    /// Master switch for the §21.7/§70.1 **holder distribution-shape** law
+    /// ([`crate::holder_concentration`]): concentration, early-buyer capture,
+    /// bundle/sniper presence and bump/wash flip behaviour, derived from the
+    /// continuous holder ledger.
+    ///
+    /// When armed, three REDUCE-ONLY consumers wake up, and nothing else changes:
+    ///
+    /// 1. the §21.5 active-market-universe screen's `top_holder_concentration_bps`
+    ///    field — dormant since inception because no source ever produced the
+    ///    number — receives the real cumulative top-10 share, screened against the
+    ///    named-const bar;
+    /// 2. the sizing chain gains a concentration haircut multiplier
+    ///    ([`crate::holder_concentration::CONCENTRATION_HAIRCUT_MULT_BPS`]) and,
+    ///    CONJUNCTIVELY with an independent §21.7 fabrication corroboration, a
+    ///    pre-entry refusal;
+    /// 3. the flow-authenticity multiplier gains the bundle/flip evidence legs —
+    ///    inside the existing single authenticity channel, never as a second
+    ///    multiplier (§21.7).
+    ///
+    /// The law is **fail-open by construction**: a
+    /// [`crate::holder_concentration::ConcentrationVerdict::Unknown`] (delta-only
+    /// basis, truncated ledger, or too few tracked entities) yields the identity on
+    /// every one of the three, so a market we cannot measure is treated exactly as
+    /// it was before this law existed. Off = byte-identical to that same prior
+    /// behaviour on every market.
+    ///
+    /// Default set by the pre-registered two-sided A/B in
+    /// `tests/holder_concentration.rs::ab_*`.
+    pub holder_concentration_enable: bool,
+
     // ---- §70.6/§70.8 narrative class + ceiling (Batch-2c LAW 8) ----
     /// Master switch for the §70.6/§70.8 narrative-class law. When true the
     /// attention emit path derives each mint's `NarrativeClass` (via
@@ -952,6 +983,7 @@ impl Config {
             // tape in audit_wave2_laws.rs.
             money_proxy_enable: true,
             money_proxy_holder_flow_enable: false,
+            holder_concentration_enable: false,
             narrative_class_enable: false,
             platform_lead_enable: false,
             deployer_screen_enable: false,
@@ -1113,6 +1145,9 @@ impl Config {
             "money_proxy_enable" => self.money_proxy_enable = value != 0,
             "money_proxy_holder_flow_enable" => {
                 self.money_proxy_holder_flow_enable = value != 0;
+            }
+            "holder_concentration_enable" => {
+                self.holder_concentration_enable = value != 0;
             }
             "narrative_class_enable" => self.narrative_class_enable = value != 0,
             "platform_lead_enable" => self.platform_lead_enable = value != 0,

@@ -37,6 +37,7 @@ fn bool_field(cfg: &Config, key: &str) -> Option<bool> {
         "entry_mode_leaves_enable" => cfg.entry_mode_leaves_enable,
         "money_proxy_enable" => cfg.money_proxy_enable,
         "money_proxy_holder_flow_enable" => cfg.money_proxy_holder_flow_enable,
+        "holder_concentration_enable" => cfg.holder_concentration_enable,
         "narrative_class_enable" => cfg.narrative_class_enable,
         "platform_lead_enable" => cfg.platform_lead_enable,
         "deployer_screen_enable" => cfg.deployer_screen_enable,
@@ -116,6 +117,9 @@ fn law_toggle_flips() -> Vec<(&'static str, fn(&mut Config))> {
         }),
         ("entry_mode_leaves_enable", |c| {
             c.entry_mode_leaves_enable = !c.entry_mode_leaves_enable
+        }),
+        ("holder_concentration_enable", |c: &mut Config| {
+            c.holder_concentration_enable = !c.holder_concentration_enable
         }),
         ("money_proxy_holder_flow_enable", |c: &mut Config| {
             c.money_proxy_holder_flow_enable = !c.money_proxy_holder_flow_enable

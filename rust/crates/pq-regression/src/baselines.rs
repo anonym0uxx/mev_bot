@@ -18,6 +18,17 @@
 /// Byte-exact decision-journal digest of the golden tape under
 /// `Config::dev_portable`. The primary determinism fingerprint (§22/§54).
 ///
+/// Re-pin #20 (§21.7/§70.1 holder DISTRIBUTION-SHAPE law) moved this and NOTHING
+/// else, for the same seed-only reason as #19: the wave ADDED one config field —
+/// `holder_concentration_enable` — and §19 folds the whole `Config`'s strategy
+/// identity into the journal seed. Every decision-plane number below is unchanged
+/// from re-pin #19, and the law is EXACTLY neutral on the golden tape even when
+/// ARMED, because every golden market is discovered mid-life (`DeltaOnly` basis)
+/// and the basis gate refuses a concentration reading on a subset ledger. The
+/// decision-affecting switch SHIPS OFF: its pre-registered two-sided A/B measured
+/// HAPPY +84_996_098 lamports against a > 100_000_000 bar and MIRROR −61_154_566,
+/// an asymmetry of 1.39× against a 3× bar — it failed both legs.
+///
 /// Re-pin #19 (§70.1 continuous holder accounting) moved this and NOTHING else:
 /// §19 folds the whole `Config`'s strategy identity into the journal seed, and
 /// this wave ADDED one config field — `money_proxy_holder_flow_enable` — which
@@ -38,7 +49,7 @@
 ///
 /// (Re-pin #17 moved it for two config VALUES: `meta_taxonomy_version` 0 → 1 and
 /// `brain_recall_max_distance` 12 → 8.)
-pub const GOLDEN_DIGEST: u64 = 6_234_587_619_693_007_457;
+pub const GOLDEN_DIGEST: u64 = 12_080_844_907_577_912_056;
 /// Realized net-SOL (lamports) on the golden tape (§24-compliant cost-derived).
 pub const GOLDEN_NET_LAMPORTS: i128 = 15_410_801;
 /// Candidates promoted to the gate.
@@ -105,6 +116,11 @@ pub const LAW_BOOL_DEFAULTS: &[(&str, bool)] = &[
     // §70.1 holder term from the continuous holder ledger — DEFAULT OFF, its
     // two-sided A/B measured exactly zero lamports (re-pin #19).
     ("money_proxy_holder_flow_enable", false),
+    // §21.7/§70.1 holder distribution-shape law (concentration/early-top-10/
+    // bundle/flip) — DEFAULT OFF, its pre-registered two-sided A/B earned
+    // +84_996_098 on the happy tape (bar > 100_000_000) and lost −61_154_566 on the
+    // mirror (asymmetry 1.39× against a 3× bar): it failed both legs (re-pin #20).
+    ("holder_concentration_enable", false),
     // §70.6/§70.8 narrative class + ceiling — new scoring, OFF.
     ("narrative_class_enable", false),
     // §70.7 platform-lead / crypto-social-lag — new scoring, OFF.

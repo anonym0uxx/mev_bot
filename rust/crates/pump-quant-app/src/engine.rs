@@ -47,6 +47,10 @@ use crate::attention::{AttentionField, AttentionParams};
 use crate::event::CreatorActionKind;
 use crate::extraction_risk::ExtractionRiskLedger;
 use crate::hazard_scaffold::HazardScaffold;
+use crate::holder_concentration::{
+    concentration_of, ConcentrationRisk, ConcentrationUnknown, ConcentrationVerdict,
+    TOP10_HAIRCUT_BPS,
+};
 use crate::holder_flow::{HolderCountBasis, HolderFlow, HolderReading};
 use crate::social_earn::{SocialEarn, SocialEarnParams};
 use crate::social_ingest::{ledger_quality, to_mention, SourceQualityPolicy};
@@ -84,7 +88,7 @@ use pump_quant_market_state::meta::{
 use pump_quant_narrative::narrative::nv_meta_emergence;
 use pump_quant_narrative::narrative_family::NarrativeFamily;
 use pump_quant_signals::active_market_universe::{
-    passes_broad_screen, MarketObservation, ScreenCriteria,
+    passes_broad_screen, passes_progressive_filter, MarketObservation, ScreenCriteria,
 };
 use pump_quant_signals::fee_plausibility::{
     assess_fee_floor, cumulative_fees_lamports, FeeFloorConfig, FeeFloorStatus,
@@ -602,6 +606,16 @@ pub struct HolderTrajectoryRow {
     pub entities_tracked: u32,
     /// Entity arrivals refused by the per-mint cap. Non-zero ⇒ `Incomplete`.
     pub truncated: u64,
+    /// §21.7/§70.1 the mint's holder DISTRIBUTION SHAPE as known now — the
+    /// concentration, early-buyer capture, bundle/sniper cohort and flip ratio
+    /// behind the row's counts.
+    ///
+    /// Report plane only, and derived unconditionally: an operator watching a held
+    /// position wants to know whether the float underneath it is concentrating,
+    /// whether or not the LAW that reads that number is armed. Carries the same
+    /// basis discipline as everything else here — under a delta-only or truncated
+    /// ledger it is `Unknown` with the reason and no estimate.
+    pub concentration: ConcentrationVerdict,
 }
 
 /// The running engine.
@@ -1383,12 +1397,19 @@ impl Engine {
                 // above that floor — asserted at compile time in `holder_flow`.
                 {
                     let ns = self.now.saturating_mul(BRAIN_TICK_NS);
-                    let fold = self.holder_flow.observe_swap(
+                    // The swap's market age in slots is passed through so the
+                    // ledger can classify an entity's FIRST buy as a bundle
+                    // (creation slot) or a sniper (within
+                    // `holder_flow::SNIPER_SLOT_WINDOW`) — arXiv 2601.08641. It is
+                    // a first-sighting fact that cannot be recovered later, so it
+                    // is captured in the fold or not at all (§20).
+                    let fold = self.holder_flow.observe_swap_aged(
                         mint.as_bytes(),
                         buyer_entity,
                         signed_base,
                         self.now,
                         ns,
+                        Some(age_slots),
                     );
                     if let Some(count) = fold.sample {
                         self.measured
@@ -2358,6 +2379,7 @@ impl Engine {
         let w = self
             .structure
             .activity(&mint_bytes, self.now, self.cfg.universe_window_ticks);
+        let conc = self.concentration_verdict(&mint_bytes);
         // Crude wash guard: hyperactive single-entity tape is not organic (§28).
         if w.entities > 0 && w.trades / w.entities.max(1) > self.cfg.universe_wash_ratio_max {
             return false;
@@ -2371,8 +2393,16 @@ impl Engine {
             // Slot time ≈ 400ms; the screen's age bounds are no-bind here (the
             // app's own exemption handled age), so the exact scale is inert.
             age_ms: u64::from(feats.age_slots).saturating_mul(400),
-            spread_bps: 0,                   // no live source — never binds (max = MAX)
-            top_holder_concentration_bps: 0, // no live source — never binds
+            spread_bps: 0, // no live source — never binds (max = MAX)
+            // §21.7/§70.1 THE FORMERLY-DORMANT FIELD. Until the holder ledger grew
+            // a distribution-shape derivation this was a hard-coded `0` against a
+            // `u32::MAX` bar — a screen that could never bind because nothing
+            // produced the number. It now carries the real cumulative top-10 share
+            // of tracked supply, and `0` survives ONLY as the honest fail-open
+            // value for a verdict we could not take (delta-only basis, truncated
+            // ledger, thin ledger, or the law disarmed) — see
+            // `ConcentrationVerdict::screen_concentration_bps`.
+            top_holder_concentration_bps: conc.screen_concentration_bps(),
         };
         let criteria = ScreenCriteria {
             min_liquidity_lamports: u128::from(self.cfg.universe_min_liquidity_lamports),
@@ -2380,11 +2410,48 @@ impl Engine {
             min_swap_count: self.cfg.universe_min_trades,
             min_unique_traders: self.cfg.universe_min_entities,
             max_spread_bps: u32::MAX,
-            max_concentration_bps: u32::MAX,
+            // Armed: the §21.5 concentration bar, which is the SAME 5 000 bps the
+            // signals crate's own selector dossiers use. Disarmed: `u32::MAX`,
+            // which with the `0` above reproduces the pre-existing no-bind screen
+            // exactly.
+            max_concentration_bps: if self.cfg.holder_concentration_enable {
+                TOP10_HAIRCUT_BPS
+            } else {
+                u32::MAX
+            },
             min_age_ms: 0,
             max_age_ms: u64::MAX,
         };
-        passes_broad_screen(&obs, &criteria)
+        // The broad screen is unchanged. The progressive filter is added ONLY so
+        // the concentration leg has a consumer: spread and the age band are pinned
+        // to never-bind values here (the app's own age exemption handled age
+        // above), so this call adds exactly one comparison and nothing else.
+        passes_broad_screen(&obs, &criteria) && passes_progressive_filter(&obs, &criteria)
+    }
+
+    /// §21.7/§70.1 the holder distribution-shape verdict used by the DECISION
+    /// plane.
+    ///
+    /// Returns [`ConcentrationUnknown::Disarmed`] without touching the ledger when
+    /// the law is off, so the disarmed engine does exactly the work it did before
+    /// this law existed (the derivation is `O(n · TOP_N)` over a 512-entity ledger
+    /// and has no business running on a hot path that will discard it).
+    fn concentration_verdict(&self, mint: &[u8; 32]) -> ConcentrationVerdict {
+        if !self.cfg.holder_concentration_enable {
+            return ConcentrationVerdict::Unknown(ConcentrationUnknown::Disarmed);
+        }
+        concentration_of(&self.holder_flow, mint)
+    }
+
+    /// §21.7/§70.1 the holder distribution-shape verdict for the REPORT plane.
+    ///
+    /// Always derived, regardless of the config switch, because an operator asking
+    /// "what does the ledger say about this market's distribution" is asking about
+    /// the evidence, not about whether the law is armed. Never a decision input —
+    /// decision consumers go through [`Self::concentration_verdict`].
+    #[must_use]
+    pub fn holder_concentration(&self, mint: &[u8; 32]) -> ConcentrationVerdict {
+        concentration_of(&self.holder_flow, mint)
     }
 
     /// §24 conditional expectancy (EXPECTANCY_V1, see [`EXPECTANCY_VERSION`]):
@@ -2526,6 +2593,39 @@ impl Engine {
                     self.record_reject_sample(REJECT_FEE_FLOOR, mint_bytes);
                     return None;
                 }
+                // ---- §21.7/§70.1 HOLDER DISTRIBUTION SHAPE (the wave's decision
+                // change). Concentration, early-buyer capture and whale dominance,
+                // derived from the continuous holder ledger — reduce-only, and
+                // fail-open on an `Unknown` verdict (delta-only basis, truncated or
+                // thin ledger, or the law disarmed all yield `Clear`, which is the
+                // identity).
+                //
+                // The refusal is CONJUNCTIVE by constitutional requirement: §21.7
+                // states that bundle-adjusted top-N holding concentration is "a
+                // feature family and prior, never a standalone veto", and that
+                // "only extreme fabrication signatures may hard-reject". So the
+                // corroborating leg is the INDEPENDENT flow-authenticity reading —
+                // computed over per-entity QUOTE-lamport gross flow, where the
+                // concentration is computed over per-entity BASE-token net
+                // positions. It is deliberately read WITHOUT the holder evidence
+                // (`authenticity`, not `authenticity_with`): letting the holder
+                // ledger corroborate itself would make the conjunction decorative.
+                let conc = self.concentration_verdict(&mint_bytes);
+                let conc_corroborated = self.flow_screen.has_auth_evidence(&mint_bytes)
+                    && auth_bps <= CONCENTRATION_VETO_AUTH_BPS;
+                let conc_risk = conc.risk_or_clear(conc_corroborated);
+                if conc_risk == ConcentrationRisk::Veto {
+                    self.rejected += 1;
+                    self.journal.record(Decision::Rejected {
+                        mint: mint_bytes,
+                        reason: REJECT_HOLDER_CONCENTRATION,
+                    });
+                    // Feeds the §49 ConvexityPreservationLedger through the shared
+                    // veto path, which is the audit the constitution requires of
+                    // this family's veto/downweight effects.
+                    self.record_reject_sample(REJECT_HOLDER_CONCENTRATION, mint_bytes);
+                    return None;
+                }
                 // ---- VPIN extreme tier (the one binary veto): a distributed,
                 // sell-dominant dump in progress. Graded tiers only shrink size.
                 let vp = self.vpin_params();
@@ -2598,7 +2698,23 @@ impl Engine {
                 // §21.7 single-channel authenticity multiplier (phase-weighted) and
                 // §27 creator-credibility haircut — both reduce-only.
                 let is_pool = self.context.is_pool(&mint_bytes);
-                let auth_mult = self.flow_screen.size_mult_bp(&mint_bytes, is_pool);
+                // The bundle/sniper cohort size and the bump/wash flip ratio are
+                // AUTHENTICITY evidence, so they enter through the authenticity
+                // multiplier and nowhere else — §21.7 admits exactly one entry
+                // point per feature into the sizing chain. The concentration
+                // SHARES are a different quantity (fragility, not fabrication) and
+                // enter through `conc_mult` below; no number is charged twice.
+                // `HolderAuthEvidence::default()` under an `Unknown` verdict makes
+                // this call byte-identical to the plain `size_mult_bp`.
+                let auth_mult = self.flow_screen.size_mult_bp_with(
+                    &mint_bytes,
+                    is_pool,
+                    conc.auth_evidence_or_default(),
+                );
+                // §21.7/§70.1 concentration fragility haircut — reduce-only, and
+                // exactly 10 000 (identity) under `Clear`, which is what every
+                // `Unknown` verdict and the disarmed law both produce.
+                let conc_mult: u32 = conc_risk.size_mult_bp();
                 let cred_mult = match self
                     .mint_creator
                     .get(&mint_bytes)
@@ -2661,6 +2777,8 @@ impl Engine {
                     * u128::from(rug_mult)
                     / 10_000
                     * u128::from(struct_mult)
+                    / 10_000
+                    * u128::from(conc_mult)
                     / 10_000) as u32;
                 let raw = u128::from(deployable) * u128::from(f_eff) / 10_000;
                 // ---- LAWs B1/B3: the episodic capture and the reduce-only recall
@@ -4095,6 +4213,7 @@ impl Engine {
                     growth_bps: est.map(|e| e.growth_bps),
                     entities_tracked: r.entities_tracked(),
                     truncated: r.truncated(),
+                    concentration: concentration_of(&self.holder_flow, m),
                 })
             })
             .collect()
@@ -4949,6 +5068,34 @@ const REJECT_UNDECODED_QUOTE: u8 = 15;
 /// with `brain_haircut_enable` armed; the fail-closed law (B4) guarantees an
 /// `Unknown` verdict can never reach it.
 const REJECT_BRAIN_BLED: u8 = 16;
+
+/// §21.7/§70.1 holder-concentration refusal: the market's tracked holder
+/// distribution is extreme (cumulative top-10 share, first-ten-buyer capture, or
+/// whale dominance past the named-const veto bar) AND an independent §21.7
+/// flow-authenticity signature corroborates it.
+///
+/// **The conjunction is constitutional, not stylistic.** §21.7 names this exact
+/// feature — bundle-adjusted top-N holding concentration — "a feature family and
+/// prior, never a standalone veto", and separately restricts hard rejection to
+/// "extreme fabrication signatures". Concentration alone therefore only ever
+/// haircuts; this code can only appear when the base-position distribution AND the
+/// quote-flow authenticity independently agree.
+///
+/// It also cannot appear at all unless `holder_concentration_enable` is armed, and
+/// the fail-open law guarantees a `ConcentrationVerdict::Unknown` (delta-only,
+/// truncated, or thin ledger) can never reach it.
+const REJECT_HOLDER_CONCENTRATION: u8 = 17;
+
+/// §21.7 corroboration bar (bps) for [`REJECT_HOLDER_CONCENTRATION`].
+///
+/// The independent flow-authenticity reading — computed over per-entity
+/// quote-lamport gross flow, a different quantity with a different denominator
+/// from the base-token net positions the concentration is computed over — must be
+/// EVIDENCED (past the screen's own swap-sample floor, so a thin tape's neutral
+/// prior cannot corroborate anything) and degraded to at most half. At 5 000 bps
+/// the wash/HHI evidence the concentration screen never saw has already cut the
+/// authenticity multiplier in half on its own.
+const CONCENTRATION_VETO_AUTH_BPS: u32 = 5_000;
 
 /// §94 default quote decimals for a SOL-quoted market (lamports = 9 decimals).
 /// The engine's economic gate has always priced in SOL lamports; making the

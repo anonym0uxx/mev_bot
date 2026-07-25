@@ -806,7 +806,42 @@ fn drive(cfg: Config) -> pump_quant_app::engine::Report {
 // it. Measured, not assumed: ablating the holder fold while KEEPING the config
 // field reproduces this digest byte for byte, which isolates the drift to the seed.
 // (arc: … → 1_406_102 → 1_864_780 → 15_410_801 [net unchanged at re-pins #16, #17, #18, #19].)
-const GOLDEN_DIGEST: u64 = 6_234_587_619_693_007_457;
+//
+// ---------------------------------------------------------------------------
+// RE-PIN #20 — §21.7/§70.1 holder DISTRIBUTION-SHAPE law (digest only).
+// ---------------------------------------------------------------------------
+// This wave derives the holder ledger's distribution SHAPE (`holder_concentration`):
+// cumulative top-1/top-10 share, Herfindahl and its normalization, the arXiv
+// 2512.00377 whale-dominance product, the MemeTrans (arXiv 2602.13480) first-ten-
+// buyer cohort, the arXiv 2601.08641 bundle/sniper first-buy classification, and the
+// bump/wash flip ratio — and wires it, reduce-only, to three consumers:
+//   * the §21.5 active-market screen's `top_holder_concentration_bps`, which had been
+//     a hard-coded `0` against a `u32::MAX` bar since inception (a screen that could
+//     never bind because nothing produced the number);
+//   * a sizing fragility haircut plus a CONJUNCTIVE pre-entry refusal (reject code 17
+//     — §21.7 forbids this family from vetoing alone, so the refusal also requires an
+//     independent flow-authenticity signature computed on QUOTE flow);
+//   * the bundle/flip legs of the existing §21.7 authenticity multiplier (the single
+//     authenticity entry point — never a second multiplier).
+//
+// DEFAULT OFF. `tests/holder_concentration.rs::ab_holder_concentration_two_sided`
+// measures, on a purpose-built tape with real promotion/bankroll contention:
+// HAPPY +84_996_098 lamports (bar: > 100_000_000) and MIRROR −61_154_566, an
+// asymmetry of 1.39× against a pre-registered 3× bar. It failed both legs of its own
+// pre-registered rule and is therefore not armed.
+//
+// EVERY decision-plane number is UNCHANGED — net 15_410_801, promoted 504,
+// admitted 13, rejected 457, universe_filtered 72, AlphaCall 447_700, and every
+// per-lane / per-discovery-lane net and final weight identical to re-pin #19. Only
+// the DIGEST moves, and again for exactly one reason: §19 folds the whole `Config`'s
+// strategy identity into the journal seed, so ADDING the single config field this
+// wave needs — `holder_concentration_enable` — necessarily re-seeds it. Measured, not
+// assumed: with the field present and the law ARMED the tape is still byte-identical
+// on every counter (see `holder_concentration_is_exactly_neutral_on_this_tape`), and
+// reverting each wired consumer in turn while keeping the config field reproduces
+// this digest exactly — which isolates the drift to the seed.
+// (arc: … → 1_864_780 → 15_410_801 [net unchanged at re-pins #16, #17, #18, #19, #20].)
+const GOLDEN_DIGEST: u64 = 12_080_844_907_577_912_056;
 const GOLDEN_NET_LAMPORTS: i128 = 15_410_801;
 const GOLDEN_PROMOTED: u64 = 504;
 const GOLDEN_ADMITTED: u64 = 13;
@@ -1135,5 +1170,94 @@ fn holder_flow_money_term_is_exactly_neutral_on_this_tape() {
             .and_then(|r| r.growth_level()),
         Some(1),
         "the watch-time holder fold must be live on the golden engine"
+    );
+}
+
+/// §21.7/§70.1 holder-concentration law: EXACTLY neutral on the golden tape.
+///
+/// Pre-registered condition (c) of the wave's A/B rule. Every golden market is
+/// discovered mid-life (the tape's mints get no creation sighting before their
+/// first swap), so every ledger here is `DeltaOnly` and every concentration
+/// verdict is `Unknown` — which is the fail-open path, and which is exactly the
+/// property that makes the basis discipline load-bearing rather than decorative:
+/// the golden markets are *precisely* the ones an unguarded concentration screen
+/// would have vetoed on an overstated subset share.
+#[test]
+fn holder_concentration_is_exactly_neutral_on_this_tape() {
+    let off = drive(Config::dev_portable());
+    let mut on_cfg = Config::dev_portable();
+    on_cfg.holder_concentration_enable = true;
+    let armed = drive(on_cfg);
+    println!(
+        "HOLDER-CONCENTRATION-on-golden: off_net={} armed_net={} off_adm={} armed_adm={} \
+         off_filtered={} armed_filtered={}",
+        off.net_lamports,
+        armed.net_lamports,
+        off.admitted,
+        armed.admitted,
+        off.universe_filtered,
+        armed.universe_filtered
+    );
+    assert_eq!(
+        armed.net_lamports, off.net_lamports,
+        "the §21.7 concentration law must be EXACTLY neutral on the golden tape"
+    );
+    assert_eq!(armed.admitted, off.admitted, "admissions unchanged");
+    assert_eq!(armed.rejected, off.rejected, "rejections unchanged");
+    assert_eq!(armed.promoted, off.promoted, "promotions unchanged");
+    assert_eq!(
+        armed.universe_filtered, off.universe_filtered,
+        "§21.5 screen activity unchanged"
+    );
+    assert_eq!(
+        armed.per_lane_net, off.per_lane_net,
+        "attribution unchanged"
+    );
+    // NOT vacuous by accident: prove the neutrality is the BASIS gate refusing,
+    // and that a creation-first ledger on the same engine does produce a reading.
+    let mut probe = Engine::new(Config::dev_portable(), RunMode::Replay);
+    let m = mint(9);
+    for e in 0..25u64 {
+        probe.tick(AppEvent::MarketTrade {
+            mint: m,
+            price_fp: 1_000_000_000,
+            quote_lamports: 400_000,
+            liquidity_lamports: 120_000_000,
+            signed_base: 500_000,
+            buyer_entity: e,
+            age_slots: 12,
+        });
+    }
+    assert_eq!(
+        probe
+            .holder_concentration(m.as_bytes())
+            .unknown_reason()
+            .map(|u| format!("{u:?}")),
+        Some("DeltaOnlyBasis".to_string()),
+        "a mid-life golden-style market must refuse a concentration reading"
+    );
+    let mut probe2 = Engine::new(Config::dev_portable(), RunMode::Replay);
+    let m2 = mint(10);
+    probe2.tick(AppEvent::TokenMetadata {
+        mint: m2,
+        category_id: 0,
+        taxonomy_version: 1,
+        creator: 42,
+        slot: 1,
+    });
+    for e in 0..25u64 {
+        probe2.tick(AppEvent::MarketTrade {
+            mint: m2,
+            price_fp: 1_000_000_000,
+            quote_lamports: 400_000,
+            liquidity_lamports: 120_000_000,
+            signed_base: 500_000,
+            buyer_entity: e,
+            age_slots: 12,
+        });
+    }
+    assert!(
+        probe2.holder_concentration(m2.as_bytes()).is_known(),
+        "and a creation-first ledger on the SAME engine must produce one"
     );
 }

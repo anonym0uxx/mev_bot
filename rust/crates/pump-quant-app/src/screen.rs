@@ -39,6 +39,8 @@ use pump_quant_wallet_graph::smart_money::{
 };
 use pump_quant_wallet_graph::{FamilyId, TokenId, PRICE_SCALE};
 
+use crate::holder_concentration::{HolderAuthEvidence, BUNDLE_TOLERANCE_COUNT, FLIP_TOLERANCE_BPS};
+
 // ===========================================================================================
 // Named constants (§102 — every threshold carries its provenance)
 // ===========================================================================================
@@ -117,6 +119,43 @@ pub const PHASE_W_CURVE_BPS: u64 = 5_000;
 /// Phase weight (bps) for pool-phase markets: exit realizability there
 /// depends on the very flow being judged, so the haircut applies in full.
 pub const PHASE_W_POOL_BPS: u64 = 10_000;
+
+// --- Holder-ledger authenticity evidence (§21.7; arXiv 2601.08641) ---
+//
+// The two quantities below arrive from [`crate::holder_concentration`] and are
+// folded into THIS multiplier rather than applied as a second one. §21.7 is
+// explicit that flow authenticity "enters the decision chain exactly once ... it
+// is never additionally applied as a second independent size multiplier, because
+// penalizing the same uncertainty twice systematically undersizes and forfeits
+// expected value". Bundle presence and bump/wash churn are authenticity evidence,
+// so they enter here; the concentration SHARES are a distinct fragility quantity
+// and enter through the engine's separate concentration haircut. The two channels
+// read different numbers out of the same ledger and neither is charged twice.
+
+/// Authenticity penalty (bps) per bundle/sniper entity ABOVE the venue baseline
+/// tolerance ([`crate::holder_concentration::BUNDLE_TOLERANCE_COUNT`]).
+///
+/// 250 bps each. Calibrated against the ledger's own shape floor: taking a market
+/// from the MemeTrans baseline bundle share to a fully-bundled cohort at the
+/// [`crate::holder_concentration::MIN_ENTITIES_FOR_SHAPE`] floor costs 14 excess
+/// entities × 250 = 3 500 bps — a material but survivable degradation, matching
+/// arXiv 2601.08641's finding that bundle-bot presence *reduces* returns and
+/// shortens dump duration rather than being a binary kill.
+pub const BUNDLE_AUTH_PENALTY_BPS: u64 = 250;
+
+/// Cap on the bundle penalty (bps). Bounded so that no single evidence leg can
+/// drive the multiplier on its own (§99); the floor at
+/// [`AUTH_FLOOR_BPS`] still applies below it.
+pub const BUNDLE_AUTH_PENALTY_CAP_BPS: u64 = 3_000;
+
+/// Divisor turning flip-ratio excess (bps over
+/// [`crate::holder_concentration::FLIP_TOLERANCE_BPS`]) into an authenticity
+/// penalty. 20 ⇒ a market churning 10× its retained position (flip 100 000 bps)
+/// pays 3 500 bps, the same order as a fully-bundled cohort.
+pub const FLIP_AUTH_PENALTY_DIVISOR: u64 = 20;
+
+/// Cap on the flip penalty (bps), same bounding rationale as the bundle cap.
+pub const FLIP_AUTH_PENALTY_CAP_BPS: u64 = 3_000;
 
 // --- WalletScreen (§28 research-fixed shadow parameters) ---
 
@@ -377,15 +416,42 @@ impl FlowScreen {
 
     #[must_use]
     pub fn authenticity(&self, mint: &[u8; 32]) -> (u32, bool) {
+        self.authenticity_with(mint, HolderAuthEvidence::default())
+    }
+
+    /// [`FlowScreen::authenticity`] with additional §21.7 evidence read out of
+    /// the continuous holder ledger (bundle/sniper cohort size and the bump/wash
+    /// flip ratio — arXiv 2601.08641).
+    ///
+    /// The evidence is **reduce-only** and enters the SAME single channel as the
+    /// flow-derived terms: it subtracts from `auth_bps` and is then clamped by the
+    /// existing [`AUTH_FLOOR_BPS`] / [`AUTH_CEIL_BPS`] band, so it can never raise
+    /// authenticity and can never push it below the floor. It deliberately does
+    /// **not** feed the `fabricated` signature: §21.7 permits only extreme
+    /// fabrication signatures to hard-reject, and that signature stays exactly the
+    /// two flow-derived legs it has always been.
+    ///
+    /// A [`HolderAuthEvidence::default()`] (which is what an `Unknown` — i.e.
+    /// delta-only, truncated or thin — concentration verdict yields) subtracts
+    /// zero, so the disarmed and unevidenced paths are byte-identical to the
+    /// pre-existing screen.
+    ///
+    /// The evidence is applied on EVERY branch, including the thin-sample neutral
+    /// prior: the holder ledger clears its own independent evidence bar
+    /// (`Exact` basis and [`crate::holder_concentration::MIN_ENTITIES_FOR_SHAPE`]
+    /// entities), which is a different measurement from this screen's swap-count
+    /// floor, so gating one behind the other would discard evidence that qualified.
+    #[must_use]
+    pub fn authenticity_with(&self, mint: &[u8; 32], ev: HolderAuthEvidence) -> (u32, bool) {
         let Some(flow) = self.mints.get(mint) else {
-            return (NEUTRAL_PRIOR_BPS, false);
+            return (Self::apply_holder_evidence(NEUTRAL_PRIOR_BPS, ev), false);
         };
         if flow.recorded_swaps < MIN_SWAPS_FOR_AUTH {
-            return (NEUTRAL_PRIOR_BPS, false);
+            return (Self::apply_holder_evidence(NEUTRAL_PRIOR_BPS, ev), false);
         }
         let gross = u128::from(flow.gross_total);
         if gross == 0 {
-            return (NEUTRAL_PRIOR_BPS, false);
+            return (Self::apply_holder_evidence(NEUTRAL_PRIOR_BPS, ev), false);
         }
         let mut matched: u128 = 0;
         let mut hhi_acc: u128 = 0;
@@ -414,7 +480,30 @@ impl FlowScreen {
         let auth_bps = u32::try_from(auth).unwrap_or(AUTH_FLOOR_BPS);
 
         let fabricated = rt_bps >= FABRICATED_RT_BPS && top1_bps >= FABRICATED_TOP1_BPS;
-        (auth_bps, fabricated)
+        (Self::apply_holder_evidence(auth_bps, ev), fabricated)
+    }
+
+    /// Subtract the holder-ledger evidence penalty from an authenticity reading,
+    /// re-clamped into the `[AUTH_FLOOR_BPS, AUTH_CEIL_BPS]` band.
+    ///
+    /// Both legs charge only the EXCESS over a published venue baseline (28% of
+    /// holders bundled; 21.4% wash-trade share — MemeTrans arXiv 2602.13480), and
+    /// each is separately capped, so neither can dominate the multiplier alone.
+    fn apply_holder_evidence(auth_bps: u32, ev: HolderAuthEvidence) -> u32 {
+        let bundle_excess = u64::from(
+            ev.bundle_suspect_count
+                .saturating_sub(BUNDLE_TOLERANCE_COUNT),
+        );
+        let bundle_pen = bundle_excess
+            .saturating_mul(BUNDLE_AUTH_PENALTY_BPS)
+            .min(BUNDLE_AUTH_PENALTY_CAP_BPS);
+        let flip_pen = (ev.flip_ratio_bps.saturating_sub(FLIP_TOLERANCE_BPS)
+            / FLIP_AUTH_PENALTY_DIVISOR)
+            .min(FLIP_AUTH_PENALTY_CAP_BPS);
+        let penalty = u32::try_from(bundle_pen.saturating_add(flip_pen)).unwrap_or(u32::MAX);
+        auth_bps
+            .saturating_sub(penalty)
+            .clamp(AUTH_FLOOR_BPS, AUTH_CEIL_BPS)
     }
 
     /// Reduce-only size multiplier (bps ≤ 10 000) for the market's phase.
@@ -427,7 +516,15 @@ impl FlowScreen {
     /// (§21.7 phase asymmetry).
     #[must_use]
     pub fn size_mult_bp(&self, mint: &[u8; 32], is_pool: bool) -> u32 {
-        let (auth_bps, _) = self.authenticity(mint);
+        self.size_mult_bp_with(mint, is_pool, HolderAuthEvidence::default())
+    }
+
+    /// [`FlowScreen::size_mult_bp`] with the holder-ledger authenticity evidence
+    /// folded in — the SINGLE §21.7 authenticity entry point into the sizing
+    /// chain.
+    #[must_use]
+    pub fn size_mult_bp_with(&self, mint: &[u8; 32], is_pool: bool, ev: HolderAuthEvidence) -> u32 {
+        let (auth_bps, _) = self.authenticity_with(mint, ev);
         let phase_w = if is_pool {
             PHASE_W_POOL_BPS
         } else {
