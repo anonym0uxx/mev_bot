@@ -514,13 +514,95 @@ impl ScalpLifecycle {
     /// opened it; deterministic confirmation scales it to target); refused after
     /// any tranche has been sold (never re-risk a de-risking position). Returns
     /// whether the scale-in was applied.
-    pub fn scale_in(&mut self, mint: &[u8; 32], add_lamports: u64, add_cost_lamports: u64) -> bool {
+    /// §33 one-shot scale-in, at a **weighted-average cost basis**.
+    ///
+    /// # Why the basis must move (audit 2026-07-25)
+    ///
+    /// This function used to add `add_lamports` to `size_lamports` while leaving
+    /// `entry_price_fp` untouched. Every later [`Self::realize`] computes
+    /// `gross = size × mult_bps / 10_000` with `mult_bps` measured against
+    /// `entry_price_fp`, so lamports bought at the CURRENT mark were booked as if
+    /// they had been bought at the ORIGINAL entry — pure phantom profit equal to
+    /// `add_lamports × (mark/entry − 1)` at the moment of the add. The trigger
+    /// (evidenced authenticity + structure not Downtrend) conditions on a RISING
+    /// tape, so the error was systematically in our favour: precisely the direction
+    /// that flatters a backtest and cannot be collected in cash.
+    ///
+    /// Blending the basis makes `size × mult_bps` mean "units × exit price" again,
+    /// which is the only reading under which realized net SOL is real.
+    ///
+    /// # Arithmetic (§22) — and why it is NOT the obvious weighted average
+    ///
+    /// `size_lamports` is a **NOTIONAL** (lamports deployed), not a unit count, and
+    /// `realize` computes `gross = size × mult_bps / 10_000`. The units a notional
+    /// `s` buys at price `p` is `s / p`, so the basis that makes
+    /// `total_notional × P / B` equal the true `units × P` is the **harmonic**
+    /// (notional-weighted) mean, not the arithmetic one:
+    ///
+    /// ```text
+    ///     B = (s1 + s2) · p1 · p2 / (s1·p2 + s2·p1)
+    /// ```
+    ///
+    /// The arithmetic mean `(s1·p1 + s2·p2)/(s1+s2)` is the natural-looking answer
+    /// and it is WRONG here — it would leave a residual phantom of ~0.9% of the
+    /// added tranche at a 1.2× add, because it implicitly treats notionals as unit
+    /// counts. `tests/scale_in_basis.rs` catches exactly that error.
+    ///
+    /// Integer-only via `u128`, rounded **UP** (`div_ceil`), which is fail-closed: a
+    /// higher basis can only LOWER every subsequent `mult_bps`, so truncation never
+    /// manufactures profit. Products are `checked_*`; the function REFUSES the add
+    /// on overflow or on a missing (zero) mark rather than booking risk against
+    /// unknown evidence (§6.4).
+    ///
+    /// A residual of at most **1 bp of notional** remains after blending, because
+    /// `mult_bps` is itself quantized to integer basis points — that is a property
+    /// of the price representation, not of this function, and it is conservative.
+    pub fn scale_in(
+        &mut self,
+        mint: &[u8; 32],
+        add_lamports: u64,
+        add_cost_lamports: u64,
+        mark_price_fp: u64,
+    ) -> bool {
         let Some(pos) = self.open.get_mut(mint) else {
             return false;
         };
         if pos.scaled || pos.tranche_mask != 0 || pos.remaining_bps != 10_000 {
             return false;
         }
+        // A zero mark is missing evidence, not a price — never add risk on it.
+        if add_lamports == 0 || mark_price_fp == 0 || pos.entry_price_fp == 0 {
+            return false;
+        }
+        let s1 = u128::from(pos.size_lamports);
+        let s2 = u128::from(add_lamports);
+        let p1 = u128::from(pos.entry_price_fp);
+        let p2 = u128::from(mark_price_fp);
+        // den = s1·p2 + s2·p1  (proportional to total UNITS held)
+        let Some(den) = s1
+            .checked_mul(p2)
+            .and_then(|a| s2.checked_mul(p1).and_then(|b| a.checked_add(b)))
+        else {
+            return false;
+        };
+        if den == 0 {
+            return false;
+        }
+        // num = (s1 + s2)·p1·p2
+        let Some(num) = s1
+            .checked_add(s2)
+            .and_then(|s| s.checked_mul(p1))
+            .and_then(|s| s.checked_mul(p2))
+        else {
+            return false;
+        };
+        let Ok(blended) = u64::try_from(num.div_ceil(den)) else {
+            return false;
+        };
+        if blended == 0 {
+            return false;
+        }
+        pos.entry_price_fp = blended;
         pos.scaled = true;
         pos.size_lamports = pos.size_lamports.saturating_add(add_lamports);
         pos.cost_lamports = pos.cost_lamports.saturating_add(add_cost_lamports);

@@ -1584,6 +1584,10 @@ impl Engine {
                                             mint.as_bytes(),
                                             att.scale_add,
                                             att.scale_cost,
+                                            // The mark the added lamports are ACTUALLY
+                                            // bought at — blends the cost basis so the
+                                            // add cannot book phantom profit.
+                                            price_u,
                                         )
                                     {
                                         if let Some(e) = self.open_lane.get_mut(mint.as_bytes()) {
