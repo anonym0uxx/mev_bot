@@ -48,6 +48,13 @@ overflow-checks = false
 # money/fixed-point & outcome-controlling crates keep overflow checks in release —
 # silent money wrap is prohibited (§22). Plumbing crates (clock, journal, canonical,
 # governance, social) inherit the workspace default.
+[profile.release.package.pump-quant-app]
+# The composition root owns `bankroll_realized`, `bankroll_committed`, `book_exit`,
+# and all of `position.rs::realize` — i.e. every lamport the bot actually books. It
+# was missing from this list, which meant the ONE crate §22's "silent money wrap is
+# prohibited" rule most obviously targets was compiling with overflow-checks OFF in
+# release. (Audit 2026-07-25.)
+overflow-checks = true
 [profile.release.package.pump-quant-brain]
 overflow-checks = true
 [profile.release.package.pump-quant-core]

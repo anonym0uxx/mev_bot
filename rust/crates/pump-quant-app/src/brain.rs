@@ -51,7 +51,7 @@ use pump_quant_brain::persist::{
     BlobStore, BrainStore, FileBlobStore, MemBlobStore, PersistError, RestoreReport,
 };
 use pump_quant_brain::recall::{
-    EpisodicIndex, RecallFilter, RecallParams, RecallVerdict, EPISODE_CAP,
+    EpisodicIndex, RecallFilter, RecallParams, RecallStats, RecallVerdict, EPISODE_CAP,
 };
 use pump_quant_brain::social_recall::{
     AuthorTrackRecord, CallMarkout, CallRecord, Platform, SocialRecallIndex, DEFAULT_CALL_WINDOW_NS,
@@ -650,21 +650,67 @@ impl BrainPlane {
         if !armed {
             return BrainSizeVerdict::Identity;
         }
-        if stats.n_matched < self.params.min_sample {
+        let v = Self::verdict_from_stats(
+            stats,
+            self.params.min_sample,
+            haircut_win_rate_bp,
+            veto_win_rate_bp,
+            haircut_mult_bp,
+        )
+        ;
+        match v {
+            BrainSizeVerdict::Veto => self.vetoes = self.vetoes.saturating_add(1),
+            BrainSizeVerdict::Haircut(_) => {
+                self.haircuts_applied = self.haircuts_applied.saturating_add(1);
+            }
+            BrainSizeVerdict::Identity => {}
+        }
+        v
+    }
+
+    /// The B3 verdict RULE, as a pure function of the recalled statistics — no index,
+    /// no counters, no state. Extracted so the rule itself is directly testable
+    /// (`tests/lottery_class_admission.rs`), because a proxy defect lived here
+    /// undetected precisely because the rule could only be exercised end-to-end.
+    #[must_use]
+    pub fn verdict_from_stats(
+        stats: &RecallStats,
+        min_sample: u32,
+        haircut_win_rate_bp: u32,
+        veto_win_rate_bp: u32,
+        haircut_mult_bp: u32,
+    ) -> BrainSizeVerdict {
+        if stats.n_matched < min_sample {
             // Defence in depth: the brain already enforces this, but the law is
             // stated here too so a future params edit cannot smuggle small-n in.
             return BrainSizeVerdict::Identity;
         }
-        let bled = stats.median_net_lamports < 0;
+        // BLED REQUIRES BOTH — the median AND the mean. This is the same conjunction
+        // `brain_analysis::is_conditioned_negative` has always applied to retirement,
+        // and the reason is stated there verbatim: **a negative median with a POSITIVE
+        // mean is a class that pays rarely and hugely — a lottery, but not a losing
+        // one.** That shape is the canonical profitable memecoin payoff (most trades
+        // lose small, rare trades win huge), so median-only would have this law VETO
+        // precisely the setups the strategy exists to catch: 18 losses of −0.10 SOL
+        // against 2 wins of +3.00 SOL is a median of −0.10, a win rate of 1_000 bp,
+        // and a TOTAL of +4.20 SOL — refused at admission on a median-only test.
+        // Vetoing on the median while the aggregate pays is optimizing a proxy
+        // directly against the objective (§realized net SOL, criterion 74), and the
+        // veto is absorbing: a vetoed class books no episode, so its statistics
+        // freeze and it can never redeem itself.
+        //
+        // The fat LEFT tail (positive median, negative mean — many small wins against
+        // rare large losses) is likewise left alone here: that is a tail-shape problem
+        // the exit ladder owns, not an admission problem. Only a class that fails in
+        // BOTH the typical and the aggregate sense loses size.
+        let bled = stats.median_net_lamports < 0 && stats.mean_net_lamports < 0;
         if !bled {
             return BrainSizeVerdict::Identity;
         }
         if stats.win_rate_bp <= veto_win_rate_bp {
-            self.vetoes = self.vetoes.saturating_add(1);
             return BrainSizeVerdict::Veto;
         }
         if stats.win_rate_bp <= haircut_win_rate_bp {
-            self.haircuts_applied = self.haircuts_applied.saturating_add(1);
             // Reduce-only clamp: the configured factor can never exceed identity.
             return BrainSizeVerdict::Haircut(haircut_mult_bp.min(10_000));
         }

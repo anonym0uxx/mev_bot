@@ -3739,7 +3739,14 @@ impl Engine {
             .get(&e.mint)
             .map(|a| (a.lane, a.discovery_lane));
         if let Some((lane, discovery_lane)) = attribution {
-            let net = i64::try_from(e.net_lamports).unwrap_or(i64::MAX);
+            // Saturate in the CORRECT DIRECTION: `try_from` fails at BOTH ends, so
+            // `unwrap_or(i64::MAX)` would turn an out-of-range LOSS into a maximal
+            // GAIN — and this value feeds `lane_perf`/`disc_perf`, which drive
+            // reflection weights (a decision path, not a readout). Clamping is what
+            // the sibling attribution below already does. (Audit 2026-07-25.)
+            let net = e
+                .net_lamports
+                .clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
             self.lane_perf.record(lane, net);
             // §71.2 reflection integrity: attribute realized net-SOL to the ACTUAL
             // discovery lane, so lanes sharing a setup archetype learn independently.
