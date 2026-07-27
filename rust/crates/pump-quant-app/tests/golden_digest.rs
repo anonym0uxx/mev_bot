@@ -476,7 +476,7 @@ use tape_golden::*;
 // and `brain_haircut_is_exactly_neutral_on_this_tape` drives BOTH arms of the flag on
 // the real golden tape to prove the counters are byte-identical.
 // (arc: … → 1_864_780 → 15_410_801 [net unchanged at re-pins #16, #17, #18, #19, #20, #21].)
-const GOLDEN_DIGEST: u64 = 8_413_891_310_981_713_968;
+const GOLDEN_DIGEST: u64 = 17_774_161_487_163_901_985;
 const GOLDEN_NET_LAMPORTS: i128 = 15_410_801;
 const GOLDEN_PROMOTED: u64 = 504;
 const GOLDEN_ADMITTED: u64 = 13;

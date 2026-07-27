@@ -31,7 +31,7 @@ minus SOL out after all costs), maximized autonomously under the risk constituti
 win-rate, trade count, or gross P&L.
 
 **The honest baseline you are inheriting:** the golden reference net is **15,410,801 lamports
-on a cost-realistic tape** (digest `8413891310981713968`), NOT the retired 12.55M headline,
+on a cost-realistic tape** (digest `17774161487163901985`), NOT the retired 12.55M headline,
 which was an artifact of understated costs. Round-trip cost on small clips is ~7%, dominated
 by fixed priority/tip — this is the drag you are trading against. Do not cite the old arc as
 edge. Your task is to find, on live chain, the forms of scalping that clear that real cost
@@ -45,7 +45,7 @@ Your first action is the §65 M0/M1 audit built from **actual inspection you rea
 — never claim to have inspected a file, config, provider dashboard, Windows topology, or
 runtime state you did not. Cover, at minimum: the code-path authority audit; the current
 Rust runtime + determinism map (confirm `cargo test --workspace` green, golden digest =
-`8413891310981713968`, `scripts/regression_e2e.py` green, 191 dossiers intact); the Windows
+`17774161487163901985`, `scripts/regression_e2e.py` green, 191 dossiers intact); the Windows
 host / CPU / NUMA / storage / network audit; the protocol-registry and decoder-coverage
 audit; the Helius/LaserStream entitlement verification; and the exact immediate autonomous
 actions with what evidence would change direction. Mark every server-only item you have not

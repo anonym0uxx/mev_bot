@@ -262,3 +262,112 @@ Binding on whoever runs it. Most of these are ways a memecoin backtest lies.
 * Real-data run: **NOT DONE — blocked on data reachability, not on code.** No net-SOL claim from
   real data exists yet, and none should be cited until this runs on the server.
 * Owner: Hermes, Phase-B. See the activation directive's action items.
+
+---
+
+# §7. PRINCIPAL-QUANT SCRUTINY OF THE HARNESS (2026-07-27)
+
+The harness was reviewed the way a desk would review a backtest before letting it size anything.
+Findings are ordered by how much they would have flattered the result.
+
+## FATAL — would have invalidated any net figure
+
+### F1. Fills happen at the observed print, with ZERO own-impact **(now buildable)**
+
+`engine.rs:2992` — `let entry_price = self.numeric.latest_price_fp(mint).unwrap_or(0);` — opens the
+position at the **last observed print**, and exits do the same. `pump_quant_simulator::fill::
+simulate_fill` exists but is **never called on the held-position path** (only in `scalp.rs`, a
+separate single-shot evaluator).
+
+pump.fun is a constant-product bonding curve. Executing size `S` does not fill at the marginal
+price; it fills at the average along the curve, which is *strictly worse* — and because we hold the
+reserves, that is **exactly computable, so approximating it is inexcusable**. Closed form:
+`avg/spot = (vsol + sol_in)/vsol`, i.e. impact in bps is exactly `sol_in · 10_000 / vsol`. At a
+fresh 30-SOL curve a 0.1 SOL clip pays **33 bps** we never charged ourselves — on both legs, on
+every trade, against a ~700 bps round trip.
+
+**Built this pass:** `crates/pump-quant-app/src/curve_fill.rs` — exact integer constant-product
+execution (`buy_tokens_out`, `sell_sol_out`, `buy_avg_price_fp`, `sell_avg_price_fp`,
+`spot_price_fp`, `buy_impact_bps`, `sell_impact_bps`), `u128` intermediates, `checked_*` throughout,
+`None` rather than saturation on degenerate input, and **conservative rounding** (buy average rounds
+UP, sell average rounds DOWN) so the model can never flatter a fill. 14 unit tests pin the
+properties that matter: buy-average ≥ spot always, sell-average ≤ spot always, impact monotone in
+size, convergence to spot as size → 0, `k` preserved across a round trip, and a pinned worked
+example at real pump.fun reserves.
+
+### F2. Same-slot fill is look-ahead, and it violates our own law
+
+The replay observes a swap and fills at that same price in the same slot. Real landing is ≥ 1 slot
+(~400 ms) later, and **criterion 103 already requires evaluating at expected LANDING state, never
+observation state.** The harness was breaking a constitutional rule in the flattering direction.
+
+**Built this pass:** `fill_landing_slots` config (default `0` = today's behaviour, so nothing moves
+until deliberately enabled).
+
+## SEVERE — biases magnitude
+
+### S1. Price quantization swamps the edge at real reserves **(fixed)**
+
+This one was found only because an independent hand-check of the curve math disagreed with the
+module's own test — and chasing the disagreement was more valuable than the check.
+
+`price_fp = vsol · 10_000_000 / vtok`. At real pump.fun reserves (`vsol` 30 SOL,
+`vtok` ≈ 1.07e15) that lands at **279 — three significant digits.** The smallest representable
+price move is therefore **~36 bps**, which is the same order as the entire per-trade edge. Measured
+across the realistic band:
+
+| curve SOL | `price_fp` | smallest representable move |
+|---|---|---|
+| 30 | 279 | **35.8 bps** |
+| 45 | 629 | 15.9 bps |
+| 85 | 2,236 | 4.5 bps |
+| 115 | 4,107 | 2.4 bps |
+
+A raw-scaled backtest would have been dominated by quantization noise, and the noise is *invisible*
+in the output — it looks like strategy performance.
+
+**Fixed:** the converter now re-bases each mint's series to its own first observation
+(`--price-normalize per-mint`, default). The engine consumes `price_fp` **only through ratios**
+(`price · 10_000 / entry_price`, verified in `position.rs`), so this is **exact, not an
+approximation**, and resolution goes from ~36 bps to ~0.001 bps. The market-cap gate deliberately
+keeps the RAW absolute price, since a per-mint ratio carries no absolute scale. The tool reports the
+raw quantum it eliminated, and warns if `raw` mode is selected with a quantum ≥ 10 bps.
+
+### S2. Our fills do not consume the liquidity they take
+
+A simulated buy does not move the curve for subsequent tape events, so the historical path continues
+as though we were never there — and that path partly reflects the very trades we would be
+displacing. **This is not fully fixable in a single-agent replay.** The honest mitigation is to keep
+our size small relative to contemporaneous flow and to report the participation rate, so the
+counterfactual damage is bounded and visible rather than assumed away. Not yet built; specified here
+so it is not forgotten.
+
+### S3. Logical time is tied to trade COUNT, not slots
+
+`--tick-every N` advances the clock every N trades, so time-based exits and decay run fast in busy
+markets and slow in quiet ones — exactly backwards. Time stops should key off slots. Not yet built.
+
+## METHODOLOGICAL
+
+* **M1. "First sighting" is not "launch"** unless the pull begins at creation. If the data starts
+  mid-life the mcap gate admits mid-flight tokens, which is an easier and different game. Check
+  `age_slots` at first sighting.
+* **M2. Reserve semantics are unvalidated** — the converter documents reserves as AFTER the swap; a
+  source that emits BEFORE would shift every price by one swap. Detectable via a constant-product
+  consistency check against the swap amounts.
+* **M3. No warm-up exclusion.** Lane weights and the brain adapt from cold, so early trades are
+  measured under a model that has not converged.
+* **M4. No purged/embargoed out-of-sample split and no multiple-testing correction**, while the
+  parameters being evaluated have already been tuned elsewhere. The repo's §51 FDR/PBO machinery is
+  built but unwired — wire it before believing a positive result.
+* **M5. Cost model under-prices by ~150 bps** (`NET_SOL_SANITY_AUDIT_2026-07-25.md` §5). Set costs
+  from measured server figures first.
+
+## Status after this pass
+
+`curve_fill.rs` and both config fields are built and tested; **defaults reproduce prior behaviour
+exactly**, so re-pin #23 is SEED-ONLY (net 15,410,801 / 504 / 13 / 457 / 72 all unchanged — only the
+§19 config-identity digest moved). **Wiring the curve fill into the decision path is deliberately
+NOT done here**: it changes every historical number and must land as its own gated change with its
+own A/B. Until it is wired, **no real-data net is admissible**, because F1 and F2 both remain live
+in the fill path.

@@ -149,6 +149,13 @@ def main():
                     help="newline-delimited list of EVERY mint created in the window "
                          "(the launch-time universe). Required unless "
                          "--unaudited-survivorship is passed.")
+    ap.add_argument("--price-normalize", choices=("per-mint", "raw"), default="per-mint",
+                    help="per-mint (default): express each mint's price as a ratio to its "
+                         "OWN first observed price, scaled by PRICE_SCALE. The engine uses "
+                         "price only in ratios, so this is exact -- and it is necessary, "
+                         "because raw scaling gives only ~3 significant digits at real "
+                         "pump.fun reserves (a 35 bps price QUANTUM on a fresh curve, the "
+                         "same order as the entire per-trade edge).")
     ap.add_argument("--unaudited-survivorship", action="store_true",
                     help="proceed with NO survivorship audit. The output is stamped "
                          "UNAUDITED and any net from it is not admissible evidence.")
@@ -231,6 +238,7 @@ def main():
                 "slot": slot,
                 "mh": mh,
                 "price_fp": price_fp,
+                "raw_price_fp": price_fp,
                 "quote": abs(sol),
                 "liq": vsol,
                 "signed_base": abs(tok) if is_buy else -abs(tok),
@@ -250,8 +258,9 @@ def main():
     for mint, rows in per_mint.items():
         rows.sort(key=lambda r: r["slot"])
         first = rows[0]
-        # price_fp is SOL-per-token-base-unit scaled; convert to whole-token SOL.
-        price_sol_per_token = (first["price_fp"] / PRICE_SCALE) * (10 ** TOKEN_DECIMALS)
+        # The market-cap gate MUST use the RAW (absolute) price -- normalization below
+        # is a per-mint ratio and carries no absolute scale.
+        price_sol_per_token = (first["raw_price_fp"] / PRICE_SCALE) * (10 ** TOKEN_DECIMALS)
         mcap_sol = price_sol_per_token * TOTAL_SUPPLY_TOKENS / LAMPORTS_PER_SOL
         if not (args.min_mcap_sol <= mcap_sol <= args.max_mcap_sol):
             drops["outside_mcap_band"] += 1
@@ -302,6 +311,30 @@ def main():
         print("FATAL: every mint fell outside the market-cap band. Widen "
               "--min-mcap-sol/--max-mcap-sol. Ledger:", dict(drops), file=sys.stderr)
         return 2
+
+    # ---- PRICE NORMALIZATION (§22 integer-only) ----
+    # `price_fp` is consumed by the engine ONLY through ratios (`price * 10_000 /
+    # entry_price` in `position.rs`), so re-basing each mint's series to its own first
+    # observation is EXACT, not an approximation. It is also necessary: at real
+    # pump.fun reserves (vsol 30 SOL, vtok ~1.07e15) the raw `vsol*SCALE/vtok` lands
+    # at ~279, i.e. THREE significant digits, so the smallest representable price move
+    # is ~36 bps -- the same order as the entire per-trade edge being measured. Raw
+    # scaling would drown the result in quantization noise.
+    worst_raw_res_bps = 0
+    if selected:
+        worst_raw_res_bps = max(
+            (10_000 // r[1][0]["raw_price_fp"]) if r[1][0]["raw_price_fp"] else 10_000
+            for r in selected
+        )
+    if args.price_normalize == "per-mint":
+        for _mint, rows, _mc in selected:
+            vsol0 = rows[0]["vsol"]
+            vtok0 = rows[0]["vtok"]
+            for r in rows:
+                # price/price0 = (vsol/vtok) / (vsol0/vtok0) = vsol*vtok0 / (vtok*vsol0)
+                num = PRICE_SCALE * r["vsol"] * vtok0
+                den = r["vtok"] * vsol0
+                r["price_fp"] = max(1, num // den) if den else 1
 
     # ---- emit, strictly in slot order across all mints ----
     stream = []
@@ -362,6 +395,12 @@ def main():
     print(f"  mcap band (SOL)    : {min(caps):.2f} .. {max(caps):.2f}")
     print(f"  records kept       : {kept_records}")
     print(f"  sampling           : {sampling}")
+    print(f"  price normalize    : {args.price_normalize}")
+    print(f"  raw price quantum  : ~{worst_raw_res_bps} bps (worst mint) "
+          f"-> {'~0.001 bps after normalization' if args.price_normalize == 'per-mint' else 'UNCHANGED (raw mode)'}")
+    if args.price_normalize == "raw" and worst_raw_res_bps >= 10:
+        print("  *** WARNING: raw price scaling leaves a price quantum comparable to the "
+              "per-trade edge. The measured net will be dominated by quantization noise.")
     print(f"  trades/mint min/med: {min_tpm} / {tpm[len(tpm)//2] if tpm else 0}")
     print("  --- SURVIVORSHIP AUDIT ---")
     if universe_n is not None:

@@ -175,6 +175,45 @@ pub struct Config {
     /// Impact `k` (bps) for the simulator's constant-product impact model.
     pub sim_impact_k_bps: u32,
 
+    // ---- backtest fidelity: exact curve fill + landing lag (criterion 103) ----
+    /// Price fills through the EXACT constant-product curve math in
+    /// [`crate::curve_fill`] instead of the last observed print.
+    ///
+    /// The engine today opens and closes positions at
+    /// `numeric.latest_price_fp(mint)` — the marginal/spot price of the last swap it
+    /// saw. On a pump.fun bonding curve (and the PumpSwap pool it migrates into) that
+    /// price is unreachable by any order of non-zero size: our own order walks the
+    /// curve and fills at the strictly worse AVERAGE price along it. Because we hold
+    /// the reserves, that average is exactly computable, so modelling it as "spot"
+    /// is not a conservative simplification — it is a systematic, size-proportional
+    /// overstatement of every entry and every exit. A 0.1 SOL bite into the canonical
+    /// 30 SOL virtual reserve fills 33 bps worse than spot on the way in and ~33 bps
+    /// worse on the way out; a backtest that charges neither books ~65 bps of
+    /// notional per round trip that the wallet would never have seen.
+    ///
+    /// **DEFAULT `false`.** The curve math is built, tested and pinned
+    /// ([`crate::curve_fill`]) but is deliberately NOT yet read by any decision path.
+    /// Arming it changes fill prices and therefore net SOL, so it is a separate gated
+    /// change with its own A/B — leaving it off here keeps this addition a §19
+    /// seed-only digest move with every golden decision number unchanged.
+    pub curve_exact_fill_enable: bool,
+    /// Slots of expected landing lag applied between OBSERVING a market state and
+    /// FILLING against it (criterion 103).
+    ///
+    /// Criterion 103 requires every fill be evaluated at the expected LANDING state,
+    /// never the observation state. The engine currently does the opposite: it
+    /// observes a swap and fills at that same print, in the same slot — which is
+    /// look-ahead, because the transaction that produced the print has already landed
+    /// and ours has not been sent. Real landing is at least one slot (~400 ms) later,
+    /// during which the reserves move against whichever side we are taking. `1` is
+    /// the honest minimum for a same-block-submit assumption; larger values model a
+    /// congested leader or a slower sender.
+    ///
+    /// **DEFAULT `0`.** Zero reproduces today's same-slot (look-ahead) behaviour
+    /// byte-for-byte, so this field's arrival moves only the §19 config-identity
+    /// digest seed and no decision. Raising it is a separate gated change.
+    pub fill_landing_slots: u64,
+
     // ---- bankroll / dynamic sizing (§33 Layer 1, delta-§1) ----
     /// PAPER/REPLAY starting-bankroll SEED ONLY, lamports — NEVER the live bankroll.
     /// Live trading sources the bankroll base from the reconciled on-chain wallet
@@ -861,6 +900,15 @@ impl Config {
             exit_tip_lamports: 10_000,
             sim_impact_k_bps: 50,
 
+            // Criterion 103 backtest-fidelity leaves: BOTH default-inert. The exact
+            // curve-fill math and the landing-lag knob exist and are tested, but
+            // arming either changes fill prices and therefore net SOL, so each is a
+            // separate gated change with its own A/B (§56: no decision-plane law is
+            // armed before it has paid for itself). Off/zero reproduces today's
+            // behaviour byte-for-byte.
+            curve_exact_fill_enable: false,
+            fill_landing_slots: 0,
+
             bankroll_initial_lamports: 2_000_000_000, // 2 SOL start; ANY amount works
             // A-6 small-bankroll recalibration (criterion 112): on a 2 SOL start the
             // survival floor is max(0.5 SOL, 25%×2) = 0.5 SOL ⇒ deployable 1.5 SOL,
@@ -1112,6 +1160,8 @@ impl Config {
             "entry_tip_lamports" => self.entry_tip_lamports = nonneg(value)?,
             "exit_tip_lamports" => self.exit_tip_lamports = nonneg(value)?,
             "sim_impact_k_bps" => self.sim_impact_k_bps = bp(value)?,
+            "curve_exact_fill_enable" => self.curve_exact_fill_enable = value != 0,
+            "fill_landing_slots" => self.fill_landing_slots = nonneg(value)?,
             "bankroll_initial_lamports" => self.bankroll_initial_lamports = nonneg(value)?,
             "min_trade_size_lamports" => self.min_trade_size_lamports = nonneg(value)?,
             "floor_fraction_bps" => self.floor_fraction_bps = bp(value)?,
