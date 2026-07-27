@@ -64,9 +64,9 @@
 ///
 /// (Re-pin #17 moved it for two config VALUES: `meta_taxonomy_version` 0 → 1 and
 /// `brain_recall_max_distance` 12 → 8.)
-pub const GOLDEN_DIGEST: u64 = 17_774_161_487_163_901_985;
+pub const GOLDEN_DIGEST: u64 = 617_234_374_244_928_651;
 /// Realized net-SOL (lamports) on the golden tape (§24-compliant cost-derived).
-pub const GOLDEN_NET_LAMPORTS: i128 = 15_410_801;
+pub const GOLDEN_NET_LAMPORTS: i128 = 8_124_568;
 /// Candidates promoted to the gate.
 pub const GOLDEN_PROMOTED: u64 = 504;
 /// Candidates admitted by the gate.
@@ -78,19 +78,28 @@ pub const GOLDEN_UNIVERSE_FILTERED: u64 = 72;
 
 /// Net-SOL on the golden tape with the §24 cost-derived ladder DISABLED — i.e.
 /// the forbidden fixed 13_500/25_000/50_000 ladder. Pinned so the §24 reversal's
-/// decision-level effect (derived out-earns fixed here by +355_101) can never be
-/// silently dead-coded. Source: golden_digest.rs re-pin #15 (recalibrated sizing).
-pub const GOLDEN_NET_FIXED_LADDER: i128 = 15_055_700;
+/// decision-level effect (derived out-earns fixed here by +797_253) can never be
+/// silently dead-coded.
+///
+/// **Re-measured at re-pin #24 (2026-07-27), not substituted.** The retired value
+/// 15_055_700 was taken on a tape whose pools were 0.12–0.47 SOL against a 0.1 SOL
+/// clip, with fills at the print. Under real pump.fun depth with our own curve
+/// impact charged on both legs it is 7_327_315. **The §24 LAW is unaffected and in
+/// fact reads slightly stronger**: cost-derived still out-earns the forbidden fixed
+/// ladder, and by a WIDER margin than before (+355_101 → +797_253), because a fixed
+/// ladder that ignores cost is punished harder once the cost is real.
+pub const GOLDEN_NET_FIXED_LADDER: i128 = 7_327_315;
 
 /// The margin by which the §24 cost-derived default out-earns the forbidden fixed
 /// ladder on the representative golden tape (re-pin #13: "derived now marginally
-/// OUT-earns fixed", preserved through re-pin #14's Discord alpha cohort and re-pin
-/// #15's 0.1-SOL operator floor + small-bankroll Kelly recalibration — the modest
-/// alpha winner still peaks BELOW the fixed +35% rung so it never rewards the
-/// forbidden ladder; the larger clips widen the margin to +355_101). Mirror of
+/// OUT-earns fixed", preserved through re-pin #14's Discord alpha cohort, re-pin
+/// #15's 0.1-SOL operator floor + small-bankroll Kelly recalibration, and re-pin
+/// #24's depth realism — which more than DOUBLED the margin, 355_101 → 797_253,
+/// because charging real execution cost is precisely what a cost-DERIVED ladder
+/// prices and a fixed one cannot). Mirror of
 /// `GOLDEN_NET_LAMPORTS - GOLDEN_NET_FIXED_LADDER`; the manifest test proves the
 /// identity so a drift in either net is caught here.
-pub const GOLDEN_DERIVED_MINUS_FIXED: i128 = 355_101;
+pub const GOLDEN_DERIVED_MINUS_FIXED: i128 = 797_253;
 
 /// The full net-SOL re-pin ARC narrated in `golden_digest.rs` (re-pins #1→#15).
 /// The LAST element is the live [`GOLDEN_NET_LAMPORTS`]; the manifest test proves
@@ -98,7 +107,7 @@ pub const GOLDEN_DERIVED_MINUS_FIXED: i128 = 355_101;
 /// or a net drift, fails against this mirror. Source: the "(arc: …)" annotations.
 pub const GOLDEN_NET_ARC: &[i128] = &[
     2_979_624, 5_017_234, 6_443_936, 8_785_954, 12_550_767, 3_831_945, 1_406_102, 1_864_780,
-    15_410_801,
+    8_124_568,
 ];
 
 /// The single REAL decision-level signed delta re-pin #12 recorded on the

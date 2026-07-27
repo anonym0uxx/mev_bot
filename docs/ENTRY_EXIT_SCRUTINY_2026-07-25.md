@@ -1,5 +1,20 @@
 # ENTRY / EXIT WORKFLOW SCRUTINY — principal-quant A/B study (2026-07-25)
 
+> **ERRATUM — 2026-07-27. Every absolute lamport figure below is superseded; every verdict stands.**
+>
+> This study was run against a golden tape whose pools were **0.12–0.47 SOL** while our minimum clip
+> is 0.1 SOL, and whose fills happened **at the print**. Our own order was therefore 21–83% of the
+> entire pool and was charged nothing for it. The tape has since been given real pump.fun depth
+> (30 SOL virtual at launch) with own-curve impact charged on both legs, which moved golden net
+> **15,410,801 → 8,124,568**. Read every absolute number here as historical.
+>
+> **The conclusions are unaffected, and this is why:** every finding in this study is a *relative*
+> A/B on a single tape — knob armed vs. disarmed, holding depth fixed. A uniform mispricing of depth
+> shifts both arms of every comparison in the same direction, so the sign and the ordering survive.
+> Price-based exit knobs are still decision-inert (the §32 flow flip still binds first); sizing is
+> still the only real mover and still fails the concentration tape when raised. What did NOT survive
+> is any reading of an absolute net as an economic result. See `docs/BACKTEST.md §9`.
+
 **Mandate (operator, verbatim intent):** scrutinize the entry/exit workflow end-to-end
 from the POV of a principal memecoin Solana quant, referencing every prior research
 finding. **Calculate + A/B test FIRST.** If a change moves net lamports, make it; if it

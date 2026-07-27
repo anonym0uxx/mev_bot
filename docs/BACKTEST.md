@@ -452,3 +452,121 @@ the correct next pass.
 
 **For any real-data backtest, `curve_exact_fill_enable` MUST be armed** — there the depth is real,
 and this is precisely the friction that decides whether the strategy clears its costs.
+
+---
+
+# §9. THE TAPE NOW HAS A REAL MARKET IN IT — and the honest number is half what we thought
+
+§8 ended with "give the tapes realistic reserves" as the next pass. Done. This is the coherent
+end-state, and the headline is that **making the market real cut the reported book roughly in half.**
+
+## What "coherent" required — it was never one number
+
+Depth realism is not a constant swap. Four quantities all describe the same pool and all had to
+agree, and the first attempt at this fixed three of five depth sites and produced a **−379,067,452**
+result that looked like a damning strategy verdict. It was a bug in the fix: two cohort blocks still
+carried 0.17–0.30 SOL pools, so those entries were being charged **+33% and +59% markups**. The
+diagnostic that caught it was printing `spot`, `vsol` and `size` at the fill site — the arithmetic
+was never wrong, the tape was inconsistent with itself.
+
+The four quantities, now mutually coherent:
+
+1. **Pool reserves** (`liquidity_lamports`) — 30 SOL virtual at launch, deepening toward ~67 SOL
+   with cumulative inflow, matching how a pump.fun curve actually fills up. **All five sites.**
+2. **Confirmed sellable depth** — scaled to the pools it describes. A 30 SOL curve you can only sell
+   0.15 SOL into is not a market, and it was silently capping every size band.
+3. **The gate's impact model** (`gate_impact_den`) — set to `vsol / 10_000 = 3_000_000`, which makes
+   `impact_bps = size/den` **exactly equal** the constant-product truth. The old 250_000 implied a
+   0.025 SOL pool and charged our clip 400 bps while this file's own comment claimed it modelled
+   "40–60 bps" — wrong by 8×, and invisible because nothing ever reconciled the gate against the fill.
+4. **The fill itself** — `curve_exact_fill_enable` armed on this tape, so our own impact is charged
+   on both legs at the ~33 bps the curve actually imposes.
+
+## The result
+
+| configuration | net | admits |
+|---|---|---|
+| old tape (0.12–0.47 SOL pools, fills at the print) | **+15,410,801** | 13 |
+| real depth + coherent gate, fills still at the print | +15,641,439 | 13 |
+| **real depth + coherent gate + own impact charged** | **+8,124,568** | 13 |
+
+**Depth realism alone changes almost nothing (+1.5%). Charging ourselves the impact we actually
+cause halves the book.** The strategy stays positive — but the honest number is **+0.0081 SOL**, not
++0.0154 SOL, and every historical claim built on the larger figure was measured in a market where our
+0.1 SOL clip was up to 83% of the pool.
+
+The fill distribution is now sane: worst −15.1M, best +22.0M on ~100M positions, i.e. −15% to +22%
+per trade. Under the broken intermediate state it was −70% to −80% per trade, which is what exposed
+the bug.
+
+## Two findings that fall out of it, and both are unwelcome
+
+* **The AlphaCall (Discord) lane does not earn.** It read **+447,700** on the fictional tape and reads
+  **−2,721,835** on the real one. The activation directive calls Discord "a proven positive discovery
+  lane" and cites that +447,700 — **that claim is now false and must not be repeated.** Whether a paid
+  room is worth its subscription is an open question for live data, not a settled positive. Both
+  `golden_digest` assertions were inverted to pin the measured reality rather than the hope.
+* **The book is smaller than a single trade's loss.** Net +8.1M against a worst fill of −15.1M means
+  one bad trade exceeds the entire book. That is criterion 108's top-k concentration hazard showing
+  up in the representative tape, and it means this net is fragile to trade selection, not a stable
+  edge.
+
+## Scope, stated as a decision rather than an omission
+
+**Only the GOLDEN tape was re-based.** It is the sole tape whose ABSOLUTE net is quoted as an
+economic result. The hazard tapes (B3/B7/concentration/flow) are RELATIVE instruments — armed vs
+disarmed, where depth cancels because both arms pay identically — so re-basing them would churn every
+pinned constant across ten files, risk breaking carefully-built scenario dynamics, and change no
+verdict. They keep stylized depth and keep the fill disarmed, and `curve_fill_wiring.rs` pins the
+arithmetic of why.
+
+`dev_portable` also keeps the fill **off**: the bare profile carries no depth model, so arming it
+against stylized depth would produce nonsense. The tape that has real depth arms it explicitly.
+
+## Re-pin #24 — this one is NOT seed-only
+
+Net **15,410,801 → 8,124,568**, digest → `617_234_374_244_928_651`, AlphaCall **+447,700 →
+−2,721,835**. Promoted/admitted/rejected/filtered (504/13/457/72) unchanged. Every dependent constant
+was **re-measured, not substituted** — the flow-persistence best-gain (257,400 → 207,252) and its
+`k = 5` figure (2,322,301 → −3,223,175, now negative) were derived from fresh runs.
+
+## What else the re-pin dragged out — the exact-zero that was an artifact
+
+`law_permutation_sweep.rs` used to assert that LAW B3's brain-veto count was **exactly identical**
+whether the concentration conditioner was on or off:
+
+```rust
+assert_eq!(r_b3.brain_vetoes, r_both.brain_vetoes);   // no longer true
+```
+
+That equality broke (1196 vs 1254) and it is worth being precise about *why*, because the honest
+reading is less flattering than "a constant needed bumping". The scale-in harmonic-basis fix changed
+`mfe_bps` / `mae_bps` on sealed episodes, which changes what the brain recalls, which changes how many
+mints it vetoes. **The exact zero was never a structural property — it was an artifact of the phantom
+PnL accounting.** The property that actually matters, and that still holds exactly, is
+`joint_overlap.is_empty()`: the two laws act on **disjoint mint sets**, so there is no double-counting
+in the sizing chain (§21.7). The assertion was rewritten to pin that plus a bounded interaction:
+
+```rust
+let veto_delta = r_b3.brain_vetoes.abs_diff(r_both.brain_vetoes);
+assert!(veto_delta * 10 <= r_b3.brain_vetoes.max(1), ...);
+```
+
+**And the process failure is the more useful finding.** That test takes ten minutes, so it was skipped
+after the scale-in commit (`640a312`) and the breakage surfaced two commits later, at which point three
+candidate causes had to be separated. Ten minutes of wall clock bought several hours of archaeology.
+The rule this earns: **a change to episode-sealing arithmetic runs the full sweep before it is
+committed, without exception, however obviously local it looks.**
+
+## Fixture declarations, per Amendment A-13
+
+A-13 was written into the constitution (`§51.2 / §56.10`) as a direct consequence of this defect. Its
+first clause requires that every fixture pricing an order declare the depth it walks. That has been
+applied down to the unit tests: `position.rs` and `shadow.rs` now carry
+`TEST_LIQ_LAMPORTS = 30_000_000_000` with the participation rate stated, decision-inert today because
+`LifecycleParams::standard()` ships `curve_exact_fill = false`, and stated anyway so nobody arms a fill
+against an undeclared pool a second time.
+
+The one thing this whole exercise does NOT establish, and must not be read as establishing: **that the
+strategy makes money.** The golden book is smaller than one 0.1-SOL bite. It is a regression fixture.
+Absolute profitability is a Phase-B question answered on chain data or not at all (A-13(4)).

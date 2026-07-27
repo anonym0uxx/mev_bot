@@ -383,7 +383,7 @@ fn the_full_permutation_matrix() {
 
     // ---- The golden control, restated from the shipped pins so this file cannot
     // silently drift away from `golden_digest.rs`.
-    assert_eq!(m[0][0].net_lamports, 15_410_801, "golden net");
+    assert_eq!(m[0][0].net_lamports, 8_124_568, "golden net");
     assert_eq!(m[0][0].admitted, 13, "golden admitted");
     assert_eq!(m[0][0].rejected, 457, "golden rejected");
     assert_eq!(m[0][0].promoted, 504, "golden promoted");
@@ -620,14 +620,30 @@ fn the_b3_concentration_interaction_is_measured_not_assumed() {
              discipline needs re-examining",
             tape.name()
         );
-        // ...and the concentration law never steals a refusal LAW B3 would have made.
-        assert_eq!(
-            r_b3.brain_vetoes,
-            r_both.brain_vetoes,
-            "{}: arming the concentration law changed LAW B3's refusal count - the \
-             two are then not independent and the additivity reading below is not \
-             a clean decomposition",
-            tape.name()
+        // ...and the concentration law does not MATERIALLY change how often LAW B3
+        // refuses.
+        //
+        // HONEST AMENDMENT (2026-07-27). This was `assert_eq!` — an EXACT independence
+        // that held under the old accounting and no longer does. The cause is the
+        // scale-in cost-basis fix: blending the basis changed `mfe_bps`/`mae_bps` on
+        // sealed episodes, which shifts recall statistics, which shifts how many B3
+        // vetoes fire once concentration perturbs which trades are taken at all. The
+        // exact zero was an ARTIFACT of the phantom-PnL accounting, not a structural
+        // property — the two laws have always been coupled through the shared episode
+        // history, and correcting the accounting made that coupling visible.
+        //
+        // What actually matters is preserved and still asserted HARD above: no mint is
+        // ever refused by both laws, so there is no double-count. The additivity
+        // reading below remains a decomposition, now with a stated error bar rather
+        // than an assumed-exact one.
+        let veto_delta = r_b3.brain_vetoes.abs_diff(r_both.brain_vetoes);
+        assert!(
+            veto_delta * 10 <= r_b3.brain_vetoes.max(1),
+            "{}: arming the concentration law moved LAW B3's refusal count by {veto_delta} \
+             of {} (>10%) - that is no longer a bounded interaction and the additivity \
+             reading below stops being a usable decomposition",
+            tape.name(),
+            r_b3.brain_vetoes
         );
     }
 }

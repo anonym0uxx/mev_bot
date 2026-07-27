@@ -869,6 +869,13 @@ mod tests {
     use super::*;
 
     const P: LifecycleParams = LifecycleParams::standard();
+    /// Real pump.fun virtual-SOL depth at launch (~30 SOL). **Amendment A-13(1):** every
+    /// fixture that prices an order declares the depth it is walking, so the participation
+    /// rate `clip / vsol` is visible rather than assumed. These unit tests run under
+    /// `LifecycleParams::standard()`, which ships `curve_exact_fill = false`, so this value
+    /// is decision-INERT here; it is stated so that arming the fill in a unit test charges a
+    /// realistic 33 bps rather than the 8,333 bps the old golden tape silently charged nobody.
+    const TEST_LIQ_LAMPORTS: u64 = 30_000_000_000;
 
     fn open_one(size: u64, entry: u64) -> ScalpLifecycle {
         let mut lc = ScalpLifecycle::new(P, 64);
@@ -889,7 +896,7 @@ mod tests {
             .enumerate()
         {
             let price = 1_000_000 * m / 10_000;
-            if let Some(e) = lc.on_trade(&[1u8; 32], price, 500_000, i as u64 + 1) {
+            if let Some(e) = lc.on_trade(&[1u8; 32], price, 500_000, i as u64 + 1, TEST_LIQ_LAMPORTS) {
                 total += e.net_lamports;
                 closed = e.closed;
             }
@@ -905,9 +912,9 @@ mod tests {
     fn rug_precursor_dumps_early() {
         let mut lc = open_one(1_000_000, 1_000_000);
         // one up tick, then a −40% single-swap collapse
-        lc.on_trade(&[1u8; 32], 1_100_000, 500_000, 1);
+        lc.on_trade(&[1u8; 32], 1_100_000, 500_000, 1, TEST_LIQ_LAMPORTS);
         let e = lc
-            .on_trade(&[1u8; 32], 660_000, -900_000, 2)
+            .on_trade(&[1u8; 32], 660_000, -900_000, 2, TEST_LIQ_LAMPORTS)
             .expect("precursor fires");
         assert_eq!(e.reason, ExitReason::RugPrecursor);
         assert!(e.closed);
@@ -925,7 +932,7 @@ mod tests {
         {
             let price = 1_000_000 * m / 10_000;
             last = lc
-                .on_trade(&[1u8; 32], price, -100_000, i as u64 + 1)
+                .on_trade(&[1u8; 32], price, -100_000, i as u64 + 1, TEST_LIQ_LAMPORTS)
                 .or(last);
         }
         let e = last.expect("a stop fired");
@@ -948,10 +955,10 @@ mod tests {
     fn thesis_invalidation_on_cvd_rollover() {
         let mut lc = open_one(1_000_000, 1_000_000);
         // build CVD peak with buys at a small profit, then CVD rolls over on sells
-        lc.on_trade(&[1u8; 32], 1_050_000, 5_000_000, 1);
-        lc.on_trade(&[1u8; 32], 1_060_000, 5_000_000, 2);
+        lc.on_trade(&[1u8; 32], 1_050_000, 5_000_000, 1, TEST_LIQ_LAMPORTS);
+        lc.on_trade(&[1u8; 32], 1_060_000, 5_000_000, 2, TEST_LIQ_LAMPORTS);
         let e = lc
-            .on_trade(&[1u8; 32], 1_055_000, -9_000_000, 3)
+            .on_trade(&[1u8; 32], 1_055_000, -9_000_000, 3, TEST_LIQ_LAMPORTS)
             .expect("thesis fires on flow rollover");
         assert_eq!(e.reason, ExitReason::ThesisInvalidation);
         assert!(e.closed);
@@ -971,7 +978,7 @@ mod tests {
             .enumerate()
             {
                 let price = 1_000_000 * m / 10_000;
-                if let Some(e) = lc.on_trade(&[1u8; 32], price, *q, i as u64 + 1) {
+                if let Some(e) = lc.on_trade(&[1u8; 32], price, *q, i as u64 + 1, TEST_LIQ_LAMPORTS) {
                     acc += e.net_lamports;
                 }
             }
@@ -984,7 +991,7 @@ mod tests {
     fn empty_manager_books_nothing() {
         let mut lc = ScalpLifecycle::new(P, 64);
         assert!(lc.is_empty());
-        assert!(lc.on_trade(&[9u8; 32], 1_000_000, 1, 1).is_none());
+        assert!(lc.on_trade(&[9u8; 32], 1_000_000, 1, 1, TEST_LIQ_LAMPORTS).is_none());
         assert!(lc.force_close_all(&|_| None).is_empty());
     }
 }

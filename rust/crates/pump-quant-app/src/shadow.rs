@@ -850,6 +850,13 @@ mod tests {
 
     const ENTRY: u64 = 1_000_000;
     const SIZE: u64 = 1_000_000_000;
+    /// Real pump.fun virtual-SOL depth at launch (~30 SOL). **Amendment A-13(1):** every
+    /// fixture that prices an order declares the depth it is walking, so the participation
+    /// rate `clip / vsol` is visible rather than assumed. These unit tests run under
+    /// `LifecycleParams::standard()`, which ships `curve_exact_fill = false`, so this value
+    /// is decision-INERT here; it is stated so that arming the fill in a unit test charges a
+    /// realistic 33 bps rather than the 8,333 bps the old golden tape silently charged nobody.
+    const TEST_LIQ_LAMPORTS: u64 = 30_000_000_000;
 
     /// One same-admit pair: open everywhere, then the live close arrives with
     /// the market marked at `mark_px` and the incumbent netting `inc_net`.
@@ -949,8 +956,8 @@ mod tests {
         let mut t = ExitTournament::new(LifecycleParams::standard());
         t.open(mint(0), ENTRY, SIZE, SIZE, 0, 0);
         // A −40% single print: the rug precursor closes ALL shadow books.
-        t.on_trade(&mint(0), 1_100_000, 500_000, 1);
-        t.on_trade(&mint(0), 660_000, -900_000, 2);
+        t.on_trade(&mint(0), 1_100_000, 500_000, 1, TEST_LIQ_LAMPORTS);
+        t.on_trade(&mint(0), 660_000, -900_000, 2, TEST_LIQ_LAMPORTS);
         assert!(t.is_empty(), "precursor closed every challenger");
         // Live close arrives later, much worse: every challenger banked a
         // better exit → d > 0 for all.
@@ -1025,7 +1032,7 @@ mod tests {
                 let px = if i % 3 == 0 { 900_000 } else { 1_150_000 };
                 let inc = if i % 3 == 0 { -40_000_000 } else { 30_000_000 };
                 t.open(mint(i), ENTRY, SIZE, SIZE, i * 10, 0);
-                t.on_trade(&mint(i), 1_050_000, 250_000, i * 10 + 1);
+                t.on_trade(&mint(i), 1_050_000, 250_000, i * 10 + 1, TEST_LIQ_LAMPORTS);
                 t.on_tick(i * 10 + 2, &|_| Some(px));
                 t.incumbent_closed(&mint(i), inc, &|_| Some(px));
             }
@@ -1041,8 +1048,8 @@ mod tests {
         // pending outcomes and price marks must stay capped.
         for i in 0..(PENDING_CLOSED_CAP as u64 + 40) {
             t.open(mint(i), ENTRY, SIZE, SIZE, i * 3, 0);
-            t.on_trade(&mint(i), 1_100_000, 500_000, i * 3 + 1);
-            t.on_trade(&mint(i), 660_000, -900_000, i * 3 + 2);
+            t.on_trade(&mint(i), 1_100_000, 500_000, i * 3 + 1, TEST_LIQ_LAMPORTS);
+            t.on_trade(&mint(i), 660_000, -900_000, i * 3 + 2, TEST_LIQ_LAMPORTS);
         }
         for c in &t.challengers {
             assert!(c.pending.len() <= PENDING_CLOSED_CAP);

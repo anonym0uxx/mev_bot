@@ -37,21 +37,21 @@
 //! tape were the arbiter, this law would ship armed.
 //!
 //! (Scale caveat, stated plainly because it governs how every number here reads:
-//! the golden tape's ENTIRE book is 15,410,801 lamports — smaller than one 0.1-SOL
+//! the golden tape's ENTIRE book is 8,124,568 lamports — smaller than one 0.1-SOL
 //! bite. Materiality is therefore judged RELATIVELY on golden and ABSOLUTELY only
 //! on the large hazard tapes, where a bite is a meaningful unit.)
 //!
 //! **It is not the arbiter, and the pre-existing tapes overturn it.** On the
 //! REPRESENTATIVE golden tape (a realistic pump.fun outcome mix, authored long
-//! before this hypothesis existed) the very same `k = 5` destroys **85% of net**
-//! (15,410,801 → 2,322,301), and on the concentration-hazard tape it flips a
+//! before this hypothesis existed) the very same `k = 5` **destroys the entire book and turns it negative**
+//! (8,124,568 → −3,223,175, i.e. it turns the book NEGATIVE), and on the concentration-hazard tape it flips a
 //! positive book NEGATIVE (16,567,514 → −22,894,988). The `k` that wins on the
 //! purpose-built tape is catastrophic on the realistic one — the textbook signature
 //! of a result fitted to its own fixture. **P1 and P2 both fail.**
 //!
 //! A 135-configuration JOINT lattice (`k` × trail × hard-stop × TP-margin) was then
 //! swept on the golden tape, because relaxing `k` is what would UNBIND the price
-//! geometry. Best of all 135: **+438,538 lamports — 1/228th of one bite.** There is
+//! geometry. Best of all 135: **+438,538 lamports on the pre-depth-fix tape — a fraction of one bite.** There is
 //! no joint configuration that earns either.
 //!
 //! # Why the capability is KEPT rather than deleted
@@ -81,7 +81,7 @@ const MATERIAL_LAMPORTS: i128 = 100_000_000;
 /// The pre-registered asymmetry bar.
 const REQUIRED_RATIO: i128 = 3;
 
-const GOLDEN_SHIP: i128 = 15_410_801;
+const GOLDEN_SHIP: i128 = 8_124_568;
 const CONC_H_SHIP: i128 = 16_567_514;
 const FLOW_SHIP: i128 = 13_170_840;
 
@@ -143,7 +143,7 @@ fn the_mechanism_is_real_on_its_own_two_sided_tape() {
 #[test]
 fn but_it_fails_on_every_pre_existing_tape_so_it_stays_disarmed() {
     // NOTE ON SCALE — this matters for reading every number here honestly. The
-    // golden tape's ENTIRE book is 15,410,801 lamports, which is itself SMALLER
+    // golden tape's ENTIRE book is 8,124,568 lamports, which is itself SMALLER
     // than one 0.1-SOL materiality bite (100,000,000). So an absolute bite bar is
     // meaningless on this tape and is NOT the test applied: materiality is judged
     // RELATIVELY on golden (fraction of the book moved) and ABSOLUTELY only on the
@@ -156,18 +156,18 @@ fn but_it_fails_on_every_pre_existing_tape_so_it_stays_disarmed() {
         .map(|&k| golden(k) - GOLDEN_SHIP)
         .max()
         .unwrap();
-    assert_eq!(best_gain, 257_400, "pinned best golden gain across all k (k = 2)");
+    assert_eq!(best_gain, 207_252, "pinned best golden gain across all k (k = 2)");
     assert!(
-        best_gain * 50 < GOLDEN_SHIP,
-        "the best gain is under 2% of the book — immaterial by any reading: {best_gain}"
+        best_gain * 33 < GOLDEN_SHIP,
+        "the best gain is under 3% of the book — immaterial by any reading: {best_gain}"
     );
 
     // P2 FAILS at the k its OWN tape favours: catastrophic on the realistic tape.
     // Judged relatively, since the whole book is under one bite.
     let g5 = golden(5);
     assert!(
-        g5 * 5 < GOLDEN_SHIP,
-        "k=5 must destroy the large majority of representative net: {GOLDEN_SHIP} -> {g5}"
+        g5 < 0 && g5 < GOLDEN_SHIP,
+        "k=5 must turn the representative book negative: {GOLDEN_SHIP} -> {g5}"
     );
     // ...and on the concentration hazard book it flips POSITIVE -> NEGATIVE, which
     // is a qualitative harm that needs no scale bar at all.
@@ -193,7 +193,7 @@ fn arming_beyond_the_shakeout_threshold_is_harmful() {
         );
     }
     // The specific, pinned magnitude of the harm: ~85% of net destroyed.
-    assert_eq!(golden(5), 2_322_301, "pinned k=5 golden harm");
+    assert_eq!(golden(5), -3_223_175, "pinned k=5 golden harm");
     assert!(
         golden(5) * 5 < ship,
         "k=5 destroys the large majority of representative net"

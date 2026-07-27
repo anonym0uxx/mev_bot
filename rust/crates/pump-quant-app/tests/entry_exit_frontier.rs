@@ -78,7 +78,7 @@ fn b3_hazard(mutate: impl FnOnce(&mut Config)) -> i128 {
 
 // ---- shipped-value net on every tape (identity pins) ------------------------
 
-const SHIP_GOLDEN: i128 = 15_410_801;
+const SHIP_GOLDEN: i128 = 8_124_568;
 const SHIP_B7_HAPPY: i128 = 479_556_343;
 const SHIP_B7_UNHAPPY: i128 = 601_202_914;
 const SHIP_CONC_HAPPY: i128 = 16_567_514;

@@ -92,7 +92,15 @@ pub fn drive(cfg: Config) -> Report {
     cfg.gate_protocol_bps = 450;
     cfg.gate_margin_bps = 150;
     cfg.gate_base_fixed_lamports = 200_000;
-    cfg.gate_impact_den = 250_000;
+    // DEPTH REALISM (2026-07-27) — mirrored from `tape_golden/mod.rs`. `impact_den` is
+    // the gate's own price-impact model (`impact_bps = size / impact_den`). For a pool
+    // whose SOL side is `vsol`, the exact constant-product impact is `size * 10_000 / vsol`,
+    // so the coherent denominator is `vsol / 10_000`. Real pump.fun virtual reserves START
+    // at 30 SOL => 3_000_000, i.e. 33 bps on a 0.1 SOL clip. The retired 250_000 implied a
+    // ~0.025 SOL pool and charged 400 bps. See Amendment A-13(3).
+    cfg.gate_impact_den = 3_000_000;
+    // The depths below are real, so our own curve impact is charged on both legs.
+    cfg.curve_exact_fill_enable = true;
     let mut eng = Engine::new(cfg, RunMode::Replay);
     let n = 512u64;
     for round in 0..6u64 {
@@ -104,7 +112,9 @@ pub fn drive(cfg: Config) -> Report {
                     mint: mt,
                     price_fp,
                     quote_lamports: 400_000 + (m % 13) * 1_000,
-                    liquidity_lamports: 120_000_000 + (m % 350) * 1_000_000 + round * 7,
+                    liquidity_lamports: 30_000_000_000
+                        + round * 4_000_000_000
+                        + (m % 350) * 50_000_000,
                     signed_base,
                     buyer_entity: (m + i) % 97,
                     age_slots: 10 + (m as u32 % 40),
@@ -115,7 +125,7 @@ pub fn drive(cfg: Config) -> Report {
                 if m % 2 == 0 {
                     eng.tick(AppEvent::OnchainConfirm {
                         mint: mt,
-                        sellable_depth_lamports: 150_000_000 + m * 500,
+                        sellable_depth_lamports: 29_000_000_000 + m * 1_000_000,
                     });
                 }
                 if m % 3 == 0 {
@@ -149,7 +159,7 @@ pub fn drive(cfg: Config) -> Report {
                         mint: mt,
                         price_fp: 1_000_000_000 + (z as i128) * 5_000 + (i as i128) * 1_000,
                         quote_lamports: 900_000 + z * 1_000,
-                        liquidity_lamports: 400_000_000 + z * 10_000,
+                        liquidity_lamports: 34_000_000_000 + z * 1_000_000,
                         signed_base: 800_000 + (z as i64) * 500,
                         buyer_entity: 200 + (z + i) % 9,
                         age_slots: 200,
@@ -159,7 +169,7 @@ pub fn drive(cfg: Config) -> Report {
             if round == 3 {
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: mt,
-                    sellable_depth_lamports: 500_000_000,
+                    sellable_depth_lamports: 30_000_000_000,
                 });
             }
         }
@@ -176,7 +186,7 @@ pub fn drive(cfg: Config) -> Report {
                     mint: mt,
                     price_fp: base + zg * 1_000_000 + (d as i128) * 10_000,
                     quote_lamports: 700_000 + d * 2_000,
-                    liquidity_lamports: 180_000_000 + d * 5_000,
+                    liquidity_lamports: 31_000_000_000 + d * 500_000,
                     signed_base: if selling {
                         -(900_000 + (d as i64) * 700)
                     } else {
@@ -189,7 +199,7 @@ pub fn drive(cfg: Config) -> Report {
             if round == 0 {
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: mt,
-                    sellable_depth_lamports: 400_000_000,
+                    sellable_depth_lamports: 34_000_000_000,
                 });
             }
         }
@@ -213,7 +223,7 @@ pub fn drive(cfg: Config) -> Report {
                 mint: st,
                 price_fp: sbase + (i as i128) * 500_000,
                 quote_lamports: 700_000,
-                liquidity_lamports: 170_000_000,
+                liquidity_lamports: 30_500_000_000,
                 signed_base: if selling {
                     -800_000
                 } else if i % 2 == 0 {
@@ -228,7 +238,7 @@ pub fn drive(cfg: Config) -> Report {
         if round == 0 {
             eng.tick(AppEvent::OnchainConfirm {
                 mint: st,
-                sellable_depth_lamports: 500_000_000,
+                sellable_depth_lamports: 30_000_000_000,
             });
         }
         if round <= 2 {
@@ -268,7 +278,7 @@ pub fn drive(cfg: Config) -> Report {
                 mint: alpha_win,
                 price_fp: aw_base + (i as i128) * 500_000,
                 quote_lamports: 700_000,
-                liquidity_lamports: 300_000_000,
+                liquidity_lamports: 32_000_000_000,
                 signed_base: if selling {
                     -800_000
                 } else if i % 2 == 0 {
@@ -283,7 +293,7 @@ pub fn drive(cfg: Config) -> Report {
         if round == 0 {
             eng.tick(AppEvent::OnchainConfirm {
                 mint: alpha_win,
-                sellable_depth_lamports: 500_000_000,
+                sellable_depth_lamports: 30_000_000_000,
             });
         }
         if round <= 2 {

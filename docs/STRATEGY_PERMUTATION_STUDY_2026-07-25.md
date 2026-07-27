@@ -1,5 +1,32 @@
 # STRATEGY PERMUTATION STUDY — exhaustive entry/exit search + Tsetlin assessment (2026-07-25)
 
+> **ERRATUM — 2026-07-27. Every absolute lamport figure below is superseded; every verdict stands,
+> and one of them got STRONGER.**
+>
+> This study ran against a golden tape whose pools were **0.12–0.47 SOL** against our 0.1-SOL
+> minimum clip, with fills at the print — our own order was 21–83% of the pool and was charged
+> nothing for it. The tape now carries real pump.fun depth (30 SOL virtual at launch) with own-curve
+> impact charged on both legs. Golden net **15,410,801 → 8,124,568**. See `docs/BACKTEST.md §9`.
+>
+> Corrections to the specific numbers this study turns on:
+>
+> | quantity | as published (2026-07-25) | honest (2026-07-27) |
+> |---|---|---|
+> | golden net, shipped `k = 1` | 15,410,801 | **8,124,568** |
+> | golden net at `k = 5` | 2,322,301 (positive) | **−3,223,175 (NEGATIVE)** |
+> | best golden gain over all `k` | +257,400 (`k = 2`) | **+207,252 (`k = 2`)** |
+>
+> **The `k = 5` verdict is now stronger than published.** Under fictional depth, `k = 5` merely
+> destroyed 85% of the book; under honest fills it turns the book negative outright. The
+> pre-existing-corpus arbiter rule rejected it either way, but the harm it rejects is larger than
+> we knew. `thesis_persist_obs` stays DISARMED at `k = 1`, and
+> `tests/flow_persistence_laws.rs` pins the corrected magnitude.
+>
+> The relative verdicts survive because each is an A/B on one tape with depth held fixed: a uniform
+> depth mispricing moves both arms together, preserving sign and ordering. What does not survive is
+> reading any absolute net as an economic result — the golden book is smaller than one 0.1-SOL bite
+> and is a regression fixture, not a forecast.
+
 **Mandate:** test every rational, factually-supported low-cap memecoin scalping permutation
 end-to-end across entry and exit, fine-tune and A/B every identifiable variant to find the
 absolute maximum net-SOL edge; research every external source (NIH/PMC, arXiv) for

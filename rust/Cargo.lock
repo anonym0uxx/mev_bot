@@ -3,7 +3,78 @@
 version = 4
 
 [[package]]
+name = "pq-evaluator"
+version = "0.1.0"
+dependencies = [
+ "pump-quant-evaluator",
+]
+
+[[package]]
+name = "pq-regression"
+version = "0.1.0"
+dependencies = [
+ "pump-quant-app",
+ "pump-quant-domain",
+ "pump-quant-evaluator",
+ "pump-quant-execution",
+ "pump-quant-features",
+ "pump-quant-ingest",
+ "pump-quant-narrative",
+ "pump-quant-protocol",
+ "pump-quant-signals",
+ "pump-quant-social",
+ "pump-quant-strategy",
+ "pump-quant-wallet-graph",
+ "pump-quant-watchlist",
+]
+
+[[package]]
+name = "pq-research-runner"
+version = "0.1.0"
+dependencies = [
+ "pump-quant-evaluator",
+]
+
+[[package]]
+name = "pump-quant-app"
+version = "0.1.0"
+dependencies = [
+ "pump-quant-brain",
+ "pump-quant-domain",
+ "pump-quant-evaluator",
+ "pump-quant-features",
+ "pump-quant-governance",
+ "pump-quant-ingest",
+ "pump-quant-market-state",
+ "pump-quant-memory",
+ "pump-quant-narrative",
+ "pump-quant-protocol",
+ "pump-quant-signals",
+ "pump-quant-simulator",
+ "pump-quant-social",
+ "pump-quant-strategy",
+ "pump-quant-wallet-graph",
+ "pump-quant-watchlist",
+]
+
+[[package]]
+name = "pump-quant-brain"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-canonical"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-clock"
+version = "0.1.0"
+
+[[package]]
 name = "pump-quant-core"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-domain"
 version = "0.1.0"
 
 [[package]]
@@ -11,5 +82,71 @@ name = "pump-quant-evaluator"
 version = "0.1.0"
 
 [[package]]
+name = "pump-quant-execution"
+version = "0.1.0"
+dependencies = [
+ "pump-quant-protocol",
+]
+
+[[package]]
+name = "pump-quant-features"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-governance"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-ingest"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-journal"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-market-state"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-memory"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-narrative"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-protocol"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-replay"
+version = "0.1.0"
+dependencies = [
+ "pump-quant-clock",
+]
+
+[[package]]
+name = "pump-quant-signals"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-simulator"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-social"
+version = "0.1.0"
+
+[[package]]
 name = "pump-quant-strategy"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-wallet-graph"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-watchlist"
 version = "0.1.0"

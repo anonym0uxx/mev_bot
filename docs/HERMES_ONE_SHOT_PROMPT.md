@@ -2179,3 +2179,52 @@ egress, any transfer, or any relaxation of a gate. Under §68 / criterion 111 it
 amendments; widening A-12 requires the operator. (5) **Do not re-litigate the election.** The operator
 has accepted the storage risk knowingly; the conductor does not refuse, nag, or repeatedly warn about
 it, and instead enforces clauses (2) and (4) exactly._
+
+## §51.2 / §56.10 — Amendment A-13 extension (FIXTURE REALISM — a tape that misprices the market cannot price a strategy)
+
+_Amendment A-13 (2026-07-27, human-directed, arising from the golden-tape depth defect): FIXTURE
+REALISM IS A TESTED PROPERTY, NOT AN ASSUMPTION. A-11 governs how a thesis is argued; A-13 governs
+whether the fixture it is argued on is entitled to decide anything. **THE DEFECT THAT PRODUCED THIS
+AMENDMENT:** the golden tape ran for months with virtual SOL pools of **0.12–0.47 SOL** against an
+operator minimum clip of **0.1 SOL** — our own order was 21–83% of the entire pool — and the engine
+filled at the last print, charging that participation nothing. Real pump.fun launch depth is ~30 SOL
+virtual, where the same clip costs 33 bps. The tape understated depth by **more than 250x relative to
+our own clip**, and every absolute net ever quoted from it (12.55M, then 15,410,801) was an artifact
+of a market that did not exist. Correcting it moved golden net to **8,124,568** and flipped the
+AlphaCall (Discord) lane from +447,700 to **−2,721,835**, falsifying a claim this project had already
+written into an activation directive. Nothing detected this for months, because nobody had ever
+compared the fixture's depth to the size of our own order. (1) **EVERY FIXTURE THAT PRICES AN ORDER
+MUST DECLARE ITS PARTICIPATION RATE.** For any tape, corpus, or replay used to produce a lamport
+number, the ratio `our_clip / vsol` MUST be computed and asserted in a test alongside the tape, with
+the real-world reference it is claiming to model. `tests/curve_fill_wiring.rs` is the pattern:
+arithmetic, pinned, and loud when someone changes the depth. A fixture that has never stated its
+participation rate is a fixture whose absolute numbers are UNVERIFIED — say so wherever they are
+quoted. (2) **OUR OWN IMPACT IS A COST AND MUST BE CHARGED ON BOTH LEGS.** On a constant-product
+curve our order never fills at the print; it walks the curve and fills strictly worse by exactly
+`notional · 10_000 / vsol` bps. The token reserve CANCELS from that expression
+(`curve_fill::own_impact_bps`), so this is priceable from `liquidity_lamports` ALONE and there is
+never a data excuse for omitting it. Filling at the print is a subsidy the market does not grant.
+Where a fixture genuinely carries no depth model, the fill MUST be disarmed AND the fixture demoted
+to relative-only under clause (4) — never armed against stylized depth, which manufactures a
+different fiction. (3) **COST/GATE PARAMETERS MUST BE COHERENT WITH THE DEPTH THEY GUARD.** An impact
+gate calibrated against a fictional pool silently admits or rejects the wrong trades. When depth
+changes, every parameter derived from depth is re-derived in the same commit, and the derivation is
+written down (`gate_impact_den = vsol/10_000`, i.e. the curve's own 33 bps). A fix applied to some of
+the depth sites and not all of them is WORSE than no fix: the first incomplete pass here produced
+−379,067,452 and read as a damning verdict on the strategy when it was a verdict on two unfixed
+cohort blocks. **Enumerate every site, fix them in one pass, and prove the enumeration was complete.**
+(4) **ABSOLUTE VERSUS RELATIVE — THE STANDING DISTINCTION.** A synthetic tape may arbitrate the
+DIRECTION of an A/B, because a uniform mispricing shifts both arms together and preserves sign and
+ordering. It may NEVER establish that a strategy earns. The golden book is smaller than one 0.1-SOL
+bite; quoting it as an economic result is a reporting defect regardless of how carefully it was
+measured. **Absolute profitability is established on live or replay chain data or it is not
+established.** (5) **A FALSIFIED CLAIM IS CHASED DOWN, NOT LEFT STANDING.** When a fixture correction
+falsifies a claim already written into a document, the conductor MUST locate every place that claim
+was repeated and correct it in the SAME commit — the study, the directive, the tests, the ledger —
+and publish the correction as an erratum rather than silently rewriting history. Dated study
+artifacts KEEP their original numbers with an erratum header stating what moved, what survived, and
+why; the surviving verdicts must be re-argued explicitly, not assumed. (6) **THE HONEST-NEGATIVE
+OBLIGATION APPLIES TO OUR OWN FIXTURES.** Discovering that a measurement flattered us is a finding of
+the same rank as discovering an edge, and is published with the same prominence. Under §68 /
+criterion 111 the conductor may only PROPOSE amendments; widening or narrowing A-13 requires the
+operator._

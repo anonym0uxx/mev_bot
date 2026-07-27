@@ -125,7 +125,9 @@ pub fn drive_eng(cfg: Config) -> Engine {
     //   • bid/ask spread on a thin low-cap (~1%/side)   → ~200 bps round trip
     //     ⇒ size-invariant protocol/fee/spread ≈ 450 bps (gate_protocol_bps).
     //   • priority fee + Jito tip, both legs ≈ 0.0002 SOL fixed (gate_base_fixed).
-    //   • constant-product price impact vs pool depth ≈ 40–60 bps (gate_impact_den).
+    //   • constant-product price impact vs REAL pool depth ≈ 33 bps/leg at the 0.1 SOL
+    //     floor against a 30 SOL launch curve (gate_impact_den, and now charged for
+    //     real via `curve_exact_fill_enable`).
     // Realized round-trip on this tape lands ~650–760 bps (6.5–7.6%) — consistent
     // with observed low-cap memecoin scalp costs. The credited favourable move
     // (cold-start prior) is a realistic lottery-like ~18%.
@@ -134,7 +136,22 @@ pub fn drive_eng(cfg: Config) -> Engine {
     cfg.gate_protocol_bps = 450;
     cfg.gate_margin_bps = 150;
     cfg.gate_base_fixed_lamports = 200_000;
-    cfg.gate_impact_den = 250_000;
+    // DEPTH REALISM (2026-07-27). `impact_den` is the gate's own price-impact model:
+    // `impact_bps = size / impact_den`. It MUST agree with the constant-product curve,
+    // or the gate prices a market that does not exist. For a pool whose SOL side is
+    // `vsol`, the exact curve impact is `size * 10_000 / vsol`, so the coherent
+    // denominator is `vsol / 10_000`.
+    //
+    // The old value of 250_000 implied a ~0.025 SOL pool: it charged our 0.1 SOL clip
+    // 400 bps, while this file's own comment claimed it modelled "40-60 bps" — wrong by
+    // 8x, and never noticed because fills happened at the print and nothing ever
+    // reconciled the two. Real pump.fun virtual reserves START at 30 SOL, so:
+    //     den = 30_000_000_000 / 10_000 = 3_000_000  ->  33 bps on a 0.1 SOL clip.
+    // Set from the SHALLOWEST (launch) depth, which is conservative: it over-states
+    // impact as the pool deepens, never under-states it.
+    cfg.gate_impact_den = 3_000_000;
+    // The depths below are real, so our own curve impact is charged on both legs.
+    cfg.curve_exact_fill_enable = true;
     let mut eng = Engine::new(cfg, RunMode::Replay);
     // 512 mints against a capacity-64 watchlist => heavy full-path eviction.
     // Extended (ledger-refinement batch) with three §21.5/§21.6/§29.6 cohorts —
@@ -157,7 +174,15 @@ pub fn drive_eng(cfg: Config) -> Engine {
                     // Competitive, varied pool depth (0.12–0.47 SOL) so the BROAD
                     // realistic distribution — not just the deep dense/live cohorts —
                     // wins position slots and drives the representative net.
-                    liquidity_lamports: 120_000_000 + (m % 350) * 1_000_000 + round * 7,
+                    // REAL pump.fun depth. Virtual reserves start at 30 SOL and deepen
+                    // as net SOL flows in; graduation lands near 85 SOL. `round` is the
+                    // tape's proxy for cumulative inflow, so depth grows 30 -> ~67 SOL
+                    // across a mint's life. The previous 0.12-0.47 SOL put our 0.1 SOL
+                    // minimum clip at 21-83% OF THE POOL — a market in which no strategy
+                    // result means anything.
+                    liquidity_lamports: 30_000_000_000
+                        + round * 4_000_000_000
+                        + (m % 350) * 50_000_000,
                     signed_base,
                     buyer_entity: (m + i) % 97,
                     age_slots: 10 + (m as u32 % 40),
@@ -175,7 +200,7 @@ pub fn drive_eng(cfg: Config) -> Engine {
                 if m % 2 == 0 {
                     eng.tick(AppEvent::OnchainConfirm {
                         mint: mt,
-                        sellable_depth_lamports: 150_000_000 + m * 500,
+                        sellable_depth_lamports: 29_000_000_000 + m * 1_000_000,
                     });
                 }
                 if m % 3 == 0 {
@@ -212,7 +237,7 @@ pub fn drive_eng(cfg: Config) -> Engine {
                         mint: mt,
                         price_fp: 1_000_000_000 + (z as i128) * 5_000 + (i as i128) * 1_000,
                         quote_lamports: 900_000 + z * 1_000,
-                        liquidity_lamports: 400_000_000 + z * 10_000,
+                        liquidity_lamports: 34_000_000_000 + z * 1_000_000,
                         signed_base: 800_000 + (z as i64) * 500,
                         buyer_entity: 200 + (z + i) % 9,
                         age_slots: 200,
@@ -222,7 +247,7 @@ pub fn drive_eng(cfg: Config) -> Engine {
             if round == 3 {
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: mt,
-                    sellable_depth_lamports: 500_000_000,
+                    sellable_depth_lamports: 30_000_000_000,
                 });
             }
         }
@@ -251,7 +276,7 @@ pub fn drive_eng(cfg: Config) -> Engine {
                     quote_lamports: 700_000 + d * 2_000,
                     // Depth comparable to the main distribution so this special-
                     // purpose §21.6 cohort does not monopolize the 3 position slots.
-                    liquidity_lamports: 180_000_000 + d * 5_000,
+                    liquidity_lamports: 31_000_000_000 + d * 500_000,
                     signed_base: if selling {
                         -(900_000 + (d as i64) * 700)
                     } else {
@@ -264,7 +289,7 @@ pub fn drive_eng(cfg: Config) -> Engine {
             if round == 0 {
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: mt,
-                    sellable_depth_lamports: 400_000_000,
+                    sellable_depth_lamports: 34_000_000_000,
                 });
             }
         }
@@ -300,7 +325,7 @@ pub fn drive_eng(cfg: Config) -> Engine {
                 // Depth comparable to the main distribution so the streamed coin
                 // still admits (via the §71 corroboration quota) but does not
                 // monopolize every slot as the single deepest repeat runner.
-                liquidity_lamports: 170_000_000,
+                liquidity_lamports: 30_500_000_000,
                 signed_base: if selling {
                     -800_000
                 } else if i % 2 == 0 {
@@ -315,7 +340,7 @@ pub fn drive_eng(cfg: Config) -> Engine {
         if round == 0 {
             eng.tick(AppEvent::OnchainConfirm {
                 mint: st,
-                sellable_depth_lamports: 500_000_000,
+                sellable_depth_lamports: 30_000_000_000,
             });
         }
         // The stream chat (deterministic batch per round): the broadcaster names
@@ -377,7 +402,7 @@ pub fn drive_eng(cfg: Config) -> Engine {
                 quote_lamports: 700_000,
                 // Deep pool so the paid room's genuine runner wins a corroboration
                 // slot in §23 arbitration (a real deep-liquidity alpha call).
-                liquidity_lamports: 300_000_000,
+                liquidity_lamports: 32_000_000_000,
                 signed_base: if selling {
                     -800_000
                 } else if i % 2 == 0 {
@@ -392,7 +417,7 @@ pub fn drive_eng(cfg: Config) -> Engine {
         if round == 0 {
             eng.tick(AppEvent::OnchainConfirm {
                 mint: alpha_win,
-                sellable_depth_lamports: 500_000_000,
+                sellable_depth_lamports: 30_000_000_000,
             });
         }
         // The paid room's designated calls (rounds 0-2, while the call is hot).

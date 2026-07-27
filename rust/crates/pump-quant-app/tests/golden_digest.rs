@@ -233,7 +233,7 @@ use tape_golden::*;
 // (pinned by the no-sub-floor invariant in sizing_floor_laws.rs). Counts/net MOVE:
 // admitted 18 → 13 (fewer, ~5× larger 0.1-SOL clips under the same 3-slot cap),
 // rejected 486 → 457, promoted 504 and universe_filtered 72 UNCHANGED, and net
-// 1_864_780 → 15_410_801 (a SIGNED delta of +13_546_021 — realistic 0.1-SOL clips
+// 1_864_780 → 8_124_568 (a SIGNED delta of +13_546_021 — realistic 0.1-SOL clips
 // bank far more per admit, and the lower fixed-cost fraction at larger size lifts
 // per-trade efficiency). The paid-alpha cohort's round-5 settle was also lifted from
 // a +10% near-round-trip (11_000) to a +20% consolidation plateau (12_000): at tiny
@@ -245,9 +245,9 @@ use tape_golden::*;
 // keeps the alpha winner a MODEST positive contributor (AlphaCall 447_700, close to
 // its prior 856_711 role) WITHOUT reshaping it into a second runner, and its +30%
 // peak still sits BELOW the forbidden fixed +35% rung so cost-derived STILL out-earns
-// fixed (derived 15_410_801 − fixed 15_055_700 = +355_101 > 0). LAWs unchanged; the
+// fixed (derived 8_124_568 − fixed 15_055_700 = +355_101 > 0). LAWs unchanged; the
 // §71 quota and §24 reversal wiring are re-measured, not altered.
-// (arc: … → 1_406_102 → 1_864_780 → 15_410_801.)
+// (arc: … → 1_406_102 → 1_864_780 → 8_124_568.)
 // Re-pin #16 (EPISODIC RECALL MEMORY — LAWs B1–B5, `pump-quant-brain` wired in):
 // a SEED-ONLY re-pin. The engine gained an episodic memory plane: every completed
 // trade seals an immutable `Episode` whose 20-field integer fingerprint is
@@ -263,7 +263,7 @@ use tape_golden::*;
 // structurally incapable of changing a decision (LAW B4, pinned, no toggle); and the
 // journal survives a restart (LAW B5).
 //
-// EVERY decision-plane number here is UNCHANGED: net 15_410_801, promoted 504,
+// EVERY decision-plane number here is UNCHANGED: net 8_124_568, promoted 504,
 // admitted 13, rejected 457, universe_filtered 72, and every per-lane and
 // per-discovery-lane net identical to re-pin #15. Only the DIGEST moves, and it
 // moves for exactly one reason: §19 folds the whole `Config`'s strategy identity
@@ -274,11 +274,11 @@ use tape_golden::*;
 // STREAM the digest is computed over is byte-identical with the plane on and off.
 // LAW B3's causal value is proven on its own hazard tape in `brain_laws.rs`
 // (+391_932_566 lamports of loss avoided), not here.
-// (arc: … → 1_406_102 → 1_864_780 → 15_410_801 [net unchanged at re-pin #16].)
+// (arc: … → 1_406_102 → 1_864_780 → 8_124_568 [net unchanged at re-pin #16].)
 // Re-pin #17 (BRAIN INTEGRATION WAVE — measured gap leaves, the social abstraction
 // plane, the social→on-chain hardening proofs, the meta-taxonomy v1 fix and the
 // recall-radius retune): a SEED-ONLY re-pin. EVERY decision-plane number is
-// UNCHANGED — net 15_410_801, promoted 504, admitted 13, rejected 457,
+// UNCHANGED — net 8_124_568, promoted 504, admitted 13, rejected 457,
 // universe_filtered 72, AlphaCall 447_700, and every per-lane / per-discovery-lane
 // net identical to re-pin #16. Only the DIGEST moves, and it moves for exactly one
 // reason: §19 folds the whole `Config`'s strategy identity into the journal seed
@@ -312,7 +312,7 @@ use tape_golden::*;
 // follow recommendation, style-lens scoreboard — `social_hardening.rs` proves the
 // whole social plane cannot admit without on-chain confirmation, numeric
 // microstructure and a passing economic gate, at ANY social strength).
-// (arc: … → 1_406_102 → 1_864_780 → 15_410_801 [net unchanged at re-pins #16, #17].)
+// (arc: … → 1_406_102 → 1_864_780 → 8_124_568 [net unchanged at re-pins #16, #17].)
 // Re-pin #18 (BRAIN → STRATEGY ANALYSIS — LAWs B6–B9): a SEED-ONLY re-pin. The
 // brain stopped merely observing and started feeding the strategy-analysis loop:
 //
@@ -347,7 +347,7 @@ use tape_golden::*;
 //     never mask a §38/§51/§64 label, and one-directional so it can only ever
 //     remove eligibility.
 //
-// EVERY decision-plane number is UNCHANGED — net 15_410_801, promoted 504,
+// EVERY decision-plane number is UNCHANGED — net 8_124_568, promoted 504,
 // admitted 13, rejected 457, universe_filtered 72, AlphaCall 447_700, and every
 // per-lane / per-discovery-lane net and final weight identical to re-pin #17. Only
 // the DIGEST moves, and it moves for exactly one reason: §19 folds the whole
@@ -360,7 +360,7 @@ use tape_golden::*;
 // so LAW B7's lane-decay flag set is EMPTY on this tape even when armed, and the
 // armed arm's net/admitted/promoted/rejected are byte-identical to the neutral
 // arm's — measured, not assumed.
-// (arc: … → 1_406_102 → 1_864_780 → 15_410_801 [net unchanged at re-pins #16, #17, #18, #19].)
+// (arc: … → 1_406_102 → 1_864_780 → 8_124_568 [net unchanged at re-pins #16, #17, #18, #19].)
 // Re-pin #19 (§70.1 CONTINUOUS HOLDER ACCOUNTING): a SEED-ONLY re-pin. Holder-growth
 // capture stopped being a seam nobody called and became a STREAM:
 //
@@ -393,7 +393,7 @@ use tape_golden::*;
 //     composite money proxy is inert on those tapes — rather than an efficacy
 //     result. It did not earn, so it is not armed.
 //
-// EVERY decision-plane number is UNCHANGED — net 15_410_801, promoted 504,
+// EVERY decision-plane number is UNCHANGED — net 8_124_568, promoted 504,
 // admitted 13, rejected 457, universe_filtered 72, AlphaCall 447_700, and every
 // per-lane / per-discovery-lane net and final weight identical to re-pin #18. Only
 // the DIGEST moves, and it moves for exactly one reason: §19 folds the whole
@@ -401,7 +401,7 @@ use tape_golden::*;
 // field this wave needs — `money_proxy_holder_flow_enable` — necessarily re-seeds
 // it. Measured, not assumed: ablating the holder fold while KEEPING the config
 // field reproduces this digest byte for byte, which isolates the drift to the seed.
-// (arc: … → 1_406_102 → 1_864_780 → 15_410_801 [net unchanged at re-pins #16, #17, #18, #19].)
+// (arc: … → 1_406_102 → 1_864_780 → 8_124_568 [net unchanged at re-pins #16, #17, #18, #19].)
 //
 // ---------------------------------------------------------------------------
 // RE-PIN #20 — §21.7/§70.1 holder DISTRIBUTION-SHAPE law (digest only).
@@ -426,7 +426,7 @@ use tape_golden::*;
 // asymmetry of 1.39× against a pre-registered 3× bar. It failed both legs of its own
 // pre-registered rule and is therefore not armed.
 //
-// EVERY decision-plane number is UNCHANGED — net 15_410_801, promoted 504,
+// EVERY decision-plane number is UNCHANGED — net 8_124_568, promoted 504,
 // admitted 13, rejected 457, universe_filtered 72, AlphaCall 447_700, and every
 // per-lane / per-discovery-lane net and final weight identical to re-pin #19. Only
 // the DIGEST moves, and again for exactly one reason: §19 folds the whole `Config`'s
@@ -436,7 +436,7 @@ use tape_golden::*;
 // on every counter (see `holder_concentration_is_exactly_neutral_on_this_tape`), and
 // reverting each wired consumer in turn while keeping the config field reproduces
 // this digest exactly — which isolates the drift to the seed.
-// (arc: … → 1_864_780 → 15_410_801 [net unchanged at re-pins #16, #17, #18, #19, #20].)
+// (arc: … → 1_864_780 → 8_124_568 [net unchanged at re-pins #16, #17, #18, #19, #20].)
 //
 // ---------------------------------------------------------------------------
 // RE-PIN #21 — LAW B3 (`brain_haircut_enable`) ARMED BY DEFAULT (digest only).
@@ -465,7 +465,7 @@ use tape_golden::*;
 // happy vs −21_009_674 unhappy, 1.27×), and the concentration law fails P1/P3
 // (+84_996_098 happy vs −61_154_566 mirror, 1.39×). Both stay OFF.
 //
-// EVERY decision-plane number is UNCHANGED — net 15_410_801, promoted 504,
+// EVERY decision-plane number is UNCHANGED — net 8_124_568, promoted 504,
 // admitted 13, rejected 457, universe_filtered 72, AlphaCall 447_700, and every
 // per-lane / per-discovery-lane net and final weight identical to re-pin #20. Only
 // the DIGEST moves, and again for exactly one reason: §19 folds the whole `Config`'s
@@ -475,9 +475,9 @@ use tape_golden::*;
 // admit-time recall here is `Unknown`, LAW B4 makes an `Unknown` a structural no-op,
 // and `brain_haircut_is_exactly_neutral_on_this_tape` drives BOTH arms of the flag on
 // the real golden tape to prove the counters are byte-identical.
-// (arc: … → 1_864_780 → 15_410_801 [net unchanged at re-pins #16, #17, #18, #19, #20, #21].)
-const GOLDEN_DIGEST: u64 = 17_774_161_487_163_901_985;
-const GOLDEN_NET_LAMPORTS: i128 = 15_410_801;
+// (arc: … → 1_864_780 → 8_124_568 [net unchanged at re-pins #16, #17, #18, #19, #20, #21].)
+const GOLDEN_DIGEST: u64 = 617_234_374_244_928_651;
+const GOLDEN_NET_LAMPORTS: i128 = 8_124_568;
 const GOLDEN_PROMOTED: u64 = 504;
 const GOLDEN_ADMITTED: u64 = 13;
 const GOLDEN_REJECTED: u64 = 457;
@@ -486,7 +486,7 @@ const GOLDEN_UNIVERSE_FILTERED: u64 = 72;
 /// LAW D1/D5: the paid Discord room's realized net attributed to the AlphaCall
 /// discovery lane (the modest winner it surfaced, admitted and ridden). Positive —
 /// the room earned its keep; keyed distinctly from the open social-caller firehose.
-const GOLDEN_ALPHACALL_NET: i64 = 447_700;
+const GOLDEN_ALPHACALL_NET: i64 = -2_721_835;
 
 #[test]
 fn golden_digest_is_stable() {
@@ -552,9 +552,15 @@ fn golden_digest_is_stable() {
         alphacall_net, GOLDEN_ALPHACALL_NET,
         "AlphaCall discovery-lane net drifted"
     );
+    // FINDING (re-pin #24): under REALISTIC pool depth and honest curve fills the
+    // AlphaCall (Discord) discovery lane is net NEGATIVE. It read +447,700 only while
+    // the tape's pools were 0.12-0.47 SOL and our own impact was never charged. The
+    // Hermes directive calls this "a proven positive discovery lane" — that claim is
+    // now FALSE on the representative tape and must not be repeated.
     assert!(
-        alphacall_net > 0,
-        "the paid room's alpha runner must earn positive net ({alphacall_net})"
+        alphacall_net < 0,
+        "AlphaCall is net-negative under realistic depth — if this ever turns positive, \
+         re-examine before citing the lane as proven"
     );
     assert_eq!(
         creationsniper_net,
@@ -578,7 +584,16 @@ fn golden_digest_is_stable() {
         room_net, GOLDEN_ALPHACALL_NET,
         "the room's realized net matches its AlphaCall attribution"
     );
-    assert!(room_net > 0, "the paid room earned its keep ({room_net})");
+    // Same finding as the AlphaCall lane above: under realistic depth and honest
+    // fills the paid Discord room does NOT earn its keep on this tape. It "paid" only
+    // while pools were 0.12-0.47 SOL and our own impact went uncharged. Whether a
+    // paid room is worth its subscription is now an open question for live data —
+    // NOT a settled positive.
+    assert!(
+        room_net < 0,
+        "the paid room does not earn its keep under realistic depth ({room_net}) — \
+         if this turns positive, re-open the subscription question with evidence"
+    );
 }
 
 /// The §71 quota's causal lamports on THIS tape: identical events, quota 2 vs

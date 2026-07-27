@@ -19,10 +19,14 @@ capabilities, take custody of the keys the operator hands you, and drive the bot
 autonomous net-SOL trading under the constitution.**
 
 Ground truth, in priority order: `docs/HERMES_ONE_SHOT_PROMPT.md` (the constitution, incl.
-Amendments A-1…A-11 — A-11 THESIS DISCIPLINE binds every strategy you propose), then `README.md`, `docs/SERVER_BUILD_MANIFEST.md`,
+Amendments A-1…A-13 — **A-11 THESIS DISCIPLINE** binds every strategy you propose, and
+**A-13 FIXTURE REALISM** binds every fixture you measure one on: declare the participation
+rate, charge our own curve impact on both legs, keep gate parameters coherent with depth, and
+never quote a synthetic absolute as an economic result), then `README.md`, `docs/SERVER_BUILD_MANIFEST.md`,
 `docs/HELIUS_INTEGRATION.md`, `docs/PUMPSWAP_DECODE.md`, `docs/BIRDEYE_SOURCE.md`,
 `docs/DISCORD_SOURCE.md`, `REGRESSION_BASELINES.md`, and the two A-11 study artifacts that
-settle every entry/exit and sizing conclusion asserted below —
+settle every entry/exit and sizing conclusion asserted below (**both now carry 2026-07-27
+errata** — read the erratum header before you cite any figure from them) —
 `docs/ENTRY_EXIT_SCRUTINY_2026-07-25.md`, `docs/STRATEGY_PERMUTATION_STUDY_2026-07-25.md`,
 `docs/NET_SOL_SANITY_AUDIT_2026-07-25.md` and `docs/BACKTEST.md`
 (read these before re-opening any entry/exit or sizing question, so you do not re-run a
@@ -30,12 +34,28 @@ settled negative). Your single objective function is **realized net SOL** (SOL i
 minus SOL out after all costs), maximized autonomously under the risk constitution — never
 win-rate, trade count, or gross P&L.
 
-**The honest baseline you are inheriting:** the golden reference net is **15,410,801 lamports
-on a cost-realistic tape** (digest `17774161487163901985`), NOT the retired 12.55M headline,
-which was an artifact of understated costs. Round-trip cost on small clips is ~7%, dominated
-by fixed priority/tip — this is the drag you are trading against. Do not cite the old arc as
-edge. Your task is to find, on live chain, the forms of scalping that clear that real cost
-floor with margin.
+**The honest baseline you are inheriting:** the golden reference net is **8,124,568 lamports**
+(digest `617234374244928651`). Read that number the way it is meant, because two prior headlines
+were retired for being read the wrong way:
+
+* The 12.55M headline was retired because costs were understated.
+* The **15,410,801** headline was retired on 2026-07-27 because the tape's *market* was fictional.
+  Its pools were 0.12–0.47 SOL against a 0.1-SOL minimum clip, i.e. our own order was 21–83% of the
+  entire pool, and it was charged nothing for that. The tape now carries real pump.fun depth
+  (30 SOL virtual at launch, deepening toward graduation), a `gate_impact_den` coherent with it
+  (`vsol/10_000` ≈ 33 bps), and **our own curve impact is charged on both legs**
+  (`curve_exact_fill_enable`, `crates/pump-quant-app/src/curve_fill.rs`). Honest accounting cost
+  roughly half the book. `docs/BACKTEST.md §9` is the record.
+
+Round-trip cost on small clips is ~7%, dominated by fixed priority/tip; own-curve impact adds
+~33 bps per leg at launch depth. That is the drag you are trading against.
+
+**And read this next sentence before you quote 8,124,568 to anyone.** It is a *synthetic
+regression fixture*, not an economic forecast. The entire golden book is smaller than ONE 0.1-SOL
+bite (100,000,000 lamports), so it can arbitrate A/B *direction* and pin determinism, and it cannot
+tell you the strategy makes money. **No synthetic tape can.** Establishing whether this strategy
+clears the real cost floor is a Phase-B job on live/replay chain data, and it is the single most
+important thing you will do. Do not cite any tape net — old or new — as evidence of edge.
 
 ---
 
@@ -45,7 +65,7 @@ Your first action is the §65 M0/M1 audit built from **actual inspection you rea
 — never claim to have inspected a file, config, provider dashboard, Windows topology, or
 runtime state you did not. Cover, at minimum: the code-path authority audit; the current
 Rust runtime + determinism map (confirm `cargo test --workspace` green, golden digest =
-`17774161487163901985`, `scripts/regression_e2e.py` green, 191 dossiers intact); the Windows
+`617234374244928651`, `scripts/regression_e2e.py` green, 191 dossiers intact); the Windows
 host / CPU / NUMA / storage / network audit; the protocol-registry and decoder-coverage
 audit; the Helius/LaserStream entitlement verification; and the exact immediate autonomous
 actions with what evidence would change direction. Mark every server-only item you have not
@@ -244,12 +264,22 @@ server measurement before the affected path may arm. Activate in this order:
    record (criterion 65). **Also stand up the Discord paid-alpha capture lane (manifest §12,
    Amendment A-5)** — `pq-stream-capture discord-gateway` with `DISCORD_USER_TOKEN`, the
    guild/channel allowlist, and the designated-caller author-ids. Discord is a CONSTITUTIONALLY
-   NAMED real-time alpha-call source with its own `DiscoveryLane::AlphaCall`, whose realized net
-   is pinned on the golden tape at **+447,700** (`golden_digest.rs::GOLDEN_ALPHACALL_NET`) — it
-   is a proven positive discovery lane, not an optional extra. Passive/incognito read only, on a
-   dedicated throwaway account, **no multi-account rotation or proxy evasion, and never any
-   promotional action (criterion 110)**. The lane fails open, so a missing token degrades to
-   absence rather than halting. Manifest **§3 (Jito ShredStream)** and **§7 (funded wallets +
+   NAMED real-time alpha-call source with its own `DiscoveryLane::AlphaCall`.
+
+   **CORRECTED 2026-07-27 — do not repeat the old claim.** This directive previously called Discord
+   "a proven positive discovery lane" on the strength of a pinned golden net of **+447,700**. That
+   number was measured while the tape's pools were 0.12–0.47 SOL and our own order was charged
+   nothing for consuming 21–83% of them. With real depth and own-curve impact charged, the same lane
+   reads **−2,721,835** (`golden_digest.rs::GOLDEN_ALPHACALL_NET`). **The lane is net NEGATIVE on
+   the only tape that prices it honestly, and the "proven positive" claim is false.** Stand the
+   capture lane up anyway — it is constitutionally named and it is how you gather the observations —
+   but treat its economic value as **UNKNOWN and currently measuring negative**, and settle it under
+   Amendment A-11 with a thesis document before you let it size a single lamport. In particular, do
+   not buy a paid alpha subscription on the strength of a retired number.
+
+   Passive/incognito read only, on a dedicated throwaway account, **no multi-account rotation or
+   proxy evasion, and never any promotional action (criterion 110)**. The lane fails open, so a
+   missing token degrades to absence rather than halting. Manifest **§3 (Jito ShredStream)** and **§7 (funded wallets +
    live probes / `ExecutionCalibrationBudget`, §39)** are also yours — §7 in particular gates
    §5's probe ladder, so do not leave it unwired.
 4. **Soak-measure the acceptance evidence** and journal it — you may not mark a criterion
@@ -271,8 +301,8 @@ server measurement before the affected path may arm. Activate in this order:
    `fnv1a_64(format!("{cfg:?}"))`, i.e. the FULL config identity, so **adding any `Config`
    field moves the digest with zero decision change.** Phase-B will add config fields (signer,
    submission, OsTune, secrets wiring), so this WILL fire. The test is the DECISION PLANE, not
-   the digest: verify `net = 15,410,801`, `promoted/admitted/rejected = 504/13/457`,
-   `universe_filtered = 72`, `AlphaCall net = 447,700`, plus per-lane net and final weights.
+   the digest: verify `net = 8,124,568`, `promoted/admitted/rejected = 504/13/457`,
+   `universe_filtered = 72`, `AlphaCall net = −2,721,835`, plus per-lane net and final weights.
    If every one of those is byte-identical and only the digest moved, it is a **SEED-ONLY
    re-pin** — legitimate, and done 8+ times already (#5, #7, #8, #9, #16, #17, #21, #22).
    Document the cause in the `golden_digest.rs` re-pin ledger and update the constant in
@@ -619,7 +649,7 @@ retro-remap v0-stamped assignments.
 it binds you exactly as it binds the authoring surface. In short: **no thesis of yours changes a
 shipped default until you have written the study artifact for it** — mandate, the rule pre-registered
 BEFORE you measure, method, a per-tape/per-corpus numeric table, a leg-by-leg verdict, what changed,
-and the green-gate list — committed to `docs/` and registered under its §51 ExperimentId. Note A-11(4)'s materiality-basis clause, which is load-bearing here: the gain bar is judged ABSOLUTELY on corpora whose book is large relative to one 0.1-SOL bite and RELATIVELY where it is not, **with the book size and your choice of basis stated explicitly** — the golden tape's ENTIRE book (15,410,801) is smaller than one bite (100,000,000), so silently applying an absolute bar there is the reporting defect A-11 names. Every
+and the green-gate list — committed to `docs/` and registered under its §51 ExperimentId. Note A-11(4)'s materiality-basis clause, which is load-bearing here: the gain bar is judged ABSOLUTELY on corpora whose book is large relative to one 0.1-SOL bite and RELATIVELY where it is not, **with the book size and your choice of basis stated explicitly** — the golden tape's ENTIRE book (8,124,568) is smaller than one bite (100,000,000), so silently applying an absolute bar there is the reporting defect A-11 names. Every
 protective law needs a HAPPY path and a MIRROR that is byte-identical up to the moment of decision.
 Laws ship **DISARMED** until they earn it. **Honest negatives are published, not buried** — a study
 concluding "no change" is a completed deliverable and you will be judged as having done the work.
@@ -647,11 +677,12 @@ adverse observations in EVENT time before that exit fires; any non-adverse obser
 Pareto-distributed, so a SINGLE flip is near-uninformative; Kaminski & Lo (*J. Financial Markets*
 18:234–254) show a stop's premium is negative unless its trigger predicts PERSISTENT adverse drift.
 On the two-sided tape built for it, `k = 5` passed both bars (+152,694,678 vs −44,095,911, asymmetry
-3.46×). **But on the pre-existing corpora that could price it, it failed**: that same `k = 5` destroys 85% of the golden net
-(15,410,801 → 2,322,301) and flips the concentration book positive → negative. Best gain any `k` gives
-on golden is +257,400 (`k = 2`), under 1.7% of the book; a 135-config joint lattice (`k` × trail ×
-hard-stop × TP-margin) topped out at +438,538 lamports. Per the arbiter rule, the pre-existing corpus
-won. **What blocks arming is a MISSING MEASUREMENT, not a disproven theory.**
+3.46×). **But on the pre-existing corpora that could price it, it failed**: that same `k = 5` does not
+merely dent the golden book, it turns it **NEGATIVE** (8,124,568 → **−3,223,175**), and it flips the
+concentration book positive → negative. Best gain any `k` gives on golden is **+207,252** (`k = 2`),
+under 2.6% of the book; a 135-config joint lattice (`k` × trail × hard-stop × TP-margin) topped out
+at +438,538 lamports — a number measured on the pre-depth-fix tape and therefore an upper bound that
+honest fills can only lower. Per the arbiter rule, the pre-existing corpus won. **What blocks arming is a MISSING MEASUREMENT, not a disproven theory.**
 
 *The exact measurement you must run — this is the single most valuable number the laptop could not
 get.* On live/replay data: **of held positions whose windowed OFI first turns net-sell, what fraction
