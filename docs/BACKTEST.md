@@ -371,3 +371,84 @@ exactly**, so re-pin #23 is SEED-ONLY (net 15,410,801 / 504 / 13 / 457 / 72 all 
 NOT done here**: it changes every historical number and must land as its own gated change with its
 own A/B. Until it is wired, **no real-data net is admissible**, because F1 and F2 both remain live
 in the fill path.
+
+---
+
+# §8. THE CURVE FILL IS NOW WIRED — and it found something bigger than itself
+
+§7 left F1/F2 built but unwired, with the note that wiring "needs its own pass". That was
+capacity reasoning dressed as methodology. It is now wired, A/B'd, and the result matters more
+than the wiring did.
+
+## The blocker that was not one
+
+Wiring appeared to need the TOKEN reserve, which the events grammar has never carried. It does
+not. For a constant-product curve the token reserve **cancels**:
+
+```
+    buy:   avg/spot      = (vsol + notional) / vsol
+    sell:  realized/spot = vsol / (vsol + notional)
+    both:  own-impact bps = notional · 10_000 / vsol
+```
+
+Only the SOL side appears — and the engine has always carried it as `liquidity_lamports`. Verified
+against the full constant-product computation in
+`curve_fill::reserve_free_tests::impact_bps_matches_the_full_curve_computation`. So the fill could
+be priced **exactly**, not approximately, with data already in hand.
+
+## Wired on both legs
+
+* **Entry** (`engine.rs`): the admit price is `buy_fill_price_fp(spot, vsol, size)` — we pay up the
+  curve. Unknown depth REFUSES the entry rather than guessing (§6).
+* **Exit** (`position.rs::realize`): each sell adds `notional · 10_000 / vsol` bps to the existing
+  §38 adversarial impairment — they are different frictions and both are charged. The freshest
+  curve depth rides on the position, updated per swap, and **fails closed at 0**.
+* `ScalpLifecycle::on_trade` and the §48 shadow tournament both take the depth, so challengers are
+  scored under the same fill model as the incumbent.
+
+## The A/B — and the finding
+
+| tape | curve fill OFF | curve fill ON |
+|---|---|---|
+| GOLDEN | **+15,410,801** | **−332,289,498** |
+| CONC-happy | +16,567,514 | −287,474,148 |
+| CONC-mirror | +55,684,531 | −279,553,950 |
+
+Every tape flips deeply negative. **That is not a verdict on the strategy — it is a verdict on the
+TAPES, and it is the most consequential thing this work found.**
+
+| pool depth (`vsol`) | own-impact per leg, 0.1 SOL clip |
+|---|---|
+| golden tape MIN, 0.12 SOL | **8,333 bps** |
+| golden tape MAX, 0.47 SOL | **2,127 bps** |
+| **REAL pump.fun at launch, 30 SOL** | **33 bps** |
+| real, near graduation, 85 SOL | 11 bps |
+
+The golden tape's pools are **0.12–0.47 SOL** while the operator's minimum clip is **0.1 SOL**. Our
+own order is **21–83% of the entire pool**, and every measurement ever taken on that tape was taken
+while charging ourselves nothing for it. Real pump.fun virtual reserves start at ~30 SOL — the tape
+understates depth by roughly **250×** relative to our clip.
+
+**What this does and does not invalidate, precisely:**
+
+* **Relative A/B verdicts survive.** Both arms of every prior comparison paid the same (zero)
+  impact, so armed-vs-disarmed conclusions — B3, B7, concentration, flow-persistence — are not
+  overturned.
+* **The absolute net does not survive.** "+15,410,801 on a cost-realistic tape" is not a coherent
+  economic statement when the clip is a fifth of the pool. The tape is cost-realistic in **fees**
+  and badly unrealistic in **depth**. That headline should not be quoted as an economic result
+  again, including in the activation directive's "honest baseline" paragraph.
+
+## Status and the next move
+
+Default stays **OFF**: arming it against unrealistic depth produces nonsense rather than a verdict,
+and `curve_fill_wiring.rs` pins that reasoning in arithmetic (3 tests) so it cannot quietly rot. The
+golden digest is unchanged — the disarmed path is byte-identical.
+
+**The real fix is to give the synthetic tapes pump.fun-realistic reserves (~30 SOL virtual at
+launch, scaling toward ~85 at graduation).** Under real depth the charge is ~33 bps/leg, ~66 bps
+round trip against a ~700 bps round trip: material, and survivable. That re-pins every tape and is
+the correct next pass.
+
+**For any real-data backtest, `curve_exact_fill_enable` MUST be armed** — there the depth is real,
+and this is precisely the friction that decides whether the strategy clears its costs.

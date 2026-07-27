@@ -89,6 +89,12 @@ pub struct LifecycleParams {
     /// climax while in profit). Per-position so shadow challengers can carry it
     /// independently of the incumbent (§48 pre-registered axis).
     pub into_strength_exit_enable: bool,
+    /// FILL FIDELITY: when true, every sell additionally pays its own
+    /// constant-product curve impact, `notional · 10_000 / vsol` bps, on top of
+    /// `exit_impair_bps`. Selling at the observed print credits us a price the curve
+    /// would never have given — see `curve_fill::own_impact_bps`. Default false so
+    /// the historical pins hold; MUST be true for any real-data backtest.
+    pub curve_exact_fill: bool,
     /// §24(d) LAW 5: burst arrival-rate elevation multiple (bps of 10_000) over
     /// baseline that a plateaued recent window must clear to count as a climax.
     pub into_strength_climax_bp: u32,
@@ -123,6 +129,7 @@ impl LifecycleParams {
             first_sell_penalty_bps: 150,
             tip_lamports: 10_000,
             exit_impair_bps: 0, // Mode A/B default; engine sets from cfg.fill_mode
+            curve_exact_fill: false, // fill fidelity; MUST be armed for real-data backtests
             into_strength_exit_enable: false, // LAW 5 off by default; operator/challenger arms
             into_strength_climax_bp: 20_000, // 2× baseline arrival = a genuine climax
             vol_stop_enable: false, // LAW 6 off by default
@@ -225,6 +232,11 @@ pub struct Exit {
 /// One held position, integer/fixed-point.
 #[derive(Clone, Copy, Debug)]
 struct HeldPosition {
+    /// Freshest observed curve SOL side (lamports). Updated on every swap; the
+    /// depth our own exit walks when `curve_exact_fill` is armed. 0 = unknown,
+    /// which fails CLOSED (no curve impact can be priced, so no sell is credited
+    /// a price the curve would not have given).
+    liq_lamports: u64,
     entry_price_fp: u64,
     peak_price_fp: u64,
     prev_price_fp: u64,
@@ -370,7 +382,18 @@ impl HeldPosition {
         let mut gross = notional * u128::from(mult_bps) / 10_000;
         // §38 adversarial impairment: every sell pays the configured extra slippage
         // under Mode C (0 in Modes A/B), so paper proceeds are execution-honest.
-        gross -= gross * u128::from(p.exit_impair_bps.min(10_000)) / 10_000;
+        // FILL FIDELITY: our own sell walks the constant-product curve, so it
+        // realizes `vsol/(vsol + notional)` of the observed print — exactly
+        // `notional · 10_000 / vsol` bps of adverse impact (the token reserve
+        // cancels; see `curve_fill::own_impact_bps`). Added to the §38 adversarial
+        // impairment rather than replacing it: they are different frictions.
+        let curve_bps = if p.curve_exact_fill && self.liq_lamports > 0 {
+            u32::try_from(notional * 10_000 / u128::from(self.liq_lamports)).unwrap_or(10_000)
+        } else {
+            0
+        };
+        let impair = p.exit_impair_bps.saturating_add(curve_bps).min(10_000);
+        gross -= gross * u128::from(impair) / 10_000;
         let fee = gross * u128::from(p.fee_bps) / 10_000;
         let penalty = if self.took_first_sell {
             0
@@ -460,6 +483,7 @@ impl ScalpLifecycle {
         self.open.insert(
             mint,
             HeldPosition {
+                liq_lamports: 0,
                 entry_price_fp,
                 peak_price_fp: entry_price_fp,
                 prev_price_fp: entry_price_fp,
@@ -619,9 +643,12 @@ impl ScalpLifecycle {
         price_fp: u64,
         signed_quote: i128,
         tick: u64,
+        liq_lamports: u64,
     ) -> Option<Exit> {
         let p = self.params;
         let pos = self.open.get_mut(mint)?;
+        // Freshest curve depth — what our own exit would walk (fails closed at 0).
+        pos.liq_lamports = liq_lamports;
         pos.cvd = pos.cvd.saturating_add(signed_quote);
         if pos.cvd > pos.cvd_peak {
             pos.cvd_peak = pos.cvd;

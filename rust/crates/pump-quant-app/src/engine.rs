@@ -1003,6 +1003,7 @@ impl Engine {
             first_sell_penalty_bps: LifecycleParams::standard().first_sell_penalty_bps,
             tip_lamports: cfg.exit_tip_lamports,
             exit_impair_bps,
+            curve_exact_fill: cfg.curve_exact_fill_enable,
             into_strength_exit_enable: cfg.into_strength_exit_enable,
             into_strength_climax_bp: cfg.into_strength_climax_bp,
             vol_stop_enable: cfg.vol_stop_enable,
@@ -1550,10 +1551,10 @@ impl Engine {
                     };
                     let price_u = u64::try_from(price_fp.max(0)).unwrap_or(u64::MAX);
                     self.tournament
-                        .on_trade(mint.as_bytes(), price_u, signed_quote, self.now);
+                        .on_trade(mint.as_bytes(), price_u, signed_quote, self.now, liquidity_lamports);
                     if let Some(exit) =
                         self.positions
-                            .on_trade(mint.as_bytes(), price_u, signed_quote, self.now)
+                            .on_trade(mint.as_bytes(), price_u, signed_quote, self.now, liquidity_lamports)
                     {
                         self.book_exit(exit);
                     } else if self.positions.has(mint.as_bytes()) {
@@ -2989,7 +2990,31 @@ impl Engine {
                 // Fully priced: hand to §23 arbitration. Expected net per slot =
                 // size × priced move − the round-trip cost load — conditional
                 // expected net SOL, never raw discovery score.
-                let entry_price = self.numeric.latest_price_fp(domain_mint).unwrap_or(0);
+                let spot_price = self.numeric.latest_price_fp(domain_mint).unwrap_or(0);
+                if spot_price == 0 {
+                    return None;
+                }
+                // §24/criterion 103 FILL FIDELITY: pump.fun is a constant-product curve,
+                // so OUR OWN order does not fill at the observed print — it fills at the
+                // average along the curve, which is strictly worse by exactly
+                // `size · 10_000 / vsol` bps (the token reserve cancels; see
+                // `curve_fill::own_impact_bps`). Filling at the print is a subsidy the
+                // market never granted, on every entry. Disarmed by default so the
+                // historical pins hold; MUST be armed for any real-data backtest.
+                let entry_price = if self.cfg.curve_exact_fill_enable {
+                    // Same fresh snapshot `latest_price_fp` came from — the pool's SOL
+                    // side is the curve depth our order walks.
+                    let vsol = self
+                        .numeric
+                        .features_for(domain_mint)
+                        .map_or(0, |f| f.liquidity_lamports);
+                    match crate::curve_fill::buy_fill_price_fp(spot_price, vsol, size) {
+                        Some(p) => p,
+                        None => return None, // unknown depth ⇒ refuse, never guess (§6)
+                    }
+                } else {
+                    spot_price
+                };
                 if entry_price == 0 {
                     return None;
                 }

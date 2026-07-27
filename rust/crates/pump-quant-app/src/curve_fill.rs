@@ -719,3 +719,92 @@ mod tests {
         assert_eq!(ceil_div(u128::MAX - 1, 2), Some(u128::MAX / 2));
     }
 }
+
+
+// ---------------------------------------------------------------------------
+// THE RESERVE-FREE CLOSED FORMS — why the engine can price its own impact with
+// only `liquidity_lamports`.
+// ---------------------------------------------------------------------------
+
+/// Adverse own-impact of trading `notional` lamports against a curve whose SOL
+/// side is `vsol`, in bps: **exactly `notional · 10_000 / vsol`**.
+///
+/// The token reserve CANCELS. For a buy, `avg/spot = (vsol + notional)/vsol`; for a
+/// sell of the same notional, `realized/spot = vsol/(vsol + notional)`. Both depend
+/// only on the SOL side, which is why the engine — which carries `vsol` as
+/// `liquidity_lamports` but has never carried `vtok` — can price its own impact
+/// exactly rather than approximately. Verified against the full constant-product
+/// computation in `impact_bps_matches_the_full_curve_computation`.
+#[must_use]
+pub fn own_impact_bps(vsol: u64, notional: u64) -> Option<u64> {
+    if vsol == 0 {
+        return None;
+    }
+    u64::try_from(u128::from(notional) * BPS_DENOM / u128::from(vsol)).ok()
+}
+
+/// Entry fill price: `spot · (vsol + notional) / vsol`, rounded UP (we pay worse).
+#[must_use]
+pub fn buy_fill_price_fp(spot_fp: u64, vsol: u64, notional: u64) -> Option<u64> {
+    if vsol == 0 || spot_fp == 0 {
+        return None;
+    }
+    let num = u128::from(spot_fp).checked_mul(u128::from(vsol).checked_add(u128::from(notional))?)?;
+    u64::try_from(num.div_ceil(u128::from(vsol))).ok()
+}
+
+/// Exit fill price: `spot · vsol / (vsol + notional)`, rounded DOWN (we receive less).
+#[must_use]
+pub fn sell_fill_price_fp(spot_fp: u64, vsol: u64, notional: u64) -> Option<u64> {
+    if vsol == 0 || spot_fp == 0 {
+        return None;
+    }
+    let den = u128::from(vsol).checked_add(u128::from(notional))?;
+    let num = u128::from(spot_fp).checked_mul(u128::from(vsol))?;
+    u64::try_from(num / den).ok()
+}
+
+#[cfg(test)]
+mod reserve_free_tests {
+    use super::*;
+
+    /// The load-bearing claim: the reserve-free form equals the full constant-product
+    /// computation, so wiring it with only `liquidity_lamports` loses NOTHING.
+    #[test]
+    fn impact_bps_matches_the_full_curve_computation() {
+        for &(vsol, vtok) in &[
+            (30_000_000_000u64, 1_073_000_000_000_000u64),
+            (45_000_000_000, 715_000_000_000_000),
+            (85_000_000_000, 380_000_000_000_000),
+            (30_000_000_000, 5_000_000_000_000_000),
+        ] {
+            for &n in &[10_000_000u64, 100_000_000, 500_000_000] {
+                let spot = spot_price_fp(vsol, vtok).unwrap();
+                let exact = buy_avg_price_fp(vsol, vtok, n).unwrap();
+                let closed = buy_fill_price_fp(spot, vsol, n).unwrap();
+                let tol = exact / 1_000 + 2; // ≤0.1% + fp rounding
+                assert!(
+                    exact.abs_diff(closed) <= tol,
+                    "reserve-free form must track the full curve: vsol={vsol} vtok={vtok}                      n={n} exact={exact} closed={closed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn entry_is_always_worse_and_exit_always_worse_than_spot() {
+        let spot = 10_000_000u64;
+        let vsol = 30_000_000_000u64;
+        for &n in &[1u64, 100_000_000, 1_000_000_000] {
+            assert!(buy_fill_price_fp(spot, vsol, n).unwrap() >= spot, "buy pays up");
+            assert!(sell_fill_price_fp(spot, vsol, n).unwrap() <= spot, "sell receives less");
+        }
+    }
+
+    #[test]
+    fn a_zero_depth_curve_refuses_rather_than_dividing_by_zero() {
+        assert_eq!(own_impact_bps(0, 1), None);
+        assert_eq!(buy_fill_price_fp(10_000_000, 0, 1), None);
+        assert_eq!(sell_fill_price_fp(10_000_000, 0, 1), None);
+    }
+}

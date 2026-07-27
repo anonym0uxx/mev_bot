@@ -412,11 +412,18 @@ impl ExitTournament {
 
     /// Mirror one decoded swap into every challenger's lifecycle, folding any
     /// exits (partial tranches accumulate; closes await pairing).
-    pub fn on_trade(&mut self, mint: &[u8; 32], price_fp: u64, signed_quote: i128, tick: u64) {
+    pub fn on_trade(
+        &mut self,
+        mint: &[u8; 32],
+        price_fp: u64,
+        signed_quote: i128,
+        tick: u64,
+        liq_lamports: u64,
+    ) {
         self.note_price(*mint, price_fp);
         let seq = self.seq;
         for c in &mut self.challengers {
-            if let Some(e) = c.book.on_trade(mint, price_fp, signed_quote, tick) {
+            if let Some(e) = c.book.on_trade(mint, price_fp, signed_quote, tick, liq_lamports) {
                 let acc = c.partial.entry(*mint).or_insert(0);
                 *acc = acc.saturating_add(e.net_lamports);
                 if e.closed {
