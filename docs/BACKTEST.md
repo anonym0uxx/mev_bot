@@ -25,6 +25,36 @@ Every claim below was checked directly against the source, not inferred from the
 | **horenresearch/solana-pairs-history** (HF) | **Fully free, no key** | Per-pair JSONL OHLCV, includes pump.fun mints (they end `pump`) | **Wrong granularity — see §2** |
 | **BigQuery** Solana public dataset | Scan costs money | Full chain | Rejected on cost |
 | **jetstreamer** + Old Faithful | Free software, needs a big machine | Full chain replay | Viable on the server; heavy |
+| **masonmarker/memecoins-chart-data-low-mc** (HF) | Free but **GATED** (401) | 1.16 GB chart data, explicitly LOW market cap | **Best free lead — needs the operator to accept terms on HF, then re-check granularity** |
+| **muhammetakkurt/pump-fun-meme-token-dataset** (HF) | **Fully free, no key** | 67 MB CSV, ONE ROW PER TOKEN: mint, created_timestamp, creator, `complete`, market_cap, **virtual_sol/token_reserves**, socials, reply_count | **Not a backtest corpus — but a real LAUNCH UNIVERSE (see §1.1)** |
+| **blackhawkdragon/pumpfun-real-data** (HF) | **Fully free, no key** | **366 rows**, per-token labeled OUTCOMES: `reached_50pct`, `reached_100pct`, `migrated`, `peak_price`, `final_price`, `buy_ratio`, `dev_success_rate` | Too small to be a corpus; useful as a labeled sanity sample |
+| **rincel/pumpfun** (HF) | Fully free | 1.18 GB, but a SINGLE `SIGNER` column | Useless for backtesting; possibly a known-degen wallet list |
+| **Zenodo 10.5281/zenodo.20633486** | Free | 832,941 pump.fun token launches (survival-analysis paper) | **Largest launch universe found.** `robots.txt` blocks this sandbox; reachable from the server |
+
+### 1.1 The survey was widened after the first pass, and it changed the answer
+
+The first pass only checked the sources in the operator's screenshots. A systematic sweep of the
+HuggingFace dataset API (`pump.fun`, `pumpfun`, `solana`, `memecoin`) surfaced four datasets that
+pass had missed, and two of them matter:
+
+* **`muhammetakkurt/pump-fun-meme-token-dataset` partially solves the survivorship problem.** It is
+  one row per token *as created* — including the dead ones (the sampled row is a token sitting at a
+  28.5 SOL cap, `is_currently_live: false`, `complete: false`) — and it carries
+  `virtual_sol_reserves` / `virtual_token_reserves`, so the curve state is real rather than
+  reconstructed. **That makes it a usable `--universe-manifest` source for its window**, and an
+  honest read on the real market-cap distribution at launch. It is NOT trade data and cannot drive
+  a backtest.
+* **`masonmarker/memecoins-chart-data-low-mc` is the best free lead and is one click from usable.**
+  1.16 GB, explicitly low-market-cap, but **gated behind HF terms acceptance (401 from here)**.
+  Nobody can evaluate its granularity until someone with an HF account accepts the terms. **If it
+  turns out to be per-trade rather than candles, it is the single best free corpus found.** That is
+  a concrete operator action, not a research task.
+
+**The conclusion is unchanged: no FREE source yet gives per-swap pump.fun trades with side,
+reserves, trader and timestamp at scale.** Helius (already paid for) and Dune's free
+`pumpdotfun.trades` remain the two routes that do. What changed is that we now have a real launch
+universe to audit survivorship against, and one gated candidate worth ten minutes of the operator's
+time.
 
 ## 2. The free OHLCV set cannot backtest THIS strategy — and the reason matters
 
