@@ -116,11 +116,38 @@ printf 'gate_expected_move_bps = 1800\ngate_protocol_bps = 450\ngate_margin_bps 
 
 Binding on whoever runs it. Most of these are ways a memecoin backtest lies.
 
-1. **Survivorship bias is the dominant risk.** Any dataset assembled from *indexed pairs* is
-   conditioned on the token having mattered enough to be indexed. Tokens that died in minutes —
-   the majority, and our modal case — are systematically under-represented. **Sample from a
-   launch-time universe (every mint created in the window), not from a list of pairs that exist
-   today.** Report what fraction of launched mints the corpus actually contains.
+1. **Survivorship bias is the dominant risk — and it is now ENFORCED, not advised.** Any dataset
+   assembled from *indexed pairs* is conditioned on the token having mattered enough to be indexed.
+   Tokens that died in minutes — the majority, and our modal case — are systematically absent, and
+   a backtest over the survivors will look profitable when the strategy is not.
+
+   The converter therefore **REFUSES TO RUN** without `--universe-manifest`: the launch-time
+   universe, i.e. every mint created in the window. Passing `--unaudited-survivorship` overrides it
+   but stamps the events file `*** UNAUDITED ***`, and a net produced from an unaudited corpus is
+   **not admissible evidence** under A-11.
+
+   **How to build the launch universe (do this first, before pulling any trades).** Enumerate the
+   pump.fun program's `create` instructions over the slot range — that set IS the universe, because
+   every token that ever existed was created by one, including the ones that died in ninety seconds
+   and were never indexed anywhere:
+
+   * Program id `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`.
+   * Page `getSignaturesForAddress` over the program by slot range (or use Helius enhanced
+     transactions / LaserStream backfill, which we already pay for), keep transactions containing a
+     `create`, and take the mint from the emitted `CreateEvent`.
+   * Write one mint per line. That file is `--universe-manifest`.
+   * **Never** build it from a list of pairs that exist today, from a DEX-screener export, or from
+     "tokens with at least N trades" — each of those is the bias wearing a different hat.
+
+   The tool then reports `corpus covers X/Y launched mints (Z%)`, warns loudly below 50%, and
+   independently flags a **pre-filtered input**: if the minimum trades-per-mint is implausibly high,
+   the corpus was filtered to active tokens somewhere upstream, which is the same bias entering
+   before the tool ever sees the data. Both warnings are written into the events-file header so they
+   travel with the artifact and cannot be lost between the run and the write-up.
+
+   Finally, subsampling with `--max-mints` is **hash-ordered, not first-N**. Taking the first N
+   after a slot sort — which this tool originally did — silently truncates to the earliest mints,
+   i.e. a single market regime. That was a real defect, found and fixed in review.
 2. **No look-ahead anywhere.** Selection, market-cap gating, and every feature must be computable
    from data at or before the decision slot. The gate already captures the brain fingerprint at
    admit for this reason.

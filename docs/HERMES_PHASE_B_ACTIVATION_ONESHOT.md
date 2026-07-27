@@ -573,8 +573,16 @@ before the first swap.** That is a coverage problem tied to the LaserStream/Heli
    band over the last year via **Helius** (already paid for — enhanced transactions / LaserStream
    backfill) or **Dune's free `pumpdotfun.trades`**, convert, and replay. Read `docs/BACKTEST.md`
    §5 before you start — it lists the ways this measurement lies, of which **survivorship bias is
-   the worst**: sample from a launch-time universe of every mint created in the window, never from
-   a list of pairs that still exist. Set costs from MEASURED server figures, not the laptop
+   the worst**. You will not be able to skip it: the converter **REFUSES to run** without
+   `--universe-manifest`, the launch-time universe. **Build that FIRST** by enumerating the pump.fun
+   program's `create` instructions (`6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`) over your slot
+   range via Helius — that set IS the universe, because it includes the tokens that died in ninety
+   seconds and were never indexed anywhere. One mint per line. **Never** build it from pairs that
+   exist today, a DEX-screener export, or "tokens with ≥N trades" — each is the same bias wearing a
+   different hat. The tool reports corpus-vs-universe coverage, warns below 50%, flags a
+   pre-filtered input, and stamps all of it into the events-file header. If you override with
+   `--unaudited-survivorship`, the resulting net is **not admissible evidence** under A-11 and you
+   may not cite it. Set costs from MEASURED server figures, not the laptop
    defaults (which under-price by ~150 bps). Re-run under Mode-C before believing anything. **A
    negative result is the expected outcome, is publishable, and must be reported** — the published
    literature contains no memecoin strategy with positive out-of-sample expectancy, so if we do not
