@@ -276,12 +276,20 @@ def main():
     # ---- SURVIVORSHIP AUDIT ----
     universe_n = None
     covered = None
+    outside = 0
     if args.universe_manifest:
         with open(args.universe_manifest, "r", encoding="utf-8") as fh:
             universe = {ln.strip() for ln in fh if ln.strip()}
         universe_n = len(universe)
         seen = set(per_mint.keys())
         covered = len(seen & universe)
+        # WINDOW MISMATCH DETECTOR. If the corpus contains mints the universe has
+        # never heard of, the universe does not cover the corpus's time window (or is
+        # the wrong universe entirely) — and the coverage percentage below is then
+        # meaningless rather than merely low. This is the likeliest way to misuse a
+        # ready-made universe: the published ones cover WEEKS, not years. Match the
+        # trade window to the universe window, or build the universe yourself.
+        outside = len(seen - universe)
 
     # A corpus that was pre-filtered to "active" tokens shows up as an implausibly
     # high MINIMUM trade count -- real launch universes are dominated by mints with a
@@ -322,6 +330,10 @@ def main():
             pct = 100.0 * covered / universe_n if universe_n else 0.0
             out.write(f"# SURVIVORSHIP: corpus covers {covered}/{universe_n} "
                       f"launched mints ({pct:.2f}%)\n")
+            if outside > 0:
+                out.write(f"# SURVIVORSHIP WINDOW MISMATCH: {outside} corpus mints are "
+                          "absent from the universe, so the universe does not cover this "
+                          "corpus's window; the coverage figure is NOT interpretable\n")
             if pct < 50.0:
                 out.write("# SURVIVORSHIP WARNING: under half the launch universe is "
                           "present; the missing mints are disproportionately the ones "
@@ -356,6 +368,12 @@ def main():
         pct = 100.0 * covered / universe_n if universe_n else 0.0
         print(f"  launch universe    : {universe_n} mints created in window")
         print(f"  corpus coverage    : {covered} ({pct:.2f}%)")
+        print(f"  corpus mints NOT in universe: {outside}")
+        if outside > 0:
+            print("  *** WINDOW MISMATCH: the corpus contains mints the universe does not "
+                  "list, so the universe does not cover this corpus's time window (or is "
+                  "the wrong universe). The coverage figure above is NOT interpretable "
+                  "until the trade window and the universe window are the same.")
         if pct < 50.0:
             print("  *** WARNING: under half the launch universe is present. The absent "
                   "mints are disproportionately the ones that DIED -- net is biased UPWARD.")

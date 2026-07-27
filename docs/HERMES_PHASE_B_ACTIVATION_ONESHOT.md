@@ -579,8 +579,16 @@ before the first swap.** That is a coverage problem tied to the LaserStream/Heli
    range via Helius — that set IS the universe, because it includes the tokens that died in ninety
    seconds and were never indexed anywhere. One mint per line. **Never** build it from pairs that
    exist today, a DEX-screener export, or "tokens with ≥N trades" — each is the same bias wearing a
-   different hat. The tool reports corpus-vs-universe coverage, warns below 50%, flags a
-   pre-filtered input, and stamps all of it into the events-file header. If you override with
+   different hat. **You may not have to build it yourself:** the Zenodo release
+   `10.5281/zenodo.20633486` is an open CC-BY-4.0 census of **860,213 pump.fun launches**, the
+   dataset behind arXiv 2607.02823 — but it covers **2026-05-08 → 2026-06-10 ONLY (~33 days)**,
+   so **pull your trade data for exactly that window if you use it.** Auditing a year of trades
+   against a 33-day universe yields a coverage figure that is not low, it is MEANINGLESS. For any
+   other window, enumerate `create` instructions yourself. `docs/BACKTEST.md` §5.1 has the
+   end-to-end commands. The tool reports corpus-vs-universe coverage, warns below 50%, flags a
+   pre-filtered input, **and machine-checks the window: any corpus mint absent from the universe
+   trips an explicit WINDOW MISMATCH and voids the coverage figure.** All of it is stamped into
+   the events-file header. If you override with
    `--unaudited-survivorship`, the resulting net is **not admissible evidence** under A-11 and you
    may not cite it. Set costs from MEASURED server figures, not the laptop
    defaults (which under-price by ~150 bps). Re-run under Mode-C before believing anything. **A

@@ -175,6 +175,65 @@ Binding on whoever runs it. Most of these are ways a memecoin backtest lies.
    before the tool ever sees the data. Both warnings are written into the events-file header so they
    travel with the artifact and cannot be lost between the run and the write-up.
 
+   ### Ready-made launch universes — and the window rule that governs all of them
+
+   You do not always have to enumerate `create` instructions yourself. Three published
+   universes exist, all free. **But every one of them covers WEEKS, not years, and that is the
+   trap:** a universe is only valid for the window it was collected in.
+
+   | Universe | Window | Size | License / access |
+   |---|---|---|---|
+   | **Zenodo `10.5281/zenodo.20633486`** (concept DOI) | **2026-05-08 → 2026-06-10** | **860,213 launches** | **CC-BY-4.0, open** |
+   | `muhammetakkurt/pump-fun-meme-token-dataset` (HF) | ~Jan 2025 | 67 MB, one row per token | Free, no key |
+   | Kaggle `dremovd/pump-fun-graduation-february-2025` | ~Feb 2025 | graduation cohort | Kaggle account |
+
+   The Zenodo release is the best of the three — it is the dataset behind arXiv 2607.02823
+   ("Survival Analysis of 832,941 Token Launches"), it is openly licensed, and it is a genuine
+   launch-time census rather than a survivor list.
+
+   **THE WINDOW RULE, which is binding: pull your trade data for the SAME window the universe
+   covers.** Auditing a year of trades against the 33-day Zenodo universe produces a coverage
+   figure that is not merely low, it is meaningless. If you need a different window, enumerate
+   `create` instructions for that window via Helius instead — the ready-made sets do not
+   generalise, and no amount of care downstream repairs a mismatched universe.
+
+   **This is now machine-checked.** The converter counts corpus mints that are ABSENT from the
+   universe. Any non-zero count means the universe does not cover the corpus window (or is the
+   wrong universe), and the tool says so explicitly — on the console and stamped into the events
+   header — stating that the coverage figure is not interpretable until the two windows match.
+
+   **End-to-end, using the Zenodo universe:**
+
+   ```bash
+   # 1. Fetch the launch census (resolve the concept DOI to its latest version).
+   #    CC-BY-4.0 — attribute arXiv 2607.02823 in any write-up.
+   curl -L -o zenodo_launches.zip \
+        "https://zenodo.org/api/records/20633486/files-archive"
+   unzip zenodo_launches.zip -d zenodo_launches/
+
+   # 2. Reduce it to the manifest format: one mint per line, nothing else.
+   #    Adjust the column name to whatever the release actually ships.
+   python3 - <<'EOF' > universe_2026-05-08_2026-06-10.txt
+   import csv, glob, sys
+   for path in glob.glob("zenodo_launches/*.csv"):
+       with open(path, newline="", encoding="utf-8") as fh:
+           for row in csv.DictReader(fh):
+               m = row.get("mint") or row.get("token_address") or row.get("address")
+               if m:
+                   print(m.strip())
+   EOF
+
+   # 3. Pull trades for THE SAME WINDOW (Helius, 2026-05-08 .. 2026-06-10) -> swaps.jsonl
+   #    Then convert, and the audit runs automatically.
+   python3 tools/backtest/pump_replay_build.py \
+       --in swaps.jsonl --out events.txt \
+       --universe-manifest universe_2026-05-08_2026-06-10.txt \
+       --min-mcap-sol 5 --max-mcap-sol 600
+
+   # 4. Confirm the header says WINDOW MISMATCH: 0 before believing any net.
+   head -8 events.txt
+   ```
+
    Finally, subsampling with `--max-mints` is **hash-ordered, not first-N**. Taking the first N
    after a slot sort — which this tool originally did — silently truncates to the earliest mints,
    i.e. a single market regime. That was a real defect, found and fixed in review.
