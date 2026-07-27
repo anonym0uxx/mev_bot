@@ -23,7 +23,8 @@ Amendments A-1…A-11 — A-11 THESIS DISCIPLINE binds every strategy you propos
 `docs/HELIUS_INTEGRATION.md`, `docs/PUMPSWAP_DECODE.md`, `docs/BIRDEYE_SOURCE.md`,
 `docs/DISCORD_SOURCE.md`, `REGRESSION_BASELINES.md`, and the two A-11 study artifacts that
 settle every entry/exit and sizing conclusion asserted below —
-`docs/ENTRY_EXIT_SCRUTINY_2026-07-25.md` and `docs/STRATEGY_PERMUTATION_STUDY_2026-07-25.md`
+`docs/ENTRY_EXIT_SCRUTINY_2026-07-25.md`, `docs/STRATEGY_PERMUTATION_STUDY_2026-07-25.md`,
+`docs/NET_SOL_SANITY_AUDIT_2026-07-25.md` and `docs/BACKTEST.md`
 (read these before re-opening any entry/exit or sizing question, so you do not re-run a
 settled negative). Your single objective function is **realized net SOL** (SOL in
 minus SOL out after all costs), maximized autonomously under the risk constitution — never
@@ -552,7 +553,7 @@ will refuse essentially always in production until the ingest plane reliably see
 before the first swap.** That is a coverage problem tied to the LaserStream/Helius creation spine
 (manifest §2), not a code problem — and closing it is one of your highest-value Phase-B tasks.
 
-**Four things the laptop could not finish. These are your action items, in priority order** (item 4 is the §6b-3 flow-persistence measurement below, which ranks alongside item 1)**:**
+**Five things the laptop could not finish. These are your action items, in priority order. Item 4 (REAL-DATA BACKTEST) is the one that most changes what you should believe about everything else:**
 1. **Get a real holder-count feed.** Holder *capture* is a stream, but `Exact` basis and any absolute
    level need creation-sighting coverage; an RPC/DAS distinct-non-zero-balance read is the Phase-B
    source. Deliberately NOT substituted with unique-buyer counts — that is a different quantity and
@@ -564,7 +565,21 @@ before the first swap.** That is a coverage problem tied to the LaserStream/Heli
    `Unknown` forever). The information gain is real (within-class dispersion −9,544 bp) and is worth
    nothing in lamports so far. **Do not "fix" this with another representation refinement.** It
    resolves only when (1) lands and gives the fields non-degenerate coverage.
-4. **Measure the flow-persistence base rate and rule on `thesis_persist_obs` — full brief in §6b-3
+4. **BACKTEST THE STRATEGY ON REAL DATA. Nothing here has ever been measured against the actual
+   market — see `docs/BACKTEST.md`.** This ranks with (1) and is arguably above it: every number in
+   this repo, including the golden net you are told to verify, comes from tapes we WROTE. The
+   harness is built and tested (`tools/backtest/pump_replay_build.py`); what it needs is data the
+   authoring sandbox could not reach and you can: pull decoded pump.fun swaps for our market-cap
+   band over the last year via **Helius** (already paid for — enhanced transactions / LaserStream
+   backfill) or **Dune's free `pumpdotfun.trades`**, convert, and replay. Read `docs/BACKTEST.md`
+   §5 before you start — it lists the ways this measurement lies, of which **survivorship bias is
+   the worst**: sample from a launch-time universe of every mint created in the window, never from
+   a list of pairs that still exist. Set costs from MEASURED server figures, not the laptop
+   defaults (which under-price by ~150 bps). Re-run under Mode-C before believing anything. **A
+   negative result is the expected outcome, is publishable, and must be reported** — the published
+   literature contains no memecoin strategy with positive out-of-sample expectancy, so if we do not
+   clear the ~7% round trip, that is the finding and it goes in the A-11 artifact.
+5. **Measure the flow-persistence base rate and rule on `thesis_persist_obs` — full brief in §6b-3
    below.** Ranks alongside (1): of held positions whose windowed OFI first turns net-sell, what
    fraction make a NEW HIGH before a sustained reversal (a shakeout) versus collapse from there (a
    true top), and what is the distribution of the additional move captured versus given back? That
