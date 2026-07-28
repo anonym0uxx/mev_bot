@@ -2620,9 +2620,21 @@ impl Engine {
         // gate, only to narrow it once it has evidence.
         let move_override = if self.cfg.expected_move_model_enable {
             let vsol = confirmation.map_or(0, |c| c.numeric.liquidity_lamports);
+            // EVERY conditioning signal the engine holds at gate time is presented. That
+            // is safe precisely because an UNCALIBRATED band contributes exactly zero
+            // (`expected_move::uncalibrated_signals_contribute_exactly_zero`), so wiring
+            // more signals can never add fabricated edge — only earned edge.
+            let obs = confirmation.map_or(crate::expected_move::SignalObs::none(), |c| {
+                crate::expected_move::SignalObs::from_features(
+                    c.numeric.buy_pressure_bp,
+                    c.numeric.unique_buyers,
+                    c.numeric.age_slots,
+                )
+            });
             self.expected_move
                 .estimate(
                     vsol,
+                    obs,
                     crate::expected_move::MoveParams {
                         min_sample: self.cfg.expected_move_min_sample,
                         prior_weight: self.cfg.expected_move_prior_weight,

@@ -107,6 +107,14 @@ whole ecosystem quotes — at **410.88 SOL** of market cap.
 
 ### 4.2 `expected_move.rs` — the per-candidate estimate, empty on purpose
 
+> **EXTENDED 2026-07-28 (same day, operator challenge).** The first cut of this module
+> stratified on curve progress *alone*. The operator pushed back — *"should the admission
+> economics see this? I think it should. A real quant would consider these datapoints"* —
+> and was right. **§10 replaces the single-stratum design with an additive
+> marginal-effect model over every signal available at gate time.** The paragraphs below
+> describe the base term, which survives unchanged as one component of it.
+
+
 A **stratified empirical estimator**: strata over curve progress, each holding `(n, Σ realized bps)`,
 shrunk toward the cold-start prior with the same hierarchical partial pooling
 `conditional_edge_bps` already uses, and **refusing below a sample floor** exactly as the episodic
@@ -255,3 +263,122 @@ unchanged. Digest → `13_150_420_781_254_346_145`.
 * Froglabs, *Pump.fun Fees Explained (2026)* — corroborates 1.25% per bonding-curve trade.
 * Kamat, A. U., arXiv:2607.02823 — graduation 0.198% over 832,941 launches; Cox concordance 0.858.
 * CoinGecko / MetaMask, 2026-07 — SOL ≈ $75.71–$76.33, the conversion recorded for the band.
+
+
+---
+
+## §10. Letting the admission economics see every signal — the marginal-effect model
+
+**The operator's challenge, and the concession.** §2 established that the engine holds
+rich per-candidate information and a per-lane learner, and that the admission economics
+can see neither. §4.2 then closed only part of that gap: a base term stratified on curve
+progress. The operator's response was that a real quant *would* consider the other
+datapoints, and that the admission economics should see them.
+
+That is correct, and the first cut under-built it. What follows is the corrected design.
+One thing does not move, though, and it is the reason this is a redesign rather than a
+capitulation.
+
+### 10.1 What does not change: signals reach money only through calibration
+
+`Candidate::discovery_score` is, by its own documentation, *"raw discovery score in
+caller-defined fixed-point units"* — an **ordinal salience rank**. The gate's arithmetic
+is in **basis points of expected return**. Feeding one into the other is not aggressive,
+it is *dimensionally meaningless*: it produces a number with no interpretation that
+nonetheless moves real size.
+
+What a desk actually does is two steps, never one: signals → a **calibrated forecast of
+expected return**, each coefficient fitted on realized outcomes; then forecast → the
+economic decision. Collapsing those two steps into a hand-weighted composite is how the
+arbitrariness gets smuggled into the weights, where it is harder to see and much harder
+to retire.
+
+So: **yes, every signal reaches the admission decision. Through a coefficient it earned.**
+
+### 10.2 Why marginal effects and not a joint table — the arithmetic
+
+The obvious way to condition on many signals is to stratify on their cross-product. It is
+unaffordable, and by a margin that is not close:
+
+| scheme | cells | episodes needed at a 30-observation floor |
+|---|---|---|
+| joint (curve × 4 signals × 5 bands) | 5,625 | **168,750** |
+| **marginal (additive lifts)** | **29** | **870** |
+
+**194× fewer.** A replay corpus of ~50,000 launches yields on the order of a few thousand
+tradeable episodes — comfortably enough for the marginal model, nowhere near enough for
+the joint one. A joint table fed that corpus would not fail loudly; it would answer
+confidently from four observations a cell, which is strictly worse than the constant it
+replaced. Pinned in
+`expected_move::tests::the_marginal_decomposition_costs_194x_less_data_than_a_joint_table`.
+
+The estimate therefore decomposes:
+
+```text
+  expected_move_bps = base(curve_progress)      <- must be calibrated, or the whole thing refuses
+                    + Σ lift(signal_band)       <- each earns its place separately
+```
+
+`lift` is a signal band's realized mean **minus the global realized mean** — the marginal
+*excess* return associated with being in that band, which is the only quantity it is
+legitimate to add to a base.
+
+### 10.3 The asymmetry that makes wiring everything safe
+
+* The **base** must clear its own sample floor or the entire estimate refuses and the
+  gate falls back to the configured constant. *No base, no opinion* —
+  `a_calibrated_signal_cannot_rescue_an_uncalibrated_base` pins that a rich signal cannot
+  paper over an empty stratum.
+* Each **lift** contributes only if *its own* band clears the floor. An uncalibrated
+  signal contributes **exactly zero** — not a guess, not a neutral default.
+
+That second property is load-bearing and is why the engine now presents *every* signal it
+holds at gate time without any risk being added:
+**adding signals cannot add fabricated edge, only earned edge.**
+`uncalibrated_signals_contribute_exactly_zero` asserts that presenting signals the table
+cannot price changes the output not at all.
+
+A related distinction the type system enforces: an **unobserved** signal is not a
+zero-valued one. `SignalObs` carries `Option<band>`, and a missing measurement contributes
+nothing rather than looking like a weak reading (§6.4/§18.2).
+
+### 10.4 The known flaw, named rather than hidden
+
+Marginal effects **double-count correlated signals**. Buy pressure and unique buyers are
+surely correlated; if each marginally carries +200 bps, adding both claims +400 where the
+true joint lift might be +250. Three guards, in increasing bluntness:
+
+1. each single lift is clamped to ±600 bps;
+2. their sum is clamped to ±1,000 bps — deliberately far below the sum of the individual
+   caps, precisely because correlated marginals over-add;
+3. the total may never exceed the base itself, so **signals modulate an estimate and can
+   never manufacture one**.
+
+The principled fix is **sequential residual calibration** — fit signal *k* against what
+signals *1…k−1* left unexplained — which removes the double-count exactly but needs both
+an ordering and more data than a first corpus will supply. It is the documented upgrade
+path, not a substitute for the caps.
+
+### 10.5 What is wired, and what it costs
+
+Presented to the estimator at gate time, straight off the candidate's confirmed feature
+snapshot: **buy pressure**, **unique buyers**, **market age**, and a **holder
+concentration** slot the caller fills (kept caller-supplied because
+`ConcentrationReading` distinguishes *measured-low* from *unknown*, and that distinction
+must not be flattened into a numeric bucket).
+
+Every table is empty, so today every one of them contributes zero and the gate is
+byte-identical — **the golden digest does not move for this change**, since no `Config`
+field was added and no decision path is reachable while the table is empty.
+
+### 10.6 The honest status
+
+The structure now answers the operator's question with *yes*: the admission economics can
+see every signal the engine computes. **What it still cannot do is tell you what any of
+them is worth**, because that requires realized outcomes from a real corpus — the same
+blocker every study in this repository has reached.
+
+The difference is that the blocker is now purely a data problem. When a replay corpus
+lands, filling `MoveTable` is a mechanical operation over episodes already being sealed,
+and the A-11 leg set decides whether it arms. There is no further design work between
+here and a calibrated per-candidate expected move.
