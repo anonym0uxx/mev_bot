@@ -48,6 +48,7 @@ pub mod authority;
 pub mod brain;
 pub mod brain_analysis;
 pub mod config;
+pub mod cost_model;
 pub mod curve_authenticity;
 pub mod curve_fill;
 pub mod curve_state;
