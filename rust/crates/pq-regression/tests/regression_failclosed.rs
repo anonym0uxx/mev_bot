@@ -71,7 +71,7 @@ fn pq_regression_golden_events() -> Vec<pump_quant_app::event::AppEvent> {
             mint: mt,
             price_fp: (100 + i as i128) * 10_000_000,
             quote_lamports: 800_000,
-            liquidity_lamports: 400_000_000,
+            liquidity_lamports: pq_regression::FIXTURE_VSOL_LAMPORTS,
             signed_base: 900_000 - i as i64,
             buyer_entity: 40 + i % 7,
             age_slots: 12,
@@ -79,7 +79,7 @@ fn pq_regression_golden_events() -> Vec<pump_quant_app::event::AppEvent> {
     }
     evs.push(AppEvent::OnchainConfirm {
         mint: mt,
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
     });
     for _ in 0..20 {
         evs.push(AppEvent::Tick);

@@ -11,6 +11,14 @@ use pump_quant_app::event::AppEvent;
 use pump_quant_app::journal_log::Decision;
 use pump_quant_domain::ids::Mint;
 
+/// **DEPTH REALISM (re-pin #26).** The gate's price-impact model is now DERIVED from
+/// the market's own SOL-side reserve (`cost_model::impact_den_for`), so a fixture's
+/// declared depth is a decision input rather than decoration. Real pump.fun virtual
+/// reserves START at 30 SOL; the sub-SOL depths these fixtures used to declare put the
+/// operator's 0.1 SOL floor clip at 5-125% of the pool — a market in which no strategy
+/// result means anything (Amendment A-13(1)).
+const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+
 fn mint(tag: u64) -> Mint {
     let mut b = [0u8; 32];
     b[..8].copy_from_slice(&tag.to_le_bytes());
@@ -40,10 +48,10 @@ fn drive_positions(cfg: Config) -> Engine {
     let mut eng = Engine::new(cfg, RunMode::Replay);
     for round in 0..3u64 {
         for m in 0..6u64 {
-            pump(&mut eng, m, 100 + round as i128 * 20, 24, 400_000_000);
+            pump(&mut eng, m, 100 + round as i128 * 20, 24, REAL_CURVE_VSOL);
             eng.tick(AppEvent::OnchainConfirm {
                 mint: mint(m),
-                sellable_depth_lamports: 500_000_000,
+                sellable_depth_lamports: REAL_CURVE_VSOL,
             });
         }
         for _ in 0..40 {
@@ -56,7 +64,7 @@ fn drive_positions(cfg: Config) -> Engine {
                     mint: mint(m),
                     price_fp: (150 - i as i128 * 6) * PRICE_SCALE,
                     quote_lamports: 800_000,
-                    liquidity_lamports: 400_000_000,
+                    liquidity_lamports: REAL_CURVE_VSOL,
                     signed_base: -900_000,
                     buyer_entity: 40 + i % 7,
                     age_slots: 12,
@@ -144,10 +152,10 @@ fn drive_sub_xmin(probe_budget: bool) -> Engine {
     cfg.probe_budget_enable = probe_budget;
     let mut eng = Engine::new(cfg, RunMode::Replay);
     for m in 0..6u64 {
-        pump(&mut eng, m, 100, 24, 400_000_000);
+        pump(&mut eng, m, 100, 24, REAL_CURVE_VSOL);
         eng.tick(AppEvent::OnchainConfirm {
             mint: mint(m),
-            sellable_depth_lamports: 500_000_000,
+            sellable_depth_lamports: REAL_CURVE_VSOL,
         });
     }
     for _ in 0..30 {
@@ -274,7 +282,7 @@ fn markout_cells_and_foregone_present_per_exit_reason() {
 fn dead_mint_gets_terminal_label_at_versioned_delta_t() {
     let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
     // A mint trades briefly, then goes silent forever.
-    pump(&mut eng, 7, 100, 6, 400_000_000);
+    pump(&mut eng, 7, 100, 6, REAL_CURVE_VSOL);
     // Advance well past the terminal δT (240 ticks) with no further trades for it.
     for _ in 0..300 {
         eng.tick(AppEvent::Tick);

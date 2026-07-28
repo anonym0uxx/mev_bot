@@ -61,3 +61,27 @@
 
 pub mod baselines;
 pub mod golden_tape;
+
+/// **The SOL-side reserve every hand-built fixture in this crate declares: a
+/// pump.fun bonding curve at LAUNCH depth, 30 SOL of virtual SOL reserve**
+/// (`pump_quant_app::curve_state::LAUNCH_VSOL_LAMPORTS`, and the shallowest depth
+/// the venue can present).
+///
+/// **Re-pin #26 (2026-07-28).** Every fixture here used to declare `400_000_000` —
+/// 0.4 SOL — which was harmless while the gate's impact model was a config constant
+/// and became fatal the moment `pump_quant_app::cost_model::impact_den_for` began
+/// deriving it per candidate as `vsol / 10_000`. A 0.1 SOL floor clip into a 0.4 SOL
+/// pool is 2_500 bps of own impact PER LEG; every fixture market refused as
+/// `EconomicallyUnviable`, and four regression tests whose whole subject is "a real
+/// admission happened" failed on their own non-vacuity guards ("the tape must open at
+/// least one position", "both markets must open") rather than on anything they were
+/// written to protect.
+///
+/// A declared depth is now a PRICE. It is stated once, here, so the fixtures in this
+/// crate cannot drift apart from each other or from the venue.
+pub const FIXTURE_VSOL_LAMPORTS: u64 = 30_000_000_000;
+
+/// The confirmed sellable depth every hand-built fixture here declares, just under
+/// [`FIXTURE_VSOL_LAMPORTS`] — the "an on-chain confirm proves slightly less than the
+/// pool holds" discipline the golden tape uses. Re-pin #26: was `500_000_000`.
+pub const FIXTURE_SELLABLE_LAMPORTS: u64 = 29_000_000_000;

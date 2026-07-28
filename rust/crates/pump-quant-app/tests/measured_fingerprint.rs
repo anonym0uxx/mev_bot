@@ -26,6 +26,14 @@ use pump_quant_wallet_graph::creator_ledger::{
     CreatorTrack, CREATOR_MIN_SURVIVED_FOR_PROVEN, CREATOR_SURVIVAL_HORIZON_SLOTS,
 };
 
+/// **DEPTH REALISM (re-pin #26).** The gate's price-impact model is now DERIVED from
+/// the market's own SOL-side reserve (`cost_model::impact_den_for`), so a fixture's
+/// declared depth is a decision input rather than decoration. Real pump.fun virtual
+/// reserves START at 30 SOL; the sub-SOL depths these fixtures used to declare put the
+/// operator's 0.1 SOL floor clip at 20-125% of the pool — a market in which no
+/// strategy result means anything (Amendment A-13(1)).
+const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+
 const PRICE_SCALE: i128 = 10_000_000;
 
 fn mint(tag: u64) -> Mint {
@@ -46,7 +54,7 @@ fn trade(eng: &mut Engine, m: Mint, price_mult: i128, signed_base: i64, entity: 
         mint: m,
         price_fp: price_mult * PRICE_SCALE,
         quote_lamports: 800_000,
-        liquidity_lamports: 400_000_000,
+        liquidity_lamports: REAL_CURVE_VSOL,
         signed_base,
         buyer_entity: entity,
         age_slots: 30,
@@ -327,7 +335,7 @@ fn the_measured_plane_is_decision_inert() {
             }
             eng.tick(AppEvent::OnchainConfirm {
                 mint: m,
-                sellable_depth_lamports: 500_000_000,
+                sellable_depth_lamports: REAL_CURVE_VSOL,
             });
             if feed {
                 eng.observe_holder_count(m.as_bytes(), 50 + round * 25);

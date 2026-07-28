@@ -114,44 +114,38 @@ pub fn main_scalp(m: u64, round: u64, i: u64) -> (i128, i64) {
 /// (the §21.7 parallel stream, the strategy export) against the same tape and
 /// then check that the journal digest did not move.
 pub fn drive_eng(cfg: Config) -> Engine {
-    // ---- Cost-realism: model a REALISTIC low-cap Solana memecoin scalp round-trip.
-    // The default `dev_portable` economics (protocol 100 bps, fixed 50k lamports,
-    // impact_den 1e6) yield a ~150–190 bps round-trip — far too cheap, which
-    // collapsed the cost-derived exits to a ~1.02× target and let the forbidden
-    // fixed 1.35× rung win. Real frictions on a ~0.008–0.015 SOL clip
-    // (docs/PUMPSWAP_DECODE.md — dynamic market-cap-tiered fees via `pfeeUxB6…`):
-    //   • swap fee (tiered, ~1%/side low-mcap)         → ~200 bps round trip
-    //   • LP + protocol + coin-creator fee (~0.28%/side)→  ~55 bps round trip
-    //   • bid/ask spread on a thin low-cap (~1%/side)   → ~200 bps round trip
-    //     ⇒ size-invariant protocol/fee/spread ≈ 450 bps (gate_protocol_bps).
-    //   • priority fee + Jito tip, both legs ≈ 0.0002 SOL fixed (gate_base_fixed).
-    //   • constant-product price impact vs REAL pool depth ≈ 33 bps/leg at the 0.1 SOL
-    //     floor against a 30 SOL launch curve (gate_impact_den, and now charged for
-    //     real via `curve_exact_fill_enable`).
-    // Realized round-trip on this tape lands ~650–760 bps (6.5–7.6%) — consistent
-    // with observed low-cap memecoin scalp costs. The credited favourable move
-    // (cold-start prior) is a realistic lottery-like ~18%.
+    drive_eng_with_fill(cfg, true)
+}
+
+/// The SAME tape, driven with the curve-exact fill DISARMED — fills taken at the
+/// observed print instead of walking the constant product.
+///
+/// The event script is not duplicated: [`drive_eng`] and this function are the same
+/// function under one boolean, so "what our own impact costs" is measurable on ONE
+/// cost model by toggling exactly the fill, rather than by comparing against a number
+/// measured under a retired one (`curve_fill_wiring.rs`).
+pub fn drive_at_print(cfg: Config) -> pump_quant_app::engine::Report {
+    drive_eng_with_fill(cfg, false).report()
+}
+
+fn drive_eng_with_fill(cfg: Config, curve_exact_fill: bool) -> Engine {
+    // ---- Cost-realism. The round-trip cost is no longer stated here at all: it is
+    // DERIVED, per candidate, from the market's own SOL-side reserve by
+    // `pump_quant_app::cost_model` — the single authority the gate and the P&L
+    // lifecycle now share. What this tape used to assert in a comment (a ~450 bps
+    // size-invariant fee containing ~200 bps of "bid/ask spread") is arithmetically
+    // impossible on a constant-product AMM and is gone: the venue charges 125 bps a
+    // leg on the whole bonding curve, and the cost of crossing size is own impact,
+    // charged separately on both legs against the depth this tape declares below.
+    //
+    // What remains configurable is the BENEFIT side (a realistic lottery-like ~18%
+    // cold-start prior) and the safety margin. Everything on the cost side is now a
+    // property of the market, not of this fixture.
     let mut cfg = cfg;
     cfg.gate_expected_move_bps = 1_800;
-    cfg.gate_protocol_bps = 450;
     cfg.gate_margin_bps = 150;
-    cfg.gate_base_fixed_lamports = 200_000;
-    // DEPTH REALISM (2026-07-27). `impact_den` is the gate's own price-impact model:
-    // `impact_bps = size / impact_den`. It MUST agree with the constant-product curve,
-    // or the gate prices a market that does not exist. For a pool whose SOL side is
-    // `vsol`, the exact curve impact is `size * 10_000 / vsol`, so the coherent
-    // denominator is `vsol / 10_000`.
-    //
-    // The old value of 250_000 implied a ~0.025 SOL pool: it charged our 0.1 SOL clip
-    // 400 bps, while this file's own comment claimed it modelled "40-60 bps" — wrong by
-    // 8x, and never noticed because fills happened at the print and nothing ever
-    // reconciled the two. Real pump.fun virtual reserves START at 30 SOL, so:
-    //     den = 30_000_000_000 / 10_000 = 3_000_000  ->  33 bps on a 0.1 SOL clip.
-    // Set from the SHALLOWEST (launch) depth, which is conservative: it over-states
-    // impact as the pool deepens, never under-states it.
-    cfg.gate_impact_den = 3_000_000;
     // The depths below are real, so our own curve impact is charged on both legs.
-    cfg.curve_exact_fill_enable = true;
+    cfg.curve_exact_fill_enable = curve_exact_fill;
     let mut eng = Engine::new(cfg, RunMode::Replay);
     // 512 mints against a capacity-64 watchlist => heavy full-path eviction.
     // Extended (ledger-refinement batch) with three §21.5/§21.6/§29.6 cohorts —

@@ -79,10 +79,27 @@ pub fn post(eng: &mut Engine, author: &str, addr: &str, body: &str, ts_ns: u64) 
     eng.ingest_social(&mut src);
 }
 
-/// Pool depth, identical for both cohorts (lamports).
-pub const LIQ: u64 = 260_000_000;
-/// Confirmed sellable depth, identical for both cohorts (lamports).
-pub const DEPTH: u64 = 300_000_000;
+/// **Pool depth, identical for both cohorts (lamports): a real pump.fun curve a
+/// little past launch, 32 SOL of virtual SOL reserve.**
+///
+/// **Re-pin #26 (2026-07-28).** This was `260_000_000` — 0.26 SOL — which made the
+/// tape VACUOUS as soon as `gate::decide` began deriving its impact denominator from
+/// the market's own reserve (`cost_model::impact_den_for` = `vsol / 10_000`). A
+/// 0.1 SOL clip into a 0.26 SOL pool is 3_846 bps of own impact a LEG; every one of
+/// the eight markets refused as `EconomicallyUnviable`, both arms admitted 0, and
+/// `ab_tape_is_not_vacuous` — the guard written for exactly this — fired.
+///
+/// **The scenario is untouched.** This tape's entire variable is WHO ENDS UP HOLDING
+/// THE BASE (`launch_base` / `launch_age`): the concentrated cohort hands 98.5% of
+/// the float to five creation-slot entities, the broad cohort splits it evenly, and
+/// both take the same [`LAUNCH_PRINTS`] prints at the same [`PRINT_QUOTE`] into the
+/// same depth. Depth is a CONTROL here, held equal across cohorts — so raising it
+/// changes the level at which the experiment runs and nothing about the experiment.
+/// It remains identical for both cohorts, which is the property that matters.
+pub const LIQ: u64 = 32_000_000_000;
+/// Confirmed sellable depth, identical for both cohorts (lamports) — just under
+/// [`LIQ`], the discipline `tape_golden` uses. Re-pin #26: was `300_000_000`.
+pub const DEPTH: u64 = 30_000_000_000;
 /// Accumulation prints per launch, identical for both cohorts.
 pub const LAUNCH_PRINTS: u64 = 25;
 /// Quote lamports per accumulation print, identical for both cohorts — this is
@@ -233,11 +250,15 @@ pub fn price_path(round: u64, pays: bool, offset: i128) -> i128 {
 pub fn conc_cfg(cfg: Config) -> Config {
     let mut cfg = cfg;
     // Same cost realism as the golden tape, so the lamport numbers are comparable.
+    // COST-MODEL UNIFICATION (2026-07-28). The gate's three cost inputs —
+    // protocol bps, base fixed lamports and the impact denominator — are no longer
+    // config: `gate::decide` derives them per candidate from the market's own
+    // SOL-side reserve via `cost_model`. The overrides that used to sit here
+    // (450 / 200_000 / 250_000) are gone because they no longer decide anything;
+    // what this tape must now declare honestly is its DEPTH, which is what the
+    // derived impact model reads — see `LIQ` (re-pin #26).
     cfg.gate_expected_move_bps = 1_800;
-    cfg.gate_protocol_bps = 450;
     cfg.gate_margin_bps = 150;
-    cfg.gate_base_fixed_lamports = 200_000;
-    cfg.gate_impact_den = 250_000;
     // Position capacity is SCARCE, so a refusal actually redirects capital rather
     // than merely removing a trade: eight candidates compete for two slots.
     cfg.max_concurrent_positions = 6;

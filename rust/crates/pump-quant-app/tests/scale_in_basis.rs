@@ -44,8 +44,7 @@ const MINT: [u8; 32] = [7u8; 32];
 fn clean_params() -> LifecycleParams {
     let mut p = LifecycleParams::standard();
     p.fee_bps = 0;
-    p.first_sell_penalty_bps = 0;
-    p.tip_lamports = 0;
+    p.fixed_lamports_per_leg = 0;
     p.exit_impair_bps = 0;
     // Push every price trigger out of the way so the close under test is the only
     // exit — this measures the BASIS, not the ladder.
@@ -70,7 +69,11 @@ fn run(add_mult: u64, exit_mult: u64) -> i128 {
         "scale-in must be accepted"
     );
     let exit = lc
-        .close_at(&MINT, px(exit_mult), pump_quant_app::position::ExitReason::ForceClose)
+        .close_at(
+            &MINT,
+            px(exit_mult),
+            pump_quant_app::position::ExitReason::ForceClose,
+        )
         .expect("close must produce an exit");
     exit.net_lamports
 }
@@ -89,9 +92,9 @@ fn scaling_in_then_closing_at_the_same_mark_earns_only_the_probes_gain() {
     let net = run(12_000, 12_000);
     const TRUTH: i128 = 20_000_000; // the probe's real +0.02 SOL
     const OLD_PHANTOM_NET: i128 = 50_000_000; // what the un-blended basis booked
-    // `mult_bps` is quantized to integer basis points, so up to 1 bp of the 0.25 SOL
-    // notional (25_000 lamports) is unrecoverable here — a property of the price
-    // representation, and it rounds AGAINST us.
+                                              // `mult_bps` is quantized to integer basis points, so up to 1 bp of the 0.25 SOL
+                                              // notional (25_000 lamports) is unrecoverable here — a property of the price
+                                              // representation, and it rounds AGAINST us.
     const QUANT: i128 = 25_000;
     assert!(
         (TRUTH - net).abs() <= QUANT && net <= TRUTH,
@@ -121,15 +124,17 @@ fn the_phantom_is_removed_at_every_scale_in_premium() {
              beyond quantization: booked {net}, truth {truth}"
         );
         // What the old rule would have booked, and the phantom it represents.
-        let old = i128::from(PROBE + ADD) * i128::from(add_mult) / 10_000
-            - i128::from(PROBE + ADD);
+        let old = i128::from(PROBE + ADD) * i128::from(add_mult) / 10_000 - i128::from(PROBE + ADD);
         let phantom = old - truth;
         assert_eq!(
             phantom,
             i128::from(ADD) * (i128::from(add_mult) - 10_000) / 10_000,
             "phantom == add_lamports × (mark/entry − 1), exactly as specified"
         );
-        assert!(phantom > 0, "the old rule always over-booked on a rising tape");
+        assert!(
+            phantom > 0,
+            "the old rule always over-booked on a rising tape"
+        );
     }
 }
 

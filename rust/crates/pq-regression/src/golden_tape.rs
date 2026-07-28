@@ -87,18 +87,17 @@ fn main_scalp(m: u64, round: u64, i: u64) -> (i128, i64) {
 /// same 512-mint distribution, same §21.5/§21.6/§29.6 + live-stream cohorts, same
 /// social ingest. Any divergence here changes the digest and fails the mirror.
 pub fn drive(cfg: Config) -> Report {
+    // ---- Cost-realism. The round-trip cost is no longer stated here at all: it is
+    // DERIVED, per candidate, from the market's own SOL-side reserve by
+    // `pump_quant_app::cost_model` — the single authority the gate and the P&L
+    // lifecycle now share. What this tape used to assert in a comment (a ~450 bps
+    // size-invariant fee containing ~200 bps of "bid/ask spread") is arithmetically
+    // impossible on a constant-product AMM and is gone: the venue charges 125 bps a
+    // leg on the whole bonding curve, and the cost of crossing size is own impact,
+    // charged separately on both legs against the depth this tape declares below.
     let mut cfg = cfg;
     cfg.gate_expected_move_bps = 1_800;
-    cfg.gate_protocol_bps = 450;
     cfg.gate_margin_bps = 150;
-    cfg.gate_base_fixed_lamports = 200_000;
-    // DEPTH REALISM (2026-07-27) — mirrored from `tape_golden/mod.rs`. `impact_den` is
-    // the gate's own price-impact model (`impact_bps = size / impact_den`). For a pool
-    // whose SOL side is `vsol`, the exact constant-product impact is `size * 10_000 / vsol`,
-    // so the coherent denominator is `vsol / 10_000`. Real pump.fun virtual reserves START
-    // at 30 SOL => 3_000_000, i.e. 33 bps on a 0.1 SOL clip. The retired 250_000 implied a
-    // ~0.025 SOL pool and charged 400 bps. See Amendment A-13(3).
-    cfg.gate_impact_den = 3_000_000;
     // The depths below are real, so our own curve impact is charged on both legs.
     cfg.curve_exact_fill_enable = true;
     let mut eng = Engine::new(cfg, RunMode::Replay);

@@ -212,7 +212,9 @@ impl SignalObs {
     /// Nothing observed. The safe construction: every lift is zero.
     #[must_use]
     pub const fn none() -> Self {
-        Self { bands: [None; N_SIGNALS] }
+        Self {
+            bands: [None; N_SIGNALS],
+        }
     }
 
     /// Record one signal's band. Out-of-range band indices are dropped rather than
@@ -393,7 +395,10 @@ impl MoveTable {
     /// Read one signal band's raw evidence.
     #[must_use]
     pub fn lift_cell(&self, kind: SignalKind, band: usize) -> Cell {
-        self.lift[kind.index()].get(band).copied().unwrap_or_default()
+        self.lift[kind.index()]
+            .get(band)
+            .copied()
+            .unwrap_or_default()
     }
 
     /// Record one realized outcome into the base stratum, the global pool, and every
@@ -448,7 +453,9 @@ impl MoveTable {
             });
         }
         let k = i64::from(p.prior_weight.max(1));
-        let base = (bc.sum_bps.saturating_add(i64::from(p.prior_bps).saturating_mul(k)))
+        let base = (bc
+            .sum_bps
+            .saturating_add(i64::from(p.prior_bps).saturating_mul(k)))
             / i64::from(bc.n).saturating_add(k).max(1);
 
         // Marginal lifts, measured against the global mean so they are EXCESSES.
@@ -462,9 +469,8 @@ impl MoveTable {
                 continue; // uncalibrated signals contribute EXACTLY zero
             }
             let Some(m) = c.mean_bps() else { continue };
-            lift_sum = lift_sum.saturating_add(
-                (m - global_mean).clamp(-MAX_SINGLE_LIFT_BPS, MAX_SINGLE_LIFT_BPS),
-            );
+            lift_sum = lift_sum
+                .saturating_add((m - global_mean).clamp(-MAX_SINGLE_LIFT_BPS, MAX_SINGLE_LIFT_BPS));
             applied += 1;
         }
         // Correlated marginals over-add: cap the total, then never let signals exceed
@@ -489,7 +495,11 @@ impl MoveTable {
 mod tests {
     use super::*;
 
-    const P: MoveParams = MoveParams { min_sample: 30, prior_weight: 30, prior_bps: 1_800 };
+    const P: MoveParams = MoveParams {
+        min_sample: 30,
+        prior_weight: 30,
+        prior_bps: 1_800,
+    };
     /// A reserve inside the operator's $9k–$20k band.
     const IN_BAND_VSOL: u64 = 61_740_908_643;
 
@@ -504,7 +514,12 @@ mod tests {
         let t = MoveTable::empty();
         assert!(t.is_empty());
         assert_eq!(t.total_n(), 0);
-        for vsol in [30_000_000_000u64, IN_BAND_VSOL, 92_038_689_690, 115_005_359_056] {
+        for vsol in [
+            30_000_000_000u64,
+            IN_BAND_VSOL,
+            92_038_689_690,
+            115_005_359_056,
+        ] {
             assert_eq!(
                 t.estimate(vsol, obs(), P),
                 MoveVerdict::Unknown(MoveUnknown::EmptyTable),
@@ -533,7 +548,10 @@ mod tests {
             MoveVerdict::Known(e) => e,
             other => panic!("expected an estimate, got {other:?}"),
         };
-        assert_eq!(with_signals.signals_applied, 0, "no signal band is calibrated");
+        assert_eq!(
+            with_signals.signals_applied, 0,
+            "no signal band is calibrated"
+        );
         assert_eq!(with_signals.lift_bps, 0);
         assert_eq!(
             with_signals.bps, without.bps,
@@ -561,7 +579,10 @@ mod tests {
             "a signal band with better realized outcomes must price higher ({hi} vs {lo})"
         );
         // And the lift is an EXCESS over the global mean, so the two straddle it.
-        let neutral = t.estimate(IN_BAND_VSOL, SignalObs::none(), P).known_bps().unwrap();
+        let neutral = t
+            .estimate(IN_BAND_VSOL, SignalObs::none(), P)
+            .known_bps()
+            .unwrap();
         assert!(lo < neutral && neutral < hi, "{lo} < {neutral} < {hi}");
     }
 
@@ -597,7 +618,10 @@ mod tests {
             e.lift_bps,
             e.base_bps
         );
-        assert!(e.bps <= e.base_bps * 2, "the estimate cannot more than double on signals");
+        assert!(
+            e.bps <= e.base_bps * 2,
+            "the estimate cannot more than double on signals"
+        );
     }
 
     /// **NO BASE, NO OPINION.** A calibrated signal cannot rescue an uncalibrated base:
@@ -634,7 +658,10 @@ mod tests {
             other => panic!("expected a refusal, got {other:?}"),
         }
         t.record(IN_BAND_VSOL, SignalObs::none(), 500);
-        assert!(t.estimate(IN_BAND_VSOL, SignalObs::none(), P).known_bps().is_some());
+        assert!(t
+            .estimate(IN_BAND_VSOL, SignalObs::none(), P)
+            .known_bps()
+            .is_some());
     }
 
     /// Shrinkage is hierarchical: with `n == prior_weight` the base sits exactly halfway
@@ -650,7 +677,11 @@ mod tests {
             other => panic!("expected an estimate, got {other:?}"),
         };
         assert_eq!(e.n, 30);
-        assert_eq!(e.base_bps, (200 + 1_800) / 2, "n == k must land exactly halfway");
+        assert_eq!(
+            e.base_bps,
+            (200 + 1_800) / 2,
+            "n == k must land exactly halfway"
+        );
     }
 
     /// **A LOSING STRATUM MUST BE ABLE TO SAY SO.** Floored at zero rather than reported
@@ -680,7 +711,10 @@ mod tests {
             t.record(IN_BAND_VSOL, SignalObs::none(), 2_000);
         }
         let observed = t.estimate(IN_BAND_VSOL, zero_band, P).known_bps().unwrap();
-        let unobserved = t.estimate(IN_BAND_VSOL, SignalObs::none(), P).known_bps().unwrap();
+        let unobserved = t
+            .estimate(IN_BAND_VSOL, SignalObs::none(), P)
+            .known_bps()
+            .unwrap();
         assert!(
             observed < unobserved,
             "an observed weak reading must price below an absent one ({observed} vs {unobserved})"
@@ -696,7 +730,10 @@ mod tests {
         for _ in 0..100 {
             t.record(35_000_000_000, SignalObs::none(), 9_000);
         }
-        assert!(t.estimate(35_000_000_000, SignalObs::none(), P).known_bps().is_some());
+        assert!(t
+            .estimate(35_000_000_000, SignalObs::none(), P)
+            .known_bps()
+            .is_some());
         match t.estimate(92_038_689_690, SignalObs::none(), P) {
             MoveVerdict::Unknown(MoveUnknown::BelowSampleFloor { n, .. }) => assert_eq!(n, 0),
             other => panic!("a neighbouring band must not borrow evidence: {other:?}"),
@@ -715,8 +752,16 @@ mod tests {
         assert_eq!(band_of(u32::MAX), 8);
         assert_eq!(band_of_vsol(curve_state::LAUNCH_VSOL_LAMPORTS), 0);
         assert_eq!(band_of_vsol(curve_state::GRADUATION_VSOL_LAMPORTS), 8);
-        assert_eq!(band_of_vsol(IN_BAND_VSOL), 2, "$9k sits in stratum 2 (37% of curve)");
-        assert_eq!(band_of_vsol(92_038_689_690), 5, "$20k sits in stratum 5 (72% of curve)");
+        assert_eq!(
+            band_of_vsol(IN_BAND_VSOL),
+            2,
+            "$9k sits in stratum 2 (37% of curve)"
+        );
+        assert_eq!(
+            band_of_vsol(92_038_689_690),
+            5,
+            "$20k sits in stratum 5 (72% of curve)"
+        );
     }
 
     /// Signal banding is total, monotone, and never out of range.
@@ -734,7 +779,10 @@ mod tests {
         assert_eq!(band_age_slots(0), 0);
         assert_eq!(band_age_slots(u32::MAX), 4);
         // An out-of-range band is DROPPED, never clamped into a real one.
-        assert!(SignalObs::none().with(SignalKind::BuyPressure, 99).band(SignalKind::BuyPressure).is_none());
+        assert!(SignalObs::none()
+            .with(SignalKind::BuyPressure, 99)
+            .band(SignalKind::BuyPressure)
+            .is_none());
     }
 
     /// **THE DATA-COST ARGUMENT, pinned in arithmetic.** This is why the model is
@@ -757,9 +805,16 @@ mod tests {
         let mut t = MoveTable::empty();
         for i in 0..50_000u32 {
             let o = SignalObs::from_features(i % 11_000, i % 300, i % 8_000);
-            t.record(30_000_000_000 + u64::from(i % 90_000) * 1_000_000, o, i64::from(i % 700) - 350);
+            t.record(
+                30_000_000_000 + u64::from(i % 90_000) * 1_000_000,
+                o,
+                i64::from(i % 700) - 350,
+            );
         }
-        assert_eq!(core::mem::size_of_val(&t), core::mem::size_of::<MoveTable>());
+        assert_eq!(
+            core::mem::size_of_val(&t),
+            core::mem::size_of::<MoveTable>()
+        );
         assert_eq!(t.total_n(), 50_000);
     }
 }

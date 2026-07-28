@@ -59,6 +59,34 @@ pub const LIFE_ROUNDS: u64 = 6;
 /// separate them, and the only thing on the engine that can is the episodic record
 /// of what setups LIKE THIS did last time.
 pub const COMMON_PREFIX_BP: [i64; 3] = [10_000, 10_450, 11_000];
+/// **The SOL-side reserve of the shallowest market on this tape: a pump.fun curve at
+/// LAUNCH depth** ([`pump_quant_app::curve_state::LAUNCH_VSOL_LAMPORTS`]).
+///
+/// **Re-pin #26 (2026-07-28).** This was `200_000_000` — 0.2 SOL — and it made the
+/// whole tape vacuous the moment the gate started deriving its impact denominator
+/// from the market's own reserve (`cost_model::impact_den_for` = `vsol / 10_000`).
+/// At 0.2 SOL a 0.1 SOL clip is HALF the pool: 5_000 bps of own impact a leg, every
+/// candidate `EconomicallyUnviable`, `admitted = 0` on both arms, and a two-sided
+/// A/B in which neither side trades. A tape that books nothing cannot arbitrate a
+/// law — `the_two_sided_verdict_at_the_default_step` measured `0 == 0` and called it
+/// a verdict.
+///
+/// The depth was never load-bearing for what this tape tests. LAW B7 is about
+/// PROMOTION-SLOT CONTENTION between a flagged lane and a healthy one, and the tape
+/// separates the two lanes on call quality and wallet size, not on depth. Real depth
+/// therefore costs the scenario nothing and buys back the only thing that makes the
+/// measurement mean anything: markets that actually open.
+pub const LAUNCH_VSOL: u64 = 30_000_000_000;
+/// Per-market depth spread over [`LAUNCH_VSOL`], so the 88 markets are not one
+/// identical pool: `tag % 40` steps of 0.25 SOL spans 30.00–39.75 SOL, all of it
+/// inside the bonding curve and all of it on the same 125 bps-a-leg fee tier
+/// (`cost_model::venue_fee_bps_per_leg`), so depth varies without the FEE varying.
+pub const VSOL_STEP: u64 = 250_000_000;
+/// Confirmed sellable depth, just under [`LAUNCH_VSOL`] — the same "the confirm
+/// proves slightly less than the pool holds" discipline `tape_golden` uses.
+/// Re-pin #26: was `400_000_000`.
+pub const SELLABLE_DEPTH: u64 = 29_000_000_000;
+
 /// A market that pays: a move well clear of the ~700 bps realistic round-trip, then
 /// a partial give-back to a plateau it holds.
 pub const GOOD_TAIL_BP: [i64; 3] = [13_000, 14_200, 13_800];
@@ -236,11 +264,15 @@ pub fn b7_cfg(cfg: Config) -> Config {
     let mut cfg = cfg;
     // The same cost-realism overrides the golden tape uses, so the gate is the real
     // §18 economic gate rather than a permissive one.
+    // COST-MODEL UNIFICATION (2026-07-28). The gate's three cost inputs —
+    // protocol bps, base fixed lamports and the impact denominator — are no longer
+    // config: `gate::decide` derives them per candidate from the market's own
+    // SOL-side reserve via `cost_model`. The overrides that used to sit here
+    // (450 / 200_000 / 250_000) are gone because they no longer decide anything;
+    // what this tape must now declare honestly is its DEPTH, which is what the
+    // derived impact model reads — see `LAUNCH_VSOL` (re-pin #26).
     cfg.gate_expected_move_bps = 1_800;
-    cfg.gate_protocol_bps = 450;
     cfg.gate_margin_bps = 150;
-    cfg.gate_base_fixed_lamports = 200_000;
-    cfg.gate_impact_den = 250_000;
     // Corroboration evidence goes stale in ~2.5 rounds rather than ~8, so the
     // contended candidate set TURNS OVER (fresh launches displace old ones) instead
     // of growing without bound. Numeric snapshots stay well inside it — every live
@@ -293,7 +325,7 @@ pub fn apply_tape(
                     mint: mint(m.tag),
                     price_fp: base + (i as i128) * 400_000 + (m.tag as i128) * 3_000,
                     quote_lamports: 700_000 + (m.tag % 11) * 1_000,
-                    liquidity_lamports: 200_000_000 + (m.tag % 40) * 1_000_000,
+                    liquidity_lamports: LAUNCH_VSOL + (m.tag % 40) * VSOL_STEP,
                     signed_base: sgn * mag,
                     buyer_entity: 1_000 + (m.tag * 7 + i) % 23,
                     age_slots: 10 + (m.tag as u32 % 20),
@@ -302,7 +334,7 @@ pub fn apply_tape(
             if age == 0 {
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: mint(m.tag),
-                    sellable_depth_lamports: 400_000_000,
+                    sellable_depth_lamports: SELLABLE_DEPTH,
                 });
             }
             if age < EVIDENCE_ROUNDS {

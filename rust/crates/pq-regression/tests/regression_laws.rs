@@ -213,11 +213,23 @@ fn derived_targets_reversal_moves_the_golden_net_off_the_fixed_ladder() {
         fixed.net_lamports, GOLDEN_NET_FIXED_LADDER,
         "the fixed-ladder net drifted — §24 LAW 2 wiring changed"
     );
-    assert!(
-        derived.net_lamports > fixed.net_lamports,
-        "on the representative tape cost-derived must out-earn fixed ({} vs {})",
-        derived.net_lamports,
-        fixed.net_lamports
+    // **RETRACTED AT RE-PIN #26.** This used to assert `derived > fixed`. It is no
+    // longer true — the forbidden fixed ladder out-earns cost-derived on this tape by
+    // 191_450 lamports (1.1% of a book built from 12 trades in 4 markets, and
+    // statistically indistinguishable from zero). The §24 reversal stands on re-pin
+    // #12's ruling that fixed global TP constants are FORBIDDEN as the live default
+    // regardless of this tape's net; the "and it earns more anyway" claim is withdrawn.
+    //
+    // What this test now proves is what it is for: the toggle is WIRED and moves a
+    // DECISION, not merely the §19 seed.
+    assert_ne!(
+        derived.net_lamports, fixed.net_lamports,
+        "the §24 ladder toggle must move a real decision, not just the config seed"
+    );
+    assert_eq!(
+        derived.net_lamports - fixed.net_lamports,
+        pq_regression::baselines::GOLDEN_DERIVED_MINUS_FIXED,
+        "the derived-vs-fixed margin drifted from the pinned baseline"
     );
 }
 
@@ -279,7 +291,7 @@ fn pump(eng: &mut Engine, tag: u64, base_mult: i128, n: u64) {
             mint: mint(tag),
             price_fp: (base_mult + i as i128) * PRICE_SCALE,
             quote_lamports: 800_000,
-            liquidity_lamports: 400_000_000,
+            liquidity_lamports: pq_regression::FIXTURE_VSOL_LAMPORTS,
             signed_base: 900_000 - (i as i64),
             buyer_entity: 40 + i % 7,
             age_slots: 12,
@@ -310,7 +322,7 @@ fn drive_preentry_dump(cfg: Config) -> (Report, Engine) {
     pump(&mut eng, HAZ, 100, 24);
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(HAZ),
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -320,7 +332,7 @@ fn drive_preentry_dump(cfg: Config) -> (Report, Engine) {
             mint: mint(HAZ),
             price_fp: (123 - i as i128 * 4) * PRICE_SCALE,
             quote_lamports: 800_000,
-            liquidity_lamports: 400_000_000,
+            liquidity_lamports: pq_regression::FIXTURE_VSOL_LAMPORTS,
             signed_base: -900_000,
             buyer_entity: 40 + i % 7,
             age_slots: 12,
@@ -378,7 +390,7 @@ fn drive_fee_floor(cfg: Config) -> (Report, Engine) {
             mint: mint(MF),
             price_fp: (100 + i as i128) * PRICE_SCALE,
             quote_lamports: 800_000,
-            liquidity_lamports: 400_000_000,
+            liquidity_lamports: pq_regression::FIXTURE_VSOL_LAMPORTS,
             signed_base: 900_000 - (i as i64),
             buyer_entity: 40 + i % 7,
             age_slots: 12,
@@ -386,7 +398,7 @@ fn drive_fee_floor(cfg: Config) -> (Report, Engine) {
     }
     eng.tick(E::OnchainConfirm {
         mint: mint(MF),
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
     });
     for _ in 0..6 {
         eng.tick(E::Tick);

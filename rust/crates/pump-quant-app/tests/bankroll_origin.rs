@@ -24,6 +24,14 @@ use pump_quant_app::journal_log::Decision;
 use pump_quant_domain::ids::Mint;
 use pump_quant_strategy::probe_ladder::{deployable_capital, derive_survival_floor};
 
+/// **DEPTH REALISM (re-pin #26).** The gate's price-impact model is now DERIVED from
+/// the market's own SOL-side reserve (`cost_model::impact_den_for`), so a fixture's
+/// declared depth is a decision input rather than decoration. Real pump.fun virtual
+/// reserves START at 30 SOL; the sub-SOL depths these fixtures used to declare put the
+/// operator's 0.1 SOL floor clip at 5-125% of the pool — a market in which no strategy
+/// result means anything (Amendment A-13(1)).
+const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+
 const SOL: u64 = 1_000_000_000;
 
 /// The config-seed default the paper engine boots with (see `Config::dev_portable`).
@@ -61,7 +69,7 @@ fn drive_golden_style(mut eng: Engine) -> Engine {
                     mint: mint(m),
                     price_fp: 1_000_000_000 + (round as i128) * 40_000_000 + (i as i128) * 500_000,
                     quote_lamports: 700_000,
-                    liquidity_lamports: 2_000_000_000 + (m % 8) * 250_000_000,
+                    liquidity_lamports: REAL_CURVE_VSOL + (m % 8) * 250_000_000,
                     signed_base: 900_000 - (i as i64 * 50),
                     buyer_entity: (m + i) % 31,
                     age_slots: 12 + (m as u32 % 20),
@@ -70,7 +78,7 @@ fn drive_golden_style(mut eng: Engine) -> Engine {
             if round == m % 4 {
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: mint(m),
-                    sellable_depth_lamports: 2_000_000_000,
+                    sellable_depth_lamports: REAL_CURVE_VSOL,
                 });
             }
         }
@@ -87,10 +95,7 @@ fn golden_style_cfg(bankroll_initial_lamports: u64) -> Config {
     let mut cfg = Config::dev_portable();
     cfg.bankroll_initial_lamports = bankroll_initial_lamports;
     cfg.gate_expected_move_bps = 1_800;
-    cfg.gate_protocol_bps = 450;
     cfg.gate_margin_bps = 150;
-    cfg.gate_base_fixed_lamports = 200_000;
-    cfg.gate_impact_den = 250_000;
     cfg
 }
 

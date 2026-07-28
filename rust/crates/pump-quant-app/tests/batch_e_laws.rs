@@ -14,6 +14,14 @@ use pump_quant_app::event::AppEvent;
 use pump_quant_app::journal_log::Decision;
 use pump_quant_domain::ids::Mint;
 
+/// **DEPTH REALISM (re-pin #26).** The gate's price-impact model is now DERIVED from
+/// the market's own SOL-side reserve (`cost_model::impact_den_for`), so a fixture's
+/// declared depth is a decision input rather than decoration. Real pump.fun virtual
+/// reserves START at 30 SOL; the sub-SOL depths these fixtures used to declare put the
+/// operator's 0.1 SOL floor clip at 5-125% of the pool — a market in which no strategy
+/// result means anything (Amendment A-13(1)).
+const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+
 fn mint(tag: u64) -> Mint {
     let mut b = [0u8; 32];
     b[..8].copy_from_slice(&tag.to_le_bytes());
@@ -58,7 +66,7 @@ fn drive_zombies(cfg: Config) -> (Report, Engine) {
                         mint: mt,
                         price_fp: 1_000_000_000 + (z as i128) * 5_000 + (i as i128) * 1_000,
                         quote_lamports: 900_000 + z * 1_000,
-                        liquidity_lamports: 400_000_000 + z * 10_000,
+                        liquidity_lamports: REAL_CURVE_VSOL + z * 10_000,
                         signed_base: 800_000 + (z as i64) * 500,
                         buyer_entity: 200 + (z + i) % 9,
                         age_slots: 200,
@@ -70,7 +78,7 @@ fn drive_zombies(cfg: Config) -> (Report, Engine) {
             if round == 3 {
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: mt,
-                    sellable_depth_lamports: 500_000_000,
+                    sellable_depth_lamports: REAL_CURVE_VSOL,
                 });
             }
         }
@@ -126,10 +134,7 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
     // test (bar_trades_per_bar) is untouched.
     let mut cfg = cfg;
     cfg.gate_expected_move_bps = 1_800;
-    cfg.gate_protocol_bps = 450;
     cfg.gate_margin_bps = 150;
-    cfg.gate_base_fixed_lamports = 200_000;
-    cfg.gate_impact_den = 250_000;
     // 7 SOL ⇒ deployable 5.25, base ~0.35 SOL. Both arms land in the WINDOW where a
     // bite (a) clears the 0.1-SOL floor without promotion (the 0.7 structure haircut is
     // below the promote-min guard) AND (b) is below the 0.2-SOL two-bite split
@@ -159,7 +164,7 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
                 mint: mt,
                 price_fp: p * scale + (i as i128),
                 quote_lamports: 800_000,
-                liquidity_lamports: 400_000_000,
+                liquidity_lamports: REAL_CURVE_VSOL,
                 signed_base: 900_000 - (i as i64),
                 buyer_entity: 40 + i % 7,
                 age_slots: 12,
@@ -171,14 +176,14 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
         mint: mt,
         price_fp: 165 * scale,
         quote_lamports: 800_000,
-        liquidity_lamports: 400_000_000,
+        liquidity_lamports: REAL_CURVE_VSOL,
         signed_base: 900_000,
         buyer_entity: 47,
         age_slots: 12,
     });
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -189,7 +194,7 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
             mint: mt,
             price_fp: (100 - i as i128) * scale,
             quote_lamports: 800_000,
-            liquidity_lamports: 400_000_000,
+            liquidity_lamports: REAL_CURVE_VSOL,
             signed_base: 900_000,
             buyer_entity: 40 + i % 7,
             age_slots: 12,
@@ -248,10 +253,7 @@ fn drive_squatter(cfg: Config) -> (Report, Engine) {
     // promote-slot toggles under test are untouched — both arms share these overrides.
     let mut cfg = cfg;
     cfg.gate_expected_move_bps = 1_800;
-    cfg.gate_protocol_bps = 450;
     cfg.gate_margin_bps = 150;
-    cfg.gate_base_fixed_lamports = 200_000;
-    cfg.gate_impact_den = 250_000;
     cfg.bankroll_initial_lamports = 10_000_000_000; // 10 SOL ⇒ deployable 7.5, base ~0.5 SOL
     let mut eng = Engine::new(cfg, RunMode::Replay);
     let j = mint(9_100);
@@ -272,7 +274,7 @@ fn drive_squatter(cfg: Config) -> (Report, Engine) {
             mint: k,
             price_fp: 1_000_000_000 + (i as i128) * 500_000,
             quote_lamports: 600_000,
-            liquidity_lamports: 300_000_000,
+            liquidity_lamports: REAL_CURVE_VSOL,
             signed_base: if i % 2 == 0 { 500_000 } else { -460_000 },
             buyer_entity: 60 + i % 5,
             age_slots: 15,
@@ -280,7 +282,7 @@ fn drive_squatter(cfg: Config) -> (Report, Engine) {
     }
     eng.tick(AppEvent::OnchainConfirm {
         mint: k,
-        sellable_depth_lamports: 400_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
     for block in 0..5u64 {
         for _ in 0..10 {
@@ -296,7 +298,7 @@ fn drive_squatter(cfg: Config) -> (Report, Engine) {
                 mint: k,
                 price_fp: 1_000_000_000 + (block as i128 + 1) * 60_000_000 + (i as i128) * 500_000,
                 quote_lamports: 600_000,
-                liquidity_lamports: 300_000_000,
+                liquidity_lamports: REAL_CURVE_VSOL,
                 signed_base: if i % 2 == 0 { 500_000 } else { -460_000 },
                 buyer_entity: 60 + i % 5,
                 age_slots: 15,

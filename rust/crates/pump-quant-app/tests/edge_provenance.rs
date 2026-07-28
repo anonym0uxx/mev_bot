@@ -59,8 +59,14 @@ fn print_the_per_trade_ledger() {
             format!("{:?}", o.exit_reason),
         ));
     }
-    println!("\n=== GOLDEN TAPE PER-TRADE LEDGER ({} admits) ===", admitted.len());
-    println!("{:>8}  {:>14}  {:>9}  {:>9}  {}", "mint", "net_lamports", "mfe_bps", "mae_bps", "exit");
+    println!(
+        "\n=== GOLDEN TAPE PER-TRADE LEDGER ({} admits) ===",
+        admitted.len()
+    );
+    println!(
+        "{:>8}  {:>14}  {:>9}  {:>9}  exit",
+        "mint", "net_lamports", "mfe_bps", "mae_bps"
+    );
     let mut total: i128 = 0;
     let mut wins = 0usize;
     for (m, net, mfe, mae, reason) in &admitted {
@@ -79,7 +85,11 @@ fn print_the_per_trade_ledger() {
     println!("episodes                {seen} sealed, {adm} admitted");
     println!("---");
     println!("NATURAL closes only     {natural}  (n = {n_natural})");
-    println!("FORCED at end of tape   {}  (n = {})", total - natural, admitted.len() - n_natural);
+    println!(
+        "FORCED at end of tape   {}  (n = {})",
+        total - natural,
+        admitted.len() - n_natural
+    );
     println!("report().net_lamports   {}", report.net_lamports);
     let forced = total - natural;
     if natural != 0 {
@@ -131,7 +141,10 @@ fn order_flow_on_this_tape_is_a_clock_not_a_signal() {
         );
     }
     // And the flip happens at the same place for all of them: end of round 2.
-    let flip = series[0].iter().position(|&x| x < 0).expect("flow must flip");
+    let flip = series[0]
+        .iter()
+        .position(|&x| x < 0)
+        .expect("flow must flip");
     assert_eq!(
         flip, 9,
         "flow flips after exactly 9 prints (3 rounds x 3) for EVERY mint — a clock"
@@ -162,8 +175,10 @@ fn outcome_is_a_function_of_the_mint_tag_alone() {
     let a = peak(100);
     let b = peak(101);
     let c = peak(102);
+    let monotone_up = a <= b && b <= c;
+    let monotone_down = a >= b && b >= c;
     assert!(
-        !(a <= b && b <= c) && !(a >= b && b >= c),
+        !monotone_up && !monotone_down,
         "consecutive tags must not be monotone in outcome — got {a}, {b}, {c}"
     );
 }
@@ -174,10 +189,15 @@ fn outcome_is_a_function_of_the_mint_tag_alone() {
 // one bounds what any A/B run on this tape is entitled to conclude.
 // ===========================================================================
 
-/// **THE EFFECTIVE SAMPLE SIZE IS FIVE MARKETS.** The tape presents 512 mints and
-/// the report says 13 admits, but those 13 admits are re-entries into just 5
+/// **THE EFFECTIVE SAMPLE SIZE IS FOUR MARKETS.** The tape presents 512 mints and
+/// the report says 12 admits, but those 12 admits are re-entries into just 4
 /// distinct markets. Every "verdict" this repo has recorded on the golden tape is
-/// a statement about 5 hash draws.
+/// a statement about 4 hash draws.
+///
+/// Re-pin #26 made this WORSE, not better: the unified cost model admits one fewer
+/// trade into one fewer market. The book doubled at the same time, which is exactly
+/// the pairing that should raise suspicion rather than confidence — a larger number
+/// from a smaller sample.
 #[test]
 fn the_representative_tape_trades_only_five_distinct_markets() {
     let mut eng = tape_golden::drive_eng(Config::dev_portable());
@@ -192,23 +212,28 @@ fn the_representative_tape_trades_only_five_distinct_markets() {
     let trades = mints.len();
     mints.sort_unstable();
     mints.dedup();
-    assert_eq!(trades, 13, "admit count drifted");
+    assert_eq!(trades, 12, "admit count drifted");
     assert_eq!(
         mints.len(),
-        5,
-        "the golden book is 13 trades in {} distinct markets — if this changes, every \
+        4,
+        "the golden book is 12 trades in {} distinct markets — if this changes, every \
          statistical claim made on this tape must be recomputed",
         mints.len()
     );
 }
 
 /// **THE BOOK IS NOT STATISTICALLY DISTINGUISHABLE FROM ZERO.** Per-trade net has a
-/// standard deviation roughly 20x its mean, so on n = 13 the t-statistic is ~0.18
-/// against a ~2.18 threshold. Pinned in integer arithmetic (§22): we assert
+/// standard deviation roughly 9x its mean, so on n = 12 the t-statistic is ~0.19
+/// against a ~2.20 threshold. Pinned in integer arithmetic (§22): we assert
 /// `mean^2 * n * 4 < variance`, i.e. |t| < 2, which is the honest statement.
 ///
 /// This is NOT a defect to fix. It is the correct reading of the number, and it is
-/// why `docs/BACKTEST.md §9` refuses to call +8,124,568 evidence of edge.
+/// why `docs/BACKTEST.md §9` refuses to call the golden net evidence of edge.
+///
+/// **Re-pin #26 doubled the book and did not move this conclusion at all** (t went
+/// from ~0.18 to ~0.19). That is the single most useful thing this test does: a
+/// change that roughly DOUBLES realized net is still, on this corpus, indistinguishable
+/// from zero, so "the net went up" is not evidence that anything got better.
 #[test]
 fn the_golden_book_is_indistinguishable_from_zero() {
     let mut eng = tape_golden::drive_eng(Config::dev_portable());
@@ -221,9 +246,9 @@ fn the_golden_book_is_indistinguishable_from_zero() {
         .map(|e| e.outcome().realized_net_lamports)
         .collect();
     let n = nets.len() as i128;
-    assert_eq!(n, 13);
+    assert_eq!(n, 12);
     let sum: i128 = nets.iter().sum();
-    assert_eq!(sum, 8_124_568, "the book drifted");
+    assert_eq!(sum, 16_778_896, "the book drifted");
     // Sample variance * (n-1), all-integer.
     let mean_num = sum; // mean = mean_num / n
     let ss: i128 = nets
@@ -238,21 +263,31 @@ fn the_golden_book_is_indistinguishable_from_zero() {
     // t^2 = mean^2 / (var / n) = mean^2 * n / var. Require t^2 < 4  (|t| < 2).
     let mean = sum / n;
     assert!(
-        mean * mean * n * 1 < var * 4,
+        mean * mean * n < var * 4,
         "the golden book must remain statistically indistinguishable from zero \
          (mean {mean}, var {var}, n {n}); if a change ever makes this significant \
-         on 13 trades in 5 markets, suspect the fixture before believing the edge"
+         on 12 trades in 4 markets, suspect the fixture before believing the edge"
     );
 }
 
-/// **77% OF THE BOOK IS A BOUNDARY ARTIFACT.** Eleven positions closed on the
-/// strategy's own triggers for +34,884,254. Two positions were still open when the
-/// tape ran out and were force-closed by `finalize()` for −26,759,686. The reported
-/// +8,124,568 is the sum. Whether that −26.7M is real depends entirely on what those
-/// two markets did after the fixture stopped, which the fixture cannot say.
+/// **60% OF THE BOOK IS A BOUNDARY ARTIFACT.** Positions that closed on the
+/// strategy's own triggers earned +42,058,785. Positions still open when the tape ran
+/// out were force-closed by `finalize()` for −25,279,889. The reported +16,778,896 is
+/// the sum. Whether that −25.3M is real depends entirely on what those markets did
+/// after the fixture stopped, which the fixture cannot say.
+///
+/// Re-pin #26 moved the fraction from 77% to 60% and moved nothing about the argument:
+/// the naturally-earned subtotal rose (+34.9M → +42.1M) and the forced subtotal barely
+/// moved (−26.8M → −25.3M), so a book that DOUBLED is still, in majority, an accident
+/// of where the fixture stops. Read the doubling with that in front of it.
 ///
 /// The same bias inflates the public "N% of pump.fun traders are profitable"
 /// statistics, which are computed on realized PnL and exclude never-sold bags.
+///
+/// NOTE ON ORDERING, because it is a trap: `natural` must be summed BEFORE
+/// `report()`. `report()` calls `finalize()`, which force-closes the open book and
+/// seals those positions as episodes too — so summing the episode index afterwards
+/// returns the TOTAL and makes the forced subtotal look like exactly zero.
 #[test]
 fn the_book_is_dominated_by_end_of_tape_force_closure() {
     let mut eng = tape_golden::drive_eng(Config::dev_portable());
@@ -264,13 +299,22 @@ fn the_book_is_dominated_by_end_of_tape_force_closure() {
         .map(|e| e.outcome().realized_net_lamports)
         .sum();
     let total = eng.report().net_lamports;
-    assert_eq!(natural, 34_884_254, "naturally-closed subtotal drifted");
-    assert_eq!(total, 8_124_568);
+    assert_eq!(natural, 42_058_785, "naturally-closed subtotal drifted");
+    assert_eq!(total, 16_778_896);
     let forced = total - natural;
-    assert_eq!(forced, -26_759_686, "force-closed subtotal drifted");
+    assert_eq!(forced, -25_279_889, "force-closed subtotal drifted");
     assert!(
-        -forced * 4 > natural * 3,
-        "end-of-tape force closure erases >75% of what the strategy actually earned \
-         ({natural} earned, {forced} forced) — the headline net is a boundary artifact"
+        -forced * 2 > natural,
+        "end-of-tape force closure erases the MAJORITY of what the strategy actually \
+         earned ({natural} earned, {forced} forced) — the headline net is a boundary \
+         artifact, and no re-pin that raises the net may be quoted without this number \
+         beside it"
+    );
+    // The fraction itself, so a future change that improved it is visible rather than
+    // merely non-failing. 77% at re-pin #24, 60% now.
+    assert_eq!(
+        -forced * 100 / natural,
+        60,
+        "boundary-artifact fraction drifted"
     );
 }

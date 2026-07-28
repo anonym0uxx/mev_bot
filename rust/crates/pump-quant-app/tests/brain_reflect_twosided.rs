@@ -51,7 +51,7 @@
 //! One amendment was made to the rule after the tapes were built and before the
 //! verdict was taken, and it only ever makes the rule STRICTER: the evidence is
 //! read across the market-shape neighbourhood
-//! ([`the_sign_of_the_effect_is_not_governed_by_whether_the_flag_is_right`]), not
+//! ([`the_sign_of_the_effect_now_tracks_whether_the_flag_is_right`]), not
 //! from a single hand-picked cell, so a favourable cell cannot carry the verdict.
 //!
 //! Two structural guardrails hold regardless of the economics and are asserted on
@@ -86,21 +86,62 @@
 //!    diverge only after the decision is made. A tape whose bad markets already look
 //!    bad when the gate reads them tests the §18 gate, not the brain.
 //!
-//! # STEP 3 — THE VERDICT
+//! # STEP 3 — THE VERDICT (RE-TAKEN AT RE-PIN #26 — **THE PUBLISHED VERDICT IS NOW
+//! IN QUESTION**)
 //!
-//! **The default stays OFF.** Both economic legs fail, and the reason is not that
-//! the mechanism is inert — it is that its effect is a *reshuffle*:
+//! **The default stays OFF, and the reason it stays OFF has changed.** It is no
+//! longer "the law does not earn". It is "the law now clears its own pre-registered
+//! bar at every step size except the shipped one, and arming it is an operator
+//! decision that requires an A-11 study rather than a passing test run".
 //!
-//! * Happy tape: the armed arm gains **+26_697_249** lamports on a **479_556_343**
-//!   base (+5.6%), which is BELOW the pre-registered materiality bar of one 0.1-SOL
-//!   bite. Leg (a) fails.
-//! * Unhappy (false-positive) tape: the armed arm loses **−21_009_674**. The ratio
-//!   is **1.27**, far under the pre-registered 3×. Leg (b) fails.
-//! * The sign of the effect is not governed by whether the flag is RIGHT: on
-//!   neighbouring market shapes the armed arm *loses* on the true-positive tape and
-//!   *gains* on the false-positive tape
-//!   ([`the_sign_of_the_effect_is_not_governed_by_whether_the_flag_is_right`]).
-//!   That is the signature of a reshuffle, not of an edge.
+//! ## Why the old verdict cannot stand
+//!
+//! Every number behind it was measured on a tape declaring **0.2 SOL pools** against
+//! a 0.1 SOL minimum clip. Once the gate began deriving its impact model from the
+//! market's own reserve (`cost_model::impact_den_for`), that tape priced every
+//! candidate at ~5_000 bps of own impact a leg and refused all of them: `admitted =
+//! 0` on both arms, `net = 0` on both arms, and the "two-sided verdict" was the
+//! comparison `0 == 0`. The tape now declares real pump.fun depth (30–39.75 SOL) with
+//! the lane structure, the price ladders and the contention untouched.
+//!
+//! ## What the re-measurement says
+//!
+//! | | old (0.2 SOL pools) | new (real depth) |
+//! |---|---|---|
+//! | happy gain @ step 250 | +26_697_249 | **+88_208_992** |
+//! | unhappy loss @ step 250 | −21_009_674 | **−15_249_896** |
+//! | ratio (bar: 3×) | 1.27 — **FAILS** | **5.78 — PASSES** |
+//! | materiality (bar: 100_000_000) | fails | **fails, by 12%** |
+//! | @ step 1_000 | (not reached) | gain +375_495_781, loss −38_190_136, **all legs pass** |
+//! | @ step 5_000 | (not reached) | gain +703_394_355, loss −145_823_020, **all legs pass** |
+//!
+//! * **Leg (b) has flipped from FAIL to PASS.** The asymmetry is 5.78× against a 3×
+//!   bar at the default step, and 9.83× at step 1_000.
+//! * **Leg (a) still fails at the shipped step**, but by 12% rather than by an order
+//!   of magnitude — and it PASSES at every larger step. The verdict is now an
+//!   artifact of the step size, which is exactly what
+//!   [`the_verdict_is_an_artifact_of_the_step_size`] existed to rule out and now
+//!   records instead.
+//! * **The reshuffle diagnosis is RETIRED.** The decisive evidence for default-OFF
+//!   was that the armed arm did better when its flag was a FALSE POSITIVE than when
+//!   it was correct, on at least one neighbouring market shape. At real depth that
+//!   inversion is gone on all five shapes
+//!   ([`the_sign_of_the_effect_now_tracks_whether_the_flag_is_right`]). The effect
+//!   now behaves like a law, not like a permutation of the promotion order.
+//! * The three-law permutation sweep agrees independently: `law_permutation_sweep.rs`
+//!   now finds TWO configurations clearing its pre-registered rule — `{B3}` and
+//!   `{B3, B7}` — where it previously found `{B3}` uniquely.
+//!
+//! ## What must happen next (and what deliberately does not happen here)
+//!
+//! **LAW B7 IS NOT ARMED BY THIS COMMIT.** Arming a law is an operator decision, and
+//! a verdict that changes because a FIXTURE was corrected is precisely the situation
+//! in which a test author must not also be the one to act on it. What is owed is an
+//! **A-11 study**: the two legs must be re-taken on evidence that is not this tape,
+//! because the same 0.2-SOL depth defect that made the old verdict wrong is a
+//! reminder that a synthetic fixture decides nothing on its own. Until then the
+//! shipped default is unchanged and this file pins the measured state so that the
+//! open question cannot be forgotten.
 //!
 //! And the mechanism behind the prior agent's diagnosis is now named:
 //! [`the_incumbent_expectancy_estimator_binds_before_the_brain_can`]. §24
@@ -253,17 +294,22 @@ fn the_decay_flag_fires_and_the_incumbent_does_not_already_downweight() {
 // The two-sided A/B.
 // ===========================================================================
 
-/// Pinned happy-path arms (armed − neutral), lamports.
-const HAPPY_NEUTRAL_NET: i128 = 479_556_343;
-const HAPPY_ARMED_NET: i128 = 506_253_592;
-/// Pinned unhappy-path (false-positive) arms.
-const UNHAPPY_NEUTRAL_NET: i128 = 601_202_914;
-const UNHAPPY_ARMED_NET: i128 = 580_193_240;
+/// Pinned happy-path arms (armed − neutral), lamports. Re-measured at re-pin #26 on
+/// a tape that actually trades; the retired pair (479_556_343 / 506_253_592) was
+/// taken while the tape declared 0.2 SOL pools.
+const HAPPY_NEUTRAL_NET: i128 = 555_444_680;
+const HAPPY_ARMED_NET: i128 = 643_653_672;
+/// Pinned unhappy-path (false-positive) arms. Retired pair: 601_202_914 / 580_193_240.
+const UNHAPPY_NEUTRAL_NET: i128 = 1_346_209_124;
+const UNHAPPY_ARMED_NET: i128 = 1_330_959_228;
 
 /// **The pre-registered two-sided A/B at the default step.**
 ///
-/// Both economic legs FAIL, so the default stays OFF. The numbers are pinned so a
-/// future change that made LAW B7 pay — or made it worse — is loud.
+/// Re-pin #26: leg (a) still fails — by 12% — and **leg (b) now PASSES at 5.78×
+/// against a 3× bar**, where it previously failed at 1.27×. The default stays OFF
+/// because leg (a) is a leg and because arming is not a test author's call, NOT
+/// because the law is inert. Every number is pinned so the next move on either leg
+/// is loud.
 #[test]
 fn the_two_sided_verdict_at_the_default_step() {
     let cfg = Config::dev_portable();
@@ -308,6 +354,16 @@ fn the_two_sided_verdict_at_the_default_step() {
          materiality bar of {MATERIAL_LAMPORTS} lamports (one 0.1-SOL bite). If this \
          fires, LAW B7 has started earning materially and leg (a) must be re-taken."
     );
+    // …and it now MISSES that bar by 12%, not by an order of magnitude. Pinned as a
+    // number rather than left to the inequality above, because "fails leg (a)" reads
+    // very differently at 88_208_992 than it did at 26_697_249 and the difference is
+    // the whole reason this law is now an open A-11 question.
+    assert!(
+        happy_gain * 10 > MATERIAL_LAMPORTS * 8,
+        "the happy-path gain ({happy_gain}) is within 20% of the materiality bar — if \
+         it ever falls well clear of it again, the A-11 study this file requests is no \
+         longer owed and this comment should be retired"
+    );
 
     // ---- Leg (b): is the false-positive cost small enough to justify arming?
     let loss = -unhappy_delta;
@@ -322,19 +378,38 @@ fn the_two_sided_verdict_at_the_default_step() {
         happy_gain / loss,
         (happy_gain * 100 / loss) % 100
     );
+    // **LEG (b) NOW PASSES.** This assertion used to read `happy_gain < REQUIRED_RATIO
+    // * loss` and to fire with "cleared the pre-registered bar" as a warning. It fired.
+    // The bar is cleared — 5.78× against 3× — and the honest record is the pin below,
+    // not a re-tightened inequality. Leg (b) failing again would be a real change and
+    // is what this now catches.
     assert!(
-        happy_gain < REQUIRED_RATIO * loss,
-        "MEASURED: happy/unhappy = {happy_gain}/{loss} cleared the pre-registered \
-         {REQUIRED_RATIO}× asymmetry bar"
+        happy_gain >= REQUIRED_RATIO * loss,
+        "MEASURED: leg (b) has gone back to FAILING ({happy_gain}/{loss} under the \
+         {REQUIRED_RATIO}× bar). It passed at re-pin #26 at 5.78×; a return to failure \
+         is a substantive change and the A-11 study request should be withdrawn."
     );
 }
 
-/// **Robustness to the step size.** The verdict must not be an artifact of the
-/// default 250 bp step, so the whole two-sided comparison is re-run at 250, 1_000
-/// and 5_000 bp (the last is ~13% of the §56.2 envelope width). At no step does the
-/// pre-registered rule pass.
+/// **THE VERDICT *IS* AN ARTIFACT OF THE STEP SIZE — the single most important thing
+/// this file now says.**
+///
+/// This test was written to rule that out, and at re-pin #26 it caught the opposite.
+/// The two-sided comparison is run at 250, 1_000 and 5_000 bp (the last is ~13% of the
+/// §56.2 envelope width):
+///
+/// * **250 bp (shipped)** — gain +88_208_992 against a 100_000_000 bar: leg (a) fails
+///   by 12%. The rule does NOT pass.
+/// * **1_000 bp** — gain +375_495_781, loss −38_190_136 (9.83×). The rule PASSES.
+/// * **5_000 bp** — gain +703_394_355, loss −145_823_020 (4.82×). The rule PASSES.
+///
+/// So "LAW B7 does not clear its bar" is true of the shipped step and false of the
+/// two larger ones, and the shipped step was never itself the output of a study — it
+/// is `brain_reflect_step_bp`'s default. **A law whose verdict is decided by an
+/// unstudied knob has not been decided.** The default stays OFF (arming is not a test
+/// author's call) and this pins the shape of the open question for A-11.
 #[test]
-fn the_verdict_is_not_an_artifact_of_the_step_size() {
+fn the_verdict_is_an_artifact_of_the_step_size() {
     let cfg = Config::dev_portable();
     for step in [250u32, 1_000, 5_000] {
         let h_n = run(cfg, false, step, Tape::happy());
@@ -353,26 +428,57 @@ fn the_verdict_is_not_an_artifact_of_the_step_size() {
             u_a.report.final_weights.map(|w| w.1),
         );
         let passes = gain > MATERIAL_LAMPORTS && (delta >= 0 || gain >= REQUIRED_RATIO * (-delta));
-        assert!(
-            !passes,
-            "MEASURED: at step {step} the pre-registered rule PASSED (gain={gain}, \
-             unhappy={delta}). The default-OFF verdict must be revisited."
+        // Pinned per step, MEASURED. The shipped step is the ONLY one that fails, and
+        // it fails on leg (a) alone.
+        assert_eq!(
+            passes,
+            step > 250,
+            "MEASURED: the pre-registered rule's answer at step {step} changed \
+             (gain={gain}, unhappy={delta}, passes={passes}). Re-pin #26 measured \
+             FAIL at 250 and PASS at 1_000 and 5_000; either direction of drift is a \
+             substantive change to an open A-11 question and must be reported, not \
+             re-pinned silently."
         );
     }
+    // The shipped step is the failing one — stated explicitly, because the whole
+    // finding is that the verdict rides on this default and this default was never
+    // studied.
+    assert_eq!(
+        Config::dev_portable().brain_reflect_step_bp,
+        250,
+        "the shipped step is the one at which the rule does not pass; if the default \
+         moves, LAW B7's verdict moves with it and must be re-taken"
+    );
 }
 
-/// **The decisive evidence: the effect is a reshuffle, not an edge.**
+/// **THE RESHUFFLE DIAGNOSIS IS RETIRED.**
 ///
-/// A law that earns should earn *because the flag was right*. Here the sign of the
-/// armed − neutral delta is not governed by that at all. Re-running the identical
-/// experiment on two neighbouring market shapes (a milder bleeder, a smaller runner)
-/// produces cells where the armed arm does BETTER when its flag is a FALSE POSITIVE
-/// than when the flag is correct.
+/// A law that earns should earn *because the flag was right*. The strongest argument
+/// for LAW B7's default-OFF was that it did not: re-running the identical experiment
+/// on neighbouring market shapes produced cells where the armed arm did BETTER when
+/// its flag was a FALSE POSITIVE than when it was correct, which is the signature of
+/// a permutation of the promotion order rather than of an edge.
 ///
-/// The printed table is the honest record; the assertion pins the inversion, because
-/// it — not the headline ratio — is the strongest reason the default stays OFF.
+/// **At real depth that inversion does not occur on any of the five shapes.** The
+/// true-positive delta exceeds the false-positive delta everywhere:
+///
+/// | shape | true-positive | false-positive |
+/// |---|---|---|
+/// | headline | +88_208_992 | −15_249_896 |
+/// | mild-bleeder | +219_767_450 | +9_367_800 |
+/// | small-runner | +54_111_031 | −205_543_902 |
+/// | huge-runner | +6_152_118 | −26_450_910 |
+/// | huge-runner-mild | +51_880_006 | −42_260_853 |
+///
+/// The old table was measured on a tape whose 0.2 SOL pools refused every trade, so
+/// every cell in it was `0` against `0` and the "inversion" was read out of a corpus
+/// that had no admissions in it at all.
+///
+/// The assertion is inverted to match: no shape may invert. If one ever does, the
+/// reshuffle diagnosis is back and the A-11 study this file requests is answered in
+/// the negative.
 #[test]
-fn the_sign_of_the_effect_is_not_governed_by_whether_the_flag_is_right() {
+fn the_sign_of_the_effect_now_tracks_whether_the_flag_is_right() {
     let cfg = Config::dev_portable();
     let shapes: [(&str, [i64; 3], [i64; 3]); 5] = [
         ("headline", RUNNER_TAIL_BP, BAD_TAIL_BP),
@@ -382,6 +488,7 @@ fn the_sign_of_the_effect_is_not_governed_by_whether_the_flag_is_right() {
         ("huge-runner-mild", HUGE_RUNNER_TAIL_BP, MILD_BAD_TAIL_BP),
     ];
     let mut inversion_seen = false;
+    let mut best_true_positive = i128::MIN;
     for (name, runner, bad) in shapes {
         let happy = Tape::happy().with_tails(runner, bad);
         let unhappy = Tape::unhappy().with_tails(runner, bad);
@@ -398,15 +505,24 @@ fn the_sign_of_the_effect_is_not_governed_by_whether_the_flag_is_right() {
              (bases {} / {})",
             h_n.report.net_lamports, u_n.report.net_lamports
         );
+        best_true_positive = best_true_positive.max(gain);
         if delta > gain {
             inversion_seen = true;
         }
     }
     assert!(
-        inversion_seen,
+        !inversion_seen,
         "MEASURED: on at least one market shape the armed arm does BETTER when the \
-         decay flag is a FALSE POSITIVE than when it is correct. If this stops \
-         holding, the reshuffle diagnosis behind the default-OFF verdict is stale."
+         decay flag is a FALSE POSITIVE than when it is correct. That is the RESHUFFLE \
+         signature, and it returning would answer the open A-11 question on LAW B7 in \
+         the negative — report it, do not re-pin it."
+    );
+    // …and the true-positive side must actually be positive, or "no inversion" would
+    // be satisfiable by a law that does nothing on either side.
+    assert!(
+        best_true_positive > 0,
+        "the armed arm must genuinely EARN on at least one true-positive shape \
+         ({best_true_positive}), else the no-inversion result is vacuous"
     );
 }
 

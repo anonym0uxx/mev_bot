@@ -139,7 +139,9 @@ pub fn curve_progress_bps(vsol_lamports: u64) -> u32 {
     }
     let raised = u128::from(vsol_lamports - LAUNCH_VSOL_LAMPORTS);
     let total = u128::from(GRADUATION_VSOL_LAMPORTS - LAUNCH_VSOL_LAMPORTS);
-    u32::try_from(raised.saturating_mul(10_000) / total).unwrap_or(10_000).min(10_000)
+    u32::try_from(raised.saturating_mul(10_000) / total)
+        .unwrap_or(10_000)
+        .min(10_000)
 }
 
 /// SOL still to be raised before this curve graduates, lamports. `0` once reached.
@@ -200,7 +202,10 @@ mod tests {
         assert_eq!(vtok_grad, 279_900_000_000_000);
         let k = u128::from(LAUNCH_VSOL_LAMPORTS) * INITIAL_VIRTUAL_TOKENS;
         let vsol_grad = u64::try_from(k / vtok_grad).unwrap();
-        assert_eq!(vsol_grad, GRADUATION_VSOL_LAMPORTS, "graduation vsol drifted");
+        assert_eq!(
+            vsol_grad, GRADUATION_VSOL_LAMPORTS,
+            "graduation vsol drifted"
+        );
         let raised = vsol_grad - LAUNCH_VSOL_LAMPORTS;
         assert_eq!(
             raised / 10_000_000,
@@ -241,11 +246,19 @@ mod tests {
         let lo_vsol = vsol_for_mcap(LO).unwrap();
         let hi_vsol = vsol_for_mcap(HI).unwrap();
         assert_eq!(lo_vsol / 10_000_000, 6_174, "band floor is vsol 61.74 SOL");
-        assert_eq!(hi_vsol / 10_000_000, 9_203, "band ceiling is vsol 92.03 SOL");
+        assert_eq!(
+            hi_vsol / 10_000_000,
+            9_203,
+            "band ceiling is vsol 92.03 SOL"
+        );
 
         // 37% -> 73% of the way to graduation. Not "early".
         assert_eq!(curve_progress_bps(lo_vsol) / 100, 37);
-        assert_eq!(curve_progress_bps(hi_vsol) / 100, 72, "integer truncation: 72.9% floors to 72");
+        assert_eq!(
+            curve_progress_bps(hi_vsol) / 100,
+            72,
+            "integer truncation: 72.9% floors to 72"
+        );
 
         // And it is entirely PRE-graduation, so no migration event can fire mid-hold.
         assert!(hi_vsol < GRADUATION_VSOL_LAMPORTS);
@@ -257,12 +270,30 @@ mod tests {
         // first reserve just OUT of band, so the last in-band reserve is one lamport
         // below it. Stating this here is the point of the test: a caller that treats
         // both edges the same way silently loses or gains a candidate at the boundary.
-        assert!(mcap_in_band(lo_vsol, LO, HI), "the floor reserve must be IN band");
-        assert!(!mcap_in_band(lo_vsol - 1, LO, HI), "one lamport below the floor is out");
-        assert!(!mcap_in_band(hi_vsol, LO, HI), "the ceiling reserve is the first one OUT");
-        assert!(mcap_in_band(hi_vsol - 1, LO, HI), "one lamport below it is the last one IN");
-        assert!(!mcap_in_band(LAUNCH_VSOL_LAMPORTS, LO, HI), "launch is below the band");
-        assert!(!mcap_in_band(GRADUATION_VSOL_LAMPORTS, LO, HI), "graduation is above it");
+        assert!(
+            mcap_in_band(lo_vsol, LO, HI),
+            "the floor reserve must be IN band"
+        );
+        assert!(
+            !mcap_in_band(lo_vsol - 1, LO, HI),
+            "one lamport below the floor is out"
+        );
+        assert!(
+            !mcap_in_band(hi_vsol, LO, HI),
+            "the ceiling reserve is the first one OUT"
+        );
+        assert!(
+            mcap_in_band(hi_vsol - 1, LO, HI),
+            "one lamport below it is the last one IN"
+        );
+        assert!(
+            !mcap_in_band(LAUNCH_VSOL_LAMPORTS, LO, HI),
+            "launch is below the band"
+        );
+        assert!(
+            !mcap_in_band(GRADUATION_VSOL_LAMPORTS, LO, HI),
+            "graduation is above it"
+        );
     }
 
     /// **WHY THE BAND HELPS, AND BY EXACTLY HOW MUCH.** Deeper reserve means our own
@@ -274,8 +305,16 @@ mod tests {
         let imp = |vsol: u64| crate::curve_fill::own_impact_bps(vsol, CLIP).unwrap();
 
         assert_eq!(imp(LAUNCH_VSOL_LAMPORTS), 33, "launch depth: 33 bps a leg");
-        assert_eq!(imp(vsol_for_mcap(118_420_000_000).unwrap()), 16, "$9k: 16 bps");
-        assert_eq!(imp(vsol_for_mcap(263_160_000_000).unwrap()), 10, "$20k: 10 bps");
+        assert_eq!(
+            imp(vsol_for_mcap(118_420_000_000).unwrap()),
+            16,
+            "$9k: 16 bps"
+        );
+        assert_eq!(
+            imp(vsol_for_mcap(263_160_000_000).unwrap()),
+            10,
+            "$20k: 10 bps"
+        );
 
         // Round trip: the band saves ~35 bps against launch depth. Real, and small
         // against a ~250 bps fee that the band does NOT reduce (see below).
@@ -298,15 +337,32 @@ mod tests {
              ({FIRST_FEE_TIER_BREAK_SOL_MCAP}) — every point on the curve pays 1.25%"
         );
         // The gap is small but decisive: ~9 SOL of market cap.
-        assert_eq!((FIRST_FEE_TIER_BREAK_SOL_MCAP - grad_mcap) / 1_000_000_000, 9);
+        assert_eq!(
+            (FIRST_FEE_TIER_BREAK_SOL_MCAP - grad_mcap) / 1_000_000_000,
+            9
+        );
     }
 
     #[test]
     fn isqrt_is_exact_on_perfect_squares_and_never_overshoots() {
-        for n in [0u128, 1, 2, 3, 4, 99, 100, 101, 1 << 60, u128::from(u64::MAX)] {
+        for n in [
+            0u128,
+            1,
+            2,
+            3,
+            4,
+            99,
+            100,
+            101,
+            1 << 60,
+            u128::from(u64::MAX),
+        ] {
             let r = isqrt_u128(n);
             assert!(r * r <= n, "isqrt({n}) = {r} overshot");
-            assert!((r + 1).checked_mul(r + 1).is_none_or(|s| s > n), "isqrt({n}) = {r} undershot");
+            assert!(
+                (r + 1).checked_mul(r + 1).is_none_or(|s| s > n),
+                "isqrt({n}) = {r} undershot"
+            );
         }
     }
 
@@ -314,7 +370,10 @@ mod tests {
     fn zero_reserve_refuses_rather_than_returning_zero() {
         assert!(mcap_lamports(0).is_none());
         assert!(vsol_for_mcap(0).is_none());
-        assert!(!mcap_in_band(0, 1, u128::MAX), "an undecoded pool is never in band");
+        assert!(
+            !mcap_in_band(0, 1, u128::MAX),
+            "an undecoded pool is never in band"
+        );
         assert_eq!(curve_progress_bps(0), 0);
     }
 }

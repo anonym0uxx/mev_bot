@@ -31,6 +31,14 @@ use pump_quant_app::event::AppEvent;
 use pump_quant_app::shadow::{brain_exit_proposals, ProposalAxis};
 use pump_quant_domain::ids::Mint;
 
+/// **DEPTH REALISM (re-pin #26).** The gate's price-impact model is now DERIVED from
+/// the market's own SOL-side reserve (`cost_model::impact_den_for`), so a fixture's
+/// declared depth is a decision input rather than decoration. Real pump.fun virtual
+/// reserves START at 30 SOL; the sub-SOL depths these fixtures used to declare put the
+/// operator's 0.1 SOL floor clip at 5-125% of the pool — a market in which no strategy
+/// result means anything (Amendment A-13(1)).
+const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+
 // ===========================================================================
 // A brain-rich tape.
 //
@@ -108,10 +116,7 @@ fn drive(cfg: Config, decayed: bool) -> Engine {
     // Same cost-realism overrides the golden tape uses, so the gate is the real
     // §18 economic gate rather than a permissive one.
     cfg.gate_expected_move_bps = 1_800;
-    cfg.gate_protocol_bps = 450;
     cfg.gate_margin_bps = 150;
-    cfg.gate_base_fixed_lamports = 200_000;
-    cfg.gate_impact_den = 250_000;
     let mut eng = Engine::new(cfg, RunMode::Replay);
     let n = 384u64;
     for round in 0..6u64 {
@@ -123,7 +128,7 @@ fn drive(cfg: Config, decayed: bool) -> Engine {
                     mint: mt,
                     price_fp,
                     quote_lamports: 420_000 + (m % 17) * 1_000,
-                    liquidity_lamports: 130_000_000 + (m % 300) * 1_000_000 + round * 11,
+                    liquidity_lamports: REAL_CURVE_VSOL + (m % 300) * 1_000_000 + round * 11,
                     signed_base,
                     buyer_entity: (m + i) % 89,
                     age_slots: 10 + (m as u32 % 35),
@@ -133,7 +138,7 @@ fn drive(cfg: Config, decayed: bool) -> Engine {
                 if m % 2 == 0 {
                     eng.tick(AppEvent::OnchainConfirm {
                         mint: mt,
-                        sellable_depth_lamports: 160_000_000 + m * 400,
+                        sellable_depth_lamports: REAL_CURVE_VSOL + m * 400,
                     });
                 }
                 if m % 5 == 0 {

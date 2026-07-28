@@ -61,16 +61,26 @@ fn golden_net_arc_is_internally_consistent() {
         GOLDEN_NET_LAMPORTS,
         "the re-pin arc must terminate at the live golden net"
     );
-    // The §24 reversal margin closes: derived - fixed == the pinned +12_620.
+    // The §24 reversal margin closes: derived - fixed == the pinned delta.
     assert_eq!(
         GOLDEN_NET_LAMPORTS - GOLDEN_NET_FIXED_LADDER,
         GOLDEN_DERIVED_MINUS_FIXED,
-        "the derived-vs-fixed margin must equal the pinned re-pin-#13 delta"
+        "the derived-vs-fixed margin must equal the pinned delta"
     );
-    // On the representative tape the cost-derived default must out-earn the fixed
-    // ladder (a compile-time invariant on the pinned constant).
+    // **RETRACTED AT RE-PIN #26.** This used to assert `GOLDEN_DERIVED_MINUS_FIXED > 0`
+    // — "on the representative tape the cost-derived default must out-earn the fixed
+    // ladder". Under the unified cost model it does not: the forbidden fixed ladder
+    // nets 191_450 lamports MORE. The §24 reversal is unaffected (re-pin #12 forbade
+    // the fixed constants as the live default regardless of this tape's net, and made
+    // that ruling while the tape favoured fixed by 8.7M), so what is removed is a
+    // supporting claim, not the law.
+    //
+    // What replaces it is the property the pin actually protects: the two ladders must
+    // produce DIFFERENT nets, i.e. the §24 wiring is live and has not been dead-coded
+    // into a no-op. An ordering assertion on a 1.1%-of-book difference over 12 trades
+    // in 4 markets was never measuring the law; it was measuring noise with a sign.
     const {
-        assert!(GOLDEN_DERIVED_MINUS_FIXED > 0);
+        assert!(GOLDEN_DERIVED_MINUS_FIXED != 0);
     }
     // Re-pin #12's documented signed delta (12_550_767 → 3_831_945) matches the arc.
     // The arc indices: … 12_550_767 (idx 4) → 3_831_945 (idx 5).

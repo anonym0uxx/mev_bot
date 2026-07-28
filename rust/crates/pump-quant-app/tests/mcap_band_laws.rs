@@ -56,8 +56,8 @@ use pump_quant_watchlist::candidate::{Candidate, Features, Lane, Mint};
 /// One 0.1-SOL bite — the materiality bar shared with every other law study here.
 const MATERIAL_LAMPORTS: i128 = 100_000_000;
 
-/// The golden reference net at re-pin #24.
-const GOLDEN_SHIP: i128 = 8_124_568;
+/// The golden reference net at re-pin #26 (cost-model unification).
+const GOLDEN_SHIP: i128 = 16_778_896;
 
 fn band_cfg() -> Config {
     let mut c = Config::dev_portable();
@@ -104,8 +104,14 @@ fn the_band_law_ships_disarmed_and_is_decision_inert() {
     );
     // And the defaults encode the operator's stated band, not something else.
     let c = Config::dev_portable();
-    assert_eq!(c.mcap_band_lo_lamports, 118_420_000_000, "$9k at the recorded conversion");
-    assert_eq!(c.mcap_band_hi_lamports, 263_160_000_000, "$20k at the recorded conversion");
+    assert_eq!(
+        c.mcap_band_lo_lamports, 118_420_000_000,
+        "$9k at the recorded conversion"
+    );
+    assert_eq!(
+        c.mcap_band_hi_lamports, 263_160_000_000,
+        "$20k at the recorded conversion"
+    );
 }
 
 /// **THE LAW DOES WHAT IT SAYS.** In-band admits, out-of-band refuses, and the refusal
@@ -127,7 +133,11 @@ fn the_band_admits_inside_and_refuses_outside_with_a_distinct_reason() {
     }
     // Below the band (a fresh launch) and above it (post-graduation): refused, and
     // refused for the RIGHT reason.
-    for vsol in [curve_state::LAUNCH_VSOL_LAMPORTS, hi, curve_state::GRADUATION_VSOL_LAMPORTS] {
+    for vsol in [
+        curve_state::LAUNCH_VSOL_LAMPORTS,
+        hi,
+        curve_state::GRADUATION_VSOL_LAMPORTS,
+    ] {
         assert_eq!(
             decide(&cand(), Some(conf_at(vsol)), &cfg, None),
             GateDecision::Reject(GateReject::OutsideMcapBand),
@@ -137,7 +147,12 @@ fn the_band_admits_inside_and_refuses_outside_with_a_distinct_reason() {
     // With the law off, none of those are band-refused.
     let off = Config::dev_portable();
     assert!(!matches!(
-        decide(&cand(), Some(conf_at(curve_state::LAUNCH_VSOL_LAMPORTS)), &off, None),
+        decide(
+            &cand(),
+            Some(conf_at(curve_state::LAUNCH_VSOL_LAMPORTS)),
+            &off,
+            None
+        ),
         GateDecision::Reject(GateReject::OutsideMcapBand)
     ));
 }
@@ -154,13 +169,41 @@ fn the_band_measurably_reduces_our_own_execution_cost() {
     let lo = imp(curve_state::vsol_for_mcap(118_420_000_000).unwrap());
     let hi = imp(curve_state::vsol_for_mcap(263_160_000_000).unwrap());
 
-    assert_eq!((launch, lo, hi), (33, 16, 10), "own impact per leg: launch / $9k / $20k");
-    assert!(lo < launch && hi < lo, "cost must fall monotonically across the band");
-    assert_eq!(2 * (launch - hi), 46, "the band is worth 46 bps of round-trip impact");
+    assert_eq!(
+        (launch, lo, hi),
+        (33, 16, 10),
+        "own impact per leg: launch / $9k / $20k"
+    );
+    assert!(
+        lo < launch && hi < lo,
+        "cost must fall monotonically across the band"
+    );
+    let saving = 2 * (launch - hi);
+    assert_eq!(saving, 46, "the band is worth 46 bps of round-trip impact");
 
     // Honest scale: 46 bps against a ~300 bps round trip is ~15% of cost, and the fee
     // — the dominant term — is untouched. See `no_pre_graduation_band_can_reduce_the_fee`.
-    assert!(46 * 6 < 300, "the saving is a minority of the round trip, not a fix for it");
+    // Measured against the SHIPPED round-trip cost rather than a hand-written 300, so
+    // this stays true of the cost model actually installed (re-pin #26).
+    let round_trip =
+        pump_quant_app::cost_model::round_trip_bps(&pump_quant_app::cost_model::CostInputs {
+            notional_lamports: CLIP,
+            vsol_lamports: curve_state::LAUNCH_VSOL_LAMPORTS,
+            fee_bps_per_leg: pump_quant_app::cost_model::venue_fee_bps_per_leg(
+                curve_state::LAUNCH_VSOL_LAMPORTS,
+            ),
+            fixed_lamports_per_leg: pump_quant_app::cost_model::FIXED_LAMPORTS_PER_LEG,
+            fail_rate_bps: 500,
+            exit_tranches: 3,
+            needs_ata: true,
+            reclaims_ata: true,
+        })
+        .unwrap();
+    assert!(
+        saving * 6 < u64::from(round_trip),
+        "the saving ({saving} bps) is a minority of the round trip ({round_trip} bps), \
+         not a fix for it"
+    );
 }
 
 /// **P3 — WHY THIS CANNOT BE SETTLED HERE, asserted rather than asserted-away.**
@@ -189,7 +232,8 @@ fn the_representative_corpus_cannot_price_a_band_selection() {
         "the corpus does reach into the band..."
     );
     assert!(
-        hi_mcap * 2 < u128::from(cfg.mcap_band_hi_lamports) * 2 - u128::from(cfg.mcap_band_lo_lamports),
+        hi_mcap * 2
+            < u128::from(cfg.mcap_band_hi_lamports) * 2 - u128::from(cfg.mcap_band_lo_lamports),
         "...but only into its lowest sliver: the corpus tops out at {hi_mcap}, barely \
          above the band floor {} and far below the ceiling {}",
         cfg.mcap_band_lo_lamports,
@@ -208,8 +252,14 @@ fn the_representative_corpus_cannot_price_a_band_selection() {
     // And the "delta" such an A/B would report is simply the whole book disappearing,
     // which no pre-registered rule would ever accept as a measurement.
     let delta = armed - GOLDEN_SHIP;
-    assert_eq!(delta, -GOLDEN_SHIP, "the delta is the entire book, i.e. not a measurement");
-    assert!(delta.abs() < MATERIAL_LAMPORTS, "and it is sub-material besides: {delta}");
+    assert_eq!(
+        delta, -GOLDEN_SHIP,
+        "the delta is the entire book, i.e. not a measurement"
+    );
+    assert!(
+        delta.abs() < MATERIAL_LAMPORTS,
+        "and it is sub-material besides: {delta}"
+    );
 }
 
 /// **THE GUARD.** Arming the band because the impact arithmetic (P2) looks good is the

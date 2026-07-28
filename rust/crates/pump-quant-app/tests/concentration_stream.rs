@@ -25,6 +25,14 @@ use pump_quant_app::holder_flow::HolderCountBasis;
 use pump_quant_brain::concentration::TrajectoryDirection;
 use pump_quant_domain::ids::Mint;
 
+/// **DEPTH REALISM (re-pin #26).** The gate's price-impact model is now DERIVED from
+/// the market's own SOL-side reserve (`cost_model::impact_den_for`), so a fixture's
+/// declared depth is a decision input rather than decoration. Real pump.fun virtual
+/// reserves START at 30 SOL; the sub-SOL depths these fixtures used to declare put the
+/// operator's 0.1 SOL floor clip at 20-125% of the pool — a market in which no
+/// strategy result means anything (Amendment A-13(1)).
+const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+
 fn mint(tag: u64) -> Mint {
     let mut b = [0u8; 32];
     b[..8].copy_from_slice(&tag.to_le_bytes());
@@ -38,7 +46,7 @@ fn trade(e: &mut Engine, m: Mint, entity: u64, signed_base: i64) {
         mint: m,
         price_fp: 1_000_000_000,
         quote_lamports: 400_000,
-        liquidity_lamports: 120_000_000,
+        liquidity_lamports: REAL_CURVE_VSOL,
         signed_base,
         buyer_entity: entity,
         age_slots: 12,

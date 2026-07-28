@@ -103,9 +103,9 @@ use pump_quant_social::types::SourceRef;
 use pump_quant_strategy::calibration_budget::{
     admit_calibration, CalibrationLedger, CalibrationRequest, RouteId,
 };
-use pump_quant_strategy::economic_gate::{
-    effective_fixed_lamports, round_trip_cost_bps, ImpactCurve,
-};
+use pump_quant_strategy::economic_gate::effective_fixed_lamports;
+#[cfg(test)]
+use pump_quant_strategy::economic_gate::{round_trip_cost_bps, ImpactCurve};
 use pump_quant_strategy::entry_arbitration::{arbitrate, ArbitrationParams, EntryCandidate};
 use pump_quant_strategy::entry_mode_leaves::{
     detect_narrative_confirmation, detect_pullback_continuation, NarrativeConfirmationFeatures,
@@ -217,6 +217,11 @@ struct PendingEntry {
     /// admit and threaded to the held position so its take-profit ladder is
     /// derived from the market's own cost floor rather than fixed constants.
     round_trip_cost_bps: u32,
+    /// The market's SOL-side reserve at admit — the single input every cost term is
+    /// derived from (venue fee tier, impact denominator, optimal clip). Carried so
+    /// the ladder derivation downstream prices the SAME market the gate admitted,
+    /// rather than re-reading a reserve that may have moved.
+    entry_vsol: u64,
     /// §34.4 DecisionRecord provenance: the economic size band `[x_min, x_cost,
     /// x_max]` (net of fees/tips/expected-failure/margin) the admitted size was
     /// clamped within — threaded from the gate's `Admit` verdict into the
@@ -303,6 +308,13 @@ const TERMINAL_CADENCE_VERSION: u32 = 1;
 /// §47a/§99 LAW 18 bound on the per-mint last-activity table (deterministic
 /// eviction of the lexicographically-smallest tracked mint past capacity).
 const LAST_TRADE_TABLE_CAP: usize = 8_192;
+
+/// §99 bound on [`Engine::ata_open`], the set of mints holding an open Associated
+/// Token Account. Membership tracks live positions, which `max_concurrent_positions`
+/// already caps far below this, so the bound is a leak backstop rather than a working
+/// limit — and it fails in the EXPENSIVE direction (an untracked mint is charged full
+/// rent) rather than by evicting a mint whose deposit is really posted.
+const ATA_OPEN_CAP: usize = 1_024;
 
 /// Per-creator linked-cluster tracking bound (§99/§102). Small by design: a
 /// creator funding more than this many distinct sybil clusters is already
@@ -801,6 +813,23 @@ pub struct Engine {
     /// while a thesis does, is reset the moment flow is non-adverse, and is
     /// removed when the position closes.
     thesis_adverse: BTreeMap<[u8; 32], u32>,
+    /// **Mints for which an Associated Token Account is currently OPEN**, and whose
+    /// [`crate::cost_model::ATA_RENT_LAMPORTS`] deposit is therefore already posted.
+    ///
+    /// The **lazy-hold, close-on-full-exit** policy: an ATA is opened (rent charged
+    /// into the entry basis) only on an admit into a mint not already in this set, and
+    /// closed — [`crate::cost_model::ATA_CLOSE_LAMPORTS`] charged, the full deposit
+    /// refunded — when the position fully exits. Without the set, a re-entry into a
+    /// mint we still hold an account for would be charged 203 bps of a deposit it never
+    /// posted; the golden tape does 13 trades in 5 distinct mints, so re-entry is the
+    /// common case, not the corner.
+    ///
+    /// Bounded (§99) by [`ATA_OPEN_CAP`], which is itself far above
+    /// `max_concurrent_positions` — the set only ever holds mints with live positions,
+    /// so the cap is a backstop against a leak, never a working limit. On overflow the
+    /// insert is REFUSED and the rent is charged anyway (the conservative direction:
+    /// an untracked account is priced as a fresh one, never as free).
+    ata_open: std::collections::BTreeSet<[u8; 32]>,
     /// mint → creator entity (from TokenMetadata), for the credibility haircut.
     mint_creator: BTreeMap<[u8; 32], u64>,
     /// creator → (lifetime launches, window start tick, launches in window).
@@ -1002,9 +1031,14 @@ impl Engine {
             stall_ticks: cfg.lc_stall_ticks,
             max_hold_ticks: cfg.lc_max_hold_ticks,
             precursor_drop_bps: cfg.lc_precursor_drop_bps,
-            fee_bps: cfg.exit_fee_bps,
-            first_sell_penalty_bps: LifecycleParams::standard().first_sell_penalty_bps,
-            tip_lamports: cfg.exit_tip_lamports,
+            // COST-MODEL UNIFICATION (2026-07-28): the lifecycle's frictions are no
+            // longer operator constants that could disagree with the gate's. Both
+            // come from `cost_model`, which is why they cannot drift apart again.
+            // `fee_bps` here is only the depth-unknown FALLBACK — `realize` reads the
+            // tiered rate from the position's own decoded reserve — so it is set to
+            // the pre-graduation rate, the expensive end of the schedule (§54).
+            fee_bps: crate::cost_model::VENUE_FEE_BPS_CURVE,
+            fixed_lamports_per_leg: crate::cost_model::FIXED_LAMPORTS_PER_LEG,
             exit_impair_bps,
             curve_exact_fill: cfg.curve_exact_fill_enable,
             into_strength_exit_enable: cfg.into_strength_exit_enable,
@@ -1087,6 +1121,7 @@ impl Engine {
             context: MarketContext::new(),
             theses: BTreeMap::new(),
             thesis_adverse: BTreeMap::new(),
+            ata_open: std::collections::BTreeSet::new(),
             mint_creator: BTreeMap::new(),
             creator_launches: BTreeMap::new(),
             first_slot_fees: BTreeMap::new(),
@@ -1554,12 +1589,20 @@ impl Engine {
                         -i128::from(quote_lamports)
                     };
                     let price_u = u64::try_from(price_fp.max(0)).unwrap_or(u64::MAX);
-                    self.tournament
-                        .on_trade(mint.as_bytes(), price_u, signed_quote, self.now, liquidity_lamports);
-                    if let Some(exit) =
-                        self.positions
-                            .on_trade(mint.as_bytes(), price_u, signed_quote, self.now, liquidity_lamports)
-                    {
+                    self.tournament.on_trade(
+                        mint.as_bytes(),
+                        price_u,
+                        signed_quote,
+                        self.now,
+                        liquidity_lamports,
+                    );
+                    if let Some(exit) = self.positions.on_trade(
+                        mint.as_bytes(),
+                        price_u,
+                        signed_quote,
+                        self.now,
+                        liquidity_lamports,
+                    ) {
                         self.book_exit(exit);
                     } else if self.positions.has(mint.as_bytes()) {
                         // §33 probe→confirm scale-in (one-shot; scale_in refuses after
@@ -2647,6 +2690,11 @@ impl Engine {
         };
         match decide(&cand, confirmation, &self.cfg, move_override) {
             GateDecision::Admit(band) => {
+                // The market's SOL-side reserve: the ONE number every cost term below
+                // derives from — the venue fee tier, the impact denominator, the
+                // round-trip bps. `gate::decide` refuses a zero reserve, so reaching
+                // this arm guarantees it is positive.
+                let conf_vsol = confirmation.map_or(0, |c| c.numeric.liquidity_lamports);
                 // §21.7 extreme fabrication signature — the only authenticity gate.
                 let (auth_bps, fabricated) = self.flow_screen.authenticity(&mint_bytes);
                 // §105 REPORT-plane extraction-risk accumulation (never feeds a
@@ -2893,23 +2941,12 @@ impl Engine {
                     let pre_brain_size = (raw * u128::from(base_haircut_bp) / 10_000)
                         .min(u128::from(band.x_max))
                         .min(available_risk) as u64;
-                    let pre_fixed = effective_fixed_lamports(
-                        self.cfg.gate_base_fixed_lamports,
-                        self.cfg.gate_fail_rate_bps,
-                    )
-                    .unwrap_or(self.cfg.gate_base_fixed_lamports);
-                    let pre_impact = ImpactCurve::linear_test(self.cfg.gate_impact_den);
                     // An UNDECODED quote yields no cost; the entry is rejected for
                     // that reason further down regardless, so the `0` fallback here
                     // can never reach a decision (§18.2 fails closed below).
-                    let pre_rt = round_trip_cost_bps_quoted(
-                        pre_brain_size,
-                        pre_fixed,
-                        self.cfg.gate_protocol_bps,
-                        &pre_impact,
-                        self.resolve_quote_mint(&mint_bytes),
-                    )
-                    .unwrap_or(0);
+                    let pre_rt = self
+                        .unified_rt_bps(&mint_bytes, pre_brain_size, conf_vsol)
+                        .unwrap_or(0);
                     Some(self.brain_entry_at_admit(&mint_bytes, cand.discovery_lane, pre_rt))
                 } else {
                     None
@@ -2990,11 +3027,28 @@ impl Engine {
                 };
                 // ---- Survival-floor guard (strategy leaf pl_wallet_floor): the
                 // entry spend may never push the balance below the floor.
-                let entry_fee =
-                    (u128::from(size) * u128::from(self.cfg.entry_fee_bps) / 10_000) as u64;
+                // COST-MODEL UNIFICATION: the entry leg is priced by the SAME
+                // authority the gate admitted under — the venue's tiered per-leg fee
+                // against THIS market's reserve, one landed transaction's fixed cost,
+                // and (only when we do not already hold a token account for the mint)
+                // the refundable ATA rent deposit. The deposit is returned, less one
+                // signature, by `book_exit` when the position fully closes; carrying
+                // it in the basis is what makes the 203 bps difference between a round
+                // trip that finishes and one that abandons its account VISIBLE in the
+                // realized net rather than invisible in nobody's model.
+                let entry_vsol = conf_vsol;
+                let entry_fee = (u128::from(size)
+                    * u128::from(crate::cost_model::venue_fee_bps_per_leg(entry_vsol))
+                    / 10_000) as u64;
+                let needs_ata = !self.ata_open.contains(&mint_bytes);
                 let entry_cost = size
                     .saturating_add(entry_fee)
-                    .saturating_add(self.cfg.entry_tip_lamports);
+                    .saturating_add(crate::cost_model::FIXED_LAMPORTS_PER_LEG)
+                    .saturating_add(if needs_ata {
+                        crate::cost_model::ATA_RENT_LAMPORTS
+                    } else {
+                        0
+                    });
                 if wallet_floor_guard(entry_cost, balance, floor) == FloorVerdict::RefusedBelowFloor
                 {
                     self.rejected += 1;
@@ -3047,10 +3101,9 @@ impl Engine {
                         .numeric
                         .features_for(domain_mint)
                         .map_or(0, |f| f.liquidity_lamports);
-                    match crate::curve_fill::buy_fill_price_fp(spot_price, vsol, size) {
-                        Some(p) => p,
-                        None => return None, // unknown depth ⇒ refuse, never guess (§6)
-                    }
+                    // Unknown depth ⇒ refuse, never guess (§6): `?` propagates the
+                    // `None` as the enclosing fn's refusal.
+                    crate::curve_fill::buy_fill_price_fp(spot_price, vsol, size)?
                 } else {
                     spot_price
                 };
@@ -3060,23 +3113,11 @@ impl Engine {
                 // Priced with the SAME §34.4 economics the gate admitted under, so a
                 // size the band declared viable ranks with a non-negative expected
                 // net (move − round-trip cost at this size), in lamports.
-                let eff_fixed = effective_fixed_lamports(
-                    self.cfg.gate_base_fixed_lamports,
-                    self.cfg.gate_fail_rate_bps,
-                )
-                .unwrap_or(self.cfg.gate_base_fixed_lamports);
-                let impact = ImpactCurve::linear_test(self.cfg.gate_impact_den);
-                // §94 quote-mint-parametric cost. Defaults to SOL, so `rt_bps` is
-                // byte-identical to the pre-§94 path for every SOL-quoted market;
-                // an UNDECODED quote fails closed here (never priced as assumed-SOL).
-                let quote = self.resolve_quote_mint(&mint_bytes);
-                let rt_bps = match round_trip_cost_bps_quoted(
-                    size,
-                    eff_fixed,
-                    self.cfg.gate_protocol_bps,
-                    &impact,
-                    quote,
-                ) {
+                // §94 quote-mint-parametric cost, now priced by the ONE authority
+                // (`cost_model`) rather than by a second restatement of the gate's
+                // arithmetic. An UNDECODED quote fails closed here (never priced as
+                // assumed-SOL).
+                let rt_bps = match self.unified_rt_bps(&mint_bytes, size, conf_vsol) {
                     Some(bps) => bps,
                     None => {
                         self.rejected += 1;
@@ -3125,6 +3166,7 @@ impl Engine {
                     entry_cost,
                     expected_net,
                     round_trip_cost_bps: rt_bps,
+                    entry_vsol: conf_vsol,
                     x_min: band.x_min,
                     x_cost: band.x_cost,
                     x_max: band.x_max,
@@ -3645,6 +3687,39 @@ impl Engine {
         false
     }
 
+    /// **The engine's ONE round-trip cost: [`crate::cost_model::round_trip_bps`]
+    /// under the engine's own policy.**
+    ///
+    /// The venue's tiered fee against THIS market's reserve, one landed transaction's
+    /// fixed cost per leg, the configured fail rate and exit-tranche count, exact
+    /// curve impact on both legs, and the ATA deposit priced by whether we already
+    /// hold an account for the mint — with `reclaims_ata` always true, because the
+    /// engine always closes on full exit and a model that assumed otherwise would be
+    /// pricing a policy the engine does not run.
+    ///
+    /// §94: `None` ONLY for an UNDECODED quote, which fails closed at every call
+    /// site. An unpriceable market inside a decoded quote still saturates to
+    /// `u32::MAX` — that is a cost so large nothing clears it, not a refusal.
+    #[must_use]
+    fn unified_rt_bps(&self, mint: &[u8; 32], size: u64, vsol: u64) -> Option<u32> {
+        match self.resolve_quote_mint(mint) {
+            QuoteMint::Undecoded => None,
+            QuoteMint::Sol { .. } | QuoteMint::Usdc { .. } => Some(
+                crate::cost_model::round_trip_bps(&crate::cost_model::CostInputs {
+                    notional_lamports: size,
+                    vsol_lamports: vsol,
+                    fee_bps_per_leg: crate::cost_model::venue_fee_bps_per_leg(vsol),
+                    fixed_lamports_per_leg: crate::cost_model::FIXED_LAMPORTS_PER_LEG,
+                    fail_rate_bps: self.cfg.gate_fail_rate_bps,
+                    exit_tranches: self.cfg.gate_exit_tranches,
+                    needs_ata: !self.ata_open.contains(mint),
+                    reclaims_ata: true,
+                })
+                .unwrap_or(u32::MAX),
+            ),
+        }
+    }
+
     /// §24 LAW 2: derive the per-market take-profit ladder from the gate's measured
     /// round-trip cost. The tp1 move is `derive_target_bps(rt_cost, margin, None)`
     /// where `margin = rt_cost × target_margin_mult_bp/10_000`
@@ -3653,7 +3728,7 @@ impl Engine {
     /// target_ceiling_bp]` envelope (§56.2). The tranche COUNT is the cost-priced
     /// rung count from `exit_ladder::ladder_rungs`, clamped to the ladder's 3 slots.
     /// `None` when the law is off (fixed constants) or the cost is unpriceable.
-    fn derive_targets(&self, size: u64, rt_bps: u32) -> Option<DerivedTargets> {
+    fn derive_targets(&self, size: u64, rt_bps: u32, vsol: u64) -> Option<DerivedTargets> {
         if !self.cfg.derived_targets_enable {
             return None;
         }
@@ -3667,13 +3742,20 @@ impl Engine {
         };
         // Cost-priced rung count: each rung must clear the full fixed cost with the
         // gate's margin; the impact ceiling bounds the rest (criterion 112).
+        // Both cost inputs are DERIVED, exactly as `gate::decide` derives them: the
+        // rung count must be priced against the same fixed cost and the same
+        // constant-product impact the admission was priced against, or the ladder is
+        // sized for a market that does not exist.
         let eff_fixed = effective_fixed_lamports(
-            self.cfg.gate_base_fixed_lamports,
+            crate::cost_model::gate_base_fixed_lamports(self.cfg.gate_exit_tranches),
             self.cfg.gate_fail_rate_bps,
         )
-        .unwrap_or(self.cfg.gate_base_fixed_lamports);
-        let curve =
-            pump_quant_strategy::exit_ladder::ImpactCurve::linear_test(self.cfg.gate_impact_den);
+        .unwrap_or(crate::cost_model::gate_base_fixed_lamports(
+            self.cfg.gate_exit_tranches,
+        ));
+        let curve = pump_quant_strategy::exit_ladder::ImpactCurve::linear_test(
+            crate::cost_model::impact_den_for(vsol),
+        );
         let rungs = pump_quant_strategy::exit_ladder::ladder_rungs(
             size,
             self.cfg.gate_expected_move_bps.max(1),
@@ -3710,6 +3792,15 @@ impl Engine {
             .open(e.mint, e.entry_price, probe, probe_cost, self.now)
         {
             self.admitted += 1;
+            // LAZY-HOLD ATA: the rent deposit is already in `e.entry_cost` (charged
+            // by `pending_entry` iff the mint was absent from the set), so this is
+            // the bookkeeping half — record that an account is now open for the mint
+            // so a re-entry is not charged the deposit twice. Refused at the §99
+            // bound, which fails in the EXPENSIVE direction: an untracked mint is
+            // priced as a fresh account on every entry, never as a free one.
+            if self.ata_open.len() < ATA_OPEN_CAP {
+                self.ata_open.insert(e.mint);
+            }
             self.bankroll_committed = self
                 .bankroll_committed
                 .saturating_add(u128::from(e.entry_cost));
@@ -3742,7 +3833,7 @@ impl Engine {
                 .structure
                 .recent_vol_bps(&e.mint, VOL_STOP_WINDOW_BARS)
                 .map_or(0, |v| v.clamp(0, i128::from(u32::MAX)) as u32);
-            let derived = self.derive_targets(e.size, e.round_trip_cost_bps);
+            let derived = self.derive_targets(e.size, e.round_trip_cost_bps, e.entry_vsol);
             self.positions.arm_context(&e.mint, vol_bps, derived);
             self.tournament.open(
                 e.mint,
@@ -3801,7 +3892,25 @@ impl Engine {
     /// the position fully closes, release its committed risk budget, ratchet the
     /// high-water mark, and attribute the market's total realized net back to its
     /// social callers (§82).
-    fn book_exit(&mut self, e: Exit) {
+    fn book_exit(&mut self, mut e: Exit) {
+        // CLOSE-ON-FULL-EXIT: a fully-exited position's token account is emptied, so
+        // it is closed. `close_account` returns the whole `ATA_RENT_LAMPORTS` deposit
+        // — which the entry basis charged and `realize` has been netting out pro-rata
+        // across the position's life — for one signature. The net ATA cost of a
+        // COMPLETED round trip is therefore `ATA_CLOSE_LAMPORTS`, five thousand
+        // lamports, against the 2_039_280 an abandoned account forfeits: a 408:1
+        // return on the cheapest instruction in the system, and the single highest-
+        // return action available anywhere in this engine.
+        //
+        // This is booked HERE, on the engine, and not in `position::realize`, because
+        // only the engine knows whether an account exists for the mint. Applied
+        // before any accountant reads `e.net_lamports`, so the refund reaches the
+        // journal, the bankroll, the lane attribution and the analytics identically.
+        if e.closed && self.ata_open.remove(&e.mint) {
+            e.net_lamports = e.net_lamports.saturating_add(i128::from(
+                crate::cost_model::ATA_RENT_LAMPORTS - crate::cost_model::ATA_CLOSE_LAMPORTS,
+            ));
+        }
         let attribution = self
             .open_lane
             .get(&e.mint)
@@ -3961,13 +4070,21 @@ impl Engine {
                         let hold_gross = (u128::from(entry_spend).saturating_mul(u128::from(px))
                             / u128::from(entry_price))
                             as i128;
+                        // §52: the baseline pays the SAME unified round-trip
+                        // frictions the strategy does — two legs of the venue's
+                        // tiered fee, two landed transactions, and one closing
+                        // signature. A baseline priced on a cheaper cost model
+                        // would be beaten by arithmetic rather than by strategy.
+                        let bl_vsol = self
+                            .numeric
+                            .features_for(DomainMint::from_bytes(e.mint))
+                            .map_or(0, |f| f.liquidity_lamports);
+                        let bl_fee_bps = 2 * crate::cost_model::venue_fee_bps_per_leg(bl_vsol);
                         let baseline = hold_gross
                             - i128::from(entry_spend)
-                            - (u128::from(entry_spend)
-                                * u128::from(self.cfg.entry_fee_bps + self.cfg.exit_fee_bps)
-                                / 10_000) as i128
-                            - i128::from(self.cfg.entry_tip_lamports)
-                            - i128::from(self.cfg.exit_tip_lamports);
+                            - (u128::from(entry_spend) * u128::from(bl_fee_bps) / 10_000) as i128
+                            - 2 * i128::from(crate::cost_model::FIXED_LAMPORTS_PER_LEG)
+                            - i128::from(crate::cost_model::ATA_CLOSE_LAMPORTS);
                         self.analytics.record_baseline(baseline);
                     }
                 }
@@ -5018,7 +5135,9 @@ impl Engine {
     #[must_use]
     pub fn baseline_family_report(&self) -> Vec<BaselineResult> {
         let tape = self.baseline_family_tape();
-        let fee = FeeModel::new(u128::from(self.cfg.entry_tip_lamports));
+        // §52 LAW 16: the naive baselines pay the same per-entry landed-transaction
+        // cost the strategy does (`cost_model`), never the retired 10_000 tip.
+        let fee = FeeModel::new(u128::from(crate::cost_model::FIXED_LAMPORTS_PER_LEG));
         run_family(&tape, &fee, &FamilyParams::default_params())
     }
 
@@ -5406,6 +5525,13 @@ fn decade_u64(v: u64) -> u64 {
 ///   saturates to `u32::MAX`, exactly as before — that is a cost, not a refusal).
 /// * `None` ONLY for an UNDECODED quote — §18.2 UNKNOWN fails closed: refuse rather
 ///   than price against an assumed-SOL cost.
+///
+/// **RETIRED (2026-07-28 cost-model unification).** The live §94 seam is
+/// [`Engine::unified_rt_bps`], which applies the same decoded/undecoded quote rule to
+/// [`crate::cost_model::round_trip_bps`]. This expression is retained only as the
+/// reference the §94 dossier tests below pin — deleting it would delete the evidence
+/// that the SOL path was byte-identical to the pre-§94 cost.
+#[cfg(test)]
 #[inline]
 #[must_use]
 fn round_trip_cost_bps_quoted(

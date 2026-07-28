@@ -387,21 +387,58 @@ fn b3_armed_recall_haircut_strictly_out_earns_its_absence() {
         for (b, net, n) in &seen {
             eprintln!("B3   class buckets={b:?} n={n} net={net}");
         }
-        // The two classes must sit STRICTLY outside the similarity radius, or the
-        // estimate would be a pool of a winner and a loser — the exact error §100
-        // forbids across phases and the same error across setups.
+        // **A WINNER AND A LOSER MUST NEVER SIT INSIDE THE SIMILARITY RADIUS.** That
+        // is the property this audit exists to enforce, stated in its own terms: an
+        // estimate pooled across a class that pays and a class that bleeds is the
+        // exact §100 error — the same mistake across SETUPS that §100 forbids across
+        // phases — and it is the one failure mode that would make LAW B3's measured
+        // delta meaningless.
+        //
+        // Re-pin #26 note. This loop used to require EVERY pair of observed classes
+        // to sit outside the radius, which is stronger than the rationale above and
+        // is no longer satisfiable — nor should it be. Since the cost-model
+        // unification the fingerprint's `round_trip_cost` field carries a number that
+        // varies with CLIP SIZE (`cost_model::round_trip_bps` amortises a fixed
+        // per-leg cost over the notional), so a class whose bankroll-derived size
+        // drifts across a `ROUND_TRIP_COST_EDGES_BPS` boundary legitimately splits
+        // into neighbouring sub-classes one bucket apart. Here the HEALTHY class
+        // splits that way: its first, largest admit prices one bucket cheaper than
+        // the 21 that follow it. Both sub-classes PAY, both are the same setup, and
+        // recall pooling them is correct rather than an error — refusing to pool them
+        // would be the defect. The bleeding class stays 5 and 6 buckets away from
+        // both, which is what the law actually needs.
+        let mut opposite_sign_pairs = 0usize;
         for i in 0..seen.len() {
             for j in (i + 1)..seen.len() {
                 let d: u32 = (0..FIELD_COUNT)
                     .map(|k| u32::from(seen[i].0[k].abs_diff(seen[j].0[k])))
                     .sum();
-                eprintln!("B3   ordinal-L1 distance class{i} vs class{j} = {d}");
-                assert!(
-                    d > 3,
-                    "the hazard classes must sit outside the configured radius (d={d})"
+                let opposed = (seen[i].1 > 0) != (seen[j].1 > 0);
+                eprintln!(
+                    "B3   ordinal-L1 distance class{i} vs class{j} = {d} \
+                     (nets {} / {}, opposed={opposed})",
+                    seen[i].1, seen[j].1,
                 );
+                if opposed {
+                    opposite_sign_pairs += 1;
+                    assert!(
+                        d > 3,
+                        "a paying class and a bleeding class must sit outside the \
+                         configured radius (d={d}, nets {} / {})",
+                        seen[i].1,
+                        seen[j].1,
+                    );
+                }
             }
         }
+        // …and the check must have had something to check: if the tape ever stopped
+        // producing BOTH a paying class and a bleeding one, the loop above would pass
+        // vacuously and this audit would be worthless.
+        assert!(
+            opposite_sign_pairs > 0,
+            "the tape must produce at least one paying class AND one bleeding class, \
+             else the separation audit proves nothing"
+        );
     }
 
     // The tape must contain the hazard: a class that recurs and bleeds every time.

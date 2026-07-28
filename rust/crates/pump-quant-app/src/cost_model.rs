@@ -101,9 +101,169 @@
 //! to bound (§99), and it is pure, so it is safe on the decision path.
 
 use crate::curve_fill::own_impact_bps;
+use crate::curve_state::{isqrt_u128, GRADUATION_VSOL_LAMPORTS};
 
 /// Basis-point denominator (`10_000 == 100%`). Named const (§102).
 const BPS_DENOM: u128 = 10_000;
+
+/// **The fixed lamports one landed transaction costs: priority fee + Jito tip.**
+///
+/// Operator-set, deliberately conservative (2026-07-28 decision). It replaces BOTH
+/// numbers the split cost model carried — the gate's `gate_base_fixed_lamports` of
+/// 200_000 for a whole round trip (i.e. ~100_000 a leg) and the lifecycle's
+/// `tip_lamports` of 10_000 a tranche, which were a 10× disagreement about the price
+/// of the same signature.
+///
+/// This is a PER-LEG figure. A round trip pays it `1 + exit_tranches` times, and the
+/// fail-rate multiplier inflates it further, because a transaction that does not land
+/// still paid its priority fee and its tip.
+pub const FIXED_LAMPORTS_PER_LEG: u64 = 150_000;
+
+/// pump.fun's per-trade fee **on the bonding curve**: 1.25% = 125 bps, charged on
+/// EACH leg.
+///
+/// The schedule is tiered on SOL-denominated market cap and the first tier break sits
+/// at 420 SOL of market cap. See [`venue_fee_bps_per_leg`] for why that fact means
+/// this rate is the only one a pre-graduation strategy can ever pay.
+pub const VENUE_FEE_BPS_CURVE: u32 = 125;
+
+/// The per-leg venue fee **after graduation**, on the migrated PumpSwap pool: 30 bps.
+///
+/// Reachable only by a position that survives the migration at
+/// [`crate::curve_state::GRADUATION_VSOL_LAMPORTS`]. No admission decision this bot
+/// makes inside the operator's $9k–$20k band can be priced at this rate.
+pub const VENUE_FEE_BPS_POST_GRADUATION: u32 = 30;
+
+/// The market cap (lamports) at which pump.fun's fee schedule first steps down.
+///
+/// Stated here rather than inferred, because the ENTIRE argument of
+/// [`venue_fee_bps_per_leg`] is the 9-SOL gap between this number and the market cap
+/// at graduation.
+pub const FIRST_FEE_TIER_BREAK_MCAP_LAMPORTS: u128 = 420_000_000_000;
+
+/// **The venue fee in bps charged on ONE leg, from the pool's SOL-side reserve.**
+///
+/// pump.fun charges **1.25% per trade** on the bonding curve, tiered on
+/// SOL-denominated market cap, and the first tier break is at **420 SOL of market
+/// cap**. Graduation — the point at which the curve is exhausted and liquidity
+/// migrates — happens at **410.88 SOL** of market cap
+/// ([`crate::curve_state::mcap_lamports`] of
+/// [`crate::curve_state::GRADUATION_VSOL_LAMPORTS`]).
+///
+/// **The tier break sits 9 SOL of market cap ABOVE the end of the curve.** That
+/// single fact is why no pre-graduation band can buy fee relief: every reserve a
+/// bonding-curve strategy can ever hold — launch, the operator's $9k–$20k target
+/// band, the last lamport before migration — pays the top 125 bps a leg. A band
+/// choice buys own-impact (a deeper pool is a smaller participation rate) and buys
+/// nothing at all on fee. Any proposal that justifies a market-cap band by "we move
+/// into a cheaper fee tier" is arithmetically impossible on this venue, and
+/// `the_fee_tier_break_is_unreachable_before_graduation` pins it so the claim cannot
+/// be made twice.
+///
+/// A zero reserve returns the curve rate rather than refusing: this is a fee
+/// SCHEDULE lookup, not a price, and the caller that supplied a zero reserve is
+/// refused by [`round_trip_lamports`] on the same input anyway. Returning the more
+/// expensive rate is the conservative direction (§54).
+#[inline]
+#[must_use]
+pub fn venue_fee_bps_per_leg(vsol_lamports: u64) -> u32 {
+    if vsol_lamports >= GRADUATION_VSOL_LAMPORTS {
+        VENUE_FEE_BPS_POST_GRADUATION
+    } else {
+        VENUE_FEE_BPS_CURVE
+    }
+}
+
+/// The `ImpactCurve::linear_test` denominator that makes the strategy gate's linear
+/// impact model EXACTLY this curve's constant-product impact: `vsol / 10_000`.
+///
+/// `pump_quant_strategy::economic_gate::ImpactCurve::linear_test(den)` computes
+/// `impact_bps = size / den`; [`crate::curve_fill::own_impact_bps`] computes
+/// `size · 10_000 / vsol`. The two are identical exactly when `den = vsol / 10_000`.
+///
+/// **This is why the denominator must be derived per candidate and can never be a
+/// config constant.** A static `gate_impact_den` is right for exactly one pool depth
+/// and wrong — silently, and by an unbounded factor — for every other. The golden
+/// tape carried 250_000 (a 0.025 SOL pool) and then 3_000_000 (a 30 SOL pool) while
+/// pricing markets from 30 to 67 SOL; deriving it removes the choice.
+///
+/// Clamped to `1` so a zero reserve cannot produce a zero denominator; `linear_test`
+/// clamps identically, so this is documentation of an existing floor rather than a
+/// new one.
+#[inline]
+#[must_use]
+pub fn impact_den_for(vsol_lamports: u64) -> u64 {
+    (vsol_lamports / 10_000).max(1)
+}
+
+/// The strategy gate's size-invariant `protocol_bps` for a market: **two legs of
+/// venue fee, and nothing else**.
+///
+/// This is the number that removes the phantom 200 bps of "bid/ask spread" the golden
+/// tape's `gate_protocol_bps = 450` carried. A constant-product AMM has one reserve
+/// ratio and one price; there is no spread to cross. The cost of crossing size is own
+/// impact, which the gate charges separately through [`impact_den_for`] and which
+/// [`round_trip_lamports`] charges on both legs. Leaving the 200 bps in would be
+/// double-counting impact under an order book's name.
+#[inline]
+#[must_use]
+pub fn gate_protocol_bps(vsol_lamports: u64) -> u32 {
+    2 * venue_fee_bps_per_leg(vsol_lamports)
+}
+
+/// The strategy gate's `base_fixed_lamports`: `FIXED_LAMPORTS_PER_LEG ·
+/// (1 + exit_tranches)`, plus the ATA term.
+///
+/// The ATA term is [`ATA_CLOSE_LAMPORTS`], not [`ATA_RENT_LAMPORTS`], because the
+/// engine runs the **lazy-hold, close-on-full-exit** policy: the rent deposit is
+/// posted at admit and reclaimed in full when the position fully exits, so the cash
+/// cost of the token account across a COMPLETED round trip is the one closing
+/// signature. A gate that charged the full deposit would be pricing a round trip
+/// nobody intends to leave unfinished (203 bps on a floor clip), and a gate that
+/// charged nothing would be pricing an account that closes itself.
+///
+/// `exit_tranches` is clamped to `>= 1`: a position that is never exited is not a
+/// round trip.
+#[inline]
+#[must_use]
+pub fn gate_base_fixed_lamports(exit_tranches: u32) -> u64 {
+    FIXED_LAMPORTS_PER_LEG
+        .saturating_mul(u64::from(exit_tranches.max(1)).saturating_add(1))
+        .saturating_add(ATA_CLOSE_LAMPORTS)
+}
+
+/// **The clip size that minimises round-trip cost as a fraction of notional:**
+/// `S* = isqrt(fixed_total · vsol / 2)`.
+///
+/// Round-trip cost in bps is `fixed_total · 10_000 / S + 2 · S · 10_000 / vsol`
+/// (fixed amortised over the clip, plus two legs of constant-product impact); the
+/// venue fee is size-invariant and drops out of the derivative. Setting the
+/// derivative to zero gives `S*² = fixed_total · vsol / 2`.
+///
+/// # Why this function exists
+///
+/// It is the shortest statement of what the ATA deposit actually does to strategy.
+/// The deposit is not a 203 bps haircut you pay and forget — it is a **fixed cost**,
+/// and a fixed cost moves the cost-minimising trade size by its square root. At a
+/// mid-band curve, reclaiming the deposit puts the optimum near the operator's 0.1
+/// SOL floor clip; abandoning it moves the optimum to roughly 0.26 SOL, a **3.3×
+/// shift in the right size to trade**. Two strategies that disagree only about
+/// whether they close an emptied token account should be trading different size, and
+/// `the_reclaimed_deposit_moves_the_optimal_clip_by_three_times` pins exactly that.
+///
+/// `None` on a zero reserve, a zero fixed cost (no fixed cost means no interior
+/// optimum — cost falls monotonically toward dust), or a result that does not fit
+/// `u64`. Integer only (§22): the square root is
+/// [`crate::curve_state::isqrt_u128`], the one implementation in this crate.
+#[inline]
+#[must_use]
+pub fn optimal_clip_lamports(vsol_lamports: u64, fixed_total_lamports: u64) -> Option<u64> {
+    if vsol_lamports == 0 || fixed_total_lamports == 0 {
+        return None;
+    }
+    let prod = u128::from(fixed_total_lamports).checked_mul(u128::from(vsol_lamports))? / 2;
+    u64::try_from(isqrt_u128(prod)).ok()
+}
 
 /// The rent-exempt minimum balance of an Associated Token Account: **2_039_280
 /// lamports**, derived as `(ACCOUNT_STORAGE_OVERHEAD + SPL_TOKEN_ACCOUNT_LEN) ·
@@ -182,6 +342,9 @@ fn ceil_div(n: u128, d: u128) -> Option<u128> {
     }
     // Rounded up without a `+ d - 1` numerator that could itself overflow.
     let q = n / d;
+    // Plain modulo, not `is_multiple_of`, to honour the workspace MSRV 1.85 (the
+    // helper stabilised in 1.87) — the same choice `engine.rs` documents.
+    #[allow(clippy::manual_is_multiple_of)]
     if n % d == 0 {
         Some(q)
     } else {
@@ -220,7 +383,10 @@ pub fn round_trip_lamports(i: &CostInputs) -> Option<u64> {
 
     // 1. Fee: BOTH legs, on the full notional, from ONE parameter. Tranche-invariant
     //    — splitting a sale sells the same tokens.
-    let fee_leg = ceil_div(notional.checked_mul(u128::from(i.fee_bps_per_leg))?, BPS_DENOM)?;
+    let fee_leg = ceil_div(
+        notional.checked_mul(u128::from(i.fee_bps_per_leg))?,
+        BPS_DENOM,
+    )?;
     let fee = fee_leg.checked_mul(2)?;
 
     // 2. Fixed: one entry leg plus N exit tranches, then inflated by the expected
@@ -260,7 +426,10 @@ pub fn round_trip_lamports(i: &CostInputs) -> Option<u64> {
 #[must_use]
 pub fn round_trip_bps(i: &CostInputs) -> Option<u32> {
     let lamports = u128::from(round_trip_lamports(i)?);
-    let bps = ceil_div(lamports.checked_mul(BPS_DENOM)?, u128::from(i.notional_lamports))?;
+    let bps = ceil_div(
+        lamports.checked_mul(BPS_DENOM)?,
+        u128::from(i.notional_lamports),
+    )?;
     u32::try_from(bps).ok()
 }
 
@@ -311,8 +480,8 @@ mod tests {
         // Decomposition, so a change to any one term names itself in the diff.
         let fee = 2 * u128::from(CLIP) * 125 / BPS_DENOM;
         let fixed = (200_000u128 * BPS_DENOM).div_ceil(9_500);
-        let impact = 2 * u128::from(CLIP) * u128::from(own_impact_bps(BAND_VSOL, CLIP).unwrap())
-            / BPS_DENOM;
+        let impact =
+            2 * u128::from(CLIP) * u128::from(own_impact_bps(BAND_VSOL, CLIP).unwrap()) / BPS_DENOM;
         let total = fee + fixed + impact + u128::from(ATA_CLOSE_LAMPORTS);
         assert_eq!(
             round_trip_lamports(&anchor(true)),
@@ -332,8 +501,10 @@ mod tests {
         // The abandoned figure lands just UNDER the gate's 538, which is the
         // cancellation this module exists to break apart: the gate's phantom spread
         // was very nearly pricing the rent it had never heard of.
-        assert!(ANCHOR_RECLAIMED_BPS < 420);
-        assert!(ANCHOR_ABANDONED_BPS > 420 && ANCHOR_ABANDONED_BPS < 538);
+        const {
+            assert!(ANCHOR_RECLAIMED_BPS < 420);
+            assert!(ANCHOR_ABANDONED_BPS > 420 && ANCHOR_ABANDONED_BPS < 538);
+        }
     }
 
     /// The same trade with the token account abandoned costs the pinned higher
@@ -405,7 +576,10 @@ mod tests {
     fn zero_exit_tranches_is_clamped_to_one_rather_than_priced_as_free() {
         let mut zero = anchor(true);
         zero.exit_tranches = 0;
-        assert_eq!(round_trip_lamports(&zero), round_trip_lamports(&anchor(true)));
+        assert_eq!(
+            round_trip_lamports(&zero),
+            round_trip_lamports(&anchor(true))
+        );
     }
 
     /// Every degenerate input REFUSES. Not one of them returns a zero cost, because a
@@ -503,7 +677,10 @@ mod tests {
         assert!(round_trip_lamports(&worse).unwrap() > base);
         let mut worse = anchor(true);
         worse.vsol_lamports = 30_000_000_000;
-        assert!(round_trip_lamports(&worse).unwrap() > base, "thinner curve costs more");
+        assert!(
+            round_trip_lamports(&worse).unwrap() > base,
+            "thinner curve costs more"
+        );
         assert!(round_trip_lamports(&anchor(false)).unwrap() > base);
     }
 
@@ -517,9 +694,12 @@ mod tests {
         free.fixed_lamports_per_leg = 0;
         free.needs_ata = false;
         free.reclaims_ata = false;
-        let per_leg = u128::from(CLIP) * u128::from(own_impact_bps(BAND_VSOL, CLIP).unwrap())
-            / BPS_DENOM;
-        assert_eq!(round_trip_lamports(&free), Some(u64::try_from(2 * per_leg).unwrap()));
+        let per_leg =
+            u128::from(CLIP) * u128::from(own_impact_bps(BAND_VSOL, CLIP).unwrap()) / BPS_DENOM;
+        assert_eq!(
+            round_trip_lamports(&free),
+            Some(u64::try_from(2 * per_leg).unwrap())
+        );
         // A round trip is charged impact twice, never once.
         assert_eq!(own_impact_bps(BAND_VSOL, CLIP), Some(16));
         assert_eq!(round_trip_bps(&free), Some(32));
@@ -545,5 +725,172 @@ mod tests {
         // Pinned exactly, so that a change to either number breaks this test rather
         // than quietly restoring the cancellation.
         assert_eq!(rent_bps_on_a_floor_clip, 203);
+    }
+
+    /// **THE FEE TIER BREAK IS UNREACHABLE.** pump.fun's first fee-tier boundary is
+    /// at 420 SOL of market cap; the curve is exhausted at 410.88. The whole bonding
+    /// curve — launch, the operator's band, the last lamport before migration — pays
+    /// 125 bps a leg, and no pre-graduation band selection can change that.
+    #[test]
+    fn the_fee_tier_break_is_unreachable_before_graduation() {
+        let grad_mcap = crate::curve_state::mcap_lamports(GRADUATION_VSOL_LAMPORTS).unwrap();
+        assert!(grad_mcap < FIRST_FEE_TIER_BREAK_MCAP_LAMPORTS);
+        // The gap, in SOL of market cap. Small, and decisive.
+        assert_eq!(
+            (FIRST_FEE_TIER_BREAK_MCAP_LAMPORTS - grad_mcap) / 1_000_000_000,
+            9,
+        );
+        // Every reserve on the curve pays the top rate…
+        for vsol in [
+            crate::curve_state::LAUNCH_VSOL_LAMPORTS,
+            BAND_VSOL,
+            92_040_000_000,
+            GRADUATION_VSOL_LAMPORTS - 1,
+        ] {
+            assert_eq!(venue_fee_bps_per_leg(vsol), VENUE_FEE_BPS_CURVE, "{vsol}");
+            assert_eq!(gate_protocol_bps(vsol), 250, "two legs of curve fee");
+        }
+        // …and only the migrated pool pays less.
+        assert_eq!(
+            venue_fee_bps_per_leg(GRADUATION_VSOL_LAMPORTS),
+            VENUE_FEE_BPS_POST_GRADUATION,
+        );
+        assert_eq!(gate_protocol_bps(GRADUATION_VSOL_LAMPORTS), 60);
+        // A zero reserve is not a refusal here — it is the EXPENSIVE rate (§54).
+        assert_eq!(venue_fee_bps_per_leg(0), VENUE_FEE_BPS_CURVE);
+    }
+
+    /// **THE IDENTITY THE GATE'S IMPACT MODEL NOW SATISFIES BY CONSTRUCTION.**
+    /// `linear_test(vsol / 10_000).impact_bps(size)` is `own_impact_bps(vsol, size)`
+    /// for every market — which a static `gate_impact_den` could only ever be for one.
+    #[test]
+    fn the_derived_impact_denominator_reproduces_the_constant_product_curve() {
+        use pump_quant_strategy::economic_gate::ImpactCurve;
+        for &vsol in &[
+            crate::curve_state::LAUNCH_VSOL_LAMPORTS,
+            BAND_VSOL,
+            67_000_000_000,
+            GRADUATION_VSOL_LAMPORTS,
+            500_000_000_000,
+        ] {
+            let curve = ImpactCurve::linear_test(impact_den_for(vsol));
+            for &size in &[10_000_000u64, CLIP, 250_000_000, 1_000_000_000] {
+                let gate = u64::from(curve.impact_bps(size));
+                let exact = own_impact_bps(vsol, size).unwrap();
+                // Identical up to the one floor-division step each performs on a
+                // slightly different grouping of the same ratio — never more than a
+                // single bp apart, and never in a direction that flatters us by more.
+                assert!(
+                    gate.abs_diff(exact) <= 1,
+                    "vsol={vsol} size={size}: gate {gate} vs curve {exact}",
+                );
+            }
+        }
+        // The anchor, exactly: a floor clip into a mid-band curve is 16 bps a leg on
+        // both models.
+        assert_eq!(
+            ImpactCurve::linear_test(impact_den_for(BAND_VSOL)).impact_bps(CLIP),
+            16,
+        );
+        assert_eq!(own_impact_bps(BAND_VSOL, CLIP), Some(16));
+    }
+
+    /// The gate's fixed term scales with exit legs and carries the CLOSE signature,
+    /// not the deposit — the lazy-hold, close-on-full-exit policy priced.
+    #[test]
+    fn the_gate_fixed_term_is_legs_of_tip_plus_one_closing_signature() {
+        assert_eq!(gate_base_fixed_lamports(1), 2 * 150_000 + 5_000);
+        assert_eq!(gate_base_fixed_lamports(3), 4 * 150_000 + 5_000);
+        // A zero-tranche exit is not free; it is one tranche.
+        assert_eq!(gate_base_fixed_lamports(0), gate_base_fixed_lamports(1));
+        // It is nowhere near the abandoned-deposit figure, and that is the point.
+        assert!(gate_base_fixed_lamports(3) < ATA_RENT_LAMPORTS);
+    }
+
+    /// **THE STRATEGIC POINT OF THE WHOLE EXERCISE.** The ATA deposit is a FIXED
+    /// cost, and a fixed cost moves the cost-minimising clip by its square root.
+    /// Reclaiming the deposit puts the optimum at the operator's floor clip;
+    /// abandoning it moves the optimum 3.3× higher. Two strategies that differ only
+    /// in whether they close an emptied token account should not trade the same size.
+    #[test]
+    fn the_reclaimed_deposit_moves_the_optimal_clip_by_three_times() {
+        // The anchor's own fixed terms: two legs at 100_000 plus the close signature
+        // when the deposit is reclaimed, and the same plus the whole unrecovered
+        // deposit when it is not.
+        const RECLAIMED_FIXED: u64 = 2 * 100_000 + ATA_CLOSE_LAMPORTS;
+        const ABANDONED_FIXED: u64 = 2 * 100_000 + ATA_RENT_LAMPORTS;
+        let reclaimed = optimal_clip_lamports(BAND_VSOL, RECLAIMED_FIXED).unwrap();
+        let abandoned = optimal_clip_lamports(BAND_VSOL, ABANDONED_FIXED).unwrap();
+        println!("MEASURE optimal reclaimed={reclaimed} abandoned={abandoned}");
+        assert_eq!(reclaimed, MEASURED_OPTIMAL_RECLAIMED);
+        assert_eq!(abandoned, MEASURED_OPTIMAL_ABANDONED);
+        // ~0.079 SOL against ~0.263 SOL.
+        assert_eq!(reclaimed / 1_000_000, 79);
+        assert_eq!(abandoned / 1_000_000, 262);
+        // A 3.3× shift in the right size to trade, from one closing signature.
+        assert_eq!(abandoned * 100 / reclaimed, 330);
+
+        // The SHIPPED per-leg fixed cost (150_000) is larger, so both optima move up
+        // together and the ratio compresses — stated so the shipped figure is on the
+        // record next to the anchor's, not inferred from it.
+        let ship_reclaimed =
+            optimal_clip_lamports(BAND_VSOL, 2 * FIXED_LAMPORTS_PER_LEG + ATA_CLOSE_LAMPORTS)
+                .unwrap();
+        let ship_abandoned =
+            optimal_clip_lamports(BAND_VSOL, 2 * FIXED_LAMPORTS_PER_LEG + ATA_RENT_LAMPORTS)
+                .unwrap();
+        println!("MEASURE ship optimal reclaimed={ship_reclaimed} abandoned={ship_abandoned}");
+        assert_eq!(ship_reclaimed, MEASURED_SHIP_OPTIMAL_RECLAIMED);
+        assert_eq!(ship_abandoned, MEASURED_SHIP_OPTIMAL_ABANDONED);
+    }
+
+    /// Measured, not computed: pinned from the first run of
+    /// `the_reclaimed_deposit_moves_the_optimal_clip_by_three_times`.
+    const MEASURED_OPTIMAL_RECLAIMED: u64 = 79_551_512;
+    const MEASURED_OPTIMAL_ABANDONED: u64 = 262_921_263;
+    const MEASURED_SHIP_OPTIMAL_RECLAIMED: u64 = 97_033_440;
+    const MEASURED_SHIP_OPTIMAL_ABANDONED: u64 = 268_727_810;
+
+    /// `optimal_clip_lamports` really is the minimiser: the cost at `S*` is no worse
+    /// than the cost anywhere near it. Verified against the SAME arithmetic
+    /// [`round_trip_bps`] uses, so the optimum is the optimum of the shipped model
+    /// and not of a private restatement of it.
+    #[test]
+    fn the_optimal_clip_actually_minimises_the_shipped_round_trip_cost() {
+        let fixed_total = 2 * FIXED_LAMPORTS_PER_LEG + ATA_CLOSE_LAMPORTS;
+        let star = optimal_clip_lamports(BAND_VSOL, fixed_total).unwrap();
+        let cost_at = |n: u64| -> u32 {
+            round_trip_bps(&CostInputs {
+                notional_lamports: n,
+                vsol_lamports: BAND_VSOL,
+                fee_bps_per_leg: VENUE_FEE_BPS_CURVE,
+                fixed_lamports_per_leg: FIXED_LAMPORTS_PER_LEG,
+                fail_rate_bps: 0,
+                exit_tranches: 1,
+                needs_ata: true,
+                reclaims_ata: true,
+            })
+            .unwrap()
+        };
+        let at_star = cost_at(star);
+        for &other in &[
+            star / 4,
+            star / 2,
+            star * 2,
+            star * 4,
+            10_000_000,
+            1_000_000_000,
+        ] {
+            assert!(
+                cost_at(other) >= at_star,
+                "S*={star} costs {at_star} bps; {other} costs {} bps",
+                cost_at(other),
+            );
+        }
+        // Degenerate inputs refuse rather than returning a fabricated size.
+        assert_eq!(optimal_clip_lamports(0, fixed_total), None);
+        assert_eq!(optimal_clip_lamports(BAND_VSOL, 0), None);
+        // Totality at the extreme: it must not wrap or panic, whatever it returns.
+        let _ = optimal_clip_lamports(u64::MAX, u64::MAX);
     }
 }

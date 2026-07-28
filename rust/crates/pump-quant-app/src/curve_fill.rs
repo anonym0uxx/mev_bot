@@ -110,6 +110,9 @@ fn ceil_div(n: u128, d: u128) -> Option<u128> {
     }
     // Rounded up without a `+ d - 1` numerator that could itself overflow.
     let q = n / d;
+    // Plain modulo, not `is_multiple_of`, to honour the workspace MSRV 1.85 (the
+    // helper stabilised in 1.87) — the same choice `engine.rs` documents.
+    #[allow(clippy::manual_is_multiple_of)]
     if n % d == 0 {
         Some(q)
     } else {
@@ -354,7 +357,9 @@ mod tests {
         );
         // The engine's current model would have booked the entry at PF_SPOT_FP; the
         // difference is real lamports it never charged itself.
-        assert!(PF_BUY_AVG_FP > PF_SPOT_FP);
+        const {
+            assert!(PF_BUY_AVG_FP > PF_SPOT_FP);
+        }
     }
 
     /// The same example on the sell side: unwinding the position we just bought
@@ -486,9 +491,15 @@ mod tests {
         let a = buy_avg_price_fp(PF_VSOL, PF_VTOK, 100_000_000).unwrap();
         let b = buy_avg_price_fp(PF_VSOL, PF_VTOK, 1_000_000_000).unwrap();
         let c = buy_avg_price_fp(PF_VSOL, PF_VTOK, 10_000_000_000).unwrap();
-        assert!(a < b && b < c, "avg buy price strictly worsens: {a} {b} {c}");
+        assert!(
+            a < b && b < c,
+            "avg buy price strictly worsens: {a} {b} {c}"
+        );
         assert_eq!(buy_impact_bps(PF_VSOL, PF_VTOK, 1_000_000_000), Some(333));
-        assert_eq!(buy_impact_bps(PF_VSOL, PF_VTOK, 10_000_000_000), Some(3_333));
+        assert_eq!(
+            buy_impact_bps(PF_VSOL, PF_VTOK, 10_000_000_000),
+            Some(3_333)
+        );
     }
 
     /// LAW: as size shrinks toward zero, the average price converges to spot.
@@ -570,10 +581,9 @@ mod tests {
     #[test]
     fn k_is_preserved_across_a_buy_then_an_equal_token_sell() {
         for &(vsol, vtok) in RESERVES {
-            let unit_value_lamports = u64::try_from(
-                u128::from(spot_price_fp(vsol, vtok).unwrap_or(0)) / PRICE_SCALE,
-            )
-            .unwrap_or(u64::MAX);
+            let unit_value_lamports =
+                u64::try_from(u128::from(spot_price_fp(vsol, vtok).unwrap_or(0)) / PRICE_SCALE)
+                    .unwrap_or(u64::MAX);
             for &s in SIZES {
                 let Some(out) = buy_tokens_out(vsol, vtok, s) else {
                     continue;
@@ -720,7 +730,6 @@ mod tests {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // THE RESERVE-FREE CLOSED FORMS — why the engine can price its own impact with
 // only `liquidity_lamports`.
@@ -749,7 +758,8 @@ pub fn buy_fill_price_fp(spot_fp: u64, vsol: u64, notional: u64) -> Option<u64> 
     if vsol == 0 || spot_fp == 0 {
         return None;
     }
-    let num = u128::from(spot_fp).checked_mul(u128::from(vsol).checked_add(u128::from(notional))?)?;
+    let num =
+        u128::from(spot_fp).checked_mul(u128::from(vsol).checked_add(u128::from(notional))?)?;
     u64::try_from(num.div_ceil(u128::from(vsol))).ok()
 }
 
@@ -796,8 +806,14 @@ mod reserve_free_tests {
         let spot = 10_000_000u64;
         let vsol = 30_000_000_000u64;
         for &n in &[1u64, 100_000_000, 1_000_000_000] {
-            assert!(buy_fill_price_fp(spot, vsol, n).unwrap() >= spot, "buy pays up");
-            assert!(sell_fill_price_fp(spot, vsol, n).unwrap() <= spot, "sell receives less");
+            assert!(
+                buy_fill_price_fp(spot, vsol, n).unwrap() >= spot,
+                "buy pays up"
+            );
+            assert!(
+                sell_fill_price_fp(spot, vsol, n).unwrap() <= spot,
+                "sell receives less"
+            );
         }
     }
 

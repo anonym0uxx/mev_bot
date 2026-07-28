@@ -11,7 +11,7 @@ Everything here is integer / deterministic, fast (< 30 s), and needs no network,
 no wall-clock, and no RNG (§22).
 
 At the pinned green HEAD: `cargo test --workspace` = **all passed / 0 failed**,
-golden digest `13150420781254346145` (net `8124568`), **191** dossiers intact.
+golden digest `6163272398497391826` (net `16778896`), **191** dossiers intact.
 
 ### Brain representation state (no baseline of its own — recorded so a future re-pin knows where it started)
 
@@ -55,17 +55,17 @@ worth **zero lamports** on every tape this repo can drive.
 
 | Baseline | Value | Guards |
 |---|---|---|
-| `GOLDEN_DIGEST` | `13150420781254346145` (hex `b67fae06d19485a1`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
-| `GOLDEN_NET_LAMPORTS` | `8124568` | realized §24-compliant cost-derived net-SOL on the golden tape |
+| `GOLDEN_DIGEST` | `6163272398497391826` (hex `558857978e6824d2`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
+| `GOLDEN_NET_LAMPORTS` | `16778896` | realized §24-compliant cost-derived net-SOL on the golden tape |
 | `GOLDEN_PROMOTED` | `504` | candidates promoted to the gate |
-| `GOLDEN_ADMITTED` | `13` | candidates admitted by the gate |
-| `GOLDEN_REJECTED` | `457` | candidates rejected by the gate |
+| `GOLDEN_ADMITTED` | `12` | candidates admitted by the gate |
+| `GOLDEN_REJECTED` | `447` | candidates rejected by the gate |
 | `GOLDEN_UNIVERSE_FILTERED` | `72` | §21.5 universe-screen removals (zombie cohort) |
-| `GOLDEN_NET_FIXED_LADDER` | `7327315` | net with the §24 cost-derived ladder DISABLED (forbidden fixed 13500/25000/50000 ladder). Re-measured at re-pin #24 under real depth + own-impact fills (was `15055700` on the fictional tape) |
-| `GOLDEN_DERIVED_MINUS_FIXED` | `797253` | margin by which cost-derived out-earns the fixed ladder on the representative tape (re-pin #13, preserved through re-pin #14's Discord alpha cohort, re-pin #15's 0.1-SOL operator floor + Kelly recalibration, and re-pin #24's depth realism — which MORE THAN DOUBLED the margin, `355101` → `797253`: charging real execution cost is exactly what a cost-DERIVED ladder prices and a fixed one cannot) |
+| `GOLDEN_NET_FIXED_LADDER` | `16970346` | net with the §24 cost-derived ladder DISABLED (forbidden fixed 13500/25000/50000 ladder). Re-measured at re-pin #26 under the unified cost model (was `7327315` at re-pin #24, `15055700` on the fictional tape) |
+| `GOLDEN_DERIVED_MINUS_FIXED` | `-191450` | **NEGATIVE since re-pin #26 — the fixed ladder now out-earns cost-derived on this tape by 191450 lamports (1.1% of the book, on 12 trades in 4 markets).** The §24 reversal STANDS regardless: re-pin #12 ruled that fixed global TP constants are FORBIDDEN as the live default *whatever this tape's net*, and it anticipated exactly this case. The retired claim that derived also earns more (`+12620` → `+355101` → `+797253`) is withdrawn, not re-argued |
 
 **Golden net re-pin arc** (`GOLDEN_NET_ARC`, mirrored from `golden_digest.rs`):
-`2979624 → 5017234 → 6443936 → 8785954 → 12550767 → 3831945 → 1406102 → 1864780 → 8124568`.
+`2979624 → 5017234 → 6443936 → 8785954 → 12550767 → 3831945 → 1406102 → 1864780 → 8124568 → 16778896`.
 The arc must terminate at `GOLDEN_NET_LAMPORTS`; re-pin #12's documented signed
 delta is `GOLDEN_ARC_REPIN12_DELTA` = `-8718822` (`3831945 - 12550767`).
 
@@ -147,8 +147,10 @@ Config-identity + defaults (`tests/regression_laws.rs`):
 - **every_law_toggle_is_in_the_strategy_identity_seed** — flipping ANY toggle moves
   the golden digest (the law is still part of the §19 strategy identity).
 - **derived_targets_reversal_moves_the_golden_net_off_the_fixed_ladder** — §24
-  default-ON produces the derived net (`8124568`); OFF falls back to the forbidden
-  fixed ladder (`15055700`), derived > fixed.
+  default-ON produces the derived net (`16778896`); OFF falls back to the forbidden
+  fixed ladder (`16970346`). Since re-pin #26 fixed is the LARGER of the two by
+  `191450`; the test pins both nets and that they DIFFER (the wiring is live), and no
+  longer asserts an ordering it cannot support.
 - **corroboration_quota_changes_golden_admissions_and_net** — §71 quota strictly
   out-earns its absence and changes admissions.
 - **universe_screen_toggle_changes_the_filtered_count** — §21.5 age screen moves

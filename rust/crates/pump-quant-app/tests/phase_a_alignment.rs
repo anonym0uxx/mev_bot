@@ -27,17 +27,33 @@ fn funded() -> Config {
     cfg
 }
 
+/// **The SOL-side reserve every fixture in this file declares: a pump.fun bonding
+/// curve at LAUNCH depth, 30 SOL of virtual SOL reserve**
+/// (`pump_quant_app::curve_state::LAUNCH_VSOL_LAMPORTS` — the shallowest depth the
+/// venue can present).
+///
+/// **Re-pin #26 (2026-07-28).** A declared depth is now a PRICE: `gate::decide`
+/// derives the gate's impact denominator from the market's own reserve
+/// (`cost_model::impact_den_for` = `vsol / 10_000`). At the previous 10 SOL this
+/// file's 20-SOL bankroll sized a ~0.9-SOL bite — 900 bps of own impact a leg — and
+/// `inflated_depth_claim_buys_no_size` stopped admitting anything at all, so the §15
+/// cross-check it exists to prove had nothing to compare.
+const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+/// Confirmed sellable depth, just under [`REAL_CURVE_VSOL`] — the "a confirm proves
+/// slightly less than the pool holds" discipline the golden tape uses.
+const REAL_SELLABLE_DEPTH: u64 = 29_000_000_000;
+
 /// Deep, admissible flow for one mint: strong OFI, deep pool, broad entities. The
-/// pool is deep enough (10 SOL of reserve) that a ≥0.1-SOL floor clip (criterion 112 /
-/// A-6) is a small fraction of the curve and clears the §34.4 exit-cost veto — a
-/// shallow 0.3-SOL curve cannot absorb a 0.1-SOL exit (~33% of reserve).
+/// pool is a real launch curve ([`REAL_CURVE_VSOL`]), so a ≥0.1-SOL floor clip
+/// (criterion 112 / A-6) is a small fraction of it and clears the §34.4 exit-cost
+/// veto — a shallow 0.3-SOL curve cannot absorb a 0.1-SOL exit (~33% of reserve).
 fn feed_flow(eng: &mut Engine, mt: Mint, trades: u64) {
     for i in 0..trades {
         eng.tick(AppEvent::MarketTrade {
             mint: mt,
             price_fp: 1_000_000_000 + (i as i128) * 100_000,
             quote_lamports: 800_000,
-            liquidity_lamports: 10_000_000_000,
+            liquidity_lamports: REAL_CURVE_VSOL,
             signed_base: 900_000 - (i as i64),
             buyer_entity: 10 + i % 9,
             age_slots: 12,
@@ -62,7 +78,7 @@ fn stale_numeric_snapshot_cannot_authorize_entry() {
     // ...then land a perfectly fresh on-chain confirm.
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: REAL_SELLABLE_DEPTH,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -82,7 +98,7 @@ fn fresh_numeric_snapshot_with_confirm_admits() {
     feed_flow(&mut eng, mt, 20);
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: REAL_SELLABLE_DEPTH,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -118,11 +134,12 @@ fn inflated_depth_claim_buys_no_size() {
             })
             .collect()
     };
-    // Observed pool liquidity in feed_flow is 10 SOL; an honest claim at that depth vs
-    // a claim 100× beyond it must buy the SAME size — §15 cross-checks the asserted
-    // depth against observed liquidity, and the size band bounds both identically.
-    let honest = run(10_000_000_000);
-    let inflated = run(1_000_000_000_000);
+    // Observed pool liquidity in feed_flow is `REAL_CURVE_VSOL`; an honest claim at
+    // that depth vs a claim 100× beyond it must buy the SAME size — §15 cross-checks
+    // the asserted depth against observed liquidity, and the size band bounds both
+    // identically.
+    let honest = run(REAL_CURVE_VSOL);
+    let inflated = run(REAL_CURVE_VSOL * 100);
     assert!(!honest.is_empty());
     assert_eq!(
         honest, inflated,
@@ -148,7 +165,7 @@ fn caller_followable_cannot_authorize_entry() {
         if round == 0 {
             eng.tick(AppEvent::OnchainConfirm {
                 mint: mt,
-                sellable_depth_lamports: 500_000_000,
+                sellable_depth_lamports: REAL_SELLABLE_DEPTH,
             });
         }
         for _ in 0..6 {
@@ -228,7 +245,7 @@ fn expectancy_is_prior_until_lane_sample_gate() {
     feed_flow(&mut eng, mt, 20);
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
-        sellable_depth_lamports: 400_000_000,
+        sellable_depth_lamports: REAL_SELLABLE_DEPTH,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -239,7 +256,7 @@ fn expectancy_is_prior_until_lane_sample_gate() {
             mint: mt,
             price_fp: 600_000_000 - (i as i128) * 10_000_000,
             quote_lamports: 800_000,
-            liquidity_lamports: 300_000_000,
+            liquidity_lamports: REAL_CURVE_VSOL,
             signed_base: 900_000,
             buyer_entity: 10 + i % 9,
             age_slots: 12,

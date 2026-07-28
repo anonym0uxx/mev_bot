@@ -57,10 +57,25 @@ pub enum Side {
 /// Markets on the tape. Enough to matter in lamports, few enough to stay fast.
 pub const MARKETS: u64 = 6;
 
-/// Pool depth (lamports) — deep enough that the exit is priceable at every rung.
-pub const LIQ: u64 = 260_000_000;
-/// Confirmed sellable depth (lamports).
-pub const DEPTH: u64 = 300_000_000;
+/// **Pool depth (lamports): a real pump.fun curve a little past launch, 32 SOL of
+/// virtual SOL reserve** — deep enough that the exit is priceable at every rung.
+///
+/// **Re-pin #26 (2026-07-28).** This was `260_000_000` — 0.26 SOL — and "priceable
+/// at every rung" stopped being true the moment `gate::decide` began deriving its
+/// impact denominator from the market's own reserve (`cost_model::impact_den_for` =
+/// `vsol / 10_000`). A 0.1 SOL clip into a 0.26 SOL pool is 3_846 bps of own impact
+/// a LEG; all six markets refused, nothing opened, and both sides of a tape whose
+/// entire purpose is to make the two sides DIFFER reported the same 0.
+///
+/// **The scenario is untouched.** Every lever this tape exercises is a FLOW lever:
+/// the shakeout burst ([`SELL_BURST`]) and the recovery ([`RECOVER_BUY`]) act on
+/// windowed order-flow imbalance, which is computed from signed BASE and does not
+/// read depth at all; the price waypoints are unchanged. Real depth changes only
+/// whether the positions the tape is about ever get opened.
+pub const LIQ: u64 = 32_000_000_000;
+/// Confirmed sellable depth (lamports) — just under [`LIQ`], the discipline
+/// `tape_golden` uses. Re-pin #26: was `300_000_000`.
+pub const DEPTH: u64 = 30_000_000_000;
 /// Market age in slots: past the sniper window, still inside the §21.5
 /// fresh-launch exemption, so the universe screen stays inert and this tape
 /// isolates the EXIT lever only.
@@ -125,11 +140,15 @@ fn confirm(eng: &mut Engine, m: Mint) {
 /// plus enough position slots to hold every market on the tape.
 pub fn flow_cfg(cfg: Config) -> Config {
     let mut cfg = cfg;
+    // COST-MODEL UNIFICATION (2026-07-28). The gate's three cost inputs —
+    // protocol bps, base fixed lamports and the impact denominator — are no longer
+    // config: `gate::decide` derives them per candidate from the market's own
+    // SOL-side reserve via `cost_model`. The overrides that used to sit here
+    // (450 / 200_000 / 250_000) are gone because they no longer decide anything;
+    // what this tape must now declare honestly is its DEPTH, which is what the
+    // derived impact model reads — see `LIQ` (re-pin #26).
     cfg.gate_expected_move_bps = 1_800;
-    cfg.gate_protocol_bps = 450;
     cfg.gate_margin_bps = 150;
-    cfg.gate_base_fixed_lamports = 200_000;
-    cfg.gate_impact_den = 250_000;
     cfg.max_concurrent_positions = 6;
     // ---- ISOLATE THE LEVER UNDER TEST (§32 flow persistence) ----
     // The held-position lifecycle carries its OWN exits that also fire on a large

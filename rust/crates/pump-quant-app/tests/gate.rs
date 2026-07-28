@@ -8,9 +8,16 @@ fn cand(lane: Lane) -> Candidate {
     Candidate::new(Mint::new([9u8; 32]), lane, 1_000, 1, Features::default())
 }
 
+/// DEPTH REALISM (re-pin #26): the gate's impact model is now DERIVED from the
+/// market's own SOL-side reserve (`cost_model::impact_den_for`), so a fixture's
+/// declared depth is a decision input rather than decoration. Real pump.fun virtual
+/// reserves start at 30 SOL; the old 0.1 SOL declared here put the operator's 0.1 SOL
+/// floor clip at 100% of the pool.
+const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+
 fn numeric_feats() -> Features {
     Features {
-        liquidity_lamports: 100_000_000,
+        liquidity_lamports: REAL_CURVE_VSOL,
         buy_pressure_bp: 9_000,
         unique_buyers: 12,
         age_slots: 40,
@@ -34,7 +41,7 @@ fn confirmation_without_numeric_evidence_is_refused() {
     let cfg = Config::dev_portable();
     // Confirmed depth but no numeric microstructure (default features = 0 liquidity).
     let conf = Confirmation {
-        sellable_depth_lamports: 200_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
         numeric: Features::default(),
     };
     let d = decide(&cand(Lane::EarlyConfirmation), Some(conf), &cfg, None);
@@ -45,7 +52,7 @@ fn confirmation_without_numeric_evidence_is_refused() {
 fn confirmed_and_viable_is_admitted() {
     let cfg = Config::dev_portable();
     let conf = Confirmation {
-        sellable_depth_lamports: 200_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
         numeric: numeric_feats(),
     };
     let d = decide(&cand(Lane::ActiveMarketScalp), Some(conf), &cfg, None);
@@ -64,7 +71,7 @@ fn unviable_economics_is_refused() {
     let mut cfg = Config::dev_portable();
     cfg.apply("gate_margin_bps", 9_000).unwrap();
     let conf = Confirmation {
-        sellable_depth_lamports: 200_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
         numeric: numeric_feats(),
     };
     let d = decide(&cand(Lane::ActiveMarketScalp), Some(conf), &cfg, None);

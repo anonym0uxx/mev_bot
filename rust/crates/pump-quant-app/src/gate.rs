@@ -16,7 +16,12 @@
 //!    collapses (`Refuse`) means there is no size at which the edge survives its own
 //!    costs, and the candidate is dropped.
 //!
-//! No parameter here is hard-coded: every number the size-band consults comes from
+//! The size-band's three COST inputs — impact denominator, protocol bps and base
+//! fixed lamports — are no longer config constants. They are derived per candidate
+//! from the market's own SOL-side reserve by [`crate::cost_model`], the single
+//! authority on what a round trip costs, so the gate prices the market in front of it
+//! rather than a market the operator once configured. Everything else the size-band
+//! consults (expected move, fail rate, margin, operator floor) still comes from
 //! [`crate::config::Config`].
 
 use crate::config::Config;
@@ -105,14 +110,37 @@ pub fn decide(
         return GateDecision::Reject(GateReject::OutsideMcapBand);
     }
 
-    let impact = ImpactCurve::linear_test(cfg.gate_impact_den);
+    // ---- COST INPUTS, DERIVED PER CANDIDATE (2026-07-28 cost-model unification).
+    //
+    // `economic_gate::size_band` lives in `pump-quant-strategy`, which this crate
+    // DEPENDS ON, so it cannot call `cost_model` without a dependency cycle. The
+    // resolution is not to move a crate: it is that the caller — this function, which
+    // can see both — derives the three cost inputs from the market in front of it and
+    // hands them down. `size_band` stays the pure arithmetic leaf it always was; the
+    // economics stop being config constants.
+    //
+    // 1. IMPACT. `linear_test(vsol / 10_000)` makes the gate's linear impact model
+    //    EXACTLY `curve_fill::own_impact_bps` for THIS market (`cost_model::
+    //    impact_den_for`). The old `cfg.gate_impact_den` was a single number standing
+    //    in for every pool on the venue; it was 250_000 (a 0.025 SOL pool) while the
+    //    tape priced 30-67 SOL pools, then 3_000_000 (a 30 SOL pool) while the tape
+    //    priced up to 67. A static denominator can only ever be right for one depth.
+    // 2. PROTOCOL. Two legs of the venue's own fee and NOTHING ELSE. This removes the
+    //    phantom 200 bps of "bid/ask spread" the golden tape's 450 carried: a
+    //    constant-product AMM has one reserve ratio and one price, and the cost of
+    //    crossing size is own impact — already charged, on both legs, just above.
+    //    The rate is market-cap tiered, so it too is per-candidate.
+    // 3. FIXED. `FIXED_LAMPORTS_PER_LEG · (1 + exit_tranches)` plus the one signature
+    //    that reclaims the ATA deposit. See `cost_model::gate_base_fixed_lamports`.
+    let vsol = conf.numeric.liquidity_lamports;
+    let impact = ImpactCurve::linear_test(crate::cost_model::impact_den_for(vsol));
     let band = size_band(
         expected_move_bps_override.unwrap_or(cfg.gate_expected_move_bps),
-        cfg.gate_base_fixed_lamports,
+        crate::cost_model::gate_base_fixed_lamports(cfg.gate_exit_tranches),
         cfg.gate_fail_rate_bps,
-        cfg.gate_protocol_bps,
+        crate::cost_model::gate_protocol_bps(vsol),
         cfg.gate_margin_bps,
-        conf.numeric.liquidity_lamports,
+        vsol,
         &impact,
         conf.sellable_depth_lamports,
     );

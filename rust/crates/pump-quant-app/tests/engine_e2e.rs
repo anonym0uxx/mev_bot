@@ -6,6 +6,13 @@ use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::{AppEvent, CreatorActionKind};
 use pump_quant_domain::ids::Mint as DomainMint;
 
+/// **DEPTH REALISM (re-pin #26).** The gate's price-impact model is now DERIVED from
+/// the market's own SOL-side reserve (`cost_model::impact_den_for`), so a fixture's
+/// declared depth is a decision input rather than decoration. Real pump.fun virtual
+/// reserves START at 30 SOL; the 2 SOL these fixtures used to declare put the
+/// operator's 0.1 SOL floor clip at 5% of the pool (Amendment A-13(1)).
+const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+
 fn mint(tag: u8) -> DomainMint {
     DomainMint::from_bytes([tag; 32])
 }
@@ -40,7 +47,7 @@ fn scenario() -> Vec<AppEvent> {
             mint: a,
             price_fp: 1_000_000_000 + (i as i128) * 1_000_000,
             quote_lamports: 500_000,
-            liquidity_lamports: 2_000_000_000,
+            liquidity_lamports: REAL_CURVE_VSOL,
             signed_base: 1_000_000,
             buyer_entity: i,
             age_slots: 30,
@@ -48,7 +55,7 @@ fn scenario() -> Vec<AppEvent> {
     }
     ev.push(AppEvent::OnchainConfirm {
         mint: a,
-        sellable_depth_lamports: 2_000_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
 
     // Loud social call on B and narrative burst on C — corroboration only.
@@ -221,7 +228,7 @@ fn social_source_earns_quality_from_realized_outcomes() {
             mint: mkt,
             price_fp: 1_000_000_000 + (i as i128) * 1_000_000,
             quote_lamports: 500_000,
-            liquidity_lamports: 2_000_000_000, // deep: a 0.1-SOL floor clip clears exit-cost
+            liquidity_lamports: REAL_CURVE_VSOL, // deep: a 0.1-SOL floor clip clears exit-cost
             signed_base: 1_000_000,
             buyer_entity: i,
             age_slots: 30,
@@ -229,7 +236,7 @@ fn social_source_earns_quality_from_realized_outcomes() {
     }
     eng.tick(AppEvent::OnchainConfirm {
         mint: mkt,
-        sellable_depth_lamports: 2_000_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
     // One evaluation tick promotes + admits: the position OPENS here.
     eng.tick(AppEvent::Tick);
@@ -240,7 +247,7 @@ fn social_source_earns_quality_from_realized_outcomes() {
         mint: mkt,
         price_fp: 1_420_000_000,
         quote_lamports: 500_000,
-        liquidity_lamports: 2_000_000_000,
+        liquidity_lamports: REAL_CURVE_VSOL,
         signed_base: 1_000_000,
         buyer_entity: 5,
         age_slots: 31,
@@ -249,7 +256,7 @@ fn social_source_earns_quality_from_realized_outcomes() {
         mint: mkt,
         price_fp: 1_400_000_000,
         quote_lamports: 2_000_000,
-        liquidity_lamports: 2_000_000_000,
+        liquidity_lamports: REAL_CURVE_VSOL,
         signed_base: -4_000_000,
         buyer_entity: 6,
         age_slots: 32,
@@ -335,16 +342,13 @@ fn creator_distribution_fades_size_but_never_vetoes() {
         // fixed cost the band collapses to a single point (x_min == x_cost) and any
         // corroboration-tier haircut is correctly a no-op (never sizes below viable).
         let mut cfg = Config::dev_portable();
-        cfg.gate_base_fixed_lamports = 1_000;
         // A-6: deep market + wide economics + a 7-SOL bankroll place BOTH arms in the
         // free sizing regime (above the 0.1-SOL floor, below x_max ≈ 0.3 SOL, and below
         // the 0.2-SOL two-bite split threshold — single-bite, no scale-in asymmetry), so
         // the graded creator fade reduces the DEPLOYED size and the smaller net is
         // visible. A shallow default market would clamp both arms to the floor.
         cfg.gate_expected_move_bps = 1_800;
-        cfg.gate_protocol_bps = 450;
         cfg.gate_margin_bps = 150;
-        cfg.gate_impact_den = 250_000;
         cfg.bankroll_initial_lamports = 7_000_000_000; // base ~0.35 SOL
         let mut e = Engine::new(cfg, RunMode::Paper);
         let m = mint(0x62);
@@ -372,7 +376,7 @@ fn creator_distribution_fades_size_but_never_vetoes() {
                 mint: m,
                 price_fp: 1_000_000_000 + (i as i128) * 1_000_000,
                 quote_lamports: 500_000,
-                liquidity_lamports: 2_000_000_000, // deep: x_max bounded by economics, not depth
+                liquidity_lamports: REAL_CURVE_VSOL, // deep: x_max bounded by economics, not depth
                 signed_base: 1_000_000,
                 buyer_entity: i,
                 age_slots: 30,
@@ -380,7 +384,7 @@ fn creator_distribution_fades_size_but_never_vetoes() {
         }
         e.tick(AppEvent::OnchainConfirm {
             mint: m,
-            sellable_depth_lamports: 2_000_000_000,
+            sellable_depth_lamports: REAL_CURVE_VSOL,
         });
         // Admit (position opens), then a pump past the principal-recovery target and
         // a flow rollover close the position AT A PROFIT — so realized net scales
@@ -390,7 +394,7 @@ fn creator_distribution_fades_size_but_never_vetoes() {
             mint: m,
             price_fp: 1_500_000_000,
             quote_lamports: 500_000,
-            liquidity_lamports: 2_000_000_000,
+            liquidity_lamports: REAL_CURVE_VSOL,
             signed_base: 1_000_000,
             buyer_entity: 5,
             age_slots: 31,
@@ -399,7 +403,7 @@ fn creator_distribution_fades_size_but_never_vetoes() {
             mint: m,
             price_fp: 1_480_000_000,
             quote_lamports: 2_000_000,
-            liquidity_lamports: 2_000_000_000,
+            liquidity_lamports: REAL_CURVE_VSOL,
             signed_base: -4_000_000,
             buyer_entity: 6,
             age_slots: 32,
@@ -522,7 +526,7 @@ fn numeric_lane_discovers_buy_flow_not_sell_flow() {
                 mint: m,
                 price_fp: 1_000_000_000 + (i as i128) * 1_000_000, // price rising either way
                 quote_lamports: 500_000,
-                liquidity_lamports: 2_000_000_000, // deep: a 0.1-SOL floor clip clears exit-cost
+                liquidity_lamports: REAL_CURVE_VSOL, // deep: a 0.1-SOL floor clip clears exit-cost
                 signed_base: sign * 1_000_000,
                 buyer_entity: i,
                 age_slots: 30,
@@ -530,7 +534,7 @@ fn numeric_lane_discovers_buy_flow_not_sell_flow() {
         }
         e.tick(AppEvent::OnchainConfirm {
             mint: m,
-            sellable_depth_lamports: 2_000_000_000,
+            sellable_depth_lamports: REAL_CURVE_VSOL,
         });
         for _ in 0..6 {
             e.tick(AppEvent::Tick);
@@ -563,7 +567,7 @@ fn admissible_stream(tag: u8) -> Vec<AppEvent> {
             quote_lamports: 500_000,
             // Deep pool so a ≥0.1-SOL floor clip (criterion 112 / A-6) has a low exit
             // cost and clears the §34.4 exit-cost veto (a 100M pool cannot absorb it).
-            liquidity_lamports: 2_000_000_000,
+            liquidity_lamports: REAL_CURVE_VSOL,
             signed_base: 1_000_000,
             buyer_entity: i,
             age_slots: 30,
@@ -571,7 +575,7 @@ fn admissible_stream(tag: u8) -> Vec<AppEvent> {
     }
     ev.push(AppEvent::OnchainConfirm {
         mint: m,
-        sellable_depth_lamports: 2_000_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
     ev.push(AppEvent::Tick);
     ev
@@ -637,12 +641,11 @@ fn bankroll_size_is_proportional_to_deployable_capital() {
         let mut cfg = Config::dev_portable();
         cfg.apply("bankroll_initial_lamports", bankroll as i64)
             .unwrap();
-        cfg.apply("gate_base_fixed_lamports", 1_000).unwrap();
-        // A-6: a deep impact curve so x_max (impact-bounded) is far above both arms'
-        // deployed size — the proportionality (10× bankroll ⇒ 10× size) is only visible
-        // while the band does NOT bind. With the default impact_den both arms would cap
-        // at x_max ≈ 0.15 SOL and the proportionality would vanish.
-        cfg.apply("gate_impact_den", 100_000_000).unwrap();
+        // A-6: x_max (impact-bounded) must sit far above both arms' deployed size —
+        // the proportionality (10× bankroll ⇒ 10× size) is only visible while the band
+        // does NOT bind. Since re-pin #26 the impact curve is DERIVED from the market's
+        // own reserve, so depth is bought by declaring a deep pool (the 100 SOL
+        // `deep_admissible_stream` below), not by overriding a config denominator.
         let mut e = Engine::new(cfg, RunMode::Paper);
         for ev in deep_admissible_stream(0x92) {
             e.tick(ev);
@@ -666,19 +669,71 @@ fn bankroll_size_is_proportional_to_deployable_capital() {
             buyer_entity: 10,
             age_slots: 32,
         });
-        e.report().net_lamports
+        let rr = e.report();
+        let codes: Vec<u8> = e
+            .journal()
+            .recent()
+            .filter_map(|d| match *d {
+                pump_quant_app::journal_log::Decision::Rejected { reason, .. } => Some(reason),
+                _ => None,
+            })
+            .collect();
+        println!(
+            "PROPDBG bankroll={bankroll} admitted={} rejected={} net={} codes={codes:?}",
+            rr.admitted, rr.rejected, rr.net_lamports
+        );
+        rr.net_lamports
     };
     // A-6: both bankrolls sized so the deployed bite is ABOVE the 0.2-SOL two-bite
-    // split threshold (deployable × f_base × the ~0.5 flow haircut ≳ 0.5 SOL), so BOTH
+    // split threshold (deployable × f_base × the ~0.5 flow haircut ≳ 0.2 SOL), so BOTH
     // split probe+scale-in at the SAME 40% probe fraction — proportionality holds. (At
-    // the old 4-SOL bankroll the small arm sizes at the 0.1-SOL floor as a SINGLE bite
-    // while the large arm splits, breaking the 10×-size ⇒ 10×-net proportionality.)
-    let small = net_for(20_000_000_000); // 20 SOL → deployable 15, bite ~0.5 SOL
-    let large = net_for(200_000_000_000); // 200 SOL → deployable 150, bite ~5 SOL
+    // a 4-SOL bankroll the small arm sizes at the 0.1-SOL floor as a SINGLE bite while
+    // the large arm splits, breaking the 10×-size ⇒ 10×-net proportionality.)
+    //
+    // **Re-pin #26: the pair moved DOWN a decade, from 20/200 SOL to 10/100 SOL, and
+    // the reason is a real economic finding rather than a fixture tweak.** The gate's
+    // impact model is now DERIVED from the market's own reserve
+    // (`cost_model::impact_den_for`), so own impact is proportional to CLIP SIZE and a
+    // bankroll can outgrow the market it is trading. At 200 SOL this stream deploys a
+    // ~5-SOL bite into a 100-SOL curve — 500 bps of own impact a leg — and §23
+    // arbitration correctly refuses it (reject code 11, `admitted = 0`). That refusal
+    // is the engine being RIGHT; it is simply not the regime in which "10× capital
+    // deploys 10× size" can be observed, because past a point 10× capital deploys the
+    // same size and eats the rest of the pool. 10/100 SOL sits inside the regime the
+    // law is about (bites of 0.45 and 4.5 SOL, a clean 10.0×), and the boundary itself
+    // is worth knowing: on a real pump.fun curve this strategy's capacity is bounded by
+    // depth well before it is bounded by bankroll.
+    let size_for = |bankroll: u64| -> Option<u64> {
+        let mut cfg = Config::dev_portable();
+        cfg.apply("bankroll_initial_lamports", bankroll as i64)
+            .unwrap();
+        let mut e = Engine::new(cfg, RunMode::Paper);
+        for ev in deep_admissible_stream(0x93) {
+            e.tick(ev);
+        }
+        let size = e.journal().recent().find_map(|d| match *d {
+            pump_quant_app::journal_log::Decision::Admitted { size_lamports, .. } => {
+                Some(size_lamports)
+            }
+            _ => None,
+        });
+        size
+    };
+    let small = net_for(10_000_000_000); // 10 SOL → deployable 7.5, bite ~0.45 SOL
+    let large = net_for(100_000_000_000); // 100 SOL → deployable 75, bite ~4.5 SOL
+    println!("PROP small={small} large={large}");
     assert!(small > 0 && large > 0, "both bankrolls profit on the pump");
     assert!(
         large > small * 5,
         "10× bankroll deploys ~10× size ⇒ much larger realized net ({large} vs {small})"
+    );
+    // …and the DEPLOYED SIZE really is 10×, which is the mechanism the net is only a
+    // proxy for. Stated so a future change that got the net right by some other route
+    // cannot pass silently.
+    assert_eq!(
+        size_for(100_000_000_000),
+        size_for(10_000_000_000).map(|s| s * 10),
+        "10x deployable capital must deploy exactly 10x the bite"
     );
 }
 

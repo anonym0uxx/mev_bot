@@ -656,8 +656,7 @@ impl BrainPlane {
             haircut_win_rate_bp,
             veto_win_rate_bp,
             haircut_mult_bp,
-        )
-        ;
+        );
         match v {
             BrainSizeVerdict::Veto => self.vetoes = self.vetoes.saturating_add(1),
             BrainSizeVerdict::Haircut(_) => {

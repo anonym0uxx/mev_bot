@@ -26,6 +26,14 @@ use pump_quant_domain::ids::Mint;
 use pump_quant_ingest::social_source::{MockSocialSource, RawSocialPayload};
 use pump_quant_social::types::{SourceKind, SourceRef};
 
+/// **DEPTH REALISM (re-pin #26).** The gate's price-impact model is now DERIVED from
+/// the market's own SOL-side reserve (`cost_model::impact_den_for`), so a fixture's
+/// declared depth is a decision input rather than decoration. Real pump.fun virtual
+/// reserves START at 30 SOL; the sub-SOL depths these fixtures used to declare put the
+/// operator's 0.1 SOL floor clip at 20-125% of the pool — a market in which no
+/// strategy result means anything (Amendment A-13(1)).
+const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+
 const PRICE_SCALE: i128 = 10_000_000;
 
 /// Decode a base58 pubkey to a `Mint` (valid by construction for these tests).
@@ -47,7 +55,7 @@ fn one(eng: &mut Engine, m: Mint, price_mult: i128, signed_base: i64, entity: u6
         mint: m,
         price_fp: price_mult * PRICE_SCALE,
         quote_lamports: 800_000,
-        liquidity_lamports: 400_000_000,
+        liquidity_lamports: REAL_CURVE_VSOL,
         signed_base,
         buyer_entity: entity,
         age_slots: 12,
@@ -283,7 +291,7 @@ fn drive_alpha_admission(with_onchain: bool) -> (Report, Engine) {
             }
             eng.tick(AppEvent::OnchainConfirm {
                 mint: m,
-                sellable_depth_lamports: 500_000_000,
+                sellable_depth_lamports: REAL_CURVE_VSOL,
             });
         }
         ticks(&mut eng, 3);
@@ -356,11 +364,11 @@ fn drive_two_rooms() -> (Report, Engine) {
     }
     eng.tick(AppEvent::OnchainConfirm {
         mint: win,
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
     eng.tick(AppEvent::OnchainConfirm {
         mint: lose,
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
     discord_call(
         &mut eng,
@@ -501,7 +509,7 @@ fn seed_open_held(eng: &mut Engine, held: Mint) {
     }
     eng.tick(AppEvent::OnchainConfirm {
         mint: held,
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
     narrate(eng, held);
     ticks(eng, 2); // admit

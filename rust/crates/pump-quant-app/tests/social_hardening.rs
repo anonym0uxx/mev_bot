@@ -76,6 +76,21 @@ fn ticks(eng: &mut Engine, n: u64) {
     }
 }
 
+/// **The SOL-side reserve every fixture in this file declares: a pump.fun bonding
+/// curve at LAUNCH depth, 30 SOL of virtual SOL reserve**
+/// (`pump_quant_app::curve_state::LAUNCH_VSOL_LAMPORTS` — the shallowest depth the
+/// venue can present).
+///
+/// **Re-pin #26 (2026-07-28).** A declared depth is now a PRICE, not a label:
+/// `gate::decide` derives the gate's impact denominator from the market's own reserve
+/// (`cost_model::impact_den_for` = `vsol / 10_000`), so the sub-SOL figures this file
+/// used to carry priced a 0.1-SOL floor clip at thousands of bps a leg and refused
+/// every candidate. Stated once, so the fixtures here cannot drift from the venue.
+const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+/// Confirmed sellable depth, just under [`REAL_CURVE_VSOL`] — the "a confirm proves
+/// slightly less than the pool holds" discipline the golden tape uses.
+const REAL_SELLABLE_DEPTH: u64 = 29_000_000_000;
+
 /// One decoded on-chain swap. `signed_base > 0` is net buying.
 fn trade(eng: &mut Engine, m: Mint, price_mult: i128, signed_base: i64, entity: u64, liq: u64) {
     eng.tick(AppEvent::MarketTrade {
@@ -202,7 +217,7 @@ fn drive_cell(strength: SocialStrength, onchain: OnchainEvidence) -> (Report, En
             OnchainEvidence::ConfirmOnly => {
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: m,
-                    sellable_depth_lamports: 500_000_000,
+                    sellable_depth_lamports: REAL_SELLABLE_DEPTH,
                 });
             }
             OnchainEvidence::NumericOnly => {
@@ -213,7 +228,7 @@ fn drive_cell(strength: SocialStrength, onchain: OnchainEvidence) -> (Report, En
                         100 + i128::from(i as i64),
                         900_000 - i as i64,
                         40 + i % 7,
-                        400_000_000,
+                        REAL_CURVE_VSOL,
                     );
                 }
             }
@@ -243,12 +258,12 @@ fn drive_cell(strength: SocialStrength, onchain: OnchainEvidence) -> (Report, En
                         100 + i128::from(i as i64),
                         900_000 - i as i64,
                         40 + i % 7,
-                        400_000_000,
+                        REAL_CURVE_VSOL,
                     );
                 }
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: m,
-                    sellable_depth_lamports: 500_000_000,
+                    sellable_depth_lamports: REAL_SELLABLE_DEPTH,
                 });
             }
         }
@@ -532,12 +547,12 @@ fn even_callers_with_earned_realized_trust_cannot_admit_without_onchain() {
                 100 + i128::from(i as i64) * 3,
                 900_000 - i as i64,
                 40 + i % 7,
-                400_000_000,
+                REAL_CURVE_VSOL,
             );
         }
         eng.tick(AppEvent::OnchainConfirm {
             mint: earner,
-            sellable_depth_lamports: 500_000_000,
+            sellable_depth_lamports: REAL_SELLABLE_DEPTH,
         });
         ticks(&mut eng, 4);
     }
@@ -614,12 +629,12 @@ fn the_social_abstraction_plane_is_decision_inert() {
                     100 + i128::from(i as i64),
                     900_000 - i as i64,
                     40 + i % 7,
-                    400_000_000,
+                    REAL_CURVE_VSOL,
                 );
             }
             eng.tick(AppEvent::OnchainConfirm {
                 mint: m,
-                sellable_depth_lamports: 500_000_000,
+                sellable_depth_lamports: REAL_SELLABLE_DEPTH,
             });
             if exercise {
                 // Every new surface, driven hard — and on the REAL author ids the
@@ -718,12 +733,12 @@ fn maximal_social_support_never_increases_realized_size() {
                     100 + i128::from(i as i64),
                     900_000 - i as i64,
                     40 + i % 7,
-                    400_000_000,
+                    REAL_CURVE_VSOL,
                 );
             }
             eng.tick(AppEvent::OnchainConfirm {
                 mint: m,
-                sellable_depth_lamports: 500_000_000,
+                sellable_depth_lamports: REAL_SELLABLE_DEPTH,
             });
             ticks(eng, 3);
         }

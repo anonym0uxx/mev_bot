@@ -34,8 +34,9 @@ settled negative). Your single objective function is **realized net SOL** (SOL i
 minus SOL out after all costs), maximized autonomously under the risk constitution — never
 win-rate, trade count, or gross P&L.
 
-**The honest baseline you are inheriting:** the golden reference net is **8,124,568 lamports**
-(digest `13150420781254346145`). Read that number the way it is meant, because two prior headlines
+**The honest baseline you are inheriting:** the golden reference net is **16,778,896 lamports**
+(re-pin #26, 2026-07-28, cost-model unification; it was 8,124,568 at re-pin #24)
+(digest `6163272398497391826`). Read that number the way it is meant, because two prior headlines
 were retired for being read the wrong way:
 
 * The 12.55M headline was retired because costs were understated.
@@ -50,7 +51,7 @@ were retired for being read the wrong way:
 Round-trip cost on small clips is ~7%, dominated by fixed priority/tip; own-curve impact adds
 ~33 bps per leg at launch depth. That is the drag you are trading against.
 
-**And read this next sentence before you quote 8,124,568 to anyone.** It is a *synthetic
+**And read this next sentence before you quote 16,778,896 to anyone.** It is a *synthetic
 regression fixture*, not an economic forecast. The entire golden book is smaller than ONE 0.1-SOL
 bite (100,000,000 lamports), so it can arbitrate A/B *direction* and pin determinism, and it cannot
 tell you the strategy makes money. **No synthetic tape can.** Establishing whether this strategy
@@ -65,7 +66,7 @@ Your first action is the §65 M0/M1 audit built from **actual inspection you rea
 — never claim to have inspected a file, config, provider dashboard, Windows topology, or
 runtime state you did not. Cover, at minimum: the code-path authority audit; the current
 Rust runtime + determinism map (confirm `cargo test --workspace` green, golden digest =
-`13150420781254346145`, `scripts/regression_e2e.py` green, 191 dossiers intact); the Windows
+`6163272398497391826`, `scripts/regression_e2e.py` green, 191 dossiers intact); the Windows
 host / CPU / NUMA / storage / network audit; the protocol-registry and decoder-coverage
 audit; the Helius/LaserStream entitlement verification; and the exact immediate autonomous
 actions with what evidence would change direction. Mark every server-only item you have not
@@ -301,7 +302,7 @@ server measurement before the affected path may arm. Activate in this order:
    `fnv1a_64(format!("{cfg:?}"))`, i.e. the FULL config identity, so **adding any `Config`
    field moves the digest with zero decision change.** Phase-B will add config fields (signer,
    submission, OsTune, secrets wiring), so this WILL fire. The test is the DECISION PLANE, not
-   the digest: verify `net = 8,124,568`, `promoted/admitted/rejected = 504/13/457`,
+   the digest: verify `net = 16,778,896`, `promoted/admitted/rejected = 504/12/447`,
    `universe_filtered = 72`, `AlphaCall net = −2,721,835`, plus per-lane net and final weights.
    If every one of those is byte-identical and only the digest moved, it is a **SEED-ONLY
    re-pin** — legitimate, and done 8+ times already (#5, #7, #8, #9, #16, #17, #21, #22).
@@ -545,9 +546,20 @@ following; which trading style is actually paying for us right now.*
   exactly neutral — 0 haircuts, 0 vetoes. No laptop tape both uses shipped settings and contains B3's
   hazard. So B3 is armed on evidence that is real but narrow: **re-validate it on the first live
   replay corpus, and disarm it if it does not reproduce.**
-- `brain_reflect_enable` and `holder_concentration_enable` remain DEFAULT OFF. Both were re-measured
-  under the sharper schema-2 representation and both still fail their own pre-registered rules
-  (asymmetry 1.27× and 1.39× against a 3× bar). Do not arm either on the assumption it will earn (§46).
+- `brain_reflect_enable` and `holder_concentration_enable` remain DEFAULT OFF. Do not arm either on
+  the assumption it will earn (§46).
+  **UPDATE (re-pin #26, 2026-07-28) — `brain_reflect_enable` (LAW B7) IS AN OPEN QUESTION AND IS THE
+  FIRST THING TO SETTLE.** The 1.27× asymmetry that disqualified it was measured on a tape declaring
+  0.2 SOL pools against a 0.1 SOL minimum clip; once the gate began deriving its impact model from
+  each market's own reserve, that tape refused every candidate and both arms of the "two-sided
+  verdict" read zero. At real depth the asymmetry is **5.78×** (clears the 3× bar), the happy-path
+  gain misses the materiality bite by only 12%, the whole pre-registered rule PASSES at every step
+  size above the shipped 250 bp, and the sign-inversion evidence that carried the default-OFF ruling
+  is gone on all five market shapes. The 2^3 law sweep now finds TWO configurations clearing its
+  rule — `{B3}` and `{B3, B7}` — where it previously found one. **Nothing was armed on the strength
+  of a corrected fixture.** Owed: an A-11 study on evidence that is not this tape. See
+  `rust/crates/pump-quant-app/tests/brain_reflect_twosided.rs`.
+  (`holder_concentration_enable` still fails: 1.52× at real depth, against the same 3× bar.)
 - **Trust is earned in lamports.** Never let follower counts, engagement, or a caller's own claims
   enter a trust judgement — the code makes that unreachable and your reasoning must match the code.
 - **Social never authorizes.** The entire social plane — support, trust, archetypes, alpha calls — is
@@ -649,7 +661,7 @@ retro-remap v0-stamped assignments.
 it binds you exactly as it binds the authoring surface. In short: **no thesis of yours changes a
 shipped default until you have written the study artifact for it** — mandate, the rule pre-registered
 BEFORE you measure, method, a per-tape/per-corpus numeric table, a leg-by-leg verdict, what changed,
-and the green-gate list — committed to `docs/` and registered under its §51 ExperimentId. Note A-11(4)'s materiality-basis clause, which is load-bearing here: the gain bar is judged ABSOLUTELY on corpora whose book is large relative to one 0.1-SOL bite and RELATIVELY where it is not, **with the book size and your choice of basis stated explicitly** — the golden tape's ENTIRE book (8,124,568) is smaller than one bite (100,000,000), so silently applying an absolute bar there is the reporting defect A-11 names. Every
+and the green-gate list — committed to `docs/` and registered under its §51 ExperimentId. Note A-11(4)'s materiality-basis clause, which is load-bearing here: the gain bar is judged ABSOLUTELY on corpora whose book is large relative to one 0.1-SOL bite and RELATIVELY where it is not, **with the book size and your choice of basis stated explicitly** — the golden tape's ENTIRE book (16,778,896) is smaller than one bite (100,000,000), so silently applying an absolute bar there is the reporting defect A-11 names. Every
 protective law needs a HAPPY path and a MIRROR that is byte-identical up to the moment of decision.
 Laws ship **DISARMED** until they earn it. **Honest negatives are published, not buried** — a study
 concluding "no change" is a completed deliverable and you will be judged as having done the work.

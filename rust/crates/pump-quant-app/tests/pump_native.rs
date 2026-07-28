@@ -11,6 +11,14 @@ use pump_quant_app::token_ingest::to_token_metadata_v1;
 use pump_quant_ingest::pumpportal_parse::{parse_pumpportal_create, parse_pumpportal_migration};
 use pump_quant_ingest::social_source::{MockSocialSource, RawSocialPayload};
 
+/// **DEPTH REALISM (re-pin #26).** The gate's price-impact model is now DERIVED from
+/// the market's own SOL-side reserve (`cost_model::impact_den_for`), so a fixture's
+/// declared depth is a decision input rather than decoration. Real pump.fun virtual
+/// reserves START at 30 SOL; the sub-SOL depths these fixtures used to declare put the
+/// operator's 0.1 SOL floor clip at 20-125% of the pool — a market in which no
+/// strategy result means anything (Amendment A-13(1)).
+const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+
 const MINT_B58: &str = "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump";
 
 fn pump_line(author: &str, text: &str) -> String {
@@ -38,7 +46,7 @@ fn pump_replies_feed_candidates_but_never_authorize() {
     // Give the coin an on-chain confirm but NO trade flow at all.
     eng.tick(AppEvent::OnchainConfirm {
         mint: pump_quant_domain::ids::Mint::from_hex(&hex_of(MINT_B58)).unwrap(),
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
     for _ in 0..6 {
         eng.tick(AppEvent::Tick);

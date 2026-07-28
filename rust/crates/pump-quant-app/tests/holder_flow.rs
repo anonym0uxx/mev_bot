@@ -402,6 +402,21 @@ fn bound_production_caps_are_the_named_constants() {
 // 4. The stream: folded at WATCH time, for every mint, deterministically
 // ---------------------------------------------------------------------------
 
+/// **The SOL-side reserve every fixture in this file declares: a pump.fun bonding
+/// curve at LAUNCH depth, 30 SOL of virtual SOL reserve**
+/// (`pump_quant_app::curve_state::LAUNCH_VSOL_LAMPORTS` — the shallowest depth the
+/// venue can present).
+///
+/// **Re-pin #26 (2026-07-28).** A declared depth is now a PRICE, not a label:
+/// `gate::decide` derives the gate's impact denominator from the market's own reserve
+/// (`cost_model::impact_den_for` = `vsol / 10_000`), so the sub-SOL figures this file
+/// used to carry priced a 0.1-SOL floor clip at thousands of bps a leg and refused
+/// every candidate. Stated once, so the fixtures here cannot drift from the venue.
+const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+/// Confirmed sellable depth, just under [`REAL_CURVE_VSOL`] — the "a confirm proves
+/// slightly less than the pool holds" discipline the golden tape uses.
+const REAL_SELLABLE_DEPTH: u64 = 29_000_000_000;
+
 /// One decoded swap through the real engine seam.
 fn trade(eng: &mut Engine, m: Mint, price_mult: i128, signed_base: i64, entity: u64, liq: u64) {
     eng.tick(AppEvent::MarketTrade {
@@ -430,7 +445,7 @@ fn stream_is_folded_for_every_watched_mint_not_only_admitted_ones() {
     for tag in 0..3u64 {
         let mt = mint(tag);
         for e in 0..5u64 {
-            trade(&mut eng, mt, 100, 10_000, e, 200_000_000);
+            trade(&mut eng, mt, 100, 10_000, e, REAL_CURVE_VSOL);
         }
     }
     ticks(&mut eng, 4);
@@ -484,7 +499,7 @@ fn stream_estimate_at_tick_t_cannot_use_a_swap_from_t_plus_one() {
     let mut entity = 0u64;
     for _ in 0..6 {
         for _ in 0..4 {
-            trade(&mut eng, mt, 100, 5_000, entity, 200_000_000);
+            trade(&mut eng, mt, 100, 5_000, entity, REAL_CURVE_VSOL);
             entity += 1;
         }
         ticks(&mut eng, HOLDER_SAMPLE_INTERVAL_TICKS);
@@ -503,7 +518,7 @@ fn stream_estimate_at_tick_t_cannot_use_a_swap_from_t_plus_one() {
     assert!(eng.now() > t);
     // A large burst of NEW holders arrives afterwards.
     for _ in 0..40 {
-        trade(&mut eng, mt, 100, 5_000, entity, 200_000_000);
+        trade(&mut eng, mt, 100, 5_000, entity, REAL_CURVE_VSOL);
         entity += 1;
     }
     ticks(&mut eng, HOLDER_SAMPLE_INTERVAL_TICKS * 2);
@@ -534,7 +549,7 @@ fn stream_is_replay_deterministic() {
                         100 + round as i128,
                         sb,
                         (tag * 17 + i + round) % 23,
-                        200_000_000,
+                        REAL_CURVE_VSOL,
                     );
                 }
             }
@@ -568,7 +583,14 @@ fn broadening_tape(eng: &mut Engine, mt: Mint) {
     let mut entity = 1u64;
     for (window, arrivals) in ARRIVALS.into_iter().enumerate() {
         for _ in 0..arrivals {
-            trade(eng, mt, 100 + window as i128, 6_000, entity, 220_000_000);
+            trade(
+                eng,
+                mt,
+                100 + window as i128,
+                6_000,
+                entity,
+                REAL_CURVE_VSOL,
+            );
             entity += 1;
         }
         ticks(eng, HOLDER_SAMPLE_INTERVAL_TICKS + 1);
@@ -634,8 +656,8 @@ fn fingerprint_stream_distinguishes_broadening_from_a_single_whale() {
     let mut whale = Engine::new(Config::dev_portable(), RunMode::Replay);
     let mt = mint(310);
     for i in 0..24u64 {
-        trade(&mut broad, mt, 100, 5_000, i, 220_000_000);
-        trade(&mut whale, mt, 100, 5_000, 7, 220_000_000);
+        trade(&mut broad, mt, 100, 5_000, i, REAL_CURVE_VSOL);
+        trade(&mut whale, mt, 100, 5_000, 7, REAL_CURVE_VSOL);
         if i % 4 == 3 {
             ticks(&mut broad, HOLDER_SAMPLE_INTERVAL_TICKS + 1);
             ticks(&mut whale, HOLDER_SAMPLE_INTERVAL_TICKS + 1);
@@ -655,7 +677,7 @@ fn holder_trajectory_is_reported_for_the_open_book() {
     let mt = mint(320);
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
-        sellable_depth_lamports: 400_000_000,
+        sellable_depth_lamports: REAL_SELLABLE_DEPTH,
     });
     let mut entity = 1u64;
     for round in 0..8u64 {
@@ -666,7 +688,7 @@ fn holder_trajectory_is_reported_for_the_open_book() {
                 100 + round as i128 * 3,
                 9_000,
                 entity,
-                300_000_000,
+                REAL_CURVE_VSOL,
             );
             entity += 1;
         }
@@ -756,10 +778,7 @@ fn ab_drive(cfg: Config, side: Side) -> pump_quant_app::engine::Report {
     let mut cfg = cfg;
     // Same cost realism as the golden tape, so the lamport numbers are comparable.
     cfg.gate_expected_move_bps = 1_800;
-    cfg.gate_protocol_bps = 450;
     cfg.gate_margin_bps = 150;
-    cfg.gate_base_fixed_lamports = 200_000;
-    cfg.gate_impact_den = 250_000;
     // The numeric lane's DISCOVERY bar is raised out of reach on this tape. Both
     // cohorts trade with net-zero base flow, so neither has the imbalance the
     // numeric lane discovers on; lifting the bar makes that structural rather
@@ -781,7 +800,7 @@ fn ab_drive(cfg: Config, side: Side) -> pump_quant_app::engine::Report {
     for a in BROADEN_B58.iter().chain(DISTRIB_B58.iter()) {
         eng.tick(AppEvent::OnchainConfirm {
             mint: b58(a),
-            sellable_depth_lamports: 300_000_000,
+            sellable_depth_lamports: REAL_SELLABLE_DEPTH,
         });
     }
 
@@ -818,8 +837,8 @@ fn ab_drive(cfg: Config, side: Side) -> pump_quant_app::engine::Report {
         let mt = b58(a);
         let mm = market_maker(a);
         for k in 0..SEED_HOLDERS {
-            trade(&mut eng, mt, 100, CLIP, seed_entity(a, k), 260_000_000);
-            trade(&mut eng, mt, 100, -CLIP, mm, 260_000_000);
+            trade(&mut eng, mt, 100, CLIP, seed_entity(a, k), REAL_CURVE_VSOL);
+            trade(&mut eng, mt, 100, -CLIP, mm, REAL_CURVE_VSOL);
         }
         post(&mut eng, "seedcaller", a, "seed call", 900_000_000);
     }
@@ -833,10 +852,10 @@ fn ab_drive(cfg: Config, side: Side) -> pump_quant_app::engine::Report {
             for k in 0..PER_ROUND {
                 // A NEW entity accumulates...
                 let e = SEED_HOLDERS + round * PER_ROUND + k;
-                trade(&mut eng, mt, px, CLIP, seed_entity(a, e), 260_000_000);
+                trade(&mut eng, mt, px, CLIP, seed_entity(a, e), REAL_CURVE_VSOL);
                 // ...and the market maker distributes the same notional, so net
                 // base flow for the round is exactly zero.
-                trade(&mut eng, mt, px, -CLIP, mm, 260_000_000);
+                trade(&mut eng, mt, px, -CLIP, mm, REAL_CURVE_VSOL);
             }
             post(
                 &mut eng,
@@ -852,11 +871,11 @@ fn ab_drive(cfg: Config, side: Side) -> pump_quant_app::engine::Report {
             let whale = market_maker(a);
             for k in 0..PER_ROUND {
                 // The whale accumulates...
-                trade(&mut eng, mt, px, CLIP, whale, 260_000_000);
+                trade(&mut eng, mt, px, CLIP, whale, REAL_CURVE_VSOL);
                 // ...out of an EXISTING holder who exits in full. Same net zero,
                 // same swap count, opposite holder trajectory.
                 let e = round * PER_ROUND + k;
-                trade(&mut eng, mt, px, -CLIP, seed_entity(a, e), 260_000_000);
+                trade(&mut eng, mt, px, -CLIP, seed_entity(a, e), REAL_CURVE_VSOL);
             }
             post(
                 &mut eng,
@@ -913,8 +932,8 @@ fn ab_tape_actually_exercises_the_holder_term() {
     let bm = b58(BROADEN_B58[0]);
     let dm = b58(DISTRIB_B58[0]);
     for k in 0..48u64 {
-        trade(&mut eng, dm, 100, 5_000, 100_000 + k, 260_000_000);
-        trade(&mut eng, bm, 100, 5_000, 900_000, 260_000_000);
+        trade(&mut eng, dm, 100, 5_000, 100_000 + k, REAL_CURVE_VSOL);
+        trade(&mut eng, bm, 100, 5_000, 900_000, REAL_CURVE_VSOL);
     }
     ticks(&mut eng, 8);
     let b_start = eng.holder_reading(bm.as_bytes()).unwrap().growth_level();
@@ -927,17 +946,17 @@ fn ab_tape_actually_exercises_the_holder_term() {
                 100,
                 5_000,
                 200_000 + round * 100 + k,
-                260_000_000,
+                REAL_CURVE_VSOL,
             );
-            trade(&mut eng, bm, 100, -5_000, 900_000, 260_000_000);
-            trade(&mut eng, dm, 100, 5_000, 800_000, 260_000_000);
+            trade(&mut eng, bm, 100, -5_000, 900_000, REAL_CURVE_VSOL);
+            trade(&mut eng, dm, 100, 5_000, 800_000, REAL_CURVE_VSOL);
             trade(
                 &mut eng,
                 dm,
                 100,
                 -5_000,
                 100_000 + round * 5 + k,
-                260_000_000,
+                REAL_CURVE_VSOL,
             );
         }
         ticks(&mut eng, 8);

@@ -25,6 +25,14 @@ use pump_quant_app::journal_log::Decision;
 use pump_quant_domain::ids::Mint;
 use pump_quant_watchlist::candidate::{DiscoveryLane, Lane as WlLane};
 
+/// **DEPTH REALISM (re-pin #26).** The gate's price-impact model is now DERIVED from
+/// the market's own SOL-side reserve (`cost_model::impact_den_for`), so a fixture's
+/// declared depth is a decision input rather than decoration. Real pump.fun virtual
+/// reserves START at 30 SOL; the sub-SOL depths these fixtures used to declare put the
+/// operator's 0.1 SOL floor clip at 20-125% of the pool — a market in which no
+/// strategy result means anything (Amendment A-13(1)).
+const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+
 fn mint(tag: u64) -> Mint {
     let mut b = [0u8; 32];
     b[..8].copy_from_slice(&tag.to_le_bytes());
@@ -55,7 +63,7 @@ fn pump(eng: &mut Engine, base_mult: i128, n: u64) {
             mint: mint(M),
             price_fp: (base_mult + i as i128) * PRICE_SCALE,
             quote_lamports: 800_000,
-            liquidity_lamports: 400_000_000,
+            liquidity_lamports: REAL_CURVE_VSOL,
             signed_base: 900_000 - (i as i64),
             buyer_entity: 40 + i % 7,
             age_slots: 12,
@@ -70,7 +78,7 @@ fn crater(eng: &mut Engine, top_mult: i128, n: u64) {
             mint: mint(M),
             price_fp: (top_mult - (i as i128) * 4) * PRICE_SCALE,
             quote_lamports: 800_000,
-            liquidity_lamports: 400_000_000,
+            liquidity_lamports: REAL_CURVE_VSOL,
             signed_base: -900_000,
             buyer_entity: 40 + i % 7,
             age_slots: 12,
@@ -93,10 +101,7 @@ fn drive_held_dump(cfg: Config) -> (Report, Engine) {
     // toggle under test is untouched — both arms share these overrides.
     let mut cfg = cfg;
     cfg.gate_expected_move_bps = 1_800;
-    cfg.gate_protocol_bps = 450;
     cfg.gate_margin_bps = 150;
-    cfg.gate_base_fixed_lamports = 200_000;
-    cfg.gate_impact_den = 250_000;
     cfg.bankroll_initial_lamports = 10_000_000_000; // 10 SOL ⇒ deployable 7.5, base ~0.5 SOL
     let mut eng = Engine::new(cfg, RunMode::Replay);
     // Deployer initializes holding the full supply (no sells yet — not a dump).
@@ -112,7 +117,7 @@ fn drive_held_dump(cfg: Config) -> (Report, Engine) {
     pump(&mut eng, 100, 24);
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(M),
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -192,7 +197,7 @@ fn drive_preentry_dump(cfg: Config) -> (Report, Engine) {
     pump(&mut eng, 100, 24);
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(M),
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -266,7 +271,7 @@ fn one(eng: &mut Engine, price_mult: i128, signed_base: i64, entity: u64) {
         mint: mint(M),
         price_fp: price_mult * PRICE_SCALE,
         quote_lamports: 800_000,
-        liquidity_lamports: 400_000_000,
+        liquidity_lamports: REAL_CURVE_VSOL,
         signed_base,
         buyer_entity: entity,
         age_slots: 12,
@@ -318,7 +323,7 @@ fn seed_open(eng: &mut Engine, disc_prices: &[i128]) {
     }
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(M),
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
     narrate(eng);
     ticks(eng, 2); // admit
@@ -557,7 +562,7 @@ fn sell_flow(eng: &mut Engine, tag: u64, base: i128, n: u64) {
             mint: mint(tag),
             price_fp: (base - i as i128) * PRICE_SCALE,
             quote_lamports: 800_000,
-            liquidity_lamports: 400_000_000,
+            liquidity_lamports: REAL_CURVE_VSOL,
             signed_base: -500_000,
             buyer_entity: 60 + i % 7,
             age_slots: 12,
@@ -587,11 +592,11 @@ fn drive_disc_attribution() -> Report {
     sell_flow(&mut eng, MB, 130, 12);
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(MA),
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(MB),
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
     // Keep both discovery signals fresh across the admit ticks.
     eng.tick(AppEvent::TokenMetadata {
@@ -672,7 +677,7 @@ fn bar8(eng: &mut Engine, tag: u64, prices: [i128; 8], entity0: u64) {
             mint: mint(tag),
             price_fp: p * PRICE_SCALE,
             quote_lamports: 800_000,
-            liquidity_lamports: 400_000_000,
+            liquidity_lamports: REAL_CURVE_VSOL,
             signed_base: 900_000,
             buyer_entity: entity0 + i as u64 % 7,
             age_slots: 12,
@@ -702,7 +707,7 @@ fn drive_classifier(cfg: Config) -> (Report, Vec<u16>) {
             mint: mint(tag),
             price_fp: 131 * PRICE_SCALE,
             quote_lamports: 800_000,
-            liquidity_lamports: 400_000_000,
+            liquidity_lamports: REAL_CURVE_VSOL,
             signed_base: 900_000,
             buyer_entity: 44,
             age_slots: 12,
@@ -710,11 +715,11 @@ fn drive_classifier(cfg: Config) -> (Report, Vec<u16>) {
     }
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(MC1),
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(MC2),
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
     ticks(&mut eng, 3);
     let r = eng.report();
@@ -787,10 +792,7 @@ fn drive_pullback(cfg: Config) -> Report {
     // entry_mode toggle under test is untouched — both arms share these overrides.
     let mut cfg = cfg;
     cfg.gate_expected_move_bps = 1_800;
-    cfg.gate_protocol_bps = 450;
     cfg.gate_margin_bps = 150;
-    cfg.gate_base_fixed_lamports = 200_000;
-    cfg.gate_impact_den = 250_000;
     cfg.bankroll_initial_lamports = 10_000_000_000; // 10 SOL ⇒ deployable 7.5, base ~0.5 SOL
     let mut eng = Engine::new(cfg, RunMode::Replay);
     pb_bar(&mut eng, [100, 90, 110, 95, 100, 105, 98, 100], 40); // low90 high110
@@ -806,7 +808,7 @@ fn drive_pullback(cfg: Config) -> Report {
         mint: mint(MP),
         price_fp: 160 * PRICE_SCALE,
         quote_lamports: 800_000,
-        liquidity_lamports: 400_000_000,
+        liquidity_lamports: REAL_CURVE_VSOL,
         signed_base: 900_000,
         buyer_entity: 47,
         age_slots: 12,
@@ -1137,7 +1139,7 @@ fn pump_mf(eng: &mut Engine, n: u64) {
             mint: mint(MF),
             price_fp: (100 + i as i128) * PRICE_SCALE,
             quote_lamports: 800_000,
-            liquidity_lamports: 400_000_000,
+            liquidity_lamports: REAL_CURVE_VSOL,
             signed_base: 900_000 - (i as i64),
             buyer_entity: 40 + i % 7,
             age_slots: 12,
@@ -1173,7 +1175,7 @@ fn drive_fee_floor(cfg: Config, feed_bundle: bool) -> (Report, Engine) {
     pump_mf(&mut eng, 24);
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(MF),
-        sellable_depth_lamports: 500_000_000,
+        sellable_depth_lamports: REAL_CURVE_VSOL,
     });
     ticks(&mut eng, 6);
     let r = eng.report();

@@ -491,17 +491,130 @@ use tape_golden::*;
 // `expected_move::tests::the_shipped_table_refuses_everywhere`.
 // Study: `docs/BAND_THESIS_2026-07-28.md`.
 // (arc: … → 1_864_780 → 8_124_568 [net unchanged at re-pins #16–#21, #25].)
-const GOLDEN_DIGEST: u64 = 13_150_420_781_254_346_145;
-const GOLDEN_NET_LAMPORTS: i128 = 8_124_568;
+//
+// ---------------------------------------------------------------------------
+// RE-PIN #26 (2026-07-28) — COST-MODEL UNIFICATION + HAZARD-TAPE DEPTH REALISM.
+// ---------------------------------------------------------------------------
+// A REAL decision-level re-pin, operator-authorised. The engine carried TWO
+// disagreeing round-trip cost models — the gate's (~538 bps) and the lifecycle's
+// (~420 bps) — and used one to DECIDE and the other to BOOK. `cost_model.rs` is now
+// the single authority, wired into `gate::decide` and `HeldPosition::realize`. Four
+// substantive corrections land together, and they must land together (see that
+// module's header: two of them were nearly equal and opposite, and either alone
+// moves the gate 200 bps in the wrong direction):
+//
+//   1. IMPACT IS DERIVED PER CANDIDATE. `impact_den_for(vsol) = vsol / 10_000` makes
+//      the gate's linear impact model EXACTLY `curve_fill::own_impact_bps` for the
+//      market in front of it. The static `cfg.gate_impact_den` is off the decision
+//      path; a single denominator can only ever be right for one pool depth.
+//   2. THE PHANTOM SPREAD IS GONE. `gate_protocol_bps` is `2 x venue_fee_bps_per_leg`
+//      — 250 bps on the curve — and nothing else. The retired 450 contained ~200 bps
+//      of "bid/ask spread"; a constant-product AMM has ONE reserve ratio and ONE
+//      price, and the cost of crossing size is own impact, already charged.
+//   3. ATA RENT IS PRICED. 2_039_280 lamports of rent-exempt deposit was priced
+//      NOWHERE in the workspace — 203 bps of a floor clip. Under the lazy-hold /
+//      close-on-full-exit policy a completed round trip's cash cost is one closing
+//      signature, so the gate carries `ATA_CLOSE_LAMPORTS` and the lifecycle credits
+//      the reclaim.
+//   4. THE FIRST-SELL PENALTY IS DELETED. `first_sell_penalty_bps` (150 bps of
+//      notional, once) was own-impact under another name, now charged exactly once
+//      by `curve_fill`. `FIXED_LAMPORTS_PER_LEG` = 150_000 replaces both the gate's
+//      200_000-a-round-trip and the lifecycle's 10_000-a-tranche (a 10x disagreement
+//      about the price of the same signature).
+//
+// Counts/net MOVE: admitted 13 -> 12, rejected 457 -> 447, net 8_124_568 ->
+// 16_778_896 (a SIGNED delta of +8_654_328), promoted 504 and universe_filtered 72
+// UNCHANGED. The book roughly DOUBLES, and the direction is not a discount: the gate
+// stopped charging 200 bps that the venue cannot charge and started charging own
+// impact against each market's real reserve, so it admits fewer trades and prices
+// the ones it takes correctly. Twelve admits in FOUR distinct markets (was 13 in
+// five) — every statistical claim on this tape is still a statement about four hash
+// draws (`edge_provenance.rs`).
+//
+// THREE FINDINGS THIS RE-PIN OVERTURNS, each stated here because each contradicts a
+// published claim and none of them may be discovered twice:
+//
+//   (a) **THE BOOK IS STILL, IN MAJORITY, A BOUNDARY ARTIFACT.** Re-pin #24 recorded
+//       +34_884_254 earned on the strategy's own triggers against -26_759_686 of
+//       end-of-tape force closure: 77% of the book erased by where the fixture
+//       stops. The doubling does NOT come from fixing that. Naturally-closed rises to
+//       +42_058_785 and the forced subtotal barely moves (-25_279_889), so the
+//       fraction goes 77% -> 60% and the caveat stands: this net is not quotable
+//       without it (`edge_provenance.rs`). It is also still statistically
+//       indistinguishable from zero — twelve trades, four markets, |t| ~ 0.19.
+//   (b) **THE PAID DISCORD ROOM IS NET-POSITIVE AGAIN (+815_594).** Re-pin #24
+//       asserted `alphacall_net < 0` and wrote that calling the lane "proven
+//       positive" was FALSE. Under honest costs it is positive again. Both readings
+//       were produced by a cost model, not by evidence about the room: the number
+//       has now been negative under one and positive under two, on 12 trades in 4
+//       markets. The correct statement is that this tape CANNOT settle whether a
+//       paid room earns its subscription, and the assertion below no longer pins a
+//       SIGN — it pins the VALUE and says so.
+//   (c) **COST-DERIVED NO LONGER OUT-EARNS THE FIXED LADDER HERE.** Re-pins #13-#15
+//       recorded derived - fixed = +12_620, then +355_101, then +797_253 at re-pin
+//       #24. It is now -191_450: the forbidden fixed 13_500/25_000/50_000 ladder
+//       nets 16_970_346 against cost-derived's 16_778_896. The §24 reversal STANDS
+//       — re-pin #12 already ruled that fixed global TP constants are forbidden as
+//       the live default REGARDLESS of this tape's net, and that ruling anticipated
+//       exactly this case — but the supporting claim "and it earns more anyway" is
+//       now false and has been removed rather than re-argued. A 1.1%-of-book
+//       difference on 12 trades is noise either way; the reason cost-derived ships
+//       is the constitution, not this number.
+//
+// The digest also necessarily moves: §19 folds `fnv1a_64(format!("{cfg:?}"))` into
+// the journal seed and the decision stream itself changed.
+//
+// TWO LAW VERDICTS ARE NOW OPEN, AND NEITHER LAW IS ARMED BY THIS RE-PIN:
+//
+//   * **LAW B7 (`brain_reflect_enable`).** Re-pin #21 recorded B3-alone as the UNIQUE
+//     configuration clearing the 2^3 sweep's pre-registered rule, with LAW B7 failing
+//     at a 1.27x asymmetry. That was measured on a tape declaring 0.2 SOL pools; under
+//     the derived impact model it admitted NOTHING and both arms read zero. At real
+//     depth LAW B7's asymmetry is 5.78x (bar: 3x), the rule PASSES outright at every
+//     step size above the shipped 250 bp, the reshuffle sign-inversion is gone on all
+//     five market shapes, and `law_permutation_sweep.rs` now finds TWO winners —
+//     {B3} and {B3, B7}. B7's MARGINAL union contribution over the shipped {B3} is
+//     33_426_226, a third of the materiality bite, and arming a law whose verdict
+//     moved because a FIXTURE was corrected is an operator decision. An A-11 study is
+//     owed (`brain_reflect_twosided.rs`). LAW B3's own case is stronger than at re-pin
+//     #21 (+414_992_045 on its hazard tape, worst hazard delta still exactly 0).
+//   * **§32 flow persistence (`thesis_persist_obs`).** `k = 5` no longer turns the
+//     golden book negative — because the book doubled, not because `k` improved. The
+//     HARM is 11_469_573, against 11_347_743 before: 1.1% WORSE. It also now loses on
+//     its OWN two-sided tape. It stays disarmed and the published study is corrected
+//     (`docs/STRATEGY_PERMUTATION_STUDY_2026-07-25.md`, Erratum #2).
+//
+// The §21.7 concentration law still fails its rule (1.52x against a 3x bar) and stays
+// OFF.
+//
+// TAPE DEPTH. The same change forced a fixture correction across the HAZARD tapes.
+// Because the gate now reads each market's declared reserve, the sub-SOL depths the
+// B7 / concentration / flow tapes carried (0.2-0.26 SOL against a 0.1 SOL clip)
+// priced every candidate at thousands of bps of own impact and refused all of them:
+// those tapes went VACUOUS (`admitted = 0`, both arms, delta 0) and could no longer
+// arbitrate any law. They now declare real pump.fun depth (30-110 SOL) with their
+// scenarios — bleeding cohort, concentration hazard, shakeout-then-run — unchanged.
+// The golden tape needed no change; it was given real depth at re-pin #24.
+// (arc: ... -> 1_864_780 -> 8_124_568 -> 16_778_896.)
+const GOLDEN_DIGEST: u64 = 6_163_272_398_497_391_826;
+const GOLDEN_NET_LAMPORTS: i128 = 16_778_896;
 const GOLDEN_PROMOTED: u64 = 504;
-const GOLDEN_ADMITTED: u64 = 13;
-const GOLDEN_REJECTED: u64 = 457;
+const GOLDEN_ADMITTED: u64 = 12;
+const GOLDEN_REJECTED: u64 = 447;
 /// Zombie-cohort promotions the §21.5 screen must remove (visible activity).
 const GOLDEN_UNIVERSE_FILTERED: u64 = 72;
 /// LAW D1/D5: the paid Discord room's realized net attributed to the AlphaCall
-/// discovery lane (the modest winner it surfaced, admitted and ridden). Positive —
-/// the room earned its keep; keyed distinctly from the open social-caller firehose.
-const GOLDEN_ALPHACALL_NET: i64 = -2_721_835;
+/// discovery lane (the modest winner it surfaced, admitted and ridden), keyed
+/// distinctly from the open social-caller firehose.
+///
+/// **This number has now been positive, negative, and positive again, and NOT ONE of
+/// those changes came from evidence about the room.** It was +447_700 while the
+/// tape's pools were 0.12-0.47 SOL and our own impact went uncharged, -2_721_835 once
+/// re-pin #24 gave the tape real depth and armed the curve fill, and +815_594 once
+/// re-pin #26 unified the cost model. Three cost models, three signs, the same
+/// events. It is pinned as a VALUE — a tripwire on the §71.2 attribution split — and
+/// no claim about paid alpha rooms may be built on its sign in either direction.
+const GOLDEN_ALPHACALL_NET: i64 = 815_594;
 
 #[test]
 fn golden_digest_is_stable() {
@@ -567,15 +680,19 @@ fn golden_digest_is_stable() {
         alphacall_net, GOLDEN_ALPHACALL_NET,
         "AlphaCall discovery-lane net drifted"
     );
-    // FINDING (re-pin #24): under REALISTIC pool depth and honest curve fills the
-    // AlphaCall (Discord) discovery lane is net NEGATIVE. It read +447,700 only while
-    // the tape's pools were 0.12-0.47 SOL and our own impact was never charged. The
-    // Hermes directive calls this "a proven positive discovery lane" — that claim is
-    // now FALSE on the representative tape and must not be repeated.
+    // FINDING (re-pin #26, superseding re-pin #24). Re-pin #24 asserted this lane was
+    // net NEGATIVE and recorded that calling it "a proven positive discovery lane" was
+    // FALSE. Under the unified cost model it is positive again. The honest conclusion
+    // is not "the lane is good after all" — it is that a 12-trade, 4-market book
+    // cannot settle the question at all, and that the sign here is a readout of
+    // whichever cost model is installed. What IS pinned is the §71.2 SPLIT: the
+    // AlphaCall lane is tracked separately from the open social-caller firehose and
+    // sums correctly into its setup lane. No subscription decision may cite this.
     assert!(
-        alphacall_net < 0,
-        "AlphaCall is net-negative under realistic depth — if this ever turns positive, \
-         re-examine before citing the lane as proven"
+        alphacall_net.unsigned_abs() < GOLDEN_NET_LAMPORTS.unsigned_abs() as u64,
+        "the paid room is a MINORITY of the book ({alphacall_net}) — it has never been \
+         the thing carrying this tape, under any of the three cost models that have \
+         priced it"
     );
     assert_eq!(
         creationsniper_net,
@@ -599,16 +716,11 @@ fn golden_digest_is_stable() {
         room_net, GOLDEN_ALPHACALL_NET,
         "the room's realized net matches its AlphaCall attribution"
     );
-    // Same finding as the AlphaCall lane above: under realistic depth and honest
-    // fills the paid Discord room does NOT earn its keep on this tape. It "paid" only
-    // while pools were 0.12-0.47 SOL and our own impact went uncharged. Whether a
-    // paid room is worth its subscription is now an open question for live data —
-    // NOT a settled positive.
-    assert!(
-        room_net < 0,
-        "the paid room does not earn its keep under realistic depth ({room_net}) — \
-         if this turns positive, re-open the subscription question with evidence"
-    );
+    // Whether a paid room is worth its subscription is an OPEN question for live
+    // data, and this tape has now answered it three different ways under three
+    // different cost models (+447_700, -2_721_835, +815_594) on the same events. The
+    // room's net is pinned as a value by `GOLDEN_ALPHACALL_NET` above; its SIGN is not
+    // evidence and is deliberately not asserted here in either direction.
 }
 
 /// The §71 quota's causal lamports on THIS tape: identical events, quota 2 vs

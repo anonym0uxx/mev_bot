@@ -48,10 +48,16 @@ fn drive_positions(cfg: Config) -> Engine {
     let mut eng = Engine::new(cfg, RunMode::Replay);
     for round in 0..3u64 {
         for m in 0..6u64 {
-            pump(&mut eng, m, 100 + round as i128 * 20, 24, 400_000_000);
+            pump(
+                &mut eng,
+                m,
+                100 + round as i128 * 20,
+                24,
+                pq_regression::FIXTURE_VSOL_LAMPORTS,
+            );
             eng.tick(AppEvent::OnchainConfirm {
                 mint: mint(m),
-                sellable_depth_lamports: 500_000_000,
+                sellable_depth_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
             });
         }
         for _ in 0..40 {
@@ -63,7 +69,7 @@ fn drive_positions(cfg: Config) -> Engine {
                     mint: mint(m),
                     price_fp: (150 - i as i128 * 6) * PRICE_SCALE,
                     quote_lamports: 800_000,
-                    liquidity_lamports: 400_000_000,
+                    liquidity_lamports: pq_regression::FIXTURE_VSOL_LAMPORTS,
                     signed_base: -900_000,
                     buyer_entity: 40 + i % 7,
                     age_slots: 12,
@@ -165,7 +171,7 @@ fn post_exit_markouts_and_foregone_upside_present() {
 #[test]
 fn dead_mint_gets_terminal_label_at_versioned_delta_t() {
     let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
-    pump(&mut eng, 7, 100, 6, 400_000_000);
+    pump(&mut eng, 7, 100, 6, pq_regression::FIXTURE_VSOL_LAMPORTS);
     for _ in 0..300 {
         eng.tick(AppEvent::Tick);
     }
@@ -194,7 +200,7 @@ fn bar8(eng: &mut Engine, tag: u64, prices: [i128; 8], entity0: u64) {
             mint: mint(tag),
             price_fp: p * PRICE_SCALE,
             quote_lamports: 800_000,
-            liquidity_lamports: 400_000_000,
+            liquidity_lamports: pq_regression::FIXTURE_VSOL_LAMPORTS,
             signed_base: 900_000,
             buyer_entity: entity0 + i as u64 % 7,
             age_slots: 12,
@@ -216,14 +222,14 @@ fn drive_classifier(cfg: Config) -> (Report, Vec<u16>) {
             mint: mint(tag),
             price_fp: 131 * PRICE_SCALE,
             quote_lamports: 800_000,
-            liquidity_lamports: 400_000_000,
+            liquidity_lamports: pq_regression::FIXTURE_VSOL_LAMPORTS,
             signed_base: 900_000,
             buyer_entity: 44,
             age_slots: 12,
         });
         eng.tick(AppEvent::OnchainConfirm {
             mint: mint(tag),
-            sellable_depth_lamports: 500_000_000,
+            sellable_depth_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
         });
     }
     for _ in 0..3 {
@@ -268,7 +274,7 @@ fn sell_flow(eng: &mut Engine, tag: u64, base: i128, n: u64) {
             mint: mint(tag),
             price_fp: (base - i as i128) * PRICE_SCALE,
             quote_lamports: 800_000,
-            liquidity_lamports: 400_000_000,
+            liquidity_lamports: pq_regression::FIXTURE_VSOL_LAMPORTS,
             signed_base: -500_000,
             buyer_entity: 60 + i % 7,
             age_slots: 12,
@@ -301,7 +307,7 @@ fn discovery_lane_attribution_keeps_lanes_distinct() {
     for tag in [ma, mb] {
         eng.tick(AppEvent::OnchainConfirm {
             mint: mint(tag),
-            sellable_depth_lamports: 500_000_000,
+            sellable_depth_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
         });
     }
     eng.tick(AppEvent::TokenMetadata {

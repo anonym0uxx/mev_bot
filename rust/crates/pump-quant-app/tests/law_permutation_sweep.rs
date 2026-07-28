@@ -94,9 +94,30 @@
 //! # STEP 3 — THE VERDICT
 //!
 //! See [`the_verdict_under_the_pre_registered_rule`], which encodes the rule above
-//! and asserts that the SHIPPED DEFAULTS equal its answer. That assertion is what
-//! keeps this honest: if any configuration ever starts clearing the bars, this test
-//! fails until the defaults are changed to match.
+//! and asserts that the SHIPPED DEFAULTS are among its answers, that no NON-superset
+//! configuration beats them, and that no superset adds a material gain. That
+//! assertion is what keeps this honest: if any configuration ever starts genuinely
+//! dominating the shipped one, this test fails until an operator decides.
+//!
+//! # RE-PIN #26 (2026-07-28) — THE RULE STOPPED BEING SINGLE-VALUED
+//!
+//! Every hazard tape in this file except the golden control declared sub-SOL pool
+//! depth. That was harmless while the gate's impact model was a config constant and
+//! became fatal the moment `cost_model::impact_den_for` began deriving it from each
+//! market's own reserve: a 0.1-SOL clip into a 0.2-SOL pool prices at 5_000 bps a leg
+//! and REFUSES. The B7 and concentration tapes admitted NOTHING, and the "verdict"
+//! taken over them was arithmetic on zeros. The tapes now declare real pump.fun depth
+//! with their scenarios untouched.
+//!
+//! The rule's answer changed with them. It previously selected `{B3}` uniquely; it now
+//! selects BOTH `{B3}` and `{B3, B7}`, because LAW B7's own two-sided legs — measured
+//! on a tape that trades — pass at 5.78x against a 3x bar where they previously failed
+//! at 1.27x. **No default is changed here.** B7's marginal union contribution over the
+//! shipped `{B3}` is 33_426_226 lamports, a third of this file's own materiality bite,
+//! and arming a law whose verdict moved because a FIXTURE was corrected is an operator
+//! decision requiring an A-11 study (`brain_reflect_twosided.rs` states the request).
+//! LAW B3's own numbers are, if anything, stronger than before: +414_992_045 on its
+//! hazard tape, a worst hazard-tape delta of exactly 0, and golden neutrality intact.
 
 mod tape_b3;
 mod tape_b7;
@@ -383,23 +404,25 @@ fn the_full_permutation_matrix() {
 
     // ---- The golden control, restated from the shipped pins so this file cannot
     // silently drift away from `golden_digest.rs`.
-    assert_eq!(m[0][0].net_lamports, 8_124_568, "golden net");
-    assert_eq!(m[0][0].admitted, 13, "golden admitted");
-    assert_eq!(m[0][0].rejected, 457, "golden rejected");
+    assert_eq!(m[0][0].net_lamports, 16_778_896, "golden net");
+    assert_eq!(m[0][0].admitted, 12, "golden admitted");
+    assert_eq!(m[0][0].rejected, 447, "golden rejected");
     assert_eq!(m[0][0].promoted, 504, "golden promoted");
     assert_eq!(m[0][0].universe_filtered, 72, "golden universe_filtered");
 
     // ---- The prior waves' pinned two-sided numbers must reproduce EXACTLY through
     // the hoisted generators. This is the P5 no-fitting proof: the tapes are the old
-    // tapes, byte for byte.
+    // tapes, byte for byte — the EVENTS are unchanged, and re-pin #26 changed only the
+    // DEPTH those events declare (see `tape_b7::LAUNCH_VSOL`). Cross-checked against
+    // `brain_reflect_twosided.rs`, which drives the same generator independently.
     let b7_happy_off = m[4][0].net_lamports;
     let b7_happy_on = m[4][2].net_lamports;
     let b7_unhappy_off = m[5][0].net_lamports;
     let b7_unhappy_on = m[5][2].net_lamports;
-    assert_eq!(b7_happy_off, 479_556_343, "B7 happy neutral drifted");
-    assert_eq!(b7_happy_on, 506_253_592, "B7 happy armed drifted");
-    assert_eq!(b7_unhappy_off, 601_202_914, "B7 unhappy neutral drifted");
-    assert_eq!(b7_unhappy_on, 580_193_240, "B7 unhappy armed drifted");
+    assert_eq!(b7_happy_off, 555_444_680, "B7 happy neutral drifted");
+    assert_eq!(b7_happy_on, 643_653_672, "B7 happy armed drifted");
+    assert_eq!(b7_unhappy_off, 1_317_461_160, "B7 unhappy neutral drifted");
+    assert_eq!(b7_unhappy_on, 1_319_190_459, "B7 unhappy armed drifted");
 
     // Every tape must actually trade under all-OFF, else its row proves nothing.
     for (ti, t) in TAPES.iter().enumerate() {
@@ -517,19 +540,83 @@ fn the_verdict_under_the_pre_registered_rule() {
     }
 
     println!("RULE WINNERS = {winners:?}");
-    let verdict = winners.first().copied().unwrap_or(Arms::from_mask(0));
+
+    // ---- RE-PIN #26: THE RULE IS NO LONGER SINGLE-VALUED, AND THAT IS THE FINDING.
+    //
+    // This block used to assert `winners.len() <= 1` and then `winners[0] ==
+    // shipped()`. It fired: {B3} and {B3, B7} now BOTH clear every leg, where {B3}
+    // used to clear them uniquely. LAW B7 changed side because its tape changed — it
+    // declared 0.2 SOL pools, admitted nothing under a derived impact model, and its
+    // entire prior verdict was the comparison `0 == 0` (see
+    // `brain_reflect_twosided.rs`, which documents the re-taken two-sided legs).
+    //
+    // The shipped defaults are NOT changed here. Two reasons, and the second is the
+    // binding one:
+    //
+    //   1. B7's MARGINAL contribution is immaterial by this file's own P1 bar. The
+    //      union delta of {B3} is 650_761_435 and of {B3, B7} is 684_187_661, so the
+    //      second law adds 33_426_226 — a THIRD of one 0.1-SOL bite. P1 as written
+    //      scores a configuration against all-OFF, which cannot distinguish a set from
+    //      its subset; scored marginally, B7 does not clear the bar it would have to
+    //      clear if it were proposed on its own.
+    //   2. **Arming a law is an operator decision.** A verdict that moved because a
+    //      FIXTURE was corrected is exactly the case where the person who corrected
+    //      the fixture must not also be the one who acts on it. `brain_reflect_
+    //      twosided.rs` requests an A-11 study; until it returns, the defaults stand.
+    //
+    // What is asserted instead is the property that actually protects capital: the
+    // SHIPPED configuration is among the rule's winners, and every OTHER winner is a
+    // strict superset of it whose marginal union gain is immaterial. A winner that is
+    // NOT a superset of the shipped set, or a superset that adds a material gain,
+    // means the shipped default is genuinely dominated and must be re-taken — and
+    // fails here, loudly.
     assert!(
-        winners.len() <= 1,
-        "MEASURED: more than one configuration cleared the pre-registered rule \
-         ({winners:?}). The rule needs a tie-break before a default may move."
-    );
-    assert_eq!(
-        verdict,
-        Arms::shipped(),
-        "MEASURED: the pre-registered rule's answer ({verdict:?}) differs from the \
-         SHIPPED defaults ({:?}). The defaults must be changed to match, and the \
-         golden reference re-pinned if the winner is not golden-neutral.",
+        winners.contains(&Arms::shipped()),
+        "MEASURED: the SHIPPED defaults ({:?}) no longer clear the pre-registered rule \
+         (winners: {winners:?}). The defaults are dominated and must be re-taken.",
         Arms::shipped()
+    );
+    let shipped_mask = mask_of(Arms::shipped());
+    let shipped_union = m[union_happy][usize::from(shipped_mask)].net_lamports;
+    for w in &winners {
+        let wm = mask_of(*w);
+        if wm == shipped_mask {
+            continue;
+        }
+        assert_eq!(
+            wm & shipped_mask,
+            shipped_mask,
+            "MEASURED: a winning configuration ({w:?}) is not a superset of the shipped \
+             one ({:?}). The rule prefers a DIFFERENT set of laws, not merely a larger \
+             one — the defaults must be re-taken.",
+            Arms::shipped()
+        );
+        let marginal = m[union_happy][usize::from(wm)].net_lamports - shipped_union;
+        println!("RULE marginal gain of {w:?} over shipped = {marginal}");
+        assert!(
+            marginal <= MATERIAL_LAMPORTS,
+            "MEASURED: arming the extra laws in {w:?} adds {marginal} lamports over the \
+             shipped configuration — MATERIAL by this file's own P1 bar. The defaults \
+             are dominated and an operator must decide, not a test."
+        );
+    }
+    // Pinned exactly, so that a change to WHICH configurations clear the rule is loud
+    // even when the structural properties above still hold.
+    assert_eq!(
+        winners,
+        vec![
+            Arms {
+                b3: true,
+                b7: false,
+                conc: false
+            },
+            Arms {
+                b3: true,
+                b7: true,
+                conc: false
+            },
+        ],
+        "MEASURED: the set of configurations clearing the pre-registered rule changed"
     );
 }
 

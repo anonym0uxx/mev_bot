@@ -423,7 +423,10 @@ impl ExitTournament {
         self.note_price(*mint, price_fp);
         let seq = self.seq;
         for c in &mut self.challengers {
-            if let Some(e) = c.book.on_trade(mint, price_fp, signed_quote, tick, liq_lamports) {
+            if let Some(e) = c
+                .book
+                .on_trade(mint, price_fp, signed_quote, tick, liq_lamports)
+            {
                 let acc = c.partial.entry(*mint).or_insert(0);
                 *acc = acc.saturating_add(e.net_lamports);
                 if e.closed {
@@ -866,13 +869,18 @@ mod tests {
         t.incumbent_closed(&mint(i), inc_net, &|_| Some(mark_px));
     }
 
-    /// Challenger net for a full force-close at `mult` bps of entry with this
-    /// module's SIZE/cost conventions (fee 1%, first-sell 150 bps, tip 1e4).
+    /// Challenger net for a full force-close at `mult` bps of entry under the
+    /// UNIFIED cost model: the venue's per-leg fee on the exit gross (no depth is
+    /// fed in these pairs, so `realize` falls back to `p.fee_bps`, the
+    /// pre-graduation rate), one landed transaction's fixed cost, and the pro-rata
+    /// entry basis. The retired first-sell penalty is gone — it was own-impact under
+    /// another name (`cost_model`).
     fn force_close_net(mult_bps: u128) -> i128 {
         let gross = u128::from(SIZE) * mult_bps / 10_000;
-        let fee = gross * 100 / 10_000;
-        let penalty = u128::from(SIZE) * 150 / 10_000;
-        (gross - fee - penalty) as i128 - i128::from(SIZE) - 10_000
+        let fee = gross * u128::from(crate::cost_model::VENUE_FEE_BPS_CURVE) / 10_000;
+        (gross - fee) as i128
+            - i128::from(SIZE)
+            - i128::from(crate::cost_model::FIXED_LAMPORTS_PER_LEG)
     }
 
     #[test]

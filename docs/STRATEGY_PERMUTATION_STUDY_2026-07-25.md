@@ -1,6 +1,54 @@
 # STRATEGY PERMUTATION STUDY — exhaustive entry/exit search + Tsetlin assessment (2026-07-25)
 
-> **ERRATUM — 2026-07-27. Every absolute lamport figure below is superseded; every verdict stands,
+> **ERRATUM #2 — 2026-07-28 (re-pin #26, COST-MODEL UNIFICATION). The `k = 5` verdict
+> STANDS; the sentence "it turns the book negative" below is retracted, and Erratum #1's
+> reading of it was wrong.**
+>
+> Erratum #1 (below) recorded that `k = 5` had gone from destroying 85% of the book to turning
+> it negative outright, and concluded "the `k = 5` verdict is now stronger than published".
+> That was a misreading, and it is worth naming because it is an easy one to make twice.
+>
+> The engine now prices a round trip through one authority (`cost_model.rs`) instead of two
+> disagreeing ones: the impact denominator is derived per candidate from each market's own
+> reserve, a phantom ~200 bps of "bid/ask spread" that a constant-product AMM cannot charge is
+> deleted, 2,039,280 lamports of ATA rent is modelled as the refundable deposit it is, and a
+> 150 bps first-sell penalty that was own-impact under another name is deleted. The golden book
+> roughly doubles.
+>
+> | quantity | published (2026-07-25) | erratum #1 (2026-07-27) | honest (2026-07-28) |
+> |---|---|---|---|
+> | golden net, shipped `k = 1` | 15,410,801 | 8,124,568 | **16,778,896** |
+> | golden net at `k = 5` | 2,322,301 | −3,223,175 | **+5,309,323** |
+> | **`k = 5` HARM (`k=1` − `k=5`)** | **13,088,500** | **11,347,743** | **11,469,573** |
+> | best golden gain over all `k` | +257,400 (`k = 2`) | +207,252 (`k = 2`) | **+177,199 (`k = 2`)** |
+>
+> **Read the HARM column, not the level column.** `k = 5` does not "turn the book negative" and
+> never did anything of the sort *to* `k`; it forfeits ~11.4 million lamports of upside on this
+> tape, and it has forfeited approximately that same amount under all three cost models. The sign
+> of the residual is a statement about how big the book is, not about how harmful `k` is. Under
+> honest costs `k = 5` is **1.1% MORE harmful than Erratum #1 measured**, which also refutes the
+> natural hypothesis that the old harm was an artifact of the phantom costs — deleting them made
+> `k = 5` slightly worse, not better.
+>
+> **What DOES change is §3 below: the law no longer passes on its own tape either.** `tape_flow`
+> declared **0.26 SOL pools** against a 0.1-SOL clip. That was invisible while the gate's impact
+> model was a config constant; once it was derived from the declared reserve, the tape refused
+> every candidate and both sides read `0`. At real depth (32 SOL) the tape trades and `k = 5`
+> **loses on its own happy side**: 104,607,333 → −52,846,461, while the mirror also worsens
+> (−54,978,642 → −94,186,083). The admit count falls 63 → 36: at realistic size the position slots
+> are the binding resource and patience is paid for in round trips not taken. §3's claim that "if
+> that tape were the arbiter, this law would ship armed" is **withdrawn**. P1, P2 *and* P3 now
+> fail.
+>
+> Every relative verdict in §4's table is superseded by `tests/flow_persistence_laws.rs`, which
+> holds the live numbers.
+>
+> **Erratum #1's closing paragraph is also retracted** where it says "a uniform depth mispricing
+> moves both arms together, preserving sign and ordering". That is true only while the GATE cannot
+> see depth. Once it can, a depth mispricing does not scale both arms — it REFUSES both arms, and
+> a tape that admits nothing preserves nothing.
+
+> **ERRATUM #1 — 2026-07-27. Every absolute lamport figure below is superseded; every verdict stands,
 > and one of them got STRONGER.**
 >
 > This study ran against a golden tape whose pools were **0.12–0.47 SOL** against our 0.1-SOL
@@ -103,6 +151,11 @@ were deliberately left at shipped defaults so the mirror side genuinely pays for
 loses **−44,095,911** on the mirror — asymmetry **3.46×**, clearing the pre-registered 3× bar, with
 a material gain. If that tape were the arbiter, this law would ship armed.
 
+> **RETRACTED (Erratum #2, 2026-07-28).** This paragraph was measured on a tape declaring 0.26 SOL
+> pools. At real depth `k = 5` LOSES on its own happy side (104,607,333 → −52,846,461) and worsens
+> the mirror too. There is no tape on which flow persistence pays. See
+> `tests/flow_persistence_laws.rs::the_mechanism_is_real_on_its_own_two_sided_tape`.
+
 ---
 
 ## 4. Why it does not ship: the pre-existing tapes overturn it
@@ -118,6 +171,11 @@ a material gain. If that tape were the arbiter, this law would ship armed.
 | **5** | **2,322,301** | 293,235,710 | 482,140,552 | 604,305,163 | **−22,894,988** | **165,865,518** | −30,925,071 |
 | 8 | 12,663,401 | 293,235,710 | 482,140,552 | 604,305,163 | −3,571,503 | 36,535,209 | −65,684,622 |
 | 12 | 5,733,401 | 293,235,710 | 482,140,552 | 604,305,163 | −8,392,202 | −9,200,211 | −6,447,807 |
+
+> **SUPERSEDED (Erratum #2).** Every cell in the table above is measured under the retired split
+> cost model and on hazard tapes whose sub-SOL depth made them vacuous under a derived impact
+> model. `tests/flow_persistence_laws.rs` holds the live numbers. The paragraph below is retained
+> as the historical argument; its conclusion is unchanged and its arithmetic is not current.
 
 The `k` that wins on the purpose-built tape **destroys 85% of net on the representative tape**
 (15,410,801 → 2,322,301) and **flips the concentration-hazard book from positive to negative**.

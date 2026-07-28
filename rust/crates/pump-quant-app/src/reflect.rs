@@ -56,10 +56,22 @@
 //! decayed and healthy markets share a byte-identical price prefix, so the §18 gate
 //! and §23 arbitration cannot separate them and only the episodic record can — and
 //! its mirror image in which the flag is a FALSE positive. The armed arm gained
-//! +26_697_249 lamports on the true-positive tape and lost −21_009_674 on the
-//! false-positive one: a 1.27× asymmetry against a pre-registered 3× bar, with the
-//! gain itself below one minimum trade size. On neighbouring market shapes the sign
-//! inverts — the armed arm does BETTER when its flag is wrong.
+//! +88_208_992 lamports on the true-positive tape and lost −15_249_896 on the
+//! false-positive one: a 5.78× asymmetry, which CLEARS the pre-registered 3× bar,
+//! while the gain itself remains (narrowly, by 12%) below one minimum trade size.
+//!
+//! **THE DEFAULT-OFF VERDICT IS UNDER REVIEW (re-pin #26, 2026-07-28).** The figures
+//! above are a RE-MEASUREMENT. The published ones (+26_697_249 against −21_009_674, a
+//! 1.27× asymmetry, with the sign inverting on neighbouring market shapes) were taken
+//! on a tape declaring 0.2 SOL pools against a 0.1 SOL minimum clip; once
+//! `cost_model::impact_den_for` began deriving the gate's impact model from each
+//! market's own reserve, that tape refused every candidate and both arms read zero.
+//! At real depth the asymmetry leg PASSES, the rule passes outright at every step
+//! size above the shipped 250 bp, and the "reshuffle" sign-inversion does not occur
+//! on any of the five market shapes tested. The law is NOT armed on the strength of a
+//! corrected fixture: `tests/brain_reflect_twosided.rs` holds the measured state and
+//! requests an A-11 study. The structural argument below is unaffected and is why the
+//! effect was small in the first place.
 //!
 //! The structural reason is that lane weight is not the binding constraint.
 //! §24 conditional expectancy (`Engine::conditional_edge_bps`) already conditions

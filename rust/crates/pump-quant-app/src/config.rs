@@ -149,28 +149,52 @@ pub struct Config {
     /// Expected favourable move, in bps, credited to a confirmed candidate. Feeds
     /// the economic size-band. Operator-tuned, never inferred from a single trade.
     pub gate_expected_move_bps: u32,
-    /// Fixed per-attempt cost in lamports (base tip + fee floor) the gate must clear.
+    /// **DECISION-INERT since the cost-model unification (2026-07-28).** The gate's
+    /// fixed per-attempt cost is now derived from
+    /// [`crate::cost_model::FIXED_LAMPORTS_PER_LEG`] and `gate_exit_tranches`.
+    /// Retained so an existing operator config file still parses.
     pub gate_base_fixed_lamports: u64,
-    /// Expected send-failure rate, bps, inflating the effective fixed cost.
+    /// Expected send-failure rate, bps, inflating the effective fixed cost. STILL
+    /// LIVE: it is a property of the sender, not of the venue's fee schedule.
     pub gate_fail_rate_bps: u32,
-    /// Round-trip protocol fee, bps.
+    /// **No longer the gate's protocol fee** — that is derived per candidate from the
+    /// venue's tiered schedule ([`crate::cost_model::gate_protocol_bps`]). This field
+    /// survives as the §38 Mode-C adversarial retry-slippage severity, which is the
+    /// only thing that still reads it.
     pub gate_protocol_bps: u32,
     /// Safety margin, bps, demanded on top of costs before admitting size.
     pub gate_margin_bps: u32,
-    /// Linear impact-curve denominator: `impact_bps ≈ size / den`. Operator-fit to
-    /// observed depth response; larger = deeper book = more size tolerated.
+    /// **DECISION-INERT since the cost-model unification (2026-07-28).** The gate's
+    /// impact denominator is now DERIVED per candidate from the market's own SOL-side
+    /// reserve ([`crate::cost_model::impact_den_for`]), because a static denominator is
+    /// right for exactly one pool depth and silently wrong for every other. Retained
+    /// only so an existing operator config file still parses; nothing reads it.
     pub gate_impact_den: u64,
+    /// How many transactions the gate assumes an exit is split across. The fixed
+    /// per-signature cost is charged `1 + gate_exit_tranches` times
+    /// ([`crate::cost_model::gate_base_fixed_lamports`]); fee and own-impact are
+    /// tranche-invariant, so this scales the fixed term and nothing else. Default 3 —
+    /// the §24 LAW 2 ladder's maximum rung count, which is the conservative end of the
+    /// 1-to-4 range a real position takes (§54).
+    pub gate_exit_tranches: u32,
 
     // ---- scalp / paper fill ----
     /// Fill semantics for the paper engine.
     pub fill_mode: FillModeCfg,
-    /// Entry fee, bps, charged by the simulated venue.
+    /// **DECISION-INERT since the cost-model unification (2026-07-28).** Both legs'
+    /// venue fee is the tiered per-market rate from
+    /// [`crate::cost_model::venue_fee_bps_per_leg`]; both legs' fixed cost is
+    /// [`crate::cost_model::FIXED_LAMPORTS_PER_LEG`]. These four fields were the
+    /// lifecycle half of the two-model split — an operator could set them to disagree
+    /// with the gate, and did (100 bps a leg against the gate's 450 round trip; 10_000
+    /// lamports a tranche against the gate's ~100_000 a leg). Retained so an existing
+    /// operator config file still parses; nothing on the decision path reads them.
     pub entry_fee_bps: u32,
-    /// Exit fee, bps.
+    /// See [`Config::entry_fee_bps`] — decision-inert.
     pub exit_fee_bps: u32,
-    /// Entry tip, lamports.
+    /// See [`Config::entry_fee_bps`] — decision-inert.
     pub entry_tip_lamports: u64,
-    /// Exit tip, lamports.
+    /// See [`Config::entry_fee_bps`] — decision-inert.
     pub exit_tip_lamports: u64,
     /// Impact `k` (bps) for the simulator's constant-product impact model.
     pub sim_impact_k_bps: u32,
@@ -822,13 +846,21 @@ pub struct Config {
     /// promotion-slot contention, with the decayed and healthy markets
     /// INDISTINGUISHABLE at admit), an unhappy path (the same tape with the two
     /// forward cohorts' shapes swapped, so the flag is a false positive), and the
-    /// golden tape as the neutral control. Measured: the happy-path gain is
-    /// +26_697_249 lamports on a 479_556_343 base — below the pre-registered
-    /// materiality bar of one 0.1-SOL bite — against a false-positive cost of
-    /// −21_009_674, a 1.27× asymmetry versus the pre-registered 3× bar. Worse, the
-    /// SIGN of the effect is not governed by whether the flag was right: on
-    /// neighbouring market shapes the armed arm gains on the FALSE-positive tape and
-    /// is flat on the true-positive one. It is a reshuffle, not an edge, because
+    /// golden tape as the neutral control. Measured (re-pin #26, 2026-07-28): the
+    /// happy-path gain is +88_208_992 lamports on a 555_444_680 base — still below
+    /// the pre-registered materiality bar of one 0.1-SOL bite, but by only 12% —
+    /// against a false-positive cost of −15_249_896, a 5.78× asymmetry that CLEARS
+    /// the pre-registered 3× bar.
+    ///
+    /// **THIS DEFAULT IS UNDER REVIEW.** The retired figures (+26_697_249 /
+    /// −21_009_674, 1.27×, with the sign inverting on neighbouring shapes) were taken
+    /// on a tape declaring 0.2 SOL pools against a 0.1 SOL clip; under the derived
+    /// impact model that tape admitted NOTHING and the verdict was arithmetic on
+    /// zeros. At real depth the asymmetry leg passes, the whole rule passes at every
+    /// step size above the shipped 250 bp, and the sign inversion is gone. The law
+    /// stays OFF pending an A-11 study — arming on the strength of a corrected fixture
+    /// is not a decision a test author may take. The structural argument below still
+    /// explains why the effect is bounded, and is unaffected:
     /// §24 conditional expectancy already conditions §23 slot arbitration on each
     /// lane's realized mean return and activates at `expectancy_min_lane_trades` = 8
     /// — fewer trades than `brain_decay_min_sample` = 12 requires before this law
@@ -916,12 +948,23 @@ impl Config {
             narrative_stage_lo_fp: pump_quant_narrative::narrative::FP_ONE,
             confirmed_capacity_mult: 4,
 
-            gate_expected_move_bps: 300,
+            // COST-MODEL UNIFICATION (2026-07-28). The old 300 bps prior was viable
+            // only against the old 100 bps modelled protocol cost. The venue's REAL
+            // schedule is 125 bps a leg — 250 bps round trip — so 300 bps of expected
+            // move minus 250 of fee minus the 50 bps margin leaves ZERO budget for
+            // impact, and `size_band` refuses every candidate at every size. The floor
+            // of coherence is ~397 bps (250 fee + 50 margin + 64 fail-inflated fixed +
+            // 33 impact, at the 0.1 SOL operator clip against a 30 SOL launch curve);
+            // 1_800 is the venue-realistic figure every tape fixture in this repo
+            // already overrides to, and it is now the default rather than a constant
+            // fifteen fixtures had to correct by hand.
+            gate_expected_move_bps: 1_800,
             gate_base_fixed_lamports: 50_000,
             gate_fail_rate_bps: 500,
             gate_protocol_bps: 100,
             gate_margin_bps: 50,
             gate_impact_den: 1_000_000,
+            gate_exit_tranches: 3,
 
             fill_mode: FillModeCfg::OptimisticCeiling,
             entry_fee_bps: 100,
@@ -1118,19 +1161,26 @@ impl Config {
             // of re-pin #21, and the decision is the OUTPUT of a pre-registered
             // rule rather than an opinion. `tests/law_permutation_sweep.rs` measures
             // ALL EIGHT combinations of {B3, B7, §21.7 concentration} on ten tapes
-            // and B3-alone is the unique configuration that clears every leg:
-            //   * union tape (all three hazards on one engine): +296_536_625
-            //     lamports against a 100_000_000 materiality bar;
+            // and B3-alone clears every leg (re-measured at re-pin #26 on hazard
+            // tapes with real pump.fun depth; the retired figures are in parentheses):
+            //   * union tape (all three hazards on one engine): +650_761_435
+            //     (was +296_536_625) against a 100_000_000 materiality bar;
             //   * WORST delta across all nine hazard tapes: exactly 0 — B3 does not
             //     lose a lamport on any tape measured, including both sides of
             //     every other law's two-sided pair;
-            //   * its own two-sided pair: +391_932_566 on the hazard tape against a
-            //     NEGATIVE loss (+350_288_025) on the maximal false-positive mirror,
-            //     so the 3× asymmetry bar passes without needing the ratio;
+            //   * its own two-sided pair: +414_992_045 (was +391_932_566) on the
+            //     hazard tape against a NEGATIVE loss (+392_297_119) on the maximal
+            //     false-positive mirror, so the 3× asymmetry bar passes without
+            //     needing the ratio;
             //   * the golden tape is EXACTLY neutral — net / admitted / rejected /
-            //     promoted / universe_filtered all unchanged (13 admits generate too
+            //     promoted / universe_filtered all unchanged (12 admits generate too
             //     few episodes to clear the §46 sample floor, so every admit-time
             //     recall there is `Unknown` and LAW B4 makes that a structural no-op).
+            // NOTE (re-pin #26): B3-alone is no longer the UNIQUE winner. {B3, B7}
+            // also clears the rule now that LAW B7's tape is not vacuous. B7 is NOT
+            // armed here — its marginal union contribution is 33_426_226, a third of
+            // the materiality bite, and the decision belongs to an operator via A-11.
+            // See `tests/law_permutation_sweep.rs` and `tests/brain_reflect_twosided.rs`.
             // The law is reduce-only (§29.5 — the verdict type has no boost variant)
             // and fail-closed (LAW B4), so arming it is bounded on the downside by
             // construction as well as by measurement.
@@ -1187,6 +1237,10 @@ impl Config {
             "gate_protocol_bps" => self.gate_protocol_bps = bp(value)?,
             "gate_margin_bps" => self.gate_margin_bps = bp(value)?,
             "gate_impact_den" => self.gate_impact_den = nonneg(value)?.max(1),
+            "gate_exit_tranches" => {
+                self.gate_exit_tranches = u32::try_from(nonneg(value)?.max(1))
+                    .map_err(|_| ConfigError::OutOfRange(key.to_string(), value))?
+            }
             "fill_mode" => {
                 self.fill_mode = FillModeCfg::from_code(value)
                     .ok_or(ConfigError::OutOfRange(key.to_string(), value))?

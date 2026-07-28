@@ -28,9 +28,9 @@ canonical values, for cross-reference, are:
 
 | Invariant | Value | Source (authoritative) |
 |---|---|---|
-| Golden decision-journal digest | `13_150_420_781_254_346_145` | `baselines.rs::GOLDEN_DIGEST` |
-| Golden net-SOL (lamports) | `8_124_568` | `baselines.rs::GOLDEN_NET_LAMPORTS` |
-| Promoted / admitted / rejected | `504 / 13 / 457` | `baselines.rs::GOLDEN_{PROMOTED,ADMITTED,REJECTED}` |
+| Golden decision-journal digest | `6_163_272_398_497_391_826` | `baselines.rs::GOLDEN_DIGEST` |
+| Golden net-SOL (lamports) | `16_778_896` | `baselines.rs::GOLDEN_NET_LAMPORTS` |
+| Promoted / admitted / rejected | `504 / 12 / 447` | `baselines.rs::GOLDEN_{PROMOTED,ADMITTED,REJECTED}` |
 | `cargo test --workspace` | 1908 tests / 0 fail | live workspace run |
 | `cargo fmt --all --check` | clean | live |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean | live |

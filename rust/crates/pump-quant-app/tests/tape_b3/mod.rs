@@ -29,11 +29,48 @@ pub fn ticks(eng: &mut Engine, n: u64) {
     }
 }
 
-/// Liquidity of the BLEEDING setup class: a thin ~4-SOL pool (signed decade 9).
-pub const THIN_LIQUIDITY: u64 = 4_000_000_000;
-/// Liquidity of the HEALTHY setup class: a ~400-SOL pool (signed decade 11), two
-/// ladder buckets away, so the two classes never share a `liquidity_decade`.
-pub const DEEP_LIQUIDITY: u64 = 400_000_000_000;
+/// Liquidity of the BLEEDING setup class: a curve at **LAUNCH depth**, 30 SOL of
+/// virtual SOL reserve ([`pump_quant_app::curve_state::LAUNCH_VSOL_LAMPORTS`]) —
+/// signed decade 10, `liquidity_decade` ladder bucket 3.
+///
+/// **Re-pin #26 (2026-07-28): this was 4 SOL and is now real.** The number is no
+/// longer decorative. Since the cost-model unification `gate::decide` derives the
+/// gate's impact denominator from the market's own reserve
+/// ([`pump_quant_app::cost_model::impact_den_for`] — `vsol / 10_000`), so a declared
+/// depth is now a PRICE. At 4 SOL a 0.02 SOL clip priced at 50 bps a leg; that was
+/// survivable, but it is not a depth pump.fun has — the curve is seeded with 30 SOL
+/// of virtual reserve and no market on it is ever thinner. The old figure made the
+/// bleeding class expensive for a reason that does not exist on the venue.
+///
+/// The SCENARIO is unchanged, and is in fact sharper: the bleeding class is now a
+/// FRESH LAUNCH at the shallowest depth the curve can present, which is exactly what
+/// "thin, seconds-old, narrow-breadth, on net-sell flow" describes.
+pub const THIN_LIQUIDITY: u64 = 30_000_000_000;
+/// Liquidity of the HEALTHY setup class: a curve **near graduation**, 110 SOL of
+/// virtual SOL reserve — signed decade 11, `liquidity_decade` ladder bucket 4, one
+/// ladder bucket away from [`THIN_LIQUIDITY`], so the two classes still never share
+/// a `liquidity_decade`.
+///
+/// **Re-pin #26: this was 400 SOL, which is not a bonding curve at all.** The curve
+/// is exhausted at [`pump_quant_app::curve_state::GRADUATION_VSOL_LAMPORTS`] =
+/// 115.005 SOL, and `cost_model::venue_fee_bps_per_leg` charges 30 bps a leg at or
+/// above it against 125 bps below. A 400 SOL "pool" therefore did not merely
+/// exaggerate depth — it silently moved the HEALTHY class onto the POST-GRADUATION
+/// fee tier while the BLEEDING class paid the curve rate, putting a 190 bps a leg
+/// fee difference on the one axis the A/B is not supposed to vary. 110 SOL keeps
+/// both classes on the curve, on the same fee schedule, differing only in depth.
+///
+/// The scenario survives intact: a mature market that has raised ~80 SOL and sits
+/// one print from migrating is precisely the "deep, ~33 minutes old, broad
+/// participation" healthy class this cohort was written to express.
+pub const DEEP_LIQUIDITY: u64 = 110_000_000_000;
+/// Confirmed sellable depth of the BLEEDING class, just under its own reserve —
+/// the same "confirm proves slightly less than the pool holds" discipline
+/// `tape_golden` uses. Re-pin #26: was 2 SOL against a 4 SOL pool.
+pub const THIN_SELLABLE: u64 = 29_000_000_000;
+/// Confirmed sellable depth of the HEALTHY class, just under its own reserve.
+/// Re-pin #26: was 200 SOL against a 400 SOL pool.
+pub const DEEP_SELLABLE: u64 = 105_000_000_000;
 /// Market age of the BLEEDING class: seconds old (`token_age` bucket 0).
 pub const FRESH_AGE_SLOTS: u32 = 12;
 /// Market age of the HEALTHY class: ~33 minutes of information time (bucket 3).
@@ -97,7 +134,7 @@ pub fn seed_and_admit(eng: &mut Engine, m: Mint, entity_base: u64) {
     }
     eng.tick(AppEvent::OnchainConfirm {
         mint: m,
-        sellable_depth_lamports: 2_000_000_000,
+        sellable_depth_lamports: THIN_SELLABLE,
     });
     narrate(eng, m);
     ticks(eng, 2);
@@ -137,8 +174,8 @@ pub fn hazard_cfg() -> Config {
     cfg.lc_stall_ticks = 5;
     cfg.lc_max_hold_ticks = 18;
     // Tighten the similarity radius from the brain's default 12 to 6. The two
-    // classes on the hazard tape sit 8 ordinal buckets apart (opposite ends of the
-    // OFI ladder plus two liquidity decades), which the default radius would POOL —
+    // classes on the hazard tape sit many ordinal buckets apart (opposite ends of the
+    // OFI ladder, plus liquidity/age/breadth), which the default radius would POOL —
     // and a pooled estimate over a profitable class and a bleeding one is exactly
     // the §100-style error the whole design exists to avoid. 6 keeps them separate
     // while still matching within-class variation (which is 1 bucket here).
@@ -169,11 +206,16 @@ pub fn hazard_cfg() -> Config {
 // specific SETUP CLASS bleeds on every single occurrence. Recall conditions on the
 // setup, so it can see what the pooled estimator structurally cannot.
 //
-//   * class HEALTHY — deep (~40 SOL) pool, net-BUY flow, price rips to 2.5x.
-//   * class BLEEDER — thin (~0.4 SOL) pool, net-SELL flow, price craters 40%.
+//   * class HEALTHY — a near-graduation curve (110 SOL), mature, broad
+//     participation, choppy pre-entry tape; price rips to 2.5x.
+//   * class BLEEDER — a launch curve (30 SOL), seconds old, three buyers, flat
+//     pre-entry tape, net-SELL flow; price craters 40%.
 //
-// The two quantize far apart (opposite ends of the OFI and CVD ladders, two
-// liquidity decades apart), so recall never pools them — while the WATCHLIST lane
+// Re-pin #26 gave both classes REAL pump.fun depth (the gate now derives its impact
+// denominator from the declared reserve, so a stylized depth is a mispriced trade,
+// not a harmless label). The two still quantize far apart — opposite ends of the OFI
+// and CVD ladders, one liquidity decade, two token-age buckets and two breadth
+// buckets — so recall never pools them — while the WATCHLIST lane
 // and the §71.2 discovery lane are identical for both, so the lane-pooled
 // expectancy sees one blended, profitable stream.
 //
@@ -188,9 +230,10 @@ pub fn hazard_cfg() -> Config {
 /// deliberate and load-bearing: if the two classes fell in different watchlist
 /// lanes, the engine's existing §24 per-lane conditional expectancy would already
 /// separate them and LAW B3 would be measuring nothing. They are separated ONLY on
-/// axes the lane-pooled estimator cannot see: pool depth (2 liquidity decades),
-/// market age (fresh vs ~33 min), buyer breadth (3 vs 24 distinct entities) and
-/// realized volatility (flat vs choppy pre-entry).
+/// axes the lane-pooled estimator cannot see: pool depth (a launch curve against a
+/// near-graduation one — one liquidity decade since re-pin #26 gave both classes real
+/// depth), market age (fresh vs ~33 min), buyer breadth (3 vs 24 distinct entities)
+/// and realized volatility (flat vs choppy pre-entry).
 pub fn seed_healthy(eng: &mut Engine, m: Mint, entity_base: u64) {
     for _ in 0..4 {
         narrate(eng, m);
@@ -210,7 +253,7 @@ pub fn seed_healthy(eng: &mut Engine, m: Mint, entity_base: u64) {
     }
     eng.tick(AppEvent::OnchainConfirm {
         mint: m,
-        sellable_depth_lamports: 200_000_000_000,
+        sellable_depth_lamports: DEEP_SELLABLE,
     });
     narrate(eng, m);
     ticks(eng, 2);

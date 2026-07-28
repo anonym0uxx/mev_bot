@@ -73,12 +73,18 @@ pub struct LifecycleParams {
     /// Rug precursor: a single-swap price drop of at least this (bps) dumps the
     /// remainder immediately (accept slippage; being early beats a total-loss gap).
     pub precursor_drop_bps: u32,
-    /// Round-trip venue fee charged on each sell tranche (bps of proceeds).
+    /// **Fallback** venue fee per leg (bps), used only when the position has no
+    /// decoded curve depth. When depth IS known — which is every position the engine
+    /// drives — [`HeldPosition::realize`] reads the tiered rate straight from
+    /// [`crate::cost_model::venue_fee_bps_per_leg`] against the freshest reserve, so
+    /// the exit leg is charged the same schedule the gate admitted under. The engine
+    /// sets this from `cost_model` too (§102: one authority, one number).
     pub fee_bps: u32,
-    /// First-sell penalty (bps of the sold notional), charged once on the first exit.
-    pub first_sell_penalty_bps: u32,
-    /// Fixed tip (lamports) charged per sell tranche.
-    pub tip_lamports: u64,
+    /// Size-invariant lamports per landed transaction: priority fee + Jito tip,
+    /// charged on EVERY sell tranche. Replaces the old `tip_lamports` of 10_000,
+    /// which disagreed with the gate's own per-leg figure by 10×
+    /// ([`crate::cost_model::FIXED_LAMPORTS_PER_LEG`]).
+    pub fixed_lamports_per_leg: u64,
     /// Adversarial exit impairment (bps of gross proceeds) applied to EVERY sell —
     /// the §38 Mode-C severity threading: 0 under SignalReplay/OptimisticCeiling,
     /// the configured retry-slippage under AdversarialRealistic, doubled under
@@ -125,9 +131,8 @@ impl LifecycleParams {
             stall_ticks: 25,
             max_hold_ticks: 300,
             precursor_drop_bps: 3_000, // −30% single-swap step = collapse onset
-            fee_bps: 100,
-            first_sell_penalty_bps: 150,
-            tip_lamports: 10_000,
+            fee_bps: crate::cost_model::VENUE_FEE_BPS_CURVE,
+            fixed_lamports_per_leg: crate::cost_model::FIXED_LAMPORTS_PER_LEG,
             exit_impair_bps: 0, // Mode A/B default; engine sets from cfg.fill_mode
             curve_exact_fill: false, // fill fidelity; MUST be armed for real-data backtests
             into_strength_exit_enable: false, // LAW 5 off by default; operator/challenger arms
@@ -252,7 +257,6 @@ struct HeldPosition {
     last_high_tick: u64,
     /// Bit i set once tranche i has been taken.
     tranche_mask: u8,
-    took_first_sell: bool,
     /// Lowest price seen since entry (MAE tracking; §48 excursion rows).
     trough_price_fp: u64,
     /// Meta-saturation exit pressure (§21.4 third consumption limb): when set, the
@@ -371,8 +375,31 @@ impl HeldPosition {
     }
 
     /// Net lamports realized by selling `frac_bps` of the ORIGINAL size at
-    /// `mult_bps`, charging fee + (once) first-sell penalty + tip, and netting the
+    /// `mult_bps`, under the **unified** [`crate::cost_model`] arithmetic, netting the
     /// pro-rata entry cost. Integer, saturating (§22).
+    ///
+    /// # What this charges, and what it deliberately no longer charges
+    ///
+    /// Three ad-hoc terms are gone, replaced by the one authority:
+    ///
+    /// * `fee_bps` is now the venue's TIERED per-leg rate read from the position's own
+    ///   decoded reserve, not an operator constant. The ENTRY leg's fee is charged in
+    ///   the engine's `entry_cost` basis (which this function nets out pro-rata), so a
+    ///   round trip pays exactly two legs of it — the property the split cost model
+    ///   could not state because the two legs lived in two files.
+    /// * `first_sell_penalty_bps` (150 bps of notional, once) is **deleted**. It was
+    ///   own-impact under another name, and `curve_exact_fill` charges own-impact
+    ///   exactly, on every tranche, from the single curve authority. Keeping both was
+    ///   double-counting.
+    /// * `tip_lamports` (10_000 a tranche) becomes
+    ///   [`crate::cost_model::FIXED_LAMPORTS_PER_LEG`] (150_000 a tranche), the same
+    ///   per-signature figure the gate now amortises. The old pair disagreed by 10×
+    ///   about the price of one transaction.
+    ///
+    /// The ATA deposit is NOT charged here. It is a per-MINT cost, not a per-tranche
+    /// one, and a function that sees one tranche of one position cannot know whether a
+    /// token account already exists; the engine owns it (lazy-hold, close-on-full-exit)
+    /// because the engine is the only thing that knows.
     fn realize(&mut self, frac_bps: u32, mult_bps: u32, p: &LifecycleParams) -> i128 {
         let frac_bps = frac_bps.min(self.remaining_bps);
         if frac_bps == 0 {
@@ -394,20 +421,24 @@ impl HeldPosition {
         };
         let impair = p.exit_impair_bps.saturating_add(curve_bps).min(10_000);
         gross -= gross * u128::from(impair) / 10_000;
-        let fee = gross * u128::from(p.fee_bps) / 10_000;
-        let penalty = if self.took_first_sell {
-            0
+        // The venue's TIERED per-leg fee, read from this position's freshest decoded
+        // reserve — the same schedule, from the same function, the gate admitted the
+        // trade under. Depth unknown ⇒ the configured fallback rate (the engine sets
+        // it from `cost_model` too), never a free sell.
+        let venue_fee_bps = if self.liq_lamports > 0 {
+            crate::cost_model::venue_fee_bps_per_leg(self.liq_lamports)
         } else {
-            notional * u128::from(p.first_sell_penalty_bps) / 10_000
+            p.fee_bps
         };
-        self.took_first_sell = true;
+        let fee = gross * u128::from(venue_fee_bps) / 10_000;
         let cost = u128::from(self.cost_lamports) * u128::from(frac_bps) / 10_000;
         self.remaining_bps -= frac_bps;
-        // proceeds − fee − penalty − tip − pro-rata entry cost
-        let proceeds = gross.saturating_sub(fee).saturating_sub(penalty);
+        // proceeds − venue fee − this tranche's landed-transaction cost − pro-rata
+        // entry cost (which already carries the ENTRY leg's fee and fixed cost).
+        let proceeds = gross.saturating_sub(fee);
         (proceeds as i128)
             .saturating_sub(cost as i128)
-            .saturating_sub(i128::from(p.tip_lamports))
+            .saturating_sub(i128::from(p.fixed_lamports_per_leg))
     }
 }
 
@@ -495,7 +526,6 @@ impl ScalpLifecycle {
                 entry_tick: tick,
                 last_high_tick: tick,
                 tranche_mask: 0,
-                took_first_sell: false,
                 trough_price_fp: entry_price_fp,
                 pressure: false,
                 scaled: false,
@@ -879,7 +909,7 @@ mod tests {
 
     fn open_one(size: u64, entry: u64) -> ScalpLifecycle {
         let mut lc = ScalpLifecycle::new(P, 64);
-        lc.open([1u8; 32], entry, size, size + P.tip_lamports, 0);
+        lc.open([1u8; 32], entry, size, size + P.fixed_lamports_per_leg, 0);
         lc
     }
 
@@ -896,7 +926,9 @@ mod tests {
             .enumerate()
         {
             let price = 1_000_000 * m / 10_000;
-            if let Some(e) = lc.on_trade(&[1u8; 32], price, 500_000, i as u64 + 1, TEST_LIQ_LAMPORTS) {
+            if let Some(e) =
+                lc.on_trade(&[1u8; 32], price, 500_000, i as u64 + 1, TEST_LIQ_LAMPORTS)
+            {
                 total += e.net_lamports;
                 closed = e.closed;
             }
@@ -944,10 +976,16 @@ mod tests {
             e.net_lamports < 0,
             "a bleed realizes a loss, but a bounded one"
         );
-        // bounded: never worse than ~ −(hard_sl + costs) of size
+        // Bounded: never worse than −(hard_sl + costs) of size. This toy position is
+        // 0.001 SOL — a hundredth of the operator's floor clip — so the two landed
+        // transactions at `FIXED_LAMPORTS_PER_LEG` are 30% of it on their own. That is
+        // not a defect in the bound; it is the fixed-cost floor the whole cost model
+        // exists to make visible, and it is exactly why `optimal_clip_lamports` puts
+        // the cost-minimising clip two orders of magnitude above this size.
         assert!(
-            e.net_lamports > -600_000,
-            "loss is bounded by the hard stop"
+            e.net_lamports > -700_000,
+            "loss is bounded by the hard stop ({})",
+            e.net_lamports,
         );
     }
 
@@ -978,7 +1016,8 @@ mod tests {
             .enumerate()
             {
                 let price = 1_000_000 * m / 10_000;
-                if let Some(e) = lc.on_trade(&[1u8; 32], price, *q, i as u64 + 1, TEST_LIQ_LAMPORTS) {
+                if let Some(e) = lc.on_trade(&[1u8; 32], price, *q, i as u64 + 1, TEST_LIQ_LAMPORTS)
+                {
                     acc += e.net_lamports;
                 }
             }
@@ -991,7 +1030,9 @@ mod tests {
     fn empty_manager_books_nothing() {
         let mut lc = ScalpLifecycle::new(P, 64);
         assert!(lc.is_empty());
-        assert!(lc.on_trade(&[9u8; 32], 1_000_000, 1, 1, TEST_LIQ_LAMPORTS).is_none());
+        assert!(lc
+            .on_trade(&[9u8; 32], 1_000_000, 1, 1, TEST_LIQ_LAMPORTS)
+            .is_none());
         assert!(lc.force_close_all(&|_| None).is_empty());
     }
 }

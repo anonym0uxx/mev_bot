@@ -1,5 +1,15 @@
 # BAND THESIS — optimising the bot for the $9k–$20k pump.fun band (2026-07-28)
 
+> **ERRATUM — 2026-07-28 (re-pin #26, COST-MODEL UNIFICATION).** Every golden-tape
+> absolute below is superseded. The engine carried two disagreeing round-trip cost models
+> and used one to DECIDE and the other to BOOK; `crates/pump-quant-app/src/cost_model.rs`
+> is now the single authority for both. Golden net **8,124,568 → 16,778,896**, digest →
+> `6163272398497391826`, admitted **13 → 12**, rejected **457 → 447** (promoted 504 and
+> universe_filtered 72 unchanged). The book roughly doubled and **not one qualitative
+> conclusion about edge changes**: it is still 12 trades in 4 distinct markets, still
+> statistically indistinguishable from zero (|t| ≈ 0.19), and still 60% boundary artifact
+> from end-of-tape force closure. Live pins: `crates/pq-regression/src/baselines.rs`.
+
 **Mandate (operator, verbatim intent):** the engine appears to enter on raw unhashed numbers.
 Shouldn't it holistically examine the signals, build a score, rank the trade's potential upside, and
 enter — then exit on algorithms too? Scrutinise end to end from a principal memecoin quant

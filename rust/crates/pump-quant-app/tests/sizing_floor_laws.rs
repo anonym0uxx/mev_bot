@@ -20,6 +20,14 @@ use pump_quant_app::event::AppEvent;
 use pump_quant_app::journal_log::Decision;
 use pump_quant_domain::ids::Mint;
 
+/// **DEPTH REALISM (re-pin #26).** The gate's price-impact model is now DERIVED from
+/// the market's own SOL-side reserve (`cost_model::impact_den_for`), so a fixture's
+/// declared depth is a decision input rather than decoration. Real pump.fun virtual
+/// reserves START at 30 SOL; the sub-SOL depths these fixtures used to declare put the
+/// operator's 0.1 SOL floor clip at 5-125% of the pool — a market in which no strategy
+/// result means anything (Amendment A-13(1)).
+const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+
 const FLOOR: u64 = MIN_TRADE_SIZE_LAMPORTS_DEFAULT; // 100_000_000 = 0.1 SOL
 
 fn mint(tag: u64) -> Mint {
@@ -47,10 +55,7 @@ fn admitted_sizes(eng: &Engine) -> Vec<u64> {
 fn drive_golden_style(mut cfg: Config) -> Engine {
     // Realistic low-cap round-trip (mirror of the golden tape's cost overrides).
     cfg.gate_expected_move_bps = 1_800;
-    cfg.gate_protocol_bps = 450;
     cfg.gate_margin_bps = 150;
-    cfg.gate_base_fixed_lamports = 200_000;
-    cfg.gate_impact_den = 250_000;
     let mut eng = Engine::new(cfg, RunMode::Replay);
     for round in 0..4u64 {
         for m in 0..24u64 {
@@ -61,7 +66,7 @@ fn drive_golden_style(mut cfg: Config) -> Engine {
                     quote_lamports: 700_000,
                     // Deep pool (2–4 SOL of reserve): a ≥0.1-SOL floor clip is a small
                     // fraction of the curve and clears the exit-cost veto.
-                    liquidity_lamports: 2_000_000_000 + (m % 8) * 250_000_000,
+                    liquidity_lamports: REAL_CURVE_VSOL + (m % 8) * 250_000_000,
                     signed_base: 900_000 - (i as i64 * 50),
                     buyer_entity: (m + i) % 31,
                     age_slots: 12 + (m as u32 % 20),
@@ -70,7 +75,7 @@ fn drive_golden_style(mut cfg: Config) -> Engine {
             if round == m % 4 {
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: mint(m),
-                    sellable_depth_lamports: 2_000_000_000,
+                    sellable_depth_lamports: REAL_CURVE_VSOL,
                 });
             }
         }
@@ -185,18 +190,39 @@ fn clamp_up_to_floor_unblocks_what_refuse_below_xmin_would_block() {
 // ============================================================================
 // LAW 3: a market too thin to take a 0.1 clip (x_max < floor) is REFUSED.
 // ============================================================================
+/// The sellable depth the on-chain confirm PROVES for the too-thin market: 0.075 SOL,
+/// deliberately just under the 0.1-SOL operator floor, so `x_max` collapses below the
+/// floor while everything else about the market stays real and healthy.
+const PROVEN_SELLABLE: u64 = 75_000_000;
+
 #[test]
 fn too_thin_market_refuses_rather_than_sizing_below_floor() {
-    // A market whose impact-bounded x_max is BELOW the 0.1-SOL floor: a thin impact
-    // curve (x_impact ≈ 0.075 SOL) but a DEEP reserve, so the ONLY reason to refuse is
-    // that a floor-sized clip does not fit x_max — not the exit-cost veto.
+    // A market whose x_max is BELOW the 0.1-SOL floor, with a DEEP reserve, so the
+    // ONLY reason to refuse is that a floor-sized clip does not fit x_max — not the
+    // exit-cost veto.
+    //
+    // **Re-pin #26 (2026-07-28): the thinness moved from the IMPACT bound to the
+    // SELLABILITY bound, and it had to.** `size_band` takes
+    // `x_max = min(x_impact, sellable_max)`, and this test used to squeeze x_impact by
+    // configuring a shallow `gate_impact_den` of 500_000. That knob no longer exists on
+    // the decision path: `cost_model::impact_den_for` derives it as `vsol / 10_000`, so
+    // `x_impact = (1_800 − 250 − 50) × vsol / 10_000 = 0.15 × vsol`. On a real pump.fun
+    // curve — 30 SOL of virtual reserve at launch, and never less — x_impact is at
+    // least 4.5 SOL, and a market whose IMPACT bound sits under a 0.1-SOL clip is a
+    // 0.67-SOL pool: a market that does not exist on this venue. Reaching the law
+    // through a fictional depth would be testing the floor against a fiction.
+    //
+    // The sellability bound reaches the same law on a market that is entirely real, and
+    // arguably describes it better: the pool is deep, but the on-chain confirm PROVES
+    // only 0.075 SOL of sellable depth, and §15 will not let an unproven claim buy
+    // size. "We cannot prove we can get 0.1 SOL back out" is exactly the hazard the
+    // operator floor's refuse-if-unsafe rule exists for.
     let run = |floor_on: bool| -> (u64, Vec<u64>) {
         let mut cfg = Config::dev_portable();
         cfg.bankroll_initial_lamports = 20_000_000_000; // funded: base ≫ x_max
         cfg.min_trade_size_lamports = if floor_on { FLOOR } else { 0 };
-        // Default gate economics with a SHALLOW impact curve: x_impact = (300−100−50)
-        // × 500_000 = 75_000_000 = 0.075 SOL < the 0.1-SOL floor.
-        cfg.gate_impact_den = 500_000;
+        // Default gate economics against a real launch curve; the binding bound is
+        // PROVEN_SELLABLE (0.075 SOL) < the 0.1-SOL floor.
         let mut eng = Engine::new(cfg, RunMode::Replay);
         let m = mint(700);
         for round in 0..3u64 {
@@ -205,7 +231,7 @@ fn too_thin_market_refuses_rather_than_sizing_below_floor() {
                     mint: m,
                     price_fp: 1_000_000_000 + (round as i128) * 20_000_000 + (i as i128) * 500_000,
                     quote_lamports: 700_000,
-                    liquidity_lamports: 10_000_000_000, // deep reserve: exit cost is cheap
+                    liquidity_lamports: REAL_CURVE_VSOL, // deep reserve: exit cost is cheap
                     signed_base: 900_000 - (i as i64 * 40),
                     buyer_entity: i % 9,
                     age_slots: 14,
@@ -214,7 +240,7 @@ fn too_thin_market_refuses_rather_than_sizing_below_floor() {
             if round == 0 {
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: m,
-                    sellable_depth_lamports: 10_000_000_000,
+                    sellable_depth_lamports: PROVEN_SELLABLE,
                 });
             }
             for _ in 0..6 {
