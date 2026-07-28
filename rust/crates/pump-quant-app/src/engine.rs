@@ -889,6 +889,9 @@ pub struct Engine {
     corrob_buf: Vec<Candidate>,
     extras_buf: Vec<Candidate>,
     pending_buf: Vec<PendingEntry>,
+    /// Stratified per-candidate expected-move table. EMPTY in the shipped state, so
+    /// every estimate refuses and the gate prices on `gate_expected_move_bps`.
+    expected_move: crate::expected_move::MoveTable,
     cands_buf: Vec<EntryCandidate>,
 
     /// LAWs B1–B5: the episodic recall memory plane. Bounded (§99) and, unless
@@ -1112,6 +1115,7 @@ impl Engine {
             corrob_buf: Vec::new(),
             extras_buf: Vec::new(),
             pending_buf: Vec::new(),
+            expected_move: crate::expected_move::MoveTable::empty(),
             cands_buf: Vec::new(),
             brain: BrainPlane::new(cfg.brain_min_sample, cfg.brain_recall_max_distance),
             measured: MeasuredState::new(),
@@ -2606,7 +2610,30 @@ impl Engine {
             });
             return None;
         }
-        match decide(&cand, confirmation, &self.cfg) {
+        // BENEFIT-SIDE PRICING. `gate::decide` has always compared a per-candidate
+        // MEASURED cost against a GLOBAL CONSTANT benefit
+        // (`docs/EDGE_PROVENANCE_2026-07-27.md` §4). When the model is armed we hand it
+        // the stratified per-candidate estimate instead; when it refuses — which is
+        // ALWAYS in the shipped state, because the table is empty — we pass `None` and
+        // the constant is used exactly as before. Fail-open to the old behaviour is the
+        // right direction here: an uncalibrated estimator must not be able to widen the
+        // gate, only to narrow it once it has evidence.
+        let move_override = if self.cfg.expected_move_model_enable {
+            let vsol = confirmation.map_or(0, |c| c.numeric.liquidity_lamports);
+            self.expected_move
+                .estimate(
+                    vsol,
+                    crate::expected_move::MoveParams {
+                        min_sample: self.cfg.expected_move_min_sample,
+                        prior_weight: self.cfg.expected_move_prior_weight,
+                        prior_bps: self.cfg.gate_expected_move_bps,
+                    },
+                )
+                .known_bps()
+        } else {
+            None
+        };
+        match decide(&cand, confirmation, &self.cfg, move_override) {
             GateDecision::Admit(band) => {
                 // §21.7 extreme fabrication signature — the only authenticity gate.
                 let (auth_bps, fabricated) = self.flow_screen.authenticity(&mint_bytes);
@@ -5220,6 +5247,9 @@ const fn reject_code(r: GateReject) -> u8 {
         GateReject::NeedsOnchainConfirmation => 1,
         GateReject::NoNumericConfirmation => 2,
         GateReject::EconomicallyUnviable => 3,
+        // 9 continues the post-gate numbering; a band refusal is a SELECTION event and
+        // must never be confused with an economic one in the reject statistics.
+        GateReject::OutsideMcapBand => 9,
     }
 }
 

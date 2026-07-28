@@ -197,6 +197,36 @@ pub struct Config {
     /// change with its own A/B — leaving it off here keeps this addition a §19
     /// seed-only digest move with every golden decision number unchanged.
     pub curve_exact_fill_enable: bool,
+
+    // ---- operator target band + per-candidate expected move (both default OFF) ----
+    /// **SELECTION LAW (default OFF).** Restrict admission to markets whose
+    /// bonding-curve market cap lies in `[mcap_band_lo_lamports, mcap_band_hi_lamports]`.
+    /// Market cap is `vsol^2 / curve_state::MCAP_DIVISOR_LAMPORTS` — derivable from
+    /// `liquidity_lamports` alone, so this costs no new ingestion (`curve_state`).
+    pub mcap_band_enable: bool,
+    /// Inclusive band floor, lamports of MARKET CAP (not reserve).
+    ///
+    /// Default 118.42 SOL = the operator's $9k at the SOL/USD conversion recorded in
+    /// `docs/BAND_THESIS_2026-07-28.md`. **SOL-denominated deliberately**: the objective
+    /// is net SOL, every venue cost is SOL-denominated, and a USD band would make the
+    /// journal digest a function of an external price feed (§22). If SOL moves
+    /// materially the operator re-pins this; the bot never guesses.
+    pub mcap_band_lo_lamports: u64,
+    /// Inclusive band ceiling, lamports of MARKET CAP. Default 263.16 SOL = $20k at the
+    /// recorded conversion, which is 72% of the way to graduation and safely
+    /// pre-migration.
+    pub mcap_band_hi_lamports: u64,
+    /// **BENEFIT-SIDE LAW (default OFF).** Price admission on the per-candidate
+    /// stratified estimate from `expected_move` instead of the global constant
+    /// `gate_expected_move_bps`. Ships DISARMED with an EMPTY table, so every lookup
+    /// refuses and the constant is used — byte-identical to the pre-model engine.
+    /// Arming requires a calibrated table and the full A-11 leg set.
+    pub expected_move_model_enable: bool,
+    /// Minimum episodes in a curve-progress stratum before it may answer (cf. §46).
+    pub expected_move_min_sample: u32,
+    /// Shrinkage pseudo-count toward the cold-start prior — the same hierarchical
+    /// partial-pooling weight `conditional_edge_bps` uses.
+    pub expected_move_prior_weight: u32,
     /// Slots of expected landing lag applied between OBSERVING a market state and
     /// FILLING against it (criterion 103).
     ///
@@ -907,6 +937,12 @@ impl Config {
             // armed before it has paid for itself). Off/zero reproduces today's
             // behaviour byte-for-byte.
             curve_exact_fill_enable: false,
+            mcap_band_enable: false,
+            mcap_band_lo_lamports: 118_420_000_000,
+            mcap_band_hi_lamports: 263_160_000_000,
+            expected_move_model_enable: false,
+            expected_move_min_sample: 30,
+            expected_move_prior_weight: 30,
             fill_landing_slots: 0,
 
             bankroll_initial_lamports: 2_000_000_000, // 2 SOL start; ANY amount works
@@ -1161,6 +1197,12 @@ impl Config {
             "exit_tip_lamports" => self.exit_tip_lamports = nonneg(value)?,
             "sim_impact_k_bps" => self.sim_impact_k_bps = bp(value)?,
             "curve_exact_fill_enable" => self.curve_exact_fill_enable = value != 0,
+            "mcap_band_enable" => self.mcap_band_enable = value != 0,
+            "mcap_band_lo_lamports" => self.mcap_band_lo_lamports = nonneg(value)?,
+            "mcap_band_hi_lamports" => self.mcap_band_hi_lamports = nonneg(value)?,
+            "expected_move_model_enable" => self.expected_move_model_enable = value != 0,
+            "expected_move_min_sample" => self.expected_move_min_sample = bp(value)?,
+            "expected_move_prior_weight" => self.expected_move_prior_weight = bp(value)?,
             "fill_landing_slots" => self.fill_landing_slots = nonneg(value)?,
             "bankroll_initial_lamports" => self.bankroll_initial_lamports = nonneg(value)?,
             "min_trade_size_lamports" => self.min_trade_size_lamports = nonneg(value)?,

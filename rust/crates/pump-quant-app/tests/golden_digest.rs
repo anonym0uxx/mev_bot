@@ -476,7 +476,22 @@ use tape_golden::*;
 // and `brain_haircut_is_exactly_neutral_on_this_tape` drives BOTH arms of the flag on
 // the real golden tape to prove the counters are byte-identical.
 // (arc: … → 1_864_780 → 8_124_568 [net unchanged at re-pins #16, #17, #18, #19, #20, #21].)
-const GOLDEN_DIGEST: u64 = 617_234_374_244_928_651;
+// RE-PIN #25 (2026-07-28) — SEED-ONLY. Six `Config` fields were ADDED for the
+// operator target band and the per-candidate expected-move estimator:
+// `mcap_band_enable` / `mcap_band_lo_lamports` / `mcap_band_hi_lamports` /
+// `expected_move_model_enable` / `expected_move_min_sample` /
+// `expected_move_prior_weight`. §19 folds `fnv1a_64(format!("{cfg:?}"))` into the
+// journal seed, so ADDING a field re-seeds the digest with zero decision change.
+//
+// Both laws ship DISARMED and the expected-move table ships EMPTY, so every estimate
+// refuses and `gate::decide` prices on `gate_expected_move_bps` exactly as before.
+// EVERY decision-plane number is UNCHANGED — net 8_124_568, promoted 504, admitted 13,
+// rejected 457, universe_filtered 72, and every per-lane / per-discovery-lane net and
+// final weight identical to re-pin #24. Verified by `mcap_band_laws.rs` (P1) and
+// `expected_move::tests::the_shipped_table_refuses_everywhere`.
+// Study: `docs/BAND_THESIS_2026-07-28.md`.
+// (arc: … → 1_864_780 → 8_124_568 [net unchanged at re-pins #16–#21, #25].)
+const GOLDEN_DIGEST: u64 = 13_150_420_781_254_346_145;
 const GOLDEN_NET_LAMPORTS: i128 = 8_124_568;
 const GOLDEN_PROMOTED: u64 = 504;
 const GOLDEN_ADMITTED: u64 = 13;

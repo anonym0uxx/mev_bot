@@ -36,6 +36,12 @@ pub enum GateReject {
     NoNumericConfirmation,
     /// The economic size-band collapsed: no size clears costs with margin (§18).
     EconomicallyUnviable,
+    /// The market's bonding-curve market cap sits outside the operator's target band
+    /// (`mcap_band_*`). A SELECTION refusal, not an economic one: the trade may be
+    /// perfectly viable, it is simply not the population this bot is aimed at.
+    /// Distinguished from `EconomicallyUnviable` so band tuning never contaminates the
+    /// cost-floor reject statistics.
+    OutsideMcapBand,
 }
 
 /// The gate's verdict on one candidate.
@@ -62,10 +68,18 @@ pub struct Confirmation {
 /// candidate's mint *and* the numeric lane holds a feature snapshot for it. The two
 /// together are the on-chain truth requirement; either missing is a hard refuse.
 #[must_use]
+/// `expected_move_bps_override` is the per-candidate conditional estimate from
+/// [`crate::expected_move`] when the model is armed AND its stratum cleared the sample
+/// floor. `None` means "the estimator refused" and the configured cold-start constant
+/// is used instead — the shipped path, byte-identical to the pre-model engine. The
+/// fallback is an explicit parameter rather than a default inside this function so that
+/// "we priced this on the constant" is visible at the call site and journallable
+/// (`docs/EDGE_PROVENANCE_2026-07-27.md §4`).
 pub fn decide(
     _candidate: &Candidate,
     confirmation: Option<Confirmation>,
     cfg: &Config,
+    expected_move_bps_override: Option<u32>,
 ) -> GateDecision {
     let conf = match confirmation {
         Some(c) if c.sellable_depth_lamports > 0 => c,
@@ -76,9 +90,24 @@ pub fn decide(
         return GateDecision::Reject(GateReject::NoNumericConfirmation);
     }
 
+    // OPERATOR TARGET BAND (default OFF). On a constant-product curve with virtual
+    // reserves the market cap is `vsol^2 / MCAP_DIVISOR` — the token side cancels, so
+    // `liquidity_lamports` alone prices it with no oracle and no extra decode
+    // (`curve_state`). Selection is applied BEFORE the economic band so that an
+    // out-of-band market never consumes gate work or pollutes the cost statistics.
+    if cfg.mcap_band_enable
+        && !crate::curve_state::mcap_in_band(
+            conf.numeric.liquidity_lamports,
+            u128::from(cfg.mcap_band_lo_lamports),
+            u128::from(cfg.mcap_band_hi_lamports),
+        )
+    {
+        return GateDecision::Reject(GateReject::OutsideMcapBand);
+    }
+
     let impact = ImpactCurve::linear_test(cfg.gate_impact_den);
     let band = size_band(
-        cfg.gate_expected_move_bps,
+        expected_move_bps_override.unwrap_or(cfg.gate_expected_move_bps),
         cfg.gate_base_fixed_lamports,
         cfg.gate_fail_rate_bps,
         cfg.gate_protocol_bps,

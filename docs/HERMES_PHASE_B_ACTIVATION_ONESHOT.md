@@ -35,7 +35,7 @@ minus SOL out after all costs), maximized autonomously under the risk constituti
 win-rate, trade count, or gross P&L.
 
 **The honest baseline you are inheriting:** the golden reference net is **8,124,568 lamports**
-(digest `617234374244928651`). Read that number the way it is meant, because two prior headlines
+(digest `13150420781254346145`). Read that number the way it is meant, because two prior headlines
 were retired for being read the wrong way:
 
 * The 12.55M headline was retired because costs were understated.
@@ -65,7 +65,7 @@ Your first action is the §65 M0/M1 audit built from **actual inspection you rea
 — never claim to have inspected a file, config, provider dashboard, Windows topology, or
 runtime state you did not. Cover, at minimum: the code-path authority audit; the current
 Rust runtime + determinism map (confirm `cargo test --workspace` green, golden digest =
-`617234374244928651`, `scripts/regression_e2e.py` green, 191 dossiers intact); the Windows
+`13150420781254346145`, `scripts/regression_e2e.py` green, 191 dossiers intact); the Windows
 host / CPU / NUMA / storage / network audit; the protocol-registry and decoder-coverage
 audit; the Helius/LaserStream entitlement verification; and the exact immediate autonomous
 actions with what evidence would change direction. Mark every server-only item you have not

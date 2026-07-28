@@ -21,7 +21,7 @@ fn numeric_feats() -> Features {
 fn no_confirmation_is_refused_even_for_loud_social() {
     let cfg = Config::dev_portable();
     // A social-lane candidate with a huge score but no on-chain confirmation.
-    let d = decide(&cand(Lane::CreationSniper), None, &cfg);
+    let d = decide(&cand(Lane::CreationSniper), None, &cfg, None);
     assert_eq!(
         d,
         GateDecision::Reject(GateReject::NeedsOnchainConfirmation),
@@ -37,7 +37,7 @@ fn confirmation_without_numeric_evidence_is_refused() {
         sellable_depth_lamports: 200_000_000,
         numeric: Features::default(),
     };
-    let d = decide(&cand(Lane::EarlyConfirmation), Some(conf), &cfg);
+    let d = decide(&cand(Lane::EarlyConfirmation), Some(conf), &cfg, None);
     assert_eq!(d, GateDecision::Reject(GateReject::NoNumericConfirmation));
 }
 
@@ -48,7 +48,7 @@ fn confirmed_and_viable_is_admitted() {
         sellable_depth_lamports: 200_000_000,
         numeric: numeric_feats(),
     };
-    let d = decide(&cand(Lane::ActiveMarketScalp), Some(conf), &cfg);
+    let d = decide(&cand(Lane::ActiveMarketScalp), Some(conf), &cfg, None);
     match d {
         GateDecision::Admit(band) => {
             assert!(band.x_max > 0);
@@ -67,7 +67,7 @@ fn unviable_economics_is_refused() {
         sellable_depth_lamports: 200_000_000,
         numeric: numeric_feats(),
     };
-    let d = decide(&cand(Lane::ActiveMarketScalp), Some(conf), &cfg);
+    let d = decide(&cand(Lane::ActiveMarketScalp), Some(conf), &cfg, None);
     assert_eq!(d, GateDecision::Reject(GateReject::EconomicallyUnviable));
 }
 
@@ -78,7 +78,7 @@ fn zero_depth_confirmation_is_treated_as_unconfirmed() {
         sellable_depth_lamports: 0,
         numeric: numeric_feats(),
     };
-    let d = decide(&cand(Lane::ActiveMarketScalp), Some(conf), &cfg);
+    let d = decide(&cand(Lane::ActiveMarketScalp), Some(conf), &cfg, None);
     assert_eq!(
         d,
         GateDecision::Reject(GateReject::NeedsOnchainConfirmation)
