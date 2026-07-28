@@ -207,15 +207,31 @@ pooling (EXPECTANCY_V1), and the §52 baseline is valued at the realized hold mo
 so configuration can never manufacture edge or baseline evidence. These laws are pinned as tests
 (`tests/phase_a_alignment.rs`, `tests/batch_e_laws.rs`, `tests/audit_wave2_laws.rs`) alongside a
 golden determinism tape. Every law is A/B-attributed: it must strictly out-earn (or, for a protective
-law, strictly avoid loss beyond) its own absence on a tape containing exactly its hazard. **An honesty
-correction is baked into the current pin:** the constitution's §24 reversal (defect #3) makes
-cost-derived profit targets the live default and forbids the fixed global TP constants; honoring it
-exposed that the earlier golden tape modeled unrealistically low (~1.5%) round-trip cost, which
-inflated realized net. The tape was corrected to realistic pump.fun/PumpSwap scalp economics (~7%
-round-trip cost, dominated by fixed priority/tip on small clips; a realistic loser/small-winner/runner
-mix) and re-pinned to **net 15,410,801 lamports** — the honest representative reference, on which
-cost-derived targets marginally out-earn the forbidden fixed ladder. The earlier headline arc
-(2.98M → … → 12.55M) was an artifact of understated costs and is not cited as live edge. The runner
+law, strictly avoid loss beyond) its own absence on a tape containing exactly its hazard.
+
+**Three honesty corrections are baked into the current pin, and the number they produced must be read
+the way it is meant.** The current golden reference is **net 16,778,896 lamports**, digest
+`6163272398497391826`, promoted/admitted/rejected/universe-filtered **504 / 12 / 447 / 72**
+(re-pin #26, 2026-07-28). It got there by *removing* two costs that were never real and *adding* one
+that is:
+
+1. **Cost realism (re-pin #23).** The §24 reversal makes cost-derived profit targets the live default
+   and forbids fixed global TP constants; honoring it exposed a tape modelling ~1.5% round-trip cost.
+   Corrected to realistic pump.fun economics.
+2. **Depth realism (re-pin #24).** The tape's pools were 0.12–0.47 SOL against a 0.1 SOL minimum clip —
+   our own order was 21–83% of the entire pool and was charged nothing for it. Real reserves start at
+   30 SOL. Own-curve impact is now charged on both legs.
+3. **Cost-model unification (re-pin #26).** Round-trip cost was computed independently in three places
+   and the engine used one to *decide* and another to *book*. `crates/pump-quant-app/src/cost_model.rs`
+   is now the single authority for both, and Associated Token Account rent — 203 bps on a floor clip,
+   previously absent from the entire workspace — is priced and reclaimed.
+
+**The book roughly doubled at re-pin #26 and that is not an improvement.** It is the same trades with
+honest arithmetic. It remains 12 trades in four distinct markets, statistically indistinguishable from
+zero (|t| ≈ 0.19), with ~60% of the swing attributable to end-of-tape force closure. It is a
+**regression fixture, not evidence of edge** — see `docs/EDGE_PROVENANCE_2026-07-27.md`. The earlier
+headline arc (2.98M → … → 12.55M → 15,410,801) reflected understated costs and is never cited as live
+edge. The runner
 exports a trade JSONL and a config-identity ledger on request (`--trade-jsonl`, `--config-ledger`);
 both are secondary records, never authoritative over the journal digest or chain truth.
 

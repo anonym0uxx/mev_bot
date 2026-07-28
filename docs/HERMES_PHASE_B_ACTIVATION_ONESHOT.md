@@ -688,13 +688,24 @@ adverse observations in EVENT time before that exit fires; any non-adverse obser
 (Lillo–Mike–Farmer, `γ = α − 1`) shows trade signs are long-memory because metaorder lengths are
 Pareto-distributed, so a SINGLE flip is near-uninformative; Kaminski & Lo (*J. Financial Markets*
 18:234–254) show a stop's premium is negative unless its trigger predicts PERSISTENT adverse drift.
-On the two-sided tape built for it, `k = 5` passed both bars (+152,694,678 vs −44,095,911, asymmetry
-3.46×). **But on the pre-existing corpora that could price it, it failed**: that same `k = 5` does not
-merely dent the golden book, it turns it **NEGATIVE** (8,124,568 → **−3,223,175**), and it flips the
-concentration book positive → negative. Best gain any `k` gives on golden is **+207,252** (`k = 2`),
-under 2.6% of the book; a 135-config joint lattice (`k` × trail × hard-stop × TP-margin) topped out
-at +438,538 lamports — a number measured on the pre-depth-fix tape and therefore an upper bound that
-honest fills can only lower. Per the arbiter rule, the pre-existing corpus won. **What blocks arming is a MISSING MEASUREMENT, not a disproven theory.**
+**RESTATED AT RE-PIN #26 (2026-07-28) — the verdict held and the reasoning got stronger, so read
+this version and not the one it replaces.** Earlier drafts said `k = 5` "turns the golden book
+negative (8,124,568 → −3,223,175)". Under the unified cost model that reads
+**16,778,896 → +5,309,323**, which looks like a reversal and is not one. **The harm never moved — it
+GREW**, 11,347,743 → 11,469,573 lamports forfeited. The sign flipped only because honest costs
+roughly doubled the baseline, so a constant harm that used to erase 140% of the book now erases 68%
+of a bigger one. Anyone quoting the sign rather than the magnitude will draw the wrong conclusion.
+
+And at realistic depth a third leg fails that previously did not: **`k = 5` now loses on its OWN
+purpose-built tape** (happy side 104,607,333 → −52,846,461), because once positions are sized against
+real reserves the concurrent-position slots become the binding resource and patience is paid for in
+round trips not taken. Admits fall 63 → 36. Best gain any `k` gives on golden is **+177,199**
+(`k = 2`), around 1% of the book.
+
+So P1, P2 **and** P3 now fail, where before only P1 and P2 did. The lever stays **DISARMED** and the
+case against arming it is stronger than when it was written. **What still blocks arming is a MISSING
+MEASUREMENT, not a disproven theory** — but do not mistake that for "it might be fine": on every
+corpus that can price it today, it is not.
 
 *The exact measurement you must run — this is the single most valuable number the laptop could not
 get.* On live/replay data: **of held positions whose windowed OFI first turns net-sell, what fraction

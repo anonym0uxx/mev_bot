@@ -3135,7 +3135,25 @@ impl Engine {
                 // shrunk toward the prior (hierarchical partial pooling) and THAT
                 // conditions the slot arbitration — configuration can no longer
                 // manufacture a fixed edge for every candidate forever.
-                let edge_bps = self.conditional_edge_bps(cand.lane) - i128::from(rt_bps);
+                //
+                // **ONE EXPECTED MOVE PER TRADE (silo audit F1, 2026-07-28).** Whatever
+                // number priced the band a few hundred lines above MUST be the number
+                // that ranks the slot here. Arbitration used to reach independently for
+                // `conditional_edge_bps` — a PER-LANE estimate, ~6 numbers for the whole
+                // universe — and discard `move_override` entirely. With the estimator
+                // armed the two disagree by up to the model's full range (base plus
+                // `MAX_TOTAL_LIFT_BPS`), which on a floor clip is ~10M lamports of
+                // mis-ranking on the decision that allocates the scarce position slots.
+                // That is the cost-model defect (`docs/NET_SOL_AUDIT_2026-07-28.md` F2)
+                // reappearing in the BENEFIT term: admission priced one trade, ranking
+                // ranked a different one, and neither site was wrong on its own terms.
+                //
+                // The per-lane estimate remains the fallback, and is the ONLY path while
+                // `expected_move_model_enable` is false — so this is decision-inert in
+                // the shipped configuration and byte-identical on every pinned tape.
+                let priced_move_bps = move_override
+                    .map_or_else(|| self.conditional_edge_bps(cand.lane), i128::from);
+                let edge_bps = priced_move_bps - i128::from(rt_bps);
                 let expected_net = i128::from(size).saturating_mul(edge_bps) / 10_000;
                 // §49 LAW 15 haircut convexity (reduced-vs-full size): when the
                 // reduce-only multipliers shrank the size below the full §33
