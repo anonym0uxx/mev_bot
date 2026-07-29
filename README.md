@@ -402,8 +402,13 @@ server bringup is credentials + measurement, not new construction. The ordered m
 [`docs/SERVER_BUILD_MANIFEST.md`](docs/SERVER_BUILD_MANIFEST.md); the Helius product map is
 [`docs/HELIUS_INTEGRATION.md`](docs/HELIUS_INTEGRATION.md) and what it will cost for 30 days of
 continuous operation is [`docs/HELIUS_BUDGET_2026-07-29.md`](docs/HELIUS_BUDGET_2026-07-29.md) —
-read that one **before** arming the gRPC lane, because the subscription as written is a
-program-wide firehose with no cost monitor and the central case consumes 80% of a 100M-credit month.
+read that one **before** arming the gRPC lane. It also carries the two-source allocation: free
+PumpPortal (`wss://pumpportal.fun/api/data`, DISCOVERY tier, per-mint filtering) owns the wide net —
+creation discovery, graduations, screening flow — and paid LaserStream is narrowed to the watchlist
+and to held positions, where §29 corroboration and §97 exit latency actually require canonical
+on-chain data. The two subscription sets are kept **disjoint by construction** rather than deduped
+after the fact. As written today the gRPC lane is a program-wide firehose with no cost monitor and
+the central case consumes 80% of a 100M-credit month; under the allocation it consumes 7%.
 The on-chain instruction layouts Phase-B must build against — every constant re-derived from first
 principles, including two that failed — are [`docs/VENUE_TX_LAYOUTS.md`](docs/VENUE_TX_LAYOUTS.md).
 

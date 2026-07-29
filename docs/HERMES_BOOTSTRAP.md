@@ -38,7 +38,10 @@ end to end, without waiting for me to approve each step.**
 Read `docs/SERVER_BUILD_MANIFEST.md` as you work its §1–§12 spine. Two documents are **not** read on
 demand and must be read before the work they govern: `docs/HELIUS_BUDGET_2026-07-29.md` before you
 arm the LaserStream gRPC lane (the subscription as written is a program-wide firehose with no cost
-monitor; the §72 arm-gate `may_arm` exists and has no caller), and `docs/VENUE_TX_LAYOUTS.md` before
+monitor; the §72 arm-gate `may_arm` exists and has no caller; and its §5 sets the standing source
+allocation — free PumpPortal owns discovery, graduations and screening flow, paid LaserStream is
+narrowed to the watchlist and held positions, the two sets disjoint by construction, and you bring
+the free lane up first because it can be measured at zero cost), and `docs/VENUE_TX_LAYOUTS.md` before
 you build any transaction (it carries the re-derived account orders and records two constants in the
 deleted legacy tree that were fabricated). Everything else —
 `REGRESSION_BASELINES.md`, `README.md`, `docs/HELIUS_INTEGRATION.md`, `docs/PUMPSWAP_DECODE.md`,
