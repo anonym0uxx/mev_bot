@@ -35,7 +35,10 @@ use pump_quant_app::config::Config;
 use pump_quant_app::{cost_model, curve_state};
 
 /// The golden reference net at re-pin #26.
-const GOLDEN_SHIP: i128 = 16_778_896;
+/// Re-pin #27 (2026-07-28): 16_778_896 -> 31_111_528. The move is the confirmed-set
+/// eviction key reordering under corrected fixture depth, NOT either provenance fix —
+/// both were measured decision-inert on this tape. See `golden_digest.rs`.
+const GOLDEN_SHIP: i128 = 31_111_528;
 
 /// **SILO AUDIT F1 — one expected move per trade.**
 ///
@@ -69,38 +72,91 @@ fn admission_and_arbitration_price_the_same_trade() {
     );
 }
 
-/// **SILO AUDIT F3 — two depth numbers describing one reserve.**
+/// **SILO AUDIT F3 — CORRECTED. They are not two views of one number; they are two
+/// DIFFERENT quantities with an exact relationship, and the first version of this test
+/// asserted a bound so weak it passed while the fixtures were 30x wrong.**
 ///
-/// `Features::liquidity_lamports` (the curve's SOL-side reserve, `vsol`) drives the
-/// impact model — what our own order costs. `Confirmation::sellable_depth_lamports`
-/// drives `size_band`'s `x_max` capacity cap — how much the market can absorb. On a
-/// pump.fun bonding curve these are **the same physical pool**: you sell back into the
-/// reserve you bought from.
+/// The original finding said `liquidity_lamports` and `sellable_depth_lamports`
+/// "describe the same pool" and asserted `sellable <= vsol`. Every fixture passed. The
+/// truth is sharper and worse:
 ///
-/// Nothing in the type system enforces agreement. If a decoder ever reports a sellable
-/// depth materially above `vsol`, the capacity cap would permit a size the curve cannot
-/// absorb while impact was priced off the smaller number — the silo shape exactly.
+/// * `virtual_sol` sets the **price curve**. pump.fun seeds it at 30 SOL.
+/// * `real_sol` is the SOL **actually in the pool** — the only SOL a seller can be paid.
+///   It is seeded at ZERO, and every buy adds the same lamports to both, so
+///   `real_sol = virtual_sol - 30 SOL` exactly.
 ///
-/// This pins the relationship on the representative tape so a fixture or decoder that
-/// breaks it is caught here. The audit's recommended structural fix is to derive
-/// sellable depth from `vsol` on a bonding-curve venue rather than accept an independent
-/// value; until then, this is the assertion.
+/// The identity is confirmed by the venue's own published constant: at graduation
+/// `virtual_sol = 115,005,359,056`, which predicts a raise of **85.005 SOL** — precisely
+/// the figure the ecosystem quotes as pump.fun's graduation threshold. An identity that
+/// reproduces the platform's headline number from first principles is the identity.
+///
+/// Against the CORRECT bound the old fixtures were not close. A curve at
+/// `vsol = 30 SOL` is one nobody has bought into: it can pay out **nothing**, and the
+/// tape declared 29 SOL of sellable depth there. At `vsol = 31 SOL` the pool holds
+/// 1 SOL and the tape claimed 30 — a **30x** overstatement feeding the `x_max` cap.
+///
+/// This is the third member of a family this codebase keeps rediscovering: market cap
+/// (`vsol^2 / 32_190_000_000`), own-curve impact (`notional * 10_000 / vsol`) and now
+/// payout depth (`vsol - 30 SOL`) are all pure functions of the SOL-side reserve. Each
+/// was independently sourced, configured or guessed until someone did the algebra.
 #[test]
-fn sellable_depth_never_exceeds_the_reserve_it_sells_into() {
-    // The golden tape's declared pairs, read from `tape_golden`'s own cohort blocks.
-    // Each is (vsol, sellable_depth) as the fixture presents them to the gate.
-    const DECLARED: [(u64, u64); 4] = [
-        (30_000_000_000, 29_000_000_000),
-        (34_000_000_000, 30_000_000_000),
-        (31_000_000_000, 30_000_000_000),
-        (32_000_000_000, 30_000_000_000),
-    ];
-    for (vsol, sellable) in DECLARED {
+fn payout_depth_is_bounded_by_sol_that_actually_exists() {
+    // A curve nobody has bought into can pay out nothing, however deep its PRICE
+    // reserve looks. This single case is what the retired `sellable <= vsol` missed.
+    assert_eq!(
+        curve_state::real_sol_for(curve_state::LAUNCH_VSOL_LAMPORTS),
+        Some(0),
+        "a freshly launched curve holds no real SOL and can pay out nothing"
+    );
+
+    // The identity reproduces the venue's published graduation raise. Measured one
+    // lamport BELOW graduation, because at graduation itself the derivation correctly
+    // refuses — the curve is complete and there is no curve left to derive against.
+    let just_before = curve_state::real_sol_for(curve_state::GRADUATION_VSOL_LAMPORTS - 1)
+        .expect("one lamport below graduation is still on the curve");
+    assert_eq!(
+        just_before / 1_000_000,
+        85_005,
+        "the curve must raise 85.005 SOL to graduate — the ecosystem's own constant, \
+         reproduced from `virtual_sol - LAUNCH_VSOL` and nothing else"
+    );
+
+    // **THE VENUE BOUNDARY, and it must REFUSE rather than answer.** The −30 SOL offset
+    // is a bonding-curve fact. Applying it to a migrated PumpSwap pool would understate
+    // payout depth by 30 SOL; the post-graduation case belongs to the caller's venue
+    // branch (`CurveDepth::MigratedPool`), and this derivation must not silently serve it.
+    assert_eq!(
+        curve_state::real_sol_for(curve_state::GRADUATION_VSOL_LAMPORTS),
+        None,
+        "at and beyond graduation the curve derivation REFUSES — the offset is a \
+         bonding-curve fact and a migrated pool's reserves are its own"
+    );
+    // And a reserve below the seeded floor is a broken decode, not a thin market.
+    assert_eq!(
+        curve_state::real_sol_for(curve_state::LAUNCH_VSOL_LAMPORTS - 1),
+        None,
+        "a reserve below the 30 SOL seed cannot exist on this venue — refuse, never clamp"
+    );
+
+    // Payout depth is strictly less than the price reserve everywhere on the curve,
+    // by exactly the 30 SOL virtual offset — never equal, which is what the retired
+    // assertion permitted.
+    for vsol in [
+        curve_state::LAUNCH_VSOL_LAMPORTS,
+        45_000_000_000,
+        61_740_908_643,
+        92_038_689_691,
+        curve_state::GRADUATION_VSOL_LAMPORTS - 1,
+    ] {
+        let payout = curve_state::real_sol_for(vsol).expect("on-curve reserve");
+        assert_eq!(
+            payout,
+            vsol - curve_state::LAUNCH_VSOL_LAMPORTS,
+            "payout depth is the price reserve minus the virtual offset, exactly"
+        );
         assert!(
-            sellable <= vsol,
-            "sellable depth {sellable} exceeds the reserve {vsol} it sells into — on a \
-             bonding curve these are one pool, and a capacity cap above the reserve \
-             would admit a size the curve cannot absorb"
+            payout < vsol,
+            "payout must be STRICTLY below the price reserve; `sellable <= vsol` was              the assertion that let a 30x overstatement through"
         );
     }
 }

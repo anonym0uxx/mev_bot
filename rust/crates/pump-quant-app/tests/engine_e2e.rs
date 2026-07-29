@@ -11,7 +11,25 @@ use pump_quant_domain::ids::Mint as DomainMint;
 /// declared depth is a decision input rather than decoration. Real pump.fun virtual
 /// reserves START at 30 SOL; the 2 SOL these fixtures used to declare put the
 /// operator's 0.1 SOL floor clip at 5% of the pool (Amendment A-13(1)).
-const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+/// **A REAL BONDING CURVE THAT HAS BEEN BOUGHT INTO (corrected 2026-07-28).**
+///
+/// pump.fun seeds a curve with **30 SOL of VIRTUAL reserve and ZERO real SOL**, and
+/// escrows `real_sol = virtual_sol - 30 SOL` thereafter. This constant used to be the
+/// bare seed reserve (30 SOL) paired with a "sellable depth" of 29-30 SOL — a market
+/// that cannot exist, since a curve nobody has bought into can pay out nothing at all.
+/// It is now a curve with 0.3 SOL genuinely raised: the price reserve is close enough
+/// to the seed that own-impact on a 0.1 SOL floor clip is unchanged at 33 bps a leg,
+/// and the payout reserve is the 0.3 SOL that was actually paid in.
+/// See `curve_state::real_sol_for`.
+const REAL_CURVE_VSOL: u64 = 30_300_000_000;
+/// The SOL this curve actually escrows — `REAL_CURVE_VSOL - LAUNCH_VSOL_LAMPORTS`,
+/// the identity, not a choice. This is what caps `size_band`'s `x_max`.
+const REAL_CURVE_REAL_SOL: u64 = 300_000_000;
+/// A curve barely off its seed: 0.15 SOL raised. Re-pin #27 replaces the 0.08-0.2 SOL
+/// "pools" these harnesses declared, which are not markets this venue can produce —
+/// every curve starts at 30 SOL of VIRTUAL reserve.
+const SHALLOW_CURVE_REAL_SOL: u64 = 150_000_000;
+const SHALLOW_CURVE_VSOL: u64 = 30_000_000_000 + SHALLOW_CURVE_REAL_SOL;
 
 fn mint(tag: u8) -> DomainMint {
     DomainMint::from_bytes([tag; 32])
@@ -55,7 +73,8 @@ fn scenario() -> Vec<AppEvent> {
     }
     ev.push(AppEvent::OnchainConfirm {
         mint: a,
-        sellable_depth_lamports: REAL_CURVE_VSOL,
+        virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
 
     // Loud social call on B and narrative burst on C — corroboration only.
@@ -236,7 +255,8 @@ fn social_source_earns_quality_from_realized_outcomes() {
     }
     eng.tick(AppEvent::OnchainConfirm {
         mint: mkt,
-        sellable_depth_lamports: REAL_CURVE_VSOL,
+        virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     // One evaluation tick promotes + admits: the position OPENS here.
     eng.tick(AppEvent::Tick);
@@ -384,7 +404,8 @@ fn creator_distribution_fades_size_but_never_vetoes() {
         }
         e.tick(AppEvent::OnchainConfirm {
             mint: m,
-            sellable_depth_lamports: REAL_CURVE_VSOL,
+            virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_CURVE_REAL_SOL,
         });
         // Admit (position opens), then a pump past the principal-recovery target and
         // a flow rollover close the position AT A PROFIT — so realized net scales
@@ -453,7 +474,7 @@ fn fed_meta_path_is_live_and_deterministic() {
                             + (round as i128) * 4_000_000
                             + (i as i128) * 1_000_000,
                         quote_lamports: 800_000,
-                        liquidity_lamports: 80_000_000,
+                        liquidity_lamports: SHALLOW_CURVE_VSOL,
                         signed_base: 2_000_000,
                         buyer_entity: (i + round) % 7,
                         age_slots: 20,
@@ -461,7 +482,8 @@ fn fed_meta_path_is_live_and_deterministic() {
                 }
                 e.tick(AppEvent::OnchainConfirm {
                     mint: m,
-                    sellable_depth_lamports: 150_000_000,
+                    virtual_sol_lamports: SHALLOW_CURVE_VSOL,
+                    real_sol_lamports: SHALLOW_CURVE_REAL_SOL,
                 });
             }
             for _ in 0..60 {
@@ -534,7 +556,8 @@ fn numeric_lane_discovers_buy_flow_not_sell_flow() {
         }
         e.tick(AppEvent::OnchainConfirm {
             mint: m,
-            sellable_depth_lamports: REAL_CURVE_VSOL,
+            virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_CURVE_REAL_SOL,
         });
         for _ in 0..6 {
             e.tick(AppEvent::Tick);
@@ -575,15 +598,21 @@ fn admissible_stream(tag: u8) -> Vec<AppEvent> {
     }
     ev.push(AppEvent::OnchainConfirm {
         mint: m,
-        sellable_depth_lamports: REAL_CURVE_VSOL,
+        virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     ev.push(AppEvent::Tick);
     ev
 }
 
-/// A deep, admissible market (100-SOL pool, 200-SOL proven depth) so bankroll-
-/// derived sizes are small relative to the venue (the §34.4/§21.7 exit-cost law
-/// correctly vetoes bankroll-scale sizes against toy-sized pools).
+/// A deep, admissible market so bankroll-derived sizes are small relative to the
+/// venue (the §34.4/§21.7 exit-cost law correctly vetoes bankroll-scale sizes against
+/// toy-sized pools).
+///
+/// Re-pin #27: this declared a 100 SOL price reserve with 200 SOL of "proven depth" —
+/// twice the whole curve, on a venue where the curve escrows `virtual_sol − 30 SOL`
+/// and can never hold more than 85.005 SOL. The reserve is unchanged; the payout it
+/// escrows is now the 70 SOL it actually raised.
 fn deep_admissible_stream(tag: u8) -> Vec<AppEvent> {
     let m = mint(tag);
     let mut ev = Vec::new();
@@ -600,7 +629,8 @@ fn deep_admissible_stream(tag: u8) -> Vec<AppEvent> {
     }
     ev.push(AppEvent::OnchainConfirm {
         mint: m,
-        sellable_depth_lamports: 200_000_000_000,
+        virtual_sol_lamports: 100_000_000_000,
+        real_sol_lamports: 70_000_000_000,
     });
     ev.push(AppEvent::Tick);
     ev
@@ -768,7 +798,7 @@ fn vpin_sell_dump_vetoes_admission() {
             mint: m,
             price_fp: 995_000_000 + (i as i128) * 500_000,
             quote_lamports: 50,
-            liquidity_lamports: 100_000_000,
+            liquidity_lamports: SHALLOW_CURVE_VSOL,
             signed_base: 1_000_000,
             buyer_entity: i % 9,
             age_slots: 31,
@@ -776,7 +806,8 @@ fn vpin_sell_dump_vetoes_admission() {
     }
     e.tick(AppEvent::OnchainConfirm {
         mint: m,
-        sellable_depth_lamports: 200_000_000,
+        virtual_sol_lamports: SHALLOW_CURVE_VSOL,
+        real_sol_lamports: SHALLOW_CURVE_REAL_SOL,
     });
     e.tick(AppEvent::Tick);
     let r = e.report();

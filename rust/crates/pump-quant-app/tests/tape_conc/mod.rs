@@ -97,9 +97,11 @@ pub fn post(eng: &mut Engine, author: &str, addr: &str, body: &str, ts_ns: u64) 
 /// changes the level at which the experiment runs and nothing about the experiment.
 /// It remains identical for both cohorts, which is the property that matters.
 pub const LIQ: u64 = 32_000_000_000;
-/// Confirmed sellable depth, identical for both cohorts (lamports) — just under
-/// [`LIQ`], the discipline `tape_golden` uses. Re-pin #26: was `300_000_000`.
-pub const DEPTH: u64 = 30_000_000_000;
+/// The SOL this curve actually escrows, identical for both cohorts:
+/// `LIQ - LAUNCH_VSOL_LAMPORTS`. Re-pin #27 (2026-07-28): was `30_000_000_000`, i.e.
+/// 15x the money a 32 SOL curve actually holds. Still a CONTROL, held equal across
+/// cohorts — only its level is corrected.
+pub const DEPTH: u64 = LIQ - 30_000_000_000;
 /// Accumulation prints per launch, identical for both cohorts.
 pub const LAUNCH_PRINTS: u64 = 25;
 /// Quote lamports per accumulation print, identical for both cohorts — this is
@@ -169,7 +171,8 @@ pub fn seed_launch(eng: &mut Engine, addr: &str, concentrated: bool, wash: bool,
     });
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
-        sellable_depth_lamports: DEPTH,
+        virtual_sol_lamports: LIQ,
+        real_sol_lamports: DEPTH,
     });
     for k in 0..LAUNCH_PRINTS {
         let e = ent(addr, k);

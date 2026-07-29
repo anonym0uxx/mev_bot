@@ -132,6 +132,13 @@ fn index_hash(index: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+
+    /// A curve that has been bought into by 0.2 SOL: the price reserve is the 30 SOL
+    /// seed plus the raise, and the escrowed (extractable) SOL is the raise itself.
+    /// `real_sol = virtual_sol - LAUNCH_VSOL_LAMPORTS` is the venue's identity, not a
+    /// choice — see `crate::curve_state::real_sol_for`.
+    const CURVE_REAL_SOL: u64 = 200_000_000;
+    const CURVE_VSOL: u64 = crate::curve_state::LAUNCH_VSOL_LAMPORTS + CURVE_REAL_SOL;
     use super::*;
     use pump_quant_domain::ids::Mint;
     use pump_quant_evaluator::ablation::run_ablation;
@@ -152,15 +159,22 @@ mod tests {
                     mint: mt,
                     price_fp: 1_000_000_000 + (i as i128) * 1_000_000 + (m as i128) * 1_000,
                     quote_lamports: 500_000,
-                    liquidity_lamports: 200_000_000,
+                    liquidity_lamports: CURVE_VSOL,
                     signed_base: 600_000 - (i as i64) * 50,
                     buyer_entity: (m + i) % 13,
                     age_slots: 12,
                 });
             }
+            // RE-EXPRESSED (2026-07-28): this harness used to declare a 0.2 SOL
+            // "pool" and a 0.2 SOL sellable depth — a market that cannot exist on
+            // this venue, where a curve is seeded with 30 SOL of VIRTUAL reserve and
+            // escrows `virtual_sol - 30 SOL`. The reserve is now a real curve whose
+            // extractable depth is still 0.2 SOL, so the report surface exercises the
+            // same shape against a market the venue could actually produce.
             tape.push(AppEvent::OnchainConfirm {
                 mint: mt,
-                sellable_depth_lamports: 200_000_000,
+                virtual_sol_lamports: CURVE_VSOL,
+                real_sol_lamports: CURVE_REAL_SOL,
             });
             tape.push(AppEvent::Tick);
         }

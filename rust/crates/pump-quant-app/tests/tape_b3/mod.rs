@@ -45,7 +45,14 @@ pub fn ticks(eng: &mut Engine, n: u64) {
 /// The SCENARIO is unchanged, and is in fact sharper: the bleeding class is now a
 /// FRESH LAUNCH at the shallowest depth the curve can present, which is exactly what
 /// "thin, seconds-old, narrow-breadth, on net-sell flow" describes.
-pub const THIN_LIQUIDITY: u64 = 30_000_000_000;
+///
+/// **Re-pin #27 (2026-07-28): 30.0 -> 30.3 SOL.** The seed reserve exactly is a curve
+/// **nobody has bought into**, which escrows zero SOL and can pay a seller nothing;
+/// the bleeding class would have been refused for having no capacity rather than for
+/// bleeding. 0.3 SOL of raise is the shallowest curve that can still fund a 0.1 SOL
+/// floor clip, keeps the same signed liquidity decade, and leaves own-impact on that
+/// clip unchanged at 33 bps a leg.
+pub const THIN_LIQUIDITY: u64 = 30_300_000_000;
 /// Liquidity of the HEALTHY setup class: a curve **near graduation**, 110 SOL of
 /// virtual SOL reserve — signed decade 11, `liquidity_decade` ladder bucket 4, one
 /// ladder bucket away from [`THIN_LIQUIDITY`], so the two classes still never share
@@ -64,13 +71,13 @@ pub const THIN_LIQUIDITY: u64 = 30_000_000_000;
 /// one print from migrating is precisely the "deep, ~33 minutes old, broad
 /// participation" healthy class this cohort was written to express.
 pub const DEEP_LIQUIDITY: u64 = 110_000_000_000;
-/// Confirmed sellable depth of the BLEEDING class, just under its own reserve —
-/// the same "confirm proves slightly less than the pool holds" discipline
-/// `tape_golden` uses. Re-pin #26: was 2 SOL against a 4 SOL pool.
-pub const THIN_SELLABLE: u64 = 29_000_000_000;
-/// Confirmed sellable depth of the HEALTHY class, just under its own reserve.
-/// Re-pin #26: was 200 SOL against a 400 SOL pool.
-pub const DEEP_SELLABLE: u64 = 105_000_000_000;
+/// The SOL the BLEEDING curve actually escrows: `THIN_LIQUIDITY - 30 SOL`.
+/// Re-pin #27: was 29 SOL claimed against a curve holding 0.
+pub const THIN_SELLABLE: u64 = THIN_LIQUIDITY - 30_000_000_000;
+/// The SOL the HEALTHY curve actually escrows: `DEEP_LIQUIDITY - 30 SOL` = 80 SOL,
+/// i.e. a curve that has raised ~80 of the 85 it needs to graduate. Re-pin #27: was
+/// 105 SOL, which is 25 SOL more than the pool can ever hold.
+pub const DEEP_SELLABLE: u64 = DEEP_LIQUIDITY - 30_000_000_000;
 /// Market age of the BLEEDING class: seconds old (`token_age` bucket 0).
 pub const FRESH_AGE_SLOTS: u32 = 12;
 /// Market age of the HEALTHY class: ~33 minutes of information time (bucket 3).
@@ -134,7 +141,8 @@ pub fn seed_and_admit(eng: &mut Engine, m: Mint, entity_base: u64) {
     }
     eng.tick(AppEvent::OnchainConfirm {
         mint: m,
-        sellable_depth_lamports: THIN_SELLABLE,
+        virtual_sol_lamports: THIN_LIQUIDITY,
+        real_sol_lamports: THIN_SELLABLE,
     });
     narrate(eng, m);
     ticks(eng, 2);
@@ -253,7 +261,8 @@ pub fn seed_healthy(eng: &mut Engine, m: Mint, entity_base: u64) {
     }
     eng.tick(AppEvent::OnchainConfirm {
         mint: m,
-        sellable_depth_lamports: DEEP_SELLABLE,
+        virtual_sol_lamports: DEEP_LIQUIDITY,
+        real_sol_lamports: DEEP_SELLABLE,
     });
     narrate(eng, m);
     ticks(eng, 2);

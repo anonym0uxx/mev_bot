@@ -71,7 +71,7 @@ fn the_golden_tape_is_priced_with_real_depth_and_honest_fills() {
     );
     assert_eq!(
         tape_golden::drive(Config::dev_portable()).net_lamports,
-        16_778_896,
+        31_111_528,
         "the honest golden net, with real depth and our own impact charged on both legs"
     );
 }
@@ -87,6 +87,16 @@ fn honest_fills_cost_us_about_half_the_reported_book() {
     const HONEST_UNDER_THE_SPLIT_MODEL: i128 = 8_124_568;
     /// The book under real depth AND the unified cost model (re-pin #26).
     const HONEST: i128 = 16_778_896;
+    /// The book at re-pin #27, after the depth/move provenance types landed.
+    ///
+    /// **This number is NOT a third correction to fill honesty and must not be read as
+    /// one.** Both of re-pin #27's corrections were measured to be decision-inert on
+    /// this tape (the payout cap never binds against the impact bound here, and no lane
+    /// leaves the cold-start prior before the tape ends). The entire delta is the
+    /// confirmed-set eviction key, which the corrected fixtures reordered — see the
+    /// re-pin #27 entry in `golden_digest.rs`. It is carried here only so this file's
+    /// arithmetic keeps referring to the shipped tape.
+    const SHIPPED: i128 = 31_111_528;
     const {
         assert!(
             HONEST_UNDER_THE_SPLIT_MODEL < FICTIONAL,
@@ -110,7 +120,7 @@ fn honest_fills_cost_us_about_half_the_reported_book() {
     }
     assert_eq!(
         tape_golden::drive(Config::dev_portable()).net_lamports,
-        HONEST
+        SHIPPED
     );
 }
 
@@ -212,7 +222,7 @@ fn only_tapes_with_real_depth_may_charge_their_own_impact() {
     const REAL_DEPTH_FILLS_AT_PRINT: i128 = 15_641_439;
     let armed_net = tape_golden::drive(Config::dev_portable()).net_lamports;
     assert_eq!(
-        armed_net, 16_778_896,
+        armed_net, 31_111_528,
         "the golden tape must be pricing its own impact"
     );
     // Re-pin #26: 15_641_439 was measured under the SPLIT cost model, so it is no
@@ -234,7 +244,7 @@ fn only_tapes_with_real_depth_may_charge_their_own_impact() {
 /// The golden tape with fills taken AT THE PRINT under the unified cost model —
 /// measured, not computed, from the first run of
 /// `only_tapes_with_real_depth_may_charge_their_own_impact`.
-const MEASURED_FILLS_AT_PRINT: i128 = 23_608_498;
+const MEASURED_FILLS_AT_PRINT: i128 = 37_364_873;
 
 /// **A-13(1) — the participation rate, declared rather than assumed.** This is the
 /// arithmetic that nobody computed for months: what fraction of the pool is OUR order?

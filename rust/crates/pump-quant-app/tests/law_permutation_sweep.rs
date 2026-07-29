@@ -404,9 +404,9 @@ fn the_full_permutation_matrix() {
 
     // ---- The golden control, restated from the shipped pins so this file cannot
     // silently drift away from `golden_digest.rs`.
-    assert_eq!(m[0][0].net_lamports, 16_778_896, "golden net");
-    assert_eq!(m[0][0].admitted, 12, "golden admitted");
-    assert_eq!(m[0][0].rejected, 447, "golden rejected");
+    assert_eq!(m[0][0].net_lamports, 31_111_528, "golden net");
+    assert_eq!(m[0][0].admitted, 11, "golden admitted");
+    assert_eq!(m[0][0].rejected, 448, "golden rejected");
     assert_eq!(m[0][0].promoted, 504, "golden promoted");
     assert_eq!(m[0][0].universe_filtered, 72, "golden universe_filtered");
 
@@ -419,10 +419,10 @@ fn the_full_permutation_matrix() {
     let b7_happy_on = m[4][2].net_lamports;
     let b7_unhappy_off = m[5][0].net_lamports;
     let b7_unhappy_on = m[5][2].net_lamports;
-    assert_eq!(b7_happy_off, 555_444_680, "B7 happy neutral drifted");
-    assert_eq!(b7_happy_on, 643_653_672, "B7 happy armed drifted");
-    assert_eq!(b7_unhappy_off, 1_317_461_160, "B7 unhappy neutral drifted");
-    assert_eq!(b7_unhappy_on, 1_319_190_459, "B7 unhappy armed drifted");
+    assert_eq!(b7_happy_off, 539_316_863, "B7 happy neutral drifted");
+    assert_eq!(b7_happy_on, 650_239_251, "B7 happy armed drifted");
+    assert_eq!(b7_unhappy_off, 1_258_901_287, "B7 unhappy neutral drifted");
+    assert_eq!(b7_unhappy_on, 1_211_731_139, "B7 unhappy armed drifted");
 
     // Every tape must actually trade under all-OFF, else its row proves nothing.
     for (ti, t) in TAPES.iter().enumerate() {
@@ -602,20 +602,26 @@ fn the_verdict_under_the_pre_registered_rule() {
     }
     // Pinned exactly, so that a change to WHICH configurations clear the rule is loud
     // even when the structural properties above still hold.
+    //
+    // **RE-PIN #27 CLOSED AN OPEN LAW QUESTION.** Re-pin #26 produced TWO winners —
+    // `{B3}` and `{B3,B7}` — where every prior sweep had produced exactly one. That
+    // ambiguity was filed as an A-11 study request because a second winner meant the
+    // shipped default was no longer uniquely justified, and arming a law is an operator
+    // decision rather than an engineer's. Under corrected fixture depth the sweep is
+    // back to the SINGLE winner `{B3}`, which is the shipped configuration.
+    //
+    // The honest reading, and it cuts against the convenient one: this does NOT
+    // vindicate LAW B7's default-OFF ruling on new evidence. It says B7's brief
+    // appearance as a co-winner was an artifact of fixture depth that could not survive
+    // being corrected — the same class of finding as the k=5 sign flip. The A-11 request
+    // is answered by withdrawal of the question, not by a verdict.
     assert_eq!(
         winners,
-        vec![
-            Arms {
-                b3: true,
-                b7: false,
-                conc: false
-            },
-            Arms {
-                b3: true,
-                b7: true,
-                conc: false
-            },
-        ],
+        vec![Arms {
+            b3: true,
+            b7: false,
+            conc: false
+        }],
         "MEASURED: the set of configurations clearing the pre-registered rule changed"
     );
 }

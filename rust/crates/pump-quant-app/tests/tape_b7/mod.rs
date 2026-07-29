@@ -82,10 +82,24 @@ pub const LAUNCH_VSOL: u64 = 30_000_000_000;
 /// inside the bonding curve and all of it on the same 125 bps-a-leg fee tier
 /// (`cost_model::venue_fee_bps_per_leg`), so depth varies without the FEE varying.
 pub const VSOL_STEP: u64 = 250_000_000;
-/// Confirmed sellable depth, just under [`LAUNCH_VSOL`] — the same "the confirm
-/// proves slightly less than the pool holds" discipline `tape_golden` uses.
-/// Re-pin #26: was `400_000_000`.
-pub const SELLABLE_DEPTH: u64 = 29_000_000_000;
+/// The SOL a market on this tape actually escrows, as a function of its depth rung:
+/// `virtual_sol - LAUNCH_VSOL` = `(1 + tag % 40) * VSOL_STEP`, i.e. 0.25-10.00 SOL.
+///
+/// **Re-pin #27 (2026-07-28): was a flat `29_000_000_000`** — 29 SOL of claimed payout
+/// on curves holding 0.00-9.75, which is unbounded overstatement at the bottom rung.
+/// The rung ladder is also shifted by one step (`1 + tag % 40` rather than `tag % 40`)
+/// so that NO market sits at the bare seed reserve, where a curve nobody has bought
+/// into escrows nothing and could not trade for a fixture reason rather than a
+/// strategy one. Depth still varies across 40 rungs, still entirely inside the curve,
+/// still on one fee tier.
+pub fn sellable_depth(tag: u64) -> u64 {
+    (1 + tag % 40) * VSOL_STEP
+}
+
+/// The price reserve of a market on this tape: the 30 SOL seed plus its rung.
+pub fn market_vsol(tag: u64) -> u64 {
+    LAUNCH_VSOL + sellable_depth(tag)
+}
 
 /// A market that pays: a move well clear of the ~700 bps realistic round-trip, then
 /// a partial give-back to a plateau it holds.
@@ -325,7 +339,7 @@ pub fn apply_tape(
                     mint: mint(m.tag),
                     price_fp: base + (i as i128) * 400_000 + (m.tag as i128) * 3_000,
                     quote_lamports: 700_000 + (m.tag % 11) * 1_000,
-                    liquidity_lamports: LAUNCH_VSOL + (m.tag % 40) * VSOL_STEP,
+                    liquidity_lamports: market_vsol(m.tag),
                     signed_base: sgn * mag,
                     buyer_entity: 1_000 + (m.tag * 7 + i) % 23,
                     age_slots: 10 + (m.tag as u32 % 20),
@@ -334,7 +348,8 @@ pub fn apply_tape(
             if age == 0 {
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: mint(m.tag),
-                    sellable_depth_lamports: SELLABLE_DEPTH,
+                    virtual_sol_lamports: market_vsol(m.tag),
+                    real_sol_lamports: sellable_depth(m.tag),
                 });
             }
             if age < EVIDENCE_ROUNDS {

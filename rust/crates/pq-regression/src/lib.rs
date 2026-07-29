@@ -62,10 +62,17 @@
 pub mod baselines;
 pub mod golden_tape;
 
-/// **The SOL-side reserve every hand-built fixture in this crate declares: a
-/// pump.fun bonding curve at LAUNCH depth, 30 SOL of virtual SOL reserve**
-/// (`pump_quant_app::curve_state::LAUNCH_VSOL_LAMPORTS`, and the shallowest depth
-/// the venue can present).
+/// **The VIRTUAL SOL reserve every hand-built fixture in this crate declares: a
+/// pump.fun bonding curve that has been bought into by 0.3 SOL.**
+///
+/// **Re-pin #27 (2026-07-28).** This was the bare LAUNCH reserve, 30 SOL, paired with
+/// a declared sellable depth of 29 SOL. pump.fun seeds a curve with 30 SOL of VIRTUAL
+/// reserve and **zero** real SOL, and escrows `real_sol = virtual_sol - 30 SOL`
+/// thereafter (`pump_quant_app::curve_state::real_sol_for`), so that pair described a
+/// market that cannot exist: a curve nobody has bought into can pay out nothing, and
+/// the fixtures were claiming 29 SOL of it. The reserve is now 30.3 SOL — close enough
+/// to the seed that own-impact on a 0.1 SOL floor clip is unchanged at 33 bps a leg,
+/// and honest about escrowing the 0.3 SOL that was actually paid in.
 ///
 /// **Re-pin #26 (2026-07-28).** Every fixture here used to declare `400_000_000` —
 /// 0.4 SOL — which was harmless while the gate's impact model was a config constant
@@ -79,9 +86,10 @@ pub mod golden_tape;
 ///
 /// A declared depth is now a PRICE. It is stated once, here, so the fixtures in this
 /// crate cannot drift apart from each other or from the venue.
-pub const FIXTURE_VSOL_LAMPORTS: u64 = 30_000_000_000;
+pub const FIXTURE_VSOL_LAMPORTS: u64 = 30_300_000_000;
 
-/// The confirmed sellable depth every hand-built fixture here declares, just under
-/// [`FIXTURE_VSOL_LAMPORTS`] — the "an on-chain confirm proves slightly less than the
-/// pool holds" discipline the golden tape uses. Re-pin #26: was `500_000_000`.
-pub const FIXTURE_SELLABLE_LAMPORTS: u64 = 29_000_000_000;
+/// The SOL the fixture curve actually escrows — `FIXTURE_VSOL_LAMPORTS` minus the
+/// 30 SOL seed. This is the identity, not a fixture choice, and it is what caps
+/// `size_band`'s `x_max`. Re-pin #27: was `29_000_000_000`, i.e. 29 SOL of payout
+/// claimed against a pool holding none.
+pub const FIXTURE_SELLABLE_LAMPORTS: u64 = 300_000_000;

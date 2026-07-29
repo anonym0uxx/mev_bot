@@ -45,6 +45,21 @@ pub enum Decision {
         x_max: u64,
         fail_rate_bps: u32,
         rt_cost_bps: u32,
+        /// The ONE expected favourable move (signed bps) this size was justified by
+        /// — the benefit half of the admission, which the record previously omitted
+        /// entirely. Signed, because a lane that has lost money must be able to say
+        /// so (`crate::priced_move::PricedMove`).
+        move_bps: i128,
+        /// Which estimator produced `move_bps`
+        /// (`crate::priced_move::MoveSource::code`): 0 cold-start constant, 1 lane
+        /// realized expectancy, 2 the calibrated per-candidate model. Recorded so a
+        /// replay can attribute a size to the thing that priced it.
+        move_source: u8,
+        /// Provenance of the depth the capacity cap came from
+        /// (`crate::curve_depth::CurveDepth::basis_code`): 0 unknown, 1 derived from
+        /// the `real_sol = virtual_sol − 30 SOL` identity, 2 decoded from the curve
+        /// account, 3 a migrated pool.
+        depth_basis: u8,
     },
     /// The gate rejected a candidate; `reason` is a stable small code.
     Rejected { mint: [u8; 32], reason: u8 },
@@ -108,6 +123,9 @@ impl Decision {
                 x_max,
                 fail_rate_bps,
                 rt_cost_bps,
+                move_bps,
+                move_source,
+                depth_basis,
             } => {
                 push_bytes(buf, &mint);
                 push_u64(buf, size_lamports);
@@ -116,6 +134,11 @@ impl Decision {
                 push_u64(buf, x_max);
                 push_u64(buf, u64::from(fail_rate_bps));
                 push_u64(buf, u64::from(rt_cost_bps));
+                // Signed 128-bit move as two's-complement bytes: exact, sign-stable,
+                // the same encoding `Filled` uses for signed PnL.
+                push_bytes(buf, &move_bps.to_le_bytes());
+                buf.push(move_source);
+                buf.push(depth_basis);
             }
             Decision::Rejected { mint, reason } => {
                 push_bytes(buf, &mint);

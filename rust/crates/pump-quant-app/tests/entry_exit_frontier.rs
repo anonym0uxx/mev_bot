@@ -91,9 +91,12 @@ fn b3_hazard(mutate: impl FnOnce(&mut Config)) -> i128 {
 
 // ---- shipped-value net on every tape (identity pins) ------------------------
 
-const SHIP_GOLDEN: i128 = 16_778_896;
-const SHIP_B7_HAPPY: i128 = 555_444_680;
-const SHIP_B7_UNHAPPY: i128 = 1_346_209_124;
+/// Re-pin #27 (2026-07-28): 16_778_896 -> 31_111_528. The move is the confirmed-set
+/// eviction key reordering under corrected fixture depth, NOT either provenance fix —
+/// both were measured decision-inert on this tape. See `golden_digest.rs`.
+const SHIP_GOLDEN: i128 = 31_111_528;
+const SHIP_B7_HAPPY: i128 = 539_316_863;
+const SHIP_B7_UNHAPPY: i128 = 1_303_165_900;
 /// **NEGATIVE since re-pin #26, and that is the hazard working rather than a
 /// regression.** This is the side of the concentration pair on which the bundled /
 /// sniper-captured cohort is the one that craters, and the §21.7 law that would

@@ -26,7 +26,20 @@ use pump_quant_domain::ids::Mint;
 /// reserves START at 30 SOL; the sub-SOL depths these fixtures used to declare put the
 /// operator's 0.1 SOL floor clip at 5-125% of the pool — a market in which no strategy
 /// result means anything (Amendment A-13(1)).
-const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+/// **A REAL BONDING CURVE THAT HAS BEEN BOUGHT INTO (corrected 2026-07-28).**
+///
+/// pump.fun seeds a curve with **30 SOL of VIRTUAL reserve and ZERO real SOL**, and
+/// escrows `real_sol = virtual_sol - 30 SOL` thereafter. This constant used to be the
+/// bare seed reserve (30 SOL) paired with a "sellable depth" of 29-30 SOL — a market
+/// that cannot exist, since a curve nobody has bought into can pay out nothing at all.
+/// It is now a curve with 0.3 SOL genuinely raised: the price reserve is close enough
+/// to the seed that own-impact on a 0.1 SOL floor clip is unchanged at 33 bps a leg,
+/// and the payout reserve is the 0.3 SOL that was actually paid in.
+/// See `curve_state::real_sol_for`.
+const REAL_CURVE_VSOL: u64 = 30_300_000_000;
+/// The SOL this curve actually escrows — `REAL_CURVE_VSOL - LAUNCH_VSOL_LAMPORTS`,
+/// the identity, not a choice. This is what caps `size_band`'s `x_max`.
+const REAL_CURVE_REAL_SOL: u64 = 300_000_000;
 
 const FLOOR: u64 = MIN_TRADE_SIZE_LAMPORTS_DEFAULT; // 100_000_000 = 0.1 SOL
 
@@ -75,7 +88,8 @@ fn drive_golden_style(mut cfg: Config) -> Engine {
             if round == m % 4 {
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: mint(m),
-                    sellable_depth_lamports: REAL_CURVE_VSOL,
+                    virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_CURVE_REAL_SOL,
                 });
             }
         }
@@ -195,6 +209,14 @@ fn clamp_up_to_floor_unblocks_what_refuse_below_xmin_would_block() {
 /// floor while everything else about the market stays real and healthy.
 const PROVEN_SELLABLE: u64 = 75_000_000;
 
+/// The VIRTUAL reserve of that too-thin market (corrected 2026-07-28). Thinness is
+/// not a free parameter on this venue: a curve escrows `virtual_sol - 30 SOL`, so the
+/// ONLY market that can prove 0.075 SOL of payout depth is one whose price reserve is
+/// 30.075 SOL. The fixture used to declare a 30 SOL reserve alongside a 0.075 SOL
+/// depth claim, which happened to be the right SIGN of thin for the wrong reason —
+/// that curve escrows nothing at all.
+const THIN_CURVE_VSOL: u64 = 30_000_000_000 + PROVEN_SELLABLE;
+
 #[test]
 fn too_thin_market_refuses_rather_than_sizing_below_floor() {
     // A market whose x_max is BELOW the 0.1-SOL floor, with a DEEP reserve, so the
@@ -231,7 +253,7 @@ fn too_thin_market_refuses_rather_than_sizing_below_floor() {
                     mint: m,
                     price_fp: 1_000_000_000 + (round as i128) * 20_000_000 + (i as i128) * 500_000,
                     quote_lamports: 700_000,
-                    liquidity_lamports: REAL_CURVE_VSOL, // deep reserve: exit cost is cheap
+                    liquidity_lamports: THIN_CURVE_VSOL, // a real curve, barely raised
                     signed_base: 900_000 - (i as i64 * 40),
                     buyer_entity: i % 9,
                     age_slots: 14,
@@ -240,7 +262,8 @@ fn too_thin_market_refuses_rather_than_sizing_below_floor() {
             if round == 0 {
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: m,
-                    sellable_depth_lamports: PROVEN_SELLABLE,
+                    virtual_sol_lamports: THIN_CURVE_VSOL,
+                    real_sol_lamports: PROVEN_SELLABLE,
                 });
             }
             for _ in 0..6 {

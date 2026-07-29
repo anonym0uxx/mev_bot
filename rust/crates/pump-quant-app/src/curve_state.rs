@@ -89,6 +89,72 @@ pub const MCAP_DIVISOR_LAMPORTS: u128 = 32_190_000_000;
 /// **85.01 SOL raised** — the figure the ecosystem quotes.
 pub const GRADUATION_VSOL_LAMPORTS: u64 = 115_005_359_056;
 
+/// **The most SOL a bonding curve can ever escrow: the graduation raise.**
+///
+/// `GRADUATION_VSOL_LAMPORTS − LAUNCH_VSOL_LAMPORTS = 85_005_359_056` — **85.005
+/// SOL**, which is precisely the raise the entire ecosystem quotes as pump.fun's
+/// graduation threshold. See [`real_sol_for`] for why that coincidence is the proof
+/// of the identity rather than a curiosity.
+pub const MAX_CURVE_REAL_SOL_LAMPORTS: u64 = GRADUATION_VSOL_LAMPORTS - LAUNCH_VSOL_LAMPORTS;
+
+/// **The SOL a bonding curve can actually PAY OUT, from the one number the engine
+/// already carries: `real_sol = virtual_sol − 30 SOL`.**
+///
+/// # The third member of the "pure function of the SOL reserve" family
+///
+/// pump.fun's curve carries FOUR reserve numbers, and two of them are SOL-side:
+///
+/// | field | meaning |
+/// |---|---|
+/// | `virtual_sol` | sets the **price curve**. Seeded at [`LAUNCH_VSOL_LAMPORTS`]. |
+/// | `real_sol` | the SOL **actually escrowed** — the only SOL a seller can receive. Seeded at **0**. |
+///
+/// The program adds the same lamports to both on every buy and subtracts the same
+/// lamports from both on every sell, so the 30-SOL gap between them is a constant of
+/// the curve's whole life. `real_sol` is therefore not an independent quantity to be
+/// ingested, configured or guessed — it is `virtual_sol` minus the seed, exactly as
+/// market cap is `vsol² / MCAP_DIVISOR` and own-curve impact is `notional · 10_000 /
+/// vsol`. Each of those was independently sourced at some point, and each collapsed
+/// to an identity once someone did the algebra.
+///
+/// **The verification is decisive.** At graduation `virtual_sol =
+/// 115_005_359_056`, so the identity predicts an escrowed balance of
+/// [`MAX_CURVE_REAL_SOL_LAMPORTS`] = **85.005 SOL** — the venue's own published
+/// graduation raise, reproduced from first principles. An identity that regenerates
+/// the platform's headline constant is the identity.
+///
+/// # Why this matters, and where it stops being free
+///
+/// `virtual_sol` prices the trade; `real_sol` bounds the exit. Treating the former
+/// as the latter overstates extractable depth by
+/// `vsol / (vsol − 30 SOL)` — **30× at `vsol = 31 SOL`, and unbounded at `vsol = 30
+/// SOL`, where a curve nobody has bought into can pay out nothing at all.** In the
+/// operator's $9k–$20k band the two differ by a factor of ~1.9 and a 0.1 SOL clip is
+/// a rounding error against either, so the distinction costs nothing there; it is
+/// decisive near launch, which is exactly where a creation-sniper lane operates.
+///
+/// # Refusals, and why there is no clamp
+///
+/// * `vsol < LAUNCH_VSOL_LAMPORTS` — **impossible on this venue.** The program seeds
+///   the reserve at 30 SOL and no sell can take it below the seed (a sell removes
+///   only SOL that a buy put in). A smaller number is a broken decode, a
+///   different venue, or a units error. It REFUSES (`None`) rather than clamping to
+///   zero: a clamp would turn a decoder fault into a plausible-looking thin market
+///   and hide it forever (§18.2, §6.4).
+/// * `vsol >= GRADUATION_VSOL_LAMPORTS` — the curve is complete and liquidity has
+///   migrated. There is no curve left to derive against, and the `−30 SOL` offset is
+///   a bonding-curve fact that must not be applied to an AMM pool. REFUSES; the
+///   caller's venue branch ([`crate::curve_depth::CurveDepth`]) owns that case. This
+///   is the same boundary [`crate::cost_model::venue_fee_bps_per_leg`] draws, drawn
+///   the same way, so the two can never disagree about which venue a reserve is on.
+#[must_use]
+pub const fn real_sol_for(vsol_lamports: u64) -> Option<u64> {
+    if vsol_lamports < LAUNCH_VSOL_LAMPORTS || vsol_lamports >= GRADUATION_VSOL_LAMPORTS {
+        return None;
+    }
+    Some(vsol_lamports - LAUNCH_VSOL_LAMPORTS)
+}
+
 /// Market capitalisation in lamports implied by a SOL-side reserve.
 ///
 /// `mcap = vsol² / MCAP_DIVISOR`. Returns `None` only on a zero reserve, which is a
@@ -213,6 +279,57 @@ mod tests {
             "the curve must raise 85.01 SOL to graduate — the published figure"
         );
         assert_eq!(mcap_lamports(vsol_grad).unwrap(), 410_880_168_114);
+    }
+
+    /// **THE THIRD ANCHOR — the payout identity reproduces the published raise.**
+    ///
+    /// `real_sol = vsol − 30 SOL` is asserted here against the one number the venue
+    /// publishes about it: the 85-SOL graduation raise. If the identity were wrong
+    /// this would not land on 85.005 SOL from a constant derived purely off the
+    /// token side (`k / (INITIAL_VIRTUAL_TOKENS − INITIAL_REAL_TOKENS)`).
+    #[test]
+    fn the_payout_identity_reproduces_the_published_graduation_raise() {
+        assert_eq!(MAX_CURVE_REAL_SOL_LAMPORTS, 85_005_359_056);
+        assert_eq!(
+            MAX_CURVE_REAL_SOL_LAMPORTS / 10_000_000,
+            8_500,
+            "the curve escrows 85.005 SOL by the time it graduates — the published figure"
+        );
+        // A freshly seeded curve holds NOTHING, however deep its price curve looks.
+        assert_eq!(real_sol_for(LAUNCH_VSOL_LAMPORTS), Some(0));
+        // …and the overstatement of using `vsol` as payout depth is unbounded there
+        // and still 30x one SOL later.
+        assert_eq!(real_sol_for(31_000_000_000), Some(1_000_000_000));
+        assert_eq!(31_000_000_000 / real_sol_for(31_000_000_000).unwrap(), 31);
+        assert_eq!(real_sol_for(GRADUATION_VSOL_LAMPORTS - 1), Some(85_005_359_055));
+
+        // The operator's band: payout is roughly half the price reserve, so the
+        // distinction is real but a 0.1 SOL clip never notices it.
+        let lo = vsol_for_mcap(118_420_000_000).unwrap();
+        let hi = vsol_for_mcap(263_160_000_000).unwrap();
+        assert_eq!(real_sol_for(lo).unwrap() / 10_000_000, 3_174, "31.74 SOL");
+        assert_eq!(real_sol_for(hi).unwrap() / 10_000_000, 6_203, "62.03 SOL");
+        assert!(real_sol_for(lo).unwrap() > 300 * 100_000_000, "a floor clip is <1%");
+    }
+
+    /// **REFUSAL, NEVER A CLAMP.** A reserve below the seed cannot exist on this
+    /// venue and a reserve at or past graduation is not on this venue at all.
+    /// Both return `None`, so a broken decode cannot be laundered into a small
+    /// number that would still size a trade.
+    #[test]
+    fn an_impossible_reserve_refuses_rather_than_clamping_to_zero() {
+        assert_eq!(real_sol_for(0), None, "an undecoded pool");
+        assert_eq!(real_sol_for(1), None);
+        assert_eq!(real_sol_for(LAUNCH_VSOL_LAMPORTS - 1), None, "below the seed");
+        assert_eq!(real_sol_for(GRADUATION_VSOL_LAMPORTS), None, "migrated");
+        assert_eq!(real_sol_for(u64::MAX), None);
+        // The venue boundary is drawn in exactly one place: this and the fee
+        // schedule must agree about where the curve ends.
+        assert_eq!(
+            crate::cost_model::venue_fee_bps_per_leg(GRADUATION_VSOL_LAMPORTS),
+            crate::cost_model::VENUE_FEE_BPS_POST_GRADUATION,
+        );
+        assert!(real_sol_for(GRADUATION_VSOL_LAMPORTS).is_none());
     }
 
     /// The mcap↔vsol map must round-trip to within one lamport of reserve.

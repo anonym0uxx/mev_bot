@@ -32,7 +32,20 @@ use pump_quant_wallet_graph::creator_ledger::{
 /// reserves START at 30 SOL; the sub-SOL depths these fixtures used to declare put the
 /// operator's 0.1 SOL floor clip at 20-125% of the pool — a market in which no
 /// strategy result means anything (Amendment A-13(1)).
-const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+/// **A REAL BONDING CURVE THAT HAS BEEN BOUGHT INTO (corrected 2026-07-28).**
+///
+/// pump.fun seeds a curve with **30 SOL of VIRTUAL reserve and ZERO real SOL**, and
+/// escrows `real_sol = virtual_sol - 30 SOL` thereafter. This constant used to be the
+/// bare seed reserve (30 SOL) paired with a "sellable depth" of 29-30 SOL — a market
+/// that cannot exist, since a curve nobody has bought into can pay out nothing at all.
+/// It is now a curve with 0.3 SOL genuinely raised: the price reserve is close enough
+/// to the seed that own-impact on a 0.1 SOL floor clip is unchanged at 33 bps a leg,
+/// and the payout reserve is the 0.3 SOL that was actually paid in.
+/// See `curve_state::real_sol_for`.
+const REAL_CURVE_VSOL: u64 = 30_300_000_000;
+/// The SOL this curve actually escrows — `REAL_CURVE_VSOL - LAUNCH_VSOL_LAMPORTS`,
+/// the identity, not a choice. This is what caps `size_band`'s `x_max`.
+const REAL_CURVE_REAL_SOL: u64 = 300_000_000;
 
 const PRICE_SCALE: i128 = 10_000_000;
 
@@ -335,7 +348,8 @@ fn the_measured_plane_is_decision_inert() {
             }
             eng.tick(AppEvent::OnchainConfirm {
                 mint: m,
-                sellable_depth_lamports: REAL_CURVE_VSOL,
+                virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_CURVE_REAL_SOL,
             });
             if feed {
                 eng.observe_holder_count(m.as_bytes(), 50 + round * 25);

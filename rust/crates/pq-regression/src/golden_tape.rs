@@ -122,9 +122,19 @@ pub fn drive(cfg: Config) -> Report {
             let launch = m % 5;
             if round == launch {
                 if m % 2 == 0 {
+                    // ---- CURVE RESERVES, FROM ONE SNAPSHOT (corrected 2026-07-28).
+                    // The tape used to declare a "sellable depth" of 29-30 SOL against
+                    // a 30-34 SOL price reserve. On this venue a curve is SEEDED with
+                    // 30 SOL of VIRTUAL reserve and escrows `virtual_sol - 30 SOL`, so
+                    // those rows described markets that cannot exist — overstating
+                    // extractable SOL by 30x at vsol 31 and without bound at vsol 30.
+                    // The confirm now carries the pair the program actually stores.
+                    let vsol =
+                        30_000_000_000 + round * 4_000_000_000 + (m % 350) * 50_000_000;
                     eng.tick(AppEvent::OnchainConfirm {
                         mint: mt,
-                        sellable_depth_lamports: 29_000_000_000 + m * 1_000_000,
+                        virtual_sol_lamports: vsol,
+                        real_sol_lamports: vsol - 30_000_000_000,
                     });
                 }
                 if m % 3 == 0 {
@@ -166,9 +176,14 @@ pub fn drive(cfg: Config) -> Report {
                 }
             }
             if round == 3 {
+                // The zombie's last observed snapshot is its round-1 reserve; the
+                // confirm reports that decode, and the freshness law decides what to
+                // do with an old one.
+                let vsol = 34_000_000_000 + z * 1_000_000;
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: mt,
-                    sellable_depth_lamports: 30_000_000_000,
+                    virtual_sol_lamports: vsol,
+                    real_sol_lamports: vsol - 30_000_000_000,
                 });
             }
         }
@@ -196,9 +211,14 @@ pub fn drive(cfg: Config) -> Report {
                 });
             }
             if round == 0 {
+                // Previously declared 34 SOL of sellable depth on a 31 SOL reserve —
+                // depth ABOVE the whole price curve, which the retired
+                // `min(depth, liquidity)` cross-check silently laundered into 31 SOL.
+                let vsol = 31_000_000_000 + d * 500_000;
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: mt,
-                    sellable_depth_lamports: 34_000_000_000,
+                    virtual_sol_lamports: vsol,
+                    real_sol_lamports: vsol - 30_000_000_000,
                 });
             }
         }
@@ -237,7 +257,8 @@ pub fn drive(cfg: Config) -> Report {
         if round == 0 {
             eng.tick(AppEvent::OnchainConfirm {
                 mint: st,
-                sellable_depth_lamports: 30_000_000_000,
+                virtual_sol_lamports: 30_500_000_000,
+                real_sol_lamports: 500_000_000,
             });
         }
         if round <= 2 {
@@ -292,7 +313,8 @@ pub fn drive(cfg: Config) -> Report {
         if round == 0 {
             eng.tick(AppEvent::OnchainConfirm {
                 mint: alpha_win,
-                sellable_depth_lamports: 30_000_000_000,
+                virtual_sol_lamports: 32_000_000_000,
+                real_sol_lamports: 2_000_000_000,
             });
         }
         if round <= 2 {

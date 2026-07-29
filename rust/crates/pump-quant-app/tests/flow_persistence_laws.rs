@@ -121,7 +121,10 @@ const MATERIAL_LAMPORTS: i128 = 100_000_000;
 /// The pre-registered asymmetry bar.
 const REQUIRED_RATIO: i128 = 3;
 
-const GOLDEN_SHIP: i128 = 16_778_896;
+/// Re-pin #27 (2026-07-28): 16_778_896 -> 31_111_528. The move is the confirmed-set
+/// eviction key reordering under corrected fixture depth, NOT either provenance fix —
+/// both were measured decision-inert on this tape. See `golden_digest.rs`.
+const GOLDEN_SHIP: i128 = 31_111_528;
 /// The concentration-happy book at the shipped `k`. **Negative since re-pin #26**:
 /// that tape's bundled cohort craters and the §21.7 law that would refuse it ships
 /// DISARMED, so at realistic depth the engine takes those trades and loses on them.
@@ -308,11 +311,22 @@ fn arming_beyond_the_shakeout_threshold_is_harmful() {
              it is kept only as a DISARMED lever for live base-rate measurement"
         );
     }
-    // The specific, pinned magnitude of the harm: 11,469,573 lamports, 68% of net.
-    assert_eq!(golden(5), 5_309_323, "pinned k=5 golden net");
-    assert_eq!(ship - golden(5), 11_469_573, "pinned k=5 golden harm");
+    // The specific, pinned magnitude of the harm: 11,469,573 lamports.
+    //
+    // **THE HARM IS INVARIANT ACROSS THREE RE-PINS, AND THAT IS THE POINT.** The
+    // baseline has moved twice — 8,124,568 (#24) → 16,778,896 (#26) → 31,111,528 (#27)
+    // — while this number has not: 11,347,743 at #24 and 11,469,573 at both #26 and
+    // #27, unchanged to the lamport across a cost-model unification AND a fixture
+    // eviction-key reordering. A quantity that survives two independent re-pins of
+    // everything around it is measuring the LEVER, not the tape.
+    //
+    // Read the magnitude, never the fraction. The fraction has drifted 140% → 68% → 37%
+    // purely because the denominator grew, and anyone quoting it will conclude the lever
+    // is getting safer. It is not; it costs exactly what it always cost.
+    assert_eq!(golden(5), 19_641_955, "pinned k=5 golden net");
+    assert_eq!(ship - golden(5), 11_469_573, "pinned k=5 golden harm — INVARIANT");
     assert!(
-        golden(5) * 3 < ship,
-        "k=5 destroys the large majority of representative net"
+        golden(5) < ship,
+        "k=5 remains strictly harmful on the representative tape"
     );
 }

@@ -38,10 +38,24 @@ fn funded() -> Config {
 /// file's 20-SOL bankroll sized a ~0.9-SOL bite — 900 bps of own impact a leg — and
 /// `inflated_depth_claim_buys_no_size` stopped admitting anything at all, so the §15
 /// cross-check it exists to prove had nothing to compare.
-const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+/// **A REAL BONDING CURVE THAT HAS BEEN BOUGHT INTO (corrected 2026-07-28).**
+///
+/// pump.fun seeds a curve with **30 SOL of VIRTUAL reserve and ZERO real SOL**, and
+/// escrows `real_sol = virtual_sol - 30 SOL` thereafter. This constant used to be the
+/// bare seed reserve (30 SOL) paired with a "sellable depth" of 29-30 SOL — a market
+/// that cannot exist, since a curve nobody has bought into can pay out nothing at all.
+/// It is now a curve with 0.3 SOL genuinely raised: the price reserve is close enough
+/// to the seed that own-impact on a 0.1 SOL floor clip is unchanged at 33 bps a leg,
+/// and the payout reserve is the 0.3 SOL that was actually paid in.
+/// See `curve_state::real_sol_for`.
+const REAL_CURVE_VSOL: u64 = 30_300_000_000;
+/// The SOL this curve actually escrows — `REAL_CURVE_VSOL - LAUNCH_VSOL_LAMPORTS`,
+/// the identity, not a choice. This is what caps `size_band`'s `x_max`.
+const REAL_CURVE_REAL_SOL: u64 = 300_000_000;
 /// Confirmed sellable depth, just under [`REAL_CURVE_VSOL`] — the "a confirm proves
 /// slightly less than the pool holds" discipline the golden tape uses.
-const REAL_SELLABLE_DEPTH: u64 = 29_000_000_000;
+/// Alias kept for the fixtures that name the PAYOUT reserve directly.
+const REAL_SELLABLE_DEPTH: u64 = REAL_CURVE_REAL_SOL;
 
 /// Deep, admissible flow for one mint: strong OFI, deep pool, broad entities. The
 /// pool is a real launch curve ([`REAL_CURVE_VSOL`]), so a ≥0.1-SOL floor clip
@@ -78,7 +92,8 @@ fn stale_numeric_snapshot_cannot_authorize_entry() {
     // ...then land a perfectly fresh on-chain confirm.
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
-        sellable_depth_lamports: REAL_SELLABLE_DEPTH,
+        virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_SELLABLE_DEPTH,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -98,7 +113,8 @@ fn fresh_numeric_snapshot_with_confirm_admits() {
     feed_flow(&mut eng, mt, 20);
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
-        sellable_depth_lamports: REAL_SELLABLE_DEPTH,
+        virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_SELLABLE_DEPTH,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -108,18 +124,33 @@ fn fresh_numeric_snapshot_with_confirm_admits() {
 }
 
 // ============================================================================
-// §15: caller-ASSERTED sellable depth is cross-checked against observed
-// liquidity — an inflated claim buys no extra size.
+// §15: a caller-ASSERTED payout reserve is cross-checked against the venue's own
+// identity — an inflated claim buys no size, and now buys no ADMISSION either.
 // ============================================================================
+/// **THE LAW GOT STRONGER AT RE-PIN #27, AND THE OLD VERSION WAS TOO WEAK.**
+///
+/// The retired rule was `min(claimed_depth, observed_liquidity)`: an inflated claim
+/// was silently clamped to the observed VIRTUAL reserve and the trade proceeded. That
+/// clamp was measured against the wrong number — a curve escrows `virtual_sol − 30
+/// SOL`, so clamping a claim to `virtual_sol` still permitted a capacity 30x the money
+/// in the pool at `vsol = 31 SOL`, and unbounded capacity at the seed reserve. The old
+/// assertion ("the same size either way") passed the whole time.
+///
+/// The rule now: a confirm whose two reserves contradict `real_sol = virtual_sol − 30
+/// SOL` beyond `curve_depth::cross_check_tolerance_lamports` is a BROKEN DECODE, and a
+/// broken decode is refused rather than clamped — it is never recorded, the market has
+/// no on-chain confirmation, and the gate refuses. Clamping would have hidden the
+/// decoder fault forever; refusing costs one trade and surfaces it (§18.2).
 #[test]
-fn inflated_depth_claim_buys_no_size() {
-    let run = |claimed_depth: u64| -> Vec<u64> {
+fn an_inflated_depth_claim_is_refused_not_clamped() {
+    let run = |claimed_real_sol: u64| -> Vec<u64> {
         let mut eng = Engine::new(funded(), RunMode::Replay);
         let mt = mint(3);
         feed_flow(&mut eng, mt, 20);
         eng.tick(AppEvent::OnchainConfirm {
             mint: mt,
-            sellable_depth_lamports: claimed_depth,
+            virtual_sol_lamports: REAL_CURVE_VSOL,
+            real_sol_lamports: claimed_real_sol,
         });
         for _ in 0..3 {
             eng.tick(AppEvent::Tick);
@@ -134,17 +165,26 @@ fn inflated_depth_claim_buys_no_size() {
             })
             .collect()
     };
-    // Observed pool liquidity in feed_flow is `REAL_CURVE_VSOL`; an honest claim at
-    // that depth vs a claim 100× beyond it must buy the SAME size — §15 cross-checks
-    // the asserted depth against observed liquidity, and the size band bounds both
-    // identically.
-    let honest = run(REAL_CURVE_VSOL);
-    let inflated = run(REAL_CURVE_VSOL * 100);
-    assert!(!honest.is_empty());
-    assert_eq!(
-        honest, inflated,
-        "an asserted depth beyond observed liquidity must change nothing"
+    // The honest pair — what the venue's arithmetic says this reserve escrows — trades.
+    let honest = run(REAL_SELLABLE_DEPTH);
+    assert!(!honest.is_empty(), "an honest confirm must still admit");
+
+    // The claim every fixture in this repo used to make: the PRICE reserve passed off
+    // as payout capacity. It is refused outright.
+    let inflated = run(REAL_CURVE_VSOL);
+    assert!(
+        inflated.is_empty(),
+        "a claim of {REAL_CURVE_VSOL} lamports of payout on a curve escrowing \
+         {REAL_SELLABLE_DEPTH} must be refused, not clamped ({inflated:?})"
     );
+    // …and so is a claim 100x beyond the whole curve.
+    assert!(run(REAL_CURVE_VSOL * 100).is_empty());
+
+    // Drift INSIDE the tolerance is protocol-fee noise, not a decoder fault, and must
+    // not cost a trade: the law refuses contradictions, not rounding.
+    let tol = pump_quant_app::curve_depth::cross_check_tolerance_lamports(REAL_SELLABLE_DEPTH);
+    assert!(!run(REAL_SELLABLE_DEPTH.saturating_sub(tol)).is_empty());
+    assert!(!run(REAL_SELLABLE_DEPTH + tol).is_empty());
 }
 
 // ============================================================================
@@ -165,7 +205,8 @@ fn caller_followable_cannot_authorize_entry() {
         if round == 0 {
             eng.tick(AppEvent::OnchainConfirm {
                 mint: mt,
-                sellable_depth_lamports: REAL_SELLABLE_DEPTH,
+                virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_SELLABLE_DEPTH,
             });
         }
         for _ in 0..6 {
@@ -245,7 +286,8 @@ fn expectancy_is_prior_until_lane_sample_gate() {
     feed_flow(&mut eng, mt, 20);
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
-        sellable_depth_lamports: REAL_SELLABLE_DEPTH,
+        virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_SELLABLE_DEPTH,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);

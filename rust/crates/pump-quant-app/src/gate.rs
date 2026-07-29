@@ -25,6 +25,8 @@
 //! [`crate::config::Config`].
 
 use crate::config::Config;
+use crate::curve_depth::CurveDepth;
+use crate::priced_move::PricedMove;
 use pump_quant_strategy::economic_gate::{
     floor_size_band, size_band, ImpactCurve, SizeBand, Verdict,
 };
@@ -61,8 +63,14 @@ pub enum GateDecision {
 /// The on-chain facts the gate needs about a market to decide it.
 #[derive(Clone, Copy, Debug)]
 pub struct Confirmation {
-    /// Sellable depth proven on-chain, lamports (0 = unproven).
-    pub sellable_depth_lamports: u64,
+    /// The market's SOL-side depth **and where it came from** — the price reserve that
+    /// sets impact and the payout reserve that caps capacity, carried together so they
+    /// cannot be confused (`docs/DEPTH_AND_MOVE_PROVENANCE_PLAN_2026-07-28.md`).
+    ///
+    /// Replaces the bare `sellable_depth_lamports`, which had three producers with
+    /// three different meanings — an external assertion, a copy of the VIRTUAL
+    /// reserve, and a hardcoded 0.2 SOL — and no way to tell them apart.
+    pub depth: CurveDepth,
     /// The numeric feature snapshot from the on-chain flow lane.
     pub numeric: Features,
 }
@@ -73,24 +81,43 @@ pub struct Confirmation {
 /// candidate's mint *and* the numeric lane holds a feature snapshot for it. The two
 /// together are the on-chain truth requirement; either missing is a hard refuse.
 #[must_use]
-/// `expected_move_bps_override` is the per-candidate conditional estimate from
-/// [`crate::expected_move`] when the model is armed AND its stratum cleared the sample
-/// floor. `None` means "the estimator refused" and the configured cold-start constant
-/// is used instead — the shipped path, byte-identical to the pre-model engine. The
-/// fallback is an explicit parameter rather than a default inside this function so that
-/// "we priced this on the constant" is visible at the call site and journallable
-/// (`docs/EDGE_PROVENANCE_2026-07-27.md §4`).
+/// `priced_move` is the ONE expected-move estimate for this candidate
+/// ([`crate::priced_move::PricedMove`]), computed once by [`crate::engine`] and handed
+/// to BOTH this function and §23 arbitration. It carries its own provenance — the
+/// calibrated model, the lane's realized evidence, or the cold-start constant — so
+/// "what did we think this was worth, and who told us" is a journalled fact rather
+/// than an unanswerable question (`docs/EDGE_PROVENANCE_2026-07-27.md §4`).
+///
+/// Admission consumes [`PricedMove::admission_bps`] — the POPULATION view (the
+/// calibrated model when it has spoken, else the cold-start prior). §23 arbitration
+/// consumes the same object's ranking view. That asymmetry is deliberate and is
+/// argued, with the measurement behind it, in [`crate::priced_move`].
 pub fn decide(
     _candidate: &Candidate,
     confirmation: Option<Confirmation>,
     cfg: &Config,
-    expected_move_bps_override: Option<u32>,
+    priced_move: PricedMove,
 ) -> GateDecision {
-    let conf = match confirmation {
-        Some(c) if c.sellable_depth_lamports > 0 => c,
-        Some(_) => return GateDecision::Reject(GateReject::NeedsOnchainConfirmation),
-        None => return GateDecision::Reject(GateReject::NeedsOnchainConfirmation),
+    let Some(conf) = confirmation else {
+        return GateDecision::Reject(GateReject::NeedsOnchainConfirmation);
     };
+    // DEPTH, FROM ONE AUTHORITY. `price_reserve` is what our own order costs against;
+    // `payout_reserve` is what a seller can actually receive. On a bonding curve these
+    // differ by the 30 SOL seed — the second is `None` exactly when the first is, and
+    // an `Unknown` basis (undecoded pool, impossible reserve, or a decoded pair that
+    // contradicts the venue's own arithmetic) refuses BOTH rather than fabricating a
+    // zero that would still size (§18.2).
+    let (Some(vsol), Some(payout)) = (conf.depth.price_reserve(), conf.depth.payout_reserve())
+    else {
+        return GateDecision::Reject(GateReject::NeedsOnchainConfirmation);
+    };
+    // NOTE on the retired `sellable_depth_lamports > 0` guard. A curve at exactly its
+    // seed reserve escrows NOTHING — nobody has bought into it — and that used to be
+    // refused here as `NeedsOnchainConfirmation`. It is not a corroboration failure:
+    // the market IS confirmed, it simply has no capacity, and `size_band` refuses it
+    // on `x_max == 0` a few lines below as `EconomicallyUnviable`. Depth that has not
+    // been PROVEN (an `Unknown` basis, refused just above) and depth that does not
+    // EXIST are different facts and now carry different reject codes.
     if conf.numeric.liquidity_lamports == 0 {
         return GateDecision::Reject(GateReject::NoNumericConfirmation);
     }
@@ -102,7 +129,7 @@ pub fn decide(
     // out-of-band market never consumes gate work or pollutes the cost statistics.
     if cfg.mcap_band_enable
         && !crate::curve_state::mcap_in_band(
-            conf.numeric.liquidity_lamports,
+            vsol,
             u128::from(cfg.mcap_band_lo_lamports),
             u128::from(cfg.mcap_band_hi_lamports),
         )
@@ -132,17 +159,23 @@ pub fn decide(
     //    The rate is market-cap tiered, so it too is per-candidate.
     // 3. FIXED. `FIXED_LAMPORTS_PER_LEG · (1 + exit_tranches)` plus the one signature
     //    that reclaims the ATA deposit. See `cost_model::gate_base_fixed_lamports`.
-    let vsol = conf.numeric.liquidity_lamports;
+    //
+    // 4. CAPACITY. `x_max`'s sellability bound is the PAYOUT reserve, not the price
+    //    reserve. On a bonding curve `real_sol = virtual_sol − 30 SOL`, so a fixture
+    //    or decoder that hands the price reserve to this argument overstates capacity
+    //    by 30x at `vsol = 31 SOL` and without bound at the seed reserve, where a
+    //    curve nobody has bought into can pay out nothing at all. This argument is
+    //    where that overstatement dies.
     let impact = ImpactCurve::linear_test(crate::cost_model::impact_den_for(vsol));
     let band = size_band(
-        expected_move_bps_override.unwrap_or(cfg.gate_expected_move_bps),
+        priced_move.admission_bps(),
         crate::cost_model::gate_base_fixed_lamports(cfg.gate_exit_tranches),
         cfg.gate_fail_rate_bps,
         crate::cost_model::gate_protocol_bps(vsol),
         cfg.gate_margin_bps,
         vsol,
         &impact,
-        conf.sellable_depth_lamports,
+        payout,
     );
 
     // Criterion 112 / A-6 operator floor: lift the band's lower edge to the absolute

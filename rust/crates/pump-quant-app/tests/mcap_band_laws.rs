@@ -57,7 +57,10 @@ use pump_quant_watchlist::candidate::{Candidate, Features, Lane, Mint};
 const MATERIAL_LAMPORTS: i128 = 100_000_000;
 
 /// The golden reference net at re-pin #26 (cost-model unification).
-const GOLDEN_SHIP: i128 = 16_778_896;
+/// Re-pin #27 (2026-07-28): 16_778_896 -> 31_111_528. The move is the confirmed-set
+/// eviction key reordering under corrected fixture depth, NOT either provenance fix —
+/// both were measured decision-inert on this tape. See `golden_digest.rs`.
+const GOLDEN_SHIP: i128 = 31_111_528;
 
 fn band_cfg() -> Config {
     let mut c = Config::dev_portable();
@@ -82,7 +85,11 @@ fn cand() -> Candidate {
 
 fn conf_at(vsol: u64) -> Confirmation {
     Confirmation {
-        sellable_depth_lamports: vsol,
+        // The market's depth, from the reserve alone — the identity supplies the
+        // payout side (`curve_state::real_sol_for`). The fixture used to hand the
+        // VIRTUAL reserve in as the sellable depth, which is the exact confusion
+        // `CurveDepth` exists to make unrepresentable.
+        depth: pump_quant_app::curve_depth::CurveDepth::derived(vsol),
         numeric: Features {
             liquidity_lamports: vsol,
             buy_pressure_bp: 6_000,
@@ -90,6 +97,20 @@ fn conf_at(vsol: u64) -> Confirmation {
             age_slots: 300,
         },
     }
+}
+
+/// The cold-start priced move every one of these band tests runs under: no lane
+/// evidence at all, so `PricedMove` reports the configured constant AND says that is
+/// where it came from.
+fn cold_start(cfg: &Config) -> pump_quant_app::priced_move::PricedMove {
+    pump_quant_app::priced_move::PricedMove::for_candidate(
+        None, // estimator disarmed: no per-candidate model estimate
+        Lane::ActiveMarketScalp,
+        0, // no realized lane evidence
+        0,
+        cfg.gate_expected_move_bps,
+        cfg.expectancy_min_lane_trades,
+    )
 }
 
 /// **P1 — the shipped default is OFF and changes nothing.**
@@ -125,7 +146,7 @@ fn the_band_admits_inside_and_refuses_outside_with_a_distinct_reason() {
 
     // Inside the band: the band law does not refuse (the economic gate still rules).
     for vsol in [lo, (lo + hi) / 2, hi - 1] {
-        let d = decide(&cand(), Some(conf_at(vsol)), &cfg, None);
+        let d = decide(&cand(), Some(conf_at(vsol)), &cfg, cold_start(&cfg));
         assert!(
             !matches!(d, GateDecision::Reject(GateReject::OutsideMcapBand)),
             "vsol {vsol} is inside the band and must not be refused for being outside it"
@@ -139,7 +160,7 @@ fn the_band_admits_inside_and_refuses_outside_with_a_distinct_reason() {
         curve_state::GRADUATION_VSOL_LAMPORTS,
     ] {
         assert_eq!(
-            decide(&cand(), Some(conf_at(vsol)), &cfg, None),
+            decide(&cand(), Some(conf_at(vsol)), &cfg, cold_start(&cfg)),
             GateDecision::Reject(GateReject::OutsideMcapBand),
             "vsol {vsol} is outside the band and must be refused as a SELECTION event"
         );
@@ -151,7 +172,7 @@ fn the_band_admits_inside_and_refuses_outside_with_a_distinct_reason() {
             &cand(),
             Some(conf_at(curve_state::LAUNCH_VSOL_LAMPORTS)),
             &off,
-            None
+            cold_start(&off)
         ),
         GateDecision::Reject(GateReject::OutsideMcapBand)
     ));

@@ -297,11 +297,11 @@ fn the_decay_flag_fires_and_the_incumbent_does_not_already_downweight() {
 /// Pinned happy-path arms (armed − neutral), lamports. Re-measured at re-pin #26 on
 /// a tape that actually trades; the retired pair (479_556_343 / 506_253_592) was
 /// taken while the tape declared 0.2 SOL pools.
-const HAPPY_NEUTRAL_NET: i128 = 555_444_680;
-const HAPPY_ARMED_NET: i128 = 643_653_672;
+const HAPPY_NEUTRAL_NET: i128 = 539_316_863;
+const HAPPY_ARMED_NET: i128 = 650_239_251;
 /// Pinned unhappy-path (false-positive) arms. Retired pair: 601_202_914 / 580_193_240.
-const UNHAPPY_NEUTRAL_NET: i128 = 1_346_209_124;
-const UNHAPPY_ARMED_NET: i128 = 1_330_959_228;
+const UNHAPPY_NEUTRAL_NET: i128 = 1_303_165_900;
+const UNHAPPY_ARMED_NET: i128 = 1_233_822_379;
 
 /// **The pre-registered two-sided A/B at the default step.**
 ///
@@ -343,26 +343,18 @@ fn the_two_sided_verdict_at_the_default_step() {
     assert_eq!(u_n.report.net_lamports, UNHAPPY_NEUTRAL_NET);
     assert_eq!(u_a.report.net_lamports, UNHAPPY_ARMED_NET);
 
-    // ---- Leg (a): does the happy path earn a MATERIAL amount? It does not.
+    // ---- Leg (a): does the happy path earn a MATERIAL amount? **AT RE-PIN #27, YES —
+    // FOR THE FIRST TIME.** This leg is now CLEARED and the law is still not armed,
+    // which is the whole point of having more than one leg.
     assert!(
         happy_gain > 0,
         "the happy path does at least move in the right direction ({happy_gain})"
     );
     assert!(
-        happy_gain <= MATERIAL_LAMPORTS,
-        "MEASURED: the happy-path gain ({happy_gain}) cleared the pre-registered \
-         materiality bar of {MATERIAL_LAMPORTS} lamports (one 0.1-SOL bite). If this \
-         fires, LAW B7 has started earning materially and leg (a) must be re-taken."
-    );
-    // …and it now MISSES that bar by 12%, not by an order of magnitude. Pinned as a
-    // number rather than left to the inequality above, because "fails leg (a)" reads
-    // very differently at 88_208_992 than it did at 26_697_249 and the difference is
-    // the whole reason this law is now an open A-11 question.
-    assert!(
-        happy_gain * 10 > MATERIAL_LAMPORTS * 8,
-        "the happy-path gain ({happy_gain}) is within 20% of the materiality bar — if \
-         it ever falls well clear of it again, the A-11 study this file requests is no \
-         longer owed and this comment should be retired"
+        happy_gain > MATERIAL_LAMPORTS,
+        "MEASURED: the happy-path gain ({happy_gain}) now CLEARS the pre-registered \
+         materiality bar of {MATERIAL_LAMPORTS} lamports (one 0.1-SOL bite). Leg (a) \
+         passes. Promotion still turns on leg (b) below, and on the arbiter."
     );
 
     // ---- Leg (b): is the false-positive cost small enough to justify arming?
@@ -378,16 +370,40 @@ fn the_two_sided_verdict_at_the_default_step() {
         happy_gain / loss,
         (happy_gain * 100 / loss) % 100
     );
-    // **LEG (b) NOW PASSES.** This assertion used to read `happy_gain < REQUIRED_RATIO
-    // * loss` and to fire with "cleared the pre-registered bar" as a warning. It fired.
-    // The bar is cleared — 5.78× against 3× — and the honest record is the pin below,
-    // not a re-tightened inequality. Leg (b) failing again would be a real change and
-    // is what this now catches.
+    // **LEG (b) FAILS AGAIN AT RE-PIN #27, AND RE-PIN #26's PASS WAS THE ARTIFACT.**
+    //
+    // The asymmetry arc across three re-pins:
+    //
+    // | re-pin | gain | loss | ratio | bar |
+    // |---|---|---|---|---|
+    // | #24 | 26,697,249 | 21,009,674 | 1.27× | fails |
+    // | #26 | 88,208,992 | 15,249,896 | **5.78×** | passes |
+    // | #27 | 110,922,388 | 69,343,521 | **1.60×** | fails |
+    //
+    // #26 is the outlier, not #27. Under corrected fixture depth the false-positive arm
+    // costs 69.3M rather than 15.2M — the unhappy path was being let off cheaply by a
+    // payout cap that could not bind — and the ratio falls back near where it started.
+    //
+    // **This closes the A-11 study request #26 raised, by withdrawal rather than by
+    // verdict.** The question was "why did B7's asymmetry leg suddenly clear?" and the
+    // answer is that it did not really clear; a fixture whose declared payout depth
+    // exceeded the SOL its pool could actually pay out was suppressing the cost of the
+    // false-positive arm. Same shape as the k=5 sign flip and B7's brief appearance as
+    // a permutation co-winner: three separate "law verdicts" from re-pin #26 that were
+    // all readouts of the same fixture defect.
+    //
+    // Note what did NOT revert: leg (a) genuinely clears now (110.9M against a 100M
+    // bite, up from 26.7M at #24). B7 earns materially on its own two-sided tape and
+    // still fails promotion — on the asymmetry leg, and on the arbiter, which the
+    // permutation sweep now returns to a single winner `{B3}`. That is the A-11 arbiter
+    // rule working exactly as written: a tape built FOR a hypothesis may demonstrate a
+    // mechanism and may never decide promotion.
     assert!(
-        happy_gain >= REQUIRED_RATIO * loss,
-        "MEASURED: leg (b) has gone back to FAILING ({happy_gain}/{loss} under the \
-         {REQUIRED_RATIO}× bar). It passed at re-pin #26 at 5.78×; a return to failure \
-         is a substantive change and the A-11 study request should be withdrawn."
+        happy_gain < REQUIRED_RATIO * loss,
+        "MEASURED: leg (b) has started PASSING again ({happy_gain}/{loss} at or above \
+         the {REQUIRED_RATIO}× bar). It passed once, at re-pin #26, and that pass was \
+         traced to fixture payout depth exceeding what the pool could pay. If it passes \
+         again under honest depth, that is new evidence and leg (b) must be re-taken."
     );
 }
 

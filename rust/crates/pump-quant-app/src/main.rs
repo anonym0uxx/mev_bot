@@ -280,8 +280,11 @@ fn write_trade_jsonl(
                 x_max,
                 fail_rate_bps,
                 rt_cost_bps,
+                move_bps,
+                move_source,
+                depth_basis,
             } => format!(
-                "{{\"t\":\"admitted\",\"mint\":\"{}\",\"size_lamports\":{size_lamports},\"x_min\":{x_min},\"x_cost\":{x_cost},\"x_max\":{x_max},\"fail_rate_bps\":{fail_rate_bps},\"rt_cost_bps\":{rt_cost_bps}}}",
+                "{{\"t\":\"admitted\",\"mint\":\"{}\",\"size_lamports\":{size_lamports},\"x_min\":{x_min},\"x_cost\":{x_cost},\"x_max\":{x_max},\"fail_rate_bps\":{fail_rate_bps},\"rt_cost_bps\":{rt_cost_bps},\"move_bps\":{move_bps},\"move_source\":{move_source},\"depth_basis\":{depth_basis}}}",
                 hex32(&mint)
             ),
             Decision::Rejected { mint, reason } => format!(
@@ -400,9 +403,15 @@ fn parse_events(text: &str) -> Result<Vec<AppEvent>, String> {
                 followable: num(f[2])? != 0,
                 size_lamports: num(f[3])?.max(0) as u64,
             },
-            "confirm" if f.len() == 3 => AppEvent::OnchainConfirm {
+            // `confirm <mint> <virtual_sol> <real_sol>` — ONE decode of the curve
+            // account, both SOL-side reserves. The 3-field form is gone: a single
+            // "depth" number could not say which reserve it was, which is exactly
+            // how a 30x capacity overstatement survived
+            // (`docs/DEPTH_AND_MOVE_PROVENANCE_PLAN_2026-07-28.md`).
+            "confirm" if f.len() == 4 => AppEvent::OnchainConfirm {
                 mint: mint(f[1])?,
-                sellable_depth_lamports: num(f[2])?.max(0) as u64,
+                virtual_sol_lamports: num(f[2])?.max(0) as u64,
+                real_sol_lamports: num(f[3])?.max(0) as u64,
             },
             // Factual, on-chain-led category assignment (the classifier ran upstream;
             // the journal carries the resolved integer id, §85).

@@ -77,7 +77,8 @@ fn causal_block(tag: u64) -> Vec<AppEvent> {
     }
     evs.push(AppEvent::OnchainConfirm {
         mint: mt,
-        sellable_depth_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
+        virtual_sol_lamports: pq_regression::FIXTURE_VSOL_LAMPORTS,
+        real_sol_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
     });
     evs
 }

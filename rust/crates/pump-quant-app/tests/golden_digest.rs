@@ -596,11 +596,67 @@ use tape_golden::*;
 // scenarios — bleeding cohort, concentration hazard, shakeout-then-run — unchanged.
 // The golden tape needed no change; it was given real depth at re-pin #24.
 // (arc: ... -> 1_864_780 -> 8_124_568 -> 16_778_896.)
-const GOLDEN_DIGEST: u64 = 6_163_272_398_497_391_826;
-const GOLDEN_NET_LAMPORTS: i128 = 16_778_896;
+// ============================================================================
+// RE-PIN #27 (2026-07-28) — DEPTH AND MOVE PROVENANCE. A REAL decision-level re-pin,
+// and the honest reading of it is NOT the number.
+//
+// Two quantities on the decision path could come from more than one place, and both
+// travelled as bare integers with no record of which place:
+//
+//   * DEPTH. `Confirmation::sellable_depth_lamports` had three producers with three
+//     meanings — an external `OnchainConfirm` assertion, a straight copy of
+//     `Features::liquidity_lamports` (the VIRTUAL reserve) on the EntryMode paths, and
+//     a hardcoded 0.2 SOL in two report harnesses. pump.fun seeds a curve with 30 SOL
+//     of virtual reserve and ZERO real SOL, and escrows `real_sol = virtual_sol - 30
+//     SOL` (`curve_state::real_sol_for`; the identity reproduces the venue's published
+//     85.005 SOL graduation raise from first principles). Every fixture in this repo
+//     was declaring a payout capacity ABOVE what its curve could hold — 30x at
+//     vsol 31 SOL, unbounded at the 30 SOL seed, where a curve nobody has bought into
+//     was credited with 29 SOL of sellable depth. `CurveDepth` now carries the reserve
+//     AND its basis, `x_max` is capped by the PAYOUT reserve, and an inconsistent
+//     decode is REFUSED rather than clamped.
+//   * THE EXPECTED MOVE. Admission priced every candidate off the global
+//     `gate_expected_move_bps` constant while §23 arbitration priced the same trade off
+//     the lane's realized expectancy; once a lane cleared `expectancy_min_lane_trades`
+//     the two diverged permanently and nothing recorded which had spoken. `PricedMove`
+//     is now computed once, carries its `MoveSource`, and is journalled on every admit.
+//
+// THE NUMBERS, AND WHAT ACTUALLY MOVED THEM. Net 16_778_896 -> 31_111_528, admitted
+// 12 -> 11, rejected 447 -> 448; promoted 504 and universe_filtered 72 unchanged.
+//
+// **NONE of that +85% comes from either correction.** Both were measured against this
+// tape in isolation and both are decision-inert here:
+//
+//   * Removing the payout cap entirely (passing `u64::MAX` as `sellable_max`) leaves
+//     net at 31_111_528 and admitted at 11. The cap NEVER binds on this tape: the
+//     impact budget bounds `x_max` at 4.2-9.4 SOL against payout reserves of 0.5-37
+//     SOL, so the impact bound is always the smaller.
+//   * Reverting admission to the old `cfg.gate_expected_move_bps` constant likewise
+//     leaves net at 31_111_528. No lane on this tape accumulates enough realized fills
+//     to leave the cold-start prior before the tape ends.
+//
+// The whole delta is the confirmed-set EVICTION KEY. The §99 bound holds 256 markets;
+// this tape presents ~268 confirmations. Eviction drops the market with the least
+// sellable depth, which was the fixture's arbitrary `29 SOL + m` spread (ordered by
+// mint index) and is now the truth (`real_sol`, ordered by curve progress). Restoring
+// the old ORDER, with both corrections still in place, reproduces 16_778_896 and 12
+// admits EXACTLY. A ~12-trade book in a handful of markets is dominated by which
+// markets survive a capacity bound, and `edge_provenance.rs` already establishes that
+// this book is statistically indistinguishable from zero. **The +85% is a tie-break
+// readout. No claim may be built on it in either direction.**
+//
+// FIXTURES. Every tape declaring a sellable depth above `vsol - 30 SOL` was declaring
+// a market that cannot exist, and all of them were corrected: the golden tape's
+// confirms now carry the (virtual, real) pair its own trades imply, the unit fixtures'
+// `REAL_CURVE_VSOL` became a curve with 0.3 SOL genuinely raised (own-impact on a
+// floor clip unchanged at 33 bps a leg), and the two report harnesses' 0.2 SOL
+// "pools" became real curves escrowing 0.2 SOL.
+// (arc: ... -> 8_124_568 -> 16_778_896 -> 31_111_528.)
+const GOLDEN_DIGEST: u64 = 13_693_021_370_354_439_552;
+const GOLDEN_NET_LAMPORTS: i128 = 31_111_528;
 const GOLDEN_PROMOTED: u64 = 504;
-const GOLDEN_ADMITTED: u64 = 12;
-const GOLDEN_REJECTED: u64 = 447;
+const GOLDEN_ADMITTED: u64 = 11;
+const GOLDEN_REJECTED: u64 = 448;
 /// Zombie-cohort promotions the §21.5 screen must remove (visible activity).
 const GOLDEN_UNIVERSE_FILTERED: u64 = 72;
 /// LAW D1/D5: the paid Discord room's realized net attributed to the AlphaCall

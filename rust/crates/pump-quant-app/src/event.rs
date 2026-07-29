@@ -150,14 +150,31 @@ pub enum AppEvent {
         size_lamports: u64,
     },
 
-    /// An explicit on-chain confirmation that a market is real and sellable at the
-    /// given depth. The gate REQUIRES one of these before it will admit capital to
-    /// a candidate, regardless of how loud the corroboration lanes are (§29, §71).
+    /// An explicit on-chain confirmation that a market is real and sellable: **one
+    /// decode of the bonding-curve account, both SOL-side reserves.** The gate
+    /// REQUIRES one of these before it will admit capital to a candidate, regardless
+    /// of how loud the corroboration lanes are (§29, §71).
+    ///
+    /// The event used to carry a single `sellable_depth_lamports`, which three
+    /// producers filled with three different quantities — an external assertion, the
+    /// VIRTUAL reserve, and a hardcoded 0.2 SOL — and which nothing could reconcile
+    /// because the number had no declared provenance. It now carries the pair the
+    /// program actually stores, so [`crate::curve_depth::CurveDepth`] can cross-check
+    /// them against the venue's own identity `real_sol = virtual_sol − 30 SOL`
+    /// (`docs/DEPTH_AND_MOVE_PROVENANCE_PLAN_2026-07-28.md`).
+    ///
+    /// **Both fields must come from the SAME snapshot.** A `real_sol` read at one slot
+    /// against a `virtual_sol` read at another is not a decoder check, it is a
+    /// staleness check, and staleness is the §34.3 TTL laws' job.
     OnchainConfirm {
         /// The confirmed market.
         mint: Mint,
-        /// Sellable depth proven on-chain, lamports.
-        sellable_depth_lamports: u64,
+        /// `PumpCurve::virtual_sol` — the price reserve, lamports. Seeded at 30 SOL.
+        virtual_sol_lamports: u64,
+        /// `PumpCurve::real_sol` — the escrowed SOL a seller can actually receive,
+        /// lamports. Seeded at 0. Decoded since the first commit and, until now,
+        /// consumed by nothing outside the protocol crate's own tests.
+        real_sol_lamports: u64,
     },
 
     /// A deterministic, **on-chain-led** category assignment for a market. The

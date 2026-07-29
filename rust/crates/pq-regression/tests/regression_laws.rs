@@ -322,7 +322,8 @@ fn drive_preentry_dump(cfg: Config) -> (Report, Engine) {
     pump(&mut eng, HAZ, 100, 24);
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(HAZ),
-        sellable_depth_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
+        virtual_sol_lamports: pq_regression::FIXTURE_VSOL_LAMPORTS,
+        real_sol_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -398,7 +399,8 @@ fn drive_fee_floor(cfg: Config) -> (Report, Engine) {
     }
     eng.tick(E::OnchainConfirm {
         mint: mint(MF),
-        sellable_depth_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
+        virtual_sol_lamports: pq_regression::FIXTURE_VSOL_LAMPORTS,
+        real_sol_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
     });
     for _ in 0..6 {
         eng.tick(E::Tick);

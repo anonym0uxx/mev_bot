@@ -1,29 +1,3 @@
-node_modules/
-dist/
-data/
-.env
-*.db
-*.db-journal
-*.log
-*.pid
-logs/
-.DS_Store
-config/keys/*.json
-config/keys/README.md
 rust/target/
-rust/.env
-
-# build artifacts that should never be tracked
-__pycache__/
-*.pyc
-supervisor_evidence.db
-supervisor_evidence.db-wal
-supervisor_evidence.db-shm
-
-hermes_audit.zip
-*.zip
-
-# runtime build outputs
-docs/criteria_ledger.json
-
-docs/failed_leaves/
+_commit*.tar.gz
+_commit_bundle.tar.gz

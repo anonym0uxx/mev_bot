@@ -114,7 +114,7 @@ A second behaviour-preserving pass, targeting per-call allocation and O(n) memmo
 hottest paths. **Every change below is byte-identical on the golden tape**: the
 `pump-quant-app` golden-digest test (`GOLDEN_DIGEST = 13_150_420_781_254_346_145`,
 `net = 8_124_568` — the values current at the time of this pass; the live golden pins
-are `6_163_272_398_497_391_826` / `16_778_896` since re-pin #26's cost-model
+are `13_693_021_370_354_439_552` / `31_111_528` since re-pin #26's cost-model
 unification, which is a DELIBERATE decision-plane change and not a drift in any of
 the optimizations below) was re-run after each edit and never moved, and the full workspace +
 191 dossier suite is unchanged. The changes only recycle memory / drop an O(n) shift — the

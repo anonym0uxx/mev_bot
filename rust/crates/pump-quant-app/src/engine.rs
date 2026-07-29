@@ -128,6 +128,7 @@ use pump_quant_wallet_graph::creator_ledger::CreatorTrack;
 use pump_quant_wallet_graph::deployer_credibility::{
     compute_deployer_credibility, DeployerCredibilityConfig, PriorLaunch, SocialReachInput,
 };
+use crate::priced_move::PricedMove;
 use pump_quant_watchlist::candidate::{Candidate, DiscoveryLane, Features, Lane as WlLane};
 use pump_quant_watchlist::lane_ingest::ingest_union;
 use pump_quant_watchlist::lane_performance::{DiscoveryLanePerformance, LanePerformance};
@@ -230,6 +231,16 @@ struct PendingEntry {
     x_min: u64,
     x_cost: u64,
     x_max: u64,
+    /// **The ONE expected move this trade was priced with, and the estimator that
+    /// produced it.** Carried to the journal so a replay can answer "which estimator
+    /// priced this trade" — a question that was unanswerable while the number
+    /// travelled as a bare integer fetched independently by two call sites
+    /// (`docs/DEPTH_AND_MOVE_PROVENANCE_PLAN_2026-07-28.md` §4.2).
+    priced_move: PricedMove,
+    /// The provenance of the DEPTH the band was sized against (`CurveDepth::
+    /// basis_code`): derived from the identity, decoded from the account, a migrated
+    /// pool, or unknown. Journalled for the same reason as the move's source.
+    depth_basis: u8,
     /// LAW B1: the entry-time episodic capture, computed inside the gate from
     /// strictly pre-entry state. `None` when the brain plane is disabled.
     brain: Option<BrainEntry>,
@@ -661,11 +672,15 @@ pub struct Engine {
     weights: LaneWeights,
     params: RankParams,
     watchlist: WatchlistState,
-    /// mint → (proven sellable depth lamports, tick of the confirmation). The tick
-    /// bounds the confirmation's freshness: a depth proven long ago is not depth
-    /// now (§34.3 staleness law), so the gate expires entries past
+    /// mint → (decoded `virtual_sol`, decoded `real_sol`, tick of the confirmation).
+    ///
+    /// The two reserves are stored as the PAIR the decode produced, never merged: they
+    /// are different quantities (`virtual_sol` prices, `real_sol` pays out) and the
+    /// pair is what makes the identity `real_sol = virtual_sol − 30 SOL` checkable at
+    /// all. The tick bounds the confirmation's freshness: a depth proven long ago is
+    /// not depth now (§34.3 staleness law), so the gate expires entries past
     /// `confirm_ttl_ticks` instead of trusting them forever.
-    confirmed: BTreeMap<[u8; 32], (u64, u64)>,
+    confirmed: BTreeMap<[u8; 32], (u64, u64, u64)>,
 
     lane_perf: LanePerformance,
     /// §71.2 realized net-SOL keyed on the ACTUAL discovery lane (not the setup
@@ -1717,8 +1732,13 @@ impl Engine {
             }
             AppEvent::OnchainConfirm {
                 mint,
-                sellable_depth_lamports,
-            } => self.confirm(*mint.as_bytes(), sellable_depth_lamports),
+                virtual_sol_lamports,
+                real_sol_lamports,
+            } => self.confirm(
+                *mint.as_bytes(),
+                virtual_sol_lamports,
+                real_sol_lamports,
+            ),
             AppEvent::TokenMetadata {
                 mint,
                 category_id,
@@ -2104,21 +2124,51 @@ impl Engine {
         applied
     }
 
-    fn confirm(&mut self, mint: [u8; 32], depth: u64) {
+    /// Record one decoded bonding-curve snapshot as this market's on-chain proof.
+    ///
+    /// **DECODER HEALTH IS CHECKED HERE, AT THE BOUNDARY.** The pair is run through
+    /// [`crate::curve_depth::CurveDepth::decoded`], which refuses a `real_sol` that
+    /// contradicts `virtual_sol − 30 SOL` beyond
+    /// [`crate::curve_depth::cross_check_tolerance_lamports`]. A refused pair is NOT
+    /// recorded, so the market simply has no confirmation and the gate answers
+    /// `NeedsOnchainConfirmation` — fail-closed, journalled, and no trade. Silently
+    /// clamping the impossible value would have turned a decoder fault into a
+    /// plausible-looking thin market and hidden it forever (§18.2).
+    fn confirm(&mut self, mint: [u8; 32], virtual_sol: u64, real_sol: u64) {
+        if crate::curve_depth::CurveDepth::decoded(virtual_sol, real_sol).is_unknown() {
+            return;
+        }
         // Bound the confirmed set alongside the watchlist (§99); the multiple is a
-        // config field, not a baked-in constant.
+        // config field, not a baked-in constant. Eviction is by PAYOUT reserve — the
+        // capacity that actually matters — so the weakest market goes first. This is
+        // the faithful translation of the retired rule, which evicted on the lowest
+        // ASSERTED sellable depth; that quantity no longer exists independently, and
+        // its corrected form is `real_sol`.
+        //
+        // **MEASURED WARNING (re-pin #27).** On the golden tape this key, and this key
+        // alone, is worth +14_332_632 lamports — an 85% swing on the whole book. The
+        // tape presents ~268 confirmations against a 256-entry bound, so ~12 markets
+        // are evicted, and the book is built from ~12 trades in a handful of markets;
+        // WHICH markets survive a capacity bound therefore dominates the net. Replacing
+        // this key with one that reproduces the old fixture's ordering returns the tape
+        // to 16_778_896 and 12 admits EXACTLY, with both substantive corrections in this
+        // wave (the payout-bounded `x_max` and the unified `PricedMove`) still in place.
+        // The +85% is a readout of an arbitrary eviction tie-break on a book that
+        // `edge_provenance.rs` already shows is statistically indistinguishable from
+        // zero. It is not evidence about anything and must not be cited as such.
         let cap = self
             .cfg
             .watchlist_capacity
             .saturating_mul(self.cfg.confirmed_capacity_mult)
             .max(1);
         if !self.confirmed.contains_key(&mint) && self.confirmed.len() >= cap {
-            if let Some((&weakest, _)) = self.confirmed.iter().min_by_key(|(_, &(d, _))| d) {
+            if let Some((&weakest, _)) = self.confirmed.iter().min_by_key(|(_, &(_, r, _))| r) {
                 self.confirmed.remove(&weakest);
             }
         }
         // Re-confirmation refreshes the tick — freshness is earned per proof (§34.3).
-        self.confirmed.insert(mint, (depth, self.now));
+        self.confirmed
+            .insert(mint, (virtual_sol, real_sol, self.now));
     }
 
     /// The evaluation half of the loop, run once per `Tick`.
@@ -2571,14 +2621,22 @@ impl Engine {
     /// same gate (§24 hierarchical partial pooling), and that value conditions
     /// §23 slot arbitration. Paper-realized returns rank slots; they are never
     /// promotion evidence (§38 — the fill model is graded separately).
-    fn conditional_edge_bps(&self, lane: WlLane) -> i128 {
-        let prior = i128::from(self.cfg.gate_expected_move_bps);
+    /// **The ONE benefit term for one candidate.** The retired `conditional_edge_bps`
+    /// is now a CONSTRUCTOR call: the §24 pooling arithmetic lives inside
+    /// [`PricedMove::for_candidate`], so the only way to obtain a priced move is to
+    /// present evidence — the estimator's own `MoveEstimate` and the lane's realized
+    /// `(Σ bps, n)`. There is no longer a standalone `i128` for a second call site to
+    /// reach for and diverge on.
+    fn priced_move(&self, lane: WlLane, model: Option<&crate::expected_move::MoveEstimate>) -> PricedMove {
         let (sum_bps, n) = self.lane_edge[lane.index()];
-        let k = i128::from(self.cfg.expectancy_min_lane_trades.max(1));
-        if i128::from(n) < k {
-            return prior;
-        }
-        (sum_bps + prior * k) / (i128::from(n) + k)
+        PricedMove::for_candidate(
+            model,
+            lane,
+            sum_bps,
+            n,
+            self.cfg.gate_expected_move_bps,
+            self.cfg.expectancy_min_lane_trades,
+        )
     }
 
     /// Evaluate one promoted candidate through every gate and sizing law, WITHOUT
@@ -2618,19 +2676,33 @@ impl Engine {
         let confirmation = self
             .confirmed
             .get(&mint_bytes)
-            .filter(|&&(_, at)| self.now.saturating_sub(at) <= self.cfg.confirm_ttl_ticks)
-            .map(|&(depth, _)| {
+            .filter(|&&(_, _, at)| self.now.saturating_sub(at) <= self.cfg.confirm_ttl_ticks)
+            .map(|&(confirmed_vsol, confirmed_real_sol, _)| {
                 let numeric = numeric_feats.unwrap_or_default();
-                // §15 cross-check: the confirm's ASSERTED sellable depth is a
-                // level-2 observation, not canonical truth — it can never exceed
-                // the freshly observed pool liquidity. min() is conservative;
-                // with no fresh numeric snapshot the default (zero liquidity)
-                // zeroes the depth and the gate fails closed.
-                let cross_checked = depth.min(numeric.liquidity_lamports);
-                Confirmation {
-                    sellable_depth_lamports: cross_checked,
-                    numeric,
-                }
+                // ---- DEPTH PROVENANCE (§15 cross-check, corrected 2026-07-28).
+                //
+                // The retired rule was `depth.min(numeric.liquidity_lamports)`: take
+                // the smaller of an ASSERTED sellable depth and the VIRTUAL reserve.
+                // It was conservative against the wrong number. `liquidity_lamports`
+                // IS `virtual_sol`, and a curve escrows `virtual_sol − 30 SOL`, so the
+                // min() permitted a capacity 30x the reserve that can actually pay at
+                // `vsol = 31 SOL` and an unbounded one at the seed reserve.
+                //
+                // The rule now: the FRESH numeric reserve is the price authority
+                // (§34.3 — the confirm may be up to `confirm_ttl_ticks` old, the
+                // numeric snapshot no more than `lane_evidence_ttl_ticks`), and the
+                // decoded `real_sol` is preferred for payout ONLY when it belongs to
+                // that same snapshot. A decoded reserve from an EARLIER snapshot is
+                // stale, not wrong; refusing on it would re-litigate staleness, which
+                // the TTL laws already decide, so the identity supplies the payout
+                // instead. Decoder health is checked at the ingest boundary in
+                // `confirm`, where a contradictory pair is never recorded at all.
+                let depth = if confirmed_vsol == numeric.liquidity_lamports {
+                    crate::curve_depth::CurveDepth::decoded(confirmed_vsol, confirmed_real_sol)
+                } else {
+                    crate::curve_depth::CurveDepth::derived(numeric.liquidity_lamports)
+                };
+                Confirmation { depth, numeric }
             });
         // §24 LAW 11 EntryMode leaves: with the detectors enabled, a controlled
         // pullback that holds a retest in an established uptrend
@@ -2653,16 +2725,21 @@ impl Engine {
             });
             return None;
         }
-        // BENEFIT-SIDE PRICING. `gate::decide` has always compared a per-candidate
-        // MEASURED cost against a GLOBAL CONSTANT benefit
-        // (`docs/EDGE_PROVENANCE_2026-07-27.md` §4). When the model is armed we hand it
-        // the stratified per-candidate estimate instead; when it refuses — which is
-        // ALWAYS in the shipped state, because the table is empty — we pass `None` and
-        // the constant is used exactly as before. Fail-open to the old behaviour is the
-        // right direction here: an uncalibrated estimator must not be able to widen the
-        // gate, only to narrow it once it has evidence.
-        let move_override = if self.cfg.expected_move_model_enable {
-            let vsol = confirmation.map_or(0, |c| c.numeric.liquidity_lamports);
+        // BENEFIT-SIDE PRICING — ONE ESTIMATE, COMPUTED ONCE, WITH ITS PROVENANCE.
+        //
+        // `gate::decide` compared a per-candidate MEASURED cost against a GLOBAL
+        // CONSTANT benefit (`docs/EDGE_PROVENANCE_2026-07-27.md` §4) while §23
+        // arbitration, a few hundred lines below, priced the SAME trade off the lane's
+        // realized expectancy. Two estimators, one trade, and no record of which had
+        // spoken. `PricedMove` is computed HERE, once, and is the only expected move
+        // either decision can see (`docs/DEPTH_AND_MOVE_PROVENANCE_PLAN_2026-07-28.md`
+        // §4.2). Precedence: the calibrated model when it is armed AND above its
+        // sample floor, else the lane's own realized evidence, else the cold-start
+        // constant — each recorded in the `MoveSource` the journal carries.
+        let model_estimate = if self.cfg.expected_move_model_enable {
+            let vsol = confirmation
+                .and_then(|c| c.depth.price_reserve())
+                .unwrap_or(0);
             // EVERY conditioning signal the engine holds at gate time is presented. That
             // is safe precisely because an UNCALIBRATED band contributes exactly zero
             // (`expected_move::uncalibrated_signals_contribute_exactly_zero`), so wiring
@@ -2674,27 +2751,31 @@ impl Engine {
                     c.numeric.age_slots,
                 )
             });
-            self.expected_move
-                .estimate(
-                    vsol,
-                    obs,
-                    crate::expected_move::MoveParams {
-                        min_sample: self.cfg.expected_move_min_sample,
-                        prior_weight: self.cfg.expected_move_prior_weight,
-                        prior_bps: self.cfg.gate_expected_move_bps,
-                    },
-                )
-                .known_bps()
+            match self.expected_move.estimate(
+                vsol,
+                obs,
+                crate::expected_move::MoveParams {
+                    min_sample: self.cfg.expected_move_min_sample,
+                    prior_weight: self.cfg.expected_move_prior_weight,
+                    prior_bps: self.cfg.gate_expected_move_bps,
+                },
+            ) {
+                crate::expected_move::MoveVerdict::Known(e) => Some(e),
+                crate::expected_move::MoveVerdict::Unknown(_) => None,
+            }
         } else {
             None
         };
-        match decide(&cand, confirmation, &self.cfg, move_override) {
+        let priced_move = self.priced_move(cand.lane, model_estimate.as_ref());
+        match decide(&cand, confirmation, &self.cfg, priced_move) {
             GateDecision::Admit(band) => {
                 // The market's SOL-side reserve: the ONE number every cost term below
                 // derives from — the venue fee tier, the impact denominator, the
                 // round-trip bps. `gate::decide` refuses a zero reserve, so reaching
                 // this arm guarantees it is positive.
-                let conf_vsol = confirmation.map_or(0, |c| c.numeric.liquidity_lamports);
+                let conf_vsol = confirmation
+                    .and_then(|c| c.depth.price_reserve())
+                    .unwrap_or(0);
                 // §21.7 extreme fabrication signature — the only authenticity gate.
                 let (auth_bps, fabricated) = self.flow_screen.authenticity(&mint_bytes);
                 // §105 REPORT-plane extraction-risk accumulation (never feeds a
@@ -3129,31 +3210,30 @@ impl Engine {
                         return None;
                     }
                 };
-                // §24/§10-directive conditional expectancy: the configured move is
-                // a COLD-START PRIOR only. Once a lane accumulates the configured
-                // minimum of realized fills, its own realized per-trade return is
-                // shrunk toward the prior (hierarchical partial pooling) and THAT
-                // conditions the slot arbitration — configuration can no longer
-                // manufacture a fixed edge for every candidate forever.
+                // **ONE EXPECTED MOVE PER TRADE (silo audit F1, 2026-07-28).** This is
+                // the SAME `PricedMove` the size band was priced with, a few hundred
+                // lines above — not a second estimate, and no longer even a second
+                // number that could be fetched. Arbitration used to reach
+                // independently for `conditional_edge_bps` (the lane's realized
+                // expectancy, ~6 numbers for the whole universe) while admission used
+                // the global `gate_expected_move_bps` constant; once a lane cleared
+                // `expectancy_min_lane_trades` the two diverged permanently, and
+                // neither site was wrong on its own terms. That is the cost-model
+                // defect (`docs/NET_SOL_AUDIT_2026-07-28.md` F2) reappearing in the
+                // BENEFIT term: admission priced one trade, ranking ranked a different
+                // one.
                 //
-                // **ONE EXPECTED MOVE PER TRADE (silo audit F1, 2026-07-28).** Whatever
-                // number priced the band a few hundred lines above MUST be the number
-                // that ranks the slot here. Arbitration used to reach independently for
-                // `conditional_edge_bps` — a PER-LANE estimate, ~6 numbers for the whole
-                // universe — and discard `move_override` entirely. With the estimator
-                // armed the two disagree by up to the model's full range (base plus
-                // `MAX_TOTAL_LIFT_BPS`), which on a floor clip is ~10M lamports of
-                // mis-ranking on the decision that allocates the scarce position slots.
-                // That is the cost-model defect (`docs/NET_SOL_AUDIT_2026-07-28.md` F2)
-                // reappearing in the BENEFIT term: admission priced one trade, ranking
-                // ranked a different one, and neither site was wrong on its own terms.
-                //
-                // The per-lane estimate remains the fallback, and is the ONLY path while
-                // `expected_move_model_enable` is false — so this is decision-inert in
-                // the shipped configuration and byte-identical on every pinned tape.
-                let priced_move_bps = move_override
-                    .map_or_else(|| self.conditional_edge_bps(cand.lane), i128::from);
-                let edge_bps = priced_move_bps - i128::from(rt_bps);
+                // The RANKING view is used here, and the ADMISSION view priced the
+                // band above. They are two questions, not two answers to one (see
+                // `priced_move`): §18 asks whether this trade beats its own costs,
+                // which is a POPULATION question; §23/§24 asks which admissible
+                // candidate takes a scarce slot, which §24 conditions on the lane's
+                // paper-realized expectancy — a quantity §38 explicitly forbids from
+                // becoming promotion evidence, and which therefore must never acquire
+                // an admission veto. Once the calibrated model speaks, both views are
+                // the same number from the same source, which is the case the silo
+                // actually broke.
+                let edge_bps = priced_move.ranking_bps() - i128::from(rt_bps);
                 let expected_net = i128::from(size).saturating_mul(edge_bps) / 10_000;
                 // §49 LAW 15 haircut convexity (reduced-vs-full size): when the
                 // reduce-only multipliers shrank the size below the full §33
@@ -3188,6 +3268,9 @@ impl Engine {
                     x_min: band.x_min,
                     x_cost: band.x_cost,
                     x_max: band.x_max,
+                    priced_move,
+                    depth_basis: confirmation
+                        .map_or(0, |c| c.depth.basis_code()),
                     brain: brain_entry,
                 })
             }
@@ -3298,9 +3381,12 @@ impl Engine {
     ///
     /// * `detect_pullback_continuation` → **active-market-scalp eligibility**: a
     ///   controlled pullback holding a retest inside a confirmed uptrend admits an
-    ///   already-live market (sellable depth = observed pool liquidity) even
+    ///   already-live market (payout depth derived from the observed reserve) even
     ///   without a fresh `OnchainConfirm` — the setup the 4-lane confirm-gated
-    ///   logic misses. Returns a synthetic [`Confirmation`] for [`decide`].
+    ///   logic misses. Returns a synthetic [`Confirmation`] for [`decide`], whose
+    ///   depth is DERIVED from the observed reserve by the curve identity rather than
+    ///   set equal to it (the retired code assigned `liquidity_lamports` — i.e. the
+    ///   VIRTUAL reserve — straight into the sellability cap).
     /// * `detect_narrative_confirmation` → **dormant / admission-gated** (§28):
     ///   the narrative feature family is not admitted in laptop replay, so the
     ///   predicate returns `dormant` and authorizes nothing — the candidate stays
@@ -3330,7 +3416,7 @@ impl Engine {
                 let sig = detect_pullback_continuation(&pf, &PullbackParams::test());
                 if sig.eligible && sig.suggested_lane == SuggestedLane::ActiveMarketScalp {
                     Some(Confirmation {
-                        sellable_depth_lamports: numeric.liquidity_lamports,
+                        depth: crate::curve_depth::CurveDepth::derived(numeric.liquidity_lamports),
                         numeric,
                     })
                 } else {
@@ -3356,7 +3442,7 @@ impl Engine {
                     && numeric.liquidity_lamports > 0
                 {
                     Some(Confirmation {
-                        sellable_depth_lamports: numeric.liquidity_lamports,
+                        depth: crate::curve_depth::CurveDepth::derived(numeric.liquidity_lamports),
                         numeric,
                     })
                 } else {
@@ -3899,6 +3985,14 @@ impl Engine {
                 // round-trip impact cost at this size).
                 fail_rate_bps: self.cfg.gate_fail_rate_bps,
                 rt_cost_bps: e.round_trip_cost_bps,
+                // PROVENANCE (2026-07-28): the benefit term this size was justified
+                // by, the estimator that produced it, and the basis of the depth the
+                // capacity cap came from. Without these the record says WHAT was
+                // admitted and at what cost, but not what we thought it was worth or
+                // who told us — and a replay cannot reconstruct either.
+                move_bps: i128::from(e.priced_move.admission_bps()),
+                move_source: e.priced_move.admission_source().code(),
+                depth_basis: e.depth_basis,
             });
         }
     }
@@ -5105,7 +5199,7 @@ impl Engine {
         let mut out = [(0i128, 0u32, 0i128); 4];
         for (i, lane) in WlLane::ALL.into_iter().enumerate() {
             let (sum, n) = self.lane_edge[lane.index()];
-            out[i] = (sum, n, self.conditional_edge_bps(lane));
+            out[i] = (sum, n, self.priced_move(lane, None).ranking_bps());
         }
         out
     }

@@ -78,15 +78,15 @@
 /// and the 150 bps `first_sell_penalty_bps` is deleted as own-impact double-counting.
 /// Digest, net, admitted and rejected all move. See `golden_digest.rs` for the full
 /// entry, including the three published findings this re-pin overturns.
-pub const GOLDEN_DIGEST: u64 = 6_163_272_398_497_391_826;
+pub const GOLDEN_DIGEST: u64 = 13_693_021_370_354_439_552;
 /// Realized net-SOL (lamports) on the golden tape (§24-compliant cost-derived).
-pub const GOLDEN_NET_LAMPORTS: i128 = 16_778_896;
+pub const GOLDEN_NET_LAMPORTS: i128 = 31_111_528;
 /// Candidates promoted to the gate.
 pub const GOLDEN_PROMOTED: u64 = 504;
 /// Candidates admitted by the gate.
-pub const GOLDEN_ADMITTED: u64 = 12;
+pub const GOLDEN_ADMITTED: u64 = 11;
 /// Candidates rejected by the gate.
-pub const GOLDEN_REJECTED: u64 = 447;
+pub const GOLDEN_REJECTED: u64 = 448;
 /// Zombie-cohort promotions the §21.5 universe screen removes (visible activity).
 pub const GOLDEN_UNIVERSE_FILTERED: u64 = 72;
 
@@ -97,7 +97,7 @@ pub const GOLDEN_UNIVERSE_FILTERED: u64 = 72;
 /// **Re-measured at re-pin #26 (2026-07-28), not substituted.** Arc of this value:
 /// 15_055_700 on the fictional 0.12–0.47 SOL tape, 7_327_315 once re-pin #24 gave the
 /// tape real depth and armed the curve fill, 16_970_346 under the unified cost model.
-pub const GOLDEN_NET_FIXED_LADDER: i128 = 16_970_346;
+pub const GOLDEN_NET_FIXED_LADDER: i128 = 31_302_978;
 
 /// The signed margin `GOLDEN_NET_LAMPORTS - GOLDEN_NET_FIXED_LADDER`.
 ///
@@ -125,7 +125,7 @@ pub const GOLDEN_DERIVED_MINUS_FIXED: i128 = -191_450;
 /// or a net drift, fails against this mirror. Source: the "(arc: …)" annotations.
 pub const GOLDEN_NET_ARC: &[i128] = &[
     2_979_624, 5_017_234, 6_443_936, 8_785_954, 12_550_767, 3_831_945, 1_406_102, 1_864_780,
-    8_124_568, 16_778_896,
+    8_124_568, 16_778_896, 31_111_528,
 ];
 
 /// The single REAL decision-level signed delta re-pin #12 recorded on the

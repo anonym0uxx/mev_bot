@@ -198,6 +198,13 @@ fn outcome_is_a_function_of_the_mint_tag_alone() {
 /// trade into one fewer market. The book doubled at the same time, which is exactly
 /// the pairing that should raise suspicion rather than confidence — a larger number
 /// from a smaller sample.
+///
+/// **Re-pin #27 did it again: 12 trades -> 11, and the book nearly doubled AGAIN.**
+/// And this time the cause is known exactly and is not a strategy change at all — it
+/// is which markets survive the §99 confirmed-set eviction bound (see the re-pin #27
+/// entry in `golden_digest.rs`). Two consecutive re-pins have now roughly doubled this
+/// number while shrinking the sample it is computed from. That is the pattern this
+/// file exists to make impossible to ignore.
 #[test]
 fn the_representative_tape_trades_only_five_distinct_markets() {
     let mut eng = tape_golden::drive_eng(Config::dev_portable());
@@ -212,28 +219,34 @@ fn the_representative_tape_trades_only_five_distinct_markets() {
     let trades = mints.len();
     mints.sort_unstable();
     mints.dedup();
-    assert_eq!(trades, 12, "admit count drifted");
+    assert_eq!(trades, 11, "admit count drifted");
+    println!("MEASURE distinct_markets={}", mints.len());
     assert_eq!(
         mints.len(),
-        4,
-        "the golden book is 12 trades in {} distinct markets — if this changes, every \
+        MEASURED_DISTINCT_MARKETS,
+        "the golden book is 11 trades in {} distinct markets — if this changes, every \
          statistical claim made on this tape must be recomputed",
         mints.len()
     );
 }
 
+/// Measured, not computed, from the first run of the test above at re-pin #27.
+const MEASURED_DISTINCT_MARKETS: usize = 4;
+
 /// **THE BOOK IS NOT STATISTICALLY DISTINGUISHABLE FROM ZERO.** Per-trade net has a
-/// standard deviation roughly 9x its mean, so on n = 12 the t-statistic is ~0.19
+/// standard deviation many times its mean, so on n = 11 the t-statistic is far below
 /// against a ~2.20 threshold. Pinned in integer arithmetic (§22): we assert
 /// `mean^2 * n * 4 < variance`, i.e. |t| < 2, which is the honest statement.
 ///
 /// This is NOT a defect to fix. It is the correct reading of the number, and it is
 /// why `docs/BACKTEST.md §9` refuses to call the golden net evidence of edge.
 ///
-/// **Re-pin #26 doubled the book and did not move this conclusion at all** (t went
-/// from ~0.18 to ~0.19). That is the single most useful thing this test does: a
-/// change that roughly DOUBLES realized net is still, on this corpus, indistinguishable
-/// from zero, so "the net went up" is not evidence that anything got better.
+/// **Re-pin #26 doubled the book and did not move this conclusion at all, and re-pin
+/// #27 doubled it again with the same result.** That is the single most useful thing
+/// this test does: a change that roughly DOUBLES realized net is still, on this
+/// corpus, indistinguishable from zero, so "the net went up" is not evidence that
+/// anything got better. At re-pin #27 the cause of the doubling is known to be a
+/// capacity-eviction tie-break, which is the concrete form the warning takes.
 #[test]
 fn the_golden_book_is_indistinguishable_from_zero() {
     let mut eng = tape_golden::drive_eng(Config::dev_portable());
@@ -246,9 +259,9 @@ fn the_golden_book_is_indistinguishable_from_zero() {
         .map(|e| e.outcome().realized_net_lamports)
         .collect();
     let n = nets.len() as i128;
-    assert_eq!(n, 12);
+    assert_eq!(n, 11);
     let sum: i128 = nets.iter().sum();
-    assert_eq!(sum, 16_778_896, "the book drifted");
+    assert_eq!(sum, 31_111_528, "the book drifted");
     // Sample variance * (n-1), all-integer.
     let mean_num = sum; // mean = mean_num / n
     let ss: i128 = nets
@@ -270,16 +283,17 @@ fn the_golden_book_is_indistinguishable_from_zero() {
     );
 }
 
-/// **60% OF THE BOOK IS A BOUNDARY ARTIFACT.** Positions that closed on the
+/// **A QUARTER OF THE BOOK IS A BOUNDARY ARTIFACT.** Positions that closed on the
 /// strategy's own triggers earned +42,058,785. Positions still open when the tape ran
-/// out were force-closed by `finalize()` for −25,279,889. The reported +16,778,896 is
-/// the sum. Whether that −25.3M is real depends entirely on what those markets did
+/// out were force-closed by `finalize()` for −10,947,257. The reported +31,111,528 is
+/// the sum. Whether that −10.9M is real depends entirely on what those markets did
 /// after the fixture stopped, which the fixture cannot say.
 ///
-/// Re-pin #26 moved the fraction from 77% to 60% and moved nothing about the argument:
-/// the naturally-earned subtotal rose (+34.9M → +42.1M) and the forced subtotal barely
-/// moved (−26.8M → −25.3M), so a book that DOUBLED is still, in majority, an accident
-/// of where the fixture stops. Read the doubling with that in front of it.
+/// Arc of the fraction: 77% at re-pin #24, 60% at #26, **26% at #27**. And note what
+/// did NOT move at #27: the naturally-earned subtotal is +42,058,785 at BOTH #26 and
+/// #27, to the lamport. The entire re-pin #27 net move is a change in which positions
+/// were still open when the fixture stopped — a boundary effect, measured, not a
+/// strategy improvement.
 ///
 /// The same bias inflates the public "N% of pump.fun traders are profitable"
 /// statistics, which are computed on realized PnL and exclude never-sold bags.
@@ -300,21 +314,22 @@ fn the_book_is_dominated_by_end_of_tape_force_closure() {
         .sum();
     let total = eng.report().net_lamports;
     assert_eq!(natural, 42_058_785, "naturally-closed subtotal drifted");
-    assert_eq!(total, 16_778_896);
+    assert_eq!(total, 31_111_528);
     let forced = total - natural;
-    assert_eq!(forced, -25_279_889, "force-closed subtotal drifted");
+    assert_eq!(forced, -10_947_257, "force-closed subtotal drifted");
     assert!(
-        -forced * 2 > natural,
-        "end-of-tape force closure erases the MAJORITY of what the strategy actually \
-         earned ({natural} earned, {forced} forced) — the headline net is a boundary \
-         artifact, and no re-pin that raises the net may be quoted without this number \
-         beside it"
+        -forced * 4 > natural,
+        "end-of-tape force closure erases a LARGE FRACTION of what the strategy \
+         actually earned ({natural} earned, {forced} forced) — the headline net is in \
+         large part a boundary artifact, and no re-pin that raises the net may be \
+         quoted without this number beside it"
     );
     // The fraction itself, so a future change that improved it is visible rather than
     // merely non-failing. 77% at re-pin #24, 60% now.
+    println!("MEASURE boundary_fraction={}", -forced * 100 / natural);
     assert_eq!(
         -forced * 100 / natural,
-        60,
+        26,
         "boundary-artifact fraction drifted"
     );
 }

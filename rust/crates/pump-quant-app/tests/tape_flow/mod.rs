@@ -73,9 +73,13 @@ pub const MARKETS: u64 = 6;
 /// read depth at all; the price waypoints are unchanged. Real depth changes only
 /// whether the positions the tape is about ever get opened.
 pub const LIQ: u64 = 32_000_000_000;
-/// Confirmed sellable depth (lamports) — just under [`LIQ`], the discipline
-/// `tape_golden` uses. Re-pin #26: was `300_000_000`.
-pub const DEPTH: u64 = 30_000_000_000;
+/// The SOL this curve actually escrows: `LIQ - LAUNCH_VSOL_LAMPORTS`.
+///
+/// **Re-pin #27 (2026-07-28): was `30_000_000_000`** — 30 SOL of claimed payout
+/// against a 32 SOL price reserve, on a venue where a curve escrows `virtual_sol - 30
+/// SOL` and this one therefore holds 2. The claim was 15x the money in the pool. It
+/// never bound `x_max` at a 0.1 SOL clip, which is exactly why it survived.
+pub const DEPTH: u64 = LIQ - 30_000_000_000;
 /// Market age in slots: past the sniper window, still inside the §21.5
 /// fresh-launch exemption, so the universe screen stays inert and this tape
 /// isolates the EXIT lever only.
@@ -132,7 +136,8 @@ fn ticks(eng: &mut Engine, n: u64) {
 fn confirm(eng: &mut Engine, m: Mint) {
     eng.tick(AppEvent::OnchainConfirm {
         mint: m,
-        sellable_depth_lamports: DEPTH,
+        virtual_sol_lamports: LIQ,
+        real_sol_lamports: DEPTH,
     });
 }
 

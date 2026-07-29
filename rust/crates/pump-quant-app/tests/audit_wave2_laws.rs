@@ -31,7 +31,20 @@ use pump_quant_watchlist::candidate::{DiscoveryLane, Lane as WlLane};
 /// reserves START at 30 SOL; the sub-SOL depths these fixtures used to declare put the
 /// operator's 0.1 SOL floor clip at 20-125% of the pool — a market in which no
 /// strategy result means anything (Amendment A-13(1)).
-const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+/// **A REAL BONDING CURVE THAT HAS BEEN BOUGHT INTO (corrected 2026-07-28).**
+///
+/// pump.fun seeds a curve with **30 SOL of VIRTUAL reserve and ZERO real SOL**, and
+/// escrows `real_sol = virtual_sol - 30 SOL` thereafter. This constant used to be the
+/// bare seed reserve (30 SOL) paired with a "sellable depth" of 29-30 SOL — a market
+/// that cannot exist, since a curve nobody has bought into can pay out nothing at all.
+/// It is now a curve with 0.3 SOL genuinely raised: the price reserve is close enough
+/// to the seed that own-impact on a 0.1 SOL floor clip is unchanged at 33 bps a leg,
+/// and the payout reserve is the 0.3 SOL that was actually paid in.
+/// See `curve_state::real_sol_for`.
+const REAL_CURVE_VSOL: u64 = 30_300_000_000;
+/// The SOL this curve actually escrows — `REAL_CURVE_VSOL - LAUNCH_VSOL_LAMPORTS`,
+/// the identity, not a choice. This is what caps `size_band`'s `x_max`.
+const REAL_CURVE_REAL_SOL: u64 = 300_000_000;
 
 fn mint(tag: u64) -> Mint {
     let mut b = [0u8; 32];
@@ -117,7 +130,8 @@ fn drive_held_dump(cfg: Config) -> (Report, Engine) {
     pump(&mut eng, 100, 24);
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(M),
-        sellable_depth_lamports: REAL_CURVE_VSOL,
+        virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -197,7 +211,8 @@ fn drive_preentry_dump(cfg: Config) -> (Report, Engine) {
     pump(&mut eng, 100, 24);
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(M),
-        sellable_depth_lamports: REAL_CURVE_VSOL,
+        virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -323,7 +338,8 @@ fn seed_open(eng: &mut Engine, disc_prices: &[i128]) {
     }
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(M),
-        sellable_depth_lamports: REAL_CURVE_VSOL,
+        virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     narrate(eng);
     ticks(eng, 2); // admit
@@ -592,11 +608,13 @@ fn drive_disc_attribution() -> Report {
     sell_flow(&mut eng, MB, 130, 12);
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(MA),
-        sellable_depth_lamports: REAL_CURVE_VSOL,
+        virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(MB),
-        sellable_depth_lamports: REAL_CURVE_VSOL,
+        virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     // Keep both discovery signals fresh across the admit ticks.
     eng.tick(AppEvent::TokenMetadata {
@@ -715,11 +733,13 @@ fn drive_classifier(cfg: Config) -> (Report, Vec<u16>) {
     }
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(MC1),
-        sellable_depth_lamports: REAL_CURVE_VSOL,
+        virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(MC2),
-        sellable_depth_lamports: REAL_CURVE_VSOL,
+        virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     ticks(&mut eng, 3);
     let r = eng.report();
@@ -1175,7 +1195,8 @@ fn drive_fee_floor(cfg: Config, feed_bundle: bool) -> (Report, Engine) {
     pump_mf(&mut eng, 24);
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(MF),
-        sellable_depth_lamports: REAL_CURVE_VSOL,
+        virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     ticks(&mut eng, 6);
     let r = eng.report();

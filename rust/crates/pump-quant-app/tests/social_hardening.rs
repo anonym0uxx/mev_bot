@@ -86,10 +86,28 @@ fn ticks(eng: &mut Engine, n: u64) {
 /// (`cost_model::impact_den_for` = `vsol / 10_000`), so the sub-SOL figures this file
 /// used to carry priced a 0.1-SOL floor clip at thousands of bps a leg and refused
 /// every candidate. Stated once, so the fixtures here cannot drift from the venue.
-const REAL_CURVE_VSOL: u64 = 30_000_000_000;
+/// **A REAL BONDING CURVE THAT HAS BEEN BOUGHT INTO (corrected 2026-07-28).**
+///
+/// pump.fun seeds a curve with **30 SOL of VIRTUAL reserve and ZERO real SOL**, and
+/// escrows `real_sol = virtual_sol - 30 SOL` thereafter. This constant used to be the
+/// bare seed reserve (30 SOL) paired with a "sellable depth" of 29-30 SOL — a market
+/// that cannot exist, since a curve nobody has bought into can pay out nothing at all.
+/// It is now a curve with 0.3 SOL genuinely raised: the price reserve is close enough
+/// to the seed that own-impact on a 0.1 SOL floor clip is unchanged at 33 bps a leg,
+/// and the payout reserve is the 0.3 SOL that was actually paid in.
+/// See `curve_state::real_sol_for`.
+const REAL_CURVE_VSOL: u64 = 30_300_000_000;
+/// The SOL this curve actually escrows — `REAL_CURVE_VSOL - LAUNCH_VSOL_LAMPORTS`,
+/// the identity, not a choice. This is what caps `size_band`'s `x_max`.
+const REAL_CURVE_REAL_SOL: u64 = 300_000_000;
 /// Confirmed sellable depth, just under [`REAL_CURVE_VSOL`] — the "a confirm proves
 /// slightly less than the pool holds" discipline the golden tape uses.
-const REAL_SELLABLE_DEPTH: u64 = 29_000_000_000;
+/// Alias kept for the fixtures that name the PAYOUT reserve directly.
+const REAL_SELLABLE_DEPTH: u64 = REAL_CURVE_REAL_SOL;
+/// A curve that exists but has raised essentially nothing: 1_000 lamports of escrowed
+/// SOL behind a seeded 30 SOL price curve. The uneconomic cohort.
+const DUST_CURVE_REAL_SOL: u64 = 1_000;
+const DUST_CURVE_VSOL: u64 = 30_000_000_000 + DUST_CURVE_REAL_SOL;
 
 /// One decoded on-chain swap. `signed_base > 0` is net buying.
 fn trade(eng: &mut Engine, m: Mint, price_mult: i128, signed_base: i64, entity: u64, liq: u64) {
@@ -217,7 +235,8 @@ fn drive_cell(strength: SocialStrength, onchain: OnchainEvidence) -> (Report, En
             OnchainEvidence::ConfirmOnly => {
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: m,
-                    sellable_depth_lamports: REAL_SELLABLE_DEPTH,
+                    virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_SELLABLE_DEPTH,
                 });
             }
             OnchainEvidence::NumericOnly => {
@@ -233,8 +252,15 @@ fn drive_cell(strength: SocialStrength, onchain: OnchainEvidence) -> (Report, En
                 }
             }
             OnchainEvidence::BothButUneconomic => {
-                // Real prints, but a dust-depth pool: the §18 economic band cannot
-                // clear its own round-trip cost at the 0.1-SOL operator floor.
+                // Real prints, but a curve nobody has meaningfully bought into: it
+                // escrows 1_000 lamports, so the §18 economic band cannot clear its
+                // own round-trip cost at the 0.1-SOL operator floor.
+                //
+                // Re-pin #27: the fixture used to declare a 1_000-lamport POOL, which
+                // is not a market this venue can produce (a curve is seeded with 30
+                // SOL of virtual reserve). The uneconomic-ness is now expressed the
+                // way the venue expresses it — a real curve with almost nothing
+                // raised — rather than by an impossible reserve.
                 for i in 0..10u64 {
                     trade(
                         &mut eng,
@@ -242,12 +268,13 @@ fn drive_cell(strength: SocialStrength, onchain: OnchainEvidence) -> (Report, En
                         100 + i128::from(i as i64),
                         900_000 - i as i64,
                         40 + i % 7,
-                        1_000,
+                        DUST_CURVE_VSOL,
                     );
                 }
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: m,
-                    sellable_depth_lamports: 1_000,
+                    virtual_sol_lamports: DUST_CURVE_VSOL,
+                    real_sol_lamports: DUST_CURVE_REAL_SOL,
                 });
             }
             OnchainEvidence::Full => {
@@ -263,7 +290,8 @@ fn drive_cell(strength: SocialStrength, onchain: OnchainEvidence) -> (Report, En
                 }
                 eng.tick(AppEvent::OnchainConfirm {
                     mint: m,
-                    sellable_depth_lamports: REAL_SELLABLE_DEPTH,
+                    virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_SELLABLE_DEPTH,
                 });
             }
         }
@@ -552,7 +580,8 @@ fn even_callers_with_earned_realized_trust_cannot_admit_without_onchain() {
         }
         eng.tick(AppEvent::OnchainConfirm {
             mint: earner,
-            sellable_depth_lamports: REAL_SELLABLE_DEPTH,
+            virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_SELLABLE_DEPTH,
         });
         ticks(&mut eng, 4);
     }
@@ -634,7 +663,8 @@ fn the_social_abstraction_plane_is_decision_inert() {
             }
             eng.tick(AppEvent::OnchainConfirm {
                 mint: m,
-                sellable_depth_lamports: REAL_SELLABLE_DEPTH,
+                virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_SELLABLE_DEPTH,
             });
             if exercise {
                 // Every new surface, driven hard — and on the REAL author ids the
@@ -738,7 +768,8 @@ fn maximal_social_support_never_increases_realized_size() {
             }
             eng.tick(AppEvent::OnchainConfirm {
                 mint: m,
-                sellable_depth_lamports: REAL_SELLABLE_DEPTH,
+                virtual_sol_lamports: REAL_CURVE_VSOL,
+                    real_sol_lamports: REAL_SELLABLE_DEPTH,
             });
             ticks(eng, 3);
         }

@@ -57,7 +57,8 @@ fn drive_positions(cfg: Config) -> Engine {
             );
             eng.tick(AppEvent::OnchainConfirm {
                 mint: mint(m),
-                sellable_depth_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
+                virtual_sol_lamports: pq_regression::FIXTURE_VSOL_LAMPORTS,
+        real_sol_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
             });
         }
         for _ in 0..40 {
@@ -229,7 +230,8 @@ fn drive_classifier(cfg: Config) -> (Report, Vec<u16>) {
         });
         eng.tick(AppEvent::OnchainConfirm {
             mint: mint(tag),
-            sellable_depth_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
+            virtual_sol_lamports: pq_regression::FIXTURE_VSOL_LAMPORTS,
+        real_sol_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
         });
     }
     for _ in 0..3 {
@@ -307,7 +309,8 @@ fn discovery_lane_attribution_keeps_lanes_distinct() {
     for tag in [ma, mb] {
         eng.tick(AppEvent::OnchainConfirm {
             mint: mint(tag),
-            sellable_depth_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
+            virtual_sol_lamports: pq_regression::FIXTURE_VSOL_LAMPORTS,
+        real_sol_lamports: pq_regression::FIXTURE_SELLABLE_LAMPORTS,
         });
     }
     eng.tick(AppEvent::TokenMetadata {
