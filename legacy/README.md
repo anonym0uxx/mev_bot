@@ -1,3 +1,0 @@
-# Legacy code (quarantined per constitution §14)
-
-This is the prior codebase, moved here automatically and preserved in full (every version remains in git history). It is **not** the build target. Per §14 it is: (1) never executed (ELF binaries, daemons), (2) classified where it is sunset-aware (Jito/ShredStream), and (3) mined for salvage (§14.3: scorer math, tx builders, sell-retry/reconciliation logic, the paper-trade dataset as research evidence). Milestone M0 does the classification and salvage. Do not build on top of this engine — §14.4 forbids in-place determinization; the new architecture replaces it and extracts only the correct parts.
