@@ -90,6 +90,21 @@ pub const GOLDEN_REJECTED: u64 = 448;
 /// Zombie-cohort promotions the §21.5 universe screen removes (visible activity).
 pub const GOLDEN_UNIVERSE_FILTERED: u64 = 72;
 
+/// The paid Discord room's realized net attributed to `DiscoveryLane::AlphaCall`,
+/// mirrored from `pump-quant-app/tests/golden_digest.rs::GOLDEN_ALPHACALL_NET`.
+///
+/// Mirrored here for one reason: it is the fifth entry in the decision vector the
+/// Phase-B activation directive hands a builder for distinguishing a legitimate
+/// seed-only re-pin from a real determinism break, and `hermes_doc_pins.rs` asserts
+/// that directive quotes it correctly. It was quoted STALE for two re-pins.
+///
+/// **This number has been positive, negative, and positive again — +447_700, then
+/// −2_721_835 at re-pin #24, then +815_594 at re-pin #26 — and not one of those
+/// changes came from evidence about the room.** Three cost models, three signs, the
+/// same twelve events in four markets. It is pinned as a VALUE, never as a sign, and
+/// no claim about paid alpha rooms may be built on its direction.
+pub const GOLDEN_ALPHACALL_NET: i64 = 815_594;
+
 /// Net-SOL on the golden tape with the §24 cost-derived ladder DISABLED — i.e.
 /// the forbidden fixed 13_500/25_000/50_000 ladder. Pinned so the §24 reversal's
 /// decision-level wiring can never be silently dead-coded.

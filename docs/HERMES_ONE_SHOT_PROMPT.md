@@ -2195,7 +2195,14 @@ cost-model unification then moved it to **16,778,896**, and re-pin #27's provena
 for the live pins) and flipped the
 AlphaCall (Discord) lane from +447,700 to **−2,721,835**, falsifying a claim this project had already
 written into an activation directive. Nothing detected this for months, because nobody had ever
-compared the fixture's depth to the size of our own order. (1) **EVERY FIXTURE THAT PRICES AN ORDER
+compared the fixture's depth to the size of our own order. _Erratum, 2026-07-29, under clause (5)
+of this amendment applied to this amendment: re-pin #26's cost-model unification moved that lane a
+THIRD time, to **+815,594**, which is the live pin (`golden_digest.rs::GOLDEN_ALPHACALL_NET`). Three
+cost models, three signs, the same twelve events in four markets, and not one of the changes came
+from evidence about the room. The lesson A-13 draws from it is unchanged and is in fact sharpened:
+the fixture could not settle the question in either direction, so the constant is pinned as a VALUE
+and **no claim about paid alpha rooms may be built on its sign.** The −2,721,835 above is retained
+as the history that produced this amendment, not as a current reading._ (1) **EVERY FIXTURE THAT PRICES AN ORDER
 MUST DECLARE ITS PARTICIPATION RATE.** For any tape, corpus, or replay used to produce a lamport
 number, the ratio `our_clip / vsol` MUST be computed and asserted in a test alongside the tape, with
 the real-world reference it is claiming to model. `tests/curve_fill_wiring.rs` is the pattern:

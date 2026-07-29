@@ -7,8 +7,15 @@ staked connections · LaserStream WSS + gRPC · Shreds ($1,000/mo/IP add-on) · 
 the send budget. The fourth, credits, is decided entirely by how wide the LaserStream subscription
 is. As written today it is a program-wide firehose and the central case eats **80% of the plan with
 no margin**. Under the source allocation in §5 — free PumpPortal carrying the wide net, paid
-LaserStream narrowed to the watchlist — the same month costs **7%**. That is an **11× reduction**,
-and it comes from removing data we were paying for and could not legally act on anyway.
+LaserStream carrying the mints we can actually trade — the same month costs **7%**. That is an
+**11× reduction**, and it comes from removing data we were paying for and could not legally act on
+anyway.
+
+**This document does not ask you to narrow the watchlist.** §5.3 is a price list, not a cap. The
+marginal cost is roughly **100k credits per tracked mint per month**, so the plan affords about
+**965 mints** in the include list — 15× today's `watchlist_capacity` of 64. Cost is not what binds
+breadth. What matters is being *cognizant*: knowing the price of a knob before turning it, and
+knowing that the regime (quiet vs manic) moves the bill more than the breadth does.
 
 ---
 
@@ -145,22 +152,65 @@ reserves. We enter zero positions on PumpSwap — the band tops out at 80% of th
 so the only PumpSwap pools we ever care about are those of positions that graduated mid-hold, which
 T3 covers by key.
 
-### 5.3 The budget under the allocation
+### 5.3 The budget under the allocation — a price list, not a cap
 
-| Include list | Quiet (0.2 tx/s/mint) | **Central (0.5 tx/s/mint)** | Manic (2 tx/s/mint) |
-|---|---|---|---|
-| **64 mints — the watchlist** | 2.2M (**2%**) | **7.2M (7%)** | 47.0M (**47%**) |
-| 256 mints — the confirmed set | 7.2M (7%) | 27.1M (27%) | 186.4M (**186% — over**) |
-| *program firehose, today* | *22.9M (23%)* | *80.2M (80%)* | *268.9M (269%)* |
+**Nothing here narrows the watchlist.** Breadth is a strategy decision and must stay one; the point
+of this section is to make its price legible so the decision can be taken on strategy grounds with
+the cost known, rather than discovered as an overage invoice. **The include-list size and
+`watchlist_capacity` are separate knobs** — they happen to be equal in the default design, but if a
+wider watchlist is worth having, the correct move is to widen it and price the subscription, not to
+shrink the strategy to fit a subscription that was never tuned.
 
-**Cap the include list at the watchlist (64), not the confirmed set (256).** That is the binding
-design decision in this document. It is the only configuration that stays inside the plan in *every*
-scenario, and it costs nothing: the gate only ever admits from candidates that reached the watchlist,
-so the confirmed set's extra 192 mints are ones we are not about to trade.
+**The marginal cost of one tracked mint, per month:**
 
-At 64 mints the central month finishes at **7% of plan — 14× headroom** — and the residual budget is
-real optionality: it is enough to raise `watchlist_capacity`, to widen the band, or to add a second
-region for redundancy, all of which are strategy decisions rather than affordability ones.
+| regime | tx/s/mint | KB/tx | GB/mo | credits/mo | **mints affordable on 100M** |
+|---|---|---|---|---|---|
+| quiet | 0.2 | 2.5 | 1.30 | 25,920 | **3,858** |
+| central | 0.5 | 4.0 | 5.18 | 103,680 | **965** |
+| busy | 1.0 | 5.0 | 12.96 | 259,200 | **386** |
+| manic | 2.0 | 7.0 | 36.29 | 725,760 | **138** |
+
+**Roughly 100k credits per tracked mint per month at central rates — so the plan affords about 965
+mints in the include list.** That is 15× the current `watchlist_capacity` of 64 and nearly 4× the
+confirmed-set cap of 256. **Cost is not the binding constraint on watchlist breadth and this
+document should not be read as saying it is.** What binds breadth is the strategy question of how
+many candidates are worth tracking, and the compute/latency question of what the hot path can rank
+per tick — neither of which is priced here.
+
+**What a given breadth costs (% of 100M):**
+
+| mints | quiet | central | busy | manic |
+|---|---|---|---|---|
+| 64 (today's watchlist) | 2% | **7%** | 17% | 46% |
+| 128 | 3% | 13% | 33% | 93% |
+| 256 (confirmed-set cap) | 7% | 27% | 66% | 186% |
+| 512 | 13% | 53% | 133% | 372% |
+| 1024 | 27% | 106% | 265% | 743% |
+| *program firehose, today* | *23%* | *80%* | — | *269%* |
+
+Read across a row, not down a column: **the regime moves the bill more than the breadth does.** 64
+mints in a manic month (46%) costs more than 256 in a central one (27%). That is the real finding,
+and it is an argument for a **measured, adaptive breadth** rather than any fixed number — spend to a
+credit budget with headroom, widening when the tape is quiet and narrowing only when a live meter
+says the month is running hot. Which is impossible today, because there is no meter (§6(1)).
+
+**Optimizations available, ranked by leverage, all independent of breadth:**
+
+1. **Drop the unfiltered PumpSwap account firehose** — the band is pre-graduation, so it buys
+   nothing we can trade on. Free.
+2. **Stop requesting full transaction detail if the decoder does not need it.** Log messages are
+   typically 40–60% of a pump.fun transaction update. `docs/HELIUS_INTEGRATION.md:24-27` already
+   prescribes data slices; `grpc-server-only/src/main.rs:151-157` uses `..Default::default()`.
+   Closing that gap is plausibly ~40% off the dominant lane — **worth more than halving the
+   watchlist, and it costs no strategy.**
+3. **Let PumpPortal carry the screening tier** so LaserStream only ever sees candidates that
+   survived a screen. This is what makes a *wide* screening universe affordable: PumpPortal's
+   per-mint filtering is free at any breadth.
+4. **Adaptive breadth against a live credit meter**, once (1) in §7 exists.
+
+At today's 64 with the allocation in place, a central month finishes at **7% — 14× headroom.** That
+headroom is the point: it is what makes widening the band, raising `watchlist_capacity`, or adding a
+second region affordable decisions rather than budget negotiations.
 
 ### 5.4 The one thing to verify before relying on this
 

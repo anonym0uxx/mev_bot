@@ -374,16 +374,29 @@ server measurement before the affected path may arm. Activate in this order:
    guild/channel allowlist, and the designated-caller author-ids. Discord is a CONSTITUTIONALLY
    NAMED real-time alpha-call source with its own `DiscoveryLane::AlphaCall`.
 
-   **CORRECTED 2026-07-27 — do not repeat the old claim.** This directive previously called Discord
-   "a proven positive discovery lane" on the strength of a pinned golden net of **+447,700**. That
-   number was measured while the tape's pools were 0.12–0.47 SOL and our own order was charged
-   nothing for consuming 21–83% of them. With real depth and own-curve impact charged, the same lane
-   reads **−2,721,835** (`golden_digest.rs::GOLDEN_ALPHACALL_NET`). **The lane is net NEGATIVE on
-   the only tape that prices it honestly, and the "proven positive" claim is false.** Stand the
-   capture lane up anyway — it is constitutionally named and it is how you gather the observations —
-   but treat its economic value as **UNKNOWN and currently measuring negative**, and settle it under
-   Amendment A-11 with a thesis document before you let it size a single lamport. In particular, do
-   not buy a paid alpha subscription on the strength of a retired number.
+   **CORRECTED 2026-07-27, RE-CORRECTED 2026-07-29 — do not repeat EITHER old claim.** This
+   directive once called Discord "a proven positive discovery lane" on a pinned golden net of
+   **+447,700**, measured while the tape's pools were 0.12–0.47 SOL and our own order was charged
+   nothing for consuming 21–83% of them. The 2026-07-27 correction replaced that with
+   **−2,721,835** and asserted the lane "is net NEGATIVE … and the 'proven positive' claim is
+   false." **That correction is now itself retired, and the sentence you are reading replaces a
+   sign claim with a refusal to make one.**
+
+   The live constant is **`GOLDEN_ALPHACALL_NET = +815_594`**
+   (`rust/crates/pump-quant-app/tests/golden_digest.rs:673`). The arc is +447,700 → −2,721,835
+   (re-pin #24 gave the tape real depth and armed the curve fill) → **+815,594** (re-pin #26
+   unified the cost model). **Three cost models, three signs, the same twelve events in four
+   markets.** Not one of those changes came from evidence about the room. The code says the
+   operative thing and this directive now says it too: the constant is pinned as a **VALUE**, a
+   tripwire on the §71.2 attribution split, and **no claim about paid alpha rooms may be built on
+   its sign in either direction.**
+
+   Stand the capture lane up anyway — it is constitutionally named and it is how you gather the
+   observations — but treat its economic value as **UNKNOWN and unsettleable on this tape**, and
+   settle it under Amendment A-11 with a thesis document before you let it size a single lamport.
+   Do not buy a paid alpha subscription on the strength of any of the three numbers, including the
+   positive one. **If you are reading this because a checklist told you to verify AlphaCall net,
+   the value is +815,594; if any document tells you otherwise, the constant in the code governs.**
 
    Passive/incognito read only, on a dedicated throwaway account, **no multi-account rotation or
    proxy evasion, and never any promotional action (criterion 110)**. The lane fails open, so a
@@ -410,7 +423,12 @@ server measurement before the affected path may arm. Activate in this order:
    field moves the digest with zero decision change.** Phase-B will add config fields (signer,
    submission, OsTune, secrets wiring), so this WILL fire. The test is the DECISION PLANE, not
    the digest: verify `net = 31,111,528`, `promoted/admitted/rejected = 504/11/448`,
-   `universe_filtered = 72`, `AlphaCall net = −2,721,835`, plus per-lane net and final weights.
+   `universe_filtered = 72`, `AlphaCall net = +815,594`, plus per-lane net and final weights.
+   **Read those five values out of the code, not out of this sentence** — the authorities are
+   `rust/crates/pump-quant-app/tests/golden_digest.rs` and
+   `rust/crates/pq-regression/src/baselines.rs`, and `regression_manifest.rs` asserts that this
+   file quotes them correctly. If this checklist and the code disagree, the code governs and the
+   disagreement is itself a §7 halt: report it, do not reconcile it by editing the code.
    If every one of those is byte-identical and only the digest moved, it is a **SEED-ONLY
    re-pin** — legitimate, and done 8+ times already (#5, #7, #8, #9, #16, #17, #21, #22).
    Document the cause in the `golden_digest.rs` re-pin ledger and update the constant in
