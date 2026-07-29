@@ -1,14 +1,25 @@
 # NET-SOL END-TO-END AUDIT — every lamport that leaves the wallet (2026-07-28)
 
-> **ERRATUM — 2026-07-28 (re-pin #26, COST-MODEL UNIFICATION).** Every golden-tape
-> absolute below is superseded. The engine carried two disagreeing round-trip cost models
-> and used one to DECIDE and the other to BOOK; `crates/pump-quant-app/src/cost_model.rs`
-> is now the single authority for both. Golden net **8,124,568 → 16,778,896**, digest →
-> `6163272398497391826`, admitted **13 → 12**, rejected **457 → 447** (promoted 504 and
-> universe_filtered 72 unchanged). The book roughly doubled and **not one qualitative
-> conclusion about edge changes**: it is still 12 trades in 4 distinct markets, still
-> statistically indistinguishable from zero (|t| ≈ 0.19), and still 60% boundary artifact
-> from end-of-tape force closure. Live pins: `crates/pq-regression/src/baselines.rs`.
+> **ERRATUM — 2026-07-28 (re-pin #26, COST-MODEL UNIFICATION), CHASED FORWARD TO re-pin #27
+> (2026-07-28, DEPTH + MOVE PROVENANCE).** Every golden-tape absolute below is superseded, twice.
+> At #26 the engine carried two disagreeing round-trip cost models and used one to DECIDE and the
+> other to BOOK; `crates/pump-quant-app/src/cost_model.rs` is now the single authority for both.
+> At #27 the fixtures themselves were corrected: they had declared a payout depth the curve does
+> not escrow (`real_sol = virtual_sol − 30 SOL`, a **30×** overstatement near launch), and the
+> confirmed-set eviction key reordered under the corrected depth.
+>
+> | quantity | published | re-pin #26 | **re-pin #27 (live)** |
+> |---|---|---|---|
+> | golden net (lamports) | 8,124,568 | 16,778,896 | **31,111,528** |
+> | golden digest | — | 6163272398497391826 | **13693021370354439552** |
+> | promoted / admitted / rejected | 504 / 13 / 457 | 504 / 12 / 447 | **504 / 11 / 448** |
+> | universe_filtered | 72 | 72 | **72** |
+>
+> The book roughly quadrupled across the two re-pins and **not one qualitative conclusion about
+> edge changes**: it is now 11 trades in 5 distinct markets, still statistically indistinguishable
+> from zero (integer t² < 4), and still dominated by end-of-tape force closure. Read every absolute
+> below as history under this header; the surviving verdicts are re-argued explicitly, not assumed
+> (A-13(5)). Live pins: `crates/pq-regression/src/baselines.rs`.
 
 **Mandate (operator):** scrutinise the finalised engine and bot end to end to ensure we are getting
 every bit of net-SOL maximisation out of every action the bot, Hermes and the codebase take. Produce

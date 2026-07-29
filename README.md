@@ -400,7 +400,12 @@ Phase-A is provable off a live wire; Phase-B is where the deployment server turn
 ingestion + execution seams on. Because the ingestion *code* is already laptop-built and fixture-tested,
 server bringup is credentials + measurement, not new construction. The ordered manifest is
 [`docs/SERVER_BUILD_MANIFEST.md`](docs/SERVER_BUILD_MANIFEST.md); the Helius product map is
-[`docs/HELIUS_INTEGRATION.md`](docs/HELIUS_INTEGRATION.md).
+[`docs/HELIUS_INTEGRATION.md`](docs/HELIUS_INTEGRATION.md) and what it will cost for 30 days of
+continuous operation is [`docs/HELIUS_BUDGET_2026-07-29.md`](docs/HELIUS_BUDGET_2026-07-29.md) —
+read that one **before** arming the gRPC lane, because the subscription as written is a
+program-wide firehose with no cost monitor and the central case consumes 80% of a 100M-credit month.
+The on-chain instruction layouts Phase-B must build against — every constant re-derived from first
+principles, including two that failed — are [`docs/VENUE_TX_LAYOUTS.md`](docs/VENUE_TX_LAYOUTS.md).
 
 1. **Clone + build the workspace and capture lanes** on the deploy box (Windows-native target), then build
    the server-only gRPC lane (`tools/stream-capture-rs/grpc-server-only`, needs crates.io reachable):

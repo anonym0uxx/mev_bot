@@ -15,11 +15,23 @@
 > 150 bps first-sell penalty that was own-impact under another name is deleted. The golden book
 > roughly doubles.
 >
-> | quantity | published (2026-07-25) | erratum #1 (2026-07-27) | honest (2026-07-28) |
-> |---|---|---|---|
-> | golden net, shipped `k = 1` | 15,410,801 | 8,124,568 | **16,778,896** |
-> | golden net at `k = 5` | 2,322,301 | −3,223,175 | **+5,309,323** |
-> | **`k = 5` HARM (`k=1` − `k=5`)** | **13,088,500** | **11,347,743** | **11,469,573** |
+> | quantity | published (2026-07-25) | erratum #1 (2026-07-27) | re-pin #26 (2026-07-28) | **re-pin #27 (live)** |
+> |---|---|---|---|---|
+> | golden net, shipped `k = 1` | 15,410,801 | 8,124,568 | 16,778,896 | **31,111,528** |
+> | golden net at `k = 5` | 2,322,301 | −3,223,175 | +5,309,323 | *(not re-measured)* |
+> | **`k = 5` HARM (`k=1` − `k=5`)** | **13,088,500** | **11,347,743** | **11,469,573** | *(see below)* |
+>
+> **ERRATUM #3 — 2026-07-28, re-pin #27 (DEPTH + MOVE PROVENANCE), and it is the interesting one.**
+> The fixtures declared a payout depth the bonding curve does not escrow (`real_sol = virtual_sol −
+> 30 SOL`; a **30×** overstatement near launch). Corrected, the shipped baseline moved again, to
+> `31,111,528` / digest `13693021370354439552` / `504 / 11 / 448 / 72`. **The `k = 5` harm did not
+> move with it.** Across #26 and #27 it sat at `11,469,573` while the baseline it is subtracted from
+> travelled 8.1M → 16.8M → 31.1M. A quantity that is invariant to a 4× move in the thing it is
+> measured against is measuring the LEVER, not the tape — which is the correct reading of the k=5
+> result and was not available when erratum #2 was written. Two neighbouring #26 verdicts did not
+> survive the same test: B7's asymmetry (1.27× → 5.78× → 1.60×) and B7's status as a permutation
+> co-winner, both of which were artifacts of the same fixture defect and are withdrawn. See
+> `docs/DEPTH_AND_MOVE_PROVENANCE_PLAN_2026-07-28.md`.
 > | best golden gain over all `k` | +257,400 (`k = 2`) | +207,252 (`k = 2`) | **+177,199 (`k = 2`)** |
 >
 > **Read the HARM column, not the level column.** `k = 5` does not "turn the book negative" and

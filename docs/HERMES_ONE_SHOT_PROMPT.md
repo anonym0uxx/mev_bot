@@ -2215,9 +2215,23 @@ written down (`gate_impact_den = vsol/10_000`, i.e. the curve's own 33 bps). A f
 the depth sites and not all of them is WORSE than no fix: the first incomplete pass here produced
 −379,067,452 and read as a damning verdict on the strategy when it was a verdict on two unfixed
 cohort blocks. **Enumerate every site, fix them in one pass, and prove the enumeration was complete.**
-(4) **ABSOLUTE VERSUS RELATIVE — THE STANDING DISTINCTION.** A synthetic tape may arbitrate the
-DIRECTION of an A/B, because a uniform mispricing shifts both arms together and preserves sign and
-ordering. It may NEVER establish that a strategy earns. The golden book is smaller than one 0.1-SOL
+(4) **ABSOLUTE VERSUS RELATIVE — THE STANDING DISTINCTION, WITH ITS OWN CLAUSE PARTIALLY RETRACTED.**
+A synthetic tape may arbitrate the DIRECTION of an A/B **only while the gate cannot see depth**. The
+justification originally written here — that a uniform mispricing "shifts both arms together and
+preserves sign and ordering" — is **RETRACTED as stated**, under this amendment's own clause (5).
+_Erratum, re-pin #27 (2026-07-28), established in `docs/STRATEGY_PERMUTATION_STUDY_2026-07-25.md:46-49`
+and applied at `docs/HERMES_PHASE_B_ACTIVATION_ONESHOT.md:661-662`: once the gate reads depth as a
+decision input, a depth mispricing does not SCALE both arms, it REFUSES both arms, and a tape that
+admits nothing preserves nothing. Three "law verdicts" at re-pin #26 — B7's asymmetry, B7 as a
+permutation co-winner, and the k=5 sign flip — were all one fixture defect, and the tell was that the
+k=5 harm stayed invariant at 11,469,573 lamports while the baseline moved 8.1M → 16.8M → 31.1M: the
+lever was being measured, not the tape._ **The operative rule is therefore: a synthetic tape
+arbitrates direction only if it is first shown to ADMIT under the arms being compared. A tape whose
+admission count is zero, or whose admission count differs between arms because of the mispricing
+rather than because of the lever, arbitrates nothing — report it as a null, never as a verdict.**
+This retraction narrows nothing and widens nothing: it records a falsification of a stated
+justification, which clause (5) requires and §68 / criterion 111 does not reserve to the operator.
+A synthetic tape may NEVER establish that a strategy earns. The golden book is smaller than one 0.1-SOL
 bite; quoting it as an economic result is a reporting defect regardless of how carefully it was
 measured. **Absolute profitability is established on live or replay chain data or it is not
 established.** (5) **A FALSIFIED CLAIM IS CHASED DOWN, NOT LEFT STANDING.** When a fixture correction

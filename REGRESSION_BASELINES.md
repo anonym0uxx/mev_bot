@@ -30,7 +30,8 @@ canonical values, for cross-reference, are:
 |---|---|---|
 | Golden decision-journal digest | `13_693_021_370_354_439_552` | `baselines.rs::GOLDEN_DIGEST` |
 | Golden net-SOL (lamports) | `31_111_528` | `baselines.rs::GOLDEN_NET_LAMPORTS` |
-| Promoted / admitted / rejected | `504 / 12 / 447` | `baselines.rs::GOLDEN_{PROMOTED,ADMITTED,REJECTED}` |
+| Promoted / admitted / rejected | `504 / 11 / 448` | `baselines.rs::GOLDEN_{PROMOTED,ADMITTED,REJECTED}` |
+| Universe-filtered | `72` | `baselines.rs::GOLDEN_UNIVERSE_FILTERED` |
 | `cargo test --workspace` | 1908 tests / 0 fail | live workspace run |
 | `cargo fmt --all --check` | clean | live |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean | live |

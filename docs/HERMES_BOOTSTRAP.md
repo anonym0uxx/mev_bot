@@ -35,7 +35,12 @@ end to end, without waiting for me to approve each step.**
    lifecycle (§5), the reflection cadence (§6), brain and holder doctrine (§6b/§6b-2), the
    flow-persistence action item (§6b-3), and your stop-and-ask conditions (§7).
 
-Read `docs/SERVER_BUILD_MANIFEST.md` as you work its §1–§12 spine. Everything else —
+Read `docs/SERVER_BUILD_MANIFEST.md` as you work its §1–§12 spine. Two documents are **not** read on
+demand and must be read before the work they govern: `docs/HELIUS_BUDGET_2026-07-29.md` before you
+arm the LaserStream gRPC lane (the subscription as written is a program-wide firehose with no cost
+monitor; the §72 arm-gate `may_arm` exists and has no caller), and `docs/VENUE_TX_LAYOUTS.md` before
+you build any transaction (it carries the re-derived account orders and records two constants in the
+deleted legacy tree that were fabricated). Everything else —
 `REGRESSION_BASELINES.md`, `README.md`, `docs/HELIUS_INTEGRATION.md`, `docs/PUMPSWAP_DECODE.md`,
 `docs/BIRDEYE_SOURCE.md`, `docs/DISCORD_SOURCE.md`, `docs/BRAIN_SYSTEM.md` — read on demand when the
 work touches it. Read `docs/ENTRY_EXIT_SCRUTINY_2026-07-25.md` and
