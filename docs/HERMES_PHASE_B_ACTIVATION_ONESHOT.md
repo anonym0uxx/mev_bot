@@ -34,29 +34,136 @@ settled negative). Your single objective function is **realized net SOL** (SOL i
 minus SOL out after all costs), maximized autonomously under the risk constitution — never
 win-rate, trade count, or gross P&L.
 
-**The honest baseline you are inheriting:** the golden reference net is **16,778,896 lamports**
-(re-pin #26, 2026-07-28, cost-model unification; it was 8,124,568 at re-pin #24)
-(digest `6163272398497391826`). Read that number the way it is meant, because two prior headlines
-were retired for being read the wrong way:
+**THE FIRST THING TO UNDERSTAND, BEFORE ANY NUMBER BELOW.** This system **has never traded**.
+Realized net SOL to date is **exactly zero**. There is no wallet P&L, no filled order, and no
+position has ever been opened on chain. Every figure in this repository is a *synthetic regression
+fixture*. Establishing whether this strategy makes money is **your job**, and it is not yet begun.
 
-* The 12.55M headline was retired because costs were understated.
-* The **15,410,801** headline was retired on 2026-07-27 because the tape's *market* was fictional.
-  Its pools were 0.12–0.47 SOL against a 0.1-SOL minimum clip, i.e. our own order was 21–83% of the
-  entire pool, and it was charged nothing for that. The tape now carries real pump.fun depth
-  (30 SOL virtual at launch, deepening toward graduation), a `gate_impact_den` coherent with it
-  (`vsol/10_000` ≈ 33 bps), and **our own curve impact is charged on both legs**
-  (`curve_exact_fill_enable`, `crates/pump-quant-app/src/curve_fill.rs`). Honest accounting cost
-  roughly half the book. `docs/BACKTEST.md §9` is the record.
+**The golden reference you are inheriting:** net **31,111,528 lamports**, digest
+`13693021370354439552`, promoted/admitted/rejected/universe-filtered **504 / 11 / 448 / 72**
+(re-pin #27, 2026-07-28).
 
-Round-trip cost on small clips is ~7%, dominated by fixed priority/tip; own-curve impact adds
-~33 bps per leg at launch depth. That is the drag you are trading against.
+In real terms that book is **0.031 SOL — about $2.36** — across **11 trades in a handful of
+markets**, with |t| ≈ 0.19. It is statistically indistinguishable from zero and a large share of it
+is an artifact of where the tape stops and of which markets survive a capacity bound. **It is a
+determinism fingerprint and a drift detector. It is not evidence of edge and must never be quoted as
+one.** `docs/EDGE_PROVENANCE_2026-07-27.md` is the proof.
 
-**And read this next sentence before you quote 16,778,896 to anyone.** It is a *synthetic
-regression fixture*, not an economic forecast. The entire golden book is smaller than ONE 0.1-SOL
-bite (100,000,000 lamports), so it can arbitrate A/B *direction* and pin determinism, and it cannot
-tell you the strategy makes money. **No synthetic tape can.** Establishing whether this strategy
-clears the real cost floor is a Phase-B job on live/replay chain data, and it is the single most
-important thing you will do. Do not cite any tape net — old or new — as evidence of edge.
+**Five headline numbers have been retired, and the pattern matters more than any of them.** The arc
+is 2.98M → … → 12.55M → 15,410,801 → 8,124,568 → 16,778,896 → 31,111,528. **Every single move was an
+accounting correction, not a strategy change:**
+
+* **12.55M** — retired because costs were understated.
+* **15,410,801** (re-pin #24) — retired because the tape's *market* was fictional: pools of
+  0.12–0.47 SOL against a 0.1 SOL minimum clip, so our own order was 21–83% of the entire pool and
+  was charged nothing for it. Real reserves start at 30 SOL; own-curve impact is now charged on both
+  legs. Honest accounting roughly **halved** the book.
+* **8,124,568 → 16,778,896** (re-pin #26) — round-trip cost was computed independently in **three**
+  places and the engine used one to *decide* and another to *book*. `cost_model.rs` is now the single
+  authority, the phantom 200 bps "bid/ask spread" (an AMM has no spread) is gone, and **Associated
+  Token Account rent — 203 bps on a floor clip, previously absent from the entire workspace — is
+  priced and reclaimed.** Deleting costs that were never real roughly **doubled** it.
+* **16,778,896 → 31,111,528** (re-pin #27) — depth and expected move became types carrying their own
+  provenance. `virtual_sol` sets the price curve; `real_sol` is the only SOL a seller can be paid and
+  equals `virtual_sol − 30 SOL`, an identity that reproduces pump.fun's published 85.005 SOL
+  graduation raise. Fixtures had declared payout depth up to **30× above what their pools could
+  pay**. **This move is a fixture artifact, not economics** — it is the confirmed-set eviction key
+  reordering which markets get traded; both provenance fixes measured decision-inert.
+
+**Do not read a rising number as progress.** Twice it roughly doubled because costs that did not
+exist were removed. `docs/NET_SOL_AUDIT_2026-07-28.md`,
+`docs/DEPTH_AND_MOVE_PROVENANCE_PLAN_2026-07-28.md` and `docs/SILO_AUDIT_2026-07-28.md` are the record.
+
+**The real cost floor you are trading against**, in the operator's $9k–$20k target band: roughly
+**292–302 bps round trip** on a 0.1 SOL clip — 250 bps of venue fee (1.25% per trade, and **no
+pre-graduation band can reduce it**; the first fee tier break sits 9 SOL of market cap *above*
+graduation), ~21 bps of fail-inflated fixed cost at 150,000 lamports a leg, ~22–32 bps of own-curve
+impact, and one ~5,000-lamport close signature for the ATA deposit **provided you reclaim it** — if
+you do not, add 203 bps and the cost-minimising clip jumps 3.3×.
+
+---
+
+## 0b. STATE OF THE REPOSITORY AT HANDOFF — read this before you plan anything
+
+Written 2026-07-28, at re-pin #27. This exists so you do not spend your first hours rediscovering it.
+
+### What is DISARMED, and why that is deliberate
+
+**Fifteen laws ship OFF. None of them is off because it was forgotten.** Each is built, wired,
+tested two-sided, and left disarmed because it failed at least one leg of the Amendment A-11
+pre-registered rule on a pre-existing corpus, or because the measurement that would arm it does not
+exist yet. `curve_exact_fill_enable`, `mcap_band_enable`, `expected_move_model_enable`,
+`into_strength_exit_enable`, `vol_stop_enable`, `entry_mode_leaves_enable`,
+`money_proxy_holder_flow_enable`, `holder_concentration_enable`, `narrative_class_enable`,
+`platform_lead_enable`, `deployer_screen_enable`, `fee_floor_enable`, `probe_budget_enable`,
+`brain_persist_enable`, `brain_reflect_enable`. Plus `thesis_persist_obs = 1`.
+
+**Do not arm any of them to improve a number.** Under §68 / criterion 111 you may PROPOSE; the
+operator decides. Each has a study in `docs/` naming the exact measurement that would justify it —
+and in almost every case that measurement requires live or replay chain data, which is precisely
+what you are being stood up to collect.
+
+### The one genuinely open operator decision: LAW B7
+
+At re-pin #27 LAW B7's **materiality leg started passing for the first time** — a happy-path gain of
+110,922,388 against a 100,000,000 bite, up from 26,697,249 at re-pin #24. It still fails on two
+counts: the asymmetry leg reads **1.60× against a 3× bar**, and the permutation sweep returns a
+single winner `{B3}`, which is the shipped default.
+
+**It was left OFF and the decision was escalated rather than taken.** If you find yourself reasoning
+toward arming it, that is the expected pull — and it is exactly the decision that is not yours.
+
+### Three "law verdicts" that turned out to be one fixture defect — do not re-derive them
+
+Re-pin #26 produced three results that all looked like new evidence and were all readouts of
+fixtures declaring payout depth their pools could not pay:
+
+1. LAW B7's asymmetry leg spiking to 5.78× (it is 1.27× → 5.78× → **1.60×** across #24/#26/#27).
+2. B7 appearing as a second permutation winner (gone at #27; back to a single winner).
+3. The `k = 5` sign flip (the harm never moved — it is **invariant at 11,469,573** across #26 and
+   #27 while the baseline doubled around it).
+
+If you re-run any of these and get an exciting answer, **check the fixture's depth before you
+believe it.** That is Amendment A-13, and it was written because this exact trap has now been
+sprung three times.
+
+### What the audits already settled, so you do not re-open them
+
+* **The hot path is not where the SOL is.** 57-rule hot-path lint, two allocation-elimination passes,
+  zero-allocation steady-state `evaluate()`. Optimising compute further is the wrong target —
+  `docs/NET_SOL_AUDIT_2026-07-28.md`.
+* **Cost has ONE authority** (`cost_model.rs`) and so do depth and expected move (`curve_depth.rs`,
+  `priced_move.rs`). If you find a fourth place computing round-trip cost, that is a defect, not a
+  design — `docs/SILO_AUDIT_2026-07-28.md`. `scalp::scalp()` is dead code carrying retired
+  arithmetic and is flagged for deletion; do not wire it.
+* **Sizing is closed in both directions.** The 0.1 SOL operator floor is within ~14 bps of the
+  cost-minimising clip for the target band. Going smaller is forbidden and going larger is punished
+  by own-impact — `docs/BAND_THESIS_2026-07-28.md`.
+* **No pre-graduation band can reduce the venue fee.** The first tier break sits 9 SOL of market cap
+  *above* graduation, so every point on every bonding curve pays 1.25% per trade.
+
+### The four things that would actually move net SOL, in order
+
+None of them is a parameter. All four need the data you are about to start collecting.
+
+1. **Replace the constant `gate_expected_move_bps` with a calibrated per-candidate estimate.**
+   `expected_move.rs` is built, empty, and refuses until a corpus fills it. External evidence says
+   the information exists: a survival analysis of 832,941 launches reports Cox concordance **0.858**
+   from pre-trade observables, with social presence carrying an 8.94× graduation lift.
+2. **Reclaim the ATA deposit on every exit.** 2,039,280 lamports a token, refundable for one
+   ~5,000-lamport signature — a 408:1 return that is pure operational discipline, not alpha.
+3. **Measure the flow-flip base rate** — of positions whose OFI first turns net-sell, what fraction
+   make a new high before reversing? Unknown to us *and* to the published literature. It is the
+   single most valuable number the laptop could not get.
+4. **Measure landing latency.** We would fill at slot `t+Δ`, not `t`, and Δ is modelled as **zero**
+   everywhere. On a hot launch this is plausibly the largest unpriced cost in the system.
+
+### Your first real deliverable
+
+Not a tuned parameter. A **replay corpus with the complete launch universe** — not survivors —
+against which the golden tape's verdicts can be re-taken on data that can actually distinguish a
+good token from a bad one. `tools/backtest/pump_replay_build.py` exists and REFUSES without a
+universe manifest; that refusal is a feature. `docs/BACKTEST.md` is the method.
 
 ---
 
@@ -66,7 +173,7 @@ Your first action is the §65 M0/M1 audit built from **actual inspection you rea
 — never claim to have inspected a file, config, provider dashboard, Windows topology, or
 runtime state you did not. Cover, at minimum: the code-path authority audit; the current
 Rust runtime + determinism map (confirm `cargo test --workspace` green, golden digest =
-`6163272398497391826`, `scripts/regression_e2e.py` green, 191 dossiers intact); the Windows
+`13693021370354439552`, `scripts/regression_e2e.py` green, 191 dossiers intact); the Windows
 host / CPU / NUMA / storage / network audit; the protocol-registry and decoder-coverage
 audit; the Helius/LaserStream entitlement verification; and the exact immediate autonomous
 actions with what evidence would change direction. Mark every server-only item you have not
@@ -302,7 +409,7 @@ server measurement before the affected path may arm. Activate in this order:
    `fnv1a_64(format!("{cfg:?}"))`, i.e. the FULL config identity, so **adding any `Config`
    field moves the digest with zero decision change.** Phase-B will add config fields (signer,
    submission, OsTune, secrets wiring), so this WILL fire. The test is the DECISION PLANE, not
-   the digest: verify `net = 16,778,896`, `promoted/admitted/rejected = 504/12/447`,
+   the digest: verify `net = 31,111,528`, `promoted/admitted/rejected = 504/11/448`,
    `universe_filtered = 72`, `AlphaCall net = −2,721,835`, plus per-lane net and final weights.
    If every one of those is byte-identical and only the digest moved, it is a **SEED-ONLY
    re-pin** — legitimate, and done 8+ times already (#5, #7, #8, #9, #16, #17, #21, #22).
@@ -661,7 +768,7 @@ retro-remap v0-stamped assignments.
 it binds you exactly as it binds the authoring surface. In short: **no thesis of yours changes a
 shipped default until you have written the study artifact for it** — mandate, the rule pre-registered
 BEFORE you measure, method, a per-tape/per-corpus numeric table, a leg-by-leg verdict, what changed,
-and the green-gate list — committed to `docs/` and registered under its §51 ExperimentId. Note A-11(4)'s materiality-basis clause, which is load-bearing here: the gain bar is judged ABSOLUTELY on corpora whose book is large relative to one 0.1-SOL bite and RELATIVELY where it is not, **with the book size and your choice of basis stated explicitly** — the golden tape's ENTIRE book (16,778,896) is smaller than one bite (100,000,000), so silently applying an absolute bar there is the reporting defect A-11 names. Every
+and the green-gate list — committed to `docs/` and registered under its §51 ExperimentId. Note A-11(4)'s materiality-basis clause, which is load-bearing here: the gain bar is judged ABSOLUTELY on corpora whose book is large relative to one 0.1-SOL bite and RELATIVELY where it is not, **with the book size and your choice of basis stated explicitly** — the golden tape's ENTIRE book (31,111,528) is smaller than one bite (100,000,000), so silently applying an absolute bar there is the reporting defect A-11 names. Every
 protective law needs a HAPPY path and a MIRROR that is byte-identical up to the moment of decision.
 Laws ship **DISARMED** until they earn it. **Honest negatives are published, not buried** — a study
 concluding "no change" is a completed deliverable and you will be judged as having done the work.
@@ -688,13 +795,20 @@ adverse observations in EVENT time before that exit fires; any non-adverse obser
 (Lillo–Mike–Farmer, `γ = α − 1`) shows trade signs are long-memory because metaorder lengths are
 Pareto-distributed, so a SINGLE flip is near-uninformative; Kaminski & Lo (*J. Financial Markets*
 18:234–254) show a stop's premium is negative unless its trigger predicts PERSISTENT adverse drift.
-**RESTATED AT RE-PIN #26 (2026-07-28) — the verdict held and the reasoning got stronger, so read
-this version and not the one it replaces.** Earlier drafts said `k = 5` "turns the golden book
-negative (8,124,568 → −3,223,175)". Under the unified cost model that reads
-**16,778,896 → +5,309,323**, which looks like a reversal and is not one. **The harm never moved — it
-GREW**, 11,347,743 → 11,469,573 lamports forfeited. The sign flipped only because honest costs
-roughly doubled the baseline, so a constant harm that used to erase 140% of the book now erases 68%
-of a bigger one. Anyone quoting the sign rather than the magnitude will draw the wrong conclusion.
+**RESTATED AT RE-PIN #27 (2026-07-28) — the verdict held twice over, so read this version and not
+the ones it replaces.** Earlier drafts said `k = 5` "turns the golden book negative
+(8,124,568 → −3,223,175)". It now reads **31,111,528 → +19,641,955**, which looks like a reversal
+and is not one.
+
+**THE HARM IS INVARIANT TO THE LAMPORT ACROSS THREE RE-PINS, AND THAT IS THE WHOLE POINT.**
+11,347,743 (#24) → **11,469,573** (#26) → **11,469,573** (#27) — unchanged through a cost-model
+unification *and* a fixture eviction reordering, while the baseline moved 8.1M → 16.8M → 31.1M
+around it. A quantity that survives two independent re-pins of everything surrounding it is
+measuring the **lever**, not the tape.
+
+**Read the magnitude, never the fraction.** The fraction has drifted 140% → 68% → 37% purely because
+the denominator grew. Anyone quoting it will conclude the lever is getting safer. It is not; it costs
+exactly what it always cost.
 
 And at realistic depth a third leg fails that previously did not: **`k = 5` now loses on its OWN
 purpose-built tape** (happy side 104,607,333 → −52,846,461), because once positions are sized against

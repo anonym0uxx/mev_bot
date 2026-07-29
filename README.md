@@ -210,10 +210,10 @@ golden determinism tape. Every law is A/B-attributed: it must strictly out-earn 
 law, strictly avoid loss beyond) its own absence on a tape containing exactly its hazard.
 
 **Three honesty corrections are baked into the current pin, and the number they produced must be read
-the way it is meant.** The current golden reference is **net 16,778,896 lamports**, digest
-`6163272398497391826`, promoted/admitted/rejected/universe-filtered **504 / 12 / 447 / 72**
-(re-pin #26, 2026-07-28). It got there by *removing* two costs that were never real and *adding* one
-that is:
+the way it is meant.** The current golden reference is **net 31,111,528 lamports**, digest
+`13693021370354439552`, promoted/admitted/rejected/universe-filtered **504 / 11 / 448 / 72**
+(re-pin #27, 2026-07-28). It got there through **four** accounting corrections, none of which is a
+strategy change:
 
 1. **Cost realism (re-pin #23).** The §24 reversal makes cost-derived profit targets the live default
    and forbids fixed global TP constants; honoring it exposed a tape modelling ~1.5% round-trip cost.
@@ -225,13 +225,20 @@ that is:
    and the engine used one to *decide* and another to *book*. `crates/pump-quant-app/src/cost_model.rs`
    is now the single authority for both, and Associated Token Account rent — 203 bps on a floor clip,
    previously absent from the entire workspace — is priced and reclaimed.
+4. **Provenance types (re-pin #27).** Depth and expected move became types that carry their own
+   source. `virtual_sol` sets the price curve; `real_sol` is the only SOL a seller can actually be
+   paid, and equals `virtual_sol − 30 SOL` — an identity that reproduces pump.fun's published
+   85.005 SOL graduation raise. Fixtures had been declaring payout depth up to **30× above what their
+   pools could pay**, and a curve nobody has bought into was claiming 29 SOL of sellable depth.
 
-**The book roughly doubled at re-pin #26 and that is not an improvement.** It is the same trades with
-honest arithmetic. It remains 12 trades in four distinct markets, statistically indistinguishable from
-zero (|t| ≈ 0.19), with ~60% of the swing attributable to end-of-tape force closure. It is a
-**regression fixture, not evidence of edge** — see `docs/EDGE_PROVENANCE_2026-07-27.md`. The earlier
-headline arc (2.98M → … → 12.55M → 15,410,801) reflected understated costs and is never cited as live
-edge. The runner
+**The book has roughly doubled twice, and neither time is an improvement.** Same trades, honest
+arithmetic. **Actual net SOL from trading is zero — this system has never traded.** The pin is a
+synthetic regression fixture worth about **0.031 SOL (~$2.36)** across **11 trades in a handful of
+markets**, statistically indistinguishable from zero (|t| ≈ 0.19), with a large share of the swing
+attributable to end-of-tape force closure and to which markets survive a capacity bound. It is a
+**regression fixture, not evidence of edge** — see `docs/EDGE_PROVENANCE_2026-07-27.md`. The full
+headline arc (2.98M → … → 12.55M → 15,410,801 → 8,124,568 → 16,778,896 → 31,111,528) is a record of
+accounting corrections and is never cited as live edge. The runner
 exports a trade JSONL and a config-identity ledger on request (`--trade-jsonl`, `--config-ledger`);
 both are secondary records, never authoritative over the journal digest or chain truth.
 
