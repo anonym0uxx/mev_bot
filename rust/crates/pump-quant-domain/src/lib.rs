@@ -27,6 +27,15 @@
 //!
 //! Everything the tests touch is `pub` by contract.
 
+// SAFETY POLICY (added 2026-07-29): this crate is the shared money and identity types,
+// and it contained zero `unsafe` when this was added. `forbid` makes that a
+// property the compiler holds rather than one a reviewer has to re-verify —
+// and unlike `deny` it cannot be locally overridden by an `#[allow]`.
+// Constitution §24(b): an `unsafe` block requires a dossier-registered,
+// property-tested safety argument. There is no such dossier entry for this
+// crate, so there is no `unsafe` this attribute could legitimately block.
+#![forbid(unsafe_code)]
+
 #![deny(missing_docs)]
 
 pub mod evidence;

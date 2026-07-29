@@ -15,8 +15,12 @@ task #1.
 
 ## §1 CPU affinity / NUMA / NIC / IRQ / Windows tuning (OsTune)
 
+- **BUILD SPEC: [`docs/OSTUNE_BUILD_SPEC.md`](OSTUNE_BUILD_SPEC.md) — read it before writing a
+  line of adapter.** It corrects five load-bearing claims this section used to make, gives the
+  Win32 mapping method by method, and names the acceptance test that actually binds.
 - **Phase-A interface:** `pump-quant-core::cpu_numa_tuning` — topology model, pin plan,
-  jitter probe, and the `OsTune` trait with a no-op/recording impl; plus
+  jitter aggregation, the `OsTune` trait, `RecordingOs` (the no-op recorder; **added 2026-07-29 —
+  this bullet claimed one existed for months and none did**), and `ostune_conformance`; plus
   `pump-quant-core::lockfree` and `pump-quant-core::latency` for the structures the plan
   protects.
 - **Required production adapter:** real `impl OsTune` on the deploy OS (Windows:
@@ -27,9 +31,18 @@ task #1.
 - **Server measurement required:** jitter probe before/after pinning; per-CCD cache
   residency of the hot decision thread; IRQ distribution under ingest load.
 - **Integration point:** app startup applies the pin plan from `cpu_numa_tuning` before
-  the `evaluate()` loop starts.
-- **Acceptance test:** jitter-probe deltas recorded in the evidence store; the golden
-  digest (`tests/golden_digest.rs`) unchanged — tuning must be behaviour-preserving.
+  the `evaluate()` loop starts. **THIS CALL SITE DOES NOT EXIST YET** — `apply_plan`,
+  `derive_plan`, `parse_topology` and `jitter_stats` have zero callers outside their own tests.
+  Wiring it is your work, not something you are inheriting. See OSTUNE_BUILD_SPEC §5, including
+  why the pin plan should NOT become a `Config` field.
+- **Acceptance test:** `ostune_conformance` run against the **real adapter on the deploy box**,
+  with `ConformanceReport::conformant() == true` and the report journaled — **no tuned latency
+  number may be claimed otherwise.** Plus jitter-probe deltas in the evidence store, and the
+  golden digest (`tests/golden_digest.rs`) unchanged — tuning must be behaviour-preserving.
+  **Note:** the older acceptance criterion pointed at `dossier_cpu_numa_tuning_cn_os_apply`,
+  which exercises `MockOs` and is green today with no adapter written. `RecordingOs` and
+  `MockOs::faithful()` are both pinned as deliberately NON-conformant so neither can be wired
+  into an acceptance run and misread as a pass.
 - **Failure behaviour (fail-closed):** if any OsTune call fails, the bot runs unpinned
   and records the failure; it never claims tuned latency numbers.
 - **Enablement condition:** deploy box provisioned + real `OsTune` impl merged + jitter

@@ -20,6 +20,21 @@ use crate::json::{self, JsonValue};
 /// pump.fun program id (bonding-curve program).
 pub const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 
+/// The runtime log line that proves a transaction actually entered the pump.fun
+/// program, precomputed as a `const` rather than `format!`ed per call.
+///
+/// This was `format!("Program {PUMP_PROGRAM_ID} invoke")` built once per parsed
+/// transaction — a heap allocation on the per-transaction decode path, and the only
+/// production `hot_alloc_fmt` violation in this crate when it was brought into the
+/// enforced hot scope (`rust/lint_rules.yaml`). `concat!` requires literals, so the
+/// program id is spelled out here and `prefix_matches_program_id` asserts the two
+/// spellings can never diverge.
+const PUMP_INVOKE_PREFIX: &str = concat!(
+    "Program ",
+    "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+    " invoke"
+);
+
 /// Raydium AMM v4 invoke marker — primary (pre-March-2025) graduation signal.
 pub const GRADUATION_LOG_MARKER: &[u8] =
     b"Program 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8 invoke";
@@ -93,11 +108,10 @@ pub fn parse_helius(payload: &[u8]) -> Option<CanonicalTx> {
     // ── Normal pump.fun trade: require a pump.fun invoke line ──
     let mut is_pump_trade = false;
     let mut direction = TradeDirection::Buy; // legacy default assumption
-    let invoke_prefix = format!("Program {PUMP_PROGRAM_ID} invoke");
 
     for entry in logs {
         if let Some(s) = entry.as_str() {
-            if s.starts_with(&invoke_prefix) {
+            if s.starts_with(PUMP_INVOKE_PREFIX) {
                 is_pump_trade = true;
             }
             if s.contains("Instruction: Buy") {
@@ -144,4 +158,22 @@ fn logs_contain_graduation_marker(logs: &[JsonValue]) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod prefix_tests {
+    use super::*;
+
+    /// The `concat!`-built prefix duplicates the program id as a literal because
+    /// `concat!` cannot take a `const`. This proves the duplication can never drift:
+    /// if `PUMP_PROGRAM_ID` is ever corrected, this fails until the literal is too.
+    #[test]
+    fn prefix_matches_program_id() {
+        assert_eq!(
+            PUMP_INVOKE_PREFIX,
+            format!("Program {PUMP_PROGRAM_ID} invoke"),
+            "the const invoke prefix and PUMP_PROGRAM_ID have diverged — the prefix \
+             spells the id out as a literal because concat! requires literals"
+        );
+    }
 }

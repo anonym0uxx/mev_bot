@@ -344,7 +344,16 @@ Everything provable off a live wire is built and tested here (Phase-A, laptop). 
 deployment box is intentionally absent (Phase-B, server), each left as a trait seam with a locked acceptance
 test: the real `OsTune` Windows binding, the `MemorySampler`, Helius LaserStream live ingest, PGO /
 deploy-CPU pinning, live-chain reconciliation, and key signing / fund movement. The server task for each is
-"implement this trait and satisfy this named locked test," not "design from scratch." The actionable
+"implement this trait and satisfy this named locked test," not "design from scratch."
+
+**One correction to that sentence, because it mattered (2026-07-29).** For `OsTune` the named locked
+test was `dossier_cpu_numa_tuning_cn_os_apply`, which exercises `MockOs` — **it is green right now
+with zero Windows code written**, so it locked nothing about the adapter. The test that actually
+binds is `ostune_conformance` (`pump-quant-core`, 10 tests), which exercises all four trait methods
+including the two `apply_plan` never calls, and carries an anti-stub probe that an echoing
+implementation cannot pass. Read [`docs/OSTUNE_BUILD_SPEC.md`](docs/OSTUNE_BUILD_SPEC.md) before
+building it. Where a trait seam's locked test only exercises a mock, treat the seam as specified but
+**not** acceptance-gated until you have written the test that fails for the right reason. The actionable
 checklist is [`docs/SERVER_BUILD_MANIFEST.md`](docs/SERVER_BUILD_MANIFEST.md).
 
 ---

@@ -19,6 +19,24 @@ exists to replace self-knowledge with mechanism.
 
 ## 1. Preflight — run this first, paste the output, stop on any mismatch
 
+**Run it as a script, not as a table:**
+
+```
+python scripts/preflight.py           # ENVIRONMENT: is this box able to build at all?
+python scripts/phase_b_preflight.py   # TREE: is this checkout the one the docs describe?
+```
+
+Both. They check different things and neither substitutes for the other — the first
+is per-machine and one-off, the second is per-work-item. `phase_b_preflight.py` runs
+every row below, prints a verdict each, and exits non-zero if any blocking row failed.
+**Paste its output verbatim; do not summarise it.** A table has to be read, obeyed and
+honestly reported on, which is three places to drift; the most likely drift is not
+skipping a row but running it, seeing red, and reasoning that the red is unrelated.
+
+The rows, for reference — and note `phase_b_preflight.py` re-derives the decision
+vector **from `baselines.rs` at runtime**, so it can never carry a stale copy the way
+this table can:
+
 Do not begin any Phase-B work item until every row passes. Do not proceed on a remembered pass.
 
 | # | Command | Expected | On mismatch |
@@ -31,6 +49,7 @@ Do not begin any Phase-B work item until every row passes. Do not proceed on a r
 | 6 | `cargo test -p pq-regression` | all pass | STOP |
 | 7 | `cargo test -p pq-regression --test hermes_doc_pins` | 6 pass | STOP — the docs you are about to follow disagree with the code |
 | 8 | `python scripts/regression_e2e.py` | exit 0 | STOP |
+| 8a | `cargo test -p pump-quant-core --test ostune_conformance` | 10 pass | STOP — the OsTune acceptance battery is broken |
 | 9 | `python scripts/ci_gate.py --repo . --config supervisor/config/supervisor.yaml` | exit 0 | STOP |
 | 10 | `cmp docs/HERMES_ONE_SHOT_PROMPT.md CONSTITUTION.md` | identical, or `CONSTITUTION.md` absent | if it exists and differs, the untracked local mirror is stale — **`cp docs/HERMES_ONE_SHOT_PROMPT.md CONSTITUTION.md`** and never read the mirror as authority |
 
@@ -104,7 +123,7 @@ the damage:
 | 2 — credential provisioning, private-repo visibility confirmed first | JUDGMENT (the CI secrets check is WARN-only by design — Amendment A-12) |
 | 3 — stream lanes: LaserStream, Enhanced WS, PumpPortal, RPC failover, webhooks, Discord | MECHANICAL for wiring credentials into pre-built, pre-tested adapters; JUDGMENT for "preserve raw before interpretation" and "distinguish provider-replay from live", which no test asserts on a live socket |
 | 4 — soak acceptance evidence | JUDGMENT — "zero *unexplained* gaps" has no definition of *explained*; failover parity (digest equality) is the one mechanical sub-item |
-| 5 — OsTune + the seed-only-re-pin judgment | **JUDGMENT, highest risk in Phase B.** The Linux-ism ban *is* lint-enforced globally (`supervisor/gates/hotpath_lint.py`), but the re-pin decision is prose |
+| 5 — OsTune + the seed-only-re-pin judgment | **RESEARCH** (was JUDGMENT). Now specified end-to-end in `docs/OSTUNE_BUILD_SPEC.md` with `ostune_conformance` as a real acceptance test, so the *adapter* is mechanically checkable — but §4.0's `unsafe`-versus-§24(b) contradiction and the `Config`/digest decision are STOP AND ASK, and the Linux-ism ban is lint-enforced globally |
 | 6 — fee sampler → versioned calibration | MECHANICAL |
 | 7 — pre-trade `simulateTransaction` on the real sell route | **RESEARCH** — depends on an unverified account layout |
 | 8 — sender submission client under the signing boundary | **RESEARCH** — where a confident wrong answer costs real SOL |

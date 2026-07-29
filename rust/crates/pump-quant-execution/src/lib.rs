@@ -35,6 +35,15 @@
 //!   (model output must pass sell-simulation + signing before reaching chain;
 //!   the deterministic exit path is proven model-independent).
 
+// SAFETY POLICY (added 2026-07-29): this crate is the code that builds, sizes, routes and reconciles what is submitted to chain,
+// and it contained zero `unsafe` when this was added. `forbid` makes that a
+// property the compiler holds rather than one a reviewer has to re-verify —
+// and unlike `deny` it cannot be locally overridden by an `#[allow]`.
+// Constitution §24(b): an `unsafe` block requires a dossier-registered,
+// property-tested safety argument. There is no such dossier entry for this
+// crate, so there is no `unsafe` this attribute could legitimately block.
+#![forbid(unsafe_code)]
+
 pub mod ex_blockhash_cache;
 pub mod ex_builder_quarantine;
 pub mod ex_bundle_assemble;

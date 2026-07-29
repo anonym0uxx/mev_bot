@@ -36,7 +36,11 @@ end to end, without waiting for me to approve each step.**
    flow-persistence action item (§6b-3), and your stop-and-ask conditions (§7).
 
 Read `docs/SERVER_BUILD_MANIFEST.md` as you work its §1–§12 spine. Two documents are **not** read on
-demand and must be read before the work they govern: `docs/HELIUS_BUDGET_2026-07-29.md` before you
+demand and must be read before the work they govern: `docs/OSTUNE_BUILD_SPEC.md` before you write a
+line of the Windows OsTune adapter (it corrects five load-bearing false claims in the older
+documents, resolves an `unsafe`-versus-§24(b) contradiction you must STOP AND ASK about, and names
+`ostune_conformance` as the test that actually binds — the previously-named locked test exercises a
+mock and is green with zero Windows code written); `docs/HELIUS_BUDGET_2026-07-29.md` before you
 arm the LaserStream gRPC lane (the subscription as written is a program-wide firehose with no cost
 monitor; the §72 arm-gate `may_arm` exists and has no caller; and its §5 sets the standing source
 allocation — free PumpPortal owns discovery, graduations and screening flow, paid LaserStream is

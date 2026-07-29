@@ -35,6 +35,15 @@
 //!   launch-metadata evidence, and `Unclassified` whenever that evidence is
 //!   absent (§6.4 — under-claiming beats fabricating).
 
+// SAFETY POLICY (added 2026-07-29): this crate is narrative scoring feeding admission,
+// and it contained zero `unsafe` when this was added. `forbid` makes that a
+// property the compiler holds rather than one a reviewer has to re-verify —
+// and unlike `deny` it cannot be locally overridden by an `#[allow]`.
+// Constitution §24(b): an `unsafe` block requires a dossier-registered,
+// property-tested safety argument. There is no such dossier entry for this
+// crate, so there is no `unsafe` this attribute could legitimately block.
+#![forbid(unsafe_code)]
+
 pub mod attention_decay;
 pub mod attention_state;
 pub mod catalyst_classifier;

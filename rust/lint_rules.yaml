@@ -37,6 +37,30 @@ hot_globs:
   - "rust/crates/pump-quant-app/src/attention.rs"
   - "rust/crates/pump-quant-app/src/position.rs"
   - "rust/crates/pump-quant-app/src/structure.rs"
+  # --- Phase-B crates (added 2026-07-29, before the Phase-B build starts) ---
+  # These three were in NEITHER scope. Each crate root ASSERTS §22 in prose —
+  # execution: "every value that affects an on-chain decision is integer /
+  # fixed-point"; ingest: "no floating point in any outcome-controlling path";
+  # journal: "there is no f32/f64 anywhere in this crate" — and all three claims
+  # were true only because nobody had broken them yet. The code that computes what
+  # to send to chain was outside the float ban, outside the panic ban, and outside
+  # the syscall-clock ban, which is the wrong place to leave unenforced when the
+  # next hands on it may be a weaker model's.
+  #
+  # Bringing them in cost exactly one production fix: helius_parse.rs built its
+  # pump.fun invoke prefix with `format!` once per parsed transaction; it is now a
+  # `const` (a real allocation removed from the per-transaction decode path), with
+  # `prefix_matches_program_id` proving the literal cannot drift from the const id.
+  #
+  # NOTE for a Phase-B builder: `pump-quant-ingest` is a boundary/parsing crate and
+  # `hot_float` bans the f32/f64 TOKEN outright. If a sanctioned boundary
+  # quantization is ever genuinely needed there, the answer is an inline
+  # `LINT-ALLOW(hot_float): reason` (the convention `pump-quant-core/src/reducer.rs`
+  # already establishes) — counted and reported, never silent. It is NOT to widen
+  # this file.
+  - "rust/crates/pump-quant-execution/src/**/*.rs"
+  - "rust/crates/pump-quant-ingest/src/**/*.rs"
+  - "rust/crates/pump-quant-journal/src/**/*.rs"
 
 # MONEY — every crate that computes or carries money / outcome quantities, where
 # an `as f32`/`as f64` cast is a §22 integrity violation.
@@ -52,6 +76,12 @@ money_globs:
   - "rust/crates/pump-quant-wallet-graph/src/**/*.rs"
   - "rust/crates/pump-quant-watchlist/src/**/*.rs"
   - "rust/crates/pump-quant-memory/src/**/*.rs"
+  # --- Phase-B crates (added 2026-07-29) — see the note in `hot_globs`. ---
+  # `pump-quant-execution` in particular sizes and prices what is submitted to
+  # chain; an `as f64` there is a §22 integrity violation of the most direct kind.
+  - "rust/crates/pump-quant-execution/src/**/*.rs"
+  - "rust/crates/pump-quant-ingest/src/**/*.rs"
+  - "rust/crates/pump-quant-journal/src/**/*.rs"
 
 # Optional additional data-defined rules (same schema as the built-ins). None yet.
 rules: []
