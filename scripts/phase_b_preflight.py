@@ -89,6 +89,42 @@ def tail(s: str, n: int = 12) -> str:
     return "\n      ".join(lines[-n:]) if lines else "(no output)"
 
 
+def _fmt_per_crate(rust: Path) -> tuple[int, str]:
+    """Per-crate fmt --check fallback for Windows (OS error 206 on --all).
+
+    Enumerates workspace members from Cargo.toml, runs `cargo fmt -p <crate>
+    --check` on each, and returns a combined rc + output. Any single crate
+    failing fmt makes the whole row fail.
+    """
+    import re
+
+    manifest = (rust / "Cargo.toml").read_text(encoding="utf-8")
+    members: list[str] = []
+    # Parse workspace.members — supports "path/*" glob patterns.
+    m = re.search(r"members\s*=\s*\[(.*?)\]", manifest, re.DOTALL)
+    if m:
+        raw = m.group(1)
+        for item in re.findall(r'"([^"]+)"', raw):
+            if "*" in item:
+                base = rust / item.replace("/*", "")
+                if base.is_dir():
+                    for sub in base.iterdir():
+                        if (sub / "Cargo.toml").is_file():
+                            name = sub.name
+                            members.append(name)
+            else:
+                members.append(item)
+
+    fails: list[str] = []
+    for crate in members:
+        rc, out = run(["cargo", "fmt", "-p", crate, "--check"], rust)
+        if rc != 0:
+            fails.append(f"{crate}: {tail(out, 3)}")
+    if fails:
+        return 1, "fmt failures:\n      " + "\n      ".join(fails)
+    return 0, f"all {len(members)} crates fmt-clean (per-crate check)"
+
+
 def read_pins(repo: Path) -> dict[str, int]:
     """Re-derive the decision vector FROM THE CODE, never from a copy in this file."""
     import re
@@ -238,6 +274,26 @@ def main() -> int:
             r.passed, r.detail = None, "SKIPPED (--fast)"
         else:
             rc, out = run(["cargo", *cargs], rust)
+            # Windows path-length workaround: `cargo fmt --all --check` fails
+            # with OS error 206 (ERROR_FILENAME_EXCED_RANGE) when workspace
+            # paths exceed MAX_PATH. Fall back to per-crate checks, which
+            # work because each crate path is shorter.
+            fmt_path_err = ("error 206" in out.lower()
+                            or "too long" in out.lower())
+            if rc != 0 and n == 6 and sys.platform == "win32" and fmt_path_err:
+                # Re-run fmt per-crate, collecting any real diffs.
+                rc2, out2 = run(
+                    ["cargo", "fmt", "--all", "--check", "--manifest-path",
+                     str(rust / "Cargo.toml")], rust
+                )
+                if rc2 != 0 and ("error 206" in out2.lower()
+                                 or "too long" in out2.lower()):
+                    # Per-crate fallback: enumerate workspace members and
+                    # check each individually.
+                    rc3, out3 = _fmt_per_crate(rust)
+                    rc, out = rc3, out3
+                else:
+                    rc, out = rc2, out2
             r.passed = rc == 0
             r.detail = tail(out, 6)
             r.remedy = "fix and re-run — do not proceed on a red row"

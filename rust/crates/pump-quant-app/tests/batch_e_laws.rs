@@ -198,7 +198,7 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -298,7 +298,7 @@ fn drive_squatter(cfg: Config) -> (Report, Engine) {
     eng.tick(AppEvent::OnchainConfirm {
         mint: k,
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     for block in 0..5u64 {
         for _ in 0..10 {

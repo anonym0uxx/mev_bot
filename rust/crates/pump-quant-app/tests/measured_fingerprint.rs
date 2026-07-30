@@ -349,7 +349,7 @@ fn the_measured_plane_is_decision_inert() {
             eng.tick(AppEvent::OnchainConfirm {
                 mint: m,
                 virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+                real_sol_lamports: REAL_CURVE_REAL_SOL,
             });
             if feed {
                 eng.observe_holder_count(m.as_bytes(), 50 + round * 25);

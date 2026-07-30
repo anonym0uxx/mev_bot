@@ -305,7 +305,7 @@ fn drive_alpha_admission(with_onchain: bool) -> (Report, Engine) {
             eng.tick(AppEvent::OnchainConfirm {
                 mint: m,
                 virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+                real_sol_lamports: REAL_CURVE_REAL_SOL,
             });
         }
         ticks(&mut eng, 3);
@@ -379,12 +379,12 @@ fn drive_two_rooms() -> (Report, Engine) {
     eng.tick(AppEvent::OnchainConfirm {
         mint: win,
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     eng.tick(AppEvent::OnchainConfirm {
         mint: lose,
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     discord_call(
         &mut eng,
@@ -526,7 +526,7 @@ fn seed_open_held(eng: &mut Engine, held: Mint) {
     eng.tick(AppEvent::OnchainConfirm {
         mint: held,
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     narrate(eng, held);
     ticks(eng, 2); // admit

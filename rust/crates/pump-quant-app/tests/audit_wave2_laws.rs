@@ -131,7 +131,7 @@ fn drive_held_dump(cfg: Config) -> (Report, Engine) {
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(M),
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -212,7 +212,7 @@ fn drive_preentry_dump(cfg: Config) -> (Report, Engine) {
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(M),
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -339,7 +339,7 @@ fn seed_open(eng: &mut Engine, disc_prices: &[i128]) {
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(M),
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     narrate(eng);
     ticks(eng, 2); // admit
@@ -609,12 +609,12 @@ fn drive_disc_attribution() -> Report {
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(MA),
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(MB),
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     // Keep both discovery signals fresh across the admit ticks.
     eng.tick(AppEvent::TokenMetadata {
@@ -734,12 +734,12 @@ fn drive_classifier(cfg: Config) -> (Report, Vec<u16>) {
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(MC1),
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(MC2),
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     ticks(&mut eng, 3);
     let r = eng.report();
@@ -1196,7 +1196,7 @@ fn drive_fee_floor(cfg: Config, feed_bundle: bool) -> (Report, Engine) {
     eng.tick(AppEvent::OnchainConfirm {
         mint: mint(MF),
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     ticks(&mut eng, 6);
     let r = eng.report();

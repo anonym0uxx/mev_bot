@@ -54,6 +54,7 @@ use crate::holder_concentration::{
 use pump_quant_brain::concentration::ConcentrationTrajectory as BrainTrajectory;
 
 use crate::holder_flow::{HolderCountBasis, HolderFlow, HolderReading};
+use crate::priced_move::PricedMove;
 use crate::social_earn::{SocialEarn, SocialEarnParams};
 use crate::social_ingest::{ledger_quality, to_mention, SourceQualityPolicy};
 use crate::social_plane::{
@@ -128,7 +129,6 @@ use pump_quant_wallet_graph::creator_ledger::CreatorTrack;
 use pump_quant_wallet_graph::deployer_credibility::{
     compute_deployer_credibility, DeployerCredibilityConfig, PriorLaunch, SocialReachInput,
 };
-use crate::priced_move::PricedMove;
 use pump_quant_watchlist::candidate::{Candidate, DiscoveryLane, Features, Lane as WlLane};
 use pump_quant_watchlist::lane_ingest::ingest_union;
 use pump_quant_watchlist::lane_performance::{DiscoveryLanePerformance, LanePerformance};
@@ -1734,11 +1734,7 @@ impl Engine {
                 mint,
                 virtual_sol_lamports,
                 real_sol_lamports,
-            } => self.confirm(
-                *mint.as_bytes(),
-                virtual_sol_lamports,
-                real_sol_lamports,
-            ),
+            } => self.confirm(*mint.as_bytes(), virtual_sol_lamports, real_sol_lamports),
             AppEvent::TokenMetadata {
                 mint,
                 category_id,
@@ -2627,7 +2623,11 @@ impl Engine {
     /// present evidence — the estimator's own `MoveEstimate` and the lane's realized
     /// `(Σ bps, n)`. There is no longer a standalone `i128` for a second call site to
     /// reach for and diverge on.
-    fn priced_move(&self, lane: WlLane, model: Option<&crate::expected_move::MoveEstimate>) -> PricedMove {
+    fn priced_move(
+        &self,
+        lane: WlLane,
+        model: Option<&crate::expected_move::MoveEstimate>,
+    ) -> PricedMove {
         let (sum_bps, n) = self.lane_edge[lane.index()];
         PricedMove::for_candidate(
             model,
@@ -3269,8 +3269,7 @@ impl Engine {
                     x_cost: band.x_cost,
                     x_max: band.x_max,
                     priced_move,
-                    depth_basis: confirmation
-                        .map_or(0, |c| c.depth.basis_code()),
+                    depth_basis: confirmation.map_or(0, |c| c.depth.basis_code()),
                     brain: brain_entry,
                 })
             }

@@ -167,7 +167,7 @@ fn bullish_sentiment_cannot_authorize_entry() {
             pump_quant_ingest::base58::decode_pubkey(MINT_B58).unwrap(),
         ),
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     for _ in 0..6 {
         eng.tick(AppEvent::Tick);

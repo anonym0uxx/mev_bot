@@ -74,7 +74,7 @@ fn scenario() -> Vec<AppEvent> {
     ev.push(AppEvent::OnchainConfirm {
         mint: a,
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
 
     // Loud social call on B and narrative burst on C — corroboration only.
@@ -256,7 +256,7 @@ fn social_source_earns_quality_from_realized_outcomes() {
     eng.tick(AppEvent::OnchainConfirm {
         mint: mkt,
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     // One evaluation tick promotes + admits: the position OPENS here.
     eng.tick(AppEvent::Tick);
@@ -405,7 +405,7 @@ fn creator_distribution_fades_size_but_never_vetoes() {
         e.tick(AppEvent::OnchainConfirm {
             mint: m,
             virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+            real_sol_lamports: REAL_CURVE_REAL_SOL,
         });
         // Admit (position opens), then a pump past the principal-recovery target and
         // a flow rollover close the position AT A PROFIT — so realized net scales
@@ -557,7 +557,7 @@ fn numeric_lane_discovers_buy_flow_not_sell_flow() {
         e.tick(AppEvent::OnchainConfirm {
             mint: m,
             virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+            real_sol_lamports: REAL_CURVE_REAL_SOL,
         });
         for _ in 0..6 {
             e.tick(AppEvent::Tick);
@@ -599,7 +599,7 @@ fn admissible_stream(tag: u8) -> Vec<AppEvent> {
     ev.push(AppEvent::OnchainConfirm {
         mint: m,
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+        real_sol_lamports: REAL_CURVE_REAL_SOL,
     });
     ev.push(AppEvent::Tick);
     ev

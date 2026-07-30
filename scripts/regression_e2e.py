@@ -136,6 +136,11 @@ class Runner:
 
     # -- vendored config ----------------------------------------------------
     def ensure_vendored_config(self, suite_dir: Path) -> None:
+        # Only write a vendored config if the vendor tree actually exists;
+        # otherwise an online build (no --offline) needs the default crates.io
+        # source, and a stale vendored config pointing at a missing dir breaks it.
+        if not Path(self.vendor).is_dir():
+            return
         cfg = suite_dir / ".cargo" / "config.toml"
         if cfg.exists():
             return
@@ -169,7 +174,40 @@ class Runner:
             return
 
         # fmt --check (fast, no compile)
+        # On Windows, `cargo fmt --all --check` hits OS error 206
+        # (ERROR_FILENAME_EXCED_RANGE) when workspace paths exceed MAX_PATH.
+        # Fall back to per-crate checks, which work because each crate path
+        # is shorter.
         r = self._run(["cargo", "fmt", "--all", "--check"], cwd=rust, timeout=600)
+        if r.returncode != 0 and sys.platform == "win32" \
+                and ("error 206" in (r.stdout + r.stderr).lower()
+                     or "too long" in (r.stdout + r.stderr).lower()):
+            # Per-crate fallback
+            import re as _re
+            manifest = (rust / "Cargo.toml").read_text(encoding="utf-8")
+            members = []
+            m = _re.search(r"members\s*=\s*\[(.*?)\]", manifest, _re.DOTALL)
+            if m:
+                for item in _re.findall(r'"([^"]+)"', m.group(1)):
+                    if "*" in item:
+                        base = rust / item.replace("/*", "")
+                        if base.is_dir():
+                            for sub in base.iterdir():
+                                if (sub / "Cargo.toml").is_file():
+                                    members.append(sub.name)
+                    else:
+                        members.append(item)
+            fmt_fail = False
+            for crate in members:
+                rc = self._run(["cargo", "fmt", "-p", crate, "--check"],
+                              cwd=rust, timeout=120)
+                if rc.returncode != 0:
+                    fmt_fail = True
+                    break
+            r = subprocess.CompletedProcess(
+                ["cargo", "fmt", "--per-crate"], 0 if not fmt_fail else 1,
+                f"per-crate fmt check: {'clean' if not fmt_fail else 'DIFF'}",
+                "")
         self._add(Invariant("rust", "cargo fmt --check", "pass", "clean",
                             "clean" if r.returncode == 0 else "DIFF", r.returncode == 0,
                             "" if r.returncode == 0 else r.stdout[-400:]))
@@ -215,7 +253,10 @@ class Runner:
                                     False, "suite directory missing"))
                 continue
             self.ensure_vendored_config(suite_dir)
-            r = self._run(["cargo", "test", "--offline"], cwd=suite_dir, timeout=3600)
+            # Use --offline only when the vendor tree exists; otherwise let cargo
+            # fetch from crates.io (the lockfile must be resolvable online).
+            offline_args = ["--offline"] if Path(self.vendor).is_dir() else []
+            r = self._run(["cargo", "test", *offline_args], cwd=suite_dir, timeout=3600)
             if r.returncode != 0:
                 self._add(Invariant("capture", f"{suite} tests", ">=", floor, "FAILED",
                                     False, _tail(r)))

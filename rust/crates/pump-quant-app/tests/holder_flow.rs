@@ -692,7 +692,7 @@ fn holder_trajectory_is_reported_for_the_open_book() {
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_SELLABLE_DEPTH,
+        real_sol_lamports: REAL_SELLABLE_DEPTH,
     });
     let mut entity = 1u64;
     for round in 0..8u64 {
@@ -816,7 +816,7 @@ fn ab_drive(cfg: Config, side: Side) -> pump_quant_app::engine::Report {
         eng.tick(AppEvent::OnchainConfirm {
             mint: b58(a),
             virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_SELLABLE_DEPTH,
+            real_sol_lamports: REAL_SELLABLE_DEPTH,
         });
     }
 

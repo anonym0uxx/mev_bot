@@ -65,7 +65,7 @@ fn drive_positions(cfg: Config) -> Engine {
             eng.tick(AppEvent::OnchainConfirm {
                 mint: mint(m),
                 virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+                real_sol_lamports: REAL_CURVE_REAL_SOL,
             });
         }
         for _ in 0..40 {
@@ -193,7 +193,7 @@ fn drive_sub_xmin(probe_budget: bool) -> Engine {
         eng.tick(AppEvent::OnchainConfirm {
             mint: mint(m),
             virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_CURVE_REAL_SOL,
+            real_sol_lamports: REAL_CURVE_REAL_SOL,
         });
     }
     for _ in 0..30 {

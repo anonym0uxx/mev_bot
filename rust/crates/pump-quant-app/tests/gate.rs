@@ -177,7 +177,8 @@ fn the_price_reserve_can_no_longer_be_passed_off_as_capacity() {
     let mut cfg = Config::dev_portable();
     // A bankroll big enough that the sizing chain WANTS more than the pool holds, so
     // the cap is the binding constraint rather than a formality.
-    cfg.apply("bankroll_initial_lamports", 200_000_000_000).unwrap();
+    cfg.apply("bankroll_initial_lamports", 200_000_000_000)
+        .unwrap();
     let vsol = 31_000_000_000; // 1 SOL raised: the 30x row from the audit table
     let conf = Confirmation {
         depth: CurveDepth::derived(vsol),

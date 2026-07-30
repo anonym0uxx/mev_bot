@@ -180,7 +180,7 @@ fn the_gate_and_the_curve_are_one_impact_model() {
     ] {
         let den = cost_model::impact_den_for(vsol);
         let gate_bps = CLIP / den; // ImpactCurve::linear_test semantics
-        let curve_bps = u64::from(pump_quant_app::curve_fill::own_impact_bps(vsol, CLIP).unwrap());
+        let curve_bps = pump_quant_app::curve_fill::own_impact_bps(vsol, CLIP).unwrap();
         assert!(
             gate_bps.abs_diff(curve_bps) <= 1,
             "the gate ({gate_bps} bps) and the curve ({curve_bps} bps) must price our own \

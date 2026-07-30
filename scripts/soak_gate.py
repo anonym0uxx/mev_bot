@@ -45,8 +45,13 @@ def sample_rss_bytes() -> int:
     Prefers Linux `/proc/self/status` VmRSS (true current RSS, which can go DOWN as the allocator
     releases pages — essential for trend detection). Falls back to `resource.getrusage` maxrss
     (a high-water mark; monotonic, so it can only ever understate a leak's reversal, never a
-    leak's growth). Returns 0 if neither is available.
+    leak's growth). On Windows, falls back to `ctypes` + `GetProcessMemoryInfo` (current RSS,
+    can go down). Returns 0 if none of these are available.
+
+    A return of 0 makes the gate VACUOUS (it cannot detect any leak), so callers that get 0
+    should treat the result as non-evidence rather than a pass.
     """
+    # Linux /proc/self/status VmRSS — true current RSS.
     try:
         with open("/proc/self/status", "r", encoding="utf-8") as fh:
             for line in fh:
@@ -54,6 +59,48 @@ def sample_rss_bytes() -> int:
                     return int(line.split()[1]) * 1024  # kB -> bytes
     except OSError:
         pass
+
+    # Windows GetProcessMemoryInfo — current RSS via PROCESS_MEMORY_COUNTERS.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+                _fields_ = [
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                ]
+
+            psapi = ctypes.windll.psapi
+            psapi.GetProcessMemoryInfo.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(PROCESS_MEMORY_COUNTERS),
+                wintypes.DWORD,
+            ]
+            psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+
+            ctr = PROCESS_MEMORY_COUNTERS()
+            ctr.cb = ctypes.sizeof(ctr)
+            kernel32 = ctypes.windll.kernel32
+            psapi.GetProcessMemoryInfo(
+                kernel32.GetCurrentProcess(),
+                ctypes.byref(ctr),
+                ctr.cb,
+            )
+            return int(ctr.WorkingSetSize)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # POSIX resource.getrusage — high-water mark (monotonic; less precise but available).
     try:
         import resource
         ru = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss

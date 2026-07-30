@@ -35,7 +35,6 @@
 // property-tested safety argument. There is no such dossier entry for this
 // crate, so there is no `unsafe` this attribute could legitimately block.
 #![forbid(unsafe_code)]
-
 #![deny(missing_docs)]
 
 pub mod evidence;

@@ -581,7 +581,7 @@ fn even_callers_with_earned_realized_trust_cannot_admit_without_onchain() {
         eng.tick(AppEvent::OnchainConfirm {
             mint: earner,
             virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_SELLABLE_DEPTH,
+            real_sol_lamports: REAL_SELLABLE_DEPTH,
         });
         ticks(&mut eng, 4);
     }
@@ -664,7 +664,7 @@ fn the_social_abstraction_plane_is_decision_inert() {
             eng.tick(AppEvent::OnchainConfirm {
                 mint: m,
                 virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_SELLABLE_DEPTH,
+                real_sol_lamports: REAL_SELLABLE_DEPTH,
             });
             if exercise {
                 // Every new surface, driven hard — and on the REAL author ids the
@@ -769,7 +769,7 @@ fn maximal_social_support_never_increases_realized_size() {
             eng.tick(AppEvent::OnchainConfirm {
                 mint: m,
                 virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_SELLABLE_DEPTH,
+                real_sol_lamports: REAL_SELLABLE_DEPTH,
             });
             ticks(eng, 3);
         }

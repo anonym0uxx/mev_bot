@@ -301,7 +301,10 @@ mod tests {
         // and still 30x one SOL later.
         assert_eq!(real_sol_for(31_000_000_000), Some(1_000_000_000));
         assert_eq!(31_000_000_000 / real_sol_for(31_000_000_000).unwrap(), 31);
-        assert_eq!(real_sol_for(GRADUATION_VSOL_LAMPORTS - 1), Some(85_005_359_055));
+        assert_eq!(
+            real_sol_for(GRADUATION_VSOL_LAMPORTS - 1),
+            Some(85_005_359_055)
+        );
 
         // The operator's band: payout is roughly half the price reserve, so the
         // distinction is real but a 0.1 SOL clip never notices it.
@@ -309,7 +312,10 @@ mod tests {
         let hi = vsol_for_mcap(263_160_000_000).unwrap();
         assert_eq!(real_sol_for(lo).unwrap() / 10_000_000, 3_174, "31.74 SOL");
         assert_eq!(real_sol_for(hi).unwrap() / 10_000_000, 6_203, "62.03 SOL");
-        assert!(real_sol_for(lo).unwrap() > 300 * 100_000_000, "a floor clip is <1%");
+        assert!(
+            real_sol_for(lo).unwrap() > 300 * 100_000_000,
+            "a floor clip is <1%"
+        );
     }
 
     /// **REFUSAL, NEVER A CLAMP.** A reserve below the seed cannot exist on this
@@ -320,7 +326,11 @@ mod tests {
     fn an_impossible_reserve_refuses_rather_than_clamping_to_zero() {
         assert_eq!(real_sol_for(0), None, "an undecoded pool");
         assert_eq!(real_sol_for(1), None);
-        assert_eq!(real_sol_for(LAUNCH_VSOL_LAMPORTS - 1), None, "below the seed");
+        assert_eq!(
+            real_sol_for(LAUNCH_VSOL_LAMPORTS - 1),
+            None,
+            "below the seed"
+        );
         assert_eq!(real_sol_for(GRADUATION_VSOL_LAMPORTS), None, "migrated");
         assert_eq!(real_sol_for(u64::MAX), None);
         // The venue boundary is drawn in exactly one place: this and the fee

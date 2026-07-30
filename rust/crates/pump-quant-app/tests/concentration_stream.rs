@@ -44,6 +44,10 @@ use pump_quant_domain::ids::Mint;
 const REAL_CURVE_VSOL: u64 = 30_300_000_000;
 /// The SOL this curve actually escrows — `REAL_CURVE_VSOL - LAUNCH_VSOL_LAMPORTS`,
 /// the identity, not a choice. This is what caps `size_band`'s `x_max`.
+#[expect(
+    dead_code,
+    reason = "documented identity constant; not every test in this file uses it"
+)]
 const REAL_CURVE_REAL_SOL: u64 = 300_000_000;
 
 fn mint(tag: u64) -> Mint {

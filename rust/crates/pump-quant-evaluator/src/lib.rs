@@ -1,4 +1,3 @@
-
 // SAFETY POLICY (added 2026-07-29): this crate is outcome evaluation over money quantities,
 // and it contained zero `unsafe` when this was added. `forbid` makes that a
 // property the compiler holds rather than one a reviewer has to re-verify —

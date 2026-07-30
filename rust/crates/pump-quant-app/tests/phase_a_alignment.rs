@@ -93,7 +93,7 @@ fn stale_numeric_snapshot_cannot_authorize_entry() {
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_SELLABLE_DEPTH,
+        real_sol_lamports: REAL_SELLABLE_DEPTH,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -114,7 +114,7 @@ fn fresh_numeric_snapshot_with_confirm_admits() {
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_SELLABLE_DEPTH,
+        real_sol_lamports: REAL_SELLABLE_DEPTH,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);
@@ -206,7 +206,7 @@ fn caller_followable_cannot_authorize_entry() {
             eng.tick(AppEvent::OnchainConfirm {
                 mint: mt,
                 virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_SELLABLE_DEPTH,
+                real_sol_lamports: REAL_SELLABLE_DEPTH,
             });
         }
         for _ in 0..6 {
@@ -287,7 +287,7 @@ fn expectancy_is_prior_until_lane_sample_gate() {
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
         virtual_sol_lamports: REAL_CURVE_VSOL,
-                    real_sol_lamports: REAL_SELLABLE_DEPTH,
+        real_sol_lamports: REAL_SELLABLE_DEPTH,
     });
     for _ in 0..3 {
         eng.tick(AppEvent::Tick);

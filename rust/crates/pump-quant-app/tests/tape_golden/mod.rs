@@ -199,8 +199,7 @@ fn drive_eng_with_fill(cfg: Config, curve_exact_fill: bool) -> Engine {
                     // those rows described markets that cannot exist — overstating
                     // extractable SOL by 30x at vsol 31 and without bound at vsol 30.
                     // The confirm now carries the pair the program actually stores.
-                    let vsol =
-                        30_000_000_000 + round * 4_000_000_000 + (m % 350) * 50_000_000;
+                    let vsol = 30_000_000_000 + round * 4_000_000_000 + (m % 350) * 50_000_000;
                     eng.tick(AppEvent::OnchainConfirm {
                         mint: mt,
                         virtual_sol_lamports: vsol,

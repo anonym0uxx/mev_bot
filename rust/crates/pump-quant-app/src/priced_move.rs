@@ -300,7 +300,11 @@ mod tests {
     fn a_lane_under_its_sample_gate_reports_cold_start_not_a_lane_estimate() {
         for n in 0..K {
             let p = priced(999_999, n);
-            assert_eq!(p.ranking_bps(), i128::from(PRIOR), "evidence leaked in early");
+            assert_eq!(
+                p.ranking_bps(),
+                i128::from(PRIOR),
+                "evidence leaked in early"
+            );
             assert_eq!(p.ranking_source(), MoveSource::ColdStart);
             assert_eq!(p.ranking_source().code(), 0);
             assert!(p.is_single_sourced(), "both views are the prior here");

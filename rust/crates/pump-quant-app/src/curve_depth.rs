@@ -337,8 +337,8 @@ mod tests {
                 claimed > real,
                 "every row claimed more than the curve escrows: {claimed} vs {real}"
             );
-            if real > 0 {
-                worst = worst.max(claimed / real);
+            if let Some(ratio) = claimed.checked_div(real) {
+                worst = worst.max(ratio);
             } else {
                 // vsol == 30 SOL: a curve nobody has bought into, declaring 29 SOL of
                 // sellable depth. The overstatement is not large, it is unbounded.
@@ -428,7 +428,10 @@ mod tests {
     /// tighter than protocol-fee dust.
     #[test]
     fn the_cross_check_tolerance_is_relative_once_the_curve_is_deep() {
-        assert_eq!(cross_check_tolerance_lamports(0), CROSS_CHECK_FLOOR_LAMPORTS);
+        assert_eq!(
+            cross_check_tolerance_lamports(0),
+            CROSS_CHECK_FLOOR_LAMPORTS
+        );
         assert_eq!(
             cross_check_tolerance_lamports(10_000_000_000),
             CROSS_CHECK_FLOOR_LAMPORTS,
@@ -452,7 +455,11 @@ mod tests {
     #[test]
     fn the_graduation_boundary_switches_the_offset_off() {
         let grad = CurveDepth::derived(GRADUATION_VSOL_LAMPORTS);
-        assert_eq!(grad.basis_code(), 3, "at graduation this is no longer a curve");
+        assert_eq!(
+            grad.basis_code(),
+            3,
+            "at graduation this is no longer a curve"
+        );
         assert_eq!(grad.payout_reserve(), Some(GRADUATION_VSOL_LAMPORTS));
         // One lamport earlier it is still a curve, and payout is 30 SOL smaller.
         let last_curve = CurveDepth::derived(GRADUATION_VSOL_LAMPORTS - 1);
@@ -528,7 +535,10 @@ mod tests {
         ] {
             let d = CurveDepth::derived(vsol);
             if let (Some(p), Some(q)) = (d.price_reserve(), d.payout_reserve()) {
-                assert!(q <= p, "payout {q} exceeds price reserve {p} at vsol {vsol}");
+                assert!(
+                    q <= p,
+                    "payout {q} exceeds price reserve {p} at vsol {vsol}"
+                );
             }
             for real in [0u64, 1, vsol / 2, vsol, u64::MAX] {
                 let dd = CurveDepth::decoded(vsol, real);

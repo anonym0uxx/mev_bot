@@ -324,7 +324,11 @@ fn arming_beyond_the_shakeout_threshold_is_harmful() {
     // purely because the denominator grew, and anyone quoting it will conclude the lever
     // is getting safer. It is not; it costs exactly what it always cost.
     assert_eq!(golden(5), 19_641_955, "pinned k=5 golden net");
-    assert_eq!(ship - golden(5), 11_469_573, "pinned k=5 golden harm — INVARIANT");
+    assert_eq!(
+        ship - golden(5),
+        11_469_573,
+        "pinned k=5 golden harm — INVARIANT"
+    );
     assert!(
         golden(5) < ship,
         "k=5 remains strictly harmful on the representative tape"
