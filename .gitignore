@@ -1,3 +1,9 @@
 rust/target/
 _commit*.tar.gz
 _commit_bundle.tar.gz
+__pycache__/
+*.pyc
+.pytest_cache/
+evidence.db
+supervisor_evidence.db
+infra_manifest.json
