@@ -78,14 +78,17 @@ class SlopeMathTests(unittest.TestCase):
 
 class LiveHarnessTests(unittest.TestCase):
     def test_bounded_workload_passes(self) -> None:
-        # small, fast run; the bounded ring buffer must reach steady state on any machine
-        res = soak_gate.run_soak(checkpoints=10, warmup=3, rounds_per_checkpoint=2)
+        # small, fast run; the bounded ring buffer must reach steady state on any machine.
+        # warmup=6: on Windows the gate now reads real RSS via GetProcessMemoryInfo
+        # (previously returned 0, making the gate vacuous). Real RSS needs more
+        # warmup checkpoints for the OS to finish paging in code/data.
+        res = soak_gate.run_soak(checkpoints=14, warmup=6, rounds_per_checkpoint=2)
         self.assertTrue(res.passed, res.summary())
 
     def test_leaky_workload_is_caught(self) -> None:
         # proves the gate is not vacuous: an unbounded accumulator must FAIL
         store: list = []
-        res = soak_gate.run_soak(checkpoints=10, warmup=3, rounds_per_checkpoint=3,
+        res = soak_gate.run_soak(checkpoints=14, warmup=6, rounds_per_checkpoint=3,
                                  workload=lambda r: soak_gate.leaky_workload(store, r))
         self.assertFalse(res.passed, res.summary())
 
