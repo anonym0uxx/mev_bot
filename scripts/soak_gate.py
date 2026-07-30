@@ -198,7 +198,7 @@ def leaky_workload(store: list, rounds: int) -> None:
 
 
 # ---- live harness ---------------------------------------------------------------------------
-def run_soak(checkpoints: int = 12, warmup: int = 4, rounds_per_checkpoint: int = 4,
+def run_soak(checkpoints: int = 14, warmup: int = 6, rounds_per_checkpoint: int = 4,
              workload: Callable[[int], None] = bounded_workload,
              max_slope_bytes: float = 64 * 1024,
              max_spread_bytes: int = 8 * 1024 * 1024) -> SoakResult:
@@ -208,6 +208,12 @@ def run_soak(checkpoints: int = 12, warmup: int = 4, rounds_per_checkpoint: int 
     8 MB spread bound — orders of magnitude below any real leak yet above allocator jitter. The
     workload does not grow, so on a healthy tree every sample after warm-up is flat and the gate
     passes.
+
+    Warmup is 6 (was 4): on Windows, the process is still paging in Python modules during the
+    first few checkpoints of a light workload. 4 warmup checkpoints was insufficient for the
+    Windows memory manager to settle, causing the slope to exceed the bound on warm-up noise
+    rather than a real leak. 6 gives the process time to reach true steady-state RSS before
+    sampling begins. The slope/spread bounds are unchanged.
     """
     samples: list[int] = []
     for _ in range(checkpoints):
@@ -218,8 +224,8 @@ def run_soak(checkpoints: int = 12, warmup: int = 4, rounds_per_checkpoint: int 
 
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--checkpoints", type=int, default=12)
-    ap.add_argument("--warmup", type=int, default=4)
+    ap.add_argument("--checkpoints", type=int, default=14)
+    ap.add_argument("--warmup", type=int, default=6)
     ap.add_argument("--rounds", type=int, default=4,
                     help="workload rounds per checkpoint")
     ap.add_argument("--self-test", action="store_true",
