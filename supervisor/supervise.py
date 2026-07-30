@@ -113,6 +113,54 @@ def cmd_pin_evaluator(args) -> int:
     print(f"[pin-evaluator] pinned {sha}")
     return 0
 
+HUMAN_IDENTITIES = frozenset({"operator", "human", "owner", "alon", "me", "admin"})
+
+
+def _human_attestation(who: str, skip_prompt: bool) -> "tuple[bool, str, str]":
+    """Decide how an attestation may be RECORDED. Returns (ok, who_to_record, error).
+
+    "HUMAN-ONLY" on these verbs is a SURFACE restriction, not an identity check: they are
+    absent from the MCP tool surface (supervisor/mcp/server.py exposes 16 tools; pin_manifest,
+    pin_evaluator and amendment approve/apply are not among them), so an agent working through
+    its sanctioned tools cannot reach them by any prompt path. But nothing in this process can
+    distinguish a human at a keyboard from an agent in a shell. Therefore the RECORD must not
+    be permitted to claim more than was actually established:
+
+      * --who has no default. A default of "operator" made a flawless-looking human
+        attestation the path of least resistance for an unattended caller.
+      * A human identity may only be claimed when a human was actually asked -- stdin is a TTY
+        and --yes was not passed. Otherwise the identity is refused, and a non-human attester
+        is recorded with an explicit [non-interactive] marker.
+
+    The pin is not the security boundary; live machine measurement is, and that cannot be
+    forged by editing a file. The pin's only job is to make a post-pin edit to the declaration
+    fail closed as tampering -- a job that is worthless if whatever edits the block can also
+    re-pin it. That, and not the species of the typist, is why these stay off the tool surface.
+    """
+    who = (who or "").strip()
+    if not who:
+        return (False, "", "--who is required and has no default. Record the attester "
+                           "truthfully: 'operator' if you are a human answering the prompt "
+                           "below, otherwise the agent name and who delegated it, e.g. "
+                           "--who 'hermes-agent (delegated by Alon 2026-07-30)'.")
+    if _interactive(skip_prompt):
+        return (True, who, "")
+    if who.lower() in HUMAN_IDENTITIES:
+        return (False, who,
+                f"REFUSED: --who '{who}' claims a human attestation, but no human was asked "
+                f"(stdin is not a TTY, or --yes was passed). Either drop --yes and run this in "
+                f"a real console, or record the caller truthfully.")
+    return (True, f"{who} [non-interactive]", "")
+
+
+def _interactive(skip_prompt: bool) -> bool:
+    try:
+        tty = bool(sys.stdin.isatty())
+    except Exception:  # noqa: BLE001
+        tty = False
+    return tty and not skip_prompt
+
+
 def cmd_amendments(args) -> int:
     """HUMAN-ONLY amendment review. Deliberately CLI-only: `approve` and `apply` are
     absent from the MCP tool surface, so no model can reach them by any prompt path."""
@@ -122,6 +170,14 @@ def cmd_amendments(args) -> int:
 
     cfg = SupervisorConfig.load(args.config)
     store = EvidenceStore(cfg.evidence_db)
+
+    if args.action in ("approve", "reject", "apply"):
+        ok, who_rec, err = _human_attestation(args.who, args.yes)
+        if not ok:
+            print(err)
+            store.close()
+            return 1
+        args.who = who_rec
 
     if args.action == "list":
         items = store.list_amendments(args.state or "")
@@ -206,8 +262,11 @@ def cmd_amendments(args) -> int:
 
 def cmd_pin_manifest(args) -> int:
     """HUMAN-ONLY. Pin the manifest's deployment_host declaration (§9.5, criterion 113).
+
     Never callable via MCP; agents can rewrite the file but cannot re-pin it, and the phase
-    gate fails closed on any mismatch. Live machine measurement remains the decisive check."""
+    gate fails closed on any mismatch. Live machine measurement remains the decisive check.
+    See _human_attestation() for what "HUMAN-ONLY" does and does not enforce.
+    """
     from .core.config import SupervisorConfig
     from .store.evidence import EvidenceStore
     from .gates.build_phase import deployment_declaration, declaration_sha, measure_machine
@@ -218,25 +277,55 @@ def cmd_pin_manifest(args) -> int:
         print(f"no deployment_host declaration in {args.manifest} — generate it ON THE SERVER "
               "with: python scripts/gen_manifest.py --declare-deployment-host")
         return 1
+
+    ok, who_rec, err = _human_attestation(args.who, args.yes)
+    if not ok:
+        print(err)
+        return 1
+
     sha = declaration_sha(dep)
     live = measure_machine()
-    print(f"declaration: machine_id={dep.get('machine_id','')[:20]}... "
-          f"cpu={dep.get('cpu_model','?')}")
-    print(f"live machine: id={live['machine_id'][:20]}... ({live['id_source']}) "
-          f"cpu={live['cpu_model'] or '?'}")
+
+    # Print the WHOLE block. declaration_sha hashes EVERY key, so the reviewer must see every
+    # key: showing two fields while hashing five is how a review becomes a rubber stamp.
+    print("\ndeployment_host declaration being pinned "
+          "(every line below is an input to the hash):")
+    for k in sorted(dep):
+        print(f"    {k:<14} = {dep[k]}")
+    print(f"\n  declaration sha : {sha}")
+    print(f"  live machine    : {live['machine_id']} ({live['id_source']})")
+    print(f"  live cpu        : {live['cpu_model'] or '?'}")
+
+    prev = ""
+    try:
+        _s = EvidenceStore(cfg.evidence_db)
+        prev = _s.get_pinned_manifest()
+        _s.close()
+    except Exception:  # noqa: BLE001
+        pass
+    if prev and prev != sha:
+        print(f"  SUPERSEDES pin  : {prev[:16]}...  (this is a RE-pin)")
+    elif prev == sha:
+        print("  (this sha is already pinned; re-running re-records the attester)")
+
     if live["machine_id"] != dep.get("machine_id"):
-        print("NOTE: you are pinning from a machine that is NOT the declared deployment host. "
+        print("\nNOTE: you are pinning from a machine that is NOT the declared deployment host. "
               "That is allowed (you may pin from the laptop), but generate the declaration on "
               "the server so its machine_id is measured, not typed.")
-    if not args.yes:
-        if input(f"Pin declaration sha {sha[:16]}... as '{args.who}'? [y/N] ").strip().lower() != "y":
+    if dep.get("id_source") == "hostname_fallback":
+        print("\nWARNING: id_source is hostname_fallback, which the phase gate treats as "
+              "spoofable. Phase B stays locked even if this pin matches.")
+
+    if _interactive(args.yes):
+        if input(f"\nPin this declaration as '{who_rec}'? [y/N] ").strip().lower() != "y":
             print("not pinned")
             return 1
+
     store = EvidenceStore(cfg.evidence_db)
-    store.pin_manifest(sha, args.who)
+    store.pin_manifest(sha, who_rec)
     store.close()
-    print(f"pinned {sha[:16]}... — Phase-B gates now require this exact declaration "
-          "plus live machine match.")
+    print(f"pinned {sha[:16]}... by '{who_rec}' — Phase-B gates now require this exact "
+          "declaration plus live machine match.")
     return 0
 
 
@@ -253,14 +342,18 @@ def main(argv=None) -> int:
     sub.add_parser("pin-evaluator")
     pm = sub.add_parser("pin-manifest", help="HUMAN-ONLY: pin the deployment_host declaration")
     pm.add_argument("--manifest", default="infra_manifest.json")
-    pm.add_argument("--who", default="operator")
+    pm.add_argument("--who", required=True,
+                    help="who is attesting. 'operator' requires answering "
+                         "the prompt on a TTY; an agent must name itself and "
+                         "its delegator.")
     pm.add_argument("--yes", action="store_true")
     am = sub.add_parser("amendments", help="HUMAN-ONLY constitution amendment review "
                                             "(approve/apply are not MCP tools by design)")
     am.add_argument("action", choices=["list", "show", "approve", "reject", "apply"])
     am.add_argument("--id", type=int, default=0)
     am.add_argument("--state", default="")
-    am.add_argument("--who", default="operator")
+    am.add_argument("--who", default="",
+                    help="who is attesting (required for approve/reject/apply)")
     am.add_argument("--why", default="")
     am.add_argument("--file", default="", help="candidate constitution file (for apply)")
     am.add_argument("--dry-run", action="store_true")
