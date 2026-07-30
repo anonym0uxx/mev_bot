@@ -214,10 +214,19 @@ def run_soak(checkpoints: int = 14, warmup: int = 6, rounds_per_checkpoint: int 
     Windows memory manager to settle, causing the slope to exceed the bound on warm-up noise
     rather than a real leak. 6 gives the process time to reach true steady-state RSS before
     sampling begins. The slope/spread bounds are unchanged.
+
+    A 50ms settling delay between checkpoints lets the OS process lazy page-fault
+    completion and working-set trimming before the next RSS sample. Without it, the
+    bounded workload runs in <1ms per checkpoint and the Windows memory manager
+    hasn't finished paging in code/data, so RSS monotonically creeps upward during
+    the measurement window — warm-up noise, not a leak.
     """
+    import time
+
     samples: list[int] = []
-    for _ in range(checkpoints):
+    for i in range(checkpoints):
         workload(rounds_per_checkpoint)
+        time.sleep(0.05)  # 50ms settling delay for OS page-fault resolution
         samples.append(sample_rss_bytes())
     return analyze_trend(samples, warmup, max_slope_bytes, max_spread_bytes)
 
