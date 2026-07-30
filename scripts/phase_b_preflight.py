@@ -25,9 +25,9 @@ a failure, and reasoning that the failure is unrelated to the task at hand.
 This script removes the interpretation. It runs every row, prints a verdict per row,
 and exits non-zero if any BLOCKING row failed. Paste its output; do not summarise it.
 
-    python scripts/preflight.py                 # full, from the repo root
-    python scripts/preflight.py --fast          # skip the slow cargo rows
-    python scripts/preflight.py --json          # machine-readable
+    python scripts/phase_b_preflight.py                 # full, from the repo root
+    python scripts/phase_b_preflight.py --fast          # skip the slow cargo rows
+    python scripts/phase_b_preflight.py --json          # machine-readable
 
 WHAT IT DOES NOT DO
 -------------------

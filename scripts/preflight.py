@@ -47,7 +47,11 @@ def main() -> int:
     all_ok &= _ok("claude binary on PATH", has_claude, cdetail)
     if has_claude:
         try:
-            v = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=20)
+            # Invoke the RESOLVED path, not the bare name. On Windows the CLI is a `claude.CMD`
+            # shim; CreateProcess only appends `.exe` when resolving a bare name, so
+            # ["claude", "--version"] fails with [WinError 2] even though the binary is on PATH.
+            # `cdetail` is shutil.which()'s result, which does honour PATHEXT.
+            v = subprocess.run([cdetail, "--version"], capture_output=True, text=True, timeout=20)
             _ok("claude --version", v.returncode == 0, v.stdout.strip()[:60])
         except Exception as e:  # noqa: BLE001
             _ok("claude --version", False, str(e)[:60])
