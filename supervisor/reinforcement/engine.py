@@ -11,7 +11,10 @@ self-tunes to GLM-5.2's measured strengths per component.
 """
 from __future__ import annotations
 
+import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -70,10 +73,36 @@ def _leaf_user_prompt(dossier: Dossier, leaf: Leaf, prior_bodies: dict[str, str]
 
 
 class ReinforcementEngine:
-    def __init__(self, model: ModelClient, store: EvidenceStore, verify: LeafVerifier):
+    def __init__(self, model: ModelClient, store: EvidenceStore, verify: LeafVerifier,
+                 max_concurrency: Optional[int] = None):
         self.model = model
         self.store = store
         self.verify = verify
+        # Candidate GENERATION runs concurrently; llama-server serves --parallel N slots and
+        # decode on a 2-bit MoE is memory-bandwidth-bound, so batching reads the weights once
+        # and produces many tokens. MEASURED on the deploy box 2026-07-30:
+        #   1 stream 40.4 tok/s | 2 -> 67.5 | 4 -> 94.1 | 8 -> 123.2  (3.05x, still climbing)
+        # Set this to the server's --parallel value. Exceeding it is harmless (llama-server
+        # queues) but buys nothing. Below it, slots sit idle.
+        self.max_concurrency = int(
+            max_concurrency if max_concurrency is not None
+            else os.environ.get("PQ_LEAF_CONCURRENCY", "8")
+        )
+        self._tls = threading.local()
+
+    def _client(self) -> ModelClient:
+        """One ModelClient per worker thread.
+
+        ModelClient holds a requests.Session, which is not documented thread-safe; sharing one
+        across concurrent generations risks connection-pool corruption that would surface as
+        sporadic, unreproducible request failures — the worst possible failure mode in a loop
+        whose whole job is telling capability apart from infrastructure.
+        """
+        c = getattr(self._tls, "client", None)
+        if c is None:
+            c = ModelClient(self.model.cfg)
+            self._tls.client = c
+        return c
 
     # ---------------------------------------------------- adaptive difficulty
     @staticmethod
@@ -107,15 +136,17 @@ class ReinforcementEngine:
                        prior_bodies: dict[str, str], max_retries: int = 3) -> LeafOutcome:
         n = self._pick_n(dossier.component)
         attempts = 0
+        prompt = _leaf_user_prompt(dossier, leaf, prior_bodies)
+        distinct = 0
         for _ in range(max_retries):
-            # Bounded in-flight buffer: never hold more than N candidate bodies at once.
-            candidates: BoundedList = BoundedList(cap=n)
-            for _k in range(n):
-                attempts += 1
-                # Safety-second: if memory is under pressure, stop sampling more candidates
-                # and filter what we have rather than risk OOM (durable data already journaled).
+            base = attempts
+            attempts += n
+
+            def _generate(k: int) -> Optional[str]:
+                # Safety-second: if memory is under pressure, decline to add more in-flight work
+                # and let the filter run on whatever came back (durable data already journaled).
                 if under_pressure():
-                    break
+                    return None
                 try:
                     # Three changes, two of them measured on this box 2026-07-30.
                     #
@@ -135,21 +166,47 @@ class ReinforcementEngine:
                     # seed: distinct per candidate. NOT the fix — the same seed was already
                     #   observed to diverge (llama.cpp is not bit-reproducible under continuous
                     #   batching + cache reuse). Kept because a deterministic retry is a no-op.
-                    obj = self.model.constrained(
+                    obj = self._client().constrained(
                         LEAF_SYSTEM,
-                        _leaf_user_prompt(dossier, leaf, prior_bodies),
+                        prompt,
                         get_schema("leaf"),
                         max_tokens=8192,
-                        seed=1000 + attempts,
+                        seed=1000 + base + k + 1,
                         temperature=self._band_temperature(leaf),
                     )
                 except SchemaViolation:
-                    continue
-                body = obj.get("body", "").strip()
-                if body:
-                    candidates.append(body)
+                    return None
+                except Exception:  # noqa: BLE001 - one bad candidate must not kill the batch
+                    return None
+                return (obj.get("body") or "").strip() or None
 
-            # hard filter: compile + property test + invariant scans, in isolation
+            # GENERATE concurrently. The prompt is identical for every candidate, so the server
+            # prefills it once and the rest hit the prompt cache; the cost here is pure decode,
+            # which is exactly what batching across slots accelerates.
+            workers = max(1, min(self.max_concurrency, n))
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                raw = list(ex.map(_generate, range(n)))
+
+            # DEDUPLICATE before verifying. Candidates collapse onto identical text more often
+            # than raw inequality suggests (whitespace and identifier churn make near-duplicates
+            # look distinct), and verification is the expensive serial step — compiling the same
+            # body eight times is pure waste. The distinct count is also the honest diagnostic
+            # for whether sampling is actually exploring.
+            candidates: BoundedList = BoundedList(cap=n)
+            seen: set[str] = set()
+            for body in raw:
+                if not body:
+                    continue
+                key = " ".join(body.split())
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(body)
+            distinct = len(seen)
+
+            # HARD FILTER — deliberately SERIAL. The scratch verifier writes into a single
+            # <repo>/.supervisor_scratch crate and runs cargo there; concurrent verification
+            # would race on that directory and produce results belonging to another candidate.
             survivors: list[tuple[str, str]] = []  # (body, detail)
             for body in candidates:
                 ok, detail = self.verify(leaf, body)
@@ -164,8 +221,14 @@ class ReinforcementEngine:
             # no survivors -> tighten (smaller leaf implied by dossier author, or wider N) and retry
             n = min(16, n + 3)
 
-        return LeafOutcome(leaf.leaf_id, None, False, attempts,
-                           "no candidate passed property test at max granularity/N")
+        # Report the DISTINCT count, not just the attempt count. "8 attempts, 1 distinct" is a
+        # sampling-collapse diagnosis; "8 attempts, 8 distinct" is a genuine capability limit.
+        # Without this the two are indistinguishable and the escalation misattributes the cause.
+        return LeafOutcome(
+            leaf.leaf_id, None, False, attempts,
+            f"no candidate passed property test at max granularity/N "
+            f"({distinct} distinct of {attempts} generated, concurrency={self.max_concurrency})",
+        )
 
     # ------------------------------------------------------- full component
     def implement_component(self, dossier: Dossier) -> tuple[bool, dict[str, str], list[LeafOutcome]]:
