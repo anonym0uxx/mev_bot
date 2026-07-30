@@ -101,10 +101,17 @@ class ModelClient:
         *,
         max_tokens: int = 4096,
         schema_retries: int = 3,
+        seed: Optional[int] = None,
+        temperature: Optional[float] = None,
     ) -> dict:
         """
         Control turn. Enforces `schema` via llama.cpp json_schema (server converts to GBNF).
         Guarantees a schema-valid dict or raises SchemaViolation after bounded retries.
+
+        `seed` overrides the deterministic control seed for THIS call. Control turns want
+        determinism and should leave it None. Best-of-N SAMPLING must pass a distinct seed per
+        candidate: with a fixed seed and a fixed prompt the sampler is deterministic, so N
+        candidates come back byte-identical and best-of-N degenerates to best-of-1.
         """
         base_payload = {
             "model": self.cfg.model,
@@ -112,8 +119,14 @@ class ModelClient:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "temperature": self.cfg.control_temperature,
-            "seed": self.cfg.control_seed,
+            # MEASURED 2026-07-30: at control_temperature (0.1) the distribution is peaked
+            # enough that DIFFERENT seeds return byte-identical text, while the SAME seed can
+            # diverge (llama.cpp is not bit-reproducible across requests under continuous
+            # batching + cache reuse). Seed is therefore not the diversity lever — temperature
+            # is. Best-of-N sampling MUST pass a temperature above the control band or the N
+            # candidates collapse onto one.
+            "temperature": self.cfg.control_temperature if temperature is None else temperature,
+            "seed": self.cfg.control_seed if seed is None else seed,
             "max_tokens": max_tokens,
             # llama.cpp server: constrain decoding to the JSON schema
             "response_format": {
@@ -124,8 +137,14 @@ class ModelClient:
             "json_schema": schema,
         }
         last_text = ""
-        for _ in range(schema_retries):
-            resp = self._chat(base_payload)
+        for _attempt in range(schema_retries):
+            # A retry of a DETERMINISTIC call reproduces the same failure by definition. The
+            # first attempt keeps the caller's seed (control turns depend on that); every retry
+            # after a failure perturbs it, otherwise schema_retries is decoration.
+            payload = base_payload if _attempt == 0 else {
+                **base_payload, "seed": int(base_payload["seed"]) + _attempt
+            }
+            resp = self._chat(payload)
             last_text = self._extract_text(resp).strip()
             try:
                 data = json.loads(last_text)

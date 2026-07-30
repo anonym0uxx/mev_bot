@@ -76,6 +76,20 @@ class ReinforcementEngine:
         self.verify = verify
 
     # ---------------------------------------------------- adaptive difficulty
+    @staticmethod
+    def _band_temperature(leaf) -> float:
+        """Map the dossier's declared `temperature_band` onto a real sampling temperature.
+
+        Every dossier leaf carries a temperature_band and NOTHING read it — candidates were
+        generated at cfg.control_temperature (0.1), which is effectively greedy. Measured on
+        this box: at 0.1, distinct seeds return byte-identical bodies, so best-of-N collapsed
+        onto a single candidate and re-sampling could never escape a wrong answer. Even the
+        "low" band must stay clear of that floor to sample at all.
+        """
+        return {"low": 0.5, "medium": 0.7, "high": 0.9}.get(
+            str(getattr(leaf, "temperature_band", "low")).lower(), 0.7
+        )
+
     def _pick_n(self, component: str, default_n: int = 8) -> int:
         rates = self.store.capability_rate(component)
         if not rates:
@@ -103,11 +117,31 @@ class ReinforcementEngine:
                 if under_pressure():
                     break
                 try:
+                    # Three changes, two of them measured on this box 2026-07-30.
+                    #
+                    # temperature: THE diversity lever. Candidates were previously generated at
+                    #   cfg.control_temperature (0.1). Measured: at 0.1 distinct seeds return
+                    #   BYTE-IDENTICAL bodies, so the N candidates collapsed onto one and the
+                    #   hard filter judged the same body N times. Every dossier leaf declares a
+                    #   temperature_band and nothing read it; _band_temperature now does.
+                    #
+                    # max_tokens 2048 -> 8192: MEASURED finish_reason="length" at exactly 2048
+                    #   with reasoning_content present. GLM-5.2 spends reasoning tokens from the
+                    #   same budget, so the body truncated mid-function. GBNF still emits
+                    #   syntactically valid JSON, so this did NOT raise — it produced a
+                    #   well-formed object containing unusable code that failed to compile,
+                    #   which is indistinguishable from the model being incapable.
+                    #
+                    # seed: distinct per candidate. NOT the fix — the same seed was already
+                    #   observed to diverge (llama.cpp is not bit-reproducible under continuous
+                    #   batching + cache reuse). Kept because a deterministic retry is a no-op.
                     obj = self.model.constrained(
                         LEAF_SYSTEM,
                         _leaf_user_prompt(dossier, leaf, prior_bodies),
                         get_schema("leaf"),
-                        max_tokens=2048,
+                        max_tokens=8192,
+                        seed=1000 + attempts,
+                        temperature=self._band_temperature(leaf),
                     )
                 except SchemaViolation:
                     continue
