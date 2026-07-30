@@ -182,10 +182,11 @@ class Runner:
         if r.returncode != 0 and sys.platform == "win32" \
                 and ("error 206" in (r.stdout + r.stderr).lower()
                      or "too long" in (r.stdout + r.stderr).lower()):
-            # Per-crate fallback
+            # Per-crate fallback: resolve package names from each member's
+            # Cargo.toml (cargo fmt -p expects a package name, not a path).
             import re as _re
             manifest = (rust / "Cargo.toml").read_text(encoding="utf-8")
-            members = []
+            member_paths = []
             m = _re.search(r"members\s*=\s*\[(.*?)\]", manifest, _re.DOTALL)
             if m:
                 for item in _re.findall(r'"([^"]+)"', m.group(1)):
@@ -194,11 +195,19 @@ class Runner:
                         if base.is_dir():
                             for sub in base.iterdir():
                                 if (sub / "Cargo.toml").is_file():
-                                    members.append(sub.name)
+                                    member_paths.append(str(sub))
                     else:
-                        members.append(item)
+                        member_paths.append(item)
+            pkg_names = []
+            for mp in member_paths:
+                ct = rust / mp / "Cargo.toml"
+                if ct.is_file():
+                    txt = ct.read_text(encoding="utf-8")
+                    pm = _re.search(r'name\s*=\s*"([^"]+)"', txt)
+                    if pm:
+                        pkg_names.append(pm.group(1))
             fmt_fail = False
-            for crate in members:
+            for crate in pkg_names:
                 rc = self._run(["cargo", "fmt", "-p", crate, "--check"],
                               cwd=rust, timeout=120)
                 if rc.returncode != 0:

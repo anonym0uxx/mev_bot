@@ -92,14 +92,15 @@ def tail(s: str, n: int = 12) -> str:
 def _fmt_per_crate(rust: Path) -> tuple[int, str]:
     """Per-crate fmt --check fallback for Windows (OS error 206 on --all).
 
-    Enumerates workspace members from Cargo.toml, runs `cargo fmt -p <crate>
-    --check` on each, and returns a combined rc + output. Any single crate
-    failing fmt makes the whole row fail.
+    Enumerates workspace members from Cargo.toml, resolves each member's
+    package name from its own Cargo.toml, runs `cargo fmt -p <pkg> --check`
+    on each, and returns a combined rc + output. Any single crate failing
+    fmt makes the whole row fail.
     """
     import re
 
     manifest = (rust / "Cargo.toml").read_text(encoding="utf-8")
-    members: list[str] = []
+    member_paths: list[str] = []
     # Parse workspace.members — supports "path/*" glob patterns.
     m = re.search(r"members\s*=\s*\[(.*?)\]", manifest, re.DOTALL)
     if m:
@@ -110,10 +111,19 @@ def _fmt_per_crate(rust: Path) -> tuple[int, str]:
                 if base.is_dir():
                     for sub in base.iterdir():
                         if (sub / "Cargo.toml").is_file():
-                            name = sub.name
-                            members.append(name)
+                            member_paths.append(str(sub))
             else:
-                members.append(item)
+                member_paths.append(item)
+
+    # Resolve the package name from each member's Cargo.toml.
+    members: list[str] = []
+    for mp in member_paths:
+        ct = rust / mp / "Cargo.toml"
+        if ct.is_file():
+            txt = ct.read_text(encoding="utf-8")
+            pm = re.search(r'name\s*=\s*"([^"]+)"', txt)
+            if pm:
+                members.append(pm.group(1))
 
     fails: list[str] = []
     for crate in members:
