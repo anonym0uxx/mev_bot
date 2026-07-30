@@ -221,7 +221,14 @@ def run_soak(checkpoints: int = 14, warmup: int = 6, rounds_per_checkpoint: int 
     hasn't finished paging in code/data, so RSS monotonically creeps upward during
     the measurement window — warm-up noise, not a leak.
     """
+    import gc
     import time
+
+    # Force garbage collection before sampling so the process starts from a clean
+    # baseline, regardless of what ran before (e.g. 150 prior unittests leaving
+    # fragmented allocator state). gc.collect() cannot collect references that are
+    # still alive — a real leak holds them — so this does not reduce sensitivity.
+    gc.collect()
 
     samples: list[int] = []
     for i in range(checkpoints):
