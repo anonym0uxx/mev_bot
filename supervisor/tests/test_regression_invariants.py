@@ -146,12 +146,14 @@ class SelfHealingInvariants(unittest.TestCase):
     def test_soak_gate_still_catches_an_injected_leak(self) -> None:
         # The gate is not vacuous: an unbounded accumulator MUST fail both the
         # slope and spread bounds. If this ever passes, the leak detector broke.
+        # warmup=6, checkpoints=14: Windows needs more warmup now that the gate
+        # reads real RSS via GetProcessMemoryInfo (previously vacuous — returned 0).
         store: list = []
-        res = soak_gate.run_soak(checkpoints=10, warmup=3, rounds_per_checkpoint=3,
+        res = soak_gate.run_soak(checkpoints=14, warmup=6, rounds_per_checkpoint=3,
                                  workload=lambda r: soak_gate.leaky_workload(store, r))
         self.assertFalse(res.passed, res.summary())
         # And the bounded workload still passes on the same machine.
-        ok = soak_gate.run_soak(checkpoints=10, warmup=3, rounds_per_checkpoint=2)
+        ok = soak_gate.run_soak(checkpoints=14, warmup=6, rounds_per_checkpoint=2)
         self.assertTrue(ok.passed, ok.summary())
 
     def test_evidence_migrations_are_idempotent(self) -> None:
