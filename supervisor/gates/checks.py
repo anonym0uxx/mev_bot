@@ -73,6 +73,51 @@ def _have(tool: str) -> bool:
     return shutil.which(tool) is not None
 
 
+def _fmt_per_crate_check(repo: str, cargo_dir: str) -> CheckResult:
+    """Per-crate ``cargo fmt -p <pkg> --check`` fallback for Windows MAX_PATH.
+
+    Enumerates workspace members from the workspace Cargo.toml, resolves each
+    member's package name, and runs ``cargo fmt -p <pkg> --check`` individually.
+    All read-only — never mutates the tree.  Any crate with a diff fails the
+    check.
+    """
+    import pathlib as _p
+    _Path = _p.Path
+    manifest = (_Path(cargo_dir) / "Cargo.toml").read_text(encoding="utf-8")
+    member_paths: list[str] = []
+    m = re.search(r"members\s*=\s*\[(.*?)\]", manifest, re.DOTALL)
+    if m:
+        for item in re.findall(r'"([^"]+)"', m.group(1)):
+            if "*" in item:
+                base = _Path(cargo_dir) / item.replace("/*", "")
+                if base.is_dir():
+                    for sub in sorted(base.iterdir()):
+                        if (sub / "Cargo.toml").is_file():
+                            member_paths.append(str(sub))
+            else:
+                member_paths.append(item)
+    pkg_names: list[str] = []
+    for mp in member_paths:
+        ct = _Path(cargo_dir) / mp / "Cargo.toml"
+        if ct.is_file():
+            txt = ct.read_text(encoding="utf-8")
+            pm = re.search(r'name\s*=\s*"([^"]+)"', txt)
+            if pm:
+                pkg_names.append(pm.group(1))
+    diffs: list[str] = []
+    for crate in pkg_names:
+        rc, out, err = _run(["cargo", "fmt", "-p", crate, "--check"], cargo_dir, timeout=120)
+        if rc != 0:
+            diffs.append(crate)
+    if not diffs:
+        return CheckResult("fmt", True, {"method": "per-crate", "packages": len(pkg_names)},
+                           "formatted (clean, per-crate)")
+    return CheckResult("fmt", False,
+                       {"method": "per-crate", "diff_crates": diffs,
+                        "stderr_tail": err[-2000:] if diffs else ""},
+                       f"fmt check failed: {len(diffs)} crate(s) with diff: {diffs[:10]}")
+
+
 def _cargo_dir(repo: str) -> str:
     """Directory to run cargo in = the one containing the workspace Cargo.toml.
 
@@ -110,10 +155,27 @@ def check_clippy(repo: str) -> CheckResult:
 
 
 def check_fmt(repo: str) -> CheckResult:
+    """Verify the tree is formatted — WITHOUT mutating it.
+
+    Runs ``cargo fmt --all -- --check`` (read-only).  On Windows, the
+    ``--all`` flag can hit OS error 206 (ERROR_FILENAME_EXCED_RANGE) when
+    workspace paths exceed MAX_PATH; in that case we fall back to per-crate
+    ``cargo fmt -p <pkg> --check`` (also read-only).  A missing cargo is a
+    FAIL (the docstring at the top of this module says: never a silent pass).
+    """
     if not _have("cargo"):
-        return CheckResult("fmt", True, summary="cargo not found; fmt skipped")
-    _run(["cargo", "fmt"], _cargo_dir(repo))
-    return CheckResult("fmt", True, {"formatted": True}, "formatted (applied)")
+        return CheckResult("fmt", False, {"reason": "cargo not found"}, "cargo not found; fmt skipped")
+    cargo_dir = _cargo_dir(repo)
+    rc, out, err = _run(["cargo", "fmt", "--all", "--", "--check"], cargo_dir)
+    if rc == 0:
+        return CheckResult("fmt", True, {"returncode": rc}, "formatted (clean)")
+    # Windows: cargo fmt --all -- --check hits OS error 206 when workspace
+    # paths exceed MAX_PATH.  Fall back to per-crate --check (non-mutating).
+    combined = (out + err).lower()
+    if os.name == "nt" and ("error 206" in combined or "too long" in combined or "filename" in combined):
+        return _fmt_per_crate_check(repo, cargo_dir)
+    return CheckResult("fmt", False, {"returncode": rc, "stderr_tail": err[-2000:]},
+                       "fmt check failed (diff present)")
 
 
 
@@ -123,21 +185,27 @@ def check_dossier_test_integrity(repo) -> "CheckResult":
     Runs `scripts/materialize_tests.py --verify`, which re-hashes every materialized test
     against what its dossier renders. Any edit, deletion, or drift fails this check — the
     correctness authority is protected mechanically, not by trust.
+
+    When the materializer script is absent (no dossier tests materialized in this repo
+    layout), the check is a SKIP reported honestly as NOT-PASSED, so the gate battery
+    does not silently certify a property it could not verify.
     """
     import subprocess, sys
     from pathlib import Path as _P
     script = _P(repo) / "scripts" / "materialize_tests.py"
     if not script.is_file():
-        # no materializer in this repo layout -> nothing to verify (non-fatal)
-        return CheckResult("dossier_test_integrity", True, "materializer not present (skip)", {})
+        return CheckResult("dossier_test_integrity", False,
+                           {"reason": "materializer not present"},
+                           "materializer not present (skip — not certified)")
     try:
         p = subprocess.run([sys.executable, str(script), "--repo", str(repo), "--verify"],
                            capture_output=True, text=True, timeout=120)
     except Exception as e:  # noqa: BLE001
-        return CheckResult("dossier_test_integrity", False, f"verify error: {e}", {})
+        return CheckResult("dossier_test_integrity", False, {"error": str(e)},
+                           f"verify error: {e}")
     ok = p.returncode == 0
     detail = (p.stdout.strip().splitlines()[-1] if p.stdout.strip() else "") or p.stderr[:200]
-    return CheckResult("dossier_test_integrity", ok, detail, {"returncode": p.returncode})
+    return CheckResult("dossier_test_integrity", ok, {"returncode": p.returncode}, detail)
 
 
 # Genuine Rust stub markers in PRODUCTION source (test modules are stripped before matching).
