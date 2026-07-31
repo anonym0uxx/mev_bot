@@ -93,7 +93,8 @@ fn engine_scenario(n_mints: u64) -> (Engine, Vec<AppEvent>) {
         }
         eng.tick(AppEvent::OnchainConfirm {
             mint: mt,
-            sellable_depth_lamports: 200_000_000,
+            virtual_sol_lamports: 30_000_000_000,
+            real_sol_lamports: 200_000_000,
         });
         if m % 3 == 0 {
             eng.tick(AppEvent::NarrativeSample {

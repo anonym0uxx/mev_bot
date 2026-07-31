@@ -8,6 +8,14 @@ publish = false
 name = "bench"
 path = "src/main.rs"
 
+[[bin]]
+name = "jitter-probe"
+path = "src/jitter_probe.rs"
+
+[[bin]]
+name = "engine-soak"
+path = "src/engine_soak.rs"
+
 [dependencies]
 pump-quant-app      = { path = "../rust/crates/pump-quant-app" }
 pump-quant-core     = { path = "../rust/crates/pump-quant-core" }
