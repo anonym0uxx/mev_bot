@@ -1,0 +1,211 @@
+{
+  "passed": false,
+  "elapsed_s": 335.2,
+  "trust_mismatches": [
+    "unmet criteria: ['criterion 52: UNVERIFIED \u2014 key-custody election \u2014 operator process, not code', 'criterion 69: UNVERIFIED \u2014 native Windows / no WSL dependency \u2014 requires artifact study', 'criterion 81: UNVERIFIED \u2014 taxonomy forward-only \u2014 requires artifact study', 'criterion 85: UNVERIFIED \u2014 capital allocation \u2014 policy, not code', 'criterion 96: UNVERIFIED \u2014 signal-horizon matching law \u2014 requires artifact study', 'criterion 97: UNVERIFIED \u2014 scalp-readiness \u2014 requires artifact study', 'criterion 98: UNVERIFIED \u2014 no-edge rescoping \u2014 requires artifact study', 'criterion 99: UNVERIFIED \u2014 memory soak / no unbounded growth \u2014 check_memory_soak exists but soak_bin not built', 'criterion 102: UNVERIFIED \u2014 safety constants static \u2014 requires artifact study', 'criterion 103: UNVERIFIED \u2014 latency budgets \u2014 check_bench exists but bench_name empty (Shape 3)', 'criterion 110: UNVERIFIED \u2014 attention spend source \u2014 policy, not code', 'criterion 111: UNVERIFIED \u2014 amendment subsystem \u2014 requires artifact study', 'criterion 112: UNVERIFIED \u2014 size-viability band \u2014 requires artifact study', \"criterion 113: UNVERIFIED \u2014 two-phase build boundary \u2014 check_phase_provenance exists but is inside the bench block (bench_name='' \u2192 skipped)\"]"
+  ],
+  "results": [
+    {
+      "name": "build",
+      "passed": true,
+      "summary": "compiled",
+      "detail_keys": [
+        "returncode",
+        "stderr_tail"
+      ]
+    },
+    {
+      "name": "fmt",
+      "passed": true,
+      "summary": "formatted (clean, per-crate)",
+      "detail_keys": [
+        "method",
+        "packages"
+      ]
+    },
+    {
+      "name": "clippy",
+      "passed": true,
+      "summary": "clean",
+      "detail_keys": [
+        "returncode",
+        "stderr_tail"
+      ]
+    },
+    {
+      "name": "no_stubs",
+      "passed": true,
+      "summary": "no stubs (253 files scanned)",
+      "detail_keys": [
+        "hits",
+        "matched_files"
+      ]
+    },
+    {
+      "name": "test",
+      "passed": true,
+      "summary": "tests pass",
+      "detail_keys": [
+        "returncode",
+        "missing_required_tests",
+        "stderr_tail"
+      ]
+    },
+    {
+      "name": "secrets",
+      "passed": false,
+      "summary": "1 possible secrets",
+      "detail_keys": [
+        "tool",
+        "hits",
+        "allowlisted_skipped"
+      ]
+    },
+    {
+      "name": "dossier_test_integrity",
+      "passed": true,
+      "summary": "[materialize:verify] OK \u2014 191 dossier tests intact and unmodified",
+      "detail_keys": [
+        "returncode"
+      ]
+    },
+    {
+      "name": "hotpath_lint",
+      "passed": true,
+      "summary": "clean (11 explicit LINT-ALLOW exemptions; 0 repo rule(s) merged; 875 files scanned)",
+      "detail_keys": [
+        "violations",
+        "allowed",
+        "matched_files"
+      ]
+    },
+    {
+      "name": "determinism",
+      "passed": false,
+      "summary": "declared run_determinism: true but replay_bin is empty \u2014 check is a silent no-op",
+      "detail_keys": [
+        "declared",
+        "replay_bin"
+      ]
+    },
+    {
+      "name": "bench",
+      "passed": false,
+      "summary": "declared run_bench: true but bench_name is empty \u2014 check is a silent no-op",
+      "detail_keys": [
+        "declared",
+        "bench_name"
+      ]
+    }
+  ],
+  "criterion_board": [
+    {
+      "criterion": 52,
+      "binding_type": "UNVERIFIED",
+      "check_name": "",
+      "note": "key-custody election \u2014 operator process, not code"
+    },
+    {
+      "criterion": 69,
+      "binding_type": "UNVERIFIED",
+      "check_name": "",
+      "note": "native Windows / no WSL dependency \u2014 requires artifact study"
+    },
+    {
+      "criterion": 81,
+      "binding_type": "UNVERIFIED",
+      "check_name": "",
+      "note": "taxonomy forward-only \u2014 requires artifact study"
+    },
+    {
+      "criterion": 85,
+      "binding_type": "UNVERIFIED",
+      "check_name": "",
+      "note": "capital allocation \u2014 policy, not code"
+    },
+    {
+      "criterion": 96,
+      "binding_type": "UNVERIFIED",
+      "check_name": "",
+      "note": "signal-horizon matching law \u2014 requires artifact study"
+    },
+    {
+      "criterion": 97,
+      "binding_type": "UNVERIFIED",
+      "check_name": "",
+      "note": "scalp-readiness \u2014 requires artifact study"
+    },
+    {
+      "criterion": 98,
+      "binding_type": "UNVERIFIED",
+      "check_name": "",
+      "note": "no-edge rescoping \u2014 requires artifact study"
+    },
+    {
+      "criterion": 99,
+      "binding_type": "UNVERIFIED",
+      "check_name": "",
+      "note": "memory soak / no unbounded growth \u2014 check_memory_soak exists but soak_bin not built"
+    },
+    {
+      "criterion": 102,
+      "binding_type": "UNVERIFIED",
+      "check_name": "",
+      "note": "safety constants static \u2014 requires artifact study"
+    },
+    {
+      "criterion": 103,
+      "binding_type": "UNVERIFIED",
+      "check_name": "",
+      "note": "latency budgets \u2014 check_bench exists but bench_name empty (Shape 3)"
+    },
+    {
+      "criterion": 109,
+      "binding_type": "MECHANICAL",
+      "check_name": "hotpath_lint",
+      "note": "\u00a724 Rust perf law \u2014 Phase-A clauses enforced by lint; deploy clauses require Phase-B"
+    },
+    {
+      "criterion": 110,
+      "binding_type": "UNVERIFIED",
+      "check_name": "",
+      "note": "attention spend source \u2014 policy, not code"
+    },
+    {
+      "criterion": 111,
+      "binding_type": "UNVERIFIED",
+      "check_name": "",
+      "note": "amendment subsystem \u2014 requires artifact study"
+    },
+    {
+      "criterion": 112,
+      "binding_type": "UNVERIFIED",
+      "check_name": "",
+      "note": "size-viability band \u2014 requires artifact study"
+    },
+    {
+      "criterion": 113,
+      "binding_type": "UNVERIFIED",
+      "check_name": "",
+      "note": "two-phase build boundary \u2014 check_phase_provenance exists but is inside the bench block (bench_name='' \u2192 skipped)"
+    },
+    {
+      "criterion": 114,
+      "binding_type": "MECHANICAL",
+      "check_name": "build",
+      "note": "build execution surfaces \u2014 cargo build compiles all 26 workspace members"
+    },
+    {
+      "criterion": 115,
+      "binding_type": "MECHANICAL",
+      "check_name": "test",
+      "note": "pq-narrative property-tested \u2014 required_tests now lists dossier_narrative_nv_* tests; check_tests verifies they ran"
+    },
+    {
+      "criterion": 116,
+      "binding_type": "MECHANICAL",
+      "check_name": "test",
+      "note": "pq-watchlist never-idle \u2014 required_tests now lists dossier_rank_wr_* tests; check_tests verifies they ran"
+    }
+  ]
+}

@@ -35,7 +35,14 @@ gate:
   target_triple: x86_64-pc-windows-msvc
   production_globs:
   - rust/**/src/**/*.rs
-  required_tests: []
+  required_tests:
+  - dossier_narrative_nv_attention_series
+  - dossier_narrative_nv_candidate_score
+  - dossier_narrative_nv_lifecycle_stage
+  - dossier_narrative_nv_platform_lead
+  - dossier_rank_wr_lane_weights
+  - dossier_rank_wr_recency_factor
+  - dossier_rank_wr_score_rank
   run_bench: true
   bench_name: ''
   bench_budgets_ns: {}

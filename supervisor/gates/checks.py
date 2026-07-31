@@ -221,19 +221,33 @@ _STUB_PATTERNS = [
 
 def check_no_stubs(repo: str, production_globs: list[str]) -> CheckResult:
     hits: list[str] = []
+    matched_files = 0
     root = Path(repo)
     for g in production_globs:
         for f in root.glob(g):
             if f.suffix != ".rs":
                 continue
+            matched_files += 1
             text = f.read_text(encoding="utf-8", errors="ignore")
             # allow markers in #[cfg(test)] blocks only: crude but effective — strip test modules
             text_wo_tests = re.sub(r"#\[cfg\(test\)\][\s\S]*?\n}\n", "", text)
             for rx in _STUB_PATTERNS:
                 if rx.search(text_wo_tests):
                     hits.append(f"{f.relative_to(root)}: {rx.pattern}")
-    return CheckResult("no_stubs", len(hits) == 0, {"hits": hits},
-                       "no stubs" if not hits else f"{len(hits)} stub/TODO in production paths")
+    # Empty-set guard: a typo'd glob matching zero files would silently pass. Fail closed
+    # and report the matched count so the assertion ("these N files have no stubs") is
+    # explicit, not an unexamined empty set.
+    if matched_files == 0:
+        return CheckResult("no_stubs", False,
+                           {"hits": [], "matched_files": 0, "globs": production_globs},
+                           f"EMPTY-SET: production_globs matched 0 .rs files — glob may be typo'd")
+    if hits:
+        return CheckResult("no_stubs", False,
+                           {"hits": hits, "matched_files": matched_files},
+                           f"{len(hits)} stub/TODO in production paths ({matched_files} files scanned)")
+    return CheckResult("no_stubs", True,
+                       {"hits": [], "matched_files": matched_files},
+                       f"no stubs ({matched_files} files scanned)")
 
 
 # --------------------------------------------------------------------------- tests

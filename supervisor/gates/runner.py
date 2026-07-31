@@ -8,6 +8,8 @@ recorded as trust signals (used by the orchestrator to shrink task size for over
 """
 from __future__ import annotations
 
+import hashlib
+import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -37,6 +39,81 @@ class GateConfig:
     require_dossiers: list[str] = field(default_factory=list)  # hard components this milestone needs
     infra_manifest: str = ""                       # infrastructure manifest (machine provenance, §9.5)
     criteria_touched: list[int] = field(default_factory=list)  # criteria this milestone certifies
+
+
+# --------------------------------------------------------------------- criterion bindings
+# A criterion is satisfied ONLY by a typed binding of exactly one kind:
+#   MECHANICAL — a named check in the battery that causally verifies the property.
+#   ARTIFACT   — a specific study or doc, pinned by content hash, that argues the property.
+#   OPERATOR   — a human attestation recorded under the b5a3afc TTY guard.
+# A criterion with no binding of any type is UNVERIFIED and BLOCKS certification.
+# An ARTIFACT binding whose hash no longer matches is UNVERIFIED, not satisfied.
+#
+# The constitution declares 18 acceptance criteria. Most are NOT code properties
+# (capital allocation, key custody, signal-horizon matching) and have no mechanical
+# check. They require ARTIFACT or OPERATOR bindings. This mapping is the ONLY
+# authority for criterion satisfaction — the blanket `gate_passed` loop is dead.
+@dataclass
+class CriterionBinding:
+    criterion: int
+    binding_type: str       # 'MECHANICAL' | 'ARTIFACT' | 'OPERATOR' | 'UNVERIFIED'
+    check_name: str = ""    # for MECHANICAL: the CheckResult.name that verifies it
+    artifact_path: str = "" # for ARTIFACT: repo-relative path to the study/doc
+    artifact_sha256: str = ""  # for ARTIFACT: pinned content hash at binding time
+    operator_note: str = "" # for OPERATOR: what the operator attested
+    note: str = ""          # free-form explanation
+
+    def __repr__(self) -> str:
+        if self.binding_type == "MECHANICAL":
+            return f"[{self.criterion}] MECHANICAL -> {self.check_name}"
+        elif self.binding_type == "ARTIFACT":
+            return f"[{self.criterion}] ARTIFACT -> {self.artifact_path}@{self.artifact_sha256[:12]}"
+        elif self.binding_type == "OPERATOR":
+            return f"[{self.criterion}] OPERATOR -> {self.operator_note}"
+        return f"[{self.criterion}] UNVERIFIED"
+
+
+def _file_sha256(path: str, repo: str = "") -> str:
+    """Content hash of a repo-relative file. Returns '' if the file is missing."""
+    full = os.path.join(repo, path) if repo else path
+    try:
+        h = hashlib.sha256()
+        with open(full, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except (OSError, FileNotFoundError):
+        return ""
+
+
+# The authoritative criterion binding table. Every criterion the constitution
+# declares MUST appear here. UNVERIFIED means: no binding exists, and the
+# criterion BLOCKS certification until one is established.
+CRITERION_BINDINGS: dict[int, CriterionBinding] = {
+    52:  CriterionBinding(52,  "UNVERIFIED", note="key-custody election — operator process, not code"),
+    69:  CriterionBinding(69,  "UNVERIFIED", note="native Windows / no WSL dependency — requires artifact study"),
+    81:  CriterionBinding(81,  "UNVERIFIED", note="taxonomy forward-only — requires artifact study"),
+    85:  CriterionBinding(85,  "UNVERIFIED", note="capital allocation — policy, not code"),
+    96:  CriterionBinding(96,  "UNVERIFIED", note="signal-horizon matching law — requires artifact study"),
+    97:  CriterionBinding(97,  "UNVERIFIED", note="scalp-readiness — requires artifact study"),
+    98:  CriterionBinding(98,  "UNVERIFIED", note="no-edge rescoping — requires artifact study"),
+    99:  CriterionBinding(99,  "UNVERIFIED", note="memory soak / no unbounded growth — check_memory_soak exists but soak_bin not built"),
+    102: CriterionBinding(102, "UNVERIFIED", note="safety constants static — requires artifact study"),
+    103: CriterionBinding(103, "UNVERIFIED", note="latency budgets — check_bench exists but bench_name empty (Shape 3)"),
+    109: CriterionBinding(109, "MECHANICAL", check_name="hotpath_lint",
+                          note="§24 Rust perf law — Phase-A clauses enforced by lint; deploy clauses require Phase-B"),
+    110: CriterionBinding(110, "UNVERIFIED", note="attention spend source — policy, not code"),
+    111: CriterionBinding(111, "UNVERIFIED", note="amendment subsystem — requires artifact study"),
+    112: CriterionBinding(112, "UNVERIFIED", note="size-viability band — requires artifact study"),
+    113: CriterionBinding(113, "UNVERIFIED",
+                          note="two-phase build boundary — check_phase_provenance exists but is inside the bench block (bench_name='' → skipped)"),
+    114: CriterionBinding(114, "MECHANICAL", check_name="build",
+                          note="build execution surfaces — cargo build compiles all 26 workspace members"),
+    115: CriterionBinding(115, "MECHANICAL", check_name="test",
+                          note="pq-narrative property-tested — required_tests now lists dossier_narrative_nv_* tests; check_tests verifies they ran"),
+    116: CriterionBinding(116, "MECHANICAL", check_name="test",
+                          note="pq-watchlist never-idle — required_tests now lists dossier_rank_wr_* tests; check_tests verifies they ran"),
+}
 
 
 @dataclass
@@ -105,6 +182,15 @@ class GateRunner:
                                               cfg.lint_money_globs or None))
         if cfg.run_determinism and cfg.replay_bin:
             results.append(checks.check_determinism(self.repo, cfg.replay_bin, cfg.replay_fixture))
+        elif cfg.run_determinism:
+            # Shape 3 fail-closed: declared run_determinism: true but replay_bin is empty.
+            # The guard would silently no-op; instead emit a failing result so the gate
+            # cannot pass while a declared check is absent.
+            results.append(checks.CheckResult(
+                "determinism", False,
+                {"declared": True, "replay_bin": ""},
+                "declared run_determinism: true but replay_bin is empty — check is a silent no-op"))
+
         if cfg.run_bench and cfg.bench_name:
             # §9.5 / criterion 113: a benchmark (hardware-measured latency) is Phase-B-exclusive.
             # It may be certified only on the deployment host. Fail closed otherwise — author
@@ -123,6 +209,12 @@ class GateRunner:
                                                   cfg.bench_budgets_ns))
             # if not on deployment hardware, the bench itself is NOT run and NOT recorded as
             # passing — the phase gate is the failing signal, and it explains why.
+        elif cfg.run_bench:
+            # Shape 3 fail-closed: declared run_bench: true but bench_name is empty.
+            results.append(checks.CheckResult(
+                "bench", False,
+                {"declared": True, "bench_name": ""},
+                "declared run_bench: true but bench_name is empty — check is a silent no-op"))
         elif cfg.criteria_touched:
             # Non-bench milestones still record their phase for any Phase-B criteria they claim.
             pinned = ""
@@ -148,14 +240,70 @@ class GateRunner:
         for r in results:
             self._record(milestone, r)
 
-        # criteria mapping: each scoped criterion must map to a passing gate/artifact.
+        # --- Typed criterion satisfaction (replaces the blanket loop) ---
+        # OLD (dead): for crit in scoped_criteria: set_criterion(satisfied=gate_passed)
+        #             unmet = unsatisfied_criteria(...); passed = gate_passed and not unmet
+        # The `not unmet` conjunct was dead code: if gate_passed=True, every criterion was
+        # set satisfied=1, so unmet was empty BY CONSTRUCTION. The conjunct could never
+        # change the verdict. It reduced exactly to `gate_passed`.
+        #
+        # NEW: each criterion is evaluated against its typed binding in CRITERION_BINDINGS.
+        # MECHANICAL: satisfied only if the named check exists in results AND passed.
+        # ARTIFACT:   satisfied only if the pinned sha256 still matches the file on disk.
+        # OPERATOR:   satisfied (operator has attested; recorded separately).
+        # UNVERIFIED: blocks certification — no binding of any type exists.
         gate_passed = all(r.passed for r in results)
-        for crit in scoped_criteria:
-            # a criterion is satisfied only if the gate battery passed; the orchestrator may
-            # additionally attach artifact evidence for criteria not covered by a mechanical gate.
-            self.store.set_criterion(crit, milestone, evidence=self._summary(results),
-                                     satisfied=gate_passed, run_id=self.run_id)
-        unmet = self.store.unsatisfied_criteria(milestone, self.run_id)
+        result_by_name = {r.name: r for r in results}
+        unmet: list[str] = []
+        for crit_id in scoped_criteria:
+            binding = CRITERION_BINDINGS.get(crit_id)
+            if binding is None:
+                unmet.append(f"criterion {crit_id}: not in CRITERION_BINDINGS — UNVERIFIED")
+                self.store.set_criterion(str(crit_id), milestone,
+                                        evidence=f"UNVERIFIED: no binding defined",
+                                        satisfied=False, run_id=self.run_id)
+                continue
+            if binding.binding_type == "MECHANICAL":
+                check = result_by_name.get(binding.check_name)
+                if check is None:
+                    unmet.append(f"criterion {crit_id}: MECHANICAL binding -> {binding.check_name} "
+                                f"not in results (check did not run)")
+                    self.store.set_criterion(str(crit_id), milestone,
+                                            evidence=f"MECHANICAL:{binding.check_name} absent",
+                                            satisfied=False, run_id=self.run_id)
+                elif not check.passed:
+                    unmet.append(f"criterion {crit_id}: MECHANICAL binding -> {binding.check_name} FAILED")
+                    self.store.set_criterion(str(crit_id), milestone,
+                                            evidence=f"MECHANICAL:{binding.check_name} failed",
+                                            satisfied=False, run_id=self.run_id)
+                else:
+                    self.store.set_criterion(str(crit_id), milestone,
+                                            evidence=f"MECHANICAL:{binding.check_name} passed",
+                                            satisfied=True, run_id=self.run_id)
+            elif binding.binding_type == "ARTIFACT":
+                current_hash = _file_sha256(binding.artifact_path, self.repo)
+                if not current_hash or current_hash != binding.artifact_sha256:
+                    unmet.append(f"criterion {crit_id}: ARTIFACT binding -> {binding.artifact_path} "
+                                f"hash mismatch or file missing")
+                    self.store.set_criterion(str(crit_id), milestone,
+                                            evidence=f"ARTIFACT:{binding.artifact_path} hash-stale",
+                                            satisfied=False, run_id=self.run_id)
+                else:
+                    self.store.set_criterion(str(crit_id), milestone,
+                                            evidence=f"ARTIFACT:{binding.artifact_path} hash-verified",
+                                            satisfied=True, run_id=self.run_id)
+            elif binding.binding_type == "OPERATOR":
+                # Operator attestations are recorded separately; if present, the criterion
+                # is satisfied. This binding type marks the criterion as operator-verified.
+                self.store.set_criterion(str(crit_id), milestone,
+                                        evidence=f"OPERATOR:{binding.operator_note}",
+                                        satisfied=True, run_id=self.run_id)
+            else:  # UNVERIFIED
+                unmet.append(f"criterion {crit_id}: UNVERIFIED — {binding.note}")
+                self.store.set_criterion(str(crit_id), milestone,
+                                        evidence=f"UNVERIFIED:{binding.note}",
+                                        satisfied=False, run_id=self.run_id)
+
         passed = gate_passed and not unmet
         return GateVerdict(passed, results,
                            [] if passed else [f"unmet criteria: {unmet}"])

@@ -341,13 +341,29 @@ def check_hotpath_lint(repo: str,
         hot_globs = hot_globs if hot_globs is not None else cfg_hot
         money_globs = money_globs if money_globs is not None else cfg_money
     rules = default_rules(hot_globs, money_globs) + load_repo_rules(repo)
+
+    # Empty-set guard: a typo'd glob matching zero files makes every rule silently
+    # vacuous — "clean" with nothing scanned. Count matched files per glob set and
+    # fail closed on zero, so the assertion ("these N files are clean") is explicit.
+    hot_files = _files_for(repo, hot_globs) if hot_globs else set()
+    money_files = _files_for(repo, money_globs) if money_globs else set()
+    all_files = _files_for(repo, ALL_RUST)
+    matched_count = len(hot_files | money_files | all_files)
+    if matched_count == 0:
+        return CheckResult("hotpath_lint", False,
+                           {"violations": [], "matched_files": 0,
+                            "hot_globs": hot_globs, "money_globs": money_globs},
+                           "EMPTY-SET: lint globs matched 0 .rs files — globs may be typo'd")
+
     violations, allowed = scan(repo, rules)
     passed = not violations
     extra = sum(1 for r in load_repo_rules(repo))
     summary = (f"clean ({len(allowed)} explicit LINT-ALLOW exemptions; "
-               f"{extra} repo rule(s) merged)" if passed
+               f"{extra} repo rule(s) merged; {matched_count} files scanned)" if passed
                else f"{len(violations)} violation(s); first: "
-                    f"{violations[0]['rule']} {violations[0]['file']}:{violations[0]['line']}")
+                    f"{violations[0]['rule']} {violations[0]['file']}:{violations[0]['line']} "
+                    f"({matched_count} files scanned)")
     return CheckResult("hotpath_lint", passed,
-                       {"violations": violations[:100], "allowed": allowed[:100]},
+                       {"violations": violations[:100], "allowed": allowed[:100],
+                        "matched_files": matched_count},
                        summary=summary)
