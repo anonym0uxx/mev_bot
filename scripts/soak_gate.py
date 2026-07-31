@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
-soak_gate.py — portable steady-state RSS-trend gate (§99 / §57 memory-safety mandate).
+soak_gate.py — portable RSS-trend self-test of THIS HARNESS's own CPython allocator.
+
+NOT criterion-99 evidence. NOT engine evidence.
 
 Why this exists
-    Acceptance criterion 99 (and the §56 "System-memory safety and continuous memory
-    optimization" mandate) requires: "a CI soak test proves steady-state RSS does not trend
-    upward (no leaks)". The real gate is a long, server-side soak of the running bot under
-    sustained synthetic load. That is a Phase-B (deployment-hardware) artifact and is meaningless
-    to run for hours on a CI runner.
+    Acceptance criterion 99 requires a server-side soak of the running TRADING ENGINE under
+    sustained synthetic load, proving steady-state RSS does not trend upward. That is a Phase-B
+    (deployment-hardware) artifact and is meaningless to run for hours on a CI runner.
 
-    THIS module is the deterministic, fast, PORTABLE PROXY for that gate — runnable in seconds on
-    any developer machine or CI runner. It does not certify the server soak; it enforces the same
-    invariant in miniature so a gross leak in the portable-profile tooling is caught early, and it
-    documents itself as the proxy it is. The server-side long-soak remains SERVER-DEFERRED.
+    THIS module measures the RSS of THIS PYTHON SCRIPT'S OWN CPython allocator while running
+    a bounded synthetic workload. The process under test is the gate script's interpreter —
+    NOT the trading engine. It does not certify criterion 99. It does not enforce the same
+    invariant in miniature; the invariant for criterion 99 is the engine's memory behaviour
+    under load, and this gate never touches the engine. A pass here is evidence only that
+    the Python harness's own allocator reaches steady state on a bounded workload — adjacent
+    to the criterion, not causally connected to it. Criterion 99 stays UNVERIFIED until the
+    real server-side engine soak exists.
 
 How pass/fail is decided (two independent bounds; a leak must clear BOTH to pass)
     1. Warm up: the workload runs a few rounds before any sample, so interpreter/allocator
@@ -251,7 +255,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     res = run_soak(checkpoints=args.checkpoints, warmup=args.warmup,
                    rounds_per_checkpoint=args.rounds)
-    print(f"[soak_gate] portable RSS-trend proxy (§99): {res.summary()}")
+    print(f"[soak_gate] harness RSS-trend self-test (NOT criterion 99; measures CPython allocator, not engine): {res.summary()}")
 
     if args.self_test:
         leak_store: list = []

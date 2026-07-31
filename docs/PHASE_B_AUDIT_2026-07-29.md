@@ -290,6 +290,97 @@ Per §2 of the activation directive, I acknowledge and will not violate:
 
 ---
 
+## 9. ERRATUM — soak_gate.py vacuous-proxy misrepresentation (2026-07-30)
+
+**Finding.** Two implementations of criterion 99 lived side by side:
+
+- `check_memory_soak` (checks.py:436-461) is HONEST. It spawns the engine
+  soak binary; when that binary does not exist it fails closed with
+  "criterion 99 not yet verifiable". It has never reported a pass.
+- `soak_gate.py` (scripts/) was VACUOUS. It measured the harness script's
+  OWN CPython heap (via `GetCurrentProcess()` / `/proc/self/status`) while
+  running a bounded Python workload — NOT the trading engine — and reported
+  green. Its docstring falsely claimed it "enforces the same invariant in
+  miniature." It does not. The invariant for criterion 99 is the engine's
+  memory behaviour under sustained load; this gate never touches the engine.
+
+The Phase-B preflight (Row 12, which runs `ci_gate.py`) counted the vacuous
+gate's green. The honest gate (`check_memory_soak`) was never called from
+the gate runner at all. A deferred real gate shadowed by a vacuous proxy
+that passes anyway — that is the structural pattern.
+
+**Corrective action (authorized patches only).**
+
+1. **soak_gate.py docstring**: deleted the claim "enforces the same invariant
+   in miniature"; replaced with a plain statement that the module measures
+   the harness's own CPython allocator, not the engine. Removed the §99
+   reference from the title and the `main()` print line.
+2. **ci_gate.py soak section**: comment and print label now state plainly
+   what is measured (harness CPython RSS, not engine). The verdict no longer
+   maps to criterion 99. Criterion 99 stays UNVERIFIED. The row may still
+   run; its pass is not engine evidence.
+3. **No other code changed.** The soak harness binary was NOT built.
+   `PrivateUsage` on the engine process was NOT wired. Both are real work
+   that follows the audit below.
+
+**Structural pattern name: shadowed honest gate by vacuous proxy.**
+
+### 9.1 — Dead conjunct in milestone_gate (criterion satisfaction is vacuous)
+
+runner.py:152-160:
+
+```
+gate_passed = all(r.passed for r in results)           # line 152
+for crit in scoped_criteria:                            # line 153
+    self.store.set_criterion(crit, milestone,           # line 156
+                             satisfied=gate_passed, ...) # ← EVERY crit gets gate_passed
+unmet = self.store.unsatisfied_criteria(milestone, ...) # line 158 — queries satisfied=0
+passed = gate_passed and not unmet                      # line 159
+```
+
+The loop sets **every** scoped criterion to `satisfied=gate_passed` for this run_id.
+`unsatisfied_criteria` then queries for `satisfied=0` rows. If `gate_passed` is True,
+every criterion was set to `satisfied=1` — so `unmet` is empty **by construction**.
+The second conjunct `not unmet` cannot be False when the first (`gate_passed`) is True.
+If `gate_passed` is False, the result is already False from the first conjunct alone.
+
+**`passed = gate_passed and not unmet` reduces exactly to `gate_passed`.**
+The `not unmet` conjunct is dead code wearing the costume of a criterion-satisfaction
+control. It can never change the verdict. This is the fifth instance this month of
+the recurring defect: **dead control** — a mechanism that purports to enforce a
+constraint but is structurally incapable of producing a failing signal.
+
+Prior instances: (1) check_fmt ran mutating `cargo fmt` and returned True unconditionally;
+(2) soak_gate.py measured the wrong process and reported green; (3) pin-manifest
+`--yes --who` accepted unverified operator input as verification; (4) step23's
+unverified launcher install claimed verified without verification; (5) this dead conjunct.
+
+### 9.2 — Blanket criterion mapping (not a 99 problem — the whole system)
+
+The dead conjunct's root cause is upstream: `set_criterion` is called with
+`satisfied=gate_passed` for **every** scoped criterion, not per-criterion. There is no
+mapping from a specific criterion to the specific check that verifies it. The gate
+battery runs 7-8 checks (build, fmt, clippy, no_stubs, tests, secrets, dossier_integrity,
+hotpath_lint). The constitution declares 18 acceptance criteria. Every certified=true
+this repo has ever emitted blanket-satisfied **all** scoped criteria with the overall
+gate_passed flag, regardless of whether any check in the battery actually tests that
+criterion. Criteria 99 (memory soak), 103 (latency budgets), and determinism are
+satisfied by a battery that never runs their checks — but so is every other criterion
+not coincidentally covered by the seven checks in `results`.
+
+### 9.3 — Withdrawn: "guarded by check_build" (false comfort on empty-set risk)
+
+The audit initially cleared check_no_stubs and check_hotpath_lint Q3 empty-set risk by
+reasoning that a zero-file glob implies a failing build. **This is withdrawn.** `cargo
+build` compiles from `Cargo.toml` (which lists 26 workspace members by path). The globs
+are independent path patterns in `lint_rules.yaml` / `production_globs`. A typo'd glob
+matches zero files, the build passes (Cargo.toml is unchanged), and the lint reports
+"clean" — a vacuous pass with no guard. Both checks are **Q3-vacuous with no mechanical
+guard**. The current configuration matches real files (253/37/117), but that is a
+property of the current repo state, not a structural protection in the check itself.
+
+---
+
 *This audit was produced by actual inspection of the repository, host
 hardware, running processes, git history, filesystem, and MCP tools.
 Every VERIFIED item was confirmed by a real command execution.
