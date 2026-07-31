@@ -310,6 +310,12 @@ def main() -> int:
         rows.append(r)
 
     # --- 11-12. The python gates --------------------------------------------
+    # Row 11 runs regression_e2e.py. The soak proxy (CPython allocator RSS)
+    # was removed from both ci_gate.py and the supervisor test suite's
+    # bounded-workload assertion. Criterion 99 (engine memory soak) is
+    # UNVERIFIED. Engine memory is UNMEASURED — a green preflight must NEVER
+    # be readable as "memory is fine." The real engine soak harness belongs
+    # in §4.5 deploy-hardware tuning.
     for n, name, script in [
         (11, "scripts/regression_e2e.py", "scripts/regression_e2e.py"),
         (12, "scripts/ci_gate.py", "scripts/ci_gate.py"),
@@ -351,7 +357,9 @@ def main() -> int:
                             **({"extra": x.extra} if x.extra else {}),
                         }
                         for x in rows
-                    ]
+                    ],
+                    "engine_memory": "UNMEASURED",
+                    "criterion_99": "UNVERIFIED",
                 },
                 indent=2,
             )
@@ -376,6 +384,12 @@ def main() -> int:
             print(f"PREFLIGHT FAILED — {len(failed)} blocking row(s): "
                   f"{', '.join(str(x.n) for x in failed)}")
             print("Do NOT begin a Phase-B work item. Report this output verbatim.")
+            print(
+                "\nENGINE MEMORY: UNMEASURED. The soak proxy (CPython allocator RSS) was\n"
+                "removed from the preflight and ci_gate. Criterion 99 (engine memory soak)\n"
+                "is UNVERIFIED. The real engine soak harness belongs in §4.5 deploy-\n"
+                "hardware tuning, where engine performance work happens anyway."
+            )
         return 1
     if not args.json:
         if skipped:
@@ -389,6 +403,14 @@ def main() -> int:
             "\nThis establishes the TREE is sound. It says nothing about the work you are\n"
             "about to do. docs/PHASE_B_PREFLIGHT.md §2 (STOP AND ASK) still applies, and\n"
             "those are decisions no script can see coming."
+        )
+        # Engine memory caveat — criterion 99 is UNVERIFIED. A green preflight
+        # must never be readable as "memory is fine."
+        print(
+            "\nENGINE MEMORY: UNMEASURED. The soak proxy (CPython allocator RSS) was\n"
+            "removed from the preflight and ci_gate. Criterion 99 (engine memory soak)\n"
+            "is UNVERIFIED. The real engine soak harness belongs in §4.5 deploy-\n"
+            "hardware tuning, where engine performance work happens anyway."
         )
     return 0
 

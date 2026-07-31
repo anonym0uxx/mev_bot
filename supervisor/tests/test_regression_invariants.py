@@ -10,8 +10,11 @@ Owned by the end-to-end regression layer, not the module authors. Three guards:
      round-trips through the classifier (explicit passthrough) and lands in the
      distribution aggregator.
   3. Self-healing properties — the soak gate still CATCHES an injected leak
-     (not vacuous), and evidence.py migrations are IDEMPOTENT (constructing the
-     store twice against the same file, and calling _migrate twice, is a no-op).
+     (not vacuous: the leak-detection assertion remains; the bounded-workload
+     assertion was removed because it measured CPython allocator noise, not
+     engine memory — criterion 99 is UNVERIFIED, engine memory is UNMEASURED).
+     Evidence.py migrations are IDEMPOTENT (constructing the store twice against
+     the same file, and calling _migrate twice, is a no-op).
 
 Stdlib unittest; run with `python3 -m unittest`.
 """
@@ -152,9 +155,15 @@ class SelfHealingInvariants(unittest.TestCase):
         res = soak_gate.run_soak(checkpoints=14, warmup=6, rounds_per_checkpoint=3,
                                  workload=lambda r: soak_gate.leaky_workload(store, r))
         self.assertFalse(res.passed, res.summary())
-        # And the bounded workload still passes on the same machine.
-        ok = soak_gate.run_soak(checkpoints=14, warmup=6, rounds_per_checkpoint=2)
-        self.assertTrue(ok.passed, ok.summary())
+        # NOTE: The bounded-workload assertion was REMOVED. It asserted that a
+        # bounded CPython allocator workload PASSES the soak gate — but the
+        # gate measures the CPython harness allocator RSS, NOT the trading
+        # engine's memory behaviour. The 55× run-to-run variance in RSS slope
+        # (documented in docs/TASK4_CI_MILESTONE_CONTRADICTION_2026-07-31.md)
+        # made this assertion flaky on this machine without telling us anything
+        # about the engine. Criterion 99 (engine memory soak) is UNVERIFIED.
+        # Engine memory is UNMEASURED — the real engine soak harness belongs
+        # in §4.5 deploy-hardware tuning, not in the supervisor test suite.
 
     def test_evidence_migrations_are_idempotent(self) -> None:
         # Constructing the store twice against the SAME file re-runs SCHEMA +
