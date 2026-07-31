@@ -962,6 +962,76 @@ def _make_scratch_verifier(repo_path: str):
     return verify
 
 
+# ------------------------------------------------------------------ output capping
+#
+# Context-discipline patch (2026-07-31): every MCP tool result is capped at
+# ~2,000 tokens before it enters the JSON-RPC response.  The full pre-cap
+# output is written to D:\tmp\toolout\<id>.txt; the elision is VISIBLE and
+# addressable — never silent.  Every result (capped or not) is logged to
+# D:\tmp\toolout\sizes.tsv so we can measure what fraction of context is
+# actually tool output on this workload.
+
+_CAP_CHARS = 8000          # ~2,000 tokens at ~4 chars/token
+_HEAD_CHARS = 3600         # head budget (~900 tokens)
+_TAIL_CHARS = 3600         # tail budget (~900 tokens)
+_TOOLOUT_DIR = Path(r"D:\tmp\toolout")
+_SIZES_TSV = _TOOLOUT_DIR / "sizes.tsv"
+
+
+def _log_size(tool_name: str, pre_cap: int, post_cap: int, full_path: str) -> None:
+    """Append one TSV line per result: timestamp, tool, pre-cap chars, post-cap chars, full-path."""
+    try:
+        _TOOLOUT_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_SIZES_TSV, "a", encoding="utf-8") as fh:
+            fh.write(f"{time.time():.3f}\t{tool_name}\t{pre_cap}\t{post_cap}\t{full_path}\n")
+    except OSError:
+        pass  # logging must never break a tool result
+
+
+def _cap_and_log(full_text: str, tool_name: str) -> str:
+    """Cap *full_text* at ~2,000 tokens.  Under the cap → pass through untouched
+    (still logged).  Over the cap → write the full output to D:\\tmp\\toolout\\<id>.txt
+    and return head + visible-elision-marker + tail.  Never silently truncate."""
+    pre_cap = len(full_text)
+    if pre_cap <= _CAP_CHARS:
+        _log_size(tool_name, pre_cap, pre_cap, "")
+        return full_text
+
+    # Over cap — persist full output, build a visible-elided surrogate.
+    _TOOLOUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    full_path = _TOOLOUT_DIR / f"{out_id}.txt"
+    full_path_str = str(full_path)
+    try:
+        full_path.write_text(full_text, encoding="utf-8")
+    except OSError:
+        full_path_str = f"<write-failed: {full_path}>"
+
+    total_lines = full_text.count("\n") + 1
+
+    # Head: first _HEAD_CHARS chars, trimmed back to the last newline boundary.
+    head = full_text[:_HEAD_CHARS]
+    cut = head.rfind("\n")
+    if cut > 0:
+        head = head[:cut]
+
+    # Tail: last _TAIL_CHARS chars, trimmed forward to the first newline boundary.
+    tail = full_text[-_TAIL_CHARS:]
+    cut = tail.find("\n")
+    if 0 <= cut < len(tail) - 1:
+        tail = tail[cut + 1:]
+
+    head_lines = (head.count("\n") + 1) if head else 0
+    tail_lines = (tail.count("\n") + 1) if tail else 0
+    elided_lines = max(0, total_lines - head_lines - tail_lines)
+
+    marker = (f"\n... [elided {elided_lines} of {total_lines} lines - "
+              f"full output: {full_path_str}]\n")
+    capped = head + marker + tail
+    _log_size(tool_name, pre_cap, len(capped), full_path_str)
+    return capped
+
+
 # ------------------------------------------------------------------ JSON-RPC loop
 def _rpc_result(id_: Any, result: dict) -> dict:
     return {"jsonrpc": "2.0", "id": id_, "result": result}
@@ -994,15 +1064,18 @@ def handle_message(msg: dict, box: ToolBox) -> dict | None:
         try:
             out = box.call(name, args)
             is_err = "error" in out
+            _text = json.dumps(out, indent=2)
+            _capped = _cap_and_log(_text, name)
             return _rpc_result(id_, {
-                "content": [{"type": "text", "text": json.dumps(out, indent=2)}],
+                "content": [{"type": "text", "text": _capped}],
                 "isError": is_err,
             })
         except Exception as e:  # noqa: BLE001 — tool errors must round-trip, not kill the server
+            _err_text = json.dumps({"error": str(e),
+                                    "trace": traceback.format_exc()[-800:]})
+            _capped_err = _cap_and_log(_err_text, name + ":error")
             return _rpc_result(id_, {
-                "content": [{"type": "text",
-                             "text": json.dumps({"error": str(e),
-                                                 "trace": traceback.format_exc()[-800:]})}],
+                "content": [{"type": "text", "text": _capped_err}],
                 "isError": True,
             })
     if id_ is not None:
