@@ -24,12 +24,7 @@ except Exception as e:  # noqa: BLE001
     print(f"[ci_gate] cannot import supervisor package: {e}")
     sys.exit(2)
 
-# soak_gate lives beside this script in scripts/; import by path-adjacency.
-try:
-    import soak_gate
-except Exception:  # noqa: BLE001
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import soak_gate  # type: ignore
+# soak_gate import removed — see removal comment in main() body.
 
 
 def main() -> int:
@@ -69,20 +64,16 @@ def main() -> int:
     if not r.passed:
         failures.append("hot-path-lint")
 
-    # steady-state RSS-trend soak (§99 / §57 memory-safety mandate) — the PORTABLE PROXY for the
-    # server-side long-soak (which stays SERVER-DEFERRED). Bounded workload; asserts steady-state
-    # RSS does not trend upward. Fast and deterministic; fails the gate on a suspected leak.
-    try:
-        soak = soak_gate.run_soak()
-        print(f"[ci_gate] soak (RSS-trend, portable proxy): "
-              f"{'ok' if soak.passed else 'FAIL'} — {soak.summary()}")
-        if not soak.passed:
-            failures.append("soak-rss-trend")
-    except Exception as e:  # noqa: BLE001
-        print(f"[ci_gate] soak gate error: {e}")
-        failures.append("soak-rss-trend")
+    # SOAK GATE REMOVED — it measured the CPython harness allocator RSS on a
+    # bounded Python workload, NOT the trading engine's memory behaviour. Its
+    # green contributed a false pass to ci_gate despite measuring the wrong
+    # system. Criterion 99 (memory soak) stays UNVERIFIED until a real
+    # server-side engine soak harness exists. See docs/TASK4_CI_MILESTONE_
+    # CONTRADICTION_2026-07-31.md and docs/ERRATUM_AND_CORRECTED_TABLE.
+    # soak_gate.py remains available as a standalone script but no longer
+    # participates in ci_gate.
 
-    # dossier presence: any constitution-declared hard component without a dossier fails closed
+    # dossier presence:
     try:
         cons_path = repo / "docs" / "HERMES_ONE_SHOT_PROMPT.md"
         missing = missing_dossiers(str(cons_path) if cons_path.is_file() else None)
