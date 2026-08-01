@@ -276,6 +276,7 @@ def verify_dossiers() -> tuple[bool, str]:
         from supervisor.reinforcement.dossier import load_dossier, HARD_COMPONENTS
         ddir = HERE / "supervisor" / "reinforcement" / "dossiers"
         missing, broken, leaves = [], [], 0
+        safety_errors: list[str] = []
         for comp in HARD_COMPONENTS:
             p = ddir / f"{comp}.yaml"
             if not p.exists():
@@ -283,12 +284,67 @@ def verify_dossiers() -> tuple[bool, str]:
             try:
                 d = load_dossier(p); d.leaf_order(); leaves += len(d.leaves)
             except Exception as e:  # noqa: BLE001
-                broken.append(f"{comp}: {e}")
-        if missing or broken:
-            return False, f"missing={missing or 'none'} broken={broken or 'none'}"
-        return True, f"{len(HARD_COMPONENTS)} dossiers, {leaves} leaves, all load + topo-sort clean"
+                broken.append(f"{comp}: {e}"); continue
+
+            # --- safety count-equality check (criterion 111 / §24b) ---
+            # A dossier with safety: [] loads clean and nothing complains — that is a
+            # control that cannot fail. This check makes it fail: the number of unsafe
+            # blocks in the component's source must equal the number of safety entries.
+            n_unsafe = _count_unsafe_blocks(comp)
+            if n_unsafe != len(d.safety):
+                safety_errors.append(
+                    f"{comp}: {n_unsafe} unsafe blocks in source, {len(d.safety)} safety entries in dossier"
+                )
+
+        if missing or broken or safety_errors:
+            parts = []
+            if missing: parts.append(f"missing={missing}")
+            if broken: parts.append(f"broken={broken}")
+            if safety_errors: parts.append(f"safety_mismatch={safety_errors}")
+            return False, "; ".join(parts)
+        return True, f"{len(HARD_COMPONENTS)} dossiers, {leaves} leaves, all load + topo-sort clean, safety counts verified"
     except Exception as e:  # noqa: BLE001
         return False, f"dossier check errored: {e}"
+
+
+def _count_unsafe_blocks(component: str) -> int:
+    """Count `unsafe` blocks in the component's Rust source files via source scan.
+
+    Uses the same mechanism as the existing libc lint (hotpath_lint.py): regex
+    over .rs files. The component name maps to source files by convention:
+    cpu_numa_tuning -> rust/crates/pump-quant-core/src/cpu_numa_tuning.rs and
+    any test files under rust/crates/*/tests/*cpu_numa_tuning*.rs.
+
+    Returns 0 when no source files are found (the check is only meaningful
+    when the component has Rust source to scan).
+    """
+    import re
+    import glob as _glob
+
+    # Pattern: `unsafe` followed by `{` — counts actual unsafe BLOCKS, not
+    # unsafe fn declarations (whose safety contract is at the trait definition).
+    # The keyword in a `//` comment line is excluded below.
+    pattern = re.compile(r"^\s*(?!//).*\bunsafe\s*\{", re.MULTILINE)
+
+    # Candidate source paths: the main source file + test files matching the component.
+    candidates: list[str] = []
+    candidates.extend(_glob.glob(str(HERE / "rust" / "crates" / "*" / "src" / f"{component}.rs")))
+    candidates.extend(_glob.glob(str(HERE / "rust" / "crates" / "*" / "src" / "**" / f"{component}.rs"), ))
+    candidates.extend(_glob.glob(str(HERE / "rust" / "crates" / "*" / "tests" / f"*{component}*.rs")))
+
+    count = 0
+    for path in candidates:
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+            # Remove comment lines so `unsafe` in comments is not counted.
+            lines = "\n".join(
+                line for line in text.splitlines()
+                if not line.strip().startswith("//")
+            )
+            count += len(pattern.findall(lines))
+        except Exception:  # noqa: BLE001
+            pass
+    return count
 
 
 def place_scaffold(repo: Path, check_only: bool) -> str:
