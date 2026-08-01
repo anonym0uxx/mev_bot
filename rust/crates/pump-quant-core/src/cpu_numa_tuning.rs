@@ -804,7 +804,7 @@ impl OsTune for RecordingOs {
 // ===========================================================================
 
 #[cfg(windows)]
-mod win_adapter {
+pub mod win_adapter {
     use super::{
         GroupAffinity, OsErr, OsTune, Prio, ThreadId,
     };
