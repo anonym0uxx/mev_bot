@@ -119,6 +119,18 @@ pub const META_PHASE_NEUTRAL: MetaSaturationState = MetaSaturationState::Emergin
 /// first (deterministic — no clock, no insertion order).
 pub const FAMILY_TABLE_CAP: usize = 4_096;
 
+/// §99 bound on the per-mint holder-sample timestamp map. Keyed by `MintKey`
+/// (u64 hash), evicted lexicographically-smallest first — matching the
+/// `HolderGrowthTracker` and `HolderFlow` pattern. Without this cap the map
+/// grows unbounded in production as new mints arrive.
+pub const HOLDER_LAST_NS_CAP: usize = 4_096;
+
+/// §99 bound on the per-category meta totals map. Keyed by `EntityId` (u64),
+/// evicted lexicographically-smallest first. Categories are bounded by the
+/// mint universe, but without an explicit cap a runaway category-id space
+/// (e.g. hash collisions, adversarial inputs) grows without bound.
+pub const META_PREV_TOTALS_CAP: usize = 4_096;
+
 // ---------------------------------------------------------------------------
 // Ordinal crosswalks
 // ---------------------------------------------------------------------------
@@ -304,6 +316,12 @@ impl MeasuredState {
             )
             .is_ok();
         if ok {
+            // §99 cap: evict lexicographically-smallest key at capacity.
+            if self.holder_last_ns.len() >= HOLDER_LAST_NS_CAP {
+                if let Some(&victim) = self.holder_last_ns.keys().next() {
+                    self.holder_last_ns.remove(&victim);
+                }
+            }
             self.holder_last_ns.insert(mint_id, info_time_ns);
         }
         ok
@@ -475,6 +493,14 @@ impl MeasuredState {
         slot: u64,
         totals: MetaTotals,
     ) -> Option<MetaSampleWrite> {
+        // §99 cap: evict lexicographically-smallest key at capacity BEFORE insert.
+        if !self.meta_prev_totals.contains_key(&category)
+            && self.meta_prev_totals.len() >= META_PREV_TOTALS_CAP
+        {
+            if let Some(&victim) = self.meta_prev_totals.keys().next() {
+                self.meta_prev_totals.remove(&victim);
+            }
+        }
         let prev = self
             .meta_prev_totals
             .insert(category, totals)

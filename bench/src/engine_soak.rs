@@ -99,8 +99,19 @@ fn mint(tag: u64) -> Mint {
 /// Generate a mixed event stream that exercises every lane:
 /// MarketTrade (price discovery), OnchainConfirm (depth), NarrativeSample
 /// (social), and periodic Tick (gate/settlement).
-fn next_event(mint_idx: u64, tick_idx: u64) -> AppEvent {
-    let mt = mint(mint_idx % 256);
+///
+/// When `churn` > 0: every `churn_interval` ticks, the mint base shifts by
+/// `churn` so a fresh batch of keys enters the engine. The key space grows
+/// unbounded, exposing per-mint unbounded maps (holder_last_ns,
+/// meta_prev_totals) that the fixed 256-mint replay cannot reach.
+fn next_event(mint_idx: u64, tick_idx: u64, churn: u64, churn_interval: u64) -> AppEvent {
+    // Base mint set shifts upward when churn is active.
+    let base = if churn > 0 {
+        (tick_idx / churn_interval) * churn
+    } else {
+        0
+    };
+    let mt = mint(base + (mint_idx % 256));
     match tick_idx % 7 {
         0..=2 => AppEvent::MarketTrade {
             mint: mt,
@@ -144,10 +155,15 @@ fn main() {
     let duration_secs = parse_arg(&args, "--duration", 60);
     let n_mints = parse_arg(&args, "--mints", 256);
     let tick_rate = parse_arg(&args, "--tick-rate", 5000);
+    // --churn N: rotate to a fresh set of N new mint keys every `churn_interval`
+    // ticks, so the key space grows unbounded across the run. Without this the
+    // soak replays a bounded key set and cannot expose per-mint unbounded maps.
+    let churn_limit = parse_arg(&args, "--churn", 0); // 0 = disabled
+    let churn_interval = 5000u64; // introduce a new mint batch every 5000 ticks
 
     println!("== engine soak harness (release) ==");
     println!(
-        "  duration: {duration_secs}s, mints: {n_mints}, target tick-rate: {tick_rate}/s"
+        "  duration: {duration_secs}s, mints: {n_mints}, target tick-rate: {tick_rate}/s, churn: {churn_limit}"
     );
     println!();
 
@@ -188,17 +204,32 @@ fn main() {
     let window_secs = 10;
     let tick_interval_us = 1_000_000u64 / tick_rate;
 
-    let mut all_latencies: Vec<u64> = Vec::new();
+    let mut all_latencies: Vec<u64> = Vec::new(); // kept for len/capacity report only; no longer accumulates
     let mut window_latencies: Vec<u64> = Vec::new();
+    let mut window_stats: Vec<(u64, u64, u64, u64, u64, usize)> = Vec::new(); // (p50, p95, p99, p999, max, n)
     let mut tick_count = 0u64;
     let mut mint_idx = 0u64;
     let mut window_idx = 0u64;
     let start = Instant::now();
     let mut next_window = start + Duration::from_secs(window_secs);
+    let mut next_rss_sample = start + Duration::from_secs(60);
 
     print!("  window 0: ");
     loop {
         let now = Instant::now();
+        // RSS sample every 60s — the curve decides leak vs warm-up.
+        if now >= next_rss_sample {
+            let rss_now = rss_bytes();
+            println!(
+                "  [RSS @ {}s: {} bytes ({:.1} MB)]",
+                start.elapsed().as_secs(),
+                rss_now,
+                rss_now as f64 / 1e6
+            );
+            next_rss_sample = start + Duration::from_secs(
+                (start.elapsed().as_secs() / 60 + 1) * 60,
+            );
+        }
         if now >= next_window {
             // Report window stats.
             if !window_latencies.is_empty() {
@@ -207,11 +238,16 @@ fn main() {
                 let w_p95 = pct(&mut s, 95.0);
                 let w_p99 = pct(&mut s, 99.0);
                 let w_p999 = pct(&mut s, 99.9);
+                let w_max = *window_latencies.iter().max().unwrap_or(&0);
                 println!(
-                    "p50 {w_p50:>6}ns p95 {w_p95:>6}ns p99 {w_p99:>6}ns p999 {w_p999:>6}ns [{} ticks]",
+                    "p50 {w_p50:>6}ns p95 {w_p95:>6}ns p99 {w_p99:>6}ns p999 {w_p999:>6}ns max {w_max:>8}ns [{} ticks]",
                     window_latencies.len()
                 );
-                all_latencies.extend(window_latencies.drain(..));
+                window_stats.push((w_p50, w_p95, w_p99, w_p999, w_max, window_latencies.len()));
+                // DRAIN per window — do NOT accumulate into all_latencies.
+                // The Vec capacity-doubling + clone+sort on the tick thread was
+                // inflating RSS and p999. Window stats are already computed above.
+                window_latencies.clear();
             }
             window_idx += 1;
             next_window = start + Duration::from_secs((window_idx + 1) * window_secs);
@@ -221,7 +257,7 @@ fn main() {
             print!("  window {window_idx}: ");
         }
 
-        let event = next_event(mint_idx, tick_count);
+        let event = next_event(mint_idx, tick_count, churn_limit, churn_interval);
         let t = Instant::now();
         eng.tick(black_box(event));
         let lat = t.elapsed().as_nanos() as u64;
@@ -241,16 +277,26 @@ fn main() {
     let elapsed = start.elapsed();
     let rss_after = rss_bytes();
 
-    // Aggregate stats.
-    if all_latencies.is_empty() {
-        all_latencies.extend(window_latencies.drain(..));
+    // Aggregate stats from per-window summaries (no global sample buffer).
+    if all_latencies.is_empty() && !window_latencies.is_empty() {
+        // Capture the last window if the loop ended mid-window.
+        let mut s = window_latencies.clone();
+        let p50 = pct(&mut s, 50.0);
+        let p95 = pct(&mut s, 95.0);
+        let p99 = pct(&mut s, 99.0);
+        let p999 = pct(&mut s, 99.9);
+        let max_lat = *s.iter().max().unwrap_or(&0);
+        window_stats.push((p50, p95, p99, p999, max_lat, s.len()));
+        window_latencies.clear();
     }
-    let mut s = all_latencies.clone();
-    let p50 = pct(&mut s, 50.0);
-    let p95 = pct(&mut s, 95.0);
-    let p99 = pct(&mut s, 99.0);
-    let p999 = pct(&mut s, 99.9);
-    let max_lat = *s.iter().max().unwrap_or(&0);
+
+    // Report worst-case percentiles across all windows.
+    let p50 = window_stats.iter().map(|&(p, _, _, _, _, _)| p).max().unwrap_or(0);
+    let p95 = window_stats.iter().map(|&(_, p, _, _, _, _)| p).max().unwrap_or(0);
+    let p99 = window_stats.iter().map(|&(_, _, p, _, _, _)| p).max().unwrap_or(0);
+    let p999 = window_stats.iter().map(|&(_, _, _, p, _, _)| p).max().unwrap_or(0);
+    let max_lat = window_stats.iter().map(|&(_, _, _, _, m, _)| m).max().unwrap_or(0);
+    let total_ticks: u64 = window_stats.iter().map(|&(_, _, _, _, _, n)| n as u64).sum();
 
     let tps = tick_count as f64 / elapsed.as_secs_f64();
 
@@ -272,6 +318,14 @@ fn main() {
     println!(
         "  RSS delta:  {rss_delta} bytes ({:.1} MB)",
         rss_delta as f64 / 1e6
+    );
+    // MEASURED, not computed: all_latencies contribution to RSS.
+    println!(
+        "  all_latencies.len()={}, .capacity()={} ({} bytes reserved, {:.1} MB)",
+        all_latencies.len(),
+        all_latencies.capacity(),
+        all_latencies.capacity() * 8,
+        (all_latencies.capacity() * 8) as f64 / 1e6,
     );
     println!();
     println!("  latency p50:  {p50:>8} ns");
