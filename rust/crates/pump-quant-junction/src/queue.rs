@@ -199,4 +199,45 @@ mod tests {
         }
         assert!(q.pop().is_none());
     }
+
+    /// Deliberate overrun (Task 2c): fill the queue past capacity, confirm
+    /// the overflow counter increments on every excess push, confirm the
+    /// counter is surfaced via overflow_stats(), and confirm the queue depth
+    /// never exceeds capacity. A backpressure counter that has never been
+    /// observed incrementing is a control that has never been tested.
+    #[test]
+    fn test_deliberate_overrun_counter_increments_and_surfaces() {
+        let cap = 8;
+        let q = BoundedJunctionQueue::with_capacity(cap);
+
+        // Fill to capacity.
+        for i in 0..cap as u64 {
+            assert!(q.push(make_event(i), i), "push {} should succeed", i);
+        }
+        assert_eq!(q.depth(), cap, "queue should be at capacity");
+
+        // Deliberate overrun: push 20 more past capacity.
+        let overrun: u64 = 20;
+        for i in 0..overrun {
+            let slot = cap as u64 + i;
+            assert!(!q.push(make_event(slot), slot), "push past cap should drop");
+        }
+
+        // Counter must reflect every drop.
+        let stats = q.overflow_stats();
+        assert_eq!(stats.dropped, overrun, "overflow counter must equal overrun");
+        assert_eq!(
+            stats.last_drop_slot,
+            cap as u64 + overrun - 1,
+            "last_drop_slot must be the final dropped slot"
+        );
+
+        // Queue depth must never exceed capacity despite the overrun.
+        assert_eq!(q.depth(), cap, "depth must not exceed capacity");
+
+        // Surfacing: the overflow counter is readable and non-zero — this is
+        // the value the junction-run binary prints as junction_overflow.
+        // A silent counter would be invisible; this one is surfaced.
+        assert!(stats.dropped > 0, "overflow counter must be non-zero after overrun");
+    }
 }
