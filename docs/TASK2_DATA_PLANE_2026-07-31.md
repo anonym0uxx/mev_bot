@@ -7,7 +7,7 @@
 
 ### 1. HELIUS_API_KEY — Enhanced-WS lane (LIVE OBSERVATION)
 
-**The committed key (`2c32e05f-...`, docs/RPC-RATE-LIMIT-SPEC.md:113) is FREE TIER.**
+**The committed key (SHA-256[:8] `b84516c7`, formerly at docs/RPC-RATE-LIMIT-SPEC.md:113) is FREE TIER.** Key value scrubbed this session — now read from `$HELIUS_API_KEY` env var.
 
 Proven via live connection (NOT provider-replay):
 - `pq-stream-capture helius-ws` connected to `wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com`
@@ -83,7 +83,7 @@ PumpPortal WS lane is live (33 token-creation events in 65.8s, prior session LIV
 
 ### 8. Operator note: live Helius key at docs/RPC-RATE-LIMIT-SPEC.md:113
 
-**DISCRETE WORK ITEM:** The literal key `2c32e05f-ac39-4d4d-b5d9-fea06f6d7fe1` is committed at `docs/RPC-RATE-LIMIT-SPEC.md:113` and republishes on every push. When the operator provides the new Helius key, the removal of this literal from `docs/RPC-RATE-LIMIT-SPEC.md` is a discrete work item. **The agent will NOT rotate anything itself** — rotation is the operator's call (§64). The agent's role is to report the removal once the operator provides the new key and confirms the rotation.
+**DISCRETE WORK ITEM:** The literal Helius API key (SHA-256[:8] `b84516c7`) was committed at `docs/RPC-RATE-LIMIT-SPEC.md:113` and republished on every push. SCRUBBED this session — replaced with env-var reference. Rotation remains the operator's call (§64).
 
 ### 9. §41 — wallet private key
 

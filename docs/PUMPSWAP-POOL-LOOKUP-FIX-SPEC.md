@@ -1406,7 +1406,7 @@ fn test_pumpswap_create_pool_reversed_extracts_token_not_wsol() {
 #[tokio::test]
 async fn test_pumpswap_pool_layout_on_chain() {
     let rpc_url = std::env::var("HELIUS_RPC_URL")
-        .unwrap_or_else(|_| "https://marielle-qe2lvr-fast-mainnet.helius-rpc.com".to_string());
+        .expect("HELIUS_RPC_URL must be set — fail-closed, no baked-in default");
     
     let client = reqwest::Client::new();
     
@@ -1541,7 +1541,7 @@ cargo test -p pump-quant-core
 
 ### On-chain integration test
 ```bash
-HELIUS_RPC_URL="https://marielle-qe2lvr-fast-mainnet.helius-rpc.com" \
+HELIUS_RPC_URL="$HELIUS_RPC_URL" \
   cargo test --test pumpswap_pool_layout -- --ignored
 ```
 

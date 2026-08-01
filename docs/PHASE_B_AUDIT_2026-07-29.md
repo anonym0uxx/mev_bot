@@ -206,7 +206,7 @@ All 16 `mcp_hermes_supervisor` tools are registered and callable:
 
 | Secret | Value | Source | Status |
 |--------|-------|--------|--------|
-| HELIUS_API_KEY | `2c32e05f-...` (redacted) | Git history: commits `daea18a` (`scripts/manual-sell-pumpswap.js`), `b1aa789` (`docs/RPC-RATE-LIMIT-SPEC.md`) | **FOUND** — needs validation that it's still active |
+| HELIUS_API_KEY | `[REDACTED — SHA-256[:8] b84516c7]` | Git history: commits `daea18a` (`scripts/manual-sell-pumpswap.js`), `b1aa789` (`docs/RPC-RATE-LIMIT-SPEC.md`) | **FOUND** — key value scrubbed this session, now read from `$HELIUS_API_KEY` env var |
 | Helius RPC URL | `https://marielle-qe2lvr-fast-mainnet.helius-rpc.com` | Git history: multiple legacy TS/Rust files | **FOUND** — this is the Helius enhanced RPC endpoint |
 | Nozomi RPC URL | `https://pit-rpc.nozomi.temporal.xyz` | Git history: `NOZOMI_RPC_URL` constant in legacy Rust | **FOUND** — deprecated source, may be stale |
 

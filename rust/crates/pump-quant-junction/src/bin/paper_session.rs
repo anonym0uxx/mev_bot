@@ -260,7 +260,7 @@ fn main() -> ExitCode {
     let pp_url = std::env::var("PUMPPORTAL_WS_URL")
         .unwrap_or_else(|_| PUMPPORTAL_DEFAULT_URL.to_string());
     let helius_url = helius_ws::ws_url(
-        Some("wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"),
+        std::env::var("HELIUS_WS_URL").ok().as_deref(),
         &helius_key,
     );
 

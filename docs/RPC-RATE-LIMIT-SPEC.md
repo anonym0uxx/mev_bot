@@ -108,15 +108,15 @@ Meanwhile `sendTransaction` + `getSignatureStatuses` need ~4 calls per trade (1 
 
 ```env
 # EXISTING (unchanged)
-SOLANA_RPC_URL=https://marielle-qe2lvr-fast-mainnet.helius-rpc.com
-SOLANA_WS_URL=wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com
-HELIUS_API_KEY=2c32e05f-ac39-4d4d-b5d9-fea06f6d7fe1
+SOLANA_RPC_URL=$SOLANA_RPC_URL  # set at runtime, fail-closed if absent
+SOLANA_WS_URL=$SOLANA_WS_URL
+HELIUS_API_KEY=<set via $HELIUS_API_KEY env var — fail-closed if absent>
 
 # NEW
 # Dedicated endpoint for sendTransaction + getSignatureStatuses.
 # Isolated from read traffic. Uses the same Helius fast endpoint but
 # is accessed through a separate rate limiter with highest priority.
-HELIUS_SEND_URL=https://marielle-qe2lvr-fast-mainnet.helius-rpc.com
+HELIUS_SEND_URL=$HELIUS_SEND_URL  # set at runtime, fail-closed if absent
 
 # Public Solana RPC for read-heavy pool resolution.
 # Free, generous rate limits, no API key needed.
