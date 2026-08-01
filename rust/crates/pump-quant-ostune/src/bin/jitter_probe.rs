@@ -1,15 +1,12 @@
 //! §4.5 jitter probe — measures scheduling jitter before/after OS tuning.
 //!
 //! Run modes:
-//!   `jitter_probe baseline`   — measure jitter WITHOUT any tuning
-//!   `jitter_probe tuned`      — apply OS tuning, then measure jitter
-//!   `jitter_probe delta`      — run baseline, then tuned, report delta
-//!
-//! The probe samples inter-tick deltas in a tight loop, feeding them to
-//! `jitter_stats` from `pump-quant-core`. The `tuned` mode constructs a
-//! `WinOsTune` adapter, derives a pin plan for one hot thread on the
-//! current box's group-0 cores, applies it, sets HIGH_PRIORITY_CLASS,
-//! sets a 1ms timer resolution, then runs the probe.
+//!   `jitter_probe baseline`           — measure jitter WITHOUT any tuning
+//!   `jitter_probe tuned`              — apply OS tuning, then measure jitter
+//!   `jitter_probe delta`              — run baseline, then tuned, report delta
+//!   `jitter_probe positive-control`   — inject known 50µs jitter every 1000
+//!                                        samples, confirm instrument detects it
+//!   `jitter_probe qpf`                — report QueryPerformanceFrequency only
 //!
 //! CRITICAL: The WinOsTune adapter MUST outlive the probe run. The adapter
 //! owns the TimerResGuard (timer resolution) and locked memory ranges
@@ -34,10 +31,72 @@ const SAMPLES: usize = 50_000;
 /// ACTUAL interval — jitter is the deviation from this target.
 const TICK_NS: u64 = 1_000; // 1 µs target tick
 
-fn run_probe() -> JitterStats {
+/// Injected jitter magnitude for positive control (50 µs).
+const INJECT_NS: u64 = 50_000;
+
+/// Inject every N samples.
+const INJECT_INTERVAL: usize = 1_000;
+
+// ─── QPF FFI ──────────────────────────────────────────────────────────
+// QueryPerformanceFrequency returns counts/sec. If 10,000,000 then
+// 1 count = 100 ns — the clock resolves to 100 ns, NOT 1000 ns.
+// Rust's Instant is backed by QPC on Windows.
+
+#[cfg(windows)]
+extern "system" {
+    fn QueryPerformanceFrequency(freq: *mut i64) -> i32;
+    fn QueryPerformanceCounter(counter: *mut i64) -> i32;
+}
+
+#[cfg(windows)]
+fn report_qpf() -> Option<i64> {
+    let mut freq: i64 = 0;
+    let ok = unsafe { QueryPerformanceFrequency(&mut freq) };
+    if ok == 0 {
+        return None;
+    }
+    // Also read the counter once to show resolution in action.
+    let mut counter: i64 = 0;
+    unsafe { QueryPerformanceCounter(&mut counter) };
+    println!("QPF: frequency={} Hz (1 count = {} ns), counter={}",
+        freq, 1_000_000_000 / freq, counter);
+    Some(freq)
+}
+
+#[cfg(not(windows))]
+fn report_qpf() -> Option<i64> {
+    println!("QPF: not on windows — no QPC");
+    None
+}
+
+// ─── Probe ────────────────────────────────────────────────────────────
+
+/// Run the probe. If `inject` is true, stall for ~INJECT_NS every
+/// INJECT_INTERVAL samples. The stall happens BETWEEN samples, so the
+/// NEXT sample's delta includes the stall time. If the instrument can
+/// detect jitter, p999 and max should jump by ~INJECT_NS.
+fn run_probe(inject: bool) -> JitterStats {
     let mut deltas: Vec<u64> = Vec::with_capacity(SAMPLES);
     let mut prev = Instant::now();
-    for _ in 0..SAMPLES {
+
+    for i in 0..SAMPLES {
+        // Positive control: inject known jitter every INJECT_INTERVAL samples.
+        // The stall goes BEFORE the next busy-wait, so the next delta
+        // includes the stall. This tests whether the instrument can
+        // detect a perturbation of known magnitude.
+        if inject && i > 0 && i % INJECT_INTERVAL == 0 {
+            let stall_start = Instant::now();
+            loop {
+                let stalled = stall_start.elapsed().as_nanos() as u64;
+                if stalled >= INJECT_NS {
+                    break;
+                }
+            }
+            // prev is still the last sample's timestamp. The next
+            // busy-wait will measure elapsed since prev, which now
+            // includes the stall. So that sample's delta ≈ TICK_NS + INJECT_NS.
+        }
+
         // Busy-wait: spin until at least TICK_NS have elapsed since prev.
         loop {
             let now = Instant::now();
@@ -92,16 +151,12 @@ fn apply_tuning(
 ) -> Result<TuningGuard, String> {
     use pump_quant_core::cpu_numa_tuning::win_adapter::WinOsTune;
 
-    // Box the adapter so it lives on the heap and outlives this function.
-    // The TuningGuard holds it, and the caller keeps the guard alive.
-    let mut os = Box::new(WinOsTune::new(64 * 1024 * 1024) // 64 MiB lock budget
+    let mut os = Box::new(WinOsTune::new(64 * 1024 * 1024)
         .map_err(|e| format!("WinOsTune::new failed: {:?}", e))?);
 
-    // Timer resolution: 1 ms (timeGetDevCaps + timeBeginPeriod)
     let timer_res = os.set_timer_res_ms(1)
         .map_err(|e| format!("set_timer_res_ms failed: {:?}", e))?;
 
-    // Apply the pin plan with HIGH priority (NOT realtime per §66/109)
     let report = pump_quant_core::cpu_numa_tuning::apply_plan(
         &mut *os as &mut dyn OsTune,
         plan,
@@ -118,8 +173,6 @@ fn apply_tuning(
         return Err("apply_plan: no threads applied".to_string());
     }
 
-    // Lock a sentinel region to exercise VirtualLock (64 KiB).
-    // The sentinel Vec stays alive in the TuningGuard.
     let sentinel = vec![0u8; 64 * 1024];
     let locked = unsafe {
         os.lock_region(sentinel.as_ptr(), sentinel.len())
@@ -129,8 +182,8 @@ fn apply_tuning(
     }
 
     Ok(TuningGuard {
-        _os: os,           // adapter alive → timer + lock persist
-        _sentinel: sentinel, // locked region alive → VirtualLock valid
+        _os: os,
+        _sentinel: sentinel,
         affinity_applied: true,
         priority_applied: true,
         timer_res_ms: timer_res,
@@ -154,25 +207,52 @@ fn print_stats(label: &str, s: &JitterStats) {
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "delta".to_string());
 
+    // Report QPF in ALL modes — this is the instrument characterization.
+    let qpf = report_qpf();
+
     match mode.as_str() {
+        "qpf" => {
+            // Just report QPF and exit.
+            if let Some(f) = qpf {
+                let tick_ns = 1_000_000_000 / f;
+                println!("\nQPF={} — clock tick resolution = {} ns", f, tick_ns);
+                if tick_ns == 100 {
+                    println!("10 MHz QPC confirmed. 1000 ns is NOT the clock floor.");
+                    println!("The probe is the defect if p50=p99=p999=1000 ns.");
+                }
+            }
+        }
         "baseline" => {
-            let stats = run_probe();
+            let stats = run_probe(false);
             print_stats("baseline", &stats);
+        }
+        "positive-control" => {
+            // Inject ~50µs stall every 1000 samples.
+            // If the instrument works, p999 and max should jump by ~50µs.
+            // If they stay pinned, the instrument cannot measure jitter.
+            println!("\n=== POSITIVE CONTROL — injecting {} ns jitter every {} samples ===",
+                INJECT_NS, INJECT_INTERVAL);
+            println!("Expected: ~{} injected samples out of {}, each ~{} ns",
+                SAMPLES / INJECT_INTERVAL, SAMPLES, INJECT_NS + TICK_NS);
+            println!("If p999 and max move by ~{} ns, the instrument CAN measure jitter.",
+                INJECT_NS);
+            println!("If they stay pinned at {} ns, the instrument CANNOT measure jitter.\n",
+                TICK_NS);
+            let stats = run_probe(true);
+            print_stats("positive-control", &stats);
         }
         "tuned" => {
             let plan = build_topology()
                 .expect("failed to build topology");
             match apply_tuning(&plan) {
                 Ok(_guard) => {
-                    // _guard holds the adapter alive for the probe duration.
-                    let stats = run_probe();
+                    let stats = run_probe(false);
                     print_stats("tuned", &stats);
-                    // _guard drops here → timer resets, memory unlocks.
                 }
                 Err(e) => {
                     eprintln!("TUNING FAILED (fail-closed): {}", e);
                     eprintln!("Running baseline probe instead.");
-                    let stats = run_probe();
+                    let stats = run_probe(false);
                     print_stats("tuned-failed-fallback-baseline", &stats);
                 }
             }
@@ -180,7 +260,7 @@ fn main() {
         "delta" => {
             // Phase 1: baseline (no tuning, no adapter in scope)
             println!("=== §4.5 Jitter Probe — BEFORE (baseline) ===");
-            let before = run_probe();
+            let before = run_probe(false);
             print_stats("before", &before);
 
             // Phase 2: apply tuning, keep adapter alive, then measure
@@ -189,15 +269,11 @@ fn main() {
                 .expect("failed to build topology");
             match apply_tuning(&plan) {
                 Ok(guard) => {
-                    // guard holds WinOsTune + sentinel alive.
-                    // Timer resolution and VirtualLock are ACTIVE.
                     println!("tuning: affinity=applied, priority=HIGH, timer={}ms, locked={}bytes",
                         guard.timer_res_ms, guard.locked_bytes);
-                    let after = run_probe();
+                    let after = run_probe(false);
                     print_stats("after", &after);
-                    // guard drops here → all tuning undone.
 
-                    // Delta
                     println!("\n=== DELTA ===");
                     println!("p50:  {}ns -> {}ns (delta {}ns)",
                         before.p50_ns, after.p50_ns,
@@ -221,7 +297,7 @@ fn main() {
             }
         }
         _ => {
-            eprintln!("Usage: jitter_probe [baseline|tuned|delta]");
+            eprintln!("Usage: jitter_probe [baseline|tuned|delta|positive-control|qpf]");
             std::process::exit(1);
         }
     }
