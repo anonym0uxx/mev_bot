@@ -311,7 +311,14 @@ pub trait OsTune {
     /// Set the global timer resolution (ms); returns the granted resolution.
     fn set_timer_res_ms(&mut self, ms: u32) -> Result<u32, OsErr>;
     /// Lock a memory region resident; returns the number of bytes locked.
-    fn lock_region(&mut self, ptr: *const u8, len: usize) -> Result<usize, OsErr>;
+    ///
+    /// # Safety
+    /// `ptr` must be the start of, and `len` must lie entirely within, a single
+    /// committed region owned by this process. That region must remain allocated
+    /// until either `unlock_region` is called for it or this adapter is dropped,
+    /// whichever happens first. The obligation is NOT bound to a returned value:
+    /// this method returns the ALIGNED byte count, and the adapter owns the unlock.
+    unsafe fn lock_region(&mut self, ptr: *const u8, len: usize) -> Result<usize, OsErr>;
 }
 
 /// A single discrepancy between a requested and an observed OS setting.
@@ -450,7 +457,7 @@ impl OsTune for MockOs {
         Ok(ms)
     }
 
-    fn lock_region(&mut self, _ptr: *const u8, len: usize) -> Result<usize, OsErr> {
+    unsafe fn lock_region(&mut self, _ptr: *const u8, len: usize) -> Result<usize, OsErr> {
         Ok(len)
     }
 }
@@ -668,7 +675,11 @@ pub fn ostune_conformance<T: OsTune + ?Sized>(
 
     // 4. Page-locking: a short lock is the normal failure and must never be
     //    rounded up to success.
-    match os.lock_region(region.as_ptr(), region.len()) {
+    // SAFETY: `region` is a `&[u8]` slice that is live for the duration of
+    // this call. The pointer and length come directly from the slice's
+    // invariants, so `ptr` is valid and `len` is within bounds. The region
+    // remains allocated because the borrow keeps it alive.
+    match unsafe { os.lock_region(region.as_ptr(), region.len()) } {
         Ok(observed) if observed >= region.len() => {}
         Ok(observed) => {
             r.surface.push(SurfaceMismatch::LockRegion {
@@ -735,7 +746,7 @@ impl OsTune for RecordingOs {
         self.timer_calls.push(ms);
         Ok(ms)
     }
-    fn lock_region(&mut self, _ptr: *const u8, len: usize) -> Result<usize, OsErr> {
+    unsafe fn lock_region(&mut self, _ptr: *const u8, len: usize) -> Result<usize, OsErr> {
         self.lock_calls.push(len);
         Ok(len)
     }

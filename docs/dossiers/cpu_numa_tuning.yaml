@@ -160,9 +160,23 @@ leaves:
           fn set_affinity(&mut self, th: ThreadId, aff: GroupAffinity) -> Result<GroupAffinity, OsErr>;
           fn set_priority(&mut self, th: ThreadId, prio: Prio) -> Result<Prio, OsErr>;
           fn set_timer_res_ms(&mut self, ms: u32) -> Result<u32, OsErr>;
-          fn lock_region(&mut self, ptr: *const u8, len: usize) -> Result<usize, OsErr>;
+          /// # Safety
+          /// ptr must be the start of, and len must lie entirely within, a single
+          /// committed region owned by this process. That region must remain allocated
+          /// until either unlock_region is called for it or this adapter is dropped,
+          /// whichever happens first. The obligation is NOT bound to a returned value:
+          /// this method returns the ALIGNED byte count, and the adapter owns the unlock.
+          unsafe fn lock_region(&mut self, ptr: *const u8, len: usize) -> Result<usize, OsErr>;
       }
       pub fn apply_plan(os: &mut dyn OsTune, plan: &PinPlan, prio: Prio) -> ApplyReport
+    #
+    # FUTURE REFINEMENT (recorded, not for this commit):
+    #   fn lock_region<'a>(&mut self, region: &'a [u8]) -> Result<LockGuard<'a>, OsErr>
+    # The borrow checker then enforces the WHOLE invariant: the guard holds a borrow of the
+    # region, so it cannot be freed while locked. No unsafe at the call site, no new owning
+    # type, and lifetime parameters keep the trait object-safe for dyn OsTune. Strictly
+    # better than both options presented; deferred only because it changes the return type
+    # and every caller.
     invariants:
       - "every call's returned observed value is compared to requested; mismatches land in ApplyReport::mismatches, never dropped"
       - "partial failure applies nothing further to the failed thread but continues others; report is complete either way"
