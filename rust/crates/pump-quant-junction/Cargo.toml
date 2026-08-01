@@ -1,0 +1,18 @@
+[package]
+name = "pump-quant-junction"
+version = "0.1.0"
+edition = "2021"
+description = """Junction crate translating live ingest feeds (CanonicalTx, accountSubscribe \
+snapshots) into AppEvent streams with structural provenance (criterion 65). Bridges \
+pump-quant-ingest (provider-neutral canonical types) and pump-quant-app (engine AppEvent). \
+The engine stays testable against fixtures alone; this crate owns the live-source wiring. \
+Bounded queue with explicit backpressure (§6/§99). No async on the decode path (§24/criterion 109)."""
+
+[dependencies]
+pump-quant-ingest = { path = "../pump-quant-ingest" }
+pump-quant-app = { path = "../pump-quant-app" }
+pump-quant-domain = { path = "../pump-quant-domain" }
+
+[lib]
+name = "pump_quant_junction"
+path = "src/lib.rs"

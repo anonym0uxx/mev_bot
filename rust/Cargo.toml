@@ -26,6 +26,7 @@ members = [
     "crates/pump-quant-watchlist",
     "crates/pump-quant-replay",
     "crates/pump-quant-app",
+    "crates/pump-quant-junction",
     "crates/pump-quant-brain",
     "crates/pq-evaluator",
     "crates/pq-research-runner",

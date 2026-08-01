@@ -61,6 +61,11 @@ hot_globs:
   - "rust/crates/pump-quant-execution/src/**/*.rs"
   - "rust/crates/pump-quant-ingest/src/**/*.rs"
   - "rust/crates/pump-quant-journal/src/**/*.rs"
+  # --- Junction crate (added 2026-07-31, Phase B Task B) ---
+  # The junction translates live ingest feeds into AppEvent streams on the
+  # decode path. No async, no floats, no panics, no per-event allocation
+  # (§24/criterion 109). hotpath_lint must cover it before code is written.
+  - "rust/crates/pump-quant-junction/src/**/*.rs"
 
 # MONEY — every crate that computes or carries money / outcome quantities, where
 # an `as f32`/`as f64` cast is a §22 integrity violation.
