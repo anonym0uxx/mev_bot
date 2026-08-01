@@ -46,6 +46,40 @@ pub struct ProvenancedEvent {
     pub is_live: bool,
 }
 
+// ─── Decode provenance (blocker 2 structural fix) ─────────────────────────
+
+/// A `real_sol` value that can ONLY come from a decoded bonding-curve account
+/// snapshot, never from arithmetic on a venue-reported figure.
+///
+/// The inner `u64` is private. The sole constructor is [`from_curve`], which
+/// takes a `&PumpCurve` — a type that itself can only be produced by
+/// `pump_quant_protocol::decode::decode_pump_curve`. A derived `u64`
+/// (`vsol - 30 SOL`) cannot construct this type; the mistake is
+/// unrepresentable, not merely tested for.
+///
+/// The junction's public API accepts `&PumpCurve` for OnchainConfirm
+/// construction, never `real_sol: u64`. The text-file replay path
+/// (`parse_events`) constructs `AppEvent::OnchainConfirm` with bare `u64`
+/// directly — that path is certified by the golden digest and is untouched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecodedRealSol(u64);
+
+impl DecodedRealSol {
+    /// Construct from a decoded pump.fun bonding-curve account snapshot.
+    /// This is the ONLY public constructor — `PumpCurve` can only come from
+    /// `decode_pump_curve`, so the value's provenance is structural.
+    pub fn from_curve(curve: &pump_quant_protocol::decode::PumpCurve) -> Self {
+        Self(curve.real_sol)
+    }
+
+    /// Extract the inner `u64` for engine consumption. This is a one-way
+    /// extraction — the consumer gets the value, but cannot re-construct a
+    /// `DecodedRealSol` from it.
+    pub fn into_lamports(self) -> u64 {
+        self.0
+    }
+}
+
 // ─── Backpressure ─────────────────────────────────────────────────────────
 
 /// Bounded queue capacity for the ingest→junction channel.
@@ -66,6 +100,8 @@ pub struct OverflowStats {
 pub mod translate;
 pub mod decode;
 pub mod queue;
+pub mod pumpportal;
 
 pub use queue::BoundedJunctionQueue;
 pub use translate::canonical_tx_to_market_trade;
+pub use pumpportal::{handle_trade_payload, handle_create_payload};

@@ -124,27 +124,29 @@ pub fn canonical_tx_to_market_trade(
 
 /// Translate a decoded bonding-curve account snapshot into AppEvent::OnchainConfirm.
 ///
-/// CRITICAL (blocker 2): BOTH virtual_sol_lamports AND real_sol_lamports must
-/// come from the SAME decoded account snapshot. Never from arithmetic on a
-/// venue-reported figure. The identity real_sol = vsol - 30 SOL is a CHECK
-/// the engine's CurveDepth performs — it is NOT a source of data. Feeding
-/// vsol - 30 SOL as real_sol would make the gate compare a number to itself.
+/// CRITICAL (blocker 2, structural fix): `real_sol_lamports` enters through
+/// `DecodedRealSol::from_curve`, whose sole constructor takes `&PumpCurve`
+/// (which can only come from `decode_pump_curve`). A derived `u64`
+/// (`vsol - 30 SOL`) cannot construct this type — the mistake is
+/// unrepresentable, not merely tested for.
 ///
-/// This function takes the decoded fields directly. The decode module
-/// (`decode.rs`) parses the raw account data; this function wraps it.
+/// The identity `real_sol = vsol - 30 SOL` is a pump.fun invariant that will
+/// usually hold. The integrity point is not that the numbers differ — it is
+/// that their PROVENANCE differs: one is observed, one is computed from a
+/// constant pump.fun has changed before and can change again.
 pub fn decoded_snapshot_to_onchain_confirm(
     mint_bytes: &[u8; 32],
-    virtual_sol_lamports: u64,
-    real_sol_lamports: u64,
+    curve: &pump_quant_protocol::decode::PumpCurve,
     slot: u64,
     is_live: bool,
 ) -> ProvenancedEvent {
     let mint = mint_from_bytes(mint_bytes);
+    let real_sol = crate::DecodedRealSol::from_curve(curve);
 
     let event = AppEvent::OnchainConfirm {
         mint,
-        virtual_sol_lamports,
-        real_sol_lamports,
+        virtual_sol_lamports: curve.virtual_sol,
+        real_sol_lamports: real_sol.into_lamports(),
     };
 
     ProvenancedEvent {
@@ -262,10 +264,16 @@ mod tests {
 
     #[test]
     fn test_onchain_confirm_from_decoded_snapshot() {
+        let curve = pump_quant_protocol::decode::PumpCurve {
+            virtual_sol: 30_000_000_000,
+            virtual_token: 1_000_000_000,
+            real_sol: 5_000_000_000,
+            real_token: 800_000_000,
+            complete: false,
+        };
         let result = decoded_snapshot_to_onchain_confirm(
             &[0xAB; 32],
-            30_000_000_000, // virtual_sol = 30 SOL
-            5_000_000_000,  // real_sol = 5 SOL (DECODED, not derived)
+            &curve,
             1000,
             true,
         );
