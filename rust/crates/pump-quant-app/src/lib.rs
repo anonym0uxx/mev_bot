@@ -67,6 +67,7 @@ pub mod lane;
 pub mod live_status;
 pub mod market_context;
 pub mod measured_state;
+pub mod parse;
 pub mod position;
 pub mod priced_move;
 pub mod reflect;

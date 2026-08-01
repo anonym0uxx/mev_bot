@@ -17,3 +17,7 @@ pump-quant-protocol = { path = "../pump-quant-protocol" }
 [lib]
 name = "pump_quant_junction"
 path = "src/lib.rs"
+
+[[bin]]
+name = "junction-run"
+path = "src/bin/junction_run.rs"
