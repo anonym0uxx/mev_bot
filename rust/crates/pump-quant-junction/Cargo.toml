@@ -12,6 +12,7 @@ Bounded queue with explicit backpressure (§6/§99). No async on the decode path
 pump-quant-ingest = { path = "../pump-quant-ingest" }
 pump-quant-app = { path = "../pump-quant-app" }
 pump-quant-domain = { path = "../pump-quant-domain" }
+pump-quant-protocol = { path = "../pump-quant-protocol" }
 
 [lib]
 name = "pump_quant_junction"

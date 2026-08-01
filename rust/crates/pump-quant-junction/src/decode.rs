@@ -1,158 +1,187 @@
 //! Decode bonding-curve account snapshots from accountSubscribe RPC responses.
 //!
-//! The bonding curve account on pump.fun stores the virtual SOL reserves and
-//! real SOL escrow. We decode the raw account data binary, NOT the JSON
-//! wrapper, because the JSON path would require a serde dependency on the
-//! hot path (§24/criterion 109: no serde on the decode path).
+//! This module is a THIN ADAPTER over `pump_quant_protocol::decode_pump_curve`,
+//! which is the discriminator-verified, bounds-checked, integer-only decoder
+//! that the protocol crate owns. We DO NOT reimplement the account layout here
+//! — that would duplicate the on-chain field offsets into a second source of
+//! truth that can drift (§18.2).
 //!
-//! The account layout for pump.fun bonding curves stores, in order:
-//!   - discriminator (8 bytes, account type prefix)
-//!   - virtual_sol_reserves: u64 (lamports)
-//!   - real_sol_reserves: u64 (lamports)
-//!   - virtual_token_reserves: u64
-//!   - real_token_reserves: u64
-//!   - ... (other fields we do not read)
+//! The junction's job is: take a raw account blob from accountSubscribe,
+//! call the protocol decoder, and wrap the result into an `AppEvent::OnchainConfirm`
+//! with structural provenance. The protocol crate owns WHAT the fields mean;
+//! the junction owns WHERE they go.
 //!
-//! CRITICAL: this decoder reads BOTH reserves from the SAME binary snapshot.
-//! The caller (accountSubscribe) provides a single account blob at a single
-//! slot. This is the structural guarantee that satisfies blocker 2: the gate
-//! compares two independently-decoded fields from one snapshot, not a number
-//! to itself.
+//! CRITICAL (blocker 2): `real_sol_lamports` in the resulting `OnchainConfirm`
+//! comes from the decoded account snapshot — the SAME blob, the SAME slot, the
+//! SAME decode path as `virtual_sol_lamports`. It is NOT derived from
+//! `virtual_sol - 30 SOL`. The gate compares two independently-decoded fields
+//! from one snapshot, not a number to itself.
 
+use pump_quant_app::event::AppEvent;
 use pump_quant_domain::ids::Mint;
+use pump_quant_protocol::decode::decode_pump_curve;
 
-/// Decoded bonding-curve reserves from a single account snapshot.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DecodedCurveReserves {
-    /// The market (mint) this curve tracks.
-    pub mint: Mint,
-    /// Virtual SOL reserves (price pool), in lamports.
-    pub virtual_sol_lamports: u64,
-    /// Real SOL reserves (escrow, sellable), in lamports.
-    /// DECODED from the account — never derived from virtual_sol.
-    pub real_sol_lamports: u64,
-    /// Virtual token reserves, in base units.
-    pub virtual_token_reserves: u64,
-    /// Real token reserves, in base units.
-    pub real_token_reserves: u64,
-}
-
-/// Decode a bonding-curve account data blob.
+/// Decode a bonding-curve account blob into a provenanced `OnchainConfirm`.
 ///
 /// The raw bytes come from `accountSubscribe.data` (base64-decoded by the
-/// WebSocket caller before reaching this function). We read the fixed-layout
-/// fields directly — no serde, no JSON, no allocation.
+/// WebSocket caller before reaching this function). We delegate to the
+/// protocol crate's `decode_pump_curve`, which verifies the 8-byte Anchor
+/// discriminator (§18.2) and bounds-checks every field.
 ///
-/// Returns `None` if the blob is too short or the discriminator does not
-/// match the expected bonding-curve account type.
-pub fn decode_bonding_curve(
+/// Returns `None` when:
+/// - The blob is too short (`< 49 bytes`).
+/// - The discriminator does not match the pump.fun BondingCurve account type.
+/// - The `complete` byte is not a canonical boolean.
+///
+/// On success, the `ProvenancedEvent` carries provenance: source = `HeliusAccountSubscribe`,
+/// the slot, and `is_live = true` — satisfying criterion 65 by construction.
+pub fn decode_onchain_confirm(
     mint_bytes: &[u8; 32],
     account_data: &[u8],
-) -> Option<DecodedCurveReserves> {
-    // The pump.fun bonding curve account is at minimum 8 + 32 bytes.
-    // We need: 8 (discriminator) + 8 (vsol) + 8 (rsol) + 8 (vtoken) + 8 (rtoken)
-    // = 40 bytes minimum.
-    if account_data.len() < 40 {
-        return None;
-    }
+    slot: u64,
+) -> Option<crate::ProvenancedEvent> {
+    let curve = decode_pump_curve(account_data)?;
 
-    // Read u64 little-endian at offset 8 (after discriminator).
-    // Layout: [discriminator 8] [vsol 8] [rsol 8] [vtoken 8] [rtoken 8] ...
-    let virtual_sol_lamports = read_u64_le(account_data, 8);
-    let real_sol_lamports = read_u64_le(account_data, 16);
-    let virtual_token_reserves = read_u64_le(account_data, 24);
-    let real_token_reserves = read_u64_le(account_data, 32);
-
-    // Sanity check: virtual_sol must be >= real_sol (virtual = real + 30 SOL
-    // seed). If vsol < rsol, the decode is corrupt or this is not a bonding
-    // curve account. Fail closed.
-    if virtual_sol_lamports < real_sol_lamports {
-        return None;
-    }
-
-    Some(DecodedCurveReserves {
+    // The protocol decoder already validated discriminator and bounds.
+    // real_sol comes FROM THE DECODE — not from virtual_sol - 30 SOL.
+    let event = AppEvent::OnchainConfirm {
         mint: Mint(*mint_bytes),
-        virtual_sol_lamports,
-        real_sol_lamports,
-        virtual_token_reserves,
-        real_token_reserves,
-    })
-}
+        virtual_sol_lamports: curve.virtual_sol,
+        real_sol_lamports: curve.real_sol, // DECODED, NOT DERIVED (blocker 2)
+    };
 
-/// Read a little-endian u64 at the given offset. No unsafe — pure safe indexing.
-fn read_u64_le(data: &[u8], offset: usize) -> u64 {
-    let bytes = &data[offset..offset + 8];
-    u64::from_le_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3],
-        bytes[4], bytes[5], bytes[6], bytes[7],
-    ])
+    Some(crate::ProvenancedEvent {
+        event,
+        source: crate::ProvenanceSource::HeliusAccountSubscribe,
+        slot,
+        is_live: true,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pump_quant_protocol::registry::{self, Venue};
 
-    fn make_curve_account(vsol: u64, rsol: u64, vtoken: u64, rtoken: u64) -> Vec<u8> {
-        let mut data = Vec::with_capacity(40);
-        // discriminator (8 bytes — pump.fun curve account type)
-        data.extend_from_slice(&[0x53, 0x21, 0xe4, 0x72, 0x0a, 0x42, 0x13, 0x00]);
-        data.extend_from_slice(&vsol.to_le_bytes());
-        data.extend_from_slice(&rsol.to_le_bytes());
-        data.extend_from_slice(&vtoken.to_le_bytes());
-        data.extend_from_slice(&rtoken.to_le_bytes());
+    /// Build a structurally valid pump.fun bonding curve account blob using
+    /// the REAL on-chain layout from the protocol crate:
+    ///   offset 0:  8-byte discriminator (from registry)
+    ///   offset 8:  virtual_token_reserves (u64 LE)
+    ///   offset 16: virtual_sol_reserves (u64 LE)
+    ///   offset 24: real_token_reserves (u64 LE)
+    ///   offset 32: real_sol_reserves (u64 LE)
+    ///   offset 40: token_total_supply (u64 LE, unused)
+    ///   offset 48: complete (bool)
+    fn make_real_curve_account(
+        v_token: u64,
+        v_sol: u64,
+        r_token: u64,
+        r_sol: u64,
+        complete: bool,
+    ) -> Vec<u8> {
+        let mut data = vec![0u8; 49]; // CURVE_MIN_LEN
+        let disc = registry::account_discriminator(Venue::PumpFun);
+        data[0..8].copy_from_slice(&disc);
+        data[8..16].copy_from_slice(&v_token.to_le_bytes());
+        data[16..24].copy_from_slice(&v_sol.to_le_bytes());
+        data[24..32].copy_from_slice(&r_token.to_le_bytes());
+        data[32..40].copy_from_slice(&r_sol.to_le_bytes());
+        // offset 40: token_total_supply — leave zero
+        data[48] = if complete { 1 } else { 0 };
         data
     }
 
     #[test]
-    fn test_decode_valid_curve() {
-        let blob = make_curve_account(
-            30_000_000_000, // 30 SOL virtual
-            5_000_000_000,  // 5 SOL real (DECODED, not derived)
-            1_000_000_000,
-            500_000_000,
+    fn test_decode_valid_curve_with_real_layout() {
+        // Use the REAL on-chain layout (v_token at offset 8, v_sol at 16,
+        // r_sol at 32) — NOT the wrong layout the first draft had.
+        let blob = make_real_curve_account(
+            1_000_000_000, // v_token
+            30_000_000_000, // v_sol = 30 SOL
+            500_000_000,   // r_token
+            5_000_000_000,  // r_sol = 5 SOL (DECODED, not derived)
+            false,
         );
-        let result = decode_bonding_curve(&[0xAB; 32], &blob).unwrap();
+        let result = decode_onchain_confirm(&[0xAB; 32], &blob, 12345).unwrap();
 
-        assert_eq!(result.virtual_sol_lamports, 30_000_000_000);
-        assert_eq!(result.real_sol_lamports, 5_000_000_000);
-        assert_eq!(result.virtual_token_reserves, 1_000_000_000);
-        assert_eq!(result.real_token_reserves, 500_000_000);
+        assert_eq!(result.source, crate::ProvenanceSource::HeliusAccountSubscribe);
+        assert_eq!(result.slot, 12345);
+        assert!(result.is_live);
+
+        if let AppEvent::OnchainConfirm {
+            mint,
+            virtual_sol_lamports,
+            real_sol_lamports,
+        } = result.event
+        {
+            assert_eq!(mint.0, [0xAB; 32]);
+            assert_eq!(virtual_sol_lamports, 30_000_000_000);
+            assert_eq!(real_sol_lamports, 5_000_000_000);
+        } else {
+            panic!("expected OnchainConfirm");
+        }
     }
 
     #[test]
     fn test_decode_too_short() {
-        let blob = vec![0u8; 10]; // too short
-        assert!(decode_bonding_curve(&[0xAB; 32], &blob).is_none());
+        let blob = vec![0u8; 10];
+        assert!(decode_onchain_confirm(&[0xAB; 32], &blob, 100).is_none());
     }
 
     #[test]
-    fn test_decode_vsol_lt_rsol_rejected() {
-        // Corrupt or non-curve account: vsol < rsol is impossible for a real
-        // bonding curve (virtual = real + 30 SOL seed).
-        let blob = make_curve_account(1_000, 2_000, 0, 0);
-        assert!(decode_bonding_curve(&[0xAB; 32], &blob).is_none());
+    fn test_decode_wrong_discriminator_rejected() {
+        // Foreign discriminator (PumpSwap Pool) on a curve-length buffer.
+        let mut blob = make_real_curve_account(100, 200, 300, 400, false);
+        let wrong_disc = registry::account_discriminator(Venue::PumpSwap);
+        blob[0..8].copy_from_slice(&wrong_disc);
+        assert!(decode_onchain_confirm(&[0xAB; 32], &blob, 100).is_none());
     }
 
     #[test]
     fn test_decode_real_sol_not_derived() {
-        // This test documents blocker 2: the decoded real_sol is 5 SOL, NOT
-        // vsol - 30 SOL = 0 SOL. The gate compares the decoded value against
-        // the identity check — it must NOT pass a derived value.
-        let blob = make_curve_account(
-            30_000_000_000,
-            5_000_000_000, // decoded, NOT 30 SOL - 30 SOL = 0
+        // BLOCKER 2 TEST: the decoded real_sol is 5 SOL, NOT
+        // vsol - 30 SOL = 0 SOL. The gate compares the decoded value
+        // against an independent decode — passing a derived value would
+        // make the gate compare a number to itself.
+        let blob = make_real_curve_account(
             1_000_000_000,
+            30_000_000_000, // v_sol
             500_000_000,
+            5_000_000_000,  // r_sol DECODED from account, NOT 30 SOL - 30 SOL
+            false,
         );
-        let result = decode_bonding_curve(&[0xAB; 32], &blob).unwrap();
+        let result = decode_onchain_confirm(&[0xAB; 32], &blob, 100).unwrap();
 
-        // The decoded real_sol is 5 SOL, not 0 SOL (which is what vsol-30SOL
-        // would give). This is the structural guarantee.
-        assert_eq!(result.real_sol_lamports, 5_000_000_000);
-        assert_ne!(
-            result.real_sol_lamports,
-            result.virtual_sol_lamports.saturating_sub(30_000_000_000),
-            "real_sol must NOT equal vsol - 30 SOL (that would be blocker 2)"
+        if let AppEvent::OnchainConfirm {
+            virtual_sol_lamports,
+            real_sol_lamports,
+            ..
+        } = result.event
+        {
+            assert_eq!(real_sol_lamports, 5_000_000_000);
+            assert_ne!(
+                real_sol_lamports,
+                virtual_sol_lamports.saturating_sub(30_000_000_000),
+                "real_sol must NOT equal vsol - 30 SOL (blocker 2)"
+            );
+        } else {
+            panic!("expected OnchainConfirm");
+        }
+    }
+
+    #[test]
+    fn test_decode_completed_curve_still_decodes() {
+        // A completed curve (complete=true) still has valid reserves.
+        let blob = make_real_curve_account(
+            100, 200, 300, 400, true,
         );
+        assert!(decode_onchain_confirm(&[0xAB; 32], &blob, 100).is_some());
+    }
+
+    #[test]
+    fn test_decode_zero_discriminator_rejected() {
+        // All-zeros buffer must fail closed (§18.2).
+        let blob = vec![0u8; 49];
+        assert!(decode_onchain_confirm(&[0xAB; 32], &blob, 100).is_none());
     }
 }

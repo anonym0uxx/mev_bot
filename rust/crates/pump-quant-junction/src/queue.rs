@@ -146,7 +146,6 @@ impl Default for BoundedJunctionQueue {
 mod tests {
     use super::*;
     use pump_quant_app::event::AppEvent;
-    use pump_quant_domain::ids::Mint;
     use crate::ProvenanceSource;
 
     fn make_event(slot: u64) -> ProvenancedEvent {
