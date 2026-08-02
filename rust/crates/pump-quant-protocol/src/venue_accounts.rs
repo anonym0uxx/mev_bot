@@ -156,6 +156,42 @@ pub const PUMPSWAP_GLOBAL_VOLUME_ACCUMULATOR: [u8; 32] = [
     233, 62, 88, 249, 23, 138, 41, 24, 221, 170, 247, 180,
 ];
 
+/// Seed prefix of the fee program's per-mint `SharingConfig` account:
+/// `["sharing-config", mint]` under [`FEE_PROGRAM_ID`], writable.
+///
+/// # Provenance and status: HYPOTHESIS, NOT VERIFIED
+/// The 2026-08-02 on-chain check found one **extra writable account owned by
+/// the fee program**, positioned after `bonding_curve_v2`, in 100% of sampled
+/// bonding-curve buys and sells. `pump_fees.json` defines exactly one writable
+/// per-mint fee-program account that fits: `SharingConfig`, seeds
+/// `["sharing-config", mint]` (see `create_fee_sharing_config`,
+/// `update_fee_shares`, `create_donation_fee_pda`).
+///
+/// This is the leading candidate and it is NOT confirmed. Two other
+/// fee-program accounts could occupy that slot, and they are distinguishable
+/// by one observation:
+///
+/// * `fee_program_global` — seeds `["fee-program-global"]`, **no mint seed**,
+///   so it is the SAME address in every transaction:
+///   `CHqnuTkj6sXDFknM652aEFPECZh9qVsBXWkhPohmV9dA`.
+/// * `SharingConfig` / `DonationFeePda` — per-mint, so the address VARIES with
+///   the traded mint.
+///
+/// **The discriminating test:** compare the extra account across two
+/// transactions on DIFFERENT mints. Same address across both ⇒
+/// `fee_program_global`. Different ⇒ per-mint, and then diff against this
+/// derivation to settle which. Until that observation exists,
+/// [`crate::layout::LayoutRegistry`] refuses to build either layout.
+pub const SHARING_CONFIG_SEED: &[u8] = b"sharing-config";
+
+/// `CHqnuTkj6sXDFknM652aEFPECZh9qVsBXWkhPohmV9dA` — the fee program's
+/// `["fee-program-global"]` PDA, bump 254. Constant across all mints; see
+/// [`SHARING_CONFIG_SEED`] for why that property is the discriminating test.
+pub const FEE_PROGRAM_GLOBAL: [u8; 32] = [
+    167, 193, 4, 143, 73, 19, 57, 135, 189, 42, 3, 184, 87, 125, 86, 236, 42, 127, 234, 67, 216,
+    71, 107, 70, 63, 192, 22, 198, 207, 56, 61, 241,
+];
+
 /// `5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx` — PumpSwap `fee_config`:
 /// `["fee_config", PUMPSWAP_PROGRAM_ID]` under [`FEE_PROGRAM_ID`], bump 255.
 /// Previously carried as "legacy, unverified"; now derives (module doc).
@@ -291,11 +327,96 @@ impl PumpCurveCtx {
     }
 }
 
-/// Build the pump.fun `buy` account list — 17 accounts (§4.1).
+/// Which trailing account the fee program requires after `bonding_curve_v2`.
+///
+/// The 2026-08-02 on-chain check proved one exists in 100% of sampled
+/// transactions and that the builder omitted it. Which account it is has NOT
+/// been settled — see [`SHARING_CONFIG_SEED`] for the discriminating test.
+/// This enum makes the open question explicit and typed instead of leaving it
+/// as a doc caveat, so a caller must state which hypothesis it is building
+/// under and `LayoutRegistry` can refuse an unproven one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeeTail {
+    /// Emit no trailing fee account. This is what shipped on 2026-08-02 and it
+    /// is now known to be WRONG on mainnet. Kept only so the existing fixtures
+    /// and the pre-finding behaviour remain expressible and diffable.
+    None,
+    /// Per-mint `["sharing-config", mint]` under the fee program. Leading
+    /// hypothesis.
+    SharingConfig,
+    /// Constant `["fee-program-global"]`. The alternative hypothesis; chosen
+    /// if the extra account is identical across two different mints.
+    FeeProgramGlobal,
+    /// An account observed on chain and supplied verbatim by the caller. The
+    /// escape hatch that is NOT a guess: use this when the fixture extractor
+    /// has read the real account but the derivation is still unknown, so the
+    /// builder reproduces observed truth rather than a theory of it.
+    Observed([u8; 32]),
+}
+
+impl FeeTail {
+    /// Resolve to the trailing account meta, if any. Writable per the
+    /// observation (the extra account was writable in every sample).
+    fn resolve(self, mint: &[u8; 32]) -> Result<Option<AccountMeta>, AccountBuildError> {
+        Ok(match self {
+            FeeTail::None => None,
+            FeeTail::SharingConfig => {
+                let (a, _) =
+                    pda::find_program_address(&[SHARING_CONFIG_SEED, mint], &FEE_PROGRAM_ID)?;
+                Some(AccountMeta::w(a))
+            }
+            FeeTail::FeeProgramGlobal => Some(AccountMeta::w(FEE_PROGRAM_GLOBAL)),
+            FeeTail::Observed(pk) => {
+                if pk == [0u8; 32] {
+                    return Err(AccountBuildError::ZeroedInput("fee_tail_observed"));
+                }
+                Some(AccountMeta::w(pk))
+            }
+        })
+    }
+}
+
+/// Build the pump.fun `buy` account list.
+///
+/// 17 accounts with [`FeeTail::None`] (the falsified 2026-08-02 shape), 18
+/// with any other tail (the observed mainnet shape).
 ///
 /// `[16]` `bonding_curve_v2` (`["bonding-curve-v2", mint]`) is the cashback
-/// upgrade's trailing account; it is not in the IDL's named list (it rides as
-/// a remaining account) and **must be last**.
+/// upgrade's trailing account and is not in the IDL's named list. It was
+/// documented here as "must be last"; the chain disagrees — a fee-program
+/// account follows it. That comment was wrong and is corrected.
+pub fn pump_buy_accounts_with_tail(
+    ctx: &PumpCurveCtx,
+    tail: FeeTail,
+) -> Result<Vec<AccountMeta>, AccountBuildError> {
+    let mut v = pump_buy_accounts(ctx)?;
+    if let Some(t) = tail.resolve(&ctx.mint)? {
+        v.push(t);
+    }
+    Ok(v)
+}
+
+/// Build the pump.fun `sell` account list with the trailing fee account.
+///
+/// 15/16 with [`FeeTail::None`], 16/17 otherwise (non-cashback / cashback).
+pub fn pump_sell_accounts_with_tail(
+    ctx: &PumpCurveCtx,
+    tail: FeeTail,
+) -> Result<Vec<AccountMeta>, AccountBuildError> {
+    let mut v = pump_sell_accounts(ctx)?;
+    if let Some(t) = tail.resolve(&ctx.mint)? {
+        v.push(t);
+    }
+    Ok(v)
+}
+
+/// Build the pump.fun `buy` account list — 17 accounts (§4.1).
+///
+/// # This shape is KNOWN WRONG on mainnet as of 2026-08-02
+/// A live check found 18 accounts. Prefer [`pump_buy_accounts_with_tail`].
+/// This function is retained because the existing fixtures encode this shape
+/// and because `diff_layout` needs to express "what the builder used to do" to
+/// produce a meaningful delta.
 pub fn pump_buy_accounts(ctx: &PumpCurveCtx) -> Result<Vec<AccountMeta>, AccountBuildError> {
     ctx.validate()?;
     let (bonding_curve, _) =
@@ -333,6 +454,9 @@ pub fn pump_buy_accounts(ctx: &PumpCurveCtx) -> Result<Vec<AccountMeta>, Account
 /// Build the pump.fun `sell` account list — 15 accounts, 16 on a cashback
 /// mint where `user_volume_accumulator` (writable) is inserted at `[14]` and
 /// `bonding_curve_v2` moves to `[15]` (§4.1).
+///
+/// # This shape is KNOWN WRONG on mainnet as of 2026-08-02
+/// A live check found 16 / 17. Prefer [`pump_sell_accounts_with_tail`].
 pub fn pump_sell_accounts(ctx: &PumpCurveCtx) -> Result<Vec<AccountMeta>, AccountBuildError> {
     ctx.validate()?;
     let (bonding_curve, _) =

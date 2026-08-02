@@ -47,9 +47,11 @@
 //!   fixtures; nothing here can reach a chain without passing it.
 
 use crate::ix::{self, BuyParams, SellParams};
+use crate::layout::{LayoutError, LayoutKey, LayoutRegistry, Side, Variant, Venue};
 use crate::message::{self, compile_message, CompiledMessage, Instruction, MessageError};
 use crate::venue_accounts::{
-    pump_buy_accounts, pump_sell_accounts, AccountBuildError, PumpCurveCtx,
+    pump_buy_accounts_with_tail, pump_sell_accounts_with_tail, AccountBuildError, FeeTail,
+    PumpCurveCtx,
 };
 
 /// A Sender tip: destination (one of the ten committed tip accounts, selected
@@ -82,8 +84,38 @@ pub enum TxBuildError {
     ZeroTip,
     /// The tip destination was all-zero.
     ZeroTipAccount,
-    /// The recent blockhash was all-zero — a default value, not a decoded one.
+    /// The recent blockhash was all-zero - a default value, not a decoded one.
     ZeroBlockhash,
+    /// The layout this build needs has no verified on-chain fixture, or the
+    /// builder disagrees with the fixture it has. Propagated from
+    /// [`crate::layout::LayoutRegistry`].
+    ///
+    /// This is the control added after the 2026-08-02 falsification: the
+    /// builder shipped a 17-account bonding-curve buy that the chain answered
+    /// with 18, and nothing in the type system objected. Now it does.
+    Layout(LayoutError),
+}
+
+impl From<LayoutError> for TxBuildError {
+    fn from(e: LayoutError) -> Self {
+        Self::Layout(e)
+    }
+}
+
+/// Derive the [`LayoutKey`] a bonding-curve build must have verified.
+///
+/// `reversed_pool` is always false here - it is a PumpSwap-only dimension.
+fn pump_layout_key(ctx: &PumpCurveCtx, side: Side) -> LayoutKey {
+    LayoutKey {
+        venue: Venue::PumpFun,
+        side,
+        variant: Variant {
+            cashback: ctx.is_cashback_coin,
+            token_2022: ctx.token_program == crate::venue_accounts::TOKEN_2022_PROGRAM_ID,
+            non_sol_quote: ctx.quote_mint != crate::venue_accounts::WSOL_MINT,
+            reversed_pool: false,
+        },
+    }
 }
 
 impl From<AccountBuildError> for TxBuildError {
@@ -120,6 +152,23 @@ pub fn build_buy_data_with_volume_flag(params: BuyParams) -> Vec<u8> {
     data
 }
 
+/// Everything about *how* a transaction is built, as opposed to *what* it
+/// trades. Grouping these is not cosmetic: the parameter list grew past seven
+/// when the layout gate was added, and a long positional argument list is how
+/// a `recent_blockhash` ends up where a `tip` was meant to go.
+pub struct BuildEnv<'a> {
+    /// Compute-budget envelope.
+    pub compute: ComputePlan,
+    /// Sender tip, or `None` when `ex_sender_route` answered no.
+    pub tip: Option<TipPlan>,
+    /// Decoded recent blockhash. All-zero is refused.
+    pub recent_blockhash: [u8; 32],
+    /// The verified-layout registry. An empty one builds nothing.
+    pub registry: &'a LayoutRegistry,
+    /// Which trailing fee-program account to emit (2026-08-02 finding).
+    pub fee_tail: FeeTail,
+}
+
 /// Build the unsigned pump.fun **buy** message.
 ///
 /// The caller signs `result.bytes` with the wallet signer and assembles the
@@ -127,12 +176,15 @@ pub fn build_buy_data_with_volume_flag(params: BuyParams) -> Vec<u8> {
 pub fn build_pump_buy_message(
     ctx: &PumpCurveCtx,
     params: BuyParams,
-    compute: ComputePlan,
-    tip: Option<TipPlan>,
-    recent_blockhash: &[u8; 32],
+    env: &BuildEnv<'_>,
 ) -> Result<CompiledMessage, TxBuildError> {
+    let (compute, tip, recent_blockhash) = (env.compute, env.tip, &env.recent_blockhash);
     validate_common(recent_blockhash, &tip)?;
-    let accounts = pump_buy_accounts(ctx)?;
+    let accounts = pump_buy_accounts_with_tail(ctx, env.fee_tail)?;
+    // THE GATE. An unverified layout cannot be built, so an account list that
+    // has never been diffed against a real transaction cannot reach a signer.
+    env.registry
+        .require(&pump_layout_key(ctx, Side::Buy), accounts.len())?;
     // associated_user is index [5] of the §4.1 buy list.
     let associated_user = accounts[5].pubkey;
 
@@ -166,13 +218,14 @@ pub fn build_pump_buy_message(
 pub fn build_pump_sell_message(
     ctx: &PumpCurveCtx,
     params: SellParams,
-    compute: ComputePlan,
-    tip: Option<TipPlan>,
-    recent_blockhash: &[u8; 32],
+    env: &BuildEnv<'_>,
     close_token_account: bool,
 ) -> Result<CompiledMessage, TxBuildError> {
+    let (compute, tip, recent_blockhash) = (env.compute, env.tip, &env.recent_blockhash);
     validate_common(recent_blockhash, &tip)?;
-    let accounts = pump_sell_accounts(ctx)?;
+    let accounts = pump_sell_accounts_with_tail(ctx, env.fee_tail)?;
+    env.registry
+        .require(&pump_layout_key(ctx, Side::Sell), accounts.len())?;
     // associated_user is index [5] of the §4.1 sell list.
     let associated_user = accounts[5].pubkey;
 
