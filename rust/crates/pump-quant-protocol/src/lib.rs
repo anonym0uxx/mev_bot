@@ -33,6 +33,9 @@
 //! * [`message`]        — Solana legacy-message compiler + compute-budget /
 //!   system-transfer / SPL helper instructions.
 //! * [`tx_build`]       — end-to-end: decoded venue state → signable bytes.
+//! * [`layout`]         — versioned layouts, on-chain fixture parity, and the
+//!   registry gate that makes an UNVERIFIED layout unbuildable. Added
+//!   2026-08-02 after a live check falsified the shipped account lists.
 //!
 //! # Constitution
 //! * §22 — NO `f32`/`f64` on any outcome-controlling path. Every calculation
@@ -50,6 +53,7 @@ pub mod curve;
 pub mod decode;
 pub mod errors;
 pub mod ix;
+pub mod layout;
 pub mod message;
 pub mod pda;
 pub mod pumpswap;
