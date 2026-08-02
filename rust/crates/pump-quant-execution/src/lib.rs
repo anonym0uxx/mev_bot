@@ -23,6 +23,22 @@
 //! - [`ex_tip_compute`] — priority / Jito tip sizing from congestion inputs.
 //! - [`ex_blockhash_cache`] — blockhash validity-window logic.
 //! - [`ex_route_policy`] — MEV-aware route selection.
+//! - [`ex_route_health`] — observed landing outcomes folded into the health
+//!   inputs [`ex_route_policy`] needs. Bounded window, integer EWMA, and an
+//!   under-sampled route reports NO measurement rather than good health.
+//! - [`ex_sender_route`] — Helius Sender tier selection, tip budgeting against
+//!   expected edge, and composition with [`ex_route_policy`] into a single
+//!   submission plan. Purely additive: it reads [`ex_route_policy`] types and
+//!   changes none of them.
+//! - [`ex_promotion_gate`] — whether paper evidence justifies arming live
+//!   capital. A pre-registered test with a stated threshold, requiring
+//!   statistical separation from zero rather than merely a positive total, and
+//!   refusing outright on a gappy feed.
+//! - [`ex_live_arming`] — the live-capital arming gate and risk envelope. One
+//!   operator arming action authorises autonomous trading within stated limits;
+//!   after it, no entry or exit needs approval. Exits are admitted even when
+//!   disarmed, because a kill switch that blocks selling traps capital instead
+//!   of protecting it.
 //! - [`ex_bundle_assemble`] — Jito bundle ordering / validation.
 //! - [`ex_circuit_breaker`] — RPC circuit-breaker backoff state machine.
 //! - [`ex_builder_quarantine`] — builder-quarantine circuit breaker (criterion 78):
@@ -34,6 +50,13 @@
 //! - [`si_incident_gate`] — incident-branch remediation admission gate
 //!   (model output must pass sell-simulation + signing before reaching chain;
 //!   the deterministic exit path is proven model-independent).
+//!
+//! ## The live-capital chain
+//! Three gates in series, each able to refuse:
+//! [`ex_promotion_gate`] decides whether the evidence justifies arming at all,
+//! [`ex_live_arming`] decides whether a given entry fits the authorised
+//! envelope, and [`ex_builder_quarantine`] decides whether a submitter may be
+//! used. None of them asks a human to approve a trade.
 
 // SAFETY POLICY (added 2026-07-29): this crate is the code that builds, sizes, routes and reconciles what is submitted to chain,
 // and it contained zero `unsafe` when this was added. `forbid` makes that a
@@ -49,9 +72,13 @@ pub mod ex_builder_quarantine;
 pub mod ex_bundle_assemble;
 pub mod ex_circuit_breaker;
 pub mod ex_construction_gate;
+pub mod ex_live_arming;
+pub mod ex_promotion_gate;
 pub mod ex_reconcile_fill;
+pub mod ex_route_health;
 pub mod ex_route_policy;
 pub mod ex_sell_ladder_escalate;
 pub mod ex_sell_ladder_state;
+pub mod ex_sender_route;
 pub mod ex_tip_compute;
 pub mod si_incident_gate;

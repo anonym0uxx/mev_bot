@@ -15,6 +15,11 @@
 //! * [`webhook_listener`] — pure-std HTTP listener for Helius enhanced
 //!   webhooks (whale lane), raw + normalized emission;
 //! * [`rpc`] — deterministic multi-provider JSON-RPC failover;
+//! * [`sender`] — Helius Sender submission transport (dual-routes to staked
+//!   connections and Jito); wire format only, over the [`rpc::Transport`] seam;
+//! * [`signer`] — ed25519 wallet signing for live submission. Loads a Solana
+//!   CLI keypair, binds it to an expected address, self-tests at load, and
+//!   never prints key material. Uses `ring`, already vendored via rustls;
 //! * [`fees`] — priority-fee calibration sampler (`fee_calibration_v1`).
 //!
 //! # Constitution discipline (binding)
@@ -36,6 +41,16 @@
 //!   at arming; schema drift, slot gaps, staleness and oversize drops are
 //!   loud stderr sentinels, never silence.
 
+// SAFETY POLICY (added 2026-08-02): this crate is the entire network-impurity
+// surface of the ingestion spine, and now also holds the ed25519 signer that
+// authorises moving money. It contains zero `unsafe`. `forbid` makes that a
+// property the compiler holds rather than one a reviewer re-verifies, and
+// unlike `deny` it cannot be locally overridden by an `#[allow]`.
+// Constitution §24(b): an `unsafe` block requires a dossier-registered,
+// property-tested safety argument. There is no such entry for this crate, so
+// there is no `unsafe` this attribute could legitimately block.
+#![forbid(unsafe_code)]
+
 pub mod backoff;
 pub mod dedupe;
 pub mod discord_gateway;
@@ -46,6 +61,8 @@ pub mod http;
 pub mod json;
 pub mod pumpportal_ws;
 pub mod rpc;
+pub mod sender;
+pub mod signer;
 pub mod webhook_listener;
 pub mod ws;
 
