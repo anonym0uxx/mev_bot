@@ -1,0 +1,11 @@
+[package]
+name = "pump-quant-ostune"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pump-quant-core = { path = "../pump-quant-core" }
+
+[[bin]]
+name = "jitter_probe"
+path = "src/bin/jitter_probe.rs"

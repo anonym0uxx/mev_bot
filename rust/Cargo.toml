@@ -31,6 +31,7 @@ members = [
     "crates/pq-evaluator",
     "crates/pq-research-runner",
     "crates/pq-regression",
+    "crates/pump-quant-ostune",
 ]
 
 [workspace.package]

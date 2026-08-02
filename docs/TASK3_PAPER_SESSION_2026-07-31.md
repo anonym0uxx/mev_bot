@@ -7,7 +7,7 @@
 - **Binary**: `paper-session` (junction crate, `src/bin/paper_session.rs`)
 - **Duration**: 300 seconds live
 - **PumpPortal WS**: `wss://pumpportal.fun/api/data` (free, no key)
-- **Helius WS**: `wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com/?api-key=…` (free tier, accountSubscribe)
+- **Helius WS**: `wss://mainnet.helius-rpc.com/?api-key=$HELIUS_API_KEY` (free tier, accountSubscribe)
 - **PDA derivation**: `solana-program` crate `Pubkey::find_program_address(["bonding-curve", mint], &pump_fun_program_id)`
 - **Pump.fun program ID**: `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`
 - **Junction cap**: 4096, commitment: processed

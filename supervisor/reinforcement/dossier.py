@@ -42,6 +42,15 @@ class Dossier:
     adversarial_checks: list[str]       # known failure modes -> tests
     benchmark: Optional[dict] = None    # {'bench_name':..., 'budgets_ns': {...}}
     leaves: list[Leaf] = field(default_factory=list)
+    safety: list[dict] = field(default_factory=list)
+    # Each safety entry is a dict with keys:
+    #   block: {file, function, marker}  — LOCATABLE, not prose
+    #   compiler_cannot_verify: str
+    #   callee_preconditions: str
+    #   safe_code_establishes: str
+    #   failure_modes: str          — memory-safety failure modes only
+    #   system_safety: str           — NON-memory hazards (starvation, quota, etc.)
+    #   invalidation: str            — what future change would invalidate the argument
 
     def leaf_order(self) -> list[Leaf]:
         """Topological order over depends_on so leaves build in dependency sequence."""
@@ -80,6 +89,7 @@ def load_dossier(path: str | Path) -> Dossier:
         adversarial_checks=data.get("adversarial_checks", []),
         benchmark=data.get("benchmark"),
         leaves=leaves,
+        safety=data.get("safety", []),
     )
 
 

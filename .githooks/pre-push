@@ -1,0 +1,55 @@
+#!/bin/sh
+# pre-push credential guard v3.
+# Scans BOTH new-commit diffs (git show) AND the tree at the tip.
+# Uses blank_benign() to blank allowlisted tokens BEFORE pattern matching,
+# so a line carrying both a benign GUID and a real credential is still caught.
+# Bypass is deliberate and loud: PQ_ALLOW_SECRET=1 git push
+if [ "$PQ_ALLOW_SECRET" = "1" ]; then
+  echo "pre-push: guard BYPASSED by PQ_ALLOW_SECRET=1" >&2
+  exit 0
+fi
+UUID='[0-9a-fA-F]\{8\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{4\}-[0-9a-fA-F]\{12\}'
+TG='[0-9]\{8,10\}:[A-Za-z0-9_-]\{30,40\}'
+APIK='api[-_]\{0,1\}key[=:][A-Za-z0-9-]\{16,\}'
+ZERO=0000000000000000000000000000000000000000
+fail=0
+
+# Blank allowlisted DOCUMENTED PUBLIC CONSTANTS by value before scanning.
+# Never allowlist an environment-specific identifier — remove it instead.
+# An allowlist that grows with local values decays into a bypass, one entry at a time.
+blank_benign() {
+  sed -e 's/258EAFA5-E914-47DA-95CA-C5AB0DC85B11/<rfc6455-guid>/Ig' \
+      -e 's/e9a42b02-d5df-448d-aa00-03f14749eb61/<win-power-plan>/Ig' \
+      -e 's/00000000-0000-0000-0000-000000000000/<nil-uuid>/g'
+}
+
+while read local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$ZERO" ] && continue
+
+  if [ "$remote_sha" = "$ZERO" ]; then
+    commits=$(git rev-list "$local_sha" --not --remotes)
+  else
+    commits=$(git rev-list "$remote_sha..$local_sha")
+  fi
+
+  for c in $commits; do
+    hits=$(git show --format= --no-color "$c" | grep '^+' | blank_benign \
+           | grep -e "$UUID" -e "$TG" -e "$APIK")
+    if [ -n "$hits" ]; then
+      echo "pre-push: BLOCKED - credential in commit $c ($local_ref)" >&2
+      echo "$hits" >&2
+      fail=1
+    fi
+  done
+
+  hits=$(git grep -I -e "$UUID" -e "$TG" -e "$APIK" "$local_sha" \
+         2>/dev/null | blank_benign | grep -e "$UUID" -e "$TG" -e "$APIK")
+  if [ -n "$hits" ]; then
+    echo "pre-push: BLOCKED - credential in tree at $local_sha" >&2
+    echo "$hits" >&2
+    fail=1
+  fi
+done
+
+[ "$fail" = "1" ] && exit 1
+exit 0

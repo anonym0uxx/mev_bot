@@ -76,7 +76,7 @@ impl OsTune for HonestOs {
             self.granted_timer_ms
         })
     }
-    fn lock_region(&mut self, _p: *const u8, len: usize) -> Result<usize, OsErr> {
+    unsafe fn lock_region(&mut self, _p: *const u8, len: usize) -> Result<usize, OsErr> {
         Ok(self.lock_bytes.unwrap_or(len))
     }
 }
@@ -96,7 +96,7 @@ impl OsTune for EchoingStub {
     fn set_timer_res_ms(&mut self, ms: u32) -> Result<u32, OsErr> {
         Ok(ms)
     }
-    fn lock_region(&mut self, _p: *const u8, len: usize) -> Result<usize, OsErr> {
+    unsafe fn lock_region(&mut self, _p: *const u8, len: usize) -> Result<usize, OsErr> {
         Ok(len)
     }
 }
@@ -119,7 +119,7 @@ impl OsTune for SilentNoOpOs {
     fn set_timer_res_ms(&mut self, _ms: u32) -> Result<u32, OsErr> {
         Ok(15) // the Windows default period, i.e. the request did nothing
     }
-    fn lock_region(&mut self, _p: *const u8, _len: usize) -> Result<usize, OsErr> {
+    unsafe fn lock_region(&mut self, _p: *const u8, _len: usize) -> Result<usize, OsErr> {
         Ok(0)
     }
 }
@@ -138,7 +138,7 @@ impl OsTune for UnprivilegedOs {
     fn set_timer_res_ms(&mut self, _ms: u32) -> Result<u32, OsErr> {
         Err(OsErr::Denied)
     }
-    fn lock_region(&mut self, _p: *const u8, _len: usize) -> Result<usize, OsErr> {
+    unsafe fn lock_region(&mut self, _p: *const u8, _len: usize) -> Result<usize, OsErr> {
         Err(OsErr::Denied)
     }
 }
