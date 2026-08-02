@@ -40,6 +40,17 @@ impl Creds {
             dotenvy::from_path(Path::new(&p))
                 .with_context(|| format!("PQ_CREDS_FILE={p} could not be loaded"))?;
         }
+        Self::from_lookup(|k| std::env::var(k).ok())
+    }
+
+    /// Pure credential lookup from an explicit map. Touches no global
+    /// state. This is what tests exercise to avoid racing on process env.
+    pub fn from_lookup<F: Fn(&str) -> Option<String>>(get: F) -> Result<Self> {
+        let req = |k: &str| -> Result<String> {
+            get(k)
+                .filter(|v| !v.trim().is_empty())
+                .with_context(|| format!("{k} not set; refusing to start"))
+        };
         Ok(Self {
             helius_api_key: Secret::new(req("HELIUS_API_KEY")?),
             laserstream_endpoint: req("LASERSTREAM_ENDPOINT")?,
@@ -74,28 +85,92 @@ impl Creds {
     }
 }
 
-/// Require an env var. Fail-closed: absent or empty means refuse to start.
-fn req(name: &str) -> Result<String> {
-    let v = std::env::var(name)
-        .with_context(|| format!("{name} not set; refusing to start"))?;
-    if v.trim().is_empty() {
-        bail!("{name} is empty; refusing to start");
-    }
-    Ok(v)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::io::Write;
+    use std::sync::Mutex;
+
+    /// Lock to serialize the single test that touches real process env.
+    /// All other tests use `from_lookup` with an explicit map.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Helper: build an explicit lookup map for `from_lookup`.
+    fn make_lookup(
+        helius: Option<&str>,
+        laserstream: Option<&str>,
+    ) -> impl Fn(&str) -> Option<String> {
+        let mut m: HashMap<String, String> = HashMap::new();
+        if let Some(v) = helius {
+            m.insert("HELIUS_API_KEY".to_string(), v.to_string());
+        }
+        if let Some(v) = laserstream {
+            m.insert("LASERSTREAM_ENDPOINT".to_string(), v.to_string());
+        }
+        move |k: &str| m.get(k).cloned()
+    }
+
+    // ── Positive controls via from_lookup (no process env, no race) ──
+
+    /// Positive control: from_lookup fails when HELIUS_API_KEY is absent.
+    #[test]
+    fn from_lookup_fails_when_helius_unset() {
+        let lookup = make_lookup(None, Some("https://laserstream-mainnet-slc.helius-rpc.com"));
+        let result = Creds::from_lookup(lookup);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.err().unwrap());
+        assert!(
+            err_msg.contains("HELIUS_API_KEY"),
+            "error must name the missing var: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("refusing to start"),
+            "error must be fail-closed: {err_msg}"
+        );
+    }
+
+    /// Positive control: from_lookup fails when LASERSTREAM_ENDPOINT is absent.
+    #[test]
+    fn from_lookup_fails_when_laserstream_unset() {
+        let lookup = make_lookup(Some("fake-key-1234"), None);
+        let result = Creds::from_lookup(lookup);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.err().unwrap());
+        assert!(
+            err_msg.contains("LASERSTREAM_ENDPOINT"),
+            "error must name the missing var: {err_msg}"
+        );
+    }
+
+    /// Positive control: from_lookup fails when HELIUS_API_KEY is empty.
+    #[test]
+    fn from_lookup_fails_when_helius_empty() {
+        let lookup = make_lookup(Some("   "), Some("https://laserstream-mainnet-slc.helius-rpc.com"));
+        let result = Creds::from_lookup(lookup);
+        assert!(result.is_err(), "from_lookup must fail when HELIUS_API_KEY is whitespace-only");
+        let err_msg = format!("{}", result.err().unwrap());
+        assert!(err_msg.contains("HELIUS_API_KEY"));
+    }
+
+    /// Positive control: from_lookup succeeds when both vars are present.
+    #[test]
+    fn from_lookup_succeeds_when_both_set() {
+        let lookup = make_lookup(Some("fake-key-1234"), Some("https://laserstream-mainnet-slc.helius-rpc.com"));
+        let creds = Creds::from_lookup(lookup).expect("both vars set must succeed");
+        assert_eq!(creds.helius_api_key.expose(), "fake-key-1234");
+        assert_eq!(creds.laserstream_endpoint, "https://laserstream-mainnet-slc.helius-rpc.com");
+    }
 
     /// Positive control: the Debug output of Creds must NOT contain the key value.
+    /// Uses from_lookup — no process env mutation.
     #[test]
     fn debug_does_not_leak_key() {
-        let creds = Creds {
-            helius_api_key: Secret::new("test-key-not-a-uuid-shape"),
-            laserstream_endpoint: "https://laserstream-mainnet-slc.helius-rpc.com".to_string(),
-        };
+        let lookup = make_lookup(
+            Some("test-key-not-a-uuid-shape"),
+            Some("https://laserstream-mainnet-slc.helius-rpc.com"),
+        );
+        let creds = Creds::from_lookup(lookup).unwrap();
         let dbg = format!("{:?}", creds);
         assert!(
             !dbg.contains("test-key-not-a-uuid-shape"),
@@ -104,46 +179,90 @@ mod tests {
         assert!(dbg.contains("Secret(<redacted>)"));
     }
 
+    /// rpc_url and ws_url must embed the key but redacted forms must not.
+    /// Uses from_lookup — no process env mutation.
     #[test]
     fn rpc_url_is_secret() {
-        let creds = Creds {
-            helius_api_key: Secret::new("test-key-1234"),
-            laserstream_endpoint: "https://laserstream-mainnet-slc.helius-rpc.com".to_string(),
-        };
+        let lookup = make_lookup(
+            Some("test-key-1234"),
+            Some("https://laserstream-mainnet-slc.helius-rpc.com"),
+        );
+        let creds = Creds::from_lookup(lookup).unwrap();
         let url = creds.rpc_url();
         assert!(url.expose().contains("api-key=test-key-1234"));
         assert!(!creds.rpc_url_redacted().contains("test-key-1234"));
+        let ws = creds.ws_url();
+        assert!(ws.expose().contains("api-key=test-key-1234"));
+        assert!(!creds.ws_url_redacted().contains("test-key-1234"));
     }
 
+    // ── from_env tests (serialized behind ENV_LOCK) ──
+
+    /// The ONE test that exercises from_env through real process env.
+    /// Serialized behind ENV_LOCK to prevent races with other from_env tests.
     #[test]
     fn from_env_fails_when_unset() {
-        if std::env::var("HELIUS_API_KEY").is_ok() {
-            eprintln!("HELIUS_API_KEY is set in test env — skipping fail-closed test");
-            return;
-        }
+        let _guard = ENV_LOCK.lock().unwrap();
+        // Save and remove any existing PQ_CREDS_FILE so from_env goes straight
+        // to bare env. Then ensure HELIUS_API_KEY is unset.
+        let saved_pq = std::env::var_os("PQ_CREDS_FILE");
+        std::env::remove_var("PQ_CREDS_FILE");
+        let saved_helius = std::env::var_os("HELIUS_API_KEY");
+        std::env::remove_var("HELIUS_API_KEY");
+
         let result = Creds::from_env();
-        assert!(result.is_err(), "from_env must fail when HELIUS_API_KEY is unset");
-        let err_msg = format!("{}", result.err().unwrap());
-        assert!(err_msg.contains("HELIUS_API_KEY"), "error must name the missing var: {err_msg}");
-        assert!(err_msg.contains("refusing to start"), "error must be fail-closed: {err_msg}");
+        assert!(
+            result.is_err(),
+            "from_env must fail when HELIUS_API_KEY is unset"
+        );
+        if let Err(e) = &result {
+            let err_msg = format!("{e}");
+            assert!(
+                err_msg.contains("HELIUS_API_KEY"),
+                "error must name the missing var: {err_msg}"
+            );
+            assert!(
+                err_msg.contains("refusing to start"),
+                "error must be fail-closed: {err_msg}"
+            );
+        }
+
+        // Restore env.
+        if let Some(v) = saved_helius {
+            std::env::set_var("HELIUS_API_KEY", v);
+        }
+        if let Some(v) = saved_pq {
+            std::env::set_var("PQ_CREDS_FILE", v);
+        }
     }
 
     /// PQ_CREDS_FILE points at a nonexistent path; from_env() returns Err
     /// naming the path. Fail-closed: no fallback to bare process env.
+    /// Serialized behind ENV_LOCK.
     #[test]
     fn creds_file_missing_is_error() {
-        // Generate a unique nonexistent path in the temp dir.
+        let _guard = ENV_LOCK.lock().unwrap();
         let bogus = std::env::temp_dir().join(format!(
             "pq-creds-nonexistent-{}",
             std::process::id()
         ));
-        // Ensure it does not exist.
         let _ = std::fs::remove_file(&bogus);
+
+        let saved_pq = std::env::var_os("PQ_CREDS_FILE");
         std::env::set_var("PQ_CREDS_FILE", &bogus);
+
         let result = Creds::from_env();
-        // Clean up before asserting so we don't leak the env var on failure.
-        std::env::remove_var("PQ_CREDS_FILE");
-        assert!(result.is_err(), "from_env must fail when PQ_CREDS_FILE is unreadable");
+
+        // Restore env before asserting.
+        match &saved_pq {
+            Some(v) => std::env::set_var("PQ_CREDS_FILE", v),
+            None => std::env::remove_var("PQ_CREDS_FILE"),
+        }
+
+        assert!(
+            result.is_err(),
+            "from_env must fail when PQ_CREDS_FILE is unreadable"
+        );
         let err_msg = format!("{}", result.err().unwrap());
         assert!(
             err_msg.contains(&*bogus.to_string_lossy()),
@@ -154,22 +273,30 @@ mod tests {
     /// Load a known fake key from a temp creds file; assert that
     /// format!("{:?}", creds) does NOT contain the fake value.
     /// This is the positive control for the file-loading path — the one
-    /// the real credential will take.
+    /// the real credential will take. Serialized behind ENV_LOCK.
     #[test]
     fn loaded_key_never_in_debug() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let dir = std::env::temp_dir();
         let creds_path = dir.join(format!("pq-test-creds-{}.env", std::process::id()));
         {
             let mut f = std::fs::File::create(&creds_path).unwrap();
-            // Use a value that does NOT match credential-guard patterns.
             writeln!(f, "HELIUS_API_KEY=fake-key-for-loading-test").unwrap();
             writeln!(f, "LASERSTREAM_ENDPOINT=https://laserstream-mainnet-slc.helius-rpc.com").unwrap();
         }
+
+        let saved_pq = std::env::var_os("PQ_CREDS_FILE");
         std::env::set_var("PQ_CREDS_FILE", &creds_path);
+
         let result = Creds::from_env();
-        // Clean up regardless of outcome.
+
+        // Clean up and restore env regardless of outcome.
         let _ = std::fs::remove_file(&creds_path);
-        std::env::remove_var("PQ_CREDS_FILE");
+        match &saved_pq {
+            Some(v) => std::env::set_var("PQ_CREDS_FILE", v),
+            None => std::env::remove_var("PQ_CREDS_FILE"),
+        }
+
         let creds = result.expect("from_env must succeed with a valid creds file");
         let dbg = format!("{:?}", creds);
         assert!(
