@@ -143,6 +143,120 @@ pub fn decode_pumpswap_pool(account: &[u8]) -> Option<PumpSwapPool> {
     })
 }
 
+/// The cashback-era tail of the pump.fun `BondingCurve` account.
+///
+/// ```text
+/// offset  size  field
+/// 49      32    creator            (pubkey)
+/// 81      1     is_mayhem_mode     (bool)
+/// 82      1     is_cashback_coin   (bool)
+/// 83      32    quote_mint         (pubkey)
+/// ```
+///
+/// Fields decode sequentially and stop at the first absent or non-canonical
+/// one (accounts predating an upgrade are shorter) — a truncated tail yields
+/// `None` for that field and everything after it, never a panic. The
+/// transaction builder ([`crate::venue_accounts::PumpCurveCtx`]) requires
+/// `creator` and `is_cashback_coin`; a curve whose tail lacks them fails
+/// closed upstream rather than trading on a guess (§18.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PumpCurveTail {
+    /// Curve creator — the `["creator-vault", creator]` seed (§4.1).
+    pub creator: Option<[u8; 32]>,
+    /// Mayhem-mode flag.
+    pub is_mayhem_mode: Option<bool>,
+    /// Cashback flag, **byte 82** — the authoritative cashback signal; never
+    /// inferred from the token program (§4.1).
+    pub is_cashback_coin: Option<bool>,
+    /// Quote mint. Non-SOL quote curves exist since 2026; the builder refuses
+    /// them until their layout is verified.
+    pub quote_mint: Option<[u8; 32]>,
+}
+
+/// Decode the [`PumpCurveTail`] of a pump.fun bonding-curve account.
+///
+/// The fixed prefix must decode first ([`decode_pump_curve`] semantics,
+/// including the discriminator check); the tail then decodes sequentially.
+///
+/// # Constitution
+/// §22 integer-only; §18.2 identity verified first; every access bounds-checked.
+pub fn decode_pump_curve_tail(account: &[u8]) -> Option<PumpCurveTail> {
+    // Identity and prefix validity first — a tail on an unverified account is
+    // not a decode, it is a guess.
+    decode_pump_curve(account)?;
+    let creator = read_pubkey(account, 49);
+    let is_mayhem_mode = if creator.is_some() {
+        read_bool(account, 81)
+    } else {
+        None
+    };
+    let is_cashback_coin = if is_mayhem_mode.is_some() {
+        read_bool(account, 82)
+    } else {
+        None
+    };
+    let quote_mint = if is_cashback_coin.is_some() {
+        read_pubkey(account, 83)
+    } else {
+        None
+    };
+    Some(PumpCurveTail {
+        creator,
+        is_mayhem_mode,
+        is_cashback_coin,
+        quote_mint,
+    })
+}
+
+/// `sha256("account:Global")[..8]` — the pump.fun `Global` account identity.
+pub const GLOBAL_ACCOUNT_DISCRIMINATOR: [u8; 8] = [167, 232, 232, 177, 200, 108, 114, 127];
+
+/// The fields of the pump.fun `Global` account the live path consumes.
+///
+/// ```text
+/// offset  size  field
+/// 0       8     anchor account discriminator
+/// 8       1     initialized      (bool, unused on-chain)
+/// 9       32    authority        (pubkey)
+/// 41      32    fee_recipient    (pubkey)
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PumpGlobal {
+    /// Protocol fee recipient — the **decoded** source `§4.1 [1]` requires;
+    /// hardcoding this address is forbidden (§18.2, `VENUE_TX_LAYOUTS.md` §7.3).
+    pub fee_recipient: [u8; 32],
+}
+
+/// Minimum length to read `fee_recipient`.
+const GLOBAL_MIN_LEN: usize = 73;
+
+/// Decode the pump.fun `Global` account (the fields consumed here).
+///
+/// Returns `None` on short buffers, a wrong discriminator, or an all-zero
+/// `fee_recipient` — a zeroed recipient is a default, not a decode (§18.2).
+pub fn decode_global(account: &[u8]) -> Option<PumpGlobal> {
+    if account.len() < GLOBAL_MIN_LEN {
+        return None;
+    }
+    if account.get(0..8)? != GLOBAL_ACCOUNT_DISCRIMINATOR {
+        return None;
+    }
+    let fee_recipient = read_pubkey(account, 41)?;
+    if fee_recipient == [0u8; 32] {
+        return None;
+    }
+    Some(PumpGlobal { fee_recipient })
+}
+
+/// Read a 32-byte pubkey at `offset`, returning `None` if out of bounds.
+fn read_pubkey(buf: &[u8], offset: usize) -> Option<[u8; 32]> {
+    let end = offset.checked_add(32)?;
+    let slice = buf.get(offset..end)?;
+    let mut out = [0u8; 32];
+    out.copy_from_slice(slice);
+    Some(out)
+}
+
 /// Read a little-endian `u16` at `offset`, returning `None` if out of bounds.
 fn read_u16_le(buf: &[u8], offset: usize) -> Option<u16> {
     let end = offset.checked_add(2)?;
