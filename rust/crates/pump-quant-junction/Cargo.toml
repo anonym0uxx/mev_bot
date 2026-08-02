@@ -13,6 +13,7 @@ pump-quant-ingest = { path = "../pump-quant-ingest" }
 pump-quant-app = { path = "../pump-quant-app" }
 pump-quant-domain = { path = "../pump-quant-domain" }
 pump-quant-protocol = { path = "../pump-quant-protocol" }
+pump-quant-core = { path = "../pump-quant-core" }
 pq-stream-capture = { path = "../../../tools/stream-capture-rs" }
 solana-program = "2.1"
 base64 = "0.22"

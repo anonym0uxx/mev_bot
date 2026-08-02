@@ -3,7 +3,7 @@
 **Date:** 2026-07-29  
 **Inspector:** Hermes (conductor agent, constitution §69, Surface 2)  
 **Repo:** `D:\repos\mev_bot`, branch `main`, HEAD `2295bf5`  
-**Machine:** DESKTOP-CP8N3IC, machine_id `0dbcd69f-6af6-40e4-88ec-d7256407f2fc`
+**Machine:** DESKTOP-CP8N3IC, machine_id `<machine-id redacted>`
 
 > Every item below was verified by actual inspection. Items marked UNVERIFIED
 > have not yet been confirmed on this box and must not be treated as done.

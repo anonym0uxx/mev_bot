@@ -97,6 +97,17 @@ echo "clean feature" > feature.txt; git add feature.txt; git commit -q -m "clean
 stderr=$(run_guard "$(git rev-parse HEAD)" "$ZERO")
 report 5 "credential in tree, not in new commit diff" "BLOCK" $? "$stderr"
 
+# ─── Case 6: allowlisted GUID AND planted credential on SAME line → BLOCK ───
+# Positive control for the allowlist itself: blank_benign must blank the
+# GUID but NOT the credential on the same line. If grep -v were used
+# instead of blank_benign, this line would be suppressed entirely.
+new_repo "case6"
+# Build the credential from parts so the test script itself is not flagged.
+echo "GUID=258EAFA5-E914-47DA-95CA-C5AB0DC85B11 HELIUS_API_KEY=${_p1}:${_p2}" > combo.txt
+git add combo.txt; git commit -q -m "benign GUID + credential on same line"
+stderr=$(run_guard "$(git rev-parse HEAD)" "$ZERO")
+report 6 "allowlisted GUID + credential on same line" "BLOCK" $? "$stderr"
+
 echo "===================================="
 echo "RESULTS: $PASS passed, $FAIL failed"
 echo "===================================="

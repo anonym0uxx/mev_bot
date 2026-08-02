@@ -21,7 +21,9 @@
 //!   paper-session [--duration-secs N] [--junction-cap N] [--commitment processed|confirmed]
 //!
 //! Env:
-//!   HELIUS_API_KEY  (required; free tier is sufficient for accountSubscribe)
+//!   PQ_CREDS_FILE  (path to creds file; KEY=VALUE per line, LF, no quotes)
+//!   HELIUS_API_KEY  (required; loaded from PQ_CREDS_FILE or env)
+//!   LASERSTREAM_ENDPOINT  (required; loaded from PQ_CREDS_FILE or env)
 //!   PUMPPORTAL_WS_URL  (optional override, defaults to wss://pumpportal.fun/api/data)
 
 use std::collections::{HashMap, VecDeque};
@@ -32,6 +34,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, RunMode};
+use pump_quant_core::config::Creds;
 use pump_quant_junction::decode::decode_onchain_confirm;
 use pump_quant_junction::pumpportal::{handle_create_payload, handle_trade_payload};
 use pump_quant_junction::queue::BoundedJunctionQueue;
@@ -80,13 +83,6 @@ fn parse_args() -> Result<(u64, usize, String), u8> {
         }
     }
     Ok((duration_secs, junction_cap, commitment))
-}
-
-fn get_helius_key() -> Result<String, String> {
-    if let Ok(k) = std::env::var("HELIUS_API_KEY") {
-        if !k.is_empty() { return Ok(k); }
-    }
-    Err("HELIUS_API_KEY not set in environment".to_string())
 }
 
 /// Derive the pump.fun bonding-curve PDA for a mint.
@@ -247,25 +243,29 @@ fn main() -> ExitCode {
         Err(code) => return ExitCode::from(code),
     };
 
-    let helius_key = match get_helius_key() {
-        Ok(k) => k,
+    // ─── Credential resolution ─ fail-closed, no fallbacks ──────────
+    // Creds::from_env() loads PQ_CREDS_FILE (if set) then reads env.
+    // No unwrap_or, no default endpoint. Missing = refuse to start.
+    // The old path (get_helius_key + HELIUS_WS_URL fallback to a keyless
+    // public endpoint) was FAIL-OPEN and is removed.
+    let creds = match Creds::from_env() {
+        Ok(c) => c,
         Err(e) => {
             eprintln!("FAIL-CLOSED: {e}");
-            eprintln!("Set HELIUS_API_KEY (free tier key is sufficient for accountSubscribe).");
+            eprintln!("Set PQ_CREDS_FILE or HELIUS_API_KEY + LASERSTREAM_ENDPOINT in env.");
             eprintln!("Nothing was stubbed. Nothing was synthesised. The gate was not relaxed.");
             return ExitCode::from(3);
         }
     };
+    // ws_url() returns Secret<String> — the key is embedded, so it must
+    // never be logged as String. Expose only to pass to the WS connect.
+    let helius_url = creds.ws_url().expose().to_string();
 
     let pp_url = std::env::var("PUMPPORTAL_WS_URL")
         .unwrap_or_else(|_| PUMPPORTAL_DEFAULT_URL.to_string());
-    let helius_url = helius_ws::ws_url(
-        std::env::var("HELIUS_WS_URL").ok().as_deref(),
-        &helius_key,
-    );
 
     eprintln!("[paper-session] PumpPortal: {pp_url}");
-    eprintln!("[paper-session] Helius WS:  {helius_url}");
+    eprintln!("[paper-session] Helius WS:  {}", creds.ws_url_redacted());
     eprintln!("[paper-session] duration={duration_secs}s cap={junction_cap} commitment={commitment}");
     eprintln!("[paper-session] MAX_ACCOUNT_SUBS={MAX_ACCOUNT_SUBS} (FIFO eviction)");
 
