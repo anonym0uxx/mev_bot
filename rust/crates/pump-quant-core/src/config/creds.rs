@@ -26,6 +26,10 @@ pub struct Creds {
     pub helius_api_key: Secret,
     /// LaserStream endpoint hostname (not a secret — no key embedded).
     pub laserstream_endpoint: String,
+    /// Helius WebSocket base URL (e.g. `wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com`).
+    /// This is an ENDPOINT-REFERENCE, not a credential. The API key is appended
+    /// at the call site so this value never contains key material.
+    pub helius_ws_base: String,
 }
 
 impl Creds {
@@ -54,6 +58,7 @@ impl Creds {
         Ok(Self {
             helius_api_key: Secret::new(req("HELIUS_API_KEY")?),
             laserstream_endpoint: req("LASERSTREAM_ENDPOINT")?,
+            helius_ws_base: req("HELIUS_WS_URL")?,
         })
     }
 
@@ -61,7 +66,8 @@ impl Creds {
     /// The returned `Secret` means it cannot be accidentally logged.
     pub fn rpc_url(&self) -> Secret {
         Secret::new(format!(
-            "https://mainnet.helius-rpc.com/?api-key={}",
+            "{}/?api-key={}",
+            self.helius_ws_base.replacen("wss://", "https://", 1),
             self.helius_api_key.expose()
         ))
     }
@@ -69,19 +75,23 @@ impl Creds {
     /// Build the real Helius WS URL at the call site.
     pub fn ws_url(&self) -> Secret {
         Secret::new(format!(
-            "wss://mainnet.helius-rpc.com/?api-key={}",
+            "{}/?api-key={}",
+            self.helius_ws_base,
             self.helius_api_key.expose()
         ))
     }
 
     /// The ONLY form that may be logged. Contains no key material.
     pub fn rpc_url_redacted(&self) -> String {
-        "https://mainnet.helius-rpc.com/?api-key=<redacted>".to_string()
+        format!(
+            "{}/?api-key=<redacted>",
+            self.helius_ws_base.replacen("wss://", "https://", 1)
+        )
     }
 
     /// The ONLY form that may be logged. Contains no key material.
     pub fn ws_url_redacted(&self) -> String {
-        "wss://mainnet.helius-rpc.com/?api-key=<redacted>".to_string()
+        format!("{}/?api-key=<redacted>", self.helius_ws_base)
     }
 }
 
@@ -100,6 +110,7 @@ mod tests {
     fn make_lookup(
         helius: Option<&str>,
         laserstream: Option<&str>,
+        ws_base: Option<&str>,
     ) -> impl Fn(&str) -> Option<String> {
         let mut m: HashMap<String, String> = HashMap::new();
         if let Some(v) = helius {
@@ -107,6 +118,9 @@ mod tests {
         }
         if let Some(v) = laserstream {
             m.insert("LASERSTREAM_ENDPOINT".to_string(), v.to_string());
+        }
+        if let Some(v) = ws_base {
+            m.insert("HELIUS_WS_URL".to_string(), v.to_string());
         }
         move |k: &str| m.get(k).cloned()
     }
@@ -116,7 +130,7 @@ mod tests {
     /// Positive control: from_lookup fails when HELIUS_API_KEY is absent.
     #[test]
     fn from_lookup_fails_when_helius_unset() {
-        let lookup = make_lookup(None, Some("https://laserstream-mainnet-slc.helius-rpc.com"));
+        let lookup = make_lookup(None, Some("https://laserstream-mainnet-slc.helius-rpc.com"), Some("wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"));
         let result = Creds::from_lookup(lookup);
         assert!(result.is_err());
         let err_msg = format!("{}", result.err().unwrap());
@@ -133,7 +147,7 @@ mod tests {
     /// Positive control: from_lookup fails when LASERSTREAM_ENDPOINT is absent.
     #[test]
     fn from_lookup_fails_when_laserstream_unset() {
-        let lookup = make_lookup(Some("fake-key-1234"), None);
+        let lookup = make_lookup(Some("fake-key-1234"), None, Some("wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"));
         let result = Creds::from_lookup(lookup);
         assert!(result.is_err());
         let err_msg = format!("{}", result.err().unwrap());
@@ -143,10 +157,23 @@ mod tests {
         );
     }
 
+    /// Positive control: from_lookup fails when HELIUS_WS_URL is absent.
+    #[test]
+    fn from_lookup_fails_when_ws_url_unset() {
+        let lookup = make_lookup(Some("fake-key-1234"), Some("https://laserstream-mainnet-slc.helius-rpc.com"), None);
+        let result = Creds::from_lookup(lookup);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.err().unwrap());
+        assert!(
+            err_msg.contains("HELIUS_WS_URL"),
+            "error must name the missing var: {err_msg}"
+        );
+    }
+
     /// Positive control: from_lookup fails when HELIUS_API_KEY is empty.
     #[test]
     fn from_lookup_fails_when_helius_empty() {
-        let lookup = make_lookup(Some("   "), Some("https://laserstream-mainnet-slc.helius-rpc.com"));
+        let lookup = make_lookup(Some("   "), Some("https://laserstream-mainnet-slc.helius-rpc.com"), Some("wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"));
         let result = Creds::from_lookup(lookup);
         assert!(result.is_err(), "from_lookup must fail when HELIUS_API_KEY is whitespace-only");
         let err_msg = format!("{}", result.err().unwrap());
@@ -156,10 +183,11 @@ mod tests {
     /// Positive control: from_lookup succeeds when both vars are present.
     #[test]
     fn from_lookup_succeeds_when_both_set() {
-        let lookup = make_lookup(Some("fake-key-1234"), Some("https://laserstream-mainnet-slc.helius-rpc.com"));
+        let lookup = make_lookup(Some("fake-key-1234"), Some("https://laserstream-mainnet-slc.helius-rpc.com"), Some("wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"));
         let creds = Creds::from_lookup(lookup).expect("both vars set must succeed");
         assert_eq!(creds.helius_api_key.expose(), "fake-key-1234");
         assert_eq!(creds.laserstream_endpoint, "https://laserstream-mainnet-slc.helius-rpc.com");
+        assert_eq!(creds.helius_ws_base, "wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com");
     }
 
     /// Positive control: the Debug output of Creds must NOT contain the key value.
@@ -169,6 +197,7 @@ mod tests {
         let lookup = make_lookup(
             Some("test-key-not-a-uuid-shape"),
             Some("https://laserstream-mainnet-slc.helius-rpc.com"),
+            Some("wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"),
         );
         let creds = Creds::from_lookup(lookup).unwrap();
         let dbg = format!("{:?}", creds);
@@ -186,6 +215,7 @@ mod tests {
         let lookup = make_lookup(
             Some("test-key-1234"),
             Some("https://laserstream-mainnet-slc.helius-rpc.com"),
+            Some("wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"),
         );
         let creds = Creds::from_lookup(lookup).unwrap();
         let url = creds.rpc_url();
@@ -209,6 +239,8 @@ mod tests {
         std::env::remove_var("PQ_CREDS_FILE");
         let saved_helius = std::env::var_os("HELIUS_API_KEY");
         std::env::remove_var("HELIUS_API_KEY");
+        let saved_ws = std::env::var_os("HELIUS_WS_URL");
+        std::env::remove_var("HELIUS_WS_URL");
 
         let result = Creds::from_env();
         assert!(
@@ -230,6 +262,9 @@ mod tests {
         // Restore env.
         if let Some(v) = saved_helius {
             std::env::set_var("HELIUS_API_KEY", v);
+        }
+        if let Some(v) = saved_ws {
+            std::env::set_var("HELIUS_WS_URL", v);
         }
         if let Some(v) = saved_pq {
             std::env::set_var("PQ_CREDS_FILE", v);
@@ -283,6 +318,7 @@ mod tests {
             let mut f = std::fs::File::create(&creds_path).unwrap();
             writeln!(f, "HELIUS_API_KEY=fake-key-for-loading-test").unwrap();
             writeln!(f, "LASERSTREAM_ENDPOINT=https://laserstream-mainnet-slc.helius-rpc.com").unwrap();
+            writeln!(f, "HELIUS_WS_URL=wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com").unwrap();
         }
 
         let saved_pq = std::env::var_os("PQ_CREDS_FILE");
