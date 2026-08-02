@@ -32,9 +32,6 @@ use crate::json::{self, Value};
 use crate::ws::{WsConn, WsEvent};
 use crate::{backoff, emit};
 
-/// Default Enhanced-WebSocket base (mainnet).
-pub const DEFAULT_WS_BASE: &str = "wss://mainnet.helius-rpc.com";
-
 /// Staleness watchdog (seconds): no slot notification for this long forces a
 /// reconnect. Mainnet slots tick every ~400 ms, so 15 s is ~37 missed slots —
 /// unambiguously a dead pipe, not jitter.
@@ -128,14 +125,11 @@ pub fn subscription_batch(
     subs
 }
 
-/// Compose the connect URL: `HELIUS_WS_URL` base override (or mainnet
-/// default) + `?api-key=`. A base that already carries `api-key=` is used
-/// verbatim. Pure.
+/// Compose the connect URL: base URL (required, no default) + `?api-key=`.
+/// A base that already carries `api-key=` is used verbatim. Pure.
 #[must_use]
-pub fn ws_url(base_override: Option<&str>, api_key: &str) -> String {
-    let base = base_override
-        .unwrap_or(DEFAULT_WS_BASE)
-        .trim_end_matches('/');
+pub fn ws_url(base: &str, api_key: &str) -> String {
+    let base = base.trim_end_matches('/');
     if base.contains("api-key=") {
         return base.to_string();
     }
@@ -219,7 +213,7 @@ pub fn slot_gap(last_seen: u64, new_slot: u64) -> Option<u64> {
 const USAGE: &str = "usage: pq-stream-capture helius-ws \
 [--accounts-file f] [--programs p1,p2] [--commitment processed|confirmed|finalized]\n\
   env: HELIUS_API_KEY (required; exit 3 when missing)\n\
-       HELIUS_WS_URL  (optional base override, e.g. wss://beta.helius-rpc.com)\n\
+       HELIUS_WS_URL  (required base URL, e.g. wss://mainnet.helius-rpc.com; exit 3 when missing)\n\
   at least one of --accounts-file / --programs is required (transactionSubscribe\n\
   needs a non-empty accountInclude filter).";
 
@@ -294,8 +288,19 @@ pub fn run(args: &[String], now_ms: fn() -> u64) -> u8 {
             return EXIT_ARMING;
         }
     };
-    let base = std::env::var("HELIUS_WS_URL").ok();
-    let url = ws_url(base.as_deref(), &key);
+    // Fail-closed: HELIUS_WS_URL is REQUIRED. No default endpoint — a silent
+    // default is a fail-open credential path. Missing = refuse to start.
+    let base = match std::env::var("HELIUS_WS_URL") {
+        Ok(b) if !b.trim().is_empty() => b,
+        _ => {
+            eprintln!(
+                "[pq-stream-capture] helius-ws ARMING_FAILED: HELIUS_WS_URL is not set — \
+                 refusing to start (fail-closed, exit {EXIT_ARMING}; no silent default endpoint)"
+            );
+            return EXIT_ARMING;
+        }
+    };
+    let url = ws_url(&base, &key);
     let subs = subscription_batch(
         &parsed.include,
         &parsed.watched_accounts,
@@ -497,13 +502,16 @@ mod tests {
 
     #[test]
     fn ws_url_composition() {
-        assert_eq!(ws_url(None, "K"), "wss://mainnet.helius-rpc.com/?api-key=K");
         assert_eq!(
-            ws_url(Some("wss://beta.helius-rpc.com"), "K"),
+            ws_url("wss://mainnet.helius-rpc.com", "K"),
+            "wss://mainnet.helius-rpc.com/?api-key=K"
+        );
+        assert_eq!(
+            ws_url("wss://beta.helius-rpc.com", "K"),
             "wss://beta.helius-rpc.com/?api-key=K"
         );
         assert_eq!(
-            ws_url(Some("wss://x.example/?api-key=inline"), "ignored"),
+            ws_url("wss://x.example/?api-key=inline", "ignored"),
             "wss://x.example/?api-key=inline"
         );
     }
