@@ -972,6 +972,7 @@ dependencies = [
  "pump-quant-brain",
  "pump-quant-domain",
  "pump-quant-evaluator",
+ "pump-quant-execution",
  "pump-quant-features",
  "pump-quant-governance",
  "pump-quant-ingest",
@@ -1074,6 +1075,9 @@ dependencies = [
 [[package]]
 name = "pump-quant-protocol"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "pump-quant-replay"
