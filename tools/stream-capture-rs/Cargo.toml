@@ -23,6 +23,13 @@ path = "src/main.rs"
 # suite's audited style. `base64` and `getrandom` are already in ureq's tree
 # (via rustls/ring); depending on them directly adds ZERO new vendored code.
 #
+# `ring` (added 2026-08-02) follows exactly that precedent. rustls is already
+# depended on with `features = ["ring"]`, so ring is in the vendored tree; the
+# ed25519 signing in `src/signer.rs` uses it directly rather than pulling in
+# `solana-sdk` or `ed25519-dalek`, neither of which would resolve against the
+# vendored source replacement and both of which would enlarge the supply chain
+# of the one module that authorises moving money.
+#
 # Feature selections mirror the resolved graph of social-ingest-https-rs
 # (Cargo.lock pins copied from there): rustls with ring provider only,
 # ureq without gzip.
@@ -38,3 +45,4 @@ rustls-pki-types = { version = "1.15.1" }
 webpki-roots = { version = "0.26.11" }
 base64 = { version = "0.22.1" }
 getrandom = { version = "0.4.3" }
+ring = { version = "0.17" }

@@ -931,6 +931,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
+ "ring",
  "rustls",
  "rustls-pki-types",
  "ureq",

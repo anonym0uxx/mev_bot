@@ -199,3 +199,65 @@ pub fn route_ev_lamports(mode: Route, ctx: &RouteCtx) -> i128 {
 
     gross - fee + slippage_adj - latency_decay - failure_cost
 }
+
+/// Expected net value for a route when the position is expected to need more
+/// than one tipped submission.
+///
+/// # The defect this corrects
+/// [`route_ev_lamports`] charges a route's tip **exactly once**. With the sell
+/// ladder ([`crate::ex_sell_ladder_escalate`]) an exit submits several tipped
+/// transactions, so the single-charge model understates fee cost by roughly the
+/// ladder depth — and understates it most for precisely the routes that cost
+/// most, which biases selection toward expensive routes exactly when the ladder
+/// is deepest.
+///
+/// Only the fee term scales with `expected_sends`. Gross edge, the private-route
+/// slippage credit, latency decay and failure cost are properties of the
+/// position, not of how many attempts it takes to close.
+///
+/// `expected_sends` of `0` is treated as `1`; a zero would make every route look
+/// free.
+///
+/// [`route_ev_lamports`] is preserved unchanged and delegates here with
+/// `expected_sends == 1`, so every existing caller keeps its current behaviour.
+pub fn route_ev_lamports_with_sends(mode: Route, ctx: &RouteCtx, expected_sends: u32) -> i128 {
+    let sends = i128::from(if expected_sends == 0 {
+        1
+    } else {
+        expected_sends
+    });
+
+    let per_send_fee = match mode {
+        Route::Rpc => 0i128,
+        Route::Nozomi => i128::from(ctx.nozomi_tip_lamports),
+        Route::JitoBundle => i128::from(ctx.jito_tip_lamports),
+    };
+
+    // Charge the tip once per expected send, then re-add the single charge the
+    // base function already applied so the two never double-count.
+    route_ev_lamports(mode, ctx) - (per_send_fee * (sends - 1))
+}
+
+/// Whether this context carries any *measured* route health at all.
+///
+/// # Why this exists
+/// [`route_ev_lamports`] charges [`Route::Rpc`] a fee of zero, so RPC's entire
+/// disadvantage lives in its latency and failure inputs. When those are left at
+/// their default of `0` — exactly what an unwired health feed produces — RPC
+/// scores gross edge with nothing deducted and is unbeatable by any tipped
+/// route. The EV comparison is then not "RPC is best", it is "we measured
+/// nothing", and those two are indistinguishable from the return value alone.
+///
+/// This cannot be repaired by arithmetic. Inventing a penalty for RPC would be
+/// fabricating the measurement the feed failed to supply. The honest response is
+/// to detect the condition and let the caller fail closed.
+///
+/// Returns `true` when at least one latency or failure input is non-zero.
+pub fn route_health_is_measured(ctx: &RouteCtx) -> bool {
+    ctx.rpc_latency_ms != 0
+        || ctx.nozomi_latency_ms != 0
+        || ctx.jito_latency_ms != 0
+        || ctx.rpc_fail_bps != 0
+        || ctx.nozomi_fail_bps != 0
+        || ctx.jito_fail_bps != 0
+}
