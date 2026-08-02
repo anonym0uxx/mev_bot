@@ -76,6 +76,12 @@ fn report_qpf() -> Option<i64> {
 /// NEXT sample's delta includes the stall time. If the instrument can
 /// detect jitter, p999 and max should jump by ~INJECT_NS.
 fn run_probe(inject: bool) -> JitterStats {
+    let (stats, _) = run_probe_raw(inject);
+    stats
+}
+
+/// Run the probe and return both the stats AND the raw deltas for analysis.
+fn run_probe_raw(inject: bool) -> (JitterStats, Vec<u64>) {
     let mut deltas: Vec<u64> = Vec::with_capacity(SAMPLES);
     let mut prev = Instant::now();
 
@@ -108,7 +114,8 @@ fn run_probe(inject: bool) -> JitterStats {
             }
         }
     }
-    jitter_stats(&deltas)
+    let stats = jitter_stats(&deltas);
+    (stats, deltas)
 }
 
 /// Topology for group 0: 8 physical cores, each with 2 SMT siblings.
@@ -219,6 +226,40 @@ fn main() {
                 if tick_ns == 100 {
                     println!("10 MHz QPC confirmed. 1000 ns is NOT the clock floor.");
                     println!("The probe is the defect if p50=p99=p999=1000 ns.");
+                }
+            }
+        }
+        "histogram" => {
+            let (stats, deltas) = run_probe_raw(false);
+            print_stats("histogram-baseline", &stats);
+            let mut sorted = deltas.clone();
+            sorted.sort_unstable();
+            let n = sorted.len();
+            println!("\n=== TOP 20 DELTAS (sorted descending) ===");
+            for i in 0..20 {
+                let rank = n - 1 - i;
+                println!("  rank[{}] = {} ns", rank, sorted[rank]);
+            }
+            println!("\n=== HISTOGRAM (deltas > 1000 ns) ===");
+            let buckets = [
+                (1001u64, 2000u64, "1-2 us"), (2001u64, 5000u64, "2-5 us"),
+                (5001u64, 10000u64, "5-10 us"), (10001u64, 50000u64, "10-50 us"),
+                (50001u64, 100000u64, "50-100 us"), (100001u64, u64::MAX, "100 us+"),
+            ];
+            for (lo, hi, label) in buckets {
+                let count = sorted.iter().filter(|&&d| d >= lo && d <= hi).count();
+                if count > 0 {
+                    println!("  {} ({}-{} ns): {} samples", label, lo, hi, count);
+                }
+            }
+            let p999_idx = ((999u64 * n as u64).div_ceil(1000).saturating_sub(1)) as usize;
+            println!("\n=== p999 CONTEXT (index {} of {}) ===", p999_idx, n);
+            for offset in [3i64, 2, 1, 0, -1, -2, -3] {
+                let idx = p999_idx as i64 - offset;
+                if idx >= 0 && idx < n as i64 {
+                    let i = idx as usize;
+                    println!("  sorted[{}] = {} ns {}", i, sorted[i],
+                        if i == p999_idx { "<-- p999" } else { "" });
                 }
             }
         }

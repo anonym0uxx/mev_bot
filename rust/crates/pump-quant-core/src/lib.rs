@@ -1,3 +1,4 @@
+pub mod config;
 pub mod cpu_numa_tuning;
 pub mod fixedpoint;
 pub mod latency;
