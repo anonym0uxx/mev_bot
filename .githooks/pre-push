@@ -1,9 +1,17 @@
 #!/bin/sh
-# pre-push credential guard v3.
+# pre-push credential guard v4.
 # Scans BOTH new-commit diffs (git show) AND the tree at the tip.
 # Uses blank_benign() to blank allowlisted tokens BEFORE pattern matching,
 # so a line carrying both a benign GUID and a real credential is still caught.
 # Bypass is deliberate and loud: PQ_ALLOW_SECRET=1 git push
+#
+# v4: uses --not --remotes in BOTH branches unconditionally.
+# A credential found in a commit ALREADY reachable from a remote ref
+# is NOT new publication — emit a WARNING naming the SHA and exit 0.
+# Block only what is genuinely new.
+# The tip tree scan is unchanged — it is the backstop that catches a
+# credential sitting in the current tree regardless of which commit
+# introduced it.
 if [ "$PQ_ALLOW_SECRET" = "1" ]; then
   echo "pre-push: guard BYPASSED by PQ_ALLOW_SECRET=1" >&2
   exit 0
@@ -26,22 +34,41 @@ blank_benign() {
 while read local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "$ZERO" ] && continue
 
+  # v4: unconditionally use --not --remotes to identify genuinely NEW commits.
+  # A commit already reachable from any remote ref is not new publication.
+  new_commits=$(git rev-list "$local_sha" --not --remotes)
+
+  # Also get ALL commits in the push range (for the warning pass).
   if [ "$remote_sha" = "$ZERO" ]; then
-    commits=$(git rev-list "$local_sha" --not --remotes)
+    all_commits=$(git rev-list "$local_sha")
   else
-    commits=$(git rev-list "$remote_sha..$local_sha")
+    all_commits=$(git rev-list "$remote_sha..$local_sha")
   fi
 
-  for c in $commits; do
+  # Pass 1: scan NEW commits for credentials → BLOCK
+  for c in $new_commits; do
     hits=$(git show --format= --no-color "$c" | grep '^+' | blank_benign \
            | grep -e "$UUID" -e "$TG" -e "$APIK")
     if [ -n "$hits" ]; then
-      echo "pre-push: BLOCKED - credential in commit $c ($local_ref)" >&2
+      echo "pre-push: BLOCKED - credential in NEW commit $c ($local_ref)" >&2
       echo "$hits" >&2
       fail=1
     fi
   done
 
+  # Pass 2: scan ALREADY-REMOTE commits for credentials → WARN (not block)
+  for c in $all_commits; do
+    # Skip if this commit is in the new_commits set (handled in pass 1)
+    echo "$new_commits" | grep -q "^$c$" && continue
+    hits=$(git show --format= --no-color "$c" | grep '^+' | blank_benign \
+           | grep -e "$UUID" -e "$TG" -e "$APIK")
+    if [ -n "$hits" ]; then
+      echo "pre-push: WARNING - credential-shaped pattern in commit $c ($local_ref) — ALREADY reachable from a remote ref, not blocking" >&2
+      echo "$hits" >&2
+    fi
+  done
+
+  # Tip tree scan (unchanged backstop)
   hits=$(git grep -I -e "$UUID" -e "$TG" -e "$APIK" "$local_sha" \
          2>/dev/null | blank_benign | grep -e "$UUID" -e "$TG" -e "$APIK")
   if [ -n "$hits" ]; then

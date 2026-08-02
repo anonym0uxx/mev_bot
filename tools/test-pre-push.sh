@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test matrix for pre-push guard v2. Five cases, all required.
+# Test matrix for pre-push guard v4. Seven cases, all required.
 # Each case reports: exit code + stderr content.
 set -u
 GUARD_ABS="$1"
@@ -44,6 +44,14 @@ report() {
       PASS=$((PASS+1))
     else
       echo "CASE $num: $desc — FAIL (expected BLOCK, got exit=$exit_code, stderr=$stderr)"
+      FAIL=$((FAIL+1))
+    fi
+  elif [ "$expect" = "WARN" ]; then
+    if [ "$exit_code" -eq 0 ] && echo "$stderr" | grep -q "WARNING"; then
+      echo "CASE $num: $desc — PASS (exit=$exit_code, WARNING on stderr, not blocked)"
+      PASS=$((PASS+1))
+    else
+      echo "CASE $num: $desc — FAIL (expected WARN exit=0, got exit=$exit_code, stderr=$stderr)"
       FAIL=$((FAIL+1))
     fi
   else
@@ -107,6 +115,52 @@ echo "GUID=258EAFA5-E914-47DA-95CA-C5AB0DC85B11 HELIUS_API_KEY=${_p1}:${_p2}" > 
 git add combo.txt; git commit -q -m "benign GUID + credential on same line"
 stderr=$(run_guard "$(git rev-parse HEAD)" "$ZERO")
 report 6 "allowlisted GUID + credential on same line" "BLOCK" $? "$stderr"
+
+# ─── Case 7: credential ALREADY reachable from a remote → WARN, exit 0 ───
+# Positive control for v4 --not --remotes: a commit already reachable from
+# a remote ref must NOT block. It must emit a WARNING naming the SHA and exit 0.
+# Simulates: credential commit was pushed to a task branch (origin/task4),
+# now pushing main which contains the same commit. The commit is already
+# reachable from origin/task4, so --not --remotes excludes it from the
+# "new publication" set. The tree at tip does NOT contain the credential
+# (it was scrubbed in a later commit), so the tree scan does not fire.
+new_repo "case7"
+git branch -m test  # rename default branch to test so push works
+echo "clean" > f1.txt; git add f1.txt; git commit -q -m "clean base"
+
+# Create a bare remote
+remote_repo="$TMPDIR/case7_remote"
+rm -rf "$remote_repo"
+git init -q --bare "$remote_repo"
+git remote add origin "$remote_repo" 2>/dev/null
+
+# Add credential, push to remote on branch "test" (simulating task branch push)
+echo "HELIUS_API_KEY=$FAKE_SECRET" > secret.txt; git add secret.txt
+git commit -q -m "add credential"
+# Bypass the guard for the setup push — we NEED the credential on the remote
+# to simulate the "already published" scenario. The guard correctly blocks
+# this push; we override with PQ_ALLOW_SECRET=1 as the operator would.
+PQ_ALLOW_SECRET=1 git push -q origin test 2>/dev/null
+
+# Fetch so remote-tracking ref exists for --not --remotes
+git fetch -q origin 2>/dev/null
+
+# Now scrub the credential and commit on top
+echo "HELIUS_API_KEY=\${HELIUS_API_KEY}" > secret.txt; git add secret.txt
+git commit -q -m "scrub credential"
+
+# Push the scrub commit too so origin/test is up to date
+PQ_ALLOW_SECRET=1 git push -q origin test 2>/dev/null
+git fetch -q origin 2>/dev/null
+
+# Now simulate pushing a NEW branch "main" that contains both commits.
+# The remote has origin/test but NOT origin/main.
+# --not --remotes: both commits are reachable from origin/test, so NEITHER
+# is "new". The guard should WARN on the credential commit and NOT block.
+# The tree at tip has the scrubbed version, so the tree scan is clean.
+# We pass remote_sha as ZERO (new branch) to simulate first push of main.
+stderr=$(run_guard "$(git rev-parse HEAD)" "$ZERO")
+report 7 "credential already reachable from remote (scrubbed from tree)" "WARN" $? "$stderr"
 
 echo "===================================="
 echo "RESULTS: $PASS passed, $FAIL failed"
