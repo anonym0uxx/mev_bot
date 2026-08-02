@@ -17,8 +17,6 @@ use helius_laserstream::grpc::{
 };
 use helius_laserstream::{subscribe, LaserstreamConfig};
 
-/// Default LaserStream endpoint (US-East; override via LASERSTREAM_ENDPOINT).
-const DEFAULT_ENDPOINT: &str = "https://laserstream-mainnet-ewr.helius-rpc.com";
 /// PumpSwap AMM program (pool-account owner filter + default tx include).
 const PUMPSWAP_PROGRAM: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
 /// pump.fun bonding-curve program (default tx include).
@@ -107,8 +105,13 @@ async fn main() {
             std::process::exit(3);
         }
     };
-    let endpoint =
-        std::env::var("LASERSTREAM_ENDPOINT").unwrap_or_else(|_| DEFAULT_ENDPOINT.to_string());
+    let endpoint = match std::env::var("LASERSTREAM_ENDPOINT") {
+        Ok(e) if !e.trim().is_empty() => e,
+        _ => {
+            eprintln!("[pq-laserstream-grpc] ARMING_FAILED: LASERSTREAM_ENDPOINT not set (exit 3)\n  no silent default — the endpoint the Business key travels must be explicit");
+            std::process::exit(3);
+        }
+    };
 
     // Flags: --accounts-file f, --programs p1,p2 (defaults: pump programs).
     let args: Vec<String> = std::env::args().skip(1).collect();
