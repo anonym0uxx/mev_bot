@@ -22,6 +22,18 @@
 //!   summary, fixed-point price helpers, and the CP cross-check
 //!   [`pumpswap_event::verify_buy_event`].
 //!
+//! Plus the transaction **construction** plane (2026-08-02) — the modules
+//! that produce the bytes the signer signs and the sender submits:
+//!
+//! * [`sha256`]         — self-contained FIPS 180-4 digest (PDA primitive).
+//! * [`pda`]            — `find_program_address` from first principles, with
+//!   the ed25519 on-curve check implemented locally.
+//! * [`venue_accounts`] — the real §4.1 / §4.2 account-meta lists
+//!   (`VENUE_TX_LAYOUTS.md`), fail-closed on every non-derivable input.
+//! * [`message`]        — Solana legacy-message compiler + compute-budget /
+//!   system-transfer / SPL helper instructions.
+//! * [`tx_build`]       — end-to-end: decoded venue state → signable bytes.
+//!
 //! # Constitution
 //! * §22 — NO `f32`/`f64` on any outcome-controlling path. Every calculation
 //!   in this crate is integer / fixed-point (lamports as `u64`/`u128`, ratios
@@ -38,7 +50,12 @@ pub mod curve;
 pub mod decode;
 pub mod errors;
 pub mod ix;
+pub mod message;
+pub mod pda;
 pub mod pumpswap;
 pub mod pumpswap_event;
 pub mod pumpswap_ix;
 pub mod registry;
+pub mod sha256;
+pub mod tx_build;
+pub mod venue_accounts;
