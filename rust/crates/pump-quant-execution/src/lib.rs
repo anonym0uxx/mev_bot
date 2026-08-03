@@ -73,6 +73,7 @@ pub mod ex_bundle_assemble;
 pub mod ex_circuit_breaker;
 pub mod ex_construction_gate;
 pub mod ex_live_arming;
+pub mod ex_outbound_sink;
 pub mod ex_promotion_gate;
 pub mod ex_reconcile_fill;
 pub mod ex_route_health;

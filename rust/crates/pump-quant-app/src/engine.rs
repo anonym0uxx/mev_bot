@@ -78,6 +78,7 @@ use pump_quant_evaluator::promotion_verdict::{
 use pump_quant_evaluator::reflection_cadence::{
     reflect_mints, MintId, MintReflection, MintSwaps, ReflectionCadence,
 };
+use pump_quant_execution::ex_route_health::RouteHealthSet;
 use pump_quant_features::market_structure::TrendStructure;
 use pump_quant_ingest::social_parse::fnv1a_64;
 use pump_quant_ingest::social_parse::parse_social_event;
@@ -908,6 +909,20 @@ pub struct Engine {
     /// Inert unless `probe_budget_enable` is set — a run that opens no sub-x_min
     /// probe never mutates it, so the golden tape is byte-identical.
     calibration: CalibrationLedger,
+    /// C2 wiring: per-route landing-outcome health set (§39/§99). Inert in
+    /// paper/replay mode — `RouteHealthSet::new()` is all-zero, so
+    /// `route_health_is_measured()` returns false and `choose_submit_plan()`
+    /// falls through to the legacy route. Live mode will `record()` actual
+    /// landing outcomes here; paper mode never mutates it (golden tape safe).
+    route_health: RouteHealthSet,
+    /// C2 wiring (item 7): outbound junction sink — the engine → tx_build →
+    /// signer → sender contract. Inert in paper/replay mode (`None`): the
+    /// engine books paper positions and the sink is never called. In live
+    /// mode the junction crate installs an `OutboundJunction` here; the
+    /// engine calls `on_admit` after `open_pending` books the position.
+    /// The sink's return value is logged for the report only — it NEVER feeds
+    /// an engine decision (§24(b) golden-digest invariant).
+    outbound_sink: Option<&'static dyn pump_quant_execution::ex_outbound_sink::OutboundSink>,
     /// Count of sub-`x_min` probes admitted as budgeted paid-information (LAW 13),
     /// distinct from `admitted` positions — a probe is never a position.
     probes_budgeted: u64,
@@ -1158,6 +1173,8 @@ impl Engine {
                 PROBE_PER_ROUTE_CAP_LAMPORTS,
                 0,
             ),
+            route_health: RouteHealthSet::new(),
+            outbound_sink: None,
             probes_budgeted: 0,
             last_trade_tick: BTreeMap::new(),
             terminal_reflections: Vec::new(),
@@ -3895,6 +3912,26 @@ impl Engine {
             .open(e.mint, e.entry_price, probe, probe_cost, self.now)
         {
             self.admitted += 1;
+            // C2 wiring (item 7): notify the outbound junction sink that a
+            // position was admitted. Side-effect only — the return value is
+            // logged for the report, never fed into a decision (§24(b)).
+            // In paper/replay mode `outbound_sink` is `None` and this is a
+            // no-op (golden-digest safe).
+            if let Some(sink) = self.outbound_sink {
+                // In paper mode this branch is never reached (sink is None).
+                // In live mode the junction owns the real wallet pubkey and
+                // slippage bounds; the AdmitRecord carries the engine's
+                // economic parameters for the junction's tx_build call.
+                let record = pump_quant_execution::ex_outbound_sink::AdmitRecord {
+                    mint: e.mint,
+                    user: [0u8; 32], // junction overrides with the signer
+                    is_buy: true,
+                    size_lamports: probe,
+                    entry_price: e.entry_price,
+                    max_slippage_bps: 500, // 5% default; junction may override
+                };
+                let _outcome = sink.on_admit(&record);
+            }
             // LAZY-HOLD ATA: the rent deposit is already in `e.entry_cost` (charged
             // by `pending_entry` iff the mint was absent from the set), so this is
             // the bookkeeping half — record that an account is now open for the mint
@@ -5458,6 +5495,72 @@ impl Engine {
     #[must_use]
     pub fn category_rank_adjustment(&self, category_id: u64) -> Option<i64> {
         self.category_rank_adj.get(&category_id).copied()
+    }
+
+    // ── C2 wiring: route-health accessors ──────────────────────────────────
+    //
+    // These methods are the seam between the engine's decision plane and the
+    // execution crate's route-health ring. In paper/replay mode they are never
+    // called (the paper-session binary does not submit real transactions), so
+    // the golden tape is byte-identical. In live mode the junction will:
+    //   1. call `route_health_record()` after every submission landing/failure,
+    //   2. call `route_health_fill()` to fold health into `RouteCtx` before
+    //      `choose_submit_plan()`.
+
+    /// Record a landing outcome into the route-health ring (C2).
+    ///
+    /// `route` is the submission route the attempt was sent on. `attempt`
+    /// carries the landed/missed flag and wall-clock latency in ms.
+    pub fn route_health_record(
+        &mut self,
+        route: pump_quant_execution::ex_route_policy::Route,
+        attempt: pump_quant_execution::ex_route_health::Attempt,
+    ) {
+        self.route_health.record(route, attempt);
+    }
+
+    /// Record a Helius Sender attempt into the sender-health ring (C2).
+    pub fn route_health_record_sender(
+        &mut self,
+        attempt: pump_quant_execution::ex_route_health::Attempt,
+    ) {
+        self.route_health.record_sender(attempt);
+    }
+
+    /// Fold measured route health into `route_ctx` (C2). Returns `false` if
+    /// not all legacy routes have cleared `MIN_SAMPLES`, leaving `ctx`
+    /// unchanged. Call this before `choose_submit_plan()`.
+    pub fn route_health_fill(
+        &self,
+        route_ctx: &mut pump_quant_execution::ex_route_policy::RouteCtx,
+        max_fail_bps: u32,
+    ) -> bool {
+        if !self.route_health.all_legacy_measured() {
+            return false;
+        }
+        self.route_health.fill_route_ctx(route_ctx, max_fail_bps);
+        true
+    }
+
+    /// C2 wiring (item 7): install an outbound junction sink. Only the
+    /// junction crate calls this — in live mode it installs an
+    /// `OutboundJunction`; in paper/replay mode it is never called and the
+    /// sink remains `None` (golden-digest safe).
+    ///
+    /// The sink reference must have a `'static` lifetime because the engine
+    /// outlives any individual call frame. The junction crate constructs a
+    /// `Box::leak` or a `static NoopSink` for this.
+    pub fn install_outbound_sink(
+        &mut self,
+        sink: &'static dyn pump_quant_execution::ex_outbound_sink::OutboundSink,
+    ) {
+        self.outbound_sink = Some(sink);
+    }
+
+    /// Whether an outbound sink is installed (for the report).
+    #[must_use]
+    pub fn outbound_sink_installed(&self) -> bool {
+        self.outbound_sink.is_some()
     }
 }
 
