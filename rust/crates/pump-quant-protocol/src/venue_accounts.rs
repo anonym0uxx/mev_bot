@@ -330,23 +330,45 @@ impl PumpCurveCtx {
 /// Which trailing account the fee program requires after `bonding_curve_v2`.
 ///
 /// The 2026-08-02 on-chain check proved one exists in 100% of sampled
-/// transactions and that the builder omitted it. Which account it is has NOT
-/// been settled — see [`SHARING_CONFIG_SEED`] for the discriminating test.
-/// This enum makes the open question explicit and typed instead of leaving it
-/// as a doc caveat, so a caller must state which hypothesis it is building
-/// under and `LayoutRegistry` can refuse an unproven one.
+/// transactions and that the builder omitted it. On 2026-08-03 the identity
+/// was SETTLED via two RPC tests (Item 6):
+///
+/// **TEST 1** — `getAccountInfo` on the pump.fun Global account
+/// (`4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf`) decoded three recipient
+/// fields: `fee_recipient` (1, offset 41), `fee_recipients` (7, offset 162),
+/// and `buyback_fee_recipients` (8, offset 741). The 8 addresses in the
+/// `buyback_fee_recipients` list match the 8 observed tail addresses exactly.
+///
+/// **TEST 2** — `getAccountInfo` on all 8 observed tails: every one is owned
+/// by `pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ` (fee program) with
+/// discriminator `[153,166,71,144,179,189,137,251]` = **BuybackVault** and
+/// 208-byte data. None is a wallet; none is `fee_program_global`; none is
+/// `sharing-config`.
+///
+/// The trailing account is a **BuybackVault PDA**. The 8 distinct addresses
+/// are the 8 entries of the Global account's `buyback_fee_recipients` list.
+/// The per-mint selection logic (which of the 8 a given mint uses) is the
+/// remaining unknown — the seeds are not yet reverse-engineered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeeTail {
     /// Emit no trailing fee account. This is what shipped on 2026-08-02 and it
     /// is now known to be WRONG on mainnet. Kept only so the existing fixtures
     /// and the pre-finding behaviour remain expressible and diffable.
     None,
-    /// Per-mint `["sharing-config", mint]` under the fee program. Leading
-    /// hypothesis.
+    /// Per-mint `["sharing-config", mint]` under the fee program. FALSIFIED
+    /// on 2026-08-03 — observed tails are BuybackVault PDAs, not SharingConfig.
+    /// Retained for diffability and to mark the hypothesis that was tested and
+    /// eliminated.
     SharingConfig,
-    /// Constant `["fee-program-global"]`. The alternative hypothesis; chosen
-    /// if the extra account is identical across two different mints.
+    /// Constant `["fee-program-global"]`. FALSIFIED on 2026-08-03 — observed
+    /// tails vary per-mint (8 distinct addresses) and are not the single
+    /// constant `fee_program_global` PDA. Retained for diffability.
     FeeProgramGlobal,
+    /// A BuybackVault PDA whose address is one of the 8 entries in the Global
+    /// account's `buyback_fee_recipients` list (offset 741, 8x32 bytes). The
+    /// per-mint selection index is the remaining unknown. Use this variant
+    /// when the caller knows which of the 8 addresses applies to this mint.
+    BuybackVault([u8; 32]),
     /// An account observed on chain and supplied verbatim by the caller. The
     /// escape hatch that is NOT a guess: use this when the fixture extractor
     /// has read the real account but the derivation is still unknown, so the
@@ -366,6 +388,12 @@ impl FeeTail {
                 Some(AccountMeta::w(a))
             }
             FeeTail::FeeProgramGlobal => Some(AccountMeta::w(FEE_PROGRAM_GLOBAL)),
+            FeeTail::BuybackVault(pk) => {
+                if pk == [0u8; 32] {
+                    return Err(AccountBuildError::ZeroedInput("buyback_vault"));
+                }
+                Some(AccountMeta::w(pk))
+            }
             FeeTail::Observed(pk) => {
                 if pk == [0u8; 32] {
                     return Err(AccountBuildError::ZeroedInput("fee_tail_observed"));

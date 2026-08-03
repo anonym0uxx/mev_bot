@@ -365,6 +365,17 @@ fn observed_tail_is_verbatim_and_refuses_zero() {
     assert!(pump_buy_accounts_with_tail(&ctx(), FeeTail::Observed([0u8; 32])).is_err());
 }
 
+#[test]
+fn buyback_vault_tail_is_writable_and_refuses_zero() {
+    // Item 6: the trailing fee account is a BuybackVault PDA. Verify the
+    // builder emits it as a writable trailing account and rejects zero.
+    let vault = pk(42);
+    let v = pump_buy_accounts_with_tail(&ctx(), FeeTail::BuybackVault(vault)).unwrap();
+    assert_eq!(v.last().unwrap().pubkey, vault);
+    assert!(v.last().unwrap().is_writable);
+    assert!(pump_buy_accounts_with_tail(&ctx(), FeeTail::BuybackVault([0u8; 32])).is_err());
+}
+
 // -- coverage ----------------------------------------------------------------
 
 /// The permutation matrix is the difference between "we verified a buy" and
