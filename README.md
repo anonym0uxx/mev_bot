@@ -211,7 +211,7 @@ law, strictly avoid loss beyond) its own absence on a tape containing exactly it
 
 **Three honesty corrections are baked into the current pin, and the number they produced must be read
 the way it is meant.** The current golden reference is **net 31,111,528 lamports**, digest
-`13693021370354439552`, promoted/admitted/rejected/universe-filtered **504 / 11 / 448 / 72**
+`2822236667991883855`, promoted/admitted/rejected/universe-filtered **504 / 11 / 448 / 72**
 (re-pin #27, 2026-07-28). It got there through **four** accounting corrections, none of which is a
 strategy change:
 

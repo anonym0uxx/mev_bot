@@ -240,8 +240,8 @@ fn encode_base64(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pq_stream_capture::rpc::Reply;
-    use pq_stream_capture::signer::{encode_base58, SignerError};
+    use pq_stream_capture::rpc::{Reply, Transport};
+    use pq_stream_capture::signer::{encode_base58, SignerError, SIGNATURE_BYTES};
 
     // ─── Mock transport ───────────────────────────────────────────────────
 

@@ -178,6 +178,13 @@ pub struct Config {
     /// 1-to-4 range a real position takes (§54).
     pub gate_exit_tranches: u32,
 
+    // ---- paper session cadence ----
+    /// Wall-clock period between engine `Tick` evaluations in paper mode, in
+    /// milliseconds. The live loop must drive evaluate() off the clock, not off
+    /// loop iterations, because each iteration blocks on socket polls. Starts at
+    /// 250 ms. Enters the config hash + replay record.
+    pub paper_tick_period_ms: u64,
+
     // ---- scalp / paper fill ----
     /// Fill semantics for the paper engine.
     pub fill_mode: FillModeCfg,
@@ -966,6 +973,8 @@ impl Config {
             gate_impact_den: 1_000_000,
             gate_exit_tranches: 3,
 
+            paper_tick_period_ms: 250,
+
             fill_mode: FillModeCfg::OptimisticCeiling,
             entry_fee_bps: 100,
             exit_fee_bps: 100,
@@ -1240,6 +1249,9 @@ impl Config {
             "gate_exit_tranches" => {
                 self.gate_exit_tranches = u32::try_from(nonneg(value)?.max(1))
                     .map_err(|_| ConfigError::OutOfRange(key.to_string(), value))?
+            }
+            "paper_tick_period_ms" => {
+                self.paper_tick_period_ms = nonneg(value)?.max(1)
             }
             "fill_mode" => {
                 self.fill_mode = FillModeCfg::from_code(value)

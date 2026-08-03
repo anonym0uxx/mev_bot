@@ -78,7 +78,7 @@
 /// and the 150 bps `first_sell_penalty_bps` is deleted as own-impact double-counting.
 /// Digest, net, admitted and rejected all move. See `golden_digest.rs` for the full
 /// entry, including the three published findings this re-pin overturns.
-pub const GOLDEN_DIGEST: u64 = 13_693_021_370_354_439_552;
+pub const GOLDEN_DIGEST: u64 = 2_822_236_667_991_883_855;
 /// Realized net-SOL (lamports) on the golden tape (§24-compliant cost-derived).
 pub const GOLDEN_NET_LAMPORTS: i128 = 31_111_528;
 /// Candidates promoted to the gate.

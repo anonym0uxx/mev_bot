@@ -264,9 +264,14 @@ fn main() -> ExitCode {
     let pp_url = std::env::var("PUMPPORTAL_WS_URL")
         .unwrap_or_else(|_| PUMPPORTAL_DEFAULT_URL.to_string());
 
+    // Build the engine config early so we can report the tick period in the
+    // startup banner. The config is moved into the engine later.
+    let cfg = Config::dev_portable();
+    let tick_period_ms = cfg.paper_tick_period_ms;
+
     eprintln!("[paper-session] PumpPortal: {pp_url}");
     eprintln!("[paper-session] Helius WS:  {}", creds.ws_url_redacted());
-    eprintln!("[paper-session] duration={duration_secs}s cap={junction_cap} commitment={commitment}");
+    eprintln!("[paper-session] duration={duration_secs}s cap={junction_cap} commitment={commitment} tick={}ms", tick_period_ms);
     eprintln!("[paper-session] MAX_ACCOUNT_SUBS={MAX_ACCOUNT_SUBS} (FIFO eviction)");
 
     // ─── Connect PumpPortal ──────────────────────────────────────────────
@@ -301,7 +306,6 @@ fn main() -> ExitCode {
 
     // ─── Engine + queue ──────────────────────────────────────────────────
     let queue = BoundedJunctionQueue::with_capacity(junction_cap);
-    let cfg = Config::dev_portable();
     let mut engine = Engine::new(cfg, RunMode::Paper);
 
     let mut sub_tracker = SubTracker::new();
@@ -314,8 +318,13 @@ fn main() -> ExitCode {
     let deadline = Instant::now() + Duration::from_secs(duration_secs);
     let mut last_slot_seen: u64 = 0;
     let mut last_slot_time = Instant::now();
-    let mut since_tick = 0u64;
-    let tick_interval = 50u64;
+
+    // Wall-clock tick cadence: evaluate the engine on a fixed period regardless
+    // of how many socket polls blocked in the loop body. This decouples tick
+    // rate from feed activity, so a silent socket does not freeze the decision
+    // loop. The period comes from config (paper_tick_period_ms, default 250 ms).
+    let tick_period = Duration::from_millis(tick_period_ms);
+    let mut next_tick = Instant::now() + tick_period;
 
     eprintln!("[paper-session] live — entering event loop");
 
@@ -625,10 +634,12 @@ fn main() -> ExitCode {
         }
 
         // ── Periodic Tick (engine evaluate) ──────────────────────────────
-        since_tick += 1;
-        if since_tick >= tick_interval {
+        // Wall-clock driven: fire exactly once per tick_period, regardless of
+        // how many loop iterations elapsed. A silent socket no longer freezes
+        // the decision loop.
+        if Instant::now() >= next_tick {
             engine.tick(pump_quant_app::event::AppEvent::Tick);
-            since_tick = 0;
+            next_tick = Instant::now() + tick_period;
         }
 
         if !did_work {

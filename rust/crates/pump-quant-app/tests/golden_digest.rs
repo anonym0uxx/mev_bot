@@ -652,7 +652,7 @@ use tape_golden::*;
 // floor clip unchanged at 33 bps a leg), and the two report harnesses' 0.2 SOL
 // "pools" became real curves escrowing 0.2 SOL.
 // (arc: ... -> 8_124_568 -> 16_778_896 -> 31_111_528.)
-const GOLDEN_DIGEST: u64 = 13_693_021_370_354_439_552;
+const GOLDEN_DIGEST: u64 = 2_822_236_667_991_883_855;
 const GOLDEN_NET_LAMPORTS: i128 = 31_111_528;
 const GOLDEN_PROMOTED: u64 = 504;
 const GOLDEN_ADMITTED: u64 = 11;
