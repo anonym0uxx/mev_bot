@@ -283,6 +283,9 @@ fn main() -> ExitCode {
             return ExitCode::from(4);
         }
     };
+    // Match the poll timeout to the tick period so a silent socket doesn't
+    // block longer than one tick.
+    let _ = pp_conn.set_read_timeout(Duration::from_millis(tick_period_ms));
     for sub in pumpportal_ws::subscription_batch(&[]) {
         if let Err(e) = pp_conn.send_text(&sub) {
             eprintln!("[paper-session] PumpPortal subscribe error: {e}");
@@ -299,6 +302,7 @@ fn main() -> ExitCode {
             return ExitCode::from(4);
         }
     };
+    let _ = helius_conn.set_read_timeout(Duration::from_millis(tick_period_ms));
     if let Err(e) = helius_conn.send_text(&helius_ws::slot_subscribe_request()) {
         eprintln!("[paper-session] Helius slotSubscribe error: {e}");
         return ExitCode::from(4);
@@ -409,6 +413,7 @@ fn main() -> ExitCode {
                 stats.pp_reconnects += 1;
                 pp_conn = match WsConn::connect(&pp_url) {
                     Ok(mut c) => {
+                        let _ = c.set_read_timeout(Duration::from_millis(tick_period_ms));
                         for sub in pumpportal_ws::subscription_batch(&[]) {
                             let _ = c.send_text(&sub);
                         }
@@ -563,6 +568,7 @@ fn main() -> ExitCode {
                 stats.helius_reconnects += 1;
                 helius_conn = match WsConn::connect(&helius_url) {
                     Ok(mut c) => {
+                        let _ = c.set_read_timeout(Duration::from_millis(tick_period_ms));
                         let _ = c.send_text(&helius_ws::slot_subscribe_request());
                         // Re-subscribe all active mints with fresh request IDs
                         for (_, mint) in sub_tracker.active_mints() {

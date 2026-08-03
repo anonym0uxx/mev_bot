@@ -620,6 +620,12 @@ impl WsConn {
         })
     }
 
+    /// Adjust the socket read timeout. Lets the caller match the poll cadence
+    /// to a wall-clock tick period shorter than the default 1 s.
+    pub fn set_read_timeout(&mut self, timeout: Duration) -> Result<(), String> {
+        self.stream.get_ref().set_read_timeout(Some(timeout)).map_err(|e| e.to_string())
+    }
+
     /// Pull the next event. `Ok(None)` = read-timeout tick (no data): the
     /// caller runs its keepalive/staleness timers and polls again. Control
     /// frames are handled inline: ping → automatic pong reply, close →
