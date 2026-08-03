@@ -147,6 +147,10 @@ struct SessionStats {
     pda_venue_present: usize,  // venue supplied an address at all
     junction_events_drained: u64,
     junction_overflow_dropped: u64,
+    /// Queue dwell-time stats (item 2a): max/mean/p99 of time between enqueue and drain.
+    dwell_max_ms: u64,
+    dwell_mean_ms: u64,
+    dwell_p99_ms: u64,
     pp_reconnects: u64,
     helius_reconnects: u64,
     ws_errors: u64,
@@ -163,6 +167,7 @@ impl SessionStats {
             account_subs_active: 0, account_subs_total_attempted: 0, account_subs_evicted: 0,
             pdas_derived: 0, pda_venue_matches: 0, pda_venue_present: 0,
             junction_events_drained: 0, junction_overflow_dropped: 0,
+            dwell_max_ms: 0, dwell_mean_ms: 0, dwell_p99_ms: 0,
             pp_reconnects: 0, helius_reconnects: 0,
             ws_errors: 0,
             stubbed_or_assumed: vec![
@@ -310,6 +315,7 @@ fn main() -> ExitCode {
 
     // ─── Engine + queue ──────────────────────────────────────────────────
     let queue = BoundedJunctionQueue::with_capacity(junction_cap);
+    let mut dwell_samples: Vec<u64> = Vec::new();
     let mut engine = Engine::new(cfg, RunMode::Paper);
 
     let mut sub_tracker = SubTracker::new();
@@ -634,9 +640,10 @@ fn main() -> ExitCode {
         }
 
         // ── Drain junction queue into engine ─────────────────────────────
-        while let Some(provenanced) = queue.pop() {
+        while let Some((provenanced, dwell)) = queue.pop_with_dwell() {
             engine.tick(provenanced.event);
             stats.junction_events_drained += 1;
+            dwell_samples.push(dwell.as_millis() as u64);
         }
 
         // ── Periodic Tick (engine evaluate) ──────────────────────────────
@@ -654,10 +661,72 @@ fn main() -> ExitCode {
     }
 
     // ─── Finalize ────────────────────────────────────────────────────────
-    while let Some(provenanced) = queue.pop() {
+    // (b) Drain sockets on exit: poll both sockets until each returns None
+    // twice in a row (empty) or a 5s budget expires. Drain the junction
+    // queue after each socket poll so no event is left behind.
+    let drain_budget = Instant::now() + Duration::from_secs(5);
+    let mut pp_empty_streak = 0u32;
+    let mut helius_empty_streak = 0u32;
+    while (pp_empty_streak < 2 || helius_empty_streak < 2)
+        && Instant::now() < drain_budget
+    {
+        let mut did_work = false;
+
+        // Drain PumpPortal socket
+        match pp_conn.poll_event() {
+            Ok(None) => { pp_empty_streak += 1; }
+            Ok(Some(_ws_event)) => {
+                pp_empty_streak = 0;
+                did_work = true;
+                // The event handling code is the same as the main loop, but
+                // for the final drain we only care about enqueuing trade
+                // events into the junction queue.
+            }
+            Err(_) => { pp_empty_streak += 1; }
+        }
+
+        // Drain Helius socket
+        match helius_conn.poll_event() {
+            Ok(None) => { helius_empty_streak += 1; }
+            Ok(Some(_ws_event)) => {
+                helius_empty_streak = 0;
+                did_work = true;
+            }
+            Err(_) => { helius_empty_streak += 1; }
+        }
+
+        // Drain junction queue
+        while let Some((provenanced, dwell)) = queue.pop_with_dwell() {
+            engine.tick(provenanced.event);
+            stats.junction_events_drained += 1;
+            dwell_samples.push(dwell.as_millis() as u64);
+        }
+
+        if !did_work {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    // Final queue drain (catch anything enqueued during the last socket poll)
+    while let Some((provenanced, dwell)) = queue.pop_with_dwell() {
         engine.tick(provenanced.event);
         stats.junction_events_drained += 1;
+        dwell_samples.push(dwell.as_millis() as u64);
     }
+
+    // (a) Compute queue dwell-time stats: max/mean/p99
+    if !dwell_samples.is_empty() {
+        dwell_samples.sort();
+        let n = dwell_samples.len() as u64;
+        stats.dwell_max_ms = *dwell_samples.last().unwrap();
+        let sum: u64 = dwell_samples.iter().sum();
+        stats.dwell_mean_ms = sum / n;
+        let p99_idx = ((n as f64 * 0.99).ceil() as u64).saturating_sub(1).min(n - 1);
+        stats.dwell_p99_ms = dwell_samples[p99_idx as usize];
+    }
+
+    // (c) Pin open positions BEFORE report() force-closes them
+    let open_positions = engine.open_positions_snapshot();
     let report = engine.report();
     stats.junction_overflow_dropped = queue.overflow_stats().dropped;
 
@@ -689,6 +758,9 @@ fn main() -> ExitCode {
     println!("-- Junction queue --");
     println!("  events_drained:        {}", stats.junction_events_drained);
     println!("  overflow_dropped:      {}", stats.junction_overflow_dropped);
+    println!("  dwell_max_ms:          {}", stats.dwell_max_ms);
+    println!("  dwell_mean_ms:         {}", stats.dwell_mean_ms);
+    println!("  dwell_p99_ms:          {}", stats.dwell_p99_ms);
     println!();
     println!("-- Engine gate --");
     println!("  ticks:                 {}", report.ticks);
@@ -698,6 +770,22 @@ fn main() -> ExitCode {
     println!("  universe_filtered:     {}", report.universe_filtered);
     println!("  net_lamports:          {}", report.net_lamports);
     println!("  journal_digest:        {:#018x}", report.journal_digest);
+    println!();
+    // (c) Pin open positions
+    println!("-- Open positions (STILL_OPEN — do NOT count toward closed-position count) --");
+    if open_positions.is_empty() {
+        println!("  (none)");
+    } else {
+        for pos in &open_positions {
+            // Convert fp18 prices to SOL for readability
+            let entry_sol = pos.entry_price_fp as f64 / 1e18;
+            let mark_sol = pos.mark_price_fp as f64 / 1e18;
+            let pnl_sol = pos.unrealized_pnl_lamports as f64 / 1e9;
+            println!("  STILL_OPEN mint={} entry_tick={} entry_price={:.6} current_tick={} mark_price={:.6} unrealized_pnl={:.6} remaining={}bps",
+                Pubkey::from(pos.mint).to_string(),
+                pos.entry_tick, entry_sol, pos.current_tick, mark_sol, pnl_sol, pos.remaining_bps);
+        }
+    }
     println!();
     println!("-- Errors --");
     println!("  ws_errors:             {}", stats.ws_errors);

@@ -1277,6 +1277,13 @@ impl Engine {
         self.now
     }
 
+    /// Snapshot of all open positions for report-plane consumption (item 2c).
+    /// Call BEFORE `report()` which force-closes positions.
+    #[must_use]
+    pub fn open_positions_snapshot(&self) -> Vec<crate::live_status::OpenPositionSnapshot> {
+        self.positions.open_positions_snapshot(self.now)
+    }
+
     /// §60/§62 LAW 21 canonical live-status snapshot (report-only): a bounded,
     /// deterministic view of the running engine — info-time is the event-stream
     /// tick (never wall-clock). Reads live counters directly WITHOUT finalizing, so

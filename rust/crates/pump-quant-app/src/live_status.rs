@@ -11,6 +11,26 @@
 
 use std::io::Write;
 
+/// One open position at session end (item 2c: pin open positions).
+/// Report-plane only — never read by a gate, size, rank, or exit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenPositionSnapshot {
+    /// The mint address of the open position.
+    pub mint: [u8; 32],
+    /// Entry tick (logical, from event stream).
+    pub entry_tick: u64,
+    /// Entry price (fixed-point, fp18).
+    pub entry_price_fp: u64,
+    /// Current/latest tick at snapshot time.
+    pub current_tick: u64,
+    /// Mark price at snapshot time (fixed-point, fp18).
+    pub mark_price_fp: u64,
+    /// Unrealized PnL in lamports (mark - entry) × remaining size.
+    pub unrealized_pnl_lamports: i128,
+    /// Remaining fraction in bps (10000 = full).
+    pub remaining_bps: u32,
+}
+
 /// A bounded, deterministic snapshot of the running engine (§60/§62).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LiveStatus {

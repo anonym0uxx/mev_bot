@@ -468,6 +468,34 @@ impl ScalpLifecycle {
         }
     }
 
+    /// A snapshot of every open position for report-plane consumption (item 2c).
+    /// Returns entry tick, entry price, current tick, mark price, unrealized PnL,
+    /// and remaining fraction. Sorted by mint for determinism (§22).
+    #[must_use]
+    pub fn open_positions_snapshot(&self, current_tick: u64) -> Vec<crate::live_status::OpenPositionSnapshot> {
+        self.open
+            .iter()
+            .map(|(mint, pos)| {
+                let mark_price_fp = pos.prev_price_fp;
+                let size_lamports = pos.size_lamports as i128;
+                let remaining_frac = pos.remaining_bps as i128;
+                // Unrealized PnL = (mark - entry) × remaining_size
+                let remaining_size = size_lamports * remaining_frac / 10_000;
+                let pnl_per_unit = mark_price_fp as i128 - pos.entry_price_fp as i128;
+                let unrealized_pnl = remaining_size.saturating_mul(pnl_per_unit) / 1_000_000_000_000_000_000i128;
+                crate::live_status::OpenPositionSnapshot {
+                    mint: *mint,
+                    entry_tick: pos.entry_tick,
+                    entry_price_fp: pos.entry_price_fp,
+                    current_tick,
+                    mark_price_fp,
+                    unrealized_pnl_lamports: unrealized_pnl,
+                    remaining_bps: pos.remaining_bps,
+                }
+            })
+            .collect()
+    }
+
     /// The incumbent exit parameters this manager runs under (read-only).
     ///
     /// The §48 tournament and the LAW B8 proposal derivation both need to diff

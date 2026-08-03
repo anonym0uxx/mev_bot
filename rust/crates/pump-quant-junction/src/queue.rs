@@ -20,6 +20,8 @@ pub struct BoundedJunctionQueue {
     /// Ring buffer storage, pre-allocated to capacity.
     /// Stored as Vec for stable allocation; accessed circularly.
     buf: std::cell::UnsafeCell<Vec<Option<ProvenancedEvent>>>,
+    /// Enqueue timestamps, parallel ring for dwell-time measurement.
+    enqueued_at: std::cell::UnsafeCell<Vec<Option<std::time::Instant>>>,
     /// Capacity (must be power-of-2 for mask-based indexing).
     cap_mask: usize,
     /// Head index (consumer). Atomic because the engine thread reads it.
@@ -55,12 +57,15 @@ impl BoundedJunctionQueue {
         let cap_mask = cap - 1;
 
         let mut buf = Vec::with_capacity(cap);
+        let mut ts_buf = Vec::with_capacity(cap);
         for _ in 0..cap {
             buf.push(None);
+            ts_buf.push(None);
         }
 
         Self {
             buf: std::cell::UnsafeCell::new(buf),
+            enqueued_at: std::cell::UnsafeCell::new(ts_buf),
             cap_mask,
             head: std::sync::atomic::AtomicUsize::new(0),
             tail: std::sync::atomic::AtomicUsize::new(0),
@@ -92,6 +97,8 @@ impl BoundedJunctionQueue {
         // thread can write to this slot while we hold the tail index.
         let buf = unsafe { &mut *self.buf.get() };
         buf[idx] = Some(event);
+        let ts_buf = unsafe { &mut *self.enqueued_at.get() };
+        ts_buf[idx] = Some(std::time::Instant::now());
         self.tail
             .fetch_add(1, std::sync::atomic::Ordering::Release);
         true
@@ -133,6 +140,34 @@ impl BoundedJunctionQueue {
                 .last_drop_slot
                 .load(std::sync::atomic::Ordering::Relaxed),
         }
+    }
+
+    /// Pop an event and return it together with its dwell time (time spent
+    /// in the queue from enqueue to drain). Returns None if the queue is
+    /// empty.
+    pub fn pop_with_dwell(&self) -> Option<(ProvenancedEvent, std::time::Duration)> {
+        let head = self.head.load(std::sync::atomic::Ordering::Relaxed);
+        let tail = self.tail.load(std::sync::atomic::Ordering::Acquire);
+
+        if head == tail {
+            return None; // empty
+        }
+
+        let idx = head & self.cap_mask;
+        // SAFETY: The consumer owns slots between head and tail.
+        let buf = unsafe { &mut *self.buf.get() };
+        let event = buf[idx].take();
+        let ts_buf = unsafe { &mut *self.enqueued_at.get() };
+        let enqueued = ts_buf[idx].take();
+        self.head
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+
+        event.map(|e| {
+            let dwell = enqueued
+                .map(|t| t.elapsed())
+                .unwrap_or_default();
+            (e, dwell)
+        })
     }
 }
 
