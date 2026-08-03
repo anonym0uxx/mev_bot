@@ -41,6 +41,11 @@ impl Creds {
     /// PQ_CREDS_FILE set but unreadable is an error, not a fallback.
     pub fn from_env() -> Result<Self> {
         if let Ok(p) = std::env::var("PQ_CREDS_FILE") {
+            // Normalise MSYS/git-bash paths (e.g. `/c/Users/...`) to native
+            // Windows paths (`C:\Users\...`) so the file is reachable from a
+            // Windows binary launched inside a git-bash shell. On non-Windows
+            // hosts this is a no-op.
+            let p = normalise_path(&p);
             dotenvy::from_path(Path::new(&p))
                 .with_context(|| format!("PQ_CREDS_FILE={p} could not be loaded"))?;
         }
@@ -93,6 +98,32 @@ impl Creds {
     pub fn ws_url_redacted(&self) -> String {
         format!("{}/?api-key=<redacted>", self.helius_ws_base)
     }
+}
+
+/// Normalise an MSYS/git-bash path (`/c/Users/...`) to a native Windows path
+/// (`C:\Users\...`) so that a Windows binary launched inside a git-bash shell
+/// can find a file referenced by `PQ_CREDS_FILE`. On non-Windows hosts this
+/// is a no-op (returns the input unchanged). This is a defensive convenience
+/// — the primary fix is setting `PQ_CREDS_FILE` to a native path at User
+/// scope.
+fn normalise_path(p: &str) -> String {
+    #[cfg(windows)]
+    {
+        // MSYS mounts `/c` at `C:\`, `/d` at `D:\`, etc. The pattern is
+        // `/<single-letter>/rest`.
+        let bytes = p.as_bytes();
+        if bytes.len() >= 2 && bytes[0] == b'/' {
+            let drive = bytes[1] as char;
+            if drive.is_ascii_alphabetic() && (bytes.len() == 2 || bytes[2] == b'/') {
+                let rest = &p[2..];
+                let native = format!("{}:{}", drive.to_ascii_uppercase(), rest.replace('/', "\\"));
+                return native;
+            }
+        }
+        p.to_string()
+    }
+    #[cfg(not(windows))]
+    p.to_string()
 }
 
 #[cfg(test)]
@@ -340,5 +371,24 @@ mod tests {
             "Creds Debug leaked the key loaded from file! Debug output: {dbg}"
         );
         assert!(dbg.contains("Secret(<redacted>)"));
+    }
+
+    #[test]
+    fn normalise_path_msys_to_native() {
+        // MSYS `/c/Users/...` → `C:\Users\...` on Windows; unchanged elsewhere.
+        let inp = "/c/Users/Alon/.hermes/creds/pump-quant.env";
+        let out = normalise_path(inp);
+        #[cfg(windows)]
+        assert_eq!(out, "C:\\Users\\Alon\\.hermes\\creds\\pump-quant.env");
+        #[cfg(not(windows))]
+        assert_eq!(out, inp);
+    }
+
+    #[test]
+    fn normalise_path_already_native() {
+        // A native Windows path is left unchanged.
+        let inp = "C:\\Users\\Alon\\creds.env";
+        let out = normalise_path(inp);
+        assert_eq!(out, inp);
     }
 }
