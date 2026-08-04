@@ -5,6 +5,17 @@
 //! the failure mode the WS lane can only log, this lane heals. Kept minimal
 //! and obviously-correct-by-reading; it cannot be compiled in the authoring
 //! environment (crates.io unreachable), so nothing clever lives here.
+//!
+//! Output: NDJSON lines on stdout, one per gRPC update. The paper_session
+//! (and live trading) binary spawns this as a subprocess and reads stdout
+//! line-by-line. Each line is a JSON object with the schema:
+//!
+//! Transaction:  {"lane":"laserstream","kind":"transaction","slot":N,"recv_unix_ms":N,
+//!                 "signature_b58":"...","account_keys":["b58",...],
+//!                 "instructions":[{"program_b58":"...","data_b64":"...","accounts":[0,1,2]}]}
+//! Account:      {"lane":"laserstream","kind":"account","slot":N,"recv_unix_ms":N,
+//!                 "pubkey_b58":"...","data_b64":"...","owner_b58":"..."}
+//! Slot:         {"lane":"laserstream","kind":"slot","slot":N,"recv_unix_ms":N}
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -52,7 +63,32 @@ fn b58(bytes: &[u8]) -> String {
     out
 }
 
-/// JSON string escaping (same minimal set as the sibling crate's emit.rs).
+/// Minimal base64 encoder (standard alphabet) for instruction data + account data.
+fn b64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(ALPHABET[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// JSON string escaping.
 fn esc(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     for c in s.chars() {
@@ -69,15 +105,101 @@ fn esc(s: &str) -> String {
     out
 }
 
-fn emit(kind: &str, slot: u64, id_b58: &str, debug_payload: &str) {
+/// Emit a structured transaction NDJSON line.
+/// Extracts account keys and instruction data from the protobuf transaction.
+fn emit_transaction(slot: u64, tx_update: &helius_laserstream::grpc::SubscribeTransactionInfo) {
+    let tx_opt = tx_update.transaction.as_ref();
+    let sig_b58 = tx_opt
+        .and_then(|t| Some(b58(&t.signature)))
+        .unwrap_or_default();
+
+    // Extract account keys from the transaction message.
+    let account_keys: Vec<String> = tx_opt
+        .and_then(|t| t.message.as_ref())
+        .map(|msg| {
+            msg.account_keys
+                .iter()
+                .map(|k| b58(k))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Extract instructions from the message.
+    let instructions_json: Vec<String> = tx_opt
+        .and_then(|t| t.message.as_ref())
+        .map(|msg| {
+            msg.instructions
+                .iter()
+                .map(|ix| {
+                    // program_id_index is a 0-based index into account_keys
+                    let prog_b58 = if (ix.program_id_index as usize) < msg.account_keys.len() {
+                        b58(&msg.account_keys[ix.program_id_index as usize])
+                    } else {
+                        String::new()
+                    };
+                    let data_b64 = b64_encode(&ix.data);
+                    let accounts_json: Vec<String> = ix
+                        .accounts
+                        .iter()
+                        .map(|a| a.to_string())
+                        .collect();
+                    format!(
+                        "{{\"program_b58\":\"{}\",\"data_b64\":\"{}\",\"accounts\":[{}]}}",
+                        esc(&prog_b58),
+                        esc(&data_b64),
+                        accounts_json.join(",")
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     println!(
-        "{{\"lane\":\"laserstream\",\"recv_unix_ms\":{},\"kind\":\"{}\",\"slot\":{},\
-         \"raw_b58_or_json\":{{\"id_b58\":\"{}\",\"debug\":\"{}\"}}}}",
-        now_ms(),
-        kind,
+        "{{\"lane\":\"laserstream\",\"kind\":\"transaction\",\"slot\":{},\"recv_unix_ms\":{},\
+         \"signature_b58\":\"{}\",\"account_keys\":[{}],\"instructions\":[{}]}}",
         slot,
-        esc(id_b58),
-        esc(debug_payload)
+        now_ms(),
+        esc(&sig_b58),
+        account_keys.iter().map(|k| format!("\"{}\"", esc(k))).collect::<Vec<_>>().join(","),
+        instructions_json.join(",")
+    );
+}
+
+/// Emit a structured account NDJSON line.
+fn emit_account(slot: u64, acct_update: &helius_laserstream::grpc::SubscribeAccountInfo) {
+    let key_b58 = acct_update
+        .account
+        .as_ref()
+        .map(|a| b58(&a.pubkey))
+        .unwrap_or_default();
+    let owner_b58 = acct_update
+        .account
+        .as_ref()
+        .map(|a| b58(&a.owner))
+        .unwrap_or_default();
+    let data_b64 = acct_update
+        .account
+        .as_ref()
+        .map(|a| b64_encode(&a.data))
+        .unwrap_or_default();
+
+    println!(
+        "{{\"lane\":\"laserstream\",\"kind\":\"account\",\"slot\":{},\"recv_unix_ms\":{},\
+         \"pubkey_b58\":\"{}\",\"owner_b58\":\"{}\",\"data_b64\":\"{}\"}}",
+        slot,
+        now_ms(),
+        esc(&key_b58),
+        esc(&owner_b58),
+        esc(&data_b64)
+    );
+}
+
+/// Emit a slot NDJSON line.
+fn emit_slot(slot_num: u64) {
+    println!(
+        "{{\"lane\":\"laserstream\",\"kind\":\"slot\",\"slot\":{},\"recv_unix_ms\":{}}}",
+        slot_num,
+        now_ms()
     );
 }
 
@@ -174,31 +296,21 @@ async fn main() {
             Err(e) => eprintln!("[pq-laserstream-grpc] stream error (SDK will resume): {e}"),
             Ok(update) => match update.update_oneof {
                 Some(UpdateOneof::Transaction(tx)) => {
-                    let sig = tx
-                        .transaction
-                        .as_ref()
-                        .map(|t| b58(&t.signature))
-                        .unwrap_or_default();
-                    let dbg = format!("{:?}", tx.transaction);
-                    emit("transaction", tx.slot, &sig, &dbg);
+                    emit_transaction(tx.slot, &tx);
                 }
                 Some(UpdateOneof::Account(acct)) => {
-                    let key = acct
-                        .account
-                        .as_ref()
-                        .map(|a| b58(&a.pubkey))
-                        .unwrap_or_default();
-                    let dbg = format!("{:?}", acct.account);
-                    emit("account", acct.slot, &key, &dbg);
+                    emit_account(acct.slot, &acct);
                 }
                 Some(UpdateOneof::Slot(slot)) => {
-                    emit("slot", slot.slot, "", &format!("{slot:?}"));
+                    emit_slot(slot.slot);
                 }
                 Some(UpdateOneof::BlockMeta(meta)) => {
-                    emit("block_meta", meta.slot, "", &format!("{meta:?}"));
+                    // Block meta not needed for trade decode — skip silently.
+                    let _ = meta;
                 }
                 other => {
-                    emit("other", 0, "", &format!("{other:?}"));
+                    // Unknown update types — log to stderr, don't pollute stdout.
+                    eprintln!("[pq-laserstream-grpc] unhandled update: {other:?}");
                 }
             },
         }

@@ -33,6 +33,10 @@ pub enum ProvenanceSource {
     /// snapshots on a bonding-curve PDA — the reserve change IS the trade.
     /// Used when PumpPortal `subscribeTokenTrade` is unavailable (free tier).
     HeliusReserveDelta,
+    /// Helius LaserStream gRPC `transactionSubscribe` — Geyser-fed, lowest
+    /// latency, self-healing (SDK-internal `from_slot` resume). Primary
+    /// canonical ingest lane per criterion 61.
+    LaserStream,
 }
 
 /// A live-observed AppEvent with structural provenance. The engine consumes
@@ -108,9 +112,15 @@ pub mod pumpportal;
 pub mod reserve_delta;
 pub mod state_fetch;
 pub mod outbound;
+pub mod laserstream;
 
 pub use queue::BoundedJunctionQueue;
 pub use translate::canonical_tx_to_market_trade;
 pub use translate::raw_token_metadata_to_event;
 pub use pumpportal::{handle_trade_payload, handle_create_payload, handle_migration_payload};
 pub use reserve_delta::{derive_market_trade_from_delta, ReserveSnapshot};
+pub use laserstream::{
+    classify_pump_instructions, instructions_to_events,
+    parse_ndjson_line, LaserStreamTx, LaserStreamInstruction,
+    LaserStreamUpdate, PumpInstruction, LaserStreamState,
+};
