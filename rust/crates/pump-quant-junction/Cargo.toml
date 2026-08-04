@@ -19,6 +19,9 @@ pq-stream-capture = { path = "../../../tools/stream-capture-rs" }
 solana-program = "2.1"
 base64 = "0.22"
 
+[dev-dependencies]
+pump-quant-execution = { path = "../pump-quant-execution" }
+
 
 [lib]
 name = "pump_quant_junction"
