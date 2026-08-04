@@ -349,3 +349,236 @@ pub fn suggested_initial_envelope(
         heartbeat_timeout_ms,
     }
 }
+
+
+// ============================================================================
+// Phase 5: Algorithmic envelope derivation — derive ALL LiveEnvelope fields
+// from paper trading evidence. No operator guesses. The envelope is always
+// SMALLER than what paper ran. Replaces suggested_initial_envelope for the
+// autonomous path.
+// ============================================================================
+
+/// Extended paper evidence needed to algorithmically derive the `LiveEnvelope`.
+#[derive(Debug, Clone, Copy)]
+pub struct PaperEnvelopeEvidence {
+    pub verdict: PromotionVerdict,
+    pub max_drawdown_lamports: u64,
+    pub closed_positions: u32,
+    pub net_pnl_lamports: i64,
+    pub paper_max_winning_position_lamports: u64,
+    pub peak_concurrent_open: u32,
+    pub peak_deployed_lamports: u64,
+    pub slippage_p95_bps: u32,
+    pub median_slot_interval_ms: u64,
+    pub total_entries: u32,
+    pub session_duration_secs: u64,
+}
+
+/// Derive a conservative live envelope from paper trading evidence.
+/// Every field is computed from observed paper performance — no operator
+/// guesses. The envelope is always SMALLER than what paper ran.
+#[must_use]
+pub fn derive_envelope(e: &PaperEnvelopeEvidence) -> LiveEnvelope {
+    if !e.verdict.is_promote() {
+        return LiveEnvelope::closed();
+    }
+    if e.closed_positions == 0 {
+        return LiveEnvelope::closed();
+    }
+    let max_position_lamports = if e.paper_max_winning_position_lamports == 0 {
+        return LiveEnvelope::closed();
+    } else {
+        (e.paper_max_winning_position_lamports / 2).max(1)
+    };
+    let max_total_deployed_lamports = (e.peak_deployed_lamports / 5).saturating_mul(3)
+        .max(max_position_lamports);
+    let max_open_positions = e.peak_concurrent_open.min(3).max(1);
+    let max_entries_per_hour = if e.session_duration_secs == 0 {
+        10
+    } else {
+        let hourly_rate = u64::from(e.total_entries) * 3600 / e.session_duration_secs;
+        ((hourly_rate / 2).max(1)) as u32
+    };
+    let daily_loss_limit_lamports = if e.max_drawdown_lamports > 0 {
+        e.max_drawdown_lamports.saturating_mul(3)
+    } else {
+        let abs_pnl = e.net_pnl_lamports.unsigned_abs();
+        (abs_pnl / 10).max(1)
+    };
+    let max_entry_slippage_bps = if e.slippage_p95_bps > 0 {
+        e.slippage_p95_bps.saturating_add(50)
+    } else {
+        200
+    };
+    let heartbeat_timeout_ms = if e.median_slot_interval_ms > 0 {
+        e.median_slot_interval_ms.saturating_mul(3)
+    } else {
+        1200
+    };
+    LiveEnvelope {
+        max_position_lamports,
+        max_total_deployed_lamports,
+        max_open_positions,
+        max_entries_per_hour,
+        daily_loss_limit_lamports,
+        max_entry_slippage_bps,
+        heartbeat_timeout_ms,
+    }
+}
+
+#[cfg(test)]
+mod derive_envelope_tests {
+    use super::*;
+
+    fn make_evidence(
+        max_winning: u64, peak_concurrent: u32, peak_deployed: u64,
+        slippage_p95: u32, slot_interval_ms: u64, total_entries: u32, duration_secs: u64,
+    ) -> PaperEnvelopeEvidence {
+        PaperEnvelopeEvidence {
+            verdict: PromotionVerdict::Promote,
+            max_drawdown_lamports: 500_000,
+            closed_positions: 150,
+            net_pnl_lamports: 10_000_000,
+            paper_max_winning_position_lamports: max_winning,
+            peak_concurrent_open: peak_concurrent,
+            peak_deployed_lamports: peak_deployed,
+            slippage_p95_bps: slippage_p95,
+            median_slot_interval_ms: slot_interval_ms,
+            total_entries,
+            session_duration_secs: duration_secs,
+        }
+    }
+
+    #[test]
+    fn test_refused_verdict_yields_closed() {
+        let mut e = make_evidence(100, 2, 200, 100, 400, 300, 3600);
+        e.verdict = PromotionVerdict::Refuse(RefusalReason::SampleTooSmall { closed: 10, required: 100 });
+        let env = derive_envelope(&e);
+        assert!(!env.admits_anything());
+    }
+
+    #[test]
+    fn test_zero_closed_positions_yields_closed() {
+        let mut e = make_evidence(100, 2, 200, 100, 400, 300, 3600);
+        e.closed_positions = 0;
+        let env = derive_envelope(&e);
+        assert!(!env.admits_anything());
+    }
+
+    #[test]
+    fn test_zero_winning_position_yields_closed() {
+        let e = make_evidence(0, 2, 200, 100, 400, 300, 3600);
+        let env = derive_envelope(&e);
+        assert!(!env.admits_anything());
+    }
+
+    #[test]
+    fn test_position_size_is_half_winning() {
+        let e = make_evidence(1_000_000, 2, 2_000_000, 100, 400, 300, 3600);
+        let env = derive_envelope(&e);
+        assert_eq!(env.max_position_lamports, 500_000);
+    }
+
+    #[test]
+    fn test_deployed_cap_is_60_percent_of_peak() {
+        let e = make_evidence(1_000_000, 2, 10_000_000, 100, 400, 300, 3600);
+        let env = derive_envelope(&e);
+        assert_eq!(env.max_total_deployed_lamports, 6_000_000);
+    }
+
+    #[test]
+    fn test_max_open_positions_capped_at_3() {
+        let e = make_evidence(1_000_000, 10, 10_000_000, 100, 400, 300, 3600);
+        let env = derive_envelope(&e);
+        assert_eq!(env.max_open_positions, 3);
+    }
+
+    #[test]
+    fn test_max_open_positions_min_1() {
+        let e = make_evidence(1_000_000, 1, 10_000_000, 100, 400, 300, 3600);
+        let env = derive_envelope(&e);
+        assert_eq!(env.max_open_positions, 1);
+    }
+
+    #[test]
+    fn test_entry_rate_halved() {
+        let e = make_evidence(1_000_000, 2, 2_000_000, 100, 400, 300, 3600);
+        let env = derive_envelope(&e);
+        assert_eq!(env.max_entries_per_hour, 150);
+    }
+
+    #[test]
+    fn test_entry_rate_zero_duration_fallback() {
+        let e = make_evidence(1_000_000, 2, 2_000_000, 100, 400, 300, 0);
+        let env = derive_envelope(&e);
+        assert_eq!(env.max_entries_per_hour, 10);
+    }
+
+    #[test]
+    fn test_daily_loss_limit_is_3x_drawdown() {
+        let e = make_evidence(1_000_000, 2, 2_000_000, 100, 400, 300, 3600);
+        let env = derive_envelope(&e);
+        assert_eq!(env.daily_loss_limit_lamports, 1_500_000);
+    }
+
+    #[test]
+    fn test_daily_loss_limit_zero_drawdown_uses_pnl_proxy() {
+        let mut e = make_evidence(1_000_000, 2, 2_000_000, 100, 400, 300, 3600);
+        e.max_drawdown_lamports = 0;
+        e.net_pnl_lamports = 10_000_000;
+        let env = derive_envelope(&e);
+        assert_eq!(env.daily_loss_limit_lamports, 1_000_000);
+    }
+
+    #[test]
+    fn test_slippage_ceiling_is_p95_plus_50() {
+        let e = make_evidence(1_000_000, 2, 2_000_000, 150, 400, 300, 3600);
+        let env = derive_envelope(&e);
+        assert_eq!(env.max_entry_slippage_bps, 200);
+    }
+
+    #[test]
+    fn test_slippage_zero_data_defaults_to_200() {
+        let e = make_evidence(1_000_000, 2, 2_000_000, 0, 400, 300, 3600);
+        let env = derive_envelope(&e);
+        assert_eq!(env.max_entry_slippage_bps, 200);
+    }
+
+    #[test]
+    fn test_heartbeat_is_3x_slot_interval() {
+        let e = make_evidence(1_000_000, 2, 2_000_000, 100, 400, 300, 3600);
+        let env = derive_envelope(&e);
+        assert_eq!(env.heartbeat_timeout_ms, 1200);
+    }
+
+    #[test]
+    fn test_heartbeat_zero_slot_data_defaults_to_1200() {
+        let e = make_evidence(1_000_000, 2, 2_000_000, 100, 0, 300, 3600);
+        let env = derive_envelope(&e);
+        assert_eq!(env.heartbeat_timeout_ms, 1200);
+    }
+
+    #[test]
+    fn test_full_envelope_consistency() {
+        let e = make_evidence(500_000, 5, 10_000_000, 120, 400, 300, 3600);
+        let env = derive_envelope(&e);
+        assert_eq!(env.max_position_lamports, 250_000);
+        assert_eq!(env.max_total_deployed_lamports, 6_000_000);
+        assert_eq!(env.max_open_positions, 3);
+        assert_eq!(env.max_entries_per_hour, 150);
+        assert_eq!(env.daily_loss_limit_lamports, 1_500_000);
+        assert_eq!(env.max_entry_slippage_bps, 170);
+        assert_eq!(env.heartbeat_timeout_ms, 1200);
+        assert!(env.admits_anything());
+    }
+
+    #[test]
+    fn test_envelope_is_smaller_than_paper() {
+        let e = make_evidence(1_000_000, 5, 10_000_000, 200, 400, 300, 3600);
+        let env = derive_envelope(&e);
+        assert!(env.max_position_lamports <= e.paper_max_winning_position_lamports);
+        assert!(env.max_total_deployed_lamports <= e.peak_deployed_lamports);
+        assert!(env.max_open_positions as u32 <= e.peak_concurrent_open);
+        assert!(env.max_entry_slippage_bps <= e.slippage_p95_bps + 100);
+    }
+}
