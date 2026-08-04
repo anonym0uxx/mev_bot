@@ -86,3 +86,4 @@ pub mod ex_tip_compute;
 pub mod ex_fee_calibration;
 pub mod ex_live_sink;
 pub mod si_incident_gate;
+pub mod remediation_paths;

@@ -1,0 +1,21 @@
+# Pinned build configuration (constitution §24, criterion 109).
+# The CPU pin is compiled-in so it doesn't rely on RUSTFLAGS being set
+# in every shell. The release profile in the workspace Cargo.toml carries
+# the deploy-level LTO and panic=abort; this config pins the baseline
+# target-cpu for all profiles.
+#
+# Phase-A (laptop): znver5 — AMD Zen5 (DESKTOP-CP8N3IC).
+# Phase-B (server): the server's Cargo.toml profile overrides target-cpu
+# to the deploy CPU; this config.toml is the floor.
+
+[build]
+# Criterion 1: native Windows build. Criterion 109: Rust perf-engineering.
+# Pin target-cpu=znver5 so every build (debug, test, release) gets the
+# baseline instruction set. The release profile adds LTO + codegen-units=1.
+rustflags = ["-C", "target-cpu=znver5"]
+
+[profile.release]
+# Already in workspace Cargo.toml, but enforce here for standalone builds.
+lto = "fat"
+codegen-units = 1
+panic = "abort"

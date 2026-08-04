@@ -52,6 +52,7 @@
 pub mod curve;
 pub mod decode;
 pub mod errors;
+pub mod runtime_errors;
 pub mod ix;
 pub mod layout;
 pub mod message;

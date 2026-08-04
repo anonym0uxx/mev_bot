@@ -113,6 +113,9 @@ pub mod reserve_delta;
 pub mod state_fetch;
 pub mod outbound;
 pub mod laserstream;
+pub mod trade_journal;
+pub mod memory_bank;
+#[cfg(test)] mod chaos_tests;
 
 pub use queue::BoundedJunctionQueue;
 pub use translate::canonical_tx_to_market_trade;
