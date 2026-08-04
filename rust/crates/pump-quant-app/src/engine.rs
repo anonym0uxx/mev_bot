@@ -321,6 +321,10 @@ const TERMINAL_CADENCE_VERSION: u32 = 1;
 /// eviction of the lexicographically-smallest tracked mint past capacity).
 const LAST_TRADE_TABLE_CAP: usize = 8_192;
 
+/// Maximum number of `ReconTrade` records accumulated for tape export before
+/// the daemon must flush. Prevents unbounded memory growth on long runs.
+const TAPE_TRADE_CAP: usize = 10_000;
+
 /// §99 bound on [`Engine::ata_open`], the set of mints holding an open Associated
 /// Token Account. Membership tracks live positions, which `max_concurrent_positions`
 /// already caps far below this, so the bound is a leak backstop rather than a working
@@ -481,6 +485,23 @@ impl std::fmt::Display for BankrollOriginError {
 }
 
 impl std::error::Error for BankrollOriginError {}
+
+/// A single closed trade for tape export (Phase 2). Simplified view of the
+/// evaluator's `ReconTrade`, without the cross-crate dependency. The daemon
+/// maps these into `TapeRecord::Trade` for JSONL serialization.
+#[derive(Clone, Copy, Debug)]
+pub struct TapeTrade {
+    /// True if the trade was a scalp lane trade; false for early lane.
+    pub scalp: bool,
+    /// Gross lamports (proceeds - cost basis; may be negative).
+    pub gross: i128,
+    /// Trading/protocol fees paid, lamports.
+    pub fees: u128,
+    /// Priority tips paid, lamports.
+    pub tips: u128,
+    /// Cost of failed attempts, lamports.
+    pub failed: u128,
+}
 
 /// The end-of-run summary.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -692,6 +713,11 @@ pub struct Engine {
     disc_perf: DiscoveryLanePerformance,
     /// Running net-SOL reconciliation per evaluator lane (Scalp=0, Early=1); bounded.
     recon: [ReconAccum; 2],
+    /// Individual closed-trade recon records for tape export (Phase 2 autonomous
+    /// architecture). Each entry is one `ReconTrade` captured at exit time.
+    /// Bounded by `TAPE_TRADE_CAP` to prevent unbounded growth; the daemon
+    /// flushes and clears this periodically via `take_tape_trades()`.
+    tape_trades: Vec<pump_quant_evaluator::evaluator_stats::ReconTrade>,
     journal: DecisionJournal,
 
     /// Live social attention-velocity field (`virality = attention = money`), fed by
@@ -1108,6 +1134,7 @@ impl Engine {
             lane_perf: LanePerformance::new(),
             disc_perf: DiscoveryLanePerformance::new(),
             recon: [ReconAccum::default(); 2],
+            tape_trades: Vec::new(),
             journal,
             attention: AttentionField::new(AttentionParams {
                 // §70.6/§70.8 LAW 8 + §70.7 LAW 9: thread the operator flags into
@@ -1447,7 +1474,7 @@ impl Engine {
     /// and the loop continues. A disarmed switch or an empty path is a silent
     /// no-op — the artifact is a pure function of engine state and the filesystem
     /// is only one of its sinks.
-    fn write_brain_analysis(&self) {
+    pub fn write_brain_analysis(&self) {
         if !self.cfg.brain_analysis_enable || self.cfg.brain_analysis_path.is_empty() {
             return;
         }
@@ -4091,6 +4118,10 @@ impl Engine {
                 failed_costs: 0,
             };
             self.recon[accum_index(recon.lane)].add(&recon);
+            // Phase 2: accumulate for tape export.
+            if self.tape_trades.len() < TAPE_TRADE_CAP {
+                self.tape_trades.push(recon);
+            }
         }
         self.journal.record(Decision::Filled {
             mint: e.mint,
@@ -4742,6 +4773,23 @@ impl Engine {
     #[must_use]
     pub fn journal(&self) -> &DecisionJournal {
         &self.journal
+    }
+
+    /// Phase 2: drain accumulated tape trades for export to the evaluator.
+    /// Returns all `ReconTrade` records accumulated since the last call and
+    /// clears the internal buffer. The daemon calls this periodically to
+    /// flush the tape to disk.
+    pub fn take_tape_trades(&mut self) -> Vec<TapeTrade> {
+        std::mem::take(&mut self.tape_trades)
+            .into_iter()
+            .map(|t| TapeTrade {
+                scalp: matches!(t.lane, pump_quant_evaluator::evaluator_stats::Lane::Scalp),
+                gross: t.gross_lamports,
+                fees: t.fees,
+                tips: t.tips,
+                failed: t.failed_costs,
+            })
+            .collect()
     }
 
     /// LAW D5: the per-Discord-room realized-net-SOL ledger (§29.8/§71/§74) — the

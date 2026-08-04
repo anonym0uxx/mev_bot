@@ -1,0 +1,1 @@
+{"rustc":3720210673988096810,"features":"[]","declared_features":"[]","target":10889037578358917193,"profile":2040997289075261528,"path":2627138054071374617,"deps":[],"local":[{"CheckDepInfo":{"dep_info":"release\\.fingerprint\\five8_core-6e44c9e2ed71b952\\dep-lib-five8_core","checksum":false}}],"rustflags":["-C","target-cpu=znver5"],"config":9396254390672932401,"compile_kind":0}

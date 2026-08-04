@@ -27,3 +27,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "junction-run"
 path = "src/bin/junction_run.rs"
+
+[[bin]]
+name = "pq-daemon"
+path = "src/bin/pq_daemon.rs"

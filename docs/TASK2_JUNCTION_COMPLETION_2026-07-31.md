@@ -41,7 +41,7 @@ Two compile errors fixed:
   Byte-identical — the golden digest test (8/8) passes unchanged.
 - `junction-run` binary created in the junction crate: drains the junction
   queue alongside `parse_events` text-file events, both feeding `Engine::tick`.
-- **Golden digest unchanged:** `13_693_021_370_354_439_552` (re-pin #6).
+- **Golden digest unchanged:** `2_822_236_667_991_883_855` (re-pin #6).
 
 ## Task 2(c) — overflow counter test — commit `f35665a`
 

@@ -1,0 +1,4 @@
+{"t":"promoted","mint":"0100000000000000000000000000000000000000000000000000000000000000","lane":0,"rank":792}
+{"t":"admitted","mint":"0100000000000000000000000000000000000000000000000000000000000000","size_lamports":100000000,"x_min":100000000,"x_cost":100000000,"x_max":1000000000,"fail_rate_bps":500,"rt_cost_bps":378,"move_bps":1800,"move_source":0,"depth_basis":2}
+{"t":"filled","mint":"0100000000000000000000000000000000000000000000000000000000000000","net_pnl_lamports":-2805000,"reason":7}
+{"t":"run_summary","digest":"0x6162cb2823339e33","net_lamports":-2805000,"ticks":1,"authoritative":false}

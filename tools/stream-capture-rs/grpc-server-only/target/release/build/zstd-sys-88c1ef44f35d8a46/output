@@ -1,0 +1,1704 @@
+cargo:rerun-if-env-changed=ZSTD_SYS_USE_PKG_CONFIG
+cargo:rerun-if-env-changed=CC_FORCE_DISABLE
+CC_FORCE_DISABLE = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+debug.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+entropy_common.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+error_private.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+fse_decompress.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+pool.c
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+threading.c
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+zstd_common.c
+fse_compress.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+hist.c
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+huf_compress.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+zstd_compress.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+zstd_compress_literals.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+zstd_compress_sequences.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+zstd_compress_superblock.c
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+zstd_double_fast.c
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+zstd_fast.c
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+zstd_lazy.c
+zstd_ldm.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+zstd_opt.c
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+zstd_preSplit.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+zstdmt_compress.c
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+huf_decompress.c
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+zstd_ddict.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+zstd_decompress.c
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+zstd_decompress_block.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cover.c
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+divsufsort.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+fastcover.c
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+zdict.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+zstd_v01.c
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+zstd_v02.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+zstd_v03.c
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+zstd_v04.c
+zstd_v05.c
+zstd_v06.c
+zstd_v07.c
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+cargo:warning=cl : Command line warning D9002 : ignoring unknown option '-fvisibility=hidden'
+                   
+0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+cargo:rerun-if-env-changed=AR_x86_64-pc-windows-msvc
+AR_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=AR_x86_64_pc_windows_msvc
+AR_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_AR
+HOST_AR = None
+cargo:rerun-if-env-changed=AR
+AR = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=ARFLAGS
+ARFLAGS = None
+cargo:rerun-if-env-changed=HOST_ARFLAGS
+HOST_ARFLAGS = None
+cargo:rerun-if-env-changed=ARFLAGS_x86_64_pc_windows_msvc
+ARFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=ARFLAGS_x86_64-pc-windows-msvc
+ARFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=AR_x86_64-pc-windows-msvc
+AR_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=AR_x86_64_pc_windows_msvc
+AR_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_AR
+HOST_AR = None
+cargo:rerun-if-env-changed=AR
+AR = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=ARFLAGS
+ARFLAGS = None
+cargo:rerun-if-env-changed=HOST_ARFLAGS
+HOST_ARFLAGS = None
+cargo:rerun-if-env-changed=ARFLAGS_x86_64_pc_windows_msvc
+ARFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=ARFLAGS_x86_64-pc-windows-msvc
+ARFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release;D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\local\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\bin;C:\Users\Alon\AppData\Local\hermes\git\mingw64\bin;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Links;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Users\Alon\.npm-global;C:\Users\Alon\.cargo\bin;C:\Users\Alon\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Users\Alon\AppData\Local\hermes\bin;C:\Users\Alon\AppData\Local\Microsoft\WindowsApps;C:\Users\Alon\AppData\Local\hermes\git\cmd;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin;C:\Users\Alon\AppData\Local\hermes\node;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.2.0-x86_64-pc-windows-msvc;C:\Users\Alon\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin;C:\Users\Alon\.local\bin\claude.exe;C:\Users\Alon\AppData\Local\Programs\Cua\cua-driver\bin;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\vendor_perl;C:\Users\Alon\AppData\Local\hermes\git\usr\bin\core_perl;C:\Users\Alon\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rustc-link-lib=static=zstd
+cargo:rustc-link-search=native=D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\build\zstd-sys-88c1ef44f35d8a46\out
+cargo:root=D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\build\zstd-sys-88c1ef44f35d8a46\out
+cargo:include=C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zstd-sys-2.0.16+zstd.1.5.7\zstd/lib

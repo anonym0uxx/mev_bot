@@ -1,0 +1,10 @@
+D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps\compression_core-582d3c8a29617cfb.d: C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\compression-core-0.4.32\src\lib.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\compression-core-0.4.32\src\level.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\compression-core-0.4.32\src\unshared.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\compression-core-0.4.32\src\util.rs
+
+D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps\libcompression_core-582d3c8a29617cfb.rlib: C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\compression-core-0.4.32\src\lib.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\compression-core-0.4.32\src\level.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\compression-core-0.4.32\src\unshared.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\compression-core-0.4.32\src\util.rs
+
+D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps\libcompression_core-582d3c8a29617cfb.rmeta: C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\compression-core-0.4.32\src\lib.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\compression-core-0.4.32\src\level.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\compression-core-0.4.32\src\unshared.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\compression-core-0.4.32\src\util.rs
+
+C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\compression-core-0.4.32\src\lib.rs:
+C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\compression-core-0.4.32\src\level.rs:
+C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\compression-core-0.4.32\src\unshared.rs:
+C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\compression-core-0.4.32\src\util.rs:

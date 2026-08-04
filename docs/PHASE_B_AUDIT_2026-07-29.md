@@ -60,7 +60,7 @@
 test golden_digest_is_stable ... ok
 
 GOLDEN ticks=72 promoted=504 admitted=11 rejected=448 universe_filtered=72
-      net=31111528 digest=13693021370354439552
+      net=31111528 digest=2822236667991883855
       per_lane=[(CreationSniper,24995681),(EarlyConfirmation,0),
                 (GraduationTransition,0),(ActiveMarketScalp,6115847)]
       per_discovery_lane=[(OnchainCreation,0),(SocialCaller,24180087),
@@ -78,7 +78,7 @@ All five decision numbers match the directive:
 | rejected | 448 | 448 | ✓ |
 | universe_filtered | 72 | 72 | ✓ |
 | AlphaCall net | +815,594 | +815,594 | ✓ |
-| digest | 13693021370354439552 | 13693021370354439552 | ✓ |
+| digest | 2822236667991883855 | 2822236667991883855 | ✓ |
 
 Built with `RUSTFLAGS="-C target-cpu=znver5"`, release profile.
 

@@ -24,7 +24,7 @@
 > **ERRATUM #3 — 2026-07-28, re-pin #27 (DEPTH + MOVE PROVENANCE), and it is the interesting one.**
 > The fixtures declared a payout depth the bonding curve does not escrow (`real_sol = virtual_sol −
 > 30 SOL`; a **30×** overstatement near launch). Corrected, the shipped baseline moved again, to
-> `31,111,528` / digest `13693021370354439552` / `504 / 11 / 448 / 72`. **The `k = 5` harm did not
+> `31,111,528` / digest `2822236667991883855` / `504 / 11 / 448 / 72`. **The `k = 5` harm did not
 > move with it.** Across #26 and #27 it sat at `11,469,573` while the baseline it is subtracted from
 > travelled 8.1M → 16.8M → 31.1M. A quantity that is invariant to a 4× move in the thing it is
 > measured against is measuring the LEVER, not the tape — which is the correct reading of the k=5

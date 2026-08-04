@@ -1,0 +1,29 @@
+Steps 3+4: Windows OsTune adapter + safety dossier (9 entries)
+
+Adapter (Step 4):
+- WinOsTune implements OsTune via raw extern "system" FFI (no external crate)
+- 9 unsafe blocks, each with SAFETY comment, grouped one per method
+- set_affinity: SetThreadGroupAffinity + GetThreadGroupAffinity read-back
+  (NOT GetCurrentProcessorNumberEx — read-back trap avoided)
+- set_priority: SetPriorityClass + GetPriorityClass read-back, HIGH_PRIORITY_CLASS only
+- set_timer_res_ms: timeGetDevCaps + timeBeginPeriod, RAII TimerResGuard
+  (timer period UNVERIFIABLE — no read-back API, reported as such)
+- lock_region: VirtualLock with byte budget, page-align via GetSystemInfo,
+  working set raised first (else ERROR_WORKING_SET_QUOTA 1453),
+  returns ALIGNED length, all FAIL CLOSED
+- Multi-group pin plan: hot set in group 0 (32 physical cores),
+  KAFFINITY stays one usize, PlanError::MultiGroupSpan for cross-group
+
+Safety dossier (Step 3):
+- 9 entries, one per unsafe block, count matches source scan
+- Each entry: block (locatable), compiler_cannot_verify, callee_preconditions,
+  safe_code_establishes, failure_modes, system_safety, invalidation
+- system_safety separate from failure_modes per operator correction
+
+Validator: cpu_numa_tuning passes (9=9). lockfree (8=0) still fails —
+pre-existing gap, not addressed in this commission.
+
+Deliberate-failure demo: removing 1 safety entry -> 9!=8 -> validator FAILS.
+
+Four numbers: peg_parse=0 (delta 0), n_tokens=post-compaction,
+compression_count=49, max_turns=150

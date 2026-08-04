@@ -114,6 +114,7 @@ pub mod state_fetch;
 pub mod outbound;
 pub mod laserstream;
 pub mod trade_journal;
+pub mod tape_export;
 pub mod memory_bank;
 #[cfg(test)] mod chaos_tests;
 

@@ -1,0 +1,1 @@
+# minimal paper-test config — empty body uses dev_portable defaults

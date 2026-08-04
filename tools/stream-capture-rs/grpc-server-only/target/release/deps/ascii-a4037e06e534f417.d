@@ -1,0 +1,11 @@
+D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps\ascii-a4037e06e534f417.d: C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\lib.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\ascii_char.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\ascii_str.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\ascii_string.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\free_functions.rs
+
+D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps\libascii-a4037e06e534f417.rlib: C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\lib.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\ascii_char.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\ascii_str.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\ascii_string.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\free_functions.rs
+
+D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps\libascii-a4037e06e534f417.rmeta: C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\lib.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\ascii_char.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\ascii_str.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\ascii_string.rs C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\free_functions.rs
+
+C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\lib.rs:
+C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\ascii_char.rs:
+C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\ascii_str.rs:
+C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\ascii_string.rs:
+C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ascii-0.9.3\src\free_functions.rs:

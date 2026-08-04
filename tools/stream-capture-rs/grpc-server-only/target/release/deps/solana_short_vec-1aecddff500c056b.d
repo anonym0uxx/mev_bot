@@ -1,0 +1,7 @@
+D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps\solana_short_vec-1aecddff500c056b.d: C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\solana-short-vec-3.3.0\src\lib.rs
+
+D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps\libsolana_short_vec-1aecddff500c056b.rlib: C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\solana-short-vec-3.3.0\src\lib.rs
+
+D:\repos\mev_bot\tools\stream-capture-rs\grpc-server-only\target\release\deps\libsolana_short_vec-1aecddff500c056b.rmeta: C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\solana-short-vec-3.3.0\src\lib.rs
+
+C:\Users\Alon\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\solana-short-vec-3.3.0\src\lib.rs:

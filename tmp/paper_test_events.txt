@@ -1,0 +1,28 @@
+# Test event file for paper session.
+# Mint: 00000000000000000000000000000000000000000000 (32 hex bytes = 64 chars)
+# Use a simple test mint: all-zeros is invalid for base58, but the engine
+# uses DomainMint::from_hex which accepts raw hex. Let's use a real-ish mint.
+
+# First: a token creation event (TokenMetadata)
+# tokenmeta <mint> <category_id> <taxonomy_version> <creator> <slot>
+tokenmeta 0100000000000000000000000000000000000000000000000000000000000000 0 1 12345 100
+
+# Onchain confirm: confirm <mint> <virtual_sol_lamports> <real_sol_lamports>
+# virtual_sol = 31 SOL = 31_000_000_000 lamports (just above launch 30 SOL)
+# real_sol = real_sol_for(31 SOL) = 31_000_000_000 - 30_000_000_000 = 1_000_000_000 (1 SOL)
+# This is the DERIVED value — testing whether the gate accepts it.
+confirm 0100000000000000000000000000000000000000000000000000000000000000 31000000000 1000000000
+
+# Market trade: trade <mint> <price_fp> <quote_lamports> <liquidity_lamports> <signed_base> <buyer_entity> <age_slots>
+# price_fp = 1e9 scale, say 0.03 SOL price = 30_000_000 lamports price -> price_fp = 30_000_000_000_000 (30M * 1e9/1e9)
+# Actually price_fp is in PRICE_SCALE (1e9) units. A price of 0.03 SOL = 30_000_000 lamports.
+# price_fp = 30_000_000 * 1e9 = 30_000_000_000_000_000? No — let me check the scale.
+# quote_lamports = 500_000_000 (0.5 SOL trade)
+# liquidity_lamports = 31_000_000_000 (31 SOL = virtual_sol, matching the confirm)
+# signed_base = 500_000_000 (buy)
+# buyer_entity = 1
+# age_slots = 10
+trade 0100000000000000000000000000000000000000000000000000000000000000 30000000000 500000000 31000000000 500000000 1 10
+
+# Tick to trigger evaluation
+tick

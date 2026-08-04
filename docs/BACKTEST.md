@@ -4,7 +4,7 @@
 > absolute below is superseded. The engine carried two disagreeing round-trip cost models
 > and used one to DECIDE and the other to BOOK; `crates/pump-quant-app/src/cost_model.rs`
 > is now the single authority for both. Golden net **8,124,568 → 16,778,896**, then **→ 31,111,528**
-> at re-pin #27 (depth/move provenance types), digest → `13693021370354439552`, admitted
+> at re-pin #27 (depth/move provenance types), digest → `2822236667991883855`, admitted
 > **13 → 12 → 11**, rejected **457 → 447 → 448** (promoted 504 and
 > universe_filtered 72 unchanged). The book roughly doubled and **not one qualitative
 > conclusion about edge changes**: it is still 12 trades in 4 distinct markets, still

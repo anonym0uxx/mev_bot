@@ -11,7 +11,7 @@ Everything here is integer / deterministic, fast (< 30 s), and needs no network,
 no wall-clock, and no RNG (§22).
 
 At the pinned green HEAD: `cargo test --workspace` = **all passed / 0 failed**,
-golden digest `13693021370354439552` (net `31111528`), **191** dossiers intact.
+golden digest `2822236667991883855` (net `31111528`), **191** dossiers intact.
 
 ### Brain representation state (no baseline of its own — recorded so a future re-pin knows where it started)
 
@@ -55,7 +55,7 @@ worth **zero lamports** on every tape this repo can drive.
 
 | Baseline | Value | Guards |
 |---|---|---|
-| `GOLDEN_DIGEST` | `13693021370354439552` (hex `be07626339cf1580`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
+| `GOLDEN_DIGEST` | `2822236667991883855` (hex `272a994bf3bd004f`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
 | `GOLDEN_NET_LAMPORTS` | `31111528` | realized §24-compliant cost-derived net-SOL on the golden tape |
 | `GOLDEN_PROMOTED` | `504` | candidates promoted to the gate |
 | `GOLDEN_ADMITTED` | `11` | candidates admitted by the gate |

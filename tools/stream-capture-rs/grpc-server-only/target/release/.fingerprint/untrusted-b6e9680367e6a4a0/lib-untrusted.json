@@ -1,0 +1,1 @@
+{"rustc":3720210673988096810,"features":"[]","declared_features":"[]","target":13950522111565505587,"profile":2040997289075261528,"path":12163669864905406219,"deps":[],"local":[{"CheckDepInfo":{"dep_info":"release\\.fingerprint\\untrusted-b6e9680367e6a4a0\\dep-lib-untrusted","checksum":false}}],"rustflags":["-C","target-cpu=znver5"],"config":9396254390672932401,"compile_kind":0}

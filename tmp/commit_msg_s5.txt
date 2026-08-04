@@ -1,0 +1,21 @@
+Step 5: §4.5 jitter probe binary + lifetime fix + delta measurement
+
+jitter_probe binary in new pump-quant-ostune crate (outside hot-path
+lint scope). Three modes: baseline, tuned, delta.
+
+LIFETIME FIX: WinOsTune adapter boxed in TuningGuard that outlives the
+probe run. Previous code dropped the adapter before run_probe(), silently
+undoing timer resolution (timeEndPeriod) and memory lock (VirtualUnlock).
+Only affinity and priority persist after drop; timer and lock do NOT.
+
+Build: RUSTFLAGS="-C target-cpu=znver5" (§66/109), release profile.
+
+Delta mode re-measures baseline in the SAME invocation — no comparison
+against a stored figure from an unknown load state.
+
+All four adapter calls FAIL CLOSED. TuningGuard reports read-back state:
+affinity=applied (GetThreadGroupAffinity), priority=HIGH (GetPriorityClass),
+timer=1ms (UNVERIFIABLE — no read-back API), locked=69632 bytes (VirtualLock
+with working-set raise + page alignment, aligned length returned).
+
+criterion-113 evidence: this delta is producible ONLY on this machine.

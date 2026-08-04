@@ -201,7 +201,7 @@ Built, verified, green: **494 test binaries / 2,635 tests, 0 failures; `ci_gate`
 
 | | re-pin #26 | re-pin #27 |
 |---|---|---|
-| digest | `6163272398497391826` | **`13693021370354439552`** |
+| digest | `6163272398497391826` | **`2822236667991883855`** |
 | net | 16,778,896 | **31,111,528** |
 | promoted / admitted / rejected / filtered | 504 / 12 / 447 / 72 | **504 / 11 / 448 / 72** |
 | fixed ladder | 16,970,346 | **31,302,978** |

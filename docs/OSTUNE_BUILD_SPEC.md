@@ -218,7 +218,7 @@ This will fire. When it does, follow the activation directive's seed-only re-pin
 verify against **the code, not against any document**:
 
 ```
-GOLDEN_DIGEST            = 13_693_021_370_354_439_552
+GOLDEN_DIGEST            = 2_822_236_667_991_883_855
 GOLDEN_NET_LAMPORTS      = 31_111_528
 GOLDEN_PROMOTED          = 504
 GOLDEN_ADMITTED          = 11

@@ -11,7 +11,7 @@
 > | quantity | published | re-pin #26 | **re-pin #27 (live)** |
 > |---|---|---|---|
 > | golden net (lamports) | 8,124,568 | 16,778,896 | **31,111,528** |
-> | golden digest | — | 6163272398497391826 | **13693021370354439552** |
+> | golden digest | — | 6163272398497391826 | **2822236667991883855** |
 > | promoted / admitted / rejected | 504 / 13 / 457 | 504 / 12 / 447 | **504 / 11 / 448** |
 > | universe_filtered | 72 | 72 | **72** |
 >

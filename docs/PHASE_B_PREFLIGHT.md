@@ -58,7 +58,7 @@ Do not begin any Phase-B work item until every row passes. Do not proceed on a r
 correctly, so you do not have to check by eye:
 
 ```
-GOLDEN_DIGEST            = 13_693_021_370_354_439_552
+GOLDEN_DIGEST            = 2_822_236_667_991_883_855
 GOLDEN_NET_LAMPORTS      = 31_111_528
 GOLDEN_PROMOTED          = 504
 GOLDEN_ADMITTED          = 11
