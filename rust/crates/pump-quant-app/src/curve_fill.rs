@@ -824,3 +824,142 @@ mod reserve_free_tests {
         assert_eq!(sell_fill_price_fp(10_000_000, 0, 1), None);
     }
 }
+
+// ---------------------------------------------------------------------------
+// LANDING-SLOT DRIFT MODEL (criterion 103)
+// ---------------------------------------------------------------------------
+//
+// Between observing a market state and our transaction landing, `landing_slots`
+// slots elapse. During those slots the reserves move against us: on a rising
+// mint, net buy pressure adds SOL to the curve (pushing the spot up before our
+// buy lands); on a falling mint, net sell pressure drains SOL (pushing the spot
+// down before our sell lands).
+//
+// The drift is mathematically equivalent to adding it to our own notional:
+// both our order and the drift add (or remove) SOL to the same curve, and the
+// fill price is `spot * (vsol + total_sol_in) / vsol` where `total_sol_in =
+// notional + drift`. This is the SAME closed form — the drift is a virtual
+// extension of our own order, because the curve doesn't distinguish our lamports
+// from anyone else's.
+//
+// `drift_sol = net_adverse_flow_per_slot * landing_slots`. The engine computes
+// `net_adverse_flow_per_slot` from the observed trade stream. If no trade
+// history exists, drift is 0 (no adjustment — reproducing today's behaviour
+// when `fill_landing_slots == 0`).
+
+/// Landing-adjusted buy fill price. The drift SOL (net buy pressure during
+/// landing slots) is added to our own notional because both push the price up
+/// against us. Returns `None` on overflow or degenerate inputs.
+///
+/// When `drift_sol == 0` this is identical to [`buy_fill_price_fp`] — the
+/// zero-drift case reproduces today's same-slot fill.
+#[inline]
+#[must_use]
+pub fn landing_adjusted_buy_fill_fp(
+    spot_fp: u64,
+    vsol: u64,
+    notional: u64,
+    drift_sol: u64,
+) -> Option<u64> {
+    let total = notional.checked_add(drift_sol)?;
+    buy_fill_price_fp(spot_fp, vsol, total)
+}
+
+/// Landing-adjusted sell fill price. The drift SOL (net sell pressure during
+/// landing slots) is added to our own notional because both push the price
+/// down against us. Returns `None` on overflow or degenerate inputs.
+///
+/// When `drift_sol == 0` this is identical to [`sell_fill_price_fp`].
+#[inline]
+#[must_use]
+pub fn landing_adjusted_sell_fill_fp(
+    spot_fp: u64,
+    vsol: u64,
+    notional: u64,
+    drift_sol: u64,
+) -> Option<u64> {
+    let total = notional.checked_add(drift_sol)?;
+    sell_fill_price_fp(spot_fp, vsol, total)
+}
+
+/// Compute the per-slot adverse drift in SOL lamports from the trade flow.
+///
+/// For a BUY: adverse drift = net SOL flowing INTO the curve per slot (buy
+/// pressure pushes price up before we fill). For a SELL: adverse drift = net
+/// SOL flowing OUT of the curve per slot (sell pressure pushes price down
+/// before we fill).
+///
+/// `total_adverse_sol` is the sum of trade SOL in the adverse direction over
+/// the observation window. `slots_with_trades` is the number of slots that
+/// had at least one trade. Returns 0 when there is no trade history (fail-closed
+/// to no adjustment — never a fabricated drift).
+#[inline]
+#[must_use]
+pub fn per_slot_adverse_drift_sol(total_adverse_sol: u64, slots_with_trades: u64) -> u64 {
+    if slots_with_trades == 0 {
+        return 0;
+    }
+    total_adverse_sol / slots_with_trades
+}
+
+#[cfg(test)]
+mod landing_slot_tests {
+    use super::*;
+
+    const SPOT: u64 = 28_000;
+    const VSOL: u64 = 30_000_000_000;
+    const NOTIONAL: u64 = 100_000_000;
+
+    #[test]
+    fn zero_drift_reproduces_same_slot_fill() {
+        assert_eq!(
+            landing_adjusted_buy_fill_fp(SPOT, VSOL, NOTIONAL, 0),
+            buy_fill_price_fp(SPOT, VSOL, NOTIONAL),
+        );
+        assert_eq!(
+            landing_adjusted_sell_fill_fp(SPOT, VSOL, NOTIONAL, 0),
+            sell_fill_price_fp(SPOT, VSOL, NOTIONAL),
+        );
+    }
+
+    #[test]
+    fn buy_drift_makes_price_worse() {
+        let no_drift = landing_adjusted_buy_fill_fp(SPOT, VSOL, NOTIONAL, 0).unwrap();
+        let with_drift = landing_adjusted_buy_fill_fp(SPOT, VSOL, NOTIONAL, 50_000_000).unwrap();
+        assert!(with_drift > no_drift, "drift must make buy fill worse");
+    }
+
+    #[test]
+    fn sell_drift_makes_price_worse() {
+        let no_drift = landing_adjusted_sell_fill_fp(SPOT, VSOL, NOTIONAL, 0).unwrap();
+        let with_drift = landing_adjusted_sell_fill_fp(SPOT, VSOL, NOTIONAL, 50_000_000).unwrap();
+        assert!(with_drift < no_drift, "drift must make sell fill worse");
+    }
+
+    #[test]
+    fn drift_equals_larger_notional() {
+        let drift_sol = 50_000_000u64;
+        let adjusted = landing_adjusted_buy_fill_fp(SPOT, VSOL, NOTIONAL, drift_sol).unwrap();
+        let larger = buy_fill_price_fp(SPOT, VSOL, NOTIONAL + drift_sol).unwrap();
+        assert_eq!(adjusted, larger, "drift is equivalent to larger notional");
+    }
+
+    #[test]
+    fn per_slot_drift_zero_on_no_history() {
+        assert_eq!(per_slot_adverse_drift_sol(0, 0), 0);
+        assert_eq!(per_slot_adverse_drift_sol(1_000_000, 0), 0);
+    }
+
+    #[test]
+    fn per_slot_drift_computes_average() {
+        assert_eq!(per_slot_adverse_drift_sol(1_000_000, 10), 100_000);
+    }
+
+    #[test]
+    fn overflow_refuses() {
+        assert_eq!(
+            landing_adjusted_buy_fill_fp(SPOT, VSOL, u64::MAX, 1),
+            None,
+        );
+    }
+}

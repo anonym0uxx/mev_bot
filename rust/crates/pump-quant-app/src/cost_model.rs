@@ -119,6 +119,98 @@ const BPS_DENOM: u128 = 10_000;
 /// still paid its priority fee and its tip.
 pub const FIXED_LAMPORTS_PER_LEG: u64 = 150_000;
 
+// ---------------------------------------------------------------------------
+// COMPUTE-UNIT COST MODEL
+// ---------------------------------------------------------------------------
+//
+// On Solana, the priority fee of a transaction is:
+//   priority_fee = ceil(compute_units_consumed * compute_unit_price / 10_000)
+//
+// A pump.fun buy (create ATA + transfer) consumes ~25k–40k CU depending on
+// account count. A sell (transfer + close ATA) consumes ~15k–25k CU. The
+// `FIXED_LAMPORTS_PER_LEG` above is a conservative flat estimate, but for
+// accurate net-SOL modelling we need a CU-aware component that scales with
+// actual compute consumption and the current priority-fee market price.
+//
+// The model: `leg_fee = base_gas + cu_priority_fee + jito_tip`, where
+// `cu_priority_fee = ceil(cu_consumed * cu_price_lamports / BPS_DENOM)`.
+// When `cu_price_lamports == 0` (no priority-fee market data), the model
+// falls back to the flat `FIXED_LAMPORTS_PER_LEG` — fail-closed to the
+// conservative flat estimate, never a fabricated low number.
+
+/// Conservative estimate of compute units consumed by a pump.fun buy
+/// (create-ATA + bonding-curve buy instruction). 40k CU covers the
+/// worst-case account-metastasis scenario with ~8 accounts.
+pub const CU_BUY_ESTIMATE: u64 = 40_000;
+
+/// Conservative estimate of compute units consumed by a pump.fun sell
+/// (bonding-curve sell + close-ATA). 25k CU covers the worst case.
+pub const CU_SELL_ESTIMATE: u64 = 25_000;
+
+/// Default compute-unit price in lamports per CU-unit, when no live
+/// priority-fee market data is available. Zero means "fall back to
+/// the flat FIXED_LAMPORTS_PER_LEG estimate".
+pub const CU_PRICE_LAMPORTS_DEFAULT: u64 = 0;
+
+/// Base gas (non-priority) per transaction in lamports. Solana's base fee
+/// is 5,000 lamports per signature; a pump.fun buy has one signature.
+pub const BASE_GAS_LAMPORTS: u64 = 5_000;
+
+/// Jito tip in lamports (conservative; the real tip is calibrated by
+/// the fee sampler — see `fee_calibration_v1`).
+pub const JITO_TIP_LAMPORTS: u64 = 100_000;
+
+/// Compute the per-leg priority fee from compute units and CU price.
+/// Returns 0 when CU price is 0 (no market data → use flat fallback).
+///
+/// `priority_fee = ceil(cu_consumed * cu_price / 10_000)`
+#[inline]
+#[must_use]
+pub fn cu_priority_fee(cu_consumed: u64, cu_price_lamports: u64) -> u64 {
+    if cu_price_lamports == 0 || cu_consumed == 0 {
+        return 0;
+    }
+    let fee = u128::from(cu_consumed)
+        .checked_mul(u128::from(cu_price_lamports))
+        .map(|v| v / BPS_DENOM);
+    u64::try_from(fee.unwrap_or(0)).unwrap_or(u64::MAX)
+}
+
+/// Total per-leg cost when CU-aware pricing is available.
+/// `leg_cost = base_gas + cu_priority_fee + jito_tip`.
+///
+/// When `cu_price_lamports == 0`, falls back to `FIXED_LAMPORTS_PER_LEG`
+/// (the conservative flat estimate). Never returns less than the flat
+/// fallback — CU-aware pricing can only ADD cost, never subtract it,
+/// because the flat estimate already assumes the worst case.
+#[inline]
+#[must_use]
+pub fn leg_cost_lamports(cu_consumed: u64, cu_price_lamports: u64) -> u64 {
+    if cu_price_lamports == 0 {
+        return FIXED_LAMPORTS_PER_LEG;
+    }
+    let cu_fee = cu_priority_fee(cu_consumed, cu_price_lamports);
+    let total = BASE_GAS_LAMPORTS
+        .checked_add(cu_fee)
+        .and_then(|v| v.checked_add(JITO_TIP_LAMPORTS));
+    // Never return less than the flat fallback.
+    total.unwrap_or(FIXED_LAMPORTS_PER_LEG).max(FIXED_LAMPORTS_PER_LEG)
+}
+
+/// Same as [`leg_cost_lamports`] but for a buy leg (uses CU_BUY_ESTIMATE).
+#[inline]
+#[must_use]
+pub fn buy_leg_cost_lamports(cu_price_lamports: u64) -> u64 {
+    leg_cost_lamports(CU_BUY_ESTIMATE, cu_price_lamports)
+}
+
+/// Same as [`leg_cost_lamports`] but for a sell leg (uses CU_SELL_ESTIMATE).
+#[inline]
+#[must_use]
+pub fn sell_leg_cost_lamports(cu_price_lamports: u64) -> u64 {
+    leg_cost_lamports(CU_SELL_ESTIMATE, cu_price_lamports)
+}
+
 /// pump.fun's per-trade fee **on the bonding curve**: 1.25% = 125 bps, charged on
 /// EACH leg.
 ///
@@ -892,5 +984,57 @@ mod tests {
         assert_eq!(optimal_clip_lamports(BAND_VSOL, 0), None);
         // Totality at the extreme: it must not wrap or panic, whatever it returns.
         let _ = optimal_clip_lamports(u64::MAX, u64::MAX);
+    }
+
+    // ---- compute-unit cost model ----
+
+    #[test]
+    fn cu_priority_fee_zero_on_no_market_data() {
+        assert_eq!(cu_priority_fee(CU_BUY_ESTIMATE, 0), 0);
+    }
+
+    #[test]
+    fn cu_priority_fee_zero_on_zero_cu() {
+        assert_eq!(cu_priority_fee(0, 100), 0);
+    }
+
+    #[test]
+    fn cu_priority_fee_computes_correctly() {
+        // 40k CU * 100 lamports/CU / 10_000 = 400 lamports
+        assert_eq!(cu_priority_fee(40_000, 100), 400);
+        // 25k CU * 1000 lamports/CU / 10_000 = 2_500 lamports
+        assert_eq!(cu_priority_fee(25_000, 1_000), 2_500);
+    }
+
+    #[test]
+    fn leg_cost_falls_back_to_flat_on_no_market_data() {
+        assert_eq!(leg_cost_lamports(CU_BUY_ESTIMATE, 0), FIXED_LAMPORTS_PER_LEG);
+        assert_eq!(buy_leg_cost_lamports(0), FIXED_LAMPORTS_PER_LEG);
+        assert_eq!(sell_leg_cost_lamports(0), FIXED_LAMPORTS_PER_LEG);
+    }
+
+    #[test]
+    fn leg_cost_never_below_flat_fallback() {
+        // Even with a tiny CU price, the CU-aware cost should never go below
+        // the flat fallback. With CU price = 1, the priority fee is 4 lamports
+        // (40k * 1 / 10k = 4), total = 5_000 + 4 + 100_000 = 105_004, which
+        // is less than FIXED_LAMPORTS_PER_LEG, so the .max() floor kicks in.
+        assert_eq!(buy_leg_cost_lamports(1), FIXED_LAMPORTS_PER_LEG);
+    }
+
+    #[test]
+    fn leg_cost_scales_with_cu_price() {
+        // At CU price = 100, priority fee = 400, total = 105_400 → still < 150k
+        assert_eq!(buy_leg_cost_lamports(100), FIXED_LAMPORTS_PER_LEG);
+        // At CU price = 10_000, priority fee = 40k, total = 145k → still < 150k
+        assert_eq!(buy_leg_cost_lamports(10_000), FIXED_LAMPORTS_PER_LEG);
+        // At CU price = 12_500, priority fee = 50k, total = 155k → exceeds flat
+        assert!(buy_leg_cost_lamports(12_500) > FIXED_LAMPORTS_PER_LEG);
+    }
+
+    #[test]
+    fn sell_leg_cost_lower_than_buy_at_same_cu_price() {
+        // Sell uses CU_SELL_ESTIMATE (25k) vs buy CU_BUY_ESTIMATE (40k)
+        assert!(sell_leg_cost_lamports(20_000) <= buy_leg_cost_lamports(20_000));
     }
 }

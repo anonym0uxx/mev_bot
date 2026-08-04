@@ -99,10 +99,13 @@ pub const PUMPSWAP_BUY_DISCRIMINATOR: [u8; 8] = [10, 20, 30, 40, 50, 60, 70, 80]
 /// PumpSwap `sell` discriminator.
 pub const PUMPSWAP_SELL_DISCRIMINATOR: [u8; 8] = [11, 21, 31, 41, 51, 61, 71, 81];
 
-/// Program id bytes for pump.fun (deterministic placeholder — layout, not creds).
-pub const PUMPFUN_PROGRAM_ID: [u8; 32] = [0xF0; 32];
-/// Program id bytes for PumpSwap.
-pub const PUMPSWAP_PROGRAM_ID: [u8; 32] = [0x5A; 32];
+/// Program id bytes for pump.fun — real on-chain program ID from
+/// `pump-quant-protocol::venue_accounts::PUMP_PROGRAM_ID`.
+/// `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`
+pub const PUMPFUN_PROGRAM_ID: [u8; 32] = pump_quant_protocol::venue_accounts::PUMP_PROGRAM_ID;
+/// Program id bytes for PumpSwap — real on-chain program ID from
+/// `pump-quant-protocol::venue_accounts::PUMPSWAP_PROGRAM_ID`.
+pub const PUMPSWAP_PROGRAM_ID: [u8; 32] = pump_quant_protocol::venue_accounts::PUMPSWAP_PROGRAM_ID;
 
 /// Total instruction-data length (8 discriminator + 2×8 args).
 pub const IX_DATA_LEN: usize = 8 + 8 + 8;
