@@ -31,3 +31,7 @@ path = "src/bin/junction_run.rs"
 [[bin]]
 name = "pq-daemon"
 path = "src/bin/pq_daemon.rs"
+
+[[bin]]
+name = "pq-watchdog"
+path = "src/bin/pq_watchdog.rs"
