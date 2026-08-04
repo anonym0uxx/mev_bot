@@ -2,3 +2,7 @@
 name = "pump-quant-evaluator"
 version = "0.1.0"
 edition = "2021"
+
+[[bin]]
+name = "pq-refiner"
+path = "src/bin/pq_refiner.rs"
