@@ -35,9 +35,12 @@ use base64::Engine as _;
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_core::config::Creds;
-use pump_quant_junction::decode::decode_onchain_confirm;
+use pump_quant_junction::decode::decode_onchain_confirm_with_curve;
 use pump_quant_junction::pumpportal::{
     handle_create_payload, handle_trade_payload, handle_migration_payload,
+};
+use pump_quant_junction::reserve_delta::{
+    derive_market_trade_from_delta, ReserveSnapshot,
 };
 use pump_quant_junction::queue::BoundedJunctionQueue;
 use pq_stream_capture::helius_ws;
@@ -151,6 +154,10 @@ struct SessionStats {
     account_subs_active: usize,
     account_subs_total_attempted: usize,
     account_subs_evicted: usize,
+    /// Trades derived from on-chain reserve deltas (Helius accountSubscribe).
+    delta_trades_derived: u64,
+    /// Snapshots that produced no trade delta.
+    delta_no_trade: u64,
     pdas_derived: usize,
     pda_venue_matches: usize,  // venue-supplied address matched derived PDA
     pda_venue_present: usize,  // venue supplied an address at all
@@ -176,6 +183,7 @@ impl SessionStats {
             helius_account_notifications: 0, helius_onchain_confirms_decoded: 0,
             helius_slot_notifications: 0,
             account_subs_active: 0, account_subs_total_attempted: 0, account_subs_evicted: 0,
+            delta_trades_derived: 0, delta_no_trade: 0,
             pdas_derived: 0, pda_venue_matches: 0, pda_venue_present: 0,
             junction_events_drained: 0, junction_overflow_dropped: 0,
             dwell_max_ms: 0, dwell_mean_ms: 0, dwell_p99_ms: 0,
@@ -383,6 +391,12 @@ fn main() -> ExitCode {
     let mut pending_notifications: VecDeque<(u64, String, u64)> = VecDeque::new();
     let mut next_req_id: u64 = 100;  // Our request IDs start at 100
     let mut stats = SessionStats::new();
+
+    // ── Reserve-delta tracker ──────────────────────────────────────────────
+    // Tracks previous bonding-curve reserves per mint so we can derive
+    // MarketTrade events from the delta between consecutive accountSubscribe
+    // notifications. The delta IS the trade — see reserve_delta.rs.
+    let mut reserve_tracker: HashMap<[u8; 32], ReserveSnapshot> = HashMap::new();
     let deadline = Instant::now() + Duration::from_secs(duration_secs);
     let mut last_slot_seen: u64 = 0;
     let mut last_slot_time = Instant::now();
@@ -456,6 +470,8 @@ fn main() -> ExitCode {
                             if sub_tracker.len() >= MAX_ACCOUNT_SUBS {
                                 if let Some((evicted_req, evicted_mint)) = sub_tracker.evict_oldest() {
                                     stats.account_subs_evicted += 1;
+                                    // Clean up the reserve tracker for the evicted mint
+                                    reserve_tracker.remove(&evicted_mint);
                                     eprintln!(
                                         "[paper-session] EVICT sub req={evicted_req} mint={:.8} (FIFO)",
                                         hex_short(&evicted_mint)
@@ -566,8 +582,8 @@ fn main() -> ExitCode {
                                 // Found it — decode now
                                 if let Some(mb) = sub_tracker.mint_for_server_sub(ssub) {
                                     if let Ok(account_data) = B64.decode(data_str.as_bytes()) {
-                                        if let Some(provenanced) =
-                                            decode_onchain_confirm(&mb, &account_data, slot)
+                                        if let Some((provenanced, curve)) =
+                                            decode_onchain_confirm_with_curve(&mb, &account_data, slot)
                                         {
                                             queue.push(provenanced, slot);
                                             stats.helius_onchain_confirms_decoded += 1;
@@ -576,6 +592,27 @@ fn main() -> ExitCode {
                                                 "[paper-session] OnchainConfirm (flushed): mint={:.8} slot={slot} sub={ssub}",
                                                 hex_short(&mb)
                                             );
+
+                                            // ── Reserve-delta: derive MarketTrade from reserve change ──
+                                            let prev = reserve_tracker.get(&mb).copied();
+                                            if let Some(trade_pe) = derive_market_trade_from_delta(
+                                                &mb, prev, &curve, slot, true,
+                                            ) {
+                                                queue.push(trade_pe, slot);
+                                                stats.delta_trades_derived += 1;
+                                                eprintln!(
+                                                    "[paper-session] DeltaTrade (flushed): mint={:.8} slot={slot}",
+                                                    hex_short(&mb)
+                                                );
+                                            } else {
+                                                stats.delta_no_trade += 1;
+                                            }
+                                            // Update the snapshot for next delta.
+                                            reserve_tracker.insert(mb, ReserveSnapshot {
+                                                virtual_sol: curve.virtual_sol,
+                                                virtual_token: curve.virtual_token,
+                                                slot,
+                                            });
                                         }
                                     }
                                 }
@@ -615,8 +652,8 @@ fn main() -> ExitCode {
                                     let slot = slot_opt.unwrap_or(0);
                                     if let Some(data_str) = data_b64 {
                                         if let Ok(account_data) = B64.decode(data_str.as_bytes()) {
-                                            if let Some(provenanced) =
-                                                decode_onchain_confirm(&mb, &account_data, slot)
+                                            if let Some((provenanced, curve)) =
+                                                decode_onchain_confirm_with_curve(&mb, &account_data, slot)
                                             {
                                                 queue.push(provenanced, slot);
                                                 stats.helius_onchain_confirms_decoded += 1;
@@ -625,6 +662,27 @@ fn main() -> ExitCode {
                                                     "[paper-session] OnchainConfirm: mint={:.8} slot={slot} sub={server_sub}",
                                                     hex_short(&mb)
                                                 );
+
+                                                // ── Reserve-delta: derive MarketTrade from reserve change ──
+                                                let prev = reserve_tracker.get(&mb).copied();
+                                                if let Some(trade_pe) = derive_market_trade_from_delta(
+                                                    &mb, prev, &curve, slot, true,
+                                                ) {
+                                                    queue.push(trade_pe, slot);
+                                                    stats.delta_trades_derived += 1;
+                                                    eprintln!(
+                                                        "[paper-session] DeltaTrade: mint={:.8} slot={slot}",
+                                                        hex_short(&mb)
+                                                    );
+                                                } else {
+                                                    stats.delta_no_trade += 1;
+                                                }
+                                                // Update the snapshot for next delta.
+                                                reserve_tracker.insert(mb, ReserveSnapshot {
+                                                    virtual_sol: curve.virtual_sol,
+                                                    virtual_token: curve.virtual_token,
+                                                    slot,
+                                                });
                                             } else {
                                                 // Discriminator mismatch — log loudly
                                                 if account_data.len() >= 8 {
@@ -860,6 +918,8 @@ fn main() -> ExitCode {
     println!("  pdas_derived:              {}", stats.pdas_derived);
     println!("  pda_venue_present:         {}", stats.pda_venue_present);
     println!("  pda_venue_matches:         {}", stats.pda_venue_matches);
+    println!("  delta_trades_derived:      {}", stats.delta_trades_derived);
+    println!("  delta_no_trade:            {}", stats.delta_no_trade);
     println!("  last_slot_seen:            {last_slot_seen}");
     println!("  reconnects:                {}", stats.helius_reconnects);
     println!();

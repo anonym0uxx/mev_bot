@@ -49,24 +49,22 @@ pub fn decode_onchain_confirm(
     slot: u64,
 ) -> Option<ProvenancedEvent> {
     let curve = decode_pump_curve(account_data)?;
+    Some(onchain_confirm_from_curve(mint_bytes, &curve, slot))
+}
 
-    // real_sol comes FROM THE DECODE — structurally enforced via DecodedRealSol,
-    // not via a value-inequality assertion. A derived u64 cannot construct
-    // this path.
-    let real_sol = DecodedRealSol::from_curve(&curve);
-
-    let event = AppEvent::OnchainConfirm {
-        mint: Mint(*mint_bytes),
-        virtual_sol_lamports: curve.virtual_sol,
-        real_sol_lamports: real_sol.into_lamports(),
-    };
-
-    Some(ProvenancedEvent {
-        event,
-        source: ProvenanceSource::HeliusAccountSubscribe,
-        slot,
-        is_live: true,
-    })
+/// Decode a bonding-curve account blob into BOTH a provenanced `OnchainConfirm`
+/// AND the underlying `PumpCurve`. The caller needs the `PumpCurve` to compute
+/// reserve deltas for `MarketTrade` derivation (see `reserve_delta` module).
+///
+/// Returns `None` on the same failure conditions as `decode_onchain_confirm`.
+pub fn decode_onchain_confirm_with_curve(
+    mint_bytes: &[u8; 32],
+    account_data: &[u8],
+    slot: u64,
+) -> Option<(ProvenancedEvent, PumpCurve)> {
+    let curve = decode_pump_curve(account_data)?;
+    let pe = onchain_confirm_from_curve(mint_bytes, &curve, slot);
+    Some((pe, curve))
 }
 
 /// Construct an `OnchainConfirm` from a decoded `PumpCurve` without re-decoding.
