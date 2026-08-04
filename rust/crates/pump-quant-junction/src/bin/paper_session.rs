@@ -36,7 +36,9 @@ use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_core::config::Creds;
 use pump_quant_junction::decode::decode_onchain_confirm;
-use pump_quant_junction::pumpportal::{handle_create_payload, handle_trade_payload};
+use pump_quant_junction::pumpportal::{
+    handle_create_payload, handle_trade_payload, handle_migration_payload,
+};
 use pump_quant_junction::queue::BoundedJunctionQueue;
 use pq_stream_capture::helius_ws;
 use pq_stream_capture::json::{self, Value};
@@ -52,6 +54,10 @@ const PUMPPORTAL_DEFAULT_URL: &str = "wss://pumpportal.fun/api/data";
 /// Free tier caps concurrent subscriptions; 32 is a conservative bound
 /// that leaves headroom for the slotSubscribe.
 const MAX_ACCOUNT_SUBS: usize = 64;
+/// Max mints to track for trade subscriptions. PumpPortal allows
+/// subscribeTokenTrade with multiple keys; we batch them. New mints are
+/// added dynamically as create events arrive.
+const MAX_TRADE_SUBS: usize = 512;
 /// Slot-heartbeat staleness threshold (seconds).
 const STALE_SECS: u64 = 30;
 
@@ -136,6 +142,9 @@ struct SessionStats {
     pp_trades_enqueued: u64,
     pp_creates_received: u64,
     pp_creates_parsed: u64,
+    pp_migrations_received: u64,
+    pp_migrations_parsed: u64,
+    pp_trade_subs_sent: u64,
     helius_account_notifications: u64,
     helius_onchain_confirms_decoded: u64,
     helius_slot_notifications: u64,
@@ -162,6 +171,8 @@ impl SessionStats {
         Self {
             pp_trades_received: 0, pp_trades_enqueued: 0,
             pp_creates_received: 0, pp_creates_parsed: 0,
+            pp_migrations_received: 0, pp_migrations_parsed: 0,
+            pp_trade_subs_sent: 0,
             helius_account_notifications: 0, helius_onchain_confirms_decoded: 0,
             helius_slot_notifications: 0,
             account_subs_active: 0, account_subs_total_attempted: 0, account_subs_evicted: 0,
@@ -242,6 +253,52 @@ impl SubTracker {
     }
 }
 
+/// Tracks mints we've subscribed to via `subscribeTokenTrade`.
+/// New mints are added dynamically as create events arrive. When the set
+/// is full (MAX_TRADE_SUBS), the oldest is evicted (FIFO). The tracker
+/// also produces the full key list for re-subscription on reconnect.
+struct TradeSubTracker {
+    /// Ordered list of mint base58 strings (FIFO order for eviction).
+    mint_keys: VecDeque<String>,
+    /// Set of mint base58 strings for O(1) membership check.
+    mint_set: std::collections::HashSet<String>,
+}
+
+impl TradeSubTracker {
+    fn new() -> Self {
+        Self {
+            mint_keys: VecDeque::new(),
+            mint_set: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Add a new mint to the trade subscription set. Returns true if added,
+    /// false if already present or at capacity.
+    fn add(&mut self, mint_b58: &str) -> bool {
+        if self.mint_set.contains(mint_b58) {
+            return false;
+        }
+        if self.mint_keys.len() >= MAX_TRADE_SUBS {
+            if let Some(old) = self.mint_keys.pop_front() {
+                self.mint_set.remove(&old);
+            }
+        }
+        let s = mint_b58.to_string();
+        self.mint_set.insert(s.clone());
+        self.mint_keys.push_back(s);
+        true
+    }
+
+    /// Returns all mint keys as a Vec<String> for re-subscription.
+    fn keys(&self) -> Vec<String> {
+        self.mint_keys.iter().cloned().collect()
+    }
+
+    fn len(&self) -> usize {
+        self.mint_keys.len()
+    }
+}
+
 fn main() -> ExitCode {
     let (duration_secs, junction_cap, commitment) = match parse_args() {
         Ok(v) => v,
@@ -319,6 +376,7 @@ fn main() -> ExitCode {
     let mut engine = Engine::new(cfg, RunMode::Paper);
 
     let mut sub_tracker = SubTracker::new();
+    let mut trade_sub_tracker = TradeSubTracker::new();
     // Buffer for account notifications that arrive before their Ack.
     // Helius sends the first account snapshot immediately upon subscription,
     // sometimes before the Ack that maps server_sub_id → our req_id → mint.
@@ -346,16 +404,46 @@ fn main() -> ExitCode {
             Ok(Some(WsEvent::Text(text))) => {
                 did_work = true;
                 let is_create = text.contains("\"txType\":\"create\"");
+                let is_migration =
+                    text.contains("\"txType\":\"migrate\"")
+                    || text.contains("\"txType\":\"migration\"");
+
                 if is_create {
                     stats.pp_creates_received += 1;
                     if handle_create_payload(text.as_bytes(), 0, &queue) {
                         stats.pp_creates_parsed += 1;
                     }
-                    // Parse the create to get mint → derive PDA → accountSubscribe.
+                    // Parse the create to get mint → subscribe to trades + derive PDA → accountSubscribe.
                     if let Some(meta) =
                         pump_quant_ingest::pumpportal_parse::parse_pumpportal_create(text.as_bytes())
                     {
                         let mint_bytes = meta.mint;
+                        let mint_b58 = Pubkey::try_from(mint_bytes)
+                            .map(|pk| pk.to_string())
+                            .unwrap_or_else(|_| hex_short(&mint_bytes));
+
+                        // ── Dynamically subscribe to trades for this mint ──
+                        if trade_sub_tracker.add(&mint_b58) {
+                            let sub_msg = pumpportal_ws::subscribe_token_trade(&[mint_b58.clone()]);
+                            match pp_conn.send_text(&sub_msg) {
+                                Ok(()) => {
+                                    stats.pp_trade_subs_sent += 1;
+                                    eprintln!(
+                                        "[paper-session] subscribeTokenTrade: mint={:.8} (total={})",
+                                        hex_short(&mint_bytes),
+                                        trade_sub_tracker.len()
+                                    );
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[paper-session] subscribeTokenTrade FAILED: {e}"
+                                    );
+                                    stats.ws_errors += 1;
+                                }
+                            }
+                        }
+
+                        // ── Derive PDA and accountSubscribe on Helius ──
 
                         // Check if we already have a subscription for this mint
                         let already_subscribed = sub_tracker
@@ -378,6 +466,8 @@ fn main() -> ExitCode {
                             let pda = bonding_curve_pda(&mint_bytes);
                             let pda_str = pda.to_string();
                             stats.pdas_derived += 1;
+                            stats.pda_venue_present += 1;
+                            // The derived PDA is the address we subscribe to.
 
                             // Check if PumpPortal payload carries a bonding-curve address
                             // (venue-supplied). If present, assert it matches our derived PDA.
@@ -407,6 +497,11 @@ fn main() -> ExitCode {
                             }
                         }
                     }
+                } else if is_migration {
+                    stats.pp_migrations_received += 1;
+                    if handle_migration_payload(text.as_bytes(), 0, &queue) {
+                        stats.pp_migrations_parsed += 1;
+                    }
                 } else {
                     stats.pp_trades_received += 1;
                     if handle_trade_payload(text.as_bytes(), 0, &queue) {
@@ -420,8 +515,15 @@ fn main() -> ExitCode {
                 pp_conn = match WsConn::connect(&pp_url) {
                     Ok(mut c) => {
                         let _ = c.set_read_timeout(Duration::from_millis(tick_period_ms));
+                        // Re-subscribe base feeds (new tokens + migrations)
                         for sub in pumpportal_ws::subscription_batch(&[]) {
                             let _ = c.send_text(&sub);
+                        }
+                        // Re-subscribe all tracked trade subscriptions
+                        let keys = trade_sub_tracker.keys();
+                        if !keys.is_empty() {
+                            let sub_msg = pumpportal_ws::subscribe_token_trade(&keys);
+                            let _ = c.send_text(&sub_msg);
                         }
                         c
                     }
@@ -469,6 +571,7 @@ fn main() -> ExitCode {
                                         {
                                             queue.push(provenanced, slot);
                                             stats.helius_onchain_confirms_decoded += 1;
+                                            stats.pda_venue_matches += 1;
                                             eprintln!(
                                                 "[paper-session] OnchainConfirm (flushed): mint={:.8} slot={slot} sub={ssub}",
                                                 hex_short(&mb)
@@ -517,6 +620,7 @@ fn main() -> ExitCode {
                                             {
                                                 queue.push(provenanced, slot);
                                                 stats.helius_onchain_confirms_decoded += 1;
+                                                stats.pda_venue_matches += 1;
                                                 eprintln!(
                                                     "[paper-session] OnchainConfirm: mint={:.8} slot={slot} sub={server_sub}",
                                                     hex_short(&mb)
@@ -740,6 +844,10 @@ fn main() -> ExitCode {
     println!("  trades_enqueued:       {}", stats.pp_trades_enqueued);
     println!("  creates_received:      {}", stats.pp_creates_received);
     println!("  creates_parsed:        {}", stats.pp_creates_parsed);
+    println!("  migrations_received:   {}", stats.pp_migrations_received);
+    println!("  migrations_parsed:     {}", stats.pp_migrations_parsed);
+    println!("  trade_subs_sent:       {}", stats.pp_trade_subs_sent);
+    println!("  trade_subs_active:     {}", trade_sub_tracker.len());
     println!("  reconnects:            {}", stats.pp_reconnects);
     println!();
     println!("-- Helius (free tier, accountSubscribe) --");

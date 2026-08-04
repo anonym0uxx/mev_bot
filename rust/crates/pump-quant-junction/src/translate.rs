@@ -7,7 +7,9 @@
 
 use pump_quant_app::event::AppEvent;
 use pump_quant_ingest::canonical::{CanonicalTx, TradeDirection, TxKind};
+use pump_quant_ingest::token_metadata_parse::RawTokenMetadata;
 use pump_quant_domain::ids::Mint;
+use pump_quant_market_state::meta::{classify_category, TAXONOMY_V1, TAXONOMY_VERSION_V1};
 
 use crate::{ProvenanceSource, ProvenancedEvent};
 
@@ -155,6 +157,48 @@ pub fn decoded_snapshot_to_onchain_confirm(
         slot,
         is_live,
     }
+}
+
+/// Translate a `RawTokenMetadata` (from a PumpPortal create event or on-chain
+/// metadata decode) into `AppEvent::TokenMetadata` with provenance.
+///
+/// Runs the deterministic category classifier (`classify_category` under the
+/// V1 taxonomy) so the engine receives a resolved `category_id` — never a
+/// string. The creator entity id is already FNV-1a folded upstream; we pass
+/// it through. `slot` is caller-supplied (time-safe, §22).
+///
+/// Returns `None` only if the mint is zero (no market to attribute).
+#[must_use]
+pub fn raw_token_metadata_to_event(
+    raw: &RawTokenMetadata,
+    slot: u64,
+    is_live: bool,
+) -> Option<ProvenancedEvent> {
+    // Zero-mint is unrepresentable of a real market — refuse.
+    if raw.mint == [0u8; 32] {
+        return None;
+    }
+
+    let mint = mint_from_bytes(&raw.mint);
+
+    // Classify under the V1 taxonomy. The classifier scans name/symbol
+    // deterministically and returns a CategoryAssignment with stable ids.
+    let assignment = classify_category(&raw.name, &raw.symbol, &TAXONOMY_V1, slot);
+
+    let event = AppEvent::TokenMetadata {
+        mint,
+        category_id: assignment.category_id,
+        taxonomy_version: TAXONOMY_VERSION_V1,
+        creator: raw.creator,
+        slot,
+    };
+
+    Some(ProvenancedEvent {
+        event,
+        source: ProvenanceSource::PumpPortalTrade, // create events arrive via PumpPortal
+        slot,
+        is_live,
+    })
 }
 
 /// Stable per-entity id from a 32-byte pubkey. Uses fnv1a-64 — the same hash

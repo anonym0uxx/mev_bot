@@ -106,4 +106,5 @@ pub mod outbound;
 
 pub use queue::BoundedJunctionQueue;
 pub use translate::canonical_tx_to_market_trade;
-pub use pumpportal::{handle_trade_payload, handle_create_payload};
+pub use translate::raw_token_metadata_to_event;
+pub use pumpportal::{handle_trade_payload, handle_create_payload, handle_migration_payload};

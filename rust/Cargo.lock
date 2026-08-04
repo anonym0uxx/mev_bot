@@ -1049,6 +1049,7 @@ dependencies = [
  "pump-quant-core",
  "pump-quant-domain",
  "pump-quant-ingest",
+ "pump-quant-market-state",
  "pump-quant-protocol",
  "solana-program",
 ]
