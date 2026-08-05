@@ -28,6 +28,81 @@ const STOP_WATCHDOG_FILE: &str = "data/STOP_WATCHDOG";
 const STATUS_PATH: &str = "data/live_status.json";
 const WATCHDOG_GAVE_UP_FILE: &str = "data/WATCHDOG_GAVE_UP";
 const WATCHDOG_STATUS_FILE: &str = "data/watchdog_status.json";
+const WATCHDOG_PID_FILE: &str = "data/watchdog.pid";
+
+/// Check for an already-running watchdog via PID file.
+/// Returns `Some(existing_pid)` if another watchdog is alive, `None` if not.
+/// A stale PID file (process gone) is cleaned up and treated as no conflict.
+fn check_existing_watchdog() -> Option<u32> {
+    let pid_path = Path::new(WATCHDOG_PID_FILE);
+    if !pid_path.exists() {
+        return None;
+    }
+    let pid_str = match fs::read_to_string(pid_path) {
+        Ok(s) => s.trim().to_string(),
+        Err(_) => return None, // unreadable — treat as stale, let us proceed
+    };
+    let pid: u32 = match pid_str.parse() {
+        Ok(p) => p,
+        Err(_) => {
+            // Non-numeric — stale, clean up
+            let _ = fs::remove_file(pid_path);
+            return None;
+        }
+    };
+    // Check if that PID is still alive
+    // On Windows, we use `tasklist` via Command; on Unix, we'd use kill(pid, 0).
+    // For cross-platform simplicity, use std::process to check.
+    // We try to get the process — if it's gone, the PID file is stale.
+    let alive = if pid == std::process::id() {
+        // We are that PID — shouldn't happen on a fresh start, but be safe
+        false
+    } else {
+        // Use the OS to check if the PID is alive.
+        // On Windows: `tasklist /FI "PID eq <pid>" /NH` returns the process
+        // line if alive, or "INFO: No tasks..." if dead.
+        #[cfg(windows)]
+        {
+            let output = Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output();
+            match output {
+                Ok(out) => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    // If the PID is alive, tasklist prints a line with the PID.
+                    // If dead, it prints "INFO: No tasks running which match...".
+                    stdout.contains(&pid.to_string()) && !stdout.contains("INFO:")
+                }
+                Err(_) => false, // can't check — assume stale to be safe
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            // On Unix, sending signal 0 to a PID checks liveness without killing.
+            // We use libc-free approach: /proc/<pid> existence.
+            Path::new(&format!("/proc/{pid}")).exists()
+        }
+    };
+    if alive {
+        Some(pid)
+    } else {
+        // Stale PID file — clean up and proceed
+        let _ = fs::remove_file(pid_path);
+        None
+    }
+}
+
+/// Write our PID to the PID file. Called after the single-instance check passes.
+fn write_pid_file() {
+    let _ = fs::write(WATCHDOG_PID_FILE, std::process::id().to_string());
+}
+
+/// Remove the PID file on exit.
+fn remove_pid_file() {
+    let _ = fs::remove_file(WATCHDOG_PID_FILE);
+}
 
 struct WatchdogArgs {
     max_restarts: u32,
@@ -184,6 +259,18 @@ fn wait_with_health(
 fn main() -> std::process::ExitCode {
     let args = parse_args();
 
+    // ─── Single-instance guard (dedup) ───────────────────────────────────
+    // Before doing anything else, check if another watchdog is already running.
+    // This prevents duplicate daemon trees from accreting on repeated launches.
+    if let Some(existing_pid) = check_existing_watchdog() {
+        eprintln!("[pq-watchdog] REFUSING TO START: another watchdog is already running (pid={existing_pid}).");
+        eprintln!("[pq-watchdog] Only ONE watchdog instance is permitted. Aborting to prevent duplicate daemons.");
+        remove_pid_file();
+        return std::process::ExitCode::from(4);
+    }
+    write_pid_file();
+    eprintln!("[pq-watchdog] PID file written: {} (pid={})", WATCHDOG_PID_FILE, std::process::id());
+
     eprintln!("[pq-watchdog] === STARTING ===");
     eprintln!("[pq-watchdog] max_restarts={}", args.max_restarts);
     eprintln!("[pq-watchdog] health_timeout={}s", args.health_timeout_secs);
@@ -203,6 +290,7 @@ fn main() -> std::process::ExitCode {
         if emergency_stop_requested() {
             eprintln!("[pq-watchdog] EMERGENCY STOP requested — halting, no restart");
             write_watchdog_status(restart_count, None, start_time.elapsed().as_secs(), "emergency_stop");
+            remove_pid_file();
             return std::process::ExitCode::from(2);
         }
 
@@ -211,6 +299,7 @@ fn main() -> std::process::ExitCode {
             eprintln!("[pq-watchdog] STOP_WATCHDOG requested — exiting gracefully");
             write_watchdog_status(restart_count, None, start_time.elapsed().as_secs(), "watchdog_stopped");
             let _ = fs::remove_file(STOP_WATCHDOG_FILE);
+            remove_pid_file();
             return std::process::ExitCode::from(0);
         }
 
@@ -221,6 +310,7 @@ fn main() -> std::process::ExitCode {
                 "Watchdog gave up after {restart_count} restarts."
             ));
             write_watchdog_status(restart_count, None, start_time.elapsed().as_secs(), "gave_up");
+            remove_pid_file();
             return std::process::ExitCode::from(3);
         }
 
@@ -256,6 +346,7 @@ fn main() -> std::process::ExitCode {
                     eprintln!("[pq-watchdog] STOP_WATCHDOG requested — exiting");
                     let _ = fs::remove_file(STOP_WATCHDOG_FILE);
                     write_watchdog_status(restart_count, None, start_time.elapsed().as_secs(), "clean_stop");
+                    remove_pid_file();
                     return std::process::ExitCode::from(0);
                 }
                 // Otherwise, the daemon stopped on its own — restart it
