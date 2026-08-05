@@ -11,6 +11,7 @@ pub mod evaluator_stats;
 pub mod deflated_sharpe;
 pub mod thompson_sampling;
 pub mod eight_gate;
+pub mod strategy_committee;
 
 // Constitution spec-gap leaves added alongside the frozen evaluator's stats
 // core. Each is a pure, deterministic verdict/guard primitive (constitution
