@@ -346,7 +346,7 @@ fn main() -> ExitCode {
     let pp_url = std::env::var("PUMPPORTAL_WS_URL")
         .unwrap_or_else(|_| PUMPPORTAL_DEFAULT_URL.to_string());
 
-    let cfg = Config::dev_portable();
+    let cfg = Config::dev_portable().with_mcap_band(); // Amendment A-14: $9k–$20k band
     let tick_period_ms = cfg.paper_tick_period_ms;
 
     eprintln!("[pq-daemon] === AUTONOMOUS DAEMON STARTING ===");

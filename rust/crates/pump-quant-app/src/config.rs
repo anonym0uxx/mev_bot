@@ -1218,6 +1218,22 @@ impl Config {
         }
     }
 
+    /// Arm the operator-directed $9k–$20k market-cap selection band (Amendment A-14).
+    /// This is a builder method chained on `dev_portable()` by the live daemon only —
+    /// the regression golden tape calls `dev_portable()` WITHOUT this, so the band
+    /// does not perturb the pinned baselines. The band is a selection law (admission
+    /// filter): it restricts WHICH markets are eligible, not HOW they are traded.
+    /// See `docs/BAND_THESIS_2026-07-28.md` for the SOL-denominated derivation.
+    #[must_use]
+    pub fn with_mcap_band(mut self) -> Self {
+        self.mcap_band_enable = true;
+        // Defaults already carry the $9k–$20k band priced at SOL≈$76:
+        //   lo: 118.42 SOL = 118_420_000_000 lamports ($9,000)
+        //   hi: 263.16 SOL = 263_160_000_000 lamports ($20,000)
+        // The operator re-pins if SOL moves materially; the bot never guesses (§22).
+        self
+    }
+
     /// Apply a single `key = value` override. Returns `Err` on an unknown key or a
     /// value outside the field's domain, so a malformed config fails loud (§18).
     pub fn apply(&mut self, key: &str, value: i64) -> Result<(), ConfigError> {

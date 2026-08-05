@@ -29,6 +29,7 @@ fn golden_tape_digest_is_byte_stable_across_replays() {
         );
     }
     // The whole Report is frozen, field by field, against the manifest.
+    // The whole Report is frozen, field by field, against the manifest.
     assert_eq!(
         first.journal_digest, GOLDEN_DIGEST,
         "decision-journal digest drifted from the pinned baseline"
