@@ -339,6 +339,23 @@ impl LifecycleStage {
             LifecycleStage::Champion => "Champion",
         }
     }
+
+    /// Advance to the next stage. Returns None if already at Champion.
+    /// Used by the strategy registry FSM.
+    pub fn next_stage(&self) -> Option<LifecycleStage> {
+        let next_ordinal = self.ordinal().checked_add(1)?;
+        if next_ordinal > 9 {
+            return None;
+        }
+        Some(LifecycleStage::from_ordinal(next_ordinal))
+    }
+
+    /// Alias for `ordinal()` — the ordinal/index of this stage (0-9).
+    /// Used by the strategy registry FSM for threshold comparisons.
+    #[must_use]
+    pub fn index(&self) -> u8 {
+        self.ordinal()
+    }
 }
 
 /// Evidence accumulated for a strategy type's lifecycle advancement.
@@ -354,6 +371,19 @@ pub struct LifecycleEvidence {
     pub walk_forward_pass_rate: String,
     /// FDR-adjusted p-value in ppm. 0 if not yet computed.
     pub fdr_adjusted_p_ppm: u32,
+    // --- Registry FSM fields (strategy_registry.rs) ---
+    /// Number of trades observed in the current stage.
+    pub n_trades: u64,
+    /// Number of OOS folds passed in the current stage.
+    pub n_oos_folds_passed: u64,
+    /// Whether SPRT returned Adoptable at least once.
+    pub sprt_adoptable_seen: bool,
+    /// Whether SPRT dropped this strategy type.
+    pub sprt_dropped: bool,
+    /// CUSUM retirement verdict (if retired, advancement is blocked).
+    pub cusum_verdict: CusumVerdict,
+    /// Manually frozen (kill switch).
+    pub manually_frozen: bool,
 }
 
 /// Lifecycle state for one strategy type.
@@ -387,9 +417,10 @@ pub struct CusumState {
     pub min_samples: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CusumVerdict {
     /// Still monitoring.
+    #[default]
     Continue,
     /// Edge has decayed — retire this strategy type.
     Retired,
