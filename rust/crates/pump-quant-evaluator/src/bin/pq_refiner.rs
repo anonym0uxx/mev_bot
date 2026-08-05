@@ -29,6 +29,9 @@ use std::path::Path;
 use pump_quant_evaluator::evaluator_stats::{net_sol, Lane, NetSol, ReconTrade};
 use pump_quant_evaluator::champion_challenger::{challenger_defeats_champion, ChampionVerdict};
 use pump_quant_evaluator::tape::parse_jsonl;
+use pump_quant_evaluator::eight_gate::{
+    evaluate_8gate, GateInput, GateVerdict, FoldResults,
+};
 // Persistent state across refiner cycles (§51 cumulative FDR, §56.3 reproducibility).
 use pump_quant_evaluator::evaluator_state::EvaluatorState;
 
@@ -246,6 +249,8 @@ struct ShadowReplayResult {
     champion_net_early: NetSol,
     /// The verdict: does the challenger defeat the champion?
     verdict: ChampionVerdict,
+    /// The 8-gate verdict (None if gates not yet evaluated).
+    gate_verdict: Option<String>,
     /// Human-readable summary.
     summary: String,
 }
@@ -368,6 +373,7 @@ fn shadow_replay(
         champion_net_scalp,
         champion_net_early,
         verdict,
+        gate_verdict: None, // populated by 8-gate evaluation in main
         summary,
     }
 }
@@ -475,6 +481,7 @@ fn main() -> std::process::ExitCode {
     // 5. Run shadow replays
     let mut results: Vec<ShadowReplayResult> = Vec::new();
     let mut any_defeated = false;
+    let mut any_gates_passed = false;
     let mut best_challenger: Option<ShadowReplayResult> = None;
 
     for challenger in &challengers {
@@ -505,15 +512,51 @@ fn main() -> std::process::ExitCode {
             }
         }
 
+        // 5b. Run 8-gate evaluation (§45-56) for challengers that defeat on margin.
+        let mut result = result; // make mutable
+        if result.verdict.defeats() {
+            let gate_input = GateInput {
+                challenger_netsol_lamports: result.challenger_net_scalp.net_lamports as i64,
+                champion_netsol_lamports: result.champion_net_scalp.net_lamports as i64,
+                margin_lamports: args.margin_lamports as i64,
+                cumulative_trials: state.cumulative_trial_count,
+                challenger_p_ppm: 1_000, // conservative default until SPRT wired
+                fold_results: FoldResults::passing(),
+                pbo_pct: 50, // conservative default until PBO wired
+                regression_lamports: None,
+                holdout_accessible: false,
+                dsr_bps: 50, // conservative default until DSR wired
+                champion_netsol_rank: 1,
+                champion_dd_rank: 1,
+                challenger_netsol_rank: 2,
+                challenger_dd_rank: 2,
+                champion_max_dd_lamports: 0,
+            };
+            let gate_verdict = evaluate_8gate(&gate_input, &state);
+            result.gate_verdict = Some(format!(
+                "promoted={}, passed={}/8, {}",
+                gate_verdict.promoted, gate_verdict.passed_count, gate_verdict.summary
+            ));
+            if gate_verdict.promoted {
+                any_gates_passed = true;
+            }
+        }
+
         results.push(result);
     }
 
-    // 6. Write promotion file if any challenger defeated the champion
+    // 6. Write promotion file if any challenger defeated the champion AND passed 8-gate
     if let Some(ref best) = best_challenger {
-        eprintln!("[pq-refiner] CHAMPION DEFEATED by {} — writing promotion", best.challenger_id);
-        write_promotion_file(&best, &challengers);
-        write_refiner_status(challengers.len(), 1, "promoted");
-        append_refiner_log(&results, true);
+        if any_gates_passed {
+            eprintln!("[pq-refiner] CHAMPION DEFEATED by {} AND 8-gate passed — writing promotion", best.challenger_id);
+            write_promotion_file(&best, &challengers);
+            write_refiner_status(challengers.len(), 1, "promoted");
+            append_refiner_log(&results, true);
+        } else {
+            eprintln!("[pq-refiner] champion defeated on margin but 8-gate NOT passed — no promotion");
+            write_refiner_status(challengers.len(), 0, "margin_only_no_gate");
+            append_refiner_log(&results, false);
+        }
     } else {
         eprintln!("[pq-refiner] no challenger defeated the champion this cycle");
         write_refiner_status(challengers.len(), 0, "no_promotion");
@@ -590,17 +633,21 @@ fn write_promotion_file(result: &ShadowReplayResult, challengers: &[Challenger])
         String::new()
     };
 
+    let gate_verdict_str = result.gate_verdict.clone().unwrap_or_else(|| "not_evaluated".to_string());
+
     let promotion_json = format!(
         "{{\n  \"challenger_id\": \"{}\",\n  \
          \"champion_net_scalp\": {},\n  \
          \"challenger_net_scalp\": {},\n  \
          \"mutations\": [\n{}\n  ],\n  \
          \"verdict\": \"defeats\",\n  \
+         \"gate_verdict\": \"{}\",\n  \
          \"status\": \"READY_FOR_CONFIG_UPDATE\"\n}}",
         result.challenger_id,
         format_netsol(result.champion_net_scalp),
         format_netsol(result.challenger_net_scalp),
         mutations_json,
+        gate_verdict_str,
     );
 
     let _ = fs::write(PROMOTION_FILE, promotion_json);
@@ -761,6 +808,7 @@ mod tests {
             champion_net_scalp: NetSol::missing(),
             champion_net_early: NetSol::missing(),
             verdict: ChampionVerdict::Defeats,
+            gate_verdict: Some("all_8_gates_passed".to_string()),
             summary: "test".to_string(),
         };
         let challengers = vec![Challenger {
