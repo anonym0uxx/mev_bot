@@ -50,6 +50,124 @@ impl PromotionStatisticalVerdict {
     }
 }
 
+// ===========================================================================
+// Rank Reversal Diagnostic (AlgoXpert 2026, López de Prado)
+// ===========================================================================
+/// The two objectives a strategy can be ranked on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RankObjective {
+    /// Net SOL (primary objective — we maximize total SOL earned).
+    NetSol,
+    /// Maximum drawdown (risk objective — we minimize worst-case loss).
+    MaxDd,
+}
+
+/// One ranked candidate for the rank-reversal diagnostic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RankCandidate {
+    /// Candidate id (champion = 0, challengers = 1, 2, ...).
+    pub id: u64,
+    /// Net SOL in lamports (higher = better).
+    pub netsol_lamports: i64,
+    /// Maximum drawdown in lamports (lower magnitude = better; stored as
+    /// negative or zero, with 0 = no drawdown).
+    pub maxdd_lamports: i64,
+}
+
+/// The rank-reversal diagnostic result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RankReversalResult {
+    /// Whether a rank reversal was detected (champion ranks #1 on one
+    /// objective but NOT #1 on the other).
+    pub reversal_detected: bool,
+    /// Rank of the champion (id=0) under NetSol (1 = best).
+    pub champion_netsol_rank: u32,
+    /// Rank of the champion (id=0) under MaxDd (1 = best).
+    pub champion_maxdd_rank: u32,
+    /// The id of the candidate ranked #1 on NetSol.
+    pub netsol_winner_id: u64,
+    /// The id of the candidate ranked #1 on MaxDd.
+    pub maxdd_winner_id: u64,
+    /// Human-readable verdict.
+    pub verdict: RankReversalVerdict,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RankReversalVerdict {
+    /// No reversal: champion wins both objectives.
+    Consistent,
+    /// Reversal: champion wins one objective but loses the other.
+    Reversed,
+}
+
+/// Compute the rank-reversal diagnostic for a set of candidates.
+///
+/// Each candidate is ranked under two objectives: NetSol (higher = better)
+/// and MaxDd (lower magnitude = better). A **rank reversal** occurs when the
+/// champion (id=0) does NOT rank #1 on both objectives — meaning the ranking
+/// is not robust to the choice of objective function.
+///
+/// This implements the AlgoXpert (2026) rank-reversal test: a strategy that
+/// wins on one metric but loses on another is overfit to that metric's
+/// peculiarities, not to a genuine edge.
+#[must_use]
+pub fn rank_reversal(candidates: &[RankCandidate]) -> RankReversalResult {
+    if candidates.is_empty() {
+        return RankReversalResult {
+            reversal_detected: false,
+            champion_netsol_rank: 0,
+            champion_maxdd_rank: 0,
+            netsol_winner_id: 0,
+            maxdd_winner_id: 0,
+            verdict: RankReversalVerdict::Consistent,
+        };
+    }
+
+    // Rank by NetSol (descending — higher is better).
+    let mut netsol_sorted: Vec<&RankCandidate> = candidates.iter().collect();
+    netsol_sorted.sort_by(|a, b| b.netsol_lamports.cmp(&a.netsol_lamports));
+
+    // Rank by MaxDd (ascending — lower magnitude is better; maxdd is stored
+    // as negative or zero, so ascending = most negative first = worst first...
+    // no: we want LEAST negative (closest to 0) first. So sort descending.
+    let mut maxdd_sorted: Vec<&RankCandidate> = candidates.iter().collect();
+    // Higher maxdd (less negative) = better. Sort descending.
+    maxdd_sorted.sort_by(|a, b| b.maxdd_lamports.cmp(&a.maxdd_lamports));
+
+    // Find champion's rank under each objective (1-based).
+    let champion_netsol_rank = netsol_sorted
+        .iter()
+        .position(|c| c.id == 0)
+        .map(|r| r as u32 + 1)
+        .unwrap_or(0);
+    let champion_maxdd_rank = maxdd_sorted
+        .iter()
+        .position(|c| c.id == 0)
+        .map(|r| r as u32 + 1)
+        .unwrap_or(0);
+
+    let netsol_winner_id = netsol_sorted[0].id;
+    let maxdd_winner_id = maxdd_sorted[0].id;
+
+    // Rank reversal: the champion does NOT rank #1 on both objectives.
+    let reversal_detected = champion_netsol_rank != 1 || champion_maxdd_rank != 1;
+
+    let verdict = if reversal_detected {
+        RankReversalVerdict::Reversed
+    } else {
+        RankReversalVerdict::Consistent
+    };
+
+    RankReversalResult {
+        reversal_detected,
+        champion_netsol_rank,
+        champion_maxdd_rank,
+        netsol_winner_id,
+        maxdd_winner_id,
+        verdict,
+    }
+}
+
 /// Fold BH-FDR and PBO/CSCV into a single promotion-blocking verdict (§51).
 ///
 /// `family` is the set of (challenger-vs-baseline) hypotheses and `candidate_id`
@@ -175,5 +293,70 @@ mod tests {
         let a = promotion_verdict(&fam, 50_000, 1, &skilled_perf(), 5_000);
         let b = promotion_verdict(&fam, 50_000, 1, &skilled_perf(), 5_000);
         assert_eq!(a, b);
+    }
+
+    // ===== Rank Reversal Diagnostic Tests =====
+
+    #[test]
+    fn rank_reversal_no_reversal_when_champion_wins_both() {
+        let candidates = vec![
+            RankCandidate { id: 0, netsol_lamports: 500_000, maxdd_lamports: -10_000 },
+            RankCandidate { id: 1, netsol_lamports: 300_000, maxdd_lamports: -50_000 },
+            RankCandidate { id: 2, netsol_lamports: 100_000, maxdd_lamports: -80_000 },
+        ];
+        let r = rank_reversal(&candidates);
+        assert!(!r.reversal_detected);
+        assert_eq!(r.champion_netsol_rank, 1);
+        assert_eq!(r.champion_maxdd_rank, 1);
+        assert_eq!(r.netsol_winner_id, 0);
+        assert_eq!(r.maxdd_winner_id, 0);
+        assert_eq!(r.verdict, RankReversalVerdict::Consistent);
+    }
+
+    #[test]
+    fn rank_reversal_detected_when_champion_wins_netsol_but_loses_maxdd() {
+        let candidates = vec![
+            RankCandidate { id: 0, netsol_lamports: 500_000, maxdd_lamports: -100_000 },
+            RankCandidate { id: 1, netsol_lamports: 300_000, maxdd_lamports: -10_000 },
+        ];
+        let r = rank_reversal(&candidates);
+        assert!(r.reversal_detected);
+        assert_eq!(r.champion_netsol_rank, 1);
+        assert_eq!(r.champion_maxdd_rank, 2);
+        assert_eq!(r.netsol_winner_id, 0);
+        assert_eq!(r.maxdd_winner_id, 1);
+        assert_eq!(r.verdict, RankReversalVerdict::Reversed);
+    }
+
+    #[test]
+    fn rank_reversal_detected_when_champion_loses_both() {
+        let candidates = vec![
+            RankCandidate { id: 0, netsol_lamports: 100_000, maxdd_lamports: -80_000 },
+            RankCandidate { id: 1, netsol_lamports: 500_000, maxdd_lamports: -10_000 },
+            RankCandidate { id: 2, netsol_lamports: 300_000, maxdd_lamports: -30_000 },
+        ];
+        let r = rank_reversal(&candidates);
+        assert!(r.reversal_detected);
+        assert_eq!(r.champion_netsol_rank, 3);
+        assert_eq!(r.champion_maxdd_rank, 3);
+        assert_eq!(r.verdict, RankReversalVerdict::Reversed);
+    }
+
+    #[test]
+    fn rank_reversal_empty_candidates() {
+        let r = rank_reversal(&[]);
+        assert!(!r.reversal_detected);
+        assert_eq!(r.verdict, RankReversalVerdict::Consistent);
+    }
+
+    #[test]
+    fn rank_reversal_single_candidate_no_reversal() {
+        let candidates = vec![
+            RankCandidate { id: 0, netsol_lamports: 200_000, maxdd_lamports: -20_000 },
+        ];
+        let r = rank_reversal(&candidates);
+        assert!(!r.reversal_detected);
+        assert_eq!(r.champion_netsol_rank, 1);
+        assert_eq!(r.champion_maxdd_rank, 1);
     }
 }

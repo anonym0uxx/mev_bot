@@ -29,6 +29,8 @@ use std::path::Path;
 use pump_quant_evaluator::evaluator_stats::{net_sol, Lane, NetSol, ReconTrade};
 use pump_quant_evaluator::champion_challenger::{challenger_defeats_champion, ChampionVerdict};
 use pump_quant_evaluator::tape::parse_jsonl;
+// Persistent state across refiner cycles (§51 cumulative FDR, §56.3 reproducibility).
+use pump_quant_evaluator::evaluator_state::EvaluatorState;
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -37,6 +39,8 @@ const DEFAULT_CONFIG_PATH: &str = "config/paper.toml";
 const PROMOTION_FILE: &str = "data/CONFIG_PROMOTION.json";
 const REFINER_STATUS_FILE: &str = "data/refiner_status.json";
 const REFINER_LOG_FILE: &str = "data/refiner_log.jsonl";
+/// Path for the persistent evaluator state (cumulative trial count, SPRT ledgers, etc.).
+const STATE_FILE: &str = "data/evaluator_state.json";
 
 // ─── Refiner args ───────────────────────────────────────────────────────────
 
@@ -105,6 +109,23 @@ struct Challenger {
     mutations: Vec<ParameterMutation>,
 }
 
+/// Compute a deterministic hash for a challenger config (for dedup).
+/// Uses a simple string hash: concatenates mutation name→proposed_value
+/// and hashes via FNV-1a (no external crate, integer-only, §22).
+fn challenger_hash_u64(c: &Challenger) -> u64 {
+    // FNV-1a 64-bit hash over the mutation signature.
+    let mut sig = String::new();
+    for m in &c.mutations {
+        sig.push_str(&format!("{}={}|", m.name, m.proposed_value));
+    }
+    let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis
+    for b in sig.bytes() {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3); // FNV prime
+    }
+    hash
+}
+
 /// Generate challenger configs by mutating key parameters of the champion.
 ///
 /// The mutations are designed to be conservative and exploratory:
@@ -119,6 +140,8 @@ fn generate_challengers(
     let params = parse_config_params(champion_config);
 
     // Key mutable parameters (non-inert, decision-controlling):
+    // A-14 strategic parameter `mcap_band` is now included — it was previously
+    // excluded, which meant the most important strategic decision was never tested.
     let mutable_params = [
         "gate_margin_bps",
         "gate_expected_move_bps",
@@ -128,6 +151,8 @@ fn generate_challengers(
         "promote_k",
         "watchlist_ttl_ticks",
         "paper_tick_period_ms",
+        "mcap_band_lo",  // A-14 strategic: lower bound of mcap band (lamports)
+        "mcap_band_hi",  // A-14 strategic: upper bound of mcap band (lamports)
     ];
 
     let mut challengers: Vec<Challenger> = Vec::new();
@@ -358,6 +383,18 @@ fn main() -> std::process::ExitCode {
     eprintln!("[pq-refiner] margin: {} lamports", args.margin_lamports);
     eprintln!("[pq-refiner] max_challengers: {}", args.max_challengers);
 
+    // 0. LOAD persistent evaluator state (§51, §56.3)
+    // This carries cumulative trial count, SPRT ledgers, challenger history,
+    // Thompson posteriors, and strategy lifecycle states across cycles.
+    let mut state = EvaluatorState::load(STATE_FILE).unwrap_or_else(|e| {
+        eprintln!("[pq-refiner] state load failed ({}), starting fresh", e);
+        EvaluatorState::initial()
+    });
+    eprintln!(
+        "[pq-refiner] state: trials={}, challengers_history={}, cycle={}",
+        state.cumulative_trial_count, state.challenger_history.len(), state.last_cycle
+    );
+
     // 1. Read the tape
     let tape_text = match fs::read_to_string(&args.tape_path) {
         Ok(t) => {
@@ -408,7 +445,26 @@ fn main() -> std::process::ExitCode {
 
     // 4. Generate challengers
     let challengers = generate_challengers(&champion_config_text, args.max_challengers);
-    eprintln!("[pq-refiner] generated {} challengers", challengers.len());
+    eprintln!("[pq-refiner] generated {} challengers (pre-dedup)", challengers.len());
+
+    // 4b. Dedup: filter out challengers whose config hash matches a past trial.
+    // This prevents re-testing the same ±10% mutation every cycle.
+    let challengers: Vec<Challenger> = challengers
+        .into_iter()
+        .filter(|c| {
+            let hash = challenger_hash_u64(c);
+            if state.already_tested(hash) {
+                eprintln!(
+                    "[pq-refiner] skipping {} (hash={:016x} already tested)",
+                    c.id, hash
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    eprintln!("[pq-refiner] {} challengers after dedup", challengers.len());
 
     if challengers.is_empty() {
         eprintln!("[pq-refiner] no challengers generated (config has no mutable params?)");
@@ -462,6 +518,39 @@ fn main() -> std::process::ExitCode {
         eprintln!("[pq-refiner] no challenger defeated the champion this cycle");
         write_refiner_status(challengers.len(), 0, "no_promotion");
         append_refiner_log(&results, false);
+    }
+
+    // 7. UPDATE persistent state (§51, §56.3)
+    // Record each challenger in the history (for future dedup).
+    for result in &results {
+        let challenger = challengers.iter().find(|c| c.id == result.challenger_id);
+        if let Some(c) = challenger {
+            let hash = challenger_hash_u64(c);
+            let mutations: Vec<String> = c.mutations.iter().map(|m| m.name.clone()).collect();
+            state.record_challenger(
+                hash,
+                if result.verdict.defeats() { "adoptable" } else { "dropped" },
+                state.last_cycle,
+                result.challenger_net_scalp.net_lamports as i64,
+                result.challenger_net_scalp.n as u64,
+                0,    // SPRT LLR — not yet wired
+                0,    // FDR adjusted p — not yet wired
+                mutations,
+            );
+        }
+    }
+    // Increment cumulative trial count (for FDR gate — Harvey/Liu/Zhu 2015).
+    state.cumulative_trial_count += challengers.len() as u64;
+    state.last_cycle += 1;
+
+    // 8. SAVE persistent state
+    if let Err(e) = state.save(STATE_FILE) {
+        eprintln!("[pq-refiner] state save FAILED: {e}");
+    } else {
+        eprintln!(
+            "[pq-refiner] state saved: trials={}, history={}, cycle={}",
+            state.cumulative_trial_count, state.challenger_history.len(), state.last_cycle
+        );
     }
 
     eprintln!("[pq-refiner] === REFINEMENT CYCLE END ===");

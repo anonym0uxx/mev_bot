@@ -6,7 +6,11 @@
 // property-tested safety argument. There is no such dossier entry for this
 // crate, so there is no `unsafe` this attribute could legitimately block.
 #![forbid(unsafe_code)]
+pub mod evaluator_state;
 pub mod evaluator_stats;
+pub mod deflated_sharpe;
+pub mod thompson_sampling;
+pub mod eight_gate;
 
 // Constitution spec-gap leaves added alongside the frozen evaluator's stats
 // core. Each is a pure, deterministic verdict/guard primitive (constitution

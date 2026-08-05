@@ -248,6 +248,18 @@ fn get_str<'a>(obj: &'a [(String, Json)], key: &str, lineno: usize) -> Result<&'
     }
 }
 
+/// Like `get_str` but returns an owned `String`. Used for `TradeFull` records
+/// where the parsed value must outlive the borrow of the JSON object.
+fn get_str_owned(obj: &[(String, Json)], key: &str, lineno: usize) -> Result<String, TapeError> {
+    match get(obj, key) {
+        Some(Json::Str(s)) => Ok(s.clone()),
+        _ => Err(TapeError::at(
+            lineno,
+            format!("missing/invalid string field '{key}'"),
+        )),
+    }
+}
+
 fn get_int(obj: &[(String, Json)], key: &str, lineno: usize) -> Result<i128, TapeError> {
     match get(obj, key) {
         Some(Json::Int(v)) => Ok(*v),
@@ -312,11 +324,57 @@ pub struct AblationRecord {
     pub right_tail_bps: i64,
 }
 
+/// A full-fidelity enriched trade record (kind: "trade_full") carrying all 16
+/// fields from the engine's TradeRecord. Used for attribution analysis, A/B
+/// testing, and strategy-type discovery. Constitution §43, §62.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TradeFull {
+    /// Slot at which the trade decision was made (the timebase).
+    pub slot: u64,
+    /// The mint that was traded, as a base58 string.
+    pub mint_b58: String,
+    /// "BUY" or "SELL".
+    pub side: String,
+    /// Entry price in fixed-point.
+    pub entry_price_fp: i128,
+    /// Exit price in fixed-point.
+    pub exit_price_fp: i128,
+    /// Trade size in lamports.
+    pub size_lamports: u64,
+    /// The strategy ID that produced this trade.
+    pub strategy_id: u64,
+    /// The ingest source tag.
+    pub source: String,
+    /// The outcome tag (FILLED, FILLED_SLIP, REJECTED, etc.).
+    pub outcome: String,
+    /// Realized PnL in lamports (positive = profit, negative = loss).
+    pub realized_pnl_lamports: i64,
+    /// Total fees paid in lamports.
+    pub fees_lamports: u64,
+    /// Slippage in lamports.
+    pub slippage_lamports: u64,
+    /// Internal decision latency in microseconds.
+    pub decision_latency_us: u64,
+    /// On-chain confirmation latency in microseconds.
+    pub confirm_latency_us: u64,
+    /// "P" (paper) or "L" (live).
+    pub run_mode: String,
+    /// Solana program error code if on-chain failure (0 otherwise).
+    pub error_code: u32,
+    /// Monotonic sequence number.
+    pub seq: u64,
+}
+
 /// The fully-parsed decision/outcome tape.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Tape {
-    /// Reconciled trades (for net-SOL).
+    /// Reconciled trades (for net-SOL). Coarse 5-field format.
     pub trades: Vec<ReconTrade>,
+    /// Enriched full-fidelity trades (16-field format, kind: "trade_full").
+    /// When present, these supersede `trades` for attribution analysis,
+    /// A/B testing, and strategy-type discovery. The coarse `trades` field
+    /// is still populated from kind:"trade" records for backward compat.
+    pub full_trades: Vec<TradeFull>,
     /// Challenger-vs-baseline hypotheses (for BH-FDR).
     pub pvalues: Vec<Hypothesis>,
     /// CSCV performance matrix rows (for PBO).
@@ -380,6 +438,27 @@ pub fn parse_jsonl(input: &str) -> Result<Tape, TapeError> {
                     fees: as_u128(get_int(&obj, "fees", lineno)?, "fees", lineno)?,
                     tips: as_u128(get_int(&obj, "tips", lineno)?, "tips", lineno)?,
                     failed_costs: as_u128(get_int(&obj, "failed", lineno)?, "failed", lineno)?,
+                });
+            }
+            "trade_full" => {
+                tape.full_trades.push(TradeFull {
+                    slot: as_u64(get_int(&obj, "slot", lineno)?, "slot", lineno)?,
+                    mint_b58: get_str_owned(&obj, "mint", lineno)?,
+                    side: get_str_owned(&obj, "side", lineno)?,
+                    entry_price_fp: get_int(&obj, "entry_price_fp", lineno)?,
+                    exit_price_fp: get_int(&obj, "exit_price_fp", lineno)?,
+                    size_lamports: as_u64(get_int(&obj, "size_lamports", lineno)?, "size_lamports", lineno)?,
+                    strategy_id: as_u64(get_int(&obj, "strategy_id", lineno)?, "strategy_id", lineno)?,
+                    source: get_str_owned(&obj, "source", lineno)?,
+                    outcome: get_str_owned(&obj, "outcome", lineno)?,
+                    realized_pnl_lamports: as_i64(get_int(&obj, "realized_pnl", lineno)?, "realized_pnl", lineno)?,
+                    fees_lamports: as_u64(get_int(&obj, "fees", lineno)?, "fees", lineno)?,
+                    slippage_lamports: as_u64(get_int(&obj, "slippage", lineno)?, "slippage", lineno)?,
+                    decision_latency_us: as_u64(get_int(&obj, "decision_latency_us", lineno)?, "decision_latency_us", lineno)?,
+                    confirm_latency_us: as_u64(get_int(&obj, "confirm_latency_us", lineno)?, "confirm_latency_us", lineno)?,
+                    run_mode: get_str_owned(&obj, "run_mode", lineno)?,
+                    error_code: as_u32(get_int(&obj, "error_code", lineno)?, "error_code", lineno)?,
+                    seq: as_u64(get_int(&obj, "seq", lineno)?, "seq", lineno)?,
                 });
             }
             "pvalue" => {

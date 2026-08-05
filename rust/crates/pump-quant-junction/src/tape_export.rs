@@ -63,17 +63,54 @@ impl TapeLane {
     }
 }
 
+/// The source tag for a trade_full record, matching the `ProvenanceSource` enum.
+/// Serialized as a string field in the enriched tape.
+fn source_tag_short(source: &crate::ProvenanceSource) -> &'static str {
+    match source {
+        crate::ProvenanceSource::PumpPortalTrade => "PumpPortal",
+        crate::ProvenanceSource::HeliusAccountSubscribe => "HeliusAcct",
+        crate::ProvenanceSource::HeliusTransactionSubscribe => "HeliusTx",
+        crate::ProvenanceSource::HeliusReserveDelta => "ReserveDelta",
+        crate::ProvenanceSource::LaserStream => "LaserStream",
+    }
+}
+
 /// A single tape record in the evaluator's JSONL format. Each variant
 /// produces exactly one JSON line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TapeRecord {
-    /// A reconciled trade (kind: "trade").
+    /// A reconciled trade (kind: "trade") — coarse 5-field format.
+    /// Retained for backward compatibility with the existing evaluator parser.
     Trade {
         lane: TapeLane,
         gross: i128,
         fees: u128,
         tips: u128,
         failed: u128,
+    },
+    /// A full-fidelity trade record (kind: "trade_full") — all 16 fields
+    /// from `TradeRecord`. This is the enriched format that preserves mint
+    /// address, entry/exit prices, slot, slippage, strategy_id, trade size,
+    /// outcome type, and latencies for attribution analysis and A/B testing.
+    /// Constitution §43 (tables/journal schema), §62 (artifact inputs).
+    TradeFull {
+        slot: u64,
+        mint_b58: String,
+        side_tag: &'static str,
+        entry_price_fp: i128,
+        exit_price_fp: i128,
+        size_lamports: u64,
+        strategy_id: u64,
+        source_tag: &'static str,
+        outcome_tag: &'static str,
+        realized_pnl_lamports: i64,
+        fees_lamports: u64,
+        slippage_lamports: u64,
+        decision_latency_us: u64,
+        confirm_latency_us: u64,
+        run_mode_tag: &'static str,
+        error_code: u32,
+        seq: u64,
     },
     /// A hypothesis p-value (kind: "pvalue").
     PValue { id: u64, p_ppm: u32 },
@@ -112,6 +149,34 @@ impl TapeRecord {
                     fees = fees,
                     tips = tips,
                     failed = failed,
+                )
+            }
+            TapeRecord::TradeFull {
+                slot, mint_b58, side_tag, entry_price_fp, exit_price_fp,
+                size_lamports, strategy_id, source_tag, outcome_tag,
+                realized_pnl_lamports, fees_lamports, slippage_lamports,
+                decision_latency_us, confirm_latency_us, run_mode_tag,
+                error_code, seq,
+            } => {
+                format!(
+                    r#"{{"kind":"trade_full","slot":{slot},"mint":"{mint}","side":"{side}","entry_price_fp":{ep},"exit_price_fp":{xp},"size_lamports":{sz},"strategy_id":{sid},"source":"{src}","outcome":"{out}","realized_pnl":{pnl},"fees":{fees},"slippage":{slip},"decision_latency_us":{dl},"confirm_latency_us":{cl},"run_mode":"{rm}","error_code":{ec},"seq":{seq}}}"#,
+                    slot = slot,
+                    mint = mint_b58,
+                    side = side_tag,
+                    ep = entry_price_fp,
+                    xp = exit_price_fp,
+                    sz = size_lamports,
+                    sid = strategy_id,
+                    src = source_tag,
+                    out = outcome_tag,
+                    pnl = realized_pnl_lamports,
+                    fees = fees_lamports,
+                    slip = slippage_lamports,
+                    dl = decision_latency_us,
+                    cl = confirm_latency_us,
+                    rm = run_mode_tag,
+                    ec = error_code,
+                    seq = seq,
                 )
             }
             TapeRecord::PValue { id, p_ppm } => {
@@ -167,12 +232,13 @@ impl TapeRecord {
     }
 }
 
-/// Convert a `TradeRecord` into a tape `Trade` record.
+/// Convert a `TradeRecord` into a coarse tape `Trade` record (5-field format).
 ///
-/// The mapping derives the lane from the trade's strategy/source, extracts
-/// gross PnL, and maps fees and failed costs. Tips are not yet tracked
-/// per-trade in the current `TradeRecord` (the outbound path doesn't
-/// separate priority tips from base fees); they default to 0.
+/// **Deprecated in favor of `trade_record_to_tape_full`** — this coarse format
+/// strips 11 of 16 fields and makes attribution analysis impossible. Retained
+/// for backward compatibility with the existing evaluator tape parser which
+/// only understands `kind:"trade"`. The enriched `kind:"trade_full"` format
+/// should be used for all new tape output.
 pub fn trade_record_to_tape(rec: &TradeRecord) -> TapeRecord {
     // Derive lane: scalp is the default; early for early-confirmation trades.
     // The strategy_id is a hash of the strategy name; we don't have the
@@ -211,6 +277,39 @@ pub fn trade_record_to_tape(rec: &TradeRecord) -> TapeRecord {
     }
 }
 
+/// Convert a `TradeRecord` into an enriched `TradeFull` tape record (16-field
+/// format, kind: "trade_full"). This preserves ALL fields from the engine's
+/// `TradeRecord` for attribution analysis, A/B testing, and strategy-type
+/// discovery.
+///
+/// Constitution §43 (tables/journal schema), §62 (artifact inputs):
+/// the tape must carry enough fidelity to answer "which strategy type,
+/// archetype, and parameter config produced which outcome?" The coarse
+/// 5-field `Trade` format cannot answer this; `TradeFull` can.
+///
+/// All values are integers or quoted strings (§22: no floats).
+pub fn trade_record_to_tape_full(rec: &TradeRecord) -> TapeRecord {
+    TapeRecord::TradeFull {
+        slot: rec.slot,
+        mint_b58: rec.mint_b58.clone(),
+        side_tag: rec.side.tag(),
+        entry_price_fp: rec.entry_price_fp,
+        exit_price_fp: rec.exit_price_fp,
+        size_lamports: rec.size_lamports,
+        strategy_id: rec.strategy_id,
+        source_tag: source_tag_short(&rec.source),
+        outcome_tag: rec.outcome.tag(),
+        realized_pnl_lamports: rec.realized_pnl_lamports,
+        fees_lamports: rec.fees_lamports,
+        slippage_lamports: rec.slippage_lamports,
+        decision_latency_us: rec.decision_latency_us,
+        confirm_latency_us: rec.confirm_latency_us,
+        run_mode_tag: rec.run_mode.tag(),
+        error_code: rec.error_code,
+        seq: rec.seq,
+    }
+}
+
 /// A tape exporter that accumulates records and flushes them to a JSONL file.
 ///
 /// The daemon calls `export_trade()` for each closed position and
@@ -237,12 +336,18 @@ impl TapeExporter {
     }
 
     /// Add a closed trade to the pending tape.
+    ///
+    /// Emits the **enriched 16-field `TradeFull` record** (kind: "trade_full")
+    /// instead of the deprecated coarse 5-field `Trade` record. The enriched
+    /// format preserves mint address, entry/exit prices, slot, slippage,
+    /// strategy_id, trade size, outcome type, and latencies — all required
+    /// for attribution analysis and A/B testing (§43, §62).
     pub fn export_trade(&mut self, rec: &TradeRecord) {
         // Only export terminal trades (closed positions).
         // Open positions have realized_pnl = 0 and no exit; they don't
         // contribute to the evaluator's reconciliation.
         if rec.outcome.is_terminal() {
-            self.pending.push(trade_record_to_tape(rec));
+            self.pending.push(trade_record_to_tape_full(rec));
         }
     }
 
@@ -305,11 +410,14 @@ impl TapeExporter {
 
 /// Serialize a full set of trade records into a JSONL string (for testing
 /// and one-shot export). Does not touch the filesystem.
+///
+/// Emits the enriched 16-field `TradeFull` format (kind: "trade_full").
 pub fn trades_to_jsonl(records: &[TradeRecord]) -> String {
     let mut out = String::new();
     for rec in records {
+        // Only include closed trades.
         if rec.outcome.is_terminal() {
-            out.push_str(&trade_record_to_tape(rec).to_jsonl());
+            out.push_str(&trade_record_to_tape_full(rec).to_jsonl());
             out.push('\n');
         }
     }
@@ -500,8 +608,8 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
         assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains(r#""kind":"trade""#));
-        assert!(lines[1].contains(r#""kind":"trade""#));
+        assert!(lines[0].contains(r#""kind":"trade_full""#));
+        assert!(lines[1].contains(r#""kind":"trade_full""#));
 
         let _ = std::fs::remove_file(&path);
     }
