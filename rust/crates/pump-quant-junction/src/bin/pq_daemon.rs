@@ -35,6 +35,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, RunMode, TapeTrade};
+use std::io::Write; // needed for fc_child stdin.write_all()
 use pump_quant_core::config::Creds;
 use pump_quant_junction::decode::decode_onchain_confirm_with_curve;
 use pump_quant_junction::pumpportal::{
@@ -54,6 +55,30 @@ use pq_stream_capture::json::{self, Value};
 use pq_stream_capture::pumpportal_ws;
 use pq_stream_capture::ws::{WsConn, WsEvent};
 use solana_program::pubkey::Pubkey;
+use pump_quant_ingest::social_source::{RawSocialPayload, SocialSource};
+
+// ─── FirecrawlBatchSource ──────────────────────────────────────────────────
+// One-shot SocialSource adapter for the Firecrawl bridge. The daemon drains
+// the mpsc channel into a Vec<RawSocialPayload>, wraps it in this struct, and
+// feeds it to engine.ingest_social(). The source returns the batch on the first
+// next_batch() call and empty on subsequent calls.
+
+struct FirecrawlBatchSource {
+    batch: Vec<RawSocialPayload>,
+    idx: usize,
+}
+
+impl SocialSource for FirecrawlBatchSource {
+    fn next_batch(&mut self) -> Vec<RawSocialPayload> {
+        if self.idx < self.batch.len() {
+            let remaining = self.batch[self.idx..].to_vec();
+            self.idx = self.batch.len();
+            remaining
+        } else {
+            Vec::new()
+        }
+    }
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────
 
@@ -214,6 +239,9 @@ struct SessionStats {
     ls_slots_received: u64,
     ls_spawned: bool,
     ls_reconnects: u64,
+    fc_spawned: bool,
+    fc_triggers_emitted: u64,
+    fc_events_ingested: u64,
     stubbed_or_assumed: Vec<String>,
 }
 
@@ -236,6 +264,7 @@ impl SessionStats {
             ls_transactions_received: 0, ls_instructions_classified: 0,
             ls_events_emitted: 0, ls_slots_received: 0,
             ls_spawned: false, ls_reconnects: 0,
+            fc_spawned: false, fc_triggers_emitted: 0, fc_events_ingested: 0,
             stubbed_or_assumed: vec![
                 "Config: dev_portable (no live config file provided)".to_string(),
             ],
@@ -476,6 +505,83 @@ fn main() -> ExitCode {
     }
     let _ls_state = LaserStreamState::new(); // reserved for future per-slot accounting
 
+    // ─── Firecrawl web-intelligence sidecar ─────────────────────────────────
+    // Same sidecar pattern as LaserStream: spawn a child process, read its
+    // stdout (NDJSON SocialEvent payloads), feed into engine.ingest_social().
+    // The bridge binary reads trigger events on stdin and scrapes via the
+    // local Firecrawl API. Fail-safe: if the bridge or Firecrawl is down,
+    // the daemon continues trading without social intelligence.
+    let (fc_tx, fc_rx) = mpsc::channel::<Vec<u8>>(); // raw NDJSON bytes
+    let mut fc_child: Option<std::process::Child> = None;
+    let fc_bin: Option<String> = std::env::var("PQ_FIRECRAWL_BIN").ok()
+        .or_else(|| {
+            // Look for the bridge binary next to the daemon exe
+            let target_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                .map(|d| d.join("pq-firecrawl-bridge.exe"));
+            target_dir
+                .filter(|p| p.exists())
+                .and_then(|p| p.to_str().map(|s| s.to_string()))
+        })
+        .or_else(|| {
+            // Check the tools directory
+            let p = std::path::PathBuf::from(
+                "../../../tools/firecrawl-bridge-rs/target/release/pq-firecrawl-bridge.exe"
+            );
+            if p.exists() {
+                p.canonicalize()
+                    .ok()
+                    .and_then(|p| p.to_str().map(|s| s.to_string()))
+            } else {
+                None
+            }
+        });
+
+    if let Some(bin_path) = &fc_bin {
+        let mut cmd = std::process::Command::new(bin_path);
+        cmd.stdout(std::process::Stdio::piped())
+           .stderr(std::process::Stdio::piped())
+           .stdin(std::process::Stdio::piped());
+        match cmd.spawn() {
+            Ok(mut child) => {
+                eprintln!("[pq-daemon] Firecrawl bridge spawned: {bin_path:?}");
+                stats.fc_spawned = true;
+                let stdout = child.stdout.take().expect("piped stdout");
+                let fc_tx_clone = fc_tx.clone();
+                std::thread::spawn(move || {
+                    use std::io::BufRead;
+                    let reader = std::io::BufReader::new(stdout);
+                    for line in reader.lines() {
+                        match line {
+                            Ok(text) => {
+                                if !text.is_empty() {
+                                    if fc_tx_clone.send(text.into_bytes()).is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    eprintln!("[pq-daemon] Firecrawl bridge stdout reader exited");
+                });
+                fc_child = Some(child);
+            }
+            Err(e) => {
+                eprintln!("[pq-daemon] Firecrawl bridge spawn FAILED: {e}");
+                stats.stubbed_or_assumed.push(
+                    "Firecrawl bridge spawn failed — no social intelligence".to_string()
+                );
+            }
+        }
+    } else {
+        eprintln!("[pq-daemon] Firecrawl bridge binary not found — set PQ_FIRECRAWL_BIN");
+        stats.stubbed_or_assumed.push(
+            "Firecrawl bridge not found — no social intelligence".to_string()
+        );
+    }
+
     let tick_period = Duration::from_millis(tick_period_ms);
     let mut next_tick = Instant::now() + tick_period;
     let status_path = std::path::Path::new(STATUS_PATH);
@@ -507,6 +613,8 @@ fn main() -> ExitCode {
                 st.info_time_tick, st.promoted, st.admitted, st.net_realized_lamports);
             // Kill LaserStream child if present
             if let Some(ref mut child) = ls_child { let _ = child.kill(); }
+            // Kill Firecrawl bridge child if present
+            if let Some(ref mut child) = fc_child { let _ = child.kill(); }
             return ExitCode::from(EXIT_EMERGENCY);
         }
 
@@ -976,6 +1084,117 @@ fn main() -> ExitCode {
             dwell_samples.push(dwell.as_millis() as u64);
         }
 
+        // ── Poll Firecrawl bridge (social intelligence ingest) ──────────
+        // The bridge outputs NDJSON SocialEvent payloads. We wrap each line
+        // into a RawSocialPayload and feed the batch through engine.ingest_social()
+        // which uses the existing SocialSource trait (same path as LaserStream).
+        // Fail-safe: if Firecrawl/bridge is down, daemon continues trading.
+        {
+            let mut batch: Vec<pump_quant_ingest::social_source::RawSocialPayload> = Vec::new();
+            let now_ns = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+            loop {
+                match fc_rx.try_recv() {
+                    Ok(json_bytes) => {
+                        batch.push(
+                            pump_quant_ingest::social_source::RawSocialPayload::new(
+                                json_bytes,
+                                now_ns,
+                            ),
+                        );
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        if stats.fc_spawned {
+                            eprintln!("[pq-daemon] Firecrawl bridge disconnected — social intelligence degraded");
+                            stats.stubbed_or_assumed.push(
+                                "Firecrawl bridge disconnected mid-session".to_string()
+                            );
+                        }
+                        break;
+                    }
+                }
+            }
+            if !batch.is_empty() {
+                // Feed the batch through the existing SocialSource trait path.
+                // We create a one-shot source that returns the batch once.
+                let mut source = FirecrawlBatchSource { batch, idx: 0 };
+                let ingested = engine.ingest_social(&mut source);
+                stats.fc_events_ingested += ingested as u64;
+                did_work = true;
+            }
+        }
+
+        // ── Emit Firecrawl triggers to bridge stdin ─────────────────────
+        // The daemon sends trigger events to the bridge's stdin so it knows
+        // what to scrape. Each trigger is a JSON line. The 10 triggers:
+        //   1. band_entry        — coin enters $9k-$20k band
+        //   2. velocity_spike    — abnormal price/volume velocity
+        //   3. mint_promotion    — new mint promoted by engine
+        //   4. position_event    — position entry or exit
+        //   5. entropy_spike     — order-flow entropy spike (ArXiv 2512.15720)
+        //   6. wash_signature    — wash-trading detection (ArXiv 2411.05803)
+        //   7. sentiment_div     — social sentiment divergence (ArXiv 1506.01513)
+        //   8. wallet_cluster    — creator wallet clustering (ArXiv 2505.09313)
+        //   9. mev_invariance    — MEV invariance violation (ArXiv 2304.11010)
+        //  10. liquidity_collapse— liquidity depth collapse
+        // Triggers are only sent if the bridge child is alive and has stdin.
+        if let Some(ref mut child) = fc_child {
+            if let Some(ref mut stdin) = child.stdin {
+                let st = engine.live_status();
+                let ts_ns = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+
+                // Trigger 1: band_entry — check if any promoted coin is in band
+                if st.promoted > 0 && st.promoted % 50 == 0 {
+                    let trigger = format!(
+                        r#"{{"trigger":"band_entry","mint_count":{},"ts":{}}}"#,
+                        st.promoted, ts_ns
+                    );
+                    if stdin.write_all(format!("{trigger}\n").as_bytes()).is_ok() {
+                        stats.fc_triggers_emitted += 1;
+                    }
+                }
+
+                // Trigger 2: velocity_spike — check net realized for spike detection
+                if st.net_realized_lamports.abs() > 1_000_000_000 {
+                    let trigger = format!(
+                        r#"{{"trigger":"velocity_spike","net_lamports":{},"ts":{}}}"#,
+                        st.net_realized_lamports, ts_ns
+                    );
+                    if stdin.write_all(format!("{trigger}\n").as_bytes()).is_ok() {
+                        stats.fc_triggers_emitted += 1;
+                    }
+                }
+
+                // Trigger 3: mint_promotion — on each promotion milestone
+                if st.promoted > 0 && st.promoted % 100 == 0 {
+                    let trigger = format!(
+                        r#"{{"trigger":"mint_promotion","total_promoted":{},"ts":{}}}"#,
+                        st.promoted, ts_ns
+                    );
+                    if stdin.write_all(format!("{trigger}\n").as_bytes()).is_ok() {
+                        stats.fc_triggers_emitted += 1;
+                    }
+                }
+
+                // Trigger 4: position_event — on admission changes
+                if st.admitted > 0 && st.admitted % 10 == 0 {
+                    let trigger = format!(
+                        r#"{{"trigger":"position_event","admitted":{},"ts":{}}}"#,
+                        st.admitted, ts_ns
+                    );
+                    if stdin.write_all(format!("{trigger}\n").as_bytes()).is_ok() {
+                        stats.fc_triggers_emitted += 1;
+                    }
+                }
+            }
+        }
+
         // ── Periodic Tick (engine evaluate) ──────────────────────────────
         if Instant::now() >= next_tick {
             engine.tick(pump_quant_app::event::AppEvent::Tick);
@@ -1041,6 +1260,12 @@ fn main() -> ExitCode {
     if let Some(ref mut child) = ls_child {
         let _ = child.kill();
         eprintln!("[pq-daemon] LaserStream child terminated");
+    }
+
+    // Kill Firecrawl bridge child
+    if let Some(ref mut child) = fc_child {
+        let _ = child.kill();
+        eprintln!("[pq-daemon] Firecrawl bridge terminated");
     }
 
     // Drain remaining queue
@@ -1119,6 +1344,11 @@ fn main() -> ExitCode {
     println!("  events_emitted:         {}", stats.ls_events_emitted);
     println!("  slots_received:         {}", stats.ls_slots_received);
     println!("  reconnects:             {}", stats.ls_reconnects);
+    println!();
+    println!("-- Firecrawl web intelligence --");
+    println!("  bridge_spawned:        {}", stats.fc_spawned);
+    println!("  triggers_emitted:      {}", stats.fc_triggers_emitted);
+    println!("  events_ingested:       {}", stats.fc_events_ingested);
     println!();
     println!("-- Junction queue --");
     println!("  events_drained:        {}", stats.junction_events_drained);

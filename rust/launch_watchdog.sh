@@ -14,24 +14,29 @@ check_dedup() {
     wd_count=$(tasklist 2>/dev/null | grep -c "pq-watchdog" 2>/dev/null)
     dae_count=$(tasklist 2>/dev/null | grep -c "pq-daemon" 2>/dev/null)
     sc_count=$(tasklist 2>/dev/null | grep -c "pq-stream-capture" 2>/dev/null)
+    fc_count=$(tasklist 2>/dev/null | grep -c "pq-firecrawl-bridge" 2>/dev/null)
     # Strip any stray whitespace/newlines from Windows tasklist output
     wd_count=$(echo "$wd_count" | tr -d '[:space:]')
     dae_count=$(echo "$dae_count" | tr -d '[:space:]')
     sc_count=$(echo "$sc_count" | tr -d '[:space:]')
+    fc_count=$(echo "$fc_count" | tr -d '[:space:]')
     wd_count=${wd_count:-0}
     dae_count=${dae_count:-0}
     sc_count=${sc_count:-0}
+    fc_count=${fc_count:-0}
 
-    if [ "$wd_count" -gt 0 ] || [ "$dae_count" -gt 0 ] || [ "$sc_count" -gt 0 ]; then
+    if [ "$wd_count" -gt 0 ] || [ "$dae_count" -gt 0 ] || [ "$sc_count" -gt 0 ] || [ "$fc_count" -gt 0 ]; then
         echo "DEDUP CHECK FAILED — existing pq processes found:"
-        echo "  pq-watchdog:       $wd_count"
-        echo "  pq-daemon:         $dae_count"
-        echo "  pq-stream-capture: $sc_count"
+        echo "  pq-watchdog:           $wd_count"
+        echo "  pq-daemon:             $dae_count"
+        echo "  pq-stream-capture:     $sc_count"
+        echo "  pq-firecrawl-bridge:   $fc_count"
         echo ""
         echo "Refusing to launch. Kill existing processes first:"
         echo "  taskkill /F /IM pq-daemon.exe"
         echo "  taskkill /F /IM pq-watchdog.exe"
         echo "  taskkill /F /IM pq-stream-capture.exe"
+        echo "  taskkill /F /IM pq-firecrawl-bridge.exe"
         echo "  rm -f data/watchdog.pid"
         exit 1
     fi
@@ -60,6 +65,9 @@ rm -f data/EMERGENCY_STOP.sentinel data/DAEMON_STOP.sentinel
 
 # Point to the LaserStream gRPC stream-capture binary
 export PQ_LASERSTREAM_BIN="${PQ_LASERSTREAM_BIN:-D:/repos/mev_bot/tools/stream-capture-rs/target/release/pq-stream-capture.exe}"
+
+# Point to the Firecrawl web-intelligence bridge binary
+export PQ_FIRECRAWL_BIN="${PQ_FIRECRAWL_BIN:-D:/repos/mev_bot/tools/firecrawl-bridge-rs/target/release/pq-firecrawl-bridge.exe}"
 
 exec ./target/release/pq-watchdog \
     --max-restarts 10 \

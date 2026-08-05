@@ -1,0 +1,21 @@
+[package]
+name = "pq-firecrawl-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "Firecrawl web-intelligence sidecar for pq-daemon. Reads trigger events on stdin, scrapes via local Firecrawl API, outputs normalized SocialEvent NDJSON on stdout. Same sidecar pattern as pq-stream-capture."
+
+[[bin]]
+name = "pq-firecrawl-bridge"
+path = "src/main.rs"
+
+[dependencies]
+# Minimal synchronous HTTP — no async runtime, no tokio. ureq is a single-dep
+# HTTP client perfect for sidecar bridge work.
+ureq = { version = "2.12", features = ["json"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
