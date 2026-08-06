@@ -16,6 +16,7 @@ pump-quant-protocol = { path = "../pump-quant-protocol" }
 pump-quant-core = { path = "../pump-quant-core" }
 pump-quant-market-state = { path = "../pump-quant-market-state" }
 pq-stream-capture = { path = "../../../tools/stream-capture-rs" }
+pump-quant-evaluator = { path = "../pump-quant-evaluator" }
 solana-program = "2.1"
 base64 = "0.22"
 

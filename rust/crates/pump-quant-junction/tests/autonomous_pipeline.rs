@@ -371,7 +371,10 @@ fn step6_tape_jsonl_roundtrip() {
 
     for line in &lines {
         assert!(line.contains("\"kind\""), "each line should have a kind field");
-        assert!(line.contains("\"trade\""), "each line should be a trade record");
+        assert!(
+            line.contains("\"trade_full\"") || line.contains("\"trade\""),
+            "each line should be a trade record (kind=trade or kind=trade_full)"
+        );
     }
 
     let _ = std::fs::remove_file("data/test_tape_roundtrip.jsonl");

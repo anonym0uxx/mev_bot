@@ -117,6 +117,7 @@ pub mod trade_journal;
 pub mod tape_export;
 pub mod event_stream;
 pub mod memory_bank;
+pub mod autonomous_bridge;
 #[cfg(test)] mod chaos_tests;
 
 pub use queue::BoundedJunctionQueue;

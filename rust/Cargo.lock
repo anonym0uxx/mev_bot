@@ -1048,6 +1048,7 @@ dependencies = [
  "pump-quant-app",
  "pump-quant-core",
  "pump-quant-domain",
+ "pump-quant-evaluator",
  "pump-quant-execution",
  "pump-quant-ingest",
  "pump-quant-market-state",

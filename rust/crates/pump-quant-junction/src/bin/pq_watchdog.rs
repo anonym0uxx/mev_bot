@@ -158,6 +158,20 @@ fn stop_watchdog_requested() -> bool {
     Path::new(STOP_WATCHDOG_FILE).exists()
 }
 
+/// Check the refiner status file and log its last activity.
+/// Returns the number of seconds since the refiner last ran, or None if
+/// the status file doesn't exist or can't be parsed.
+fn check_refiner_status() -> Option<u64> {
+    let path = Path::new("data/REFINER_STATUS.json");
+    if !path.exists() {
+        return None;
+    }
+    let metadata = fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let elapsed = modified.elapsed().ok()?;
+    Some(elapsed.as_secs())
+}
+
 /// Check if the daemon's status file has been updated within the timeout.
 /// Returns true if the daemon appears healthy (status file is recent).
 fn daemon_is_healthy(health_timeout_secs: u64) -> bool {
@@ -336,6 +350,26 @@ fn main() -> std::process::ExitCode {
 
         // Wait for the daemon to exit, with health checks
         let exit_status = wait_with_health(&mut child, args.health_timeout_secs, 5);
+
+        // G1b: Check refiner status during the watchdog loop. The daemon
+        // spawns the refiner internally via RefinerSpawner. The watchdog
+        // monitors the refiner's status file to ensure the autonomous loop
+        // is running (daemon → tape → refiner → promotion → hot-reload).
+        if let Some(secs_since_refiner) = check_refiner_status() {
+            if secs_since_refiner > 600 {
+                eprintln!(
+                    "[pq-watchdog] WARNING: refiner hasn't run in {}s (check autonomous loop)",
+                    secs_since_refiner
+                );
+            } else {
+                eprintln!(
+                    "[pq-watchdog] refiner status: last ran {}s ago",
+                    secs_since_refiner
+                );
+            }
+        } else {
+            eprintln!("[pq-watchdog] refiner status: no status file yet (autonomous loop warming up)");
+        }
 
         match exit_status {
             Some(status) if status.success() => {

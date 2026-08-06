@@ -51,6 +51,9 @@ use pump_quant_junction::laserstream::{
 use pump_quant_junction::queue::BoundedJunctionQueue;
 use pump_quant_junction::tape_export::{TapeExporter, TapeRecord, TapeLane};
 use pump_quant_junction::event_stream::EventStreamWriter;
+use pump_quant_junction::autonomous_bridge::{
+    DefenseState, try_reload_config, RefinerSpawner,
+};
 use pq_stream_capture::helius_ws;
 use pq_stream_capture::json::{self, Value};
 use pq_stream_capture::pumpportal_ws;
@@ -109,6 +112,10 @@ struct DaemonArgs {
     status_every_ticks: u64,
     brain_snapshot_every_ticks: u64,
     tape_every_ticks: u64,
+    /// How many ticks between refiner triggers. 0 = disabled.
+    /// The refiner is spawned as a child process that reads the tape and
+    /// writes CONFIG_PROMOTION.json; the daemon hot-reloads it next tick.
+    refiner_every_ticks: u64,
 }
 
 fn parse_args() -> Result<DaemonArgs, u8> {
@@ -119,6 +126,7 @@ fn parse_args() -> Result<DaemonArgs, u8> {
         status_every_ticks: 500,
         brain_snapshot_every_ticks: 5000,
         tape_every_ticks: 1000,
+        refiner_every_ticks: 5000, // default: ~every 5000 ticks
     };
     let mut i = 1;
     while i < args.len() {
@@ -145,6 +153,10 @@ fn parse_args() -> Result<DaemonArgs, u8> {
             }
             "--tape-every-ticks" if i + 1 < args.len() => {
                 a.tape_every_ticks = args[i + 1].parse().unwrap_or(1000);
+                i += 2;
+            }
+            "--refiner-every-ticks" if i + 1 < args.len() => {
+                a.refiner_every_ticks = args[i + 1].parse().unwrap_or(5000);
                 i += 2;
             }
             _ => { i += 1; }
@@ -378,7 +390,7 @@ fn main() -> ExitCode {
     let pp_url = std::env::var("PUMPPORTAL_WS_URL")
         .unwrap_or_else(|_| PUMPPORTAL_DEFAULT_URL.to_string());
 
-    let cfg = Config::dev_portable().with_mcap_band(); // Amendment A-14: $9k–$20k band
+    let mut cfg = Config::dev_portable().with_mcap_band(); // Amendment A-14: $9k-$20k band
     let tick_period_ms = cfg.paper_tick_period_ms;
 
     eprintln!("[pq-daemon] === AUTONOMOUS DAEMON STARTING ===");
@@ -592,6 +604,17 @@ fn main() -> ExitCode {
     let mut last_status_write_tick: u64 = 0;
     let mut last_brain_snap_tick: u64 = 0;
     let mut last_tape_flush_tick: u64 = 0;
+
+    // ─── Autonomous bridge: config hot-reload + defense-in-depth ────────
+    // The bridge connects the evaluator/refiner framework to the live daemon.
+    // G2: hot-reload CONFIG_PROMOTION.json (written by pq-refiner)
+    // G4: defense-in-depth — cliff veto, circuit breaker, kill switch
+    // G1: periodic refiner spawn (evaluator tape → promotion file)
+    let mut defense_state = DefenseState::default();
+    let mut config_mtime: Option<u64> = None;
+    let mut last_refiner_spawn_tick: u64 = 0;
+    let mut refiner_spawner = RefinerSpawner::new();
+    eprintln!("[pq-daemon] autonomous bridge: defense-in-depth + config hot-reload + refiner scheduling ACTIVE");
 
     // Phase 2: tape exporter — drains engine trades to evaluator JSONL format.
     let mut tape_exporter = TapeExporter::new(TAPE_PATH);
@@ -1284,6 +1307,66 @@ fn main() -> ExitCode {
                     let _ = writer.flush();
                 }
                 last_tape_flush_tick = tick_counter;
+            }
+
+            // ── Autonomous bridge: config hot-reload (G2) ──────────────
+            // Check if CONFIG_PROMOTION.json has been written/updated by
+            // the refiner. If so, parse mutations and apply to live config.
+            {
+                let reload = try_reload_config(&mut cfg, &mut config_mtime);
+                if reload.applied {
+                    let n = reload.n_mutations;
+                    eprintln!(
+                        "[pq-daemon] CONFIG HOT-RELOAD: {n} mutations applied. Summary: {}",
+                        reload.summary
+                    );
+                }
+            }
+
+            // ── Autonomous bridge: defense-in-depth (G4) ───────────────
+            // Monitor live P&L for cliff veto / circuit breaker / kill switch.
+            {
+                let st = engine.live_status();
+                // Track realized P&L for drawdown.
+                defense_state.update_drawdown(
+                    st.net_realized_lamports.max(0) as i64
+                );
+                if !defense_state.trading_allowed() {
+                    eprintln!(
+                        "[pq-daemon] DEFENSE-IN-DEPTH: TRADING HALTED — reason: {:?}",
+                        defense_state.kill_reason()
+                    );
+                    // Write an EMERGENCY_STOP sentinel so the operator sees it.
+                    let _ = std::fs::write(
+                        EMERGENCY_STOP_FILE,
+                        "defense-in-depth automatic halt",
+                    );
+                    // Kill LaserStream child if present.
+                    if let Some(ref mut child) = ls_child { let _ = child.kill(); }
+                    if let Some(ref mut child) = fc_child { let _ = child.kill(); }
+                    return ExitCode::from(EXIT_EMERGENCY);
+                }
+            }
+
+            // ── Autonomous bridge: periodic refiner spawn (G1) ────────
+            // Spawn pq-refiner as a child process to analyze accumulated
+            // tape and emit promotion/demotion decisions. The refiner
+            // writes CONFIG_PROMOTION.json which we hot-reload above.
+            if args.refiner_every_ticks > 0
+                && tick_counter - last_refiner_spawn_tick >= args.refiner_every_ticks
+            {
+                eprintln!(
+                    "[pq-daemon] spawning pq-refiner (tick={tick_counter}, tape={TAPE_PATH})"
+                );
+                match refiner_spawner.spawn(tick_counter) {
+                    Ok(pid) => eprintln!(
+                        "[pq-daemon] pq-refiner spawned: pid={pid}"
+                    ),
+                    Err(e) => eprintln!(
+                        "[pq-daemon] pq-refiner spawn FAILED: {e}"
+                    ),
+                }
+                last_refiner_spawn_tick = tick_counter;
             }
         }
 
