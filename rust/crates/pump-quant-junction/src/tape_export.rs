@@ -134,6 +134,26 @@ pub enum TapeRecord {
     },
     /// A candidate id (kind: "candidate").
     Candidate { id: u64 },
+    /// S6: Lane retirement state snapshot (kind: "lane_state").
+    /// Carries the engine's `retired[4]` array so the refiner can observe
+    /// which watchlist lanes have been capital-blocked by the sequential
+    /// retirement system. This is metadata, not a trade — it tells the
+    /// refiner "lane N stopped producing trades because it was retired,
+    /// not because the gate tightened."
+    ///
+    /// The 4-element array maps to the engine's watchlist lane indices:
+    ///   [0] = CreationSniper/EarlyConfirmation (Early)
+    ///   [1] = GraduationTransition/ActiveMarketScalp (Scalp)
+    ///   [2..3] = reserved for future lanes
+    ///
+    /// The refiner uses this to avoid misattributing a lane's trade drought
+    /// to a gate_margin_bps change when it was actually a retirement event.
+    LaneState {
+        /// The slot at which this snapshot was taken.
+        slot: u64,
+        /// The retired state of all 4 watchlist lanes.
+        retired: [bool; 4],
+    },
 }
 
 impl TapeRecord {
@@ -228,6 +248,18 @@ impl TapeRecord {
             TapeRecord::Candidate { id } => {
                 format!(r#"{{"kind":"candidate","id":{id}}}"#, id = id)
             }
+            // S6: Lane retirement state snapshot.
+            TapeRecord::LaneState { slot, retired } => {
+                let flags: Vec<&str> = retired
+                    .iter()
+                    .map(|b| if *b { "true" } else { "false" })
+                    .collect();
+                format!(
+                    r#"{{"kind":"lane_state","slot":{slot},"retired":[{flags}]}}"#,
+                    slot = slot,
+                    flags = flags.join(","),
+                )
+            }
         }
     }
 }
@@ -240,14 +272,14 @@ impl TapeRecord {
 /// only understands `kind:"trade"`. The enriched `kind:"trade_full"` format
 /// should be used for all new tape output.
 pub fn trade_record_to_tape(rec: &TradeRecord) -> TapeRecord {
-    // Derive lane: scalp is the default; early for early-confirmation trades.
-    // The strategy_id is a hash of the strategy name; we don't have the
-    // mapping here, so we use a heuristic: if the trade source is
-    // PumpPortal and the outcome suggests a scalp (fast exit), it's scalp.
-    // For now, all trades map to "scalp" since the engine's primary mode
-    // is scalp. When early-confirmation strategies are wired, the lane
-    // will be set via a field on TradeRecord.
-    let lane = TapeLane::Scalp;
+    // S2: Derive lane from the TradeRecord's lane field instead of hardcoding
+    // TapeLane::Scalp. If the lane is None (backward compat with older
+    // callers), default to Scalp — the engine's primary mode.
+    let lane = match rec.lane {
+        Some(crate::trade_journal::TradeLane::Scalp) => TapeLane::Scalp,
+        Some(crate::trade_journal::TradeLane::Early) => TapeLane::Early,
+        None => TapeLane::Scalp, // backward compat default
+    };
 
     // Gross = realized PnL. For open positions, realized_pnl is 0.
     // For closed positions, it's the signed net PnL (proceeds - cost basis).
@@ -455,6 +487,7 @@ mod tests {
             run_mode: RunMode::Paper,
             error_code: 0,
             seq: 0,
+            lane: None,
         }
     }
 
@@ -491,6 +524,53 @@ mod tests {
                 assert_eq!(fees, 50);
                 assert_eq!(failed, 100000); // size at risk
                 assert_eq!(lane, TapeLane::Scalp);
+            }
+            _ => panic!("expected Trade record"),
+        }
+    }
+
+    /// S2: A TradeRecord with lane=Some(TradeLane::Early) must map to
+    /// TapeLane::Early in the coarse tape format — not hardcoded Scalp.
+    #[test]
+    fn s2_early_lane_attribution() {
+        let mut rec = make_trade_record(WIN, 10_000, 300, 200_000, 200);
+        rec.lane = Some(crate::trade_journal::TradeLane::Early);
+        let tape = trade_record_to_tape(&rec);
+        match tape {
+            TapeRecord::Trade { lane, .. } => {
+                assert_eq!(lane, TapeLane::Early,
+                    "S2: lane must be Early when TradeRecord.lane=Some(Early)");
+            }
+            _ => panic!("expected Trade record"),
+        }
+    }
+
+    /// S2: A TradeRecord with lane=Some(TradeLane::Scalp) must map to
+    /// TapeLane::Scalp (explicit, not just the default).
+    #[test]
+    fn s2_scalp_lane_attribution() {
+        let mut rec = make_trade_record(WIN, 10_000, 300, 200_000, 200);
+        rec.lane = Some(crate::trade_journal::TradeLane::Scalp);
+        let tape = trade_record_to_tape(&rec);
+        match tape {
+            TapeRecord::Trade { lane, .. } => {
+                assert_eq!(lane, TapeLane::Scalp,
+                    "S2: lane must be Scalp when TradeRecord.lane=Some(Scalp)");
+            }
+            _ => panic!("expected Trade record"),
+        }
+    }
+
+    /// S2: A TradeRecord with lane=None must default to Scalp (backward compat).
+    #[test]
+    fn s2_none_lane_defaults_to_scalp() {
+        let rec = make_trade_record(WIN, 10_000, 300, 200_000, 200);
+        assert!(rec.lane.is_none());
+        let tape = trade_record_to_tape(&rec);
+        match tape {
+            TapeRecord::Trade { lane, .. } => {
+                assert_eq!(lane, TapeLane::Scalp,
+                    "S2: lane must default to Scalp when TradeRecord.lane=None");
             }
             _ => panic!("expected Trade record"),
         }
@@ -706,6 +786,73 @@ mod tests {
         }
         assert_eq!(exporter.pending_count(), 1);
         exporter.flush().unwrap();
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ─── S6: Lane retirement state tests ───────────────────────────────────
+
+    #[test]
+    fn s6_lane_state_serialization() {
+        let rec = TapeRecord::LaneState {
+            slot: 12345,
+            retired: [false, true, false, false],
+        };
+        let jsonl = rec.to_jsonl();
+        assert!(jsonl.contains(r#""kind":"lane_state""#));
+        assert!(jsonl.contains(r#""slot":12345"#));
+        assert!(jsonl.contains(r#""retired":[false,true,false,false]"#));
+    }
+
+    #[test]
+    fn s6_lane_state_all_retired() {
+        let rec = TapeRecord::LaneState {
+            slot: 99999,
+            retired: [true; 4],
+        };
+        let jsonl = rec.to_jsonl();
+        assert!(jsonl.contains(r#""retired":[true,true,true,true]"#));
+    }
+
+    #[test]
+    fn s6_lane_state_none_retired() {
+        let rec = TapeRecord::LaneState {
+            slot: 1,
+            retired: [false; 4],
+        };
+        let jsonl = rec.to_jsonl();
+        assert!(jsonl.contains(r#""retired":[false,false,false,false]"#));
+    }
+
+    #[test]
+    fn s6_lane_state_no_floats() {
+        let rec = TapeRecord::LaneState {
+            slot: 42,
+            retired: [true, false, true, false],
+        };
+        let jsonl = rec.to_jsonl();
+        // No floats allowed (§22)
+        assert!(!jsonl.contains('.'));
+        assert!(!jsonl.contains("null"));
+    }
+
+    #[test]
+    fn s6_lane_state_can_be_pushed_to_exporter() {
+        let temp_dir = std::env::temp_dir();
+        let path = temp_dir.join("pq_test_lane_state.jsonl");
+        let _ = std::fs::remove_file(&path);
+
+        let mut exporter = TapeExporter::new(path.to_str().unwrap());
+        exporter.push(TapeRecord::LaneState {
+            slot: 100,
+            retired: [false, true, false, false],
+        });
+        assert_eq!(exporter.pending_count(), 1);
+        exporter.flush().unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains(r#""kind":"lane_state""#));
+        assert!(content.contains(r#""retired":[false,true,false,false]"#));
 
         let _ = std::fs::remove_file(&path);
     }

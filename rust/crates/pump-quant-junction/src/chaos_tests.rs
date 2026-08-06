@@ -248,6 +248,7 @@ mod chaos_journal {
             run_mode: if seed % 2 == 0 { RunMode::Paper } else { RunMode::Live },
             error_code: if seed % 3 == 0 { 6001 } else { 0 },
             seq: seed,
+            lane: None,
         }
     }
 
@@ -285,6 +286,7 @@ mod chaos_journal {
             run_mode: RunMode::Paper,
             error_code: 0,
             seq: 0,
+            lane: None,
         };
         let jsonl = rec.to_jsonl();
         assert!(!jsonl.is_empty());
@@ -311,6 +313,7 @@ mod chaos_journal {
             run_mode: RunMode::Live,
             error_code: u32::MAX,
             seq: u64::MAX,
+            lane: None,
         };
         let jsonl = rec.to_jsonl();
         assert!(!jsonl.is_empty());
@@ -360,6 +363,7 @@ mod chaos_memory {
             run_mode: if seed % 2 == 0 { RunMode::Paper } else { RunMode::Live },
             error_code: if seed % 3 == 0 { 6001 } else { 0 },
             seq: seed,
+            lane: None,
         }
     }
 

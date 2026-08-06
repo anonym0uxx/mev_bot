@@ -1291,7 +1291,17 @@ fn main() -> ExitCode {
                     });
                     // Also emit the coarse 5-field Trade record for backward
                     // compatibility with existing evaluator/refiner code.
-                    let _ = lane; // suppress unused warning
+                    // S2: Use the actual lane derived from t.scalp instead of
+                    // hardcoding TapeLane::Scalp. This gives the refiner per-lane
+                    // performance data so it can cross-check reflection's weight
+                    // decisions rather than being blind to lane attribution.
+                    tape_exporter.push(TapeRecord::Trade {
+                        lane,
+                        gross: t.gross,
+                        fees: t.fees,
+                        tips: t.tips,
+                        failed: t.failed,
+                    });
                 }
                 if tape_exporter.pending_count() > 0 {
                     match tape_exporter.flush() {
@@ -1358,7 +1368,17 @@ fn main() -> ExitCode {
                 eprintln!(
                     "[pq-daemon] spawning pq-refiner (tick={tick_counter}, tape={TAPE_PATH})"
                 );
-                let config_text = cfg.dump_to_text();
+                // S8: Append reflection state metadata to the champion config
+                // dump so the refiner can make reflection-aware decisions.
+                let mut config_text = cfg.dump_to_text();
+                let snap = engine.reflection_snapshot();
+                config_text.push_str(&format!(
+                    "\n# S8 reflection_snapshot: tick={} reflect_every_ticks={} brain_reflect_enable={} retired=[{},{},{},{}]\n",
+                    snap.tick,
+                    snap.reflect_every_ticks,
+                    snap.brain_reflect_enable,
+                    snap.retired[0], snap.retired[1], snap.retired[2], snap.retired[3],
+                ));
                 match refiner_spawner.spawn(tick_counter, &config_text) {
                     Ok(pid) => eprintln!(
                         "[pq-daemon] pq-refiner spawned: pid={pid}"

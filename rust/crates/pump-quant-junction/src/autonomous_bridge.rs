@@ -70,6 +70,12 @@ pub struct ReloadResult {
 ///
 /// We parse the mutations array and call `cfg.apply(name, to)` for each.
 /// Returns `ReloadResult::default()` (applied=false) if no file or stale.
+///
+/// **Validation fence (S1):** Config is `Copy`, so we apply mutations to a
+/// detached snapshot first, call `validate()` on the snapshot, and only
+/// commit to the live config if validation passes. This prevents the refiner
+/// from promoting envelope-violating mutations (e.g. floor > ceiling) through
+/// the hot-reload path, which never called `validate()` before this fix.
 pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> ReloadResult {
     let path = Path::new(PROMOTION_FILE);
     if !path.exists() {
@@ -121,9 +127,17 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
         }
     };
 
-    // Simple JSON extraction: find mutations array and parse each {name, from, to}
+    // ── Validation fence (S1) ─────────────────────────────────────────────
+    // Config is Copy, so we apply mutations to a snapshot first, validate the
+    // snapshot, and only commit to the live config if validation passes.
+    // This catches envelope violations (floor > ceiling, step > envelope
+    // width) that the per-mutation apply() cannot detect because each apply()
+    // only sees one key at a time.
+    let mut snapshot = *cfg;
+    let mut snapshot_ok = true;
     let mut mutations_applied = 0usize;
     let mut summary_parts: Vec<String> = Vec::new();
+    let mut apply_errors: Vec<String> = Vec::new();
 
     // Line-based parser: scan for "name" and "to" pairs within the mutations
     // array. Line-based parsing avoids the comma-inside-string problem that
@@ -131,6 +145,31 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
     let mut in_mutations = false;
     let mut current_name: Option<String> = None;
     let mut current_to: Option<i64> = None;
+
+    /// Apply a single mutation to the snapshot, recording the result.
+    /// This closure captures `snapshot`, `mutations_applied`, `summary_parts`,
+    /// and `apply_errors` by reference.
+    fn apply_one(
+        snapshot: &mut Config,
+        name: &str,
+        to_val: i64,
+        mutations_applied: &mut usize,
+        summary_parts: &mut Vec<String>,
+        apply_errors: &mut Vec<String>,
+    ) {
+        match snapshot.apply(name, to_val) {
+            Ok(()) => {
+                *mutations_applied += 1;
+                summary_parts.push(format!("{name}={to_val}"));
+            }
+            Err(e) => {
+                apply_errors.push(format!("{name}={to_val}: {e}"));
+                eprintln!(
+                    "[autonomous-bridge] config apply FAILED for {name}={to_val}: {e}"
+                );
+            }
+        }
+    }
 
     for line in content.lines() {
         let line = line.trim();
@@ -145,20 +184,17 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
             in_mutations = false;
             // Apply any pending pair at array close
             if let (Some(ref name), Some(to_val)) = (&current_name, current_to) {
-                match cfg.apply(name, to_val) {
-                    Ok(()) => {
-                        mutations_applied += 1;
-                        summary_parts.push(format!("{name}={to_val}"));
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "[autonomous-bridge] config apply FAILED for {name}={to_val}: {e}"
-                        );
-                    }
-                }
-                current_name = None;
-                current_to = None;
+                apply_one(
+                    &mut snapshot,
+                    name,
+                    to_val,
+                    &mut mutations_applied,
+                    &mut summary_parts,
+                    &mut apply_errors,
+                );
             }
+            current_name = None;
+            current_to = None;
             continue;
         }
         if !in_mutations {
@@ -176,22 +212,46 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
         // When we have both and hit a closing brace, apply
         if line.contains('}') && current_name.is_some() && current_to.is_some() {
             if let (Some(ref name), Some(to_val)) = (&current_name, current_to) {
-                match cfg.apply(name, to_val) {
-                    Ok(()) => {
-                        mutations_applied += 1;
-                        summary_parts.push(format!("{name}={to_val}"));
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "[autonomous-bridge] config apply FAILED for {name}={to_val}: {e}"
-                        );
-                    }
-                }
+                apply_one(
+                    &mut snapshot,
+                    name,
+                    to_val,
+                    &mut mutations_applied,
+                    &mut summary_parts,
+                    &mut apply_errors,
+                );
             }
             current_name = None;
             current_to = None;
         }
     }
+
+    // ── Validate the snapshot (S1) ────────────────────────────────────────
+    // If validate() fails on the snapshot, we reject the entire promotion.
+    // The live config is untouched. This is the correct behavior: a promotion
+    // that produces an internally inconsistent config is a bug in the refiner,
+    // not a valid optimization.
+    if snapshot_ok {
+        if let Err(e) = snapshot.validate() {
+            eprintln!(
+                "[autonomous-bridge] CONFIG HOT-RELOAD REJECTED: validate() failed after {mutations_applied} mutations: {e}"
+            );
+            // Delete the promotion file so we don't re-reject it forever.
+            let _ = fs::remove_file(path);
+            *last_mtime = Some(mtime);
+            return ReloadResult {
+                applied: false,
+                n_mutations: 0,
+                summary: format!(
+                    "REJECTED by validate(): {e} ({} mutations rolled back)",
+                    mutations_applied
+                ),
+            };
+        }
+    }
+
+    // ── Commit: validation passed, copy snapshot into live config ─────────
+    *cfg = snapshot;
 
     // Delete the promotion file so we don't re-apply it
     let _ = fs::remove_file(path);
@@ -486,6 +546,16 @@ pub fn refiner_running() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    /// S1: Serializes all tests that touch the shared PROMOTION_FILE.
+    /// Without this, parallel test execution causes race conditions
+    /// where one test overwrites another's promotion file.
+    static PROMOTION_FILE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    fn promotion_lock() -> std::sync::MutexGuard<'static, ()> {
+        let mtx = PROMOTION_FILE_LOCK.get_or_init(|| Mutex::new(()));
+        mtx.lock().unwrap()
+    }
 
     #[test]
     fn test_defense_state_default() {
@@ -556,6 +626,8 @@ mod tests {
 
     #[test]
     fn test_reload_no_file() {
+        // S1: Serialize against other promotion-file tests.
+        let _lock = promotion_lock();
         // Use a temp directory so no other test's promotion file leaks in.
         let tmp = std::env::temp_dir();
         let promo_path = tmp.join("pq_test_no_promotion.json");
@@ -575,9 +647,13 @@ mod tests {
 
     #[test]
     fn test_reload_applies_mutations() {
+        // S1: Serialize against other promotion-file tests.
+        let _lock = promotion_lock();
         // Create a fake promotion file
         let promotion_dir = Path::new("data");
         let _ = fs::create_dir_all(promotion_dir);
+        // Clean up any stale promotion file from a prior test.
+        let _ = fs::remove_file(PROMOTION_FILE);
         let promotion_content = r#"{
   "challenger_id": "test_001",
   "mutations": [
@@ -605,6 +681,87 @@ mod tests {
         assert_ne!(cfg.promote_k, original_promote_k);
 
         // File should be consumed (deleted after apply)
+        assert!(!Path::new(PROMOTION_FILE).exists());
+    }
+
+    /// S1: A promotion file that would invert the reflection envelope
+    /// (floor > ceiling) must be REJECTED by validate() and the live config
+    /// must remain untouched.
+    #[test]
+    fn test_reload_rejects_envelope_violation() {
+        // S1: Serialize against other promotion-file tests.
+        let _lock = promotion_lock();
+        let promotion_dir = Path::new("data");
+        let _ = fs::create_dir_all(promotion_dir);
+        // Clean up any stale promotion file from a prior test.
+        let _ = fs::remove_file(PROMOTION_FILE);
+        // Set floor above ceiling — validate() will reject this.
+        let promotion_content = r#"{
+  "challenger_id": "test_envelope_violation",
+  "mutations": [
+    {"name": "reflect_weight_floor_bp", "from": 2000, "to": 50000},
+    {"name": "reflect_weight_ceiling_bp", "from": 40000, "to": 3000}
+  ],
+  "verdict": "defeats",
+  "gate_verdict": "G1:pass G2:pass",
+  "status": "READY_FOR_CONFIG_UPDATE"
+}"#;
+        let _ = fs::write(PROMOTION_FILE, promotion_content);
+
+        let mut cfg = Config::dev_portable().with_mcap_band();
+        let original_floor = cfg.reflect_weight_floor_bp;
+        let original_ceiling = cfg.reflect_weight_ceiling_bp;
+
+        let mut last_mtime = None;
+        let result = try_reload_config(&mut cfg, &mut last_mtime);
+
+        // The promotion must be rejected.
+        assert!(!result.applied);
+        assert_eq!(result.n_mutations, 0);
+        assert!(
+            result.summary.contains("REJECTED"),
+            "expected REJECTED in summary, got: {}",
+            result.summary
+        );
+
+        // The live config must be untouched.
+        assert_eq!(cfg.reflect_weight_floor_bp, original_floor);
+        assert_eq!(cfg.reflect_weight_ceiling_bp, original_ceiling);
+
+        // File should still be consumed (deleted) so we don't re-reject forever.
+        assert!(!Path::new(PROMOTION_FILE).exists());
+    }
+
+    /// S1: A valid promotion that does not violate any envelope must pass
+    /// through the validate() fence and be applied normally.
+    #[test]
+    fn test_reload_accepts_valid_envelope() {
+        // S1: Serialize against other promotion-file tests.
+        let _lock = promotion_lock();
+        let promotion_dir = Path::new("data");
+        let _ = fs::create_dir_all(promotion_dir);
+        // Clean up any stale promotion file from a prior test.
+        let _ = fs::remove_file(PROMOTION_FILE);
+        // Mutate gate_margin_bps — a single-param change that validate() allows.
+        let promotion_content = r#"{
+  "challenger_id": "test_valid",
+  "mutations": [
+    {"name": "gate_margin_bps", "from": 50, "to": 55}
+  ],
+  "verdict": "defeats",
+  "gate_verdict": "G1:pass G2:pass",
+  "status": "READY_FOR_CONFIG_UPDATE"
+}"#;
+        let _ = fs::write(PROMOTION_FILE, promotion_content);
+
+        let mut cfg = Config::dev_portable().with_mcap_band();
+
+        let mut last_mtime = None;
+        let result = try_reload_config(&mut cfg, &mut last_mtime);
+
+        assert!(result.applied);
+        assert_eq!(result.n_mutations, 1);
+        assert_eq!(cfg.gate_margin_bps, 55);
         assert!(!Path::new(PROMOTION_FILE).exists());
     }
 }

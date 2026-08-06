@@ -488,6 +488,7 @@ mod tests {
             run_mode: RunMode::Paper,
             error_code: 0,
             seq: 0,
+            lane: None,
         }
     }
 

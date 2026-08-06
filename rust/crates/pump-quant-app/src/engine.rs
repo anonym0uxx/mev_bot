@@ -680,6 +680,22 @@ pub struct HolderTrajectoryRow {
     pub concentration_rate_bps: Option<i64>,
 }
 
+/// S8: Reflection state snapshot for the refiner feedback loop.
+/// Carries the engine's `retired[4]` array and reflection config so the
+/// daemon can append it to the champion config dump. The refiner reads
+/// this metadata to make reflection-aware promotion decisions (S7).
+#[derive(Clone, Copy, Debug)]
+pub struct ReflectionSnapshot {
+    /// The 4 watchlist lanes' retirement state (§56.11).
+    pub retired: [bool; 4],
+    /// The engine's logical tick at snapshot time.
+    pub tick: u64,
+    /// The champion config's reflect_every_ticks value.
+    pub reflect_every_ticks: u64,
+    /// Whether the brain-reflection lane_decay() path is armed.
+    pub brain_reflect_enable: bool,
+}
+
 /// The running engine.
 pub struct Engine {
     cfg: Config,
@@ -5109,6 +5125,21 @@ impl Engine {
         self.meta.snapshot()
     }
 
+    /// S8: Reflection state snapshot for the refiner feedback loop.
+    /// Returns the engine's current `retired[4]` array and the logical tick
+    /// at snapshot time. The daemon appends this as metadata to the champion
+    /// config dump so the refiner can observe reflection state without
+    /// needing direct engine access.
+    #[must_use]
+    pub fn reflection_snapshot(&self) -> ReflectionSnapshot {
+        ReflectionSnapshot {
+            retired: self.retired,
+            tick: self.now,
+            reflect_every_ticks: self.cfg.reflect_every_ticks,
+            brain_reflect_enable: self.cfg.brain_reflect_enable,
+        }
+    }
+
     /// The creator-state snapshot for a market, if the creator lane has seen it
     /// (position, distribution, sold-fraction-of-peak). Telemetry seam.
     #[must_use]
@@ -5834,7 +5865,7 @@ mod criterion_94_quote_mint {
     //! §94 quote-mint parametrization: the SOL path is byte-identical to the
     //! pre-§94 cost expression (digest-safe), the USDC path is reachable, and an
     //! undecoded quote refuses (fail-closed).
-    use super::{round_trip_cost_bps, round_trip_cost_bps_quoted, ImpactCurve, QuoteMint};
+    use super::{round_trip_cost_bps, round_trip_cost_bps_quoted, ImpactCurve, QuoteMint, ReflectionSnapshot};
     use pump_quant_strategy::safety_integrity::{round_trip_cost_quote, Market};
 
     /// The default SOL quote reproduces `round_trip_cost_bps(..).unwrap_or(MAX)`
@@ -5904,5 +5935,48 @@ mod criterion_94_quote_mint {
         // differs by 1000×, so the absolute costs cannot be equal.
         assert_ne!(sol, usdc, "decimals must parametrize the absolute cost");
         assert!(sol.unwrap() > usdc.unwrap());
+    }
+
+    // ─── S8: ReflectionSnapshot tests ──────────────────────────────────────
+
+    #[test]
+    fn s8_reflection_snapshot_constructs() {
+        let snap = ReflectionSnapshot {
+            retired: [false, true, false, false],
+            tick: 12345,
+            reflect_every_ticks: 50,
+            brain_reflect_enable: false,
+        };
+        assert_eq!(snap.retired, [false, true, false, false]);
+        assert_eq!(snap.tick, 12345);
+        assert_eq!(snap.reflect_every_ticks, 50);
+        assert!(!snap.brain_reflect_enable);
+    }
+
+    #[test]
+    fn s8_reflection_snapshot_all_retired() {
+        let snap = ReflectionSnapshot {
+            retired: [true; 4],
+            tick: 999,
+            reflect_every_ticks: 100,
+            brain_reflect_enable: true,
+        };
+        assert_eq!(snap.retired, [true, true, true, true]);
+        assert!(snap.brain_reflect_enable);
+    }
+
+    #[test]
+    fn s8_reflection_snapshot_is_copy() {
+        // ReflectionSnapshot must be Copy — it's returned by value from
+        // the engine without cloning.
+        let snap = ReflectionSnapshot {
+            retired: [false; 4],
+            tick: 1,
+            reflect_every_ticks: 50,
+            brain_reflect_enable: false,
+        };
+        let snap_copy = snap; // copy, not move
+        // If it weren't Copy, this line would fail to compile.
+        assert_eq!(snap.retired, snap_copy.retired);
     }
 }
