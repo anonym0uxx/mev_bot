@@ -68,7 +68,7 @@ fn parse_args() -> RefinerArgs {
         tape_path: DEFAULT_TAPE_PATH.to_string(),
         config_path: DEFAULT_CONFIG_PATH.to_string(),
         margin_lamports: 10_000, // 10k lamports = ~0.00001 SOL minimum margin
-        max_challengers: 8,
+        max_challengers: 64,
     };
     let mut i = 1;
     while i < args.len() {
@@ -86,7 +86,7 @@ fn parse_args() -> RefinerArgs {
                 i += 2;
             }
             "--max-challengers" if i + 1 < args.len() => {
-                a.max_challengers = args[i + 1].parse().unwrap_or(8);
+                a.max_challengers = args[i + 1].parse().unwrap_or(64);
                 i += 2;
             }
             _ => { i += 1; }
@@ -147,76 +147,89 @@ fn generate_challengers(
     champion_config: &str,
     max_challengers: usize,
 ) -> Vec<Challenger> {
-    // Parse the champion config to find mutable parameters
+    // Parse the champion config to find mutable parameters.
     let params = parse_config_params(champion_config);
 
-    // Key mutable parameters (non-inert, decision-controlling):
-    // A-14 strategic parameter `mcap_band` is now included — it was previously
-    // excluded, which meant the most important strategic decision was never tested.
-    let mutable_params = [
-        "gate_margin_bps",
-        "gate_expected_move_bps",
-        "gate_fail_rate_bps",
-        "sim_impact_k_bps",
-        "numeric_ofi_min_bp",
-        "promote_k",
-        "watchlist_ttl_ticks",
-        "paper_tick_period_ms",
-        "mcap_band_lo",  // A-14 strategic: lower bound of mcap band (lamports)
-        "mcap_band_hi",  // A-14 strategic: upper bound of mcap band (lamports)
-    ];
+    // ─── Full-surface challenger generation ───────────────────────────────
+    // The refiner now iterates ALL parsed config params, not a hardcoded list.
+    // This means every apply()-recognized integer/bool/enum field is a mutation
+    // candidate. The refiner explores the FULL parameter surface each cycle.
+    //
+    // Mutation strategy:
+    //   - Bool params (value 0 or 1): toggle 0→1 / 1→0
+    //   - Numeric params (value > 1): ±10% mutation
+    //   - Zero-valued params: skip (can't mutate by percentage, toggling to 1
+    //     for a bool=0 is handled by the bool path)
+    //
+    // To keep each cycle bounded, we cap total challengers at max_challengers.
+    // We iterate params in sorted order (BTreeMap default) so the selection is
+    // deterministic per champion config — reproducible across runs.
+
+    /// Bool-like params: value is 0 or 1, so ±10% is meaningless; toggle instead.
+    fn is_bool_param(name: &str) -> bool {
+        name.ends_with("_enable")
+    }
 
     let mut challengers: Vec<Challenger> = Vec::new();
     let mut id_counter = 0;
 
-    for param_name in &mutable_params {
+    for (param_name, value) in &params {
         if challengers.len() >= max_challengers {
             break;
         }
-        if let Some(value) = params.get(*param_name) {
-            if *value == 0 {
-                continue; // can't mutate a zero value by percentage
-            }
+        let val_i64 = *value;
+        let name = param_name.as_str();
 
-            // Generate +10% and -10% mutations (if non-zero and positive)
-            let val_i64 = *value as i64;
+        if is_bool_param(name) {
+            // Toggle: 0→1 or 1→0. Both directions are valid challengers.
+            let toggled = if val_i64 != 0 { 0 } else { 1 };
+            challengers.push(Challenger {
+                id: format!("challenger_{id_counter}"),
+                mutations: vec![ParameterMutation {
+                    name: name.to_string(),
+                    current_value: val_i64,
+                    proposed_value: toggled,
+                    rationale: format!("toggle {name}: {val_i64} → {toggled}"),
+                }],
+            });
+            id_counter += 1;
+        } else if val_i64 != 0 {
+            // Numeric param: ±10% mutation.
             let delta = (val_i64.unsigned_abs() / 10).max(1) as i64;
             let plus_val = val_i64 + delta;
             let minus_val = val_i64 - delta;
 
-            // Skip negative values for unsigned params
-            if val_i64 > 0 {
-                // +10% challenger
-                challengers.push(Challenger {
-                    id: format!("challenger_{id_counter}"),
-                    mutations: vec![ParameterMutation {
-                        name: param_name.to_string(),
-                        current_value: val_i64,
-                        proposed_value: plus_val,
-                        rationale: format!("+10% {param_name}: {val_i64} → {plus_val}"),
-                    }],
-                });
-                id_counter += 1;
-            }
+            // +10% challenger
+            challengers.push(Challenger {
+                id: format!("challenger_{id_counter}"),
+                mutations: vec![ParameterMutation {
+                    name: name.to_string(),
+                    current_value: val_i64,
+                    proposed_value: plus_val,
+                    rationale: format!("+10% {name}: {val_i64} → {plus_val}"),
+                }],
+            });
+            id_counter += 1;
 
             if challengers.len() >= max_challengers {
                 break;
             }
 
-            // -10% challenger (only if result is positive for unsigned params)
+            // -10% challenger (only if result stays positive for unsigned params)
             if minus_val > 0 {
                 challengers.push(Challenger {
                     id: format!("challenger_{id_counter}"),
                     mutations: vec![ParameterMutation {
-                        name: param_name.to_string(),
+                        name: name.to_string(),
                         current_value: val_i64,
                         proposed_value: minus_val,
-                        rationale: format!("-10% {param_name}: {val_i64} → {minus_val}"),
+                        rationale: format!("-10% {name}: {val_i64} → {minus_val}"),
                     }],
                 });
                 id_counter += 1;
             }
         }
+        // val_i64 == 0 for a numeric param: skip (no meaningful ±10% on zero).
     }
 
     challengers

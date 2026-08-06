@@ -1358,7 +1358,8 @@ fn main() -> ExitCode {
                 eprintln!(
                     "[pq-daemon] spawning pq-refiner (tick={tick_counter}, tape={TAPE_PATH})"
                 );
-                match refiner_spawner.spawn(tick_counter) {
+                let config_text = cfg.dump_to_text();
+                match refiner_spawner.spawn(tick_counter, &config_text) {
                     Ok(pid) => eprintln!(
                         "[pq-daemon] pq-refiner spawned: pid={pid}"
                     ),

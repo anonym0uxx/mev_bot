@@ -380,11 +380,16 @@ impl RefinerSpawner {
 
     /// Spawn the refiner for the given tick. Returns the child PID string.
     /// Non-blocking: the refiner runs as a detached child process.
-    pub fn spawn(&mut self, tick: u64) -> Result<String, String> {
+    ///
+    /// `config_text` is the champion config dumped via `Config::dump_to_text()`.
+    /// It is written to `data/CHAMPION_CONFIG.txt` and passed to the refiner via
+    /// `--config-path` so the refiner can generate challengers from the actual
+    /// live config rather than a nonexistent fallback file.
+    pub fn spawn(&mut self, tick: u64, config_text: &str) -> Result<String, String> {
         if self.in_flight {
             return Err("refiner already in flight".to_string());
         }
-        let result = spawn_refiner_cycle();
+        let result = spawn_refiner_cycle(config_text);
         if result.is_ok() {
             self.last_spawn_tick = tick;
             self.in_flight = true;
@@ -406,7 +411,20 @@ impl Default for RefinerSpawner {
 /// Spawn the pq-refiner binary as a child process, non-blocking.
 /// The refiner reads the tape, runs the 8-gate, and writes CONFIG_PROMOTION.json.
 /// The daemon picks up the promotion file on the next hot-reload tick.
-pub fn spawn_refiner_cycle() -> Result<String, String> {
+///
+/// `config_text` is the champion config (from `Config::dump_to_text()`) written
+/// to `data/CHAMPION_CONFIG.txt` and passed via `--config-path`. Without this,
+/// the refiner falls back to `config/paper.toml` (which doesn't exist) and
+/// generates zero challengers.
+pub fn spawn_refiner_cycle(config_text: &str) -> Result<String, String> {
+    // Write the champion config to data/CHAMPION_CONFIG.txt for the refiner to read.
+    const CHAMPION_CONFIG_FILE: &str = "data/CHAMPION_CONFIG.txt";
+    if let Err(e) = fs::write(CHAMPION_CONFIG_FILE, config_text) {
+        return Err(format!(
+            "failed to write champion config to {CHAMPION_CONFIG_FILE}: {e}"
+        ));
+    }
+
     // Try to locate the refiner binary in the target directory.
     // Check common locations: ./target/release/pq-refiner, ./target/debug/pq-refiner
     let candidates = [
@@ -425,11 +443,12 @@ pub fn spawn_refiner_cycle() -> Result<String, String> {
 
     let mut cmd = Command::new(bin_path);
     cmd.arg("--tape-path").arg(TAPE_FILE);
+    cmd.arg("--config-path").arg(CHAMPION_CONFIG_FILE);
 
     // Spawn it detached (non-blocking). stdout/stderr go to the parent's.
     match cmd.spawn() {
         Ok(_child) => {
-            let msg = format!("spawned pq-refiner from {bin_path}");
+            let msg = format!("spawned pq-refiner from {bin_path} with config {CHAMPION_CONFIG_FILE}");
             eprintln!("[autonomous-bridge] {msg}");
             Ok(msg)
         }

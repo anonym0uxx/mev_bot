@@ -40,6 +40,17 @@ impl FillModeCfg {
             _ => None,
         }
     }
+
+    /// Inverse of `from_code`: return the integer code for this fill mode.
+    #[must_use]
+    pub const fn code(self) -> i64 {
+        match self {
+            Self::SignalReplay => 0,
+            Self::OptimisticCeiling => 1,
+            Self::AdversarialRealistic => 2,
+            Self::AdversarialPessimistic => 3,
+        }
+    }
 }
 
 /// §99/§102 bound on the operator-supplied brain persistence path. A fixed-size
@@ -1416,6 +1427,164 @@ impl Config {
         }
         Ok(())
     }
+
+
+    /// Dump all apply()-recognized integer/bool/enum config fields as `key = value`
+    /// text, suitable for the refiner's `parse_config_params` to read.
+    /// This is the inverse of `from_str_over_default` for the integer/bool/enum
+    /// subset of the config (path-valued keys are excluded).
+    #[must_use]
+    pub fn dump_to_text(&self) -> String {
+        use std::fmt::Write as _;
+        let mut s = String::new();
+        let _ = writeln!(s, "alpha_call_lane_enable = {}", self.alpha_call_lane_enable as i64);
+        let _ = writeln!(s, "alpha_exit_pressure_enable = {}", self.alpha_exit_pressure_enable as i64);
+        let _ = writeln!(s, "arb_min_expected_net_lamports = {}", self.arb_min_expected_net_lamports as i64);
+        let _ = writeln!(s, "bankroll_initial_lamports = {}", self.bankroll_initial_lamports as i64);
+        let _ = writeln!(s, "bar_trades_per_bar = {}", self.bar_trades_per_bar as i64);
+        let _ = writeln!(s, "baseline_margin_lamports = {}", self.baseline_margin_lamports as i64);
+        let _ = writeln!(s, "baseline_min_trades = {}", self.baseline_min_trades as i64);
+        let _ = writeln!(s, "brain_analysis_enable = {}", self.brain_analysis_enable as i64);
+        let _ = writeln!(s, "brain_decay_min_sample = {}", self.brain_decay_min_sample as i64);
+        let _ = writeln!(s, "brain_enable = {}", self.brain_enable as i64);
+        let _ = writeln!(s, "brain_haircut_enable = {}", self.brain_haircut_enable as i64);
+        let _ = writeln!(s, "brain_haircut_mult_bp = {}", self.brain_haircut_mult_bp as i64);
+        let _ = writeln!(s, "brain_haircut_win_rate_bp = {}", self.brain_haircut_win_rate_bp as i64);
+        let _ = writeln!(s, "brain_min_sample = {}", self.brain_min_sample as i64);
+        let _ = writeln!(s, "brain_persist_enable = {}", self.brain_persist_enable as i64);
+        let _ = writeln!(s, "brain_recall_max_distance = {}", self.brain_recall_max_distance as i64);
+        let _ = writeln!(s, "brain_reflect_enable = {}", self.brain_reflect_enable as i64);
+        let _ = writeln!(s, "brain_reflect_step_bp = {}", self.brain_reflect_step_bp as i64);
+        let _ = writeln!(s, "brain_veto_win_rate_bp = {}", self.brain_veto_win_rate_bp as i64);
+        let _ = writeln!(s, "confirm_ttl_ticks = {}", self.confirm_ttl_ticks as i64);
+        let _ = writeln!(s, "confirmed_capacity_mult = {}", self.confirmed_capacity_mult as i64);
+        let _ = writeln!(s, "creation_score = {}", self.creation_score as i64);
+        let _ = writeln!(s, "creation_ttl_ticks = {}", self.creation_ttl_ticks as i64);
+        let _ = writeln!(s, "creator_dump_veto_bp = {}", self.creator_dump_veto_bp as i64);
+        let _ = writeln!(s, "creator_dump_veto_enable = {}", self.creator_dump_veto_enable as i64);
+        let _ = writeln!(s, "creator_dump_veto_strict_bp = {}", self.creator_dump_veto_strict_bp as i64);
+        let _ = writeln!(s, "creator_fade_sold_bps = {}", self.creator_fade_sold_bps as i64);
+        let _ = writeln!(s, "creator_track_cap = {}", self.creator_track_cap as i64);
+        let _ = writeln!(s, "curve_exact_fill_enable = {}", self.curve_exact_fill_enable as i64);
+        let _ = writeln!(s, "dd_tier1_bp = {}", self.dd_tier1_bp as i64);
+        let _ = writeln!(s, "dd_tier2_bp = {}", self.dd_tier2_bp as i64);
+        let _ = writeln!(s, "dd_tier3_bp = {}", self.dd_tier3_bp as i64);
+        let _ = writeln!(s, "deployer_screen_enable = {}", self.deployer_screen_enable as i64);
+        let _ = writeln!(s, "derived_targets_enable = {}", self.derived_targets_enable as i64);
+        let _ = writeln!(s, "designated_caller_enable = {}", self.designated_caller_enable as i64);
+        let _ = writeln!(s, "designated_caller_weight = {}", self.designated_caller_weight as i64);
+        let _ = writeln!(s, "entry_fee_bps = {}", self.entry_fee_bps as i64);
+        let _ = writeln!(s, "entry_mode_leaves_enable = {}", self.entry_mode_leaves_enable as i64);
+        let _ = writeln!(s, "entry_tip_lamports = {}", self.entry_tip_lamports as i64);
+        let _ = writeln!(s, "exit_fee_bps = {}", self.exit_fee_bps as i64);
+        let _ = writeln!(s, "exit_tip_lamports = {}", self.exit_tip_lamports as i64);
+        let _ = writeln!(s, "expectancy_min_lane_trades = {}", self.expectancy_min_lane_trades as i64);
+        let _ = writeln!(s, "expected_move_min_sample = {}", self.expected_move_min_sample as i64);
+        let _ = writeln!(s, "expected_move_model_enable = {}", self.expected_move_model_enable as i64);
+        let _ = writeln!(s, "expected_move_prior_weight = {}", self.expected_move_prior_weight as i64);
+        let _ = writeln!(s, "f_base_bp = {}", self.f_base_bp as i64);
+        let _ = writeln!(s, "fee_floor_enable = {}", self.fee_floor_enable as i64);
+        let _ = writeln!(s, "fill_landing_slots = {}", self.fill_landing_slots as i64);
+        let _ = writeln!(s, "fill_mode = {}", self.fill_mode.code());
+        let _ = writeln!(s, "floor_fraction_bps = {}", self.floor_fraction_bps as i64);
+        let _ = writeln!(s, "gate_base_fixed_lamports = {}", self.gate_base_fixed_lamports as i64);
+        let _ = writeln!(s, "gate_exit_tranches = {}", self.gate_exit_tranches as i64);
+        let _ = writeln!(s, "gate_expected_move_bps = {}", self.gate_expected_move_bps as i64);
+        let _ = writeln!(s, "gate_fail_rate_bps = {}", self.gate_fail_rate_bps as i64);
+        let _ = writeln!(s, "gate_impact_den = {}", self.gate_impact_den as i64);
+        let _ = writeln!(s, "gate_margin_bps = {}", self.gate_margin_bps as i64);
+        let _ = writeln!(s, "gate_protocol_bps = {}", self.gate_protocol_bps as i64);
+        let _ = writeln!(s, "holder_concentration_enable = {}", self.holder_concentration_enable as i64);
+        let _ = writeln!(s, "into_strength_climax_bp = {}", self.into_strength_climax_bp as i64);
+        let _ = writeln!(s, "into_strength_exit_enable = {}", self.into_strength_exit_enable as i64);
+        let _ = writeln!(s, "landing_base_bps = {}", self.landing_base_bps as i64);
+        let _ = writeln!(s, "landing_penalty_k_bps = {}", self.landing_penalty_k_bps as i64);
+        let _ = writeln!(s, "lane_evidence_ttl_ticks = {}", self.lane_evidence_ttl_ticks as i64);
+        let _ = writeln!(s, "lc_cvd_hold_frac_bps = {}", self.lc_cvd_hold_frac_bps as i64);
+        let _ = writeln!(s, "lc_hard_sl_bps = {}", self.lc_hard_sl_bps as i64);
+        let _ = writeln!(s, "lc_max_hold_ticks = {}", self.lc_max_hold_ticks as i64);
+        let _ = writeln!(s, "lc_precursor_drop_bps = {}", self.lc_precursor_drop_bps as i64);
+        let _ = writeln!(s, "lc_stall_ticks = {}", self.lc_stall_ticks as i64);
+        let _ = writeln!(s, "lc_tp1_bps = {}", self.lc_tp1_bps as i64);
+        let _ = writeln!(s, "lc_tp2_bps = {}", self.lc_tp2_bps as i64);
+        let _ = writeln!(s, "lc_tp2_frac_bps = {}", self.lc_tp2_frac_bps as i64);
+        let _ = writeln!(s, "lc_tp3_bps = {}", self.lc_tp3_bps as i64);
+        let _ = writeln!(s, "lc_tp3_frac_bps = {}", self.lc_tp3_frac_bps as i64);
+        let _ = writeln!(s, "lc_trail_base_bps = {}", self.lc_trail_base_bps as i64);
+        let _ = writeln!(s, "lc_trail_k_div = {}", self.lc_trail_k_div as i64);
+        let _ = writeln!(s, "lc_trail_max_bps = {}", self.lc_trail_max_bps as i64);
+        let _ = writeln!(s, "max_concurrent_positions = {}", self.max_concurrent_positions as i64);
+        let _ = writeln!(s, "mcap_band_enable = {}", self.mcap_band_enable as i64);
+        let _ = writeln!(s, "mcap_band_hi_lamports = {}", self.mcap_band_hi_lamports as i64);
+        let _ = writeln!(s, "mcap_band_lo_lamports = {}", self.mcap_band_lo_lamports as i64);
+        let _ = writeln!(s, "meta_accel_threshold = {}", self.meta_accel_threshold as i64);
+        let _ = writeln!(s, "meta_max_categories = {}", self.meta_max_categories as i64);
+        let _ = writeln!(s, "meta_max_creators_per_cat = {}", self.meta_max_creators_per_cat as i64);
+        let _ = writeln!(s, "meta_min_breadth = {}", self.meta_min_breadth as i64);
+        let _ = writeln!(s, "meta_min_share_bps = {}", self.meta_min_share_bps as i64);
+        let _ = writeln!(s, "meta_rank_bonus_bp = {}", self.meta_rank_bonus_bp as i64);
+        let _ = writeln!(s, "meta_saturation_haircut_bp = {}", self.meta_saturation_haircut_bp as i64);
+        let _ = writeln!(s, "meta_taxonomy_version = {}", self.meta_taxonomy_version as i64);
+        let _ = writeln!(s, "min_trade_size_lamports = {}", self.min_trade_size_lamports as i64);
+        let _ = writeln!(s, "money_proxy_enable = {}", self.money_proxy_enable as i64);
+        let _ = writeln!(s, "money_proxy_holder_flow_enable = {}", self.money_proxy_holder_flow_enable as i64);
+        let _ = writeln!(s, "narrative_class_enable = {}", self.narrative_class_enable as i64);
+        let _ = writeln!(s, "narrative_decay_bp = {}", self.narrative_decay_bp as i64);
+        let _ = writeln!(s, "narrative_decay_floor = {}", self.narrative_decay_floor as i64);
+        let _ = writeln!(s, "narrative_decay_step_ticks = {}", self.narrative_decay_step_ticks as i64);
+        let _ = writeln!(s, "narrative_stage_hi_fp = {}", self.narrative_stage_hi_fp as i64);
+        let _ = writeln!(s, "narrative_stage_lo_fp = {}", self.narrative_stage_lo_fp as i64);
+        let _ = writeln!(s, "numeric_ofi_min_bp = {}", self.numeric_ofi_min_bp as i64);
+        let _ = writeln!(s, "paper_tick_period_ms = {}", self.paper_tick_period_ms as i64);
+        let _ = writeln!(s, "platform_lead_enable = {}", self.platform_lead_enable as i64);
+        let _ = writeln!(s, "probe_budget_enable = {}", self.probe_budget_enable as i64);
+        let _ = writeln!(s, "probe_f_bp = {}", self.probe_f_bp as i64);
+        let _ = writeln!(s, "probe_frac_bp = {}", self.probe_frac_bp as i64);
+        let _ = writeln!(s, "promote_corroboration_quota = {}", self.promote_corroboration_quota as i64);
+        let _ = writeln!(s, "promote_k = {}", self.promote_k as i64);
+        let _ = writeln!(s, "promote_min_haircut_bp = {}", self.promote_min_haircut_bp as i64);
+        let _ = writeln!(s, "promote_min_rank = {}", self.promote_min_rank as i64);
+        let _ = writeln!(s, "reflect_every_ticks = {}", self.reflect_every_ticks as i64);
+        let _ = writeln!(s, "reflect_weight_ceiling_bp = {}", self.reflect_weight_ceiling_bp as i64);
+        let _ = writeln!(s, "reflect_weight_floor_bp = {}", self.reflect_weight_floor_bp as i64);
+        let _ = writeln!(s, "reflect_weight_step_bp = {}", self.reflect_weight_step_bp as i64);
+        let _ = writeln!(s, "revert_ofi_min_bp = {}", self.revert_ofi_min_bp as i64);
+        let _ = writeln!(s, "revert_size_mult_bp = {}", self.revert_size_mult_bp as i64);
+        let _ = writeln!(s, "roll_revert_bp = {}", self.roll_revert_bp as i64);
+        let _ = writeln!(s, "roll_trend_bp = {}", self.roll_trend_bp as i64);
+        let _ = writeln!(s, "scale_confirm_auth_min_bp = {}", self.scale_confirm_auth_min_bp as i64);
+        let _ = writeln!(s, "setup_classifier_enable = {}", self.setup_classifier_enable as i64);
+        let _ = writeln!(s, "sim_impact_k_bps = {}", self.sim_impact_k_bps as i64);
+        let _ = writeln!(s, "structure_downtrend_haircut_bp = {}", self.structure_downtrend_haircut_bp as i64);
+        let _ = writeln!(s, "structure_min_bars = {}", self.structure_min_bars as i64);
+        let _ = writeln!(s, "target_ceiling_bp = {}", self.target_ceiling_bp as i64);
+        let _ = writeln!(s, "target_floor_bp = {}", self.target_floor_bp as i64);
+        let _ = writeln!(s, "target_margin_mult_bp = {}", self.target_margin_mult_bp as i64);
+        let _ = writeln!(s, "thesis_persist_obs = {}", self.thesis_persist_obs as i64);
+        let _ = writeln!(s, "total_risk_cap_bp = {}", self.total_risk_cap_bp as i64);
+        let _ = writeln!(s, "universe_age_exempt_slots = {}", self.universe_age_exempt_slots as i64);
+        let _ = writeln!(s, "universe_min_entities = {}", self.universe_min_entities as i64);
+        let _ = writeln!(s, "universe_min_liquidity_lamports = {}", self.universe_min_liquidity_lamports as i64);
+        let _ = writeln!(s, "universe_min_trades = {}", self.universe_min_trades as i64);
+        let _ = writeln!(s, "universe_wash_ratio_max = {}", self.universe_wash_ratio_max as i64);
+        let _ = writeln!(s, "universe_window_ticks = {}", self.universe_window_ticks as i64);
+        let _ = writeln!(s, "vol_stop_enable = {}", self.vol_stop_enable as i64);
+        let _ = writeln!(s, "vol_stop_scale_bp = {}", self.vol_stop_scale_bp as i64);
+        let _ = writeln!(s, "vpin_min_buckets = {}", self.vpin_min_buckets as i64);
+        let _ = writeln!(s, "vpin_sell_dom_bp = {}", self.vpin_sell_dom_bp as i64);
+        let _ = writeln!(s, "vpin_stale_ticks = {}", self.vpin_stale_ticks as i64);
+        let _ = writeln!(s, "vpin_toxic_bp = {}", self.vpin_toxic_bp as i64);
+        let _ = writeln!(s, "vpin_v_max_lamports = {}", self.vpin_v_max_lamports as i64);
+        let _ = writeln!(s, "vpin_v_min_lamports = {}", self.vpin_v_min_lamports as i64);
+        let _ = writeln!(s, "vpin_veto_bp = {}", self.vpin_veto_bp as i64);
+        let _ = writeln!(s, "vpin_warn_bp = {}", self.vpin_warn_bp as i64);
+        let _ = writeln!(s, "wallet_score_scale = {}", self.wallet_score_scale as i64);
+        let _ = writeln!(s, "watchlist_capacity = {}", self.watchlist_capacity as i64);
+        let _ = writeln!(s, "watchlist_ttl_ticks = {}", self.watchlist_ttl_ticks as i64);
+        let _ = writeln!(s, "x_min_promote_cap_bp = {}", self.x_min_promote_cap_bp as i64);
+        s
+    }
+
 
     /// Apply a single `key = <path>` override for the small set of PATH-valued
     /// keys. Returns `Err` on an unknown key or a path longer than
