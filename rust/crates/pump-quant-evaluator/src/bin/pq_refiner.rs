@@ -120,6 +120,35 @@ struct Challenger {
     mutations: Vec<ParameterMutation>,
 }
 
+/// S3: Denylist of parameters that the refiner MUST NOT promote because they
+/// affect envelope relationships (floor ≤ ceiling) or one-way ratchet state
+/// (brain_reflect_enable) that the shadow replay cannot safely model. These
+/// params are mutatable in principle but promoting them risks structural
+/// invariant violations across compounding cycles.
+///
+/// The denylist is checked in two places:
+///   1. `generate_challengers` — skips denylisted params entirely (no challenger
+///      generated, so no shadow replay wasted on a no-op that would fail the
+///      margin gate anyway).
+///   2. `write_promotion_file` — defense-in-depth: even if a challenger somehow
+///      defeats the champion with a denylisted mutation, the promotion file
+///      refuses to write it.
+///
+/// Safe reflection params NOT in this list (single-value, no envelope):
+///   - reflect_every_ticks (safe: just changes frequency, no envelope)
+///   - brain_decay_min_sample (safe: just changes sample floor, no envelope)
+const REFLECTION_DENYLIST: &[&str] = &[
+    "reflect_weight_floor_bp",
+    "reflect_weight_ceiling_bp",
+    "brain_reflect_enable",
+    "brain_reflect_step_bp",
+];
+
+/// S3: Returns true if a parameter name is on the reflection denylist.
+fn is_reflection_denied(param_name: &str) -> bool {
+    REFLECTION_DENYLIST.iter().any(|d| *d == param_name)
+}
+
 /// Compute a deterministic hash for a challenger config (for dedup).
 /// Uses a simple string hash: concatenates mutation name→proposed_value
 /// and hashes via FNV-1a (no external crate, integer-only, §22).
@@ -176,6 +205,13 @@ fn generate_challengers(
     for (param_name, value) in &params {
         if challengers.len() >= max_challengers {
             break;
+        }
+        // S3: Skip denylisted envelope-affecting params — the shadow replay
+        // cannot safely model their effects and promoting them risks
+        // structural invariant violations (floor > ceiling inversion,
+        // one-way ratchet on brain_reflect_enable).
+        if is_reflection_denied(param_name.as_str()) {
+            continue;
         }
         let val_i64 = *value;
         let name = param_name.as_str();
@@ -350,6 +386,33 @@ fn shadow_replay(
                 let gross_mult = 1.0 - (pct_change * 0.5).max(-0.5);
                 for t in &mut adjusted_trades {
                     t.gross_lamports = ((t.gross_lamports as f64 * gross_mult) as i128);
+                }
+            }
+            "reflect_every_ticks" => {
+                // S5: Model the sample-count effect of changing reflection
+                // frequency. Higher reflect_every_ticks → fewer reflection
+                // passes → more trades accumulate per pass → thicker samples
+                // → more reliable reflection signal. Lower reflect_every_ticks
+                // → more frequent reflection → thinner samples per pass →
+                // noisier weight adjustments.
+                //
+                // We model this as a small confidence adjustment to the net:
+                // - Increasing reflect_every_ticks by +10% → samples are ~10%
+                //   thicker per pass → apply a +2% bonus to net (conservative:
+                //   the real benefit is better weight decisions, not direct P&L,
+                //   so we keep the bonus small).
+                // - Decreasing reflect_every_ticks by -10% → samples are ~10%
+                //   thinner → apply a -2% penalty (noisier weight decisions).
+                //
+                // The bonus/penalty is intentionally small (2% of pct_change)
+                // because reflection's effect on P&L is indirect — it changes
+                // lane weights, which changes trade selection, which changes
+                // P&L. The shadow replay can't model that full chain, but it
+                // CAN model the sample-thickness confidence effect.
+                let confidence_adj = pct_change * 0.02; // 2% of pct_change
+                for t in &mut adjusted_trades {
+                    let adjusted = (t.gross_lamports as f64 * (1.0 + confidence_adj)) as i128;
+                    t.gross_lamports = adjusted;
                 }
             }
             _ => {
@@ -863,6 +926,59 @@ fn main() -> std::process::ExitCode {
 
 // ─── Status / promotion file writers ────────────────────────────────────────
 
+/// S4: Reflection health snapshot embedded in the refiner status file.
+/// Gives the refiner visibility into reflection's sample health without needing
+/// to model reflection params in the shadow replay.
+#[derive(Clone, Debug)]
+pub struct ReflectionHealth {
+    /// reflect_every_ticks value from the champion config.
+    pub reflect_every_ticks: u64,
+    /// Number of scalp-lane trades in the current tape window.
+    pub scalp_trades: u32,
+    /// Number of early-lane trades in the current tape window.
+    pub early_trades: u32,
+    /// brain_decay_min_sample from the champion config (the sample floor).
+    pub brain_decay_min_sample: u32,
+    /// True if either lane has fewer trades than brain_decay_min_sample.
+    /// This means reflection's lane_decay() will skip that lane due to
+    /// insufficient samples — the refiner should avoid tightening gates
+    /// (which would reduce trade throughput further).
+    pub lane_starved: bool,
+}
+
+impl ReflectionHealth {
+    /// Construct from raw data. Computes `lane_starved` from the trade counts
+    /// vs the sample floor.
+    pub fn new(
+        reflect_every_ticks: u64,
+        scalp_trades: u32,
+        early_trades: u32,
+        brain_decay_min_sample: u32,
+    ) -> Self {
+        let lane_starved = scalp_trades < brain_decay_min_sample
+            || early_trades < brain_decay_min_sample;
+        ReflectionHealth {
+            reflect_every_ticks,
+            scalp_trades,
+            early_trades,
+            brain_decay_min_sample,
+            lane_starved,
+        }
+    }
+
+    /// Serialize to a JSON fragment for embedding in the refiner status file.
+    pub fn to_json(&self) -> String {
+        format!(
+            "  \"reflection_health\": {{\n    \"reflect_every_ticks\": {},\n    \"scalp_trades\": {},\n    \"early_trades\": {},\n    \"brain_decay_min_sample\": {},\n    \"lane_starved\": {}\n  }}",
+            self.reflect_every_ticks,
+            self.scalp_trades,
+            self.early_trades,
+            self.brain_decay_min_sample,
+            self.lane_starved
+        )
+    }
+}
+
 fn write_refiner_status(num_challengers: usize, num_promoted: usize, status: &str) {
     // Ensure the data directory exists
     if let Some(parent) = Path::new(REFINER_STATUS_FILE).parent() {
@@ -875,6 +991,71 @@ fn write_refiner_status(num_challengers: usize, num_promoted: usize, status: &st
     let _ = fs::write(REFINER_STATUS_FILE, status_json);
 }
 
+/// S4: Extended refiner status writer that includes reflection health metrics.
+/// The status file now carries `reflection_health` alongside the existing
+/// `challengers_evaluated` / `promoted` / `status` fields.
+fn write_refiner_status_with_reflection(
+    num_challengers: usize,
+    num_promoted: usize,
+    status: &str,
+    health: &ReflectionHealth,
+) {
+    // Ensure the data directory exists
+    if let Some(parent) = Path::new(REFINER_STATUS_FILE).parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let health_json = health.to_json();
+    let status_json = format!(
+        "{{\n  \"challengers_evaluated\": {num_challengers},\n  \"promoted\": {num_promoted},\n  \"status\": \"{status}\",\n  {health_json}\n}}",
+    );
+    let _ = fs::write(REFINER_STATUS_FILE, status_json);
+}
+
+/// S7: Determine whether a promotion should be deferred based on reflection
+/// health. If the champion config's lanes are already starved (below
+/// brain_decay_min_sample) AND the winning challenger would tighten gates
+/// (gate_margin_bps increase → fewer trades → even thinner samples), the
+/// promotion should be deferred to avoid starving reflection further.
+///
+/// Returns `true` if the promotion should proceed, `false` if it should be
+/// deferred.
+fn reflection_promotion_guard(
+    challenger: Option<&Challenger>,
+    health: Option<&ReflectionHealth>,
+) -> bool {
+    let health = match health {
+        Some(h) => h,
+        None => return true, // no health data → don't block promotion
+    };
+    if !health.lane_starved {
+        return true; // lanes healthy → promotion is safe
+    }
+    // Lanes are starved. Check if the winning mutation would reduce throughput.
+    // gate_margin_bps increase → tighter gate → fewer trades admitted →
+    // even thinner samples per reflection pass.
+    if let Some(c) = challenger {
+        for m in &c.mutations {
+            if m.name == "gate_margin_bps" && m.proposed_value > m.current_value {
+                eprintln!(
+                    "[pq-refiner] S7 DEFER: lane_starved=true and gate_margin_bps would INCREASE ({} → {}) — deferring promotion to protect reflection samples",
+                    m.current_value, m.proposed_value
+                );
+                return false;
+            }
+            // gate_fail_rate_bps increase → trades look worse → faster lane
+            // decay → fewer effective trades per reflection pass.
+            if m.name == "gate_fail_rate_bps" && m.proposed_value > m.current_value {
+                eprintln!(
+                    "[pq-refiner] S7 DEFER: lane_starved=true and gate_fail_rate_bps would INCREASE ({} → {}) — deferring promotion to protect reflection samples",
+                    m.current_value, m.proposed_value
+                );
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn write_promotion_file(result: &ShadowReplayResult, challengers: &[Challenger]) {
     // Ensure the data directory exists
     if let Some(parent) = Path::new(PROMOTION_FILE).parent() {
@@ -882,6 +1063,24 @@ fn write_promotion_file(result: &ShadowReplayResult, challengers: &[Challenger])
     }
     // Find the challenger that produced this result
     let challenger = challengers.iter().find(|c| c.id == result.challenger_id);
+
+    // S3: Defense-in-depth — refuse to write a promotion file if ANY mutation
+    // in the winning challenger targets a denylisted envelope-affecting param.
+    // This is a second guard behind the generate_challengers skip; it catches
+    // the case where a denylisted param somehow reaches promotion (e.g. via
+    // a hand-edited challenger or a future code path).
+    if let Some(c) = challenger {
+        for m in &c.mutations {
+            if is_reflection_denied(m.name.as_str()) {
+                eprintln!(
+                    "[pq-refiner] S3 DENY: refusing to promote denylisted param '{}' — promotion file NOT written",
+                    m.name
+                );
+                return;
+            }
+        }
+    }
+
     let mutations_json = if let Some(c) = challenger {
         c.mutations.iter()
             .map(|m| format!(
@@ -951,6 +1150,15 @@ fn append_refiner_log(results: &[ShadowReplayResult], any_promoted: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    /// S4: Serialize all tests that touch the shared REFINER_STATUS_FILE
+    /// or PROMOTION_FILE to prevent parallel-test race conditions.
+    static FILE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    fn file_lock() -> std::sync::MutexGuard<'static, ()> {
+        let mtx = FILE_LOCK.get_or_init(|| Mutex::new(()));
+        mtx.lock().unwrap()
+    }
 
     #[test]
     fn test_parse_config_params_basic() {
@@ -1051,6 +1259,7 @@ mod tests {
 
     #[test]
     fn test_refiner_status_format() {
+        let _lock = file_lock();
         // Verify the status JSON is valid
         write_refiner_status(5, 1, "promoted");
         let content = fs::read_to_string(REFINER_STATUS_FILE).unwrap();
@@ -1062,6 +1271,7 @@ mod tests {
 
     #[test]
     fn test_promotion_file_format() {
+        let _lock = file_lock();
         let result = ShadowReplayResult {
             challenger_id: "test_promo".to_string(),
             challenger_net_scalp: NetSol::missing(),
@@ -1087,5 +1297,316 @@ mod tests {
         assert!(content.contains("gate_margin_bps"));
         // Clean up
         let _ = fs::remove_file(PROMOTION_FILE);
+    }
+
+    // ─── S3: Reflection denylist tests ──────────────────────────────────────
+
+    #[test]
+    fn s3_denylist_covers_envelope_params() {
+        assert!(is_reflection_denied("reflect_weight_floor_bp"));
+        assert!(is_reflection_denied("reflect_weight_ceiling_bp"));
+        assert!(is_reflection_denied("brain_reflect_enable"));
+        assert!(is_reflection_denied("brain_reflect_step_bp"));
+    }
+
+    #[test]
+    fn s3_denylist_does_not_cover_safe_params() {
+        // reflect_every_ticks and brain_decay_min_sample are safe (single-value, no envelope)
+        assert!(!is_reflection_denied("reflect_every_ticks"));
+        assert!(!is_reflection_denied("brain_decay_min_sample"));
+        assert!(!is_reflection_denied("gate_margin_bps"));
+        assert!(!is_reflection_denied("sim_impact_k_bps"));
+    }
+
+    #[test]
+    fn s3_generate_challengers_skips_denylisted_params() {
+        let config = "
+            reflect_weight_floor_bp = 2000
+            reflect_weight_ceiling_bp = 40000
+            brain_reflect_enable = 0
+            brain_reflect_step_bp = 250
+            reflect_every_ticks = 50
+            gate_margin_bps = 50
+        ";
+        let challengers = generate_challengers(config, 64);
+        // No challenger should mutate a denylisted param
+        for c in &challengers {
+            for m in &c.mutations {
+                assert!(!is_reflection_denied(m.name.as_str()),
+                    "S3: challenger {} mutates denylisted param {}", c.id, m.name);
+            }
+        }
+        // reflect_every_ticks (safe) should still generate challengers
+        let has_reflect_every = challengers.iter()
+            .any(|c| c.mutations.iter().any(|m| m.name == "reflect_every_ticks"));
+        assert!(has_reflect_every, "S3: reflect_every_ticks should NOT be denied");
+        // gate_margin_bps should still generate challengers
+        let has_gate_margin = challengers.iter()
+            .any(|c| c.mutations.iter().any(|m| m.name == "gate_margin_bps"));
+        assert!(has_gate_margin, "S3: gate_margin_bps should NOT be denied");
+    }
+
+    #[test]
+    fn s3_write_promotion_file_refuses_denylisted() {
+        let _lock = file_lock();
+        let result = ShadowReplayResult {
+            challenger_id: "denylisted_test".to_string(),
+            challenger_net_scalp: NetSol::missing(),
+            challenger_net_early: NetSol::missing(),
+            champion_net_scalp: NetSol::missing(),
+            champion_net_early: NetSol::missing(),
+            verdict: ChampionVerdict::Defeats,
+            gate_verdict: Some("all_8_gates_passed".to_string()),
+            summary: "test".to_string(),
+        };
+        let challengers = vec![Challenger {
+            id: "denylisted_test".to_string(),
+            mutations: vec![ParameterMutation {
+                name: "reflect_weight_floor_bp".to_string(),
+                current_value: 2000,
+                proposed_value: 2200,
+                rationale: "+10%".to_string(),
+            }],
+        }];
+        write_promotion_file(&result, &challengers);
+        // The promotion file should NOT exist (denylisted param → refused)
+        assert!(!Path::new(PROMOTION_FILE).exists(),
+            "S3: promotion file must NOT be written for denylisted param");
+        // Clean up just in case
+        let _ = fs::remove_file(PROMOTION_FILE);
+    }
+
+    // ─── S4: Reflection health metric tests ────────────────────────────────
+
+    #[test]
+    fn s4_reflection_health_healthy_lanes() {
+        let h = ReflectionHealth::new(50, 100, 80, 12);
+        assert!(!h.lane_starved, "100 and 80 trades > 12 min sample → not starved");
+        let json = h.to_json();
+        assert!(json.contains("\"reflect_every_ticks\": 50"));
+        assert!(json.contains("\"scalp_trades\": 100"));
+        assert!(json.contains("\"early_trades\": 80"));
+        assert!(json.contains("\"brain_decay_min_sample\": 12"));
+        assert!(json.contains("\"lane_starved\": false"));
+    }
+
+    #[test]
+    fn s4_reflection_health_starved_scalp() {
+        let h = ReflectionHealth::new(50, 5, 100, 12);
+        assert!(h.lane_starved, "5 scalp trades < 12 min sample → starved");
+        assert!(h.to_json().contains("\"lane_starved\": true"));
+    }
+
+    #[test]
+    fn s4_reflection_health_starved_early() {
+        let h = ReflectionHealth::new(50, 100, 3, 12);
+        assert!(h.lane_starved, "3 early trades < 12 min sample → starved");
+    }
+
+    #[test]
+    fn s4_reflection_health_starved_both() {
+        let h = ReflectionHealth::new(50, 0, 0, 12);
+        assert!(h.lane_starved, "0 trades < 12 min sample → starved");
+    }
+
+    #[test]
+    fn s4_reflection_health_at_boundary() {
+        // Exactly at the boundary: n == min_sample is NOT starved (<, not <=)
+        let h = ReflectionHealth::new(50, 12, 12, 12);
+        assert!(!h.lane_starved, "12 == 12 is at boundary, not starved");
+    }
+
+    #[test]
+    fn s4_extended_status_includes_reflection_health() {
+        let _lock = file_lock();
+        let h = ReflectionHealth::new(50, 100, 80, 12);
+        write_refiner_status_with_reflection(5, 1, "promoted", &h);
+        let content = fs::read_to_string(REFINER_STATUS_FILE).unwrap();
+        assert!(content.contains("\"challengers_evaluated\": 5"));
+        assert!(content.contains("\"reflection_health\""));
+        assert!(content.contains("\"scalp_trades\": 100"));
+        assert!(content.contains("\"lane_starved\": false"));
+        let _ = fs::remove_file(REFINER_STATUS_FILE);
+    }
+
+    // ─── S5: reflect_every_ticks shadow replay tests ───────────────────────
+
+    #[test]
+    fn s5_reflect_every_ticks_higher_produces_bonus() {
+        // Champion reflect_every_ticks=50, challenger proposes 55 (+10%).
+        // The shadow replay should apply a small positive confidence bonus
+        // to gross (thicker samples → more reliable reflection).
+        let trades = vec![
+            ReconTrade::test(Lane::Scalp, 100_000, 1_000, 0, 0),
+            ReconTrade::test(Lane::Scalp, 200_000, 2_000, 0, 0),
+        ];
+        let champion_net = net_sol(&trades, Lane::Scalp);
+        let challenger = Challenger {
+            id: "s5_higher".to_string(),
+            mutations: vec![ParameterMutation {
+                name: "reflect_every_ticks".to_string(),
+                current_value: 50,
+                proposed_value: 55,
+                rationale: "+10%".to_string(),
+            }],
+        };
+        let result = shadow_replay(&challenger, &trades, champion_net, NetSol::missing(), 100);
+        // +10% pct_change * 0.02 confidence = +0.2% gross bonus
+        // challenger gross should be slightly higher than champion gross
+        assert!(result.challenger_net_scalp.gross_lamports > champion_net.gross_lamports,
+            "S5: +10% reflect_every_ticks should produce a positive confidence bonus");
+    }
+
+    #[test]
+    fn s5_reflect_every_ticks_lower_produces_penalty() {
+        // Champion reflect_every_ticks=50, challenger proposes 45 (-10%).
+        // The shadow replay should apply a small negative confidence penalty
+        // to gross (thinner samples → noisier reflection).
+        let trades = vec![
+            ReconTrade::test(Lane::Scalp, 100_000, 1_000, 0, 0),
+            ReconTrade::test(Lane::Scalp, 200_000, 2_000, 0, 0),
+        ];
+        let champion_net = net_sol(&trades, Lane::Scalp);
+        let challenger = Challenger {
+            id: "s5_lower".to_string(),
+            mutations: vec![ParameterMutation {
+                name: "reflect_every_ticks".to_string(),
+                current_value: 50,
+                proposed_value: 45,
+                rationale: "-10%".to_string(),
+            }],
+        };
+        let result = shadow_replay(&challenger, &trades, champion_net, NetSol::missing(), 100);
+        // -10% pct_change * 0.02 confidence = -0.2% gross penalty
+        assert!(result.challenger_net_scalp.gross_lamports < champion_net.gross_lamports,
+            "S5: -10% reflect_every_ticks should produce a negative confidence penalty");
+    }
+
+    #[test]
+    fn s5_reflect_every_ticks_bonus_is_small() {
+        // The bonus should be intentionally small (2% of pct_change, not
+        // 10%+). Verify the adjustment is conservative — the challenger
+        // should NOT defeat the champion on a thin tape (only 2 trades,
+        // margin=10000).
+        let trades = vec![
+            ReconTrade::test(Lane::Scalp, 100_000, 1_000, 0, 0),
+        ];
+        let champion_net = net_sol(&trades, Lane::Scalp);
+        let challenger = Challenger {
+            id: "s5_small".to_string(),
+            mutations: vec![ParameterMutation {
+                name: "reflect_every_ticks".to_string(),
+                current_value: 50,
+                proposed_value: 55,
+                rationale: "+10%".to_string(),
+            }],
+        };
+        let result = shadow_replay(&challenger, &trades, champion_net, NetSol::missing(), 10_000);
+        // With only 1 trade and 10k margin, the tiny bonus shouldn't defeat
+        assert!(!result.verdict.defeats(),
+            "S5: the confidence bonus is intentionally small — should not defeat on thin tape");
+    }
+
+    // ─── S7: Reflection-aware promotion guard tests ───────────────────────
+
+    #[test]
+    fn s7_guard_allows_when_lanes_healthy() {
+        // Lanes NOT starved → promotion proceeds regardless of mutation.
+        let health = ReflectionHealth::new(50, 100, 80, 12);
+        let challenger = Challenger {
+            id: "s7_healthy".to_string(),
+            mutations: vec![ParameterMutation {
+                name: "gate_margin_bps".to_string(),
+                current_value: 100,
+                proposed_value: 110, // +10% (tighter)
+                rationale: "+10%".to_string(),
+            }],
+        };
+        assert!(reflection_promotion_guard(Some(&challenger), Some(&health)),
+            "S7: healthy lanes → promotion should proceed");
+    }
+
+    #[test]
+    fn s7_guard_defers_when_starved_and_gate_tightens() {
+        // Lanes starved AND gate_margin_bps increases → DEFER.
+        let health = ReflectionHealth::new(50, 5, 100, 12); // scalp starved
+        let challenger = Challenger {
+            id: "s7_defer".to_string(),
+            mutations: vec![ParameterMutation {
+                name: "gate_margin_bps".to_string(),
+                current_value: 100,
+                proposed_value: 110, // +10% (tighter → fewer trades)
+                rationale: "+10%".to_string(),
+            }],
+        };
+        assert!(!reflection_promotion_guard(Some(&challenger), Some(&health)),
+            "S7: starved lanes + tighter gate → should defer");
+    }
+
+    #[test]
+    fn s7_guard_defers_when_starved_and_fail_rate_increases() {
+        // Lanes starved AND gate_fail_rate_bps increases → DEFER.
+        let health = ReflectionHealth::new(50, 5, 100, 12);
+        let challenger = Challenger {
+            id: "s7_failrate".to_string(),
+            mutations: vec![ParameterMutation {
+                name: "gate_fail_rate_bps".to_string(),
+                current_value: 200,
+                proposed_value: 220, // +10%
+                rationale: "+10%".to_string(),
+            }],
+        };
+        assert!(!reflection_promotion_guard(Some(&challenger), Some(&health)),
+            "S7: starved lanes + higher fail rate → should defer");
+    }
+
+    #[test]
+    fn s7_guard_allows_when_starved_but_gate_loosens() {
+        // Lanes starved BUT gate_margin_bps DECREASES → OK (more trades).
+        let health = ReflectionHealth::new(50, 5, 100, 12);
+        let challenger = Challenger {
+            id: "s7_loosen".to_string(),
+            mutations: vec![ParameterMutation {
+                name: "gate_margin_bps".to_string(),
+                current_value: 100,
+                proposed_value: 90, // -10% (looser → more trades)
+                rationale: "-10%".to_string(),
+            }],
+        };
+        assert!(reflection_promotion_guard(Some(&challenger), Some(&health)),
+            "S7: starved lanes but looser gate → should proceed (more trades = more samples)");
+    }
+
+    #[test]
+    fn s7_guard_allows_when_no_health_data() {
+        // No ReflectionHealth provided → don't block (backward compat).
+        let challenger = Challenger {
+            id: "s7_nohp".to_string(),
+            mutations: vec![ParameterMutation {
+                name: "gate_margin_bps".to_string(),
+                current_value: 100,
+                proposed_value: 110,
+                rationale: "+10%".to_string(),
+            }],
+        };
+        assert!(reflection_promotion_guard(Some(&challenger), None),
+            "S7: no health data → should allow promotion");
+    }
+
+    #[test]
+    fn s7_guard_allows_unrelated_mutation_when_starved() {
+        // Lanes starved BUT mutation is unrelated to throughput → OK.
+        let health = ReflectionHealth::new(50, 5, 100, 12);
+        let challenger = Challenger {
+            id: "s7_unrelated".to_string(),
+            mutations: vec![ParameterMutation {
+                name: "reflect_every_ticks".to_string(),
+                current_value: 50,
+                proposed_value: 55,
+                rationale: "+10%".to_string(),
+            }],
+        };
+        assert!(reflection_promotion_guard(Some(&challenger), Some(&health)),
+            "S7: starved lanes but unrelated mutation → should proceed");
     }
 }

@@ -46,6 +46,24 @@ impl RunMode {
     }
 }
 
+/// S2: The evaluator lane tag carried in a `TradeRecord`.
+/// Maps directly to the tape's `TapeLane` for correct per-lane attribution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TradeLane {
+    Scalp,
+    Early,
+}
+
+impl TradeLane {
+    /// Returns the string tag used in JSON serialization.
+    pub fn tag(&self) -> &'static str {
+        match self {
+            TradeLane::Scalp => "scalp",
+            TradeLane::Early => "early",
+        }
+    }
+}
+
 // ─── Trade side ───────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,6 +166,12 @@ pub struct TradeRecord {
     pub error_code: u32,
     /// Monotonic sequence number (for crash-recovery ordering).
     pub seq: u64,
+    /// S2: The evaluator lane this trade belongs to (scalp or early).
+    /// Derived from the discovery lane via `eval_lane_of()` at trade-creation
+    /// time. Carried in the record so the tape exporter can emit the correct
+    /// `TapeLane` without hardcoding. `None` means the lane was not known at
+    /// creation time (backward compat with older callers).
+    pub lane: Option<TradeLane>,
 }
 
 impl TradeRecord {
@@ -177,6 +201,11 @@ impl TradeRecord {
         s.push_str(&format!(",\"run_mode\":\"{}\"", self.run_mode.tag()));
         s.push_str(&format!(",\"error_code\":{}", self.error_code));
         s.push_str(&format!(",\"seq\":{}", self.seq));
+        // S2: Include the lane tag if present so the tape exporter and
+        // downstream consumers can attribute trades to the correct lane.
+        if let Some(ref lane) = self.lane {
+            s.push_str(&format!(",\"lane\":\"{}\"", lane.tag()));
+        }
         s.push('}');
         s
     }
@@ -371,6 +400,7 @@ mod tests {
             run_mode: RunMode::Paper,
             error_code: 0,
             seq: 0,
+            lane: None,
         }
     }
 

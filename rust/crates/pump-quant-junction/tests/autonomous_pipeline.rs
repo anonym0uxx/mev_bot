@@ -52,6 +52,7 @@ fn make_trade(
         run_mode: RunMode::Paper,
         error_code: 0,
         seq: slot,
+        lane: None,
     }
 }
 
