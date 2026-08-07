@@ -1237,6 +1237,18 @@ fn main() -> ExitCode {
         // ── Periodic Tick (engine evaluate) ──────────────────────────────
         if Instant::now() >= next_tick {
             engine.tick(pump_quant_app::event::AppEvent::Tick);
+            // Phase 3: write the Tick to the event stream so the replay engine
+            // can reproduce the evaluate() calls. Without Ticks in the stream,
+            // the engine replay never triggers admission decisions — making
+            // the refiner's engine-replay subprocess useless.
+            if let Some(ref mut writer) = event_stream_writer {
+                if let Err(e) = writer.write_event(
+                    &pump_quant_app::event::AppEvent::Tick,
+                    last_slot_seen,
+                ) {
+                    eprintln!("[pq-daemon] event_stream tick write error: {}", e);
+                }
+            }
             next_tick = Instant::now() + tick_period;
             tick_counter += 1;
 

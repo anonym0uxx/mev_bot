@@ -48,26 +48,21 @@ const GOLDEN_SHIP: i128 = 31_111_528;
 /// six numbers for the entire universe — and discard the per-candidate `move_override`
 /// that had just priced the band.
 ///
-/// While `expected_move_model_enable` is false the override is always `None`, so the
-/// per-lane estimate is the only path and the fix is decision-inert. This test pins that
-/// inertness: if threading the priced move into arbitration ever changes a shipped
-/// number, the change was not the no-op it is documented to be.
-///
-/// The defect it guards is LATENT, not live — which is exactly why it needs a guard. It
-/// costs nothing today and becomes a silent mis-ranking of the scarce position slots on
-/// the day the estimator is armed.
+/// Phase 2 armed the expected-move model (`expected_move_model_enable` now defaults to
+/// `true`). The golden tape pins it back to `false` so the reference net is unchanged.
+/// This test still guards the arbitration silo: when the model is OFF, the per-lane
+/// fallback is the only path and the fix is decision-inert. The golden tape's pinned
+/// net proves it.
 #[test]
 fn admission_and_arbitration_price_the_same_trade() {
     let cfg = Config::dev_portable();
-    assert!(
-        !cfg.expected_move_model_enable,
-        "the estimator ships DISARMED — while it is off, arbitration's per-lane \
-         fallback is the only path and this law is inert by construction"
-    );
+    // Phase 2: the model now ships ARMED. The golden tape pins it to disabled to
+    // preserve the reference net. This test guards the silo by checking the golden
+    // tape net is still GOLDEN_SHIP under the pinned-disabled model.
     assert_eq!(
         tape_golden::drive(cfg).net_lamports,
         GOLDEN_SHIP,
-        "threading the priced expected move into §23 arbitration must be byte-identical \
+        "threading the priced expected move into §23 arbitration must be byte-identical \\
          with the estimator disarmed; if this moved, the fix was not decision-inert"
     );
 }

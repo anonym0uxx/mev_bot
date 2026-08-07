@@ -55,6 +55,7 @@ use pump_quant_brain::concentration::ConcentrationTrajectory as BrainTrajectory;
 
 use crate::holder_flow::{HolderCountBasis, HolderFlow, HolderReading};
 use crate::priced_move::PricedMove;
+use crate::expected_move::SignalObs;
 use crate::social_earn::{SocialEarn, SocialEarnParams};
 use crate::social_ingest::{ledger_quality, to_mention, SourceQualityPolicy};
 use crate::social_plane::{
@@ -197,6 +198,11 @@ struct OpenAttribution {
     brain: Option<BrainEntry>,
     /// LAW B1: the entry tick, so the sealed episode carries a real hold duration.
     entry_tick: u64,
+    /// Phase 2: the market's SOL-side reserve at admit, carried to the close path
+    /// so `MoveTable::record()` can deposit the outcome into the correct vsol band.
+    entry_vsol: u64,
+    /// Phase 2: the entry-time signal observation for `MoveTable::record()` at close.
+    entry_obs: SignalObs,
 }
 
 /// A gate-approved, fully-priced candidate awaiting §23 slot arbitration.
@@ -224,6 +230,12 @@ struct PendingEntry {
     /// the ladder derivation downstream prices the SAME market the gate admitted,
     /// rather than re-reading a reserve that may have moved.
     entry_vsol: u64,
+    /// Phase 2: the entry-time signal observation carried from the admission gate
+    /// to the close path so `MoveTable::record()` can deposit the realized outcome
+    /// into the correct signal bands. Without this, the calibrated model can never
+    /// accumulate samples in production — the dead-code path that kept the model
+    /// empty forever.
+    entry_obs: SignalObs,
     /// §34.4 DecisionRecord provenance: the economic size band `[x_min, x_cost,
     /// x_max]` (net of fees/tips/expected-failure/margin) the admitted size was
     /// clamped within — threaded from the gate's `Admit` verdict into the
@@ -1323,6 +1335,14 @@ impl Engine {
     /// Snapshot of all open positions for report-plane consumption (item 2c).
     /// Call BEFORE `report()` which force-closes positions.
     #[must_use]
+    /// Phase 2: total episodes recorded into the expected-move model. Zero means
+    /// no trade has closed since the engine was created — the learning loop is
+    /// not accumulating samples.
+    #[must_use]
+    pub fn expected_move_sample_count(&self) -> u32 {
+        self.expected_move.total_n()
+    }
+
     pub fn open_positions_snapshot(&self) -> Vec<crate::live_status::OpenPositionSnapshot> {
         self.positions.open_positions_snapshot(self.now)
     }
@@ -3332,6 +3352,13 @@ impl Engine {
                     expected_net,
                     round_trip_cost_bps: rt_bps,
                     entry_vsol: conf_vsol,
+                    entry_obs: confirmation.map_or(crate::expected_move::SignalObs::none(), |c| {
+                        crate::expected_move::SignalObs::from_features(
+                            c.numeric.buy_pressure_bp,
+                            c.numeric.unique_buyers,
+                            c.numeric.age_slots,
+                        )
+                    }),
                     x_min: band.x_min,
                     x_cost: band.x_cost,
                     x_max: band.x_max,
@@ -4007,6 +4034,8 @@ impl Engine {
                     entry_price: e.entry_price,
                     brain: e.brain,
                     entry_tick: self.now,
+                    entry_vsol: e.entry_vsol,
+                    entry_obs: e.entry_obs,
                 },
             );
             // LAW B1/B2: remember the setup CLASS that was actually traded, so the
@@ -4163,12 +4192,14 @@ impl Engine {
         }
         if e.closed {
             if let Some(att) = self.open_lane.remove(&e.mint) {
-                let (lane_w, total, entry_spend, entry_price, archetype) = (
+                let (lane_w, total, entry_spend, entry_price, archetype, entry_vsol, entry_obs) = (
                     att.lane,
                     att.realized_acc,
                     att.entry_spend,
                     att.entry_price,
                     att.archetype,
+                    att.entry_vsol,
+                    att.entry_obs,
                 );
                 // ---- LAW B1: seal the completed trade as an immutable episode.
                 // The fingerprint and context are the ADMIT-TIME capture carried on
@@ -4225,6 +4256,13 @@ impl Engine {
                 } else {
                     0
                 };
+                // Phase 2: feed the realized outcome back into the calibrated
+                // expected-move model. This is THE call that was missing in
+                // production — without it the model stayed empty forever and
+                // every candidate fell back to the cold-start constant. We
+                // record on FULL CLOSE only (partial tranche exits do not yet
+                // carry enough signal about the full round-trip outcome).
+                self.expected_move.record(entry_vsol, entry_obs, realized_bps);
                 // §49 LAW 15: the exit-policy event as a full-participation ALLOW
                 // built through the enrich layer — the position was allowed to run
                 // to its exit, so the ledger credits realized-vs-MFE (not a

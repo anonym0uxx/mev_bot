@@ -39,3 +39,7 @@ path = "src/bin/pq_daemon.rs"
 [[bin]]
 name = "pq-watchdog"
 path = "src/bin/pq_watchdog.rs"
+
+[[bin]]
+name = "pq-engine-replay"
+path = "src/bin/pq_engine_replay.rs"

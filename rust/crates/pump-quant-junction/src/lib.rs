@@ -116,6 +116,7 @@ pub mod laserstream;
 pub mod trade_journal;
 pub mod tape_export;
 pub mod event_stream;
+pub mod engine_replay; // Phase 3: config-driven engine re-simulation
 pub mod memory_bank;
 pub mod autonomous_bridge;
 #[cfg(test)] mod chaos_tests;

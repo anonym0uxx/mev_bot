@@ -286,6 +286,13 @@ pub fn b7_cfg(cfg: Config) -> Config {
     // what this tape must now declare honestly is its DEPTH, which is what the
     // derived impact model reads — see `LAUNCH_VSOL` (re-pin #26).
     cfg.gate_expected_move_bps = 1_800;
+    // Pin the Phase 1 production defaults that this tape was NOT calibrated against.
+    // The tape measures LAW B7 brain-reflection behavior, not the economic gate's
+    // tranches or haircut screens — changing those defaults must not bleed in here.
+    cfg.gate_exit_tranches = 3;
+    cfg.promote_min_haircut_bp = 8_000;
+    cfg.expected_move_model_enable = false;
+    cfg.expected_move_min_sample = 30;
     cfg.gate_margin_bps = 150;
     // Corroboration evidence goes stale in ~2.5 rounds rather than ~8, so the
     // contended candidate set TURNS OVER (fresh launches displace old ones) instead

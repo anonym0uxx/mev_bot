@@ -164,6 +164,11 @@ pub fn crater(eng: &mut Engine, m: Mint, entity: u64) {
 /// cohort member (which would confound the A/B axis).
 pub fn hazard_cfg() -> Config {
     let mut cfg = Config::dev_portable();
+    // Pin the Phase 1 production defaults this tape was NOT calibrated against.
+    cfg.gate_exit_tranches = 3;
+    cfg.promote_min_haircut_bp = 8_000;
+    cfg.expected_move_model_enable = false;
+    cfg.expected_move_min_sample = 30;
     cfg.watchlist_ttl_ticks = 8;
     cfg.lane_evidence_ttl_ticks = 8;
     // 0.02 SOL clips: the hazard tape needs ~14 sequential round trips, which a

@@ -17,6 +17,241 @@ use pump_quant_app::event::AppEvent;
 use pump_quant_app::event::CreatorActionKind;
 use pump_quant_domain::ids::Mint;
 
+// ─── EventStreamReader ──────────────────────────────────────────────────────
+// Phase 3: the reader side of the event stream. The writer has been capturing
+// raw AppEvents since the daemon first ran; the reader loads them back into
+// `Vec<AppEvent>` for config-driven engine replay. Different configs produce
+// different admission/sizing/exit decisions against the SAME event stream —
+// this is what lets the refiner differentiate challengers.
+
+/// Read an event stream JSONL file back into a flat `Vec<AppEvent>`.
+///
+/// The slot field is discarded (the engine re-derives slot ordering from the
+/// event sequence itself; the stream is strictly append-ordered).
+/// Malformed lines are skipped (fail-soft) but counted in the return.
+pub fn read_event_stream<P: AsRef<Path>>(path: P) -> io::Result<(Vec<AppEvent>, usize)> {
+    let text = fs::read_to_string(path)?;
+    let mut events = Vec::new();
+    let mut skipped = 0usize;
+
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match parse_event_line(line) {
+            Ok(evt) => events.push(evt),
+            Err(_) => {
+                skipped += 1;
+            }
+        }
+    }
+
+    Ok((events, skipped))
+}
+
+/// Parse one JSONL line into an `AppEvent`. The format is:
+/// `{"slot":N,"kind":"<Kind>","mint":"<base58>","fields":{...}}`
+fn parse_event_line(line: &str) -> Result<AppEvent, String> {
+    // Minimal JSON parsing — we control the writer format, so we can parse
+    // the known structure without a full JSON crate dependency.
+    let kind = extract_string_field(line, "kind").ok_or("missing kind")?;
+
+    match kind.as_str() {
+        "Tick" => Ok(AppEvent::Tick),
+        "MarketTrade" => {
+            let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
+            let mint = parse_mint(&mint_str)?;
+            Ok(AppEvent::MarketTrade {
+                mint,
+                price_fp: extract_int_field(line, "price_fp")
+                    .ok_or("missing price_fp")? as i128,
+                quote_lamports: extract_int_field(line, "quote_lamports")
+                    .ok_or("missing quote_lamports")? as u64,
+                liquidity_lamports: extract_int_field(line, "liquidity_lamports")
+                    .ok_or("missing liquidity_lamports")? as u64,
+                signed_base: extract_int_field(line, "signed_base")
+                    .ok_or("missing signed_base")? as i64,
+                buyer_entity: extract_int_field(line, "buyer_entity")
+                    .ok_or("missing buyer_entity")? as u64,
+                age_slots: extract_int_field(line, "age_slots")
+                    .ok_or("missing age_slots")? as u32,
+            })
+        }
+        "OnchainConfirm" => {
+            let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
+            let mint = parse_mint(&mint_str)?;
+            Ok(AppEvent::OnchainConfirm {
+                mint,
+                virtual_sol_lamports: extract_int_field(line, "virtual_sol_lamports")
+                    .ok_or("missing virtual_sol_lamports")? as u64,
+                real_sol_lamports: extract_int_field(line, "real_sol_lamports")
+                    .ok_or("missing real_sol_lamports")? as u64,
+            })
+        }
+        "NarrativeSample" => {
+            let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
+            let mint = parse_mint(&mint_str)?;
+            Ok(AppEvent::NarrativeSample {
+                mint,
+                prior_active: extract_int_field(line, "prior_active")
+                    .ok_or("missing prior_active")? as u64,
+                new_mentions: extract_int_field(line, "new_mentions")
+                    .ok_or("missing new_mentions")? as u64,
+            })
+        }
+        "SocialCall" => {
+            let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
+            let mint = parse_mint(&mint_str)?;
+            Ok(AppEvent::SocialCall {
+                mint,
+                source_quality_bp: extract_int_field(line, "source_quality_bp")
+                    .ok_or("missing source_quality_bp")? as u32,
+            })
+        }
+        "WalletAction" => {
+            let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
+            let mint = parse_mint(&mint_str)?;
+            Ok(AppEvent::WalletAction {
+                mint,
+                followable: extract_int_field(line, "followable")
+                    .ok_or("missing followable")? != 0,
+                size_lamports: extract_int_field(line, "size_lamports")
+                    .ok_or("missing size_lamports")? as u64,
+            })
+        }
+        "TokenMetadata" => {
+            let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
+            let mint = parse_mint(&mint_str)?;
+            Ok(AppEvent::TokenMetadata {
+                mint,
+                category_id: extract_int_field(line, "category_id")
+                    .ok_or("missing category_id")? as u64,
+                taxonomy_version: extract_int_field(line, "taxonomy_version")
+                    .ok_or("missing taxonomy_version")? as u32,
+                creator: extract_int_field(line, "creator")
+                    .ok_or("missing creator")? as u64,
+                slot: extract_int_field(line, "metadata_slot")
+                    .ok_or("missing metadata_slot")? as u64,
+            })
+        }
+        "CreatorAction" => {
+            let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
+            let mint = parse_mint(&mint_str)?;
+            let slot = extract_int_field(line, "action_slot").ok_or("missing action_slot")? as u64;
+            // Parse the creator action kind from the nested JSON fragment.
+            let kind_str = extract_creator_action_kind(line)?;
+            let kind = match kind_str.as_str() {
+                "creator_init" => {
+                    CreatorActionKind::Init {
+                        initial_tokens: extract_nested_int(line, "initial_tokens")
+                            .ok_or("missing initial_tokens")? as u64,
+                        total_supply: extract_nested_int(line, "total_supply")
+                            .ok_or("missing total_supply")? as u64,
+                    }
+                }
+                "creator_buy" => {
+                    CreatorActionKind::Buy {
+                        tokens: extract_nested_int(line, "tokens")
+                            .ok_or("missing tokens")? as u64,
+                        quote_lamports: extract_nested_int(line, "quote_lamports")
+                            .ok_or("missing quote_lamports")? as u64,
+                    }
+                }
+                "creator_sell" => {
+                    CreatorActionKind::Sell {
+                        tokens: extract_nested_int(line, "tokens")
+                            .ok_or("missing tokens")? as u64,
+                        quote_lamports: extract_nested_int(line, "quote_lamports")
+                            .ok_or("missing quote_lamports")? as u64,
+                    }
+                }
+                "creator_linked_buy" => {
+                    CreatorActionKind::LinkedBuy {
+                        cluster: extract_nested_int(line, "cluster")
+                            .ok_or("missing cluster")? as u64,
+                        tokens: extract_nested_int(line, "tokens")
+                            .ok_or("missing tokens")? as u64,
+                    }
+                }
+                _ => return Err(format!("unknown creator action kind: {kind_str}")),
+            };
+            Ok(AppEvent::CreatorAction { mint, kind, slot })
+        }
+        "Migration" => {
+            let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
+            let mint = parse_mint(&mint_str)?;
+            Ok(AppEvent::Migration {
+                mint,
+                slot: extract_int_field(line, "migration_slot")
+                    .ok_or("missing migration_slot")? as u64,
+            })
+        }
+        other => Err(format!("unknown event kind: {other}")),
+    }
+}
+
+/// Extract a string field value from a JSON line: `"field":"value"`.
+fn extract_string_field(line: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{field}\":\"");
+    let start = line.find(&needle)? + needle.len();
+    let rest = &line[start..];
+    // Find the closing quote.
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// Extract an integer field value from a JSON line: `"field":N`.
+fn extract_int_field(line: &str, field: &str) -> Option<i64> {
+    let needle = format!("\"{field}\":");
+    let start = line.find(&needle)? + needle.len();
+    let rest = &line[start..];
+    // Read until we hit a non-digit, non-minus character.
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit() && c != '-')
+        .unwrap_or(rest.len());
+    let num_str = &rest[..end];
+    num_str.parse().ok()
+}
+
+/// Extract a nested integer from a JSON fragment like `"creator_init":{"initial_tokens":N,...}`.
+fn extract_nested_int(line: &str, field: &str) -> Option<i64> {
+    let needle = format!("\"{field}\":");
+    let start = line.find(&needle)? + needle.len();
+    let rest = &line[start..];
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit() && c != '-')
+        .unwrap_or(rest.len());
+    let num_str = &rest[..end];
+    num_str.parse().ok()
+}
+
+/// Extract the creator action kind key from the nested JSON.
+fn extract_creator_action_kind(line: &str) -> Result<String, String> {
+    // Look for one of the known kind keys.
+    for kind in &[
+        "creator_init",
+        "creator_buy",
+        "creator_sell",
+        "creator_linked_buy",
+    ] {
+        let needle = format!(r#""{kind}":"#);
+        if line.contains(&needle) {
+            return Ok(kind.to_string());
+        }
+    }
+    Err("no creator action kind found".to_string())
+}
+
+/// Parse a base58-encoded mint string into a `Mint`.
+fn parse_mint(s: &str) -> Result<Mint, String> {
+    use solana_program::pubkey::Pubkey;
+    let pk = s
+        .parse::<Pubkey>()
+        .map_err(|e| format!("invalid pubkey: {e}"))?;
+    Ok(Mint::from_bytes(pk.to_bytes()))
+}
+
 /// Compact JSON line writer for the event stream.
 pub struct EventStreamWriter {
     writer: BufWriter<std::fs::File>,
@@ -295,6 +530,143 @@ mod tests {
         assert!(content.contains(r#""kind":"OnchainConfirm""#));
         assert!(content.contains(r#""virtual_sol_lamports":30000000000"#));
         assert!(content.contains(r#""real_sol_lamports":5000000000"#));
+        let _ = fs::remove_file(&tmp);
+    }
+
+    // ─── Phase 3: EventStreamReader round-trip tests ──────────────────────
+
+    /// Write events, read them back, verify all fields survive the round-trip.
+    #[test]
+    fn read_back_market_trade_round_trips() {
+        // First, verify the parser works on a known-good line
+        let test_line = r#"{"slot":12345,"kind":"MarketTrade","mint":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","fields":{"price_fp":1234567890,"quote_lamports":500000,"liquidity_lamports":1000000000,"signed_base":-50000,"buyer_entity":42,"age_slots":100}}"#;
+        match parse_event_line(test_line) {
+            Ok(evt) => match evt {
+                AppEvent::MarketTrade { price_fp, .. } => {
+                    assert_eq!(price_fp, 1_234_567_890, "price_fp must round-trip");
+                }
+                _ => panic!("expected MarketTrade, got something else"),
+            },
+            Err(e) => panic!("parse failed on known-good line: {e}"),
+        }
+
+        // Now write and read back
+        let tmp = std::env::temp_dir().join("pq_event_stream_readback_test.jsonl");
+        let _ = fs::remove_file(&tmp);
+        let mut writer = EventStreamWriter::open(&tmp).expect("open");
+        let mint = Mint([7u8; 32]);
+        let event = AppEvent::MarketTrade {
+            mint,
+            price_fp: 1_234_567_890,
+            quote_lamports: 500_000,
+            liquidity_lamports: 1_000_000_000,
+            signed_base: -50_000,
+            buyer_entity: 42,
+            age_slots: 100,
+        };
+        writer.write_event(&event, 12345).expect("write");
+        writer.flush().expect("flush");
+        drop(writer);
+
+        let (events, skipped) = read_event_stream(&tmp).expect("read");
+        assert_eq!(skipped, 0, "no lines should be skipped");
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AppEvent::MarketTrade {
+                price_fp,
+                quote_lamports,
+                liquidity_lamports,
+                signed_base,
+                buyer_entity,
+                age_slots,
+                ..
+            } => {
+                assert_eq!(*price_fp, 1_234_567_890);
+                assert_eq!(*quote_lamports, 500_000);
+                assert_eq!(*liquidity_lamports, 1_000_000_000);
+                assert_eq!(*signed_base, -50_000);
+                assert_eq!(*buyer_entity, 42);
+                assert_eq!(*age_slots, 100);
+            }
+            _ => panic!("expected MarketTrade"),
+        }
+        let _ = fs::remove_file(&tmp);
+    }
+
+    /// Write multiple event types, read them back, verify the sequence.
+    #[test]
+    fn read_back_mixed_event_types() {
+        let tmp = std::env::temp_dir().join("pq_event_stream_mixed_test.jsonl");
+        let _ = fs::remove_file(&tmp);
+        let mut writer = EventStreamWriter::open(&tmp).expect("open");
+        let mint = Mint([3u8; 32]);
+
+        // Write a Tick, a MarketTrade, an OnchainConfirm, and another Tick.
+        writer.write_event(&AppEvent::Tick, 1).expect("write");
+        writer.write_event(
+            &AppEvent::MarketTrade {
+                mint,
+                price_fp: 2_000_000_000,
+                quote_lamports: 100_000,
+                liquidity_lamports: 500_000_000,
+                signed_base: 10_000,
+                buyer_entity: 5,
+                age_slots: 20,
+            },
+            2,
+        )
+        .expect("write");
+        writer.write_event(
+            &AppEvent::OnchainConfirm {
+                mint,
+                virtual_sol_lamports: 80_000_000_000,
+                real_sol_lamports: 30_000_000_000,
+            },
+            3,
+        )
+        .expect("write");
+        writer.write_event(&AppEvent::Tick, 4).expect("write");
+        writer.flush().expect("flush");
+        drop(writer);
+
+        let (events, skipped) = read_event_stream(&tmp).expect("read");
+        assert_eq!(skipped, 0);
+        assert_eq!(events.len(), 4);
+        assert!(matches!(events[0], AppEvent::Tick));
+        assert!(matches!(events[1], AppEvent::MarketTrade { .. }));
+        assert!(matches!(events[2], AppEvent::OnchainConfirm { .. }));
+        assert!(matches!(events[3], AppEvent::Tick));
+        let _ = fs::remove_file(&tmp);
+    }
+
+    /// An empty file reads back as zero events, zero skipped.
+    #[test]
+    fn empty_file_reads_as_zero_events() {
+        let tmp = std::env::temp_dir().join("pq_event_stream_empty_test.jsonl");
+        let _ = fs::remove_file(&tmp);
+        fs::write(&tmp, "").expect("write empty");
+        let (events, skipped) = read_event_stream(&tmp).expect("read");
+        assert_eq!(events.len(), 0);
+        assert_eq!(skipped, 0);
+        let _ = fs::remove_file(&tmp);
+    }
+
+    /// Malformed lines are skipped (fail-soft), valid lines are kept.
+    #[test]
+    fn malformed_lines_are_skipped() {
+        let tmp = std::env::temp_dir().join("pq_event_stream_malformed_test.jsonl");
+        let _ = fs::remove_file(&tmp);
+        // One valid Tick line + two garbage lines + one valid Tick line.
+        let content = format!(
+            r#"{{"slot":1,"kind":"Tick"}}
+garbage line 1
+garbage line 2
+{{"slot":2,"kind":"Tick"}}"#,
+        );
+        fs::write(&tmp, &content).expect("write");
+        let (events, skipped) = read_event_stream(&tmp).expect("read");
+        assert_eq!(events.len(), 2, "two valid Tick events");
+        assert_eq!(skipped, 2, "two malformed lines skipped");
         let _ = fs::remove_file(&tmp);
     }
 }

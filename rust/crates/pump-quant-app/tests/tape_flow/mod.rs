@@ -153,6 +153,11 @@ pub fn flow_cfg(cfg: Config) -> Config {
     // what this tape must now declare honestly is its DEPTH, which is what the
     // derived impact model reads — see `LIQ` (re-pin #26).
     cfg.gate_expected_move_bps = 1_800;
+    // Pin the Phase 1 production defaults this tape was NOT calibrated against.
+    cfg.gate_exit_tranches = 3;
+    cfg.promote_min_haircut_bp = 8_000;
+    cfg.expected_move_model_enable = false;
+    cfg.expected_move_min_sample = 30;
     cfg.gate_margin_bps = 150;
     cfg.max_concurrent_positions = 6;
     // ---- ISOLATE THE LEVER UNDER TEST (§32 flow persistence) ----

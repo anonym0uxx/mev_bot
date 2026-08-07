@@ -60,6 +60,11 @@ struct RefinerArgs {
     config_path: String,
     margin_lamports: i128,
     max_challengers: usize,
+    /// Path to the event stream JSONL — used by Phase 3 engine replay.
+    /// When set, the refiner spawns `pq-engine-replay` per challenger to
+    /// produce genuine admission/sizing/exit decisions under each mutated
+    /// config. When empty, falls back to shadow replay only.
+    event_stream_path: String,
 }
 
 fn parse_args() -> RefinerArgs {
@@ -69,6 +74,7 @@ fn parse_args() -> RefinerArgs {
         config_path: DEFAULT_CONFIG_PATH.to_string(),
         margin_lamports: 10_000, // 10k lamports = ~0.00001 SOL minimum margin
         max_challengers: 64,
+        event_stream_path: String::new(), // default: no engine replay
     };
     let mut i = 1;
     while i < args.len() {
@@ -87,6 +93,10 @@ fn parse_args() -> RefinerArgs {
             }
             "--max-challengers" if i + 1 < args.len() => {
                 a.max_challengers = args[i + 1].parse().unwrap_or(64);
+                i += 2;
+            }
+            "--event-stream-path" if i + 1 < args.len() => {
+                a.event_stream_path = args[i + 1].clone();
                 i += 2;
             }
             _ => { i += 1; }
@@ -292,6 +302,144 @@ fn parse_config_params(config_text: &str) -> BTreeMap<String, i64> {
     params
 }
 
+// ─── Phase 3: Engine replay via subprocess ────────────────────────────────
+
+/// The genuine engine replay score for one challenger. Unlike the shadow
+/// replay (which only adjusts cost on existing trades), this is the REAL
+/// engine output — different configs produce different admission decisions,
+/// different sizing, different exits, and different net P&L.
+#[derive(Clone, Debug)]
+struct EngineReplayScore {
+    /// Net lamports from the engine Report (the objective).
+    net_lamports: i128,
+    /// Trades admitted by the gate.
+    admitted: u64,
+    /// Trades rejected by the gate.
+    rejected: u64,
+    /// Trades promoted to the gate.
+    promoted: u64,
+    /// Events fed into the engine.
+    events_fed: u64,
+    /// Lines skipped during event stream parsing.
+    parse_skipped: u64,
+}
+
+/// Apply a single mutation to the champion config text, producing the
+/// challenger's full config text. The config format is `key = value` lines;
+/// we replace the value for the mutated key. If the key isn't found (e.g.
+/// a default-only param not in the champion file), we append it.
+fn apply_mutation_to_config_text(champion_text: &str, mutation: &ParameterMutation) -> String {
+    let target_key = &mutation.name;
+    let new_val = mutation.proposed_value;
+    let mut found = false;
+    let mut out = String::with_capacity(champion_text.len());
+    for line in champion_text.lines() {
+        if let Some(eq_pos) = line.find('=') {
+            let key = line[..eq_pos].trim();
+            if key == target_key {
+                // Replace this line's value.
+                out.push_str(&format!("{} = {}\n", target_key, new_val));
+                found = true;
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !found {
+        // Key not in the champion config — append it.
+        out.push_str(&format!("{} = {}\n", target_key, new_val));
+    }
+    out
+}
+
+/// Apply ALL of a challenger's mutations to the champion config text.
+fn build_challenger_config_text(champion_text: &str, challenger: &Challenger) -> String {
+    let mut text = champion_text.to_string();
+    for m in &challenger.mutations {
+        text = apply_mutation_to_config_text(&text, m);
+    }
+    text
+}
+
+/// Run `pq-engine-replay` as a subprocess with the given event stream and
+/// config text. Writes the config to a temp file, spawns the binary, parses
+/// the JSON output, and returns the score. Returns `None` if the subprocess
+/// fails or the JSON is unparseable.
+fn run_engine_replay(
+    event_stream_path: &str,
+    config_text: &str,
+) -> Option<EngineReplayScore> {
+    // Locate the pq-engine-replay binary next to the refiner binary.
+    let replay_bin = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("pq-engine-replay")))
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "pq-engine-replay".to_string());
+
+    // Write config to a temp file.
+    let temp_config = std::env::temp_dir().join(format!(
+        "pq-replay-config-{}-{}.cfg",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos()
+    ));
+    if fs::write(&temp_config, config_text).is_err() {
+        return None;
+    }
+
+    // Spawn the subprocess.
+    let mut cmd = std::process::Command::new(&replay_bin);
+    cmd.arg("--event-stream").arg(event_stream_path)
+        .arg("--config").arg(&temp_config)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let output = cmd.spawn().ok()?.wait_with_output().ok()?;
+
+    // Clean up temp file (best-effort).
+    let _ = fs::remove_file(&temp_config);
+
+    if !output.status.success() {
+        eprintln!(
+            "[pq-refiner] engine-replay FAILED: exit={:?} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).lines().last().unwrap_or("(empty)")
+        );
+        return None;
+    }
+
+    // Parse JSON from stdout.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_engine_replay_json(&stdout)
+}
+
+/// Parse the JSON output of `pq-engine-replay` into an `EngineReplayScore`.
+/// The format is:
+///   {"admitted":N,"rejected":N,"net_lamports":I,"promoted":N,"ticks":N,
+///    "events_fed":N,"parse_skipped":N}
+fn parse_engine_replay_json(json: &str) -> Option<EngineReplayScore> {
+    // Simple integer extractor — no serde dependency in the evaluator crate.
+    let extract = |key: &str| -> Option<i128> {
+        let needle = format!("\"{key}\":");
+        let pos = json.find(&needle)?;
+        let rest = &json[pos + needle.len()..];
+        let end = rest.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(rest.len());
+        rest[..end].parse().ok()
+    };
+
+    Some(EngineReplayScore {
+        net_lamports: extract("net_lamports")?,
+        admitted: extract("admitted")? as u64,
+        rejected: extract("rejected")? as u64,
+        promoted: extract("promoted")? as u64,
+        events_fed: extract("events_fed")? as u64,
+        parse_skipped: extract("parse_skipped")? as u64,
+    })
+}
+
 // ─── Shadow replay ──────────────────────────────────────────────────────────
 
 /// The result of a shadow replay for one challenger.
@@ -310,6 +458,11 @@ struct ShadowReplayResult {
     gate_verdict: Option<String>,
     /// Human-readable summary.
     summary: String,
+    /// Phase 3: genuine engine replay score (None if engine replay not run).
+    /// When present, this is the REAL engine output — different configs produce
+    /// different admission/sizing/exit decisions. This OVERRIDES the shadow
+    /// replay score for scoring and promotion decisions.
+    engine_replay: Option<EngineReplayScore>,
 }
 
 /// Run a shadow replay for a challenger.
@@ -416,9 +569,22 @@ fn shadow_replay(
                 }
             }
             _ => {
-                // For other parameters: no direct tape-level impact in the
-                // simplified replay. The full engine replay (Phase 6) will
-                // capture their effects.
+                // Admission-gate parameters (gate_expected_move_bps,
+                // gate_exit_tranches, promote_min_haircut_bp, etc.) change WHICH
+                // trades the engine would admit — not just the economics of trades
+                // that were admitted. The shadow replay CANNOT model this because
+                // it operates on a fixed tape of already-executed trades.
+                //
+                // Proxy heuristics (removing fractions of trades, scaling fees by
+                // leg count) were considered and REJECTED: they guess at what the
+                // engine would do instead of running the engine. The real path is
+                // the engine-replay subprocess (see `engine_replay_score` below),
+                // which feeds the event stream through Engine::new(cfg, Replay)
+                // and produces a genuine Report with different admission decisions.
+                //
+                // For the shadow-replay score, these parameters are no-ops: the
+                // tape is unchanged. The engine-replay score is the one that
+                // differentiates challengers on these parameters.
             }
         }
     }
@@ -459,6 +625,7 @@ fn shadow_replay(
         verdict,
         gate_verdict: None, // populated by 8-gate evaluation in main
         summary,
+        engine_replay: None, // populated by Phase 3 engine replay in main
     }
 }
 
@@ -602,11 +769,43 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::from(0);
     }
 
-    // 5. Run shadow replays
+    // 5. Run shadow replays + Phase 3 engine replays
     let mut results: Vec<ShadowReplayResult> = Vec::new();
     let mut any_defeated = false;
     let mut any_gates_passed = false;
     let mut best_challenger: Option<ShadowReplayResult> = None;
+
+    // Phase 3: if the event stream path is set, also compute the champion's
+    // engine-replay score for fair comparison. Each challenger's engine-replay
+    // net_lamports is compared against this champion engine-replay score.
+    let champion_engine_replay = if !args.event_stream_path.is_empty()
+        && std::path::Path::new(&args.event_stream_path).exists()
+    {
+        eprintln!(
+            "[pq-refiner] Phase 3: engine replay enabled — event stream: {}",
+            args.event_stream_path
+        );
+        let champ_cfg = build_challenger_config_text(&champion_config_text, &Challenger {
+            id: "champion".to_string(),
+            mutations: vec![],
+        });
+        match run_engine_replay(&args.event_stream_path, &champ_cfg) {
+            Some(score) => {
+                eprintln!(
+                    "[pq-refiner] champion engine-replay: net={} admitted={} rejected={}",
+                    score.net_lamports, score.admitted, score.rejected
+                );
+                Some(score)
+            }
+            None => {
+                eprintln!("[pq-refiner] champion engine-replay FAILED — falling back to shadow replay only");
+                None
+            }
+        }
+    } else {
+        eprintln!("[pq-refiner] Phase 3: engine replay disabled (no event stream path)");
+        None
+    };
 
     for challenger in &challengers {
         eprintln!("[pq-refiner] shadow replay: {} (mutations: {})",
@@ -615,13 +814,54 @@ fn main() -> std::process::ExitCode {
                 .collect::<Vec<_>>().join(", ")
         );
 
-        let result = shadow_replay(
+        let mut result = shadow_replay(
             challenger,
             &tape.trades,
             champion_net_scalp,
             champion_net_early,
             args.margin_lamports,
         );
+
+        // ─── Phase 3: engine replay via subprocess ──────────────────────
+        // When the event stream is available, spawn `pq-engine-replay` with
+        // the challenger's mutated config. This produces the GENUINE engine
+        // output — the real admission/sizing/exit decisions under the mutated
+        // config. If it succeeds, we OVERRIDE the shadow replay's net_lamports
+        // with the engine replay's net_lamports and re-derive the verdict.
+        // This is the REAL scoring path — no proxy heuristics.
+        if let Some(ref champ_er) = champion_engine_replay {
+            let challenger_cfg = build_challenger_config_text(
+                &champion_config_text,
+                challenger,
+            );
+            match run_engine_replay(&args.event_stream_path, &challenger_cfg) {
+                Some(score) => {
+                    eprintln!(
+                        "[pq-refiner]   engine-replay: {} net={} admitted={} rejected={}",
+                        challenger.id, score.net_lamports, score.admitted, score.rejected
+                    );
+                    // Override the challenger's net with the genuine engine output.
+                    result.challenger_net_scalp.net_lamports = score.net_lamports;
+                    // Re-derive the verdict using the engine replay score.
+                    let champ_net = NetSol {
+                        net_lamports: champ_er.net_lamports,
+                        ..NetSol::missing()
+                    };
+                    result.verdict = challenger_defeats_champion(
+                        &champ_net,
+                        &result.challenger_net_scalp,
+                        args.margin_lamports,
+                    );
+                    result.engine_replay = Some(score);
+                }
+                None => {
+                    eprintln!(
+                        "[pq-refiner]   engine-replay FAILED for {} — keeping shadow replay score",
+                        challenger.id
+                    );
+                }
+            }
+        }
 
         eprintln!("[pq-refiner]   → {}", result.summary);
 
@@ -637,7 +877,6 @@ fn main() -> std::process::ExitCode {
         }
 
         // 5b. Run 8-gate evaluation (§45-56) for challengers that defeat on margin.
-        let mut result = result; // make mutable
         if result.verdict.defeats() {
             let gate_input = GateInput {
                 challenger_netsol_lamports: result.challenger_net_scalp.net_lamports as i64,
@@ -1095,6 +1334,16 @@ fn write_promotion_file(result: &ShadowReplayResult, challengers: &[Challenger])
 
     let gate_verdict_str = result.gate_verdict.clone().unwrap_or_else(|| "not_evaluated".to_string());
 
+    // Phase 3: include engine replay evidence if available.
+    let engine_replay_json = if let Some(er) = &result.engine_replay {
+        format!(
+            ",\n  \"engine_replay\": {{\"net_lamports\": {}, \"admitted\": {}, \"rejected\": {}, \"promoted\": {}, \"events_fed\": {}}}",
+            er.net_lamports, er.admitted, er.rejected, er.promoted, er.events_fed,
+        )
+    } else {
+        String::new()
+    };
+
     let promotion_json = format!(
         "{{\n  \"challenger_id\": \"{}\",\n  \
          \"champion_net_scalp\": {},\n  \
@@ -1102,12 +1351,13 @@ fn write_promotion_file(result: &ShadowReplayResult, challengers: &[Challenger])
          \"mutations\": [\n{}\n  ],\n  \
          \"verdict\": \"defeats\",\n  \
          \"gate_verdict\": \"{}\",\n  \
-         \"status\": \"READY_FOR_CONFIG_UPDATE\"\n}}",
+         \"status\": \"READY_FOR_CONFIG_UPDATE\"{}\n}}",
         result.challenger_id,
         format_netsol(result.champion_net_scalp),
         format_netsol(result.challenger_net_scalp),
         mutations_json,
         gate_verdict_str,
+        engine_replay_json,
     );
 
     let _ = fs::write(PROMOTION_FILE, promotion_json);
@@ -1281,6 +1531,7 @@ mod tests {
             verdict: ChampionVerdict::Defeats,
             gate_verdict: Some("all_8_gates_passed".to_string()),
             summary: "test".to_string(),
+            engine_replay: None,
         };
         let challengers = vec![Challenger {
             id: "test_promo".to_string(),
@@ -1358,6 +1609,7 @@ mod tests {
             verdict: ChampionVerdict::Defeats,
             gate_verdict: Some("all_8_gates_passed".to_string()),
             summary: "test".to_string(),
+            engine_replay: None,
         };
         let challengers = vec![Challenger {
             id: "denylisted_test".to_string(),

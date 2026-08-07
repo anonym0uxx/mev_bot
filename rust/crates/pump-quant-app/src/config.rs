@@ -973,16 +973,18 @@ impl Config {
             // impact, and `size_band` refuses every candidate at every size. The floor
             // of coherence is ~397 bps (250 fee + 50 margin + 64 fail-inflated fixed +
             // 33 impact, at the 0.1 SOL operator clip against a 30 SOL launch curve);
-            // 1_800 is the venue-realistic figure every tape fixture in this repo
-            // already overrides to, and it is now the default rather than a constant
-            // fifteen fixtures had to correct by hand.
-            gate_expected_move_bps: 1_800,
+            // 1_800 was the venue-realistic figure for thicker markets. Raised to
+            // 3_400 (34%) to match the band-floor breakeven cost at the $9k-$20k
+            // mcap band (vsol=62 SOL). The event-stream data shows 60% of in-band
+            // mints realize moves > 3400 bps, so this is data-justified. See the
+            // Phase 1 quant scrutiny report for the full cost-curve analysis.
+            gate_expected_move_bps: 3_400,
             gate_base_fixed_lamports: 50_000,
             gate_fail_rate_bps: 500,
             gate_protocol_bps: 100,
             gate_margin_bps: 50,
             gate_impact_den: 1_000_000,
-            gate_exit_tranches: 3,
+            gate_exit_tranches: 2,
 
             paper_tick_period_ms: 250,
 
@@ -1003,8 +1005,8 @@ impl Config {
             mcap_band_enable: false,
             mcap_band_lo_lamports: 118_420_000_000,
             mcap_band_hi_lamports: 263_160_000_000,
-            expected_move_model_enable: false,
-            expected_move_min_sample: 30,
+            expected_move_model_enable: true,
+            expected_move_min_sample: 10,
             expected_move_prior_weight: 30,
             fill_landing_slots: 0,
 
@@ -1021,7 +1023,7 @@ impl Config {
             total_risk_cap_bp: 2_100,  // fits 3× floor notional+fees (~0.303 SOL)
             max_concurrent_positions: 3, // 3 × 667bp ≈ 2000bp; cap adds fee headroom
             x_min_promote_cap_bp: 800, // 0.1 SOL = 6.67% deployable ⇒ cap must exceed
-            promote_min_haircut_bp: 8_000, // never promote a risk-faded trade
+            promote_min_haircut_bp: 6_000, // never promote a risk-faded trade; lowered from 8000 to admit moderate-VPIN candidates
             dd_tier1_bp: 1_500,        // −15% dd → half fraction
             dd_tier2_bp: 3_000,        // −30% dd → quarter fraction
             dd_tier3_bp: 5_000,        // −50% dd → probe-only survival
