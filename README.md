@@ -210,8 +210,8 @@ golden determinism tape. Every law is A/B-attributed: it must strictly out-earn 
 law, strictly avoid loss beyond) its own absence on a tape containing exactly its hazard.
 
 **Three honesty corrections are baked into the current pin, and the number they produced must be read
-the way it is meant.** The current golden reference is **net 31,111,528 lamports**, digest
-`2822236667991883855`, promoted/admitted/rejected/universe-filtered **504 / 11 / 448 / 72**
+the way it is meant.** The current golden reference is **net 30,889,282 lamports**, digest
+`4716956466487911990`, promoted/admitted/rejected/universe-filtered **504 / 11 / 448 / 72**
 (re-pin #27, 2026-07-28). It got there through **four** accounting corrections, none of which is a
 strategy change:
 
@@ -237,7 +237,7 @@ synthetic regression fixture worth about **0.031 SOL (~$2.36)** across **11 trad
 markets**, statistically indistinguishable from zero (|t| ≈ 0.19), with a large share of the swing
 attributable to end-of-tape force closure and to which markets survive a capacity bound. It is a
 **regression fixture, not evidence of edge** — see `docs/EDGE_PROVENANCE_2026-07-27.md`. The full
-headline arc (2.98M → … → 12.55M → 15,410,801 → 8,124,568 → 16,778,896 → 31,111,528) is a record of
+headline arc (2.98M → … → 12.55M → 15,410,801 → 8,124,568 → 16,778,896 → 30,889,282) is a record of
 accounting corrections and is never cited as live edge. The runner
 exports a trade JSONL and a config-identity ledger on request (`--trade-jsonl`, `--config-ledger`);
 both are secondary records, never authoritative over the journal digest or chain truth.

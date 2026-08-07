@@ -404,7 +404,7 @@ fn the_full_permutation_matrix() {
 
     // ---- The golden control, restated from the shipped pins so this file cannot
     // silently drift away from `golden_digest.rs`.
-    assert_eq!(m[0][0].net_lamports, 31_111_528, "golden net");
+    assert_eq!(m[0][0].net_lamports, 30_889_282, "golden net");
     assert_eq!(m[0][0].admitted, 11, "golden admitted");
     assert_eq!(m[0][0].rejected, 448, "golden rejected");
     assert_eq!(m[0][0].promoted, 504, "golden promoted");
@@ -421,8 +421,8 @@ fn the_full_permutation_matrix() {
     let b7_unhappy_on = m[5][2].net_lamports;
     assert_eq!(b7_happy_off, 539_316_863, "B7 happy neutral drifted");
     assert_eq!(b7_happy_on, 650_239_251, "B7 happy armed drifted");
-    assert_eq!(b7_unhappy_off, 1_258_901_287, "B7 unhappy neutral drifted");
-    assert_eq!(b7_unhappy_on, 1_211_731_139, "B7 unhappy armed drifted");
+    assert_eq!(b7_unhappy_off, 1_260_733_533, "B7 unhappy neutral drifted");
+    assert_eq!(b7_unhappy_on, 1_187_355_797, "B7 unhappy armed drifted");
 
     // Every tape must actually trade under all-OFF, else its row proves nothing.
     for (ti, t) in TAPES.iter().enumerate() {

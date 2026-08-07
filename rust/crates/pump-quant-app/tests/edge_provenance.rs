@@ -261,7 +261,7 @@ fn the_golden_book_is_indistinguishable_from_zero() {
     let n = nets.len() as i128;
     assert_eq!(n, 11);
     let sum: i128 = nets.iter().sum();
-    assert_eq!(sum, 31_111_528, "the book drifted");
+    assert_eq!(sum, 30_889_282, "the book drifted");
     // Sample variance * (n-1), all-integer.
     let mean_num = sum; // mean = mean_num / n
     let ss: i128 = nets
@@ -313,8 +313,8 @@ fn the_book_is_dominated_by_end_of_tape_force_closure() {
         .map(|e| e.outcome().realized_net_lamports)
         .sum();
     let total = eng.report().net_lamports;
-    assert_eq!(natural, 42_058_785, "naturally-closed subtotal drifted");
-    assert_eq!(total, 31_111_528);
+    assert_eq!(natural, 41_836_539, "naturally-closed subtotal drifted");
+    assert_eq!(total, 30_889_282);
     let forced = total - natural;
     assert_eq!(forced, -10_947_257, "force-closed subtotal drifted");
     assert!(

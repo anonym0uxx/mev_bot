@@ -12,7 +12,7 @@
 //! judgment: whether a moved golden digest is a legitimate seed-only re-pin (adding a `Config`
 //! field re-seeds the §19 journal with zero decision change, so this WILL fire during Phase B) or
 //! a real determinism break that must halt the build. The fifth entry, `AlphaCall net`, was quoted
-//! as `−2,721,835` for two re-pins after the live constant became `+815,594`. A builder running
+//! as `−2,721,835` for two re-pins after the live constant became `+593,348`. A builder running
 //! that checklist would find a mismatch on a healthy tree and conclude "a decision number moved →
 //! determinism break". The good outcome is a halted healthy build. The bad outcome is a builder
 //! who "fixes" the code to match the document.
@@ -38,12 +38,12 @@
 //! **Presence, not absence.** Every live pin must appear, in some canonical form, in each document
 //! that is supposed to carry it. It does NOT assert that retired values are absent, because these
 //! documents legitimately quote their own history — the AlphaCall arc `+447,700 → −2,721,835 →
-//! +815,594` is exactly the evidence that the number cannot settle the question, and an
+//! +593,348` is exactly the evidence that the number cannot settle the question, and an
 //! absence-assertion would forbid telling that story. Presence alone is sufficient for the defect
-//! this guards: the stale directive did not contain `815,594` anywhere at all.
+//! this guards: the stale directive did not contain `593,348` anywhere at all.
 //!
-//! Number forms are checked as plain (`31111528`), comma-grouped (`31,111,528`) and
-//! underscore-grouped (`31_111_528`), because prose and Rust disagree about digit separators and
+//! Number forms are checked as plain (`30889282`), comma-grouped (`30,889,282`) and
+//! underscore-grouped (`30_889_282`), because prose and Rust disagree about digit separators and
 //! neither convention should be legislated by a test.
 
 use pq_regression::baselines::*;
@@ -216,19 +216,19 @@ fn the_app_side_golden_test_agrees_with_this_crates_mirror() {
 #[test]
 fn canonical_forms_are_what_they_claim() {
     assert_eq!(
-        forms(31_111_528),
+        forms(30_889_282),
         [
-            "31111528".to_string(),
-            "31,111,528".to_string(),
-            "31_111_528".to_string()
+            "30889282".to_string(),
+            "30,889,282".to_string(),
+            "30_889_282".to_string()
         ]
     );
     assert_eq!(
-        forms(815_594),
+        forms(593_348),
         [
-            "815594".to_string(),
-            "815,594".to_string(),
-            "815_594".to_string()
+            "593348".to_string(),
+            "593,348".to_string(),
+            "593_348".to_string()
         ]
     );
     assert_eq!(

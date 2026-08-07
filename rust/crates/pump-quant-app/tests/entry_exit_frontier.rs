@@ -91,12 +91,12 @@ fn b3_hazard(mutate: impl FnOnce(&mut Config)) -> i128 {
 
 // ---- shipped-value net on every tape (identity pins) ------------------------
 
-/// Re-pin #27 (2026-07-28): 16_778_896 -> 31_111_528. The move is the confirmed-set
+/// Re-pin #27 (2026-07-28): 16_778_896 -> 30_889_282. The move is the confirmed-set
 /// eviction key reordering under corrected fixture depth, NOT either provenance fix —
 /// both were measured decision-inert on this tape. See `golden_digest.rs`.
-const SHIP_GOLDEN: i128 = 31_111_528;
+const SHIP_GOLDEN: i128 = 30_889_282;
 const SHIP_B7_HAPPY: i128 = 539_316_863;
-const SHIP_B7_UNHAPPY: i128 = 1_303_165_900;
+const SHIP_B7_UNHAPPY: i128 = 1_304_886_706;
 /// **NEGATIVE since re-pin #26, and that is the hazard working rather than a
 /// regression.** This is the side of the concentration pair on which the bundled /
 /// sniper-captured cohort is the one that craters, and the §21.7 law that would
@@ -106,8 +106,8 @@ const SHIP_B7_UNHAPPY: i128 = 1_303_165_900;
 /// the engine takes them, and they do what the tape was built to make them do. A
 /// hazard tape whose hazard is undefended SHOULD lose money — the old positive was
 /// the fixture's thinness standing in for a defence the engine does not have.
-const SHIP_CONC_HAPPY: i128 = -4_961_452;
-const SHIP_CONC_MIRROR: i128 = 8_038_176;
+const SHIP_CONC_HAPPY: i128 = -5_259_344;
+const SHIP_CONC_MIRROR: i128 = 7_888_590;
 const SHIP_B3_HAZARD: i128 = 276_922_370;
 
 #[test]

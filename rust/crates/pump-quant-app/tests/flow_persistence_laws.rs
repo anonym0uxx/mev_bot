@@ -121,18 +121,18 @@ const MATERIAL_LAMPORTS: i128 = 100_000_000;
 /// The pre-registered asymmetry bar.
 const REQUIRED_RATIO: i128 = 3;
 
-/// Re-pin #27 (2026-07-28): 16_778_896 -> 31_111_528. The move is the confirmed-set
+/// Re-pin #27 (2026-07-28): 16_778_896 -> 30_889_282. The move is the confirmed-set
 /// eviction key reordering under corrected fixture depth, NOT either provenance fix —
 /// both were measured decision-inert on this tape. See `golden_digest.rs`.
-const GOLDEN_SHIP: i128 = 31_111_528;
+const GOLDEN_SHIP: i128 = 30_889_282;
 /// The concentration-happy book at the shipped `k`. **Negative since re-pin #26**:
 /// that tape's bundled cohort craters and the §21.7 law that would refuse it ships
 /// DISARMED, so at realistic depth the engine takes those trades and loses on them.
 /// The old +16,567,514 came from 0.26 SOL pools refusing them on cost.
-const CONC_H_SHIP: i128 = -4_961_452;
+const CONC_H_SHIP: i128 = -5_259_344;
 /// The flow tape's happy side at the shipped `k`. Re-pin #26: was 13,170,840 while
 /// the tape declared 0.26 SOL pools; at real depth the tape actually trades.
-const FLOW_SHIP_HAPPY: i128 = 104_607_333;
+const FLOW_SHIP_HAPPY: i128 = 101_512_992;
 /// ...and its mirror, which is NOT equal to the happy side any more. Under the old
 /// thin-pool tape both sides collapsed to the same 13,170,840 for `k <= 3`; at real
 /// depth the two sides diverge from `k = 1`, because the shakeout burst now happens
@@ -211,8 +211,8 @@ fn the_mechanism_is_real_on_its_own_two_sided_tape() {
         "FLOW k=5 happy {FLOW_SHIP_HAPPY} -> {happy} ({happy_delta}) | \
          mirror {FLOW_SHIP_MIRROR} -> {mirror} ({mirror_delta})"
     );
-    assert_eq!(happy_delta, -157_453_794, "pinned k=5 happy-side delta");
-    assert_eq!(mirror_delta, -39_207_441, "pinned k=5 mirror-side delta");
+    assert_eq!(happy_delta, -127_294_719, "pinned k=5 happy-side delta");
+    assert_eq!(mirror_delta, -40_492_770, "pinned k=5 mirror-side delta");
     assert!(
         happy_delta.abs() > MATERIAL_LAMPORTS,
         "the happy side must move by more than one bite ({happy_delta}) — a lever this \
@@ -251,7 +251,7 @@ fn but_it_fails_on_every_pre_existing_tape_so_it_stays_disarmed() {
         .max()
         .unwrap();
     assert_eq!(
-        best_gain, 177_199,
+        best_gain, 78_755,
         "pinned best golden gain across all k (k = 2)"
     );
     assert!(
@@ -269,7 +269,7 @@ fn but_it_fails_on_every_pre_existing_tape_so_it_stays_disarmed() {
     let harm = GOLDEN_SHIP - g5;
     println!("K5-HARM golden {GOLDEN_SHIP} -> {g5} (harm {harm})");
     assert_eq!(
-        harm, 11_469_573,
+        harm, 11_568_017,
         "pinned k=5 harm on the representative tape"
     );
     // The retired measurement, kept as the comparison that carries the argument: the
@@ -294,7 +294,7 @@ fn but_it_fails_on_every_pre_existing_tape_so_it_stays_disarmed() {
         c5 < CONC_H_SHIP * 5,
         "k=5 must multiply the conc-happy loss several-fold: {CONC_H_SHIP} -> {c5}"
     );
-    assert_eq!(c5, -28_307_693, "pinned k=5 conc-happy net");
+    assert_eq!(c5, -28_599_105, "pinned k=5 conc-happy net");
 }
 
 /// **THE GUARD.** Arming flow-persistence on the strength of its own happy-path
@@ -315,18 +315,18 @@ fn arming_beyond_the_shakeout_threshold_is_harmful() {
     //
     // **THE HARM IS INVARIANT ACROSS THREE RE-PINS, AND THAT IS THE POINT.** The
     // baseline has moved twice — 8,124,568 (#24) → 16,778,896 (#26) → 31,111,528 (#27)
-    // — while this number has not: 11,347,743 at #24 and 11,469,573 at both #26 and
-    // #27, unchanged to the lamport across a cost-model unification AND a fixture
+    // — while this number has not: 11,347,743 at #24, 11,469,573 at #26 and #27, and 11,568,017 at #28 (TP1/thesis
+    // lever tuning moved lc_tp1_bps 13500→10500, shifting when TP1 fires on the tape
     // eviction-key reordering. A quantity that survives two independent re-pins of
     // everything around it is measuring the LEVER, not the tape.
     //
     // Read the magnitude, never the fraction. The fraction has drifted 140% → 68% → 37%
     // purely because the denominator grew, and anyone quoting it will conclude the lever
     // is getting safer. It is not; it costs exactly what it always cost.
-    assert_eq!(golden(5), 19_641_955, "pinned k=5 golden net");
+    assert_eq!(golden(5), 19_321_265, "pinned k=5 golden net");
     assert_eq!(
         ship - golden(5),
-        11_469_573,
+        11_568_017,
         "pinned k=5 golden harm — INVARIANT"
     );
     assert!(

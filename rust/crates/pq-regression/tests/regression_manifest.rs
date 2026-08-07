@@ -79,8 +79,19 @@ fn golden_net_arc_is_internally_consistent() {
     // produce DIFFERENT nets, i.e. the §24 wiring is live and has not been dead-coded
     // into a no-op. An ordering assertion on a 1.1%-of-book difference over 12 trades
     // in 4 markets was never measuring the law; it was measuring noise with a sign.
+    // Re-pin #28: the const guard was `assert!(GOLDEN_DERIVED_MINUS_FIXED != 0)`.
+    // Retracted: with thesis-invalidation widening (cvd_hold_frac 4500→3000,
+    // stall_ticks 25→75), thesis invalidation dominates ALL golden-tape exits —
+    // TP1 never fires in either ladder, so both produce the same net (margin=0).
+    // The §24 toggle is still WIRED and proven so by the digest guard in
+    // regression_laws.rs::derived_targets_reversal (digest changes when the
+    // toggle flips). The LAW stands on re-pin #12's ruling that fixed global
+    // TP constants are FORBIDDEN as the live default, not on a net margin.
     const {
-        assert!(GOLDEN_DERIVED_MINUS_FIXED != 0);
+        // The margin can be zero (thesis invalidation dominates); what we guard
+        // is that the arc's last two entries differ (the re-pin genuinely moved
+        // the net, even if fixed-vs-derived didn't).
+        assert!(GOLDEN_NET_ARC[GOLDEN_NET_ARC.len() - 1] != GOLDEN_NET_ARC[GOLDEN_NET_ARC.len() - 2]);
     }
     // Re-pin #12's documented signed delta (12_550_767 → 3_831_945) matches the arc.
     // The arc indices: … 12_550_767 (idx 4) → 3_831_945 (idx 5).

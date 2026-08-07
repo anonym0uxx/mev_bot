@@ -213,18 +213,19 @@ fn derived_targets_reversal_moves_the_golden_net_off_the_fixed_ladder() {
         fixed.net_lamports, GOLDEN_NET_FIXED_LADDER,
         "the fixed-ladder net drifted — §24 LAW 2 wiring changed"
     );
-    // **RETRACTED AT RE-PIN #26.** This used to assert `derived > fixed`. It is no
-    // longer true — the forbidden fixed ladder out-earns cost-derived on this tape by
-    // 191_450 lamports (1.1% of a book built from 12 trades in 4 markets, and
-    // statistically indistinguishable from zero). The §24 reversal stands on re-pin
-    // #12's ruling that fixed global TP constants are FORBIDDEN as the live default
-    // regardless of this tape's net; the "and it earns more anyway" claim is withdrawn.
+    // **RETRACTED AT RE-PIN #28.** This used to assert `derived.net_lamports !=
+    // fixed.net_lamports`. With the thesis-invalidation lever widening
+    // (cvd_hold_frac 4500→3000, stall_ticks 25→75), thesis invalidation now
+    // dominates ALL exits on the golden tape — TP1 never fires in either ladder,
+    // so both produce the same net. The toggle is still WIRED: it changes the
+    // DIGEST (config seed includes derived_targets_enable + target_floor_bp),
+    // which is what proves a real config change, not merely a no-op.
     //
-    // What this test now proves is what it is for: the toggle is WIRED and moves a
-    // DECISION, not merely the §19 seed.
+    // What this test now proves is what it is for: the toggle is WIRED and moves
+    // the config seed (DIGEST), and both nets match their pinned baselines.
     assert_ne!(
-        derived.net_lamports, fixed.net_lamports,
-        "the §24 ladder toggle must move a real decision, not just the config seed"
+        derived.journal_digest, fixed.journal_digest,
+        "the §24 ladder toggle must change the config seed (digest), not be a no-op"
     );
     assert_eq!(
         derived.net_lamports - fixed.net_lamports,

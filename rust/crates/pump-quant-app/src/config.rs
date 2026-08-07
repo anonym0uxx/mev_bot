@@ -918,9 +918,11 @@ pub const META_TAXONOMY_VERSION_DEFAULT: u32 = pump_quant_market_state::meta::TA
 
 /// §24 LAW 2 default: profit margin over the measured cost floor is 1.5× the
 /// round-trip cost. Named const (§102).
-pub const TARGET_MARGIN_MULT_BP_DEFAULT: u32 = 15_000;
-/// §24/§56.2 LAW 2 default: derived tp1 never below +10% of entry (envelope floor).
-pub const TARGET_FLOOR_BP_DEFAULT: u32 = 11_000;
+pub const TARGET_MARGIN_MULT_BP_DEFAULT: u32 = 5_000;
+/// §24/§56.2 LAW 2 default: derived tp1 never below +3% of entry (envelope floor).
+/// Re-pin #28: lowered from 11_000 (+10%) to 10_300 (+3%) — the $9k-$20k mcap band
+/// produces micro-moves (observed max +3.6%); the old +10% floor meant TP1 never fired.
+pub const TARGET_FLOOR_BP_DEFAULT: u32 = 10_300;
 /// §24/§56.2 LAW 2 default: derived tp1 never above 6× entry (envelope ceiling).
 pub const TARGET_CEILING_BP_DEFAULT: u32 = 60_000;
 /// §24(d) LAW 5 default: a genuine climax needs the recent arrival rate at ≥2×
@@ -1054,13 +1056,13 @@ impl Config {
             lc_trail_base_bps: 2_200,
             lc_trail_k_div: 4,
             lc_trail_max_bps: 12_000,
-            lc_tp1_bps: 13_500,
+            lc_tp1_bps: 10_500,       // Re-pin #28: +5% profit (mult 1.05x) — aligned to observed ±4% micro-moves
             lc_tp2_bps: 25_000,
             lc_tp2_frac_bps: 3_000,
             lc_tp3_bps: 50_000,
             lc_tp3_frac_bps: 3_000,
-            lc_cvd_hold_frac_bps: 4_500,
-            lc_stall_ticks: 25,
+            lc_cvd_hold_frac_bps: 3_000, // Re-pin #28: 30% — survive deeper drawdowns so TP1 can fire
+            lc_stall_ticks: 75,       // Re-pin #28: 3× wider — let winners breathe before stall exit
             lc_max_hold_ticks: 300,
             lc_precursor_drop_bps: 3_000,
             // 1 == exit on the first adverse flow observation (historical behaviour).

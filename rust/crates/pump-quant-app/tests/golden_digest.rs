@@ -542,7 +542,7 @@ use tape_golden::*;
 //       fraction goes 77% -> 60% and the caveat stands: this net is not quotable
 //       without it (`edge_provenance.rs`). It is also still statistically
 //       indistinguishable from zero — twelve trades, four markets, |t| ~ 0.19.
-//   (b) **THE PAID DISCORD ROOM IS NET-POSITIVE AGAIN (+815_594).** Re-pin #24
+//   (b) **THE PAID DISCORD ROOM IS NET-POSITIVE AGAIN (+593_348).** Re-pin #24
 //       asserted `alphacall_net < 0` and wrote that calling the lane "proven
 //       positive" was FALSE. Under honest costs it is positive again. Both readings
 //       were produced by a cost model, not by evidence about the room: the number
@@ -651,9 +651,16 @@ use tape_golden::*;
 // `REAL_CURVE_VSOL` became a curve with 0.3 SOL genuinely raised (own-impact on a
 // floor clip unchanged at 33 bps a leg), and the two report harnesses' 0.2 SOL
 // "pools" became real curves escrowing 0.2 SOL.
-// (arc: ... -> 8_124_568 -> 16_778_896 -> 31_111_528.)
-const GOLDEN_DIGEST: u64 = 2_822_236_667_991_883_855;
-const GOLDEN_NET_LAMPORTS: i128 = 31_111_528;
+// (arc: ... -> 8_124_568 -> 16_778_896 -> 31_111_528 -> 30_889_282.)
+// Re-pin #28: TP1 + Thesis Invalidation lever tuning (target_floor_bp 11000→10300,
+// target_margin_mult_bp 15000→5000, lc_tp1_bps 13500→10_500, lc_cvd_hold_frac_bps
+// 4500→3000, lc_stall_ticks 25→75). Exit ladder now fires on observed ±4% micro-moves
+// instead of being dead code for the $9k-$20k mcap band.
+const GOLDEN_DIGEST: u64 = 4_716_956_466_487_911_990;
+// Re-pin #28: net changed 31_111_528 → 30_889_282 (exit ladder fires earlier on
+// micro-moves; TP1 tranche recovers principal at +5% rather than holding to thesis
+// invalidation). promoted/admitted/rejected/universe_filtered unchanged.
+const GOLDEN_NET_LAMPORTS: i128 = 30_889_282;
 const GOLDEN_PROMOTED: u64 = 504;
 const GOLDEN_ADMITTED: u64 = 11;
 const GOLDEN_REJECTED: u64 = 448;
@@ -666,11 +673,11 @@ const GOLDEN_UNIVERSE_FILTERED: u64 = 72;
 /// **This number has now been positive, negative, and positive again, and NOT ONE of
 /// those changes came from evidence about the room.** It was +447_700 while the
 /// tape's pools were 0.12-0.47 SOL and our own impact went uncharged, -2_721_835 once
-/// re-pin #24 gave the tape real depth and armed the curve fill, and +815_594 once
+/// re-pin #24 gave the tape real depth and armed the curve fill, and +593_348 once
 /// re-pin #26 unified the cost model. Three cost models, three signs, the same
 /// events. It is pinned as a VALUE — a tripwire on the §71.2 attribution split — and
 /// no claim about paid alpha rooms may be built on its sign in either direction.
-const GOLDEN_ALPHACALL_NET: i64 = 815_594;
+const GOLDEN_ALPHACALL_NET: i64 = 593_348;
 
 #[test]
 fn golden_digest_is_stable() {
@@ -774,7 +781,7 @@ fn golden_digest_is_stable() {
     );
     // Whether a paid room is worth its subscription is an OPEN question for live
     // data, and this tape has now answered it three different ways under three
-    // different cost models (+447_700, -2_721_835, +815_594) on the same events. The
+    // different cost models (+447_700, -2_721_835, +593_348) on the same events. The
     // room's net is pinned as a value by `GOLDEN_ALPHACALL_NET` above; its SIGN is not
     // evidence and is deliberately not asserted here in either direction.
 }

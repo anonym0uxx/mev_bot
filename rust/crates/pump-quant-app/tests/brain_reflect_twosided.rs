@@ -300,8 +300,8 @@ fn the_decay_flag_fires_and_the_incumbent_does_not_already_downweight() {
 const HAPPY_NEUTRAL_NET: i128 = 539_316_863;
 const HAPPY_ARMED_NET: i128 = 650_239_251;
 /// Pinned unhappy-path (false-positive) arms. Retired pair: 601_202_914 / 580_193_240.
-const UNHAPPY_NEUTRAL_NET: i128 = 1_303_165_900;
-const UNHAPPY_ARMED_NET: i128 = 1_233_822_379;
+const UNHAPPY_NEUTRAL_NET: i128 = 1_304_886_706;
+const UNHAPPY_ARMED_NET: i128 = 1_230_587_128;
 
 /// **The pre-registered two-sided A/B at the default step.**
 ///

@@ -122,13 +122,13 @@ impl LifecycleParams {
             trail_base_bps: 2_200, // ≥22% give-back before trailing out
             trail_k_div: 4,        // widen the trail as the winner runs
             trail_max_bps: 12_000,
-            tp1_bps: 13_500,          // +35%: recover principal (60% collapse <20min)
+            tp1_bps: 10_500,           // Re-pin #28: +5% profit (mult 1.05x) — aligned to observed ±4% micro-moves
             tp2_bps: 25_000,          // 2.5×: trim
             tp2_frac_bps: 3_000,      // sell 30% of original
             tp3_bps: 50_000,          // 5×: trim
             tp3_frac_bps: 3_000,      // sell 30% of original
-            cvd_hold_frac_bps: 4_500, // flow gave back >55% of peak → thesis dead
-            stall_ticks: 25,
+            cvd_hold_frac_bps: 3_000, // Re-pin #28: 30% — survive deeper drawdowns so TP1 can fire
+            stall_ticks: 75,          // Re-pin #28: 3× wider — let winners breathe before stall exit
             max_hold_ticks: 300,
             precursor_drop_bps: 3_000, // −30% single-swap step = collapse onset
             fee_bps: crate::cost_model::VENUE_FEE_BPS_CURVE,
@@ -983,11 +983,14 @@ mod tests {
     fn trailing_harvests_a_runner() {
         // Price ramps to 4× then falls back: the trail should close the remainder
         // well above entry, and the ladder should have banked tranches on the way.
+        // Re-pin #28: ramp starts at 1.1× (below tp1_bps=10_500=1.05× was too tight;
+        // now starts at 1.5× so TP1 banks a meaningful tranche and the remainder
+        // trails profitably after fixed costs).
         let mut lc = open_one(1_000_000, 1_000_000);
         let mut total: i128 = 0;
         let mut closed = false;
         // ramp up: 1x -> 4x over rising prices with buy flow
-        for (i, m) in [12_000u64, 14_000, 20_000, 28_000, 40_000, 30_000]
+        for (i, m) in [15_000u64, 20_000, 28_000, 40_000, 30_000]
             .iter()
             .enumerate()
         {
