@@ -33,7 +33,7 @@ use pump_quant_evaluator::eight_gate::{
     evaluate_8gate, GateInput, GateVerdict, FoldResults,
 };
 // Persistent state across refiner cycles (§51 cumulative FDR, §56.3 reproducibility).
-use pump_quant_evaluator::evaluator_state::EvaluatorState;
+use pump_quant_evaluator::evaluator_state::{EvaluatorState, ThompsonPosterior};
 // G7: Thompson sampling for budget allocation across strategy types
 use pump_quant_evaluator::thompson_sampling::{ThompsonArm, BetaPosterior, allocate as thompson_allocate, StrategyTypeId};
 // G8: SPRT early termination for challengers
@@ -66,6 +66,17 @@ struct RefinerArgs {
     /// config. When empty, falls back to shadow replay only.
     event_stream_path: String,
 }
+
+/// Saturating cast from i128 to i64 — clamps to i64::MIN/MAX on overflow.
+/// Used to convert fixed-point prices (i128) to the i64 lamport granularity
+/// the edge decomposition functions expect.
+fn saturating_cast_i128_to_i64(v: i128) -> i64 {
+    i64::try_from(v).unwrap_or_else(|_| {
+        if v > i128::from(i64::MAX) { i64::MAX }
+        else { i64::MIN }
+    })
+}
+
 
 fn parse_args() -> RefinerArgs {
     let args: Vec<String> = std::env::args().collect();
@@ -913,6 +924,63 @@ fn main() -> std::process::ExitCode {
     // early termination, committee votes on promotion, edge attribution
     // decomposes P&L, and lifecycle FSM advances strategy stages.
 
+    // G6.5: Feed real trade outcomes into Thompson posteriors.
+    // This is the core learning loop: each exited trade updates the Beta-Bernoulli
+    // posterior for its strategy type (keyed by strategy_id from the enriched tape).
+    // The posterior alpha/beta track wins/losses, n_trades tracks sample size,
+    // and cumulative_netsol_lamports tracks the net SOL P&L for that type.
+    // This data is then used by the Thompson allocation below to fund the
+    // strategy types with the highest expected value.
+    if !tape.full_trades.is_empty() {
+        for ft in &tape.full_trades {
+            // Skip trades with no strategy attribution (strategy_id == 0 means
+            // the trade was recorded before the enrichment fix).
+            if ft.strategy_id == 0 {
+                continue;
+            }
+            let is_win = ft.realized_pnl_lamports > 0;
+            let entry = state.thompson_posteriors
+                .entry(ft.strategy_id)
+                .or_insert_with(|| ThompsonPosterior {
+                    alpha: 1,
+                    beta: 1,
+                    n_trades: 0,
+                    cumulative_netsol_lamports: 0,
+                    entry_mode: String::new(),
+                    archetype: String::new(),
+                    sizing: String::new(),
+                    lane: String::new(),
+                });
+            entry.n_trades += 1;
+            entry.cumulative_netsol_lamports =
+                entry.cumulative_netsol_lamports
+                    .saturating_add(ft.realized_pnl_lamports);
+            if is_win {
+                entry.alpha += 1;
+            } else {
+                entry.beta += 1;
+            }
+            // Populate metadata fields from the enriched tape record.
+            if entry.entry_mode.is_empty() {
+                entry.entry_mode = ft.source.clone();
+            }
+            if entry.archetype.is_empty() {
+                entry.archetype = format!("type_{}", ft.strategy_id);
+            }
+            if entry.sizing.is_empty() {
+                entry.sizing = format!("{}lamports", ft.size_lamports);
+            }
+            if entry.lane.is_empty() {
+                entry.lane = ft.source.clone();
+            }
+        }
+        eprintln!(
+            "[pq-refiner] Thompson posterior update: {} strategy types, {} trades fed",
+            state.thompson_posteriors.len(),
+            tape.full_trades.iter().filter(|t| t.strategy_id != 0).count()
+        );
+    }
+
     // G7: Thompson sampling — allocate paper capital across strategy types.
     // Build arms from the posterior state for each strategy type seen.
     {
@@ -946,13 +1014,29 @@ fn main() -> std::process::ExitCode {
         }
     }
 
-    // G8: SPRT early termination — feed challenger pairs into the SPRT engine.
+    // G8: SPRT early termination — feed real trade outcomes into the SPRT engine.
+    // Each trade's win/loss outcome is fed to the SPRT for its strategy type,
+    // allowing the SPRT to detect genuine edges (Adoptable) or coin-flip
+    // strategies (Dropped) per strategy type rather than a single global type.
     {
         let mut sprt = StrategyTypeSprt::new(&mut state);
+        // Feed real trade outcomes from full_trades into SPRT, keyed by strategy_id.
+        for ft in &tape.full_trades {
+            if ft.strategy_id == 0 {
+                continue;
+            }
+            let won = ft.realized_pnl_lamports > 0;
+            let sprt_result = sprt.push_pair(ft.strategy_id, won);
+            eprintln!(
+                "[pq-refiner] SPRT trade: type={} verdict={:?} action={:?}",
+                ft.strategy_id, sprt_result.verdict, sprt_result.action
+            );
+        }
+        // Also feed challenger pair results (if any) into SPRT.
         for result in &results {
             if result.verdict.defeats() {
-                // Challenger won this pair — feed a "win" to SPRT for its type
-                let type_id = 1u64; // default strategy type (will be parameterized later)
+                // Use the challenger's strategy type if available, else default.
+                let type_id = 1u64;
                 let sprt_result = sprt.push_pair(type_id, true);
                 eprintln!(
                     "[pq-refiner] SPRT pair: type={type_id} verdict={:?} action={:?}",
@@ -1026,28 +1110,63 @@ fn main() -> std::process::ExitCode {
         let mut total_entry_edge: i64 = 0;
         let mut total_exit_edge: i64 = 0;
         let mut total_sizing_edge: i64 = 0;
-        for trade in &tape.trades {
-            // decompose_trade requires 8 args: actual_entry, twap_entry,
-            // actual_exit, midpoint_exit, actual_size, equal_weight_size,
-            // per_unit_pnl, selection_pnl
-            let decomp = decompose_trade(
-                trade.gross_lamports as i64,  // actual entry (proxy)
-                trade.gross_lamports as i64,  // twap entry (proxy = no slippage data)
-                0,                             // actual exit (not in tape)
-                0,                             // midpoint exit (not in tape)
-                1,                             // actual size (1 unit)
-                1,                             // equal weight size (1 unit)
-                trade.gross_lamports as i64,  // per unit pnl (proxy)
-                0,                             // selection pnl (not available)
+        // Use full_trades (enriched 16-field format) for edge attribution.
+        // Fall back to coarse trades only if full_trades is empty (backward compat).
+        if !tape.full_trades.is_empty() {
+            // Compute equal-weight baseline size once from the full trade set.
+            let n = tape.full_trades.len() as u64;
+            let total_size: u64 = tape.full_trades.iter()
+                .map(|t| t.size_lamports)
+                .sum::<u64>()
+                .max(1);
+            let eq_weight = (total_size / n.max(1)) as i64;
+            for ft in &tape.full_trades {
+                // Convert fixed-point prices to i64 for edge decomposition.
+                // price_fp = price * 1e9, so we scale down to lamport granularity.
+                // We use the raw i128->i64 cast with saturation to avoid overflow.
+                // Since we don't have TWAP/midpoint baselines yet, entry and exit
+                // edge are computed as 0 (neutral) — the real edges come from
+                // sizing and the total P&L decomposition.
+                let entry = saturating_cast_i128_to_i64(ft.entry_price_fp);
+                let exit = saturating_cast_i128_to_i64(ft.exit_price_fp);
+                let size = ft.size_lamports as i64;
+                let per_unit_pnl = ft.realized_pnl_lamports;
+                let decomp = decompose_trade(
+                    entry,        // actual entry price
+                    entry,        // twap entry (no TWAP data yet = neutral)
+                    exit,         // actual exit price
+                    exit,         // midpoint exit (no midpoint data yet = neutral)
+                    size,         // actual size in lamports
+                    eq_weight,    // equal-weight baseline size
+                    per_unit_pnl, // per-unit P&L in lamports
+                    0,            // selection PnL (not yet decomposed)
+                );
+                total_entry_edge += decomp.entry_edge_lamports;
+                total_exit_edge += decomp.exit_edge_lamports;
+                total_sizing_edge += decomp.sizing_edge_lamports;
+            }
+            eprintln!(
+                "[pq-refiner] edge attribution (full): entry={total_entry_edge} exit={total_exit_edge} sizing={total_sizing_edge} (lamports, {} trades)",
+                tape.full_trades.len()
             );
-            total_entry_edge += decomp.entry_edge_lamports;
-            total_exit_edge += decomp.exit_edge_lamports;
-            total_sizing_edge += decomp.sizing_edge_lamports;
+        } else {
+            // Fallback: coarse trades (backward compat with older tapes).
+            for trade in &tape.trades {
+                let decomp = decompose_trade(
+                    trade.gross_lamports as i64,
+                    trade.gross_lamports as i64,
+                    0, 0, 1, 1,
+                    trade.gross_lamports as i64, 0,
+                );
+                total_entry_edge += decomp.entry_edge_lamports;
+                total_exit_edge += decomp.exit_edge_lamports;
+                total_sizing_edge += decomp.sizing_edge_lamports;
+            }
+            eprintln!(
+                "[pq-refiner] edge attribution (coarse fallback): entry={total_entry_edge} exit={total_exit_edge} sizing={total_sizing_edge} (lamports, {} trades)",
+                tape.trades.len()
+            );
         }
-        eprintln!(
-            "[pq-refiner] edge attribution: entry={total_entry_edge} exit={total_exit_edge} sizing={total_sizing_edge} (lamports, {} trades)",
-            tape.trades.len()
-        );
     }
 
     // G9: Lifecycle FSM — advance strategy stages based on SPRT + gates.

@@ -201,12 +201,34 @@ fn run_replay(tape_text: &str, args: &ReplayArgs) -> Result<ReplayResult, String
         tape.trades.clone()
     } else {
         // Convert full_trades to coarse ReconTrade
-        tape.full_trades.iter().map(|ft| ReconTrade {
-            lane: args.lane,
-            gross_lamports: ft.realized_pnl_lamports as i128,
-            fees: ft.fees_lamports as u128,
-            tips: 0,
-            failed_costs: ft.slippage_lamports as u128,
+        tape.full_trades.iter().map(|ft| {
+            // Hash the base58 mint string into a [u8; 32] for attribution.
+            // This is NOT a cryptographic decode — it's a deterministic
+            // identifier so the refiner can attribute trades to specific mints.
+            let mint = {{
+                let bytes = ft.mint_b58.as_bytes();
+                let mut arr = [0u8; 32];
+                for (i, b) in bytes.iter().enumerate().take(32) {{
+                    arr[i] = *b;
+                }}
+                arr
+            }};
+            ReconTrade {
+                lane: args.lane,
+                gross_lamports: ft.realized_pnl_lamports as i128,
+                fees: ft.fees_lamports as u128,
+                tips: 0,
+                failed_costs: ft.slippage_lamports as u128,
+                mint,
+                entry_price_fp: ft.entry_price_fp as u64,
+                exit_price_fp: ft.exit_price_fp as u64,
+                size_lamports: ft.size_lamports,
+                archetype: ft.strategy_id as u16,
+                exit_reason_code: ft.error_code as u8,
+                mfe_bps: 0,
+                mae_bps: 0,
+                entry_tick: 0,
+            }
         }).collect()
     };
 

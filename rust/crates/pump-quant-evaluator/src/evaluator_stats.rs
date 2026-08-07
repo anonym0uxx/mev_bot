@@ -156,6 +156,24 @@ pub struct ReconTrade {
     pub tips: u128,
     /// Cost of failed attempts attributable to this trade, lamports.
     pub failed_costs: u128,
+    /// The mint address of the traded market (base58-unchecked, raw 32 bytes).
+    pub mint: [u8; 32],
+    /// Entry price in fixed-point (lamports per token-unit).
+    pub entry_price_fp: u64,
+    /// Exit price in fixed-point (lamports per token-unit).
+    pub exit_price_fp: u64,
+    /// Total deployed notional (lamports) at entry — the position size.
+    pub size_lamports: u64,
+    /// §25 setup archetype tag (0 = None / classifier off).
+    pub archetype: u16,
+    /// Exit reason code (maps to ExitReason::code()).
+    pub exit_reason_code: u8,
+    /// Maximum favorable excursion, bps of entry.
+    pub mfe_bps: i64,
+    /// Maximum adverse excursion, bps of entry (≤ 0).
+    pub mae_bps: i64,
+    /// The logical tick at which the position was opened.
+    pub entry_tick: u64,
 }
 
 impl ReconTrade {
@@ -167,6 +185,15 @@ impl ReconTrade {
             fees: fee,
             tips: tip,
             failed_costs: failc,
+            mint: [0u8; 32],
+            entry_price_fp: 0,
+            exit_price_fp: 0,
+            size_lamports: 0,
+            archetype: 0,
+            exit_reason_code: 0,
+            mfe_bps: 0,
+            mae_bps: 0,
+            entry_tick: 0,
         }
     }
 }

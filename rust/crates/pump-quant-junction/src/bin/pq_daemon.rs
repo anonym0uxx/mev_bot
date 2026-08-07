@@ -50,6 +50,12 @@ use pump_quant_junction::laserstream::{
 };
 use pump_quant_junction::queue::BoundedJunctionQueue;
 use pump_quant_junction::tape_export::{TapeExporter, TapeRecord, TapeLane};
+use pump_quant_junction::memory_bank::{MemoryBank, MemoryBankConfig};
+use pump_quant_junction::trade_journal::{
+    TradeRecord, TradeOutcome, TradeSide, TradeLane,
+};
+use pump_quant_junction::trade_journal::RunMode as JournalRunMode;
+use pump_quant_junction::ProvenanceSource;
 use pump_quant_junction::event_stream::EventStreamWriter;
 use pump_quant_junction::autonomous_bridge::{
     DefenseState, try_reload_config, RefinerSpawner,
@@ -692,6 +698,17 @@ fn main() -> ExitCode {
 
     // Phase 2: tape exporter — drains engine trades to evaluator JSONL format.
     let mut tape_exporter = TapeExporter::new(TAPE_PATH);
+    // Memory bank — aggregates trade records into per-mint and per-strategy
+    // performance summaries for continuous optimization toward max net SOL.
+    // This is the learning loop: every exited trade feeds the bank, which
+    // the refiner reads to adapt strategy weights and Thompson posteriors.
+    let mut memory_bank = MemoryBank::new(MemoryBankConfig {
+        max_mints: 512,
+        max_strategies: 64,
+        decay_window: 50,
+    });
+    let memory_bank_path = "data/memory_bank.json";
+    eprintln!("[pq-daemon] memory bank path: data/memory_bank.json");
     // Event stream capture for deterministic replay (§13 paper/live parity).
     // Fail-safe: if the file can't be opened, daemon continues without capture.
     let mut event_stream_writer = EventStreamWriter::open(EVENT_STREAM_PATH);
@@ -1351,6 +1368,11 @@ fn main() -> ExitCode {
                     Err(e) => eprintln!("[pq-daemon] live_status write failed: {e}"),
                 }
                 engine.write_brain_analysis();
+                // Export memory bank summaries for the refiner to consume.
+                // This is the learning loop's output: per-mint and per-strategy
+                // performance data that feeds progressive refinement.
+                let mb_json = memory_bank.global_json();
+                let _ = std::fs::write(memory_bank_path, &mb_json);
                 last_status_write_tick = tick_counter;
                 last_status_write_wallclock = Instant::now();
             }
@@ -1374,15 +1396,18 @@ fn main() -> ExitCode {
                     // Fields not yet available from engine.take_tape_trades() are
                     // zeroed — future enrichment will populate them from the
                     // decision journal and position exit context.
+                    let mint_b58 = Pubkey::try_from(t.mint)
+                        .map(|pk| pk.to_string())
+                        .unwrap_or_else(|_| hex_short(&t.mint));
                     tape_exporter.push(TapeRecord::TradeFull {
                         slot: last_slot_seen,
-                        mint_b58: String::new(),
+                        mint_b58,
                         side_tag: "buy",
-                        entry_price_fp: 0,
-                        exit_price_fp: 0,
-                        size_lamports: 0,
-                        strategy_id: 0,
-                        source_tag: "unknown",
+                        entry_price_fp: t.entry_price_fp as i128,
+                        exit_price_fp: t.exit_price_fp as i128,
+                        size_lamports: t.size_lamports,
+                        strategy_id: t.archetype as u64,
+                        source_tag: if t.scalp { "scalp" } else { "early" },
                         outcome_tag: if net >= 0 { "profit" } else { "loss" },
                         realized_pnl_lamports: net,
                         fees_lamports: (t.fees + t.tips) as u64,
@@ -1390,7 +1415,7 @@ fn main() -> ExitCode {
                         decision_latency_us: 0,
                         confirm_latency_us: 0,
                         run_mode_tag: "paper",
-                        error_code: 0,
+                        error_code: t.exit_reason_code as u32,
                         seq: 0,
                     });
                     // Also emit the coarse 5-field Trade record for backward
@@ -1406,6 +1431,35 @@ fn main() -> ExitCode {
                         tips: t.tips,
                         failed: t.failed,
                     });
+                    // Feed the memory bank — the learning loop. Every exited
+                    // trade is recorded with full provenance so the bank can
+                    // build per-mint and per-strategy performance summaries.
+                    let trade_lane = if t.scalp { TradeLane::Scalp } else { TradeLane::Early };
+                    let rec = TradeRecord {
+                        slot: last_slot_seen,
+                        mint_b58: Pubkey::try_from(t.mint)
+                            .map(|pk| pk.to_string())
+                            .unwrap_or_else(|_| hex_short(&t.mint)),
+                        side: TradeSide::Buy,
+                        entry_price_fp: t.entry_price_fp as i128,
+                        exit_price_fp: t.exit_price_fp as i128,
+                        size_lamports: t.size_lamports,
+                        strategy_id: t.archetype as u64,
+                        source: if t.scalp { ProvenanceSource::HeliusAccountSubscribe }
+                                else { ProvenanceSource::PumpPortalTrade },
+                        outcome: if net >= 0 { TradeOutcome::Filled }
+                                 else { TradeOutcome::FilledWithSlippage },
+                        realized_pnl_lamports: net,
+                        fees_lamports: (t.fees + t.tips) as u64,
+                        slippage_lamports: t.failed as u64,
+                        decision_latency_us: 0,
+                        confirm_latency_us: 0,
+                        run_mode: JournalRunMode::Paper,
+                        error_code: t.exit_reason_code as u32,
+                        seq: 0,
+                        lane: Some(trade_lane),
+                    };
+                    memory_bank.ingest(&rec);
                 }
                 if tape_exporter.pending_count() > 0 {
                     match tape_exporter.flush() {
@@ -1549,15 +1603,43 @@ fn main() -> ExitCode {
     for t in &trades {
         let _lane = if t.scalp { TapeLane::Scalp } else { TapeLane::Early };
         let net = t.gross as i64 - t.fees as i64 - t.tips as i64 - t.failed as i64;
+            let mint_b58 = Pubkey::try_from(t.mint)
+            .map(|pk| pk.to_string())
+            .unwrap_or_else(|_| hex_short(&t.mint));
+        // Feed final trades to memory bank too
+        let trade_lane = if t.scalp { TradeLane::Scalp } else { TradeLane::Early };
+        let rec = TradeRecord {
+            slot: last_slot_seen,
+            mint_b58: mint_b58.clone(),
+            side: TradeSide::Buy,
+            entry_price_fp: t.entry_price_fp as i128,
+            exit_price_fp: t.exit_price_fp as i128,
+            size_lamports: t.size_lamports,
+            strategy_id: t.archetype as u64,
+            source: if t.scalp { ProvenanceSource::HeliusAccountSubscribe }
+                    else { ProvenanceSource::PumpPortalTrade },
+            outcome: if net >= 0 { TradeOutcome::Filled }
+                     else { TradeOutcome::FilledWithSlippage },
+            realized_pnl_lamports: net,
+            fees_lamports: (t.fees + t.tips) as u64,
+            slippage_lamports: t.failed as u64,
+            decision_latency_us: 0,
+            confirm_latency_us: 0,
+            run_mode: JournalRunMode::Paper,
+            error_code: t.exit_reason_code as u32,
+            seq: 0,
+            lane: Some(trade_lane),
+        };
+        memory_bank.ingest(&rec);
         tape_exporter.push(TapeRecord::TradeFull {
             slot: last_slot_seen,
-            mint_b58: String::new(),
+            mint_b58,
             side_tag: "buy",
-            entry_price_fp: 0,
-            exit_price_fp: 0,
-            size_lamports: 0,
-            strategy_id: 0,
-            source_tag: "unknown",
+            entry_price_fp: t.entry_price_fp as i128,
+            exit_price_fp: t.exit_price_fp as i128,
+            size_lamports: t.size_lamports,
+            strategy_id: t.archetype as u64,
+            source_tag: if t.scalp { "scalp" } else { "early" },
             outcome_tag: if net >= 0 { "profit" } else { "loss" },
             realized_pnl_lamports: net,
             fees_lamports: (t.fees + t.tips) as u64,
@@ -1565,7 +1647,7 @@ fn main() -> ExitCode {
             decision_latency_us: 0,
             confirm_latency_us: 0,
             run_mode_tag: "paper",
-            error_code: 0,
+            error_code: t.exit_reason_code as u32,
             seq: 0,
         });
     }
@@ -1575,6 +1657,17 @@ fn main() -> ExitCode {
             tape_exporter.total_exported()
         ),
         Err(e) => eprintln!("[pq-daemon] final tape flush FAILED: {e}"),
+    }
+
+    // Final memory bank export — flush learning summaries to disk
+    let mb_json = memory_bank.global_json();
+    match std::fs::write(memory_bank_path, &mb_json) {
+        Ok(_) => eprintln!(
+            "[pq-daemon] final memory bank export: trades={} net={}lamports",
+            memory_bank.global_summary().total_trades,
+            memory_bank.global_summary().net_lamports
+        ),
+        Err(e) => eprintln!("[pq-daemon] final memory bank export FAILED: {e}"),
     }
 
     // Final event stream flush

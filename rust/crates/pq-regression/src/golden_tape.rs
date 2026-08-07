@@ -97,6 +97,12 @@ pub fn drive(cfg: Config) -> Report {
     // charged separately on both legs against the depth this tape declares below.
     let mut cfg = cfg;
     cfg.gate_expected_move_bps = 1_800;
+    cfg.gate_exit_tranches = 3; // golden tape calibrated against 3 tranches; pin to preserve
+    cfg.promote_min_haircut_bp = 8_000; // golden tape calibrated against 8000; pin to preserve
+    // Pin the Phase 2 model defaults — the golden tape was calibrated with the
+    // model disabled and min_sample=30; the new defaults must not bleed in here.
+    cfg.expected_move_model_enable = false;
+    cfg.expected_move_min_sample = 30;
     cfg.gate_margin_bps = 150;
     // The depths below are real, so our own curve impact is charged on both legs.
     cfg.curve_exact_fill_enable = true;

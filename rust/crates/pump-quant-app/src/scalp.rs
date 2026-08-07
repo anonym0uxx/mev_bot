@@ -145,6 +145,15 @@ pub fn scalp(
         fees: 0,
         tips,
         failed_costs: 0,
+        mint: [0u8; 32],
+        entry_price_fp: 0,
+        exit_price_fp: 0,
+        size_lamports: size,
+        archetype: 0,
+        exit_reason_code: 0,
+        mfe_bps: 0,
+        mae_bps: 0,
+        entry_tick: 0,
     };
 
     ScalpResult {

@@ -438,6 +438,15 @@ pub fn parse_jsonl(input: &str) -> Result<Tape, TapeError> {
                     fees: as_u128(get_int(&obj, "fees", lineno)?, "fees", lineno)?,
                     tips: as_u128(get_int(&obj, "tips", lineno)?, "tips", lineno)?,
                     failed_costs: as_u128(get_int(&obj, "failed", lineno)?, "failed", lineno)?,
+                    mint: [0u8; 32],
+                    entry_price_fp: 0,
+                    exit_price_fp: 0,
+                    size_lamports: 0,
+                    archetype: 0,
+                    exit_reason_code: 0,
+                    mfe_bps: 0,
+                    mae_bps: 0,
+                    entry_tick: 0,
                 });
             }
             "trade_full" => {

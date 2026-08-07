@@ -18,6 +18,19 @@
 /// Byte-exact decision-journal digest of the golden tape under
 /// `Config::dev_portable`. The primary determinism fingerprint (§22/§54).
 ///
+/// Re-pin #27 (2026-08-07) — METADATA COMPLETENESS OVERHAUL + TAPE MIRROR FIX.
+/// The `Exit` struct gained 4 fields (`entry_price_fp`, `exit_price_fp`,
+/// `size_lamports`, `entry_tick`), `ReconTrade`/`TapeTrade` gained 9 fields
+/// each, and `MemoryBank` was wired into the daemon. These are decision-neutral
+/// enrichments — the new fields are NOT read in any decision path. Separately,
+/// `pq-regression/src/golden_tape.rs` was MISSING 4 config overrides that
+/// `pump-quant-app/tests/tape_golden/mod.rs` had (`gate_exit_tranches = 3`,
+/// `promote_min_haircut_bp = 8_000`, `expected_move_model_enable = false`,
+/// `expected_move_min_sample = 30`), causing the two tapes to diverge. The
+/// overrides are now mirrored, so both tapes produce the SAME digest. All
+/// golden values remain at re-pin #26 levels — this re-pin is a NO-OP on
+/// the pinned values; the fix is in the tape mirror alignment.
+///
 /// Re-pin #21 (LAW B3 `brain_haircut_enable` ARMED BY DEFAULT) moved this and
 /// NOTHING else, for the same seed-only reason as #19 and #20: §19 folds the whole
 /// `Config`'s strategy identity into the journal seed, so CHANGING the value of a

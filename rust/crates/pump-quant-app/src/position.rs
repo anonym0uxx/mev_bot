@@ -232,6 +232,16 @@ pub struct Exit {
     pub mfe_bps: i64,
     /// Maximum adverse excursion, bps of entry (trough/entry − 1; ≤ 0).
     pub mae_bps: i64,
+    /// Entry price in fixed-point, carried from the held position so the
+    /// tape and memory bank can record real entry/exit prices.
+    pub entry_price_fp: u64,
+    /// Exit price in fixed-point (= entry_price_fp * mult_bps / 10_000).
+    pub exit_price_fp: u64,
+    /// Total deployed notional (lamports) at entry — the position size.
+    pub size_lamports: u64,
+    /// The logical tick at which the position was opened, so hold duration
+    /// can be computed in the tape and memory bank.
+    pub entry_tick: u64,
 }
 
 /// One held position, integer/fixed-point.
@@ -802,6 +812,9 @@ impl ScalpLifecycle {
             pos.tranche_mask |= 0b001;
             let net = pos.realize(frac, mult, &p);
             let (mfe_bps, mae_bps) = pos.excursions_bps();
+            let exit_px = u64::try_from(
+                u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000
+            ).unwrap_or(pos.entry_price_fp);
             return Some(Exit {
                 mint: *mint,
                 net_lamports: net,
@@ -809,12 +822,19 @@ impl ScalpLifecycle {
                 closed: pos.remaining_bps == 0,
                 mfe_bps,
                 mae_bps,
+                entry_price_fp: pos.entry_price_fp,
+                exit_price_fp: exit_px,
+                size_lamports: pos.size_lamports,
+                entry_tick: pos.entry_tick,
             });
         }
         if max_rungs >= 2 && mult >= t2 && (pos.tranche_mask & 0b010) == 0 {
             pos.tranche_mask |= 0b010;
             let net = pos.realize(p.tp2_frac_bps, mult, &p);
             let (mfe_bps, mae_bps) = pos.excursions_bps();
+            let exit_px = u64::try_from(
+                u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000
+            ).unwrap_or(pos.entry_price_fp);
             return Some(Exit {
                 mint: *mint,
                 net_lamports: net,
@@ -822,12 +842,19 @@ impl ScalpLifecycle {
                 closed: pos.remaining_bps == 0,
                 mfe_bps,
                 mae_bps,
+                entry_price_fp: pos.entry_price_fp,
+                exit_price_fp: exit_px,
+                size_lamports: pos.size_lamports,
+                entry_tick: pos.entry_tick,
             });
         }
         if max_rungs >= 3 && mult >= t3 && (pos.tranche_mask & 0b100) == 0 {
             pos.tranche_mask |= 0b100;
             let net = pos.realize(p.tp3_frac_bps, mult, &p);
             let (mfe_bps, mae_bps) = pos.excursions_bps();
+            let exit_px = u64::try_from(
+                u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000
+            ).unwrap_or(pos.entry_price_fp);
             return Some(Exit {
                 mint: *mint,
                 net_lamports: net,
@@ -835,6 +862,10 @@ impl ScalpLifecycle {
                 closed: pos.remaining_bps == 0,
                 mfe_bps,
                 mae_bps,
+                entry_price_fp: pos.entry_price_fp,
+                exit_price_fp: exit_px,
+                size_lamports: pos.size_lamports,
+                entry_tick: pos.entry_tick,
             });
         }
 
@@ -911,6 +942,9 @@ impl ScalpLifecycle {
         let mut pos = self.open.remove(mint).expect("close on an open position"); // LINT-ALLOW(hot_panic): infallible — every caller (on_tick/close_at/force_close_all) checks open membership before close()
         let (mfe_bps, mae_bps) = pos.excursions_bps();
         let net = pos.realize(pos.remaining_bps, mult_bps, &self.params);
+        let exit_px = u64::try_from(
+            u128::from(pos.entry_price_fp) * u128::from(mult_bps) / 10_000
+        ).unwrap_or(pos.entry_price_fp);
         Exit {
             mint: *mint,
             net_lamports: net,
@@ -918,6 +952,10 @@ impl ScalpLifecycle {
             closed: true,
             mfe_bps,
             mae_bps,
+            entry_price_fp: pos.entry_price_fp,
+            exit_price_fp: exit_px,
+            size_lamports: pos.size_lamports,
+            entry_tick: pos.entry_tick,
         }
     }
 }

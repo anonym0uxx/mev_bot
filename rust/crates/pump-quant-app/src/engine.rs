@@ -513,6 +513,24 @@ pub struct TapeTrade {
     pub tips: u128,
     /// Cost of failed attempts, lamports.
     pub failed: u128,
+    /// The mint address of the traded market (raw 32 bytes).
+    pub mint: [u8; 32],
+    /// Entry price in fixed-point.
+    pub entry_price_fp: u64,
+    /// Exit price in fixed-point.
+    pub exit_price_fp: u64,
+    /// Total deployed notional (lamports) at entry.
+    pub size_lamports: u64,
+    /// §25 setup archetype tag (0 = None / classifier off).
+    pub archetype: u16,
+    /// Exit reason code (maps to ExitReason::code()).
+    pub exit_reason_code: u8,
+    /// Maximum favorable excursion, bps of entry.
+    pub mfe_bps: i64,
+    /// Maximum adverse excursion, bps of entry (≤ 0).
+    pub mae_bps: i64,
+    /// The logical tick at which the position was opened.
+    pub entry_tick: u64,
 }
 
 /// The end-of-run summary.
@@ -4141,8 +4159,8 @@ impl Engine {
         let attribution = self
             .open_lane
             .get(&e.mint)
-            .map(|a| (a.lane, a.discovery_lane));
-        if let Some((lane, discovery_lane)) = attribution {
+            .map(|a| (a.lane, a.discovery_lane, a.archetype));
+        if let Some((lane, discovery_lane, archetype)) = attribution {
             // Saturate in the CORRECT DIRECTION: `try_from` fails at BOTH ends, so
             // `unwrap_or(i64::MAX)` would turn an out-of-range LOSS into a maximal
             // GAIN — and this value feeds `lane_perf`/`disc_perf`, which drive
@@ -4161,6 +4179,15 @@ impl Engine {
                 fees: 0,
                 tips: 0,
                 failed_costs: 0,
+                mint: e.mint,
+                entry_price_fp: e.entry_price_fp,
+                exit_price_fp: e.exit_price_fp,
+                size_lamports: e.size_lamports,
+                archetype,
+                exit_reason_code: e.reason.code(),
+                mfe_bps: e.mfe_bps,
+                mae_bps: e.mae_bps,
+                entry_tick: e.entry_tick,
             };
             self.recon[accum_index(recon.lane)].add(&recon);
             // Phase 2: accumulate for tape export.
@@ -4842,6 +4869,15 @@ impl Engine {
                 fees: t.fees,
                 tips: t.tips,
                 failed: t.failed_costs,
+                mint: t.mint,
+                entry_price_fp: t.entry_price_fp,
+                exit_price_fp: t.exit_price_fp,
+                size_lamports: t.size_lamports,
+                archetype: t.archetype,
+                exit_reason_code: t.exit_reason_code,
+                mfe_bps: t.mfe_bps,
+                mae_bps: t.mae_bps,
+                entry_tick: t.entry_tick,
             })
             .collect()
     }
