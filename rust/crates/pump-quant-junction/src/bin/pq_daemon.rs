@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use pump_quant_app::config::Config;
-use pump_quant_app::engine::{Engine, RunMode, TapeTrade};
+use pump_quant_app::engine::{Engine, RunMode};
 use std::io::Write; // needed for fc_child stdin.write_all()
 use pump_quant_core::config::Creds;
 use pump_quant_junction::decode::decode_onchain_confirm_with_curve;
@@ -91,6 +91,19 @@ const PUMPPORTAL_DEFAULT_URL: &str = "wss://pumpportal.fun/api/data";
 const MAX_ACCOUNT_SUBS: usize = 64;
 const MAX_TRADE_SUBS: usize = 512;
 const STALE_SECS: u64 = 30;
+
+/// WS read timeout in millis. Tightened from tick_period_ms (250ms) to prevent
+/// blocking on degraded connections. Each poll returns within 100ms max,
+/// ensuring the tick loop advances even when both WS lanes are silent.
+const WS_READ_TIMEOUT_MS: u64 = 100;
+/// Wall-clock status heartbeat interval in seconds. live_status.json is
+/// refreshed at most this often, decoupling health reporting from event
+/// throughput so the watchdog never kills a healthy-but-starved daemon.
+const STATUS_HEARTBEAT_SECS: u64 = 15;
+/// Bounded sleep on WS reconnect failures (was 5s which blocked the entire
+/// event loop). 500ms gives the server time to recover without starving
+/// the tick loop.
+const WS_RECONNECT_SLEEP_MS: u64 = 500;
 
 /// Exit code on emergency stop.
 const EXIT_EMERGENCY: u8 = 99;
@@ -415,7 +428,10 @@ fn main() -> ExitCode {
             return ExitCode::from(4);
         }
     };
-    let _ = pp_conn.set_read_timeout(Duration::from_millis(tick_period_ms));
+    // Tightened read timeout: 100ms per poll ensures the event loop advances
+    // even when both WS lanes are silent. Previously used tick_period_ms (250ms),
+    // which combined with two sequential polls = 500ms per iteration.
+    let _ = pp_conn.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
     for sub in pumpportal_ws::subscription_batch(&[]) {
         if let Err(e) = pp_conn.send_text(&sub) {
             eprintln!("[pq-daemon] PumpPortal subscribe error: {e}");
@@ -431,7 +447,7 @@ fn main() -> ExitCode {
             return ExitCode::from(4);
         }
     };
-    let _ = helius_conn.set_read_timeout(Duration::from_millis(tick_period_ms));
+    let _ = helius_conn.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
     if let Err(e) = helius_conn.send_text(&helius_ws::slot_subscribe_request()) {
         eprintln!("[pq-daemon] Helius slotSubscribe error: {e}");
         return ExitCode::from(4);
@@ -602,6 +618,7 @@ fn main() -> ExitCode {
     let status_path = std::path::Path::new(STATUS_PATH);
     let mut tick_counter: u64 = 0;
     let mut last_status_write_tick: u64 = 0;
+    let mut last_status_write_wallclock: Instant = Instant::now();
     let mut last_brain_snap_tick: u64 = 0;
     let mut last_tape_flush_tick: u64 = 0;
 
@@ -655,6 +672,24 @@ fn main() -> ExitCode {
         }
 
         let mut did_work = false;
+
+        // ── Wall-clock status heartbeat (top-of-loop) ─────────────────────
+        // This fires on EVERY loop iteration, independent of tick timing.
+        // Even if the loop is blocked by WS reconnect sleeps or slow polls,
+        // this ensures live_status.json is refreshed within
+        // STATUS_HEARTBEAT_SECS of the last write. This is the critical
+        // defense against watchdog health-check kills when the daemon is
+        // healthy but event-starved (all WS lanes degraded).
+        if last_status_write_wallclock.elapsed() >= Duration::from_secs(STATUS_HEARTBEAT_SECS) {
+            let st = engine.live_status();
+            match st.write_to_path(status_path) {
+                Ok(()) => {}
+                Err(e) => eprintln!("[pq-daemon] heartbeat live_status write failed: {e}"),
+            }
+            engine.write_brain_analysis();
+            last_status_write_tick = tick_counter;
+            last_status_write_wallclock = Instant::now();
+        }
 
         // ── Poll LaserStream gRPC (PRIMARY ingest lane) ──────────────────
         loop {
@@ -826,7 +861,7 @@ fn main() -> ExitCode {
                 stats.pp_reconnects += 1;
                 pp_conn = match WsConn::connect(&pp_url) {
                     Ok(mut c) => {
-                        let _ = c.set_read_timeout(Duration::from_millis(tick_period_ms));
+                        let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
                         for sub in pumpportal_ws::subscription_batch(&[]) {
                             let _ = c.send_text(&sub);
                         }
@@ -840,14 +875,12 @@ fn main() -> ExitCode {
                     Err(e) => {
                         eprintln!("[pq-daemon] PumpPortal reconnect failed: {e}");
                         stats.ws_errors += 1;
-                        // In daemon mode: don't break — sleep and retry next iteration.
-                        // The loop will keep trying. A persistent failure will be
-                        // caught by the watchdog via stale live_status.json.
-                        std::thread::sleep(Duration::from_secs(5));
+                        // Bounded sleep: 500ms (was 5s). Keeps tick loop alive.
+                        std::thread::sleep(Duration::from_millis(WS_RECONNECT_SLEEP_MS));
                         // Try to reconnect the existing connection object
                         match WsConn::connect(&pp_url) {
                             Ok(mut c) => {
-                                let _ = c.set_read_timeout(Duration::from_millis(tick_period_ms));
+                                let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
                                 for sub in pumpportal_ws::subscription_batch(&[]) {
                                     let _ = c.send_text(&sub);
                                 }
@@ -859,16 +892,13 @@ fn main() -> ExitCode {
                                 c
                             }
                             Err(_) => {
-                                // Still failing — keep the old (broken) conn;
-                                // the next iteration will retry.
-                                pp_conn = WsConn::connect(&pp_url).unwrap_or_else(|_| {
-                                    // Last resort: create a dummy that always returns None.
-                                    // This is ugly but keeps the daemon alive.
-                                    WsConn::connect(&pp_url).unwrap_or_else(|_| {
-                                        panic!("PumpPortal irrecoverably dead")
-                                    })
-                                });
-                                continue;
+                                // Graceful degradation: keep the old (broken) conn.
+                                // The daemon continues with LaserStream + Helius.
+                                // Previously this path panicked — crashing the daemon
+                                // and burning a watchdog restart for a transient
+                                // network issue.
+                                eprintln!("[pq-daemon] PumpPortal 2nd reconnect failed — degrading, continuing with LaserStream/Helius");
+                                pp_conn
                             }
                         }
                     }
@@ -1013,7 +1043,7 @@ fn main() -> ExitCode {
                 stats.helius_reconnects += 1;
                 helius_conn = match WsConn::connect(&helius_url) {
                     Ok(mut c) => {
-                        let _ = c.set_read_timeout(Duration::from_millis(tick_period_ms));
+                        let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
                         let _ = c.send_text(&helius_ws::slot_subscribe_request());
                         for (_, mint) in sub_tracker.active_mints() {
                             let pda = bonding_curve_pda(&mint);
@@ -1030,11 +1060,11 @@ fn main() -> ExitCode {
                     Err(e) => {
                         eprintln!("[pq-daemon] Helius reconnect failed: {e}");
                         stats.ws_errors += 1;
-                        // In daemon mode: sleep and retry next iteration rather than break
-                        std::thread::sleep(Duration::from_secs(5));
+                        // Bounded sleep: 500ms (was 5s). Keeps tick loop alive.
+                        std::thread::sleep(Duration::from_millis(WS_RECONNECT_SLEEP_MS));
                         match WsConn::connect(&helius_url) {
                             Ok(mut c) => {
-                                let _ = c.set_read_timeout(Duration::from_millis(tick_period_ms));
+                                let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
                                 let _ = c.send_text(&helius_ws::slot_subscribe_request());
                                 for (_, mint) in sub_tracker.active_mints() {
                                     let pda = bonding_curve_pda(&mint);
@@ -1049,13 +1079,11 @@ fn main() -> ExitCode {
                                 c
                             }
                             Err(_) => {
-                                // Keep going — the watchdog will catch persistent failure
-                                // via stale live_status.json. Don't kill the daemon.
-                                helius_conn = WsConn::connect(&helius_url)
-                                    .unwrap_or_else(|_| {
-                                        panic!("Helius irrecoverably dead")
-                                    });
-                                continue;
+                                // Graceful degradation: keep the old (broken) conn.
+                                // Daemon continues with LaserStream + PumpPortal.
+                                // Previously this path panicked.
+                                eprintln!("[pq-daemon] Helius 2nd reconnect failed — degrading, continuing with LaserStream/PumpPortal");
+                                helius_conn
                             }
                         }
                     }
@@ -1080,7 +1108,7 @@ fn main() -> ExitCode {
             stats.helius_reconnects += 1;
             helius_conn = match WsConn::connect(&helius_url) {
                 Ok(mut c) => {
-                    let _ = c.set_read_timeout(Duration::from_millis(tick_period_ms));
+                    let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
                     let _ = c.send_text(&helius_ws::slot_subscribe_request());
                     for (_, mint) in sub_tracker.active_mints() {
                         let pda = bonding_curve_pda(&mint);
@@ -1098,10 +1126,11 @@ fn main() -> ExitCode {
                 Err(e) => {
                     eprintln!("[pq-daemon] Helius stale-reconnect failed: {e}");
                     stats.ws_errors += 1;
-                    // Don't break — keep the daemon alive. The watchdog will
-                    // detect persistent staleness via live_status.json age.
-                    last_slot_time = Instant::now(); // reset to avoid spam
-                    continue;
+                    // Don't break — keep the daemon alive. Reset stale timer
+                    // to avoid spam. The next loop iteration will retry.
+                    last_slot_time = Instant::now();
+                    // Keep the old connection — graceful degradation.
+                    helius_conn
                 }
             };
         }
@@ -1253,6 +1282,8 @@ fn main() -> ExitCode {
             tick_counter += 1;
 
             // ── Periodic status write ────────────────────────────────────
+            // Tick-count based status write. The wall-clock heartbeat at
+            // the top of the loop handles the event-starvation case.
             if tick_counter - last_status_write_tick >= args.status_every_ticks {
                 let st = engine.live_status();
                 match st.write_to_path(status_path) {
@@ -1261,6 +1292,7 @@ fn main() -> ExitCode {
                 }
                 engine.write_brain_analysis();
                 last_status_write_tick = tick_counter;
+                last_status_write_wallclock = Instant::now();
             }
 
             // ── Periodic brain snapshot ─────────────────────────────────
