@@ -523,6 +523,11 @@ fn main() -> ExitCode {
         if let Ok(ws_url) = std::env::var("HELIUS_WS_URL") {
             cmd.env("HELIUS_WS_URL", ws_url);
         }
+        // Forward env vars through WSL2 boundary via WSLENV.
+        // When PQ_LASERSTREAM_BIN=wsl.exe, these vars are injected into WSL2
+        // so the Linux gRPC binary can read them. WSLENV format: VAR/u
+        // (the /u suffix converts Windows paths to Linux paths if needed).
+        cmd.env("WSLENV", "HELIUS_API_KEY/u:LASERSTREAM_ENDPOINT/u:HELIUS_WS_URL/u");
         // Inject extra args (subcommand + flags) if provided.
         for arg in &ls_extra_args {
             cmd.arg(arg);

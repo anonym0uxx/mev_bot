@@ -124,6 +124,10 @@ DATA_DIR="$RUST_DIR/data"
 WATCHDOG_BIN="$RUST_DIR/target/release/pq-watchdog.exe"
 
 STREAM_CAPTURE_BIN="$REPO_ROOT/tools/stream-capture-rs/target/release/pq-stream-capture.exe"
+# gRPC binary is compiled in WSL2 (Linux ELF). The daemon spawns it via wsl.exe
+# with WSLENV forwarding credentials through the Windows→WSL2 boundary.
+LASERSTREAM_GRPC_WSL="/mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/target/release/pq-laserstream-grpc"
+# Native Windows fallback (if ever compiled natively on Windows):
 LASERSTREAM_GRPC_BIN="$REPO_ROOT/tools/stream-capture-rs/grpc-server-only/target/release/pq-laserstream-grpc.exe"
 LASERSTREAM_FALLBACK_BIN="$REPO_ROOT/tools/stream-capture-rs/target/release/pq-laserstream-grpc.exe"
 FIRECRAWL_BIN="$REPO_ROOT/tools/firecrawl-bridge-rs/target/release/pq-firecrawl-bridge.exe"
@@ -199,12 +203,24 @@ LS_BIN_SET=false
 LS_BIN_PATH=""
 LS_BIN_ARGS=""
 
-if [ -f "$LASERSTREAM_GRPC_BIN" ]; then
-    # gRPC binary available — use as primary (lowest latency, replay-capable)
-    LS_BIN_PATH="$LASERSTREAM_GRPC_BIN"
-    LS_BIN_ARGS=""  # gRPC binary reads LASERSTREAM_ENDPOINT env var, no args needed
+# Check if the WSL2-compiled gRPC binary exists. We use `wsl.exe` to test
+# because the binary lives inside the WSL2 filesystem (/mnt/d/...).
+WSL_GRPC_EXISTS=$(wsl.exe -d Ubuntu -- bash -c 'test -x "/mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/target/release/pq-laserstream-grpc" && echo yes' 2>/dev/null || echo "no")
+
+if [ "$WSL_GRPC_EXISTS" = "yes" ]; then
+    # gRPC binary available in WSL2 — use as primary (lowest latency, replay-capable)
+    # The daemon spawns wsl.exe, which runs the Linux binary inside WSL2.
+    # Credentials are forwarded via WSLENV (set by the daemon's cmd.env()).
+    LS_BIN_PATH="wsl.exe"
+    LS_BIN_ARGS="-d Ubuntu -- $LASERSTREAM_GRPC_WSL"
     LS_BIN_SET=true
-    echo "  pq-laserstream-grpc: OK (PRIMARY lane — gRPC, replay-capable)"
+    echo "  pq-laserstream-grpc: OK (PRIMARY lane — gRPC via WSL2, replay-capable)"
+elif [ -f "$LASERSTREAM_GRPC_BIN" ]; then
+    # Native Windows gRPC binary (if ever compiled natively)
+    LS_BIN_PATH="$LASERSTREAM_GRPC_BIN"
+    LS_BIN_ARGS=""
+    LS_BIN_SET=true
+    echo "  pq-laserstream-grpc: OK (PRIMARY lane — native gRPC, replay-capable)"
 elif [ -f "$STREAM_CAPTURE_BIN" ]; then
     # gRPC binary NOT available (can't compile on Windows). Use stream-capture
     # helius-ws as fallback. This adds transactionSubscribe on the pump.fun
@@ -352,9 +368,9 @@ echo "  Daemon:      $DAEMON_BIN"
 echo "  Data dir:    $DATA_DIR"
 echo "  Creds:       $PQ_CREDS_FILE (PQ_CREDS_FILE env, User scope)"
 if [ "$LS_BIN_SET" = true ]; then
-    echo "  LaserStream: $PQ_LASERSTREAM_BIN"
+    echo "  LaserStream: $PQ_LASERSTREAM_BIN $PQ_LASERSTREAM_ARGS"
     if [ -n "${PQ_LASERSTREAM_ARGS:-}" ]; then
-        echo "    args:      $PQ_LASERSTREAM_ARGS"
+        echo "    mode:      WSL2 gRPC (credentials forwarded via WSLENV)"
     fi
 else
     echo "  LaserStream: DISABLED (gRPC binary not compiled — Helius WS + PumpPortal WS fallback)"

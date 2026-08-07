@@ -107,14 +107,15 @@ fn esc(s: &str) -> String {
 
 /// Emit a structured transaction NDJSON line.
 /// Extracts account keys and instruction data from the protobuf transaction.
-fn emit_transaction(slot: u64, tx_update: &helius_laserstream::grpc::SubscribeTransactionInfo) {
-    let tx_opt = tx_update.transaction.as_ref();
-    let sig_b58 = tx_opt
+fn emit_transaction(slot: u64, tx_update: &helius_laserstream::grpc::SubscribeUpdateTransaction) {
+    let tx_info = tx_update.transaction.as_ref();
+    let sig_b58 = tx_info
         .and_then(|t| Some(b58(&t.signature)))
         .unwrap_or_default();
 
     // Extract account keys from the transaction message.
-    let account_keys: Vec<String> = tx_opt
+    let account_keys: Vec<String> = tx_info
+        .and_then(|t| t.transaction.as_ref())
         .and_then(|t| t.message.as_ref())
         .map(|msg| {
             msg.account_keys
@@ -125,7 +126,8 @@ fn emit_transaction(slot: u64, tx_update: &helius_laserstream::grpc::SubscribeTr
         .unwrap_or_default();
 
     // Extract instructions from the message.
-    let instructions_json: Vec<String> = tx_opt
+    let instructions_json: Vec<String> = tx_info
+        .and_then(|t| t.transaction.as_ref())
         .and_then(|t| t.message.as_ref())
         .map(|msg| {
             msg.instructions
@@ -166,20 +168,15 @@ fn emit_transaction(slot: u64, tx_update: &helius_laserstream::grpc::SubscribeTr
 }
 
 /// Emit a structured account NDJSON line.
-fn emit_account(slot: u64, acct_update: &helius_laserstream::grpc::SubscribeAccountInfo) {
-    let key_b58 = acct_update
-        .account
-        .as_ref()
+fn emit_account(slot: u64, acct_update: &helius_laserstream::grpc::SubscribeUpdateAccount) {
+    let acct_info = acct_update.account.as_ref();
+    let key_b58 = acct_info
         .map(|a| b58(&a.pubkey))
         .unwrap_or_default();
-    let owner_b58 = acct_update
-        .account
-        .as_ref()
+    let owner_b58 = acct_info
         .map(|a| b58(&a.owner))
         .unwrap_or_default();
-    let data_b64 = acct_update
-        .account
-        .as_ref()
+    let data_b64 = acct_info
         .map(|a| b64_encode(&a.data))
         .unwrap_or_default();
 
