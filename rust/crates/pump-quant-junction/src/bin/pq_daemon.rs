@@ -104,6 +104,17 @@ const STATUS_HEARTBEAT_SECS: u64 = 15;
 /// event loop). 500ms gives the server time to recover without starving
 /// the tick loop.
 const WS_RECONNECT_SLEEP_MS: u64 = 500;
+/// Minimum seconds between LaserStream respawn attempts. Without this, a
+/// binary that exits immediately (e.g. wrong subcommand, missing creds)
+/// triggers a tight-loop respawn on every `Disconnected` poll, burning CPU
+/// and spamming logs. 15s is long enough to break the cycle but short
+/// enough to recover when the issue is transient (network blip).
+const LS_RESPAWN_COOLDOWN_SECS: u64 = 15;
+/// Maximum LaserStream respawn attempts before giving up and falling back
+/// to Helius WS permanently. Prevents infinite respawn loops against a
+/// fundamentally broken binary (e.g. pq-stream-capture.exe spawned without
+/// a subcommand, or pq-laserstream-grpc.exe with a bad endpoint).
+const LS_MAX_RESPAWN_ATTEMPTS: u32 = 5;
 
 /// Exit code on emergency stop.
 const EXIT_EMERGENCY: u8 = 99;
@@ -471,7 +482,9 @@ fn main() -> ExitCode {
     // ─── LaserStream gRPC primary ingest lane ────────────────────────────
     let (ls_tx, ls_rx) = mpsc::channel::<LaserStreamUpdate>();
     let mut ls_child: Option<std::process::Child> = None;
-    let ls_bin: Option<String> = std::env::var("PQ_LASERSTREAM_BIN").ok()
+    let ls_bin: Option<String> = std::env::var("PQ_LASERSTREAM_BIN")
+        .ok()
+        .filter(|s| !s.is_empty())
         .or_else(|| {
             let target_dir = std::env::current_exe()
                 .ok()
@@ -486,20 +499,45 @@ fn main() -> ExitCode {
             if p.exists() { p.to_str().map(|s| s.to_string()) } else { None }
         });
 
-    if let Some(bin_path) = &ls_bin {
+    // ─── LaserStream spawn helper ────────────────────────────────────────
+    // Shared closure for initial spawn + respawn. Reads PQ_LASERSTREAM_ARGS
+    // (space-separated subcommand + flags, e.g. "helius-ws --programs p1,p2")
+    // so the launch script can configure the binary's mode without code changes.
+    // If PQ_LASERSTREAM_ARGS is unset, no args are passed (gRPC binary default).
+    let ls_extra_args: Vec<String> = std::env::var("PQ_LASERSTREAM_ARGS")
+        .ok()
+        .map(|s| s.split_whitespace().map(String::from).collect())
+        .unwrap_or_default();
+
+    let spawn_ls = |bin_path: &str| -> Option<std::process::Child> {
         let mut cmd = std::process::Command::new(bin_path);
         cmd.stdout(std::process::Stdio::piped())
            .stderr(std::process::Stdio::piped());
+        // Pass through credential env vars to the subprocess.
         if let Ok(endpoint) = std::env::var("LASERSTREAM_ENDPOINT") {
             cmd.env("LASERSTREAM_ENDPOINT", endpoint);
         }
         if let Ok(key) = std::env::var("HELIUS_API_KEY") {
             cmd.env("HELIUS_API_KEY", key);
         }
+        if let Ok(ws_url) = std::env::var("HELIUS_WS_URL") {
+            cmd.env("HELIUS_WS_URL", ws_url);
+        }
+        // Inject extra args (subcommand + flags) if provided.
+        for arg in &ls_extra_args {
+            cmd.arg(arg);
+        }
         match cmd.spawn() {
             Ok(mut child) => {
-                eprintln!("[pq-daemon] LaserStream gRPC spawned: {:?}", bin_path);
-                stats.ls_spawned = true;
+                eprintln!(
+                    "[pq-daemon] LaserStream spawned: {} {}",
+                    bin_path,
+                    if ls_extra_args.is_empty() {
+                        "(no args)".to_string()
+                    } else {
+                        ls_extra_args.join(" ")
+                    }
+                );
                 let stdout = child.stdout.take().expect("piped stdout");
                 let ls_tx_clone = ls_tx.clone();
                 std::thread::spawn(move || {
@@ -518,23 +556,37 @@ fn main() -> ExitCode {
                         }
                     }
                 });
-                ls_child = Some(child);
+                Some(child)
             }
             Err(e) => {
                 eprintln!("[pq-daemon] LaserStream spawn FAILED: {e}");
+                None
+            }
+        }
+    };
+
+    if let Some(bin_path) = &ls_bin {
+        match spawn_ls(bin_path) {
+            Some(child) => {
+                stats.ls_spawned = true;
+                ls_child = Some(child);
+            }
+            None => {
                 eprintln!("[pq-daemon] Proceeding with Helius WS as secondary lane");
                 stats.stubbed_or_assumed.push(
-                    "LaserStream gRPC spawn failed — Helius WS as fallback".to_string()
+                    "LaserStream spawn failed — Helius WS as fallback".to_string()
                 );
             }
         }
     } else {
         eprintln!("[pq-daemon] LaserStream binary not found — set PQ_LASERSTREAM_BIN");
         stats.stubbed_or_assumed.push(
-            "LaserStream gRPC binary not found — Helius WS as fallback".to_string()
+            "LaserStream binary not found — Helius WS as fallback".to_string()
         );
     }
     let _ls_state = LaserStreamState::new(); // reserved for future per-slot accounting
+    let mut ls_respawn_count: u32 = 0;
+    let mut ls_last_respawn: Option<Instant> = None;
 
     // ─── Firecrawl web-intelligence sidecar ─────────────────────────────────
     // Same sidecar pattern as LaserStream: spawn a child process, read its
@@ -719,46 +771,49 @@ fn main() -> ExitCode {
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     // Reader thread exited — LaserStream stream ended.
-                    // In daemon mode: attempt to RE-SPAWN the gRPC binary.
+                    // In daemon mode: attempt to RE-SPAWN the binary with a
+                    // cooldown to prevent tight-loop respawning against a
+                    // fundamentally broken binary (e.g. wrong subcommand,
+                    // missing creds, bad endpoint).
                     if stats.ls_spawned {
-                        eprintln!("[pq-daemon] LaserStream disconnected — attempting respawn");
+                        // Check respawn cooldown + max attempts
+                        let now = Instant::now();
+                        let cooldown_ok = ls_last_respawn
+                            .map(|t| now.duration_since(t).as_secs() >= LS_RESPAWN_COOLDOWN_SECS)
+                            .unwrap_or(true);
+                        if !cooldown_ok {
+                            // Too soon — skip respawn this iteration
+                            break;
+                        }
+                        if ls_respawn_count >= LS_MAX_RESPAWN_ATTEMPTS {
+                            eprintln!(
+                                "[pq-daemon] LaserStream respawn limit reached ({}), \
+                                giving up — Helius WS as permanent fallback",
+                                ls_respawn_count
+                            );
+                            stats.stubbed_or_assumed.push(
+                                "LaserStream exhausted respawns — Helius WS fallback".to_string()
+                            );
+                            // Mark ls_spawned false so we don't keep trying
+                            stats.ls_spawned = false;
+                            break;
+                        }
+                        eprintln!(
+                            "[pq-daemon] LaserStream disconnected — respawn attempt {}/{}",
+                            ls_respawn_count + 1,
+                            LS_MAX_RESPAWN_ATTEMPTS
+                        );
                         stats.ls_reconnects += 1;
-                        // Try to re-spawn
+                        ls_respawn_count += 1;
+                        ls_last_respawn = Some(now);
                         if let Some(bin_path) = &ls_bin {
-                            let mut cmd = std::process::Command::new(bin_path);
-                            cmd.stdout(std::process::Stdio::piped())
-                               .stderr(std::process::Stdio::piped());
-                            if let Ok(endpoint) = std::env::var("LASERSTREAM_ENDPOINT") {
-                                cmd.env("LASERSTREAM_ENDPOINT", endpoint);
-                            }
-                            if let Ok(key) = std::env::var("HELIUS_API_KEY") {
-                                cmd.env("HELIUS_API_KEY", key);
-                            }
-                            match cmd.spawn() {
-                                Ok(mut child) => {
+                            match spawn_ls(bin_path) {
+                                Some(child) => {
                                     eprintln!("[pq-daemon] LaserStream respawned");
-                                    let stdout = child.stdout.take().expect("piped stdout");
-                                    let ls_tx_clone2 = ls_tx.clone();
-                                    std::thread::spawn(move || {
-                                        use std::io::BufRead;
-                                        let reader = std::io::BufReader::new(stdout);
-                                        for line in reader.lines() {
-                                            match line {
-                                                Ok(text) => {
-                                                    if let Some(update) = parse_ndjson_line(&text) {
-                                                        if ls_tx_clone2.send(update).is_err() {
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                                Err(_) => break,
-                                            }
-                                        }
-                                    });
                                     ls_child = Some(child);
                                 }
-                                Err(e) => {
-                                    eprintln!("[pq-daemon] LaserStream respawn FAILED: {e}");
+                                None => {
+                                    eprintln!("[pq-daemon] LaserStream respawn FAILED");
                                     stats.ws_errors += 1;
                                 }
                             }
