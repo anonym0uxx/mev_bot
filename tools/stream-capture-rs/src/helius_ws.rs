@@ -96,6 +96,15 @@ pub fn account_subscribe_request(id: u64, pubkey: &str, commitment: &str) -> Str
     out
 }
 
+/// Build a standard `accountUnsubscribe` request for one subscription id. Pure.
+/// Used to release Helius server-side subscription slots when we evict locally.
+#[must_use]
+pub fn account_unsubscribe_request(id: u64, server_sub_id: u64) -> String {
+    format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"accountUnsubscribe\",\"params\":[{server_sub_id}]}}"
+    )
+}
+
 /// Build the standard `slotSubscribe` request (no params). Pure.
 #[must_use]
 pub fn slot_subscribe_request() -> String {

@@ -321,6 +321,7 @@ impl SessionStats {
 
 struct SubTracker {
     req_to_mint: HashMap<u64, [u8; 32]>,
+    req_to_server_sub: HashMap<u64, u64>,
     server_sub_to_mint: HashMap<u64, [u8; 32]>,
     subscription_order: Vec<(u64, [u8; 32])>,
 }
@@ -329,6 +330,7 @@ impl SubTracker {
     fn new() -> Self {
         Self {
             req_to_mint: HashMap::new(),
+            req_to_server_sub: HashMap::new(),
             server_sub_to_mint: HashMap::new(),
             subscription_order: Vec::new(),
         }
@@ -341,6 +343,7 @@ impl SubTracker {
 
     fn record_ack(&mut self, req_id: u64, server_sub_id: u64) {
         if let Some(mint) = self.req_to_mint.get(&req_id).copied() {
+            self.req_to_server_sub.insert(req_id, server_sub_id);
             self.server_sub_to_mint.insert(server_sub_id, mint);
         }
     }
@@ -349,12 +352,27 @@ impl SubTracker {
         self.server_sub_to_mint.get(&server_sub_id).copied()
     }
 
-    fn evict_oldest(&mut self) -> Option<(u64, [u8; 32])> {
+    /// Evict the oldest locally-tracked subscription. Returns (req_id, mint,
+    /// server_sub_id) where server_sub_id is Some if Helius has ACKed the
+    /// subscription (needed to send accountUnsubscribe), or None if the ACK
+    /// hasn't arrived yet.
+    fn evict_oldest(&mut self) -> Option<(u64, [u8; 32], Option<u64>)> {
         let item = self.subscription_order.first().copied()?;
         let (req_id, mint) = item;
         self.subscription_order.remove(0);
         self.req_to_mint.remove(&req_id);
-        Some((req_id, mint))
+        let server_sub = self.req_to_server_sub.remove(&req_id);
+        if let Some(ssid) = server_sub {
+            self.server_sub_to_mint.remove(&ssid);
+        }
+        Some((req_id, mint, server_sub))
+    }
+
+    /// Clear all server-sub mappings (used on reconnect — the server assigns
+    /// new sub IDs on a fresh connection, so stale mappings must go).
+    fn clear_server_subs(&mut self) {
+        self.req_to_server_sub.clear();
+        self.server_sub_to_mint.clear();
     }
 
     fn active_mints(&self) -> Vec<(u64, [u8; 32])> {
@@ -947,9 +965,26 @@ fn main() -> ExitCode {
 
                         if !already_subscribed {
                             if sub_tracker.len() >= MAX_ACCOUNT_SUBS {
-                                if let Some((evicted_req, evicted_mint)) = sub_tracker.evict_oldest() {
+                                if let Some((evicted_req, evicted_mint, evicted_server_sub)) = sub_tracker.evict_oldest() {
                                     stats.account_subs_evicted += 1;
                                     reserve_tracker.remove(&evicted_mint);
+                                    // Send accountUnsubscribe to release the Helius
+                                    // server-side subscription slot. Without this the
+                                    // connection leaks subscriptions until Helius caps
+                                    // at 1000, after which no new accountSubscribe
+                                    // succeeds and ALL new candidates fail with
+                                    // NeedsOnchainConfirmation.
+                                    if let Some(ssid) = evicted_server_sub {
+                                        let unsub_id = next_req_id;
+                                        next_req_id += 1;
+                                        let unsub = helius_ws::account_unsubscribe_request(unsub_id, ssid);
+                                        if let Err(e) = helius_conn.send_text(&unsub) {
+                                            eprintln!(
+                                                "[pq-daemon] accountUnsubscribe send error (server_sub={ssid}): {e}"
+                                            );
+                                            stats.ws_errors += 1;
+                                        }
+                                    }
                                     eprintln!(
                                         "[pq-daemon] EVICT sub req={evicted_req} mint={:.8}",
                                         hex_short(&evicted_mint)
@@ -1177,6 +1212,7 @@ fn main() -> ExitCode {
             Ok(Some(WsEvent::Closed(reason))) => {
                 eprintln!("[pq-daemon] Helius closed: {reason}, reconnecting…");
                 stats.helius_reconnects += 1;
+                sub_tracker.clear_server_subs();
                 helius_conn = match WsConn::connect(&helius_url) {
                     Ok(mut c) => {
                         let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
@@ -1242,6 +1278,7 @@ fn main() -> ExitCode {
                 last_slot_time.elapsed().as_secs()
             );
             stats.helius_reconnects += 1;
+            sub_tracker.clear_server_subs();
             helius_conn = match WsConn::connect(&helius_url) {
                 Ok(mut c) => {
                     let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
