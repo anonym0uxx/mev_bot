@@ -71,7 +71,7 @@ fn the_golden_tape_is_priced_with_real_depth_and_honest_fills() {
     );
     assert_eq!(
         tape_golden::drive(Config::dev_portable()).net_lamports,
-        30_889_282,
+        31_465_931,
         "the honest golden net, with real depth and our own impact charged on both legs"
     );
 }
@@ -96,7 +96,7 @@ fn honest_fills_cost_us_about_half_the_reported_book() {
     /// confirmed-set eviction key, which the corrected fixtures reordered — see the
     /// re-pin #27 entry in `golden_digest.rs`. It is carried here only so this file's
     /// arithmetic keeps referring to the shipped tape.
-    const SHIPPED: i128 = 30_889_282;
+    const SHIPPED: i128 = 31_465_931;
     const {
         assert!(
             HONEST_UNDER_THE_SPLIT_MODEL < FICTIONAL,
@@ -222,7 +222,7 @@ fn only_tapes_with_real_depth_may_charge_their_own_impact() {
     const REAL_DEPTH_FILLS_AT_PRINT: i128 = 15_641_439;
     let armed_net = tape_golden::drive(Config::dev_portable()).net_lamports;
     assert_eq!(
-        armed_net, 30_889_282,
+        armed_net, 31_465_931,
         "the golden tape must be pricing its own impact"
     );
     // Re-pin #26: 15_641_439 was measured under the SPLIT cost model, so it is no
@@ -244,8 +244,9 @@ fn only_tapes_with_real_depth_may_charge_their_own_impact() {
 /// The golden tape with fills taken AT THE PRINT under the unified cost model —
 /// measured, not computed, from the first run of
 /// `only_tapes_with_real_depth_may_charge_their_own_impact`.
-/// Re-pin #28: 37_364_873 → 37_070_067 — TP1/thesis-invalidation lever tuning.
-const MEASURED_FILLS_AT_PRINT: i128 = 37_070_067;
+/// Re-pin #29: 37_070_067 → 37_171_418 — cost-aware TP ladder (fixed fractions,
+/// research-synthesized values from arXiv:2606.08232 fat-tail capture design).
+const MEASURED_FILLS_AT_PRINT: i128 = 37_171_418;
 
 /// **A-13(1) — the participation rate, declared rather than assumed.** This is the
 /// arithmetic that nobody computed for months: what fraction of the pool is OUR order?

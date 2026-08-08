@@ -53,8 +53,16 @@ pub struct LifecycleParams {
     pub trail_k_div: u32,
     /// Maximum trailing width (bps) — a very large winner is never stopped by noise.
     pub trail_max_bps: u32,
-    /// Take-profit tranche 1 target (mult bps): sell enough to recover principal.
+    /// Take-profit tranche 1 target (mult bps): the cost-aware first exit.
+    /// Under the derived ladder (§24 LAW 2) this is `10_000 + margin` where
+    /// margin is the measured round-trip cost × `target_margin_mult_bp/10_000`;
+    /// the fixed default is the conservative fallback when derivation is off.
     pub tp1_bps: u32,
+    /// Tranche 1 sell fraction (bps of ORIGINAL size). FIXED, not cost-recovery:
+    /// sells a known portion to lock in profit while leaving the remainder to
+    /// trail. The old cost-recovery mechanism sold ~97% at low multiples,
+    /// leaving dust — a fixed 40% ensures 60% rides the runner. §29 re-pin #29.
+    pub tp1_frac_bps: u32,
     /// Tranche 2 target (mult bps) and the fraction of ORIGINAL size to sell (bps).
     pub tp2_bps: u32,
     /// Tranche 2 sell fraction (bps of original size).
@@ -122,11 +130,12 @@ impl LifecycleParams {
             trail_base_bps: 2_200, // ≥22% give-back before trailing out
             trail_k_div: 4,        // widen the trail as the winner runs
             trail_max_bps: 12_000,
-            tp1_bps: 10_500,           // Re-pin #28: +5% profit (mult 1.05x) — aligned to observed ±4% micro-moves
-            tp2_bps: 25_000,          // 2.5×: trim
-            tp2_frac_bps: 3_000,      // sell 30% of original
-            tp3_bps: 50_000,          // 5×: trim
-            tp3_frac_bps: 3_000,      // sell 30% of original
+            tp1_bps: 11_000,          // Re-pin #29: +10% cost-aware fallback (derived ladder overrides per-market)
+            tp1_frac_bps: 3_500,      // Re-pin #29: FIXED 35% — lock profit, leave 65% (was cost-recovery ~97%)
+            tp2_bps: 25_000,          // Re-pin #29: 2.5× moderate runner (arXiv:2606.08232 fat-tail capture)
+            tp2_frac_bps: 2_500,      // Re-pin #29: 25% — trim quarter, leave rest for TP3+moon bag
+            tp3_bps: 50_000,          // Re-pin #29: 5× strong runner — fat-tail zone (top 1.6% of trades)
+            tp3_frac_bps: 3_000,      // sell 30% of original — leaves 10% moon bag to trail
             cvd_hold_frac_bps: 3_000, // Re-pin #28: 30% — survive deeper drawdowns so TP1 can fire
             stall_ticks: 75,          // Re-pin #28: 3× wider — let winners breathe before stall exit
             max_hold_ticks: 300,
@@ -804,11 +813,16 @@ impl ScalpLifecycle {
             None => (p.tp1_bps, p.tp2_bps, p.tp3_bps, 3u8),
         };
         if max_rungs >= 1 && mult >= t1 && (pos.tranche_mask & 0b001) == 0 {
-            // Sell the fraction that recovers principal+cost at this multiple.
-            let recover_frac = ((u128::from(pos.cost_lamports) * 10_000)
-                / (u128::from(pos.size_lamports).max(1) * u128::from(mult) / 10_000).max(1))
-                as u32;
-            let frac = recover_frac.min(pos.remaining_bps);
+            // Re-pin #29: FIXED fraction (tp1_frac_bps) instead of cost-recovery.
+            // The old mechanism computed `recover_frac = cost / (size * mult)` to
+            // recover ALL principal+cost at the current multiple — at low multiples
+            // this sold ~97% of the position, leaving dust to trail. A fixed 40%
+            // sells a known portion, locks in profit above breakeven, and leaves
+            // 60% to ride the runner. The target (t1) is cost-aware via the derived
+            // ladder (margin = rt_bps × target_margin_mult_bp/10_000, floor 10_500)
+            // or the fixed fallback (11_000 = +10%), so the exit price is always
+            // above all-in round-trip cost.
+            let frac = p.tp1_frac_bps.min(pos.remaining_bps);
             pos.tranche_mask |= 0b001;
             let net = pos.realize(frac, mult, &p);
             let (mfe_bps, mae_bps) = pos.excursions_bps();
@@ -981,16 +995,18 @@ mod tests {
 
     #[test]
     fn trailing_harvests_a_runner() {
-        // Price ramps to 4× then falls back: the trail should close the remainder
-        // well above entry, and the ladder should have banked tranches on the way.
-        // Re-pin #28: ramp starts at 1.1× (below tp1_bps=10_500=1.05× was too tight;
-        // now starts at 1.5× so TP1 banks a meaningful tranche and the remainder
-        // trails profitably after fixed costs).
+        // Price ramps to 5.5× then falls back: the ladder banks TP1/TP2/TP3 tranches
+        // on the way up, and the rug-precursor drop closes the 10% moon bag well
+        // above entry. Net must be positive after all costs.
+        // Re-pin #29: ramp updated for cost-aware ladder (TP1=11_000/+10%, TP2=25_000/
+        // 2.5×, TP3=50_000/5×). Old ramp peaked at 4× — below the new TP3 — so the
+        // moon bag never closed. New ramp peaks at 5.5× (hits TP3), then drops 36%
+        // in one step (≥30% precursor threshold) to close the remainder.
         let mut lc = open_one(1_000_000, 1_000_000);
         let mut total: i128 = 0;
         let mut closed = false;
-        // ramp up: 1x -> 4x over rising prices with buy flow
-        for (i, m) in [15_000u64, 20_000, 28_000, 40_000, 30_000]
+        // ramp up: 1× -> 5.5× over rising prices, then sharp drop closes the moon bag
+        for (i, m) in [15_000u64, 28_000, 55_000, 35_000]
             .iter()
             .enumerate()
         {

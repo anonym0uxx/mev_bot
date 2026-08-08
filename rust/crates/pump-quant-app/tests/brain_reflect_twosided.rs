@@ -297,11 +297,11 @@ fn the_decay_flag_fires_and_the_incumbent_does_not_already_downweight() {
 /// Pinned happy-path arms (armed − neutral), lamports. Re-measured at re-pin #26 on
 /// a tape that actually trades; the retired pair (479_556_343 / 506_253_592) was
 /// taken while the tape declared 0.2 SOL pools.
-const HAPPY_NEUTRAL_NET: i128 = 539_316_863;
-const HAPPY_ARMED_NET: i128 = 650_239_251;
+const HAPPY_NEUTRAL_NET: i128 = 539_413_679;
+const HAPPY_ARMED_NET: i128 = 650_502_083;
 /// Pinned unhappy-path (false-positive) arms. Retired pair: 601_202_914 / 580_193_240.
-const UNHAPPY_NEUTRAL_NET: i128 = 1_304_886_706;
-const UNHAPPY_ARMED_NET: i128 = 1_230_587_128;
+const UNHAPPY_NEUTRAL_NET: i128 = 1_301_109_382;
+const UNHAPPY_ARMED_NET: i128 = 1_231_844_582;
 
 /// **The pre-registered two-sided A/B at the default step.**
 ///

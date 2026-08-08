@@ -651,16 +651,16 @@ use tape_golden::*;
 // `REAL_CURVE_VSOL` became a curve with 0.3 SOL genuinely raised (own-impact on a
 // floor clip unchanged at 33 bps a leg), and the two report harnesses' 0.2 SOL
 // "pools" became real curves escrowing 0.2 SOL.
-// (arc: ... -> 8_124_568 -> 16_778_896 -> 31_111_528 -> 30_889_282.)
+// (arc: ... -> 8_124_568 -> 16_778_896 -> 31_111_528 -> 30_889_282 -> 31_465_931.)
 // Re-pin #28: TP1 + Thesis Invalidation lever tuning (target_floor_bp 11000→10300,
 // target_margin_mult_bp 15000→5000, lc_tp1_bps 13500→10_500, lc_cvd_hold_frac_bps
 // 4500→3000, lc_stall_ticks 25→75). Exit ladder now fires on observed ±4% micro-moves
 // instead of being dead code for the $9k-$20k mcap band.
-const GOLDEN_DIGEST: u64 = 4_716_956_466_487_911_990;
+const GOLDEN_DIGEST: u64 = 10_190_407_336_939_000_110;
 // Re-pin #28: net changed 31_111_528 → 30_889_282 (exit ladder fires earlier on
 // micro-moves; TP1 tranche recovers principal at +5% rather than holding to thesis
 // invalidation). promoted/admitted/rejected/universe_filtered unchanged.
-const GOLDEN_NET_LAMPORTS: i128 = 30_889_282;
+const GOLDEN_NET_LAMPORTS: i128 = 31_465_931;
 const GOLDEN_PROMOTED: u64 = 504;
 const GOLDEN_ADMITTED: u64 = 11;
 const GOLDEN_REJECTED: u64 = 448;
@@ -677,7 +677,7 @@ const GOLDEN_UNIVERSE_FILTERED: u64 = 72;
 /// re-pin #26 unified the cost model. Three cost models, three signs, the same
 /// events. It is pinned as a VALUE — a tripwire on the §71.2 attribution split — and
 /// no claim about paid alpha rooms may be built on its sign in either direction.
-const GOLDEN_ALPHACALL_NET: i64 = 593_348;
+const GOLDEN_ALPHACALL_NET: i64 = 891_331;
 
 #[test]
 fn golden_digest_is_stable() {

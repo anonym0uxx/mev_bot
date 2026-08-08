@@ -28,8 +28,8 @@ canonical values, for cross-reference, are:
 
 | Invariant | Value | Source (authoritative) |
 |---|---|---|
-| Golden decision-journal digest | `4_716_956_466_487_911_990` | `baselines.rs::GOLDEN_DIGEST` |
-| Golden net-SOL (lamports) | `30_889_282` | `baselines.rs::GOLDEN_NET_LAMPORTS` |
+| Golden decision-journal digest | `10_190_407_336_939_000_110` | `baselines.rs::GOLDEN_DIGEST` |
+| Golden net-SOL (lamports) | `31_465_931` | `baselines.rs::GOLDEN_NET_LAMPORTS` |
 | Promoted / admitted / rejected | `504 / 11 / 448` | `baselines.rs::GOLDEN_{PROMOTED,ADMITTED,REJECTED}` |
 | Universe-filtered | `72` | `baselines.rs::GOLDEN_UNIVERSE_FILTERED` |
 | `cargo test --workspace` | 1908 tests / 0 fail | live workspace run |

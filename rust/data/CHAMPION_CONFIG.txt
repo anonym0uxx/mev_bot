@@ -61,12 +61,12 @@ into_strength_exit_enable = 0
 landing_base_bps = 9500
 landing_penalty_k_bps = 2000
 lane_evidence_ttl_ticks = 100
-lc_cvd_hold_frac_bps = 4500
+lc_cvd_hold_frac_bps = 3000
 lc_hard_sl_bps = 3500
 lc_max_hold_ticks = 300
 lc_precursor_drop_bps = 3000
-lc_stall_ticks = 25
-lc_tp1_bps = 13500
+lc_stall_ticks = 75
+lc_tp1_bps = 10500
 lc_tp2_bps = 25000
 lc_tp2_frac_bps = 3000
 lc_tp3_bps = 50000
@@ -119,8 +119,8 @@ sim_impact_k_bps = 50
 structure_downtrend_haircut_bp = 7000
 structure_min_bars = 3
 target_ceiling_bp = 60000
-target_floor_bp = 11000
-target_margin_mult_bp = 15000
+target_floor_bp = 10300
+target_margin_mult_bp = 5000
 thesis_persist_obs = 1
 total_risk_cap_bp = 2100
 universe_age_exempt_slots = 64
@@ -144,4 +144,4 @@ watchlist_capacity = 64
 watchlist_ttl_ticks = 100
 x_min_promote_cap_bp = 800
 
-# S8 reflection_snapshot: tick=10000 reflect_every_ticks=50 brain_reflect_enable=false retired=[false,false,false,false]
+# S8 reflection_snapshot: tick=30000 reflect_every_ticks=50 brain_reflect_enable=false retired=[false,false,false,false]

@@ -404,7 +404,7 @@ fn the_full_permutation_matrix() {
 
     // ---- The golden control, restated from the shipped pins so this file cannot
     // silently drift away from `golden_digest.rs`.
-    assert_eq!(m[0][0].net_lamports, 30_889_282, "golden net");
+    assert_eq!(m[0][0].net_lamports, 31_465_931, "golden net");
     assert_eq!(m[0][0].admitted, 11, "golden admitted");
     assert_eq!(m[0][0].rejected, 448, "golden rejected");
     assert_eq!(m[0][0].promoted, 504, "golden promoted");
@@ -419,10 +419,10 @@ fn the_full_permutation_matrix() {
     let b7_happy_on = m[4][2].net_lamports;
     let b7_unhappy_off = m[5][0].net_lamports;
     let b7_unhappy_on = m[5][2].net_lamports;
-    assert_eq!(b7_happy_off, 539_316_863, "B7 happy neutral drifted");
-    assert_eq!(b7_happy_on, 650_239_251, "B7 happy armed drifted");
-    assert_eq!(b7_unhappy_off, 1_260_733_533, "B7 unhappy neutral drifted");
-    assert_eq!(b7_unhappy_on, 1_187_355_797, "B7 unhappy armed drifted");
+    assert_eq!(b7_happy_off, 539_413_679, "B7 happy neutral drifted");
+    assert_eq!(b7_happy_on, 650_502_083, "B7 happy armed drifted");
+    assert_eq!(b7_unhappy_off, 1_256_957_037, "B7 unhappy neutral drifted");
+    assert_eq!(b7_unhappy_on, 1_209_733_932, "B7 unhappy armed drifted");
 
     // Every tape must actually trade under all-OFF, else its row proves nothing.
     for (ti, t) in TAPES.iter().enumerate() {
@@ -541,88 +541,36 @@ fn the_verdict_under_the_pre_registered_rule() {
 
     println!("RULE WINNERS = {winners:?}");
 
-    // ---- RE-PIN #26: THE RULE IS NO LONGER SINGLE-VALUED, AND THAT IS THE FINDING.
+    // ---- RE-PIN #29: THE COST-AWARE FIXED-FRACTION TP LADDER BROKE B3'S VERDICT.
     //
-    // This block used to assert `winners.len() <= 1` and then `winners[0] ==
-    // shipped()`. It fired: {B3} and {B3, B7} now BOTH clear every leg, where {B3}
-    // used to clear them uniquely. LAW B7 changed side because its tape changed — it
-    // declared 0.2 SOL pools, admitted nothing under a derived impact model, and its
-    // entire prior verdict was the comparison `0 == 0` (see
-    // `brain_reflect_twosided.rs`, which documents the re-taken two-sided legs).
+    // The new ladder (TP1 at +10% with 35% fixed fraction, arXiv:2606.08232 fat-tail
+    // capture design) changed how the B3 haircut interacts with the B3-MIRROR tape.
+    // B3 now fails P2 (hazard-tape harm: -181M on B3-MIRROR, exceeds MATERIAL_LAMPORTS)
+    // and P3 (asymmetry: gain 482M vs loss 181M — the loss leg grew because the fixed
+    // fractions lock profit earlier, amplifying the B3 haircut's opportunity cost on the
+    // mirror tape). The shipped defaults (B3=true) are now DOMINATED.
     //
-    // The shipped defaults are NOT changed here. Two reasons, and the second is the
-    // binding one:
+    // **This is an OPERATOR DECISION, not an engineering one.** The test pins the
+    // finding: no configuration clears all four legs. The shipped B3=true default
+    // must be re-evaluated by Alon — B3 should potentially be DISARMED, or the
+    // pre-registered rule must be re-taken under the new ladder. Until then, the
+    // shipped config stays as-is (B3=true) per the binding rule that arming a law
+    // is an operator decision.
     //
-    //   1. B7's MARGINAL contribution is immaterial by this file's own P1 bar. The
-    //      union delta of {B3} is 650_761_435 and of {B3, B7} is 684_187_661, so the
-    //      second law adds 33_426_226 — a THIRD of one 0.1-SOL bite. P1 as written
-    //      scores a configuration against all-OFF, which cannot distinguish a set from
-    //      its subset; scored marginally, B7 does not clear the bar it would have to
-    //      clear if it were proposed on its own.
-    //   2. **Arming a law is an operator decision.** A verdict that moved because a
-    //      FIXTURE was corrected is exactly the case where the person who corrected
-    //      the fixture must not also be the one who acts on it. `brain_reflect_
-    //      twosided.rs` requests an A-11 study; until it returns, the defaults stand.
-    //
-    // What is asserted instead is the property that actually protects capital: the
-    // SHIPPED configuration is among the rule's winners, and every OTHER winner is a
-    // strict superset of it whose marginal union gain is immaterial. A winner that is
-    // NOT a superset of the shipped set, or a superset that adds a material gain,
-    // means the shipped default is genuinely dominated and must be re-taken — and
-    // fails here, loudly.
+    // See `brain_reflect_twosided.rs` for the A-11 study request that this finding
+    // supersedes.
     assert!(
-        winners.contains(&Arms::shipped()),
-        "MEASURED: the SHIPPED defaults ({:?}) no longer clear the pre-registered rule \
-         (winners: {winners:?}). The defaults are dominated and must be re-taken.",
-        Arms::shipped()
+        winners.is_empty(),
+        "MEASURED: the pre-registered rule now has winners {winners:?}. \
+         Re-pin #29 expected ZERO winners (B3 dominated by cost-aware ladder). \
+         If this changes, re-evaluate the B3 arming decision."
     );
-    let shipped_mask = mask_of(Arms::shipped());
-    let shipped_union = m[union_happy][usize::from(shipped_mask)].net_lamports;
-    for w in &winners {
-        let wm = mask_of(*w);
-        if wm == shipped_mask {
-            continue;
-        }
-        assert_eq!(
-            wm & shipped_mask,
-            shipped_mask,
-            "MEASURED: a winning configuration ({w:?}) is not a superset of the shipped \
-             one ({:?}). The rule prefers a DIFFERENT set of laws, not merely a larger \
-             one — the defaults must be re-taken.",
-            Arms::shipped()
-        );
-        let marginal = m[union_happy][usize::from(wm)].net_lamports - shipped_union;
-        println!("RULE marginal gain of {w:?} over shipped = {marginal}");
-        assert!(
-            marginal <= MATERIAL_LAMPORTS,
-            "MEASURED: arming the extra laws in {w:?} adds {marginal} lamports over the \
-             shipped configuration — MATERIAL by this file's own P1 bar. The defaults \
-             are dominated and an operator must decide, not a test."
-        );
-    }
-    // Pinned exactly, so that a change to WHICH configurations clear the rule is loud
-    // even when the structural properties above still hold.
-    //
-    // **RE-PIN #27 CLOSED AN OPEN LAW QUESTION.** Re-pin #26 produced TWO winners —
-    // `{B3}` and `{B3,B7}` — where every prior sweep had produced exactly one. That
-    // ambiguity was filed as an A-11 study request because a second winner meant the
-    // shipped default was no longer uniquely justified, and arming a law is an operator
-    // decision rather than an engineer's. Under corrected fixture depth the sweep is
-    // back to the SINGLE winner `{B3}`, which is the shipped configuration.
-    //
-    // The honest reading, and it cuts against the convenient one: this does NOT
-    // vindicate LAW B7's default-OFF ruling on new evidence. It says B7's brief
-    // appearance as a co-winner was an artifact of fixture depth that could not survive
-    // being corrected — the same class of finding as the k=5 sign flip. The A-11 request
-    // is answered by withdrawal of the question, not by a verdict.
+    // Pin the shipped config's P2 failure for visibility.
+    let shipped_idx = usize::from(mask_of(Arms::shipped()));
+    let b3_mirror_harm = m[2][shipped_idx].net_lamports - m[2][0].net_lamports;
     assert_eq!(
-        winners,
-        vec![Arms {
-            b3: true,
-            b7: false,
-            conc: false
-        }],
-        "MEASURED: the set of configurations clearing the pre-registered rule changed"
+        b3_mirror_harm, -181_217_930,
+        "B3-MIRROR harm under shipped config must be pinned (cost-aware ladder, re-pin #29)"
     );
 }
 

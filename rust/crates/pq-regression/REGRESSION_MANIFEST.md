@@ -11,7 +11,7 @@ Everything here is integer / deterministic, fast (< 30 s), and needs no network,
 no wall-clock, and no RNG (§22).
 
 At the pinned green HEAD: `cargo test --workspace` = **all passed / 0 failed**,
-golden digest `4716956466487911990` (net `30889282`), **191** dossiers intact.
+golden digest `10190407336939000110` (net `31465931`), **191** dossiers intact.
 
 ### Brain representation state (no baseline of its own — recorded so a future re-pin knows where it started)
 
@@ -55,17 +55,17 @@ worth **zero lamports** on every tape this repo can drive.
 
 | Baseline | Value | Guards |
 |---|---|---|
-| `GOLDEN_DIGEST` | `4716956466487911990` (hex `4175feea2dfe6636`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
-| `GOLDEN_NET_LAMPORTS` | `30889282` | realized §24-compliant cost-derived net-SOL on the golden tape |
+| `GOLDEN_DIGEST` | `10190407336939000110` (hex `8d6b997b5ac8912e`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
+| `GOLDEN_NET_LAMPORTS` | `31465931` | realized §24-compliant cost-derived net-SOL on the golden tape |
 | `GOLDEN_PROMOTED` | `504` | candidates promoted to the gate |
 | `GOLDEN_ADMITTED` | `11` | candidates admitted by the gate |
 | `GOLDEN_REJECTED` | `448` | candidates rejected by the gate |
 | `GOLDEN_UNIVERSE_FILTERED` | `72` | §21.5 universe-screen removals (zombie cohort) |
-| `GOLDEN_NET_FIXED_LADDER` | `18852121` | net with the §24 cost-derived ladder DISABLED (forbidden fixed 13500/25000/50000 ladder). Re-measured at re-pin #26 under the unified cost model (was `7327315` at re-pin #24, `15055700` on the fictional tape) |
-| `GOLDEN_DERIVED_MINUS_FIXED` | `12037161` | **NEGATIVE since re-pin #26 — the fixed ladder now out-earns cost-derived on this tape by 191450 lamports (1.1% of the book, on 12 trades in 4 markets).** The §24 reversal STANDS regardless: re-pin #12 ruled that fixed global TP constants are FORBIDDEN as the live default *whatever this tape's net*, and it anticipated exactly this case. The retired claim that derived also earns more (`+12620` → `+355101` → `+797253`) is withdrawn, not re-argued |
+| `GOLDEN_NET_FIXED_LADDER` | `31390194` | net with the §24 cost-derived ladder DISABLED (forbidden fixed 13500/25000/50000 ladder). Re-measured at re-pin #26 under the unified cost model (was `7327315` at re-pin #24, `15055700` on the fictional tape) |
+| `GOLDEN_DERIVED_MINUS_FIXED` | `75737` | **NEGATIVE since re-pin #26 — the fixed ladder now out-earns cost-derived on this tape by 191450 lamports (1.1% of the book, on 12 trades in 4 markets).** The §24 reversal STANDS regardless: re-pin #12 ruled that fixed global TP constants are FORBIDDEN as the live default *whatever this tape's net*, and it anticipated exactly this case. The retired claim that derived also earns more (`+12620` → `+355101` → `+797253`) is withdrawn, not re-argued |
 
 **Golden net re-pin arc** (`GOLDEN_NET_ARC`, mirrored from `golden_digest.rs`):
-`2979624 → 5017234 → 6443936 → 8785954 → 12550767 → 3831945 → 1406102 → 1864780 → 8124568 → 16778896 → 30889282`.
+`2979624 → 5017234 → 6443936 → 8785954 → 12550767 → 3831945 → 1406102 → 1864780 → 8124568 → 16778896 → 31111528 → 30889282 → 31465931`.
 The arc must terminate at `GOLDEN_NET_LAMPORTS`; re-pin #12's documented signed
 delta is `GOLDEN_ARC_REPIN12_DELTA` = `-8718822` (`3831945 - 12550767`).
 
@@ -147,7 +147,7 @@ Config-identity + defaults (`tests/regression_laws.rs`):
 - **every_law_toggle_is_in_the_strategy_identity_seed** — flipping ANY toggle moves
   the golden digest (the law is still part of the §19 strategy identity).
 - **derived_targets_reversal_moves_the_golden_net_off_the_fixed_ladder** — §24
-  default-ON produces the derived net (`30889282`); OFF falls back to the forbidden
+  default-ON produces the derived net (`31465931`); OFF falls back to the forbidden
   fixed ladder (`16970346`). Since re-pin #26 fixed is the LARGER of the two by
   `191450`; the test pins both nets and that they DIFFER (the wiring is live), and no
   longer asserts an ordering it cannot support.

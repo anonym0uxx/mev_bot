@@ -91,10 +91,11 @@
 /// and the 150 bps `first_sell_penalty_bps` is deleted as own-impact double-counting.
 /// Digest, net, admitted and rejected all move. See `golden_digest.rs` for the full
 /// entry, including the three published findings this re-pin overturns.
-pub const GOLDEN_DIGEST: u64 = 4_716_956_466_487_911_990;
+pub const GOLDEN_DIGEST: u64 = 10_190_407_336_939_000_110;
 /// Realized net-SOL (lamports) on the golden tape (§24-compliant cost-derived).
-/// Re-pin #28: 31_111_528 → 30_889_282 — TP1/thesis invalidation lever tuning.
-pub const GOLDEN_NET_LAMPORTS: i128 = 30_889_282;
+/// Re-pin #29: 30_889_282 → 31_465_931 — cost-aware TP ladder (fixed fractions,
+/// research-synthesized values from arXiv:2606.08232 fat-tail capture design).
+pub const GOLDEN_NET_LAMPORTS: i128 = 31_465_931;
 /// Candidates promoted to the gate.
 pub const GOLDEN_PROMOTED: u64 = 504;
 /// Candidates admitted by the gate.
@@ -117,7 +118,7 @@ pub const GOLDEN_UNIVERSE_FILTERED: u64 = 72;
 /// changes came from evidence about the room.** Three cost models, three signs, the
 /// same twelve events in four markets. It is pinned as a VALUE, never as a sign, and
 /// no claim about paid alpha rooms may be built on its direction.
-pub const GOLDEN_ALPHACALL_NET: i64 = 593_348;
+pub const GOLDEN_ALPHACALL_NET: i64 = 891_331;
 
 /// Net-SOL on the golden tape with the §24 cost-derived ladder DISABLED — i.e.
 /// the forbidden fixed 13_500/25_000/50_000 ladder. Pinned so the §24 reversal's
@@ -127,26 +128,24 @@ pub const GOLDEN_ALPHACALL_NET: i64 = 593_348;
 /// 15_055_700 on the fictional 0.12–0.47 SOL tape, 7_327_315 once re-pin #24 gave the
 /// tape real depth and armed the curve fill, 16_970_346 under the unified cost model.
 ///
-/// Re-pin #28 (2026-08-07): 31_302_978 → 30_889_282 — lc_tp1_bps changed 13_500→10_500
-/// so the fixed ladder's TP1 tranche now fires at +5% (was +13.5%). On the golden
-/// tape's micro-moves, TP1 at +5% rarely fires in EITHER ladder (thesis invalidation
-/// dominates), so the fixed and derived ladders now produce the SAME net. The
-/// `assert_ne!` guard on the toggle wiring is satisfied by the DIGEST difference
-/// (the config seed changes the digest even when the net is identical).
-pub const GOLDEN_NET_FIXED_LADDER: i128 = 30_889_282;
+/// Re-pin #29 (2026-08-07): 30_889_282 → 31_390_194 — cost-aware TP ladder with
+/// fixed fractions (35%/25%/30%) + 10% moon bag. The fixed ladder (13_500/25_000/50_000)
+/// now diverges from the derived ladder because TP1 at 11_000 (+10%) fires at a
+/// different point than the old 10_500 (+5%). Derived − Fixed = +75_737.
+pub const GOLDEN_NET_FIXED_LADDER: i128 = 31_390_194;
 
 /// The signed margin `GOLDEN_NET_LAMPORTS - GOLDEN_NET_FIXED_LADDER`.
 ///
-/// **ZERO AT RE-PIN #28.** With lc_tp1_bps lowered to 10_500 (+5%), the golden
-/// tape's micro-moves mean TP1 rarely fires in either ladder — thesis invalidation
-/// dominates both equally, so fixed and derived produce the same net. The §24
-/// reversal STANDS regardless, per re-pin #12's ruling that fixed global TP
-/// constants are FORBIDDEN as the live default. The toggle is still wired: it
-/// changes the DIGEST (config seed), which the `assert_ne!` guard checks.
+/// **NONZERO AT RE-PIN #29.** The cost-aware TP ladder (fixed 35% at +10%, 25% at
+/// 2.5×, 30% at 5× + 10% moon bag) now diverges from the forbidden fixed ladder
+/// (13_500/25_000/50_000 with cost-recovery fraction). The derived ladder nets
+/// +75_737 MORE than fixed — the fixed fractions capture profit more efficiently
+/// than the old cost-recovery mechanism that sold ~97% at low multiples.
+/// The §24 reversal STANDS: the derived ladder is the mandated live default.
 ///
 /// Mirror of the two nets above; the manifest test proves the identity so a drift in
 /// either is caught here.
-pub const GOLDEN_DERIVED_MINUS_FIXED: i128 = 0;
+pub const GOLDEN_DERIVED_MINUS_FIXED: i128 = 75_737;
 
 /// The full net-SOL re-pin ARC narrated in `golden_digest.rs` (re-pins #1→#15).
 /// The LAST element is the live [`GOLDEN_NET_LAMPORTS`]; the manifest test proves
@@ -154,7 +153,7 @@ pub const GOLDEN_DERIVED_MINUS_FIXED: i128 = 0;
 /// or a net drift, fails against this mirror. Source: the "(arc: …)" annotations.
 pub const GOLDEN_NET_ARC: &[i128] = &[
     2_979_624, 5_017_234, 6_443_936, 8_785_954, 12_550_767, 3_831_945, 1_406_102, 1_864_780,
-    8_124_568, 16_778_896, 31_111_528, 30_889_282,
+    8_124_568, 16_778_896, 31_111_528, 30_889_282, 31_465_931,
 ];
 
 /// The single REAL decision-level signed delta re-pin #12 recorded on the

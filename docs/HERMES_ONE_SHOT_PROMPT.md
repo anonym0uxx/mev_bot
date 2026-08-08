@@ -2191,13 +2191,13 @@ filled at the last print, charging that participation nothing. Real pump.fun lau
 virtual, where the same clip costs 33 bps. The tape understated depth by **more than 250x relative to
 our own clip**, and every absolute net ever quoted from it (12.55M, then 15,410,801) was an artifact
 of a market that did not exist. Correcting it moved golden net to **8,124,568** (and re-pin #26's
-cost-model unification then moved it to **16,778,896**, and re-pin #27's provenance types to **30,889,282** — see `crates/pq-regression/src/baselines.rs`
+cost-model unification then moved it to **16,778,896**, and re-pin #27's provenance types to **31,465,931** — see `crates/pq-regression/src/baselines.rs`
 for the live pins) and flipped the
 AlphaCall (Discord) lane from +447,700 to **−2,721,835**, falsifying a claim this project had already
 written into an activation directive. Nothing detected this for months, because nobody had ever
 compared the fixture's depth to the size of our own order. _Erratum, 2026-07-29, under clause (5)
 of this amendment applied to this amendment: re-pin #26's cost-model unification moved that lane a
-THIRD time, to **+593,348**, which is the live pin (`golden_digest.rs::GOLDEN_ALPHACALL_NET`). Three
+THIRD time, to **+891,331**, which is the live pin (`golden_digest.rs::GOLDEN_ALPHACALL_NET`). Three
 cost models, three signs, the same twelve events in four markets, and not one of the changes came
 from evidence about the room. The lesson A-13 draws from it is unchanged and is in fact sharpened:
 the fixture could not settle the question in either direction, so the constant is pinned as a VALUE

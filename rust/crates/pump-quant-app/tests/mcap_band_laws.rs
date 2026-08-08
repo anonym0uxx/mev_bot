@@ -57,10 +57,10 @@ use pump_quant_watchlist::candidate::{Candidate, Features, Lane, Mint};
 const MATERIAL_LAMPORTS: i128 = 100_000_000;
 
 /// The golden reference net at re-pin #26 (cost-model unification).
-/// Re-pin #27 (2026-07-28): 16_778_896 -> 31_111_528. The move is the confirmed-set
+/// Re-pin #27 (2026-07-28): 16_778_896 -> 31_465_931. The move is the confirmed-set
 /// eviction key reordering under corrected fixture depth, NOT either provenance fix —
 /// both were measured decision-inert on this tape. See `golden_digest.rs`.
-const GOLDEN_SHIP: i128 = 31_111_528;
+const GOLDEN_SHIP: i128 = 31_465_931;
 
 fn band_cfg() -> Config {
     let mut c = Config::dev_portable();

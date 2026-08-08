@@ -402,6 +402,9 @@ pub struct Config {
     pub lc_trail_max_bps: u32,
     /// Principal-recovery tranche trigger, mult bps of entry.
     pub lc_tp1_bps: u32,
+    /// First tranche size, bps of original position. FIXED fraction — not the
+    /// old cost-recovery mechanism that sold ~97% at low multiples. 4_000 = 40%.
+    pub lc_tp1_frac_bps: u32,
     /// Second tranche trigger, mult bps.
     pub lc_tp2_bps: u32,
     /// Second tranche size, bps of original position.
@@ -918,11 +921,14 @@ pub const META_TAXONOMY_VERSION_DEFAULT: u32 = pump_quant_market_state::meta::TA
 
 /// §24 LAW 2 default: profit margin over the measured cost floor is 1.5× the
 /// round-trip cost. Named const (§102).
-pub const TARGET_MARGIN_MULT_BP_DEFAULT: u32 = 5_000;
-/// §24/§56.2 LAW 2 default: derived tp1 never below +3% of entry (envelope floor).
-/// Re-pin #28: lowered from 11_000 (+10%) to 10_300 (+3%) — the $9k-$20k mcap band
-/// produces micro-moves (observed max +3.6%); the old +10% floor meant TP1 never fired.
-pub const TARGET_FLOOR_BP_DEFAULT: u32 = 10_300;
+pub const TARGET_MARGIN_MULT_BP_DEFAULT: u32 = 10_000;
+/// §24/§56.2 LAW 2 default: derived tp1 never below +5% of entry (envelope floor).
+/// Re-pin #29: set to 10_500 (+5%) — the minimum profit after all-in round-trip cost.
+/// The derived ladder computes tp1 = 10_000 + rt_bps × margin_mult/10_000; with
+/// margin_mult = 10_000 (100%), tp1 = 10_000 + rt_bps, which is breakeven + full
+/// cost as margin. The floor ensures even the deepest pools (rt_bps ~330) get
+/// at least +5% — every TP1 exit clears all costs with margin to spare.
+pub const TARGET_FLOOR_BP_DEFAULT: u32 = 10_500;
 /// §24/§56.2 LAW 2 default: derived tp1 never above 6× entry (envelope ceiling).
 pub const TARGET_CEILING_BP_DEFAULT: u32 = 60_000;
 /// §24(d) LAW 5 default: a genuine climax needs the recent arrival rate at ≥2×
@@ -1056,11 +1062,12 @@ impl Config {
             lc_trail_base_bps: 2_200,
             lc_trail_k_div: 4,
             lc_trail_max_bps: 12_000,
-            lc_tp1_bps: 10_500,       // Re-pin #28: +5% profit (mult 1.05x) — aligned to observed ±4% micro-moves
-            lc_tp2_bps: 25_000,
-            lc_tp2_frac_bps: 3_000,
-            lc_tp3_bps: 50_000,
-            lc_tp3_frac_bps: 3_000,
+            lc_tp1_bps: 11_000,       // Re-pin #29: +10% cost-aware fallback (derived ladder overrides per-market)
+            lc_tp1_frac_bps: 3_500,   // Re-pin #29: FIXED 35% — lock profit, leave 65% (was cost-recovery ~97%)
+            lc_tp2_bps: 25_000,       // Re-pin #29: 2.5× moderate runner (arXiv:2606.08232 fat-tail capture)
+            lc_tp2_frac_bps: 2_500,   // Re-pin #29: 25% — trim quarter (was 3000)
+            lc_tp3_bps: 50_000,       // Re-pin #29: 5× strong runner — fat-tail zone
+            lc_tp3_frac_bps: 3_000,   // 30% — leaves 10% moon bag to trail
             lc_cvd_hold_frac_bps: 3_000, // Re-pin #28: 30% — survive deeper drawdowns so TP1 can fire
             lc_stall_ticks: 75,       // Re-pin #28: 3× wider — let winners breathe before stall exit
             lc_max_hold_ticks: 300,
@@ -1336,6 +1343,7 @@ impl Config {
             "lc_trail_k_div" => self.lc_trail_k_div = bp(value)?.max(1),
             "lc_trail_max_bps" => self.lc_trail_max_bps = bp(value)?,
             "lc_tp1_bps" => self.lc_tp1_bps = bp(value)?,
+            "lc_tp1_frac_bps" => self.lc_tp1_frac_bps = bp(value)?,
             "lc_tp2_bps" => self.lc_tp2_bps = bp(value)?,
             "lc_tp2_frac_bps" => self.lc_tp2_frac_bps = bp(value)?,
             "lc_tp3_bps" => self.lc_tp3_bps = bp(value)?,
@@ -1510,6 +1518,7 @@ impl Config {
         let _ = writeln!(s, "lc_precursor_drop_bps = {}", self.lc_precursor_drop_bps as i64);
         let _ = writeln!(s, "lc_stall_ticks = {}", self.lc_stall_ticks as i64);
         let _ = writeln!(s, "lc_tp1_bps = {}", self.lc_tp1_bps as i64);
+        let _ = writeln!(s, "lc_tp1_frac_bps = {}", self.lc_tp1_frac_bps as i64);
         let _ = writeln!(s, "lc_tp2_bps = {}", self.lc_tp2_bps as i64);
         let _ = writeln!(s, "lc_tp2_frac_bps = {}", self.lc_tp2_frac_bps as i64);
         let _ = writeln!(s, "lc_tp3_bps = {}", self.lc_tp3_bps as i64);

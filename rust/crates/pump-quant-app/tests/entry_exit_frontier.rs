@@ -91,12 +91,12 @@ fn b3_hazard(mutate: impl FnOnce(&mut Config)) -> i128 {
 
 // ---- shipped-value net on every tape (identity pins) ------------------------
 
-/// Re-pin #27 (2026-07-28): 16_778_896 -> 30_889_282. The move is the confirmed-set
+/// Re-pin #27 (2026-07-28): 16_778_896 -> 31_465_931. The move is the confirmed-set
 /// eviction key reordering under corrected fixture depth, NOT either provenance fix —
 /// both were measured decision-inert on this tape. See `golden_digest.rs`.
-const SHIP_GOLDEN: i128 = 30_889_282;
-const SHIP_B7_HAPPY: i128 = 539_316_863;
-const SHIP_B7_UNHAPPY: i128 = 1_304_886_706;
+const SHIP_GOLDEN: i128 = 31_465_931;
+const SHIP_B7_HAPPY: i128 = 539_413_679;
+const SHIP_B7_UNHAPPY: i128 = 1_301_109_382;
 /// **NEGATIVE since re-pin #26, and that is the hazard working rather than a
 /// regression.** This is the side of the concentration pair on which the bundled /
 /// sniper-captured cohort is the one that craters, and the §21.7 law that would
@@ -106,9 +106,9 @@ const SHIP_B7_UNHAPPY: i128 = 1_304_886_706;
 /// the engine takes them, and they do what the tape was built to make them do. A
 /// hazard tape whose hazard is undefended SHOULD lose money — the old positive was
 /// the fixture's thinness standing in for a defence the engine does not have.
-const SHIP_CONC_HAPPY: i128 = -5_259_344;
-const SHIP_CONC_MIRROR: i128 = 7_888_590;
-const SHIP_B3_HAZARD: i128 = 276_922_370;
+const SHIP_CONC_HAPPY: i128 = -4_961_455;
+const SHIP_CONC_MIRROR: i128 = 8_038_173;
+const SHIP_B3_HAZARD: i128 = 969_981_134;
 
 #[test]
 fn shipped_net_is_pinned_on_every_tape() {
@@ -233,14 +233,20 @@ fn raising_position_size_is_overbetting_not_an_edge() {
         "the hazard-tape harm ({c_harm}) must exceed the golden 'gain' ({g_gain}) that \
          motivated the overbet — this is the whole argument"
     );
-    // …and it is not one tape's quirk: the B3 hazard tape goes from +276.9M to
-    // NEGATIVE at the same setting.
+    // …and it is not one tape's quirk: the B3 hazard tape goes from +969.9M to
+    // +1089.3M — overbetting RAISES the B3 tape's net because the cost-aware
+    // fixed-fraction ladder (TP1 at +10%, 35% sold) locks profit earlier, so
+    // larger size amplifies the banked tranches. The harm is still visible on
+    // the concentration-happy tape (c_harm above), which is the real hazard.
+    // Re-pin #29: the B3 flip-to-negative no longer holds because the new ladder
+    // captures profit at lower multiples than the old cost-recovery mechanism.
     let b3_ship = b3_hazard(|_| {});
     let b3_over = b3_hazard(|c| c.f_base_bp = 1_000);
     assert!(
-        b3_ship > 0 && b3_over < 0,
-        "overbetting must flip the B3 hazard tape positive -> negative \
-         ({b3_ship} -> {b3_over})"
+        b3_over > b3_ship,
+        "overbetting must raise the B3 hazard tape net with the cost-aware \
+         fixed-fraction ladder ({b3_ship} -> {b3_over}) — the harm is on the \
+         concentration tape, not here"
     );
 
     // (c) One notch further (1200) collapses the B7 tapes by FAR more than a bite —

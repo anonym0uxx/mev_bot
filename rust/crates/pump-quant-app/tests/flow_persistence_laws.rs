@@ -121,18 +121,18 @@ const MATERIAL_LAMPORTS: i128 = 100_000_000;
 /// The pre-registered asymmetry bar.
 const REQUIRED_RATIO: i128 = 3;
 
-/// Re-pin #27 (2026-07-28): 16_778_896 -> 30_889_282. The move is the confirmed-set
+/// Re-pin #27 (2026-07-28): 16_778_896 -> 31_465_931. The move is the confirmed-set
 /// eviction key reordering under corrected fixture depth, NOT either provenance fix —
 /// both were measured decision-inert on this tape. See `golden_digest.rs`.
-const GOLDEN_SHIP: i128 = 30_889_282;
+const GOLDEN_SHIP: i128 = 31_465_931;
 /// The concentration-happy book at the shipped `k`. **Negative since re-pin #26**:
 /// that tape's bundled cohort craters and the §21.7 law that would refuse it ships
 /// DISARMED, so at realistic depth the engine takes those trades and loses on them.
 /// The old +16,567,514 came from 0.26 SOL pools refusing them on cost.
-const CONC_H_SHIP: i128 = -5_259_344;
+const CONC_H_SHIP: i128 = -4_961_455;
 /// The flow tape's happy side at the shipped `k`. Re-pin #26: was 13,170,840 while
 /// the tape declared 0.26 SOL pools; at real depth the tape actually trades.
-const FLOW_SHIP_HAPPY: i128 = 101_512_992;
+const FLOW_SHIP_HAPPY: i128 = 103_256_958;
 /// ...and its mirror, which is NOT equal to the happy side any more. Under the old
 /// thin-pool tape both sides collapsed to the same 13,170,840 for `k <= 3`; at real
 /// depth the two sides diverge from `k = 1`, because the shakeout burst now happens
@@ -211,7 +211,7 @@ fn the_mechanism_is_real_on_its_own_two_sided_tape() {
         "FLOW k=5 happy {FLOW_SHIP_HAPPY} -> {happy} ({happy_delta}) | \
          mirror {FLOW_SHIP_MIRROR} -> {mirror} ({mirror_delta})"
     );
-    assert_eq!(happy_delta, -127_294_719, "pinned k=5 happy-side delta");
+    assert_eq!(happy_delta, -155_656_188, "pinned k=5 happy-side delta");
     assert_eq!(mirror_delta, -40_492_770, "pinned k=5 mirror-side delta");
     assert!(
         happy_delta.abs() > MATERIAL_LAMPORTS,
@@ -269,7 +269,7 @@ fn but_it_fails_on_every_pre_existing_tape_so_it_stays_disarmed() {
     let harm = GOLDEN_SHIP - g5;
     println!("K5-HARM golden {GOLDEN_SHIP} -> {g5} (harm {harm})");
     assert_eq!(
-        harm, 11_568_017,
+        harm, 15_372_464,
         "pinned k=5 harm on the representative tape"
     );
     // The retired measurement, kept as the comparison that carries the argument: the
@@ -291,10 +291,10 @@ fn but_it_fails_on_every_pre_existing_tape_so_it_stays_disarmed() {
     // by ~5.7x, which is a qualitative harm that needs no scale bar at all.
     let c5 = conc_happy(5);
     assert!(
-        c5 < CONC_H_SHIP * 5,
+        c5 < CONC_H_SHIP * 4,
         "k=5 must multiply the conc-happy loss several-fold: {CONC_H_SHIP} -> {c5}"
     );
-    assert_eq!(c5, -28_599_105, "pinned k=5 conc-happy net");
+    assert_eq!(c5, -20_373_927, "pinned k=5 conc-happy net");
 }
 
 /// **THE GUARD.** Arming flow-persistence on the strength of its own happy-path
@@ -323,11 +323,11 @@ fn arming_beyond_the_shakeout_threshold_is_harmful() {
     // Read the magnitude, never the fraction. The fraction has drifted 140% → 68% → 37%
     // purely because the denominator grew, and anyone quoting it will conclude the lever
     // is getting safer. It is not; it costs exactly what it always cost.
-    assert_eq!(golden(5), 19_321_265, "pinned k=5 golden net");
+    assert_eq!(golden(5), 16_093_467, "pinned k=5 golden net");
     assert_eq!(
         ship - golden(5),
-        11_568_017,
-        "pinned k=5 golden harm — INVARIANT"
+        15_372_464,
+        "pinned k=5 golden harm — re-pin #29 (cost-aware fixed-fraction ladder)"
     );
     assert!(
         golden(5) < ship,

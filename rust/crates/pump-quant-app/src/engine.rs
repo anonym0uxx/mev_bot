@@ -1125,6 +1125,7 @@ impl Engine {
             trail_k_div: cfg.lc_trail_k_div,
             trail_max_bps: cfg.lc_trail_max_bps,
             tp1_bps: cfg.lc_tp1_bps,
+            tp1_frac_bps: cfg.lc_tp1_frac_bps,
             tp2_bps: cfg.lc_tp2_bps,
             tp2_frac_bps: cfg.lc_tp2_frac_bps,
             tp3_bps: cfg.lc_tp3_bps,

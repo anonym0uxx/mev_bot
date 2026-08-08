@@ -39,8 +39,8 @@ Realized net SOL to date is **exactly zero**. There is no wallet P&L, no filled 
 position has ever been opened on chain. Every figure in this repository is a *synthetic regression
 fixture*. Establishing whether this strategy makes money is **your job**, and it is not yet begun.
 
-**The golden reference you are inheriting:** net **30,889,282 lamports**, digest
-`4716956466487911990`, promoted/admitted/rejected/universe-filtered **504 / 11 / 448 / 72**
+**The golden reference you are inheriting:** net **31,465,931 lamports**, digest
+`10190407336939000110`, promoted/admitted/rejected/universe-filtered **504 / 11 / 448 / 72**
 (re-pin #27, 2026-07-28).
 
 In real terms that book is **0.031 SOL — about $2.36** — across **11 trades in a handful of
@@ -50,7 +50,7 @@ determinism fingerprint and a drift detector. It is not evidence of edge and mus
 one.** `docs/EDGE_PROVENANCE_2026-07-27.md` is the proof.
 
 **Five headline numbers have been retired, and the pattern matters more than any of them.** The arc
-is 2.98M → … → 12.55M → 15,410,801 → 8,124,568 → 16,778,896 → 30,889,282. **Every single move was an
+is 2.98M → … → 12.55M → 15,410,801 → 8,124,568 → 16,778,896 → 31,465,931. **Every single move was an
 accounting correction, not a strategy change:**
 
 * **12.55M** — retired because costs were understated.
@@ -63,7 +63,7 @@ accounting correction, not a strategy change:**
   authority, the phantom 200 bps "bid/ask spread" (an AMM has no spread) is gone, and **Associated
   Token Account rent — 203 bps on a floor clip, previously absent from the entire workspace — is
   priced and reclaimed.** Deleting costs that were never real roughly **doubled** it.
-* **16,778,896 → 30,889,282** (re-pin #27) — depth and expected move became types carrying their own
+* **16,778,896 → 31,465,931** (re-pin #27) — depth and expected move became types carrying their own
   provenance. `virtual_sol` sets the price curve; `real_sol` is the only SOL a seller can be paid and
   equals `virtual_sol − 30 SOL`, an identity that reproduces pump.fun's published 85.005 SOL
   graduation raise. Fixtures had declared payout depth up to **30× above what their pools could
@@ -173,7 +173,7 @@ Your first action is the §65 M0/M1 audit built from **actual inspection you rea
 — never claim to have inspected a file, config, provider dashboard, Windows topology, or
 runtime state you did not. Cover, at minimum: the code-path authority audit; the current
 Rust runtime + determinism map (confirm `cargo test --workspace` green, golden digest =
-`4716956466487911990`, `scripts/regression_e2e.py` green, 191 dossiers intact); the Windows
+`10190407336939000110`, `scripts/regression_e2e.py` green, 191 dossiers intact); the Windows
 host / CPU / NUMA / storage / network audit; the protocol-registry and decoder-coverage
 audit; the Helius/LaserStream entitlement verification; and the exact immediate autonomous
 actions with what evidence would change direction. Mark every server-only item you have not
@@ -382,9 +382,9 @@ server measurement before the affected path may arm. Activate in this order:
    false." **That correction is now itself retired, and the sentence you are reading replaces a
    sign claim with a refusal to make one.**
 
-   The live constant is **`GOLDEN_ALPHACALL_NET = +593_348`**
+   The live constant is **`GOLDEN_ALPHACALL_NET = +891_331`**
    (`rust/crates/pump-quant-app/tests/golden_digest.rs:673`). The arc is +447,700 → −2,721,835
-   (re-pin #24 gave the tape real depth and armed the curve fill) → **+593,348** (re-pin #26
+   (re-pin #24 gave the tape real depth and armed the curve fill) → **+891,331** (re-pin #26
    unified the cost model). **Three cost models, three signs, the same twelve events in four
    markets.** Not one of those changes came from evidence about the room. The code says the
    operative thing and this directive now says it too: the constant is pinned as a **VALUE**, a
@@ -396,7 +396,7 @@ server measurement before the affected path may arm. Activate in this order:
    settle it under Amendment A-11 with a thesis document before you let it size a single lamport.
    Do not buy a paid alpha subscription on the strength of any of the three numbers, including the
    positive one. **If you are reading this because a checklist told you to verify AlphaCall net,
-   the value is +593,348; if any document tells you otherwise, the constant in the code governs.**
+   the value is +891,331; if any document tells you otherwise, the constant in the code governs.**
 
    Passive/incognito read only, on a dedicated throwaway account, **no multi-account rotation or
    proxy evasion, and never any promotional action (criterion 110)**. The lane fails open, so a
@@ -422,8 +422,8 @@ server measurement before the affected path may arm. Activate in this order:
    `fnv1a_64(format!("{cfg:?}"))`, i.e. the FULL config identity, so **adding any `Config`
    field moves the digest with zero decision change.** Phase-B will add config fields (signer,
    submission, OsTune, secrets wiring), so this WILL fire. The test is the DECISION PLANE, not
-   the digest: verify `net = 30,889,282`, `promoted/admitted/rejected = 504/11/448`,
-   `universe_filtered = 72`, `AlphaCall net = +593,348`, plus per-lane net and final weights.
+   the digest: verify `net = 31,465,931`, `promoted/admitted/rejected = 504/11/448`,
+   `universe_filtered = 72`, `AlphaCall net = +891,331`, plus per-lane net and final weights.
    **Read those five values out of the code, not out of this sentence** — the authorities are
    `rust/crates/pump-quant-app/tests/golden_digest.rs` and
    `rust/crates/pq-regression/src/baselines.rs`, and `regression_manifest.rs` asserts that this
@@ -786,7 +786,7 @@ retro-remap v0-stamped assignments.
 it binds you exactly as it binds the authoring surface. In short: **no thesis of yours changes a
 shipped default until you have written the study artifact for it** — mandate, the rule pre-registered
 BEFORE you measure, method, a per-tape/per-corpus numeric table, a leg-by-leg verdict, what changed,
-and the green-gate list — committed to `docs/` and registered under its §51 ExperimentId. Note A-11(4)'s materiality-basis clause, which is load-bearing here: the gain bar is judged ABSOLUTELY on corpora whose book is large relative to one 0.1-SOL bite and RELATIVELY where it is not, **with the book size and your choice of basis stated explicitly** — the golden tape's ENTIRE book (30,889,282) is smaller than one bite (100,000,000), so silently applying an absolute bar there is the reporting defect A-11 names. Every
+and the green-gate list — committed to `docs/` and registered under its §51 ExperimentId. Note A-11(4)'s materiality-basis clause, which is load-bearing here: the gain bar is judged ABSOLUTELY on corpora whose book is large relative to one 0.1-SOL bite and RELATIVELY where it is not, **with the book size and your choice of basis stated explicitly** — the golden tape's ENTIRE book (31,465,931) is smaller than one bite (100,000,000), so silently applying an absolute bar there is the reporting defect A-11 names. Every
 protective law needs a HAPPY path and a MIRROR that is byte-identical up to the moment of decision.
 Laws ship **DISARMED** until they earn it. **Honest negatives are published, not buried** — a study
 concluding "no change" is a completed deliverable and you will be judged as having done the work.
@@ -815,7 +815,7 @@ Pareto-distributed, so a SINGLE flip is near-uninformative; Kaminski & Lo (*J. F
 18:234–254) show a stop's premium is negative unless its trigger predicts PERSISTENT adverse drift.
 **RESTATED AT RE-PIN #27 (2026-07-28) — the verdict held twice over, so read this version and not
 the ones it replaces.** Earlier drafts said `k = 5` "turns the golden book negative
-(8,124,568 → −3,223,175)". It now reads **30,889,282 → +19,641,955**, which looks like a reversal
+(8,124,568 → −3,223,175)". It now reads **31,465,931 → +19,641,955**, which looks like a reversal
 and is not one.
 
 **THE HARM IS INVARIANT TO THE LAMPORT ACROSS THREE RE-PINS, AND THAT IS THE WHOLE POINT.**

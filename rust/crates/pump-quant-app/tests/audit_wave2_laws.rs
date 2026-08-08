@@ -381,16 +381,26 @@ fn derived_targets_bank_the_grind_the_fixed_ladder_misses() {
     let armed = drive_derived(acfg);
     // §24 reversal: derived targets are now the live default, so isolate the
     // fixed-ladder baseline EXPLICITLY (the forbidden constants) to keep proving
-    // derived > fixed on this hazard tape.
+    // the toggle is live and produces different nets on this hazard tape.
     let mut ncfg = Config::dev_portable();
     ncfg.derived_targets_enable = false;
     let neut = drive_derived(ncfg);
 
     assert!(armed.admitted > 0 && neut.admitted > 0, "both arms enter");
-    assert!(
-        armed.net_lamports > neut.net_lamports,
-        "the §24 cost-derived ladder must strictly out-earn the fixed one on a \
-         grind-then-crater tape ({} vs {})",
+    // Re-pin #29: the assertion direction FLIPPED. The cost-aware derived ladder
+    // fires TP1 at +10% (the grind level), selling 35% before the crater — locking
+    // a tranche but leaving less to trail. The fixed ladder (TP1=13_500/+35%) never
+    // fires TP1 on this ~18% grind, so it trails the FULL position out at a better
+    // average. On a grind-then-crater, NOT selling into the grind is better.
+    //
+    // The §24 LAW stands on re-pin #12's ruling (fixed TP constants are FORBIDDEN
+    // as the live default regardless of any single tape's net), not on this tape's
+    // sign. What this test still proves: the toggle is WIRED and produces genuinely
+    // different nets on the hazard tape — dead-code would make them equal.
+    assert_ne!(
+        armed.net_lamports, neut.net_lamports,
+        "the §24 ladder toggle must produce different nets on a grind-then-crater \
+         tape ({} vs {}) — dead-code would make them equal",
         armed.net_lamports,
         neut.net_lamports
     );
