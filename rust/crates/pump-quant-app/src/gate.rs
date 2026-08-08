@@ -28,7 +28,8 @@ use crate::config::Config;
 use crate::curve_depth::CurveDepth;
 use crate::priced_move::PricedMove;
 use pump_quant_strategy::economic_gate::{
-    floor_size_band, size_band, ImpactCurve, SizeBand, Verdict,
+    effective_fixed_lamports, floor_size_band, round_trip_cost_bps, size_band, ImpactCurve,
+    SizeBand, Verdict,
 };
 use pump_quant_watchlist::candidate::{Candidate, Features};
 
@@ -49,6 +50,15 @@ pub enum GateReject {
     /// Distinguished from `EconomicallyUnviable` so band tuning never contaminates the
     /// cost-floor reject statistics.
     OutsideMcapBand,
+    /// **Re-pin #29 — TP1 REACHABILITY.** The calibrated model estimated a realistic
+    /// upside that cannot reach TP1 (`lc_tp1_bps`) after round-trip costs. Entering
+    /// such a candidate would mean TP1 never fires, leaving the position to rely
+    /// entirely on the hard stop or trailing exit — suboptimal for non-moonshot
+    /// tokens. This check fires ONLY when the model has spoken (MoveSource::Model);
+    /// cold-start candidates are still admitted for evidence-gathering so the model
+    /// can calibrate. Without this gate, the bot enters trades where the cost-aware
+    /// TP ladder has no room to operate (ArXiv:2606.08232 fat-tail capture design).
+    Tp1Unreachable,
 }
 
 /// The gate's verdict on one candidate.
@@ -184,6 +194,47 @@ pub fn decide(
     // collapses to `Refuse` here — the engine never emits a sub-floor order and never
     // exceeds x_max. Applied above the dossier-locked economic leaf.
     let band = floor_size_band(band, cfg.min_trade_size_lamports);
+
+    // ---- RE-PIN #29 — TP1 REACHABILITY (ArXiv:2606.08232 fat-tail capture design).
+    //
+    // The cost-aware TP ladder's TP1 sits at +10% (11_000 bps). If the calibrated
+    // model estimates a realistic upside that can't reach TP1 after round-trip costs,
+    // admitting this candidate means TP1 never fires — the position would rely
+    // entirely on the hard stop or trailing exit. That is suboptimal for non-moonshot
+    // tokens and defeats the ladder's purpose: the ladder is designed to lock profit
+    // early on fat-tail moonshots, not to hold a position to the hard stop.
+    //
+    // This check fires ONLY when the calibrated model has spoken (MoveSource::Model).
+    // Cold-start candidates (MoveSource::ColdStart) are still admitted because:
+    //   1. The model needs paper trades to calibrate — refusing all cold-start
+    //      candidates would starve it of evidence forever.
+    //   2. The cold-start prior (gate_expected_move_bps = 3_400) is a POPULATION
+    //      estimate, not a per-candidate estimate; it has no opinion on whether THIS
+    //      token can reach TP1.
+    //
+    // The round-trip cost is evaluated at x_cost (the cost-minimizing size), which is
+    // the BEST possible round-trip cost for this market — if the model's estimated
+    // upside can't reach TP1 even at the minimum cost, no size will make TP1 reachable.
+    if let Verdict::Admit = band.verdict {
+        if let crate::priced_move::MoveSource::Model { .. } = priced_move.admission_source() {
+            if let Some(eff) = effective_fixed_lamports(
+                crate::cost_model::gate_base_fixed_lamports(cfg.gate_exit_tranches),
+                cfg.gate_fail_rate_bps,
+            ) {
+                if let Some(rt_bps) = round_trip_cost_bps(
+                    band.x_cost,
+                    eff,
+                    crate::cost_model::gate_protocol_bps(vsol),
+                    &impact,
+                ) {
+                    let tp1_with_cost = cfg.lc_tp1_bps.saturating_add(rt_bps);
+                    if priced_move.admission_bps() < tp1_with_cost {
+                        return GateDecision::Reject(GateReject::Tp1Unreachable);
+                    }
+                }
+            }
+        }
+    }
 
     match band.verdict {
         Verdict::Admit => GateDecision::Admit(band),

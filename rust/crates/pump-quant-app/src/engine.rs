@@ -106,9 +106,9 @@ use pump_quant_social::types::SourceRef;
 use pump_quant_strategy::calibration_budget::{
     admit_calibration, CalibrationLedger, CalibrationRequest, RouteId,
 };
-use pump_quant_strategy::economic_gate::effective_fixed_lamports;
+use pump_quant_strategy::economic_gate::{effective_fixed_lamports, round_trip_cost_bps};
 #[cfg(test)]
-use pump_quant_strategy::economic_gate::{round_trip_cost_bps, ImpactCurve};
+use pump_quant_strategy::economic_gate::ImpactCurve;
 use pump_quant_strategy::entry_arbitration::{arbitrate, ArbitrationParams, EntryCandidate};
 use pump_quant_strategy::entry_mode_leaves::{
     detect_narrative_confirmation, detect_pullback_continuation, NarrativeConfirmationFeatures,
@@ -5756,6 +5756,11 @@ const fn reject_code(r: GateReject) -> u8 {
         // 9 continues the post-gate numbering; a band refusal is a SELECTION event and
         // must never be confused with an economic one in the reject statistics.
         GateReject::OutsideMcapBand => 9,
+        // Re-pin #29: TP1 reachability refusal — the model's estimated upside can't
+        // reach TP1 after round-trip costs. A distinct gate refusal, not an economic
+        // unviability: the trade clears costs, it just can't reach the first take-
+        // profit rung of the new cost-aware ladder.
+        GateReject::Tp1Unreachable => 18,
     }
 }
 

@@ -2,6 +2,7 @@
 
 use pump_quant_app::config::Config;
 use pump_quant_app::curve_depth::CurveDepth;
+use pump_quant_app::expected_move::MoveEstimate;
 use pump_quant_app::gate::{decide, Confirmation, GateDecision, GateReject};
 use pump_quant_app::priced_move::PricedMove;
 use pump_quant_watchlist::candidate::{Candidate, Features, Lane, Mint};
@@ -201,4 +202,127 @@ fn the_price_reserve_can_no_longer_be_passed_off_as_capacity() {
     );
     // The number the old fixtures would have permitted, for the record.
     assert_eq!(vsol / band.x_max, 31);
+}
+
+/// **RE-PIN #29 — TP1 REACHABILITY (ArXiv:2606.08232 fat-tail capture design).**
+///
+/// The cost-aware TP ladder's TP1 sits at +10% (11_000 bps). If the calibrated
+/// model estimates a realistic upside that can't reach TP1 after round-trip costs,
+/// the gate must refuse — entering such a candidate means TP1 never fires, leaving
+/// the position to rely entirely on the hard stop or trailing exit. That defeats the
+/// ladder's purpose: locking profit early on fat-tail moonshots.
+///
+/// This test constructs a model-sourced PricedMove with a deliberately low estimate
+/// (5_000 bps = +5%) that is below TP1 (11_000 bps) plus round-trip cost. The gate
+/// must refuse with `Tp1Unreachable`.
+#[test]
+fn tp1_unreachable_refuses_low_model_estimate() {
+    let cfg = Config::dev_portable();
+    let conf = Confirmation {
+        depth: CurveDepth::derived(REAL_CURVE_VSOL),
+        numeric: numeric_feats(),
+    };
+    // Model estimate: +5% — below TP1's +10% even before round-trip costs.
+    let model = MoveEstimate {
+        bps: 5_000,
+        base_bps: 5_000,
+        lift_bps: 0,
+        signals_applied: 0,
+        n: 50,
+        band: 0,
+    };
+    let pm = PricedMove::for_candidate(
+        Some(&model),
+        Lane::ActiveMarketScalp,
+        0,
+        0,
+        cfg.gate_expected_move_bps,
+        cfg.expectancy_min_lane_trades,
+    );
+    let d = decide(
+        &cand(Lane::ActiveMarketScalp),
+        Some(conf),
+        &cfg,
+        pm,
+    );
+    assert_eq!(
+        d,
+        GateDecision::Reject(GateReject::Tp1Unreachable),
+        "a model estimate below TP1+cost must be refused, not admitted to rely on the hard stop"
+    );
+}
+
+/// **RE-PIN #29 — TP1 REACHABILITY does NOT fire on cold-start candidates.**
+///
+/// Cold-start candidates use the population prior (gate_expected_move_bps = 3_400),
+/// which is intentionally below TP1 (11_000 bps). The reachability check must NOT
+/// fire on them because:
+///   1. The model needs paper trades to calibrate — refusing all cold-start
+///      candidates would starve it of evidence forever.
+///   2. The cold-start prior is a POPULATION estimate, not a per-candidate estimate.
+#[test]
+fn tp1_reachability_does_not_fire_on_cold_start() {
+    let cfg = Config::dev_portable();
+    let conf = Confirmation {
+        depth: CurveDepth::derived(REAL_CURVE_VSOL),
+        numeric: numeric_feats(),
+    };
+    // Cold-start: no model, prior = 3_400 bps (below TP1 of 11_000 bps).
+    let d = decide(
+        &cand(Lane::ActiveMarketScalp),
+        Some(conf),
+        &cfg,
+        cold_start(&cfg),
+    );
+    // Must ADMIT, not refuse with Tp1Unreachable — cold-start needs evidence.
+    match d {
+        GateDecision::Admit(band) => assert!(band.x_max > 0, "cold-start must admit for evidence"),
+        GateDecision::Reject(GateReject::Tp1Unreachable) => {
+            panic!("Tp1Unreachable must NOT fire on cold-start candidates")
+        }
+        other => panic!("expected admit for cold-start, got {other:?}"),
+    }
+}
+
+/// **RE-PIN #29 — TP1 REACHABILITY admits model estimates that CAN reach TP1.**
+///
+/// A model estimate of +15% (15_000 bps) exceeds TP1 (11_000 bps) plus round-trip
+/// cost (~450 bps), so the gate must admit.
+#[test]
+fn tp1_reachable_admits_high_model_estimate() {
+    let cfg = Config::dev_portable();
+    let conf = Confirmation {
+        depth: CurveDepth::derived(REAL_CURVE_VSOL),
+        numeric: numeric_feats(),
+    };
+    // Model estimate: +15% — above TP1's +10% plus round-trip cost.
+    let model = MoveEstimate {
+        bps: 15_000,
+        base_bps: 15_000,
+        lift_bps: 0,
+        signals_applied: 0,
+        n: 50,
+        band: 0,
+    };
+    let pm = PricedMove::for_candidate(
+        Some(&model),
+        Lane::ActiveMarketScalp,
+        0,
+        0,
+        cfg.gate_expected_move_bps,
+        cfg.expectancy_min_lane_trades,
+    );
+    let d = decide(
+        &cand(Lane::ActiveMarketScalp),
+        Some(conf),
+        &cfg,
+        pm,
+    );
+    match d {
+        GateDecision::Admit(band) => assert!(band.x_max > 0, "model estimate above TP1+cost must admit"),
+        GateDecision::Reject(GateReject::Tp1Unreachable) => {
+            panic!("Tp1Unreachable must NOT fire when model estimate exceeds TP1+cost")
+        }
+        other => panic!("expected admit for high model estimate, got {other:?}"),
+    }
 }
