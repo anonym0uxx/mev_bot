@@ -94,7 +94,13 @@ impl SocialSource for FirecrawlBatchSource {
 
 const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 const PUMPPORTAL_DEFAULT_URL: &str = "wss://pumpportal.fun/api/data";
-const MAX_ACCOUNT_SUBS: usize = 64;
+/// Max concurrent Helius account subscriptions. Helius allows 1000 concurrent
+/// subs per connection. Raised from 64 to 256 (Phase 2) — with the GAP #7
+/// accountUnsubscribe leak fixed, we have headroom. At 256 subs, each mint
+/// holds a slot for ~588s (vs ~147s at 64), giving far more time for the
+/// median 37.6s OnchainConfirm to arrive. We leave room below the 1000 cap
+/// for the slot subscription and re-subscribe churn during reconnects.
+const MAX_ACCOUNT_SUBS: usize = 256;
 const MAX_TRADE_SUBS: usize = 512;
 const STALE_SECS: u64 = 30;
 
@@ -110,6 +116,16 @@ const STATUS_HEARTBEAT_SECS: u64 = 15;
 /// event loop). 500ms gives the server time to recover without starving
 /// the tick loop.
 const WS_RECONNECT_SLEEP_MS: u64 = 500;
+/// Maximum reconnect attempts with exponential backoff before falling back
+/// to graceful degradation. The backoff ladder is: 500ms → 1s → 2s → 4s → 8s
+/// (capped). After MAX_RECONNECT_ATTEMPTS failures, the daemon keeps the old
+/// (broken) connection and continues with PumpPortal/LaserStream — it does
+/// NOT crash. The stale-check watchdog will retry on the next tick.
+const MAX_RECONNECT_ATTEMPTS: u32 = 5;
+/// Backoff cap in milliseconds. The exponential ladder doubles from
+/// WS_RECONNECT_SLEEP_MS (500ms) up to this cap. 10s is long enough to let
+/// a rate-limited server recover but short enough to not starve the tick loop.
+const RECONNECT_BACKOFF_CAP_MS: u64 = 10_000;
 /// Minimum seconds between LaserStream respawn attempts. Without this, a
 /// binary that exits immediately (e.g. wrong subcommand, missing creds)
 /// triggers a tight-loop respawn on every `Disconnected` poll, burning CPU
@@ -318,12 +334,29 @@ impl SessionStats {
 }
 
 // ─── Sub trackers (same as paper_session) ────────────────────────────────
+//
+// TRADE-AWARE EVICTION (GAP #11 / Phase 3):
+// The original FIFO eviction blindly removed the oldest subscription,
+// regardless of whether the mint had active MarketTrade activity. This meant
+// a mint that was receiving heavy buying pressure could be evicted just
+// because it was subscribed early, losing its OnchainConfirm slot precisely
+// when it mattered most.
+//
+// The enhanced SubTracker tracks a `has_trades` flag per subscription. The
+// eviction policy is two-tier:
+//   1. First, evict the oldest subscription with NO trade activity (dormant).
+//   2. If all active subs have trades, fall back to FIFO on the oldest.
+//
+// This preserves subscription slots for mints with demonstrated market
+// interest — the exact population we want to confirm and admit.
 
 struct SubTracker {
     req_to_mint: HashMap<u64, [u8; 32]>,
     req_to_server_sub: HashMap<u64, u64>,
     server_sub_to_mint: HashMap<u64, [u8; 32]>,
-    subscription_order: Vec<(u64, [u8; 32])>,
+    // (req_id, mint, has_trades) — has_trades is set true when a MarketTrade
+    // event is observed for this mint while it holds an active subscription.
+    subscription_order: Vec<(u64, [u8; 32], bool)>,
 }
 
 impl SubTracker {
@@ -338,7 +371,7 @@ impl SubTracker {
 
     fn record_request(&mut self, req_id: u64, mint: [u8; 32]) {
         self.req_to_mint.insert(req_id, mint);
-        self.subscription_order.push((req_id, mint));
+        self.subscription_order.push((req_id, mint, false));
     }
 
     fn record_ack(&mut self, req_id: u64, server_sub_id: u64) {
@@ -348,18 +381,43 @@ impl SubTracker {
         }
     }
 
+    /// Mark that a MarketTrade event was observed for `mint`. This promotes
+    /// the subscription's eviction priority — dormant mints are evicted
+    /// before trade-active mints. Returns true if the mint was found.
+    fn mark_trade_seen(&mut self, mint: &[u8; 32]) -> bool {
+        for entry in self.subscription_order.iter_mut() {
+            if &entry.1 == mint {
+                entry.2 = true;
+                return true;
+            }
+        }
+        false
+    }
+
     fn mint_for_server_sub(&self, server_sub_id: u64) -> Option<[u8; 32]> {
         self.server_sub_to_mint.get(&server_sub_id).copied()
     }
 
-    /// Evict the oldest locally-tracked subscription. Returns (req_id, mint,
-    /// server_sub_id) where server_sub_id is Some if Helius has ACKed the
-    /// subscription (needed to send accountUnsubscribe), or None if the ACK
-    /// hasn't arrived yet.
+    /// Evict using trade-aware priority: first try the oldest subscription
+    /// with `has_trades == false` (dormant). If ALL active subscriptions have
+    /// trades, fall back to pure FIFO (evict the oldest regardless of trade
+    /// state). Returns (req_id, mint, server_sub_id) where server_sub_id is
+    /// Some if Helius has ACKed the subscription (needed to send
+    /// accountUnsubscribe), or None if the ACK hasn't arrived yet.
     fn evict_oldest(&mut self) -> Option<(u64, [u8; 32], Option<u64>)> {
-        let item = self.subscription_order.first().copied()?;
-        let (req_id, mint) = item;
-        self.subscription_order.remove(0);
+        if self.subscription_order.is_empty() {
+            return None;
+        }
+        // Tier 1: find the index of the oldest subscription with no trades.
+        let dormant_idx = self.subscription_order
+            .iter()
+            .position(|(_, _, has_trades)| !*has_trades);
+
+        let idx = dormant_idx.unwrap_or(0);
+        // Vec::remove returns the value directly (not Option). The idx is
+        // always valid because subscription_order is non-empty (guarded above).
+        let item = self.subscription_order.remove(idx);
+        let (req_id, mint, _has_trades) = item;
         self.req_to_mint.remove(&req_id);
         let server_sub = self.req_to_server_sub.remove(&req_id);
         if let Some(ssid) = server_sub {
@@ -370,13 +428,24 @@ impl SubTracker {
 
     /// Clear all server-sub mappings (used on reconnect — the server assigns
     /// new sub IDs on a fresh connection, so stale mappings must go).
+    /// Also resets has_trades flags — after reconnect, we haven't seen any
+    /// trades on the new connection yet.
     fn clear_server_subs(&mut self) {
         self.req_to_server_sub.clear();
         self.server_sub_to_mint.clear();
+        // Reset trade flags on reconnect — the new connection hasn't observed
+        // any trades yet. This prevents stale trade-flags from permanently
+        // protecting subscriptions that may no longer be active.
+        for entry in self.subscription_order.iter_mut() {
+            entry.2 = false;
+        }
     }
 
     fn active_mints(&self) -> Vec<(u64, [u8; 32])> {
-        self.subscription_order.clone()
+        self.subscription_order
+            .iter()
+            .map(|(req_id, mint, _)| (*req_id, *mint))
+            .collect()
     }
 
     fn len(&self) -> usize {
@@ -524,6 +593,9 @@ fn main() -> ExitCode {
         eprintln!("[pq-daemon] Helius slotSubscribe error: {e}");
         return ExitCode::from(4);
     }
+    // Track connection establishment time for the stale-check guard (GAP #10).
+    // Initialized here on initial connect; reset on every reconnect.
+    // (helius_conn_established_at is declared later, before the event loop.)
 
     // ─── Engine + queue ──────────────────────────────────────────────────
     let queue = BoundedJunctionQueue::with_capacity(args.junction_cap);
@@ -561,6 +633,18 @@ fn main() -> ExitCode {
     let mut reserve_tracker: HashMap<[u8; 32], ReserveSnapshot> = HashMap::new();
     let mut last_slot_seen: u64 = 0;
     let mut last_slot_time = Instant::now();
+
+    // GAP #10: Track when the current Helius connection was established.
+    // The stale check previously required `last_slot_seen > 0` — on a fresh
+    // daemon start where Helius dies before the first slot notification,
+    // last_slot_seen stayed 0 and the stale check NEVER fired, leaving the
+    // daemon spinning on poll errors forever with no recovery.
+    //
+    // With conn_established_at, the stale check fires based on connection AGE
+    // (wall clock since connect), not slot count. If no slot arrives within
+    // STALE_SECS of connection establishment, the connection is declared
+    // stale and reconnected — regardless of last_slot_seen.
+    let mut helius_conn_established_at = Instant::now();
 
     // ─── LaserStream gRPC primary ingest lane ────────────────────────────
     let (ls_tx, ls_rx) = mpsc::channel::<LaserStreamUpdate>();
@@ -1025,6 +1109,15 @@ fn main() -> ExitCode {
                     if handle_trade_payload(text.as_bytes(), 0, &queue) {
                         stats.pp_trades_enqueued += 1;
                     }
+                    // Phase 3: Mark the mint as trade-active in SubTracker so
+                    // the trade-aware eviction policy preserves its Helius
+                    // subscription slot. Without this, a mint receiving heavy
+                    // buying pressure could be evicted just because it was
+                    // subscribed early, losing its OnchainConfirm slot
+                    // precisely when it matters most.
+                    if let Some(tx) = pump_quant_ingest::pumpportal_parse::parse_pumpportal(text.as_bytes()) {
+                        sub_tracker.mark_trade_seen(&tx.mint);
+                    }
                 }
             }
             Ok(Some(WsEvent::Closed(reason))) => {
@@ -1213,27 +1306,93 @@ fn main() -> ExitCode {
                 eprintln!("[pq-daemon] Helius closed: {reason}, reconnecting…");
                 stats.helius_reconnects += 1;
                 sub_tracker.clear_server_subs();
-                helius_conn = match WsConn::connect(&helius_url) {
-                    Ok(mut c) => {
-                        let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
-                        let _ = c.send_text(&helius_ws::slot_subscribe_request());
-                        for (_, mint) in sub_tracker.active_mints() {
-                            let pda = bonding_curve_pda(&mint);
-                            let pda_str = pda.to_string();
-                            let req_id = next_req_id;
-                            next_req_id += 1;
-                            let req = helius_ws::account_subscribe_request(
-                                req_id, &pda_str, &args.commitment,
-                            );
-                            let _ = c.send_text(&req);
+                // GAP #11: Exponential backoff reconnect ladder.
+                // The old code tried once, slept 500ms, tried once more, then
+                // gave up. Against a rate-limiting or overloaded Helius endpoint,
+                // two immediate retries both fail. The backoff ladder doubles
+                // the sleep from 500ms → 1s → 2s → 4s → 8s (capped at 10s),
+                // giving the server progressively more time to recover.
+                let mut backoff_ms = WS_RECONNECT_SLEEP_MS;
+                let mut reconnected = false;
+                for _ in 0..MAX_RECONNECT_ATTEMPTS {
+                    if !reconnected {
+                        match WsConn::connect(&helius_url) {
+                            Ok(mut c) => {
+                                let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
+                                let _ = c.send_text(&helius_ws::slot_subscribe_request());
+                                // GAP #8: record_request() MUST be called for
+                                // each re-subscription. Without it, the ACK
+                                // from Helius arrives but record_ack() can't
+                                // map req_id → mint because record_request
+                                // never stored it. server_sub_to_mint stays
+                                // empty → all notifications are silently
+                                // dropped → 0 OnchainConfirms after reconnect.
+                                for (_, mint) in sub_tracker.active_mints() {
+                                    let pda = bonding_curve_pda(&mint);
+                                    let pda_str = pda.to_string();
+                                    let req_id = next_req_id;
+                                    next_req_id += 1;
+                                    let req = helius_ws::account_subscribe_request(
+                                        req_id, &pda_str, &args.commitment,
+                                    );
+                                    let _ = c.send_text(&req);
+                                    // CRITICAL: register the req_id → mint
+                                    // mapping so the ACK can be resolved.
+                                    sub_tracker.record_request(req_id, mint);
+                                }
+                                helius_conn_established_at = Instant::now();
+                                last_slot_time = Instant::now();
+                                reconnected = true;
+                                helius_conn = c;
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[pq-daemon] Helius reconnect failed (backoff={backoff_ms}ms): {e}"
+                                );
+                                stats.ws_errors += 1;
+                                std::thread::sleep(Duration::from_millis(backoff_ms));
+                                backoff_ms = (backoff_ms * 2).min(RECONNECT_BACKOFF_CAP_MS);
+                            }
                         }
-                        c
                     }
-                    Err(e) => {
-                        eprintln!("[pq-daemon] Helius reconnect failed: {e}");
-                        stats.ws_errors += 1;
-                        // Bounded sleep: 500ms (was 5s). Keeps tick loop alive.
-                        std::thread::sleep(Duration::from_millis(WS_RECONNECT_SLEEP_MS));
+                }
+                if !reconnected {
+                    eprintln!(
+                        "[pq-daemon] Helius reconnect exhausted after {MAX_RECONNECT_ATTEMPTS} attempts — degrading, continuing with LaserStream/PumpPortal"
+                    );
+                    // Graceful degradation: keep the old (broken) conn.
+                    // The stale-check watchdog will retry on the next tick.
+                }
+            }
+            Ok(Some(WsEvent::Pong)) | Ok(None) => {}
+            Ok(Some(WsEvent::Binary(_))) => { stats.ws_errors += 1; }
+            Err(e) => {
+                // GAP #9: Err path recovery — THE ACTIVE ROOT CAUSE.
+                //
+                // The old code here was:
+                //   eprintln!("Helius poll error: {e}");
+                //   stats.ws_errors += 1;
+                //
+                // That's it. No reconnect, no state reset, no backoff.
+                // When the Helius TCP connection was forcibly closed by the
+                // remote host (Windows error WSAECONNRESET, os error 10054),
+                // poll_event() returned Err on EVERY subsequent call —
+                // 34,379 consecutive poll errors over hours. The daemon
+                // kept sending EVICT unsubscribes and new accountSubscribe
+                // requests into a dead socket. Zero slot notifications,
+                // zero OnchainConfirms, 95% NeedsOnchainConfirmation rejects.
+                //
+                // The fix: treat Err identically to WsEvent::Closed —
+                // clear server subs, reconnect with backoff, re-subscribe
+                // all active mints with record_request(), reset timers.
+                eprintln!("[pq-daemon] Helius poll error: {e}");
+                stats.ws_errors += 1;
+                stats.helius_reconnects += 1;
+                sub_tracker.clear_server_subs();
+                let mut backoff_ms = WS_RECONNECT_SLEEP_MS;
+                let mut reconnected = false;
+                for _ in 0..MAX_RECONNECT_ATTEMPTS {
+                    if !reconnected {
                         match WsConn::connect(&helius_url) {
                             Ok(mut c) => {
                                 let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
@@ -1247,65 +1406,105 @@ fn main() -> ExitCode {
                                         req_id, &pda_str, &args.commitment,
                                     );
                                     let _ = c.send_text(&req);
+                                    sub_tracker.record_request(req_id, mint);
                                 }
-                                c
+                                helius_conn_established_at = Instant::now();
+                                last_slot_time = Instant::now();
+                                reconnected = true;
+                                helius_conn = c;
+                                eprintln!(
+                                    "[pq-daemon] Helius Err-path reconnect succeeded after poll errors"
+                                );
                             }
-                            Err(_) => {
-                                // Graceful degradation: keep the old (broken) conn.
-                                // Daemon continues with LaserStream + PumpPortal.
-                                // Previously this path panicked.
-                                eprintln!("[pq-daemon] Helius 2nd reconnect failed — degrading, continuing with LaserStream/PumpPortal");
-                                helius_conn
+                            Err(err) => {
+                                eprintln!(
+                                    "[pq-daemon] Helius Err-path reconnect failed (backoff={backoff_ms}ms): {err}"
+                                );
+                                stats.ws_errors += 1;
+                                std::thread::sleep(Duration::from_millis(backoff_ms));
+                                backoff_ms = (backoff_ms * 2).min(RECONNECT_BACKOFF_CAP_MS);
                             }
                         }
                     }
-                };
-            }
-            Ok(Some(WsEvent::Pong)) | Ok(None) => {}
-            Ok(Some(WsEvent::Binary(_))) => { stats.ws_errors += 1; }
-            Err(e) => {
-                eprintln!("[pq-daemon] Helius poll error: {e}");
-                stats.ws_errors += 1;
+                }
+                if !reconnected {
+                    eprintln!(
+                        "[pq-daemon] Helius Err-path reconnect exhausted after {MAX_RECONNECT_ATTEMPTS} attempts — degrading, stale-check will retry"
+                    );
+                    // Reset stale timer to avoid immediate re-trigger spam;
+                    // the stale check below will retry on the next tick.
+                    last_slot_time = Instant::now();
+                }
             }
         }
 
         // ── Keepalive + staleness ────────────────────────────────────────
         let _ = pp_conn.maybe_keepalive();
         let _ = helius_conn.maybe_keepalive();
-        if last_slot_seen > 0 && last_slot_time.elapsed() > Duration::from_secs(STALE_SECS) {
+        // GAP #10: The stale check guard previously required `last_slot_seen > 0`.
+        // On a fresh daemon start where Helius dies before the first slot
+        // notification, last_slot_seen stays 0 and this check NEVER fired,
+        // leaving the daemon spinning on poll errors forever with no recovery.
+        //
+        // The fix: also check connection age. If the connection has been alive
+        // for > STALE_SECS and no slot has arrived (last_slot_time elapsed >
+        // STALE_SECS), it's stale. The `last_slot_seen > 0` guard is removed —
+        // connection age alone is sufficient to declare staleness.
+        if last_slot_time.elapsed() > Duration::from_secs(STALE_SECS)
+            && helius_conn_established_at.elapsed() > Duration::from_secs(STALE_SECS)
+        {
             eprintln!(
-                "[pq-daemon] Helius stale: no slot for {}s, reconnecting",
-                last_slot_time.elapsed().as_secs()
+                "[pq-daemon] Helius stale: no slot for {}s (conn age {}s, last_slot_seen={}), reconnecting",
+                last_slot_time.elapsed().as_secs(),
+                helius_conn_established_at.elapsed().as_secs(),
+                last_slot_seen,
             );
             stats.helius_reconnects += 1;
             sub_tracker.clear_server_subs();
-            helius_conn = match WsConn::connect(&helius_url) {
-                Ok(mut c) => {
-                    let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
-                    let _ = c.send_text(&helius_ws::slot_subscribe_request());
-                    for (_, mint) in sub_tracker.active_mints() {
-                        let pda = bonding_curve_pda(&mint);
-                        let pda_str = pda.to_string();
-                        let req_id = next_req_id;
-                        next_req_id += 1;
-                        let req = helius_ws::account_subscribe_request(
-                            req_id, &pda_str, &args.commitment,
-                        );
-                        let _ = c.send_text(&req);
+            // GAP #11: Same exponential backoff ladder as the Closed/Err paths.
+            let mut backoff_ms = WS_RECONNECT_SLEEP_MS;
+            let mut reconnected = false;
+            for _ in 0..MAX_RECONNECT_ATTEMPTS {
+                if !reconnected {
+                    match WsConn::connect(&helius_url) {
+                        Ok(mut c) => {
+                            let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
+                            let _ = c.send_text(&helius_ws::slot_subscribe_request());
+                            for (_, mint) in sub_tracker.active_mints() {
+                                let pda = bonding_curve_pda(&mint);
+                                let pda_str = pda.to_string();
+                                let req_id = next_req_id;
+                                next_req_id += 1;
+                                let req = helius_ws::account_subscribe_request(
+                                    req_id, &pda_str, &args.commitment,
+                                );
+                                let _ = c.send_text(&req);
+                                sub_tracker.record_request(req_id, mint);
+                            }
+                            helius_conn_established_at = Instant::now();
+                            last_slot_time = Instant::now();
+                            reconnected = true;
+                            helius_conn = c;
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[pq-daemon] Helius stale-reconnect failed (backoff={backoff_ms}ms): {e}"
+                            );
+                            stats.ws_errors += 1;
+                            std::thread::sleep(Duration::from_millis(backoff_ms));
+                            backoff_ms = (backoff_ms * 2).min(RECONNECT_BACKOFF_CAP_MS);
+                        }
                     }
-                    last_slot_time = Instant::now();
-                    c
                 }
-                Err(e) => {
-                    eprintln!("[pq-daemon] Helius stale-reconnect failed: {e}");
-                    stats.ws_errors += 1;
-                    // Don't break — keep the daemon alive. Reset stale timer
-                    // to avoid spam. The next loop iteration will retry.
-                    last_slot_time = Instant::now();
-                    // Keep the old connection — graceful degradation.
-                    helius_conn
-                }
-            };
+            }
+            if !reconnected {
+                eprintln!(
+                    "[pq-daemon] Helius stale-reconnect exhausted after {MAX_RECONNECT_ATTEMPTS} attempts — degrading"
+                );
+                // Don't break — keep the daemon alive. Reset stale timer
+                // to avoid spam. The next loop iteration will retry.
+                last_slot_time = Instant::now();
+            }
         }
 
         // ── Drain junction queue into engine ─────────────────────────────
