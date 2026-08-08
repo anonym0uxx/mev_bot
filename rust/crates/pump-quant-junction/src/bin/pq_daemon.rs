@@ -475,6 +475,28 @@ fn main() -> ExitCode {
     let mut dwell_samples: Vec<u64> = Vec::new();
     let mut engine = Engine::new(cfg, RunMode::Paper);
 
+    // LAW B5: arm the episodic brain store for persistence. Without this,
+    // snapshot_brain() is a silent no-op (store = None → Ok(())). The daemon
+    // MUST attach a File blob store so episodic memory survives restarts and
+    // the brain_analysis.json + brain snapshot are actually written to disk.
+    if cfg.brain_enable && cfg.brain_persist_enable && !cfg.brain_path.is_empty() {
+        match engine.attach_brain_store(pump_quant_app::brain::AppBlobStore::File(
+            pump_quant_brain::persist::FileBlobStore,
+        )) {
+            Ok(report) => eprintln!(
+                "[pq-daemon] brain store restored: {} episodes ({} snapshot, {} journal){}",
+                report.admitted(),
+                report.snapshot_admitted,
+                report.journal_admitted,
+                if report.saw_damage() { " [DAMAGE SEEN]" } else { "" }
+            ),
+            Err(e) => eprintln!(
+                "[pq-daemon] brain persistence disarmed: cannot open {} ({e})",
+                cfg.brain_path.as_str()
+            ),
+        }
+    }
+
     let mut sub_tracker = SubTracker::new();
     let mut trade_sub_tracker = TradeSubTracker::new();
     let mut pending_notifications: VecDeque<(u64, String, u64)> = VecDeque::new();

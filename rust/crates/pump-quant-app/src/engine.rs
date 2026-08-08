@@ -1053,6 +1053,10 @@ pub struct Engine {
     promoted: u64,
     admitted: u64,
     rejected: u64,
+    /// Per-code reject histogram (index = reject code 1..18). Full population,
+    /// not a ring-buffer sample — every rejection increments both `rejected`
+    /// and `reject_counts[code]`, so the histogram is exact, not statistical.
+    reject_counts: [u64; 32],
 }
 
 impl Engine {
@@ -1264,6 +1268,7 @@ impl Engine {
             promoted: 0,
             admitted: 0,
             rejected: 0,
+            reject_counts: [0; 32],
         }
     }
 
@@ -1366,6 +1371,17 @@ impl Engine {
         self.positions.open_positions_snapshot(self.now)
     }
 
+    /// Centralized reject accounting: increments both the aggregate `rejected`
+    /// counter and the per-code `reject_counts` histogram. Every reject site
+    /// MUST route through this helper so the histogram is exact and the
+    /// accounting identity `promoted = admitted + rejected` is preserved
+    /// alongside the per-code breakdown.
+    fn reject(&mut self, code: u8) {
+        self.rejected += 1;
+        let idx = (code as usize).min(31);
+        self.reject_counts[idx] += 1;
+    }
+
     /// §60/§62 LAW 21 canonical live-status snapshot (report-only): a bounded,
     /// deterministic view of the running engine — info-time is the event-stream
     /// tick (never wall-clock). Reads live counters directly WITHOUT finalizing, so
@@ -1377,6 +1393,7 @@ impl Engine {
             promoted: self.promoted,
             admitted: self.admitted,
             rejected: self.rejected,
+            reject_counts: self.reject_counts,
             open_positions: self.positions.len() as u64,
             net_realized_lamports: self.bankroll_realized,
             universe_filtered: self.universe_filtered,
@@ -2574,7 +2591,7 @@ impl Engine {
                 if i < awarded.len() && awarded[i] {
                     self.open_pending(p);
                 } else {
-                    self.rejected += 1;
+                    self.reject(REJECT_ARBITRATION);
                     self.journal.record(Decision::Rejected {
                         mint: p.mint,
                         reason: REJECT_ARBITRATION,
@@ -2824,7 +2841,7 @@ impl Engine {
         // §56.11: a retired lane's candidates stay research-visible but are
         // capital-ineligible.
         if self.retired[cand.lane.index()] {
-            self.rejected += 1;
+            self.reject(REJECT_LANE_RETIRED);
             self.journal.record(Decision::Rejected {
                 mint: mint_bytes,
                 reason: REJECT_LANE_RETIRED,
@@ -2895,7 +2912,7 @@ impl Engine {
                         .observe(mint_bytes, u64::from(wash_strength), self.now);
                 }
                 if fabricated {
-                    self.rejected += 1;
+                    self.reject(REJECT_FABRICATED_FLOW);
                     self.journal.record(Decision::Rejected {
                         mint: mint_bytes,
                         reason: REJECT_FABRICATED_FLOW,
@@ -2908,7 +2925,7 @@ impl Engine {
                 // pre-entry — the prior "creator distribution is fade-only, never a
                 // veto" behaviour is reversed for the confirmed-dump regime.
                 if self.creator_dump_active(&mint_bytes) {
-                    self.rejected += 1;
+                    self.reject(REJECT_CREATOR_DUMP);
                     self.journal.record(Decision::Rejected {
                         mint: mint_bytes,
                         reason: REJECT_CREATOR_DUMP,
@@ -2922,7 +2939,7 @@ impl Engine {
                 // pre-entry. A merely-low footprint fades size later (below).
                 let (fee_floor_veto, _fee_fade) = self.fee_floor_verdict(&mint_bytes);
                 if fee_floor_veto {
-                    self.rejected += 1;
+                    self.reject(REJECT_FEE_FLOOR);
                     self.journal.record(Decision::Rejected {
                         mint: mint_bytes,
                         reason: REJECT_FEE_FLOOR,
@@ -2952,7 +2969,7 @@ impl Engine {
                     && auth_bps <= CONCENTRATION_VETO_AUTH_BPS;
                 let conc_risk = conc.risk_or_clear(conc_corroborated);
                 if conc_risk == ConcentrationRisk::Veto {
-                    self.rejected += 1;
+                    self.reject(REJECT_HOLDER_CONCENTRATION);
                     self.journal.record(Decision::Rejected {
                         mint: mint_bytes,
                         reason: REJECT_HOLDER_CONCENTRATION,
@@ -2972,7 +2989,7 @@ impl Engine {
                     .and_then(|v| v.reading(self.now, &vp));
                 let vpin_mult = vpin_size_mult_bp(vpin_reading, &self.vpin_thresholds());
                 if vpin_mult == 0 {
-                    self.rejected += 1;
+                    self.reject(REJECT_VPIN_TOXIC);
                     self.journal.record(Decision::Rejected {
                         mint: mint_bytes,
                         reason: REJECT_VPIN_TOXIC,
@@ -2983,7 +3000,7 @@ impl Engine {
                 // ---- Concurrency cap (§33: jointly sized with the risk fractions —
                 // max_concurrent × f_base ≈ total_risk_cap). Journaled, never silent.
                 if self.positions.len() >= self.cfg.max_concurrent_positions {
-                    self.rejected += 1;
+                    self.reject(REJECT_MAX_CONCURRENT);
                     self.journal.record(Decision::Rejected {
                         mint: mint_bytes,
                         reason: REJECT_MAX_CONCURRENT,
@@ -3006,7 +3023,7 @@ impl Engine {
                     u128::from(deployable) * u128::from(self.cfg.total_risk_cap_bp) / 10_000;
                 let available_risk = risk_budget.saturating_sub(self.bankroll_committed);
                 if deployable == 0 || available_risk == 0 {
-                    self.rejected += 1;
+                    self.reject(REJECT_INSUFFICIENT_BANKROLL);
                     self.journal.record(Decision::Rejected {
                         mint: mint_bytes,
                         reason: REJECT_INSUFFICIENT_BANKROLL,
@@ -3152,7 +3169,7 @@ impl Engine {
                     None => BrainSizeVerdict::Identity,
                 };
                 if brain_verdict == BrainSizeVerdict::Veto {
-                    self.rejected += 1;
+                    self.reject(REJECT_BRAIN_BLED);
                     self.journal.record(Decision::Rejected {
                         mint: mint_bytes,
                         reason: REJECT_BRAIN_BLED,
@@ -3203,7 +3220,7 @@ impl Engine {
                     if promotable {
                         band.x_min
                     } else {
-                        self.rejected += 1;
+                        self.reject(REJECT_BELOW_COST_FLOOR);
                         self.journal.record(Decision::Rejected {
                             mint: mint_bytes,
                             reason: REJECT_BELOW_COST_FLOOR,
@@ -3238,7 +3255,7 @@ impl Engine {
                     });
                 if wallet_floor_guard(entry_cost, balance, floor) == FloorVerdict::RefusedBelowFloor
                 {
-                    self.rejected += 1;
+                    self.reject(REJECT_WALLET_FLOOR);
                     self.journal.record(Decision::Rejected {
                         mint: mint_bytes,
                         reason: REJECT_WALLET_FLOOR,
@@ -3258,7 +3275,7 @@ impl Engine {
                                 .gate_expected_move_bps
                                 .saturating_mul(EXIT_COST_VETO_MULT) => {}
                     _ => {
-                        self.rejected += 1;
+                        self.reject(REJECT_EXIT_COST);
                         self.journal.record(Decision::Rejected {
                             mint: mint_bytes,
                             reason: REJECT_EXIT_COST,
@@ -3307,7 +3324,7 @@ impl Engine {
                 let rt_bps = match self.unified_rt_bps(&mint_bytes, size, conf_vsol) {
                     Some(bps) => bps,
                     None => {
-                        self.rejected += 1;
+                        self.reject(REJECT_UNDECODED_QUOTE);
                         self.journal.record(Decision::Rejected {
                             mint: mint_bytes,
                             reason: REJECT_UNDECODED_QUOTE,
@@ -3387,12 +3404,13 @@ impl Engine {
                 })
             }
             GateDecision::Reject(reason) => {
-                self.rejected += 1;
+                let code = reject_code(reason);
+                self.reject(code);
                 self.journal.record(Decision::Rejected {
                     mint: mint_bytes,
-                    reason: reject_code(reason),
+                    reason: code,
                 });
-                self.record_reject_sample(reject_code(reason), mint_bytes);
+                self.record_reject_sample(code, mint_bytes);
                 None
             }
         }
@@ -3427,7 +3445,7 @@ impl Engine {
                 });
             }
             Err(_) => {
-                self.rejected += 1;
+                self.reject(REJECT_BELOW_COST_FLOOR);
                 self.journal.record(Decision::Rejected {
                     mint,
                     reason: REJECT_BELOW_COST_FLOOR,

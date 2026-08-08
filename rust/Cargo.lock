@@ -1046,6 +1046,7 @@ dependencies = [
  "base64 0.22.1",
  "pq-stream-capture",
  "pump-quant-app",
+ "pump-quant-brain",
  "pump-quant-core",
  "pump-quant-domain",
  "pump-quant-evaluator",

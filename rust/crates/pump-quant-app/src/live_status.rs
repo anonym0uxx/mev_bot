@@ -42,6 +42,10 @@ pub struct LiveStatus {
     pub admitted: u64,
     /// Candidates rejected so far.
     pub rejected: u64,
+    /// Per-code reject histogram (index = reject code 1..18, 0 = unused slot).
+    /// Exact population — every rejection increments both `rejected` and the
+    /// matching slot here, so `sum(reject_counts) == rejected` is an invariant.
+    pub reject_counts: [u64; 32],
     /// Currently-open positions.
     pub open_positions: u64,
     /// Running realized net-SOL, lamports (realized-only; marks never count).
@@ -58,13 +62,20 @@ pub struct LiveStatus {
 
 impl LiveStatus {
     /// The status schema tag — bumped if the field set ever changes.
-    pub const SCHEMA: &'static str = "live_status/1";
+    pub const SCHEMA: &'static str = "live_status/2";
 
     /// Serialize to canonical JSON: a fixed key order, integer/decimal values, the
     /// digest as a fixed-width hex string. Two runs over the same tape produce the
     /// byte-identical string.
     #[must_use]
     pub fn to_canonical_json(&self) -> String {
+        // Render reject_counts as a JSON array of 32 integers.
+        let mut rc = String::from("[");
+        for (i, &c) in self.reject_counts.iter().enumerate() {
+            if i > 0 { rc.push(','); }
+            rc.push_str(&c.to_string());
+        }
+        rc.push(']');
         format!(
             concat!(
                 "{{\"schema\":\"{}\",",
@@ -72,6 +83,7 @@ impl LiveStatus {
                 "\"promoted\":{},",
                 "\"admitted\":{},",
                 "\"rejected\":{},",
+                "\"reject_counts\":{},",
                 "\"open_positions\":{},",
                 "\"net_realized_lamports\":{},",
                 "\"universe_filtered\":{},",
@@ -84,6 +96,7 @@ impl LiveStatus {
             self.promoted,
             self.admitted,
             self.rejected,
+            rc,
             self.open_positions,
             self.net_realized_lamports,
             self.universe_filtered,
@@ -172,11 +185,12 @@ mod tests {
         assert_eq!(json, b.to_canonical_json());
         // The expected canonical keys are all present.
         for key in [
-            "\"schema\":\"live_status/1\"",
+            "\"schema\":\"live_status/2\"",
             "\"info_time_tick\":",
             "\"promoted\":",
             "\"admitted\":",
             "\"rejected\":",
+            "\"reject_counts\":",
             "\"open_positions\":",
             "\"net_realized_lamports\":",
             "\"universe_filtered\":",
@@ -186,6 +200,9 @@ mod tests {
         ] {
             assert!(json.contains(key), "missing key {key} in {json}");
         }
+        // The reject histogram invariant: sum(reject_counts) == rejected.
+        let sum: u64 = a.reject_counts.iter().sum();
+        assert_eq!(sum, a.rejected, "histogram sum {} != rejected {}", sum, a.rejected);
         // Info-time is the event-stream tick, not a wall-clock — non-zero after the
         // driven ticks and identical across replays (already asserted equal above).
         assert!(a.info_time_tick > 0);

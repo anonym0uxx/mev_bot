@@ -6,15 +6,17 @@ bar_trades_per_bar = 8
 baseline_margin_lamports = 100000
 baseline_min_trades = 32
 brain_analysis_enable = 1
+brain_analysis_path = data/brain_analysis.json
 brain_decay_min_sample = 12
 brain_enable = 1
 brain_haircut_enable = 1
 brain_haircut_mult_bp = 5000
 brain_haircut_win_rate_bp = 3500
 brain_min_sample = 8
-brain_persist_enable = 0
+brain_path = data/brain
+brain_persist_enable = 1
 brain_recall_max_distance = 8
-brain_reflect_enable = 0
+brain_reflect_enable = 1
 brain_reflect_step_bp = 250
 brain_veto_win_rate_bp = 1500
 confirm_ttl_ticks = 200
@@ -145,4 +147,4 @@ watchlist_capacity = 64
 watchlist_ttl_ticks = 100
 x_min_promote_cap_bp = 800
 
-# S8 reflection_snapshot: tick=5000 reflect_every_ticks=50 brain_reflect_enable=false retired=[false,false,false,false]
+# S8 reflection_snapshot: tick=10000 reflect_every_ticks=50 brain_reflect_enable=false retired=[false,false,false,false]
