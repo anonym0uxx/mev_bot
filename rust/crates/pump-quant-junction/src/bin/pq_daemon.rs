@@ -420,7 +420,44 @@ fn main() -> ExitCode {
     let pp_url = std::env::var("PUMPPORTAL_WS_URL")
         .unwrap_or_else(|_| PUMPPORTAL_DEFAULT_URL.to_string());
 
+    // Load CHAMPION_CONFIG.txt over compiled defaults — the config file is the
+    // operator's source of truth for all tunable knobs (TP ladder, brain
+    // persistence, reflection, etc). Compiled dev_portable() provides safe
+    // fail-closed defaults; the file overrides them. This is NOT the simplest
+    // approach (which would be to hardcode brain_persist_enable=true in the
+    // defaults) — it is the correct one: the operator's config file governs.
     let mut cfg = Config::dev_portable().with_mcap_band(); // Amendment A-14: $9k-$20k band
+    {
+        const CHAMPION_CONFIG_FILE: &str = "data/CHAMPION_CONFIG.txt";
+        if std::path::Path::new(CHAMPION_CONFIG_FILE).exists() {
+            match std::fs::read_to_string(CHAMPION_CONFIG_FILE) {
+                Ok(text) => match Config::from_str_over_default(&text) {
+                    Ok(loaded) => {
+                        cfg = loaded.with_mcap_band();
+                        eprintln!(
+                            "[pq-daemon] CHAMPION_CONFIG.txt loaded — {} keys applied over dev_portable defaults",
+                            text.lines().filter(|l| {
+                                let t = l.split('#').next().unwrap_or("").trim();
+                                !t.is_empty() && t.contains('=')
+                            }).count()
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[pq-daemon] CHAMPION_CONFIG.txt parse error — using compiled defaults ({e})"
+                        );
+                    }
+                },
+                Err(e) => {
+                    eprintln!(
+                        "[pq-daemon] CHAMPION_CONFIG.txt unreadable — using compiled defaults ({e})"
+                    );
+                }
+            }
+        } else {
+            eprintln!("[pq-daemon] no CHAMPION_CONFIG.txt — using compiled dev_portable defaults");
+        }
+    }
     let tick_period_ms = cfg.paper_tick_period_ms;
 
     eprintln!("[pq-daemon] === AUTONOMOUS DAEMON STARTING ===");
