@@ -246,6 +246,49 @@ fn hex_short(b: &[u8; 32]) -> String {
     s
 }
 
+/// Kill a child process AND its entire process tree. This is critical for
+/// preventing orphaned LaserStream/Firecrawl grandchildren on Windows.
+///
+/// On Windows, `child.kill()` calls `TerminateProcess` which kills ONLY the
+/// immediate process — NOT its children. When the daemon spawns LS via
+/// `wsl.exe`, the actual gRPC binary runs as a grandchild inside WSL2.
+/// `TerminateProcess` on wsl.exe leaves the Linux gRPC process orphaned,
+/// still connected to Helius, burning credits. This function uses
+/// `taskkill /T /F /PID` to recursively kill the entire process tree
+/// before calling the Rust kill as a fallback.
+///
+/// GAP #13: This function is called on EVERY child kill path (graceful
+/// shutdown, emergency stop, defense-in-depth halt, and LS respawn).
+fn kill_process_tree(child: &mut std::process::Child) {
+    let pid = child.id();
+    #[cfg(windows)]
+    {
+        // taskkill /T = kill tree, /F = force. This kills the PID and all
+        // processes spawned by it recursively — critical for wsl.exe → bash →
+        // pq-laserstream-grpc process chains.
+        let _ = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    // Fallback: Rust's own kill (covers non-Windows or if taskkill failed)
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Kill a LaserStream or Firecrawl child by PID when we only have the PID
+/// (e.g. orphans from a previous session detected via health monitoring).
+/// Used by the LS orphan reaper (GAP #14).
+#[cfg(windows)]
+fn kill_pid_tree(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 fn extract_account_data(result: &Value) -> (Option<String>, Option<u64>) {
     let data_b64 = result
         .get("value")
@@ -883,6 +926,9 @@ fn main() -> ExitCode {
     //   3. Both WS connections break AND reconnects fail irrecoverably
     eprintln!("[pq-daemon] === ENTERING PERSISTENT EVENT LOOP ===");
 
+    // GAP #14: Track session start time for daemon_health.json uptime reporting.
+    let session_start = Instant::now();
+
     loop {
         // ── Emergency stop check (every iteration) ───────────────────────
         if emergency_stop_requested() {
@@ -892,13 +938,15 @@ fn main() -> ExitCode {
             let st = engine.live_status();
             eprintln!("[pq-daemon] EMERGENCY: ticks={} promoted={} admitted={} net={}lamports",
                 st.info_time_tick, st.promoted, st.admitted, st.net_realized_lamports);
-            // Kill LaserStream child if present
-            if let Some(ref mut child) = ls_child { let _ = child.kill(); }
-            // Kill Firecrawl bridge child if present
-            if let Some(ref mut child) = fc_child { let _ = child.kill(); }
+            // Kill LaserStream child if present — use kill_process_tree to
+            // kill the entire process tree (prevents orphaned gRPC in WSL2).
+            // GAP #13: bare child.kill() leaves wsl.exe grandchildren alive.
+            if let Some(ref mut child) = ls_child { kill_process_tree(child); }
+            // Kill Firecrawl bridge child if present — same tree-kill logic.
+            if let Some(ref mut child) = fc_child { kill_process_tree(child); }
             return ExitCode::from(EXIT_EMERGENCY);
         }
-
+        
         // ── Graceful shutdown check (every iteration) ────────────────────
         if daemon_stop_requested() {
             eprintln!("[pq-daemon] DAEMON_STOP detected — initiating graceful shutdown");
@@ -922,6 +970,37 @@ fn main() -> ExitCode {
                 Err(e) => eprintln!("[pq-daemon] heartbeat live_status write failed: {e}"),
             }
             engine.write_brain_analysis();
+
+            // GAP #14: Write a daemon health JSON that the watchdog can read
+            // to detect OnchainConfirm starvation. The live_status.json schema
+            // is fixed (live_status/2) and can't be changed without breaking
+            // the canonical JSON invariant, so we write a SEPARATE file:
+            // data/daemon_health.json. This includes the onchain_confirm count
+            // and daemon uptime so the watchdog can detect a dead Helius WS
+            // lane and restart the daemon to re-establish it.
+            let uptime_secs = session_start.elapsed().as_secs();
+            let health_json = format!(
+                concat!(
+                    "{{",
+                    "\"onchain_confirms_decoded\":{},",
+                    "\"helius_account_notifications\":{},",
+                    "\"helius_reconnects\":{},",
+                    "\"ls_transactions_received\":{},",
+                    "\"ls_spawned\":{},",
+                    "\"uptime_secs\":{},",
+                    "\"tick\":{}",
+                    "}}"
+                ),
+                stats.helius_onchain_confirms_decoded,
+                stats.helius_account_notifications,
+                stats.helius_reconnects,
+                stats.ls_transactions_received,
+                stats.ls_spawned,
+                uptime_secs,
+                tick_counter,
+            );
+            let _ = std::fs::write("data/daemon_health.json", health_json);
+
             last_status_write_tick = tick_counter;
             last_status_write_wallclock = Instant::now();
         }
@@ -992,6 +1071,37 @@ fn main() -> ExitCode {
                         if let Some(bin_path) = &ls_bin {
                             match spawn_ls(bin_path) {
                                 Some(child) => {
+                                    // GAP #12 FIX: Kill the OLD LS child before
+                                    // replacing. Without this, Rust's Drop for
+                                    // Child on Windows closes the handle but
+                                    // does NOT kill the process — the old LS
+                                    // survives as an orphan, keeps its gRPC
+                                    // connection to Helius alive, and burns
+                                    // credits while its stdout pipe goes
+                                    // nowhere. This is the root cause of the
+                                    // 2M credit leak.
+                                    if let Some(ref mut old) = ls_child {
+                                        eprintln!(
+                                            "[pq-daemon] killing old LaserStream child (pid={}) before respawn to prevent orphan leak",
+                                            old.id()
+                                        );
+                                        // On Windows, child.kill() calls
+                                        // TerminateProcess which kills only the
+                                        // immediate process. For wsl.exe-spawned
+                                        // LS, we also need taskkill /T to kill
+                                        // the WSL subprocess tree.
+                                        #[cfg(windows)]
+                                        {
+                                            let old_pid = old.id();
+                                            let _ = std::process::Command::new("taskkill")
+                                                .args(["/T", "/F", "/PID", &old_pid.to_string()])
+                                                .stdout(std::process::Stdio::null())
+                                                .stderr(std::process::Stdio::null())
+                                                .status();
+                                        }
+                                        let _ = old.kill();
+                                        let _ = old.wait();
+                                    }
                                     eprintln!("[pq-daemon] LaserStream respawned");
                                     ls_child = Some(child);
                                 }
@@ -1804,9 +1914,10 @@ fn main() -> ExitCode {
                         EMERGENCY_STOP_FILE,
                         "defense-in-depth automatic halt",
                     );
-                    // Kill LaserStream child if present.
-                    if let Some(ref mut child) = ls_child { let _ = child.kill(); }
-                    if let Some(ref mut child) = fc_child { let _ = child.kill(); }
+                    // Kill LaserStream child if present — tree-kill to prevent
+                    // orphaned gRPC processes burning Helius credits. GAP #13.
+                    if let Some(ref mut child) = ls_child { kill_process_tree(child); }
+                    if let Some(ref mut child) = fc_child { kill_process_tree(child); }
                     return ExitCode::from(EXIT_EMERGENCY);
                 }
             }
@@ -1853,16 +1964,18 @@ fn main() -> ExitCode {
     // ─── Graceful shutdown ──────────────────────────────────────────────
     eprintln!("[pq-daemon] === GRACEFUL SHUTDOWN ===");
 
-    // Kill LaserStream child
+    // Kill LaserStream child — tree-kill to prevent orphaned gRPC processes.
+    // GAP #13: bare child.kill() leaves wsl.exe grandchildren alive in WSL2,
+    // still connected to Helius gRPC, burning credits into a dead pipe.
     if let Some(ref mut child) = ls_child {
-        let _ = child.kill();
-        eprintln!("[pq-daemon] LaserStream child terminated");
+        kill_process_tree(child);
+        eprintln!("[pq-daemon] LaserStream child terminated (process tree killed)");
     }
 
-    // Kill Firecrawl bridge child
+    // Kill Firecrawl bridge child — same tree-kill logic.
     if let Some(ref mut child) = fc_child {
-        let _ = child.kill();
-        eprintln!("[pq-daemon] Firecrawl bridge terminated");
+        kill_process_tree(child);
+        eprintln!("[pq-daemon] Firecrawl bridge terminated (process tree killed)");
     }
 
     // Drain remaining queue

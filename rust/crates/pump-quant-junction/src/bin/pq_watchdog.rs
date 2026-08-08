@@ -191,6 +191,52 @@ fn daemon_is_healthy(health_timeout_secs: u64) -> bool {
     }
 }
 
+/// GAP #14: Check if the daemon is suffering from OnchainConfirm starvation.
+/// Reads data/daemon_health.json (written by the daemon every STATUS_HEARTBEAT_SECS)
+/// and checks if the daemon has been running long enough (uptime > 120s) but has
+/// ZERO onchain confirms — meaning the Helius WS lane is dead. This is a CRITICAL
+/// health signal: without onchain confirms, 95%+ of trade signals are rejected
+/// as NeedsOnchainConfirmation, and the daemon is effectively trading blind.
+fn daemon_onchain_confirm_healthy() -> Option<bool> {
+    let path = Path::new("data/daemon_health.json");
+    if !path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(path).ok()?;
+    let confirms = extract_json_u64(&content, "onchain_confirms_decoded")?;
+    let uptime = extract_json_u64(&content, "uptime_secs")?;
+    // If we can't find the values, fail-open (return None).
+    let confirms = confirms?;
+    let uptime = uptime?;
+    if uptime > 120 && confirms == 0 {
+        Some(false)
+    } else {
+        Some(true)
+    }
+}
+
+/// Extract a u64 value from a JSON string by key name. Returns None if the
+/// key is not found or the value is not a number. This is a lightweight
+/// alternative to pulling in a full JSON parser.
+fn extract_json_u64(json: &str, key: &str) -> Option<Option<u64>> {
+    // Search for "key": <number> pattern
+    let pattern = format!("\"{key}\"");
+    let idx = json.find(&pattern)?;
+    let rest = &json[idx + pattern.len()..];
+    // Skip whitespace and colon
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix(':')?;
+    let rest = rest.trim_start();
+    // Parse the number
+    let num_str: String = rest.chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if num_str.is_empty() {
+        return Some(None);
+    }
+    num_str.parse::<u64>().ok().map(Some)
+}
+
 /// Write the watchdog status file for monitoring by the operator.
 fn write_watchdog_status(
     restarts: u32,
@@ -206,6 +252,15 @@ fn write_watchdog_status(
 }
 
 /// Spawn the pq-daemon child process.
+/// GAP #15 FIX: Redirect daemon stderr to a log file instead of Stdio::inherit().
+/// The old code used Stdio::inherit() which meant stderr went to the watchdog's
+/// own stderr — and if the watchdog was launched via a script with output
+/// redirection, the daemon's stderr was captured to the SAME log file as the
+/// watchdog, making it impossible to distinguish between them. Worse, if the
+/// watchdog was launched without any redirection, stderr was lost entirely
+/// (the launch_test.log was stale since Aug 7 10:57 because of this).
+/// Now we explicitly redirect daemon stderr to data/daemon_stderr.log which
+/// is always fresh, always captured, and always available for debugging.
 fn spawn_daemon(daemon_args: &str) -> Result<Child, String> {
     // Find the pq-daemon binary in the same directory as this watchdog,
     // or in the target/release or target/debug directory.
@@ -217,22 +272,80 @@ fn spawn_daemon(daemon_args: &str) -> Result<Child, String> {
     let daemon_path = exe_dir.join("pq-daemon");
     let daemon_path_str = daemon_path.to_string_lossy().to_string();
 
+    // Open a stderr log file for the daemon. This file is truncated on each
+    // spawn so we always have a fresh log for the current session.
+    let stderr_log = std::fs::File::create("data/daemon_stderr.log")
+        .map_err(|e| format!("Failed to create daemon_stderr.log: {e}"))?;
+    let stderr = Stdio::from(stderr_log);
+
     let mut cmd = Command::new(&daemon_path_str);
     if !daemon_args.is_empty() {
         for arg in daemon_args.split_whitespace() {
             cmd.arg(arg);
         }
     }
+    // GAP #15: daemon stdout → inherit (watchdog relays it), stderr → file
     cmd.stdout(Stdio::inherit());
-    cmd.stderr(Stdio::inherit());
+    cmd.stderr(stderr);
 
     cmd.spawn().map_err(|e| {
         format!("Failed to spawn pq-daemon at {daemon_path_str}: {e}")
     })
 }
 
-/// Kill a child process forcefully.
+/// Reap orphaned LaserStream processes before spawning a new daemon.
+/// GAP #14 FIX: When the watchdog kills the daemon via health-check, the
+/// daemon's LS child (wsl.exe → gRPC binary) survives as an orphan. On the
+/// NEXT spawn, a new daemon spawns a NEW LS, while the old orphan keeps
+/// burning Helius credits. This function scans for orphaned wsl.exe /
+/// pq-laserstream-grpc processes and kills them before spawning.
+#[cfg(windows)]
+fn reap_orphaned_laserstream() {
+    // Use wmic to find orphaned wsl.exe processes that are NOT children of
+    // any pq-daemon. These are LS zombies from a previous session.
+    let output = Command::new("wmic")
+        .args(["process", "where", "name=\"wsl.exe\"", "get", "ProcessId"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+
+    if let Ok(out) = output {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for line in stdout.lines() {
+            if let Ok(pid) = line.trim().parse::<u32>() {
+                if pid == 0 { continue; }
+                eprintln!("[pq-watchdog] reaping orphaned wsl.exe (pid={pid})");
+                let _ = Command::new("taskkill")
+                    .args(["/T", "/F", "/PID", &pid.to_string()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+    }
+}
+
+/// Kill a child process forcefully AND its entire process tree.
+/// GAP #13 FIX: On Windows, child.kill() calls TerminateProcess which kills
+/// ONLY the immediate process. When the watchdog kills the daemon due to a
+/// health-check failure, the daemon's children (LaserStream via wsl.exe,
+/// Firecrawl bridge) survive as orphans — still connected to Helius gRPC,
+/// burning credits. We must use `taskkill /T /F /PID` to recursively kill
+/// the entire process tree before falling back to child.kill().
 fn kill_child(child: &mut Child) {
+    let pid = child.id();
+    #[cfg(windows)]
+    {
+        // taskkill /T = kill tree (recursive), /F = force. This kills the
+        // daemon PID and ALL processes spawned by it — including wsl.exe
+        // → bash → pq-laserstream-grpc chains in WSL2.
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    // Fallback for non-Windows or if taskkill failed
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -263,6 +376,20 @@ fn wait_with_health(
                 eprintln!("[pq-watchdog] HEALTH CHECK FAILED — daemon appears hung, killing");
                 kill_child(child);
                 return None;
+            }
+            // GAP #14: OnchainConfirm starvation check — if the daemon has been
+            // running for >120s with ZERO onchain confirms, the Helius WS lane
+            // is dead. This is a CRITICAL health signal: the daemon is trading
+            // blind (PumpPortal only, no on-chain verification) and should be
+            // restarted to re-establish the Helius WS connection.
+            match daemon_onchain_confirm_healthy() {
+                Some(false) => {
+                    eprintln!("[pq-watchdog] ONCHAIN CONFIRM STARVATION — daemon running with 0 onchain confirms, Helius WS lane likely dead, killing for restart");
+                    kill_child(child);
+                    return None;
+                }
+                Some(true) => {} // healthy
+                None => {} // can't parse — fail-open, mtime check is primary
             }
         }
 
@@ -331,6 +458,12 @@ fn main() -> std::process::ExitCode {
         // Spawn the daemon
         eprintln!("[pq-watchdog] spawning pq-daemon (attempt {}/{})", restart_count + 1, args.max_restarts);
         write_watchdog_status(restart_count, None, start_time.elapsed().as_secs(), "spawning");
+
+        // GAP #14: Reap orphaned LS/wsl.exe processes from a PREVIOUS daemon
+        // session before spawning a new one. Without this, each restart layer
+        // a new LS orphan on top of the old ones — the 2M credit burn root cause.
+        #[cfg(windows)]
+        reap_orphaned_laserstream();
 
         let mut child = match spawn_daemon(&args.daemon_args) {
             Ok(c) => {
