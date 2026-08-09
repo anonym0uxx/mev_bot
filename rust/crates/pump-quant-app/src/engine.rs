@@ -3405,6 +3405,12 @@ impl Engine {
                 // expected net SOL, never raw discovery score.
                 let spot_price = self.numeric.latest_price_fp(domain_mint).unwrap_or(0);
                 if spot_price == 0 {
+                    self.reject(REJECT_PRICING_FAILURE);
+                    self.journal.record(Decision::Rejected {
+                        mint: mint_bytes,
+                        reason: REJECT_PRICING_FAILURE,
+                    });
+                    self.record_reject_sample(REJECT_PRICING_FAILURE, mint_bytes);
                     return None;
                 }
                 // §24/criterion 103 FILL FIDELITY: pump.fun is a constant-product curve,
@@ -3421,13 +3427,30 @@ impl Engine {
                         .numeric
                         .features_for(domain_mint)
                         .map_or(0, |f| f.liquidity_lamports);
-                    // Unknown depth ⇒ refuse, never guess (§6): `?` propagates the
-                    // `None` as the enclosing fn's refusal.
-                    crate::curve_fill::buy_fill_price_fp(spot_price, vsol, size)?
+                    // Unknown depth ⇒ refuse, never guess (§6): fail-closed with
+                    // full reject accounting — preserves promoted = admitted + rejected.
+                    match crate::curve_fill::buy_fill_price_fp(spot_price, vsol, size) {
+                        Some(p) => p,
+                        None => {
+                            self.reject(REJECT_PRICING_FAILURE);
+                            self.journal.record(Decision::Rejected {
+                                mint: mint_bytes,
+                                reason: REJECT_PRICING_FAILURE,
+                            });
+                            self.record_reject_sample(REJECT_PRICING_FAILURE, mint_bytes);
+                            return None;
+                        }
+                    }
                 } else {
                     spot_price
                 };
                 if entry_price == 0 {
+                    self.reject(REJECT_PRICING_FAILURE);
+                    self.journal.record(Decision::Rejected {
+                        mint: mint_bytes,
+                        reason: REJECT_PRICING_FAILURE,
+                    });
+                    self.record_reject_sample(REJECT_PRICING_FAILURE, mint_bytes);
                     return None;
                 }
                 // Priced with the SAME §34.4 economics the gate admitted under, so a
@@ -4261,6 +4284,17 @@ impl Engine {
                 move_bps: i128::from(e.priced_move.admission_bps()),
                 move_source: e.priced_move.admission_source().code(),
                 depth_basis: e.depth_basis,
+            });
+        } else {
+            // ACCOUNTING IDENTITY FIX: positions.open() refused (duplicate
+            // mint or capacity full). The candidate was promoted, passed the
+            // gate, survived arbitration, and was AWARDED a slot — but could
+            // not be opened. Must count as rejected to preserve
+            // promoted = admitted + rejected.
+            self.reject(REJECT_OPEN_FAILURE);
+            self.journal.record(Decision::Rejected {
+                mint: e.mint,
+                reason: REJECT_OPEN_FAILURE,
             });
         }
     }
@@ -6152,6 +6186,22 @@ const REJECT_BRAIN_BLED: u8 = 16;
 /// the fail-open law guarantees a `ConcentrationVerdict::Unknown` (delta-only,
 /// truncated, or thin ledger) can never reach it.
 const REJECT_HOLDER_CONCENTRATION: u8 = 17;
+
+/// Post-admission pricing failure (§18.2/§24): the gate's `Admit` verdict
+/// fired, but a downstream pricing step failed-closed — no spot price, curve
+/// fill returned `None`, or zero entry price — so the candidate could not be
+/// economically sized and was refused. This is a **pricing-side rejection**,
+/// not a silent drop: it preserves the accounting identity
+/// `promoted = admitted + rejected` by ensuring every promoted candidate
+/// that exits `gate_evaluate` with `None` has been counted.
+const REJECT_PRICING_FAILURE: u8 = 18;
+
+/// Post-arbitration open failure (§23/§33): the candidate was awarded a slot
+/// by arbitration, but `positions.open()` refused — either because the mint
+/// was already open (duplicate award) or the positions capacity was full
+/// (capacity reached between gate and open). The candidate is counted as
+/// rejected to preserve the accounting identity `promoted = admitted + rejected`.
+const REJECT_OPEN_FAILURE: u8 = 19;
 
 /// §21.7 corroboration bar (bps) for [`REJECT_HOLDER_CONCENTRATION`].
 ///
