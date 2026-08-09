@@ -700,6 +700,23 @@ impl WsConn {
         Ok(())
     }
 
+    /// Send a WS Close frame (opcode 0x8, status code 1000 = normal closure)
+    /// and flush. This tells the server to **immediately release all
+    /// subscription state** associated with this connection — critical for
+    /// Helius which otherwise holds account subscriptions until TCP timeout
+    /// (30-60s), causing a subscription leak that exhausts the 1000-per-conn
+    /// cap. After `close()`, the connection is dead; do not poll or send.
+    ///
+    /// Best-effort: errors are ignored (the connection may already be broken).
+    /// The Close frame itself is the signal — even if the flush fails, the
+    /// TCP drop will eventually free the slots. But sending the Close frame
+    /// first makes the release deterministic and immediate.
+    pub fn close(&mut self) -> Result<(), String> {
+        // Status code 1000 (normal closure) in network byte order: 0x03, 0xE8
+        let payload = [0x03u8, 0xE8u8];
+        self.send_frame(true, OP_CLOSE, &payload)
+    }
+
     fn send_frame(&mut self, fin: bool, opcode: u8, payload: &[u8]) -> Result<(), String> {
         let mask = rand_bytes::<4>()?;
         let bytes = encode_frame(fin, opcode, payload, Some(mask))?;

@@ -104,6 +104,32 @@ const MAX_ACCOUNT_SUBS: usize = 256;
 const MAX_TRADE_SUBS: usize = 512;
 const STALE_SECS: u64 = 30;
 
+/// HELIUS_SUB_CAP is the server-side hard limit on concurrent subscriptions
+/// per WS connection. The daemon's local MAX_ACCOUNT_SUBS (256) is well below
+/// this, but leaked server-side slots (from evictions where the ACK never
+/// arrived, so no accountUnsubscribe could be sent) accumulate toward this
+/// cap. Once hit, every new accountSubscribe returns -32006 and the death
+/// spiral begins. The self-healing system monitors for this and triggers a
+/// reconnect to reset the server-side count.
+const HELIUS_SUB_CAP: usize = 1000;
+
+/// If leaked server-side subscriptions exceed this fraction of HELIUS_SUB_CAP,
+/// proactively trigger a reconnect before the cap is hit. This is the
+/// early-warning threshold — we don't wait for the -32006 error to start
+/// recovery. 80% gives us 200 slots of headroom (256 local + ~744 leaked
+/// before we trigger). The threshold accounts for the slot subscription
+/// (1 slot) and re-subscribe churn during reconnects.
+const SUB_CAP_RECONNECT_THRESHOLD: f64 = 0.80;
+
+/// OnchainConfirm stagnation detection: if confirms don't advance for this
+/// many seconds while the daemon is running and LS is healthy, the Helius WS
+/// lane is dead (likely subscription cap death-spiral). This is the
+/// last-resort trigger — even if -32006 detection and leak-count heuristics
+/// fail, this catches the symptom (frozen confirms) and forces a reconnect.
+/// 120s is conservative — the median OnchainConfirm latency is 37.6s, so
+/// 120s of silence means 3x the median with zero confirms = definitely dead.
+const ONCHAIN_STAGNATION_SECS: u64 = 120;
+
 /// WS read timeout in millis. Tightened from tick_period_ms (250ms) to prevent
 /// blocking on degraded connections. Each poll returns within 100ms max,
 /// ensuring the tick loop advances even when both WS lanes are silent.
@@ -330,6 +356,18 @@ struct SessionStats {
     account_subs_active: usize,
     account_subs_total_attempted: usize,
     account_subs_evicted: usize,
+    /// Count of subscriptions evicted before their ACK arrived — these are
+    /// the leaked server-side slots that accumulate toward HELIUS_SUB_CAP.
+    /// Tracked for proactive reconnect trigger and health reporting.
+    subs_leaked_no_ack: u64,
+    /// Total -32006 "Too many subscriptions" errors received from Helius.
+    /// If >0, the death spiral has begun. Tracked for health reporting
+    /// and self-healing diagnostics.
+    sub_cap_errors: u64,
+    /// Timestamp (tick counter) of the last OnchainConfirm decoded. Used
+    /// for stagnation detection — if this doesn't advance for
+    /// ONCHAIN_STAGNATION_SECS while LS is healthy, the Helius lane is dead.
+    last_confirm_tick: u64,
     delta_trades_derived: u64,
     delta_no_trade: u64,
     pdas_derived: usize,
@@ -365,6 +403,7 @@ impl SessionStats {
             helius_account_notifications: 0, helius_onchain_confirms_decoded: 0,
             helius_slot_notifications: 0,
             account_subs_active: 0, account_subs_total_attempted: 0, account_subs_evicted: 0,
+            subs_leaked_no_ack: 0, sub_cap_errors: 0, last_confirm_tick: 0,
             delta_trades_derived: 0, delta_no_trade: 0,
             pdas_derived: 0, pda_venue_matches: 0, pda_venue_present: 0,
             junction_events_drained: 0, junction_overflow_dropped: 0,
@@ -498,6 +537,34 @@ impl SubTracker {
     }
 
     fn len(&self) -> usize {
+        self.subscription_order.len()
+    }
+
+    /// Count subscriptions that have been record_request'd but NOT yet
+    /// record_ack'd. These are "pending acks" — subscriptions where we sent
+    /// accountSubscribe but haven't received the server_sub_id back. If we
+    /// evict one of these, we CANNOT send accountUnsubscribe (no
+    /// server_sub_id), so the server-side slot leaks until TCP timeout.
+    /// This count is the upper bound on potential leaks from eviction.
+    fn pending_ack_count(&self) -> usize {
+        self.subscription_order
+            .iter()
+            .filter(|(req_id, _, _)| !self.req_to_server_sub.contains_key(req_id))
+            .count()
+    }
+
+    /// Count subscriptions that HAVE been ACKed (server_sub_id known).
+    /// These can be cleanly unsubscribed on eviction — no leak.
+    fn acked_count(&self) -> usize {
+        self.req_to_server_sub.len()
+    }
+
+    /// Total "server-visible" subscriptions: ACKed + pending. The pending
+    /// ones may or may not be live on the server yet (the ACK itself
+    /// confirms the server created the subscription), but Helius allocates
+    /// the slot at request time, not ACK time. So this is the best
+    /// lower-bound estimate of server-side slot usage.
+    fn server_visible_count(&self) -> usize {
         self.subscription_order.len()
     }
 }
@@ -973,6 +1040,14 @@ fn main() -> ExitCode {
     // GAP #14: Track session start time for daemon_health.json uptime reporting.
     let session_start = Instant::now();
 
+    // ── SUBSCRIPTION CAP SELF-HEALING ──────────────────────────────────
+    // When Helius returns -32006 "Too many subscriptions", we set this flag
+    // to trigger a forced WS reconnect at the top of the next loop iteration.
+    // The reconnect closes the old connection (WS Close frame → Helius
+    // releases all subscription slots), opens a fresh one, and re-subscribes
+    // all active mints. This breaks the subscribe-error-evict death spiral.
+    let mut force_reconnect = false;
+
     loop {
         // ── Emergency stop check (every iteration) ───────────────────────
         if emergency_stop_requested() {
@@ -999,6 +1074,72 @@ fn main() -> ExitCode {
         }
 
         let mut did_work = false;
+
+        // ── SUBSCRIPTION CAP RECONNECT (self-healing) ───────────────────
+        // If -32006 was detected on the previous iteration, force a full WS
+        // reconnect NOW — before any other lane processing. This ensures
+        // we don't churn in the death spiral for another full poll cycle.
+        if force_reconnect {
+            force_reconnect = false; // consume the flag
+            eprintln!(
+                "[pq-daemon] FORCE RECONNECT triggered — closing old Helius WS to release leaked subscriptions"
+            );
+            // Send a proper WS Close frame so Helius immediately frees ALL
+            // subscription slots on the old connection.
+            let _ = helius_conn.close();
+            stats.helius_reconnects += 1;
+            sub_tracker.clear_server_subs();
+            stats.sub_cap_errors = 0; // reset after reconnect
+            stats.subs_leaked_no_ack = 0; // fresh connection, no leaks
+            // Re-subscribe with the standard backoff ladder.
+            let mut backoff_ms = WS_RECONNECT_SLEEP_MS;
+            let mut reconnected = false;
+            for _ in 0..MAX_RECONNECT_ATTEMPTS {
+                if !reconnected {
+                    match WsConn::connect(&helius_url) {
+                        Ok(mut c) => {
+                            let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
+                            let _ = c.send_text(&helius_ws::slot_subscribe_request());
+                            for (_, mint) in sub_tracker.active_mints() {
+                                let pda = bonding_curve_pda(&mint);
+                                let pda_str = pda.to_string();
+                                let req_id = next_req_id;
+                                next_req_id += 1;
+                                let req = helius_ws::account_subscribe_request(
+                                    req_id, &pda_str, &args.commitment,
+                                );
+                                let _ = c.send_text(&req);
+                                sub_tracker.record_request(req_id, mint);
+                            }
+                            helius_conn_established_at = Instant::now();
+                            last_slot_time = Instant::now();
+                            reconnected = true;
+                            helius_conn = c;
+                            eprintln!(
+                                "[pq-daemon] FORCE RECONNECT succeeded — {} active mints re-subscribed on fresh connection",
+                                sub_tracker.len()
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[pq-daemon] FORCE RECONNECT failed (backoff={backoff_ms}ms): {e}"
+                            );
+                            stats.ws_errors += 1;
+                            std::thread::sleep(Duration::from_millis(backoff_ms));
+                            backoff_ms = (backoff_ms * 2).min(RECONNECT_BACKOFF_CAP_MS);
+                        }
+                    }
+                }
+            }
+            if !reconnected {
+                eprintln!(
+                    "[pq-daemon] FORCE RECONNECT exhausted — stale-check will retry on next tick"
+                );
+                last_slot_time = Instant::now(); // avoid immediate stale trigger
+            }
+            did_work = true;
+        }
+
 
         // ── Wall-clock status heartbeat (top-of-loop) ─────────────────────
         // This fires on EVERY loop iteration, independent of tick timing.
@@ -1032,7 +1173,11 @@ fn main() -> ExitCode {
                     "\"ls_transactions_received\":{},",
                     "\"ls_spawned\":{},",
                     "\"uptime_secs\":{},",
-                    "\"tick\":{}",
+                    "\"tick\":{},",
+                    "\"account_subs_active\":{},",
+                    "\"account_subs_evicted\":{},",
+                    "\"subs_leaked_no_ack\":{},",
+                    "\"sub_cap_errors\":{}",
                     "}}"
                 ),
                 stats.helius_onchain_confirms_decoded,
@@ -1042,6 +1187,10 @@ fn main() -> ExitCode {
                 stats.ls_spawned,
                 uptime_secs,
                 tick_counter,
+                sub_tracker.len(),
+                stats.account_subs_evicted,
+                stats.subs_leaked_no_ack,
+                stats.sub_cap_errors,
             );
             let _ = std::fs::write("data/daemon_health.json", health_json);
 
@@ -1202,17 +1351,102 @@ fn main() -> ExitCode {
                             .any(|(_, m)| *m == mint_bytes);
 
                         if !already_subscribed {
+                            // ── PROACTIVE RECONNECT CHECK ──────────────────────
+                            // Before subscribing, check if leaked server-side
+                            // subscriptions are approaching the Helius cap.
+                            // The estimate: every eviction where server_sub_id
+                            // is None (ACK never arrived) leaks one server slot
+                            // that we can't reclaim via accountUnsubscribe.
+                            // If cumulative leaks exceed the threshold, force a
+                            // reconnect now to reset the server-side count.
+                            // This is the PROACTIVE layer — we don't wait for
+                            // the -32006 error to know we're leaking.
+                            let estimated_server_subs =
+                                sub_tracker.server_visible_count() as u64
+                                + stats.subs_leaked_no_ack;
+                            let threshold = (HELIUS_SUB_CAP as f64
+                                * SUB_CAP_RECONNECT_THRESHOLD) as u64;
+                            if estimated_server_subs >= threshold {
+                                eprintln!(
+                                    "[pq-daemon] PROACTIVE RECONNECT: estimated server \
+                                     subs ({estimated_server_subs}) >= threshold ({threshold}), \
+                                     leaked_no_ack={}, pending_acks={}, acked={}, forcing Helius reconnect to reset cap",
+                                    stats.subs_leaked_no_ack,
+                                    sub_tracker.pending_ack_count(),
+                                    sub_tracker.acked_count()
+                                );
+                                // Force reconnect by closing the old connection
+                                // and re-establishing. The close() sends a WS
+                                // Close frame so Helius releases slots NOW.
+                                let _ = helius_conn.close();
+                                stats.helius_reconnects += 1;
+                                stats.sub_cap_errors = 0; // reset after reconnect
+                                stats.subs_leaked_no_ack = 0; // reset after reconnect
+                                sub_tracker.clear_server_subs();
+                                match WsConn::connect(&helius_url) {
+                                    Ok(mut c) => {
+                                        let _ = c.set_read_timeout(
+                                            Duration::from_millis(WS_READ_TIMEOUT_MS),
+                                        );
+                                        let _ = c.send_text(
+                                            &helius_ws::slot_subscribe_request(),
+                                        );
+                                        for (_, mint) in sub_tracker.active_mints() {
+                                            let pda = bonding_curve_pda(&mint);
+                                            let pda_str = pda.to_string();
+                                            let req_id = next_req_id;
+                                            next_req_id += 1;
+                                            let req = helius_ws::account_subscribe_request(
+                                                req_id, &pda_str, &args.commitment,
+                                            );
+                                            let _ = c.send_text(&req);
+                                            sub_tracker.record_request(req_id, mint);
+                                        }
+                                        helius_conn_established_at = Instant::now();
+                                        last_slot_time = Instant::now();
+                                        helius_conn = c;
+                                        eprintln!(
+                                            "[pq-daemon] PROACTIVE reconnect succeeded"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[pq-daemon] PROACTIVE reconnect FAILED: {e} — \
+                                             degrading, will retry on next tick"
+                                        );
+                                        stats.ws_errors += 1;
+                                        last_slot_time = Instant::now();
+                                    }
+                                }
+                            }
+
                             if sub_tracker.len() >= MAX_ACCOUNT_SUBS {
                                 if let Some((evicted_req, evicted_mint, evicted_server_sub)) = sub_tracker.evict_oldest() {
                                     stats.account_subs_evicted += 1;
                                     reserve_tracker.remove(&evicted_mint);
-                                    // Send accountUnsubscribe to release the Helius
-                                    // server-side subscription slot. Without this the
-                                    // connection leaks subscriptions until Helius caps
-                                    // at 1000, after which no new accountSubscribe
-                                    // succeeds and ALL new candidates fail with
-                                    // NeedsOnchainConfirmation.
-                                    if let Some(ssid) = evicted_server_sub {
+                                    // Track leaked subscriptions: if the ACK
+                                    // never arrived (server_sub_id is None),
+                                    // we CANNOT send accountUnsubscribe, and
+                                    // the server-side slot leaks permanently
+                                    // until TCP timeout. This is the root cause
+                                    // of the 1000-sub cap death spiral.
+                                    if evicted_server_sub.is_none() {
+                                        stats.subs_leaked_no_ack += 1;
+                                        eprintln!(
+                                            "[pq-daemon] EVICT LEAK: req={evicted_req} \
+                                             mint={:.8} — ACK never arrived, server slot \
+                                             leaked (total leaked: {})",
+                                            hex_short(&evicted_mint),
+                                            stats.subs_leaked_no_ack
+                                        );
+                                    } else {
+                                        // Send accountUnsubscribe to release the Helius
+                                        // server-side subscription slot. Without this the
+                                        // connection leaks subscriptions until Helius caps
+                                        // at 1000, after which no new accountSubscribe
+                                        // succeeds and ALL new candidates fail with
+                                        // NeedsOnchainConfirmation.
+                                        let ssid = evicted_server_sub.unwrap();
                                         let unsub_id = next_req_id;
                                         next_req_id += 1;
                                         let unsub = helius_ws::account_unsubscribe_request(unsub_id, ssid);
@@ -1352,6 +1586,7 @@ fn main() -> ExitCode {
                                         {
                                             queue.push(provenanced, slot);
                                             stats.helius_onchain_confirms_decoded += 1;
+                                            stats.last_confirm_tick = tick_counter;
                                             stats.pda_venue_matches += 1;
 
                                             let prev = reserve_tracker.get(&mb).copied();
@@ -1409,6 +1644,7 @@ fn main() -> ExitCode {
                                             {
                                                 queue.push(provenanced, slot);
                                                 stats.helius_onchain_confirms_decoded += 1;
+                                            stats.last_confirm_tick = tick_counter;
                                                 stats.pda_venue_matches += 1;
 
                                                 let prev = reserve_tracker.get(&mb).copied();
@@ -1449,6 +1685,37 @@ fn main() -> ExitCode {
                     helius_ws::Inbound::RpcError { id, text: err } => {
                         eprintln!("[pq-daemon] Helius RPC error (id={:?}): {err}", id);
                         stats.ws_errors += 1;
+                        // ── SUBSCRIPTION CAP SELF-HEALING ──────────────────────
+                        // Helius returns -32006 "Too many subscriptions on the
+                        // connection" when the server-side subscription count
+                        // hits 1000. This happens when subscriptions are evicted
+                        // before their ACK arrives — the daemon frees its local
+                        // slot but the server still holds the subscription
+                        // (no server_sub_id to unsubscribe → leaked slot).
+                        //
+                        // Once the cap is hit, every new accountSubscribe
+                        // returns -32006. The old code just logged and moved
+                        // on, churning in a subscribe-error-evict death spiral.
+                        //
+                        // SELF-HEALING: on detecting -32006, we force a full
+                        // WS reconnect. Closing the old connection (with a WS
+                        // Close frame) tells Helius to immediately release ALL
+                        // subscription state. The new connection starts at 0
+                        // subscriptions. We then re-subscribe all active mints
+                        // with proper record_request() so ACKs map correctly.
+                        if err.contains("-32006")
+                            || err.contains("Too many subscriptions")
+                            || err.contains("Exceeded max limit")
+                        {
+                            stats.sub_cap_errors += 1;
+                            eprintln!(
+                                "[pq-daemon] SUB CAP ERROR #{} — forcing WS reconnect to release leaked subscriptions (leaked={})",
+                                stats.sub_cap_errors, stats.subs_leaked_no_ack
+                            );
+                            // Mark for reconnect — the force_reconnect flag is
+                            // checked at the top of the next poll cycle.
+                            force_reconnect = true;
+                        }
                     }
                     helius_ws::Inbound::Drift => {
                         eprintln!("[pq-daemon] Helius schema drift: {:.200}", text);
@@ -1458,6 +1725,9 @@ fn main() -> ExitCode {
             }
             Ok(Some(WsEvent::Closed(reason))) => {
                 eprintln!("[pq-daemon] Helius closed: {reason}, reconnecting…");
+                // Send WS Close on the old connection (may already be closed,
+                // but best-effort — ensures server-side subscription release).
+                let _ = helius_conn.close();
                 stats.helius_reconnects += 1;
                 sub_tracker.clear_server_subs();
                 // GAP #11: Exponential backoff reconnect ladder.
@@ -1540,6 +1810,10 @@ fn main() -> ExitCode {
                 // clear server subs, reconnect with backoff, re-subscribe
                 // all active mints with record_request(), reset timers.
                 eprintln!("[pq-daemon] Helius poll error: {e}");
+                // Send WS Close on the old connection (best-effort — the TCP
+                // socket may already be dead, but if it's half-open this
+                // accelerates server-side subscription release).
+                let _ = helius_conn.close();
                 stats.ws_errors += 1;
                 stats.helius_reconnects += 1;
                 sub_tracker.clear_server_subs();
@@ -1613,6 +1887,9 @@ fn main() -> ExitCode {
                 helius_conn_established_at.elapsed().as_secs(),
                 last_slot_seen,
             );
+            // Send WS Close on the old connection to accelerate server-side
+            // subscription slot release before opening a fresh connection.
+            let _ = helius_conn.close();
             stats.helius_reconnects += 1;
             sub_tracker.clear_server_subs();
             // GAP #11: Same exponential backoff ladder as the Closed/Err paths.
