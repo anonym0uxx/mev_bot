@@ -1,0 +1,742 @@
+{
+  "memecoin rug pull detection blockchain": [
+    {
+      "id": "1910.00742v1",
+      "title": "ChainSplitter: Towards Blockchain-based Industrial IoT Architecture for Supporting Hierarchical Storage",
+      "published": "2019-10-02",
+      "authors": "Gang Wang, Zhijie Jerry Shi, Mark Nixon, Song Han",
+      "abstract": "The fast developing Industrial Internet of Things (IIoT) technologies provide a promising opportunity to build large-scale systems to connect numerous heterogeneous devices into the Internet. Most existing IIoT infrastructures are based on a centralized architecture, which is easier for management but cannot effectively support immutable and verifiable services among multiple parties. Blockchain technology provides many desired features for large-scale IIoT infrastructures, such as decentralizat",
+      "categories": "cs.CR, cs.DC",
+      "pdf": "https://arxiv.org/pdf/1910.00742v1"
+    },
+    {
+      "id": "2004.13438v2",
+      "title": "BlockSim: An Extensible Simulation Tool for Blockchain Systems",
+      "published": "2020-04-28",
+      "authors": "Maher Alharby, Aad van Moorsel",
+      "abstract": "Both in the design and deployment of blockchain solutions many performance-impacting configuration choices need to be made. We introduce BlockSim, a framework and software tool to build and simulate discrete-event dynamic systems models for blockchain systems. BlockSim is designed to support the analysis of a large variety of blockchains and blockchain deployments as well as a wide set of analysis questions. At the core of BlockSim is a Base Model, which contains the main model constructs common",
+      "categories": "cs.CR, cs.PF",
+      "pdf": "https://arxiv.org/pdf/2004.13438v2"
+    },
+    {
+      "id": "2509.01168v1",
+      "title": "Detecting Rug Pulls in Decentralized Exchanges: Machine Learning Evidence from the TON Blockchain",
+      "published": "2025-09-01",
+      "authors": "Dmitry Yaremus, Jianghai Li, Alisa Kalacheva, Igor Vodolazov, Yury Yanovich",
+      "abstract": "This paper presents a machine learning framework for the early detection of rug pull scams on decentralized exchanges (DEXs) within The Open Network (TON) blockchain. TON's unique architecture, characterized by asynchronous execution and a massive web2 user base from Telegram, presents a novel and critical environment for fraud analysis. We conduct a comprehensive study on the two largest TON DEXs, Ston.Fi and DeDust, fusing data from both platforms to train our models. A key contribution is the",
+      "categories": "cs.DC, cs.LG",
+      "pdf": "https://arxiv.org/pdf/2509.01168v1"
+    },
+    {
+      "id": "2105.05338v1",
+      "title": "SmartOil: Blockchain and smart contract-based oil supply chain management",
+      "published": "2021-05-11",
+      "authors": "AKM Bahalul Haque, Md. Rifat Hasan, Md. Oahiduzzaman Mondol Zihad",
+      "abstract": "The traditional oil supply chain suffers from various shortcomings regarding crude oil extraction, processing, distribution, environmental pollution, and traceability. It offers an only a forward flow of products with almost no security and tracking process. In time, the system will lag behind due to the limitations in quality inspection, fraudulent information, and monopolistic behavior of supply chain entities. Inclusion of counterfeiting products and opaqueness of the system urge renovation i",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/2105.05338v1"
+    },
+    {
+      "id": "2405.19762v2",
+      "title": "The Kosmosis Approach to Crypto Rug Pull Detection",
+      "published": "2024-05-30",
+      "authors": "Philipp Stangl, Christoph P. Neumann",
+      "abstract": "Crypto rug pulls have become a major threat to the integrity of blockchain ecosystems, with illicit activities surging and resulting in significant financial losses. Existing approaches to detect crypto asset fraud are based on the analysis of transaction graphs within blockchain networks. While effective for identifying transaction patterns indicative of fraud, existing approaches do not capture the semantics of transactions and are constrained to blockchain data. Consequently, preventive metho",
+      "categories": "cs.CR, cs.DC",
+      "pdf": "https://arxiv.org/pdf/2405.19762v2"
+    },
+    {
+      "id": "2403.16082v1",
+      "title": "SoK: Comprehensive Analysis of Rug Pull Causes, Datasets, and Detection Tools in DeFi",
+      "published": "2024-03-24",
+      "authors": "Dianxiang Sun, Wei Ma, Liming Nie, Yang Liu",
+      "abstract": "Rug pulls pose a grave threat to the cryptocurrency ecosystem, leading to substantial financial loss and undermining trust in decentralized finance (DeFi) projects. With the emergence of new rug pull patterns, research on rug pull is out of state. To fill this gap, we first conducted an extensive analysis of the literature review, encompassing both scholarly and industry sources. By examining existing academic articles and industrial discussions on rug pull projects, we present a taxonomy inclus",
+      "categories": "cs.SE",
+      "pdf": "https://arxiv.org/pdf/2403.16082v1"
+    },
+    {
+      "id": "2307.10492v1",
+      "title": "Blockchain-Based Federated Learning: Incentivizing Data Sharing and Penalizing Dishonest Behavior",
+      "published": "2023-07-19",
+      "authors": "Amir Jaberzadeh, Ajay Kumar Shrestha, Faijan Ahamad Khan, Mohammed Afaan Shaikh, Bhargav Dave, Jason Geng",
+      "abstract": "With the increasing importance of data sharing for collaboration and innovation, it is becoming more important to ensure that data is managed and shared in a secure and trustworthy manner. Data governance is a common approach to managing data, but it faces many challenges such as data silos, data consistency, privacy, security, and access control. To address these challenges, this paper proposes a comprehensive framework that integrates data trust in federated learning with InterPlanetary File S",
+      "categories": "cs.LG",
+      "pdf": "https://arxiv.org/pdf/2307.10492v1"
+    },
+    {
+      "id": "2305.06108v1",
+      "title": "A Deep Dive into NFT Rug Pulls",
+      "published": "2023-05-10",
+      "authors": "Jintao Huang, Ningyu He, Kai Ma, Jiang Xiao, Haoyu Wang",
+      "abstract": "NFT rug pull is one of the most prominent type of scam that the developers of a project abandon it and then run away with investors' funds. Although they have drawn attention from our community, to the best of our knowledge, the NFT rug pulls have not been systematically explored. To fill the void, this paper presents the first in-depth study of NFT rug pulls. Specifically, we first compile a list of 253 known NFT rug pulls as our initial ground truth, based on which we perform a pilot study, hi",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/2305.06108v1"
+    }
+  ],
+  "Solana wallet clustering on-chain forensics": [
+    {
+      "id": "1902.04684v2",
+      "title": "Forensic Similarity for Digital Images",
+      "published": "2019-02-13",
+      "authors": "Owen Mayer, Matthew C. Stamm",
+      "abstract": "In this paper we introduce a new digital image forensics approach called forensic similarity, which determines whether two image patches contain the same forensic trace or different forensic traces. One benefit of this approach is that prior knowledge, e.g. training samples, of a forensic trace are not required to make a forensic similarity decision on it in the future. To do this, we propose a two part deep-learning system composed of a CNN-based feature extractor and a three-layer neural netwo",
+      "categories": "cs.CV, eess.IV",
+      "pdf": "https://arxiv.org/pdf/1902.04684v2"
+    },
+    {
+      "id": "2607.28424v2",
+      "title": "Demystifying Solana Bots: From GitHub Blueprints to On-Chain Fingerprints",
+      "published": "2026-07-30",
+      "authors": "Xiaoye Zheng, Yujing Chen, Minghao Wu, David Lo, Difan Xie, Daoyuan Wu, Xiaohu Yang, Zhiyuan Wan",
+      "abstract": "Solana is an emerging blockchain platform designed for high throughput and low transaction fees, making it inexpensive to submit transactions at scale and, consequently, increasing exposure to bot spamming and related financial exploitation. Solana bots are typically off-chain software systems that operate in a competitive on-chain execution environment by constructing and submitting transactions, and the bot-related transactions on the decentralized exchanges exceed 250 million dollars in daily",
+      "categories": "cs.SE",
+      "pdf": "https://arxiv.org/pdf/2607.28424v2"
+    },
+    {
+      "id": "1302.2395v1",
+      "title": "Signature Based Detection of User Events for Post-Mortem Forensic Analysis",
+      "published": "2013-02-11",
+      "authors": "Joshua I. James, Pavel Gladyshev, Yuandong Zhu",
+      "abstract": "This paper introduces a novel approach to user event reconstruction by showing the practicality of generating and implementing signature-based analysis methods to reconstruct high-level user actions from a collection of low-level traces found during a post-mortem forensic analysis of a system. Traditional forensic analysis and the inferences an investigator normally makes when given digital evidence, are examined. It is then demonstrated that this natural process of inferring high-level events f",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/1302.2395v1"
+    },
+    {
+      "id": "2101.09568v1",
+      "title": "A Transferable Anti-Forensic Attack on Forensic CNNs Using A Generative Adversarial Network",
+      "published": "2021-01-23",
+      "authors": "Xinwei Zhao, Chen Chen, Matthew C. Stamm",
+      "abstract": "With the development of deep learning, convolutional neural networks (CNNs) have become widely used in multimedia forensics for tasks such as detecting and identifying image forgeries. Meanwhile, anti-forensic attacks have been developed to fool these CNN-based forensic algorithms. Previous anti-forensic attacks often were designed to remove forgery traces left by a single manipulation operation as opposed to a set of manipulations. Additionally, recent research has shown that existing anti-fore",
+      "categories": "cs.CV, eess.IV",
+      "pdf": "https://arxiv.org/pdf/2101.09568v1"
+    },
+    {
+      "id": "2205.14611v1",
+      "title": "Forensic Artefact Discovery and Attribution from Android Cryptocurrency Wallet Applications",
+      "published": "2022-05-29",
+      "authors": "Eugene Chang, Paul Darcy, Kim-Kwang Raymond Choo, Nhien-An Le-Khac",
+      "abstract": "Cryptocurrency has been (ab)used to purchase illicit goods and services such as drugs, weapons and child pornography (also referred to as child sexual abuse materials), and thus mobile devices (where cryptocurrency wallet applications are installed) are a potential source of evidence in a criminal investigation. Not surprisingly, there has been increased focus on the security of cryptocurrency wallets, although forensic extraction and attribution of forensic artefacts from such wallets is unders",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/2205.14611v1"
+    },
+    {
+      "id": "1506.04129v1",
+      "title": "Applying Memory Forensics to Rootkit Detection",
+      "published": "2015-06-12",
+      "authors": "Igor Korkin, Ivan Nesterov",
+      "abstract": "Volatile memory dump and its analysis is an essential part of digital forensics. Among a number of various software and hardware approaches for memory dumping there are authors who point out that some of these approaches are not resilient to various anti-forensic techniques, and others that require a reboot or are highly platform dependent. New resilient tools have certain disadvantages such as low speed or vulnerability to rootkits which directly manipulate kernel structures e.g. page tables. A",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/1506.04129v1"
+    },
+    {
+      "id": "1803.03613v1",
+      "title": "Detecting Adversarial Examples - A Lesson from Multimedia Forensics",
+      "published": "2018-03-09",
+      "authors": "Pascal Sch\u00f6ttle, Alexander Schl\u00f6gl, Cecilia Pasquini, Rainer B\u00f6hme",
+      "abstract": "Adversarial classification is the task of performing robust classification in the presence of a strategic attacker. Originating from information hiding and multimedia forensics, adversarial classification recently received a lot of attention in a broader security context. In the domain of machine learning-based image classification, adversarial classification can be interpreted as detecting so-called adversarial examples, which are slightly altered versions of benign images. They are specificall",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/1803.03613v1"
+    },
+    {
+      "id": "2303.06313v1",
+      "title": "Cloud Forensic: Issues, Challenges and Solution Models",
+      "published": "2023-03-11",
+      "authors": "Sayada Sonia Akter, Mohammad Shahriar Rahman",
+      "abstract": "Cloud computing is a web-based utility model that is becoming popular every day with the emergence of 4th Industrial Revolution, therefore, cybercrimes that affect web-based systems are also relevant to cloud computing. In order to conduct a forensic investigation into a cyber-attack, it is necessary to identify and locate the source of the attack as soon as possible. Although significant study has been done in this domain on obstacles and its solutions, research on approaches and strategies is ",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/2303.06313v1"
+    }
+  ],
+  "smart money identification cryptocurrency trading": [
+    {
+      "id": "1806.06632v1",
+      "title": "Exploring the Interconnectedness of Cryptocurrencies using Correlation Networks",
+      "published": "2018-06-18",
+      "authors": "Andrew Burnie",
+      "abstract": "Correlation networks were used to detect characteristics which, although fixed over time, have an important influence on the evolution of prices over time. Potentially important features were identified using the websites and whitepapers of cryptocurrencies with the largest userbases. These were assessed using two datasets to enhance robustness: one with fourteen cryptocurrencies beginning from 9 November 2017, and a subset with nine cryptocurrencies starting 9 September 2016, both ending 6 Marc",
+      "categories": "q-fin.CP, cs.CR",
+      "pdf": "https://arxiv.org/pdf/1806.06632v1"
+    },
+    {
+      "id": "1809.00291v1",
+      "title": "A Critical Look at Smart Wheelchairs",
+      "published": "2018-09-02",
+      "authors": "Benjamin Narin, Makenzie Brian, William D. Smart",
+      "abstract": "Research into smart wheelchairs has been conducted for decades, but we have yet to see the widespread use of this technology among full-time wheelchair users. We argue that the main reason for this is that there is a mismatch between research and the actualities of using a powered mobility device in the real world. Based on our own research experiences, we enumerate some of these disparities, and offer some suggestions for where work in smart wheelchairs might focus in the coming years.",
+      "categories": "cs.RO",
+      "pdf": "https://arxiv.org/pdf/1809.00291v1"
+    },
+    {
+      "id": "2003.11352v5",
+      "title": "Cryptocurrency Trading: A Comprehensive Survey",
+      "published": "2020-03-25",
+      "authors": "Fan Fang, Carmine Ventre, Michail Basios, Leslie Kanthan, Lingbo Li, David Martinez-Regoband, Fan Wu",
+      "abstract": "In recent years, the tendency of the number of financial institutions including cryptocurrencies in their portfolios has accelerated. Cryptocurrencies are the first pure digital assets to be included by asset managers. Although they have some commonalities with more traditional assets, they have their own separate nature and their behaviour as an asset is still in the process of being understood. It is therefore important to summarise existing research papers and results on cryptocurrency tradin",
+      "categories": "q-fin.TR, q-fin.CP",
+      "pdf": "https://arxiv.org/pdf/2003.11352v5"
+    },
+    {
+      "id": "2311.17203v1",
+      "title": "A Review on Cryptocurrency Transaction Methods for Money Laundering",
+      "published": "2023-11-28",
+      "authors": "Hugo Almeida, Pedro Pinto, Ana Fern\u00e1ndez Vilas",
+      "abstract": "Cryptocurrencies are considered relevant assets and they are currently used as an investment or to carry out transactions. However, specific characteristics commonly associated with the cryptocurrencies such as irreversibility, immutability, decentralized architecture, absence of control authority, mobility, and pseudo-anonymity make them appealing for money laundering activities. Thus, the collection and characterization of current cryptocurrency-based methods used for money laundering are para",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/2311.17203v1"
+    },
+    {
+      "id": "2511.00094v2",
+      "title": "Digital Twin based Automatic Reconfiguration of Robotic Systems in Smart Environments",
+      "published": "2025-10-30",
+      "authors": "Angelos Alexopoulos, Agorakis Bompotas, Nikitas Rigas Kalogeropoulos, Panagiotis Kechagias, Athanasios P. Kalogeras, Christos Alexakos",
+      "abstract": "Robotic systems have become integral to smart environments, enabling applications ranging from urban surveillance and automated agriculture to industrial automation. However, their effective operation in dynamic settings - such as smart cities and precision farming - is challenged by continuously evolving topographies and environmental conditions. Traditional control systems often struggle to adapt quickly, leading to inefficiencies or operational failures. To address this limitation, we propose",
+      "categories": "cs.RO, cs.AI, eess.SY",
+      "pdf": "https://arxiv.org/pdf/2511.00094v2"
+    },
+    {
+      "id": "2506.11921v1",
+      "title": "Dynamic Grid Trading Strategy: From Zero Expectation to Market Outperformance",
+      "published": "2025-06-13",
+      "authors": "Kai-Yuan Chen, Kai-Hsin Chen, Jyh-Shing Roger Jang",
+      "abstract": "We propose a profitable trading strategy for the cryptocurrency market based on grid trading. Starting with an analysis of the expected value of the traditional grid strategy, we show that under simple assumptions, its expected return is essentially zero. We then introduce a novel Dynamic Grid-based Trading (DGT) strategy that adapts to market conditions by dynamically resetting grid positions. Our backtesting results using minute-level data from Bitcoin and Ethereum between January 2021 and Jul",
+      "categories": "q-fin.TR",
+      "pdf": "https://arxiv.org/pdf/2506.11921v1"
+    },
+    {
+      "id": "2510.26989v2",
+      "title": "SUSTAINABLE Platform: Seamless Smart Farming Integration Towards Agronomy Automation",
+      "published": "2025-10-30",
+      "authors": "Agorakis Bompotas, Konstantinos Koutras, Nikitas Rigas Kalogeropoulos, Panagiotis Kechagias, Dimitra Gariza, Athanasios P. Kalogeras, Christos Alexakos",
+      "abstract": "The global agricultural sector is undergoing a transformative shift, driven by increasing food demands, climate variability and the need for sustainable practices. SUSTAINABLE is a smart farming platform designed to integrate IoT, AI, satellite imaging, and role-based task orchestration to enable efficient, traceable, and sustainable agriculture with a pilot usecase in viticulture. This paper explores current smart agriculture solutions, presents a comparative evaluation, and introduces SUSTAINA",
+      "categories": "cs.AI, eess.SY",
+      "pdf": "https://arxiv.org/pdf/2510.26989v2"
+    },
+    {
+      "id": "1912.04492v1",
+      "title": "151 Estrategias de Trading (151 Trading Strategies)",
+      "published": "2019-11-14",
+      "authors": "Zura Kakushadze, Juan Andr\u00e9s Serur",
+      "abstract": "This book, which is in Spanish, provides detailed descriptions, including over 550 mathematical formulas, for over 150 trading strategies across a host of asset classes (and trading styles). This includes stocks, options, fixed income, futures, ETFs, indexes, commodities, foreign exchange, convertibles, structured assets, volatility (as an asset class), real estate, distressed assets, cash, cryptocurrencies, miscellany (such as weather, energy, inflation), global macro, infrastructure, and tax a",
+      "categories": "q-fin.GN, q-fin.MF, q-fin.PM",
+      "pdf": "https://arxiv.org/pdf/1912.04492v1"
+    }
+  ],
+  "wallet reputation trust score blockchain": [
+    {
+      "id": "1207.0405v1",
+      "title": "MITRA: A Meta-Model for Information Flow in Trust and Reputation Architectures",
+      "published": "2012-07-02",
+      "authors": "Eugen Staab, Guillaume Muller",
+      "abstract": "We propose MITRA, a meta-model for the information flow in (computational) trust and reputation architectures. On an abstract level, MITRA describes the information flow as it is inherent in prominent trust and reputation models from the literature. We use MITRA to provide a structured comparison of these models. This makes it possible to get a clear overview of the complex research area. Furthermore, by doing so, we identify interesting new approaches for trust and reputation modeling that so f",
+      "categories": "cs.MA",
+      "pdf": "https://arxiv.org/pdf/1207.0405v1"
+    },
+    {
+      "id": "1910.00742v1",
+      "title": "ChainSplitter: Towards Blockchain-based Industrial IoT Architecture for Supporting Hierarchical Storage",
+      "published": "2019-10-02",
+      "authors": "Gang Wang, Zhijie Jerry Shi, Mark Nixon, Song Han",
+      "abstract": "The fast developing Industrial Internet of Things (IIoT) technologies provide a promising opportunity to build large-scale systems to connect numerous heterogeneous devices into the Internet. Most existing IIoT infrastructures are based on a centralized architecture, which is easier for management but cannot effectively support immutable and verifiable services among multiple parties. Blockchain technology provides many desired features for large-scale IIoT infrastructures, such as decentralizat",
+      "categories": "cs.CR, cs.DC",
+      "pdf": "https://arxiv.org/pdf/1910.00742v1"
+    },
+    {
+      "id": "2004.13438v2",
+      "title": "BlockSim: An Extensible Simulation Tool for Blockchain Systems",
+      "published": "2020-04-28",
+      "authors": "Maher Alharby, Aad van Moorsel",
+      "abstract": "Both in the design and deployment of blockchain solutions many performance-impacting configuration choices need to be made. We introduce BlockSim, a framework and software tool to build and simulate discrete-event dynamic systems models for blockchain systems. BlockSim is designed to support the analysis of a large variety of blockchains and blockchain deployments as well as a wide set of analysis questions. At the core of BlockSim is a Base Model, which contains the main model constructs common",
+      "categories": "cs.CR, cs.PF",
+      "pdf": "https://arxiv.org/pdf/2004.13438v2"
+    },
+    {
+      "id": "1906.01831v1",
+      "title": "TrustChain: Trust Management in Blockchain and IoT supported Supply Chains",
+      "published": "2019-06-05",
+      "authors": "Sidra Malik, Volkan Dedeoglu, Salil S. Kanhere, Raja Jurdak",
+      "abstract": "Traceability and integrity are major challenges for the increasingly complex supply chains of today's world. Although blockchain technology has the potential to address these challenges through providing a tamper-proof audit trail of supply chain events and data associated with a product life-cycle, it does not solve the trust problem associated with the data itself. Reputation systems are an effective approach to solve this trust problem. However, current reputation systems are not suited to th",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/1906.01831v1"
+    },
+    {
+      "id": "1006.1956v2",
+      "title": "A Semi-distributed Reputation Based Intrusion Detection System for Mobile Adhoc Networks",
+      "published": "2010-06-10",
+      "authors": "Animesh Kr Trivedi, Rajan Arora, Rishi Kapoor, Sudip Sanyal, Sugata Sanyal",
+      "abstract": "A Mobile Adhoc Network (MANET) is a cooperative engagement of a collection of mobile nodes without any centralized access point or infrastructure to coordinate among the peers. The underlying concept of coordination among nodes in a cooperative MANET has induced in them a vulnerability to attacks due to issues like lack of fixed infrastructure, dynamically changing network topology, cooperative algorithms, lack of centralized monitoring and management point, and lack of a clear line of defense. ",
+      "categories": "cs.NI, cs.MA",
+      "pdf": "https://arxiv.org/pdf/1006.1956v2"
+    },
+    {
+      "id": "2105.05338v1",
+      "title": "SmartOil: Blockchain and smart contract-based oil supply chain management",
+      "published": "2021-05-11",
+      "authors": "AKM Bahalul Haque, Md. Rifat Hasan, Md. Oahiduzzaman Mondol Zihad",
+      "abstract": "The traditional oil supply chain suffers from various shortcomings regarding crude oil extraction, processing, distribution, environmental pollution, and traceability. It offers an only a forward flow of products with almost no security and tracking process. In time, the system will lag behind due to the limitations in quality inspection, fraudulent information, and monopolistic behavior of supply chain entities. Inclusion of counterfeiting products and opaqueness of the system urge renovation i",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/2105.05338v1"
+    },
+    {
+      "id": "2307.10492v1",
+      "title": "Blockchain-Based Federated Learning: Incentivizing Data Sharing and Penalizing Dishonest Behavior",
+      "published": "2023-07-19",
+      "authors": "Amir Jaberzadeh, Ajay Kumar Shrestha, Faijan Ahamad Khan, Mohammed Afaan Shaikh, Bhargav Dave, Jason Geng",
+      "abstract": "With the increasing importance of data sharing for collaboration and innovation, it is becoming more important to ensure that data is managed and shared in a secure and trustworthy manner. Data governance is a common approach to managing data, but it faces many challenges such as data silos, data consistency, privacy, security, and access control. To address these challenges, this paper proposes a comprehensive framework that integrates data trust in federated learning with InterPlanetary File S",
+      "categories": "cs.LG",
+      "pdf": "https://arxiv.org/pdf/2307.10492v1"
+    },
+    {
+      "id": "2203.05769v1",
+      "title": "DeTRM: Decentralised Trust and Reputation Management for Blockchain-based Supply Chains",
+      "published": "2022-03-11",
+      "authors": "Guntur Dharma Putra, Changhoon Kang, Salil S. Kanhere, James Won-Ki Hong",
+      "abstract": "Blockchain has the potential to enhance supply chain management systems by providing stronger assurance in transparency and traceability of traded commodities. However, blockchain does not overcome the inherent issues of data trust in IoT enabled supply chains. Recent proposals attempt to tackle these issues by incorporating generic trust and reputation management, which does not entirely address the complex challenges of supply chain operations and suffers from significant drawbacks. In this pa",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/2203.05769v1"
+    }
+  ],
+  "pump fun token launch pump.fun": [
+    {
+      "id": "2512.20156v4",
+      "title": "Fun-Audio-Chat Technical Report",
+      "published": "2025-12-23",
+      "authors": " Tongyi Fun Team, Qian Chen, Luyao Cheng, Chong Deng, Xiangang Li, Jiaqing Liu, Chao-Hong Tan, Wen Wang, Junhao Xu, Jieping Ye, Qinglin Zhang, Qiquan Zhang, Jingren Zhou",
+      "abstract": "Recent advancements in joint speech-text models show great potential for seamless voice interactions. However, existing models face critical challenges: temporal resolution mismatch between speech tokens (25Hz) and text tokens (~3Hz) dilutes semantic information, incurs high computational costs, and causes catastrophic forgetting of text LLM knowledge. We introduce Fun-Audio-Chat, a Large Audio Language Model addressing these limitations via two innovations from our previous work DrVoice. First,",
+      "categories": "cs.CL, cs.AI, cs.SD, eess.AS",
+      "pdf": "https://arxiv.org/pdf/2512.20156v4"
+    },
+    {
+      "id": "2602.14860v1",
+      "title": "Predicting the success of new crypto-tokens: the Pump.fun case",
+      "published": "2026-02-16",
+      "authors": "Giulio Marino, Manuel Naviglio, Francesco Tarantelli, Fabrizio Lillo",
+      "abstract": "We study the dynamics of token launched on Pump.fun, a Solana-based launchpad platform, to identify the determinants of the token success. Pump.fun employs a bonding curve mechanism to bootstrap initial liquidity possibly leading to graduation to the on-chain market, which can be seen as a token success. We build predictive models of the probability of graduation conditional on the current amount of Solana locked in the bonding curve and a set of explanatory variables that capture structural and",
+      "categories": "q-fin.ST",
+      "pdf": "https://arxiv.org/pdf/2602.14860v1"
+    },
+    {
+      "id": "2607.02823v1",
+      "title": "Pump.fun Graduation Regime Windows: Survival Analysis of 832,941 Token Launches and the Social-Presence Effect",
+      "published": "2026-07-02",
+      "authors": "Arati Uday Kamat",
+      "abstract": "We present a Kaplan-Meier and Cox proportional-hazards survival analysis of 832,941 Solana pump.fun token launches with 24-hour graduation outcomes, observed continuously between 2026-05-08 and 2026-06-10. The pooled graduation rate is 0.198% (Wilson 95% CI [0.189%, 0.208%]), a 3.18x decline from the 0.63% rate reported by Marino et al. (2026) for September-October 2025. After excluding a four-day tracker warm-up and the partial last day, the steady-state rate is 0.207% (Wilson 95% CI [0.198%, 0",
+      "categories": "q-fin.TR, q-fin.CP, q-fin.GN, q-fin.ST",
+      "pdf": "https://arxiv.org/pdf/2607.02823v1"
+    },
+    {
+      "id": "1612.03614v1",
+      "title": "Increasing Launch Efficiency with the PEGASUS Launcher",
+      "published": "2016-12-12",
+      "authors": "S. Hundertmark, G. Vincent, D. Simicic, M. Schneider",
+      "abstract": "In the real world application of railguns, the launch efficiency is one of the most important parameters. This efficiency directly relates to the capacity of the electrical energy storage that is needed for the launch. In this study, the rail/armature contact behavior for two different armature technologies was compared. To this end, experiments using aluminum c-shaped armature and copper brush armature type projectiles were performed under same initial conditions. The c-shaped armature type sho",
+      "categories": "physics.ins-det, physics.plasm-ph",
+      "pdf": "https://arxiv.org/pdf/1612.03614v1"
+    },
+    {
+      "id": "1612.04143v1",
+      "title": "Developing a Launch Package for the PEGASUS Launcher",
+      "published": "2016-12-13",
+      "authors": "S. Hundertmark, G. Vincent, D. Simicic",
+      "abstract": "Railguns are capable to far exceed the muzzle energies of current naval deck guns. Therefore one of the most promising scenario for the future application of railguns in naval warfare is the long range artillery. Hypervelocity projectiles being propelled to velocities above 2 km/s reach targets at distances of 200 km or more. At the French-German Research Institute the PEGASUS launcher is used for investigations with respect to this scenario. The 6 m long barrel has a square caliber of 40 mm. Th",
+      "categories": "physics.plasm-ph",
+      "pdf": "https://arxiv.org/pdf/1612.04143v1"
+    },
+    {
+      "id": "2605.11733v1",
+      "title": "Position: LLM Inference Should Be Evaluated as Energy-to-Token Production",
+      "published": "2026-05-12",
+      "authors": "Xiang Liu, Shimiao Yuan, Zhenheng Tang, Peijie Dong, Kaiyong Zhao, Qiang Wang, Bo Li, Xiaowen Chu",
+      "abstract": "LLM inference is still evaluated mainly as a model or software problem: accuracy, latency, throughput, and hardware utilization. This is incomplete. At deployment scale, the relevant output is a quality-conditioned token produced under joint constraints from effective compute, delivered data-center power, cooling capacity, PUE, and utilization.   We argue that the ML community should treat inference as \\emph{energy-to-token production}. We formalize this view with a dimensionally consistent Toke",
+      "categories": "cs.CE, cs.DC",
+      "pdf": "https://arxiv.org/pdf/2605.11733v1"
+    },
+    {
+      "id": "2511.04453v1",
+      "title": "Launch-Day Diffusion: Tracking Hacker News Impact on GitHub Stars for AI Tools",
+      "published": "2025-11-06",
+      "authors": "Obada Kraishan",
+      "abstract": "Social news platforms have become key launch outlets for open-source projects, especially Hacker News (HN), though quantifying their immediate impact remains challenging. This paper presents a reproducible demonstration system that tracks how HN exposure translates into GitHub star growth for AI and LLM tools. Built entirely on public APIs, our pipeline analyzes 138 repository launches from 2024-2025 and reveals substantial launch effects: repositories gain an average of 121 stars within 24 hour",
+      "categories": "cs.SI, cs.SE",
+      "pdf": "https://arxiv.org/pdf/2511.04453v1"
+    },
+    {
+      "id": "2507.06543v2",
+      "title": "Token Bottleneck: One Token to Remember Dynamics",
+      "published": "2025-07-09",
+      "authors": "Taekyung Kim, Dongyoon Han, Byeongho Heo, Jeongeun Park, Sangdoo Yun",
+      "abstract": "Deriving compact and temporally aware visual representations from dynamic scenes is essential for successful execution of sequential scene understanding tasks such as visual tracking and robotic manipulation. In this paper, we introduce Token Bottleneck (ToBo), a simple yet intuitive self-supervised learning pipeline that squeezes a scene into a bottleneck token and predicts the subsequent scene using minimal patches as hints. The ToBo pipeline facilitates the learning of sequential scene repres",
+      "categories": "cs.CV",
+      "pdf": "https://arxiv.org/pdf/2507.06543v2"
+    }
+  ],
+  "deceptive token deployment cryptocurrency": [
+    {
+      "id": "1806.06632v1",
+      "title": "Exploring the Interconnectedness of Cryptocurrencies using Correlation Networks",
+      "published": "2018-06-18",
+      "authors": "Andrew Burnie",
+      "abstract": "Correlation networks were used to detect characteristics which, although fixed over time, have an important influence on the evolution of prices over time. Potentially important features were identified using the websites and whitepapers of cryptocurrencies with the largest userbases. These were assessed using two datasets to enhance robustness: one with fourteen cryptocurrencies beginning from 9 November 2017, and a subset with nine cryptocurrencies starting 9 September 2016, both ending 6 Marc",
+      "categories": "q-fin.CP, cs.CR",
+      "pdf": "https://arxiv.org/pdf/1806.06632v1"
+    },
+    {
+      "id": "2109.03092v1",
+      "title": "Modelling Strategic Deceptive Planning in Adversarial Multi-Agent Systems",
+      "published": "2021-09-07",
+      "authors": "Lyndon Benke, Michael Papasimeon, Tim Miller",
+      "abstract": "Deception is virtually ubiquitous in warfare, and should be a central consideration for military operations research. However, studies of agent behaviour in simulated operations have typically neglected to include explicit models of deception. This paper proposes that a computational model that approximates the human deceptive planning process would enable the authentic representation of strategic deception in multi-agent systems. The proposed deceptive planning model provides a framework for st",
+      "categories": "cs.MA",
+      "pdf": "https://arxiv.org/pdf/2109.03092v1"
+    },
+    {
+      "id": "2005.14440v1",
+      "title": "Tracing Cryptocurrency Scams: Clustering Replicated Advance-Fee and Phishing Websites",
+      "published": "2020-05-29",
+      "authors": "R. Phillips, H. Wilder",
+      "abstract": "Over the past few years, there has been a growth in activity, public knowledge, and awareness of cryptocurrencies and related blockchain technology. As the industry has grown, there has also been an increase in scams looking to steal unsuspecting individuals cryptocurrency. Many of the scams operate on visually similar but seemingly unconnected websites, advertised by malicious social media accounts, which either attempt an advance-fee scam or operate as phishing websites. This paper analyses pu",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/2005.14440v1"
+    },
+    {
+      "id": "2605.11733v1",
+      "title": "Position: LLM Inference Should Be Evaluated as Energy-to-Token Production",
+      "published": "2026-05-12",
+      "authors": "Xiang Liu, Shimiao Yuan, Zhenheng Tang, Peijie Dong, Kaiyong Zhao, Qiang Wang, Bo Li, Xiaowen Chu",
+      "abstract": "LLM inference is still evaluated mainly as a model or software problem: accuracy, latency, throughput, and hardware utilization. This is incomplete. At deployment scale, the relevant output is a quality-conditioned token produced under joint constraints from effective compute, delivered data-center power, cooling capacity, PUE, and utilization.   We argue that the ML community should treat inference as \\emph{energy-to-token production}. We formalize this view with a dimensionally consistent Toke",
+      "categories": "cs.CE, cs.DC",
+      "pdf": "https://arxiv.org/pdf/2605.11733v1"
+    },
+    {
+      "id": "2606.22017v1",
+      "title": "The Market Crystal: A Spin-Lattice Model for Collective Cryptocurrency States",
+      "published": "2026-06-20",
+      "authors": "Hamidreza Oliaei-Moghadam",
+      "abstract": "Collective dynamics in financial markets can emerge through synchronized movements of large groups of assets. Motivated by analogies with interacting many-body systems, we introduce a spin-lattice representation for analyzing collective states in cryptocurrency markets. In this framework, assets are encoded as binary spin variables according to the sign of their returns, while correlations between assets determine effective interaction strengths. A correlation-based breadth-first search (CBFS) p",
+      "categories": "cond-mat.stat-mech, physics.data-an",
+      "pdf": "https://arxiv.org/pdf/2606.22017v1"
+    },
+    {
+      "id": "1910.02064v3",
+      "title": "Token Economics in Real-Life: Cryptocurrency and Incentives Design for Insolar Blockchain Network",
+      "published": "2019-10-04",
+      "authors": "Henry M. Kim, Marek Laskowski, Michael Zargham, HJalmar Turesson, Matt Barlin, Danil Kabanov",
+      "abstract": "The study of how to set up cryptocurrency incentive mechanisms and to operationalize governance is token economics. Given the $250 billion market cap for cryptocurrencies, there is compelling need to investigate this topic. In this paper, we present facets of the token engineering process for a real-life 80-person Swiss blockchain startup, Insolar. We show how Insolar used systems modeling and simulation combined with cryptocurrency expertise to design a mechanism to incentivize enterprises and ",
+      "categories": "cs.SI, cs.CY",
+      "pdf": "https://arxiv.org/pdf/1910.02064v3"
+    },
+    {
+      "id": "2305.15171v4",
+      "title": "Deceptive-NeRF/3DGS: Diffusion-Generated Pseudo-Observations for High-Quality Sparse-View Reconstruction",
+      "published": "2023-05-24",
+      "authors": "Xinhang Liu, Jiaben Chen, Shiu-hong Kao, Yu-Wing Tai, Chi-Keung Tang",
+      "abstract": "Novel view synthesis via Neural Radiance Fields (NeRFs) or 3D Gaussian Splatting (3DGS) typically necessitates dense observations with hundreds of input images to circumvent artifacts. We introduce Deceptive-NeRF/3DGS to enhance sparse-view reconstruction with only a limited set of input images, by leveraging a diffusion model pre-trained from multiview datasets. Different from using diffusion priors to regularize representation optimization, our method directly uses diffusion-generated images t",
+      "categories": "cs.CV",
+      "pdf": "https://arxiv.org/pdf/2305.15171v4"
+    },
+    {
+      "id": "2111.06477v3",
+      "title": "Accounting for carbon emissions caused by cryptocurrency and token systems",
+      "published": "2021-11-11",
+      "authors": "Ulrich Gallersd\u00f6rfer, Lena Klaa\u00dfen, Christian Stoll",
+      "abstract": "The energy consumption and related carbon emissions of cryptocurrencies such as Bitcoin are subject to extensive discussion in public, academia, and industry. As cryptocurrencies continue their journey into mainstream finance, incentives to participate in the networks and consume energy to do so remain significant. First guidance on how to allocate the carbon footprint of the Bitcoin network to single investors exist, however a holistic framework capturing a wider range of cryptocurrencies and t",
+      "categories": "cs.CY",
+      "pdf": "https://arxiv.org/pdf/2111.06477v3"
+    }
+  ],
+  "wallet graph analysis cryptocurrency fraud": [
+    {
+      "id": "2308.02793v2",
+      "title": "Crowdsourcing Fraud Detection over Heterogeneous Temporal MMMA Graph",
+      "published": "2023-08-05",
+      "authors": "Zequan Xu, Qihang Sun, Shaofeng Hu, Jieming Shi, Hui Li",
+      "abstract": "The rise of the click farm business using Multi-purpose Messaging Mobile Apps (MMMAs) tempts cybercriminals to perpetrate crowdsourcing frauds that cause financial losses to click farm workers. In this paper, we propose a novel contrastive multi-view learning method named CMT for crowdsourcing fraud detection over the heterogeneous temporal graph (HTG) of MMMA. CMT captures both heterogeneity and dynamics of HTG and generates high-quality representations for crowdsourcing fraud detection in a se",
+      "categories": "cs.SI, cs.AI",
+      "pdf": "https://arxiv.org/pdf/2308.02793v2"
+    },
+    {
+      "id": "2005.00625v3",
+      "title": "Alleviating the Inconsistency Problem of Applying Graph Neural Network to Fraud Detection",
+      "published": "2020-05-01",
+      "authors": "Zhiwei Liu, Yingtong Dou, Philip S. Yu, Yutong Deng, Hao Peng",
+      "abstract": "The graph-based model can help to detect suspicious fraud online. Owing to the development of Graph Neural Networks~(GNNs), prior research work has proposed many GNN-based fraud detection frameworks based on either homogeneous graphs or heterogeneous graphs. These work follow the existing GNN framework by aggregating the neighboring information to learn the node embedding, which lays on the assumption that the neighbors share similar context, features, and relations. However, the inconsistency p",
+      "categories": "cs.SI, cs.IR, cs.LG",
+      "pdf": "https://arxiv.org/pdf/2005.00625v3"
+    },
+    {
+      "id": "1806.06632v1",
+      "title": "Exploring the Interconnectedness of Cryptocurrencies using Correlation Networks",
+      "published": "2018-06-18",
+      "authors": "Andrew Burnie",
+      "abstract": "Correlation networks were used to detect characteristics which, although fixed over time, have an important influence on the evolution of prices over time. Potentially important features were identified using the websites and whitepapers of cryptocurrencies with the largest userbases. These were assessed using two datasets to enhance robustness: one with fourteen cryptocurrencies beginning from 9 November 2017, and a subset with nine cryptocurrencies starting 9 September 2016, both ending 6 Marc",
+      "categories": "q-fin.CP, cs.CR",
+      "pdf": "https://arxiv.org/pdf/1806.06632v1"
+    },
+    {
+      "id": "2504.11735v1",
+      "title": "WalletProbe: A Testing Framework for Browser-based Cryptocurrency Wallet Extensions",
+      "published": "2025-04-16",
+      "authors": "Xiaohui Hu, Ningyu He, Haoyu Wang",
+      "abstract": "Serving as the first touch point for users to the cryptocurrency world, cryptocurrency wallets allow users to manage, receive, and transmit digital assets on blockchain networks and interact with emerging decentralized finance (DeFi) applications. Unfortunately, cryptocurrency wallets have always been the prime targets for attackers, and incidents of wallet breaches have been reported from time to time. Although some recent studies have characterized the vulnerabilities and scams related to wall",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/2504.11735v1"
+    },
+    {
+      "id": "2105.02793v1",
+      "title": "Holistic Privacy and Usability of a Cryptocurrency Wallet",
+      "published": "2021-05-06",
+      "authors": "Harry Halpin",
+      "abstract": "In this study, we overview the problems associated with the usability of cryptocurrency wallets, such as those used by ZCash, for end-users. The concept of \"holistic privacy,\" where information leaks in one part of a system can violate the privacy expectations of different parts of the system, is introduced as a requirement. To test this requirement with real-world software, we did a 60 person task-based evaluation of the usability of a ZCash cryptocurrency wallet by having users install and try",
+      "categories": "cs.CR, cs.CY",
+      "pdf": "https://arxiv.org/pdf/2105.02793v1"
+    },
+    {
+      "id": "2205.14611v1",
+      "title": "Forensic Artefact Discovery and Attribution from Android Cryptocurrency Wallet Applications",
+      "published": "2022-05-29",
+      "authors": "Eugene Chang, Paul Darcy, Kim-Kwang Raymond Choo, Nhien-An Le-Khac",
+      "abstract": "Cryptocurrency has been (ab)used to purchase illicit goods and services such as drugs, weapons and child pornography (also referred to as child sexual abuse materials), and thus mobile devices (where cryptocurrency wallet applications are installed) are a potential source of evidence in a criminal investigation. Not surprisingly, there has been increased focus on the security of cryptocurrency wallets, although forensic extraction and attribution of forensic artefacts from such wallets is unders",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/2205.14611v1"
+    },
+    {
+      "id": "2607.19266v1",
+      "title": "Toward Auditable Fraud Detection: Combining Graph Features, Model Explanations, and Agentic Case Investigation",
+      "published": "2026-07-21",
+      "authors": "Rahil Sharma",
+      "abstract": "Fraud detection systems must scale with rising transaction volume while remaining explainable and reviewable. We study a layered pipeline on the PaySim dataset that combines a gradient-boosted classifier, graph-derived structural features, an autoencoder-based anomaly signal, TreeSHAP explanations, and a bounded LLM investigation agent applied to cases the classifier scores uncertainly. Before any model comparison, we identify and remove a simulator-specific balance shortcut that would otherwise",
+      "categories": "cs.LG, cs.AI",
+      "pdf": "https://arxiv.org/pdf/2607.19266v1"
+    },
+    {
+      "id": "2405.04332v1",
+      "title": "WALLETRADAR: Towards Automating the Detection of Vulnerabilities in Browser-based Cryptocurrency Wallets",
+      "published": "2024-05-07",
+      "authors": "Pengcheng Xia, Yanhui Guo, Zhaowen Lin, Jun Wu, Pengbo Duan, Ningyu He, Kailong Wang, Tianming Liu, Yinliang Yue, Guoai Xu, Haoyu Wang",
+      "abstract": "Cryptocurrency wallets, acting as fundamental infrastructure to the blockchain ecosystem, have seen significant user growth, particularly among browser-based wallets (i.e., browser extensions). However, this expansion accompanies security challenges, making these wallets prime targets for malicious activities. Despite a substantial user base, there is not only a significant gap in comprehensive security analysis but also a pressing need for specialized tools that can aid developers in reducing v",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/2405.04332v1"
+    }
+  ],
+  "copy trading whale wallet following": [
+    {
+      "id": "2308.04552v2",
+      "title": "WhaleVis: Visualizing the History of Commercial Whaling",
+      "published": "2023-08-08",
+      "authors": "Ameya Patil, Zoe Rand, Trevor Branch, Leilani Battle",
+      "abstract": "Whales are an important part of the oceanic ecosystem. Although historic commercial whale hunting a.k.a. whaling has severely threatened whale populations, whale researchers are looking at historical whaling data to inform current whale status and future conservation efforts. To facilitate this, we worked with experts in aquatic and fishery sciences to create WhaleVis -- an interactive dashboard for the commercial whaling dataset maintained by the International Whaling Commission (IWC). We chara",
+      "categories": "cs.DB",
+      "pdf": "https://arxiv.org/pdf/2308.04552v2"
+    },
+    {
+      "id": "1912.04492v1",
+      "title": "151 Estrategias de Trading (151 Trading Strategies)",
+      "published": "2019-11-14",
+      "authors": "Zura Kakushadze, Juan Andr\u00e9s Serur",
+      "abstract": "This book, which is in Spanish, provides detailed descriptions, including over 550 mathematical formulas, for over 150 trading strategies across a host of asset classes (and trading styles). This includes stocks, options, fixed income, futures, ETFs, indexes, commodities, foreign exchange, convertibles, structured assets, volatility (as an asset class), real estate, distressed assets, cash, cryptocurrencies, miscellany (such as weather, energy, inflation), global macro, infrastructure, and tax a",
+      "categories": "q-fin.GN, q-fin.MF, q-fin.PM",
+      "pdf": "https://arxiv.org/pdf/1912.04492v1"
+    },
+    {
+      "id": "2208.07168v1",
+      "title": "AI for trading strategies",
+      "published": "2022-06-26",
+      "authors": "Danijel Jevtic, Romain Deleze, Joerg Osterrieder",
+      "abstract": "In this bachelor thesis, we show how four different machine learning methods (Long Short-Term Memory, Random Forest, Support Vector Machine Regression, and k-Nearest Neighbor) perform compared to already successfully applied trading strategies such as Cross Signal Trading and a conventional statistical time series model ARMA-GARCH. The aim is to show that machine learning methods perform better than conventional methods in the crude oil market when used correctly. A more detailed performance ana",
+      "categories": "q-fin.TR",
+      "pdf": "https://arxiv.org/pdf/2208.07168v1"
+    },
+    {
+      "id": "1202.2447v2",
+      "title": "Ensemble properties of high frequency data and intraday trading rules",
+      "published": "2012-02-11",
+      "authors": "Fulvio Baldovin, Francesco Camana, Massimiliano Caporin, Michele Caraglio, Attilio L. Stella",
+      "abstract": "Regarding the intraday sequence of high frequency returns of the S&P index as daily realizations of a given stochastic process, we first demonstrate that the scaling properties of the aggregated return distribution can be employed to define a martingale stochastic model which consistently replicates conditioned expectations of the S&P 500 high frequency data in the morning of each trading day. Then, a more general formulation of the above scaling properties allows to extend the model to the afte",
+      "categories": "q-fin.TR, cond-mat.stat-mech",
+      "pdf": "https://arxiv.org/pdf/1202.2447v2"
+    },
+    {
+      "id": "2506.11921v1",
+      "title": "Dynamic Grid Trading Strategy: From Zero Expectation to Market Outperformance",
+      "published": "2025-06-13",
+      "authors": "Kai-Yuan Chen, Kai-Hsin Chen, Jyh-Shing Roger Jang",
+      "abstract": "We propose a profitable trading strategy for the cryptocurrency market based on grid trading. Starting with an analysis of the expected value of the traditional grid strategy, we show that under simple assumptions, its expected return is essentially zero. We then introduce a novel Dynamic Grid-based Trading (DGT) strategy that adapts to market conditions by dynamically resetting grid positions. Our backtesting results using minute-level data from Bitcoin and Ethereum between January 2021 and Jul",
+      "categories": "q-fin.TR",
+      "pdf": "https://arxiv.org/pdf/2506.11921v1"
+    },
+    {
+      "id": "1412.5558v1",
+      "title": "Backtest of Trading Systems on Candle Charts",
+      "published": "2014-12-17",
+      "authors": "Stanislaus Maier-Paape, Andreas Platen",
+      "abstract": "In this paper we try to design the necessary calculation needed for backtesting trading systems when only candle chart data are available. We lay particular emphasis on situations which are not or not uniquely decidable and give possible strategies to handle such situations.",
+      "categories": "q-fin.TR, q-fin.CP",
+      "pdf": "https://arxiv.org/pdf/1412.5558v1"
+    },
+    {
+      "id": "1409.1441v1",
+      "title": "Design and Implementation of Schedule-Based Trading Strategies Based on Uncertainty Bands",
+      "published": "2014-09-04",
+      "authors": "Vladimir Markov, Slava Mazur, David Saltz",
+      "abstract": "We propose a design for schedule-based execution trading strategies based on uncertainty bands. This formulation: 1) simplifies strategy specification and implementation; 2) provides for flexible allocation among passive, opportunistic, aggressive, and dark pool crossing execution tactics; 3) allows for rapid enhancements as new optimization methods, scheduling techniques, alpha models, and execution tactics are developed; and 4) yields information at macroscopic (strategic) and microscopic (tac",
+      "categories": "q-fin.TR",
+      "pdf": "https://arxiv.org/pdf/1409.1441v1"
+    },
+    {
+      "id": "1603.01341v8",
+      "title": "Hong Kong -- Shanghai Connect / Hong Kong -- Beijing Disconnect (?): Scaling the Great Wall of Chinese Securities Trading Costs",
+      "published": "2016-03-04",
+      "authors": "Ravi Kashyap",
+      "abstract": "We utilize a fundamentally different model of trading costs to look at the effect of the opening of the Hong Kong Shanghai Connect that links the stock exchanges in the two cities, arguably the biggest event in international business and finance since Christopher Columbus set sail for India. We design a novel methodology that compensates for the lack of data on trading costs in China. We estimate trading costs across similar positions on the dual listed set of securities in Hong Kong and China, ",
+      "categories": "q-fin.TR",
+      "pdf": "https://arxiv.org/pdf/1603.01341v8"
+    }
+  ],
+  "creator deployer credibility blockchain": [
+    {
+      "id": "2004.13438v2",
+      "title": "BlockSim: An Extensible Simulation Tool for Blockchain Systems",
+      "published": "2020-04-28",
+      "authors": "Maher Alharby, Aad van Moorsel",
+      "abstract": "Both in the design and deployment of blockchain solutions many performance-impacting configuration choices need to be made. We introduce BlockSim, a framework and software tool to build and simulate discrete-event dynamic systems models for blockchain systems. BlockSim is designed to support the analysis of a large variety of blockchains and blockchain deployments as well as a wide set of analysis questions. At the core of BlockSim is a Base Model, which contains the main model constructs common",
+      "categories": "cs.CR, cs.PF",
+      "pdf": "https://arxiv.org/pdf/2004.13438v2"
+    },
+    {
+      "id": "1910.00742v1",
+      "title": "ChainSplitter: Towards Blockchain-based Industrial IoT Architecture for Supporting Hierarchical Storage",
+      "published": "2019-10-02",
+      "authors": "Gang Wang, Zhijie Jerry Shi, Mark Nixon, Song Han",
+      "abstract": "The fast developing Industrial Internet of Things (IIoT) technologies provide a promising opportunity to build large-scale systems to connect numerous heterogeneous devices into the Internet. Most existing IIoT infrastructures are based on a centralized architecture, which is easier for management but cannot effectively support immutable and verifiable services among multiple parties. Blockchain technology provides many desired features for large-scale IIoT infrastructures, such as decentralizat",
+      "categories": "cs.CR, cs.DC",
+      "pdf": "https://arxiv.org/pdf/1910.00742v1"
+    },
+    {
+      "id": "2105.05338v1",
+      "title": "SmartOil: Blockchain and smart contract-based oil supply chain management",
+      "published": "2021-05-11",
+      "authors": "AKM Bahalul Haque, Md. Rifat Hasan, Md. Oahiduzzaman Mondol Zihad",
+      "abstract": "The traditional oil supply chain suffers from various shortcomings regarding crude oil extraction, processing, distribution, environmental pollution, and traceability. It offers an only a forward flow of products with almost no security and tracking process. In time, the system will lag behind due to the limitations in quality inspection, fraudulent information, and monopolistic behavior of supply chain entities. Inclusion of counterfeiting products and opaqueness of the system urge renovation i",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/2105.05338v1"
+    },
+    {
+      "id": "2307.10492v1",
+      "title": "Blockchain-Based Federated Learning: Incentivizing Data Sharing and Penalizing Dishonest Behavior",
+      "published": "2023-07-19",
+      "authors": "Amir Jaberzadeh, Ajay Kumar Shrestha, Faijan Ahamad Khan, Mohammed Afaan Shaikh, Bhargav Dave, Jason Geng",
+      "abstract": "With the increasing importance of data sharing for collaboration and innovation, it is becoming more important to ensure that data is managed and shared in a secure and trustworthy manner. Data governance is a common approach to managing data, but it faces many challenges such as data silos, data consistency, privacy, security, and access control. To address these challenges, this paper proposes a comprehensive framework that integrates data trust in federated learning with InterPlanetary File S",
+      "categories": "cs.LG",
+      "pdf": "https://arxiv.org/pdf/2307.10492v1"
+    },
+    {
+      "id": "2206.03237v2",
+      "title": "Blockchain for Business Process Enactment: A Taxonomy and Systematic Literature Review",
+      "published": "2022-06-07",
+      "authors": "Fabian Stiehle, Ingo Weber",
+      "abstract": "Blockchain has been proposed to facilitate the enactment of interorganisational business processes. For such processes, blockchain can guarantee the enforcement of rules and the integrity of execution traces - without the need for a centralised trusted party. However, the enactment of interorganisational processes pose manifold challenges. In this work, we ask what answers the research field offers in response to those challenges. To do so, we conduct a systematic literature review (SLR). As our",
+      "categories": "cs.SE",
+      "pdf": "https://arxiv.org/pdf/2206.03237v2"
+    },
+    {
+      "id": "2405.06097v1",
+      "title": "A trustless society? A political look at the blockchain vision",
+      "published": "2024-05-09",
+      "authors": "Rainer Rehak",
+      "abstract": "A lot of business and research effort currently deals with the so called decentralised ledger technology blockchain. Putting it to use carries the tempting promise to make the intermediaries of social interactions superfluous and furthermore keep secure track of all interactions. Currently intermediaries such as banks and notaries are necessary and must be trusted, which creates great dependencies, as the financial crisis of 2008 painfully demonstrated. Especially banks and notaries are said to ",
+      "categories": "cs.CY, cs.DC, cs.ET",
+      "pdf": "https://arxiv.org/pdf/2405.06097v1"
+    },
+    {
+      "id": "1904.02368v4",
+      "title": "Oceanic Games: Centralization Risks and Incentives in Blockchain Mining",
+      "published": "2019-04-04",
+      "authors": "Nikos Leonardos, Stefanos Leonardos, Georgios Piliouras",
+      "abstract": "To participate in the distributed consensus of permissionless blockchains, prospective nodes -- or miners -- provide proof of designated, costly resources. However, in contrast to the intended decentralization, current data on blockchain mining unveils increased concentration of these resources in a few major entities, typically mining pools. To study strategic considerations in this setting, we employ the concept of Oceanic Games, Milnor and Shapley (1978). Oceanic Games have been used to analy",
+      "categories": "cs.GT, cs.CR",
+      "pdf": "https://arxiv.org/pdf/1904.02368v4"
+    },
+    {
+      "id": "2004.13890v1",
+      "title": "Customer Data Sharing Platform: A Blockchain-Based Shopping Cart",
+      "published": "2020-04-28",
+      "authors": "Ajay Kumar Shrestha, Sandhya Joshi, Julita Vassileva",
+      "abstract": "We propose a new free eCommerce platform with blockchains that allows customers to connect to the seller directly, share personal data without losing control and ownership of it and apply it to the domain of shopping cart. Our new platform provides a solution to four important problems: private payment, ensuring privacy and user control, and incentives for sharing. It allows the trade to be open, transparent with immutable transactions that can be used for settling any disputes. The paper presen",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/2004.13890v1"
+    }
+  ],
+  "Sybil attack wallet identity linking": [
+    {
+      "id": "1808.04866v5",
+      "title": "Mitigating Sybils in Federated Learning Poisoning",
+      "published": "2018-08-14",
+      "authors": "Clement Fung, Chris J. M. Yoon, Ivan Beschastnikh",
+      "abstract": "Machine learning (ML) over distributed multi-party data is required for a variety of domains. Existing approaches, such as federated learning, collect the outputs computed by a group of devices at a central aggregator and run iterative algorithms to train a globally shared model. Unfortunately, such approaches are susceptible to a variety of attacks, including model poisoning, which is made substantially worse in the presence of sybils.   In this paper we first evaluate the vulnerability of fede",
+      "categories": "cs.LG, cs.CR, cs.DC, stat.ML",
+      "pdf": "https://arxiv.org/pdf/1808.04866v5"
+    },
+    {
+      "id": "1504.05522v1",
+      "title": "Survey of Sybil Attacks in Social Networks",
+      "published": "2015-04-21",
+      "authors": "Rupesh Gunturu",
+      "abstract": "This paper reviews the Sybil attack in social networks, which has the potential to compromise the whole distributed network. In the Sybil attack, the malicious user claims multiple identities to compromise the network. Sybil attacks can be used to change the overall ranking in voting applications, bad-mouth an opinion, access resources or to break the trust mechanism behind a P2P network. In this paper, different defense mechanisms used to mitigate Sybil attacks are also reviewed.",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/1504.05522v1"
+    },
+    {
+      "id": "1905.03507v1",
+      "title": "Detecting Sybil Attacks in Vehicular Ad Hoc Networks",
+      "published": "2019-05-09",
+      "authors": "Salam Hamdan, Amjad Hudaib, Arafat Awajan",
+      "abstract": "Ad hoc networks is vulnerable to numerous number of attacks due to its infrastructure-less nature, one of these attacks is the Sybil attack. Sybil attack is a severe attack on vehicular ad hoc networks (VANET) in which the intruder maliciously claims or steals multiple identities and use these identities to disturb the functionality of the VANET network by disseminating false identities. Many solutions have been proposed in order to defense the VANET network against the Sybil attack. In this res",
+      "categories": "cs.NI",
+      "pdf": "https://arxiv.org/pdf/1905.03507v1"
+    },
+    {
+      "id": "1112.2257v1",
+      "title": "Efficient Detection of Sybil Attack Based on Cryptography in Vanet",
+      "published": "2011-12-10",
+      "authors": "Mina Rahbari, Mohammad Ali Jabreil Jamali",
+      "abstract": "Vehicular communications play a substantial role in providing safety transportation by means of safety message exchange. Researchers have proposed several solutions for securing safety messages. Protocols based on a fixed key infrastructure are more efficient in implementation and maintain stronger security in comparison with dynamic structures. The purpose of this paper present a method based on a fixed key infrastructure for detection impersonation attack, in other words, Sybil attack, in the ",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/1112.2257v1"
+    },
+    {
+      "id": "2012.14227v1",
+      "title": "Detecting Colluding Sybil Attackers in Robotic Networks using Backscatters",
+      "published": "2020-12-28",
+      "authors": "Yong Huang, Wei Wang, Tao Jiang, Qian Zhang",
+      "abstract": "Due to the openness of wireless medium, robotic networks that consist of many miniaturized robots are susceptible to Sybil attackers, who can fabricate myriads of fictitious robots. Such detrimental attacks can overturn the fundamental trust assumption in robotic collaboration and thus impede widespread deployments of robotic networks in many collaborative tasks. Existing solutions rely on bulky multi-antenna systems to passively obtain fine-grained physical layer signatures, making them unaffor",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/2012.14227v1"
+    },
+    {
+      "id": "1207.2617v1",
+      "title": "A Review of Techniques to Mitigate Sybil Attacks",
+      "published": "2012-07-11",
+      "authors": "Nitish Balachandran, Sugata Sanyal",
+      "abstract": "Any decentralised distributed network is particularly vulnerable to the Sybil attack wherein a malicious node masquerades as several different nodes, called Sybil nodes, simultaneously in an attempt to disrupt the proper functioning of the network. Such attacks may cause damage on a fairly large scale especially since they are difficult to detect and there has been no universally accepted scheme to counter them as yet. In this paper, we discuss the different kinds of Sybil attacks including thos",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/1207.2617v1"
+    },
+    {
+      "id": "2603.24232v1",
+      "title": "Attack Assessment and Augmented Identity Recognition for Human Skeleton Data",
+      "published": "2026-03-25",
+      "authors": "Joseph G. Zalameda, Megan A. Witherow, Alexander M. Glandon, Jose Aguilera, Khan M. Iftekharuddin",
+      "abstract": "Machine learning models trained on small data sets for security applications are especially vulnerable to adversarial attacks. Person identification from LiDAR based skeleton data requires time consuming and expensive data acquisition for each subject identity. Recently, Assessment and Augmented Identity Recognition for Skeletons (AAIRS) has been used to train Hierarchical Co-occurrence Networks for Person Identification (HCN-ID) with small LiDAR based skeleton data sets. However, AAIRS does not",
+      "categories": "cs.LG, cs.CR, cs.CV",
+      "pdf": "https://arxiv.org/pdf/2603.24232v1"
+    },
+    {
+      "id": "2108.14004v1",
+      "title": "EthClipper: A Clipboard Meddling Attack on Hardware Wallets with Address Verification Evasion",
+      "published": "2021-08-31",
+      "authors": "Nikolay Ivanov, Qiben Yan",
+      "abstract": "Hardware wallets are designed to withstand malware attacks by isolating their private keys from the cyberspace, but they are vulnerable to the attacks that fake an address stored in a clipboard. To prevent such attacks, a hardware wallet asks the user to verify the recipient address shown on the wallet display. Since crypto addresses are long sequences of random symbols, their manual verification becomes a difficult task. Consequently, many users of hardware wallets elect to verify only a few sy",
+      "categories": "cs.CR",
+      "pdf": "https://arxiv.org/pdf/2108.14004v1"
+    }
+  ]
+}

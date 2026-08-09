@@ -897,6 +897,57 @@ pub struct Config {
     /// downweight (or any [`crate::brain_analysis`] retirement flag) may bind.
     /// Fail-closed — below it there is no flag at all, not a weak one.
     pub brain_decay_min_sample: u32,
+
+    // ---- §27 amendment: tracked-wallet trust boost (G5) --------------------
+    /// Master switch for the §27 amendment tracked-wallet positive signal.
+    /// When true, a buy by a wallet in the tracked candidate list (302 wallets)
+    /// on a token whose creator is classified `Proven` applies a reduce-ONLY
+    /// size boost (capped at `tracked_dev_boost_max_bps`). This is the FIRST
+    /// positive creator signal ever — all previous §27 signals were punitive
+    /// (reduce-only haircuts for SerialRug/VolumeFarmer). Off = no boost,
+    /// byte-identical to the pre-amendment engine. Default OFF: the amendment
+    /// is armed but inert until the refiner verifies the edge post-24h-data.
+    pub tracked_wallet_boost_enable: bool,
+    /// §27 amendment: max trust boost in bps applied when a tracked wallet buys
+    /// a Proven-creator token. The boost is reduce-ONLY — it can only INCREASE
+    /// the gate's size multiplier from its baseline, never decrease it or
+    /// bypass the on-chain truth requirement (`entry_mode_leaves_enable` stays
+    /// 0; the boost moves the size multiplier, not the gate verdict). The
+    /// boost scales linearly with corroboration: 1 tracked wallet = 25% of
+    /// max, 2+ = 50%, 3+ = 100% (clamped). Default 200 bps (2%).
+    pub tracked_dev_boost_max_bps: u32,
+    /// §27 amendment: minimum number of distinct tracked wallets buying the
+    /// same mint within the corroboration window for the FULL boost to apply.
+    /// Below this, the boost scales down linearly (1 wallet = 25% of max).
+    /// MadeOnSol research: 3-10 focused wallets > 50 random; 2 is the minimum
+    /// for meaningful corroboration. Default 2.
+    pub tracked_whale_min_corroboration: u32,
+    /// §27 amendment: the corroboration window in slots during which multiple
+    /// tracked-wallet buys on the same mint count toward the boost. Default
+    /// 50 slots (~25 seconds on Solana's 400ms slot cadence).
+    pub tracked_corroboration_window_slots: u64,
+    /// Path to the tracked-wallet candidate list JSON file (the 302-wallet
+    /// watch list). If empty or the file doesn't exist, no boost is applied.
+    /// The file is loaded once at daemon startup by the junction crate's
+    /// `wallet_loader` module. Default empty — must be set by the operator.
+    pub tracked_wallet_path: CfgPath,
+
+    // ---- §28 amendment: smart-money PnL screening (Phase 7) ----------------
+    /// §28 truth-screen master switch. When true, the engine evaluates the
+    /// last-buyer entity on each candidate mint via `WalletScreen::followable()`
+    /// (the §28 lagged-shadow law: ≥40 entry actions, positive realized PnL
+    /// net of costs at BOTH base and stress lag, beating a control cohort).
+    /// A followable wallet applies a reduce-ONLY size boost capped at
+    /// `smart_money_boost_max_bps`. Off = no boost, byte-identical to the
+    /// pre-amendment engine. Default OFF: the amendment is armed but inert
+    /// until the refiner verifies the edge post-24h-data.
+    pub smart_money_boost_enable: bool,
+    /// §28 amendment: max size boost in bps applied when the last buyer on a
+    /// candidate mint is classified §28-followable (PnL truth + lagged-shadow
+    /// both pass). The boost is reduce-ONLY — it can only INCREASE the gate's
+    /// size multiplier, never decrease it or bypass the on-chain truth
+    /// requirement. Capped at this value. Default 300 bps (3%).
+    pub smart_money_boost_max_bps: u32,
 }
 
 /// LAW D2 default designated-caller attention weight: half the standard attention
@@ -1237,6 +1288,23 @@ impl Config {
             brain_reflect_enable: false,
             brain_reflect_step_bp: crate::reflect::BRAIN_REFLECT_STEP_BP_DEFAULT,
             brain_decay_min_sample: crate::brain_analysis::BRAIN_DECAY_MIN_SAMPLE_DEFAULT,
+
+            // §27 amendment: tracked-wallet trust boost (G5) — default OFF.
+            // The amendment is armed but inert until the refiner verifies the
+            // edge post-24h-data. The boost is reduce-ONLY (never bypasses
+            // the gate or entry_mode_leaves_enable).
+            tracked_wallet_boost_enable: false,
+            tracked_dev_boost_max_bps: 200,          // 2% max boost
+            tracked_whale_min_corroboration: 2,      // MadeOnSol: 3-10 focused > 50 random
+            tracked_corroboration_window_slots: 50,  // ~25 seconds at 400ms slot cadence
+            tracked_wallet_path: CfgPath::empty(),      // empty = no boost applied
+
+            // §28 amendment: smart-money PnL screening (Phase 7) — default OFF.
+            // The amendment is armed but inert until the refiner verifies the
+            // edge post-24h-data. The boost is reduce-ONLY (never bypasses
+            // the gate or entry_mode_leaves_enable).
+            smart_money_boost_enable: false,
+            smart_money_boost_max_bps: 300,           // 3% max boost
         }
     }
 
@@ -1435,6 +1503,14 @@ impl Config {
             "brain_reflect_enable" => self.brain_reflect_enable = value != 0,
             "brain_reflect_step_bp" => self.brain_reflect_step_bp = bp(value)?,
             "brain_decay_min_sample" => self.brain_decay_min_sample = bp(value)?.max(1),
+            // §27 amendment: tracked-wallet trust boost (G5)
+            "tracked_wallet_boost_enable" => self.tracked_wallet_boost_enable = value != 0,
+            "tracked_dev_boost_max_bps" => self.tracked_dev_boost_max_bps = bp(value)?,
+            "tracked_whale_min_corroboration" => self.tracked_whale_min_corroboration = bp(value)?.max(1),
+            "tracked_corroboration_window_slots" => self.tracked_corroboration_window_slots = bp(value)?.max(1) as u64,
+            // §28 amendment: smart-money PnL screening (Phase 7)
+            "smart_money_boost_enable" => self.smart_money_boost_enable = value != 0,
+            "smart_money_boost_max_bps" => self.smart_money_boost_max_bps = bp(value)?,
             other => return Err(ConfigError::UnknownKey(other.to_string())),
         }
         Ok(())
@@ -1575,6 +1651,14 @@ impl Config {
         let _ = writeln!(s, "target_margin_mult_bp = {}", self.target_margin_mult_bp as i64);
         let _ = writeln!(s, "thesis_persist_obs = {}", self.thesis_persist_obs as i64);
         let _ = writeln!(s, "total_risk_cap_bp = {}", self.total_risk_cap_bp as i64);
+        let _ = writeln!(s, "tracked_corroboration_window_slots = {}", self.tracked_corroboration_window_slots as i64);
+        let _ = writeln!(s, "tracked_dev_boost_max_bps = {}", self.tracked_dev_boost_max_bps as i64);
+        let _ = writeln!(s, "tracked_wallet_boost_enable = {}", self.tracked_wallet_boost_enable as i64);
+        // tracked_wallet_path is a CfgPath (path-valued), handled by apply_path, not dump_to_text.
+        let _ = writeln!(s, "tracked_whale_min_corroboration = {}", self.tracked_whale_min_corroboration as i64);
+        // §28 amendment: smart-money PnL screening (Phase 7)
+        let _ = writeln!(s, "smart_money_boost_enable = {}", self.smart_money_boost_enable as i64);
+        let _ = writeln!(s, "smart_money_boost_max_bps = {}", self.smart_money_boost_max_bps as i64);
         let _ = writeln!(s, "universe_age_exempt_slots = {}", self.universe_age_exempt_slots as i64);
         let _ = writeln!(s, "universe_min_entities = {}", self.universe_min_entities as i64);
         let _ = writeln!(s, "universe_min_liquidity_lamports = {}", self.universe_min_liquidity_lamports as i64);
@@ -1612,6 +1696,10 @@ impl Config {
                 self.brain_analysis_path = CfgPath::from_str_checked(value)
                     .ok_or_else(|| ConfigError::PathTooLong(key.to_string()))?;
             }
+            "tracked_wallet_path" => {
+                self.tracked_wallet_path = CfgPath::from_str_checked(value)
+                    .ok_or_else(|| ConfigError::PathTooLong(key.to_string()))?;
+            }
             other => return Err(ConfigError::UnknownKey(other.to_string())),
         }
         Ok(())
@@ -1621,7 +1709,7 @@ impl Config {
     /// [`Config::apply_path`] rather than the integer [`Config::apply`].
     #[must_use]
     pub fn is_path_key(key: &str) -> bool {
-        matches!(key, "brain_path" | "brain_analysis_path")
+        matches!(key, "brain_path" | "brain_analysis_path" | "tracked_wallet_path")
     }
 
     /// Parse a dependency-free config document over a `dev_portable()` base.

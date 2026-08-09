@@ -249,6 +249,15 @@ impl WalletGraph {
         }
     }
 
+    /// Grow the graph to accommodate `new_node_count` nodes, preserving all
+    /// existing edges. Used by the engine when a new wallet entity is seen
+    /// for the first time and needs to be added to the funding graph.
+    pub fn grow(&mut self, new_node_count: usize) {
+        if new_node_count > self.node_count {
+            self.node_count = new_node_count;
+        }
+    }
+
     /// Build families (connected components) using **only** edges whose kind is
     /// in `kinds`. With every kind supplied this yields operator-family
     /// candidates; restricted to creator/deployer kinds it yields

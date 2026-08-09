@@ -656,7 +656,12 @@ use tape_golden::*;
 // target_margin_mult_bp 15000→5000, lc_tp1_bps 13500→10_500, lc_cvd_hold_frac_bps
 // 4500→3000, lc_stall_ticks 25→75). Exit ladder now fires on observed ±4% micro-moves
 // instead of being dead code for the $9k-$20k mcap band.
-const GOLDEN_DIGEST: u64 = 10_190_407_336_939_000_110;
+// Re-pin #30 (2026-08-09): §27/§28 amendment — Config struct grew new fields
+// (tracked_wallet_boost_*, smart_money_boost_*) which change the Debug-format
+// seed even though all boosts are DISABLED by default and decision logic is
+// byte-identical. All other pinned values unchanged.
+// 10_190_407_336_939_000_110 → 16_527_720_425_687_282_225.
+const GOLDEN_DIGEST: u64 = 16_527_720_425_687_282_225;
 // Re-pin #28: net changed 31_111_528 → 30_889_282 (exit ladder fires earlier on
 // micro-moves; TP1 tranche recovers principal at +5% rather than holding to thesis
 // invalidation). promoted/admitted/rejected/universe_filtered unchanged.

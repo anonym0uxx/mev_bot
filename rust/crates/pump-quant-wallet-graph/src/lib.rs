@@ -50,9 +50,11 @@
 pub mod creator_classifier;
 pub mod creator_ledger;
 pub mod deployer_credibility;
+pub mod rug_type_classifier;
 pub mod smart_money;
 pub mod tier1_hot_summary;
 pub mod tier2_wallet_graph;
+pub mod tracked_wallet_matcher;
 
 /// Basis-point denominator (100% = 10 000 bps).
 pub const BPS_DENOM: u64 = 10_000;

@@ -91,7 +91,14 @@
 /// and the 150 bps `first_sell_penalty_bps` is deleted as own-impact double-counting.
 /// Digest, net, admitted and rejected all move. See `golden_digest.rs` for the full
 /// entry, including the three published findings this re-pin overturns.
-pub const GOLDEN_DIGEST: u64 = 10_190_407_336_939_000_110;
+/// Re-pin #30 (2026-08-09): §27/§28 amendment — Config struct grew new fields
+/// (tracked_wallet_boost_*, smart_money_boost_*, tracked_wallet_path,
+/// tracked_corroboration_window_slots) which change the Debug-format seed
+/// (`journal.seed(fnv1a_64(format!("{cfg:?}")))`) even though all boosts are
+/// DISABLED by default and the decision logic is byte-identical. All other
+/// pinned values (net_lamports, promoted, admitted, rejected, universe_filtered)
+/// are unchanged. 10_190_407_336_939_000_110 → 16_527_720_425_687_282_225.
+pub const GOLDEN_DIGEST: u64 = 16_527_720_425_687_282_225;
 /// Realized net-SOL (lamports) on the golden tape (§24-compliant cost-derived).
 /// Re-pin #29: 30_889_282 → 31_465_931 — cost-aware TP ladder (fixed fractions,
 /// research-synthesized values from arXiv:2606.08232 fat-tail capture design).

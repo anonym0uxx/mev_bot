@@ -40,7 +40,7 @@ position has ever been opened on chain. Every figure in this repository is a *sy
 fixture*. Establishing whether this strategy makes money is **your job**, and it is not yet begun.
 
 **The golden reference you are inheriting:** net **31,465,931 lamports**, digest
-`10190407336939000110`, promoted/admitted/rejected/universe-filtered **504 / 11 / 448 / 72**
+`16527720425687282225`, promoted/admitted/rejected/universe-filtered **504 / 11 / 448 / 72**
 (re-pin #27, 2026-07-28).
 
 In real terms that book is **0.031 SOL — about $2.36** — across **11 trades in a handful of
@@ -173,7 +173,7 @@ Your first action is the §65 M0/M1 audit built from **actual inspection you rea
 — never claim to have inspected a file, config, provider dashboard, Windows topology, or
 runtime state you did not. Cover, at minimum: the code-path authority audit; the current
 Rust runtime + determinism map (confirm `cargo test --workspace` green, golden digest =
-`10190407336939000110`, `scripts/regression_e2e.py` green, 191 dossiers intact); the Windows
+`16527720425687282225`, `scripts/regression_e2e.py` green, 191 dossiers intact); the Windows
 host / CPU / NUMA / storage / network audit; the protocol-registry and decoder-coverage
 audit; the Helius/LaserStream entitlement verification; and the exact immediate autonomous
 actions with what evidence would change direction. Mark every server-only item you have not

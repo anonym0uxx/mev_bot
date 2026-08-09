@@ -1,0 +1,2116 @@
+[
+  {
+    "address": "12zQYCKJbCkJtVQcNJd9hPtkC1YzUvU3EqLZAQ1JDN6m",
+    "name": "Fake Ansem",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "26kZ9rg8Y5pd4j1tdT4cbT8BQRu5uDbXkaVs3L5QasHy",
+    "name": "ORANGIE",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "28ipXVfkdmu1PDowCHbcSfzkpH9edZmSiVoDhY5xGVfR",
+    "name": "MIM VFNF",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "2aDBRNNdGEnCq2Av6Wz447CqgdEbmEaDudfGW1M85MAC",
+    "name": "billym2k",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "2BU3NAzgRA2gg2MpzwwXpA8X4CCRaLgrf6TY1FKfJPX2",
+    "name": "issa",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "2eHQuhpB5yprGZ1CSFrEUS6oSzHGX1y8vkrpPXGhzA1g",
+    "name": "Favs",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "2etgHx7nEvQWvdj5xMKrvcmJEvQaHbPM9whBx4hHGxtV",
+    "name": "Rowdy",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "2huXTbjeBhtMZ1ugNwUGucYBRasRaaiypymUX6P1Kwjx",
+    "name": "Crustball GFNF",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "2V54c75rjibgh6NsDWP88tbpu8KjQ3APRrK5zNQVqx1T",
+    "name": "orangie",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "2WfNxFN74pzJWKnXQ7NpkbnbEEhSLVJZGiB9NvxQ4Vpb",
+    "name": "fridon insider2",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "32QqMDpda2bV91cJrkaG2ZYXSWG7XCFFrvL6JTmH3YPt",
+    "name": "supplyai 1",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "39qpCe9zdyC2g53UJeyGh5jwGBKjFwidCbnD5W53aVBW",
+    "name": "orangie 39q",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "3bKXGquu6NVjsxSGDSXdSiSUZfRmpNGt6zH1ivRCpVhv",
+    "name": "P89 TT1",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "3F4vYJB4ek26WGViLSZ8sW5Ab65wQh3jCm4Rt44iULT6",
+    "name": "the wild kin",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "3h65MmPZksoKKyEpEjnWU2Yk2iYT5oZDNitGy5cTaxoE",
+    "name": "jidn",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "3hLHcRZdv5yRBP592Cy9BBedNwCszjC8HpLEdRfzfrM4",
+    "name": "DOGENES 20K",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "3HvQN8uxfRXaxzAPiaYquLZ5j1RTkeFvFHYyJKgiDFoY",
+    "name": "supplyai 3",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "3jgub3P9KP3XA9Dwh7XpKu35BiQNTZZXbPmfBAJMsroL",
+    "name": "luigi quant",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "3rSZJHysEk2ueFVovRLtZ8LGnQBMZGg96H2Q4jErspAF",
+    "name": "Staqi",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "3tc4BVAdzjr1JpeZu6NAjLHyp4kK3iic7TexMBYGJ4Xk",
+    "name": "dev grand",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "3wynYQc7daEoNKvPXRTy4CFFm8j8S9gWuX79nFozyxcM",
+    "name": "xander",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "3YRMrgGgFS8YQ7E3gcSCbMRa5spMqZt2Q19CTyKoXJeM",
+    "name": "Tann",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4aDdi3EiDPMbeZ3e5BvbFMt4vfJaoahaHxZuwKQRtFc1",
+    "name": "Nach (Challenge)",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4aDVcdMbRhmL2XtFVdBLE4mq8bvze8EN2RAnRxH6Z6hz",
+    "name": "bfs dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "4Be9CvxqHW6BYiRAxW9Q3xu1ycTMWaL5z8NX4HR3ha7t",
+    "name": "MITCH",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4Bq5yvgoiZDsukGERb7aM52jDmbVPCpoihbztscZ5PeM",
+    "name": "JS (maybe)",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4btaRjaRpakx3Rjtp3AdWnH8eC7mvH3nVMVruyFiYDYk",
+    "name": "js",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4CqecFud362LKgALvChyhj6276he3Sy8yKim1uvFNV1m",
+    "name": "P89 TT3",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4D6kMkudsfBK56qujVmPyUAXCoAfBbAThdapvqWDuqBC",
+    "name": "jack alt",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4dE3d4e2oob6otG1R624X59jCVBjj2faz45B3aL7sNhS",
+    "name": "ram1",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4jRX4iW2F5wBnfYMyB7RjS2PU5MjXrST3fB9DoV4BjHa",
+    "name": "Tate",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4kuweVrNm9sAeCRxCn1q91YFiYX1bFFrHtJEpkbEXe7B",
+    "name": "buhp",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4LFQ8MSN2h9y3omR2d9W2avrdXWkT9k9rit2XgpVt68P",
+    "name": "Santi",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4M8QVddY7Ld8eAaHoYcWKPxQcwxVuZsXMFKsm8921Uzd",
+    "name": "Kimchi",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4nmSyCYLBmZUcw8z2bYQmYMDzbkbA7S1yAmr2cHAA2KJ",
+    "name": "Nach",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4NX2vftqtHTCSmC7PVDquH5Np8NWgRRhoSKSzbBnu1cX",
+    "name": "Tann?",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4qWKgdUQTfV771dxKp2HeBqEzTXEKW7agijrfDfpsXPC",
+    "name": "casper",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4sZm6CRqUTUz9EE3nE8wPfdTHBHzQHWj1Tcx4m1htfWX",
+    "name": "SolBigBrain",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4U3wrwgkxXodrVGQsxPimiLhtNCJNfFCDgGLe1pp2Gur",
+    "name": "idk",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4UtsTXeM6DpYXJJbZRCrD1Zhsaby7mfFMmi9ZhqWeeus",
+    "name": "444 gfnf",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4vQ4uSE5NbLJTn74mQczYm1y9jezRFAr36cYsWGnm2fm",
+    "name": "Test TT1",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4XMPyWFsYdNcCN4FG8geyytyTeUNacn4QundBzMqbGGT",
+    "name": "Stattics",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4zq1iLpmepj2Rj7W6A3XQMRQA1HyjYqVpZiBzM6aPyH7",
+    "name": "orangie",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "53L8zz6Z44Kaq7TwP2tuSWD7FXoBtDyrNwisWRVVKK2d",
+    "name": "Potential CT",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "55yPXFXuJpWbh7dJsre5vNtPjdovu2EFE9nPa3jyn6Q4",
+    "name": "milan 1",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "57JMxCescrFBvb8bqjNwHPM9J7wPF12SV5KJa82HCd9B",
+    "name": "milan",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5ARTXxRUjCLodrGQvGbPrcbD1b25iq81Nv6SfPGAFMDq",
+    "name": "KITTY INSIDER",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5C5NHuTyJ3t8iXuRQArXhZFkwmmxfcmRHBTA6fM8Qkwe",
+    "name": "SKY TT3",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5CLVBtQ3CPsZfHxtDof1Uk7Bmzr1LYbBiFZDv35uU8tP",
+    "name": "MALIK",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5EzUr1Z8nahDXXK7oki6pPeJ3aWoM8cxHJShFumJtsT9",
+    "name": "5ez",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5LwtbNjQeDvRYB3dz8eVFrapGreCgz999LdR41ArFmNm",
+    "name": "SHOTTA",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5M8ACGKEXG1ojKDTMH3sMqhTihTgHYMSsZc6W8i7QW3Y",
+    "name": "bonk guy",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5mtbmPwj2SMkxPP9c93s9oD9bmMdByTqepNarM9Y7u7e",
+    "name": "RyxnH",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5o5P6jK1suNxykvh8Rj8JLYCPTi5HRNrpTvRmHw9iZsC",
+    "name": "Nosh",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+    "name": "ray",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5qvLmTd6yKMn7T7DP6RPPcASBH231Rtvjta1Pzao48PR",
+    "name": "Dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "5TMR5GFPTzkNhprnty2ocXEFLoLur1uchg4NkEr5WEf4",
+    "name": "Zookez",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5U1HMpLWyd8Qpq8YNBUSsRE8JmgFsJVwkuDP4kY3FD8u",
+    "name": "fletch",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5ua8SrN7XJYxGbmvxmyqUCetXXsU51HY7vv16NL88UJm",
+    "name": "KIXNG",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5UBWGr8tA4qxyz6cNx7homdWXPU44uZRLsnW94ques1v",
+    "name": "SKY TT",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5V7z2FLGprtHqUSqe7vMk2gknsb4AAbYvwx5BFyHCdof",
+    "name": "yelo",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5VD46CMUb98ryVF5K5KSUraaVeZ1REmUPWLyaeknvXrC",
+    "name": "Cented",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5WBE6v8rCbaNLV83fHQQZwZcpaMFojYSn5NvQwrv1k5m",
+    "name": "elon",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5WYXL4gKimy8hhBaxXzBw9UxDzkesa2aANwXd59sexVU",
+    "name": "anti dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "62FZUSWPMX9pofoV1uWHMdzFJRjwMa1LHgh2zhdEB7Zj",
+    "name": "blossom",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "636N7frU8bUwYfyUAtvMQQsXhTFRuSWjxnEZihr5axGV",
+    "name": "staqi",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "666WTwF6YsiEVffGJKSAUWYCgcMCuN9cX459kG2wqrX9",
+    "name": "Nosh",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "66W4ypeod8MegVzMot5ZJPEh6QBUG4FriDxC72bEJxvT",
+    "name": "pow alt",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "68r74QNDsgV4dzuDZ2vrGofBKRMEASVscGemDDLKyjws",
+    "name": "TJR",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "694X5Cuvx6xs4y2aDBu5U1RkZS4RTbcUCZ8qLbH7bVPc",
+    "name": "idc dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "6cpADLEZ9kgVD4yDFMxCsSV7eNnkagkF2dfVL9LXtNzG",
+    "name": "cented",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "6DmAGqHB5P19MJQqLg4M9Nh2saCu8UipdecfYmXkTkpH",
+    "name": "Tavern2",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "6DtEedWf9Wk5hA7Xth82Eq441yf5DA4aGLqaQAVfDokm",
+    "name": "Alon",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "6DWVQJr4Ep78Kz4Qj7shEx7Abx594MDo4AmeLXn7YV95",
+    "name": "ANT TT4",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "6eqPKHBtEEktxS89v1fmeFMkCaNAW6p98HBNE42ChHTD",
+    "name": "anti-pro dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "6LChaYRYtEYjLEHhzo4HdEmgNwu2aia8CM8VhR9wn6n7",
+    "name": "Assasin",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "6nhskL8RVpXzWXC7mcC1UXpe3ze2p6P6og1jXVGUW88s",
+    "name": "Patty",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "6nRzbpSDdrPTf9m98Xh94c8brSwfj9LZagutH9dezHB4",
+    "name": "ORANGIE3",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "6oTuUiLduWkbD1WdF62YZgMtzUQa8YMLC4DUT17hdpqq",
+    "name": "snowchan",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "6ryvxoTHMYkVUgTTexpqntYLfY4La582UGX7TSX4KRh7",
+    "name": "obijai",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "6vktKctTpVWMbSz7NNXQVAWqtp1MyibVG6FnnLKoCBTh",
+    "name": "qoocat dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "6y7Bc52kor6sn3QhbmpvxeBwZWLud4fFP1viz9RLSVQh",
+    "name": "NACH ALT",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "73KcgcTVyLYhnVX3PJbit8e4mC7jU8QotNGBFGix14jn",
+    "name": "T1 60Ks",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "73LnJ7G9ffBDjEBGgJDdgvLUhD5APLonKrNiHsKDCw5B",
+    "name": "WADDLES",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "7cm7BtqSJHqy7QYJFh4cr7SybGR6q1zA7oXk6gdvWgTk",
+    "name": "Jihoz",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "7Dt5oUpxHWuKH8bCTXDLz2j3JyxA7jEmtzqCG6pnh96X",
+    "name": "Leens",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "7e2sow2fQNLA1RcWhCbLmyyzpfQ5kY52t8SwduvcLFwp",
+    "name": "trench AI",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "7JmBfR2vRj8Hw4RBZfD2eh26EQ6dgb1UwMJdFnahrjWd",
+    "name": "bryan danny wallet",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "7s5n36J9R5KCWufr18qD5R61kxVt6D3VhM42b2CmBX91",
+    "name": "RIPETH TT",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "7SDs3PjT2mswKQ7Zo4FTucn9gJdtuW4jaacPA65BseHS",
+    "name": "Insentos",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "7swY6WZyXXgagE3L1ca3RNmtikwJUjvFpzNxeM4qaQmH",
+    "name": "nach2",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "8deJ9xeUvXSJwicYptA9mHsU2rN2pDx37KWzkDkEXhU6",
+    "name": "cooker",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "8e1MDn3mx1p2ekKjbyALxZNtGD8pqapb1g6EjK4wf4AG",
+    "name": "svai 2",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "8EtTuouEFrqQfwjtQ6oPA2ZS6fQcew83kFH9zEYB9PJV",
+    "name": "ANT TT3",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "8GBWFfkUJw78tbdxD9W9yjSDGWt5LHxf3Vy6Mihiuk3Q",
+    "name": "gorilla",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "8MF6FoaC684sK1h2PhTtuJccbytQXa89XyBmoKtVQyQQ",
+    "name": "Profit GFNF",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "8nwPeguVWHiZYLsg1pgUWHfAavqxfBBi7nU9RyQZcgoV",
+    "name": "Ant TT2",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "8vgu2Lb311V4qsyDQrYYXdRksJvynvtV264YL63ep8CP",
+    "name": "Sage",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "8W6mYze9UQHqmS1VkX35C6RWfZBuyh4gyvq9KEeeTT8b",
+    "name": "ai32 dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "8YDcHz6KbqEvjr1SQfo5k4enicHH3Ho2dTpqcudq9KwC",
+    "name": "test dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "8yJFWmVTQq69p6VJxGwpzW7ii7c5J9GRAtHCNMMQPydj",
+    "name": "Lexapro",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "8zFZHuSRuDpuAR7J6FzwyF3vKNx4CVW3DFHJerQhc7Zd",
+    "name": "POW",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "91HANKimRsWTXMkfcDipLaDVmeTkj6m2eNSVobpkdUNz",
+    "name": "Terp",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "924zuRoroyHF7GhSJBPGBhVtebd1FBd1Gp1csuuAHZa1",
+    "name": "j3",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "92iYee4tHCanKiiCpFk3rvA89k466NjgVKojZkpJdcvj",
+    "name": "issa",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "96LnVrNbNGaJZ3yXTC9wmFp7D3Ks1UoBgToVi8ybMrXW",
+    "name": "Potential CT2",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "9FNz4MjPUmnJqTf6yEDbL1D4SsHVh7uA8zRHhR5K138r",
+    "name": "Danny",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "9fR8gerfvGSycFGbK2VY1PFrPuU9jS6QM47S974yTUHC",
+    "name": "Jasper TT3 300K",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "9hKZp6ub9SqCfPALuzWx8QmmKcqd2KkL8BVjHAc6wTnr",
+    "name": "ansem",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "9jyqFiLnruggwNn4EQwBNFXwpbLM9hrA4hV59ytyAVVz",
+    "name": "NACH",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "9NNS758mUGByRcFBSD79fLn2mYL3PGM9G9J5RjBV3kD4",
+    "name": "azrex",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "9QtfjkutLg1WH9iXQdoR9aXMCzruf4aVcHRWsYCvmYK5",
+    "name": "union",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "9R2UJG1Wyoo5V376TKkHcp98hrKEQhmGMmx8jVtRLJoz",
+    "name": "gkitad",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "9Wagwcs6HVtMHaaxBjUbE7AKmxeg9nzEDcvXhN8bydUG",
+    "name": "killz",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "9wD97Gp2zFECtrRaSXVLEsXhNe1tyzMevn8EkB9REvy",
+    "name": "kimchi",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "9yYya3F5EJoLnBNKW6z4bZvyQytMXzDcpU5D6yYr4jqL",
+    "name": "Loopier",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "9Z2JS8quQd25SkotoBQ9wN9WdKPnWwTFt7aenHiXm1Fq",
+    "name": "top trader ubc",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "A3d4nghJDz5BmBcQ2YKFMQfX1HhgYPSnJmrAfTCwWNHG",
+    "name": "bully",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "A4nTzSw1oZKK846zGv8diWw6dGXqnGPJwbxyJ85WM4Sg",
+    "name": "itai",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "AbcX4XBm7DJ3i9p29i6sU8WLmiW4FWY5tiwB9D6UBbcE",
+    "name": "eq",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "AGvZF6SzYCJTJCgB33S2L5up1pBNdmTmkYo1976J9SCQ",
+    "name": "Kimchi",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "AmnG2KXDqUuf6EskVddvuokYw2Hv2pCY5Yv4X6QpKe2R",
+    "name": "banks prison",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "AP1o6r9mbp4cezW6RZnbc9YvyzbtoEkXjb5afrYXU32B",
+    "name": "test dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "ATaHBG9gPwWPm6q1DA6PLGLhxp28mux39CcdWtN7v9tc",
+    "name": "orangie",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "CPcDUe51Xh8Jq7NdBsr8qd2wXN7tYov5iLGtNYskkXLb",
+    "name": "adin",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "EaVboaPxFCYanjoNWdkxTbPvt57nhXGu5i6m9m6ZS2kK",
+    "name": "cladz",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "ETcmHKVYg2TrU83cZbP6BNoitfztUdGVagWNSmGyzycG",
+    "name": "profit",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "Ez2jp3rwXUbaTx7XwiHGaWVgTPFdzJoSg8TopqbxfaJN",
+    "name": "Keano",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "F5jWYuiDLTiaLYa54D88YbpXgEsA6NKHzWy4SN4bMYjt",
+    "name": "mercy",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "F72vY99ihQsYwqEDCfz7igKXA5me6vN2zqVsVUTpw6qL",
+    "name": "jalen",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "FakHVp9d6JJDa5j4w4d1NetFjZafLkHx1LETWhDCyVxK",
+    "name": "nach",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "Fffc5CxTqeKwrg3xTMnNwfnmVn32m6Cuq3PB72gFNpip",
+    "name": "TIM",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "FneFUpqkjBx5KNGVWtsBY7TuUnS3962BQEgctWNje7mL",
+    "name": "ANDY (TRUTH)",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "Gmh3Wt423pU6GsS3FQyZjknifnAFW7g3J8HhbF2TrbZL",
+    "name": "sukio",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "GYMhYoRn1kwK5rrtoQ2xppYmRCJDALuNEBpLDqAnFuXW",
+    "name": "dukez",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "i8D8Qm9C1mjzr8xzQuoEVKmvQwJioETHNods4wEzbZa",
+    "name": "jarvis",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "JBKRd7yDg3npf5PDTrC4wGzLjS8tGPRMQ39k1AufvPkJ",
+    "name": "Wylie",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "JDd3hy3gQn2V982mi1zqhNqUw1GfV2UL6g76STojCJPN",
+    "name": "West",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "9HCTuTPEiQvkUtLmTZvK6uch4E3pDynwJTbNw6jLhp9z",
+    "name": "corleone",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "H812jAz5Z5t8cvfXoxbE27Q2F89eovpib5kpXawLAFdS",
+    "name": "cooker",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "BtMBMPkoNbnLF9Xn552guQq528KKXcsNBNNBre3oaQtr",
+    "name": "Letterbomb",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "BXNiM7pqt9Ld3b2Hc8iT3mA5bSwoe9CRrtkSUs15SLWN",
+    "name": "absol dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "BYZxm7zMf2wkMMnh8KmZmEFoxL319w4QGkB4zQgEThkS",
+    "name": "wy",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "ErushyoogjNsr3WdvdxS8XKLYsJ6ZL5vAZvUUfCvF7Yo",
+    "name": "JLOVE",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "EsDB2BmVKKUM64hKnaKT6ZLAcGrzdp72oBupmhBkUAue",
+    "name": "pow bundle",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "Hbi1ubruHkQdX52uDewnCjeHtxsLoCXTnsBMPJZyxn28",
+    "name": "bundle",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "AszsUFwSNY8tVZ5N8ukjutgmEbikPZYRzk5744U9JFNk",
+    "name": "marcell",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4H5cREJ2KvHFh8UvcKLek8DJgRte6kiaR2FSBTBVGUd3",
+    "name": "connor old",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "ACHhRQMbTxuWqU3bmbBbgUNGsPsYnvB8KLcPkkXCY1C7",
+    "name": "marcell",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "65paNEG8m7mCVoASVF2KbRdU21aKXdASSB9G3NjCSQuE",
+    "name": "pullup",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "FateMietcaAAUvfQDHnnPDGmeYme7mvLqFYvLomWEmNw",
+    "name": "fate",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f",
+    "name": "Cupsey 1",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "7NAd2EpYGGeFofpyvgehSXhH5vg6Ry6VRMW2Y6jiqCu1",
+    "name": "Cupsey 3",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "FxN3VZ4BosL5urG2yoeQ156JSdmavm9K5fdLxjkPmaMR",
+    "name": "Cupsey 2",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "xXpRSpAe1ajq4tJP78tS3X1AqNwJVQ4Vvb1Swg4hHQh",
+    "name": "Aloh 1",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "DuQabFqdC9eeBULVa7TTdZYxe8vK8ct5DZr4Xcf7docy",
+    "name": "Orangie",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5GCuB6Wq1Lrdkbp8qWKqpWmCyzVtcQMVdxvihyjhEheH",
+    "name": "dev msft",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "EZAGG2BHjPGgm8gCsApKK2kAfqRmH6gVSQYKb3jpowT1",
+    "name": "funder kolpredict",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "CjqBxqmjMJMpYawAh5zVctjcWMEqG6XDhUfvx4D9NXN8",
+    "name": "tylr",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "BTf4A2exGK9BCVDNzy65b9dUzXgMqB4weVkvTMFQsadd",
+    "name": "kevszn",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "8DGbkGgQewL9mx4aXzZCUChr7hBVXvPK9fYqSqc7Ajpn",
+    "name": "Ban",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4iLVvoiPNQgjNjmx3STx3z3GV8Mf5fkjp5D1ebDENNQR",
+    "name": "ETHAN CHALLENGE",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "98T65wcMEjoNLDTJszBHGZEX75QRe8QaANXokv4yw3Mp",
+    "name": "leck",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "H31vEBxSJk1nQdUN11qZgZyhScyShhscKhvhZZU3dQoU",
+    "name": "megga",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "D7xK1ZLz8KQNWN8aU1jbzNAuT5xwqgFrCUUYodVU4G42",
+    "name": "jackduval2",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "CgaA9a1JwAXJyfHuvZ7VW8YfTVRkdiT5mjBBSKcg7Rz5",
+    "name": "art",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "7sA5em1nTKmLvGm8H85cpgA9hM9YvCoPp729mwe6akhh",
+    "name": "bilo",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "GM7Hrz2bDq33ezMtL6KGidSWZXMWgZ6qBuugkb5H8NvN",
+    "name": "beaver",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "G2mgnzpr59vYjKpwU9q5zVfS9yQ9HezMwjuqF7LACvR4",
+    "name": "fz7",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "AeLaMjzxErZt4drbWVWvcxpVyo8p94xu5vrg41eZPFe3",
+    "name": "S1mple",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "A88uMtYGRx5CF4TT8L4L7KxjbPeW1o21mKMwfNcmH1db",
+    "name": "psyopanime",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "498g1rVnFcnjBjpfw1xyqA1WvgQXUU8RWuELjxkjAayQ",
+    "name": "frank",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "83b2LMf12aLec92kur3duRA8VvUkLaXUtML31aCcZNCM",
+    "name": "orangie fomo",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "831yhv67QpKqLBJjbmw2xoDUeeFHGUx8RnuRj9imeoEs",
+    "name": "trey",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "71hrqoeuTKhfRogEQiDpY1mvRePBXMv8vuDYaV4YVpci",
+    "name": "gt sell",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "3QtkdYmRAGRVNWYQnv5bRL6GmZMHNDseJruTuzoLuGUB",
+    "name": "gt sell2",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "DiaAmWrdWPF7RjyP75xENaapWLqYhG7ejH64xWVUsmuH",
+    "name": "gt sell3",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "AZNV9zQXjWNgTxsmHobjV4KqCJPyjcmvjSmgTxEr2ztE",
+    "name": "gtsell4",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "274vmGgKuYQp8Fxvb8n3cr9ZeY3SYM6LgeaXM6jS2nD6",
+    "name": "maurits",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4sAUSQFdvWRBxR8UoLBYbw8CcXuwXWxnN8pXa4mtm5nU",
+    "name": "Scharo",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "CLiXvfYSJtG5SJTCWyLvXKtDag9pJiA4vSWZGgSKP19X",
+    "name": "ethann",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "89HbgWduLwoxcofWpmn1EiF9wEdpgkNDEyPjzZ72mkDi",
+    "name": "Alxcooks",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "9LxMdvs1m8QRFvFuhvzzMXykAkpaHTJhktULdpBztUMm",
+    "name": "Speed1",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "8zkgFGVZrDLieViwqiXFCydSX6WL5hsxmUu55yBdsNsZ",
+    "name": "Good trader",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "As7HjL7dzzvbRbaD3WCun47robib2kmAKRXMvjHkSMB5",
+    "name": "Otta",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "3LYtEmYerFPeXgu1c9Y4553oMk2qVdcxiwWzDjzMkwPx",
+    "name": "Awkchan",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "D2wBctC1K2mEtA17i8ZfdEubkiksiAH2j8F7ri3ec71V",
+    "name": "Dior 2",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "9KEShFaBjyBjLVWSXGE6mvWwQbJkkxw1vF2K2R1abKvy",
+    "name": "IT4I",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "B32QbbdDAyhvUQzjcaM5j6ZVKwjCxAwGH5Xgvb9SJqnC",
+    "name": "Kadeno",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "85mNYgLJDdUWZsR9qzaYSCD4ukbz6PEUp31DteDcwQrQ",
+    "name": "Gas",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "2X4H5Y9C4Fy6Pf3wpq8Q4gMvLcWvfrrwDv2bdR8AAwQv",
+    "name": "Orangesbs 2",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+    "name": "Jack Duval",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "7VBTpiiEjkwRbRGHJFUz6o5fWuhPFtAmy8JGhNqwHNnn",
+    "name": "Brox",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "DxwDRWxQXDaVZquH3YvCVBQ75nUf16FttQ4q88okn5mc",
+    "name": "Sebi",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5XVKfruE4Zzeoz3aqBQfFMb5aSscY5nSyc6VwtQwNiid",
+    "name": "Ily",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4nvNc7dDEqKKLM4Sr9Kgk3t1of6f8G66kT64VoC95LYh",
+    "name": "Mamba",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "D1H83ueSw5Nxy5okxH7VBfV4jRnqAK5Mm1tm3JAj3m5t",
+    "name": "Jeets",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "71PCu3E4JP5RDBoY6wJteqzxkKNXLyE1byg5BTAL9UtQ",
+    "name": "Ramset",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "DYAn4XpAkN5mhiXkRB7dGq4Jadnx6XYgu8L5b3WGhbrt",
+    "name": "KayTheDoc",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "AE1xAf6bWqkTNdn6n3g1hnyAH9QdYd84FPqdaUzjAmtM",
+    "name": "Marcell 3",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "J6TDXvarvpBdPXTaTU8eJbtso1PUCYKGkVtMKUUY8iEa",
+    "name": "Pain",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5B79fMkcFeRTiwm7ehsZsFiKsC7m7n1Bgv9yLxPp9q2X",
+    "name": "Bandit",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "3zD1armVsd4UUDW4RvcaE4ve6oEkmGyHPEjtB7q5Q9LU",
+    "name": "Marcell 2",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "3BLjRcxWGtR7WRshJ3hL25U3RjWr5Ud98wMcczQqk4Ei",
+    "name": "Sebastian",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5t9xBNuDdGTGpjaPTx6hKd7sdRJbvtKS8Mhq6qVbo8Qz",
+    "name": "Smokez",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "m7Kaas3Kd8FHLnCioSjCoSuVDReZ6FDNBVM6HTNYuF7",
+    "name": "Ferb",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4YdHuvKYgS4xbEzpp6C59B8XGpfq3nKddAEp5dDNwGHA",
+    "name": "OGant",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "7iabBMwmSvS4CFPcjW2XYZY53bUCHzXjCFEFhxeYP4CY",
+    "name": "Leens",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "Av3xWHJ5EsoLZag6pr7LKbrGgLRTaykXomDD5kBhL9YQ",
+    "name": "Yolo",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "Bi4rd5FH5bYEN8scZ7wevxNZyNmKHdaBcvewdPFxYdLt",
+    "name": "Theo",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "BQVz7fQ1WsQmSTMY3umdPEPPTm1sdcBcX9sP7o6kPRmB",
+    "name": "Limfork",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "87rRdssFiTJKY4MGARa4G5vQ31hmR7MxSmhzeaJ5AAxJ",
+    "name": "Dior",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "A3W8psibkTUvjxs4LRscbnjux6TFDXdvD4m4GsGpQ2KJ",
+    "name": "numer0",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "6HJetMbdHBuk3mLUainxAPpBpWzDgYbHGTS2TqDAUSX2",
+    "name": "LJC",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "GijFWw4oNyh9ko3FaZforNsi3jk6wDovARpkKahPD4o5",
+    "name": "LunarFang",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "7S3E2L25kr6oN2cMP2GQ5tMEfg8jwcmoYo35vvv8rxhW",
+    "name": "Case",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "PMJA8UQDyWTFw2Smhyp9jGA6aTaP7jKHR7BPudrgyYN",
+    "name": "Chester",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "FAicXNV5FVqtfbpn4Zccs71XcfGeyxBSGbqLDyDJZjke",
+    "name": "Radiance",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9",
+    "name": "Decu",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "Be24Gbf5KisDk1LcWWZsBn8dvB816By7YzYF5zWZnRR6",
+    "name": "Chairman",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "G7mfcf5GbZezcBKqcDo5u16TSLARTVxTRSjXxDYbVnaq",
+    "name": "Dani",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "AuPp4YTMTyqxYXQnHc5KUc6pUuCSsHQpBJhgnD45yqrf",
+    "name": "Dani 2",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "DUF6CYFg96ryKQkbjGJLdJ5ckYuws8kEVWW42Ti7BRde",
+    "name": "Dani 3",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "VJSDW6S74YXR4rRR9P4xwhMvLZJQMhrUb8XMFirUsy1",
+    "name": "Beanz",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "G4ZWrLSqLp5kk8b2KVDafRH3ymv1FvjkpHKiyDbaRp5M",
+    "name": "Beanz 2",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "CeZbzsqje88U7GCCrAiGUr5BrZrBJ3AkQMyG9aggDiqQ",
+    "name": "Jizzy",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "8ZfZWC9UMQB8Tk2Vn93CVijSQHrPUiPzwiirqr6pxve3",
+    "name": "insidOOOr",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "HPZg9ZJcBv1sDFe2QgLr6dDzEGww42hihXuogCwrnwz4",
+    "name": "Larry 2",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "6XhfFaxsDtSnsLqhP3LpbwLjEjJX2fDKd9cWquZjD8yG",
+    "name": "Larry 3",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "FixmSpsBa7ew26gWdiqpoMAgKRFgbSXFbGAgfMZw67X",
+    "name": "Marcell",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "G3gZWqrYkNmYFKYCyfRCNtGuxdyuE2wiYKkZpiZn4WSS",
+    "name": "Goyim",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "7cQjAvzJsmdePPMk8TiW8hYHHhCfdNtEaaNK3o46YP12",
+    "name": "Parsiix",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "7S5uYhHHtVnapihNpN8SW8sykkUEXQaNoixPMeZmvsnB",
+    "name": "Jijo 2",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "Fvkc2thk1YcAASdR2gi8uf9n67JW9Dqqr9iRd99MDhoB",
+    "name": "BrezScales",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "BCrTEXmWutwPz8qv6w1S5gDbaLnSLpXKM5kSGVWyyfxu",
+    "name": "Remus",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "AQdBYZNy3BZ1vouGUjA1w9Ay7aq7kH5UQSuh4LQWKotY",
+    "name": "Data dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "yHCxHBEaJW5tbndqC8JciSThr7U1cqLpdcsvHcx6PRe",
+    "name": "Superman Dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "bwamJzztZsepfkteWRChggmXuiiCQvpLqPietdNfSXa",
+    "name": "Bwam",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "27nKnCT3DD5NLJw3xbq3KDL3thx6KTe6DmrRCbi2uszE",
+    "name": "Machi",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "FogkR8g7jBNDoTaTdConrqNydnVCxJpGt9mQo7HUtz4K",
+    "name": "Machi deployer",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "FiwwHe2obYsFoxprUXRWdAgHxMfKwK7ca9YB3g8bmX13",
+    "name": "Bob",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "CgmwCcCoF5YNhWrVBz2R2iH4MopfvYLfxLgSZsrnemi6",
+    "name": "Otta dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "3fKF8cbyWKU56fpFkrQ1E6zJoAh4mqArdsPoUE6ycTKL",
+    "name": "Trumpcoin dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "BqPN9E9odxhAEfKPWxziwVRkPK8Dz87kXHX4ZCNgLFk8",
+    "name": "z",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "951wq3qDowjKHaycrNaiRB5WpovYVKXnqhnrcKPh46zt",
+    "name": "RWA dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "F5XvCe4233m6mHRbkkq2ZsFvqrPAnRrDBExeQy2fwagQ",
+    "name": "Jazz dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "75GMVrr2xfgAeybuNg1VMHqFE3GTFJLzEHo6xC4MwUzF",
+    "name": "Trey dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "HTM87R4mgjDdiF6Yfn8duK9vbDmZxiPCTRbGvm7eCAJY",
+    "name": "Absol",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "ANXsCN8szfsLGZhzMfrb9yGnnscvNLQkegCbk2Y3Tprw",
+    "name": "Alxcooks side",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5DPcHaeVv3YXxHStCBr7oM7arB4FCNtn3m6WarAEpump",
+    "name": "aaw",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "29yFzeBZgxf5zqrAkKXwgZtQehRf4pL8WbV2nRJikbw8",
+    "name": "Theo dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "GdRSPexhxbQz5H2zFQrNN2BAZUqEjAULBigTPvQ6oDMP",
+    "name": "Noir",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "8YcbyX92UHTU23HZv3ccP9o13qibErQkKaUjoxqxd7SJ",
+    "name": "Cented dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "AMRsSeU5JpqwQWJGNLMpZzRCZSFEwYQYbMnms3dD4311",
+    "name": "Bobo",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "8y83ZUQH8gsbYa9qEyYF6Wdqw3so7L9ThsWREuCVXWTr",
+    "name": "Dog Dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "6QRdkwTSk9Kop6VdqSkSPah7a3HfqKHU5DD4BqMFCUQP",
+    "name": "Megga side",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "97K6nsFhBWDKwQf6heDDhDtsCRC4779LPHSFZkc2zqK4",
+    "name": "Nikolai dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "4UwK5AE6Djdf3MfwtPGE8pFYD47MhU9fiStDVmSHJVMB",
+    "name": "Cottage",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "GV6UUmNxz2RpKxmNAPadYKb7uQpszwqQAu3qLJxVdC52",
+    "name": "Ansem",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "9xdK3DkLZ8CCr3bvvFAXbNcWvAr8BJSyyWDVKwSLwRPF",
+    "name": "Jimothy Dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "9fnyojTv8GYHWr4Vaj4tvVL82scPPYYkW1CAXAbfUsdj",
+    "name": "TJR",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "kQdJVZvix2BPCz2i46ErUPk2a74Uf37QZL5jsRdAD8y",
+    "name": "Tyrell",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "AufH68UFBGSVVRL9D7u5W6NySCrukL4fWfSRTxDcJC6u",
+    "name": "Gosh",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "2SaShcvKTBfhetQxYyu9oNjSg43HkTSD87R8AJpfGLBm",
+    "name": "Riches",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "69z4qTgQ5DBRTJvnQzx2h8jZhNsv5UgADotEwwKUm2JS",
+    "name": "Tyrell",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "9BjcGY9ZfMvS13ozDRMwCaR2toE71hiLBXXvqBcGmeiU",
+    "name": "Dav dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "H6hPTUg73GDscH4Q9NAviJrUtMwUXE6PzZat2xWDszrJ",
+    "name": "Himmy",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "AV7PjXHL5JXZ1YoYRoN9Dsstg1x2UciBupMCXcJP8gUz",
+    "name": "Good dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "DxQ1iNidsGap2kr14VdEzA8NheqXabfh6fRkvZQbnZVY",
+    "name": "Chicky dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "5BiqDkGrWNJi1CS4FKT5hGH4u8BE6u9QMTDqTgkMACaV",
+    "name": "Treyn",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "AoGefnxF5CbZvbd2cvxv4Ex1E5j86dqEjehazRuMcMFe",
+    "name": "711",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "6gAgy3F1tLxeBWb8UhGEnmXYVRoaz3w1Lzv6APyhfoHk",
+    "name": "Henn dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "6ujZxnphRxTqveaQtLAQHFoWz16xhLWZbTijcgZN4fRp",
+    "name": "Bolttricks dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "FaBGrHWjcJ8vKnbgUtsdpZjvF7YAAajtQTWmmEHiKtQr",
+    "name": "Nillbu dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "7E9jfxCczubz4FXkkVKzUMHXGwzJxyppC4m7y3ew8ATg",
+    "name": "Ethan Dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "862TYSvRYoiHAK3F3WwTRYAfuGiQaGdxedN9AGvRGWo2",
+    "name": "Wugi",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "Ao9D9xuKxhHfTGCd3ZeBPJ3aBRUAicKKnXZ3feH6uuGC",
+    "name": "Nostal",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "6MAmqJ7aGtTReML2DezAzmRckQyFoGfKKf6gWVak7P2d",
+    "name": "Ardin",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5ZuV8eqkvzYFVEKbLvGBdexL2tFv7E5BCd2HZpjqbdg",
+    "name": "Doji dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "8i5U2uNBEuTc4zskYP14zbebDg2RSwrrG8REhEnJb97K",
+    "name": "Keano",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "HoKiWhcU3YBN9f5Uxj1bBLkcWkw5iDEQbPiiU6EnYCwQ",
+    "name": "Decent dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "5RQ1UWATaMjjXC34BW6UusEUdEoCuNRECBW8nnHPiCGH",
+    "name": "gsp dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "TffSohsKbZF1WDFfLEGJV4JE4dWf8yETfQuer8cxU6k",
+    "name": "Solcrow dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "DPNPVvoGdwNBY849ryx2JZzakWuWbDTfSUYr8aNfKLwA",
+    "name": "Abrawler",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "69aiAKU3uJMxMLRkUEGFNt6nQ43PiVimE4ZbErJ7VSM1",
+    "name": "asdfgh dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "6aXFYXbFob1ZKAEDCcqZnX2vooA3TgEqDoy5dAQbeWoV",
+    "name": "Flame",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "HF2EGxkKXRhdR93ZN5fY925PpecZDwRfKwhag6mvFMLW",
+    "name": "LSPFI",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "5vM3eUw1YvDwpYgTCcPQibfBmpsw65UY2ZPeK4f2uHJH",
+    "name": "Stingxz",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "Hp34goKgAhAYW6sw9iFAZofvDTr3DAhtkSKF1R9bAk2P",
+    "name": "Danny dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "8NJ7Ujpji8uMF2675mqaTSEm2DCbfJA7fiRKtiaqkaLN",
+    "name": "Chester dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "5FqUo9aBjsp7QeeyN6Vi2ZmF2fjS4H5EU7wnAQwPy17z",
+    "name": "Aloh",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "8AcZBvDXSwayFvAy8sb5ZD3PwqVHbnwNb2F3Fp2pdQmt",
+    "name": "Yugi",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "GpTXmkdvrTajqkzX1fBmC4BUjSboF9dHgfnqPqj8WAc4",
+    "name": "Aaaw",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "whale_trader"
+  },
+  {
+    "address": "7moqFjvm2MwAiMtCZoqYoTAPzRBxxMRT2ddyHThQuWjr",
+    "name": "Lebom dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "912kspVUFKRxTBAVRjZ2ikbiVHj6ahgewkHQqViehJf",
+    "name": "Tele dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "CCc5m84JvEoe5cCPV5dYHqiXCuvNHpFpAuUB6ggsCRUg",
+    "name": "Suso",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "36A6mEN5rYJdVTb6fMqVvG6ez8g2mTYdr1omWcQ1kDKG",
+    "name": "Mel dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "7ufmve7ZSFCzuNcKRunYrGtyb2Ka1MXzkWwf7jZhVsmL",
+    "name": "Hubz dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "3nG9zBc6fTne3j9kkS1CB5quyt25CS29GEjvMGNKmDSz",
+    "name": "Logjam",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "2JmEcVhRv6e63ucRngTGUNNsWTPb8hXMsQJyM1wwDies",
+    "name": "Donut side",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "HPRBXaMARD4wCijg3H9NDSH8JTVFwk3fe4PVes1Gemn8",
+    "name": "Coler dev",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  },
+  {
+    "address": "3Di8ry3Ym4BkoEVjH8vJwkHfXNEvJAfPjJvJPSUwSe1K",
+    "name": "Suso side",
+    "source": "operator_list",
+    "added_epoch": "2026-08-08",
+    "category": "dev_deployer"
+  }
+]

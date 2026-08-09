@@ -1054,6 +1054,7 @@ dependencies = [
  "pump-quant-ingest",
  "pump-quant-market-state",
  "pump-quant-protocol",
+ "pump-quant-wallet-graph",
  "solana-program",
 ]
 

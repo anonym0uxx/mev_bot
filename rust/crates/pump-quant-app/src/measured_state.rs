@@ -449,6 +449,12 @@ impl MeasuredState {
         &self.creators
     }
 
+    /// G3 fix: replace the internal ledger with a restored one (cross-session
+    /// persistence). Called by `Engine::restore_creator_ledger` at daemon startup.
+    pub fn restore_creator_ledger(&mut self, ledger: CreatorLedger) {
+        self.creators = ledger;
+    }
+
     // ---- §21.4 meta lifecycle phase -----------------------------------------
 
     /// Record one factual meta observation for `category` at `sample.slot`.

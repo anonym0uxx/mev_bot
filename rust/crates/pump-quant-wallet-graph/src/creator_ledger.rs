@@ -596,3 +596,393 @@ pub fn classify_track(s: &CreatorTrackSummary, cfg: &CreatorLedgerConfig) -> Cre
     }
     CreatorTrack::Unknown
 }
+
+// ---------------------------------------------------------------------------
+// §27 Persistence — manual binary serialization (no serde, zero-dep crate)
+// ---------------------------------------------------------------------------
+
+/// Magic bytes for the ledger file format: `b"CLGR"` (Creator Ledger).
+const LEDGER_MAGIC: [u8; 4] = [b'C', b'L', b'G', b'R'];
+
+/// Current serialization format version. Increment on breaking change.
+/// v1 = initial format (config + entries + evictions).
+const LEDGER_VERSION: u32 = 1;
+
+/// Serialization error — fail-closed, never panics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LedgerSerError {
+    /// Buffer too short to contain a valid header.
+    Truncated,
+    /// Magic bytes do not match.
+    BadMagic,
+    /// Format version is newer than the reader supports.
+    UnsupportedVersion(u32),
+    /// A varint or entry count exceeded a sane bound.
+    Corrupt,
+}
+
+/// Encode a `u64` as a varint (LEB128) into `buf`. Returns bytes written.
+fn encode_varint(buf: &mut Vec<u8>, val: u64) {
+    let mut v = val;
+    loop {
+        let mut byte = (v & 0x7F) as u8;
+        v >>= 7;
+        if v == 0 {
+            buf.push(byte);
+            break;
+        } else {
+            byte |= 0x80;
+            buf.push(byte);
+        }
+    }
+}
+
+/// Decode a varint (LEB128) from `buf` at position `pos`.
+/// Returns `(value, bytes_consumed)` or `None` on truncation.
+fn decode_varint(buf: &[u8], pos: usize) -> Option<(u64, usize)> {
+    let mut result: u64 = 0;
+    let mut shift: u32 = 0;
+    let mut offset = 0;
+    loop {
+        if pos + offset >= buf.len() {
+            return None; // truncated
+        }
+        let byte = buf[pos + offset];
+        offset += 1;
+        result |= ((byte & 0x7F) as u64) << shift;
+        if (byte & 0x80) == 0 {
+            return Some((result, offset));
+        }
+        shift += 7;
+        if shift > 63 {
+            return None; // corrupt: varint too long
+        }
+    }
+}
+
+impl CreatorLedgerConfig {
+    /// Encode the config as 7 fixed-width little-endian fields.
+    fn encode_to(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.survival_horizon_slots.to_le_bytes());
+        buf.extend_from_slice(&self.min_survived_for_proven.to_le_bytes());
+        buf.extend_from_slice(&self.serial_window_slots.to_le_bytes());
+        buf.extend_from_slice(&self.serial_min_launches.to_le_bytes());
+        buf.extend_from_slice(&self.min_rugs_for_toxic.to_le_bytes());
+        encode_varint(buf, self.max_creators as u64);
+        encode_varint(buf, self.max_launches_per_creator as u64);
+    }
+
+    /// Decode the config from `buf` at `pos`. Returns `(config, bytes_read)`.
+    fn decode_from(buf: &[u8], pos: usize) -> Option<(Self, usize)> {
+        if pos + 8 + 4 + 8 + 4 + 4 + 4 > buf.len() {
+            return None;
+        }
+        let mut p = pos;
+        let survival_horizon_slots = u64::from_le_bytes(
+            buf[p..p + 8].try_into().ok()?,
+        );
+        p += 8;
+        let min_survived_for_proven = u32::from_le_bytes(
+            buf[p..p + 4].try_into().ok()?,
+        );
+        p += 4;
+        let serial_window_slots = u64::from_le_bytes(
+            buf[p..p + 8].try_into().ok()?,
+        );
+        p += 8;
+        let serial_min_launches = u32::from_le_bytes(
+            buf[p..p + 4].try_into().ok()?,
+        );
+        p += 4;
+        let min_rugs_for_toxic = u32::from_le_bytes(
+            buf[p..p + 4].try_into().ok()?,
+        );
+        p += 4;
+        let (max_creators, n) = decode_varint(buf, p)?;
+        p += n;
+        let (max_launches_per_creator, n2) = decode_varint(buf, p)?;
+        p += n2;
+        Some((
+            CreatorLedgerConfig {
+                survival_horizon_slots,
+                min_survived_for_proven,
+                serial_window_slots,
+                serial_min_launches,
+                min_rugs_for_toxic,
+                max_creators: max_creators as usize,
+                max_launches_per_creator: max_launches_per_creator as usize,
+            },
+            p - pos,
+        ))
+    }
+}
+
+impl LaunchRecord {
+    /// Encode as: token(varint) + launch_slot(varint) + migrated_slot(varint, 0=None) + rugged_slot(varint, 0=None).
+    fn encode_to(&self, buf: &mut Vec<u8>) {
+        encode_varint(buf, self.token.0);
+        encode_varint(buf, self.launch_slot);
+        match self.migrated_slot {
+            Some(s) => {
+                encode_varint(buf, s + 1); // +1 so 0=absent, s+1=present
+            }
+            None => encode_varint(buf, 0),
+        }
+        match self.rugged_slot {
+            Some(s) => {
+                encode_varint(buf, s + 1);
+            }
+            None => encode_varint(buf, 0),
+        }
+    }
+
+    /// Decode from `buf` at `pos`. Returns `(record, bytes_read)` or `None`.
+    fn decode_from(buf: &[u8], pos: usize) -> Option<(Self, usize)> {
+        let mut p = pos;
+        let (token, n) = decode_varint(buf, p)?;
+        p += n;
+        let (launch_slot, n) = decode_varint(buf, p)?;
+        p += n;
+        let (migrated_raw, n) = decode_varint(buf, p)?;
+        p += n;
+        let (rugged_raw, n) = decode_varint(buf, p)?;
+        p += n;
+        let migrated_slot = if migrated_raw == 0 {
+            None
+        } else {
+            // Undo the +1 encoding; saturating to guard against corrupt 0-overflow.
+            Some(migrated_raw.checked_sub(1)?)
+        };
+        let rugged_slot = if rugged_raw == 0 {
+            None
+        } else {
+            Some(rugged_raw.checked_sub(1)?)
+        };
+        Some((
+            LaunchRecord {
+                token: TokenId(token),
+                launch_slot,
+                migrated_slot,
+                rugged_slot,
+            },
+            p - pos,
+        ))
+    }
+}
+
+impl CreatorLedger {
+    /// Serialize the entire ledger to a compact binary buffer.
+    ///
+    /// Format: magic(4) + version(4 LE) + config + creator_count(varint) +
+    /// creator_evictions(varint) + per-creator entries.
+    ///
+    /// Each entry: wallet_id(varint) + last_slot(varint) + dropped(varint) +
+    /// launch_count(varint) + launches.
+    #[must_use]
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(256);
+        buf.extend_from_slice(&LEDGER_MAGIC);
+        buf.extend_from_slice(&LEDGER_VERSION.to_le_bytes());
+        self.cfg.encode_to(&mut buf);
+        encode_varint(&mut buf, self.entries.len() as u64);
+        encode_varint(&mut buf, self.creator_evictions);
+        for (wid, hist) in &self.entries {
+            encode_varint(&mut buf, wid.0);
+            encode_varint(&mut buf, hist.last_slot);
+            encode_varint(&mut buf, hist.dropped);
+            encode_varint(&mut buf, hist.launches.len() as u64);
+            for rec in &hist.launches {
+                rec.encode_to(&mut buf);
+            }
+        }
+        buf
+    }
+
+    /// Deserialize a ledger from a binary buffer.
+    ///
+    /// Returns the reconstructed ledger, or an error if the buffer is
+    /// malformed. Fail-closed: a corrupt buffer yields an error, never a
+    /// partially-populated ledger.
+    pub fn deserialize(buf: &[u8]) -> Result<Self, LedgerSerError> {
+        if buf.len() < 4 + 4 {
+            return Err(LedgerSerError::Truncated);
+        }
+        if buf[..4] != LEDGER_MAGIC {
+            return Err(LedgerSerError::BadMagic);
+        }
+        let version = u32::from_le_bytes(buf[4..8].try_into().map_err(|_| LedgerSerError::Truncated)?);
+        if version != LEDGER_VERSION {
+            return Err(LedgerSerError::UnsupportedVersion(version));
+        }
+        let mut pos = 8;
+        let (cfg, n) = CreatorLedgerConfig::decode_from(buf, pos)
+            .ok_or(LedgerSerError::Truncated)?;
+        pos += n;
+        let (entry_count, n) = decode_varint(buf, pos).ok_or(LedgerSerError::Truncated)?;
+        pos += n;
+        // Sanity bound: entry_count should not exceed max_creators (or a reasonable
+        // upper bound for safety against corrupt inputs).
+        if entry_count > 1_000_000 {
+            return Err(LedgerSerError::Corrupt);
+        }
+        let (creator_evictions, n) = decode_varint(buf, pos).ok_or(LedgerSerError::Truncated)?;
+        pos += n;
+
+        let mut entries: Vec<(WalletId, CreatorHistory)> = Vec::with_capacity(entry_count as usize);
+        for _ in 0..entry_count {
+            let (wid_raw, n) = decode_varint(buf, pos).ok_or(LedgerSerError::Truncated)?;
+            pos += n;
+            let (last_slot, n) = decode_varint(buf, pos).ok_or(LedgerSerError::Truncated)?;
+            pos += n;
+            let (dropped, n) = decode_varint(buf, pos).ok_or(LedgerSerError::Truncated)?;
+            pos += n;
+            let (launch_count, n) = decode_varint(buf, pos).ok_or(LedgerSerError::Truncated)?;
+            pos += n;
+            if launch_count > 10_000 {
+                return Err(LedgerSerError::Corrupt);
+            }
+            let mut launches: Vec<LaunchRecord> = Vec::with_capacity(launch_count as usize);
+            for _ in 0..launch_count {
+                let (rec, n) = LaunchRecord::decode_from(buf, pos)
+                    .ok_or(LedgerSerError::Truncated)?;
+                pos += n;
+                launches.push(rec);
+            }
+            entries.push((
+                WalletId(wid_raw),
+                CreatorHistory {
+                    launches,
+                    last_slot,
+                    dropped,
+                },
+            ));
+        }
+
+        Ok(CreatorLedger {
+            entries,
+            cfg,
+            creator_evictions,
+        })
+    }
+}
+
+#[cfg(test)]
+mod ser_tests {
+    use super::*;
+
+    #[test]
+    fn test_roundtrip_empty_ledger() {
+        let ledger = CreatorLedger::with_defaults();
+        let buf = ledger.serialize();
+        let restored = CreatorLedger::deserialize(&buf).unwrap();
+        assert_eq!(restored.len(), 0);
+        assert_eq!(restored.creator_evictions(), 0);
+        assert_eq!(restored.config().survival_horizon_slots, ledger.config().survival_horizon_slots);
+    }
+
+    #[test]
+    fn test_roundtrip_with_entries() {
+        let mut ledger = CreatorLedger::with_defaults();
+        let creator = WalletId(42);
+        let token1 = TokenId(100);
+        let token2 = TokenId(200);
+        ledger.record_launch(creator, token1, 1_000);
+        ledger.record_launch(creator, token2, 2_000);
+        ledger.record_migration(creator, token1, 1_500);
+        ledger.record_rug(creator, token2, 2_500);
+
+        let buf = ledger.serialize();
+        let restored = CreatorLedger::deserialize(&buf).unwrap();
+
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored.creator_evictions(), 0);
+
+        let launches = restored.launches(creator).unwrap();
+        assert_eq!(launches.len(), 2);
+        assert_eq!(launches[0].token, token1);
+        assert_eq!(launches[0].launch_slot, 1_000);
+        assert_eq!(launches[0].migrated_slot, Some(1_500));
+        assert_eq!(launches[0].rugged_slot, None);
+        assert_eq!(launches[1].token, token2);
+        assert_eq!(launches[1].launch_slot, 2_000);
+        assert_eq!(launches[1].migrated_slot, None);
+        assert_eq!(launches[1].rugged_slot, Some(2_500));
+    }
+
+    #[test]
+    fn test_roundtrip_multiple_creators() {
+        let mut ledger = CreatorLedger::with_defaults();
+        let c1 = WalletId(10);
+        let c2 = WalletId(20);
+        let t1 = TokenId(100);
+        let t2 = TokenId(200);
+        ledger.record_launch(c1, t1, 100);
+        ledger.record_launch(c2, t2, 200);
+        ledger.record_migration(c1, t1, 150);
+
+        let buf = ledger.serialize();
+        let restored = CreatorLedger::deserialize(&buf).unwrap();
+
+        assert_eq!(restored.len(), 2);
+        assert!(restored.launches(c1).is_some());
+        assert!(restored.launches(c2).is_some());
+
+        let c1_launches = restored.launches(c1).unwrap();
+        assert_eq!(c1_launches[0].migrated_slot, Some(150));
+        let c2_launches = restored.launches(c2).unwrap();
+        assert_eq!(c2_launches[0].migrated_slot, None);
+    }
+
+    #[test]
+    fn test_bad_magic() {
+        let mut buf = vec![0x00, 0x00, 0x00, 0x00];
+        buf.extend_from_slice(&LEDGER_VERSION.to_le_bytes());
+        let result = CreatorLedger::deserialize(&buf);
+        assert!(matches!(result, Err(LedgerSerError::BadMagic)));
+    }
+
+    #[test]
+    fn test_truncated() {
+        let result = CreatorLedger::deserialize(&[0x01, 0x02]);
+        assert!(matches!(result, Err(LedgerSerError::Truncated)));
+    }
+
+    #[test]
+    fn test_unsupported_version() {
+        let mut buf = LEDGER_MAGIC.to_vec();
+        buf.extend_from_slice(&999u32.to_le_bytes());
+        let result = CreatorLedger::deserialize(&buf);
+        match result {
+            Err(LedgerSerError::UnsupportedVersion(v)) => assert_eq!(v, 999),
+            _ => panic!("expected UnsupportedVersion"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_preserves_classification() {
+        let mut ledger = CreatorLedger::with_defaults();
+        let creator = WalletId(42);
+        // Record 2 launches that both migrate and survive the horizon
+        let horizon = CREATOR_SURVIVAL_HORIZON_SLOTS;
+        let t1 = TokenId(1);
+        let t2 = TokenId(2);
+        ledger.record_launch(creator, t1, 100);
+        ledger.record_launch(creator, t2, 200);
+        ledger.record_migration(creator, t1, 150);
+        ledger.record_migration(creator, t2, 250);
+
+        // Classify before serialization — should be Unknown (not enough time)
+        let before = ledger.classify_as_of(creator, 300);
+        assert_eq!(before, CreatorTrack::Unknown);
+
+        let buf = ledger.serialize();
+        let restored = CreatorLedger::deserialize(&buf).unwrap();
+
+        // After restoration, classify at a slot past BOTH survival horizons.
+        // Token 2 migrated at 250, so it survives at 250 + horizon.
+        // Need both to survive → query_slot must be >= 250 + horizon.
+        let query_slot = 250 + horizon + 1;
+        let after = restored.classify_as_of(creator, query_slot);
+        assert_eq!(after, CreatorTrack::Proven);
+    }
+}

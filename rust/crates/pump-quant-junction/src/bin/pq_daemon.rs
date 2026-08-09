@@ -150,6 +150,12 @@ const TAPE_PATH: &str = "data/tape.jsonl";
 /// Path for the raw event stream (for deterministic replay).
 const EVENT_STREAM_PATH: &str = "data/event_stream.jsonl";
 
+/// Creator ledger persistence (G3 fix): binary snapshot for cross-session
+/// creator track-record survival. The ledger accumulates launch/migration/rug
+/// observations across daemon restarts — without persistence, every restart
+/// wipes the creator track record to "Unknown", starving the classifier.
+const LEDGER_PATH: &str = "data/creator_ledger.bin";
+
 // ─── Args ──────────────────────────────────────────────────────────────────
 
 struct DaemonArgs {
@@ -644,6 +650,44 @@ fn main() -> ExitCode {
     let queue = BoundedJunctionQueue::with_capacity(args.junction_cap);
     let mut dwell_samples: Vec<u64> = Vec::new();
     let mut engine = Engine::new(cfg, RunMode::Paper);
+
+    // G3 fix: restore the creator ledger from disk (cross-session persistence).
+    // Without this, every daemon restart wipes the creator track record to
+    // "Unknown", starving the classifier (GAP-B) and discarding accumulated
+    // rug/migration observations.
+    if std::path::Path::new(LEDGER_PATH).exists() {
+        match std::fs::read(LEDGER_PATH) {
+            Ok(bytes) => {
+                if engine.restore_creator_ledger(&bytes) {
+                    let len = engine.measured().creator_ledger_len();
+                    eprintln!("[pq-daemon] creator ledger restored: {len} entries from {LEDGER_PATH}");
+                }
+            }
+            Err(e) => eprintln!("[pq-daemon] creator ledger read error: {e} — starting fresh"),
+        }
+    } else {
+        eprintln!("[pq-daemon] no persisted creator ledger — starting fresh");
+    }
+
+    // §27 amendment (G5): load the tracked-wallet candidate list.
+    // The boost is disabled by default; only load if the operator has
+    // enabled it and provided a path.
+    if cfg.tracked_wallet_boost_enable && !cfg.tracked_wallet_path.as_str().is_empty() {
+        use pump_quant_junction::wallet_loader::load_tracked_wallets_from_json;
+        match load_tracked_wallets_from_json(cfg.tracked_wallet_path.as_str()) {
+            Ok((matcher, _stats)) => {
+                let n = engine.set_tracked_wallet_matcher(matcher);
+                if n > 0 {
+                    eprintln!("[pq-daemon] tracked-wallet boost ARMED: {n} wallets loaded");
+                } else {
+                    eprintln!("[pq-daemon] tracked-wallet boost DISABLED: 0 wallets loaded");
+                }
+            }
+            Err(e) => eprintln!("[pq-daemon] tracked-wallet load FAILED: {e:?}"),
+        }
+    } else {
+        eprintln!("[pq-daemon] tracked-wallet boost not configured — skipping load");
+    }
 
     // LAW B5: arm the episodic brain store for persistence. Without this,
     // snapshot_brain() is a silent no-op (store = None → Ok(())). The daemon
@@ -1882,6 +1926,24 @@ fn main() -> ExitCode {
                 last_tape_flush_tick = tick_counter;
             }
 
+            // ── G3 fix: periodic creator ledger persistence ────────────
+            // Snapshot the creator ledger to disk every tape flush cycle.
+            // This ensures creator track records survive daemon restarts.
+            // Atomic write: write to .tmp then rename (prevents corruption
+            // if the daemon is killed mid-write).
+            {
+                let bytes = engine.snapshot_creator_ledger();
+                let tmp_path = format!("{LEDGER_PATH}.tmp");
+                match std::fs::write(&tmp_path, &bytes) {
+                    Ok(()) => {
+                        if let Err(e) = std::fs::rename(&tmp_path, LEDGER_PATH) {
+                            eprintln!("[pq-daemon] ledger rename FAILED: {e}");
+                        }
+                    }
+                    Err(e) => eprintln!("[pq-daemon] ledger write FAILED: {e}"),
+                }
+            }
+
             // ── Autonomous bridge: config hot-reload (G2) ──────────────
             // Check if CONFIG_PROMOTION.json has been written/updated by
             // the refiner. If so, parse mutations and apply to live config.
@@ -2076,6 +2138,20 @@ fn main() -> ExitCode {
             memory_bank.global_summary().net_lamports
         ),
         Err(e) => eprintln!("[pq-daemon] final memory bank export FAILED: {e}"),
+    }
+
+    // G3 fix: final creator ledger persistence on graceful shutdown.
+    // Ensures the accumulated creator track record survives to the next session.
+    {
+        let bytes = engine.snapshot_creator_ledger();
+        match std::fs::write(LEDGER_PATH, &bytes) {
+            Ok(_) => eprintln!(
+                "[pq-daemon] final creator ledger save: {} entries, {} bytes",
+                engine.measured().creator_ledger_len(),
+                bytes.len()
+            ),
+            Err(e) => eprintln!("[pq-daemon] final creator ledger save FAILED: {e}"),
+        }
     }
 
     // Final event stream flush

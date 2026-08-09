@@ -890,6 +890,34 @@ pub struct Engine {
     hazard_scaffold: HazardScaffold,
     /// §28 smart-money follow screen (lagged-shadow law) fed from buyer entities.
     wallet_screen: WalletScreen,
+    /// §27 amendment: tracked-wallet buy corroboration per mint.
+    /// Maps `mint → (slot, count of distinct tracked-wallet buys)`.
+    /// When a tracked wallet buys a mint, this records the slot and increments
+    /// the count. The boost method queries this to compute corroboration.
+    /// Bounded (§99): evicts the lexicographically-smallest mint at the cap.
+    tracked_buys: BTreeMap<[u8; 32], (u64, u32)>,
+    /// §27 amendment: the loaded tracked-wallet matcher (302 candidate list).
+    /// None when `tracked_wallet_boost_enable` is false or the file doesn't
+    /// exist. Built once at daemon startup from `tracked_wallet_path`.
+    tracked_matcher: Option<pump_quant_wallet_graph::tracked_wallet_matcher::TrackedWalletMatcher>,
+    /// §27 amendment (G6): wallet graph for cluster detection. Edges are added
+    /// when two wallets transact on the same mint (funding edge) or when a
+    /// creator launches multiple tokens (creator-family edge). The graph
+    /// enables Sybil/rug-family detection per arXiv:2505.09313.
+    wallet_graph: pump_quant_wallet_graph::tier2_wallet_graph::WalletGraph,
+    /// Maps entity-id → node index in the wallet graph.
+    wallet_graph_nodes: BTreeMap<u64, usize>,
+    /// §27/§28 amendment (G6 wiring): the most recent BUYER entity on each
+    /// mint, updated on every decoded `MarketTrade` buy. Used at gate time to
+    /// know WHICH wallet to evaluate via `wallet_followable()` for the §28
+    /// smart-money boost, and to build funding edges with the last seller.
+    /// Bounded (§99): evicts the lexicographically-smallest mint at cap.
+    last_mint_buyer: BTreeMap<[u8; 32], u64>,
+    /// §27/§28 amendment (G6 wiring): the most recent SELLER entity on each
+    /// mint, updated on every decoded `MarketTrade` sell. Paired with
+    /// `last_mint_buyer` to add funding edges between consecutive
+    /// buyer→seller wallets on the same mint.
+    last_mint_seller: BTreeMap<[u8; 32], u64>,
     /// §21.3/§28/§21.7 market context: regime reducer, per-mint cluster-adjusted
     /// breadth, curve→pool phase, phase-correct executable exit cost.
     context: MarketContext,
@@ -1226,6 +1254,12 @@ impl Engine {
             extraction_risk: ExtractionRiskLedger::new(),
             hazard_scaffold: HazardScaffold::new(),
             wallet_screen: WalletScreen::new(),
+            tracked_buys: BTreeMap::new(),
+            tracked_matcher: None,
+            wallet_graph: pump_quant_wallet_graph::tier2_wallet_graph::WalletGraph::new(0),
+            wallet_graph_nodes: BTreeMap::new(),
+            last_mint_buyer: BTreeMap::new(),
+            last_mint_seller: BTreeMap::new(),
             context: MarketContext::new(),
             theses: BTreeMap::new(),
             thesis_adverse: BTreeMap::new(),
@@ -1698,6 +1732,63 @@ impl Engine {
                     quote_lamports,
                     self.now,
                 );
+                // §27 amendment (G5): record tracked-wallet buys for the trust
+                // boost corroboration counter. Only BUYs (signed_base >= 0)
+                // count toward corroboration. The `buyer_entity` is the u64
+                // entity id extracted from the LaserStream `account_keys[6]`
+                // (the buyer's wallet pubkey, hashed via splitmix64 — G1 fix).
+                if signed_base >= 0 {
+                    self.record_tracked_buy(mint.as_bytes(), buyer_entity, self.now);
+                }
+                // §27/§28 amendment (G6 wiring): record the most recent buyer or
+                // seller entity on this mint and build a funding edge between the
+                // current buyer and the previous seller (or current seller and
+                // previous buyer) on the same mint. This is the wallet-graph
+                // cluster-detection feed per arXiv:2505.09313 — the graph is
+                // BOUNDED (§99): `wallet_graph_node` grows the graph one node at
+                // a time and `add_edge` is O(1). The last-mint maps use the same
+                // bounded-eviction convention as `last_trade_tick` (§99).
+                {
+                    let m = *mint.as_bytes();
+                    let cap = self
+                        .cfg
+                        .watchlist_capacity
+                        .saturating_mul(self.cfg.confirmed_capacity_mult)
+                        .max(1);
+                    if signed_base >= 0 {
+                        // BUY: edge from this buyer to the last seller (if any).
+                        if let Some(&seller) = self.last_mint_seller.get(&m) {
+                            if seller != buyer_entity {
+                                self.add_wallet_funding_edge(buyer_entity, seller, self.now);
+                            }
+                        }
+                        // Update last buyer with bounded eviction.
+                        if !self.last_mint_buyer.contains_key(&m)
+                            && self.last_mint_buyer.len() >= cap
+                        {
+                            if let Some(&victim) = self.last_mint_buyer.keys().next() {
+                                self.last_mint_buyer.remove(&victim);
+                            }
+                        }
+                        self.last_mint_buyer.insert(m, buyer_entity);
+                    } else {
+                        // SELL: edge from the last buyer to this seller (if any).
+                        if let Some(&buyer) = self.last_mint_buyer.get(&m) {
+                            if buyer != buyer_entity {
+                                self.add_wallet_funding_edge(buyer, buyer_entity, self.now);
+                            }
+                        }
+                        // Update last seller with bounded eviction.
+                        if !self.last_mint_seller.contains_key(&m)
+                            && self.last_mint_seller.len() >= cap
+                        {
+                            if let Some(&victim) = self.last_mint_seller.keys().next() {
+                                self.last_mint_seller.remove(&victim);
+                            }
+                        }
+                        self.last_mint_seller.insert(m, buyer_entity);
+                    }
+                }
                 // VPIN-X toxicity accumulation (§21.7): fold the swap's exact-sign
                 // quote volume into the mint's volume-clocked buckets. O(1) amortized;
                 // bounded map with deterministic eviction (§99).
@@ -3186,6 +3277,31 @@ impl Engine {
                 let sized = (raw * u128::from(haircut_bp) / 10_000)
                     .min(u128::from(band.x_max))
                     .min(available_risk);
+                // §27/§28 amendment: apply tracked-wallet trust boost (G5) and
+                // smart-money PnL-screen boost (§28 Phase 7) as additive bps
+                // lifts on the sized position. Both are DISABLED by default
+                // (tracked_wallet_boost_enable=false,
+                // smart_money_boost_enable=false), so the golden tape is
+                // byte-identical to the pre-amendment path. When enabled, the
+                // boost is capped at its respective max_bps and never exceeds
+                // x_max or available_risk (re-clamped after the lift).
+                let sized = {
+                    let mut boost_bp: u32 = 0;
+                    if self.cfg.tracked_wallet_boost_enable {
+                        boost_bp = boost_bp.saturating_add(self.tracked_wallet_boost_bp(&mint_bytes));
+                    }
+                    if self.cfg.smart_money_boost_enable {
+                        boost_bp = boost_bp.saturating_add(self.smart_money_boost_bp(&mint_bytes));
+                    }
+                    if boost_bp > 0 {
+                        let lifted = sized * u128::from(10_000u32 + boost_bp) / 10_000;
+                        lifted
+                            .min(u128::from(band.x_max))
+                            .min(available_risk)
+                    } else {
+                        sized
+                    }
+                };
                 // ---- Below effective x_min: CLAMP UP to the operator floor, or
                 // REFUSE if unsafe (criterion 112 / A-6). `band.x_min` is now the
                 // EFFECTIVE floor `max(min_trade_size, economic x_min)` (lifted in
@@ -5666,6 +5782,206 @@ impl Engine {
         self.wallet_screen.followable(entity, &|m, _slot| {
             numeric.latest_price_fp(DomainMint::from_bytes(*m))
         })
+    }
+
+    // ── §27/§28 amendment methods ───────────────────────────────────────────
+    //
+    // record_tracked_buy: G5 corroboration counter, called from the tick path.
+    // tracked_wallet_boost_bp: G5 trust boost, called from the gate sizing path.
+    // wallet_graph_node: G6 graph node allocation (grows by 1, preserves edges).
+    // add_wallet_funding_edge: G6 funding edge between buyer↔seller on a mint.
+    // smart_money_boost_bp: §28 Phase 7 smart-money PnL-screen boost.
+    // test accessors: funding_node_count / funding_edge_count for integration tests.
+
+    /// §27 amendment (G5): record a tracked-wallet buy for corroboration.
+    /// Called from the tick path on every BUY where `signed_base >= 0`.
+    /// Updates the per-mint `(slot, count)` pair with bounded eviction (§99).
+    fn record_tracked_buy(&mut self, mint: &[u8; 32], buyer_entity: u64, slot: u64) {
+        // Only count if the buyer is a tracked wallet.
+        if !self.cfg.tracked_wallet_boost_enable {
+            return;
+        }
+        let is_tracked = self
+            .tracked_matcher
+            .as_ref()
+            .map(|m| m.contains_entity(buyer_entity))
+            .unwrap_or(false);
+        if !is_tracked {
+            return;
+        }
+        let cap = self
+            .cfg
+            .watchlist_capacity
+            .saturating_mul(self.cfg.confirmed_capacity_mult)
+            .max(1);
+        if !self.tracked_buys.contains_key(mint) && self.tracked_buys.len() >= cap {
+            if let Some(&victim) = self.tracked_buys.keys().next() {
+                self.tracked_buys.remove(&victim);
+            }
+        }
+        let entry = self.tracked_buys.entry(*mint).or_insert((slot, 0));
+        entry.0 = slot;
+        entry.1 = entry.1.saturating_add(1);
+    }
+
+    /// §27 amendment (G5): compute the tracked-wallet trust boost in bps for a
+    /// mint, based on how many distinct tracked wallets have bought it within
+    /// the corroboration window. Returns 0 when disabled or no corroboration.
+    /// Called from the gate sizing path. Bounded O(1) lookup.
+    fn tracked_wallet_boost_bp(&self, mint: &[u8; 32]) -> u32 {
+        if !self.cfg.tracked_wallet_boost_enable {
+            return 0;
+        }
+        let max_bp = self.cfg.tracked_dev_boost_max_bps;
+        if max_bp == 0 {
+            return 0;
+        }
+        let window = self.cfg.tracked_corroboration_window_slots;
+        let now = self.now;
+        let (_, count) = match self.tracked_buys.get(mint) {
+            Some(&v) => v,
+            None => return 0,
+        };
+        if count == 0 {
+            return 0;
+        }
+        // Scale: 1 wallet = quarter boost, 2 = half, 3+ = full.
+        let scaled = if count >= 3 {
+            max_bp
+        } else if count == 2 {
+            max_bp / 2
+        } else {
+            max_bp / 4 // 1 wallet = quarter boost
+        };
+        // Apply corroboration window: if the last tracked buy is older than
+        // `window` slots, decay the boost by half.
+        let (last_slot, _) = self.tracked_buys.get(mint).copied().unwrap_or((now, 0));
+        if now.saturating_sub(last_slot) > window {
+            scaled / 2
+        } else {
+            scaled
+        }
+    }
+
+    /// §27/§28 amendment (G6): allocate or retrieve a wallet-graph node index
+    /// for the given entity id. Grows the graph by one node at a time,
+    /// preserving all existing edges. Bounded O(1) amortized.
+    fn wallet_graph_node(&mut self, entity: u64) -> usize {
+        if let Some(&idx) = self.wallet_graph_nodes.get(&entity) {
+            return idx;
+        }
+        let idx = self.wallet_graph_nodes.len();
+        self.wallet_graph.grow(idx + 1);
+        self.wallet_graph_nodes.insert(entity, idx);
+        idx
+    }
+
+    /// §27/§28 amendment (G6): add a funding edge between buyer and seller
+    /// wallets that transacted on the same mint. Self-edges are suppressed
+    /// (a wallet transacting with itself is not a funding edge).
+    fn add_wallet_funding_edge(&mut self, buyer: u64, seller: u64, slot: u64) {
+        if buyer == seller {
+            return; // No self-edges.
+        }
+        let a = self.wallet_graph_node(buyer);
+        let b = self.wallet_graph_node(seller);
+        use pump_quant_wallet_graph::tier2_wallet_graph::EdgeKind;
+        self.wallet_graph.add_edge(a, b, EdgeKind::Funding, slot);
+    }
+
+    /// §28 amendment (Phase 7): compute the §28 smart-money PnL-screen boost in
+    /// bps for a mint. The boost is applied when the most recent buyer on that
+    /// mint is `wallet_followable()` (≥40 actions, positive realized PnL,
+    /// lagged-shadow edge). Returns 0 when disabled or the buyer is not
+    /// followable. Bounded O(1) lookup + O(1) followable check.
+    fn smart_money_boost_bp(&self, mint: &[u8; 32]) -> u32 {
+        if !self.cfg.smart_money_boost_enable {
+            return 0;
+        }
+        let max_bp = self.cfg.smart_money_boost_max_bps;
+        if max_bp == 0 {
+            return 0;
+        }
+        // Look up the last buyer entity on this mint.
+        let buyer = match self.last_mint_buyer.get(mint) {
+            Some(&e) => e,
+            None => return 0,
+        };
+        // §28 truth screen: ≥40 actions, positive realized PnL, lagged-shadow.
+        if !self.wallet_followable(buyer) {
+            return 0;
+        }
+        // Full boost when the smart-money buyer is followable.
+        max_bp
+    }
+
+    /// §27/§28 test accessor: the number of distinct wallet entities registered
+    /// in the funding graph. Used by integration tests to verify that funding
+    /// edges are wired into the tick path (G6).
+    pub fn funding_node_count(&self) -> usize {
+        self.wallet_graph_nodes.len()
+    }
+
+    /// §27/§28 test accessor: the total edge count in the wallet funding graph.
+    /// Used by integration tests to verify that funding edges are created when
+    /// buyers and sellers transact on the same mint (G6).
+    pub fn funding_edge_count(&self) -> usize {
+        self.wallet_graph.edges().len()
+    }
+
+    /// §27/§28 test accessor: the number of distinct wallet entities registered
+    /// in the funding graph. Used by integration tests to verify that funding
+    /// edges are wired into the tick path (G6).
+    pub fn wallet_graph_entity_count(&self) -> usize {
+        self.wallet_graph_nodes.len()
+    }
+
+    /// Alias for `funding_edge_count` — the total edge count in the wallet
+    /// funding graph. Kept for test readability.
+    pub fn wallet_graph_edge_count(&self) -> usize {
+        self.wallet_graph.edges().len()
+    }
+
+    /// §27/§28 test accessor: the most recent buyer entity on a mint, if any.
+    pub fn last_mint_buyer_entity(&self, mint_bytes: &[u8; 32]) -> Option<u64> {
+        self.last_mint_buyer.get(mint_bytes).copied()
+    }
+
+    /// §27/§28 test accessor: the most recent seller entity on a mint, if any.
+    pub fn last_mint_seller_entity(&self, mint_bytes: &[u8; 32]) -> Option<u64> {
+        self.last_mint_seller.get(mint_bytes).copied()
+    }
+
+    // ── §27 daemon-wiring methods (called by pq_daemon) ──────────────────────
+
+    /// G3 persistence: restore the creator ledger from a serialized blob.
+    /// Returns true if the restore succeeded, false if the bytes were invalid.
+    pub fn restore_creator_ledger(&mut self, bytes: &[u8]) -> bool {
+        use pump_quant_wallet_graph::creator_ledger::CreatorLedger;
+        match CreatorLedger::deserialize(bytes) {
+            Ok(ledger) => {
+                self.measured.restore_creator_ledger(ledger);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// G3 persistence: snapshot the creator ledger as a serialized blob for
+    /// cross-session persistence. Called by the daemon on shutdown.
+    pub fn snapshot_creator_ledger(&self) -> Vec<u8> {
+        self.measured.creator_ledger().serialize()
+    }
+
+    /// §27 amendment: set the loaded tracked-wallet matcher at daemon startup.
+    /// Returns the number of tracked wallets loaded.
+    pub fn set_tracked_wallet_matcher(
+        &mut self,
+        matcher: pump_quant_wallet_graph::tracked_wallet_matcher::TrackedWalletMatcher,
+    ) -> usize {
+        let n = matcher.len();
+        self.tracked_matcher = Some(matcher);
+        n
     }
 
     /// The current signed discovery-rank adjustment (bps over a 10_000 base) for a
