@@ -173,6 +173,17 @@ const EMERGENCY_STOP_FILE: &str = "data/EMERGENCY_STOP";
 /// Path for the live-status JSON.
 const STATUS_PATH: &str = "data/live_status.json";
 const TAPE_PATH: &str = "data/tape.jsonl";
+/// Path for the cumulative PnL ledger (cross-session, seeded from tape on startup).
+/// This is the trustworthy PnL report file: it combines the tape's cumulative
+/// realized PnL (all prior daemon sessions) with the current session's realized
+/// PnL from `live_status.json`. The cron reads this instead of live_status.json
+/// to avoid the restart-amnesia problem (live_status resets to 0 on every
+/// Engine::new(), but tape.jsonl is append-forever).
+const CUMULATIVE_PNL_PATH: &str = "data/cumulative_pnl.json";
+/// Path for the session history ledger (append-only, one line per daemon run).
+/// This is the A/B testing ledger: each daemon session's final stats tagged
+/// with config fingerprint + strategy label for cross-strategy comparison.
+const SESSION_HISTORY_PATH: &str = "data/session_history.jsonl";
 /// Path for the raw event stream (for deterministic replay).
 const EVENT_STREAM_PATH: &str = "data/event_stream.jsonl";
 
@@ -194,17 +205,22 @@ struct DaemonArgs {
     /// The refiner is spawned as a child process that reads the tape and
     /// writes CONFIG_PROMOTION.json; the daemon hot-reloads it next tick.
     refiner_every_ticks: u64,
+    /// Human-readable label for the strategy/config set being tested.
+    /// Used in cumulative_pnl.json and session_history.jsonl for A/B testing
+    /// attribution. If absent, "unlabeled" is used.
+    strategy_label: String,
 }
 
 fn parse_args() -> Result<DaemonArgs, u8> {
     let args: Vec<String> = std::env::args().collect();
     let mut a = DaemonArgs {
         junction_cap: 4096,
-        commitment: "processed".to_string(),
+        commitment: String::from("processed"),
         status_every_ticks: 500,
         brain_snapshot_every_ticks: 5000,
         tape_every_ticks: 1000,
         refiner_every_ticks: 5000, // default: ~every 5000 ticks
+        strategy_label: String::from("unlabeled"),
     };
     let mut i = 1;
     while i < args.len() {
@@ -237,6 +253,10 @@ fn parse_args() -> Result<DaemonArgs, u8> {
                 a.refiner_every_ticks = args[i + 1].parse().unwrap_or(5000);
                 i += 2;
             }
+            "--strategy-label" if i + 1 < args.len() => {
+                a.strategy_label = String::from(&args[i + 1]);
+                i += 2;
+            }
             _ => { i += 1; }
         }
     }
@@ -259,6 +279,196 @@ fn daemon_stop_requested() -> bool {
 /// immediately stop again).
 fn clean_stop_sentinel() {
     let _ = std::fs::remove_file(DAEMON_STOP_FILE);
+}
+
+// ─── Cumulative PnL ledger (cross-session, strategy-aware) ────────────────
+// The restart-amnesia fix: live_status.json resets to 0 on every Engine::new(),
+// but tape.jsonl is append-forever. We bridge the two by:
+//   1. On startup: read tape.jsonl, sum all realized_pnl from trade_full records
+//      → prior_realized (the cumulative PnL from ALL prior daemon sessions).
+//   2. On every status write: write cumulative_pnl.json = prior_realized +
+//      current session_realized. This is the trustworthy number the cron reads.
+//   3. On shutdown: append one line to session_history.jsonl with the session's
+//      final stats, tagged with the config fingerprint + strategy label.
+//
+// The config fingerprint is a deterministic FNV-1a hash of cfg.dump_to_text().
+// It identifies which strategy/config set produced each session's trades,
+// enabling A/B comparison across config versions.
+
+/// Read tape.jsonl and sum all `realized_pnl` from `trade_full` records.
+/// This gives the cumulative realized PnL from ALL prior daemon sessions
+/// (the tape is append-forever, never reset).
+///
+/// Returns (cumulative_pnl, trade_count). On read error or missing file,
+/// returns (0, 0) — fail-safe: a missing tape means no prior trades.
+fn seed_cumulative_from_tape(tape_path: &str) -> (i64, u64) {
+    let bytes = match std::fs::read_to_string(tape_path) {
+        Ok(s) => s,
+        Err(_) => return (0, 0),
+    };
+    let mut total_pnl: i64 = 0;
+    let mut trade_count: u64 = 0;
+    for line in bytes.lines() {
+        if !line.contains("\"kind\":\"trade_full\"") {
+            continue;
+        }
+        // Extract realized_pnl from the JSON line. The field is:
+        //   "realized_pnl":{pnl}
+        // We use a simple substring scan to avoid a full JSON parser.
+        if let Some(pnl) = extract_json_int(line, "\"realized_pnl\":") {
+            total_pnl = total_pnl.saturating_add(pnl);
+            trade_count += 1;
+        }
+    }
+    (total_pnl, trade_count)
+}
+
+/// Extract an integer value following a JSON key pattern in a single line.
+/// e.g. extract_json_int(line, "\"realized_pnl\":") → Some(12345) or None.
+/// Handles negative values. This is NOT a general JSON parser — it's a
+/// purpose-built scanner for the fixed tape format (§22: integer values,
+/// no floats, no nested objects in the trade_full record).
+fn extract_json_int(line: &str, key: &str) -> Option<i64> {
+    let idx = line.find(key)?;
+    let rest = &line[idx + key.len()..];
+    // Skip whitespace
+    let rest = rest.trim_start();
+    // Parse optional minus sign then digits
+    let mut chars = rest.chars();
+    let negative = match chars.next() {
+        Some('-') => true,
+        Some(c) if c.is_ascii_digit() => {
+            // Put it back — we need to parse from here
+            let num_str: String = rest.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            return num_str.parse().ok();
+        }
+        _ => return None,
+    };
+    let num_str: String = chars
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if num_str.is_empty() {
+        return None;
+    }
+    num_str.parse::<i64>().ok().map(|v| if negative { -v } else { v })
+}
+
+/// Compute a deterministic config fingerprint (FNV-1a hash of dump_to_text).
+/// This identifies which strategy/config set is running, for A/B testing.
+fn config_fingerprint(cfg_text: &str) -> u64 {
+    pump_quant_brain::hash::fnv1a_64(cfg_text.as_bytes())
+}
+
+/// Write cumulative_pnl.json — the trustworthy cross-session PnL report.
+/// Schema: {"schema":"cumulative_pnl/1","config_fingerprint":"0x...","strategy_label":"...","session_realized_lamports":N,"prior_tape_realized_lamports":N,"cumulative_realized_lamports":N,"prior_tape_trade_count":N,"session_admitted":N,"session_tick":N,"info_time_tick":N}
+fn write_cumulative_pnl(
+    path: &str,
+    config_fp: u64,
+    strategy_label: &str,
+    session_realized: i128,
+    prior_tape_realized: i64,
+    prior_tape_trades: u64,
+    session_admitted: u64,
+    engine_tick: u64,
+) -> std::io::Result<()> {
+    let cumulative = prior_tape_realized.saturating_add(session_realized as i64);
+    let json = format!(
+        concat!(
+            "{{\"schema\":\"cumulative_pnl/1\",",
+            "\"config_fingerprint\":\"{:#018x}\",",
+            "\"strategy_label\":\"{}\",",
+            "\"session_realized_lamports\":{},",
+            "\"prior_tape_realized_lamports\":{},",
+            "\"cumulative_realized_lamports\":{},",
+            "\"prior_tape_trade_count\":{},",
+            "\"session_admitted\":{},",
+            "\"session_tick\":{}}}"
+        ),
+        config_fp,
+        strategy_label,
+        session_realized,
+        prior_tape_realized,
+        cumulative,
+        prior_tape_trades,
+        session_admitted,
+        engine_tick,
+    );
+    let p = std::path::Path::new(path);
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let mut f = std::fs::File::create(p)?;
+    f.write_all(json.as_bytes())?;
+    f.write_all(b"\n")?;
+    f.flush()
+}
+
+/// Append one line to session_history.jsonl on daemon shutdown.
+/// This is the A/B test ledger: each daemon run gets one line tagged with
+/// the config fingerprint, strategy label, and final stats.
+fn append_session_history(
+    path: &str,
+    config_fp: u64,
+    strategy_label: &str,
+    session_realized: i128,
+    prior_tape_realized: i64,
+    prior_tape_trades: u64,
+    session_admitted: u64,
+    session_tick: u64,
+    uptime_secs: u64,
+    tape_trades_this_session: u64,
+) -> std::io::Result<()> {
+    // Use a wall-clock timestamp here — this is an append-only audit log, NOT
+    // a deterministic replay artifact. The tape/live_status are deterministic
+    // (info-time only); the session history is operational metadata.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let cumulative = prior_tape_realized.saturating_add(session_realized as i64);
+    let json = format!(
+        concat!(
+            "{{\"schema\":\"session_history/1\",",
+            "\"ts_unix\":{},",
+            "\"config_fingerprint\":\"{:#018x}\",",
+            "\"strategy_label\":\"{}\",",
+            "\"session_realized_lamports\":{},",
+            "\"prior_tape_realized_lamports\":{},",
+            "\"cumulative_realized_lamports\":{},",
+            "\"prior_tape_trade_count\":{},",
+            "\"session_admitted\":{},",
+            "\"session_tick\":{},",
+            "\"uptime_secs\":{},",
+            "\"tape_trades_this_session\":{}}}\n"
+        ),
+        ts,
+        config_fp,
+        strategy_label,
+        session_realized,
+        prior_tape_realized,
+        cumulative,
+        prior_tape_trades,
+        session_admitted,
+        session_tick,
+        uptime_secs,
+        tape_trades_this_session,
+    );
+    let p = std::path::Path::new(path);
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(p)?;
+    f.write_all(json.as_bytes())?;
+    f.flush()
 }
 
 // ─── PDA derivation ────────────────────────────────────────────────────────
@@ -1029,6 +1239,20 @@ fn main() -> ExitCode {
     let mut event_stream_writer = EventStreamWriter::open(EVENT_STREAM_PATH);
     eprintln!("[pq-daemon] tape export path: {TAPE_PATH}");
 
+    // ─── Cumulative PnL seed (restart-amnesia fix) ──────────────────────
+    // Read tape.jsonl ONCE at startup to get the cumulative realized PnL
+    // from ALL prior daemon sessions. The tape is append-forever; live_status
+    // resets to 0 on every Engine::new(). We bridge them so the cron always
+    // reads the trustworthy cumulative number, not the amnesia-prone session
+    // counter.
+    let (prior_tape_pnl, prior_tape_trades) = seed_cumulative_from_tape(TAPE_PATH);
+    let cfg_text = cfg.dump_to_text();
+    let cfg_fp = config_fingerprint(&cfg_text);
+    eprintln!(
+        "[pq-daemon] cumulative PnL seed: prior_tape={}lamports ({} trades), config_fp={:#018x}, label=\"{}\"",
+        prior_tape_pnl, prior_tape_trades, cfg_fp, args.strategy_label
+    );
+
     // ─── === PERSISTENT EVENT LOOP === ────────────────────────────────────
     // Unlike paper_session which has `while Instant::now() < deadline`, this
     // loop runs forever. The only exits are:
@@ -1153,6 +1377,21 @@ fn main() -> ExitCode {
             match st.write_to_path(status_path) {
                 Ok(()) => {}
                 Err(e) => eprintln!("[pq-daemon] heartbeat live_status write failed: {e}"),
+            }
+            // Restart-amnesia fix: write cumulative_pnl.json alongside
+            // live_status.json. This gives the cron a trustworthy PnL
+            // number that persists across daemon restarts.
+            if let Err(e) = write_cumulative_pnl(
+                CUMULATIVE_PNL_PATH,
+                cfg_fp,
+                &args.strategy_label,
+                st.net_realized_lamports,
+                prior_tape_pnl,
+                prior_tape_trades,
+                st.admitted,
+                st.info_time_tick,
+            ) {
+                eprintln!("[pq-daemon] cumulative_pnl write failed: {e}");
             }
             engine.write_brain_analysis();
 
@@ -2093,6 +2332,20 @@ fn main() -> ExitCode {
                     Ok(()) => {}
                     Err(e) => eprintln!("[pq-daemon] live_status write failed: {e}"),
                 }
+                // Restart-amnesia fix: write cumulative_pnl.json alongside
+                // live_status.json on every periodic status write too.
+                if let Err(e) = write_cumulative_pnl(
+                    CUMULATIVE_PNL_PATH,
+                    cfg_fp,
+                    &args.strategy_label,
+                    st.net_realized_lamports,
+                    prior_tape_pnl,
+                    prior_tape_trades,
+                    st.admitted,
+                    st.info_time_tick,
+                ) {
+                    eprintln!("[pq-daemon] cumulative_pnl write failed: {e}");
+                }
                 engine.write_brain_analysis();
                 // Export memory bank summaries for the refiner to consume.
                 // This is the learning loop's output: per-mint and per-strategy
@@ -2339,6 +2592,19 @@ fn main() -> ExitCode {
     let st = engine.live_status();
     let _ = st.write_to_path(status_path);
 
+    // Final cumulative PnL write — ensures cumulative_pnl.json reflects
+    // this session's final realized PnL before shutdown.
+    let _ = write_cumulative_pnl(
+        CUMULATIVE_PNL_PATH,
+        cfg_fp,
+        &args.strategy_label,
+        st.net_realized_lamports,
+        prior_tape_pnl,
+        prior_tape_trades,
+        st.admitted,
+        st.info_time_tick,
+    );
+
     // Final brain snapshot
     match engine.snapshot_brain() {
         Ok(()) => eprintln!("[pq-daemon] final brain snapshot saved"),
@@ -2405,6 +2671,25 @@ fn main() -> ExitCode {
         ),
         Err(e) => eprintln!("[pq-daemon] final tape flush FAILED: {e}"),
     }
+
+    // ─── Session history append (A/B testing ledger) ──────────────────
+    // One line per daemon run, appended to session_history.jsonl. This is
+    // the strategy-comparison ledger: each session's final stats tagged
+    // with config fingerprint + strategy label so we can compare which
+    // config set produces the best net SOL over time.
+    let uptime_secs = session_start.elapsed().as_secs();
+    let _ = append_session_history(
+        SESSION_HISTORY_PATH,
+        cfg_fp,
+        &args.strategy_label,
+        st.net_realized_lamports,
+        prior_tape_pnl,
+        prior_tape_trades,
+        st.admitted,
+        st.info_time_tick,
+        uptime_secs,
+        tape_exporter.total_exported(),
+    );
 
     // Final memory bank export — flush learning summaries to disk
     let mb_json = memory_bank.global_json();
