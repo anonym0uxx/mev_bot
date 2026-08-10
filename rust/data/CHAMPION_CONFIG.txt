@@ -61,11 +61,11 @@ into_strength_exit_enable = 0
 landing_base_bps = 9500
 landing_penalty_k_bps = 2000
 lane_evidence_ttl_ticks = 100
-lc_cvd_hold_frac_bps = 3000
-lc_hard_sl_bps = 3000
-lc_max_hold_ticks = 300
+lc_cvd_hold_frac_bps = 1500
+lc_hard_sl_bps = 6500
+lc_max_hold_ticks = 2400
 lc_precursor_drop_bps = 3000
-lc_stall_ticks = 75
+lc_stall_ticks = 600
 lc_tp1_bps = 11000
 lc_tp1_frac_bps = 3500
 lc_tp2_bps = 25000
@@ -77,7 +77,7 @@ lc_trail_k_div = 4
 lc_trail_max_bps = 12000
 max_concurrent_positions = 3
 mcap_band_enable = 1
-mcap_band_hi_lamports = 263160000000
+mcap_band_hi_lamports = 153950000000
 mcap_band_lo_lamports = 118420000000
 meta_accel_threshold = 0
 meta_max_categories = 64
@@ -164,7 +164,7 @@ universe_min_liquidity_lamports = 10000000
 universe_min_trades = 3
 universe_wash_ratio_max = 6
 universe_window_ticks = 24
-vol_stop_enable = 0
+vol_stop_enable = 1
 vol_stop_scale_bp = 5000
 vpin_min_buckets = 8
 vpin_sell_dom_bp = 6000
@@ -180,3 +180,7 @@ watchlist_ttl_ticks = 100
 x_min_promote_cap_bp = 800
 
 # S8 reflection_snapshot: tick=10000 reflect_every_ticks=50 brain_reflect_enable=true retired=[false,false,false,false]
+
+# Rev-7: re-entry cooldown — break death-by-a-thousand-cuts re-entry loop
+reentry_cooldown_enable = 1
+reentry_cooldown_ticks = 2400
