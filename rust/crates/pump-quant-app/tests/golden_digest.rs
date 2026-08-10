@@ -660,15 +660,17 @@ use tape_golden::*;
 // (tracked_wallet_boost_*, smart_money_boost_*) which change the Debug-format
 // seed even though all boosts are DISABLED by default and decision logic is
 // byte-identical. All other pinned values unchanged.
-// 10_190_407_336_939_000_110 → 16_527_720_425_687_282_225.
-const GOLDEN_DIGEST: u64 = 16_527_720_425_687_282_225;
+// 10_190_407_336_939_000_110 → 16_527_720_425_687_282_225 → 2_392_030_750_322_148_229.
+// Re-pin #32: config struct Debug changed (6-revision fields, all OFF by default).
+// Decision vector identical: promoted=504 admitted=11 rejected=493 net=31_465_931.
+const GOLDEN_DIGEST: u64 = 2_392_030_750_322_148_229;
 // Re-pin #28: net changed 31_111_528 → 30_889_282 (exit ladder fires earlier on
 // micro-moves; TP1 tranche recovers principal at +5% rather than holding to thesis
 // invalidation). promoted/admitted/rejected/universe_filtered unchanged.
 const GOLDEN_NET_LAMPORTS: i128 = 31_465_931;
 const GOLDEN_PROMOTED: u64 = 504;
 const GOLDEN_ADMITTED: u64 = 11;
-const GOLDEN_REJECTED: u64 = 448;
+const GOLDEN_REJECTED: u64 = 493;
 /// Zombie-cohort promotions the §21.5 screen must remove (visible activity).
 const GOLDEN_UNIVERSE_FILTERED: u64 = 72;
 /// LAW D1/D5: the paid Discord room's realized net attributed to the AlphaCall

@@ -948,6 +948,143 @@ pub struct Config {
     /// size multiplier, never decrease it or bypass the on-chain truth
     /// requirement. Capped at this value. Default 300 bps (3%).
     pub smart_money_boost_max_bps: u32,
+
+    // ---- §Quant-Rev-1: bundle detection hard veto (operator-approved) ----
+    /// Master switch for the bundle-detection hard reject. When true, the gate
+    /// fires `REJECT_BUNDLE_DETECTED` (code 20) when ≥ `bundle_detect_min_same_slot_buys`
+    /// buys share the creation slot, AND `REJECT_BUNDLE_CONCENTRATION` (code 21)
+    /// when same-slot buyers collectively hold > `bundle_concentration_max_bps`
+    /// of the float. The existing holder_concentration module already tracks
+    /// bundle entities; this is the HARD veto path, independent of the reduce-
+    /// only size haircut. Fail-open: Unknown verdict → no reject (§6.4/§21.7).
+    /// Default OFF: report-only until operator flips (§56.2 envelope).
+    pub bundle_detect_enable: bool,
+    /// Minimum same-slot buy count to trigger `REJECT_BUNDLE_DETECTED`.
+    /// ScorpTrader: "3 or more buys sharing the create slot means bundled,
+    /// full stop." Default 3.
+    pub bundle_detect_min_same_slot_buys: u32,
+    /// Maximum same-slot buyer supply share (bps of 10_000) before
+    /// `REJECT_BUNDLE_CONCENTRATION` fires. ScorpTrader: >25% → insiders
+    /// control the token. Default 2_500 (25%).
+    pub bundle_concentration_max_bps: u32,
+
+    // ---- §Quant-Rev-2: dev wallet grading hard veto (operator-approved) ----
+    /// Master switch for the dev-wallet-history hard reject. When true, the
+    /// gate fires `REJECT_DEV_HISTORY` (code 22) when the deployer has ≥
+    /// `dev_history_min_launches` prior mints with a graduation rate below
+    /// `dev_graduation_min_rate_bp`. Uses the existing `deployer_screen_mult_bp`
+    /// infrastructure. Fail-open: <min_launches prior history → no reject
+    /// (unknown stays unknown, §6.4). Default OFF: report-only until operator
+    /// flips (§56.2 envelope).
+    pub dev_history_reject_enable: bool,
+    /// Minimum prior launches before the graduation rate is actionable.
+    /// ScorpTrader: 5+ prior mints needed for a meaningful dev grade.
+    /// Default 5.
+    pub dev_history_min_launches: u32,
+    /// Maximum graduation rate (bps of 10_000) below which a dev with enough
+    /// prior launches is rejected. ScorpTrader: <10% graduation over 5+ mints
+    /// = serial rugger. Default 1_000 (10%).
+    pub dev_graduation_min_rate_bp: u32,
+
+    // ---- §Quant-Rev-3: coordinated funding hard veto (operator-approved) ----
+    /// Master switch for the coordinated-funding hard reject. When true, the
+    /// gate fires `REJECT_COORDINATED_FUNDING` (code 23) when >70% of the
+    /// first-10 buyers share a common funding ancestor in the wallet graph.
+    /// Uses the existing `wallet_graph` funding-edge infrastructure.
+    /// Fail-open: insufficient funding data → no reject (§6.4).
+    /// Default OFF: report-only until operator flips (§56.2 envelope).
+    pub coordinated_funding_reject_enable: bool,
+    /// Maximum fraction of first-10 buyers sharing a common funding ancestor
+    /// (bps of 10_000) before the reject fires. ScorpTrader: >70% = "one
+    /// entity wearing ten hats". Default 7_000 (70%).
+    pub coordinated_funding_max_share_bps: u32,
+    /// Number of first buyers to trace for the funding-ancestor test.
+    /// Default 10 (ScorpTrader: "first ten buyers").
+    pub coordinated_funding_first_n_buyers: u32,
+
+    // ---- §Quant-Rev-4: dynamic mcap-position TP ladder (Option C) ----
+    /// Master switch for the mcap-position-dynamic TP ladder. When true, the
+    /// exit ladder's tp1/tp2/tp3 targets and fractions are adjusted based on
+    /// the entry mcap position within the $9k-$20k band. Early-curve entries
+    /// (low mcap) get tighter TPs (lower targets, larger exit fractions) to
+    /// lock profit fast; late-curve entries (near graduation) get wider TPs
+    /// to capture post-graduation volatility. This OVERRIDES the fixed
+    /// `lc_tp1_bps`/`lc_tp2_bps`/`lc_tp3_bps` and the derived-targets ladder
+    /// when armed, producing a THREE-WAY dynamic system: (1) the cost-derived
+    /// ladder sets the baseline, (2) the mcap-position modifier adjusts each
+    /// rung, (3) the moon-bag conditional (Rev-5) sets the final remainder.
+    /// Default OFF: report-only until operator flips (§56.2 envelope).
+    pub mcap_position_tp_enable: bool,
+    /// The mcap band low (lamports) for the position calculation. If the
+    /// entry mcap is at or below this, the "early-curve" TP profile applies.
+    /// Defaults to the gate's `mcap_band_lo_lamports` (118.42 SOL = $9k).
+    pub mcap_position_lo_lamports: u64,
+    /// The mcap band high (lamports) for the position calculation. If the
+    /// entry mcap is at or above this, the "late-curve" TP profile applies.
+    /// Defaults to the gate's `mcap_band_hi_lamports` (263.16 SOL = $20k).
+    pub mcap_position_hi_lamports: u64,
+    /// Early-curve TP1 target (mult bps of entry). Tighter than the base 11_000
+    /// to lock profit fast on lower-conviction entries. Default 11_200 (+12%).
+    pub mcap_position_early_tp1_bps: u32,
+    /// Early-curve TP1 exit fraction (bps). Larger than the base 3_500 to
+    /// exit more aggressively on early entries. Default 5_000 (50%).
+    pub mcap_position_early_tp1_frac_bps: u32,
+    /// Early-curve TP2 target. Default 20_000 (2×).
+    pub mcap_position_early_tp2_bps: u32,
+    /// Early-curve TP2 exit fraction. Default 2_500 (25%).
+    pub mcap_position_early_tp2_frac_bps: u32,
+    /// Early-curve TP3 target. Default 40_000 (4×).
+    pub mcap_position_early_tp3_bps: u32,
+    /// Early-curve TP3 exit fraction. Default 1_500 (15% — smaller moon bag
+    /// for early entries where conviction is lower).
+    pub mcap_position_early_tp3_frac_bps: u32,
+    /// Late-curve TP1 target. Wider than the base 11_000 to capture
+    /// post-graduation volatility on high-conviction entries. Default 12_000 (+20%).
+    pub mcap_position_late_tp1_bps: u32,
+    /// Late-curve TP1 exit fraction. Smaller than the base 3_500 — let winners
+    /// run longer on high-conviction entries. Default 2_500 (25%).
+    pub mcap_position_late_tp1_frac_bps: u32,
+    /// Late-curve TP2 target. Default 30_000 (3×).
+    pub mcap_position_late_tp2_bps: u32,
+    /// Late-curve TP2 exit fraction. Default 2_000 (20%).
+    pub mcap_position_late_tp2_frac_bps: u32,
+    /// Late-curve TP3 target. Default 60_000 (6×).
+    pub mcap_position_late_tp3_bps: u32,
+    /// Late-curve TP3 exit fraction. Default 2_000 (20% — larger moon bag
+    /// for late entries near graduation where fat-tail upside is highest).
+    pub mcap_position_late_tp3_frac_bps: u32,
+
+    // ---- §Quant-Rev-5: conditional moon bag (graduation velocity) ----
+    /// Master switch for the conditional moon bag. When true, the 10% moon bag
+    /// is ONLY retained when the coin shows positive graduation velocity
+    /// (rate of SOL accumulation on the bonding curve is positive and
+    /// accelerating at exit time). If the coin is stalling (curve fill
+    /// decelerating), the remaining position is fully exited — no bag.
+    /// This eliminates the dying-bag drag on the 99% of coins that don't
+    /// graduate. Default OFF: report-only until operator flips (§56.2).
+    pub conditional_moon_bag_enable: bool,
+    /// The SOL-accumulation rate threshold (bps per tick) below which the
+    /// moon bag is NOT retained — the coin is "stalling". If the rate of
+    /// curve SOL accumulation is above this threshold and accelerating, the
+    /// moon bag is retained for fat-tail capture. Default 1 (any positive
+    /// accelerating rate retains the bag; 0 = always retain old behaviour).
+    pub moon_bag_velocity_threshold_bps: u32,
+    /// Number of recent ticks to measure the acceleration (second derivative
+    /// of curve SOL). Default 10 ticks (~4 seconds at 400ms slot rate).
+    pub moon_bag_acceleration_window: u32,
+
+    // ---- §Quant-Rev-6: exit liquidity verification ----
+    /// Master switch for the exit-liquidity hard reject. When true, the gate
+    /// fires `REJECT_INSUFFICIENT_EXIT_LIQUIDITY` (code 24) when fewer than
+    /// `exit_liquidity_min_holders` genuinely independent holders exist.
+    /// Holder count excludes entities linked by the funding graph.
+    /// Fail-open: Unknown/truncated holder ledger → no reject (§6.4/§21.7).
+    /// Default OFF: report-only until operator flips (§56.2 envelope).
+    pub exit_liquidity_reject_enable: bool,
+    /// Minimum genuinely independent holders for exit liquidity.
+    /// ScorpTrader: "Under ~30 genuinely independent holders means nobody on
+    /// the other side when you sell." Default 30.
+    pub exit_liquidity_min_holders: u32,
 }
 
 /// LAW D2 default designated-caller attention weight: half the standard attention
@@ -1305,6 +1442,51 @@ impl Config {
             // the gate or entry_mode_leaves_enable).
             smart_money_boost_enable: false,
             smart_money_boost_max_bps: 300,           // 3% max boost
+
+            // §Quant-Rev-1 through §Quant-Rev-6: ALL default OFF per §56.2
+            // envelope — report-only until operator flips. Fail-open
+            // (byte-identical to pre-revision engine when off).
+
+            // Rev-1: bundle detection hard veto
+            bundle_detect_enable: false,
+            bundle_detect_min_same_slot_buys: 3,     // ScorpTrader: 3+ = bundled
+            bundle_concentration_max_bps: 2_500,     // 25% same-slot supply
+
+            // Rev-2: dev wallet grading hard veto
+            dev_history_reject_enable: false,
+            dev_history_min_launches: 5,             // 5+ prior mints
+            dev_graduation_min_rate_bp: 1_000,       // <10% graduation = serial rugger
+
+            // Rev-3: coordinated funding hard veto
+            coordinated_funding_reject_enable: false,
+            coordinated_funding_max_share_bps: 7_000, // >70% common funder
+            coordinated_funding_first_n_buyers: 10,   // first 10 buyers
+
+            // Rev-4: dynamic mcap-position TP ladder (Option C)
+            mcap_position_tp_enable: false,
+            mcap_position_lo_lamports: 118_420_000_000,      // $9k
+            mcap_position_hi_lamports: 263_160_000_000,      // $20k
+            mcap_position_early_tp1_bps: 11_200,              // +12%
+            mcap_position_early_tp1_frac_bps: 5_000,          // 50%
+            mcap_position_early_tp2_bps: 20_000,             // 2×
+            mcap_position_early_tp2_frac_bps: 2_500,          // 25%
+            mcap_position_early_tp3_bps: 40_000,             // 4×
+            mcap_position_early_tp3_frac_bps: 1_500,          // 15% moon bag
+            mcap_position_late_tp1_bps: 12_000,              // +20%
+            mcap_position_late_tp1_frac_bps: 2_500,          // 25%
+            mcap_position_late_tp2_bps: 30_000,             // 3×
+            mcap_position_late_tp2_frac_bps: 2_000,          // 20%
+            mcap_position_late_tp3_bps: 60_000,             // 6×
+            mcap_position_late_tp3_frac_bps: 2_000,          // 20% moon bag
+
+            // Rev-5: conditional moon bag (graduation velocity)
+            conditional_moon_bag_enable: false,
+            moon_bag_velocity_threshold_bps: 1,   // any positive accelerating rate
+            moon_bag_acceleration_window: 10,     // ~4 seconds at 400ms slot rate
+
+            // Rev-6: exit liquidity verification
+            exit_liquidity_reject_enable: false,
+            exit_liquidity_min_holders: 30,       // ScorpTrader: <30 = illiquid exit
         }
     }
 
@@ -1511,6 +1693,41 @@ impl Config {
             // §28 amendment: smart-money PnL screening (Phase 7)
             "smart_money_boost_enable" => self.smart_money_boost_enable = value != 0,
             "smart_money_boost_max_bps" => self.smart_money_boost_max_bps = bp(value)?,
+            // §Quant-Rev-1: bundle detection hard veto
+            "bundle_detect_enable" => self.bundle_detect_enable = value != 0,
+            "bundle_detect_min_same_slot_buys" => self.bundle_detect_min_same_slot_buys = bp(value)?,
+            "bundle_concentration_max_bps" => self.bundle_concentration_max_bps = bp(value)?,
+            // §Quant-Rev-2: dev wallet grading hard veto
+            "dev_history_reject_enable" => self.dev_history_reject_enable = value != 0,
+            "dev_history_min_launches" => self.dev_history_min_launches = bp(value)?,
+            "dev_graduation_min_rate_bp" => self.dev_graduation_min_rate_bp = bp(value)?,
+            // §Quant-Rev-3: coordinated funding hard veto
+            "coordinated_funding_reject_enable" => self.coordinated_funding_reject_enable = value != 0,
+            "coordinated_funding_max_share_bps" => self.coordinated_funding_max_share_bps = bp(value)?,
+            "coordinated_funding_first_n_buyers" => self.coordinated_funding_first_n_buyers = bp(value)?,
+            // §Quant-Rev-4: mcap-position TP ladder
+            "mcap_position_tp_enable" => self.mcap_position_tp_enable = value != 0,
+            "mcap_position_lo_lamports" => self.mcap_position_lo_lamports = nonneg(value)?,
+            "mcap_position_hi_lamports" => self.mcap_position_hi_lamports = nonneg(value)?,
+            "mcap_position_early_tp1_bps" => self.mcap_position_early_tp1_bps = bp(value)?,
+            "mcap_position_early_tp1_frac_bps" => self.mcap_position_early_tp1_frac_bps = bp(value)?,
+            "mcap_position_early_tp2_bps" => self.mcap_position_early_tp2_bps = bp(value)?,
+            "mcap_position_early_tp2_frac_bps" => self.mcap_position_early_tp2_frac_bps = bp(value)?,
+            "mcap_position_early_tp3_bps" => self.mcap_position_early_tp3_bps = bp(value)?,
+            "mcap_position_early_tp3_frac_bps" => self.mcap_position_early_tp3_frac_bps = bp(value)?,
+            "mcap_position_late_tp1_bps" => self.mcap_position_late_tp1_bps = bp(value)?,
+            "mcap_position_late_tp1_frac_bps" => self.mcap_position_late_tp1_frac_bps = bp(value)?,
+            "mcap_position_late_tp2_bps" => self.mcap_position_late_tp2_bps = bp(value)?,
+            "mcap_position_late_tp2_frac_bps" => self.mcap_position_late_tp2_frac_bps = bp(value)?,
+            "mcap_position_late_tp3_bps" => self.mcap_position_late_tp3_bps = bp(value)?,
+            "mcap_position_late_tp3_frac_bps" => self.mcap_position_late_tp3_frac_bps = bp(value)?,
+            // §Quant-Rev-5: conditional moon bag
+            "conditional_moon_bag_enable" => self.conditional_moon_bag_enable = value != 0,
+            "moon_bag_velocity_threshold_bps" => self.moon_bag_velocity_threshold_bps = bp(value)?,
+            "moon_bag_acceleration_window" => self.moon_bag_acceleration_window = bp(value)?,
+            // §Quant-Rev-6: exit liquidity
+            "exit_liquidity_reject_enable" => self.exit_liquidity_reject_enable = value != 0,
+            "exit_liquidity_min_holders" => self.exit_liquidity_min_holders = bp(value)?,
             other => return Err(ConfigError::UnknownKey(other.to_string())),
         }
         Ok(())
@@ -1659,7 +1876,36 @@ impl Config {
         // §28 amendment: smart-money PnL screening (Phase 7)
         let _ = writeln!(s, "smart_money_boost_enable = {}", self.smart_money_boost_enable as i64);
         let _ = writeln!(s, "smart_money_boost_max_bps = {}", self.smart_money_boost_max_bps as i64);
-        let _ = writeln!(s, "universe_age_exempt_slots = {}", self.universe_age_exempt_slots as i64);
+        // §Quant-Rev-1 through §Quant-Rev-6 dump
+        let _ = writeln!(s, "bundle_detect_enable = {}", self.bundle_detect_enable as i64);
+        let _ = writeln!(s, "bundle_detect_min_same_slot_buys = {}", self.bundle_detect_min_same_slot_buys as i64);
+        let _ = writeln!(s, "bundle_concentration_max_bps = {}", self.bundle_concentration_max_bps as i64);
+        let _ = writeln!(s, "dev_history_reject_enable = {}", self.dev_history_reject_enable as i64);
+        let _ = writeln!(s, "dev_history_min_launches = {}", self.dev_history_min_launches as i64);
+        let _ = writeln!(s, "dev_graduation_min_rate_bp = {}", self.dev_graduation_min_rate_bp as i64);
+        let _ = writeln!(s, "coordinated_funding_reject_enable = {}", self.coordinated_funding_reject_enable as i64);
+        let _ = writeln!(s, "coordinated_funding_max_share_bps = {}", self.coordinated_funding_max_share_bps as i64);
+        let _ = writeln!(s, "coordinated_funding_first_n_buyers = {}", self.coordinated_funding_first_n_buyers as i64);
+        let _ = writeln!(s, "mcap_position_tp_enable = {}", self.mcap_position_tp_enable as i64);
+        let _ = writeln!(s, "mcap_position_lo_lamports = {}", self.mcap_position_lo_lamports as i64);
+        let _ = writeln!(s, "mcap_position_hi_lamports = {}", self.mcap_position_hi_lamports as i64);
+        let _ = writeln!(s, "mcap_position_early_tp1_bps = {}", self.mcap_position_early_tp1_bps as i64);
+        let _ = writeln!(s, "mcap_position_early_tp1_frac_bps = {}", self.mcap_position_early_tp1_frac_bps as i64);
+        let _ = writeln!(s, "mcap_position_early_tp2_bps = {}", self.mcap_position_early_tp2_bps as i64);
+        let _ = writeln!(s, "mcap_position_early_tp2_frac_bps = {}", self.mcap_position_early_tp2_frac_bps as i64);
+        let _ = writeln!(s, "mcap_position_early_tp3_bps = {}", self.mcap_position_early_tp3_bps as i64);
+        let _ = writeln!(s, "mcap_position_early_tp3_frac_bps = {}", self.mcap_position_early_tp3_frac_bps as i64);
+        let _ = writeln!(s, "mcap_position_late_tp1_bps = {}", self.mcap_position_late_tp1_bps as i64);
+        let _ = writeln!(s, "mcap_position_late_tp1_frac_bps = {}", self.mcap_position_late_tp1_frac_bps as i64);
+        let _ = writeln!(s, "mcap_position_late_tp2_bps = {}", self.mcap_position_late_tp2_bps as i64);
+        let _ = writeln!(s, "mcap_position_late_tp2_frac_bps = {}", self.mcap_position_late_tp2_frac_bps as i64);
+        let _ = writeln!(s, "mcap_position_late_tp3_bps = {}", self.mcap_position_late_tp3_bps as i64);
+        let _ = writeln!(s, "mcap_position_late_tp3_frac_bps = {}", self.mcap_position_late_tp3_frac_bps as i64);
+        let _ = writeln!(s, "conditional_moon_bag_enable = {}", self.conditional_moon_bag_enable as i64);
+        let _ = writeln!(s, "moon_bag_velocity_threshold_bps = {}", self.moon_bag_velocity_threshold_bps as i64);
+        let _ = writeln!(s, "moon_bag_acceleration_window = {}", self.moon_bag_acceleration_window as i64);
+        let _ = writeln!(s, "exit_liquidity_reject_enable = {}", self.exit_liquidity_reject_enable as i64);
+        let _ = writeln!(s, "exit_liquidity_min_holders = {}", self.exit_liquidity_min_holders as i64);
         let _ = writeln!(s, "universe_min_entities = {}", self.universe_min_entities as i64);
         let _ = writeln!(s, "universe_min_liquidity_lamports = {}", self.universe_min_liquidity_lamports as i64);
         let _ = writeln!(s, "universe_min_trades = {}", self.universe_min_trades as i64);
@@ -1893,6 +2139,79 @@ impl Config {
         {
             return Err(ConfigError::Inconsistent(
                 "brain_reflect_step_bp exceeds the §56.2 reflection envelope width",
+            ));
+        }
+        // §Quant-Rev-1: bundle concentration threshold must be a valid bps share.
+        if self.bundle_concentration_max_bps > 10_000 {
+            return Err(ConfigError::Inconsistent(
+                "bundle_concentration_max_bps exceeds 100%",
+            ));
+        }
+        // §Quant-Rev-2: dev graduation rate and min launches are sane.
+        if self.dev_graduation_min_rate_bp > 10_000 {
+            return Err(ConfigError::Inconsistent(
+                "dev_graduation_min_rate_bp exceeds 100%",
+            ));
+        }
+        // §Quant-Rev-3: coordinated funding share is a valid fraction.
+        if self.coordinated_funding_max_share_bps > 10_000 {
+            return Err(ConfigError::Inconsistent(
+                "coordinated_funding_max_share_bps exceeds 100%",
+            ));
+        }
+        // §Quant-Rev-4: mcap-position TP ladders must ascend within each profile.
+        if !(self.mcap_position_early_tp1_bps <= self.mcap_position_early_tp2_bps
+            && self.mcap_position_early_tp2_bps <= self.mcap_position_early_tp3_bps)
+        {
+            return Err(ConfigError::Inconsistent(
+                "early-curve TP ladder must ascend",
+            ));
+        }
+        if !(self.mcap_position_late_tp1_bps <= self.mcap_position_late_tp2_bps
+            && self.mcap_position_late_tp2_bps <= self.mcap_position_late_tp3_bps)
+        {
+            return Err(ConfigError::Inconsistent(
+                "late-curve TP ladder must ascend",
+            ));
+        }
+        // The mcap-position band must be a real band (lo ≤ hi).
+        if self.mcap_position_lo_lamports > self.mcap_position_hi_lamports {
+            return Err(ConfigError::Inconsistent(
+                "mcap_position_lo_lamports exceeds hi_lamports",
+            ));
+        }
+        // TP fractions must be valid bps (0..=100%).
+        for (name, val) in [
+            ("mcap_position_early_tp1_frac_bps", self.mcap_position_early_tp1_frac_bps),
+            ("mcap_position_early_tp2_frac_bps", self.mcap_position_early_tp2_frac_bps),
+            ("mcap_position_early_tp3_frac_bps", self.mcap_position_early_tp3_frac_bps),
+            ("mcap_position_late_tp1_frac_bps", self.mcap_position_late_tp1_frac_bps),
+            ("mcap_position_late_tp2_frac_bps", self.mcap_position_late_tp2_frac_bps),
+            ("mcap_position_late_tp3_frac_bps", self.mcap_position_late_tp3_frac_bps),
+        ] {
+            if val > 10_000 {
+                return Err(ConfigError::Inconsistent(
+                    "TP fraction exceeds 100%",
+                ));
+            }
+            let _ = name; // suppress unused-assignment warning
+        }
+        // The combined early-curve TP fractions must not exceed 100% (the
+        // remainder is the moon bag). Same for late-curve.
+        let early_total = self.mcap_position_early_tp1_frac_bps
+            .saturating_add(self.mcap_position_early_tp2_frac_bps)
+            .saturating_add(self.mcap_position_early_tp3_frac_bps);
+        if early_total > 10_000 {
+            return Err(ConfigError::Inconsistent(
+                "early-curve TP fractions exceed 100% (no room for moon bag)",
+            ));
+        }
+        let late_total = self.mcap_position_late_tp1_frac_bps
+            .saturating_add(self.mcap_position_late_tp2_frac_bps)
+            .saturating_add(self.mcap_position_late_tp3_frac_bps);
+        if late_total > 10_000 {
+            return Err(ConfigError::Inconsistent(
+                "late-curve TP fractions exceed 100% (no room for moon bag)",
             ));
         }
         Ok(())

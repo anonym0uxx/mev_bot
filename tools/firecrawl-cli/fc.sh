@@ -23,7 +23,10 @@ wait_for_firecrawl() {
     local tries=0
     while [ $tries -lt 10 ]; do
         if curl -sf "$FIRECRAWL_URL/v0/health" >/dev/null 2>&1 || \
-           curl -sf "$FIRECRAWL_URL/health" >/dev/null 2>&1; then
+           curl -sf "$FIRECRAWL_URL/health" >/dev/null 2>&1 || \
+           curl -sf -X POST "$FIRECRAWL_URL/v1/scrape" \
+             -H "Content-Type: application/json" \
+             -d '{"url":"https://example.com"}' >/dev/null 2>&1; then
             return 0
         fi
         sleep 2

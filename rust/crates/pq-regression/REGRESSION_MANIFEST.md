@@ -55,11 +55,11 @@ worth **zero lamports** on every tape this repo can drive.
 
 | Baseline | Value | Guards |
 |---|---|---|
-| `GOLDEN_DIGEST` | `16527720425687282225` (hex `e55e4228d80ef231`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
+| `GOLDEN_DIGEST` | `2392030750322148229` (hex `2132334b3cc34385`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
 | `GOLDEN_NET_LAMPORTS` | `31465931` | realized §24-compliant cost-derived net-SOL on the golden tape |
 | `GOLDEN_PROMOTED` | `504` | candidates promoted to the gate |
 | `GOLDEN_ADMITTED` | `11` | candidates admitted by the gate |
-| `GOLDEN_REJECTED` | `448` | candidates rejected by the gate |
+| `GOLDEN_REJECTED` | `493` | candidates rejected by the gate — re-pin #31 accounting-identity fix |
 | `GOLDEN_UNIVERSE_FILTERED` | `72` | §21.5 universe-screen removals (zombie cohort) |
 | `GOLDEN_NET_FIXED_LADDER` | `31390194` | net with the §24 cost-derived ladder DISABLED (forbidden fixed 13500/25000/50000 ladder). Re-measured at re-pin #26 under the unified cost model (was `7327315` at re-pin #24, `15055700` on the fictional tape) |
 | `GOLDEN_DERIVED_MINUS_FIXED` | `75737` | **NEGATIVE since re-pin #26 — the fixed ladder now out-earns cost-derived on this tape by 191450 lamports (1.1% of the book, on 12 trades in 4 markets).** The §24 reversal STANDS regardless: re-pin #12 ruled that fixed global TP constants are FORBIDDEN as the live default *whatever this tape's net*, and it anticipated exactly this case. The retired claim that derived also earns more (`+12620` → `+355101` → `+797253`) is withdrawn, not re-argued |

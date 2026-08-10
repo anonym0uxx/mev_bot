@@ -124,6 +124,12 @@ target_floor_bp = 10500
 target_margin_mult_bp = 10000
 thesis_persist_obs = 1
 total_risk_cap_bp = 2100
+tracked_corroboration_window_slots = 50
+tracked_dev_boost_max_bps = 200
+tracked_wallet_boost_enable = 0
+tracked_whale_min_corroboration = 2
+smart_money_boost_enable = 0
+smart_money_boost_max_bps = 300
 universe_age_exempt_slots = 64
 universe_min_entities = 2
 universe_min_liquidity_lamports = 10000000
@@ -145,4 +151,4 @@ watchlist_capacity = 64
 watchlist_ttl_ticks = 100
 x_min_promote_cap_bp = 800
 
-# S8 reflection_snapshot: tick=10000 reflect_every_ticks=50 brain_reflect_enable=true retired=[false,false,false,false]
+# S8 reflection_snapshot: tick=15000 reflect_every_ticks=50 brain_reflect_enable=true retired=[false,false,false,false]

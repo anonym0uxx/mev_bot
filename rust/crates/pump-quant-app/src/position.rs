@@ -118,6 +118,14 @@ pub struct LifecycleParams {
     /// §24 LAW 6: fraction (bps of 10_000) of the position's realized-vol bps added
     /// to the base stop/trail width before the envelope clamp.
     pub vol_stop_scale_bp: u32,
+    /// §Quant-Rev-5: master switch for the conditional moon bag. When true,
+    /// thesis-invalidation and stall exits check the graduation velocity
+    /// before closing the full position. If the curve SOL is accelerating,
+    /// the moon bag is retained instead of being closed.
+    pub conditional_moon_bag_enable: bool,
+    /// §Quant-Rev-5: the acceleration window (number of recent curve SOL
+    /// readings) used to compute the graduation velocity.
+    pub moon_bag_acceleration_window: u32,
 }
 
 impl LifecycleParams {
@@ -145,6 +153,8 @@ impl LifecycleParams {
             exit_impair_bps: 0, // Mode A/B default; engine sets from cfg.fill_mode
             curve_exact_fill: false, // fill fidelity; MUST be armed for real-data backtests
             into_strength_exit_enable: false, // LAW 5 off by default; operator/challenger arms
+            conditional_moon_bag_enable: false, // §Quant-Rev-5 off by default
+            moon_bag_acceleration_window: 10, // ~4 seconds at 400ms slot rate
             into_strength_climax_bp: 20_000, // 2× baseline arrival = a genuine climax
             vol_stop_enable: false, // LAW 6 off by default
             vol_stop_scale_bp: 5_000, // 0.5× realized-vol added to base stop/trail
@@ -222,6 +232,12 @@ pub struct DerivedTargets {
     /// Cost-priced rung COUNT (1..=3): tranches beyond this are disabled — a
     /// position too small to carry a rung above the fixed-cost floor takes fewer.
     pub rungs: u8,
+    /// §Quant-Rev-4: per-position tranche fractions (bps of original position).
+    /// When `Some`, these override the global `LifecycleParams` fractions for
+    /// this position. `None` = use the global fractions (pre-revision behavior).
+    pub tp1_frac_bps: Option<u32>,
+    pub tp2_frac_bps: Option<u32>,
+    pub tp3_frac_bps: Option<u32>,
 }
 
 /// One realized (partial or full) exit event.
@@ -300,6 +316,13 @@ struct HeldPosition {
     gap_ring_len: u64,
     /// Swaps observed (the climax detector needs a short baseline first).
     trades_seen: u64,
+    /// §Quant-Rev-5: conditional moon bag — recent curve SOL levels for
+    /// graduation velocity computation. Ring buffer of the last
+    /// `moon_bag_acceleration_window` liquidity observations. When the
+    /// velocity (rate of SOL accumulation) is positive and accelerating,
+    /// the moon bag is retained even on thesis-invalidation/stall exits.
+    curve_sol_ring: [u64; 16],
+    curve_sol_ring_len: u64,
 }
 
 impl HeldPosition {
@@ -320,6 +343,50 @@ impl HeldPosition {
             return 10_000;
         }
         ((u128::from(price_fp) * 10_000) / u128::from(self.entry_price_fp)) as u32
+    }
+
+    /// §Quant-Rev-5: record the current curve SOL level for graduation
+    /// velocity computation. Called on every swap via `liq_lamports`.
+    fn record_curve_sol(&mut self, liq_lamports: u64) {
+        let slot = (self.curve_sol_ring_len as usize) % 16;
+        self.curve_sol_ring[slot] = liq_lamports;
+        self.curve_sol_ring_len = self.curve_sol_ring_len.saturating_add(1);
+    }
+
+    /// §Quant-Rev-5: compute the graduation velocity. Returns true when the
+    /// curve SOL is accelerating (velocity positive AND increasing over the
+    /// recent window). This is the signal to retain the moon bag.
+    fn graduation_velocity_positive(&self, window: u32) -> bool {
+        if self.curve_sol_ring_len < 3 || window < 2 {
+            return false; // not enough data
+        }
+        let n = self.curve_sol_ring_len.min(window as u64).min(16) as usize;
+        // Extract the last n SOL readings in order.
+        let mut readings: Vec<u64> = Vec::with_capacity(n);
+        let start = self.curve_sol_ring_len.saturating_sub(n as u64);
+        for i in 0..n {
+            let idx = (start + i as u64) as usize % 16;
+            readings.push(self.curve_sol_ring[idx]);
+        }
+        // Compute first differences (velocity) and check if they're positive
+        // and accelerating (second differences positive).
+        let mut velocities: Vec<i64> = Vec::with_capacity(n.saturating_sub(1));
+        for i in 1..readings.len() {
+            let v = readings[i] as i64 - readings[i - 1] as i64;
+            velocities.push(v);
+        }
+        if velocities.is_empty() {
+            return false;
+        }
+        // Average velocity must be positive.
+        let avg_v = velocities.iter().sum::<i64>() / velocities.len() as i64;
+        if avg_v <= 0 {
+            return false;
+        }
+        // Check acceleration: last velocity > first velocity.
+        let first_v = velocities[0];
+        let last_v = velocities[velocities.len() - 1];
+        last_v > first_v
     }
 
     /// Vol-scaled trailing width: widens as the position runs (bps). Under
@@ -583,6 +650,8 @@ impl ScalpLifecycle {
                 gap_ring: [0; ARR_RING],
                 gap_ring_len: 0,
                 trades_seen: 0,
+                curve_sol_ring: [0; 16],
+                curve_sol_ring_len: 0,
             },
         );
         true
@@ -726,6 +795,8 @@ impl ScalpLifecycle {
         let pos = self.open.get_mut(mint)?;
         // Freshest curve depth — what our own exit would walk (fails closed at 0).
         pos.liq_lamports = liq_lamports;
+        // §Quant-Rev-5: record the curve SOL for graduation velocity computation.
+        pos.record_curve_sol(liq_lamports);
         pos.cvd = pos.cvd.saturating_add(signed_quote);
         if pos.cvd > pos.cvd_peak {
             pos.cvd_peak = pos.cvd;
@@ -800,6 +871,37 @@ impl ScalpLifecycle {
         };
         let stalled = mult > 10_000 && tick.saturating_sub(pos.last_high_tick) >= stall_window;
         if cvd_dead || stalled {
+            // §Quant-Rev-5: conditional moon bag — if the graduation velocity
+            // is positive (curve SOL accelerating toward graduation), retain
+            // the moon bag instead of closing the full position. Sell down to
+            // the moon bag fraction and keep the rest open.
+            if p.conditional_moon_bag_enable
+                && pos.graduation_velocity_positive(p.moon_bag_acceleration_window)
+                && pos.remaining_bps > 1_000 // retain at least 10% moon bag
+            {
+                // Sell down to 10% (1_000 bps) — the moon bag.
+                let sell_frac = pos.remaining_bps.saturating_sub(1_000);
+                if sell_frac > 0 {
+                    pos.tranche_mask |= 0b1000; // mark partial exit
+                    let net = pos.realize(sell_frac, mult, &p);
+                    let (mfe_bps, mae_bps) = pos.excursions_bps();
+                    let exit_px = u64::try_from(
+                        u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000
+                    ).unwrap_or(pos.entry_price_fp);
+                    return Some(Exit {
+                        mint: *mint,
+                        net_lamports: net,
+                        reason: ExitReason::TakeProfitLadder, // treat as TP-like partial
+                        closed: false, // position stays open — moon bag retained
+                        mfe_bps,
+                        mae_bps,
+                        entry_price_fp: pos.entry_price_fp,
+                        exit_price_fp: exit_px,
+                        size_lamports: pos.size_lamports,
+                        entry_tick: pos.entry_tick,
+                    });
+                }
+            }
             return Some(self.close(mint, mult, ExitReason::ThesisInvalidation));
         }
 
@@ -812,6 +914,16 @@ impl ScalpLifecycle {
             Some(d) => (d.tp1_bps, d.tp2_bps, d.tp3_bps, d.rungs),
             None => (p.tp1_bps, p.tp2_bps, p.tp3_bps, 3u8),
         };
+        // §Quant-Rev-4: per-position fractions override the global LifecycleParams
+        // fractions when the derived targets carry them (mcap-position overlay).
+        let (f1, f2, f3) = match pos.derived {
+            Some(d) => (
+                d.tp1_frac_bps.unwrap_or(p.tp1_frac_bps),
+                d.tp2_frac_bps.unwrap_or(p.tp2_frac_bps),
+                d.tp3_frac_bps.unwrap_or(p.tp3_frac_bps),
+            ),
+            None => (p.tp1_frac_bps, p.tp2_frac_bps, p.tp3_frac_bps),
+        };
         if max_rungs >= 1 && mult >= t1 && (pos.tranche_mask & 0b001) == 0 {
             // Re-pin #29: FIXED fraction (tp1_frac_bps) instead of cost-recovery.
             // The old mechanism computed `recover_frac = cost / (size * mult)` to
@@ -822,7 +934,7 @@ impl ScalpLifecycle {
             // ladder (margin = rt_bps × target_margin_mult_bp/10_000, floor 10_500)
             // or the fixed fallback (11_000 = +10%), so the exit price is always
             // above all-in round-trip cost.
-            let frac = p.tp1_frac_bps.min(pos.remaining_bps);
+            let frac = f1.min(pos.remaining_bps);
             pos.tranche_mask |= 0b001;
             let net = pos.realize(frac, mult, &p);
             let (mfe_bps, mae_bps) = pos.excursions_bps();
@@ -844,7 +956,7 @@ impl ScalpLifecycle {
         }
         if max_rungs >= 2 && mult >= t2 && (pos.tranche_mask & 0b010) == 0 {
             pos.tranche_mask |= 0b010;
-            let net = pos.realize(p.tp2_frac_bps, mult, &p);
+            let net = pos.realize(f2, mult, &p);
             let (mfe_bps, mae_bps) = pos.excursions_bps();
             let exit_px = u64::try_from(
                 u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000
@@ -864,7 +976,7 @@ impl ScalpLifecycle {
         }
         if max_rungs >= 3 && mult >= t3 && (pos.tranche_mask & 0b100) == 0 {
             pos.tranche_mask |= 0b100;
-            let net = pos.realize(p.tp3_frac_bps, mult, &p);
+            let net = pos.realize(f3, mult, &p);
             let (mfe_bps, mae_bps) = pos.excursions_bps();
             let exit_px = u64::try_from(
                 u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000
@@ -1119,5 +1231,141 @@ mod tests {
             .on_trade(&[9u8; 32], 1_000_000, 1, 1, TEST_LIQ_LAMPORTS)
             .is_none());
         assert!(lc.force_close_all(&|_| None).is_empty());
+    }
+
+    // ─── §Quant-Rev-4: Dynamic TP ladder (Option C) ──────────────────────
+
+    /// Rev-4: DerivedTargets with mcap-position fractions override the
+    /// global LifecycleParams fractions when armed via arm_context.
+    #[test]
+    fn rev4_derived_targets_override_global_fractions() {
+        let mut p = P;
+        p.conditional_moon_bag_enable = false; // isolate Rev-4
+        let mut lc = ScalpLifecycle::new(p, 64);
+        // Use a larger position to amortize fixed costs: 10M lamports.
+        lc.open([7u8; 32], 10_000_000, 10_000_000, 10_000_000 + p.fixed_lamports_per_leg, 0);
+        // Arm with mcap-position-derived targets: TP1 at +50% (15_000 bps),
+        // smaller TP1 fraction (20% = 2_000 bps instead of the default 4_000).
+        lc.arm_context(
+            &[7u8; 32],
+            0,
+            Some(DerivedTargets {
+                tp1_bps: 15_000,
+                tp2_bps: 30_000,
+                tp3_bps: 60_000,
+                tp1_frac_bps: Some(2_000),
+                tp2_frac_bps: Some(2_000),
+                tp3_frac_bps: Some(4_000),
+                rungs: 3,
+            }),
+        );
+        // Push price to TP1 (+50%): the 2_000 bps (20%) tranche should fire.
+        let price = 10_000_000u64 * 15_000 / 10_000;
+        let e = lc
+            .on_trade(&[7u8; 32], price, 5_000_000, 1, TEST_LIQ_LAMPORTS)
+            .expect("TP1 fires at +50%");
+        assert!(e.net_lamports > 0, "TP1 tranche nets positive (net={})", e.net_lamports);
+        // Position should still be open (only 20% sold, 80% remaining).
+        assert!(lc.has(&[7u8; 32]), "position remains after TP1 partial");
+    }
+
+    /// Rev-4: when no derived targets are armed, the global LifecycleParams
+    /// fractions are used (backward compatibility).
+    #[test]
+    fn rev4_no_derived_targets_falls_back_to_global() {
+        let mut lc = ScalpLifecycle::new(P, 64);
+        // Use a larger position to amortize fixed costs: 10M lamports.
+        lc.open([8u8; 32], 10_000_000, 10_000_000, 10_000_000 + P.fixed_lamports_per_leg, 0);
+        // No arm_context call — derived targets are None.
+        // Push to TP1 (11_000 = +10%): default tp1_frac_bps should fire.
+        let price = 10_000_000u64 * 11_000 / 10_000;
+        let e = lc
+            .on_trade(&[8u8; 32], price, 5_000_000, 1, TEST_LIQ_LAMPORTS)
+            .expect("TP1 fires at +10%");
+        assert!(e.net_lamports > 0, "TP1 nets positive (net={})", e.net_lamports);
+    }
+
+    // ─── §Quant-Rev-5: Conditional moon bag ─────────────────────────────
+
+    /// Rev-5: when conditional_moon_bag is enabled and graduation velocity
+    /// is positive, the thesis-invalidation exit retains a moon bag instead
+    /// of closing the full position.
+    #[test]
+    fn rev5_conditional_moon_bag_retains_on_acceleration() {
+        let mut p = P;
+        p.conditional_moon_bag_enable = true;
+        p.moon_bag_acceleration_window = 5;
+        let mut lc = ScalpLifecycle::new(p, 64);
+        lc.open([5u8; 32], 1_000_000, 1_000_000, 1_000_000 + p.fixed_lamports_per_leg, 0);
+        // Build CVD peak with buys, then roll over with a large sell.
+        // CVD peak = 5M+5M+3M+3M = 16M. A sell of -12M brings CVD to 4M = 25%
+        // of peak, below the 30% hold threshold → thesis-invalidation fires.
+        // Meanwhile curve SOL rises: 30→32→35→40→45M (accelerating).
+        lc.on_trade(&[5u8; 32], 1_050_000, 5_000_000, 1, 30_000_000_000);
+        lc.on_trade(&[5u8; 32], 1_060_000, 5_000_000, 2, 32_000_000_000);
+        lc.on_trade(&[5u8; 32], 1_065_000, 3_000_000, 3, 35_000_000_000);
+        lc.on_trade(&[5u8; 32], 1_070_000, 3_000_000, 4, 40_000_000_000);
+        // Trigger thesis-invalidation with a large sell while SOL keeps rising.
+        let e = lc
+            .on_trade(&[5u8; 32], 1_060_000, -12_000_000, 5, 45_000_000_000)
+            .expect("some exit fires");
+        // If the moon bag was retained, the position should still be open
+        // and the exit should NOT be fully closed.
+        assert!(!e.closed, "moon bag retained — exit is partial, not full close");
+        assert!(lc.has(&[5u8; 32]), "position remains — moon bag held");
+    }
+
+    /// Rev-5: when conditional_moon_bag is DISABLED (default), the
+    /// thesis-invalidation closes the full position as before.
+    #[test]
+    fn rev5_moon_bag_disabled_closes_full_position() {
+        let mut p = P;
+        p.conditional_moon_bag_enable = false; // disabled
+        let mut lc = ScalpLifecycle::new(p, 64);
+        lc.open([6u8; 32], 1_000_000, 1_000_000, 1_000_000 + p.fixed_lamports_per_leg, 0);
+        // Build CVD peak then roll over — standard thesis-invalidation.
+        lc.on_trade(&[6u8; 32], 1_050_000, 5_000_000, 1, TEST_LIQ_LAMPORTS);
+        lc.on_trade(&[6u8; 32], 1_060_000, 5_000_000, 2, TEST_LIQ_LAMPORTS);
+        let e = lc
+            .on_trade(&[6u8; 32], 1_055_000, -9_000_000, 3, TEST_LIQ_LAMPORTS)
+            .expect("thesis fires on flow rollover");
+        assert_eq!(e.reason, ExitReason::ThesisInvalidation);
+        assert!(e.closed, "full position closed when moon bag disabled");
+        assert!(!lc.has(&[6u8; 32]), "position removed after full close");
+    }
+
+    /// Rev-5: graduation_velocity_positive returns false when there are
+    /// fewer than 3 curve SOL readings (not enough data).
+    #[test]
+    fn rev5_graduation_velocity_insufficient_data() {
+        let mut lc = ScalpLifecycle::new(P, 64);
+        lc.open([3u8; 32], 1_000_000, 1_000_000, 1_000_000 + P.fixed_lamports_per_leg, 0);
+        // Only 2 trades — not enough for velocity computation.
+        lc.on_trade(&[3u8; 32], 1_050_000, 100_000, 1, 30_000_000_000);
+        lc.on_trade(&[3u8; 32], 1_060_000, 100_000, 2, 35_000_000_000);
+        // The position should still be open (no exit triggered by 2 trades).
+        assert!(lc.has(&[3u8; 32]));
+    }
+
+    /// Rev-5: graduation_velocity_positive returns false when curve SOL
+    /// is decelerating (velocity decreasing).
+    #[test]
+    fn rev5_graduation_velocity_decelerating() {
+        let mut p = P;
+        p.conditional_moon_bag_enable = true;
+        p.moon_bag_acceleration_window = 5;
+        let mut lc = ScalpLifecycle::new(p, 64);
+        lc.open([4u8; 32], 1_000_000, 1_000_000, 1_000_000 + p.fixed_lamports_per_leg, 0);
+        // Rising SOL but DECELERATING: +5M, +3M, +1M, +0.5M — velocity decreasing.
+        lc.on_trade(&[4u8; 32], 1_050_000, 5_000_000, 1, 30_000_000_000);
+        lc.on_trade(&[4u8; 32], 1_055_000, 3_000_000, 2, 35_000_000_000);
+        lc.on_trade(&[4u8; 32], 1_060_000, 2_000_000, 3, 38_000_000_000);
+        lc.on_trade(&[4u8; 32], 1_065_000, 1_000_000, 4, 40_000_000_000);
+        // Trigger thesis-invalidation with decelerating SOL.
+        let e = lc
+            .on_trade(&[4u8; 32], 1_060_000, -8_000_000, 5, 40_500_000_000)
+            .expect("thesis fires");
+        // Decelerating → moon bag NOT retained → full close.
+        assert!(e.closed, "decelerating SOL → full close, no moon bag");
     }
 }

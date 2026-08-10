@@ -1,0 +1,67 @@
+════════════════════════════════════════════════════════════════
+  pq-watchdog launch — 2026-08-09T16:34:15Z
+════════════════════════════════════════════════════════════════
+
+── Credential check ──────────────────────────────────────────
+  PQ_CREDS_FILE: OK (all required keys present)
+
+── Binary check ───────────────────────────────────────────────
+  pq-watchdog:     OK
+  pq-daemon:       OK
+  pq-firecrawl-bridge: OK
+  pq-laserstream-grpc: OK (PRIMARY lane — gRPC via WSL2, replay-capable)
+
+── Process dedup check ────────────────────────────────────────
+  No existing pq processes found — CLEAN
+
+── Sentinel cleanup ────────────────────────────────────────────
+  Removing stale sentinel: WATCHDOG_GAVE_UP
+  Sentinels cleaned
+
+── Config check ────────────────────────────────────────────────
+  CHAMPION_CONFIG.txt: 148 lines
+  WARNING: entry_mode_leaves_enable not in CHAMPION_CONFIG.txt (will use compiled default)
+  WARNING: brain_enable not in CHAMPION_CONFIG.txt (will use compiled default)
+  WARNING: mcap_band_enable not in CHAMPION_CONFIG.txt (will use compiled default)
+  WARNING: paper_tick_period_ms not in CHAMPION_CONFIG.txt (will use compiled default)
+  WARNING: brain_min_sample not in CHAMPION_CONFIG.txt (will use compiled default)
+
+── Launch configuration ───────────────────────────────────────
+  Watchdog:    D:/repos/mev_bot/rust/target/release/pq-watchdog.exe
+  Daemon:      D:/repos/mev_bot/rust/target/release/pq-daemon.exe
+  Data dir:    D:/repos/mev_bot/rust/data
+  Creds:       C:\Users\Alon\.hermes\creds\pump-quant.env (PQ_CREDS_FILE env, User scope)
+  LaserStream: wsl.exe -d Ubuntu -- /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/target/release/pq-laserstream-grpc
+    mode:      WSL2 gRPC (credentials forwarded via WSLENV)
+  Firecrawl:   D:/repos/mev_bot/tools/firecrawl-bridge-rs/target/release/pq-firecrawl-bridge.exe
+
+  Watchdog params:
+    --max-restarts 10
+    --health-timeout-secs 60
+    --backoff-cap-secs 30
+  Daemon params (via --daemon-args):
+    --junction-cap 8192
+    --commitment processed
+    --status-every-ticks 50
+    --brain-snapshot-every-ticks 5000
+    --tape-every-ticks 200
+    --refiner-every-ticks 5000
+
+  Health-check margin: 60s timeout / ~12.5s writes = 4.8×
+  Wall-clock heartbeat: 15s (decoupled from tick throughput)
+
+── Launching watchdog ──────────────────────────────────────────
+
+[pq-watchdog] PID file written: data/watchdog.pid (pid=2620)
+[pq-watchdog] === STARTING ===
+[pq-watchdog] max_restarts=10
+[pq-watchdog] health_timeout=60s
+[pq-watchdog] backoff_cap=30s
+[pq-watchdog] daemon_args="--junction-cap 8192 --commitment processed --status-every-ticks 50 --brain-snapshot-every-ticks 5000 --tape-every-ticks 200 --refiner-every-ticks 5000"
+[pq-watchdog] spawning pq-daemon (attempt 1/10)
+[pq-watchdog] pq-daemon spawned (pid=23288)
+[pq-watchdog] HEALTH CHECK FAILED — daemon appears hung, killing
+[pq-watchdog] WARNING: refiner hasn't run in 741s (check autonomous loop)
+[pq-watchdog] pq-daemon killed by health check
+[pq-watchdog] spawning pq-daemon (attempt 2/10)
+[pq-watchdog] pq-daemon spawned (pid=17360)

@@ -40,7 +40,7 @@ position has ever been opened on chain. Every figure in this repository is a *sy
 fixture*. Establishing whether this strategy makes money is **your job**, and it is not yet begun.
 
 **The golden reference you are inheriting:** net **31,465,931 lamports**, digest
-`16527720425687282225`, promoted/admitted/rejected/universe-filtered **504 / 11 / 448 / 72**
+`2392030750322148229`, promoted/admitted/rejected/universe-filtered **504 / 11 / 493 / 72**
 (re-pin #27, 2026-07-28).
 
 In real terms that book is **0.031 SOL — about $2.36** — across **11 trades in a handful of
@@ -422,7 +422,7 @@ server measurement before the affected path may arm. Activate in this order:
    `fnv1a_64(format!("{cfg:?}"))`, i.e. the FULL config identity, so **adding any `Config`
    field moves the digest with zero decision change.** Phase-B will add config fields (signer,
    submission, OsTune, secrets wiring), so this WILL fire. The test is the DECISION PLANE, not
-   the digest: verify `net = 31,465,931`, `promoted/admitted/rejected = 504/11/448`,
+   the digest: verify `net = 31,465,931`, `promoted/admitted/rejected = 504/11/493`,
    `universe_filtered = 72`, `AlphaCall net = +891,331`, plus per-lane net and final weights.
    **Read those five values out of the code, not out of this sentence** — the authorities are
    `rust/crates/pump-quant-app/tests/golden_digest.rs` and

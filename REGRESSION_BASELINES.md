@@ -28,9 +28,9 @@ canonical values, for cross-reference, are:
 
 | Invariant | Value | Source (authoritative) |
 |---|---|---|
-| Golden decision-journal digest | `16_527_720_425_687_282_225` | `baselines.rs::GOLDEN_DIGEST` |
+| Golden decision-journal digest | `2_392_030_750_322_148_229` | `baselines.rs::GOLDEN_DIGEST` |
 | Golden net-SOL (lamports) | `31_465_931` | `baselines.rs::GOLDEN_NET_LAMPORTS` |
-| Promoted / admitted / rejected | `504 / 11 / 448` | `baselines.rs::GOLDEN_{PROMOTED,ADMITTED,REJECTED}` |
+| Promoted / admitted / rejected | `504 / 11 / 493` | `baselines.rs::GOLDEN_{PROMOTED,ADMITTED,REJECTED}` |
 | Universe-filtered | `72` | `baselines.rs::GOLDEN_UNIVERSE_FILTERED` |
 | `cargo test --workspace` | 1908 tests / 0 fail | live workspace run |
 | `cargo fmt --all --check` | clean | live |
