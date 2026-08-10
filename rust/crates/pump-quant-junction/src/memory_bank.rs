@@ -489,6 +489,8 @@ mod tests {
             error_code: 0,
             seq: 0,
             lane: None,
+            mfe_bps: 0,
+            mae_bps: 0,
         }
     }
 

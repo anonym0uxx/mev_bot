@@ -111,6 +111,9 @@ pub enum TapeRecord {
         run_mode_tag: &'static str,
         error_code: u32,
         seq: u64,
+        /// GAP C: MFE/MAE excursion tracking (bps from entry price).
+        mfe_bps: i64,
+        mae_bps: i64,
     },
     /// A hypothesis p-value (kind: "pvalue").
     PValue { id: u64, p_ppm: u32 },
@@ -176,10 +179,10 @@ impl TapeRecord {
                 size_lamports, strategy_id, source_tag, outcome_tag,
                 realized_pnl_lamports, fees_lamports, slippage_lamports,
                 decision_latency_us, confirm_latency_us, run_mode_tag,
-                error_code, seq,
+                error_code, seq, mfe_bps, mae_bps,
             } => {
                 format!(
-                    r#"{{"kind":"trade_full","slot":{slot},"mint":"{mint}","side":"{side}","entry_price_fp":{ep},"exit_price_fp":{xp},"size_lamports":{sz},"strategy_id":{sid},"source":"{src}","outcome":"{out}","realized_pnl":{pnl},"fees":{fees},"slippage":{slip},"decision_latency_us":{dl},"confirm_latency_us":{cl},"run_mode":"{rm}","error_code":{ec},"seq":{seq}}}"#,
+                    r#"{{"kind":"trade_full","slot":{slot},"mint":"{mint}","side":"{side}","entry_price_fp":{ep},"exit_price_fp":{xp},"size_lamports":{sz},"strategy_id":{sid},"source":"{src}","outcome":"{out}","realized_pnl":{pnl},"fees":{fees},"slippage":{slip},"decision_latency_us":{dl},"confirm_latency_us":{cl},"run_mode":"{rm}","error_code":{ec},"seq":{seq},"mfe_bps":{mfe},"mae_bps":{mae}}}"#,
                     slot = slot,
                     mint = mint_b58,
                     side = side_tag,
@@ -197,6 +200,8 @@ impl TapeRecord {
                     rm = run_mode_tag,
                     ec = error_code,
                     seq = seq,
+                    mfe = mfe_bps,
+                    mae = mae_bps,
                 )
             }
             TapeRecord::PValue { id, p_ppm } => {
@@ -339,6 +344,8 @@ pub fn trade_record_to_tape_full(rec: &TradeRecord) -> TapeRecord {
         run_mode_tag: rec.run_mode.tag(),
         error_code: rec.error_code,
         seq: rec.seq,
+        mfe_bps: rec.mfe_bps,
+        mae_bps: rec.mae_bps,
     }
 }
 
@@ -488,6 +495,8 @@ mod tests {
             error_code: 0,
             seq: 0,
             lane: None,
+            mfe_bps: 0,
+            mae_bps: 0,
         }
     }
 

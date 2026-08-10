@@ -172,6 +172,14 @@ pub struct TradeRecord {
     /// `TapeLane` without hardcoding. `None` means the lane was not known at
     /// creation time (backward compat with older callers).
     pub lane: Option<TradeLane>,
+    /// GAP C: Maximum Favorable Excursion in basis points.
+    /// The highest unrealized profit (in bps) observed during the trade's
+    /// lifetime, measured from entry price. 0 if never tracked.
+    pub mfe_bps: i64,
+    /// GAP C: Maximum Adverse Excursion in basis points.
+    /// The deepest unrealized loss (in bps, positive = underwater) observed
+    /// during the trade's lifetime. 0 if never tracked.
+    pub mae_bps: i64,
 }
 
 impl TradeRecord {
@@ -206,6 +214,9 @@ impl TradeRecord {
         if let Some(ref lane) = self.lane {
             s.push_str(&format!(",\"lane\":\"{}\"", lane.tag()));
         }
+        // GAP C: MFE/MAE excursion tracking
+        s.push_str(&format!(",\"mfe_bps\":{}", self.mfe_bps));
+        s.push_str(&format!(",\"mae_bps\":{}", self.mae_bps));
         s.push('}');
         s
     }
@@ -401,6 +412,8 @@ mod tests {
             error_code: 0,
             seq: 0,
             lane: None,
+            mfe_bps: 0,
+            mae_bps: 0,
         }
     }
 

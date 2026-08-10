@@ -53,6 +53,8 @@ fn make_trade(
         error_code: 0,
         seq: slot,
         lane: None,
+            mfe_bps: 0,
+            mae_bps: 0,
     }
 }
 

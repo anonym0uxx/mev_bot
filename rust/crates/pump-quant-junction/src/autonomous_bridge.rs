@@ -39,6 +39,28 @@ const REFINER_STATE_FILE: &str = "data/evaluator_state.json";
 /// Path to the tape file.
 const TAPE_FILE: &str = "data/tape.jsonl";
 
+/// Path to the raw event stream (for Phase 3 engine replay in the refiner).
+/// When the refiner gets `--event-stream-path`, it runs the full engine
+/// pipeline per challenger (admission → sizing → exit), producing genuinely
+/// different trade sequences for different configs. Without it, the refiner
+/// falls back to shadow replay which only adjusts fee/slippage on a fixed
+/// trade set — producing identical NetSol for 95%+ of mutations.
+const EVENT_STREAM_FILE: &str = "data/event_stream.jsonl";
+
+/// Directory for champion config archive snapshots (GAP D).
+/// Each promotion saves the pre-promotion config here as
+/// `<fingerprint>_<timestamp>.txt` so we can revert to known-good configs.
+const CHAMPION_ARCHIVE_DIR: &str = "data/champion_archive";
+
+/// Path to the champion config file written by the daemon for the refiner.
+const CHAMPION_CONFIG_FILE: &str = "data/CHAMPION_CONFIG.txt";
+
+/// Path to the auto-revert state file (GAP B). Tracks the pre-promotion
+/// config fingerprint, PnL at promotion time, and a grace-period counter.
+/// If post-promotion PnL deteriorates beyond a threshold within the grace
+/// period, the daemon auto-reverts to the archived champion config.
+const AUTO_REVERT_STATE_FILE: &str = "data/auto_revert_state.json";
+
 // ── Config hot-reload (G2) ─────────────────────────────────────────────────
 
 /// Result of a config hot-reload check.
@@ -476,9 +498,22 @@ impl Default for RefinerSpawner {
 /// to `data/CHAMPION_CONFIG.txt` and passed via `--config-path`. Without this,
 /// the refiner falls back to `config/paper.toml` (which doesn't exist) and
 /// generates zero challengers.
+///
+/// **GAP A fix**: passes `--event-stream-path data/event_stream.jsonl` so the
+/// refiner runs the full engine replay (admission → sizing → exit) per
+/// challenger, producing genuinely different trade sequences for different
+/// configs. Without this, the refiner falls back to shadow replay only, which
+/// adjusts fee/slippage on a FIXED trade set — producing identical NetSol for
+/// 95%+ of parameter mutations, making the entire autonomous loop inert.
+///
+/// **GAP D fix**: before writing the champion config, archives the current
+/// champion config (if it exists) to `data/champion_archive/` so we have a
+/// revert target.
 pub fn spawn_refiner_cycle(config_text: &str) -> Result<String, String> {
+    // ── GAP D: archive the current champion config before overwriting ─────
+    archive_champion_config();
+
     // Write the champion config to data/CHAMPION_CONFIG.txt for the refiner to read.
-    const CHAMPION_CONFIG_FILE: &str = "data/CHAMPION_CONFIG.txt";
     if let Err(e) = fs::write(CHAMPION_CONFIG_FILE, config_text) {
         return Err(format!(
             "failed to write champion config to {CHAMPION_CONFIG_FILE}: {e}"
@@ -505,15 +540,271 @@ pub fn spawn_refiner_cycle(config_text: &str) -> Result<String, String> {
     cmd.arg("--tape-path").arg(TAPE_FILE);
     cmd.arg("--config-path").arg(CHAMPION_CONFIG_FILE);
 
+    // ── GAP A fix: pass the event stream for engine replay ────────────────
+    // This is THE critical fix. Without --event-stream-path, the refiner
+    // falls back to shadow_replay() which only adjusts fee/slippage on the
+    // fixed tape. With it, the refiner runs replay_event_stream() per
+    // challenger — re-deriving admission, sizing, and exit decisions under
+    // each mutated config. Different configs → different trades → different
+    // NetSol → actual differentiation → real promotions.
+    if Path::new(EVENT_STREAM_FILE).exists() {
+        cmd.arg("--event-stream-path").arg(EVENT_STREAM_FILE);
+        eprintln!(
+            "[autonomous-bridge] refiner: engine replay ENABLED (event_stream exists)"
+        );
+    } else {
+        eprintln!(
+            "[autonomous-bridge] WARNING: event_stream.jsonl not found — \
+             refiner will use shadow replay only (challengers may be identical)"
+        );
+    }
+
     // Spawn it detached (non-blocking). stdout/stderr go to the parent's.
     match cmd.spawn() {
         Ok(_child) => {
-            let msg = format!("spawned pq-refiner from {bin_path} with config {CHAMPION_CONFIG_FILE}");
+            let msg = format!(
+                "spawned pq-refiner from {bin_path} with config {CHAMPION_CONFIG_FILE} \
+                 and event_stream {EVENT_STREAM_FILE}"
+            );
             eprintln!("[autonomous-bridge] {msg}");
             Ok(msg)
         }
         Err(e) => Err(format!("failed to spawn pq-refiner: {e}")),
     }
+}
+
+// ── GAP B: Auto-revert mechanism ────────────────────────────────────────────
+//
+// When the refiner promotes a config, the daemon hot-reloads it. But if the
+// new config underperforms (slow bleed instead of cliff), there's no mechanism
+// to undo the promotion. This implements:
+//
+// 1. On promotion: save the pre-promotion config fingerprint + PnL snapshot
+//    to `data/auto_revert_state.json`.
+// 2. On each hot-reload tick: check if post-promotion PnL has deteriorated
+//    beyond a threshold within a grace period.
+// 3. If deterioration exceeds threshold: write a revert promotion file
+//    (CONFIG_PROMOTION.json with the archived champion config) and trigger
+//    the daemon's hot-reload to pick it up.
+//
+// The grace period prevents premature reverts — a config may need time to
+// find its trades. The deterioration threshold is conservative: we only
+// revert if the post-promotion PnL rate is significantly worse than the
+// pre-promotion rate, not just "slightly less profitable".
+
+/// State tracked for auto-revert decisions.
+#[derive(Clone, Debug)]
+pub struct AutoRevertState {
+    /// Config fingerprint of the config that was promoted (the "new" config).
+    pub promoted_fingerprint: u64,
+    /// Config fingerprint of the champion that was replaced (the "old" config).
+    pub prior_champion_fingerprint: u64,
+    /// Cumulative realized PnL (lamports) at the moment of promotion.
+    pub pnl_at_promotion: i128,
+    /// Ticks since the promotion was applied.
+    pub ticks_since_promotion: u64,
+    /// Whether auto-revert has triggered for this promotion.
+    pub reverted: bool,
+}
+
+impl Default for AutoRevertState {
+    fn default() -> Self {
+        Self {
+            promoted_fingerprint: 0,
+            prior_champion_fingerprint: 0,
+            pnl_at_promotion: 0,
+            ticks_since_promotion: 0,
+            reverted: false,
+        }
+    }
+}
+
+/// Grace period (in ticks) before auto-revert evaluates post-promotion PnL.
+/// At ~100ms/tick, 1500 ticks ≈ 2.5 minutes. This gives the new config time
+/// to find trades before we judge it.
+const AUTO_REVERT_GRACE_TICKS: u64 = 1500;
+
+/// Maximum post-promotion PnL deterioration (in lamports) before auto-revert
+/// triggers. If cumulative PnL drops by more than this amount relative to
+/// the PnL at promotion time, we revert. Set to a conservative 0.5 SOL
+/// (500_000_000 lamports) — a bad config that loses half a SOL in 2.5 min
+/// is clearly worse than the champion.
+const AUTO_REVERT_DRAWDOWN_LAMPORTS: i128 = 500_000_000;
+
+/// Write the auto-revert state to disk.
+pub fn write_auto_revert_state(state: &AutoRevertState) {
+    let json = format!(
+        concat!(
+            "{{\"schema\":\"auto_revert/1\",",
+            "\"promoted_fingerprint\":\"{:#018x}\",",
+            "\"prior_champion_fingerprint\":\"{:#018x}\",",
+            "\"pnl_at_promotion\":{},",
+            "\"ticks_since_promotion\":{},",
+            "\"reverted\":{}}}\n"
+        ),
+        state.promoted_fingerprint,
+        state.prior_champion_fingerprint,
+        state.pnl_at_promotion,
+        state.ticks_since_promotion,
+        state.reverted,
+    );
+    let _ = fs::write(AUTO_REVERT_STATE_FILE, json);
+}
+
+/// Read the auto-revert state from disk. Returns None if the file doesn't
+/// exist or can't be parsed.
+pub fn read_auto_revert_state() -> Option<AutoRevertState> {
+    let text = fs::read_to_string(AUTO_REVERT_STATE_FILE).ok()?;
+    // Simple field extraction — no JSON parser in this crate's deps.
+    let extract = |key: &str| -> Option<String> {
+        let needle = format!("\"{key}\":");
+        let start = text.find(&needle)? + needle.len();
+        let rest = &text[start..];
+        let end = rest.find(|c: char| c == ',' || c == '}')?;
+        Some(rest[..end].trim().to_string())
+    };
+    Some(AutoRevertState {
+        promoted_fingerprint: u64::from_str_radix(
+            extract("promoted_fingerprint")?.trim_start_matches('"').trim_end_matches('"'),
+            16,
+        ).ok()?,
+        prior_champion_fingerprint: u64::from_str_radix(
+            extract("prior_champion_fingerprint")?.trim_start_matches('"').trim_end_matches('"'),
+            16,
+        ).ok()?,
+        pnl_at_promotion: extract("pnl_at_promotion")?.parse().ok()?,
+        ticks_since_promotion: extract("ticks_since_promotion")?.parse().ok()?,
+        reverted: extract("reverted")?.parse::<u8>().map(|v| v != 0).ok()?,
+    })
+}
+
+/// Check if auto-revert should trigger. Called by the daemon on each
+/// hot-reload tick after a promotion has been applied.
+///
+/// Returns `Some(revert_config_text)` if we should revert, `None` otherwise.
+/// The revert config text is read from the champion archive.
+pub fn check_auto_revert(
+    current_fingerprint: u64,
+    current_cumulative_pnl: i128,
+    tick_since_promotion: u64,
+) -> Option<String> {
+    let state = read_auto_revert_state()?;
+    if state.reverted {
+        return None; // Already reverted
+    }
+    if state.promoted_fingerprint != current_fingerprint {
+        return None; // Different promotion context
+    }
+
+    // Only evaluate after the grace period
+    if tick_since_promotion < AUTO_REVERT_GRACE_TICKS {
+        return None;
+    }
+
+    // Check deterioration: has PnL dropped below the threshold?
+    let drawdown = state.pnl_at_promotion - current_cumulative_pnl;
+    if drawdown > AUTO_REVERT_DRAWDOWN_LAMPORTS {
+        eprintln!(
+            "[autonomous-bridge] AUTO-REVERT triggered: drawdown={drawdown} lamports \
+             (threshold={AUTO_REVERT_DRAWDOWN_LAMPORTS}), ticks={tick_since_promotion} \
+             (grace={AUTO_REVERT_GRACE_TICKS}). Reverting to champion fingerprint \
+             {:#018x}",
+            state.prior_champion_fingerprint
+        );
+
+        // Load the archived champion config
+        let archive_path = format!(
+            "{CHAMPION_ARCHIVE_DIR}/champion_{:#018x}.txt",
+            state.prior_champion_fingerprint
+        );
+        let revert_config = fs::read_to_string(&archive_path).ok()?;
+        return Some(revert_config);
+    }
+    None
+}
+
+// ── GAP D: Champion config archive ──────────────────────────────────────────
+//
+// Before each refiner spawn (which may trigger a promotion that overwrites
+// CHAMPION_CONFIG.txt), archive the current champion config. This preserves
+// a revert target: if a promoted config underperforms, we can load the
+// archived champion config and restore it.
+
+/// Archive the current champion config to `data/champion_archive/`.
+/// Called before each refiner spawn. The archive preserves the config text
+/// keyed by its FNV-1a fingerprint, so auto-revert can load it by fingerprint.
+fn archive_champion_config() {
+    // Ensure the archive directory exists
+    let _ = fs::create_dir_all(CHAMPION_ARCHIVE_DIR);
+
+    // Read the current champion config file
+    let config_text = match fs::read_to_string(CHAMPION_CONFIG_FILE) {
+        Ok(text) => text,
+        Err(_) => return, // No existing config to archive
+    };
+
+    // Compute the fingerprint of the current config
+    // We use the same FNV-1a hash as the daemon's config fingerprint.
+    // The daemon computes the hash via Config::fnv1a_64() on the
+    // dump_to_text() output. Since the file IS that output, we hash it
+    // the same way.
+    let fingerprint = fnv1a_64_text(&config_text);
+
+    let archive_path = format!("{CHAMPION_ARCHIVE_DIR}/champion_{fingerprint:#018x}.txt");
+
+    // Only archive if we don't already have this fingerprint archived
+    if Path::new(&archive_path).exists() {
+        return;
+    }
+
+    let archive_path_ts = format!(
+        "{CHAMPION_ARCHIVE_DIR}/champion_{fingerprint:#018x}_{}.txt",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    );
+
+    // Write the archived config
+    let _ = fs::write(&archive_path, &config_text);
+    let _ = fs::write(&archive_path_ts, &config_text);
+
+    // Write a manifest entry (append-only log of all champion configs)
+    let manifest_path = format!("{CHAMPION_ARCHIVE_DIR}/manifest.jsonl");
+    let manifest_entry = format!(
+        "{{\"schema\":\"champion_archive/1\",\
+         \"fingerprint\":\"{fingerprint:#018x}\",\
+         \"ts_unix\":{ts},\
+         \"config_file\":\"{path}\"}}\n",
+        ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        path = archive_path.replace('\\', "/"),
+    );
+    let _ = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .write(true)
+        .open(&manifest_path)
+        .and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(manifest_entry.as_bytes())
+        });
+}
+
+/// FNV-1a 64-bit hash of a text string, matching the daemon's config
+/// fingerprint computation. This replicates `pump_quant_brain::hash::fnv1a_64`
+/// for the config text bytes.
+fn fnv1a_64_text(text: &str) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x00000100000001b3;
+    let mut hash = FNV_OFFSET;
+    for byte in text.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
 }
 
 /// Check if a refiner cycle is currently in progress by looking for the

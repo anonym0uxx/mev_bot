@@ -59,6 +59,7 @@ use pump_quant_junction::ProvenanceSource;
 use pump_quant_junction::event_stream::EventStreamWriter;
 use pump_quant_junction::autonomous_bridge::{
     DefenseState, try_reload_config, RefinerSpawner,
+    AutoRevertState, write_auto_revert_state, check_auto_revert,
 };
 use pq_stream_capture::helius_ws;
 use pq_stream_capture::json::{self, Value};
@@ -435,6 +436,10 @@ fn write_cumulative_pnl(
 /// Deduplication: the analysis layer keeps the last entry per (config_fingerprint + uptime_secs)
 /// pair, or simply the entry with final=true. If the daemon crashes, the last final=false
 /// entry is the best available record for that session.
+///
+/// GAP E fix: includes a `session_id` field — a unique per-daemon-restart identifier
+/// (process PID + start timestamp) so A/B comparison can unambiguously attribute
+/// PnL to specific sessions, even when consecutive sessions share the same config.
 fn append_session_history(
     path: &str,
     config_fp: u64,
@@ -448,6 +453,7 @@ fn append_session_history(
     tape_trades_this_session: u64,
     tape_trades_total_at_shutdown: u64,
     is_final: bool,
+    session_id: u64,
 ) -> std::io::Result<()> {
     // Use a wall-clock timestamp here — this is an append-only audit log, NOT
     // a deterministic replay artifact. The tape/live_status are deterministic
@@ -459,8 +465,9 @@ fn append_session_history(
     let cumulative = prior_tape_realized.saturating_add(session_realized as i64);
     let json = format!(
         concat!(
-            "{{\"schema\":\"session_history/1\",",
+            "{{\"schema\":\"session_history/2\",",
             "\"ts_unix\":{},",
+            "\"session_id\":{},",
             "\"config_fingerprint\":\"{:#018x}\",",
             "\"strategy_label\":\"{}\",",
             "\"session_realized_lamports\":{},",
@@ -475,6 +482,7 @@ fn append_session_history(
             "\"final\":{}}}\n"
         ),
         ts,
+        session_id,
         config_fp,
         json_escape(strategy_label),
         session_realized,
@@ -1253,7 +1261,14 @@ fn main() -> ExitCode {
     let mut config_mtime: Option<u64> = None;
     let mut last_refiner_spawn_tick: u64 = 0;
     let mut refiner_spawner = RefinerSpawner::new();
-    eprintln!("[pq-daemon] autonomous bridge: defense-in-depth + config hot-reload + refiner scheduling ACTIVE");
+    // ── GAP B: auto-revert state ─────────────────────────────────────────
+    // Tracks the config fingerprint + PnL at the moment of each promotion.
+    // If post-promotion PnL deteriorates beyond a threshold within the grace
+    // period, the daemon auto-reverts to the archived champion config.
+    let mut auto_revert_state = AutoRevertState::default();
+    let mut promotion_tick: u64 = 0; // tick at which the last promotion was applied
+    let mut pre_promotion_fingerprint: u64 = 0; // fingerprint before the promotion
+    eprintln!("[pq-daemon] autonomous bridge: defense-in-depth + config hot-reload + refiner scheduling + auto-revert ACTIVE");
 
     // Phase 2: tape exporter — drains engine trades to evaluator JSONL format.
     let mut tape_exporter = TapeExporter::new(TAPE_PATH);
@@ -1297,6 +1312,16 @@ fn main() -> ExitCode {
 
     // GAP #14: Track session start time for daemon_health.json uptime reporting.
     let session_start = Instant::now();
+
+    // ── GAP E: generate unique session_id ──────────────────────────────
+    // A unique per-daemon-restart identifier (PID + start timestamp) so A/B
+    // comparison can unambiguously attribute PnL to specific sessions.
+    let session_id = std::process::id() as u64
+        | ((std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()) << 32);
+    eprintln!("[pq-daemon] session_id={:#018x}", session_id);
 
     // ── SUBSCRIPTION CAP SELF-HEALING ──────────────────────────────────
     // When Helius returns -32006 "Too many subscriptions", we set this flag
@@ -1450,6 +1475,7 @@ fn main() -> ExitCode {
                     tape_exporter.total_exported(),
                     prior_tape_trades.saturating_add(tape_exporter.total_exported()),
                     false, // final = false (periodic checkpoint)
+                    session_id,
                 );
             }
             engine.write_brain_analysis();
@@ -2310,8 +2336,25 @@ fn main() -> ExitCode {
         //   9. mev_invariance    — MEV invariance violation (ArXiv 2304.11010)
         //  10. liquidity_collapse— liquidity depth collapse
         // Triggers are only sent if the bridge child is alive and has stdin.
+        // GAP H: Check if the child has exited before writing to stdin. If
+        // the child process is dead, writing to its stdin causes a broken
+        // pipe which can block or error. We detect this by try_wait() and
+        // set fc_child = None so we stop trying to write to a dead pipe.
         if let Some(ref mut child) = fc_child {
-            if let Some(ref mut stdin) = child.stdin {
+            // GAP H: Check if the Firecrawl bridge child has exited
+            match child.try_wait() {
+                Ok(Some(_status)) => {
+                    // Child has exited — stop trying to write to its stdin
+                    eprintln!("[pq-daemon] Firecrawl bridge child exited — dropping fc_child, social intelligence disabled");
+                    stats.stubbed_or_assumed.push(
+                        "Firecrawl bridge exited — social intelligence disabled".to_string()
+                    );
+                    drop(child.stdin.take()); // drop stdin to close the pipe cleanly
+                    fc_child = None;
+                }
+                Ok(None) => {
+                    // Child still running — safe to write to stdin
+                    if let Some(ref mut stdin) = child.stdin {
                 let st = engine.live_status();
                 let ts_ns = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -2361,8 +2404,15 @@ fn main() -> ExitCode {
                         stats.fc_triggers_emitted += 1;
                     }
                 }
-            }
-        }
+                }  // close if let Some(ref mut stdin)
+                }  // close Ok(None) => arm
+                Err(e) => {
+                    eprintln!("[pq-daemon] Firecrawl bridge try_wait error: {e}");
+                    drop(child.stdin.take());
+                    fc_child = None;
+                }
+            }  // close match child.try_wait()
+        }  // close if let Some(ref mut child) = fc_child
 
         // ── Periodic Tick (engine evaluate) ──────────────────────────────
         if Instant::now() >= next_tick {
@@ -2428,6 +2478,7 @@ fn main() -> ExitCode {
                         tape_exporter.total_exported(),
                         prior_tape_trades.saturating_add(tape_exporter.total_exported()),
                         false, // final = false (periodic checkpoint)
+                        session_id,
                     );
                     }
                     engine.write_brain_analysis();
@@ -2480,6 +2531,8 @@ fn main() -> ExitCode {
                         run_mode_tag: "paper",
                         error_code: t.exit_reason_code as u32,
                         seq: 0,
+                        mfe_bps: t.mfe_bps,
+                        mae_bps: t.mae_bps,
                     });
                     // Also emit the coarse 5-field Trade record for backward
                     // compatibility with existing evaluator/refiner code.
@@ -2521,6 +2574,8 @@ fn main() -> ExitCode {
                         error_code: t.exit_reason_code as u32,
                         seq: 0,
                         lane: Some(trade_lane),
+                        mfe_bps: t.mfe_bps,
+                        mae_bps: t.mae_bps,
                     };
                     memory_bank.ingest(&rec);
                 }
@@ -2562,13 +2617,75 @@ fn main() -> ExitCode {
             // Check if CONFIG_PROMOTION.json has been written/updated by
             // the refiner. If so, parse mutations and apply to live config.
             {
+                let pre_reload_fp = config_fingerprint(&cfg.dump_to_text());
                 let reload = try_reload_config(&mut cfg, &mut config_mtime);
                 if reload.applied {
                     let n = reload.n_mutations;
+                    let post_reload_fp = config_fingerprint(&cfg.dump_to_text());
                     eprintln!(
                         "[pq-daemon] CONFIG HOT-RELOAD: {n} mutations applied. Summary: {}",
                         reload.summary
                     );
+
+                    // ── GAP B: record auto-revert state on promotion ──
+                    // Save the pre-promotion fingerprint and current PnL so
+                    // we can detect post-promotion deterioration and revert.
+                    if post_reload_fp != pre_reload_fp {
+                        let st = engine.live_status();
+                        let cumulative_pnl = prior_tape_pnl.saturating_add(
+                            st.net_realized_lamports as i64
+                        );
+                        auto_revert_state = AutoRevertState {
+                            promoted_fingerprint: post_reload_fp,
+                            prior_champion_fingerprint: pre_reload_fp,
+                            pnl_at_promotion: cumulative_pnl as i128,
+                            ticks_since_promotion: 0,
+                            reverted: false,
+                        };
+                        pre_promotion_fingerprint = pre_reload_fp;
+                        promotion_tick = tick_counter;
+                        write_auto_revert_state(&auto_revert_state);
+                        eprintln!(
+                            "[pq-daemon] AUTO-REVERT tracking: promoted_fp={:#018x} \
+                             prior_fp={:#018x} pnl_at_promotion={}lamports",
+                            post_reload_fp, pre_reload_fp, cumulative_pnl
+                        );
+                    }
+                }
+
+                // ── GAP B: auto-revert check ───────────────────────────
+                // After the grace period, check if the promoted config is
+                // deteriorating PnL. If so, revert to the archived champion.
+                if auto_revert_state.promoted_fingerprint != 0
+                    && !auto_revert_state.reverted
+                {
+                    let ticks_since = tick_counter.saturating_sub(promotion_tick);
+                    let st = engine.live_status();
+                    let cumulative_pnl = prior_tape_pnl.saturating_add(
+                        st.net_realized_lamports as i64
+                    );
+                    let current_fp = config_fingerprint(&cfg.dump_to_text());
+                    if let Some(revert_config_text) = check_auto_revert(
+                        current_fp,
+                        cumulative_pnl as i128,
+                        ticks_since,
+                    ) {
+                        // Revert: parse the archived champion config back
+                        eprintln!(
+                            "[pq-daemon] AUTO-REVERT: reverting config to archived champion"
+                        );
+                        if let Ok(reverted_cfg) = pump_quant_app::config::Config::from_str_over_default(
+                            &revert_config_text
+                        ) {
+                            cfg = reverted_cfg;
+                            auto_revert_state.reverted = true;
+                            write_auto_revert_state(&auto_revert_state);
+                            eprintln!(
+                                "[pq-daemon] AUTO-REVERT: config restored to fingerprint {:#018x}",
+                                pre_promotion_fingerprint
+                            );
+                        }
+                    }
                 }
             }
 
@@ -2726,8 +2843,10 @@ fn main() -> ExitCode {
             error_code: t.exit_reason_code as u32,
             seq: 0,
             lane: Some(trade_lane),
-        };
-        memory_bank.ingest(&rec);
+            mfe_bps: t.mfe_bps,
+            mae_bps: t.mae_bps,
+            };
+            memory_bank.ingest(&rec);
         tape_exporter.push(TapeRecord::TradeFull {
             slot: last_slot_seen,
             mint_b58,
@@ -2746,6 +2865,8 @@ fn main() -> ExitCode {
             run_mode_tag: "paper",
             error_code: t.exit_reason_code as u32,
             seq: 0,
+            mfe_bps: t.mfe_bps,
+            mae_bps: t.mae_bps,
         });
     }
     match tape_exporter.flush() {
@@ -2775,6 +2896,7 @@ fn main() -> ExitCode {
         tape_exporter.total_exported(),
         prior_tape_trades.saturating_add(tape_exporter.total_exported()),
         true, // final = true on graceful shutdown
+        session_id,
     );
 
     // Final memory bank export — flush learning summaries to disk

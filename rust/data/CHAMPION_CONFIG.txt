@@ -159,6 +159,8 @@ moon_bag_velocity_threshold_bps = 1
 moon_bag_acceleration_window = 10
 exit_liquidity_reject_enable = 1
 exit_liquidity_min_holders = 30
+reentry_cooldown_enable = 1
+reentry_cooldown_ticks = 2400
 universe_min_entities = 2
 universe_min_liquidity_lamports = 10000000
 universe_min_trades = 3
@@ -180,7 +182,3 @@ watchlist_ttl_ticks = 100
 x_min_promote_cap_bp = 800
 
 # S8 reflection_snapshot: tick=10000 reflect_every_ticks=50 brain_reflect_enable=true retired=[false,false,false,false]
-
-# Rev-7: re-entry cooldown — break death-by-a-thousand-cuts re-entry loop
-reentry_cooldown_enable = 1
-reentry_cooldown_ticks = 2400

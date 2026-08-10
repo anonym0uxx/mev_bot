@@ -363,6 +363,14 @@ pub struct TradeFull {
     pub error_code: u32,
     /// Monotonic sequence number.
     pub seq: u64,
+    /// GAP C: Maximum Favorable Excursion in basis points from entry price.
+    /// The highest unrealized profit (bps) observed during the trade's lifetime.
+    /// Zero for legacy tape records that predate MFE/MAE tracking.
+    pub mfe_bps: i64,
+    /// GAP C: Maximum Adverse Excursion in basis points from entry price.
+    /// The deepest unrealized loss (bps) observed during the trade's lifetime.
+    /// Zero for legacy tape records that predate MFE/MAE tracking.
+    pub mae_bps: i64,
 }
 
 /// The fully-parsed decision/outcome tape.
@@ -468,6 +476,24 @@ pub fn parse_jsonl(input: &str) -> Result<Tape, TapeError> {
                     run_mode: get_str_owned(&obj, "run_mode", lineno)?,
                     error_code: as_u32(get_int(&obj, "error_code", lineno)?, "error_code", lineno)?,
                     seq: as_u64(get_int(&obj, "seq", lineno)?, "seq", lineno)?,
+                    // GAP C: MFE/MAE — backward-compatible: default to 0 if fields
+                    // are absent (legacy tape records predate excursion tracking).
+                    mfe_bps: as_i64(
+                        match get(&obj, "mfe_bps") {
+                            Some(Json::Int(v)) => *v,
+                            _ => 0,
+                        },
+                        "mfe_bps",
+                        lineno,
+                    )?,
+                    mae_bps: as_i64(
+                        match get(&obj, "mae_bps") {
+                            Some(Json::Int(v)) => *v,
+                            _ => 0,
+                        },
+                        "mae_bps",
+                        lineno,
+                    )?,
                 });
             }
             "pvalue" => {

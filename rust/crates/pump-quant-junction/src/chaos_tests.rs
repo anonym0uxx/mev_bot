@@ -249,6 +249,8 @@ mod chaos_journal {
             error_code: if seed % 3 == 0 { 6001 } else { 0 },
             seq: seed,
             lane: None,
+            mfe_bps: 0,
+            mae_bps: 0,
         }
     }
 
@@ -287,6 +289,8 @@ mod chaos_journal {
             error_code: 0,
             seq: 0,
             lane: None,
+            mfe_bps: 0,
+            mae_bps: 0,
         };
         let jsonl = rec.to_jsonl();
         assert!(!jsonl.is_empty());
@@ -314,6 +318,8 @@ mod chaos_journal {
             error_code: u32::MAX,
             seq: u64::MAX,
             lane: None,
+            mfe_bps: 0,
+            mae_bps: 0,
         };
         let jsonl = rec.to_jsonl();
         assert!(!jsonl.is_empty());
@@ -364,6 +370,8 @@ mod chaos_memory {
             error_code: if seed % 3 == 0 { 6001 } else { 0 },
             seq: seed,
             lane: None,
+            mfe_bps: 0,
+            mae_bps: 0,
         }
     }
 
