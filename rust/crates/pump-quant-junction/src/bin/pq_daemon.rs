@@ -361,8 +361,30 @@ fn config_fingerprint(cfg_text: &str) -> u64 {
     pump_quant_brain::hash::fnv1a_64(cfg_text.as_bytes())
 }
 
+/// Escape a string for safe embedding inside a JSON string value.
+/// Handles backslash, double-quote, and control chars (0x00-0x1F).
+/// This prevents malformed JSON if the strategy_label contains special chars.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Write cumulative_pnl.json — the trustworthy cross-session PnL report.
-/// Schema: {"schema":"cumulative_pnl/1","config_fingerprint":"0x...","strategy_label":"...","session_realized_lamports":N,"prior_tape_realized_lamports":N,"cumulative_realized_lamports":N,"prior_tape_trade_count":N,"session_admitted":N,"session_tick":N,"info_time_tick":N}
+/// Schema: {\"schema\":\"cumulative_pnl/1\",\"config_fingerprint\":\"0x...\",\"strategy_label\":\"...\",\"session_realized_lamports\":N,\"prior_tape_realized_lamports\":N,\"cumulative_realized_lamports\":N,\"prior_tape_trade_count\":N,\"session_admitted\":N,\"session_tick\":N,\"info_time_tick\":N}
 fn write_cumulative_pnl(
     path: &str,
     config_fp: u64,
@@ -387,7 +409,7 @@ fn write_cumulative_pnl(
             "\"session_tick\":{}}}"
         ),
         config_fp,
-        strategy_label,
+        json_escape(strategy_label),
         session_realized,
         prior_tape_realized,
         cumulative,
@@ -407,9 +429,12 @@ fn write_cumulative_pnl(
     f.flush()
 }
 
-/// Append one line to session_history.jsonl on daemon shutdown.
-/// This is the A/B test ledger: each daemon run gets one line tagged with
-/// the config fingerprint, strategy label, and final stats.
+/// Append one line to session_history.jsonl — the A/B test ledger.
+/// Each daemon run gets tagged with config fingerprint, strategy label, and stats.
+/// Called both periodically (final=false, crash resilience) and on shutdown (final=true).
+/// Deduplication: the analysis layer keeps the last entry per (config_fingerprint + uptime_secs)
+/// pair, or simply the entry with final=true. If the daemon crashes, the last final=false
+/// entry is the best available record for that session.
 fn append_session_history(
     path: &str,
     config_fp: u64,
@@ -421,6 +446,8 @@ fn append_session_history(
     session_tick: u64,
     uptime_secs: u64,
     tape_trades_this_session: u64,
+    tape_trades_total_at_shutdown: u64,
+    is_final: bool,
 ) -> std::io::Result<()> {
     // Use a wall-clock timestamp here — this is an append-only audit log, NOT
     // a deterministic replay artifact. The tape/live_status are deterministic
@@ -443,11 +470,13 @@ fn append_session_history(
             "\"session_admitted\":{},",
             "\"session_tick\":{},",
             "\"uptime_secs\":{},",
-            "\"tape_trades_this_session\":{}}}\n"
+            "\"tape_trades_this_session\":{},",
+            "\"tape_trades_total\":{},",
+            "\"final\":{}}}\n"
         ),
         ts,
         config_fp,
-        strategy_label,
+        json_escape(strategy_label),
         session_realized,
         prior_tape_realized,
         cumulative,
@@ -456,6 +485,8 @@ fn append_session_history(
         session_tick,
         uptime_secs,
         tape_trades_this_session,
+        tape_trades_total_at_shutdown,
+        is_final,
     );
     let p = std::path::Path::new(path);
     if let Some(parent) = p.parent() {
@@ -1207,6 +1238,9 @@ fn main() -> ExitCode {
     let mut tick_counter: u64 = 0;
     let mut last_status_write_tick: u64 = 0;
     let mut last_status_write_wallclock: Instant = Instant::now();
+    // Counter for periodic session_history.jsonl writes (crash resilience).
+    // Every 20 heartbeat writes (~5 min), a final=false checkpoint is appended.
+    let mut session_history_write_counter: u32 = 0;
     let mut last_brain_snap_tick: u64 = 0;
     let mut last_tape_flush_tick: u64 = 0;
 
@@ -1392,6 +1426,31 @@ fn main() -> ExitCode {
                 st.info_time_tick,
             ) {
                 eprintln!("[pq-daemon] cumulative_pnl write failed: {e}");
+            }
+
+            // Crash resilience: periodically append to session_history.jsonl
+            // (every ~20 heartbeats ≈ 5 min). If the daemon is killed by the
+            // watchdog (taskkill /F) or crashes, the last periodic entry is
+            // the best available record for that session. On graceful
+            // shutdown, a final=true entry is appended (see shutdown section).
+            session_history_write_counter += 1;
+            if session_history_write_counter >= 20 {
+                session_history_write_counter = 0;
+                let uptime = session_start.elapsed().as_secs();
+                let _ = append_session_history(
+                    SESSION_HISTORY_PATH,
+                    cfg_fp,
+                    &args.strategy_label,
+                    st.net_realized_lamports,
+                    prior_tape_pnl,
+                    prior_tape_trades,
+                    st.admitted,
+                    st.info_time_tick,
+                    uptime,
+                    tape_exporter.total_exported(),
+                    prior_tape_trades.saturating_add(tape_exporter.total_exported()),
+                    false, // final = false (periodic checkpoint)
+                );
             }
             engine.write_brain_analysis();
 
@@ -2345,8 +2404,33 @@ fn main() -> ExitCode {
                     st.info_time_tick,
                 ) {
                     eprintln!("[pq-daemon] cumulative_pnl write failed: {e}");
-                }
-                engine.write_brain_analysis();
+                    }
+
+                    // Crash resilience: periodically append to session_history.jsonl
+                    // (every ~20 heartbeats ≈ 5 min). If the daemon is killed by the
+                    // watchdog (taskkill /F) or crashes, the last periodic entry is
+                    // the best available record for that session. On graceful
+                    // shutdown, a final=true entry is appended (see shutdown section).
+                    session_history_write_counter += 1;
+                    if session_history_write_counter >= 20 {
+                    session_history_write_counter = 0;
+                    let uptime = session_start.elapsed().as_secs();
+                    let _ = append_session_history(
+                        SESSION_HISTORY_PATH,
+                        cfg_fp,
+                        &args.strategy_label,
+                        st.net_realized_lamports,
+                        prior_tape_pnl,
+                        prior_tape_trades,
+                        st.admitted,
+                        st.info_time_tick,
+                        uptime,
+                        tape_exporter.total_exported(),
+                        prior_tape_trades.saturating_add(tape_exporter.total_exported()),
+                        false, // final = false (periodic checkpoint)
+                    );
+                    }
+                    engine.write_brain_analysis();
                 // Export memory bank summaries for the refiner to consume.
                 // This is the learning loop's output: per-mint and per-strategy
                 // performance data that feeds progressive refinement.
@@ -2689,6 +2773,8 @@ fn main() -> ExitCode {
         st.info_time_tick,
         uptime_secs,
         tape_exporter.total_exported(),
+        prior_tape_trades.saturating_add(tape_exporter.total_exported()),
+        true, // final = true on graceful shutdown
     );
 
     // Final memory bank export — flush learning summaries to disk
