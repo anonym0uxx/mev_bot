@@ -59,6 +59,16 @@ pub enum GateReject {
     /// can calibrate. Without this gate, the bot enters trades where the cost-aware
     /// TP ladder has no room to operate (ArXiv:2606.08232 fat-tail capture design).
     Tp1Unreachable,
+    /// §Quant-Rev-7 — RE-ENTRY COOLDOWN. The mint was recently exited (position
+    /// closed within `reentry_cooldown_ticks` ticks ago) and is still in cooldown.
+    /// Re-entering the same mint in a tight loop after thesis invalidation causes
+    /// death-by-a-thousand-cuts: each cycle bleeds ~0.0028 SOL in slippage with no
+    /// new information. The cooldown forces the bot to wait for fresh price action
+    /// before re-engaging, breaking the re-entry loop that accounted for 56% of
+    /// total paper losses. This is a SELECTION refusal, not an economic one — the
+    /// trade may be perfectly viable, the mint is simply on temporary blackout.
+    /// Cannot fire in the golden tape (no position ever closes → set never populated).
+    ReentryCooldown,
 }
 
 /// The gate's verdict on one candidate.

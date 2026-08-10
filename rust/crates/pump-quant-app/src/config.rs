@@ -1085,6 +1085,20 @@ pub struct Config {
     /// ScorpTrader: "Under ~30 genuinely independent holders means nobody on
     /// the other side when you sell." Default 30.
     pub exit_liquidity_min_holders: u32,
+
+    /// §Quant-Rev-7: RE-ENTRY COOLDOWN. After a position fully closes on a mint,
+    /// reject re-entry for `reentry_cooldown_ticks` ticks. Prevents the death-by-
+    /// a-thousand-cuts pattern where the bot re-enters the same coin 8-13 times
+    /// after thesis invalidation, each cycle bleeding ~0.0028 SOL in slippage.
+    /// The bot should enter with conviction, hold through violent volatility, and
+    /// exit — NOT re-enter the same coin in a tight loop. Default OFF (golden-tape
+    /// safe: no position closes in the golden tape, so the set is never populated).
+    pub reentry_cooldown_enable: bool,
+    /// Cooldown duration in ticks after a position closes on a mint. At 250ms/tick,
+    /// 2400 ticks = 10 minutes — matching the `max_hold_ticks` window so a mint that
+    /// was just exited cannot be re-entered within the same hold horizon. The mint
+    /// becomes eligible again only after the cooldown fully elapses.
+    pub reentry_cooldown_ticks: u64,
 }
 
 /// LAW D2 default designated-caller attention weight: half the standard attention
@@ -1487,6 +1501,10 @@ impl Config {
             // Rev-6: exit liquidity verification
             exit_liquidity_reject_enable: false,
             exit_liquidity_min_holders: 30,       // ScorpTrader: <30 = illiquid exit
+
+            // Rev-7: re-entry cooldown — prevent death-by-a-thousand-cuts
+            reentry_cooldown_enable: false,
+            reentry_cooldown_ticks: 2400,         // 10 min at 250ms/tick = max_hold window
         }
     }
 
@@ -1728,6 +1746,12 @@ impl Config {
             // §Quant-Rev-6: exit liquidity
             "exit_liquidity_reject_enable" => self.exit_liquidity_reject_enable = value != 0,
             "exit_liquidity_min_holders" => self.exit_liquidity_min_holders = bp(value)?,
+            // §Quant-Rev-7: re-entry cooldown
+            "reentry_cooldown_enable" => self.reentry_cooldown_enable = value != 0,
+            "reentry_cooldown_ticks" => {
+                let v = value.max(0);
+                self.reentry_cooldown_ticks = v as u64;
+            }
             other => return Err(ConfigError::UnknownKey(other.to_string())),
         }
         Ok(())
@@ -1906,6 +1930,9 @@ impl Config {
         let _ = writeln!(s, "moon_bag_acceleration_window = {}", self.moon_bag_acceleration_window as i64);
         let _ = writeln!(s, "exit_liquidity_reject_enable = {}", self.exit_liquidity_reject_enable as i64);
         let _ = writeln!(s, "exit_liquidity_min_holders = {}", self.exit_liquidity_min_holders as i64);
+        // §Quant-Rev-7: re-entry cooldown
+        let _ = writeln!(s, "reentry_cooldown_enable = {}", self.reentry_cooldown_enable as i64);
+        let _ = writeln!(s, "reentry_cooldown_ticks = {}", self.reentry_cooldown_ticks as i64);
         let _ = writeln!(s, "universe_min_entities = {}", self.universe_min_entities as i64);
         let _ = writeln!(s, "universe_min_liquidity_lamports = {}", self.universe_min_liquidity_lamports as i64);
         let _ = writeln!(s, "universe_min_trades = {}", self.universe_min_trades as i64);

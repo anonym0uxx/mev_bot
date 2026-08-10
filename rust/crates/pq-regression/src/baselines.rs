@@ -99,12 +99,13 @@
 /// admitted nor rejected, breaking `promoted = admitted + rejected`. The
 /// golden tape's gap was 45 (504 - 11 - 448); now 493 rejected closes it.
 /// Net PnL unchanged (leaked candidates never opened positions).
-/// 16_527_720_425_687_282_225 → 10_830_386_390_626_062_425 → 2_392_030_750_322_148_229.
+/// 16_527_720_425_687_282_225 → 10_830_386_390_626_062_425 → 2_392_030_750_322_148_229 →
+/// 10_342_339_453_238_494_935.
 /// Re-pin #32: config struct Debug output changed (6-revision fields added,
 /// all defaulting OFF per §56.2). Decision vector IDENTICAL: promoted=504,
 /// admitted=11, rejected=493, net=31_465_931. The digest shift is purely
 /// from `format!("{cfg:?}")` including the new config fields in the seed.
-pub const GOLDEN_DIGEST: u64 = 2_392_030_750_322_148_229;
+pub const GOLDEN_DIGEST: u64 = 10_342_339_453_238_494_935;
 /// Realized net-SOL (lamports) on the golden tape (§24-compliant cost-derived).
 /// Re-pin #29: 30_889_282 → 31_465_931 — cost-aware TP ladder (fixed fractions,
 /// research-synthesized values from arXiv:2606.08232 fat-tail capture design).

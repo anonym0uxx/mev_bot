@@ -1085,6 +1085,15 @@ pub struct Engine {
     /// not a ring-buffer sample — every rejection increments both `rejected`
     /// and `reject_counts[code]`, so the histogram is exact, not statistical.
     reject_counts: [u64; 32],
+
+    /// §Quant-Rev-7: RE-ENTRY COOLDOWN tracking. Maps mint → tick when the position
+    /// closed (the cooldown start). A mint in this map is in cooldown until
+    /// `self.now - entry_tick >= cfg.reentry_cooldown_ticks`. Pruned lazily: expired
+    /// entries are removed on read (gate check) and on tick advance. Empty until a
+    /// position closes, so the golden tape (which never closes a position) never
+    /// populates it — the golden path is byte-identical. Bounded by the number of
+    /// recently-exited mints (bounded by `max_concurrent_positions` * turnover rate).
+    reentry_cooldown: BTreeMap<[u8; 32], u64>,
 }
 
 impl Engine {
@@ -1305,6 +1314,8 @@ impl Engine {
             admitted: 0,
             rejected: 0,
             reject_counts: [0; 32],
+            // Rev-7: re-entry cooldown — empty until a position closes
+            reentry_cooldown: BTreeMap::new(),
         }
     }
 
@@ -2387,6 +2398,20 @@ impl Engine {
     fn evaluate(&mut self) {
         self.now = self.now.saturating_add(1);
 
+        // §Quant-Rev-7: prune expired re-entry cooldown entries. The set is bounded
+        // by the number of recently-exited mints, but without periodic pruning
+        // stale entries accumulate. Removed here on tick advance so the gate's
+        // read-path stays O(1). Only runs when the feature is armed — when
+        // disabled the set is always empty, so retain() over an empty set is a
+        // no-op (and the branch is never taken because the cfg check short-
+        // circuits before the retain).
+        if self.cfg.reentry_cooldown_enable && !self.reentry_cooldown.is_empty() {
+            let now = self.now;
+            let cooldown_ticks = self.cfg.reentry_cooldown_ticks;
+            self.reentry_cooldown
+                .retain(|_, &mut exit_tick| now.saturating_sub(exit_tick) < cooldown_ticks);
+        }
+
         // 1. Discovery: every lane emits independently; union, not intersection.
         // Lane scoring parameters come from config — no band edge or scale is baked in.
         // Each lane appends into the reused `scratch` buffer (cleared, not freed) so
@@ -2940,6 +2965,28 @@ impl Engine {
                 reason: REJECT_LANE_RETIRED,
             });
             return None;
+        }
+        // §Quant-Rev-7: RE-ENTRY COOLDOWN — reject if this mint was recently exited
+        // and is still within the cooldown window. This is a SELECTION refusal: the
+        // mint is on temporary blackout to break the death-by-a-thousand-cuts re-
+        // entry loop. Checked BEFORE the economic gate to avoid wasted pricing work.
+        // When disabled (reentry_cooldown_enable=false) the set is never populated,
+        // so this entire block is a no-op on the golden path.
+        if self.cfg.reentry_cooldown_enable {
+            if let Some(&exit_tick) = self.reentry_cooldown.get(&mint_bytes) {
+                let elapsed = self.now.saturating_sub(exit_tick);
+                if elapsed < self.cfg.reentry_cooldown_ticks {
+                    self.reject(REJECT_REENTRY_COOLDOWN);
+                    self.journal.record(Decision::Rejected {
+                        mint: mint_bytes,
+                        reason: REJECT_REENTRY_COOLDOWN,
+                    });
+                    return None;
+                } else {
+                    // Cooldown expired — prune the stale entry lazily.
+                    self.reentry_cooldown.remove(&mint_bytes);
+                }
+            }
         }
         // BENEFIT-SIDE PRICING — ONE ESTIMATE, COMPUTED ONCE, WITH ITS PROVENANCE.
         //
@@ -4590,6 +4637,13 @@ impl Engine {
                 self.theses.remove(&e.mint);
                 // §99 bounded state: the flow-persistence run dies with the position.
                 self.thesis_adverse.remove(&e.mint);
+                // §Quant-Rev-7: record the mint's exit tick for re-entry cooldown.
+                // Only fires when the cooldown feature is armed — when disabled the
+                // set is never read, so the insert is dead state that costs nothing
+                // on the golden path (no position ever closes in the golden tape).
+                if self.cfg.reentry_cooldown_enable {
+                    self.reentry_cooldown.insert(e.mint, self.now);
+                }
                 // §47/§48/§49 analytics: the whole position's realized row + the
                 // exit-policy convexity event + the §52 naive-baseline counterfactual.
                 // §25 LAW 4: the row is tagged with the derived setup archetype.
@@ -6372,6 +6426,9 @@ const fn reject_code(r: GateReject) -> u8 {
         // unviability: the trade clears costs, it just can't reach the first take-
         // profit rung of the new cost-aware ladder.
         GateReject::Tp1Unreachable => 18,
+        // §Quant-Rev-7: re-entry cooldown refusal — a SELECTION refusal (mint on
+        // temporary blackout after exit). Cannot fire in golden tape.
+        GateReject::ReentryCooldown => 25,
     }
 }
 
@@ -6495,6 +6552,13 @@ const REJECT_COORDINATED_FUNDING: u8 = 23;
 /// funding graph (coordinated wallets are not "independent"). Fail-open when
 /// the holder ledger is Unknown or truncated. Operator-approved.
 const REJECT_INSUFFICIENT_EXIT_LIQUIDITY: u8 = 24;
+
+/// §Quant-Rev-7: RE-ENTRY COOLDOWN refusal. The mint was recently exited and is
+/// still within the cooldown window (`reentry_cooldown_ticks`). A SELECTION
+/// refusal: the trade may be viable, the mint is on temporary blackout to break
+/// the death-by-a-thousand-cuts re-entry loop. Cannot fire in the golden tape
+/// (no position closes → cooldown set never populated → golden path byte-identical).
+const REJECT_REENTRY_COOLDOWN: u8 = 25;
 
 /// §21.7 corroboration bar (bps) for [`REJECT_HOLDER_CONCENTRATION`].
 ///

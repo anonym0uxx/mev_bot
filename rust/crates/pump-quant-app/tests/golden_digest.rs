@@ -663,7 +663,13 @@ use tape_golden::*;
 // 10_190_407_336_939_000_110 → 16_527_720_425_687_282_225 → 2_392_030_750_322_148_229.
 // Re-pin #32: config struct Debug changed (6-revision fields, all OFF by default).
 // Decision vector identical: promoted=504 admitted=11 rejected=493 net=31_465_931.
-const GOLDEN_DIGEST: u64 = 2_392_030_750_322_148_229;
+// Re-pin #33: config struct Debug changed (Rev-7 re-entry cooldown fields, OFF by
+// default). §19 folds fnv1a_64(format!("{cfg:?}")) into the journal seed, so adding
+// two fields re-seeds the digest with zero decision change. The cooldown feature
+// ships DISARMED (reentry_cooldown_enable=false) and no position closes in the
+// golden tape, so the cooldown set is never populated — every decision-plane number
+// is byte-identical to re-pin #32.
+const GOLDEN_DIGEST: u64 = 10_342_339_453_238_494_935;
 // Re-pin #28: net changed 31_111_528 → 30_889_282 (exit ladder fires earlier on
 // micro-moves; TP1 tranche recovers principal at +5% rather than holding to thesis
 // invalidation). promoted/admitted/rejected/universe_filtered unchanged.
