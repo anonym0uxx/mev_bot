@@ -20,19 +20,20 @@ use std::env;
 use std::fs;
 
 use pump_quant_app::config::Config;
-use pump_quant_junction::engine_replay::replay_event_stream;
+use pump_quant_junction::engine_replay::replay_event_stream_windowed;
 
 const STATEMENT: &str = "\
 pq-engine-replay — real engine re-simulation (Phase 3)\n\
 Feeds an event stream through the full engine pipeline under a given config.\n\
 The output is a genuine Report with admission/sizing/exit decisions.\n\n\
 Usage:\n  pq-engine-replay --event-stream <path> --config <path>\n\n\
-Options:\n  --event-stream <path>   JSONL event stream file (required)\n  --config <path>          Config text file (key=value format, required)\n  --help, -h               Show this help\n";
+Options:\n  --event-stream <path>   JSONL event stream file (required)\n  --config <path>          Config text file (key=value format, required)\n  --replay-window-ticks N  Rev-11 §6: Only replay the last N Tick events\n\
+                           (0 = full stream, default 0)\n  --help, -h               Show this help\n";
 
 fn main() -> std::process::ExitCode {
     eprintln!("[pq-engine-replay] === ENGINE REPLAY START ===");
 
-    let (event_stream_path, config_path) = match parse_args() {
+    let (event_stream_path, config_path, replay_window_ticks) = match parse_args() {
         Ok(v) => v,
         Err(e) => {
             eprintln!("[pq-engine-replay] ERROR: {e}");
@@ -42,6 +43,7 @@ fn main() -> std::process::ExitCode {
 
     eprintln!("[pq-engine-replay] event-stream: {event_stream_path}");
     eprintln!("[pq-engine-replay] config: {config_path}");
+    eprintln!("[pq-engine-replay] replay-window-ticks: {replay_window_ticks}");
 
     // ─── Load config ──────────────────────────────────────────────────────
     let config_text = match fs::read_to_string(&config_path) {
@@ -64,7 +66,7 @@ fn main() -> std::process::ExitCode {
         cfg.gate_expected_move_bps, cfg.gate_exit_tranches, cfg.expected_move_model_enable);
 
     // ─── Run engine replay ────────────────────────────────────────────────
-    let result = match replay_event_stream(&event_stream_path, cfg) {
+    let result = match replay_event_stream_windowed(&event_stream_path, cfg, replay_window_ticks) {
         Some(r) => r,
         None => {
             eprintln!("[pq-engine-replay] ERROR: replay produced no result (empty or unreadable stream)");
@@ -93,9 +95,10 @@ fn main() -> std::process::ExitCode {
     std::process::ExitCode::from(0)
 }
 
-fn parse_args() -> Result<(String, String), String> {
+fn parse_args() -> Result<(String, String, u64), String> {
     let mut event_stream_path = String::new();
     let mut config_path = String::new();
+    let mut replay_window_ticks: u64 = 0;
     let raw: Vec<String> = env::args().collect();
     let mut idx = 1;
     while idx < raw.len() {
@@ -115,6 +118,13 @@ fn parse_args() -> Result<(String, String), String> {
                 }
                 config_path = raw[idx].clone();
             }
+            "--replay-window-ticks" => {
+                idx += 1;
+                if idx >= raw.len() {
+                    return Err("--replay-window-ticks requires a value".to_string());
+                }
+                replay_window_ticks = raw[idx].parse().unwrap_or(0);
+            }
             "--help" | "-h" => {
                 print!("{STATEMENT}");
                 std::process::exit(0);
@@ -129,5 +139,5 @@ fn parse_args() -> Result<(String, String), String> {
     if config_path.is_empty() {
         return Err("--config <path> is required".to_string());
     }
-    Ok((event_stream_path, config_path))
+    Ok((event_stream_path, config_path, replay_window_ticks))
 }

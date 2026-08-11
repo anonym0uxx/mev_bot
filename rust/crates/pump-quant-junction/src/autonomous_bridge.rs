@@ -549,8 +549,13 @@ pub fn spawn_refiner_cycle(config_text: &str) -> Result<String, String> {
     // NetSol → actual differentiation → real promotions.
     if Path::new(EVENT_STREAM_FILE).exists() {
         cmd.arg("--event-stream-path").arg(EVENT_STREAM_FILE);
+        // Rev-11 §6: Rolling window — only replay the last 20000 ticks (~1.4h)
+        // of the event stream. This optimizes for CURRENT market conditions
+        // rather than the full historical tape, which may include stale
+        // market regimes that no longer reflect live conditions.
+        cmd.arg("--replay-window-ticks").arg("20000");
         eprintln!(
-            "[autonomous-bridge] refiner: engine replay ENABLED (event_stream exists)"
+            "[autonomous-bridge] refiner: engine replay ENABLED + rolling window 20000 ticks"
         );
     } else {
         eprintln!(

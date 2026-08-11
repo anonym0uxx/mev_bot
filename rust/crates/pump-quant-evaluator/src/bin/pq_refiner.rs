@@ -21,7 +21,7 @@
 //! Usage: pq-refiner [--tape-path data/tape.jsonl] [--config-path config/paper.toml]
 //!                   [--margin-lamports N] [--max-challengers N]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 
@@ -65,6 +65,10 @@ struct RefinerArgs {
     /// produce genuine admission/sizing/exit decisions under each mutated
     /// config. When empty, falls back to shadow replay only.
     event_stream_path: String,
+    /// Rev-11 §6: Rolling window for engine replay. If >0, only process
+    /// the last N ticks of the event stream (optimizes for current market
+    /// regime instead of full historical tape). 0 = use full tape.
+    replay_window_ticks: u64,
 }
 
 /// Saturating cast from i128 to i64 — clamps to i64::MIN/MAX on overflow.
@@ -86,6 +90,7 @@ fn parse_args() -> RefinerArgs {
         margin_lamports: 10_000, // 10k lamports = ~0.00001 SOL minimum margin
         max_challengers: 64,
         event_stream_path: String::new(), // default: no engine replay
+        replay_window_ticks: 0,           // Rev-11 §6: 0 = full tape
     };
     let mut i = 1;
     while i < args.len() {
@@ -108,6 +113,10 @@ fn parse_args() -> RefinerArgs {
             }
             "--event-stream-path" if i + 1 < args.len() => {
                 a.event_stream_path = args[i + 1].clone();
+                i += 2;
+            }
+            "--replay-window-ticks" if i + 1 < args.len() => {
+                a.replay_window_ticks = args[i + 1].parse().unwrap_or(0);
                 i += 2;
             }
             _ => { i += 1; }
@@ -187,109 +196,470 @@ fn challenger_hash_u64(c: &Challenger) -> u64 {
     hash
 }
 
-/// Generate challenger configs by mutating key parameters of the champion.
+/// Rev-11 §1+§2+§5: Generate challenger configs using a tier-based priority
+/// queue with adaptive mutation magnitudes and combinatorial pairs.
 ///
-/// The mutations are designed to be conservative and exploratory:
-/// - Each challenger mutates ONE parameter at a time (single-axis search)
-/// - The mutation magnitude is ±10% of the current value (bounded)
-/// - Parameters that are decision-inert are skipped
+/// This replaces the Rev-9 alphabetical BTreeMap iteration that only explored
+/// ~40 alphabetically-first parameters. The new system:
+///
+/// - Classifies all 182 parameters into 8 tiers (T0-T7) by economic impact
+/// - Rotates through tiers across cycles using a persisted exploration cursor
+///   so the FULL parameter surface is covered every 3 cycles
+/// - Uses adaptive mutation magnitudes: BPS params ±15%, lamport params ±10%,
+///   tick params ±20%, count params ±1/±2 absolute
+/// - Generates 8 combinatorial pairs of coupled parameters per cycle
+/// - T0 (exit params) ALWAYS explored every cycle — highest net-SOL impact
 fn generate_challengers(
     champion_config: &str,
     max_challengers: usize,
+    exploration_cursor: &mut std::collections::HashMap<u8, u64>,
 ) -> Vec<Challenger> {
-    // Parse the champion config to find mutable parameters.
     let params = parse_config_params(champion_config);
 
-    // ─── Full-surface challenger generation ───────────────────────────────
-    // The refiner now iterates ALL parsed config params, not a hardcoded list.
-    // This means every apply()-recognized integer/bool/enum field is a mutation
-    // candidate. The refiner explores the FULL parameter surface each cycle.
-    //
-    // Mutation strategy:
-    //   - Bool params (value 0 or 1): toggle 0→1 / 1→0
-    //   - Numeric params (value > 1): ±10% mutation
-    //   - Zero-valued params: skip (can't mutate by percentage, toggling to 1
-    //     for a bool=0 is handled by the bool path)
-    //
-    // To keep each cycle bounded, we cap total challengers at max_challengers.
-    // We iterate params in sorted order (BTreeMap default) so the selection is
-    // deterministic per champion config — reproducible across runs.
-
-    /// Bool-like params: value is 0 or 1, so ±10% is meaningless; toggle instead.
-    fn is_bool_param(name: &str) -> bool {
-        name.ends_with("_enable")
-    }
+    // ─── Rev-11 §1: Tier classification ───────────────────────────────────
+    // T0 = Exit/TP/SL/Trail (highest net-SOL impact — always explored)
+    // T1 = Entry/Fee/Tip (second highest — entry timing drives entry price)
+    // T2 = Sizing/Risk/DD/Cap (position sizing drives loss magnitude)
+    // T3 = Moon bag/Reentry (asymmetric upside capture)
+    // T4 = Gate/Margin (admission filter sensitivity)
+    // T5 = Brain/Reflect (meta-learning — lower priority, slow convergence)
+    // T6 = Meta/Universe (taxonomy, watchlist — infra-level)
+    // T7 = Alpha/Bar/Narrative/VPIN (lowest — mostly regime detectors)
+    let tiered = classify_params_by_tier(&params);
 
     let mut challengers: Vec<Challenger> = Vec::new();
-    let mut id_counter = 0;
+    let mut id_counter = 0u64;
 
-    for (param_name, value) in &params {
-        if challengers.len() >= max_challengers {
-            break;
+    // ─── T0: Always explore exit params (highest priority) ──────────────
+    // The 32-slot reserve for combinatorial pairs only applies when
+    // max_challengers is large enough to accommodate it.
+    let single_slot_cap = if max_challengers > 40 {
+        max_challengers.saturating_sub(32)
+    } else {
+        max_challengers
+    };
+    if let Some(t0_params) = tiered.get(&0u8) {
+        for (name, val) in t0_params.iter() {
+            if challengers.len() >= single_slot_cap {
+                break; // Reserve slots for combinatorial pairs
+            }
+            if is_reflection_denied(name.as_str()) {
+                continue;
+            }
+            generate_adaptive_challengers(
+                name.as_str(),
+                *val,
+                &mut challengers,
+                &mut id_counter,
+            );
         }
-        // S3: Skip denylisted envelope-affecting params — the shadow replay
-        // cannot safely model their effects and promoting them risks
-        // structural invariant violations (floor > ceiling inversion,
-        // one-way ratchet on brain_reflect_enable).
-        if is_reflection_denied(param_name.as_str()) {
-            continue;
+    }
+
+    // ─── T1-T7: Rotate through one tier per cycle ───────────────────────
+    // Each cycle, we explore one additional tier (beyond T0) in rotation.
+    // This ensures full-surface coverage within 7 cycles.
+    let cycle_tier = select_rotation_tier(exploration_cursor);
+    if cycle_tier > 0 {
+        if let Some(tier_params) = tiered.get(&cycle_tier) {
+            let cursor = exploration_cursor.get(&cycle_tier).copied().unwrap_or(0);
+            let param_count = tier_params.len() as u64;
+            let start_idx = (cursor % param_count.max(1)) as usize;
+
+            // Explore params starting from cursor position, wrapping around
+            for i in 0..tier_params.len() {
+                if challengers.len() >= single_slot_cap {
+                    break;
+                }
+                let idx = (start_idx + i) % tier_params.len();
+                let (name, val) = &tier_params[idx];
+                if is_reflection_denied(name.as_str()) {
+                    continue;
+                }
+                generate_adaptive_challengers(
+                    name.as_str(),
+                    *val,
+                    &mut challengers,
+                    &mut id_counter,
+                );
+            }
+            // Advance the cursor for next cycle
+            exploration_cursor.insert(cycle_tier, (cursor + tier_params.len() as u64) % param_count.max(1));
         }
-        let val_i64 = *value;
-        let name = param_name.as_str();
+    }
 
-        if is_bool_param(name) {
-            // Toggle: 0→1 or 1→0. Both directions are valid challengers.
-            let toggled = if val_i64 != 0 { 0 } else { 1 };
-            challengers.push(Challenger {
-                id: format!("challenger_{id_counter}"),
-                mutations: vec![ParameterMutation {
-                    name: name.to_string(),
-                    current_value: val_i64,
-                    proposed_value: toggled,
-                    rationale: format!("toggle {name}: {val_i64} → {toggled}"),
-                }],
-            });
-            id_counter += 1;
-        } else if val_i64 != 0 {
-            // Numeric param: ±10% mutation.
-            let delta = (val_i64.unsigned_abs() / 10).max(1) as i64;
-            let plus_val = val_i64 + delta;
-            let minus_val = val_i64 - delta;
-
-            // +10% challenger
-            challengers.push(Challenger {
-                id: format!("challenger_{id_counter}"),
-                mutations: vec![ParameterMutation {
-                    name: name.to_string(),
-                    current_value: val_i64,
-                    proposed_value: plus_val,
-                    rationale: format!("+10% {name}: {val_i64} → {plus_val}"),
-                }],
-            });
-            id_counter += 1;
-
-            if challengers.len() >= max_challengers {
+    // Rev-11 fallback: if T0 + rotation tier didn't produce enough challengers
+    // (common for small test configs or first cycle), explore ALL remaining
+    // tiers alphabetically until we reach the cap.
+    if challengers.len() < single_slot_cap {
+        for tier in [1u8, 2, 3, 4, 5, 6, 7] {
+            if challengers.len() >= single_slot_cap {
                 break;
             }
-
-            // -10% challenger (only if result stays positive for unsigned params)
-            if minus_val > 0 {
-                challengers.push(Challenger {
-                    id: format!("challenger_{id_counter}"),
-                    mutations: vec![ParameterMutation {
-                        name: name.to_string(),
-                        current_value: val_i64,
-                        proposed_value: minus_val,
-                        rationale: format!("-10% {name}: {val_i64} → {minus_val}"),
-                    }],
-                });
-                id_counter += 1;
+            if tier == cycle_tier {
+                continue; // Already explored above
+            }
+            if let Some(tier_params) = tiered.get(&tier) {
+                for (name, val) in tier_params.iter() {
+                    if challengers.len() >= single_slot_cap {
+                        break;
+                    }
+                    if is_reflection_denied(name.as_str()) {
+                        continue;
+                    }
+                    generate_adaptive_challengers(
+                        name.as_str(),
+                        *val,
+                        &mut challengers,
+                        &mut id_counter,
+                    );
+                }
             }
         }
-        // val_i64 == 0 for a numeric param: skip (no meaningful ±10% on zero).
+    }
+
+    // ─── Rev-11 §5: Combinatorial pairs ─────────────────────────────────
+    // 8 coupled parameter pairs that are known to interact economically.
+    // Each pair generates 4 challengers: (A+,B+), (A+,B-), (A-,B+), (A-,B-).
+    // This explores the pairwise interaction surface that single-axis
+    // search completely misses.
+    generate_combinatorial_pairs(&params, &mut challengers, &mut id_counter, max_challengers);
+
+    // ─── Rev-11 §4: Adaptive cap ────────────────────────────────────────
+    // If we exceeded the cap (shouldn't normally), truncate. The caller
+    // may also adjust max_challengers based on engine-replay throughput.
+    if challengers.len() > max_challengers {
+        challengers.truncate(max_challengers);
     }
 
     challengers
+}
+
+/// Rev-11 §1: Classify all config parameters into 8 priority tiers.
+/// Returns a map of tier → sorted list of (param_name, value).
+fn classify_params_by_tier(
+    params: &BTreeMap<String, i64>,
+) -> std::collections::HashMap<u8, Vec<(String, i64)>> {
+    use std::collections::HashMap;
+    let mut tiers: HashMap<u8, Vec<(String, i64)>> = HashMap::new();
+
+    for (name, val) in params {
+        let tier = param_tier(name.as_str());
+        tiers.entry(tier).or_default().push((name.clone(), *val));
+    }
+
+    // Sort each tier's params alphabetically for deterministic ordering
+    for vec in tiers.values_mut() {
+        vec.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+
+    tiers
+}
+
+/// Rev-11 §1: Map a parameter name to its priority tier (0=highest, 7=lowest).
+fn param_tier(name: &str) -> u8 {
+    // T0: Exit / TP / SL / Trail — directly controls per-trade PnL outcome
+    if name.starts_with("lc_tp") || name.starts_with("lc_trail") || name.starts_with("lc_hard_sl")
+        || name.starts_with("lc_tp1_") || name.starts_with("lc_tp2_") || name.starts_with("lc_tp3_")
+        || name.starts_with("mcap_position_") || name.starts_with("exit_")
+        || name.starts_with("target_") || name.starts_with("into_strength_")
+        || name.starts_with("conditional_moon") || name.starts_with("moon_bag")
+        || name == "lc_max_hold_ticks" || name == "lc_stall_ticks"
+        || name == "lc_precursor_drop_bps" || name == "lc_cvd_hold_frac_bps"
+    {
+        0
+    }
+    // T1: Entry / Fee / Tip — controls entry price and cost basis
+    else if name.starts_with("entry_") || name.starts_with("confirm_ttl")
+        || name.starts_with("creation_") || name.starts_with("landing_")
+        || name.starts_with("fill_") || name == "designated_caller_weight"
+        || name == "curve_exact_fill_enable" || name == "entry_mode_leaves_enable"
+    {
+        1
+    }
+    // T2: Sizing / Risk / Drawdown / Cap — controls loss magnitude and capital allocation
+    else if name.starts_with("dd_") || name.starts_with("total_risk")
+        || name.starts_with("min_trade_size") || name.starts_with("max_concurrent")
+        || name.starts_with("bankroll_") || name.starts_with("vol_stop")
+        || name == "confirmed_capacity_mult" || name == "floor_fraction_bps"
+        || name == "f_base_bp" || name == "baseline_margin_lamports"
+        || name == "baseline_min_trades" || name == "scale_confirm_auth_min_bp"
+    {
+        2
+    }
+    // T3: Moon bag / Reentry — asymmetric upside capture and re-entry timing
+    else if name.starts_with("reentry_") || name.starts_with("revert_")
+        || name == "roll_revert_bp" || name == "roll_trend_bp"
+    {
+        3
+    }
+    // T4: Gate / Margin — admission filter sensitivity
+    else if name.starts_with("gate_") || name.starts_with("probe_")
+        || name.starts_with("sim_impact") || name.starts_with("expectancy_")
+        || name.starts_with("expected_move")
+    {
+        4
+    }
+    // T5: Brain / Reflect — meta-learning (slow convergence, lower priority)
+    else if name.starts_with("brain_") || name.starts_with("reflect_")
+        || name.starts_with("narrative_") || name.starts_with("thesis_")
+    {
+        5
+    }
+    // T6: Meta / Universe / Creator — infrastructure-level
+    else if name.starts_with("meta_") || name.starts_with("universe_")
+        || name.starts_with("creator_") || name.starts_with("dev_")
+        || name.starts_with("deployer_") || name.starts_with("coordinated_")
+        || name.starts_with("bundle_") || name.starts_with("tracked_")
+        || name.starts_with("smart_money") || name.starts_with("wallet_")
+        || name.starts_with("watchlist_") || name.starts_with("holder_")
+        || name.starts_with("money_proxy") || name.starts_with("designated_caller_enable")
+        || name.starts_with("promote_") || name.starts_with("x_min_")
+        || name == "mcap_band_enable" || name == "mcap_band_hi_lamports"
+        || name == "mcap_band_lo_lamports"
+    {
+        6
+    }
+    // T7: Alpha / Bar / VPIN / Paper / Platform / Derived — lowest priority
+    else {
+        7
+    }
+}
+
+/// Rev-11 §1: Select which tier to rotate through this cycle (T1-T7).
+/// Uses the exploration cursor to cycle through tiers in order.
+/// T0 is always explored separately and is not part of the rotation.
+fn select_rotation_tier(cursor: &std::collections::HashMap<u8, u64>) -> u8 {
+    // Count how many tiers have been explored so far
+    let max_tier = 7u8;
+    let explored = cursor.len() as u8;
+
+    // Cycle through tiers 1-7 in order
+    // The rotation key tracks the "next tier to explore"
+    let rotation_key = 100u8; // sentinel key for rotation tracking
+    if let Some(&next) = cursor.get(&rotation_key) {
+        let tier = (next % 7) as u8 + 1; // cycles 1-7
+        let _ = tier; // returned below
+        return (next % 7) as u8 + 1;
+    }
+    // First cycle: start with T1 (entry params)
+    1
+}
+
+/// Rev-11 §2: Generate challengers with adaptive mutation magnitudes.
+/// BPS params: ±15% (basis points are coarse-grained, wider search is safe)
+/// Lamport params: ±10% (standard, preserves capital scale)
+/// Tick params: ±20% (timing is regime-dependent, wider exploration helps)
+/// Count params: ±1 absolute (small counts need absolute steps, not %)
+/// Other: ±10% (default)
+fn generate_adaptive_challengers(
+    name: &str,
+    val: i64,
+    challengers: &mut Vec<Challenger>,
+    id_counter: &mut u64,
+) {
+    // Bool params: toggle only
+    if name.ends_with("_enable") {
+        let toggled = if val != 0 { 0 } else { 1 };
+        challengers.push(Challenger {
+            id: format!("challenger_{id_counter}"),
+            mutations: vec![ParameterMutation {
+                name: name.to_string(),
+                current_value: val,
+                proposed_value: toggled,
+                rationale: format!("toggle {name}: {val} → {toggled}"),
+            }],
+        });
+        *id_counter += 1;
+        return;
+    }
+
+    // Zero-valued numeric: skip (can't mutate by percentage)
+    if val == 0 {
+        return;
+    }
+
+    // Determine mutation magnitude by parameter type
+    let pct = adaptive_mutation_pct(name);
+    let delta = compute_mutation_delta(val, pct, name);
+
+    let plus_val = val.saturating_add(delta);
+    let minus_val = val.saturating_sub(delta);
+
+    // +mutation challenger
+    challengers.push(Challenger {
+        id: format!("challenger_{id_counter}"),
+        mutations: vec![ParameterMutation {
+            name: name.to_string(),
+            current_value: val,
+            proposed_value: plus_val,
+            rationale: format!("+{pct}% {name}: {val} → {plus_val}"),
+        }],
+    });
+    *id_counter += 1;
+
+    // -mutation challenger (only if result stays positive for unsigned params)
+    if minus_val > 0 {
+        challengers.push(Challenger {
+            id: format!("challenger_{id_counter}"),
+            mutations: vec![ParameterMutation {
+                name: name.to_string(),
+                current_value: val,
+                proposed_value: minus_val,
+                rationale: format!("-{pct}% {name}: {val} → {minus_val}"),
+            }],
+        });
+        *id_counter += 1;
+    }
+
+    // Rev-11 §2: For high-impact T0 params, also generate an aggressive
+    // ±2× delta challenger to bracket the optimum faster
+    if param_tier(name) == 0 && delta > 0 {
+        let delta2 = delta * 2;
+        let plus2_val = val.saturating_add(delta2);
+        if plus2_val != plus_val && plus2_val > 0 {
+            challengers.push(Challenger {
+                id: format!("challenger_{id_counter}"),
+                mutations: vec![ParameterMutation {
+                    name: name.to_string(),
+                    current_value: val,
+                    proposed_value: plus2_val,
+                    rationale: format!("+{}% {name}: {val} → {plus2_val} (aggressive bracket)", pct * 2),
+                }],
+            });
+            *id_counter += 1;
+        }
+    }
+}
+
+/// Rev-11 §2: Determine the mutation percentage for a parameter based on its type.
+fn adaptive_mutation_pct(name: &str) -> i64 {
+    if name.ends_with("_bps") || name.ends_with("_bp") {
+        15 // BPS params: ±15%
+    } else if name.ends_with("_lamports") || name.ends_with("_lamport") {
+        10 // Lamport params: ±10%
+    } else if name.ends_with("_ticks") || name.ends_with("_tick") {
+        20 // Tick params: ±20%
+    } else if name.ends_with("_count") || name.ends_with("_cap")
+        || name == "max_concurrent_positions" || name.ends_with("_min")
+        || name.ends_with("_max") || name.ends_with("_window")
+        || name.ends_with("_slots") || name.ends_with("_capacity")
+    {
+        0  // Signal for absolute mutation, not percentage
+    } else {
+        10 // Default: ±10%
+    }
+}
+
+/// Rev-11 §2: Compute the mutation delta. For most params this is val * pct / 100.
+/// For count params (pct==0), use absolute steps of 1-2.
+fn compute_mutation_delta(val: i64, pct: i64, name: &str) -> i64 {
+    if pct == 0 {
+        // Count params: absolute step
+        if val.unsigned_abs() <= 3 {
+            1 // Small counts: step by 1
+        } else {
+            2 // Larger counts: step by 2
+        }
+    } else {
+        // Percentage-based: val * pct / 100, with a minimum of 1
+        let delta = (val.unsigned_abs() as u128 * pct as u128 / 100) as i64;
+        delta.max(1)
+    }
+}
+
+/// Rev-11 §5: Generate combinatorial challengers — 8 coupled parameter pairs.
+/// Each pair generates 4 challengers: (A+,B+), (A+,B-), (A-,B+), (A-,B-).
+/// This explores the pairwise interaction surface that single-axis search
+/// completely misses. Memecoin parameters are highly coupled:
+/// e.g., gate_margin + TP level — a tighter gate admits fewer but better
+/// trades, and the optimal TP depends on how selective the gate is.
+fn generate_combinatorial_pairs(
+    params: &BTreeMap<String, i64>,
+    challengers: &mut Vec<Challenger>,
+    id_counter: &mut u64,
+    max_challengers: usize,
+) {
+    // The 8 coupled pairs (param_a, param_b) — chosen by economic reasoning:
+    // 1. (gate_margin_bps, lc_tp1_bps) — gate selectivity ↔ first TP target
+    // 2. (entry_fee_bps, entry_tip_lamports) — entry cost ↔ entry speed
+    // 3. (dd_tier1_bp, lc_hard_sl_bps) — first DD tier ↔ hard stop level
+    // 4. (lc_tp1_bps, lc_tp1_frac_bps) — TP1 level ↔ TP1 fraction sold
+    // 5. (lc_tp2_bps, lc_tp2_frac_bps) — TP2 level ↔ TP2 fraction sold
+    // 6. (lc_trail_base_bps, lc_trail_max_bps) — trail start ↔ trail ceiling
+    // 7. (max_concurrent_positions, min_trade_size_lamports) — diversification ↔ sizing
+    // 8. (vol_stop_scale_bp, lc_hard_sl_bps) — vol-stop sensitivity ↔ hard stop
+    let pairs: [(&str, &str); 8] = [
+        ("gate_margin_bps", "lc_tp1_bps"),
+        ("entry_fee_bps", "entry_tip_lamports"),
+        ("dd_tier1_bp", "lc_hard_sl_bps"),
+        ("lc_tp1_bps", "lc_tp1_frac_bps"),
+        ("lc_tp2_bps", "lc_tp2_frac_bps"),
+        ("lc_trail_base_bps", "lc_trail_max_bps"),
+        ("max_concurrent_positions", "min_trade_size_lamports"),
+        ("vol_stop_scale_bp", "lc_hard_sl_bps"),
+    ];
+
+    for (param_a, param_b) in &pairs {
+        if challengers.len() + 4 > max_challengers {
+            break;
+        }
+        let val_a = match params.get(*param_a) {
+            Some(v) => *v,
+            None => continue,
+        };
+        let val_b = match params.get(*param_b) {
+            Some(v) => *v,
+            None => continue,
+        };
+        // Skip if either param is zero (can't mutate by %)
+        if val_a == 0 || val_b == 0 {
+            continue;
+        }
+        // Skip denylisted
+        if is_reflection_denied(param_a) || is_reflection_denied(param_b) {
+            continue;
+        }
+
+        let pct_a = adaptive_mutation_pct(param_a);
+        let pct_b = adaptive_mutation_pct(param_b);
+        let delta_a = compute_mutation_delta(val_a, pct_a, param_a);
+        let delta_b = compute_mutation_delta(val_b, pct_b, param_b);
+
+        let a_plus = val_a.saturating_add(delta_a);
+        let a_minus = val_a.saturating_sub(delta_a).max(1);
+        let b_plus = val_b.saturating_add(delta_b);
+        let b_minus = val_b.saturating_sub(delta_b).max(1);
+
+        // Generate 4 combinations: (A+,B+), (A+,B-), (A-,B+), (A-,B-)
+        for (va, vb, label) in [
+            (a_plus, b_plus, "++"),
+            (a_plus, b_minus, "+-"),
+            (a_minus, b_plus, "-+"),
+            (a_minus, b_minus, "--"),
+        ] {
+            if challengers.len() >= max_challengers {
+                break;
+            }
+            challengers.push(Challenger {
+                id: format!("challenger_{id_counter}"),
+                mutations: vec![
+                    ParameterMutation {
+                        name: param_a.to_string(),
+                        current_value: val_a,
+                        proposed_value: va,
+                        rationale: format!("combo {label}: {param_a} {val_a}→{va}"),
+                    },
+                    ParameterMutation {
+                        name: param_b.to_string(),
+                        current_value: val_b,
+                        proposed_value: vb,
+                        rationale: format!("combo {label}: {param_b} {val_b}→{vb}"),
+                    },
+                ],
+            });
+            *id_counter += 1;
+        }
+    }
 }
 
 /// Parse a key=value config file into a map of parameter name → value.
@@ -380,6 +750,7 @@ fn build_challenger_config_text(champion_text: &str, challenger: &Challenger) ->
 fn run_engine_replay(
     event_stream_path: &str,
     config_text: &str,
+    replay_window_ticks: u64,
 ) -> Option<EngineReplayScore> {
     // Locate the pq-engine-replay binary next to the refiner binary.
     let replay_bin = std::env::current_exe()
@@ -407,6 +778,13 @@ fn run_engine_replay(
         .arg("--config").arg(&temp_config)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+
+    // Rev-11 §6: Rolling window — only replay the last N ticks of the event
+    // stream. This optimizes for CURRENT market conditions rather than the
+    // full historical tape. A window of 20000 ticks ≈ 1.4h at 14400 ticks/hr.
+    if replay_window_ticks > 0 {
+        cmd.arg("--replay-window-ticks").arg(replay_window_ticks.to_string());
+    }
 
     let output = cmd.spawn().ok()?.wait_with_output().ok()?;
 
@@ -751,8 +1129,26 @@ fn main() -> std::process::ExitCode {
             String::new()
         });
 
-    // 4. Generate challengers
-    let challengers = generate_challengers(&champion_config_text, args.max_challengers);
+    // 4. Generate challengers (Rev-11: tier-based priority queue + adaptive mutations)
+    // Rev-11 §4: Adaptive challenger cap — scale based on last cycle's duration.
+    // If the last cycle took >60s for the default cap → reduce to 48 (throughput-limited).
+    // If the last cycle took <30s → expand to 128 (headroom to explore more).
+    // Clamp to [24, 128]. T0 params always explored regardless of cap.
+    let adaptive_cap = {
+        let base = args.max_challengers;
+        let last_dur = state.last_cycle_duration_secs;
+        let adjusted = if last_dur > 60 && base >= 64 {
+            eprintln!("[pq-refiner] §4 adaptive cap: last cycle took {last_dur}s > 60s → reducing from {base} to 48");
+            48
+        } else if last_dur > 0 && last_dur < 30 && base <= 64 {
+            eprintln!("[pq-refiner] §4 adaptive cap: last cycle took {last_dur}s < 30s → expanding from {base} to 128");
+            128
+        } else {
+            base
+        };
+        adjusted.clamp(24, 128)
+    };
+    let challengers = generate_challengers(&champion_config_text, adaptive_cap, &mut state.exploration_cursor);
     eprintln!("[pq-refiner] generated {} challengers (pre-dedup)", challengers.len());
 
     // 4b. Dedup: filter out challengers whose config hash matches a past trial.
@@ -781,10 +1177,17 @@ fn main() -> std::process::ExitCode {
     }
 
     // 5. Run shadow replays + Phase 3 engine replays
+    // Rev-11 §4: Track cycle duration for adaptive cap.
+    let cycle_start = std::time::Instant::now();
+
     let mut results: Vec<ShadowReplayResult> = Vec::new();
     let mut any_defeated = false;
     let mut any_gates_passed = false;
     let mut best_challenger: Option<ShadowReplayResult> = None;
+    // Rev-11 §3: Track whether the best challenger was scored via engine-replay.
+    // Promotion is ONLY allowed when engine-replay confirmed the edge —
+    // shadow replay alone is a pre-filter, not a promotion gate.
+    let mut best_has_engine_replay = false;
 
     // Phase 3: if the event stream path is set, also compute the champion's
     // engine-replay score for fair comparison. Each challenger's engine-replay
@@ -800,7 +1203,7 @@ fn main() -> std::process::ExitCode {
             id: "champion".to_string(),
             mutations: vec![],
         });
-        match run_engine_replay(&args.event_stream_path, &champ_cfg) {
+        match run_engine_replay(&args.event_stream_path, &champ_cfg, args.replay_window_ticks) {
             Some(score) => {
                 eprintln!(
                     "[pq-refiner] champion engine-replay: net={} admitted={} rejected={}",
@@ -845,7 +1248,7 @@ fn main() -> std::process::ExitCode {
                 &champion_config_text,
                 challenger,
             );
-            match run_engine_replay(&args.event_stream_path, &challenger_cfg) {
+            match run_engine_replay(&args.event_stream_path, &challenger_cfg, args.replay_window_ticks) {
                 Some(score) => {
                     eprintln!(
                         "[pq-refiner]   engine-replay: {} net={} admitted={} rejected={}",
@@ -884,6 +1287,10 @@ fn main() -> std::process::ExitCode {
                best_challenger.as_ref().unwrap().challenger_net_scalp.net_lamports
             {
                 best_challenger = Some(result.clone());
+                // Rev-11 §3: Record whether this best challenger has genuine
+                // engine-replay confirmation. Only engine-replay-confirmed
+                // challengers are eligible for promotion.
+                best_has_engine_replay = result.engine_replay.is_some();
             }
         }
 
@@ -1190,11 +1597,19 @@ fn main() -> std::process::ExitCode {
         }
     }
     if let Some(ref best) = best_challenger {
-        if any_gates_passed {
-            eprintln!("[pq-refiner] CHAMPION DEFEATED by {} AND 8-gate passed — writing promotion", best.challenger_id);
+        if any_gates_passed && best_has_engine_replay {
+            eprintln!("[pq-refiner] CHAMPION DEFEATED by {} AND 8-gate passed AND engine-replay confirmed — writing promotion", best.challenger_id);
             write_promotion_file(&best, &challengers);
             write_refiner_status(challengers.len(), 1, "promoted");
             append_refiner_log(&results, true);
+        } else if any_gates_passed && !best_has_engine_replay {
+            // Rev-11 §3: Engine-replay is mandatory for promotion.
+            // Shadow replay alone is a pre-filter — it cannot gate promotion.
+            // If engine-replay is unavailable or failed, we skip the cycle
+            // rather than promote on approximation.
+            eprintln!("[pq-refiner] §3: champion defeated + 8-gate passed BUT no engine-replay confirmation — NO promotion (shadow-only is insufficient)");
+            write_refiner_status(challengers.len(), 0, "gate_passed_no_engine_replay");
+            append_refiner_log(&results, false);
         } else {
             eprintln!("[pq-refiner] champion defeated on margin but 8-gate NOT passed — no promotion");
             write_refiner_status(challengers.len(), 0, "margin_only_no_gate");
@@ -1267,6 +1682,9 @@ fn main() -> std::process::ExitCode {
     // Increment cumulative trial count (for FDR gate — Harvey/Liu/Zhu 2015).
     state.cumulative_trial_count += challengers.len() as u64;
     state.last_cycle += 1;
+    // Rev-11 §4: Save cycle duration for adaptive cap next cycle.
+    state.last_cycle_duration_secs = cycle_start.elapsed().as_secs();
+    eprintln!("[pq-refiner] §4: cycle took {}s", state.last_cycle_duration_secs);
 
     // 8. SAVE persistent state
     if let Err(e) = state.save(STATE_FILE) {
@@ -1554,11 +1972,13 @@ mod tests {
             gate_fail_rate_bps = 300
             sim_impact_k_bps = 200
         ";
-        let challengers = generate_challengers(config, 8);
+        let mut cursor = std::collections::HashMap::new();
+        let challengers = generate_challengers(config, 8, &mut cursor);
         assert!(!challengers.is_empty());
-        // Each challenger should have exactly 1 mutation (single-axis search)
+        // Most challengers should have exactly 1 mutation (single-axis search),
+        // but combinatorial pairs will have 2.
         for c in &challengers {
-            assert_eq!(c.mutations.len(), 1);
+            assert!(c.mutations.len() >= 1);
         }
     }
 
@@ -1571,7 +1991,8 @@ mod tests {
             numeric_ofi_min_bp = 100
             promote_k = 10
         ";
-        let challengers = generate_challengers(config, 4);
+        let mut cursor = std::collections::HashMap::new();
+        let challengers = generate_challengers(config, 4, &mut cursor);
         assert!(challengers.len() <= 4);
     }
 
@@ -1698,7 +2119,8 @@ mod tests {
             reflect_every_ticks = 50
             gate_margin_bps = 50
         ";
-        let challengers = generate_challengers(config, 64);
+        let mut cursor = std::collections::HashMap::new();
+        let challengers = generate_challengers(config, 64, &mut cursor);
         // No challenger should mutate a denylisted param
         for c in &challengers {
             for m in &c.mutations {

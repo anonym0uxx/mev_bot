@@ -83,20 +83,46 @@ pub struct EngineReplayResult {
 /// never calls `evaluate()`, so no trades are admitted — making the replay
 /// useless. This ensures backward compatibility with pre-Phase-3 streams.
 ///
+/// **Rolling window** (Rev-11 §6): if `window_ticks > 0`, only the last
+/// `window_ticks` Tick events (and all inter-Tick state events between them)
+/// are fed to the engine. This optimizes for CURRENT market conditions rather
+/// than the full historical tape. A window of 20000 ticks ≈ 1.4h.
+///
 /// Returns `None` if the event stream cannot be read or is empty.
 #[must_use]
 pub fn replay_event_stream<P: AsRef<Path>>(path: P, cfg: Config) -> Option<EngineReplayResult> {
+    replay_event_stream_windowed(path, cfg, 0)
+}
+
+/// Rev-11 §6: Replay with an optional rolling-window on Tick count.
+/// When `window_ticks == 0`, the full event stream is replayed (legacy behavior).
+/// When `window_ticks > 0`, only events after the last `window_ticks`-th Tick
+/// (counting from the end) are fed to the engine.
+#[must_use]
+pub fn replay_event_stream_windowed<P: AsRef<Path>>(
+    path: P,
+    cfg: Config,
+    window_ticks: u64,
+) -> Option<EngineReplayResult> {
     let (events, skipped) = read_event_stream(path).ok()?;
 
     if events.is_empty() {
         return None;
     }
 
-    // Inject Ticks if the stream has none. This is critical: the engine only
-    // runs admission/evaluation on `AppEvent::Tick`. Old event streams (pre-
-    // Phase 3) only captured state-update events, never Ticks. Without
-    // injection, the replay would admit zero trades for every config.
+    // Inject Ticks if the stream has none.
     let events = inject_missing_ticks(events);
+
+    // Rev-11 §6: Apply rolling window if specified.
+    let events = if window_ticks > 0 {
+        apply_rolling_window(events, window_ticks)
+    } else {
+        events
+    };
+
+    if events.is_empty() {
+        return None;
+    }
 
     let mut engine = Engine::new(cfg, RunMode::Replay);
     let report = engine.run(&events);
@@ -105,6 +131,37 @@ pub fn replay_event_stream<P: AsRef<Path>>(path: P, cfg: Config) -> Option<Engin
         events_fed: events.len(),
         parse_skipped: skipped,
     })
+}
+
+/// Rev-11 §6: Trim the event stream to only the last `window_ticks` Ticks
+/// and all events between them. Events before the cutoff point are dropped.
+/// This ensures the engine sees a coherent slice of market history, not
+/// dangling references to tokens that were admitted before the window.
+fn apply_rolling_window(events: Vec<AppEvent>, window_ticks: u64) -> Vec<AppEvent> {
+    // Count total ticks in the stream.
+    let total_ticks = events.iter().filter(|e| matches!(e, AppEvent::Tick)).count();
+    if total_ticks <= window_ticks as usize {
+        // Fewer ticks than the window — keep everything.
+        return events;
+    }
+
+    // Find the cutoff index: the position of the (total_ticks - window_ticks)-th
+    // Tick from the start. Everything from that Tick onward is kept.
+    let cutoff_tick = total_ticks - window_ticks as usize; // index of the first Tick to keep
+    let mut tick_count = 0;
+    let mut cutoff_idx = 0;
+    for (i, e) in events.iter().enumerate() {
+        if matches!(e, AppEvent::Tick) {
+            if tick_count == cutoff_tick {
+                cutoff_idx = i;
+                break;
+            }
+            tick_count += 1;
+        }
+    }
+
+    // Keep everything from the cutoff Tick onward.
+    events[cutoff_idx..].to_vec()
 }
 
 /// Replay with a pre-loaded event vector (for testing without file I/O).

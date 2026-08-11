@@ -631,13 +631,29 @@ pub struct EvaluatorState {
 
     /// Set of config hashes already tested (for fast dedup).
     pub tested_hashes: Vec<u64>,
+
+    /// Rev-11 §1: Exploration cursor for tier-rotation. Tracks which
+    /// parameter was last explored within each tier so the refiner
+    /// rotates through the full parameter surface across cycles
+    /// instead of always starting from the alphabetically-first param.
+    /// Keyed by tier (0-7) → last explored param index within that tier.
+    pub exploration_cursor: HashMap<u8, u64>,
+
+    /// Rev-11 §4: Duration of the last refiner cycle in seconds.
+    /// Used by the adaptive challenger cap logic to scale up/down
+    /// the number of challengers based on engine-replay throughput.
+    /// If the last cycle took >60s for 64 challengers → reduce to 48.
+    /// If the last cycle took <30s → expand to 128.
+    pub last_cycle_duration_secs: u64,
 }
 
 impl EvaluatorState {
-    /// Create the initial state for the first cycle (version 1, zero trials).
+    /// Create the initial state for the first cycle (version 2, zero trials).
+    /// Rev-11: version bumped to 2 to signal the fresh-state reset and
+    /// the new exploration_cursor field.
     pub fn initial() -> Self {
         Self {
-            version: 1,
+            version: 2,
             last_cycle: 0,
             cumulative_trial_count: 0,
             cumulative_netsol_lamports: 0,
@@ -656,6 +672,8 @@ impl EvaluatorState {
             dsr_state: DsrState::default(),
             rank_reversal: RankReversalState::default(),
             tested_hashes: Vec::new(),
+            exploration_cursor: HashMap::new(),
+            last_cycle_duration_secs: 0,
         }
     }
 
@@ -842,7 +860,22 @@ impl EvaluatorState {
             }
             s.push_str(&h.to_string());
         }
-        s.push_str("]\n");
+        s.push_str("],\n");
+
+        // Rev-11 §1: Exploration cursor for tier rotation continuity.
+        s.push_str("  \"exploration_cursor\":{");
+        let mut first = true;
+        for (tier, idx) in &self.exploration_cursor {
+            if !first {
+                s.push(',');
+            }
+            first = false;
+            s.push_str(&format!("\"{}\":{}", tier, idx));
+        }
+        s.push_str("}\n");
+
+        // Rev-11 §4: Last cycle duration (for adaptive challenger cap).
+        s.push_str(&format!("  \"last_cycle_duration_secs\":{}\n", self.last_cycle_duration_secs));
 
         s.push_str("}\n");
         s
@@ -867,16 +900,12 @@ impl EvaluatorState {
         Self::from_json(&text)
     }
 
-    /// Parse a JSON string into an EvaluatorState. This is a minimal parser
-    /// that extracts the key fields. For full fidelity, use `to_json()` output.
-    /// Fail-safe (§18.2): if parsing fails, return an error so the caller
-    /// can fall back to `initial()`.
+    /// Parse a JSON string into an EvaluatorState.
+    /// Rev-11: Full parser now extracts ALL persistent fields, not just 4.
+    /// Previously, tested_hashes, thompson_posteriors, and other state were
+    /// silently dropped on load → dedup broken across cycles, all Thompson
+    /// learning lost on every restart. This was a critical bug (Defect 8).
     pub fn from_json(text: &str) -> Result<Self, String> {
-        // Use the evaluator's existing JSON parser (tape.rs has one, but
-        // for state we use a simple extraction approach).
-        // This is a minimal implementation — extract version, trial count,
-        // and cycle. Full parsing of all sub-structures is a TODO for when
-        // the state file grows beyond the basic fields.
         let mut state = Self::initial();
 
         // Extract version
@@ -894,6 +923,91 @@ impl EvaluatorState {
         // Extract cumulative_netsol_lamports
         if let Some(v) = extract_i64(text, "cumulative_netsol_lamports") {
             state.cumulative_netsol_lamports = v;
+        }
+
+        // Rev-11 §7: Parse tested_hashes array for cross-cycle dedup.
+        if let Some(hashes) = extract_u64_array(text, "tested_hashes") {
+            state.tested_hashes = hashes;
+        }
+
+        // Rev-11: Parse exploration_cursor for tier rotation continuity.
+        // Format: "exploration_cursor":{"0":5,"1":3,...}
+        if let Some(cursor_str) = extract_json_object(text, "exploration_cursor") {
+            // Parse key:value pairs from the object string
+            let pairs = cursor_str.split(',').filter(|s| !s.is_empty());
+            for pair in pairs {
+                if let Some((k, v)) = pair.split_once(':') {
+                    let tier = k.trim().trim_matches('"').parse::<u8>().unwrap_or(0);
+                    let idx = v.trim().parse::<u64>().unwrap_or(0);
+                    state.exploration_cursor.insert(tier, idx);
+                }
+            }
+        }
+
+        // Rev-11 §4: Parse last_cycle_duration_secs for adaptive cap.
+        if let Some(dur) = extract_u64(text, "last_cycle_duration_secs") {
+            state.last_cycle_duration_secs = dur;
+        }
+
+        // Rev-11: Parse challenger_history for dedup and audit trail.
+        if let Some(history_str) = extract_json_array(text, "challenger_history") {
+            // Each entry is {"hash":N,"verdict":"...","cycle":N,...}
+            for entry_str in split_json_array_entries(&history_str) {
+                if let Some(h) = extract_u64(&entry_str, "hash") {
+                    let verdict_str = extract_string(&entry_str, "verdict")
+                        .unwrap_or_else(|| "unknown".to_string());
+                    // Leak to &'static str — these are small, bounded strings
+                    // created only during state load (once per cycle).
+                    let verdict: &'static str = Box::leak(
+                        verdict_str.into_boxed_str()
+                    );
+                    let cycle = extract_u64(&entry_str, "cycle").unwrap_or(0);
+                    let netsol = extract_i64(&entry_str, "netsol").unwrap_or(0);
+                    let n_trades = extract_u64(&entry_str, "n_trades").unwrap_or(0);
+                    let sprt_llr = extract_i64(&entry_str, "sprt_llr").unwrap_or(0);
+                    let fdr_p = extract_u64(&entry_str, "fdr_p_ppm").unwrap_or(0);
+                    state.challenger_history.push(ChallengerHistoryEntry {
+                        config_hash: h,
+                        verdict,
+                        cycle,
+                        netsol_lamports: netsol,
+                        n_trades,
+                        sprt_llr_millinats: sprt_llr,
+                        fdr_adjusted_p_ppm: fdr_p as u32,
+                        mutations: Vec::new(),
+                    });
+                }
+            }
+        }
+
+        // Rev-11: Parse thompson_posteriors for cross-cycle Bayesian continuity.
+        if let Some(posteriors_str) = extract_json_array(text, "thompson_posteriors") {
+            for entry_str in split_json_array_entries(&posteriors_str) {
+                if let Some(id) = extract_u64(&entry_str, "id") {
+                    let alpha = extract_u64(&entry_str, "alpha").unwrap_or(1);
+                    let beta = extract_u64(&entry_str, "beta").unwrap_or(1);
+                    let n_trades = extract_u64(&entry_str, "n_trades").unwrap_or(0);
+                    let netsol = extract_i64(&entry_str, "netsol").unwrap_or(0);
+                    let entry_mode = extract_string(&entry_str, "entry_mode")
+                        .unwrap_or_else(|| String::new());
+                    let archetype = extract_string(&entry_str, "archetype")
+                        .unwrap_or_else(|| String::new());
+                    let sizing = extract_string(&entry_str, "sizing")
+                        .unwrap_or_else(|| String::new());
+                    let lane = extract_string(&entry_str, "lane")
+                        .unwrap_or_else(|| String::new());
+                    state.thompson_posteriors.insert(id, ThompsonPosterior {
+                        alpha,
+                        beta,
+                        n_trades,
+                        cumulative_netsol_lamports: netsol,
+                        entry_mode,
+                        archetype,
+                        sizing,
+                        lane,
+                    });
+                }
+            }
         }
 
         Ok(state)
@@ -938,6 +1052,150 @@ fn extract_i64(json: &str, key: &str) -> Option<i64> {
     num_str.parse::<i64>().ok()
 }
 
+/// Rev-11: Extract a JSON string value for a given key.
+/// Looks for "key":"value" patterns and returns the unquoted string.
+fn extract_string(json: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{key}\":");
+    let idx = json.find(&pattern)?;
+    let rest = &json[idx + pattern.len()..];
+    let rest = rest.trim_start();
+    if !rest.starts_with('"') {
+        return None;
+    }
+    let start = 1;
+    let end_quote = rest[1..].find('"')?;
+    Some(rest[start..start + end_quote].to_string())
+}
+
+/// Rev-11: Extract a JSON array of u64 values for a given key.
+/// Handles "key":[1,2,3] format.
+fn extract_u64_array(json: &str, key: &str) -> Option<Vec<u64>> {
+    let pattern = format!("\"{key}\":[");
+    let idx = json.find(&pattern)?;
+    let rest = &json[idx + pattern.len()..];
+    let end_bracket = rest.find(']')?;
+    let array_content = &rest[..end_bracket];
+    let mut result = Vec::new();
+    for part in array_content.split(',') {
+        let trimmed = part.trim();
+        if let Ok(v) = trimmed.parse::<u64>() {
+            result.push(v);
+        }
+    }
+    Some(result)
+}
+
+/// Rev-11: Extract a JSON object value for a given key.
+/// Handles "key":{"subkey":value,...} format. Returns the inner content
+/// between the outermost { and }.
+fn extract_json_object(json: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{key}\":");
+    let idx = json.find(&pattern)?;
+    let rest = &json[idx + pattern.len()..];
+    let rest = rest.trim_start();
+    if !rest.starts_with('{') {
+        return None;
+    }
+    // Find matching closing brace by counting depth.
+    let mut depth = 0i32;
+    let mut end_pos = 0;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end_pos = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
+    Some(rest[1..end_pos].to_string())
+}
+
+/// Rev-11: Extract a JSON array value (as string) for a given key.
+/// Handles "key":[{...},{...},...] format. Returns the inner content
+/// between the outermost [ and ].
+fn extract_json_array(json: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{key}\":[");
+    let idx = json.find(&pattern)?;
+    let rest = &json[idx + pattern.len()..];
+    // Find matching closing bracket by counting depth, accounting for
+    // nested objects.
+    let mut depth = 0i32;
+    let mut end_pos = 0;
+    let mut found = false;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    end_pos = i;
+                    found = true;
+                    break;
+                }
+            }
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    if !found {
+        return None;
+    }
+    Some(rest[..end_pos].to_string())
+}
+
+/// Rev-11: Split a JSON array's inner content into individual entry strings.
+/// Each entry is a {...} object. Handles nested braces.
+fn split_json_array_entries(content: &str) -> Vec<String> {
+    let mut entries = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for (i, c) in content.char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if c == '\\' && in_string {
+            escape_next = true;
+            continue;
+        }
+        if c == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match c {
+            '{' => {
+                if depth == 0 {
+                    start = i;
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    entries.push(content[start..=i].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    entries
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -950,10 +1208,11 @@ mod tests {
     fn initial_state_has_zero_trials() {
         let s = EvaluatorState::initial();
         assert_eq!(s.cumulative_trial_count, 0);
-        assert_eq!(s.version, 1);
+        assert_eq!(s.version, 2); // Rev-11: version bumped from 1 to 2
         assert!(s.sprt_ledgers.is_empty());
         assert!(s.thompson_posteriors.is_empty());
         assert!(s.challenger_history.is_empty());
+        assert!(s.exploration_cursor.is_empty()); // Rev-11
     }
 
     #[test]
@@ -1072,11 +1331,15 @@ mod tests {
         s.record_challenger(0xDEAD, "dropped", 1, -100_000, 10, -2944, 50_000, vec!["mcap_band_lo".to_string()]);
         let json = s.to_json();
         // Verify key fields are present in the JSON.
-        assert!(json.contains("\"version\":1"));
+        assert!(json.contains("\"version\":2")); // Rev-11: version bumped
         assert!(json.contains("\"cumulative_trial_count\":5"));
         assert!(json.contains("\"cumulative_netsol_lamports\":-537000"));
         assert!(json.contains("\"verdict\":\"dropped\""));
         assert!(json.contains("\"mcap_band_lo\""));
+        // Rev-11: exploration_cursor should be present (even if empty)
+        assert!(json.contains("\"exploration_cursor\""));
+        // Rev-11 §4: last_cycle_duration_secs should be present
+        assert!(json.contains("\"last_cycle_duration_secs\""));
     }
 
     #[test]
