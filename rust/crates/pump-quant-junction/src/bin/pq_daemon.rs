@@ -220,7 +220,7 @@ fn parse_args() -> Result<DaemonArgs, u8> {
         status_every_ticks: 500,
         brain_snapshot_every_ticks: 5000,
         tape_every_ticks: 1000,
-        refiner_every_ticks: 5000, // default: ~every 5000 ticks
+        refiner_every_ticks: 72000, // default: every 2 hours (72000 ticks @ 100ms/tick)
         strategy_label: String::from("unlabeled"),
     };
     let mut i = 1;
@@ -251,7 +251,7 @@ fn parse_args() -> Result<DaemonArgs, u8> {
                 i += 2;
             }
             "--refiner-every-ticks" if i + 1 < args.len() => {
-                a.refiner_every_ticks = args[i + 1].parse().unwrap_or(5000);
+                a.refiner_every_ticks = args[i + 1].parse().unwrap_or(72000);
                 i += 2;
             }
             "--strategy-label" if i + 1 < args.len() => {
@@ -1268,6 +1268,7 @@ fn main() -> ExitCode {
     let mut auto_revert_state = AutoRevertState::default();
     let mut promotion_tick: u64 = 0; // tick at which the last promotion was applied
     let mut pre_promotion_fingerprint: u64 = 0; // fingerprint before the promotion
+    let mut trades_at_promotion: u64 = 0; // cumulative trade count at promotion time
     eprintln!("[pq-daemon] autonomous bridge: defense-in-depth + config hot-reload + refiner scheduling + auto-revert ACTIVE");
 
     // Phase 2: tape exporter — drains engine trades to evaluator JSONL format.
@@ -2635,11 +2636,18 @@ fn main() -> ExitCode {
                         let cumulative_pnl = prior_tape_pnl.saturating_add(
                             st.net_realized_lamports as i64
                         );
+                        // Snapshot the cumulative trade count at promotion time
+                        // so we can compute trades-since-promotion for the
+                        // variance-based auto-revert threshold.
+                        let cumulative_trades = prior_tape_trades
+                            .saturating_add(tape_exporter.total_exported());
+                        trades_at_promotion = cumulative_trades;
                         auto_revert_state = AutoRevertState {
                             promoted_fingerprint: post_reload_fp,
                             prior_champion_fingerprint: pre_reload_fp,
                             pnl_at_promotion: cumulative_pnl as i128,
                             ticks_since_promotion: 0,
+                            trades_at_promotion: cumulative_trades,
                             reverted: false,
                         };
                         pre_promotion_fingerprint = pre_reload_fp;
@@ -2664,11 +2672,18 @@ fn main() -> ExitCode {
                     let cumulative_pnl = prior_tape_pnl.saturating_add(
                         st.net_realized_lamports as i64
                     );
+                    // Compute trades-since-promotion for the variance-based
+                    // auto-revert threshold.
+                    let cumulative_trades = prior_tape_trades
+                        .saturating_add(tape_exporter.total_exported());
+                    let trades_since = cumulative_trades
+                        .saturating_sub(trades_at_promotion);
                     let current_fp = config_fingerprint(&cfg.dump_to_text());
                     if let Some(revert_config_text) = check_auto_revert(
                         current_fp,
                         cumulative_pnl as i128,
                         ticks_since,
+                        trades_since,
                     ) {
                         // Revert: parse the archived champion config back
                         eprintln!(

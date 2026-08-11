@@ -603,6 +603,9 @@ pub struct AutoRevertState {
     pub pnl_at_promotion: i128,
     /// Ticks since the promotion was applied.
     pub ticks_since_promotion: u64,
+    /// Cumulative trade count at the moment of promotion. Used to compute
+    /// trades-since-promotion for the variance-based revert threshold.
+    pub trades_at_promotion: u64,
     /// Whether auto-revert has triggered for this promotion.
     pub reverted: bool,
 }
@@ -614,45 +617,62 @@ impl Default for AutoRevertState {
             prior_champion_fingerprint: 0,
             pnl_at_promotion: 0,
             ticks_since_promotion: 0,
+            trades_at_promotion: 0,
             reverted: false,
         }
     }
 }
 
-/// Grace period (in ticks) before auto-revert evaluates post-promotion PnL.
-/// At ~100ms/tick, 1500 ticks ≈ 2.5 minutes. This gives the new config time
-/// to find trades before we judge it.
-const AUTO_REVERT_GRACE_TICKS: u64 = 1500;
+/// Minimum trades before auto-revert evaluates post-promotion PnL.
+/// Below this, the sample is too noisy to distinguish a bad config from
+/// variance. At our ~0.27 trades/min rate, 50 trades ≈ 3 hours — which
+/// is longer than the 2-hour refiner cadence, so the revert check happens
+/// between refiner cycles, not during one.
+const AUTO_REVERT_MIN_TRADES: u64 = 50;
+
+/// Per-trade PnL standard deviation (in lamports) used for the variance-based
+/// revert threshold. Calibrated from our tape data: σ ≈ 0.0178 SOL/trade.
+/// 1 SOL = 1e9 lamports, so 0.0178 SOL = 17,800,000 lamports.
+const AUTO_REVERT_PER_TRADE_SIGMA_LAMPORTS: f64 = 17_800_000.0;
+
+/// Confidence multiplier (k) for the variance-based threshold. The threshold
+/// is `k × σ × √n` where n = trades since promotion. k=3 means we require
+/// the drawdown to exceed the 99.7% confidence band (3σ) of per-trade noise
+/// before reverting — this prevents false reverts from normal variance.
+const AUTO_REVERT_CONFIDENCE_K: f64 = 3.0;
 
 /// Maximum post-promotion PnL deterioration (in lamports) before auto-revert
-/// triggers. If cumulative PnL drops by more than this amount relative to
-/// the PnL at promotion time, we revert. Set to a conservative 0.5 SOL
-/// (500_000_000 lamports) — a bad config that loses half a SOL in 2.5 min
-/// is clearly worse than the champion.
-const AUTO_REVERT_DRAWDOWN_LAMPORTS: i128 = 500_000_000;
+/// triggers. This is a FLOOR: the actual threshold scales with trades
+/// observed as `max(FLOOR, k × σ × √n)`. The floor prevents triggering
+/// on micro-drawdowns when n is very small. Set to 0.05 SOL (50,000,000
+/// lamports) — below this, even 50 trades of pure noise could trigger.
+const AUTO_REVERT_DRAWDOWN_FLOOR_LAMPORTS: i128 = 50_000_000;
 
 /// Write the auto-revert state to disk.
 pub fn write_auto_revert_state(state: &AutoRevertState) {
     let json = format!(
         concat!(
-            "{{\"schema\":\"auto_revert/1\",",
+            "{{\"schema\":\"auto_revert/2\",",
             "\"promoted_fingerprint\":\"{:#018x}\",",
             "\"prior_champion_fingerprint\":\"{:#018x}\",",
             "\"pnl_at_promotion\":{},",
             "\"ticks_since_promotion\":{},",
+            "\"trades_at_promotion\":{},",
             "\"reverted\":{}}}\n"
         ),
         state.promoted_fingerprint,
         state.prior_champion_fingerprint,
         state.pnl_at_promotion,
         state.ticks_since_promotion,
+        state.trades_at_promotion,
         state.reverted,
     );
     let _ = fs::write(AUTO_REVERT_STATE_FILE, json);
 }
 
 /// Read the auto-revert state from disk. Returns None if the file doesn't
-/// exist or can't be parsed.
+/// exist or can't be parsed. Backward-compatible: if trades_at_promotion is
+/// missing (schema v1), defaults to 0.
 pub fn read_auto_revert_state() -> Option<AutoRevertState> {
     let text = fs::read_to_string(AUTO_REVERT_STATE_FILE).ok()?;
     // Simple field extraction — no JSON parser in this crate's deps.
@@ -665,15 +685,18 @@ pub fn read_auto_revert_state() -> Option<AutoRevertState> {
     };
     Some(AutoRevertState {
         promoted_fingerprint: u64::from_str_radix(
-            extract("promoted_fingerprint")?.trim_start_matches('"').trim_end_matches('"'),
+            extract("promoted_fingerprint")?.trim_start_matches('\"').trim_end_matches('\"'),
             16,
         ).ok()?,
         prior_champion_fingerprint: u64::from_str_radix(
-            extract("prior_champion_fingerprint")?.trim_start_matches('"').trim_end_matches('"'),
+            extract("prior_champion_fingerprint")?.trim_start_matches('\"').trim_end_matches('\"'),
             16,
         ).ok()?,
         pnl_at_promotion: extract("pnl_at_promotion")?.parse().ok()?,
         ticks_since_promotion: extract("ticks_since_promotion")?.parse().ok()?,
+        trades_at_promotion: extract("trades_at_promotion")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0), // backward compat: schema v1 has no trades_at_promotion
         reverted: extract("reverted")?.parse::<u8>().map(|v| v != 0).ok()?,
     })
 }
@@ -683,10 +706,16 @@ pub fn read_auto_revert_state() -> Option<AutoRevertState> {
 ///
 /// Returns `Some(revert_config_text)` if we should revert, `None` otherwise.
 /// The revert config text is read from the champion archive.
+///
+/// The threshold is variance-based: `threshold = max(FLOOR, k × σ × √n)`
+/// where n = trades since promotion, σ = per-trade PnL std dev, k = confidence
+/// multiplier. This prevents false reverts from normal trading variance
+/// while still catching genuinely bad configs quickly.
 pub fn check_auto_revert(
     current_fingerprint: u64,
     current_cumulative_pnl: i128,
-    tick_since_promotion: u64,
+    _tick_since_promotion: u64,
+    trades_since_promotion: u64,
 ) -> Option<String> {
     let state = read_auto_revert_state()?;
     if state.reverted {
@@ -696,19 +725,28 @@ pub fn check_auto_revert(
         return None; // Different promotion context
     }
 
-    // Only evaluate after the grace period
-    if tick_since_promotion < AUTO_REVERT_GRACE_TICKS {
+    // Require a minimum number of trades before evaluating.
+    // Below this, the sample is too noisy to distinguish a bad config
+    // from normal variance.
+    if trades_since_promotion < AUTO_REVERT_MIN_TRADES {
         return None;
     }
 
+    // Compute the variance-based threshold: max(FLOOR, k × σ × √n)
+    let n = trades_since_promotion as f64;
+    let dynamic_threshold = (AUTO_REVERT_CONFIDENCE_K
+        * AUTO_REVERT_PER_TRADE_SIGMA_LAMPORTS
+        * n.sqrt()) as i128;
+    let threshold = AUTO_REVERT_DRAWDOWN_FLOOR_LAMPORTS.max(dynamic_threshold);
+
     // Check deterioration: has PnL dropped below the threshold?
     let drawdown = state.pnl_at_promotion - current_cumulative_pnl;
-    if drawdown > AUTO_REVERT_DRAWDOWN_LAMPORTS {
+    if drawdown > threshold {
         eprintln!(
             "[autonomous-bridge] AUTO-REVERT triggered: drawdown={drawdown} lamports \
-             (threshold={AUTO_REVERT_DRAWDOWN_LAMPORTS}), ticks={tick_since_promotion} \
-             (grace={AUTO_REVERT_GRACE_TICKS}). Reverting to champion fingerprint \
-             {:#018x}",
+             (threshold={threshold}, dynamic={dynamic_threshold}, floor={AUTO_REVERT_DRAWDOWN_FLOOR_LAMPORTS}), \
+             trades_since_promotion={trades_since_promotion} (min={AUTO_REVERT_MIN_TRADES}). \
+             Reverting to champion fingerprint {:#018x}",
             state.prior_champion_fingerprint
         );
 

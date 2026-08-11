@@ -391,7 +391,7 @@ echo "    --commitment processed"
 echo "    --status-every-ticks 50"
 echo "    --brain-snapshot-every-ticks 5000"
 echo "    --tape-every-ticks 200"
-echo "    --refiner-every-ticks 5000"
+echo "    --refiner-every-ticks 72000"
 echo "    --strategy-label rev7-swing-v1"
 echo ""
 echo "  Health-check margin: 60s timeout / ~12.5s writes = 4.8×"
@@ -406,4 +406,4 @@ exec ./target/release/pq-watchdog \
     --max-restarts 10 \
     --health-timeout-secs 60 \
     --backoff-cap-secs 30 \
-    --daemon-args "--junction-cap 8192 --commitment processed --status-every-ticks 50 --brain-snapshot-every-ticks 5000 --tape-every-ticks 200 --refiner-every-ticks 5000 --strategy-label rev7-swing-v1"
+    --daemon-args "--junction-cap 8192 --commitment processed --status-every-ticks 50 --brain-snapshot-every-ticks 5000 --tape-every-ticks 200 --refiner-every-ticks 72000 --strategy-label rev7-swing-v1"
