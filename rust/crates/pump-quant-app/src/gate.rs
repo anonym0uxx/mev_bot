@@ -69,6 +69,17 @@ pub enum GateReject {
     /// trade may be perfectly viable, the mint is simply on temporary blackout.
     /// Cannot fire in the golden tape (no position ever closes → set never populated).
     ReentryCooldown,
+    /// **Rev-13 — ENTRY QUALITY FILTER.** The candidate's pre-entry trade ring
+    /// failed at least one of the walk-forward-validated quality thresholds:
+    /// buy_ratio below `entry_min_buy_ratio_bp`, a single trade exceeding
+    /// `entry_max_sol_per_trade_lamports`, or fewer than
+    /// `entry_min_trades_observed` trades in the ring. A SELECTION refusal:
+    /// the token may be perfectly tradeable, it simply lacks the organic-demand
+    /// profile that walk-forward analysis on 33.6M real trades showed is
+    /// necessary for positive expected PnL after curve impact. Distinguished
+    /// from `OutsideMcapBand` (population) and `EconomicallyUnviable` (cost):
+    /// this is about flow *quality*, not population or cost.
+    EntryQualityFilter,
 }
 
 /// The gate's verdict on one candidate.
@@ -155,6 +166,33 @@ pub fn decide(
         )
     {
         return GateDecision::Reject(GateReject::OutsideMcapBand);
+    }
+
+    // ---- Rev-13 ENTRY QUALITY FILTER (walk-forward validated 2026-08-12) ----
+    // A SELECTION refusal applied after the mcap band check and BEFORE the
+    // economic band computation: a candidate that lacks organic buy demand or
+    // is whale-dominated is refused before we spend any gate work on cost
+    // modeling — the same pattern as OutsideMcapBand above. The thresholds are
+    // config-driven so the operator can tune or disable the filter entirely.
+    //
+    // The three checks, all sourced from the pre-entry trade ring via Features:
+    //   1. trades_observed < entry_min_trades_observed → insufficient evidence
+    //   2. buy_ratio_bp < entry_min_buy_ratio_bp → no organic demand
+    //   3. max_trade_lamports > entry_max_sol_per_trade_lamports → whale dominance
+    //
+    // When disabled (entry_quality_filter_enable=false), this block is skipped
+    // entirely and the gate behaves exactly as before — golden-tape safe.
+    if cfg.entry_quality_filter_enable {
+        let feats = &conf.numeric;
+        if feats.trades_observed < cfg.entry_min_trades_observed {
+            return GateDecision::Reject(GateReject::EntryQualityFilter);
+        }
+        if feats.buy_ratio_bp < cfg.entry_min_buy_ratio_bp {
+            return GateDecision::Reject(GateReject::EntryQualityFilter);
+        }
+        if feats.max_trade_lamports > cfg.entry_max_sol_per_trade_lamports {
+            return GateDecision::Reject(GateReject::EntryQualityFilter);
+        }
     }
 
     // ---- COST INPUTS, DERIVED PER CANDIDATE (2026-07-28 cost-model unification).

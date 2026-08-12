@@ -37,6 +37,9 @@ fn constructor_stores_all_fields() {
         buy_pressure_bp: 7_500,
         unique_buyers: 42,
         age_slots: 3,
+        buy_ratio_bp: 8_000,
+        max_trade_lamports: 500_000_000,
+        trades_observed: 42,
     };
     let c = Candidate::new(mint(9), Lane::EarlyConfirmation, 1_234, 100, f);
     assert_eq!(c.mint, mint(9));

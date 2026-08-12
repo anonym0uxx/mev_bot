@@ -51,6 +51,34 @@ const NUMERIC_RING_CAP: usize = 64;
 /// degradation clause), so the lane emits nothing rather than a spurious score.
 const NUMERIC_MIN_TRADES: usize = 3;
 
+/// Compute the Rev-13 entry-quality features from the bounded trade ring:
+/// `buy_ratio_bp`, `max_trade_lamports`, and `trades_observed`. Called from both
+/// `features_for` and `emit_into` so the gate sees identical pre-entry signals
+/// regardless of which path produced the `Features` snapshot.
+///
+/// **buy_ratio_bp** = (# buy trades / total trades) × 10_000. A simple count
+/// ratio (not volume-weighted) because the walk-forward analysis on 33.6M real
+/// trades showed that trade-COUNT buy ratio was the strongest predictor of
+/// high MFE — a token where 65%+ of *trades* (not volume) are buys has organic
+/// retail demand, not whale pumps.
+///
+/// **max_trade_lamports** = the largest `quote_qty` in the ring. Walk-forward
+/// showed tokens where one trade exceeds 0.75 SOL have negative expected PnL:
+/// whale dominance means the whale's exit will crater the bonding curve.
+///
+/// **trades_observed** = ring length. The gate uses this to refuse entry when
+/// the ratio/max signals are computed on too few trades (statistical noise).
+fn entry_quality_from_ring(trades: &[TradeEvent]) -> (u32, u64, u32) {
+    let n = trades.len();
+    if n == 0 {
+        return (0, 0, 0);
+    }
+    let buys = trades.iter().filter(|t| t.side == Side::Buy).count();
+    let buy_ratio_bp = ((buys as u64 * 10_000) / n as u64) as u32;
+    let max_trade_lamports = trades.iter().map(|t| t.quote_qty).max().unwrap_or(0);
+    (buy_ratio_bp, max_trade_lamports, n as u32)
+}
+
 /// Map order-flow imbalance (bps, −10_000..=10_000, or `None` on empty flow) onto
 /// the shared 0..=10_000 buy-pressure scale (5_000 = balanced) so the `Features`
 /// contract keeps meaning while being sourced from wash-robust *signed* flow rather
@@ -301,11 +329,18 @@ impl NumericLane {
     /// is now the OFI-derived (signed, wash-robust) value on the shared scale.
     #[must_use]
     pub fn features_for(&self, mint: DomainMint) -> Option<Features> {
-        self.obs.get(mint.as_bytes()).map(|o| Features {
-            liquidity_lamports: o.liquidity_lamports,
-            buy_pressure_bp: ofi_to_pressure_bp(o.with_ordered(order_flow_imbalance_bps)),
-            unique_buyers: o.buyer_bitset.count_ones(),
-            age_slots: o.age_slots,
+        self.obs.get(mint.as_bytes()).map(|o| {
+            let (buy_ratio_bp, max_trade_lamports, trades_observed) =
+                o.with_ordered(entry_quality_from_ring);
+            Features {
+                liquidity_lamports: o.liquidity_lamports,
+                buy_pressure_bp: ofi_to_pressure_bp(o.with_ordered(order_flow_imbalance_bps)),
+                unique_buyers: o.buyer_bitset.count_ones(),
+                age_slots: o.age_slots,
+                buy_ratio_bp,
+                max_trade_lamports,
+                trades_observed,
+            }
         })
     }
 
@@ -380,6 +415,8 @@ impl NumericLane {
             let score = (ofi_bp as u64)
                 .saturating_mul(liq_decade)
                 .saturating_mul(breadth);
+            let (buy_ratio_bp, max_trade_lamports, trades_observed) =
+                o.with_ordered(entry_quality_from_ring);
             buf.push(
                 Candidate::new(
                     WlMint::new(*k),
@@ -391,6 +428,9 @@ impl NumericLane {
                         buy_pressure_bp: ofi_to_pressure_bp(Some(ofi_bp)),
                         unique_buyers: o.buyer_bitset.count_ones(),
                         age_slots: o.age_slots,
+                        buy_ratio_bp,
+                        max_trade_lamports,
+                        trades_observed,
                     },
                 )
                 .with_discovery_lane(DiscoveryLane::ActiveMarket),

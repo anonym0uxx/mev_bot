@@ -55,7 +55,7 @@ worth **zero lamports** on every tape this repo can drive.
 
 | Baseline | Value | Guards |
 |---|---|---|
-| `GOLDEN_DIGEST` | `10342339453238494935` (hex `8f875eefc8c9c6d7`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
+| `GOLDEN_DIGEST` | `16223569033580072469` (hex `e125b21473914e15`) | byte-exact decision-journal digest of the golden tape under `Config::dev_portable` — the primary determinism fingerprint (§22/§54) |
 | `GOLDEN_NET_LAMPORTS` | `31465931` | realized §24-compliant cost-derived net-SOL on the golden tape |
 | `GOLDEN_PROMOTED` | `504` | candidates promoted to the gate |
 | `GOLDEN_ADMITTED` | `11` | candidates admitted by the gate |

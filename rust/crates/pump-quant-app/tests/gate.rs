@@ -31,6 +31,9 @@ fn numeric_feats() -> Features {
         buy_pressure_bp: 9_000,
         unique_buyers: 12,
         age_slots: 40,
+        buy_ratio_bp: 10_000, // 100% buys — passes any entry filter
+        max_trade_lamports: 0, // no whale trades
+        trades_observed: 100,  // plenty of evidence
     }
 }
 

@@ -105,7 +105,11 @@
 /// all defaulting OFF per §56.2). Decision vector IDENTICAL: promoted=504,
 /// admitted=11, rejected=493, net=31_465_931. The digest shift is purely
 /// from `format!("{cfg:?}")` including the new config fields in the seed.
-pub const GOLDEN_DIGEST: u64 = 10_342_339_453_238_494_935;
+/// Re-pin #34 (2026-08-12): Rev-13 entry quality filter — 3 new Features fields
+/// + 4 new Config fields, all OFF by default. Same pattern as #32/#33: the
+/// config Debug-format seed moved, decision vector is byte-identical.
+/// 10_342_339_453_238_494_935 → 16_223_569_033_580_072_469.
+pub const GOLDEN_DIGEST: u64 = 16_223_569_033_580_072_469;
 /// Realized net-SOL (lamports) on the golden tape (§24-compliant cost-derived).
 /// Re-pin #29: 30_889_282 → 31_465_931 — cost-aware TP ladder (fixed fractions,
 /// research-synthesized values from arXiv:2606.08232 fat-tail capture design).

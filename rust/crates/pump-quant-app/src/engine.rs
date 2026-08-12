@@ -6429,6 +6429,10 @@ const fn reject_code(r: GateReject) -> u8 {
         // §Quant-Rev-7: re-entry cooldown refusal — a SELECTION refusal (mint on
         // temporary blackout after exit). Cannot fire in golden tape.
         GateReject::ReentryCooldown => 25,
+        // Rev-13: entry quality filter refusal — a SELECTION refusal (pre-entry
+        // trade ring lacks organic buy demand or is whale-dominated). Cannot
+        // fire in golden tape (no pre-entry ring in the tape's fixed flow).
+        GateReject::EntryQualityFilter => 26,
     }
 }
 

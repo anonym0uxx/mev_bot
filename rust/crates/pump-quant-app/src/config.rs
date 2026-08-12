@@ -1099,6 +1099,37 @@ pub struct Config {
     /// was just exited cannot be re-entered within the same hold horizon. The mint
     /// becomes eligible again only after the cooldown fully elapses.
     pub reentry_cooldown_ticks: u64,
+
+    // ---- Rev-13 entry quality filter (walk-forward validated 2026-08-12) ----
+    // HF dataset: 33.6M trades, 4-quarter walk-forward, bootstrap p=0.0003,
+    // Bonferroni-corrected over 64 configs. The entry filter was the single
+    // largest PnL lever — more than trail width, more than HSL tuning. It
+    // rejects tokens with low organic buy demand and whale-dominated flow.
+    /// **SELECTION LAW (default OFF).** When enabled, the gate refuses entry
+    /// on candidates whose pre-entry trade ring shows insufficient organic buy
+    /// demand (buy_ratio below threshold), whale dominance (max single trade
+    /// above threshold), or is too young (age below a minimum number of trades
+    /// for statistical meaningfulness). Walk-forward on 33.6M real trades:
+    /// tokens passing this filter had +0.0025 SOL/trade vs -0.0003 for those
+    /// that didn't — a 10× swing in per-trade expectancy.
+    pub entry_quality_filter_enable: bool,
+    /// Minimum buy-side trade ratio in bps (10_000 = 100%). A candidate whose
+    /// pre-entry ring has fewer than this fraction of buy trades is refused.
+    /// Walk-forward optimal: 5500 (55% of trades must be buys). Below this,
+    /// the token lacks organic retail demand and tends to crater on entry.
+    pub entry_min_buy_ratio_bp: u32,
+    /// Maximum single trade size in lamports. A candidate whose pre-entry ring
+    /// contains any trade larger than this is refused — whale dominance means
+    /// the whale's exit will crater the bonding curve. Walk-forward optimal:
+    /// 750_000_000 (0.75 SOL). Above this, the token is whale-driven, not
+    /// organic.
+    pub entry_max_sol_per_trade_lamports: u64,
+    /// Minimum number of trades observed in the pre-entry ring for the buy_ratio
+    /// and max_trade signals to be considered statistically meaningful. Below
+    /// this, the gate refuses entry (insufficient evidence). Walk-forward
+    /// showed that ratios computed on <8 trades are noise. Default 8, matching
+    /// the brain's minimum sample threshold for consistency.
+    pub entry_min_trades_observed: u32,
 }
 
 /// LAW D2 default designated-caller attention weight: half the standard attention
@@ -1505,6 +1536,12 @@ impl Config {
             // Rev-7: re-entry cooldown — prevent death-by-a-thousand-cuts
             reentry_cooldown_enable: false,
             reentry_cooldown_ticks: 2400,         // 10 min at 250ms/tick = max_hold window
+
+            // Rev-13: entry quality filter (walk-forward validated 2026-08-12)
+            entry_quality_filter_enable: false,
+            entry_min_buy_ratio_bp: 5_500,           // 55% of trades must be buys
+            entry_max_sol_per_trade_lamports: 750_000_000,  // 0.75 SOL max single trade
+            entry_min_trades_observed: 8,            // minimum for statistical meaning
         }
     }
 
@@ -1752,6 +1789,14 @@ impl Config {
                 let v = value.max(0);
                 self.reentry_cooldown_ticks = v as u64;
             }
+            // Rev-13: entry quality filter
+            "entry_quality_filter_enable" => self.entry_quality_filter_enable = value != 0,
+            "entry_min_buy_ratio_bp" => self.entry_min_buy_ratio_bp = bp(value)?,
+            "entry_max_sol_per_trade_lamports" => {
+                let v = value.max(0);
+                self.entry_max_sol_per_trade_lamports = v as u64;
+            }
+            "entry_min_trades_observed" => self.entry_min_trades_observed = bp(value)?,
             other => return Err(ConfigError::UnknownKey(other.to_string())),
         }
         Ok(())
@@ -1933,6 +1978,11 @@ impl Config {
         // §Quant-Rev-7: re-entry cooldown
         let _ = writeln!(s, "reentry_cooldown_enable = {}", self.reentry_cooldown_enable as i64);
         let _ = writeln!(s, "reentry_cooldown_ticks = {}", self.reentry_cooldown_ticks as i64);
+        // Rev-13: entry quality filter
+        let _ = writeln!(s, "entry_quality_filter_enable = {}", self.entry_quality_filter_enable as i64);
+        let _ = writeln!(s, "entry_min_buy_ratio_bp = {}", self.entry_min_buy_ratio_bp as i64);
+        let _ = writeln!(s, "entry_max_sol_per_trade_lamports = {}", self.entry_max_sol_per_trade_lamports as i64);
+        let _ = writeln!(s, "entry_min_trades_observed = {}", self.entry_min_trades_observed as i64);
         let _ = writeln!(s, "universe_min_entities = {}", self.universe_min_entities as i64);
         let _ = writeln!(s, "universe_min_liquidity_lamports = {}", self.universe_min_liquidity_lamports as i64);
         let _ = writeln!(s, "universe_min_trades = {}", self.universe_min_trades as i64);

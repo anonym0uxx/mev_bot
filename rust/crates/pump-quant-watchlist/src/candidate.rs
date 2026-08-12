@@ -218,6 +218,20 @@ pub struct Features {
     pub unique_buyers: u32,
     /// Age of the market at discovery, in slots.
     pub age_slots: u32,
+    // ---- Rev-13 entry quality filter (walk-forward validated 2026-08-12) ----
+    /// Buy-side trade ratio: (# buy trades / total trades) × 10_000.
+    /// Computed from the bounded trade ring at discovery. A ratio below the
+    /// configured minimum indicates the token lacks organic buy demand.
+    /// 0 when no trades have been observed yet.
+    pub buy_ratio_bp: u32,
+    /// Largest single trade (in lamports) observed in the pre-entry trade ring.
+    /// A whale-dominated token where one trade dwarfs the rest is a risk:
+    /// the whale's exit will crater the curve. 0 when no trades observed.
+    pub max_trade_lamports: u64,
+    /// Number of trades in the bounded ring at discovery. Used to ensure
+    /// the buy_ratio and max_trade signals are statistically meaningful
+    /// (not computed on 2 trades).
+    pub trades_observed: u32,
 }
 
 /// A single discovery observation: one lane's claim that one mint is worth

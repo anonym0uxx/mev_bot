@@ -198,6 +198,9 @@ fn watchlist_stays_within_capacity_under_flood() {
             buy_pressure_bp: 5_000 + (tag as u32 % 3_000),
             unique_buyers: 3 + (tag as u32 % 20),
             age_slots: 10 + (tag as u32 % 50),
+            buy_ratio_bp: 10_000,
+            max_trade_lamports: 0,
+            trades_observed: 100,
         };
         let cand = Candidate::new(
             Mint::new(b),

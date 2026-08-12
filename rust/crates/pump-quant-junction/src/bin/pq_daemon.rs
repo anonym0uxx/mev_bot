@@ -96,12 +96,14 @@ impl SocialSource for FirecrawlBatchSource {
 const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 const PUMPPORTAL_DEFAULT_URL: &str = "wss://pumpportal.fun/api/data";
 /// Max concurrent Helius account subscriptions. Helius allows 1000 concurrent
-/// subs per connection. Raised from 64 to 256 (Phase 2) — with the GAP #7
-/// accountUnsubscribe leak fixed, we have headroom. At 256 subs, each mint
-/// holds a slot for ~588s (vs ~147s at 64), giving far more time for the
-/// median 37.6s OnchainConfirm to arrive. We leave room below the 1000 cap
-/// for the slot subscription and re-subscribe churn during reconnects.
-const MAX_ACCOUNT_SUBS: usize = 256;
+/// subs per connection. Raised from 256 to 850 (Phase 3) — the 256-slot cap
+/// was causing 526 mints to be evicted before their median-37.6s OnchainConfirm
+/// arrived, producing a 79.6% NoNumericConfirmation reject rate. At 850 subs
+/// the eviction rate drops sharply: more mints hold their slot long enough for
+/// Helius to return the account data, filling `liquidity_lamports`. We leave
+/// 150 slots of headroom below the 1000 cap for the slot subscription and
+/// re-subscribe churn during reconnects.
+const MAX_ACCOUNT_SUBS: usize = 850;
 const MAX_TRADE_SUBS: usize = 512;
 const STALE_SECS: u64 = 30;
 
@@ -117,10 +119,12 @@ const HELIUS_SUB_CAP: usize = 1000;
 /// If leaked server-side subscriptions exceed this fraction of HELIUS_SUB_CAP,
 /// proactively trigger a reconnect before the cap is hit. This is the
 /// early-warning threshold — we don't wait for the -32006 error to start
-/// recovery. 80% gives us 200 slots of headroom (256 local + ~744 leaked
-/// before we trigger). The threshold accounts for the slot subscription
-/// (1 slot) and re-subscribe churn during reconnects.
-const SUB_CAP_RECONNECT_THRESHOLD: f64 = 0.80;
+/// recovery. 95% gives us 50 slots of headroom (850 local + ~100 leaked
+/// before we trigger at 950). The threshold accounts for the slot subscription
+/// (1 slot) and re-subscribe churn during reconnects. The tighter headroom is
+/// acceptable because the leak-fix (GAP #7) keeps leaked-sub accumulation
+/// low and the stagnation detector catches death-spiral symptoms within 120s.
+const SUB_CAP_RECONNECT_THRESHOLD: f64 = 0.95;
 
 /// OnchainConfirm stagnation detection: if confirms don't advance for this
 /// many seconds while the daemon is running and LS is healthy, the Helius WS

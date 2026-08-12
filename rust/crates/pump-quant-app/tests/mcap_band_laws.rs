@@ -79,6 +79,9 @@ fn cand() -> Candidate {
             buy_pressure_bp: 6_000,
             unique_buyers: 40,
             age_slots: 300,
+            buy_ratio_bp: 10_000,
+            max_trade_lamports: 0,
+            trades_observed: 100,
         },
     )
 }
@@ -95,6 +98,9 @@ fn conf_at(vsol: u64) -> Confirmation {
             buy_pressure_bp: 6_000,
             unique_buyers: 40,
             age_slots: 300,
+            buy_ratio_bp: 10_000,
+            max_trade_lamports: 0,
+            trades_observed: 100,
         },
     }
 }

@@ -40,7 +40,7 @@ position has ever been opened on chain. Every figure in this repository is a *sy
 fixture*. Establishing whether this strategy makes money is **your job**, and it is not yet begun.
 
 **The golden reference you are inheriting:** net **31,465,931 lamports**, digest
-`10342339453238494935`, promoted/admitted/rejected/universe-filtered **504 / 11 / 493 / 72**
+`16223569033580072469`, promoted/admitted/rejected/universe-filtered **504 / 11 / 493 / 72**
 (re-pin #27, 2026-07-28).
 
 In real terms that book is **0.031 SOL — about $2.36** — across **11 trades in a handful of
