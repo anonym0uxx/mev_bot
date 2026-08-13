@@ -767,19 +767,35 @@ impl SubTracker {
         Some((req_id, mint, server_sub))
     }
 
-    /// Clear all server-sub mappings (used on reconnect — the server assigns
+    /// Clear ALL tracker state (used on reconnect — the server assigns
     /// new sub IDs on a fresh connection, so stale mappings must go).
-    /// Also resets has_trades flags — after reconnect, we haven't seen any
-    /// trades on the new connection yet.
-    fn clear_server_subs(&mut self) {
+    /// Returns the list of mints that were actively subscribed, so the
+    /// caller can re-subscribe them on the new connection without
+    /// duplicating entries in `subscription_order` / `req_to_mint`.
+    ///
+    /// BUG FIX (death-spiral): The previous version only cleared
+    /// `req_to_server_sub` / `server_sub_to_mint` but kept
+    /// `subscription_order` and `req_to_mint` intact. The reconnect
+    /// code then called `active_mints()` (which reads `subscription_order`)
+    /// and re-subscribed each mint via `record_request()` — pushing
+    /// NEW entries into `subscription_order` on top of the old ones.
+    /// This doubled `server_visible_count()` on every reconnect cycle,
+    /// causing the pending-acks to grow exponentially (1700 → 3401 →
+    /// 6801 → 13601 …) until the daemon could no longer write status
+    /// files and the watchdog killed it. The fix is to snapshot the
+    /// active mints, then nuke ALL four maps so the re-subscribe loop
+    /// starts from a clean slate.
+    fn clear_server_subs(&mut self) -> Vec<[u8; 32]> {
+        // Snapshot the mints we need to re-subscribe on the new connection.
+        let mints: Vec<[u8; 32]> = self.subscription_order
+            .iter()
+            .map(|(_, mint, _)| *mint)
+            .collect();
+        self.req_to_mint.clear();
         self.req_to_server_sub.clear();
         self.server_sub_to_mint.clear();
-        // Reset trade flags on reconnect — the new connection hasn't observed
-        // any trades yet. This prevents stale trade-flags from permanently
-        // protecting subscriptions that may no longer be active.
-        for entry in self.subscription_order.iter_mut() {
-            entry.2 = false;
-        }
+        self.subscription_order.clear();
+        mints
     }
 
     fn active_mints(&self) -> Vec<(u64, [u8; 32])> {
@@ -1376,7 +1392,7 @@ fn main() -> ExitCode {
             // subscription slots on the old connection.
             let _ = helius_conn.close();
             stats.helius_reconnects += 1;
-            sub_tracker.clear_server_subs();
+            let active_mints_vec = sub_tracker.clear_server_subs();
             stats.sub_cap_errors = 0; // reset after reconnect
             stats.subs_leaked_no_ack = 0; // fresh connection, no leaks
             // Re-subscribe with the standard backoff ladder.
@@ -1388,8 +1404,8 @@ fn main() -> ExitCode {
                         Ok(mut c) => {
                             let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
                             let _ = c.send_text(&helius_ws::slot_subscribe_request());
-                            for (_, mint) in sub_tracker.active_mints() {
-                                let pda = bonding_curve_pda(&mint);
+                            for mint in &active_mints_vec {
+                                let pda = bonding_curve_pda(mint);
                                 let pda_str = pda.to_string();
                                 let req_id = next_req_id;
                                 next_req_id += 1;
@@ -1397,7 +1413,7 @@ fn main() -> ExitCode {
                                     req_id, &pda_str, &args.commitment,
                                 );
                                 let _ = c.send_text(&req);
-                                sub_tracker.record_request(req_id, mint);
+                                sub_tracker.record_request(req_id, *mint);
                             }
                             helius_conn_established_at = Instant::now();
                             last_slot_time = Instant::now();
@@ -1711,7 +1727,7 @@ fn main() -> ExitCode {
                                 stats.helius_reconnects += 1;
                                 stats.sub_cap_errors = 0; // reset after reconnect
                                 stats.subs_leaked_no_ack = 0; // reset after reconnect
-                                sub_tracker.clear_server_subs();
+                                let active_mints_vec = sub_tracker.clear_server_subs();
                                 match WsConn::connect(&helius_url) {
                                     Ok(mut c) => {
                                         let _ = c.set_read_timeout(
@@ -1720,8 +1736,8 @@ fn main() -> ExitCode {
                                         let _ = c.send_text(
                                             &helius_ws::slot_subscribe_request(),
                                         );
-                                        for (_, mint) in sub_tracker.active_mints() {
-                                            let pda = bonding_curve_pda(&mint);
+                                        for mint in &active_mints_vec {
+                                            let pda = bonding_curve_pda(mint);
                                             let pda_str = pda.to_string();
                                             let req_id = next_req_id;
                                             next_req_id += 1;
@@ -1729,7 +1745,7 @@ fn main() -> ExitCode {
                                                 req_id, &pda_str, &args.commitment,
                                             );
                                             let _ = c.send_text(&req);
-                                            sub_tracker.record_request(req_id, mint);
+                                            sub_tracker.record_request(req_id, *mint);
                                         }
                                         helius_conn_established_at = Instant::now();
                                         last_slot_time = Instant::now();
@@ -2058,7 +2074,7 @@ fn main() -> ExitCode {
                 // but best-effort — ensures server-side subscription release).
                 let _ = helius_conn.close();
                 stats.helius_reconnects += 1;
-                sub_tracker.clear_server_subs();
+                let active_mints_vec = sub_tracker.clear_server_subs();
                 // GAP #11: Exponential backoff reconnect ladder.
                 // The old code tried once, slept 500ms, tried once more, then
                 // gave up. Against a rate-limiting or overloaded Helius endpoint,
@@ -2080,8 +2096,8 @@ fn main() -> ExitCode {
                                 // never stored it. server_sub_to_mint stays
                                 // empty → all notifications are silently
                                 // dropped → 0 OnchainConfirms after reconnect.
-                                for (_, mint) in sub_tracker.active_mints() {
-                                    let pda = bonding_curve_pda(&mint);
+                                for mint in &active_mints_vec {
+                                    let pda = bonding_curve_pda(mint);
                                     let pda_str = pda.to_string();
                                     let req_id = next_req_id;
                                     next_req_id += 1;
@@ -2091,7 +2107,7 @@ fn main() -> ExitCode {
                                     let _ = c.send_text(&req);
                                     // CRITICAL: register the req_id → mint
                                     // mapping so the ACK can be resolved.
-                                    sub_tracker.record_request(req_id, mint);
+                                    sub_tracker.record_request(req_id, *mint);
                                 }
                                 helius_conn_established_at = Instant::now();
                                 last_slot_time = Instant::now();
@@ -2145,7 +2161,7 @@ fn main() -> ExitCode {
                 let _ = helius_conn.close();
                 stats.ws_errors += 1;
                 stats.helius_reconnects += 1;
-                sub_tracker.clear_server_subs();
+                let active_mints_vec = sub_tracker.clear_server_subs();
                 let mut backoff_ms = WS_RECONNECT_SLEEP_MS;
                 let mut reconnected = false;
                 for _ in 0..MAX_RECONNECT_ATTEMPTS {
@@ -2154,8 +2170,8 @@ fn main() -> ExitCode {
                             Ok(mut c) => {
                                 let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
                                 let _ = c.send_text(&helius_ws::slot_subscribe_request());
-                                for (_, mint) in sub_tracker.active_mints() {
-                                    let pda = bonding_curve_pda(&mint);
+                                for mint in &active_mints_vec {
+                                    let pda = bonding_curve_pda(mint);
                                     let pda_str = pda.to_string();
                                     let req_id = next_req_id;
                                     next_req_id += 1;
@@ -2163,7 +2179,7 @@ fn main() -> ExitCode {
                                         req_id, &pda_str, &args.commitment,
                                     );
                                     let _ = c.send_text(&req);
-                                    sub_tracker.record_request(req_id, mint);
+                                    sub_tracker.record_request(req_id, *mint);
                                 }
                                 helius_conn_established_at = Instant::now();
                                 last_slot_time = Instant::now();
@@ -2220,7 +2236,7 @@ fn main() -> ExitCode {
             // subscription slot release before opening a fresh connection.
             let _ = helius_conn.close();
             stats.helius_reconnects += 1;
-            sub_tracker.clear_server_subs();
+            let active_mints_vec = sub_tracker.clear_server_subs();
             // GAP #11: Same exponential backoff ladder as the Closed/Err paths.
             let mut backoff_ms = WS_RECONNECT_SLEEP_MS;
             let mut reconnected = false;
@@ -2230,8 +2246,8 @@ fn main() -> ExitCode {
                         Ok(mut c) => {
                             let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
                             let _ = c.send_text(&helius_ws::slot_subscribe_request());
-                            for (_, mint) in sub_tracker.active_mints() {
-                                let pda = bonding_curve_pda(&mint);
+                            for mint in &active_mints_vec {
+                                let pda = bonding_curve_pda(mint);
                                 let pda_str = pda.to_string();
                                 let req_id = next_req_id;
                                 next_req_id += 1;
@@ -2239,7 +2255,7 @@ fn main() -> ExitCode {
                                     req_id, &pda_str, &args.commitment,
                                 );
                                 let _ = c.send_text(&req);
-                                sub_tracker.record_request(req_id, mint);
+                                sub_tracker.record_request(req_id, *mint);
                             }
                             helius_conn_established_at = Instant::now();
                             last_slot_time = Instant::now();
