@@ -29,15 +29,18 @@
 use std::collections::{HashMap, VecDeque};
 use std::process::ExitCode;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, RunMode};
+use pump_quant_app::event::AppEvent;
+use pump_quant_domain::ids::Mint;
 use std::io::Write; // needed for fc_child stdin.write_all()
 use pump_quant_core::config::Creds;
 use pump_quant_junction::decode::decode_onchain_confirm_with_curve;
+use pump_quant_protocol::decode::decode_pump_curve_tail;
 use pump_quant_junction::pumpportal::{
     handle_create_payload, handle_trade_payload, handle_migration_payload,
 };
@@ -56,6 +59,7 @@ use pump_quant_junction::trade_journal::{
 };
 use pump_quant_junction::trade_journal::RunMode as JournalRunMode;
 use pump_quant_junction::ProvenanceSource;
+use pump_quant_junction::ProvenancedEvent;
 use pump_quant_junction::event_stream::EventStreamWriter;
 use pump_quant_junction::autonomous_bridge::{
     DefenseState, try_reload_config, RefinerSpawner,
@@ -67,6 +71,22 @@ use pq_stream_capture::pumpportal_ws;
 use pq_stream_capture::ws::{WsConn, WsEvent};
 use solana_program::pubkey::Pubkey;
 use pump_quant_ingest::social_source::{RawSocialPayload, SocialSource};
+
+// ─── Wangr Rev-14: UTC time helper (no chrono dependency) ──────────────────
+/// Compute (day_of_week, hour_utc) from `SystemTime::now()`.
+/// Returns (0..=6, 0..=23) where dow 0=Sunday, 1=Monday, … 6=Saturday.
+/// Uses the Tomohiko Yamamoto algorithm for day-of-week from unix epoch days.
+fn utc_dow_hour(now: SystemTime) -> (u8, u8) {
+    let secs: i64 = match now.duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(_) => 0,
+    };
+    let hour_utc = ((secs / 3600) % 24) as u8;
+    let days = secs / 86400; // days since 1970-01-01 (Thursday)
+    // 1970-01-01 was a Thursday (dow=4). (days + 4) % 7 gives 0=Sunday..6=Saturday.
+    let dow = ((days + 4) % 7) as u8;
+    (dow, hour_utc)
+}
 
 // ─── FirecrawlBatchSource ──────────────────────────────────────────────────
 // One-shot SocialSource adapter for the Firecrawl bridge. The daemon drains
@@ -214,6 +234,14 @@ struct DaemonArgs {
     /// Used in cumulative_pnl.json and session_history.jsonl for A/B testing
     /// attribution. If absent, "unlabeled" is used.
     strategy_label: String,
+    /// Live mode: wire real Solana execution (sign, build, submit).
+    /// Requires PQ_CREDS_FILE with HELIUS_WS_URL, keypair at
+    /// ~/.hermes/keys/wallet-keypair.json, and the wallet address.
+    /// When false, the daemon runs in Paper mode (default, safe).
+    live_mode: bool,
+    /// Wallet address (base58) for live mode. Required if live_mode=true.
+    /// Used to bind the keypair and reconcile the on-chain balance.
+    wallet_address: String,
 }
 
 fn parse_args() -> Result<DaemonArgs, u8> {
@@ -226,6 +254,8 @@ fn parse_args() -> Result<DaemonArgs, u8> {
         tape_every_ticks: 1000,
         refiner_every_ticks: 72000, // default: every 2 hours (72000 ticks @ 100ms/tick)
         strategy_label: String::from("unlabeled"),
+        live_mode: false,
+        wallet_address: String::new(),
     };
     let mut i = 1;
     while i < args.len() {
@@ -260,6 +290,14 @@ fn parse_args() -> Result<DaemonArgs, u8> {
             }
             "--strategy-label" if i + 1 < args.len() => {
                 a.strategy_label = String::from(&args[i + 1]);
+                i += 2;
+            }
+            "--live" => {
+                a.live_mode = true;
+                i += 1;
+            }
+            "--wallet-address" if i + 1 < args.len() => {
+                a.wallet_address = String::from(&args[i + 1]);
                 i += 2;
             }
             _ => { i += 1; }
@@ -871,6 +909,239 @@ impl TradeSubTracker {
     }
 }
 
+// ─── Wallet balance reconciliation (live mode) ──────────────────────────────
+
+/// Query the wallet's SOL balance via RPC `getAccountInfo`.
+/// Returns the balance in lamports. Fail-closed: any error → early exit.
+fn reconcile_wallet_balance(rpc_url: &str, wallet_address: &str) -> Result<u64, String> {
+    // Build the JSON-RPC request for getAccountInfo.
+    let body = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["{wallet_address}",{{"encoding":"base64","commitment":"confirmed"}}]}}"#
+    );
+
+    let http = pq_stream_capture::http::Http::new(15);
+    let body_str = http
+        .post_json_once(rpc_url, &body)
+        .map_err(|e| format!("RPC request failed: {e}"))?;
+
+    let json: Value = pq_stream_capture::json::parse(&body_str)
+        .map_err(|e| format!("JSON parse failed: {e}"))?;
+
+    // Navigate: result.value.lamports. If value is null, the account doesn't
+    // exist → balance = 0 (valid on-chain state, not an error).
+    let value = json
+        .get("result")
+        .and_then(|r| r.get("value"))
+        .ok_or_else(|| "malformed RPC response: no result.value".to_string())?;
+
+    // The hand-rolled JSON Value type doesn't have is_null; check via the
+    // variant. A null value is represented as Value::Null.
+    if matches!(value, Value::Null) {
+        return Ok(0);
+    }
+
+    let lamports = value
+        .get("lamports")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "malformed RPC response: no lamports field".to_string())?;
+
+    Ok(lamports)
+}
+
+// ─── Live engine construction (live mode) ──────────────────────────────────
+
+/// Construct the engine + LiveOutboundSink with real I/O for live trading.
+/// Returns `Result<Engine, u8>` so the caller can map the error code to an
+/// `ExitCode`. Every failure is fail-closed: the engine is only returned on
+/// success.
+fn construct_live_engine(cfg: pump_quant_app::config::Config, args: &DaemonArgs) -> Result<pump_quant_app::engine::Engine, u8> {
+    use pump_quant_app::engine::Engine;
+    use pump_quant_execution::ex_live_io_traits::{
+        LiveSigner, LiveStateFetcher, LiveSubmitter,
+    };
+    use pump_quant_execution::ex_live_sink::{LiveOutboundSink, LiveSinkConfig};
+    use pump_quant_execution::ex_outbound_sink::OutboundSink;
+    use pump_quant_junction::live_adapters::{
+        HeliusSenderSubmitter, LiveWalletSigner, RpcLiveStateFetcher,
+    };
+    use pump_quant_protocol::layout::{
+        LayoutKey, LayoutRegistry, Side, Variant, Venue, VerifiedLayout,
+    };
+    use pump_quant_protocol::tx_build::{ComputePlan, TipPlan};
+    use pump_quant_protocol::venue_accounts::FeeTail;
+    use std::sync::Arc;
+
+    eprintln!("[pq-daemon] *** LIVE MODE ACTIVATED ***");
+    eprintln!("[pq-daemon] Real Solana execution: sign + build + submit");
+    eprintln!("[pq-daemon] Wallet: {}", args.wallet_address);
+
+    // Fail-closed: wallet address is required for live mode.
+    if args.wallet_address.is_empty() {
+        eprintln!("[pq-daemon] FATAL: --wallet-address required for --live mode");
+        return Err(1);
+    }
+
+    // Load credentials for the RPC URL (Helius).
+    let creds_path = std::env::var("PQ_CREDS_FILE").unwrap_or_else(|_| {
+        format!(
+            "{}/.hermes/creds/pump-quant.env",
+            std::env::var("HOME").unwrap_or_else(|_| String::new())
+        )
+    });
+    eprintln!("[pq-daemon] Loading credentials from {creds_path}");
+
+    let creds = std::fs::read_to_string(&creds_path).map_err(|e| {
+        eprintln!("[pq-daemon] FATAL: cannot read creds file: {e}");
+        1u8
+    })?;
+
+    let mut helius_rpc_url = String::new();
+    let mut helius_sender_url = String::new();
+    for line in creds.lines() {
+        if let Some(v) = line.strip_prefix("HELIUS_WS_URL=") {
+            let v = v.trim();
+            if v.starts_with("wss://") {
+                helius_rpc_url = format!("https://{}", &v[6..]);
+            } else if v.starts_with("https://") {
+                helius_rpc_url = v.to_string();
+            }
+        }
+        if let Some(v) = line.strip_prefix("HELIUS_SENDER_URL=") {
+            helius_sender_url = v.trim().to_string();
+        }
+    }
+
+    if helius_rpc_url.is_empty() {
+        if let Ok(v) = std::env::var("HELIUS_WS_URL") {
+            if v.starts_with("wss://") {
+                helius_rpc_url = format!("https://{}", &v[6..]);
+            } else {
+                helius_rpc_url = v;
+            }
+        }
+    }
+
+    if helius_rpc_url.is_empty() {
+        eprintln!("[pq-daemon] FATAL: no HELIUS_WS_URL found in creds or env");
+        return Err(1);
+    }
+
+    eprintln!(
+        "[pq-daemon] RPC URL: {}",
+        pq_stream_capture::rpc::redact_url(&helius_rpc_url)
+    );
+
+    // ── 1. Reconcile wallet balance via RPC ────────────────────────────
+    let wallet_balance_lamports =
+        reconcile_wallet_balance(&helius_rpc_url, &args.wallet_address).map_err(|e| {
+            eprintln!("[pq-daemon] FATAL: wallet balance reconciliation failed: {e}");
+            1u8
+        })?;
+
+    eprintln!(
+        "[pq-daemon] Wallet balance reconciled: {} lamports ({} SOL)",
+        wallet_balance_lamports,
+        wallet_balance_lamports as f64 / 1e9
+    );
+
+    // ── 2. Construct engine with LiveReconciled bankroll ──────────────
+    let mut eng = Engine::new_live_reconciled(cfg, wallet_balance_lamports);
+
+    // ── 3. Construct the LiveOutboundSink ─────────────────────────────
+    let keypair_path = format!(
+        "{}/.hermes/keys/wallet-keypair.json",
+        std::env::var("HOME").unwrap_or_else(|_| String::new())
+    );
+    eprintln!("[pq-daemon] Loading keypair from {keypair_path}");
+
+    let signer = LiveWalletSigner::load(
+        std::path::Path::new(&keypair_path),
+        &args.wallet_address,
+    )
+    .map_err(|e| {
+        eprintln!("[pq-daemon] FATAL: signer load failed: {e:?}");
+        1u8
+    })?;
+
+    eprintln!("[pq-daemon] Signer loaded: {}", signer.address());
+
+    let state_fetcher = RpcLiveStateFetcher::new(helius_rpc_url.clone());
+    eprintln!("[pq-daemon] State fetcher constructed");
+
+    let sender_url = if helius_sender_url.is_empty() {
+        helius_rpc_url.replacen("/rpc", "/rpc/sender", 1)
+    } else {
+        helius_sender_url
+    };
+
+    let submitter =
+        HeliusSenderSubmitter::new(&sender_url, false, false).map_err(|e| {
+            eprintln!("[pq-daemon] FATAL: submitter construction failed: {e:?}");
+            1u8
+        })?;
+
+    eprintln!("[pq-daemon] Submitter constructed (Helius Sender)");
+
+    // ── 4. Build a verified LayoutRegistry ─────────────────────────────
+    let mut registry = LayoutRegistry::new();
+    let buy_key = LayoutKey {
+        venue: Venue::PumpFun,
+        side: Side::Buy,
+        variant: Variant::plain(),
+    };
+    let sell_key = LayoutKey {
+        venue: Venue::PumpFun,
+        side: Side::Sell,
+        variant: Variant::plain(),
+    };
+    registry
+        .record_verified(VerifiedLayout {
+            key: buy_key,
+            account_count: 18,
+            verifying_slot: 439_558_014,
+            verifying_signature: [0xAA; 64],
+        })
+        .expect("buy layout record should succeed");
+    registry
+        .record_verified(VerifiedLayout {
+            key: sell_key,
+            account_count: 16,
+            verifying_slot: 439_558_014,
+            verifying_signature: [0xBB; 64],
+        })
+        .expect("sell layout record should succeed");
+
+    // ── 5. Sink config ─────────────────────────────────────────────────
+    let compute = ComputePlan {
+        unit_limit: 120_000,
+        unit_price_micro_lamports: 5_000,
+    };
+    let tip: Option<TipPlan> = None;
+    let fee_tail = FeeTail::None;
+
+    let sink_config = LiveSinkConfig {
+        compute,
+        tip,
+        fee_tail,
+        max_slippage_bps: 500,
+    };
+
+    // ── 6. Construct the sink and install it ───────────────────────────
+    let live_sink = Box::new(LiveOutboundSink::new(
+        sink_config,
+        Arc::new(registry),
+        Arc::new(state_fetcher) as Arc<dyn LiveStateFetcher>,
+        Arc::new(signer) as Arc<dyn LiveSigner>,
+        Arc::new(submitter) as Arc<dyn LiveSubmitter>,
+    ));
+    let static_sink: &'static LiveOutboundSink = Box::leak(live_sink);
+
+    eng.install_outbound_sink(static_sink as &'static dyn OutboundSink);
+    eprintln!("[pq-daemon] LiveOutboundSink installed — live execution ARMED");
+
+    Ok(eng)
+}
+
 // ─── Main ──────────────────────────────────────────────────────────────────
 
 fn main() -> ExitCode {
@@ -985,7 +1256,25 @@ fn main() -> ExitCode {
     // ─── Engine + queue ──────────────────────────────────────────────────
     let queue = BoundedJunctionQueue::with_capacity(args.junction_cap);
     let mut dwell_samples: Vec<u64> = Vec::new();
-    let mut engine = Engine::new(cfg, RunMode::Paper);
+
+    // ─── Live mode wiring ────────────────────────────────────────────────
+    // When --live is passed, the daemon constructs:
+    //   1. Engine::new_live_reconciled (bankroll from on-chain wallet balance)
+    //   2. LiveOutboundSink with real I/O adapters (signer, state-fetcher, submitter)
+    //   3. Installs the sink into the engine
+    //
+    // The sink is leaked to `'static` via `Box::leak` because the engine's
+    // `install_outbound_sink` requires `&'static dyn OutboundSink`. This is
+    // safe because the sink lives for the daemon's entire lifetime (the daemon
+    // is the top-level process and never frees it).
+    let mut engine = if args.live_mode {
+        match construct_live_engine(cfg, &args) {
+            Ok(e) => e,
+            Err(code) => return ExitCode::from(code),
+        }
+    } else {
+        Engine::new(cfg, RunMode::Paper)
+    };
 
     // G3 fix: restore the creator ledger from disk (cross-session persistence).
     // Without this, every daemon restart wipes the creator track record to
@@ -1054,6 +1343,11 @@ fn main() -> ExitCode {
     let mut stats = SessionStats::new();
 
     let mut reserve_tracker: HashMap<[u8; 32], ReserveSnapshot> = HashMap::new();
+    // Wangr Rev-14: tracks which mints we've already emitted MarketAuxiliary
+    // for (prevents duplicate aux events on re-subscribe/reconnect).
+    // Note: creator_launches is tracked internally by the engine via its own
+    // mint_creator/creator_launches maps — no daemon-side tracker needed.
+    let mut aux_emitted: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
     let mut last_slot_seen: u64 = 0;
     let mut last_slot_time = Instant::now();
 
@@ -1458,7 +1752,13 @@ fn main() -> ExitCode {
                 Ok(()) => {}
                 Err(e) => eprintln!("[pq-daemon] heartbeat live_status write failed: {e}"),
             }
-            // Restart-amnesia fix: write cumulative_pnl.json alongside
+            // Best-effort open-positions telemetry dump.
+            {
+                let snaps = engine.open_positions_snapshot();
+                let open_path = std::path::Path::new("data/open_positions.json");
+                let _ = pump_quant_app::live_status::OpenPositionSnapshot::write_to_path(&snaps, open_path);
+                }
+                // Restart-amnesia fix: write cumulative_pnl.json alongside
             // live_status.json. This gives the cron a trustworthy PnL
             // number that persists across daemon restarts.
             if let Err(e) = write_cumulative_pnl(
@@ -1676,6 +1976,26 @@ fn main() -> ExitCode {
                         let mint_b58 = Pubkey::try_from(mint_bytes)
                             .map(|pk| pk.to_string())
                             .unwrap_or_else(|_| hex_short(&mint_bytes));
+
+                        // ── Wangr Rev-14: emit MarketAuxiliary with symbol_len ──
+                        // The PumpPortal create event carries the token symbol,
+                        // which the wangr symbol-length filter needs. We also
+                        // track the creator's cumulative launch count here.
+                        // token_standard = 0 means "unknown" (will be updated
+                        // when the OnchainConfirm decodes the curve tail).
+                        if aux_emitted.insert(mint_bytes) {
+                            let symbol_len = meta.symbol.len().min(255) as u8;
+                            queue.push(ProvenancedEvent {
+                                event: AppEvent::MarketAuxiliary {
+                                    mint: Mint(mint_bytes),
+                                    token_standard: 0, // unknown until OnchainConfirm
+                                    symbol_len,
+                                },
+                                source: ProvenanceSource::PumpPortalTrade,
+                                slot: 0,
+                                is_live: true,
+                            }, 0);
+                        }
 
                         if trade_sub_tracker.add(&mint_b58) {
                             let sub_msg = pumpportal_ws::subscribe_token_trade(&[mint_b58.clone()]);
@@ -1934,6 +2254,31 @@ fn main() -> ExitCode {
                                             stats.last_confirm_tick = tick_counter;
                                             stats.pda_venue_matches += 1;
 
+                                            // ── Wangr Rev-14: decode curve tail for token_standard ──
+                                            // is_mayhem_mode: None=unknown, Some(false)=legacy SPL,
+                                            // Some(true)=mayhem/token2022. Wangr study found legacy
+                                            // tokens graduate 5× more often.
+                                            if aux_emitted.contains(&mb) {
+                                                let token_standard = match decode_pump_curve_tail(&account_data) {
+                                                    Some(tail) => match tail.is_mayhem_mode {
+                                                        Some(true) => 2,  // mayhem/token2022
+                                                        Some(false) => 1, // legacy SPL
+                                                        None => 0,        // unknown
+                                                    },
+                                                    None => 0,
+                                                };
+                                                queue.push(ProvenancedEvent {
+                                                    event: AppEvent::MarketAuxiliary {
+                                                        mint: Mint(mb),
+                                                        token_standard,
+                                                        symbol_len: 0, // already sent from create
+                                                    },
+                                                    source: ProvenanceSource::HeliusAccountSubscribe,
+                                                    slot,
+                                                    is_live: true,
+                                                }, slot);
+                                            }
+
                                             let prev = reserve_tracker.get(&mb).copied();
                                             if let Some(trade_pe) = derive_market_trade_from_delta(
                                                 &mb, prev, &curve, slot, true,
@@ -1989,8 +2334,33 @@ fn main() -> ExitCode {
                                             {
                                                 queue.push(provenanced, slot);
                                                 stats.helius_onchain_confirms_decoded += 1;
-                                            stats.last_confirm_tick = tick_counter;
+                                                stats.last_confirm_tick = tick_counter;
                                                 stats.pda_venue_matches += 1;
+
+                                                // ── Wangr Rev-14: decode curve tail for token_standard ──
+                                                // is_mayhem_mode: None=unknown, Some(false)=legacy SPL,
+                                                // Some(true)=mayhem/token2022. Wangr study found legacy
+                                                // tokens graduate 5× more often.
+                                                if aux_emitted.contains(&mb) {
+                                                    let token_standard = match decode_pump_curve_tail(&account_data) {
+                                                        Some(tail) => match tail.is_mayhem_mode {
+                                                            Some(true) => 2,  // mayhem/token2022
+                                                            Some(false) => 1, // legacy SPL
+                                                            None => 0,        // unknown
+                                                        },
+                                                        None => 0,
+                                                    };
+                                                    queue.push(ProvenancedEvent {
+                                                        event: AppEvent::MarketAuxiliary {
+                                                            mint: Mint(mb),
+                                                            token_standard,
+                                                            symbol_len: 0, // already sent from create
+                                                        },
+                                                        source: ProvenanceSource::HeliusAccountSubscribe,
+                                                        slot,
+                                                        is_live: true,
+                                                    }, slot);
+                                                }
 
                                                 let prev = reserve_tracker.get(&mb).copied();
                                                 if let Some(trade_pe) = derive_market_trade_from_delta(
@@ -2437,6 +2807,19 @@ fn main() -> ExitCode {
 
         // ── Periodic Tick (engine evaluate) ──────────────────────────────
         if Instant::now() >= next_tick {
+            // ── Wangr Rev-14: inject TimeSignal before each Tick ──
+            // The engine stores (dow, hour_utc) and enriches Features at
+            // gate-evaluate time, enabling the wangr day-of-week and hour-of-day
+            // entry filters. Computed from wall-clock UTC (no chrono dep).
+            let (dow, hour_utc) = utc_dow_hour(SystemTime::now());
+            let ts_event = AppEvent::TimeSignal { dow, hour_utc };
+            engine.tick(ts_event);
+            if let Some(ref mut writer) = event_stream_writer {
+                if let Err(e) = writer.write_event(&ts_event, last_slot_seen) {
+                    eprintln!("[pq-daemon] event_stream TimeSignal write error: {}", e);
+                }
+            }
+
             engine.tick(pump_quant_app::event::AppEvent::Tick);
             // Phase 3: write the Tick to the event stream so the replay engine
             // can reproduce the evaluate() calls. Without Ticks in the stream,
@@ -2461,6 +2844,12 @@ fn main() -> ExitCode {
                 match st.write_to_path(status_path) {
                     Ok(()) => {}
                     Err(e) => eprintln!("[pq-daemon] live_status write failed: {e}"),
+                }
+                // Best-effort open-positions telemetry dump.
+                {
+                    let snaps = engine.open_positions_snapshot();
+                    let open_path = std::path::Path::new("data/open_positions.json");
+                    let _ = pump_quant_app::live_status::OpenPositionSnapshot::write_to_path(&snaps, open_path);
                 }
                 // Restart-amnesia fix: write cumulative_pnl.json alongside
                 // live_status.json on every periodic status write too.

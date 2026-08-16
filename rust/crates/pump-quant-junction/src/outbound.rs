@@ -154,10 +154,12 @@ impl<'a> OutboundJunction<'a> {
     /// Returns `OutboundError` on any failure, classified by §36 class.
     pub fn execute(&self, decision: &TradeDecision, request_id: &str) -> Result<Accepted, OutboundError> {
         // ── 1. State-fetch ─────────────────────────────────────────────────
-        let FetchedState { ctx, recent_blockhash } = self
+        let fetched = self
             .state_fetch
             .fetch(&decision.mint, &decision.user)
             .map_err(OutboundError::StateFetch)?;
+        let ctx = fetched.ctx;
+        let recent_blockhash = fetched.recent_blockhash;
 
         // ── 2. Build ────────────────────────────────────────────────────────
         let env = BuildEnv {

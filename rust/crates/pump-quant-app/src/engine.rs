@@ -401,15 +401,22 @@ const ALPHA_SOURCE_LEDGER_CAP: usize = 256;
 /// creator ownership is never an automatic binary reject).
 const MAX_CREATOR_FADE_BPS: u32 = 5_000;
 
-/// How the engine is allowed to act. The laptop build supports only paper and
-/// replay; live capital is a Tier-0 human-gated world this type cannot express, so
-/// no code path in this binary can reach it.
+/// How the engine is allowed to act. Paper and Replay are safe modes with no
+/// capital at risk. Live mode wires real Solana execution: ed25519 signing,
+/// wire assembly, and Helius Sender submission through a `LiveOutboundSink`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunMode {
     /// Drive the calibrated fill model; no capital moves.
     Paper,
     /// Re-run a recorded event journal for determinism checking.
     Replay,
+    /// Live trading: real Solana instructions, ed25519 signing, wire assembly,
+    /// and Helius Sender submission. The outbound sink is wired to a
+    /// `LiveOutboundSink` that builds, signs, and submits real transactions.
+    ///
+    /// The bankroll MUST be `LiveReconciled` — a `PaperSeed` is rejected at
+    /// the live guard (`require_live_verified`) before any order is sized.
+    Live,
 }
 
 /// Provenance of the engine's bankroll **base** — the lamport figure the entire
@@ -959,6 +966,17 @@ pub struct Engine {
     /// carried alongside instead (server-side decode seam). Bounded (§99); empty
     /// until fed, so a run without first-slot fees is byte-identical.
     first_slot_fees: BTreeMap<[u8; 32], (u128, u64)>,
+    /// Rev-14 wangr intelligence: per-mint auxiliary data (token_standard,
+    /// symbol_len) fed by `AppEvent::MarketAuxiliary`. Bounded (§99); empty
+    /// until fed, so a run without auxiliary events leaves the gate's wangr
+    /// filters at sentinel zero — byte-identical to prior behavior.
+    mint_aux: BTreeMap<[u8; 32], (u8, u8)>,
+    /// Rev-14 wangr intelligence: latest wall-clock time signal (dow, hour_utc)
+    /// fed by `AppEvent::TimeSignal`. Defaults to (0, 255) = unobserved, which
+    /// is a no-op for all time-based gate filters. The engine is a pure tick-
+    /// based state machine (§22) and NEVER reads wall-clock itself; this is the
+    /// sole channel through which the caller informs it of UTC time.
+    time_signal: (u8, u8),
     /// §56.11 retirement flags per watchlist lane (capital-ineligible when true).
     retired: [bool; 4],
     /// Envelope-clamped Layer-2 sizing recommendation (bps), None until earned.
@@ -1120,14 +1138,14 @@ impl Engine {
     ///
     /// Live arming MUST additionally gate every order on
     /// [`BankrollOrigin::require_live_verified`] (fail-closed) before submission — a
-    /// paper seed can never back a live trade. Because there is no `Live` [`RunMode`]
-    /// yet (that variant is Phase-B), the engine is built under [`RunMode::Paper`]
-    /// fill semantics for now; the LiveReconciled *origin* is what a live order path
-    /// checks, and it will carry the `Live` mode once that variant lands.
+    /// paper seed can never back a live trade. The engine is built under
+    /// [`RunMode::Live`] semantics: the outbound sink is expected to be wired to a
+    /// [`LiveOutboundSink`] by the caller via `install_outbound_sink` immediately
+    /// after construction.
     #[must_use]
     pub fn new_live_reconciled(cfg: Config, wallet_balance_lamports: u64) -> Self {
         let origin = BankrollOrigin::LiveReconciled(wallet_balance_lamports);
-        Self::with_origin(cfg, RunMode::Paper, origin)
+        Self::with_origin(cfg, RunMode::Live, origin)
     }
 
     /// Construct an engine under a validated config, a run mode, and an explicit
@@ -1278,6 +1296,9 @@ impl Engine {
             mint_creator: BTreeMap::new(),
             creator_launches: BTreeMap::new(),
             first_slot_fees: BTreeMap::new(),
+            // Rev-14 wangr intelligence: empty/sentinel until fed — no-op.
+            mint_aux: BTreeMap::new(),
+            time_signal: (0, 255),
             retired: [false; 4],
             f_recommended: None,
             regime_rug_elevated: false,
@@ -1571,6 +1592,8 @@ impl Engine {
             Ok(()) => writes += 1,
             Err(e) => eprintln!("live_status write failed: {e}"),
         };
+        // Best-effort open-positions telemetry dump alongside live_status.json.
+        let open_path = std::path::Path::new("data/open_positions.json");
         for (i, &ev) in events.iter().enumerate() {
             self.tick(ev);
             // Plain modulo, not `is_multiple_of`, to honour the workspace MSRV 1.85.
@@ -1578,10 +1601,14 @@ impl Engine {
             if (i as u64 + 1) % every == 0 {
                 write(self.live_status());
                 self.write_brain_analysis();
+                let snaps = self.open_positions_snapshot();
+                let _ = crate::live_status::OpenPositionSnapshot::write_to_path(&snaps, open_path);
             }
         }
         write(self.live_status());
         self.write_brain_analysis();
+        let snaps = self.open_positions_snapshot();
+        let _ = crate::live_status::OpenPositionSnapshot::write_to_path(&snaps, open_path);
         (self.report(), writes)
     }
 
@@ -1980,6 +2007,28 @@ impl Engine {
                 self.observe_creator_action(m, kind, slot);
                 // §26 held-position limb: a confirmed dump forces the exit now.
                 self.enforce_creator_dump_exit(&m);
+            }
+            // Rev-14 wangr intelligence: store auxiliary per-mint data.
+            AppEvent::MarketAuxiliary {
+                mint,
+                token_standard,
+                symbol_len,
+            } => {
+                let m = *mint.as_bytes();
+                // §99 bounded growth: evict the lexicographically smallest key
+                // at capacity (same pattern as first_slot_fees).
+                if !self.mint_aux.contains_key(&m) && self.mint_aux.len() >= 1024 {
+                    if let Some(victim) = self.mint_aux.keys().next().copied() {
+                        self.mint_aux.remove(&victim);
+                    }
+                }
+                self.mint_aux.insert(m, (token_standard, symbol_len));
+            }
+            // Rev-14 wangr intelligence: store the latest wall-clock time signal.
+            // The engine is a pure tick-based state machine (§22); this is the
+            // ONLY channel through which the caller informs it of UTC time.
+            AppEvent::TimeSignal { dow, hour_utc } => {
+                self.time_signal = (dow, hour_utc);
             }
             AppEvent::Tick => self.evaluate(),
         }
@@ -2909,6 +2958,12 @@ impl Engine {
                 .evidence_age(domain_mint, self.now)
                 .is_some_and(|age| age <= self.cfg.lane_evidence_ttl_ticks)
         });
+        // Rev-14 wangr intelligence: enrich the Features snapshot with auxiliary
+        // data from MarketAuxiliary events and the latest TimeSignal BEFORE
+        // either confirmation path consumes it. When no auxiliary data was fed,
+        // the sentinels (0, 255) are no-ops for all wangr gate filters, so the
+        // decision is byte-identical to prior behavior.
+        let numeric_feats = numeric_feats.map(|f| self.enrich_wangr_features(f, &mint_bytes));
         // Confirmation exists only with an on-chain confirm AND numeric evidence;
         // a confirm with no numeric snapshot degrades to a NoNumericConfirmation
         // reject inside the gate (default features carry zero liquidity).
@@ -2920,7 +2975,7 @@ impl Engine {
             .filter(|&&(_, _, at)| self.now.saturating_sub(at) <= self.cfg.confirm_ttl_ticks)
             .map(|&(confirmed_vsol, confirmed_real_sol, _)| {
                 let numeric = numeric_feats.unwrap_or_default();
-                // ---- DEPTH PROVENANCE (§15 cross-check, corrected 2026-07-28).
+                // ---- DEPTH PROVENANCE ----
                 //
                 // The retired rule was `depth.min(numeric.liquidity_lamports)`: take
                 // the smaller of an ASSERTED sellable depth and the VIRTUAL reserve.
@@ -2945,6 +3000,7 @@ impl Engine {
                 };
                 Confirmation { depth, numeric }
             });
+
         // §24 LAW 11 EntryMode leaves: with the detectors enabled, a controlled
         // pullback that holds a retest in an established uptrend
         // (`detect_pullback_continuation`) makes an ALREADY-LIVE market eligible
@@ -3793,6 +3849,29 @@ impl Engine {
             TrendStructure::Downtrend => -mag,
             _ => mag,
         }
+    }
+
+    /// Rev-14 wangr intelligence: enrich a `Features` snapshot with auxiliary
+    /// data stored from `MarketAuxiliary` events (token_standard, symbol_len),
+    /// the latest `TimeSignal` (dow, hour_utc), and the creator's launch count
+    /// from the `mint_creator`/`creator_launches` maps. When no auxiliary data
+    /// was fed, all fields stay at their Default sentinels (0, 255) which are
+    /// no-ops for every wangr gate filter — byte-identical to prior behavior.
+    #[must_use]
+    fn enrich_wangr_features(&self, mut f: Features, mint: &[u8; 32]) -> Features {
+        if let Some(&(ts, sym_len)) = self.mint_aux.get(mint) {
+            f.token_standard = ts;
+            f.symbol_len = sym_len;
+        }
+        let (dow, hour_utc) = self.time_signal;
+        f.dow = dow;
+        f.hour_utc = hour_utc;
+        if let Some(&creator) = self.mint_creator.get(mint) {
+            if let Some(&(launches, _, _)) = self.creator_launches.get(&creator) {
+                f.creator_launches = launches;
+            }
+        }
+        f
     }
 
     /// §24 LAW 11: the EntryMode detector leaves' contribution to admission. When
@@ -6433,6 +6512,14 @@ const fn reject_code(r: GateReject) -> u8 {
         // trade ring lacks organic buy demand or is whale-dominated). Cannot
         // fire in golden tape (no pre-entry ring in the tape's fixed flow).
         GateReject::EntryQualityFilter => 26,
+        // Rev-14 wangr intelligence: selection refusals from the wangr graduation
+        // study. Each is a SELECTION event, distinct from economic unviability.
+        // Cannot fire in golden tape (no MarketAuxiliary/TimeSignal events fed).
+        GateReject::WangrTokenStandard => 30,
+        GateReject::WangrTimeWindow => 31,
+        GateReject::WangrSymbolLength => 32,
+        GateReject::WangrCreatorTrack => 33,
+        GateReject::WangrLiquidityZone => 34,
     }
 }
 

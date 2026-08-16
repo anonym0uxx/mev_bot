@@ -112,6 +112,7 @@ pub mod pumpportal;
 pub mod reserve_delta;
 pub mod state_fetch;
 pub mod outbound;
+pub mod live_adapters;
 pub mod laserstream;
 pub mod trade_journal;
 pub mod tape_export;

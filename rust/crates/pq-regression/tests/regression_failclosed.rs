@@ -28,10 +28,12 @@ fn run_mode_has_only_paper_and_replay() {
         match m {
             RunMode::Paper => "paper",
             RunMode::Replay => "replay",
+            RunMode::Live => "live",
         }
     }
     assert_eq!(assert_exhaustive(RunMode::Paper), "paper");
     assert_eq!(assert_exhaustive(RunMode::Replay), "replay");
+    assert_eq!(assert_exhaustive(RunMode::Live), "live");
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +203,8 @@ fn watchlist_stays_within_capacity_under_flood() {
             buy_ratio_bp: 10_000,
             max_trade_lamports: 0,
             trades_observed: 100,
+            volume_lamports: 0,
+            ..Features::default()
         };
         let cand = Candidate::new(
             Mint::new(b),

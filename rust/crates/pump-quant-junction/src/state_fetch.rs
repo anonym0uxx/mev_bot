@@ -87,6 +87,12 @@ pub struct FetchedState {
     pub ctx: PumpCurveCtx,
     /// The decoded recent blockhash. All-zero is refused by the builder.
     pub recent_blockhash: [u8; 32],
+    /// Virtual SOL reserves of the bonding curve (lamports), for slippage math.
+    pub virtual_sol_reserves: u64,
+    /// Virtual token reserves of the bonding curve (token base units).
+    pub virtual_token_reserves: u64,
+    /// Whether the curve is complete (graduated to pumpswap).
+    pub is_complete: bool,
 }
 
 // ─── StateFetch trait ────────────────────────────────────────────────────
@@ -284,6 +290,9 @@ impl<'a> StateFetch for RpcStateFetch<'a> {
         Ok(FetchedState {
             ctx,
             recent_blockhash,
+            virtual_sol_reserves: curve_prefix.virtual_sol,
+            virtual_token_reserves: curve_prefix.virtual_token,
+            is_complete: false, // we already returned CurveComplete above
         })
     }
 }
