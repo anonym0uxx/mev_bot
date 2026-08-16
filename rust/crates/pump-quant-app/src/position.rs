@@ -1024,7 +1024,15 @@ impl ScalpLifecycle {
             };
             let not_advancing = tick.saturating_sub(pos.last_high_tick) >= effective_stall;
             let aged = tick.saturating_sub(pos.entry_tick) >= p.max_hold_ticks;
-            if not_advancing && aged {
+            // §Quant-Rev-17: In fat-tail mode (stall_ticks >= 99_999), the
+            // time-stop is a HARD backstop — fire on `aged` alone. Requiring
+            // `not_advancing` AND `aged` meant any marginal new high reset
+            // `last_high_tick`, so positions never closed even after
+            // max_hold_ticks — root cause of the "0 closed trades" data-
+            // population gap. In normal mode, keep the original AND-gate so
+            // the golden tape's thesis/TP exits still bind first.
+            let fat_tail = p.stall_ticks >= 99_999;
+            if (fat_tail && aged) || (!fat_tail && not_advancing && aged) {
                 fired.push(*mint);
             }
         }
