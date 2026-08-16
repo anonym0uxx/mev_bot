@@ -677,7 +677,11 @@ use tape_golden::*;
 // (entry_quality_filter_enable=false). Decision vector identical:
 // promoted=504 admitted=11 rejected=493 net=31_465_931 universe_filtered=72.
 // 10_342_339_453_238_494_935 → 16_223_569_033_580_072_469.
-const GOLDEN_DIGEST: u64 = 16_223_569_033_580_072_469;
+// Re-pin #34: config struct Debug changed (Rev-13 entry quality filter, all OFF by default).
+// Decision vector identical: promoted=504 admitted=11 rejected=493 net=31_465_931 universe_filtered=72.
+// Re-pin Rev-17: config struct Debug changed (2 new fields: entry_min_buy_pressure_bp,
+// entry_min_unique_buyers, both OFF by default). Decision vector byte-identical.
+const GOLDEN_DIGEST: u64 = 3_203_929_616_839_788_134;
 // Re-pin #28: net changed 31_111_528 → 30_889_282 (exit ladder fires earlier on
 // micro-moves; TP1 tranche recovers principal at +5% rather than holding to thesis
 // invalidation). promoted/admitted/rejected/universe_filtered unchanged.

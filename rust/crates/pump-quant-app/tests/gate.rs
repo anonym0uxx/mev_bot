@@ -34,6 +34,8 @@ fn numeric_feats() -> Features {
         buy_ratio_bp: 10_000, // 100% buys — passes any entry filter
         max_trade_lamports: 0, // no whale trades
         trades_observed: 100,  // plenty of evidence
+        volume_lamports: 0,
+        ..Features::default()
     }
 }
 

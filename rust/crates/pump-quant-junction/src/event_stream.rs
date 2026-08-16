@@ -187,6 +187,26 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
                     .ok_or("missing migration_slot")? as u64,
             })
         }
+        // Rev-14 wangr intelligence: parse auxiliary + time signal events.
+        "MarketAuxiliary" => {
+            let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
+            let mint = parse_mint(&mint_str)?;
+            Ok(AppEvent::MarketAuxiliary {
+                mint,
+                token_standard: extract_int_field(line, "token_standard")
+                    .ok_or("missing token_standard")? as u8,
+                symbol_len: extract_int_field(line, "symbol_len")
+                    .ok_or("missing symbol_len")? as u8,
+            })
+        }
+        "TimeSignal" => {
+            Ok(AppEvent::TimeSignal {
+                dow: extract_int_field(line, "dow")
+                    .ok_or("missing dow")? as u8,
+                hour_utc: extract_int_field(line, "hour_utc")
+                    .ok_or("missing hour_utc")? as u8,
+            })
+        }
         other => Err(format!("unknown event kind: {other}")),
     }
 }
@@ -336,6 +356,9 @@ fn event_kind(event: &AppEvent) -> &'static str {
         AppEvent::TokenMetadata { .. } => "TokenMetadata",
         AppEvent::CreatorAction { .. } => "CreatorAction",
         AppEvent::Migration { .. } => "Migration",
+        // Rev-14 wangr intelligence: new event variants.
+        AppEvent::MarketAuxiliary { .. } => "MarketAuxiliary",
+        AppEvent::TimeSignal { .. } => "TimeSignal",
         AppEvent::Tick => "Tick",
     }
 }
@@ -389,6 +412,15 @@ fn event_fields_json(event: &AppEvent) -> String {
         }
         AppEvent::Migration { slot, .. } => {
             parts.push(format!(r#""migration_slot":{}"#, slot));
+        }
+        // Rev-14 wangr intelligence: serialize auxiliary + time signals.
+        AppEvent::MarketAuxiliary { token_standard, symbol_len, .. } => {
+            parts.push(format!(r#""token_standard":{}"#, token_standard));
+            parts.push(format!(r#""symbol_len":{}"#, symbol_len));
+        }
+        AppEvent::TimeSignal { dow, hour_utc } => {
+            parts.push(format!(r#""dow":{}"#, dow));
+            parts.push(format!(r#""hour_utc":{}"#, hour_utc));
         }
         AppEvent::Tick => {}
     }

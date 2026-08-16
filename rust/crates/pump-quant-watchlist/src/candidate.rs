@@ -232,6 +232,43 @@ pub struct Features {
     /// the buy_ratio and max_trade signals are statistically meaningful
     /// (not computed on 2 trades).
     pub trades_observed: u32,
+    /// Cumulative quote volume (lamports) of all trades in the bounded ring.
+    /// Rev-14 entry quality filter: tokens with <2 SOL cumulative volume lack
+    /// sufficient liquidity for reversion entry. Computed as the sum of
+    /// `quote_qty` across the ring (last 64 trades).
+    pub volume_lamports: u64,
+    // ---- Rev-14 wangr intelligence (Aug 2026 pump.fun graduation study) ----
+    //
+    // Five signals from the wangr.com analysis of 567,876 pump.fun tokens
+    // (2,770 graduations). All default to 0 / 255 = UNOBSERVED, which is a
+    // no-op for every gate filter: the filter checks are guarded by config
+    // enable flags AND a non-sentinel value, so a golden tape that never feeds
+    // the new events produces byte-identical decisions.
+    //
+    // The engine enriches these fields at gate time (gate_evaluate) from its
+    // own state — they are NOT populated by the lane's features_for / emit
+    // (which stay zero-sentinel for the watchlist candidate).
+    /// Token standard: 0=unobserved, 1=legacy SPL, 2=mayhem/token2022.
+    /// Wangr: legacy tokens graduate 5× more often (1.66% vs 0.32%).
+    /// Fed by `AppEvent::MarketAuxiliary`; 0 when unobserved.
+    pub token_standard: u8,
+    /// Symbol string length (character count). Wangr: 4-6 char symbols
+    /// are most common among graduated tokens. 0 when unobserved.
+    /// Fed by `AppEvent::MarketAuxiliary`.
+    pub symbol_len: u8,
+    /// Day of week: 0=unobserved, 1=Mon, 2=Tue, …, 7=Sun (ISO-8601 order).
+    /// Wangr: Friday highest graduation rate (0.68%); Tuesday lowest (0.04%).
+    /// Fed by `AppEvent::TimeSignal`; 0 when no time signal has been fed.
+    pub dow: u8,
+    /// Hour of day in UTC: 0-23 valid, 255=unobserved.
+    /// Wangr: 3-5 UTC (1.02%, 0.94%) and 10-11 UTC (0.95%, 0.93%) are best.
+    /// Fed by `AppEvent::TimeSignal`; 255 when no time signal has been fed.
+    pub hour_utc: u8,
+    /// Lifetime launch count of this mint's creator entity. Wangr: the top
+    /// 20 creator wallets have 8-13 graduations each (vs 0.43% base rate).
+    /// Sourced from the engine's existing `creator_launches` map at gate
+    /// time; 0 when the creator is unknown or has no prior launches.
+    pub creator_launches: u32,
 }
 
 /// A single discovery observation: one lane's claim that one mint is worth

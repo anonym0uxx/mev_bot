@@ -40,6 +40,8 @@ fn constructor_stores_all_fields() {
         buy_ratio_bp: 8_000,
         max_trade_lamports: 500_000_000,
         trades_observed: 42,
+        volume_lamports: 0,
+        ..Features::default()
     };
     let c = Candidate::new(mint(9), Lane::EarlyConfirmation, 1_234, 100, f);
     assert_eq!(c.mint, mint(9));

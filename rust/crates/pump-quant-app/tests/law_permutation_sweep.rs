@@ -406,7 +406,7 @@ fn the_full_permutation_matrix() {
     // silently drift away from `golden_digest.rs`.
     assert_eq!(m[0][0].net_lamports, 31_465_931, "golden net");
     assert_eq!(m[0][0].admitted, 11, "golden admitted");
-    assert_eq!(m[0][0].rejected, 448, "golden rejected");
+    assert_eq!(m[0][0].rejected, 493, "golden rejected");
     assert_eq!(m[0][0].promoted, 504, "golden promoted");
     assert_eq!(m[0][0].universe_filtered, 72, "golden universe_filtered");
 

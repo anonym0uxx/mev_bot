@@ -51,10 +51,10 @@ const NUMERIC_RING_CAP: usize = 64;
 /// degradation clause), so the lane emits nothing rather than a spurious score.
 const NUMERIC_MIN_TRADES: usize = 3;
 
-/// Compute the Rev-13 entry-quality features from the bounded trade ring:
-/// `buy_ratio_bp`, `max_trade_lamports`, and `trades_observed`. Called from both
-/// `features_for` and `emit_into` so the gate sees identical pre-entry signals
-/// regardless of which path produced the `Features` snapshot.
+/// Compute the Rev-13/14 entry-quality features from the bounded trade ring:
+/// `buy_ratio_bp`, `max_trade_lamports`, `trades_observed`, and `volume_lamports`.
+/// Called from both `features_for` and `emit_into` so the gate sees identical
+/// pre-entry signals regardless of which path produced the `Features` snapshot.
 ///
 /// **buy_ratio_bp** = (# buy trades / total trades) × 10_000. A simple count
 /// ratio (not volume-weighted) because the walk-forward analysis on 33.6M real
@@ -68,15 +68,19 @@ const NUMERIC_MIN_TRADES: usize = 3;
 ///
 /// **trades_observed** = ring length. The gate uses this to refuse entry when
 /// the ratio/max signals are computed on too few trades (statistical noise).
-fn entry_quality_from_ring(trades: &[TradeEvent]) -> (u32, u64, u32) {
+///
+/// **volume_lamports** = sum of `quote_qty` across the ring. Rev-14: tokens
+/// with <2 SOL cumulative trade volume lack sufficient exit liquidity.
+fn entry_quality_from_ring(trades: &[TradeEvent]) -> (u32, u64, u32, u64) {
     let n = trades.len();
     if n == 0 {
-        return (0, 0, 0);
+        return (0, 0, 0, 0);
     }
     let buys = trades.iter().filter(|t| t.side == Side::Buy).count();
     let buy_ratio_bp = ((buys as u64 * 10_000) / n as u64) as u32;
     let max_trade_lamports = trades.iter().map(|t| t.quote_qty).max().unwrap_or(0);
-    (buy_ratio_bp, max_trade_lamports, n as u32)
+    let volume_lamports = trades.iter().map(|t| t.quote_qty as u128).sum::<u128>();
+    (buy_ratio_bp, max_trade_lamports, n as u32, volume_lamports as u64)
 }
 
 /// Map order-flow imbalance (bps, −10_000..=10_000, or `None` on empty flow) onto
@@ -330,7 +334,7 @@ impl NumericLane {
     #[must_use]
     pub fn features_for(&self, mint: DomainMint) -> Option<Features> {
         self.obs.get(mint.as_bytes()).map(|o| {
-            let (buy_ratio_bp, max_trade_lamports, trades_observed) =
+            let (buy_ratio_bp, max_trade_lamports, trades_observed, volume_lamports) =
                 o.with_ordered(entry_quality_from_ring);
             Features {
                 liquidity_lamports: o.liquidity_lamports,
@@ -340,6 +344,14 @@ impl NumericLane {
                 buy_ratio_bp,
                 max_trade_lamports,
                 trades_observed,
+                volume_lamports,
+                // Rev-14 wangr fields: zero-sentinel here (populated by the
+                // engine at gate_evaluate from its own state, not by the lane).
+                token_standard: 0,
+                symbol_len: 0,
+                dow: 0,
+                hour_utc: 255,
+                creator_launches: 0,
             }
         })
     }
@@ -415,7 +427,7 @@ impl NumericLane {
             let score = (ofi_bp as u64)
                 .saturating_mul(liq_decade)
                 .saturating_mul(breadth);
-            let (buy_ratio_bp, max_trade_lamports, trades_observed) =
+            let (buy_ratio_bp, max_trade_lamports, trades_observed, volume_lamports) =
                 o.with_ordered(entry_quality_from_ring);
             buf.push(
                 Candidate::new(
@@ -431,6 +443,14 @@ impl NumericLane {
                         buy_ratio_bp,
                         max_trade_lamports,
                         trades_observed,
+                        volume_lamports,
+                        // Rev-14 wangr fields: zero-sentinel for the candidate
+                        // (enriched by the engine at gate_evaluate).
+                        token_standard: 0,
+                        symbol_len: 0,
+                        dow: 0,
+                        hour_utc: 255,
+                        creator_launches: 0,
                     },
                 )
                 .with_discovery_lane(DiscoveryLane::ActiveMarket),

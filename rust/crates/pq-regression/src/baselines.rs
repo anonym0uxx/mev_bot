@@ -109,7 +109,23 @@
 /// + 4 new Config fields, all OFF by default. Same pattern as #32/#33: the
 /// config Debug-format seed moved, decision vector is byte-identical.
 /// 10_342_339_453_238_494_935 → 16_223_569_033_580_072_469.
-pub const GOLDEN_DIGEST: u64 = 16_223_569_033_580_072_469;
+/// Re-pin #35 (2026-08-13): Rev-14 entry quality filter — 2 new Config fields
+/// (entry_min_age_slots, entry_min_volume_lamports), all OFF by default. Same
+/// pattern as #32/#33/#34: config Debug-format seed moved, decision vector
+/// byte-identical. 16_223_569_033_580_072_469 → 9_921_430_214_009_318_048.
+/// Re-pin #36 (2026-08-13): Rev-14 wangr intelligence — 14 new Config fields
+/// (token-standard, dow, hour, symbol-length, creator-track, liquidity-zone
+/// filters), 5 new Features fields, 2 new AppEvent variants (MarketAuxiliary,
+/// TimeSignal). ALL config flags OFF by default, all Features fields default
+/// to sentinel no-ops (0, 255). Same pattern as #32-#35: config Debug-format
+/// seed moved, decision vector byte-identical (promoted=504, admitted=11,
+/// rejected=493, net=31_465_931).
+/// 9_921_430_214_009_318_048 → 18_339_879_180_112_657_467.
+/// Re-pin Rev-17: 18_339_879_180_112_657_467 → 3_203_929_616_839_788_134 —
+/// 2 new config fields (entry_min_buy_pressure_bp, entry_min_unique_buyers),
+/// both default 0 (disabled). Decision vector byte-identical (promoted=504,
+/// admitted=11, rejected=493, net=31_465_931). Config Debug-format seed moved.
+pub const GOLDEN_DIGEST: u64 = 3_203_929_616_839_788_134;
 /// Realized net-SOL (lamports) on the golden tape (§24-compliant cost-derived).
 /// Re-pin #29: 30_889_282 → 31_465_931 — cost-aware TP ladder (fixed fractions,
 /// research-synthesized values from arXiv:2606.08232 fat-tail capture design).

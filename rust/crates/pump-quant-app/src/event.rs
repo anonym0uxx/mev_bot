@@ -219,6 +219,40 @@ pub enum AppEvent {
         slot: u64,
     },
 
+    /// **Rev-14 wangr intelligence** — auxiliary on-chain facts about a market
+    /// that are NOT part of the trade stream or the metadata category system.
+    /// Carries the token-standard (Legacy SPL vs Mayhem/token2022) and the
+    /// symbol string length, both sourced from decoded account/metadata data
+    /// upstream. The engine stores these per-mint and enriches the gate's
+    /// `Features` snapshot at gate_evaluate time. Integer-only (§22), never
+    /// wall-clock. A market that never receives this event leaves the fields
+    /// at their zero-sentinel defaults — the gate filters are no-ops.
+    MarketAuxiliary {
+        /// The market this auxiliary data describes.
+        mint: Mint,
+        /// Token standard: 1=legacy SPL, 2=mayhem/token2022.
+        /// Wangr study: legacy tokens graduate 5× more often.
+        token_standard: u8,
+        /// Symbol string length (character count).
+        /// Wangr study: 4-6 char symbols most common among graduated tokens.
+        symbol_len: u8,
+    },
+
+    /// **Rev-14 wangr intelligence** — a wall-clock time signal. The engine is
+    /// a pure tick-based state machine (§22) and NEVER reads wall-clock itself;
+    /// this event is the sole channel through which the caller can inform the
+    /// engine of the current day-of-week and hour-of-day in UTC. The engine
+    /// stores the latest values and uses them to enrich the gate's `Features`
+    /// snapshot. A tape that never feeds this event leaves `dow=0, hour_utc=255`
+    /// (sentinel) and all time-based filters are no-ops — byte-identical to
+    /// the prior behavior (golden-tape safe).
+    TimeSignal {
+        /// Day of week: 1=Mon … 7=Sun (ISO-8601). 0 is never fed.
+        dow: u8,
+        /// Hour of day in UTC: 0-23.
+        hour_utc: u8,
+    },
+
     /// Advance the logical clock by one tick. Recency decay, TTL pruning and the
     /// reflection cadence are all measured in ticks — never wall-clock.
     Tick,
@@ -236,8 +270,9 @@ impl AppEvent {
             | AppEvent::OnchainConfirm { mint, .. }
             | AppEvent::TokenMetadata { mint, .. }
             | AppEvent::CreatorAction { mint, .. }
-            | AppEvent::Migration { mint, .. } => Some(*mint),
-            AppEvent::Tick => None,
+            | AppEvent::Migration { mint, .. }
+            | AppEvent::MarketAuxiliary { mint, .. } => Some(*mint),
+            AppEvent::TimeSignal { .. } | AppEvent::Tick => None,
         }
     }
 }

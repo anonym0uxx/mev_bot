@@ -82,6 +82,8 @@ fn cand() -> Candidate {
             buy_ratio_bp: 10_000,
             max_trade_lamports: 0,
             trades_observed: 100,
+            volume_lamports: 0,
+            ..Features::default()
         },
     )
 }
@@ -101,6 +103,8 @@ fn conf_at(vsol: u64) -> Confirmation {
             buy_ratio_bp: 10_000,
             max_trade_lamports: 0,
             trades_observed: 100,
+            volume_lamports: 0,
+            ..Features::default()
         },
     }
 }

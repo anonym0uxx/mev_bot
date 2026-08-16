@@ -28,6 +28,8 @@ const STOP_WATCHDOG_FILE: &str = "data/STOP_WATCHDOG";
 const STATUS_PATH: &str = "data/live_status.json";
 const WATCHDOG_GAVE_UP_FILE: &str = "data/WATCHDOG_GAVE_UP";
 const WATCHDOG_STATUS_FILE: &str = "data/watchdog_status.json";
+/// Wangr Rev-14: the champion config file the daemon hot-reloads.
+const CHAMPION_CONFIG_FILE: &str = "data/CHAMPION_CONFIG.txt";
 const WATCHDOG_PID_FILE: &str = "data/watchdog.pid";
 
 /// Check for an already-running watchdog via PID file.
@@ -251,6 +253,56 @@ fn write_watchdog_status(
     let _ = fs::write(WATCHDOG_STATUS_FILE, status);
 }
 
+/// Wangr Rev-14: log which wangr entry filters are enabled in the champion config.
+/// Called at watchdog startup and after each daemon (re)spawn so the operator
+/// can verify the filter state from the watchdog log. This is informational
+/// only — the watchdog does not gate on filter state; the daemon's gate does.
+fn log_wangr_filter_state() {
+    let path = Path::new(CHAMPION_CONFIG_FILE);
+    if !path.exists() {
+        eprintln!("[pq-watchdog] wangr: no CHAMPION_CONFIG.txt — all 6 filters DISABLED (dev defaults)");
+        return;
+    }
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("[pq-watchdog] wangr: failed to read CHAMPION_CONFIG.txt: {e}");
+            return;
+        }
+    };
+    // Simple key=value scanner — the config format is line-oriented `key = value`.
+    let mut enabled: Vec<&str> = Vec::new();
+    let mut disabled: Vec<&str> = Vec::new();
+    let wangr_keys: &[(&str, &str)] = &[
+        ("wangr_require_legacy_enable", "Legacy-Token(5× grad)"),
+        ("wangr_dow_filter_enable",     "DoW-Skip/Boost"),
+        ("wangr_hour_filter_enable",    "Hour-Skip/Boost"),
+        ("wangr_symbol_len_filter_enable", "Symbol-Length(4-6)"),
+        ("wangr_creator_min_launches",  "Creator-Min-Launches"),
+        ("wangr_liq_zone_filter_enable", "Liquidity-Zone(1k-10k)"),
+    ];
+    for &(key, label) in wangr_keys {
+        // Check if the key is present and its value is non-zero
+        let found = text.lines().any(|line| {
+            let stripped = line.split('#').next().unwrap_or("").trim();
+            if let Some(eq_pos) = stripped.find('=') {
+                let k = stripped[..eq_pos].trim();
+                let v = stripped[eq_pos + 1..].trim();
+                k == key && !v.is_empty() && v != "0" && v != "false"
+            } else {
+                false
+            }
+        });
+        if found {
+            enabled.push(label);
+        } else {
+            disabled.push(label);
+        }
+    }
+    eprintln!("[pq-watchdog] wangr filters ENABLED:  [{}]", enabled.join(", "));
+    eprintln!("[pq-watchdog] wangr filters DISABLED: [{}]", disabled.join(", "));
+}
+
 /// Spawn the pq-daemon child process.
 /// GAP #15 FIX: Redirect daemon stderr to a log file instead of Stdio::inherit().
 /// The old code used Stdio::inherit() which meant stderr went to the watchdog's
@@ -418,6 +470,9 @@ fn main() -> std::process::ExitCode {
     eprintln!("[pq-watchdog] backoff_cap={}s", args.backoff_cap_secs);
     eprintln!("[pq-watchdog] daemon_args=\"{}\"", args.daemon_args);
 
+    // Wangr Rev-14: log filter state at startup
+    log_wangr_filter_state();
+
     // Clean up any stale sentinels from a previous run
     let _ = fs::remove_file(STOP_WATCHDOG_FILE);
     let _ = fs::remove_file(WATCHDOG_GAVE_UP_FILE);
@@ -464,6 +519,10 @@ fn main() -> std::process::ExitCode {
         // a new LS orphan on top of the old ones — the 2M credit burn root cause.
         #[cfg(windows)]
         reap_orphaned_laserstream();
+
+        // Wangr Rev-14: re-log filter state on each respawn (config may have
+        // been hot-reloaded by the refiner between restarts)
+        log_wangr_filter_state();
 
         let mut child = match spawn_daemon(&args.daemon_args) {
             Ok(c) => {

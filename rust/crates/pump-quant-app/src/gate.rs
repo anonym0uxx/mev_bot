@@ -80,6 +80,28 @@ pub enum GateReject {
     /// from `OutsideMcapBand` (population) and `EconomicallyUnviable` (cost):
     /// this is about flow *quality*, not population or cost.
     EntryQualityFilter,
+    // ---- Rev-14 wangr intelligence filters ----
+    // Each is a SELECTION refusal, distinct from EntryQualityFilter so the
+    // operator can tune wangr filters without contaminating the Rev-13/14
+    // entry-quality statistics. All default disabled (golden-tape safe).
+    /// **Rev-14 wangr #1** — token-standard filter. The candidate's token
+    /// is Mayhem/token2022 and the operator config requires Legacy SPL
+    /// (5× graduation rate per wangr analysis of 567k tokens).
+    WangrTokenStandard,
+    /// **Rev-14 wangr #2/#3** — time filter. The candidate's day-of-week
+    /// or hour-of-day falls in a suppressed window (e.g. Tuesday, which
+    /// has 0.04% graduation rate vs 0.43% average).
+    WangrTimeWindow,
+    /// **Rev-14 wangr #4** — symbol-length filter. The candidate's symbol
+    /// length is outside the preferred 4-6 range.
+    WangrSymbolLength,
+    /// **Rev-14 wangr #5** — creator track-record filter. The candidate's
+    /// creator has insufficient prior launches (below the configured
+    /// minimum for the "serial graduation creator" signal).
+    WangrCreatorTrack,
+    /// **Rev-14 wangr #6** — liquidity-zone filter. The candidate's pool
+    /// liquidity falls outside the graduation zone (1k-10k SOL per wangr).
+    WangrLiquidityZone,
 }
 
 /// The gate's verdict on one candidate.
@@ -193,6 +215,121 @@ pub fn decide(
         if feats.max_trade_lamports > cfg.entry_max_sol_per_trade_lamports {
             return GateDecision::Reject(GateReject::EntryQualityFilter);
         }
+        // Rev-14: age check — crash-reversion tokens need time to establish
+        // a pre-crash price level. 0 = disabled.
+        if cfg.entry_min_age_slots > 0 && feats.age_slots < cfg.entry_min_age_slots {
+            return GateDecision::Reject(GateReject::EntryQualityFilter);
+        }
+        // Rev-14: volume check — tokens with <N lamports cumulative volume
+        // lack sufficient exit liquidity. 0 = disabled.
+        if cfg.entry_min_volume_lamports > 0
+            && feats.volume_lamports < cfg.entry_min_volume_lamports
+        {
+            return GateDecision::Reject(GateReject::EntryQualityFilter);
+        }
+        // Rev-17: buy-pressure momentum check — the #1 pre-entry directional
+        // signal per ArXiv research (Z-score anomaly detection arXiv:2412.18848,
+        // ML RF/AdaBoost feature importance). buy_pressure_bp measures directional
+        // buy-vs-sell volume pressure in the pre-entry ring. Dead-on-arrival coins
+        // (MFE=0, 40% of trades, 93% of losses) have low buy pressure by definition.
+        // 0 = disabled (Rev-16 compat).
+        if cfg.entry_min_buy_pressure_bp > 0
+            && feats.buy_pressure_bp < cfg.entry_min_buy_pressure_bp
+        {
+            return GateDecision::Reject(GateReject::EntryQualityFilter);
+        }
+        // Rev-17: buyer diversity check — complements max_trade_lamports (which
+        // checks trade SIZE) by checking buyer COUNT. A ring with 1-2 buyers
+        // regardless of trade count is whale concentration, not organic demand.
+        // ArXiv:2412.18848 ML model ranks unique buyer count as a top-5 feature.
+        // 0 = disabled (Rev-16 compat).
+        if cfg.entry_min_unique_buyers > 0
+            && feats.unique_buyers < cfg.entry_min_unique_buyers
+        {
+            return GateDecision::Reject(GateReject::EntryQualityFilter);
+        }
+    }
+
+    // ---- Rev-14 WANGR INTELLIGENCE FILTERS (Aug 2026 graduation study) ----
+    //
+    // Six SELECTION refusals from the wangr.com analysis of 567,876 pump.fun
+    // tokens (2,770 graduations). Each is independently config-gated and
+    // defaults disabled, so a golden tape that never feeds the new events
+    // (MarketAuxiliary / TimeSignal) leaves all fields at their sentinel
+    // values (token_standard=0, dow=0, hour_utc=255, symbol_len=0,
+    // creator_launches=0) and every filter is a no-op — byte-identical
+    // to the prior gate. The filters are checked AFTER the Rev-13/14
+    // entry-quality filter and BEFORE the economic band computation.
+    let nf = &conf.numeric;
+
+    // #1 TOKEN STANDARD (Legacy SPL vs Mayhem/token2022)
+    // Wangr: legacy tokens graduate 5× more often (1.66% vs 0.32%).
+    // When the filter is enabled and token_standard is observed (!=0),
+    // reject Mayhem tokens (standard=2) if the config requires legacy (1).
+    // A token_standard of 0 (unobserved) is always admitted — the filter
+    // is only applied when we have the data.
+    if cfg.wangr_require_legacy_enable
+        && nf.token_standard != 0
+        && nf.token_standard != cfg.wangr_required_token_standard
+    {
+        return GateDecision::Reject(GateReject::WangrTokenStandard);
+    }
+
+    // #2 DAY-OF-WEEK (Tuesday = 2 has 0.04% graduation rate, 1/10th average)
+    // When enabled and dow is observed (!=0), reject if dow is in the
+    // suppressed set. The suppressed days are encoded as a bitmask in
+    // config (bit N set = day N suppressed; bit 2 = Tuesday).
+    if cfg.wangr_dow_filter_enable && nf.dow != 0 {
+        let dow_bit = 1u32.wrapping_shl((nf.dow as u32).saturating_sub(1));
+        if (cfg.wangr_dow_suppress_mask & dow_bit) != 0 {
+            return GateDecision::Reject(GateReject::WangrTimeWindow);
+        }
+    }
+
+    // #3 HOUR-OF-DAY (3-5 UTC and 10-11 UTC are the best windows)
+    // When enabled and hour_utc is observed (!=255), reject if hour is
+    // NOT in the preferred set. The preferred hours are encoded as a
+    // bitmask: bit H set = hour H is preferred. Default includes 3,4,5,10,11.
+    if cfg.wangr_hour_filter_enable && nf.hour_utc != 255 {
+        let hour_bit = 1u32.wrapping_shl(nf.hour_utc as u32);
+        if (cfg.wangr_hour_preferred_mask & hour_bit) == 0 {
+            return GateDecision::Reject(GateReject::WangrTimeWindow);
+        }
+    }
+
+    // #4 SYMBOL LENGTH (4-6 characters are most common among graduated tokens)
+    // When enabled and symbol_len is observed (!=0), reject if outside
+    // [wangr_symbol_len_min, wangr_symbol_len_max].
+    if cfg.wangr_symbol_len_filter_enable
+        && nf.symbol_len != 0
+        && (nf.symbol_len < cfg.wangr_symbol_len_min
+            || nf.symbol_len > cfg.wangr_symbol_len_max)
+    {
+        return GateDecision::Reject(GateReject::WangrSymbolLength);
+    }
+
+    // #5 CREATOR TRACK RECORD (top 20 creators have 8-13 graduations each)
+    // When enabled, reject if the creator's lifetime launch count is below
+    // the configured minimum. A creator_launches of 0 means the creator is
+    // UNOBSERVED (no MarketAuxiliary/OnchainConfirm has populated the field
+    // yet) — such tokens are ADMITTED past this filter, because rejecting
+    // unknown creators would block virtually every new launch.
+    if cfg.wangr_creator_min_launches > 0
+        && nf.creator_launches != 0
+        && nf.creator_launches < cfg.wangr_creator_min_launches
+    {
+        return GateDecision::Reject(GateReject::WangrCreatorTrack);
+    }
+
+    // #6 LIQUIDITY ZONE (73% of graduations happen in 1k-10k SOL range)
+    // When enabled, reject if the pool liquidity (in lamports) falls outside
+    // [wangr_liq_zone_lo, wangr_liq_zone_hi]. This uses the EXISTING
+    // liquidity_lamports field — no new Features field needed.
+    if cfg.wangr_liq_zone_filter_enable
+        && (nf.liquidity_lamports < cfg.wangr_liq_zone_lo_lamports
+            || nf.liquidity_lamports > cfg.wangr_liq_zone_hi_lamports)
+    {
+        return GateDecision::Reject(GateReject::WangrLiquidityZone);
     }
 
     // ---- COST INPUTS, DERIVED PER CANDIDATE (2026-07-28 cost-model unification).

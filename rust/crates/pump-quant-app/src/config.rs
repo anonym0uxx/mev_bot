@@ -1130,6 +1130,92 @@ pub struct Config {
     /// showed that ratios computed on <8 trades are noise. Default 8, matching
     /// the brain's minimum sample threshold for consistency.
     pub entry_min_trades_observed: u32,
+    /// Rev-14: minimum token age (slots, 400ms each) required for entry.
+    /// Crash-reversion tokens need time to establish a pre-crash price level.
+    /// Default: 150 slots = 60 seconds. 0 disables the age check.
+    pub entry_min_age_slots: u32,
+    /// Rev-14: minimum cumulative quote volume (lamports) in the trade ring.
+    /// Tokens with <2 SOL cumulative volume lack sufficient exit liquidity.
+    /// 0 disables the volume check.
+    pub entry_min_volume_lamports: u64,
+    /// Rev-17: minimum directional buy-vs-sell volume pressure (bps, 10_000=100%).
+    /// A candidate whose pre-entry ring has buy_pressure_bp below this is refused.
+    /// This is the #1 pre-entry momentum signal per ArXiv research (Z-score anomaly
+    /// detection arXiv:2412.18848 + ML RF/AdaBoost feature importance): directional
+    /// buy pressure is the single most predictive feature for short-horizon price
+    /// direction. Dead-on-arrival coins (MFE=0, 40% of trades, 93% of losses) have
+    /// low buy pressure by definition. Walk-forward suggests 5500 (55%) as optimal.
+    /// 0 disables the buy-pressure check (Rev-16 compat).
+    pub entry_min_buy_pressure_bp: u32,
+    /// Rev-17: minimum distinct buyer entities in the pre-entry ring. A candidate
+    /// with fewer than this many unique buyers is refused — whale concentration
+    /// risk: a single buyer dominating the ring means the "demand" is one wallet,
+    /// not organic. Complements max_trade_lamports (which checks trade SIZE) by
+    /// checking buyer DIVERSITY. ArXiv:2412.18848 ML model ranks buyer diversity
+    /// as a top-5 feature. Default: 3. 0 disables.
+    pub entry_min_unique_buyers: u32,
+
+    // ---- Rev-14 wangr intelligence filters (Aug 2026 graduation study) ----
+    //
+    // All six filters default DISABLED so a golden tape that never feeds the
+    // new events (MarketAuxiliary / TimeSignal) produces byte-identical
+    // decisions. Each is independently toggleable by the operator.
+    //
+    // #1 TOKEN STANDARD
+    /// Enable the token-standard filter. When true, the gate rejects Mayhem/
+    /// token2022 tokens (standard=2) when the config requires Legacy SPL
+    /// (standard=1). Wangr: legacy tokens graduate 5× more often.
+    pub wangr_require_legacy_enable: bool,
+    /// Required token standard: 1=Legacy SPL, 2=Mayhem/token2022.
+    /// Default 1 (Legacy). The gate rejects tokens whose observed standard
+    /// differs from this when the filter is enabled.
+    pub wangr_required_token_standard: u8,
+
+    // #2 DAY-OF-WEEK
+    /// Enable the day-of-week filter. When true, the gate rejects candidates
+    /// whose day-of-week is in the suppressed bitmask. Wangr: Tuesday has
+    /// 0.04% graduation rate (1/10th of the 0.43% average).
+    pub wangr_dow_filter_enable: bool,
+    /// Bitmask of suppressed days: bit 0=Mon, 1=Tue, …, 6=Sun.
+    /// Default: 0b0000010 = 2 = Tuesday only. Set 0 to suppress nothing.
+    pub wangr_dow_suppress_mask: u32,
+
+    // #3 HOUR-OF-DAY
+    /// Enable the hour-of-day filter. When true, the gate rejects candidates
+    /// whose hour is NOT in the preferred bitmask. Wangr: 3-5 UTC and 10-11
+    /// UTC have the highest graduation rates (0.94%-1.02%).
+    pub wangr_hour_filter_enable: bool,
+    /// Bitmask of preferred hours: bit H = hour H (0-23) is preferred.
+    /// Default: bits 3,4,5,10,11 set = 0x0C18 = 3096. The gate rejects
+    /// any hour NOT in this set when the filter is enabled.
+    pub wangr_hour_preferred_mask: u32,
+
+    // #4 SYMBOL LENGTH
+    /// Enable the symbol-length filter. When true, the gate rejects candidates
+    /// whose symbol length is outside [min, max]. Wangr: 4-6 char symbols are
+    /// most common among graduated tokens.
+    pub wangr_symbol_len_filter_enable: bool,
+    /// Minimum symbol length (inclusive). Default 4.
+    pub wangr_symbol_len_min: u8,
+    /// Maximum symbol length (inclusive). Default 6.
+    pub wangr_symbol_len_max: u8,
+
+    // #5 CREATOR TRACK RECORD
+    /// Minimum lifetime launches for a creator to pass the track-record filter.
+    /// Wangr: the top 20 creator wallets have 8-13 graduations each (vs 0.43%
+    /// base rate). 0 disables this filter. Default 0 (disabled — requires
+    /// feeding TokenMetadata events to build the creator_launches map).
+    pub wangr_creator_min_launches: u32,
+
+    // #6 LIQUIDITY ZONE
+    /// Enable the liquidity-zone filter. When true, the gate rejects candidates
+    /// whose pool liquidity falls outside [lo, hi]. Wangr: 73% of graduations
+    /// happen in the 1k-10k SOL liquidity range.
+    pub wangr_liq_zone_filter_enable: bool,
+    /// Liquidity zone floor, lamports. Default: 1_000 SOL = 1e12 lamports.
+    pub wangr_liq_zone_lo_lamports: u64,
+    /// Liquidity zone ceiling, lamports. Default: 10_000 SOL = 1e13 lamports.
+    pub wangr_liq_zone_hi_lamports: u64,
 }
 
 /// LAW D2 default designated-caller attention weight: half the standard attention
@@ -1542,6 +1628,30 @@ impl Config {
             entry_min_buy_ratio_bp: 5_500,           // 55% of trades must be buys
             entry_max_sol_per_trade_lamports: 750_000_000,  // 0.75 SOL max single trade
             entry_min_trades_observed: 8,            // minimum for statistical meaning
+            // Rev-14: age + volume filters (reversion strategy)
+            entry_min_age_slots: 0,                  // disabled by default (Rev-13 compat)
+            entry_min_volume_lamports: 0,            // disabled by default (Rev-13 compat)
+            // Rev-17: pre-entry momentum signals (ArXiv research-backed)
+            entry_min_buy_pressure_bp: 0,            // disabled by default (Rev-16 compat)
+            entry_min_unique_buyers: 0,              // disabled by default (Rev-16 compat)
+
+            // Rev-14 wangr intelligence filters — ALL disabled by default.
+            // A golden tape that never feeds MarketAuxiliary / TimeSignal events
+            // produces byte-identical decisions because every filter checks its
+            // enable flag first and the sentinel values (0, 255) are no-ops.
+            wangr_require_legacy_enable: false,
+            wangr_required_token_standard: 1,        // 1 = Legacy SPL
+            wangr_dow_filter_enable: false,
+            wangr_dow_suppress_mask: 2,              // bit 1 = Tuesday
+            wangr_hour_filter_enable: false,
+            wangr_hour_preferred_mask: 0x0C18,       // bits 3,4,5,10,11 = 3096
+            wangr_symbol_len_filter_enable: false,
+            wangr_symbol_len_min: 4,
+            wangr_symbol_len_max: 6,
+            wangr_creator_min_launches: 0,           // disabled (needs TokenMetadata feed)
+            wangr_liq_zone_filter_enable: false,
+            wangr_liq_zone_lo_lamports: 1_000_000_000_000,   // 1_000 SOL
+            wangr_liq_zone_hi_lamports: 10_000_000_000_000,  // 10_000 SOL
         }
     }
 
@@ -1797,6 +1907,34 @@ impl Config {
                 self.entry_max_sol_per_trade_lamports = v as u64;
             }
             "entry_min_trades_observed" => self.entry_min_trades_observed = bp(value)?,
+            "entry_min_age_slots" => self.entry_min_age_slots = bp(value)?,
+            "entry_min_volume_lamports" => {
+                let v = nonneg(value)?;
+                self.entry_min_volume_lamports = v;
+            }
+            // Rev-17: pre-entry momentum signals (ArXiv research-backed)
+            "entry_min_buy_pressure_bp" => self.entry_min_buy_pressure_bp = bp(value)?,
+            "entry_min_unique_buyers" => self.entry_min_unique_buyers = bp(value)?,
+            // ---- Rev-14 wangr intelligence ----
+            "wangr_require_legacy_enable" => self.wangr_require_legacy_enable = value != 0,
+            "wangr_required_token_standard" => self.wangr_required_token_standard = bp(value)? as u8,
+            "wangr_dow_filter_enable" => self.wangr_dow_filter_enable = value != 0,
+            "wangr_dow_suppress_mask" => self.wangr_dow_suppress_mask = nonneg(value)? as u32,
+            "wangr_hour_filter_enable" => self.wangr_hour_filter_enable = value != 0,
+            "wangr_hour_preferred_mask" => self.wangr_hour_preferred_mask = nonneg(value)? as u32,
+            "wangr_symbol_len_filter_enable" => self.wangr_symbol_len_filter_enable = value != 0,
+            "wangr_symbol_len_min" => self.wangr_symbol_len_min = bp(value)? as u8,
+            "wangr_symbol_len_max" => self.wangr_symbol_len_max = bp(value)? as u8,
+            "wangr_creator_min_launches" => self.wangr_creator_min_launches = bp(value)? as u32,
+            "wangr_liq_zone_filter_enable" => self.wangr_liq_zone_filter_enable = value != 0,
+            "wangr_liq_zone_lo_lamports" => {
+                let v = nonneg(value)?;
+                self.wangr_liq_zone_lo_lamports = v;
+            }
+            "wangr_liq_zone_hi_lamports" => {
+                let v = nonneg(value)?;
+                self.wangr_liq_zone_hi_lamports = v;
+            }
             other => return Err(ConfigError::UnknownKey(other.to_string())),
         }
         Ok(())
@@ -1983,6 +2121,24 @@ impl Config {
         let _ = writeln!(s, "entry_min_buy_ratio_bp = {}", self.entry_min_buy_ratio_bp as i64);
         let _ = writeln!(s, "entry_max_sol_per_trade_lamports = {}", self.entry_max_sol_per_trade_lamports as i64);
         let _ = writeln!(s, "entry_min_trades_observed = {}", self.entry_min_trades_observed as i64);
+        let _ = writeln!(s, "entry_min_age_slots = {}", self.entry_min_age_slots as i64);
+        let _ = writeln!(s, "entry_min_volume_lamports = {}", self.entry_min_volume_lamports as i64);
+        let _ = writeln!(s, "entry_min_buy_pressure_bp = {}", self.entry_min_buy_pressure_bp as i64);
+        let _ = writeln!(s, "entry_min_unique_buyers = {}", self.entry_min_unique_buyers as i64);
+        // Rev-14 wangr intelligence filters
+        let _ = writeln!(s, "wangr_require_legacy_enable = {}", self.wangr_require_legacy_enable as i64);
+        let _ = writeln!(s, "wangr_required_token_standard = {}", self.wangr_required_token_standard as i64);
+        let _ = writeln!(s, "wangr_dow_filter_enable = {}", self.wangr_dow_filter_enable as i64);
+        let _ = writeln!(s, "wangr_dow_suppress_mask = {}", self.wangr_dow_suppress_mask as i64);
+        let _ = writeln!(s, "wangr_hour_filter_enable = {}", self.wangr_hour_filter_enable as i64);
+        let _ = writeln!(s, "wangr_hour_preferred_mask = {}", self.wangr_hour_preferred_mask as i64);
+        let _ = writeln!(s, "wangr_symbol_len_filter_enable = {}", self.wangr_symbol_len_filter_enable as i64);
+        let _ = writeln!(s, "wangr_symbol_len_min = {}", self.wangr_symbol_len_min as i64);
+        let _ = writeln!(s, "wangr_symbol_len_max = {}", self.wangr_symbol_len_max as i64);
+        let _ = writeln!(s, "wangr_creator_min_launches = {}", self.wangr_creator_min_launches as i64);
+        let _ = writeln!(s, "wangr_liq_zone_filter_enable = {}", self.wangr_liq_zone_filter_enable as i64);
+        let _ = writeln!(s, "wangr_liq_zone_lo_lamports = {}", self.wangr_liq_zone_lo_lamports as i64);
+        let _ = writeln!(s, "wangr_liq_zone_hi_lamports = {}", self.wangr_liq_zone_hi_lamports as i64);
         let _ = writeln!(s, "universe_min_entities = {}", self.universe_min_entities as i64);
         let _ = writeln!(s, "universe_min_liquidity_lamports = {}", self.universe_min_liquidity_lamports as i64);
         let _ = writeln!(s, "universe_min_trades = {}", self.universe_min_trades as i64);

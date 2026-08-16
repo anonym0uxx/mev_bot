@@ -60,6 +60,50 @@ pub struct LiveStatus {
     pub journal_digest: u64,
 }
 
+impl OpenPositionSnapshot {
+    /// Serialize a list of open positions to canonical JSON for telemetry.
+    pub fn to_json_list(positions: &[Self]) -> String {
+        let mut s = String::from("[");
+        for (i, p) in positions.iter().enumerate() {
+            if i > 0 { s.push(','); }
+            // Convert fp18 prices to SOL for readability
+            let entry_sol = p.entry_price_fp as f64 / 1e18;
+            let mark_sol = p.mark_price_fp as f64 / 1e18;
+            let pnl_sol = p.unrealized_pnl_lamports as f64 / 1e9;
+            let ret_pct = if p.entry_price_fp > 0 {
+                (p.mark_price_fp as f64 / p.entry_price_fp as f64 - 1.0) * 100.0
+            } else { 0.0 };
+            // Encode mint bytes as hex without external dependency
+            let mint_hex: String = p.mint.iter().map(|b| format!("{:02x}", b)).collect();
+            s.push_str(&format!(
+                "{{\"mint\":\"{}\",\"entry_tick\":{},\"entry_price_sol\":{:.8},\"mark_price_sol\":{:.8},\"return_pct\":{:.2},\"unrealized_pnl_sol\":{:.6},\"remaining_bps\":{}}}",
+                mint_hex,
+                p.entry_tick,
+                entry_sol,
+                mark_sol,
+                ret_pct,
+                pnl_sol,
+                p.remaining_bps,
+            ));
+        }
+        s.push(']');
+        s
+    }
+
+    /// Write the open positions JSON to a file (best-effort telemetry).
+    pub fn write_to_path(positions: &[Self], path: &std::path::Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        let mut f = std::fs::File::create(path)?;
+        f.write_all(Self::to_json_list(positions).as_bytes())?;
+        f.write_all(b"\n")?;
+        f.flush()
+    }
+}
+
 impl LiveStatus {
     /// The status schema tag — bumped if the field set ever changes.
     pub const SCHEMA: &'static str = "live_status/2";

@@ -211,8 +211,8 @@ law, strictly avoid loss beyond) its own absence on a tape containing exactly it
 
 **Three honesty corrections are baked into the current pin, and the number they produced must be read
 the way it is meant.** The current golden reference is **net 31,465,931 lamports**, digest
-`16223569033580072469`, promoted/admitted/rejected/universe-filtered **504 / 11 / 493 / 72**
-(re-pin #32, 2026-08-10). It got there through **five** accounting corrections, none of which is a
+`3203929616839788134`, promoted/admitted/rejected/universe-filtered **504 / 11 / 493 / 72**
+(re-pin Rev-17, 2026-08-16). It got there through **five** accounting corrections, none of which is a
 strategy change:
 
 1. **Cost realism (re-pin #23).** The §24 reversal makes cost-derived profit targets the live default

@@ -862,14 +862,16 @@ impl ScalpLifecycle {
         }
 
         // P2 thesis-invalidation: CVD rolled over, or a stall while in profit.
-        let cvd_dead = pos.cvd_peak > 0
+        // When cvd_hold_frac_bps == 0, the CVD check is fully disabled (fat-tail mode).
+        let cvd_dead = p.cvd_hold_frac_bps > 0
+            && pos.cvd_peak > 0
             && pos.cvd < pos.cvd_peak.saturating_mul(i128::from(p.cvd_hold_frac_bps)) / 10_000;
         let stall_window = if pos.pressure {
             (p.stall_ticks / 2).max(1)
         } else {
             p.stall_ticks
         };
-        let stalled = mult > 10_000 && tick.saturating_sub(pos.last_high_tick) >= stall_window;
+        let stalled = p.stall_ticks < 99_999 && mult > 10_000 && tick.saturating_sub(pos.last_high_tick) >= stall_window;
         if cvd_dead || stalled {
             // §Quant-Rev-5: conditional moon bag — if the graduation velocity
             // is positive (curve SOL accelerating toward graduation), retain
@@ -1011,7 +1013,16 @@ impl ScalpLifecycle {
         let mut fired = std::mem::take(&mut self.fired_buf);
         fired.clear();
         for (mint, pos) in self.open.iter() {
-            let not_advancing = tick.saturating_sub(pos.last_high_tick) >= p.stall_ticks;
+            // §Quant-Rev-16: when stall_ticks is set to 99_999 (fat-tail mode),
+            // the stall condition is intentionally disabled for thesis-invalidation
+            // but must NOT block the time stop. Use a reasonable stall window for
+            // the time-stop advancement check instead.
+            let effective_stall = if p.stall_ticks >= 99_999 {
+                p.max_hold_ticks.min(300)
+            } else {
+                p.stall_ticks
+            };
+            let not_advancing = tick.saturating_sub(pos.last_high_tick) >= effective_stall;
             let aged = tick.saturating_sub(pos.entry_tick) >= p.max_hold_ticks;
             if not_advancing && aged {
                 fired.push(*mint);

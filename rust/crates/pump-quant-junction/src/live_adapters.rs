@@ -679,9 +679,8 @@ mod tests {
 
     #[test]
     fn base58_decode_all_zeros() {
-        // "11111111111111111111111111111111111" is the all-zero pubkey (32
-        // leading '1' chars = 32 zero bytes).
-        let bh = "11111111111111111111111111111111111";
+        // 32 '1' chars in base58 = 32 zero bytes (the all-zero Solana pubkey).
+        let bh = "11111111111111111111111111111111";
         let decoded = decode_base58_32(bh);
         assert!(decoded.is_some(), "all-ones should decode to all-zeros");
         if let Some(d) = decoded {
