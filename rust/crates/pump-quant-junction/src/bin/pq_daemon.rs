@@ -997,6 +997,7 @@ fn construct_live_engine(cfg: pump_quant_app::config::Config, args: &DaemonArgs)
 
     let mut helius_rpc_url = String::new();
     let mut helius_sender_url = String::new();
+    let mut helius_api_key = String::new();
     for line in creds.lines() {
         if let Some(v) = line.strip_prefix("HELIUS_WS_URL=") {
             let v = v.trim();
@@ -1009,6 +1010,14 @@ fn construct_live_engine(cfg: pump_quant_app::config::Config, args: &DaemonArgs)
         if let Some(v) = line.strip_prefix("HELIUS_SENDER_URL=") {
             helius_sender_url = v.trim().to_string();
         }
+        if let Some(v) = line.strip_prefix("SENDER_ENDPOINT=") {
+            if helius_sender_url.is_empty() {
+                helius_sender_url = v.trim().to_string();
+            }
+        }
+        if let Some(v) = line.strip_prefix("HELIUS_API_KEY=") {
+            helius_api_key = v.trim().to_string();
+        }
     }
 
     if helius_rpc_url.is_empty() {
@@ -1019,6 +1028,17 @@ fn construct_live_engine(cfg: pump_quant_app::config::Config, args: &DaemonArgs)
                 helius_rpc_url = v;
             }
         }
+    }
+
+    if helius_api_key.is_empty() {
+        if let Ok(v) = std::env::var("HELIUS_API_KEY") {
+            helius_api_key = v;
+        }
+    }
+
+    // Inject api-key into the RPC URL if not already present.
+    if !helius_rpc_url.is_empty() && !helius_api_key.is_empty() && !helius_rpc_url.contains("api-key=") {
+        helius_rpc_url = format!("{}/?api-key={}", helius_rpc_url, helius_api_key);
     }
 
     if helius_rpc_url.is_empty() {
