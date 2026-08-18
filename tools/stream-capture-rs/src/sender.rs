@@ -235,15 +235,26 @@ fn validate_id(id: &str) -> Result<(), SenderError> {
 
 /// Build the `sendTransaction` request body.
 ///
-/// `skipPreflight: true` because preflight simulation costs a round trip that a
-/// latency-critical submission cannot afford, and `maxRetries: 0` because Sender
-/// owns retry across its own routing pathways — client-side retry would submit a
-/// second transaction competing with the first.
-pub fn build_send_body(id: &str, tx_base64: &str) -> Result<String, SenderError> {
+/// `skip_preflight` controls the `skipPreflight` RPC parameter:
+/// - **true** (buys): preflight simulation is skipped to save a round trip on
+///   the latency-critical entry path. Speed is paramount — a missed buy is a
+///   missed opportunity, and the confirmation feedback loop (Rev-19) catches
+///   failed buys asynchronously.
+/// - **false** (sells): preflight simulation runs so that sell txs that would
+///   fail on-chain (e.g. slippage exceeded, token account missing, curve
+///   complete) are rejected BEFORE submission. This prevents silent on-chain
+///   failures from consuming a blockhash slot and burning fees on a tx that
+///   was never going to land. Sells are less latency-critical than buys
+///   because the position is already held — a 50ms preflight is acceptable
+///   insurance against losing the exit entirely.
+///
+/// `maxRetries: 0` because Sender owns retry across its own routing pathways —
+/// client-side retry would submit a second transaction competing with the first.
+pub fn build_send_body(id: &str, tx_base64: &str, skip_preflight: bool) -> Result<String, SenderError> {
     validate_id(id)?;
     validate_base64_tx(tx_base64)?;
     Ok(format!(
-        r#"{{"id":"{id}","jsonrpc":"2.0","method":"sendTransaction","params":["{tx_base64}",{{"encoding":"base64","skipPreflight":true,"maxRetries":0}}]}}"#
+        r#"{{"id":"{id}","jsonrpc":"2.0","method":"sendTransaction","params":["{tx_base64}",{{"encoding":"base64","skipPreflight":{skip_preflight},"maxRetries":0}}]}}"#
     ))
 }
 
@@ -350,10 +361,10 @@ impl<'a> SenderClient<'a> {
     /// compute-unit-price instruction. This module cannot verify either without
     /// decoding the transaction, and a check that only *sometimes* runs is worse
     /// than an explicit contract.
-    pub fn send_transaction(&self, id: &str, tx_base64: &str) -> Result<Accepted, SenderError> {
-        let body = build_send_body(id, tx_base64)?;
+    pub fn send_transaction(&self, id: &str, tx_base64: &str, skip_preflight: bool) -> Result<Accepted, SenderError> {
+        let body = build_send_body(id, tx_base64, skip_preflight)?;
         // Diagnostic: log the tx payload size being submitted.
-        eprintln!("[sender] send_transaction: id={id}, tx_b64_len={}", tx_base64.len());
+        eprintln!("[sender] send_transaction: id={id}, tx_b64_len={}, skip_preflight={skip_preflight}", tx_base64.len());
         self.post(&body)
     }
 

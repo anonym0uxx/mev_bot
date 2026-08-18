@@ -164,7 +164,7 @@ impl HeliusSenderSubmitter {
 }
 
 impl LiveSubmitter for HeliusSenderSubmitter {
-    fn submit(&self, wire_tx: &[u8]) -> Result<[u8; 64], SubmitError> {
+    fn submit(&self, wire_tx: &[u8], is_buy: bool) -> Result<[u8; 64], SubmitError> {
         // 1. Base64-encode the wire bytes.
         let tx_b64 = base64::engine::general_purpose::STANDARD.encode(wire_tx);
 
@@ -177,8 +177,11 @@ impl LiveSubmitter for HeliusSenderSubmitter {
         let id = &make_request_id(wire_tx);
 
         // 4. Send and parse the response.
+        //    skip_preflight: buys skip preflight for speed; sells run preflight
+        //    to catch on-chain failures before wasting a blockhash slot.
+        let skip_preflight = is_buy;
         let accepted = client
-            .send_transaction(id, &tx_b64)
+            .send_transaction(id, &tx_b64, skip_preflight)
             .map_err(map_sender_error)?;
 
         // 5. Decode the base58 signature string into 64 bytes.

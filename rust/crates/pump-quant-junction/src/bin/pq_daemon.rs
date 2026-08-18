@@ -1605,10 +1605,25 @@ fn main() -> ExitCode {
         Engine::new(cfg, RunMode::Paper)
     };
 
-    // Run-mode tag for tape/journal exports — "live" when --live is passed,
-    // "paper" otherwise. Prevents live trades from being mislabeled as paper.
-    let run_mode_tag = if args.live_mode { "live" } else { "paper" };
-    let journal_run_mode = if args.live_mode { JournalRunMode::Live } else { JournalRunMode::Paper };
+    // Run-mode tag for tape/journal exports — derived from the ENGINE's actual
+    // RunMode, NOT the --live CLI flag. This prevents paper-mode fallback from
+    // being mislabeled as "live" in the tape. When construct_live_engine()
+    // succeeds, the engine is RunMode::Live; when it fails and we fall back,
+    // the engine is RunMode::Paper. The tape must reflect what actually
+    // happened, not what was requested.
+    let engine_mode = engine.mode();
+    let run_mode_tag = match engine_mode {
+        RunMode::Live => "live",
+        RunMode::Paper | RunMode::Replay => "paper",
+    };
+    let journal_run_mode = match engine_mode {
+        RunMode::Live => JournalRunMode::Live,
+        RunMode::Paper | RunMode::Replay => JournalRunMode::Paper,
+    };
+    eprintln!(
+        "[pq-daemon] run_mode: {} (engine mode {:?}, --live-mode flag: {})",
+        run_mode_tag, engine_mode, args.live_mode
+    );
 
     // G3 fix: restore the creator ledger from disk (cross-session persistence).
     // Without this, every daemon restart wipes the creator track record to

@@ -102,17 +102,17 @@ fn negative_control_endpoint_rejects_preexisting_query() {
 #[test]
 fn negative_control_non_base64_payload_cannot_reach_the_wire() {
     // The body is assembled by concatenation, so this is the injection guard.
-    let quote = build_send_body("abc", "AAAA\",\"evil\":\"1");
+    let quote = build_send_body("abc", "AAAA\",\"evil\":\"1", true);
     assert!(matches!(quote, Err(SenderError::BadPayload(_))));
-    let spaced = build_send_body("abc", "AAAA AAAA");
+    let spaced = build_send_body("abc", "AAAA AAAA", true);
     assert!(matches!(spaced, Err(SenderError::BadPayload(_))));
     assert!(matches!(
-        build_send_body("abc", ""),
+        build_send_body("abc", "", true),
         Err(SenderError::BadPayload(_))
     ));
     let oversize = "A".repeat(MAX_TX_BASE64_LEN + 1);
     assert!(matches!(
-        build_send_body("abc", &oversize),
+        build_send_body("abc", &oversize, true),
         Err(SenderError::BadPayload(_))
     ));
 }
@@ -120,14 +120,14 @@ fn negative_control_non_base64_payload_cannot_reach_the_wire() {
 #[test]
 fn negative_control_request_id_is_constrained() {
     assert!(matches!(
-        build_send_body("a\",\"x\":\"y", TX),
+        build_send_body("a\",\"x\":\"y", TX, true),
         Err(SenderError::BadPayload(_))
     ));
     assert!(matches!(
-        build_send_body("", TX),
+        build_send_body("", TX, true),
         Err(SenderError::BadPayload(_))
     ));
-    assert!(build_send_body("send-1_A", TX).is_ok());
+    assert!(build_send_body("send-1_A", TX, true).is_ok());
 }
 
 #[test]
@@ -201,12 +201,23 @@ fn url_matches_the_documented_routing_parameters() {
 
 #[test]
 fn send_body_carries_the_required_params() {
-    let body = build_send_body("send-1", TX).unwrap();
+    let body = build_send_body("send-1", TX, true).unwrap();
     assert!(body.contains("\"method\":\"sendTransaction\""));
     assert!(body.contains("\"encoding\":\"base64\""));
     // skipPreflight saves a round trip; maxRetries 0 leaves retry to Sender's
     // own routing rather than racing a duplicate transaction against ourselves.
     assert!(body.contains("\"skipPreflight\":true"));
+    assert!(body.contains("\"maxRetries\":0"));
+    assert!(body.contains(TX));
+}
+
+#[test]
+fn sell_body_runs_preflight_to_catch_on_chain_failures() {
+    // Sells use skipPreflight=false so the preflight simulation catches
+    // on-chain failures (slippage, missing token account, curve complete)
+    // before the tx consumes a blockhash slot and burns fees.
+    let body = build_send_body("sell-1", TX, false).unwrap();
+    assert!(body.contains("\"skipPreflight\":false"));
     assert!(body.contains("\"maxRetries\":0"));
     assert!(body.contains(TX));
 }
@@ -228,7 +239,7 @@ fn successful_send_returns_signature_and_millisecond_latency() {
     let t = MockTransport::ok(&reply, 41_812);
     let c = SenderClient::new(&t, https());
 
-    let accepted = c.send_transaction("send-1", TX).unwrap();
+    let accepted = c.send_transaction("send-1", TX, true).unwrap();
     assert_eq!(accepted.signature, SIG);
     // 41_812 us truncates to 41 ms - integer division, no float rounding.
     assert_eq!(accepted.submit_latency_ms, 41);
@@ -243,7 +254,7 @@ fn transport_failure_is_reported_with_a_redacted_url() {
     let t = MockTransport::err("connection reset");
     let e = SenderEndpoint::new("https://sender.helius-rpc.com/fast", false, false).unwrap();
     let c = SenderClient::new(&t, e);
-    match c.send_transaction("send-1", TX) {
+    match c.send_transaction("send-1", TX, true) {
         Err(SenderError::Transport(m)) => {
             assert!(m.contains("connection reset"));
             assert!(m.contains("https://sender.helius-rpc.com"));
@@ -258,7 +269,7 @@ fn rpc_error_reply_surfaces_code_and_message() {
     let reply = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32002,\"message\":\"transaction simulation failed\"},\"id\":\"1\"}";
     let t = MockTransport::ok(reply, 5_000);
     let c = SenderClient::new(&t, https());
-    match c.send_transaction("send-1", TX) {
+    match c.send_transaction("send-1", TX, true) {
         Err(SenderError::Rpc { code, message }) => {
             assert_eq!(code, -32002);
             assert_eq!(message, "transaction simulation failed");
@@ -271,7 +282,7 @@ fn rpc_error_reply_surfaces_code_and_message() {
 fn a_rejected_payload_never_reaches_the_transport() {
     let t = MockTransport::ok("{\"result\":\"x\"}", 1_000);
     let c = SenderClient::new(&t, https());
-    assert!(c.send_transaction("id", "not base64!!").is_err());
+    assert!(c.send_transaction("id", "not base64!!", true).is_err());
     assert!(
         t.seen.borrow().is_empty(),
         "validation must run before the socket"

@@ -198,8 +198,11 @@ impl<'a> OutboundJunction<'a> {
 
         // ── 5. Encode + submit ──────────────────────────────────────────────
         let tx_b64 = encode_base64(&wire_tx);
+        // skipPreflight: true for buys (latency-critical), false for sells
+        // (catch sell failures pre-flight — item 3, Rev-20).
+        let skip_preflight = decision.side == TradeSide::Buy;
         self.sender
-            .send_transaction(request_id, &tx_b64)
+            .send_transaction(request_id, &tx_b64, skip_preflight)
             .map_err(OutboundError::Submit)
     }
 }

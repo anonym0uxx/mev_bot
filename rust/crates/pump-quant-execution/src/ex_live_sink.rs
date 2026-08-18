@@ -344,7 +344,7 @@ impl OutboundSink for LiveOutboundSink {
         // For lowest latency, we return the signature on sendTransaction
         // success without waiting for full confirmation — the reconciliation
         // layer confirms asynchronously.
-        let on_chain_sig = match self.submitter.submit(&wire_tx) {
+        let on_chain_sig = match self.submitter.submit(&wire_tx, record.is_buy) {
             Ok(sig) => sig,
             Err(e) => {
                 return OutboundOutcome::Sender(format!(
@@ -402,7 +402,7 @@ mod tests {
     struct TestSubmitter;
 
     impl LiveSubmitter for TestSubmitter {
-        fn submit(&self, _wire_tx: &[u8]) -> Result<[u8; 64], SubmitError> {
+        fn submit(&self, _wire_tx: &[u8], _is_buy: bool) -> Result<[u8; 64], SubmitError> {
             let mut sig = [0u8; 64];
             sig[0] = 0xAA;
             sig[63] = 0xBB;

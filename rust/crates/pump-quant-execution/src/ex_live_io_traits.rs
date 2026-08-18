@@ -173,6 +173,13 @@ pub trait LiveSubmitter: Send + Sync {
     /// Submit `wire_tx` (the assembled wire transaction bytes) and return the
     /// 64-byte transaction signature.
     ///
+    /// `is_buy` controls the `skipPreflight` RPC parameter:
+    /// - **true** (buy): skipPreflight=true for lowest latency entry.
+    /// - **false** (sell): skipPreflight=false so preflight catches sell failures
+    ///   before they consume a blockhash slot and burn fees. The confirmation
+    ///   feedback loop (Rev-19) catches confirmed failures, but preflight
+    ///   prevents the wasted submission entirely.
+    ///
     /// The implementation should:
     /// 1. Base64-encode the wire bytes.
     /// 2. POST to the Helius Sender endpoint with the tier + mev-protect suffix.
@@ -182,5 +189,5 @@ pub trait LiveSubmitter: Send + Sync {
     /// For lowest latency, the implementation should NOT wait for full
     /// confirmation — it should return the signature on `sendTransaction`
     /// success and let the reconciliation layer confirm asynchronously.
-    fn submit(&self, wire_tx: &[u8]) -> Result<[u8; 64], SubmitError>;
+    fn submit(&self, wire_tx: &[u8], is_buy: bool) -> Result<[u8; 64], SubmitError>;
 }
