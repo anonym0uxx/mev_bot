@@ -218,63 +218,37 @@ fn make_request_id(wire_tx: &[u8]) -> String {
 }
 
 /// Decode a base58 signature string (Solana format) into 64 raw bytes.
-/// Uses the same base58 alphabet as the signer module.
+/// Uses the SAME algorithm as `decode_base58_64` in pq_daemon.rs to ensure
+/// byte-for-byte parity between stored pending signatures and on-chain
+/// signatures fetched via `getSignaturesForAddress`. Without this parity,
+/// the confirmation poll can never match stored sigs against on-chain sigs.
 fn decode_signature_bytes(sig_str: &str) -> Result<[u8; 64], SubmitError> {
-    // The Solana signature is a 64-byte ed25519 signature encoded in base58.
-    // We use the base58 Bitcoin alphabet (same as pq_stream_capture::signer).
-    const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-
+    const B58: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     if sig_str.is_empty() {
         return Err(SubmitError::InvalidSignature);
     }
-
-    // Count leading '1' bytes (zero bytes in base58).
-    let mut zeros = 0;
-    let bytes = sig_str.as_bytes();
-    while zeros < bytes.len() && bytes[zeros] == b'1' {
-        zeros += 1;
-    }
-
-    // Allocate the output buffer.
-    let mut buffer = vec![0u8; sig_str.len() * 733 / 1000 + 1]; // upper bound
-
-    let mut written = 0;
-    for &c in &bytes[zeros..] {
-        let mut carry = match ALPHABET.iter().position(|&a| a == c) {
+    let mut out = [0u8; 64];
+    for c in sig_str.bytes() {
+        let digit = match B58.iter().position(|&a| a == c) {
             Some(idx) => idx as u32,
             None => return Err(SubmitError::InvalidSignature),
         };
-
-        // Multiply buffer by 58 and add carry.
-        let mut i = 0;
-        while i < written || carry != 0 {
-            if i >= buffer.len() {
-                buffer.push(0);
-                // If we exceed 64 bytes, this is not a valid signature.
-                if buffer.len() > 64 {
-                    return Err(SubmitError::InvalidSignature);
-                }
-            }
-            let current = buffer[i] as u32 + carry;
-            buffer[i] = (current % 256) as u8;
-            carry = current / 256;
-            i += 1;
+        let mut carry = digit;
+        for byte in out.iter_mut().rev() {
+            let v = u32::from(*byte) * 58 + carry;
+            *byte = (v & 0xff) as u8;
+            carry = v >> 8;
         }
-        written = i;
+        if carry != 0 {
+            return Err(SubmitError::InvalidSignature);
+        }
     }
-
-    // Reverse the buffer (base58 is big-endian, we processed little-endian).
-    buffer.truncate(written);
-    buffer.reverse();
-
-    // Prepend zero bytes.
-    let mut result = [0u8; 64];
-    if zeros + buffer.len() > 64 {
+    let leading_ones = sig_str.bytes().take_while(|&c| c == b'1').count();
+    let leading_zeros = out.iter().take_while(|&&b| b == 0).count();
+    if leading_ones != leading_zeros {
         return Err(SubmitError::InvalidSignature);
     }
-    result[zeros..zeros + buffer.len()].copy_from_slice(&buffer);
-
-    Ok(result)
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
