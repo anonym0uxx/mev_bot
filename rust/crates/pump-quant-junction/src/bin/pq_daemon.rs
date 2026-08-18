@@ -292,7 +292,7 @@ fn parse_args() -> Result<DaemonArgs, u8> {
                 a.strategy_label = String::from(&args[i + 1]);
                 i += 2;
             }
-            "--live" => {
+            "--live" | "--live-mode" => {
                 a.live_mode = true;
                 i += 1;
             }
