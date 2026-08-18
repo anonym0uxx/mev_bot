@@ -70,6 +70,9 @@ pub struct SenderEndpoint {
     base: String,
     swqos_only: bool,
     mev_protect: bool,
+    /// Optional Helius API key appended as ?api-key=... for the Sender endpoint.
+    /// Required for the global (non-colocated) endpoint to authenticate.
+    api_key: Option<String>,
 }
 
 impl SenderEndpoint {
@@ -120,6 +123,7 @@ impl SenderEndpoint {
             base: trimmed.trim_end_matches('/').to_string(),
             swqos_only,
             mev_protect,
+            api_key: None,
         })
     }
 
@@ -135,7 +139,25 @@ impl SenderEndpoint {
             (false, false) => "",
             (false, true) => "?mev-protect=true",
         };
-        format!("{}{}", self.base, suffix)
+        let base_with_suffix = format!("{}{}", self.base, suffix);
+        match &self.api_key {
+            Some(key) if !key.is_empty() => {
+                if suffix.is_empty() {
+                    format!("{}?api-key={}", self.base, key)
+                } else {
+                    format!("{}&api-key={}", base_with_suffix, key)
+                }
+            }
+            _ => base_with_suffix,
+        }
+    }
+
+    /// Set the Helius API key for Sender authentication (global endpoint only).
+    /// The key is appended as `?api-key=...` in the request URL.
+    #[must_use]
+    pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
+        self.api_key = Some(key.into());
+        self
     }
 
     /// Whether this endpoint requests the SWQoS-only single fast path.
@@ -330,6 +352,8 @@ impl<'a> SenderClient<'a> {
     /// than an explicit contract.
     pub fn send_transaction(&self, id: &str, tx_base64: &str) -> Result<Accepted, SenderError> {
         let body = build_send_body(id, tx_base64)?;
+        // Diagnostic: log the tx payload size being submitted.
+        eprintln!("[sender] send_transaction: id={id}, tx_b64_len={}", tx_base64.len());
         self.post(&body)
     }
 
@@ -349,6 +373,8 @@ impl<'a> SenderClient<'a> {
             // TPS limit. Redaction you have to remember to add is redaction that
             // gets forgotten.
             .map_err(|e| SenderError::Transport(format!("{}: {e}", redact_url(&url))))?;
+        // Diagnostic: log the full Sender response for debugging.
+        eprintln!("[sender] POST response ({} bytes): {body}", body.len());
         let signature = parse_send_reply(&body)?;
         Ok(Accepted {
             signature,

@@ -56,6 +56,9 @@ pub struct LiveCurveState {
     pub is_complete: bool,
     /// The real-time slot at which this state was observed.
     pub observed_slot: u64,
+    /// The 8 buyback_fee_recipients from the Global account (offset 741).
+    /// Used by the live sink to select the BuybackVault PDA for the fee-tail.
+    pub buyback_fee_recipients: [[u8; 32]; 8],
 }
 
 /// The recent blockhash + slot, fetched via RPC `getLatestBlockhash`.

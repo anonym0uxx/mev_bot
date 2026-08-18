@@ -135,6 +135,22 @@ impl HeliusSenderSubmitter {
         })
     }
 
+    /// Construct with an API key for the global Helius Sender endpoint.
+    pub fn new_with_api_key(
+        endpoint_url: &str,
+        api_key: &str,
+        swqos_only: bool,
+        mev_protect: bool,
+    ) -> Result<Self, SubmitError> {
+        let endpoint = SenderEndpoint::new(endpoint_url, swqos_only, mev_protect)
+            .map_err(map_sender_error)?
+            .with_api_key(api_key);
+        Ok(Self {
+            transport: UreqTransport::new(),
+            endpoint,
+        })
+    }
+
     /// Colocated variant: allows plaintext HTTP for datacentre-to-datacentre
     /// submission with lower latency (no TLS handshake).
     pub fn new_colocated(endpoint_url: &str, swqos_only: bool, mev_protect: bool) -> Result<Self, SubmitError> {
@@ -276,6 +292,9 @@ struct CachedCurveState {
 struct CachedBlockhash {
     blockhash: [u8; 32],
     slot: u64,
+    /// Unix-epoch seconds when this blockhash was fetched — used for
+    /// freshness checks in `latest_blockhash()`.
+    fetched_at_secs: u64,
 }
 
 /// Production state fetcher backed by `RpcStateFetch` (RPC getAccountInfo +
@@ -345,6 +364,22 @@ impl RpcLiveStateFetcher {
             .fetch(mint, user)
             .map_err(map_state_fetch_error)?;
 
+        // ── Latency optimization: write the blockhash from this fetch into the
+        // cache so `latest_blockhash()` doesn't need a second RPC round-trip.
+        // The fetch already called getLatestBlockhash as part of its batched
+        // RPC — reusing it saves ~50-100ms on the hot path. ──
+        if fetched.recent_blockhash != [0u8; 32] {
+            *self.blockhash_cache.lock().unwrap() = Some(CachedBlockhash {
+                blockhash: fetched.recent_blockhash,
+                slot: 0, // RpcStateFetch doesn't return the slot; freshness is
+                         // tracked via fetched_at_secs instead.
+                fetched_at_secs: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            });
+        }
+
         Ok(LiveCurveState {
             curve_ctx: fetched.ctx,
             virtual_sol_reserves: fetched.virtual_sol_reserves,
@@ -353,6 +388,7 @@ impl RpcLiveStateFetcher {
             observed_slot: 0, // RpcStateFetch doesn't return the slot; the
                               // background thread can set this from the
                               // blockhash cache.
+            buyback_fee_recipients: fetched.buyback_fee_recipients,
         })
     }
 
@@ -394,6 +430,10 @@ impl RpcLiveStateFetcher {
         *self.blockhash_cache.lock().unwrap() = Some(CachedBlockhash {
             blockhash,
             slot,
+            fetched_at_secs: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
         });
 
         Ok(LiveBlockhash { blockhash, slot })
@@ -463,18 +503,25 @@ impl LiveStateFetcher for RpcLiveStateFetcher {
     }
 
     fn latest_blockhash(&self) -> Result<LiveBlockhash, StateFetchError> {
-        // Try the cache first.
+        // Try the cache first — but only if it's fresh (< 5 seconds old).
+        // Solana blockhashes expire after ~60s, but we refresh aggressively
+        // to avoid landing failures on high-latency submissions.
         {
             let cache = self.blockhash_cache.lock().unwrap();
             if let Some(ref cached) = *cache {
-                return Ok(LiveBlockhash {
-                    blockhash: cached.blockhash,
-                    slot: cached.slot,
-                });
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                if now.saturating_sub(cached.fetched_at_secs) < 5 {
+                    return Ok(LiveBlockhash {
+                        blockhash: cached.blockhash,
+                        slot: cached.slot,
+                    });
+                }
             }
         }
-
-        // Cache miss: fetch synchronously.
+        // Cache miss or stale: fetch synchronously.
         self.refresh_blockhash_inner()
     }
 }

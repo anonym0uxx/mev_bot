@@ -253,6 +253,60 @@ pub enum AppEvent {
         hour_utc: u8,
     },
 
+    /// **Rev-19 on-chain feedback**: our own buy transaction landed on-chain.
+    /// Fed by the daemon's `getSignaturesForAddress` poller when a pending buy
+    /// signature is confirmed. The engine uses this to reconcile the paper
+    /// position with on-chain reality and mark it as on-chain confirmed.
+    OurBuyConfirmed {
+        /// The mint that was bought.
+        mint: Mint,
+        /// The on-chain transaction signature (raw 64 bytes).
+        signature: [u8; 64],
+        /// Slot of the confirmation (caller-supplied).
+        slot: u64,
+    },
+
+    /// **Rev-19 on-chain feedback**: our own buy transaction failed on-chain.
+    /// The engine reverses the paper position (closes it) and records the
+    /// irrecoverable fee loss. Tokens were NOT received.
+    OurBuyFailed {
+        /// The mint that failed to buy.
+        mint: Mint,
+        /// The failed transaction signature.
+        signature: [u8; 64],
+        /// Compact error classification: 0=unknown, 1=simulation_failure,
+        /// 2=program_error (incl. 6062 BuybackVault), 3=timeout, 4=insufficient_funds.
+        err_code: u8,
+        /// Slot of the failure (caller-supplied).
+        slot: u64,
+    },
+
+    /// **Rev-19 on-chain feedback**: our own sell transaction landed on-chain.
+    /// The exit is now real — SOL was recovered. The paper PnL recorded in
+    /// `book_exit` is confirmed as on-chain truth.
+    OurSellConfirmed {
+        /// The mint that was sold.
+        mint: Mint,
+        /// The on-chain transaction signature.
+        signature: [u8; 64],
+        /// Slot of the confirmation.
+        slot: u64,
+    },
+
+    /// **Rev-19 on-chain feedback**: our own sell transaction failed on-chain.
+    /// Tokens remain in the wallet. The paper exit was recorded but the SOL
+    /// was NOT recovered. The daemon logs this for manual recovery or retry.
+    OurSellFailed {
+        /// The mint that failed to sell.
+        mint: Mint,
+        /// The failed transaction signature.
+        signature: [u8; 64],
+        /// Compact error classification (same as OurBuyFailed).
+        err_code: u8,
+        /// Slot of the failure.
+        slot: u64,
+    },
+
     /// Advance the logical clock by one tick. Recency decay, TTL pruning and the
     /// reflection cadence are all measured in ticks — never wall-clock.
     Tick,
@@ -271,7 +325,11 @@ impl AppEvent {
             | AppEvent::TokenMetadata { mint, .. }
             | AppEvent::CreatorAction { mint, .. }
             | AppEvent::Migration { mint, .. }
-            | AppEvent::MarketAuxiliary { mint, .. } => Some(*mint),
+            | AppEvent::MarketAuxiliary { mint, .. }
+            | AppEvent::OurBuyConfirmed { mint, .. }
+            | AppEvent::OurBuyFailed { mint, .. }
+            | AppEvent::OurSellConfirmed { mint, .. }
+            | AppEvent::OurSellFailed { mint, .. } => Some(*mint),
             AppEvent::TimeSignal { .. } | AppEvent::Tick => None,
         }
     }

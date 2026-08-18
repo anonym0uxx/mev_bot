@@ -55,7 +55,17 @@ impl Http {
         match req.send_string(body) {
             Ok(resp) => read_capped(resp),
             Err(ureq::Error::Status(code, resp)) => {
-                Err(format!("HTTP Error {code}: {}", resp.status_text()))
+                // On HTTP errors, capture the response body for diagnosis.
+                let status_text = resp.status_text().to_string();
+                let body_text = {
+                    let mut text = String::new();
+                    let mut reader = resp.into_reader().take(MAX_BODY_BYTES + 1);
+                    let _ = reader.read_to_string(&mut text);
+                    text
+                };
+                eprintln!("[http] POST {url} → HTTP {code} {status_text}");
+                eprintln!("[http] response body: {body_text}");
+                Err(format!("HTTP Error {code}: {status_text} — {body_text}"))
             }
             Err(transport) => Err(transport.to_string()),
         }

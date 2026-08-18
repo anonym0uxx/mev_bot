@@ -207,6 +207,59 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
                     .ok_or("missing hour_utc")? as u8,
             })
         }
+        // Rev-19 on-chain feedback: parse confirmation events.
+        "OurBuyConfirmed" => {
+            let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
+            let mint = parse_mint(&mint_str)?;
+            let sig_str = extract_string_field(line, "signature").ok_or("missing signature")?;
+            let signature = hex_to_sig(&sig_str)?;
+            Ok(AppEvent::OurBuyConfirmed {
+                mint,
+                signature,
+                slot: extract_int_field(line, "confirm_slot")
+                    .ok_or("missing confirm_slot")? as u64,
+            })
+        }
+        "OurBuyFailed" => {
+            let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
+            let mint = parse_mint(&mint_str)?;
+            let sig_str = extract_string_field(line, "signature").ok_or("missing signature")?;
+            let signature = hex_to_sig(&sig_str)?;
+            Ok(AppEvent::OurBuyFailed {
+                mint,
+                signature,
+                err_code: extract_int_field(line, "err_code")
+                    .ok_or("missing err_code")? as u8,
+                slot: extract_int_field(line, "confirm_slot")
+                    .ok_or("missing confirm_slot")? as u64,
+            })
+        }
+        "OurSellConfirmed" => {
+            let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
+            let mint = parse_mint(&mint_str)?;
+            let sig_str = extract_string_field(line, "signature").ok_or("missing signature")?;
+            let signature = hex_to_sig(&sig_str)?;
+            Ok(AppEvent::OurSellConfirmed {
+                mint,
+                signature,
+                slot: extract_int_field(line, "confirm_slot")
+                    .ok_or("missing confirm_slot")? as u64,
+            })
+        }
+        "OurSellFailed" => {
+            let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
+            let mint = parse_mint(&mint_str)?;
+            let sig_str = extract_string_field(line, "signature").ok_or("missing signature")?;
+            let signature = hex_to_sig(&sig_str)?;
+            Ok(AppEvent::OurSellFailed {
+                mint,
+                signature,
+                err_code: extract_int_field(line, "err_code")
+                    .ok_or("missing err_code")? as u8,
+                slot: extract_int_field(line, "confirm_slot")
+                    .ok_or("missing confirm_slot")? as u64,
+            })
+        }
         other => Err(format!("unknown event kind: {other}")),
     }
 }
@@ -359,6 +412,11 @@ fn event_kind(event: &AppEvent) -> &'static str {
         // Rev-14 wangr intelligence: new event variants.
         AppEvent::MarketAuxiliary { .. } => "MarketAuxiliary",
         AppEvent::TimeSignal { .. } => "TimeSignal",
+        // Rev-19 on-chain feedback: new event variants.
+        AppEvent::OurBuyConfirmed { .. } => "OurBuyConfirmed",
+        AppEvent::OurBuyFailed { .. } => "OurBuyFailed",
+        AppEvent::OurSellConfirmed { .. } => "OurSellConfirmed",
+        AppEvent::OurSellFailed { .. } => "OurSellFailed",
         AppEvent::Tick => "Tick",
     }
 }
@@ -422,6 +480,25 @@ fn event_fields_json(event: &AppEvent) -> String {
             parts.push(format!(r#""dow":{}"#, dow));
             parts.push(format!(r#""hour_utc":{}"#, hour_utc));
         }
+        // Rev-19 on-chain feedback: serialize signature + slot for confirmation events.
+        AppEvent::OurBuyConfirmed { signature, slot, .. } => {
+            parts.push(format!(r#""signature":"{}""#, sig_to_hex(signature)));
+            parts.push(format!(r#""confirm_slot":{}"#, slot));
+        }
+        AppEvent::OurBuyFailed { signature, err_code, slot, .. } => {
+            parts.push(format!(r#""signature":"{}""#, sig_to_hex(signature)));
+            parts.push(format!(r#""err_code":{}"#, err_code));
+            parts.push(format!(r#""confirm_slot":{}"#, slot));
+        }
+        AppEvent::OurSellConfirmed { signature, slot, .. } => {
+            parts.push(format!(r#""signature":"{}""#, sig_to_hex(signature)));
+            parts.push(format!(r#""confirm_slot":{}"#, slot));
+        }
+        AppEvent::OurSellFailed { signature, err_code, slot, .. } => {
+            parts.push(format!(r#""signature":"{}""#, sig_to_hex(signature)));
+            parts.push(format!(r#""err_code":{}"#, err_code));
+            parts.push(format!(r#""confirm_slot":{}"#, slot));
+        }
         AppEvent::Tick => {}
     }
     parts.join(",")
@@ -449,6 +526,24 @@ fn creator_action_kind_json(kind: &CreatorActionKind) -> String {
 fn mint_to_base58(mint: &Mint) -> String {
     use solana_program::pubkey::Pubkey;
     Pubkey::from(*mint.as_bytes()).to_string()
+}
+
+/// **Rev-19**: Encode a 64-byte signature as a hex string (128 chars).
+fn sig_to_hex(sig: &[u8; 64]) -> String {
+    sig.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// **Rev-19**: Decode a hex string back into a 64-byte signature.
+fn hex_to_sig(hex: &str) -> Result<[u8; 64], String> {
+    if hex.len() != 128 {
+        return Err(format!("signature hex length {} != 128", hex.len()));
+    }
+    let mut sig = [0u8; 64];
+    for i in 0..64 {
+        sig[i] = u8::from_str_radix(&hex[i*2..i*2+2], 16)
+            .map_err(|e| format!("hex decode at byte {i}: {e}"))?;
+    }
+    Ok(sig)
 }
 
 #[cfg(test)]

@@ -733,6 +733,25 @@ pub struct ReflectionSnapshot {
     pub brain_reflect_enable: bool,
 }
 
+/// **Rev-19 on-chain feedback**: A pending buy or sell tx awaiting on-chain
+/// confirmation. Created when the live sink submits a tx, consumed when the
+/// daemon's `getSignaturesForAddress` poller reports back.
+#[derive(Clone, Copy, Debug)]
+pub struct PendingTx {
+    /// Full 64-byte Solana signature of the submitted tx.
+    pub signature: [u8; 64],
+    /// The mint being traded.
+    pub mint: [u8; 32],
+    /// Tick when the tx was submitted (for timeout-based eviction).
+    pub submit_tick: u64,
+    /// SOL size deployed (for buys) or token amount sold (for sells), in
+    /// lamports / token base units respectively. Used to reconcile the paper
+    /// position on failure reversal.
+    pub size: u64,
+    /// Entry price fingerprint (for buys) or exit price fingerprint (for sells).
+    pub price_fp: u64,
+}
+
 /// The running engine.
 pub struct Engine {
     cfg: Config,
@@ -1041,6 +1060,28 @@ pub struct Engine {
     /// The sink's return value is logged for the report only — it NEVER feeds
     /// an engine decision (§24(b) golden-digest invariant).
     outbound_sink: Option<&'static dyn pump_quant_execution::ex_outbound_sink::OutboundSink>,
+    /// Count of live outbound sink successes (real on-chain buy submissions accepted).
+    live_outbound_successes: u64,
+    /// Count of live outbound sink failures (state-fetch, construction, signer, or sender errors).
+    live_outbound_failures: u64,
+    /// Live sell submission successes (sell tx accepted by the sink).
+    live_sell_successes: u64,
+    /// Live sell submission failures (sell tx rejected/errored by the sink).
+    live_sell_failures: u64,
+    /// **Rev-19 on-chain feedback**: pending buy txs awaiting on-chain confirmation.
+    /// Keyed by the first 8 bytes of the signature (compact). Bounded (§99) —
+    /// evicts the oldest entry at capacity.
+    pending_buys: BTreeMap<[u8; 8], PendingTx>,
+    /// **Rev-19 on-chain feedback**: pending sell txs awaiting on-chain confirmation.
+    pending_sells: BTreeMap<[u8; 8], PendingTx>,
+    /// Count of buy txs confirmed on-chain (landed successfully).
+    buy_confirmed_count: u64,
+    /// Count of buy txs that failed on-chain (tokens NOT received).
+    buy_failed_count: u64,
+    /// Count of sell txs confirmed on-chain (SOL recovered).
+    sell_confirmed_count: u64,
+    /// Count of sell txs that failed on-chain (SOL NOT recovered).
+    sell_failed_count: u64,
     /// Count of sub-`x_min` probes admitted as budgeted paid-information (LAW 13),
     /// distinct from `admitted` positions — a probe is never a position.
     probes_budgeted: u64,
@@ -1319,6 +1360,16 @@ impl Engine {
             ),
             route_health: RouteHealthSet::new(),
             outbound_sink: None,
+            live_outbound_successes: 0,
+            live_outbound_failures: 0,
+            live_sell_successes: 0,
+            live_sell_failures: 0,
+            pending_buys: BTreeMap::new(),
+            pending_sells: BTreeMap::new(),
+            buy_confirmed_count: 0,
+            buy_failed_count: 0,
+            sell_confirmed_count: 0,
+            sell_failed_count: 0,
             probes_budgeted: 0,
             last_trade_tick: BTreeMap::new(),
             terminal_reflections: Vec::new(),
@@ -1468,6 +1519,16 @@ impl Engine {
             probes_budgeted: self.probes_budgeted,
             probe_spend_lamports: self.calibration.spent_lifetime,
             journal_digest: self.journal.digest(),
+            live_outbound_successes: self.live_outbound_successes,
+            live_outbound_failures: self.live_outbound_failures,
+            live_sell_successes: self.live_sell_successes,
+            live_sell_failures: self.live_sell_failures,
+            buy_confirmed_count: self.buy_confirmed_count,
+            buy_failed_count: self.buy_failed_count,
+            sell_confirmed_count: self.sell_confirmed_count,
+            sell_failed_count: self.sell_failed_count,
+            pending_buy_count: self.pending_buys.len() as u64,
+            pending_sell_count: self.pending_sells.len() as u64,
         }
     }
 
@@ -2029,6 +2090,50 @@ impl Engine {
             // ONLY channel through which the caller informs it of UTC time.
             AppEvent::TimeSignal { dow, hour_utc } => {
                 self.time_signal = (dow, hour_utc);
+            }
+            // ─── Rev-19 on-chain feedback loop ──────────────────────────────
+            // Our buy tx landed on-chain. Reconcile the paper position: mark it
+            // as on-chain confirmed so the sell path knows tokens are real.
+            AppEvent::OurBuyConfirmed { mint, signature, .. } => {
+                let key = sig_key(&signature);
+                if self.pending_buys.remove(&key).is_some() {
+                    self.buy_confirmed_count = self.buy_confirmed_count.saturating_add(1);
+                    // Mark the position as on-chain confirmed.
+                    self.positions
+                        .mark_onchain_confirmed(mint.as_bytes(), true);
+                }
+            }
+            // Our buy tx failed on-chain. Reverse the paper position — we
+            // never received tokens. The fee is already burned irrecoverably.
+            AppEvent::OurBuyFailed { mint, signature, .. } => {
+                let key = sig_key(&signature);
+                if let Some(pending) = self.pending_buys.remove(&key) {
+                    self.buy_failed_count = self.buy_failed_count.saturating_add(1);
+                    // Remove the paper position — tokens were never received.
+                    self.positions.reverse_paper_entry(mint.as_bytes(), pending.size);
+                }
+            }
+            // Our sell tx landed on-chain. SOL was recovered — the paper exit
+            // is now confirmed as on-chain truth.
+            AppEvent::OurSellConfirmed { mint, signature, .. } => {
+                let key = sig_key(&signature);
+                if self.pending_sells.remove(&key).is_some() {
+                    self.sell_confirmed_count = self.sell_confirmed_count.saturating_add(1);
+                    // Mark the exit as on-chain confirmed.
+                    self.positions
+                        .mark_onchain_exit_confirmed(mint.as_bytes(), true);
+                }
+            }
+            // Our sell tx failed on-chain. Tokens remain in wallet — SOL was
+            // NOT recovered. The paper exit must be reversed so we can retry.
+            AppEvent::OurSellFailed { mint, signature, .. } => {
+                let key = sig_key(&signature);
+                if let Some(pending) = self.pending_sells.remove(&key) {
+                    self.sell_failed_count = self.sell_failed_count.saturating_add(1);
+                    // Reverse the paper exit so the sell ladder can retry.
+                    self.positions
+                        .reverse_paper_exit(mint.as_bytes(), pending.size);
+                }
             }
             AppEvent::Tick => self.evaluate(),
         }
@@ -4451,13 +4556,41 @@ impl Engine {
                 // economic parameters for the junction's tx_build call.
                 let record = pump_quant_execution::ex_outbound_sink::AdmitRecord {
                     mint: e.mint,
-                    user: [0u8; 32], // junction overrides with the signer
+                    user: [0u8; 32], // sink overrides with the real signer pubkey
                     is_buy: true,
                     size_lamports: probe,
                     entry_price: e.entry_price,
-                    max_slippage_bps: 500, // 5% default; junction may override
+                    max_slippage_bps: 500, // 5% default; sink may override
                 };
-                let _outcome = sink.on_admit(&record);
+                let outcome = sink.on_admit(&record);
+                // Log the outcome for observability. The outcome is NEVER fed
+                // into a decision (§24(b)) — it is diagnostic only. In paper
+                // mode the sink is None and this branch is skipped entirely.
+                match &outcome {
+                    pump_quant_execution::ex_outbound_sink::OutboundOutcome::Accepted { signature } => {
+                        if signature == &[0u8; 64] {
+                            eprintln!("[engine] sink: Accepted (paper placeholder)");
+                        } else {
+                            // Hex-encode the first 8 bytes of the sig for a compact log tag.
+                            let sig_hex: String = signature[..8].iter().map(|b| format!("{b:02x}")).collect();
+                            eprintln!("[engine] sink: Accepted sig={sig_hex}");
+                            self.live_outbound_successes += 1;
+                            // Rev-19: register the pending buy for on-chain confirmation polling.
+                            // The daemon will poll getSignaturesForAddress and feed
+                            // OurBuyConfirmed/OurBuyFailed back into the engine.
+                            self.register_pending_buy(
+                                *signature,
+                                e.mint,
+                                probe,
+                                e.entry_price,
+                            );
+                        }
+                    }
+                    other => {
+                        eprintln!("[engine] sink FAILED: {other:?}");
+                        self.live_outbound_failures += 1;
+                    }
+                }
             }
             // LAZY-HOLD ATA: the rent deposit is already in `e.entry_cost` (charged
             // by `pending_entry` iff the mint was absent from the set), so this is
@@ -4588,6 +4721,62 @@ impl Engine {
     /// high-water mark, and attribute the market's total realized net back to its
     /// social callers (§82).
     fn book_exit(&mut self, mut e: Exit) {
+        // ── LIVE SELL SUBMISSION (2026-08-17 fix for tape-vs-on-chain gap) ──
+        //
+        // When the outbound sink is installed (live mode), every exit with a
+        // non-zero token_amount triggers an on-chain sell via the same sink
+        // that handles buys. The sink fetches fresh curve state, computes
+        // min_sol_out from current reserves, builds the sell ix, signs, and
+        // submits. The outcome is logged for diagnostics but — per §24(b) —
+        // NEVER fed back into a decision path.
+        //
+        // In paper mode (sink is None) this branch is skipped entirely and
+        // the tape records the paper-simulated PnL as before.
+        //
+        // The token_amount on the Exit struct was computed at exit-creation
+        // time from the notional fraction sold and the entry price:
+        //   token_amount = (size_lamports * frac_bps / 10_000) * PRICE_SCALE / entry_price_fp
+        // A zero token_amount means either paper mode (no real tokens) or a
+        // degenerate position (zero entry price) — in both cases no on-chain
+        // sell is attempted.
+        if let Some(sink) = self.outbound_sink {
+            if e.token_amount > 0 {
+                let record = pump_quant_execution::ex_outbound_sink::AdmitRecord {
+                    mint: e.mint,
+                    user: [0u8; 32], // sink overrides with real signer pubkey
+                    is_buy: false,   // SELL
+                    size_lamports: e.token_amount, // token base units to sell
+                    entry_price: e.exit_price_fp, // current exit price for slippage bound
+                    max_slippage_bps: 500, // 5% default; sink may override
+                };
+                let outcome = sink.on_admit(&record);
+                match &outcome {
+                    pump_quant_execution::ex_outbound_sink::OutboundOutcome::Accepted { signature } => {
+                        if signature == &[0u8; 64] {
+                            eprintln!("[engine] sell sink: Accepted (paper placeholder)");
+                        } else {
+                            let sig_hex: String = signature[..8].iter().map(|b| format!("{b:02x}")).collect();
+                            let mint_hex: String = e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
+                            eprintln!("[engine] sell sink: Accepted sig={sig_hex} mint={mint_hex} tokens={}",
+                                e.token_amount);
+                            self.live_sell_successes += 1;
+                            // Rev-19: register the pending sell for on-chain confirmation polling.
+                            self.register_pending_sell(
+                                *signature,
+                                e.mint,
+                                e.token_amount,
+                                e.exit_price_fp,
+                            );
+                        }
+                    }
+                    other => {
+                        let mint_hex: String = e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
+                        eprintln!("[engine] sell sink FAILED: {other:?} mint={mint_hex}");
+                        self.live_sell_failures += 1;
+                    }
+                }
+            }
+        }
         // CLOSE-ON-FULL-EXIT: a fully-exited position's token account is emptied, so
         // it is closed. `close_account` returns the whole `ATA_RENT_LAMPORTS` deposit
         // — which the entry basis charged and `realize` has been netting out pro-rata
@@ -6467,6 +6656,125 @@ impl Engine {
     pub fn outbound_sink_installed(&self) -> bool {
         self.outbound_sink.is_some()
     }
+
+    // ─── Rev-19 on-chain feedback API ──────────────────────────────────────
+
+    /// Register a pending buy tx for on-chain confirmation tracking.
+    /// Called by the daemon immediately after the live sink submits a buy tx.
+    /// The signature comes from `OutboundOutcome` returned by `on_admit`.
+    pub fn register_pending_buy(&mut self, signature: [u8; 64], mint: [u8; 32], size: u64, price_fp: u64) {
+        let key = sig_key(&signature);
+        // §99 bounded: evict oldest at capacity (256 entries).
+        if self.pending_buys.len() >= 256 && !self.pending_buys.contains_key(&key) {
+            if let Some(first) = self.pending_buys.keys().next().copied() {
+                self.pending_buys.remove(&first);
+            }
+        }
+        self.pending_buys.insert(key, PendingTx {
+            signature,
+            mint,
+            submit_tick: self.now,
+            size,
+            price_fp,
+        });
+    }
+
+    /// Register a pending sell tx for on-chain confirmation tracking.
+    pub fn register_pending_sell(&mut self, signature: [u8; 64], mint: [u8; 32], size: u64, price_fp: u64) {
+        let key = sig_key(&signature);
+        if self.pending_sells.len() >= 256 && !self.pending_sells.contains_key(&key) {
+            if let Some(first) = self.pending_sells.keys().next().copied() {
+                self.pending_sells.remove(&first);
+            }
+        }
+        self.pending_sells.insert(key, PendingTx {
+            signature,
+            mint,
+            submit_tick: self.now,
+            size,
+            price_fp,
+        });
+    }
+
+    /// Return all pending buy signatures for daemon polling.
+    /// Returns (mint_bytes, signature) pairs.
+    pub fn pending_buy_signatures(&self) -> Vec<([u8; 32], [u8; 64])> {
+        self.pending_buys.values().map(|p| (p.mint, p.signature)).collect()
+    }
+
+    /// Return all pending sell signatures for daemon polling.
+    /// Returns (mint_bytes, signature) pairs.
+    pub fn pending_sell_signatures(&self) -> Vec<([u8; 32], [u8; 64])> {
+        self.pending_sells.values().map(|p| (p.mint, p.signature)).collect()
+    }
+
+    /// Evict pending txs older than `max_age_ticks` — called by the daemon
+    /// when `getSignaturesForAddress` returns no match for a signature that
+    /// has been pending too long. Returns the count evicted.
+    pub fn evict_stale_pending(&mut self, max_age_ticks: u64) -> usize {
+        let threshold = self.now.saturating_sub(max_age_ticks);
+        let mut evicted = 0;
+        // Evict stale buys
+        let stale_buy_keys: Vec<[u8; 8]> = self.pending_buys
+            .iter()
+            .filter(|(_, p)| p.submit_tick < threshold)
+            .map(|(k, _)| *k)
+            .collect();
+        for k in stale_buy_keys {
+            self.pending_buys.remove(&k);
+            evicted += 1;
+        }
+        // Evict stale sells
+        let stale_sell_keys: Vec<[u8; 8]> = self.pending_sells
+            .iter()
+            .filter(|(_, p)| p.submit_tick < threshold)
+            .map(|(k, _)| *k)
+            .collect();
+        for k in stale_sell_keys {
+            self.pending_sells.remove(&k);
+            evicted += 1;
+        }
+        evicted
+    }
+
+    /// Pending buy count (for status reporting).
+    pub fn pending_buy_count(&self) -> usize {
+        self.pending_buys.len()
+    }
+
+    /// Pending sell count (for status reporting).
+    pub fn pending_sell_count(&self) -> usize {
+        self.pending_sells.len()
+    }
+
+    /// Buy confirmed count (for status reporting).
+    pub fn buy_confirmed_count(&self) -> u64 {
+        self.buy_confirmed_count
+    }
+
+    /// Buy failed count (for status reporting).
+    pub fn buy_failed_count(&self) -> u64 {
+        self.buy_failed_count
+    }
+
+    /// Sell confirmed count (for status reporting).
+    pub fn sell_confirmed_count(&self) -> u64 {
+        self.sell_confirmed_count
+    }
+
+    /// Sell failed count (for status reporting).
+    pub fn sell_failed_count(&self) -> u64 {
+        self.sell_failed_count
+    }
+}
+
+/// **Rev-19**: Compact a 64-byte signature into an 8-byte key for BTreeMap
+/// storage. Solana signatures are 64-byte Ed25519 signatures — the first 8
+/// bytes provide sufficient distinctiveness for a bounded pending-tx map.
+fn sig_key(signature: &[u8; 64]) -> [u8; 8] {
+    let mut k = [0u8; 8];
+    k.copy_from_slice(&signature[..8]);
+    k
 }
 
 /// §51 LAW 14: map a challenger's SPRT log-likelihood ratio (milli-nats) to a

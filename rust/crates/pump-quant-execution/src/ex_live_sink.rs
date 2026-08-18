@@ -131,6 +131,17 @@ fn msg_err_str(e: &MessageError) -> String {
 
 impl OutboundSink for LiveOutboundSink {
     fn on_admit(&self, record: &AdmitRecord) -> OutboundOutcome {
+        // ── Step 0: Override the user pubkey with the real signer pubkey ──
+        //
+        // The engine passes `user: [0u8; 32]` in the AdmitRecord because it
+        // doesn't know the signer's pubkey (the junction owns the signer).
+        // The sink IS the junction — it holds the signer via `Arc<dyn
+        // LiveSigner>`, so it can supply the real pubkey here. This is critical:
+        // the state fetcher copies `user` into the PumpCurveCtx, which the tx
+        // builder uses to construct the account list. A zero pubkey would
+        // produce an invalid transaction that the Solana runtime rejects.
+        let real_user = self.signer.public_key();
+
         // ── Step 1: Fetch decoded on-chain state (cached → ~0ms) ──────────
         //
         // The state fetcher returns a LiveCurveState with the decoded
@@ -142,7 +153,7 @@ impl OutboundSink for LiveOutboundSink {
         // spl-token, but many mints use Token-2022.
         let state = match self.state_fetcher.fetch_state_hot(
             &record.mint,
-            &record.user,
+            &real_user,
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -171,6 +182,47 @@ impl OutboundSink for LiveOutboundSink {
         //
         // The result is a CompiledMessage: the exact bytes to sign.
 
+        // ── Per-mint BuybackVault selection (2026-08-17 fix for error 6062) ──
+        //
+        // The pump.fun program requires a BuybackVault PDA as the trailing
+        // account in Buy and Sell instructions. The 8 BuybackVault addresses
+        // are stored in the Global account's buyback_fee_recipients list
+        // (offset 741, 8×32 bytes). The program selects one per-mint; our
+        // on-chain analysis found the selection formula is `mint_bytes[0] % 8`
+        // (verified against 3 successful direct bonding-curve txs).
+        //
+        // If the buyback_fee_recipients are all-zero (short Global account or
+        // test fixture), we fall back to the configured fee_tail (which may
+        // be FeeTail::None for paper/test mode).
+        let fee_tail = {
+            let recipients = &state.buyback_fee_recipients;
+            let non_zero = recipients.iter().any(|r| *r != [0u8; 32]);
+            if non_zero {
+                let mint_first_byte = state.curve_ctx.mint[0];
+                let idx = (mint_first_byte % 8) as usize;
+                let bv_addr = recipients[idx];
+                if bv_addr == [0u8; 32] {
+                    // The selected slot is zero — try the next non-zero entry.
+                    let mut chosen = [0u8; 32];
+                    for r in recipients {
+                        if *r != [0u8; 32] {
+                            chosen = *r;
+                            break;
+                        }
+                    }
+                    if chosen != [0u8; 32] {
+                        FeeTail::BuybackVault(chosen)
+                    } else {
+                        self.config.fee_tail
+                    }
+                } else {
+                    FeeTail::BuybackVault(bv_addr)
+                }
+            } else {
+                self.config.fee_tail
+            }
+        };
+
         let build_env = BuildEnv {
             compute: self.config.compute,
             tip: self.config.tip,
@@ -183,7 +235,7 @@ impl OutboundSink for LiveOutboundSink {
                 }
             },
             registry: &self.registry,
-            fee_tail: self.config.fee_tail,
+            fee_tail,
         };
 
         let compiled_msg = if record.is_buy {
@@ -395,6 +447,7 @@ mod tests {
                 virtual_token_reserves: 1_000_000_000_000, // ~1e12 tokens
                 is_complete: false,
                 observed_slot: 440_000_000,
+                buyback_fee_recipients: [[0u8; 32]; 8], // test: no BV (FeeTail::None fallback)
             })
         }
 

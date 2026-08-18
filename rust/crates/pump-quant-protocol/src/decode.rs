@@ -225,10 +225,19 @@ pub struct PumpGlobal {
     /// Protocol fee recipient — the **decoded** source `§4.1 [1]` requires;
     /// hardcoding this address is forbidden (§18.2, `VENUE_TX_LAYOUTS.md` §7.3).
     pub fee_recipient: [u8; 32],
+    /// The 8 buyback fee recipients at Global offset 741 (2026-08-17 finding).
+    /// These are BuybackVault PDA addresses owned by the fee program
+    /// (`pfeeUxB6...`). The pump program requires one of these (selected
+    /// per-mint) as the trailing account in Buy/Sell instructions, or the
+    /// transaction fails with `BuybackFeeRecipientMissing` (error 6062).
+    pub buyback_fee_recipients: [[u8; 32]; 8],
 }
 
-/// Minimum length to read `fee_recipient`.
+/// Minimum length to read `fee_recipient` (offset 41, 32 bytes).
 const GLOBAL_MIN_LEN: usize = 73;
+/// Minimum length to read `buyback_fee_recipients` (offset 741, 8×32 = 256 bytes).
+/// 741 + 256 = 997. The Global account is 1045 bytes on mainnet.
+const GLOBAL_BUYBACK_MIN_LEN: usize = 997;
 
 /// Decode the pump.fun `Global` account (the fields consumed here).
 ///
@@ -245,7 +254,26 @@ pub fn decode_global(account: &[u8]) -> Option<PumpGlobal> {
     if fee_recipient == [0u8; 32] {
         return None;
     }
-    Some(PumpGlobal { fee_recipient })
+
+    // Extract the 8 buyback_fee_recipients at offset 741 (2026-08-17 finding).
+    // If the account is too short (e.g. a test fixture that doesn't model the
+    // full Global layout), we fall back to all-zero recipients — the caller
+    // treats zero recipients as "not available" and the FeeTail::None path
+    // remains the fallback. This keeps existing fixtures compiling without
+    // requiring every test to model 1045-byte Global accounts.
+    let mut buyback_fee_recipients = [[0u8; 32]; 8];
+    if account.len() >= GLOBAL_BUYBACK_MIN_LEN {
+        for i in 0..8 {
+            if let Some(pk) = read_pubkey(account, 741 + i * 32) {
+                buyback_fee_recipients[i] = pk;
+            }
+        }
+    }
+
+    Some(PumpGlobal {
+        fee_recipient,
+        buyback_fee_recipients,
+    })
 }
 
 /// Read a 32-byte pubkey at `offset`, returning `None` if out of bounds.

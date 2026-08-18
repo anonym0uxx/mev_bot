@@ -58,6 +58,27 @@ pub struct LiveStatus {
     pub probe_spend_lamports: u64,
     /// Canonical decision-journal digest at this info-time.
     pub journal_digest: u64,
+    // ─── Rev-19 on-chain feedback counters ───────────────────────────────
+    /// Live buy txs submitted to the sink (accepted).
+    pub live_outbound_successes: u64,
+    /// Live buy txs that failed at the sink (construction/signer/sender).
+    pub live_outbound_failures: u64,
+    /// Live sell txs submitted to the sink (accepted).
+    pub live_sell_successes: u64,
+    /// Live sell txs that failed at the sink.
+    pub live_sell_failures: u64,
+    /// Buy txs confirmed on-chain (landed successfully, tokens received).
+    pub buy_confirmed_count: u64,
+    /// Buy txs that failed on-chain (tokens NOT received, fee burned).
+    pub buy_failed_count: u64,
+    /// Sell txs confirmed on-chain (SOL recovered).
+    pub sell_confirmed_count: u64,
+    /// Sell txs that failed on-chain (SOL NOT recovered).
+    pub sell_failed_count: u64,
+    /// Pending buy txs awaiting on-chain confirmation.
+    pub pending_buy_count: u64,
+    /// Pending sell txs awaiting on-chain confirmation.
+    pub pending_sell_count: u64,
 }
 
 impl OpenPositionSnapshot {
@@ -133,7 +154,17 @@ impl LiveStatus {
                 "\"universe_filtered\":{},",
                 "\"probes_budgeted\":{},",
                 "\"probe_spend_lamports\":{},",
-                "\"journal_digest\":\"{:#018x}\"}}"
+                "\"journal_digest\":\"{:#018x}\",",
+                "\"live_outbound_successes\":{},",
+                "\"live_outbound_failures\":{},",
+                "\"live_sell_successes\":{},",
+                "\"live_sell_failures\":{},",
+                "\"buy_confirmed_count\":{},",
+                "\"buy_failed_count\":{},",
+                "\"sell_confirmed_count\":{},",
+                "\"sell_failed_count\":{},",
+                "\"pending_buy_count\":{},",
+                "\"pending_sell_count\":{}}}"
             ),
             Self::SCHEMA,
             self.info_time_tick,
@@ -147,6 +178,16 @@ impl LiveStatus {
             self.probes_budgeted,
             self.probe_spend_lamports,
             self.journal_digest,
+            self.live_outbound_successes,
+            self.live_outbound_failures,
+            self.live_sell_successes,
+            self.live_sell_failures,
+            self.buy_confirmed_count,
+            self.buy_failed_count,
+            self.sell_confirmed_count,
+            self.sell_failed_count,
+            self.pending_buy_count,
+            self.pending_sell_count,
         )
     }
 

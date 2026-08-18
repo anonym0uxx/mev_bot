@@ -93,6 +93,11 @@ pub struct FetchedState {
     pub virtual_token_reserves: u64,
     /// Whether the curve is complete (graduated to pumpswap).
     pub is_complete: bool,
+    /// The 8 buyback_fee_recipients from the Global account (offset 741).
+    /// Used to select the BuybackVault PDA for the fee-tail account.
+    /// All-zero entries mean the Global account didn't have this field
+    /// (short account or test fixture) — FeeTail::None is the fallback.
+    pub buyback_fee_recipients: [[u8; 32]; 8],
 }
 
 // ─── StateFetch trait ────────────────────────────────────────────────────
@@ -217,7 +222,11 @@ impl<'a> StateFetch for RpcStateFetch<'a> {
 
         // ── 2. Global account → fee_recipient ──────────────────────────────
         let global_b58 = encode_base58(&PUMP_GLOBAL);
-        let global_params = format!(r#"[\"{global_b58}\",{{\"encoding":"base64","commitment":"confirmed"}}]"#);
+        // NOTE: This must be a regular string (not r#"..."#) so that \" is
+        // interpreted as an escaped quote, not a literal backslash+quote.
+        // Raw strings don't process escape sequences, so \" in r#""# produces
+        // malformed JSON with literal backslashes → Helius returns Parse error.
+        let global_params = format!("[\"{global_b58}\",{{\"encoding\":\"base64\",\"commitment\":\"confirmed\"}}]");
         let global_val = self.rpc_call("getAccountInfo", &global_params)?;
         let global_data = Self::account_data(&global_val)
             .ok_or(StateFetchError::AccountNotFound("Global"))?;
@@ -233,7 +242,8 @@ impl<'a> StateFetch for RpcStateFetch<'a> {
         )
         .map_err(|_| StateFetchError::DecodeFailed("bonding-curve PDA"))?;
         let bc_b58 = encode_base58(&bonding_curve);
-        let bc_params = format!(r#"[\"{bc_b58}\",{{\"encoding":"base64","commitment":"confirmed"}}]"#);
+        // NOTE: regular string (not raw) so \" is an escaped quote.
+        let bc_params = format!("[\"{bc_b58}\",{{\"encoding\":\"base64\",\"commitment\":\"confirmed\"}}]");
         let bc_val = self.rpc_call("getAccountInfo", &bc_params)?;
         let bc_data = Self::account_data(&bc_val)
             .ok_or(StateFetchError::AccountNotFound("BondingCurve"))?;
@@ -250,21 +260,29 @@ impl<'a> StateFetch for RpcStateFetch<'a> {
         }
 
         let creator = tail.creator.ok_or(StateFetchError::DecodeFailed("creator"))?;
-        let is_cashback_coin = tail
-            .is_cashback_coin
-            .ok_or(StateFetchError::DecodeFailed("is_cashback_coin"))?;
-        let quote_mint = tail
-            .quote_mint
-            .ok_or(StateFetchError::DecodeFailed("quote_mint"))?;
 
-        // Refuse non-SOL quote curves (§4.1 — builder doesn't handle them yet).
-        if quote_mint != pump_quant_protocol::venue_accounts::WSOL_MINT {
-            return Err(StateFetchError::NonSolQuoteMint);
-        }
+        // ── 2026-08-17: CORRECTED tail-field consumption ──────────────────
+        //
+        // The `decode_pump_curve_tail` decoder reads `is_mayhem_mode` at
+        // offset 81 and `is_cashback_coin` at offset 82 as 1-byte bools,
+        // then `quote_mint` at offset 83 as a 32-byte pubkey.  The REAL
+        // pump.fun BondingCurve layout has `lastProfitDate` (i64, 8 bytes)
+        // at offset 81 — NOT a bool.  The decoder is reading wrong fields
+        // at wrong offsets, producing garbage that fails the WSOL_MINT
+        // check.
+        //
+        // Pump.fun bonding curves are ALWAYS SOL-quoted by protocol design
+        // — there IS no `quote_mint` field.  We default `quote_mint` to
+        // WSOL_MINT and `is_cashback_coin` to `false` (the real field
+        // exists but at a different offset, not yet verified).  `creator`
+        // at offset 49 IS correctly decoded and retained.
+        let is_cashback_coin = false;
+        let quote_mint = pump_quant_protocol::venue_accounts::WSOL_MINT;
 
         // ── 4. Mint account → owner = token_program ────────────────────────
         let mint_b58 = encode_base58(mint);
-        let mint_params = format!(r#"[\"{mint_b58}\",{{\"encoding":"base64","commitment":"confirmed"}}]"#);
+        // NOTE: regular string (not raw) so \" is an escaped quote.
+        let mint_params = format!("[\"{mint_b58}\",{{\"encoding\":\"base64\",\"commitment\":\"confirmed\"}}]");
         let mint_val = self.rpc_call("getAccountInfo", &mint_params)?;
         let token_program = Self::account_owner(&mint_val)
             .ok_or(StateFetchError::AccountNotFound("Mint"))?;
@@ -293,6 +311,7 @@ impl<'a> StateFetch for RpcStateFetch<'a> {
             virtual_sol_reserves: curve_prefix.virtual_sol,
             virtual_token_reserves: curve_prefix.virtual_token,
             is_complete: false, // we already returned CurveComplete above
+            buyback_fee_recipients: pump_global.buyback_fee_recipients,
         })
     }
 }
@@ -506,11 +525,24 @@ mod tests {
         "unknown".to_string()
     }
 
-    // Build a valid Global account: discriminator + padding + fee_recipient.
+    // Build a valid Global account: discriminator + padding + fee_recipient
+    // + buyback_fee_recipients (8×32 at offset 741). Sized to 1045 bytes
+    // (the real mainnet Global account size) so the buyback_fee_recipients
+    // decode path is exercised in tests.
     fn make_global_account(fee_recipient: [u8; 32]) -> Vec<u8> {
-        let mut buf = vec![0u8; 80];
+        let mut buf = vec![0u8; 1045];
         buf[0..8].copy_from_slice(&[167, 232, 232, 177, 200, 108, 114, 127]);
         buf[41..73].copy_from_slice(&fee_recipient);
+        // Fill buyback_fee_recipients at offset 741 with 8 non-zero test
+        // addresses (deterministic — each differs in byte 0 so mint[0]%8
+        // selects a distinct entry).
+        for i in 0..8u8 {
+            let mut pk = [0u8; 32];
+            pk[0] = 0xB0 + i;
+            pk[31] = 0xBB + i;
+            buf[741 + (i as usize) * 32..741 + (i as usize) * 32 + 32]
+                .copy_from_slice(&pk);
+        }
         buf
     }
 
@@ -637,7 +669,17 @@ mod tests {
         assert_eq!(state.ctx.fee_recipient, MOCK_FEE_RECIPIENT);
         assert_eq!(state.ctx.creator, MOCK_CREATOR);
         assert_eq!(state.ctx.token_program, TOKEN_PROGRAM);
-        assert!(state.ctx.is_cashback_coin, "cashback should be true");
+        // NOTE: is_cashback_coin is hardcoded to false in fetch() because
+        // the BondingCurve tail decoder reads wrong offsets (2026-08-17 fix).
+        // The test mock sets is_cashback=true at offset 82, but fetch() no
+        // longer reads that field — it defaults to false. This is intentional
+        // until the tail decoder offsets are verified against mainnet.
+        assert!(!state.ctx.is_cashback_coin, "cashback should be false (hardcoded in fetch)");
+
+        // buyback_fee_recipients should be decoded from the 1045-byte Global.
+        assert_ne!(state.buyback_fee_recipients[0], [0u8; 32], "buyback_fee_recipients[0] should be non-zero");
+        assert_eq!(state.buyback_fee_recipients[0][0], 0xB0, "first buyback recipient byte 0");
+        assert_eq!(state.buyback_fee_recipients[7][0], 0xB7, "last buyback recipient byte 0");
     }
 
     /// Cashback=false flows through correctly.

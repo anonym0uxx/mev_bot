@@ -202,4 +202,4 @@ watchlist_capacity = 64
 watchlist_ttl_ticks = 100
 x_min_promote_cap_bp = 800
 
-# S8 reflection_snapshot: tick=144000 reflect_every_ticks=50 brain_reflect_enable=true retired=[false,false,false,false]
+# S8 reflection_snapshot: tick=72000 reflect_every_ticks=50 brain_reflect_enable=true retired=[false,false,false,false]
