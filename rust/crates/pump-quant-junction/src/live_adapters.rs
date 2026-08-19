@@ -177,9 +177,15 @@ impl LiveSubmitter for HeliusSenderSubmitter {
         let id = &make_request_id(wire_tx);
 
         // 4. Send and parse the response.
-        //    skip_preflight: buys skip preflight for speed; sells run preflight
-        //    to catch on-chain failures before wasting a blockhash slot.
-        let skip_preflight = is_buy;
+        //    The Helius Sender endpoint (sender.helius-rpc.com) does NOT support
+        //    preflight checks — it returns HTTP 500 "running preflight check is
+        //    not supported" when skip_preflight=false.  This was the root cause
+        //    of every sell failure in Rev-22 (sells set skip_preflight=false
+        //    via `skip_preflight = is_buy`).  Both buys AND sells must skip
+        //    preflight when submitting via the Sender.  Post-submission
+        //    confirmation polling (poll_signature_confirmations in the daemon)
+        //    catches on-chain failures asynchronously instead.
+        let skip_preflight = true;
         let accepted = client
             .send_transaction(id, &tx_b64, skip_preflight)
             .map_err(map_sender_error)?;
