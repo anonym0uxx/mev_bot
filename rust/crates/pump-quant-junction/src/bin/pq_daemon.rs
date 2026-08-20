@@ -68,6 +68,66 @@ use pump_quant_junction::autonomous_bridge::{
 use pq_stream_capture::helius_ws;
 use pq_stream_capture::json::{self, Value};
 use pq_stream_capture::pumpportal_ws;
+
+// ── R-3 creator on-chain history veto ─────────────────────────────────────
+/// Shared map from mint pubkey → creator wallet pubkey, populated on PumpPortal
+/// create events and consulted by the R-3 veto sink before buy submission.
+type CreatorPubkeyMap = std::sync::Arc<std::sync::Mutex<HashMap<[u8; 32], [u8; 32]>>>;
+
+use pump_quant_execution::ex_creator_history_veto::{
+    CreatorHistoryVetoSink, CreatorPubkeyLookup, CreatorHistoryRpc,
+};
+
+// ── R-3 daemon-side trait implementations ─────────────────────────────────
+
+/// `CreatorPubkeyLookup` impl backed by the shared `CreatorPubkeyMap`.
+/// Populated on PumpPortal create events; consulted by the veto sink on buy.
+struct DaemonCreatorLookup {
+    map: CreatorPubkeyMap,
+}
+
+impl CreatorPubkeyLookup for DaemonCreatorLookup {
+    fn lookup_creator_pubkey(&self, mint: &[u8; 32]) -> Option<[u8; 32]> {
+        self.map
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(mint).copied())
+    }
+}
+
+/// `CreatorHistoryRpc` impl using the Helius JSON-RPC endpoint via
+/// `pq_stream_capture::http::Http::post_json_once`. Queries
+/// `getSignaturesForAddress` on the creator wallet and counts the returned
+/// signatures. Fail-open: any RPC error → `None` (the veto sink treats `None`
+/// as "no data → pass through", §6.4).
+struct DaemonCreatorHistoryRpc {
+    rpc_url: String,
+}
+
+impl CreatorHistoryRpc for DaemonCreatorHistoryRpc {
+    fn query_signature_count(&self, creator_pubkey: &[u8; 32]) -> Option<u32> {
+        let creator_b58 = Pubkey::try_from(*creator_pubkey)
+            .ok()?
+            .to_string();
+
+        // Request up to 1000 recent signatures (the RPC max per call).
+        // Each pump.fun mint creation produces ~1-3 signatures for the creator
+        // (create instruction + optional metadata + initial buy). A creator
+        // with 50+ mints will have 150+ signatures, well above the 1000 limit
+        // for heavy serial ruggers. We count the returned array length.
+        let body = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["{creator_b58}",{{"limit":1000,"commitment":"confirmed"}}]}}"#
+        );
+
+        let http = pq_stream_capture::http::Http::new(10);
+        let body_str = http.post_json_once(&self.rpc_url, &body).ok()?;
+        let parsed: Value = pq_stream_capture::json::parse(&body_str).ok()?;
+        let result = parsed.get("result")?;
+        // The result is an array of signature objects. Count its length.
+        let arr = result.as_array()?;
+        Some(arr.len() as u32)
+    }
+}
 use pq_stream_capture::ws::{WsConn, WsEvent};
 use solana_program::pubkey::Pubkey;
 use pump_quant_ingest::social_source::{RawSocialPayload, SocialSource};
@@ -1169,7 +1229,16 @@ fn poll_signature_confirmations(
 /// Returns `Result<Engine, u8>` so the caller can map the error code to an
 /// `ExitCode`. Every failure is fail-closed: the engine is only returned on
 /// success.
-fn construct_live_engine(cfg: pump_quant_app::config::Config, args: &DaemonArgs) -> Result<pump_quant_app::engine::Engine, u8> {
+///
+/// R-3: when `r3_creator_history_enable` is true in the config, the sink is
+/// wrapped with `CreatorHistoryVetoSink` which queries `getSignaturesForAddress`
+/// on the creator wallet (looked up from `creator_pubkey_map`) before forwarding
+/// a buy. Fail-open on RPC error or unknown creator (§6.4).
+fn construct_live_engine(
+    cfg: pump_quant_app::config::Config,
+    args: &DaemonArgs,
+    creator_pubkey_map: CreatorPubkeyMap,
+) -> Result<pump_quant_app::engine::Engine, u8> {
     use pump_quant_app::engine::Engine;
     use pump_quant_execution::ex_live_io_traits::{
         LiveSigner, LiveStateFetcher, LiveSubmitter,
@@ -1465,8 +1534,42 @@ fn construct_live_engine(cfg: pump_quant_app::config::Config, args: &DaemonArgs)
     ));
     let static_sink: &'static LiveOutboundSink = Box::leak(live_sink);
 
-    eng.install_outbound_sink(static_sink as &'static dyn OutboundSink);
-    eprintln!("[pq-daemon] LiveOutboundSink installed — live execution ARMED");
+    // ── R-3: creator on-chain history veto wrapper ────────────────────
+    // When r3_creator_history_enable is true, wrap the LiveOutboundSink with
+    // CreatorHistoryVetoSink. On buy admits, the wrapper queries
+    // getSignaturesForAddress on the creator wallet (looked up from the shared
+    // creator_pubkey_map populated on PumpPortal create events) and vetoes if
+    // the signature count ≥ r3_creator_max_launches. Fail-open on any error
+    // (§6.4): RPC failure or unknown creator → pass through to inner sink.
+    let r3_enabled = cfg.r3_creator_history_enable;
+    let r3_max_launches = cfg.r3_creator_max_launches;
+    // Clone the RPC URL for the R-3 query (already has api-key injected).
+    let r3_rpc_url = helius_rpc_url.clone();
+
+    if r3_enabled {
+        eprintln!(
+            "[pq-daemon] R-3 creator history veto ENABLED (max_launches={})",
+            r3_max_launches
+        );
+        let lookup = DaemonCreatorLookup {
+            map: creator_pubkey_map,
+        };
+        let rpc_impl = DaemonCreatorHistoryRpc {
+            rpc_url: r3_rpc_url,
+        };
+        let veto_sink = Box::new(CreatorHistoryVetoSink::new(
+            static_sink as &'static dyn OutboundSink,
+            Box::leak(Box::new(lookup)) as &'static dyn CreatorPubkeyLookup,
+            Box::leak(Box::new(rpc_impl)) as &'static dyn CreatorHistoryRpc,
+            r3_max_launches,
+        ));
+        let static_veto: &'static CreatorHistoryVetoSink = Box::leak(veto_sink);
+        eng.install_outbound_sink(static_veto as &'static dyn OutboundSink);
+        eprintln!("[pq-daemon] CreatorHistoryVetoSink installed — R-3 live execution ARMED");
+    } else {
+        eng.install_outbound_sink(static_sink as &'static dyn OutboundSink);
+        eprintln!("[pq-daemon] LiveOutboundSink installed — live execution ARMED");
+    }
 
     Ok(eng)
 }
@@ -1596,8 +1699,15 @@ fn main() -> ExitCode {
     // `install_outbound_sink` requires `&'static dyn OutboundSink`. This is
     // safe because the sink lives for the daemon's entire lifetime (the daemon
     // is the top-level process and never frees it).
+    // ── R-3: create the shared creator pubkey map before engine construction ──
+    // Populated on PumpPortal create events (traderPublicKey → creator pubkey),
+    // consulted by the CreatorHistoryVetoSink on buy admits.
+    let creator_pubkey_map: CreatorPubkeyMap = std::sync::Arc::new(
+        std::sync::Mutex::new(HashMap::new()),
+    );
+
     let mut engine = if args.live_mode {
-        match construct_live_engine(cfg, &args) {
+        match construct_live_engine(cfg, &args, creator_pubkey_map.clone()) {
             Ok(e) => e,
             Err(code) => return ExitCode::from(code),
         }
@@ -2341,6 +2451,17 @@ fn main() -> ExitCode {
                         let mint_b58 = Pubkey::try_from(mint_bytes)
                             .map(|pk| pk.to_string())
                             .unwrap_or_else(|_| hex_short(&mint_bytes));
+
+                        // ── R-3: populate creator→mint pubkey map ──────────────
+                        // The creator's raw wallet pubkey is captured from the
+                        // PumpPortal create event's traderPublicKey field. This
+                        // map is consulted by CreatorHistoryVetoSink on buy
+                        // admits to query getSignaturesForAddress.
+                        if let Some(cp) = meta.creator_pubkey {
+                            if let Ok(mut guard) = creator_pubkey_map.lock() {
+                                guard.insert(mint_bytes, cp);
+                            }
+                        }
 
                         // ── Wangr Rev-14: emit MarketAuxiliary with symbol_len ──
                         // The PumpPortal create event carries the token symbol,

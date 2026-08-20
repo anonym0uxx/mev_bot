@@ -42,6 +42,12 @@ pub struct RawTokenMetadata {
     /// Creator/deployer entity id: FNV-1a of the decoded creator handle/address, or
     /// `0` when the payload names no creator.
     pub creator: u64,
+    /// The raw 32-byte creator/deployer pubkey, when the payload carried a
+    /// base58-encoded Solana address (the PumpPortal create event's
+    /// `traderPublicKey`). `None` when the creator field is a non-pubkey handle
+    /// or absent — the R-3 creator-history veto (daemon-level) uses this to
+    /// query `getSignaturesForAddress` on the creator wallet before buying.
+    pub creator_pubkey: Option<[u8; 32]>,
     /// Slot at which the metadata was observed (caller-supplied time; time-safe).
     pub slot: u64,
 }
@@ -73,16 +79,22 @@ pub fn parse_token_metadata(raw: &[u8], slot: u64) -> Option<RawTokenMetadata> {
         .and_then(|x| x.as_str())
         .unwrap_or("")
         .to_string();
-    let creator = v
+    let creator_str = v
         .get("creator")
         .and_then(|x| x.as_str())
-        .filter(|s| !s.is_empty())
-        .map_or(0, |s| fnv1a_64(s.as_bytes()));
+        .filter(|s| !s.is_empty());
+    let creator = creator_str.map_or(0, |s| fnv1a_64(s.as_bytes()));
+    // R-3: attempt to decode the creator string as a base58 Solana pubkey. When
+    // it decodes, the R-3 veto can query getSignaturesForAddress on this wallet.
+    // When it does not (social handle or absent), creator_pubkey stays None and
+    // the R-3 veto is skipped for this mint (fail-open, §6.4).
+    let creator_pubkey = creator_str.and_then(|s| base58::decode_pubkey(s));
     Some(RawTokenMetadata {
         mint,
         name,
         symbol,
         creator,
+        creator_pubkey,
         slot,
     })
 }
@@ -102,6 +114,8 @@ mod tests {
         assert_eq!(m.name, "Doge Killer");
         assert_eq!(m.symbol, "DOGE");
         assert_eq!(m.creator, fnv1a_64(b"dev1"));
+        // "dev1" is not a valid base58 pubkey → None
+        assert!(m.creator_pubkey.is_none());
         assert_eq!(m.slot, 42);
     }
 

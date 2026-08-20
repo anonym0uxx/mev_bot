@@ -86,5 +86,6 @@ pub mod ex_tip_compute;
 pub mod ex_fee_calibration;
 pub mod ex_live_io_traits;
 pub mod ex_live_sink;
+pub mod ex_creator_history_veto;
 pub mod si_incident_gate;
 pub mod remediation_paths;

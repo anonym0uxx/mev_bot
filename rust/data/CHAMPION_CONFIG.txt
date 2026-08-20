@@ -136,6 +136,15 @@ bundle_concentration_max_bps = 2000
 dev_history_reject_enable = 1
 dev_history_min_launches = 5
 dev_graduation_min_rate_bp = 1000
+
+# ── R-3: creator on-chain history veto (daemon-level, pre-buy) ─────────────
+# Queries getSignaturesForAddress on the creator wallet before each buy.
+# If the creator has ≥ r3_creator_max_launches recent on-chain signatures,
+# the buy is vetoed (serial rugger detection). Fail-open on RPC error or
+# unknown creator (§6.4).
+r3_creator_history_enable = 1
+r3_creator_max_launches = 1000
+
 coordinated_funding_reject_enable = 1
 coordinated_funding_max_share_bps = 6000
 coordinated_funding_first_n_buyers = 10

@@ -182,17 +182,23 @@ pub fn parse_pumpportal_create(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let creator = root
+    let trader_str = root
         .get("traderPublicKey")
         .and_then(|t| t.as_str())
-        .filter(|t| !t.is_empty())
+        .filter(|t| !t.is_empty());
+    let creator = trader_str
         .map(|t| crate::social_parse::fnv1a_64(t.as_bytes()))
         .unwrap_or(0);
+    // R-3: the PumpPortal create event's traderPublicKey IS the creator's Solana
+    // wallet pubkey (base58). Decode it to raw bytes so the daemon-level R-3 veto
+    // can query getSignaturesForAddress on this wallet before buying.
+    let creator_pubkey = trader_str.and_then(|s| base58::decode_pubkey(s));
     Some(crate::token_metadata_parse::RawTokenMetadata {
         mint,
         name,
         symbol,
         creator,
+        creator_pubkey,
         slot: 0,
     })
 }
@@ -221,6 +227,8 @@ mod pump_native_tests {
         assert_eq!(raw.name, "Test Coin");
         assert_eq!(raw.symbol, "TEST");
         assert_ne!(raw.creator, 0);
+        // R-3: the traderPublicKey should decode as a valid 32-byte pubkey.
+        assert!(raw.creator_pubkey.is_some(), "creator_pubkey must be Some for a valid base58 pubkey");
         assert_eq!(raw.slot, 0, "no slot claimed when none is carried");
     }
 

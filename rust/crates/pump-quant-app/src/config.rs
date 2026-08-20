@@ -986,6 +986,22 @@ pub struct Config {
     /// = serial rugger. Default 1_000 (10%).
     pub dev_graduation_min_rate_bp: u32,
 
+    // ---- §R-3 creator on-chain history veto (daemon-level, operator-approved) ----
+    /// Master switch for the R-3 creator-history hard veto. When true, the
+    /// daemon-level wrapper sink queries `getSignaturesForAddress` on the
+    /// creator's wallet before executing a buy, and rejects if the creator has
+    /// ≥ `r3_creator_max_launches` recent signatures (a serial rugger who
+    /// launches dozens of coins). This is a DAEMON-LEVEL veto (the engine is
+    /// pure §22; the RPC query happens in the live sink wrapper, NOT in the
+    /// gate). Fail-open: RPC error or unknown creator pubkey → no reject (§6.4).
+    pub r3_creator_history_enable: bool,
+    /// Maximum recent on-chain signatures for the creator wallet before the
+    /// R-3 veto fires. A creator with ≥ this many recent signatures is
+    /// classified a serial launcher (rugger). Default 1000 (captures creators
+    /// with 50+ launches, each producing ~20 signatures). Set lower for a
+    /// stricter bar.
+    pub r3_creator_max_launches: u32,
+
     // ---- §Quant-Rev-3: coordinated funding hard veto (operator-approved) ----
     /// Master switch for the coordinated-funding hard reject. When true, the
     /// gate fires `REJECT_COORDINATED_FUNDING` (code 23) when >70% of the
@@ -1587,6 +1603,8 @@ impl Config {
             dev_history_reject_enable: false,
             dev_history_min_launches: 5,             // 5+ prior mints
             dev_graduation_min_rate_bp: 1_000,       // <10% graduation = serial rugger
+            r3_creator_history_enable: false,        // R-3: daemon-level veto, default OFF
+            r3_creator_max_launches: 1_000,          // R-3: ≥1000 recent signatures = serial rugger
 
             // Rev-3: coordinated funding hard veto
             coordinated_funding_reject_enable: false,
@@ -1866,6 +1884,10 @@ impl Config {
             "dev_history_reject_enable" => self.dev_history_reject_enable = value != 0,
             "dev_history_min_launches" => self.dev_history_min_launches = bp(value)?,
             "dev_graduation_min_rate_bp" => self.dev_graduation_min_rate_bp = bp(value)?,
+            "r3_creator_history_enable" => {
+                self.r3_creator_history_enable = value != 0;
+            }
+            "r3_creator_max_launches" => self.r3_creator_max_launches = bp(value)?,
             // §Quant-Rev-3: coordinated funding hard veto
             "coordinated_funding_reject_enable" => self.coordinated_funding_reject_enable = value != 0,
             "coordinated_funding_max_share_bps" => self.coordinated_funding_max_share_bps = bp(value)?,
@@ -2090,6 +2112,8 @@ impl Config {
         let _ = writeln!(s, "dev_history_reject_enable = {}", self.dev_history_reject_enable as i64);
         let _ = writeln!(s, "dev_history_min_launches = {}", self.dev_history_min_launches as i64);
         let _ = writeln!(s, "dev_graduation_min_rate_bp = {}", self.dev_graduation_min_rate_bp as i64);
+        let _ = writeln!(s, "r3_creator_history_enable = {}", self.r3_creator_history_enable as i64);
+        let _ = writeln!(s, "r3_creator_max_launches = {}", self.r3_creator_max_launches as i64);
         let _ = writeln!(s, "coordinated_funding_reject_enable = {}", self.coordinated_funding_reject_enable as i64);
         let _ = writeln!(s, "coordinated_funding_max_share_bps = {}", self.coordinated_funding_max_share_bps as i64);
         let _ = writeln!(s, "coordinated_funding_first_n_buyers = {}", self.coordinated_funding_first_n_buyers as i64);
