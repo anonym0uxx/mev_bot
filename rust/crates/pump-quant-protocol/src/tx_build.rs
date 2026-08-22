@@ -152,6 +152,15 @@ pub fn build_buy_data_with_volume_flag(params: BuyParams) -> Vec<u8> {
     data
 }
 
+/// `sell` data blob — 24 bytes (discriminator + 2 u64 args).
+///
+/// Rev-29 (2026-08-20): The sell IDL has only 2 args (`amount`, `min_sol_output`)
+/// and NO `track_volume` parameter. The previous code appended a spurious 25th
+/// byte (OptionBool false), which is buy-only. Sell data is exactly 24 bytes.
+pub fn build_sell_data_with_volume_flag(params: SellParams) -> Vec<u8> {
+    ix::build_sell_ix(params)
+}
+
 /// Everything about *how* a transaction is built, as opposed to *what* it
 /// trades. Grouping these is not cosmetic: the parameter list grew past seven
 /// when the layout gate was added, and a long positional argument list is how
@@ -237,7 +246,7 @@ pub fn build_pump_sell_message(
     ixs.push(Instruction {
         program_id: crate::venue_accounts::PUMP_PROGRAM_ID,
         accounts,
-        data: ix::build_sell_ix(params),
+        data: build_sell_data_with_volume_flag(params),
     });
     if close_token_account {
         ixs.push(message::spl_close_account(

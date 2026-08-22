@@ -1926,15 +1926,19 @@ impl Engine {
                         self.now,
                         liquidity_lamports,
                     );
-                    if let Some(exit) = self.positions.on_trade(
-                        mint.as_bytes(),
-                        price_u,
-                        signed_quote,
-                        self.now,
-                        liquidity_lamports,
-                    ) {
-                        self.book_exit(exit);
-                    } else if self.positions.has(mint.as_bytes()) {
+                    // Rev-31: In live mode, skip exits for unconfirmed positions.
+                    let skip_exit = self.mode == RunMode::Live
+                        && !self.positions.is_onchain_confirmed(mint.as_bytes());
+                    if !skip_exit {
+                        if let Some(exit) = self.positions.on_trade(
+                            mint.as_bytes(),
+                            price_u,
+                            signed_quote,
+                            self.now,
+                            liquidity_lamports,
+                        ) {
+                            self.book_exit(exit);
+                        } else if self.positions.has(mint.as_bytes()) {
                         // §33 probe→confirm scale-in (one-shot; scale_in refuses after
                         // any de-risking): in profit + authentic flow ⇒ full target.
                         // §21.6 reduce-only structure block: never ADD risk while the
@@ -1977,7 +1981,11 @@ impl Engine {
                         }
                         // §32 thesis evaluation: deterministic invalidation forces the
                         // exit; no score may override it.
-                        if self.thesis_forces_exit(mint.as_bytes()) {
+                        // Rev-31: gate on on-chain confirmation in live mode.
+                        let thesis_exit = self.thesis_forces_exit(mint.as_bytes())
+                            && !(self.mode == RunMode::Live
+                                && !self.positions.is_onchain_confirmed(mint.as_bytes()));
+                        if thesis_exit {
                             if let Some(exit) = self.positions.close_at(
                                 mint.as_bytes(),
                                 price_u,
@@ -1989,22 +1997,28 @@ impl Engine {
                             // VPIN exit escalation: the extreme sell-dominant tier is a
                             // distributed multi-swap dump the single-print rug-precursor
                             // cannot see — force the thesis-invalidation exit (§21.7/§32).
-                            let vp = self.vpin_params();
-                            let reading = self
-                                .vpin
-                                .get(mint.as_bytes())
-                                .and_then(|v| v.reading(self.now, &vp));
-                            if vpin_exit_escalates(reading, &self.vpin_thresholds()) {
-                                if let Some(exit) = self.positions.close_at(
-                                    mint.as_bytes(),
-                                    price_u,
-                                    ExitReason::ThesisInvalidation,
-                                ) {
-                                    self.book_exit(exit);
+                            // Rev-31: gate on on-chain confirmation in live mode.
+                            let vpin_ok = !(self.mode == RunMode::Live
+                                && !self.positions.is_onchain_confirmed(mint.as_bytes()));
+                            if vpin_ok {
+                                let vp = self.vpin_params();
+                                let reading = self
+                                    .vpin
+                                    .get(mint.as_bytes())
+                                    .and_then(|v| v.reading(self.now, &vp));
+                                if vpin_exit_escalates(reading, &self.vpin_thresholds()) {
+                                    if let Some(exit) = self.positions.close_at(
+                                        mint.as_bytes(),
+                                        price_u,
+                                        ExitReason::ThesisInvalidation,
+                                    ) {
+                                        self.book_exit(exit);
+                                    }
                                 }
                             }
                         }
-                    }
+                        } // close `else if self.positions.has(...)`
+                    } // Rev-31: close `if !skip_exit`
                 }
             }
             AppEvent::Migration { mint, slot } => {
@@ -2891,9 +2905,12 @@ impl Engine {
         // mutates while `numeric` is read for the mark price.
         if !self.positions.is_empty() {
             let numeric = &self.numeric;
-            let exits = self.positions.on_tick(self.now, &|m| {
+            // Rev-31: In live mode, filter out unconfirmed positions before
+            // the time-stop exit fires — prevents selling phantom positions.
+            let is_live = self.mode == RunMode::Live;
+            let exits = self.positions.on_tick_filtered(self.now, &|m| {
                 numeric.latest_price_fp(DomainMint::from_bytes(*m))
-            });
+            }, is_live);
             for e in exits {
                 self.book_exit(e);
             }
@@ -4586,9 +4603,38 @@ impl Engine {
                             );
                         }
                     }
+                    // ── Rev-27: SINK-FAIL ROLLBACK ───────────────────────────────
+                    // When the sink rejects the buy (R-3 veto, construction error,
+                    // state fetch failure, etc.), the on-chain buy NEVER happens.
+                    // The position was already opened at line 4544 — we must
+                    // reverse it NOW, otherwise the exit ladder will try to sell
+                    // a phantom position and hit Custom(3012) AccountNotInitialized
+                    // on-chain (our ATA doesn't exist because we never bought).
+                    //
+                    // The OurBuyFailed path (line 2108) only fires for txs that
+                    // were SUBMITTED and failed on-chain — a sink-level veto never
+                    // reaches that path, so the rollback must happen HERE.
                     other => {
-                        eprintln!("[engine] sink FAILED: {other:?}");
+                        let mint_hex: String = e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
+                        eprintln!("[engine] sink FAILED for buy mint={mint_hex}: {other:?}");
                         self.live_outbound_failures += 1;
+                        // Reverse the paper position opened at line 4544.
+                        let reversed = self.positions.reverse_paper_entry(&e.mint, e.size);
+                        if reversed {
+                            eprintln!("[engine] phantom position REVERSED for mint={mint_hex} (buy never landed on-chain)");
+                        }
+                        // Decrement admitted (incremented at line 4546).
+                        self.admitted = self.admitted.saturating_sub(1);
+                        // Release the committed bankroll (added at line 4604-4606).
+                        self.bankroll_committed = self
+                            .bankroll_committed
+                            .saturating_sub(u128::from(e.entry_cost));
+                        // Remove from ata_open (inserted at line 4601-4603).
+                        self.ata_open.remove(&e.mint);
+                        // Remove from open_lane (inserted at line 4607-4623).
+                        self.open_lane.remove(&e.mint);
+                        // Skip the rest of the admit sequence — the position is gone.
+                        return;
                     }
                 }
             }
@@ -4596,7 +4642,7 @@ impl Engine {
             // by `pending_entry` iff the mint was absent from the set), so this is
             // the bookkeeping half — record that an account is now open for the mint
             // so a re-entry is not charged the deposit twice. Refused at the §99
-            // bound, which fails in the EXPENSIVE direction: an untracked mint is
+            // bound, which fails in the EXPANSIVE direction: an untracked mint is
             // priced as a fresh account on every entry, never as a free one.
             if self.ata_open.len() < ATA_OPEN_CAP {
                 self.ata_open.insert(e.mint);
@@ -5024,9 +5070,16 @@ impl Engine {
             return;
         }
         let numeric = &self.numeric;
-        let exits = self
-            .positions
-            .force_close_all(&|m| numeric.latest_price_fp(DomainMint::from_bytes(*m)));
+        // Rev-31: In live mode, force-close only confirmed positions.
+        let exits = if self.mode == RunMode::Live {
+            self.positions.force_close_all_filtered(&|m| {
+                numeric.latest_price_fp(DomainMint::from_bytes(*m))
+            })
+        } else {
+            self.positions.force_close_all(&|m| {
+                numeric.latest_price_fp(DomainMint::from_bytes(*m))
+            })
+        };
         for e in exits {
             self.book_exit(e);
         }
@@ -5827,11 +5880,16 @@ impl Engine {
         }
         match self.numeric.latest_price_fp(DomainMint::from_bytes(*mint)) {
             Some(price) if price > 0 => {
-                if let Some(exit) = self
-                    .positions
-                    .close_at(mint, price, ExitReason::CreatorDump)
-                {
-                    self.book_exit(exit);
+                // Rev-31: gate on on-chain confirmation in live mode.
+                let creator_dump_ok = !(self.mode == RunMode::Live
+                    && !self.positions.is_onchain_confirmed(mint));
+                if creator_dump_ok {
+                    if let Some(exit) = self
+                        .positions
+                        .close_at(mint, price, ExitReason::CreatorDump)
+                    {
+                        self.book_exit(exit);
+                    }
                 }
             }
             _ => self.positions.apply_pressure(mint),
@@ -6711,27 +6769,68 @@ impl Engine {
     /// Evict pending txs older than `max_age_ticks` — called by the daemon
     /// when `getSignaturesForAddress` returns no match for a signature that
     /// has been pending too long. Returns the count evicted.
+    ///
+    /// Rev-31 (2026-08-21): CRITICAL FIX — stale buy evictions MUST reverse
+    /// the paper position. The old code just dropped the pending entry,
+    /// leaving a permanent phantom position. The exit ladder then tried to
+    /// sell phantom tokens → `AccountNotInitialized (3012)` on-chain because
+    /// the ATA was never created (buy never landed). This was the root cause
+    /// of 48 phantom sell failures.
+    ///
+    /// Similarly, stale sell evictions must reverse the paper exit so the
+    /// ladder can retry. A sell tx that disappears from the poll window
+    /// (limit 25 → missed under high throughput) is treated as failed and
+    /// the position restored for retry.
     pub fn evict_stale_pending(&mut self, max_age_ticks: u64) -> usize {
         let threshold = self.now.saturating_sub(max_age_ticks);
         let mut evicted = 0;
-        // Evict stale buys
-        let stale_buy_keys: Vec<[u8; 8]> = self.pending_buys
+        // Evict stale buys — reverse the paper position (tokens never received)
+        let stale_buy_keys: Vec<([u8; 8], PendingTx)> = self.pending_buys
             .iter()
             .filter(|(_, p)| p.submit_tick < threshold)
-            .map(|(k, _)| *k)
+            .map(|(k, v)| (*k, *v))
             .collect();
-        for k in stale_buy_keys {
+        for (k, pending) in stale_buy_keys {
             self.pending_buys.remove(&k);
+            // Reverse the paper entry — the buy never confirmed, so tokens
+            // were never received. Without this, the exit ladder sells phantom
+            // positions and hits 3012 on-chain.
+            let mint_hex: String = pending.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
+            let reversed = self.positions.reverse_paper_entry(&pending.mint, pending.size);
+            if reversed {
+                eprintln!(
+                    "[engine] STALE BUY EVICTED + phantom position REVERSED: mint={mint_hex} (pending since tick {}, now {})",
+                    pending.submit_tick, self.now
+                );
+            } else {
+                eprintln!(
+                    "[engine] STALE BUY EVICTED (no paper position to reverse): mint={mint_hex}"
+                );
+            }
             evicted += 1;
         }
-        // Evict stale sells
-        let stale_sell_keys: Vec<[u8; 8]> = self.pending_sells
+        // Evict stale sells — reverse the paper exit so the ladder can retry
+        let stale_sell_keys: Vec<([u8; 8], PendingTx)> = self.pending_sells
             .iter()
             .filter(|(_, p)| p.submit_tick < threshold)
-            .map(|(k, _)| *k)
+            .map(|(k, v)| (*k, *v))
             .collect();
-        for k in stale_sell_keys {
+        for (k, pending) in stale_sell_keys {
             self.pending_sells.remove(&k);
+            // Reverse the paper exit — the sell never confirmed, so tokens
+            // are still in the wallet. Restore the position for retry.
+            let mint_hex: String = pending.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
+            let reversed = self.positions.reverse_paper_exit(&pending.mint, pending.size);
+            if reversed {
+                eprintln!(
+                    "[engine] STALE SELL EVICTED + paper exit REVERSED: mint={mint_hex} (pending since tick {}, now {})",
+                    pending.submit_tick, self.now
+                );
+            } else {
+                eprintln!(
+                    "[engine] STALE SELL EVICTED (no paper exit to reverse): mint={mint_hex}"
+                );
+            }
             evicted += 1;
         }
         evicted

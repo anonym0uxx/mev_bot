@@ -261,22 +261,37 @@ impl<'a> StateFetch for RpcStateFetch<'a> {
 
         let creator = tail.creator.ok_or(StateFetchError::DecodeFailed("creator"))?;
 
-        // ── 2026-08-17: CORRECTED tail-field consumption ──────────────────
+        // ── 2026-08-19: CORRECTED — use decoded `is_cashback_coin` from byte 82 ──
         //
         // The `decode_pump_curve_tail` decoder reads `is_mayhem_mode` at
         // offset 81 and `is_cashback_coin` at offset 82 as 1-byte bools,
-        // then `quote_mint` at offset 83 as a 32-byte pubkey.  The REAL
-        // pump.fun BondingCurve layout has `lastProfitDate` (i64, 8 bytes)
-        // at offset 81 — NOT a bool.  The decoder is reading wrong fields
-        // at wrong offsets, producing garbage that fails the WSOL_MINT
-        // check.
+        // then `quote_mint` at offset 83 as a 32-byte pubkey.
         //
-        // Pump.fun bonding curves are ALWAYS SOL-quoted by protocol design
-        // — there IS no `quote_mint` field.  We default `quote_mint` to
-        // WSOL_MINT and `is_cashback_coin` to `false` (the real field
-        // exists but at a different offset, not yet verified).  `creator`
-        // at offset 49 IS correctly decoded and retained.
-        let is_cashback_coin = false;
+        // A previous revision (2026-08-17) incorrectly assumed offset 81
+        // was `lastProfitDate` (i64, 8 bytes) and hardcoded
+        // `is_cashback_coin = false`.  On-chain verification (Rev-27)
+        // confirmed that byte 82 IS `is_cashback_coin` and the decoder
+        // layout is correct:
+        //   - Mint 2k6Ye...VVsi: byte[82]=1 → cashback=TRUE → sell needs UVA
+        //   - Mint 2WhSpoto...pump: byte[82]=0 → cashback=FALSE
+        //
+        // Hardcoding `false` caused sells on cashback coins to omit the
+        // `user_volume_accumulator` account → pump.fun error 6073
+        // (InvalidCashbackAccumulator).  This was the root cause of 1 of 7
+        // sell failures.  The other 6 were caused by the single-entry cache
+        // returning wrong-mint state (fixed in live_adapters.rs).
+        //
+        // `quote_mint` defaults to WSOL for native-SOL curves; the builder's
+        // `validate()` refuses non-SOL quote mints.
+        let is_cashback_coin = tail
+            .is_cashback_coin
+            .unwrap_or(false);
+        // `quote_mint` at offset 83 is unreliable — on-chain bonding-curve
+        // accounts store all-zeros, NOT the WSOL mint address.  Pump.fun
+        // bonding curves are ALWAYS SOL-quoted by protocol design, so we
+        // hardcode WSOL here.  The builder's `validate()` checks
+        // `quote_mint == WSOL_MINT`, which would fail if we passed the
+        // decoded all-zeros value.
         let quote_mint = pump_quant_protocol::venue_accounts::WSOL_MINT;
 
         // ── 4. Mint account → owner = token_program ────────────────────────
@@ -669,12 +684,11 @@ mod tests {
         assert_eq!(state.ctx.fee_recipient, MOCK_FEE_RECIPIENT);
         assert_eq!(state.ctx.creator, MOCK_CREATOR);
         assert_eq!(state.ctx.token_program, TOKEN_PROGRAM);
-        // NOTE: is_cashback_coin is hardcoded to false in fetch() because
-        // the BondingCurve tail decoder reads wrong offsets (2026-08-17 fix).
-        // The test mock sets is_cashback=true at offset 82, but fetch() no
-        // longer reads that field — it defaults to false. This is intentional
-        // until the tail decoder offsets are verified against mainnet.
-        assert!(!state.ctx.is_cashback_coin, "cashback should be false (hardcoded in fetch)");
+        // NOTE: is_cashback_coin is now DECODED from byte 82 (Rev-27 fix).
+        // The test mock sets is_cashback=true at offset 82, so fetch() now
+        // correctly reads it as true.  Previously hardcoded to false, which
+        // caused sells on cashback coins to fail with error 6073.
+        assert!(state.ctx.is_cashback_coin, "cashback should be true (decoded from byte 82)");
 
         // buyback_fee_recipients should be decoded from the 1045-byte Global.
         assert_ne!(state.buyback_fee_recipients[0], [0u8; 32], "buyback_fee_recipients[0] should be non-zero");

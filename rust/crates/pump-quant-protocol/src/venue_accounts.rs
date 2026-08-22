@@ -479,12 +479,25 @@ pub fn pump_buy_accounts(ctx: &PumpCurveCtx) -> Result<Vec<AccountMeta>, Account
     Ok(v)
 }
 
-/// Build the pump.fun `sell` account list — 15 accounts, 16 on a cashback
-/// mint where `user_volume_accumulator` (writable) is inserted at `[14]` and
-/// `bonding_curve_v2` moves to `[15]` (§4.1).
+/// Build the pump.fun `sell` account list.
 ///
-/// # This shape is KNOWN WRONG on mainnet as of 2026-08-02
-/// A live check found 16 / 17. Prefer [`pump_sell_accounts_with_tail`].
+/// The sell IDL (verified 2026-08-20 from @nirholas/pump-sdk 1.36.0 IDL) has
+/// 14 named accounts — NOT 17. Crucially, sell does NOT include
+/// `global_volume_accumulator` (that's buy-only). The `fee_config` and
+/// `fee_program` are at [12]/[13], right after the 12 core accounts.
+///
+/// After the 14 named accounts, remaining accounts are appended:
+/// - `user_volume_accumulator` [14] — ONLY if `is_cashback_coin` (writable)
+/// - `bonding_curve_v2` [14 or 15] — always (read-only)
+///
+/// The `breaking_fee_recipient` (BuybackVault) is appended by
+/// `pump_sell_accounts_with_tail` via the `FeeTail` parameter, producing:
+/// - Non-cashback: 14 + 1 (bc_v2) + 1 (tail) = 16 accounts
+/// - Cashback: 14 + 1 (uva) + 1 (bc_v2) + 1 (tail) = 17 accounts
+///
+/// Rev-29 (2026-08-20): COMPLETE REWRITE to match the verified SDK IDL.
+/// Previous layout had global_volume_accumulator (buy-only, NOT in sell),
+/// wrong fee_config/fee_program positions, and missing breaking_fee_recipient.
 pub fn pump_sell_accounts(ctx: &PumpCurveCtx) -> Result<Vec<AccountMeta>, AccountBuildError> {
     ctx.validate()?;
     let (bonding_curve, _) =
@@ -496,7 +509,10 @@ pub fn pump_sell_accounts(ctx: &PumpCurveCtx) -> Result<Vec<AccountMeta>, Accoun
     let (bonding_curve_v2, _) =
         pda::find_program_address(&[b"bonding-curve-v2", &ctx.mint], &PUMP_PROGRAM_ID)?;
 
+    // Capacity: 14 IDL + up to 2 remaining (uva + bc_v2) = 16 max before tail.
     let mut v = Vec::with_capacity(16);
+
+    // --- 14 IDL named accounts (sell instruction) ---
     v.push(AccountMeta::ro(PUMP_GLOBAL)); // [0]
     v.push(AccountMeta::w(ctx.fee_recipient)); // [1]
     v.push(AccountMeta::ro(ctx.mint)); // [2]
@@ -505,18 +521,23 @@ pub fn pump_sell_accounts(ctx: &PumpCurveCtx) -> Result<Vec<AccountMeta>, Accoun
     v.push(AccountMeta::w(associated_user)); // [5]
     v.push(AccountMeta::ws(ctx.user)); // [6]
     v.push(AccountMeta::ro(SYSTEM_PROGRAM_ID)); // [7]
-    v.push(AccountMeta::w(creator_vault)); // [8] — sell order differs from buy
-    v.push(AccountMeta::ro(ctx.token_program)); // [9]
+    v.push(AccountMeta::w(creator_vault)); // [8] — sell has creator_vault before token_program
+    v.push(AccountMeta::ro(ctx.token_program)); // [9] — sell has token_program after creator_vault
     v.push(AccountMeta::ro(PUMP_EVENT_AUTHORITY)); // [10]
     v.push(AccountMeta::ro(PUMP_PROGRAM_ID)); // [11]
-    v.push(AccountMeta::ro(PUMP_FEE_CONFIG)); // [12]
-    v.push(AccountMeta::ro(FEE_PROGRAM_ID)); // [13]
+    v.push(AccountMeta::ro(PUMP_FEE_CONFIG)); // [12] — fee_config (sell IDL position)
+    v.push(AccountMeta::ro(FEE_PROGRAM_ID)); // [13] — fee_program (sell IDL position)
+
+    // --- remaining accounts ---
+    // user_volume_accumulator: ONLY for cashback coins (SDK: "For cashback coins,
+    // optionally pass user_volume_accumulator as remaining_accounts[0]")
     if ctx.is_cashback_coin {
         let (user_volume_accumulator, _) =
             pda::find_program_address(&[b"user_volume_accumulator", &ctx.user], &PUMP_PROGRAM_ID)?;
-        v.push(AccountMeta::w(user_volume_accumulator)); // [14] cashback only
+        v.push(AccountMeta::w(user_volume_accumulator)); // [14] — cashback remaining[0]
     }
-    v.push(AccountMeta::ro(bonding_curve_v2)); // last, always
+    v.push(AccountMeta::ro(bonding_curve_v2)); // [14 or 15] — always present
+
     Ok(v)
 }
 

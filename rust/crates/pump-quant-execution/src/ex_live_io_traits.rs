@@ -113,6 +113,24 @@ pub trait LiveStateFetcher: Send + Sync {
     /// refresh it on a timer (every ~5s / 20 slots), so the hot path returns
     /// a cached value in ~0ms.
     fn latest_blockhash(&self) -> Result<LiveBlockhash, StateFetchError>;
+
+    /// Fetch the actual on-chain ATA balance for `(user, token_program, mint)`.
+    ///
+    /// This is used in the sell path to ensure `token_amount` matches the real
+    /// on-chain token balance, NOT the paper-computed amount from
+    /// `exit_token_amount`. The paper math can overestimate (due to price
+    /// drift since entry) or underestimate (due to rounding), causing
+    /// on-chain errors 6023 (NotEnoughTokensToSell) or dust-leftover
+    /// CloseAccount failures (Custom:11).
+    ///
+    /// Returns 0 if the ATA does not exist yet (no tokens held). The sink
+    /// treats 0 as "skip the sell" (fail-safe).
+    fn fetch_ata_balance(
+        &self,
+        mint: &[u8; 32],
+        user: &[u8; 32],
+        token_program: &[u8; 32],
+    ) -> Result<u64, StateFetchError>;
 }
 
 // ---------------------------------------------------------------------------

@@ -37,6 +37,10 @@ pub enum ProvenanceSource {
     /// latency, self-healing (SDK-internal `from_slot` resume). Primary
     /// canonical ingest lane per criterion 61.
     LaserStream,
+    /// Helius LaserStream gRPC `accountSubscribe` — bonding-curve PDA snapshots
+    /// via the same gRPC stream. Rev-30: replaces Helius WS accountSubscribe
+    /// when LS is active (primary data source).
+    LaserStreamAccount,
 }
 
 /// A live-observed AppEvent with structural provenance. The engine consumes

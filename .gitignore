@@ -6,6 +6,8 @@ __pycache__/
 .pytest_cache/
 evidence.db
 supervisor_evidence.db
+supervisor_evidence.db-shm
+supervisor_evidence.db-wal
 infra_manifest.json
 rust/data/
 tools/stream-capture-rs/grpc-server-only/target/
