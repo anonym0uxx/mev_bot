@@ -1095,10 +1095,46 @@ impl ScalpLifecycle {
         out
     }
 
-    /// Force-exit one held position at the given mark (fixed-point price), booking
-    /// it under `reason` — the engine's escalation seam (e.g. the VPIN extreme
-    /// sell-dominant tier: a distributed multi-swap dump the single-print
-    /// rug-precursor cannot see). `None` when no position is held on `mint`.
+    /// **Rev-31**: Same as `on_tick` but with a `live_mode` flag. In live mode,
+    /// positions whose buy has NOT been confirmed on-chain are skipped — closing
+    /// them would trigger a sell for a non-existent ATA → `AccountNotInitialized
+    /// (3012)`. In paper mode, all positions are evaluated (no on-chain sells).
+    pub fn on_tick_filtered(
+        &mut self,
+        tick: u64,
+        latest_price_fp: &dyn Fn(&[u8; 32]) -> Option<u64>,
+        live_mode: bool,
+    ) -> Vec<Exit> {
+        let p = self.params;
+        let mut fired = std::mem::take(&mut self.fired_buf);
+        fired.clear();
+        for (mint, pos) in self.open.iter() {
+            // Rev-31: in live mode, skip unconfirmed positions.
+            if live_mode && !pos.onchain_confirmed {
+                continue;
+            }
+            let effective_stall = if p.stall_ticks >= 99_999 {
+                p.max_hold_ticks.min(300)
+            } else {
+                p.stall_ticks
+            };
+            let not_advancing = tick.saturating_sub(pos.last_high_tick) >= effective_stall;
+            let aged = tick.saturating_sub(pos.entry_tick) >= p.max_hold_ticks;
+            let fat_tail = p.stall_ticks >= 99_999;
+            if (fat_tail && aged) || (!fat_tail && not_advancing && aged) {
+                fired.push(*mint);
+            }
+        }
+        let mut out = Vec::with_capacity(fired.len());
+        for mint in fired.drain(..) {
+            let mult = latest_price_fp(&mint)
+                .map(|pr| self.open[&mint].mult_bps(pr))
+                .unwrap_or(10_000_u32.saturating_sub(p.hard_sl_bps));
+            out.push(self.close(&mint, mult, ExitReason::TimeStop));
+        }
+        self.fired_buf = fired;
+        out
+    }
     pub fn close_at(&mut self, mint: &[u8; 32], price_fp: u64, reason: ExitReason) -> Option<Exit> {
         if !self.open.contains_key(mint) {
             return None;
@@ -1127,6 +1163,27 @@ impl ScalpLifecycle {
         out
     }
 
+    /// **Rev-31**: Same as `force_close_all` but skips unconfirmed positions
+    /// (live mode only — prevents selling phantom positions at shutdown).
+    pub fn force_close_all_filtered(
+        &mut self,
+        latest_price_fp: &dyn Fn(&[u8; 32]) -> Option<u64>,
+    ) -> Vec<Exit> {
+        let mints: Vec<[u8; 32]> = self.open.keys().copied().collect();
+        let mut out = Vec::with_capacity(mints.len());
+        let sl = self.params.hard_sl_bps;
+        for mint in mints {
+            if !self.open[&mint].onchain_confirmed {
+                continue;
+            }
+            let mult = latest_price_fp(&mint)
+                .map(|pr| self.open[&mint].mult_bps(pr))
+                .unwrap_or(10_000_u32.saturating_sub(sl));
+            out.push(self.close(&mint, mult, ExitReason::ForceClose));
+        }
+        out
+    }
+
     /// **Rev-19**: Mark a position's buy as confirmed on-chain. Called when the
     /// daemon's `getSignaturesForAddress` poller confirms our buy tx landed.
     /// No-op if no position is held on `mint`.
@@ -1134,6 +1191,17 @@ impl ScalpLifecycle {
         if let Some(pos) = self.open.get_mut(mint) {
             pos.onchain_confirmed = _confirmed;
         }
+    }
+
+    /// **Rev-31**: Check if a position's buy has been confirmed on-chain.
+    /// Returns false if no position is held on `mint`. Used by the exit
+    /// ladder to gate sell submission — prevents selling phantom positions
+    /// (buy submitted but not yet confirmed, or buy failed on-chain).
+    pub fn is_onchain_confirmed(&self, mint: &[u8; 32]) -> bool {
+        self.open
+            .get(mint)
+            .map(|pos| pos.onchain_confirmed)
+            .unwrap_or(false)
     }
 
     /// **Rev-19**: Mark the most recent exit tranche as confirmed on-chain.
@@ -1191,13 +1259,19 @@ impl ScalpLifecycle {
     fn close(&mut self, mint: &[u8; 32], mult_bps: u32, reason: ExitReason) -> Exit {
         let mut pos = self.open.remove(mint).expect("close on an open position"); // LINT-ALLOW(hot_panic): infallible — every caller (on_tick/close_at/force_close_all) checks open membership before close()
         let (mfe_bps, mae_bps) = pos.excursions_bps();
+        // CRITICAL: capture remaining_bps BEFORE realize() — realize() mutates
+        // remaining_bps (subtracts frac_bps), so calling exit_token_amount AFTER
+        // realize() would see remaining_bps=0 on a full close → token_amount=0
+        // → no on-chain sell ever submitted (the sell-vs-tape gap root cause).
+        let remaining_bps_at_close = pos.remaining_bps;
         let net = pos.realize(pos.remaining_bps, mult_bps, &self.params);
         let exit_px = u64::try_from(
             u128::from(pos.entry_price_fp) * u128::from(mult_bps) / 10_000
         ).unwrap_or(pos.entry_price_fp);
         // Token amount for the on-chain sell: the FULL remaining fraction
-        // (remaining_bps) of the notional, priced at entry.
-        let tkn = exit_token_amount(pos.size_lamports, pos.remaining_bps, pos.entry_price_fp);
+        // (remaining_bps at close time, before realize zeroed it) of the notional,
+        // priced at entry.
+        let tkn = exit_token_amount(pos.size_lamports, remaining_bps_at_close, pos.entry_price_fp);
         Exit {
             mint: *mint,
             net_lamports: net,

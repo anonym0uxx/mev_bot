@@ -242,6 +242,7 @@ impl TradeRecord {
             ProvenanceSource::HeliusTransactionSubscribe => "HeliusTx",
             ProvenanceSource::HeliusReserveDelta => "ReserveDelta",
             ProvenanceSource::LaserStream => "LaserStream",
+            ProvenanceSource::LaserStreamAccount => "LaserStreamAccount",
         }
     }
 }

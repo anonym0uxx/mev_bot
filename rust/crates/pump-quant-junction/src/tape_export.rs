@@ -72,6 +72,7 @@ fn source_tag_short(source: &crate::ProvenanceSource) -> &'static str {
         crate::ProvenanceSource::HeliusTransactionSubscribe => "HeliusTx",
         crate::ProvenanceSource::HeliusReserveDelta => "ReserveDelta",
         crate::ProvenanceSource::LaserStream => "LaserStream",
+        crate::ProvenanceSource::LaserStreamAccount => "LaserStreamAccount",
     }
 }
 

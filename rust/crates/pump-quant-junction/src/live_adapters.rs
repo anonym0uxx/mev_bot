@@ -433,6 +433,22 @@ impl LiveStateFetcher for RpcLiveStateFetcher {
         {
             let cache = self.curve_cache.read().unwrap();
             if let Some(ref cached) = *cache {
+                // CRITICAL: verify the cached state is for the SAME mint.
+                // The single-entry cache can hold state for a different mint
+                // if the daemon bought mint A and is now selling mint B.
+                // Returning the wrong mint's state causes the sell instruction
+                // to be built with wrong accounts → on-chain error 3012
+                // (AccountNotInitialized).  This was the root cause of every
+                // sell failure in Rev-22 through Rev-26.
+                if cached.state.curve_ctx.mint != *mint {
+                    // Cache is for a different mint — bypass and fetch fresh.
+                    drop(cache);
+                    let state = self.fetch_fresh(mint, user)?;
+                    *self.curve_cache.write().unwrap() = Some(CachedCurveState {
+                        state: state.clone(),
+                    });
+                    return Ok(state);
+                }
                 // Check freshness: if the blockhash cache has a newer slot,
                 // the curve state is still valid as long as it's within the
                 // staleness threshold.
@@ -506,6 +522,36 @@ impl LiveStateFetcher for RpcLiveStateFetcher {
         }
         // Cache miss or stale: fetch synchronously.
         self.refresh_blockhash_inner()
+    }
+
+    fn fetch_ata_balance(
+        &self,
+        mint: &[u8; 32],
+        user: &[u8; 32],
+        token_program: &[u8; 32],
+    ) -> Result<u64, StateFetchError> {
+        // Derive the ATA address: PDA seeds = [wallet, token_program, mint].
+        let ata = pump_quant_protocol::pda::derive_ata(user, token_program, mint)
+            .map_err(|_| StateFetchError::DecodeError("ATA derivation failed".to_string()))?;
+        let ata_b58 = encode_base58_pubkey(&ata);
+
+        // RPC: getAccountInfo(ata, { encoding: base64, commitment: confirmed }).
+        let params = format!(
+            "[\"{ata_b58}\",{{\"encoding\":\"base64\",\"commitment\":\"confirmed\"}}]"
+        );
+        let body = format!(
+            "{{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"getAccountInfo\",\"params\":{params}}}"
+        );
+        let reply = self
+            .transport
+            .post_json(&self.rpc_url, &body)
+            .map_err(|e| StateFetchError::RpcError(e))?;
+
+        // Parse the response. If value is null, the ATA doesn't exist → balance 0.
+        let balance = extract_ata_balance(&reply.body)
+            .ok_or(StateFetchError::AccountNotFound("ATA".to_string()))?;
+
+        Ok(balance)
     }
 }
 
@@ -617,6 +663,112 @@ fn extract_slot_from_response(body: &str) -> Option<u64> {
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(after.len());
     after[..end].parse::<u64>().ok()
+}
+
+/// Encode a 32-byte pubkey into a base58 string (same alphabet as Solana).
+fn encode_base58_pubkey(pk: &[u8; 32]) -> String {
+    const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let mut leading_zeros = 0;
+    for &b in pk.iter() {
+        if b == 0 {
+            leading_zeros += 1;
+        } else {
+            break;
+        }
+    }
+
+    let mut bytes = pk.to_vec();
+    let mut encoded: Vec<u8> = Vec::new();
+    while !bytes.is_empty() {
+        let mut rem = 0u32;
+        for byte in bytes.iter_mut() {
+            let n = (rem << 8) | (*byte as u32);
+            *byte = (n / 58) as u8;
+            rem = n % 58;
+        }
+        encoded.push(rem as u8);
+        while bytes.first() == Some(&0) {
+            bytes.remove(0);
+        }
+    }
+    encoded.reverse();
+    let mut out = String::with_capacity(44);
+    for &idx in &encoded {
+        out.push(ALPHABET[idx as usize] as char);
+    }
+    for _ in 0..leading_zeros {
+        out.insert(0, '1');
+    }
+    out
+}
+
+/// Extract the token balance from a getAccountInfo JSON response for an ATA.
+///
+/// SPL token accounts (both spl-token and Token-2022) store the amount at
+/// offset 32 (after mint[32] + owner[32]). The amount is a little-endian u64.
+/// If the response value is null (account doesn't exist), returns 0 (balance 0).
+fn extract_ata_balance(body: &str) -> Option<u64> {
+    // Check for "value":null → account doesn't exist → balance 0.
+    if body.contains("\"value\":null") {
+        return Some(0);
+    }
+
+    // Find the data array: "data":["<base64>","base64"]
+    let data_key = "\"data\":[\"";
+    let start = body.find(data_key)?;
+    let rest = body.get(start + data_key.len()..)?;
+    let close_quote = rest.find('"')?;
+    let b64 = &rest[..close_quote];
+
+    // Decode base64 → raw bytes.
+    let raw = decode_base64_std(b64)?;
+
+    // The token amount is at offset 64 (after mint[32] + owner[32]).
+    // It's a little-endian u64.
+    if raw.len() < 72 {
+        return Some(0); // Too short — treat as 0 balance.
+    }
+    let amount_bytes = &raw[64..72];
+    let amount = u64::from_le_bytes(
+        amount_bytes
+            .try_into()
+            .ok()?,
+    );
+    Some(amount)
+}
+
+/// Standard base64 decode (A-Z, a-z, 0-9, +, /).
+fn decode_base64_std(s: &str) -> Option<Vec<u8>> {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut decode_map = [-1i16; 256];
+    for (i, &c) in TABLE.iter().enumerate() {
+        decode_map[c as usize] = i as i16;
+    }
+
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
+    let mut buf: u32 = 0;
+    let mut bits: u8 = 0;
+
+    for &b in bytes {
+        match b {
+            b'=' => break,
+            b'\n' | b'\r' | b' ' | b'\t' => continue,
+            _ => {
+                let v = decode_map[b as usize];
+                if v < 0 {
+                    return None;
+                }
+                buf = (buf << 6) | v as u32;
+                bits += 6;
+                if bits >= 8 {
+                    bits -= 8;
+                    out.push((buf >> bits) as u8 & 0xFF);
+                }
+            }
+        }
+    }
+    Some(out)
 }
 
 // ---------------------------------------------------------------------------

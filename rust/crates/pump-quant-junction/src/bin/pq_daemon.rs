@@ -738,6 +738,12 @@ struct SessionStats {
     ls_slots_received: u64,
     ls_spawned: bool,
     ls_reconnects: u64,
+    /// Rev-30: LS account notifications received (bonding curve PDA snapshots).
+    ls_account_received: u64,
+    /// Rev-30: LS account notifications decoded into OnchainConfirm events.
+    ls_onchain_confirms_decoded: u64,
+    /// Rev-30: LS account updates where PDA couldn't be resolved to a mint.
+    ls_account_unresolved: u64,
     fc_spawned: bool,
     fc_triggers_emitted: u64,
     fc_events_ingested: u64,
@@ -764,6 +770,7 @@ impl SessionStats {
             ls_transactions_received: 0, ls_instructions_classified: 0,
             ls_events_emitted: 0, ls_slots_received: 0,
             ls_spawned: false, ls_reconnects: 0,
+            ls_account_received: 0, ls_onchain_confirms_decoded: 0, ls_account_unresolved: 0,
             fc_spawned: false, fc_triggers_emitted: 0, fc_events_ingested: 0,
             stubbed_or_assumed: vec![
                 "Config: dev_portable (no live config file provided)".to_string(),
@@ -1127,11 +1134,14 @@ fn poll_signature_confirmations(
         return Vec::new();
     }
 
-    // Request up to 25 recent signatures for our wallet. Solana RPC default
-    // limit is 1000, but 25 is enough for our throughput (a few txs per minute).
-    // We use before=null to get the most recent signatures.
+    // Request up to 1000 recent signatures for our wallet. Solana RPC max is 1000.
+    // Rev-31 (2026-08-21): CRITICAL FIX — the old limit of 25 was too small under
+    // high throughput. Failed buy txs scrolled past the 25-sig window before the
+    // 5-second poll caught them, leaving permanent phantom positions that the exit
+    // ladder tried to sell → 48 on-chain 3012 failures. 1000 gives a ~80-minute
+    // window at 3 txs/sec, far exceeding the 30-second stale-eviction threshold.
     let body = format!(
-        r#"{{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["{wallet_address}",{{"limit":25,"commitment":"confirmed"}}]}}"#
+        r#"{{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["{wallet_address}",{{"limit":1000,"commitment":"confirmed"}}]}}"#
     );
 
     let http = pq_stream_capture::http::Http::new(15);
@@ -1463,7 +1473,14 @@ fn construct_live_engine(
         }
     }
 
-    // Sell layouts — 15/16 accounts (FeeTail::None), 16/17 (BuybackVault).
+    // Sell layouts — Rev-29 (2026-08-20): sell IDL has 14 named accounts.
+    // Sell does NOT include global_volume_accumulator (buy-only). Remaining:
+    // user_volume_accumulator (cashback only) + bonding_curve_v2 (always).
+    // FeeTail::BuybackVault adds 1 more (live mode uses Global account BV).
+    //   Non-cashback + BV: 14 + 1 (bc_v2) + 1 (BV) = 16
+    //   Cashback + BV:     14 + 1 (uva) + 1 (bc_v2) + 1 (BV) = 17
+    //   Non-cashback, None: 14 + 1 (bc_v2) = 15
+    //   Cashback, None:     14 + 1 (uva) + 1 (bc_v2) = 16
     for &token_2022 in &[false, true] {
         for &cashback in &[false, true] {
             let key = LayoutKey {
@@ -1476,14 +1493,16 @@ fn construct_live_engine(
                     reversed_pool: false,
                 },
             };
-            let base_count = if cashback { 16 } else { 15 };
+            // Rev-29: base count depends on cashback (uva adds 1 account).
+            let base_count = if cashback { 16usize } else { 15usize }; // FeeTail::None
+            let bv_count = base_count + 1; // FeeTail::BuybackVault
             let sig_byte = if token_2022 { 0xDD } else { 0xBB }
                 + if cashback { 0x10 } else { 0 };
             let mut sig = [0u8; 64];
             sig[0] = sig_byte;
             sig[31] = sig_byte;
             // Register both base (FeeTail::None) and +1 (BuybackVault) counts.
-            for &count in &[base_count, base_count + 1] {
+            for &count in &[base_count, bv_count] {
                 registry
                     .record_verified(VerifiedLayout {
                         key,
@@ -1522,6 +1541,12 @@ fn construct_live_engine(
         tip,
         fee_tail,
         max_slippage_bps: 500,
+        // Rev-36: pass the mcap band config to the live sink for TOCTOU
+        // re-validation at execution time. Uses the SAME values the gate
+        // uses (from the loaded CHAMPION_CONFIG.txt).
+        mcap_band_enable: cfg.mcap_band_enable,
+        mcap_band_lo_lamports: cfg.mcap_band_lo_lamports,
+        mcap_band_hi_lamports: cfg.mcap_band_hi_lamports,
     };
 
     // ── 6. Construct the sink and install it ───────────────────────────
@@ -1801,6 +1826,24 @@ fn main() -> ExitCode {
     let mut next_req_id: u64 = 100;
     let mut stats = SessionStats::new();
 
+    // ── Rev-30: LS-primary / WS-fallback gating ─────────────────────────
+    // LaserStream gRPC is the PRIMARY data source. Helius WS accountSubscribe
+    // is FALLBACK ONLY — activated when LS dies, deactivated when LS recovers.
+    // This prevents redundant simultaneous account data streams.
+    //
+    // ls_active: true when LS child is spawned and delivering data. When true,
+    //   the daemon suppresses new WS accountSubscribe requests and processes
+    //   LS Account updates instead. When LS dies (respawn limit reached),
+    //   ls_active → false and WS accountSubscribe resumes as fallback.
+    //
+    // pda_to_mint: reverse map of bonding_curve_pda(mint) → mint. LS Account
+    //   updates carry the bonding curve PDA as `pubkey` but not the mint. We
+    //   populate this map whenever we see a new mint (PumpPortal create, LS
+    //   transactions) so we can resolve PDA → mint for LS account decoding.
+    let mut ls_active: bool = false;
+    let mut pda_to_mint: std::collections::HashMap<[u8; 32], [u8; 32]> =
+        std::collections::HashMap::new();
+
     let mut reserve_tracker: HashMap<[u8; 32], ReserveSnapshot> = HashMap::new();
     // Wangr Rev-14: tracks which mints we've already emitted MarketAuxiliary
     // for (prevents duplicate aux events on re-subscribe/reconnect).
@@ -1917,6 +1960,7 @@ fn main() -> ExitCode {
         match spawn_ls(bin_path) {
             Some(child) => {
                 stats.ls_spawned = true;
+                ls_active = true; // Rev-30: LS is primary — suppress WS accountSubscribe
                 ls_child = Some(child);
             }
             None => {
@@ -2292,6 +2336,10 @@ fn main() -> ExitCode {
                     "\"helius_reconnects\":{},",
                     "\"ls_transactions_received\":{},",
                     "\"ls_spawned\":{},",
+                    "\"ls_active\":{},",
+                    "\"ls_account_received\":{},",
+                    "\"ls_onchain_confirms_decoded\":{},",
+                    "\"ls_account_unresolved\":{},",
                     "\"uptime_secs\":{},",
                     "\"tick\":{},",
                     "\"account_subs_active\":{},",
@@ -2305,6 +2353,10 @@ fn main() -> ExitCode {
                 stats.helius_reconnects,
                 stats.ls_transactions_received,
                 stats.ls_spawned,
+                ls_active,
+                stats.ls_account_received,
+                stats.ls_onchain_confirms_decoded,
+                stats.ls_account_unresolved,
                 uptime_secs,
                 tick_counter,
                 sub_tracker.len(),
@@ -2340,8 +2392,76 @@ fn main() -> ExitCode {
                     last_slot_seen = slot;
                     last_slot_time = Instant::now();
                 }
-                Ok(LaserStreamUpdate::Account { .. }) => {
+                Ok(LaserStreamUpdate::Account { pubkey, owner, data, slot }) => {
                     did_work = true;
+                    stats.ls_account_received += 1;
+
+                    // ── Rev-30: Process LS account updates as PRIMARY bonding
+                    // curve data source. The gRPC server subscribes to accounts
+                    // owned by PUMP_PROGRAM (bonding curves) and PUMPSWAP_PROGRAM
+                    // (AMM pools). When LS is active, this replaces Helius WS
+                    // accountSubscribe entirely — no redundant WS data stream.
+                    //
+                    // The `pubkey` is the bonding curve PDA. We resolve it to
+                    // a mint via the pda_to_mint reverse map, then decode the
+                    // account data the same way the WS handler does.
+                    if let Some(mint_bytes) = pda_to_mint.get(&pubkey) {
+                        let mb = *mint_bytes;
+                        if let Some((provenanced, curve)) =
+                            decode_onchain_confirm_with_curve(&mb, &data, slot)
+                        {
+                            queue.push(provenanced, slot);
+                            stats.ls_onchain_confirms_decoded += 1;
+                            stats.last_confirm_tick = tick_counter;
+                            stats.pda_venue_matches += 1;
+
+                            // Wangr Rev-14: decode curve tail for token_standard
+                            if aux_emitted.contains(&mb) {
+                                let token_standard = match decode_pump_curve_tail(&data) {
+                                    Some(tail) => match tail.is_mayhem_mode {
+                                        Some(true) => 2,  // mayhem/token2022
+                                        Some(false) => 1, // legacy SPL
+                                        None => 0,        // unknown
+                                    },
+                                    None => 0,
+                                };
+                                queue.push(ProvenancedEvent {
+                                    event: AppEvent::MarketAuxiliary {
+                                        mint: Mint(mb),
+                                        token_standard,
+                                        symbol_len: 0,
+                                    },
+                                    source: ProvenanceSource::LaserStreamAccount,
+                                    slot,
+                                    is_live: true,
+                                }, slot);
+                            }
+
+                            // Derive market trade from reserve delta — same
+                            // logic as the WS account notification handler.
+                            let prev = reserve_tracker.get(&mb).copied();
+                            if let Some(trade_pe) = derive_market_trade_from_delta(
+                                &mb, prev, &curve, slot, true,
+                            ) {
+                                queue.push(trade_pe, slot);
+                                stats.delta_trades_derived += 1;
+                            } else {
+                                stats.delta_no_trade += 1;
+                            }
+                            reserve_tracker.insert(mb, ReserveSnapshot {
+                                virtual_sol: curve.virtual_sol,
+                                virtual_token: curve.virtual_token,
+                                slot,
+                            });
+                        }
+                    } else {
+                        // PDA not in reverse map — this happens for bonding
+                        // curves of mints we haven't seen yet (e.g. LS catches
+                        // a curve update before PumpPortal create arrives).
+                        // This is expected and non-fatal; the WS fallback would
+                        // also miss these without a prior create event.
+                        stats.ls_account_unresolved += 1;
+                    }
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -2371,6 +2491,11 @@ fn main() -> ExitCode {
                             );
                             // Mark ls_spawned false so we don't keep trying
                             stats.ls_spawned = false;
+                            // Rev-30: LS is dead — activate WS fallback.
+                            ls_active = false;
+                            eprintln!(
+                                "[pq-daemon] ls_active=false — WS accountSubscribe now active as fallback data source"
+                            );
                             break;
                         }
                         eprintln!(
@@ -2417,6 +2542,19 @@ fn main() -> ExitCode {
                                     }
                                     eprintln!("[pq-daemon] LaserStream respawned");
                                     ls_child = Some(child);
+                                    // Rev-30: LS recovered — re-activate as primary.
+                                    ls_active = true;
+                                    // Close Helius WS account subscriptions
+                                    // to stop redundant WS data stream. The
+                                    // WS connection itself stays open for slot
+                                    // notifications (cheap, non-redundant).
+                                    let active_mints_vec = sub_tracker.clear_server_subs();
+                                    if !active_mints_vec.is_empty() {
+                                        eprintln!(
+                                            "[pq-daemon] LS recovered — cleared {} WS accountSubs (redundant with LS gRPC)",
+                                            active_mints_vec.len()
+                                        );
+                                    }
                                 }
                                 None => {
                                     eprintln!("[pq-daemon] LaserStream respawn FAILED");
@@ -2463,6 +2601,13 @@ fn main() -> ExitCode {
                             }
                         }
 
+                        // ── Rev-30: Populate PDA→mint reverse map for LS Account ──
+                        // When LaserStream delivers bonding-curve account updates,
+                        // the pubkey is the PDA — we need this reverse map to
+                        // resolve PDA → mint for decoding.
+                        let pda = bonding_curve_pda(&mint_bytes);
+                        pda_to_mint.insert(pda.to_bytes(), mint_bytes);
+
                         // ── Wangr Rev-14: emit MarketAuxiliary with symbol_len ──
                         // The PumpPortal create event carries the token symbol,
                         // which the wangr symbol-length filter needs. We also
@@ -2502,6 +2647,23 @@ fn main() -> ExitCode {
                             .any(|(_, m)| *m == mint_bytes);
 
                         if !already_subscribed {
+                            // ── Rev-30: LS-primary gating ──────────────────────
+                            // When LaserStream is active (primary data source),
+                            // SKIP the Helius WS accountSubscribe. LS already
+                            // delivers bonding-curve account updates via gRPC,
+                            // so a WS accountSubscribe would be redundant. We
+                            // still populate pda_to_mint (done above) so LS
+                            // Account updates can resolve PDA → mint.
+                            //
+                            // When LS is down (ls_active = false), WS
+                            // accountSubscribe activates as fallback — the
+                            // original subscription logic runs unchanged.
+                            if ls_active {
+                                eprintln!(
+                                    "[pq-daemon] LS active — skipping WS accountSubscribe for mint {:.8} (LS covers bonding curves via gRPC)",
+                                    hex_short(&mint_bytes)
+                                );
+                            } else {
                             // ── PROACTIVE RECONNECT CHECK ──────────────────────
                             // Before subscribing, check if leaked server-side
                             // subscriptions are approaching the Helius cap.
@@ -2636,6 +2798,7 @@ fn main() -> ExitCode {
                                     stats.ws_errors += 1;
                                 }
                             }
+                            } // Rev-30: close else (WS fallback) block
                         }
                     }
                 } else if is_migration {
@@ -3381,6 +3544,23 @@ fn main() -> ExitCode {
                             "[pq-daemon] confirmation poll: {}/{} pending txs resolved",
                             results.len(),
                             pending_buys.len() + pending_sells.len()
+                        );
+                    }
+                }
+
+                // Rev-31 (2026-08-21): Evict stale pending txs that the poll
+                // never resolved. A pending buy/sell older than 30s (120 ticks
+                // at 250ms/tick) is assumed to have failed or never landed.
+                // For stale buys: reverse the paper position (phantom fix).
+                // For stale sells: reverse the paper exit (ladder can retry).
+                // This is the safety net that prevents permanent phantom
+                // positions when the poll misses a tx.
+                {
+                    let stale_threshold_ticks: u64 = 120; // ~30s at 250ms/tick
+                    let evicted = engine.evict_stale_pending(stale_threshold_ticks);
+                    if evicted > 0 {
+                        eprintln!(
+                            "[pq-daemon] stale pending eviction: {evicted} txs evicted (phantom positions reversed)"
                         );
                     }
                 }

@@ -196,21 +196,32 @@ fn daemon_is_healthy(health_timeout_secs: u64) -> bool {
 /// GAP #14: Check if the daemon is suffering from OnchainConfirm starvation.
 /// Reads data/daemon_health.json (written by the daemon every STATUS_HEARTBEAT_SECS)
 /// and checks if the daemon has been running long enough (uptime > 120s) but has
-/// ZERO onchain confirms — meaning the Helius WS lane is dead. This is a CRITICAL
-/// health signal: without onchain confirms, 95%+ of trade signals are rejected
-/// as NeedsOnchainConfirmation, and the daemon is effectively trading blind.
+/// ZERO onchain confirms — meaning BOTH data lanes (LaserStream gRPC AND Helius
+/// WS) are dead. This is a CRITICAL health signal: without onchain confirms,
+/// 95%+ of trade signals are rejected as NeedsOnchainConfirmation, and the
+/// daemon is effectively trading blind.
+///
+/// Rev-30: With LS-primary/WS-fallback architecture, onchain confirms arrive
+/// via TWO possible lanes:
+///   1. `ls_onchain_confirms_decoded` — LaserStream gRPC account updates
+///   2. `onchain_confirms_decoded`     — Helius WS accountSubscribe (fallback)
+/// The daemon is considered starved ONLY if BOTH are zero after uptime > 120s.
 fn daemon_onchain_confirm_healthy() -> Option<bool> {
     let path = Path::new("data/daemon_health.json");
     if !path.exists() {
         return None;
     }
     let content = fs::read_to_string(path).ok()?;
-    let confirms = extract_json_u64(&content, "onchain_confirms_decoded")?;
+    let ws_confirms = extract_json_u64(&content, "onchain_confirms_decoded")?;
+    let ls_confirms = extract_json_u64(&content, "ls_onchain_confirms_decoded")?;
     let uptime = extract_json_u64(&content, "uptime_secs")?;
     // If we can't find the values, fail-open (return None).
-    let confirms = confirms?;
+    let ws_confirms = ws_confirms?;
+    let ls_confirms = ls_confirms?;
     let uptime = uptime?;
-    if uptime > 120 && confirms == 0 {
+    // Rev-30: daemon is healthy if EITHER lane has confirms (LS primary OR WS fallback).
+    // Starved only when BOTH are zero after sufficient uptime.
+    if uptime > 120 && ws_confirms == 0 && ls_confirms == 0 {
         Some(false)
     } else {
         Some(true)
@@ -436,7 +447,7 @@ fn wait_with_health(
             // restarted to re-establish the Helius WS connection.
             match daemon_onchain_confirm_healthy() {
                 Some(false) => {
-                    eprintln!("[pq-watchdog] ONCHAIN CONFIRM STARVATION — daemon running with 0 onchain confirms, Helius WS lane likely dead, killing for restart");
+                    eprintln!("[pq-watchdog] ONCHAIN CONFIRM STARVATION — daemon running with 0 onchain confirms (both LS gRPC and Helius WS lanes dead), killing for restart");
                     kill_child(child);
                     return None;
                 }

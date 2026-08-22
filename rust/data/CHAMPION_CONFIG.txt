@@ -62,22 +62,22 @@ landing_base_bps = 9500
 landing_penalty_k_bps = 2000
 lane_evidence_ttl_ticks = 100
 lc_cvd_hold_frac_bps = 0
-lc_hard_sl_bps = 5500
-lc_max_hold_ticks = 18000
+lc_hard_sl_bps = 1000
+lc_max_hold_ticks = 6000
 lc_precursor_drop_bps = 1000
 lc_stall_ticks = 99999
 lc_tp1_bps = 11500
 lc_tp1_frac_bps = 3000
 lc_tp2_bps = 13500
 lc_tp2_frac_bps = 3000
-lc_tp3_bps = 14500
+lc_tp3_bps = 19900
 lc_tp3_frac_bps = 4000
 lc_trail_base_bps = 99900
 lc_trail_k_div = 1
 lc_trail_max_bps = 99900
 max_concurrent_positions = 10
 mcap_band_enable = 1
-mcap_band_hi_lamports = 45000000000
+mcap_band_hi_lamports = 40000000000
 mcap_band_lo_lamports = 5000000000
 meta_accel_threshold = 0
 meta_max_categories = 64
@@ -136,15 +136,8 @@ bundle_concentration_max_bps = 2000
 dev_history_reject_enable = 1
 dev_history_min_launches = 5
 dev_graduation_min_rate_bp = 1000
-
-# ── R-3: creator on-chain history veto (daemon-level, pre-buy) ─────────────
-# Queries getSignaturesForAddress on the creator wallet before each buy.
-# If the creator has ≥ r3_creator_max_launches recent on-chain signatures,
-# the buy is vetoed (serial rugger detection). Fail-open on RPC error or
-# unknown creator (§6.4).
 r3_creator_history_enable = 1
 r3_creator_max_launches = 1000
-
 coordinated_funding_reject_enable = 1
 coordinated_funding_max_share_bps = 6000
 coordinated_funding_first_n_buyers = 10
@@ -174,8 +167,8 @@ entry_quality_filter_enable = 1
 entry_min_buy_ratio_bp = 3500
 entry_max_sol_per_trade_lamports = 2000000000
 entry_min_trades_observed = 3
-entry_min_age_slots = 0
-entry_min_volume_lamports = 0
+entry_min_age_slots = 5
+entry_min_volume_lamports = 2000000000
 entry_min_buy_pressure_bp = 5000
 entry_min_unique_buyers = 0
 wangr_require_legacy_enable = 0
@@ -191,7 +184,7 @@ wangr_creator_min_launches = 0
 wangr_liq_zone_filter_enable = 0
 wangr_liq_zone_lo_lamports = 1000000000000
 wangr_liq_zone_hi_lamports = 10000000000000
-universe_min_entities = 15
+universe_min_entities = 7
 universe_min_liquidity_lamports = 10000000
 universe_min_trades = 3
 universe_wash_ratio_max = 6

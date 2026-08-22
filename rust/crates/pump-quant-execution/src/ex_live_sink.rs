@@ -75,6 +75,15 @@ pub struct LiveSinkConfig {
     pub fee_tail: FeeTail,
     /// Max slippage in basis points for the buy instruction's min_tokens_out.
     pub max_slippage_bps: u16,
+    /// Rev-36: TOCTOU mcap band re-validation at execution time.
+    /// When true, `on_admit` re-checks the mcap band using the FRESH vsol
+    /// fetched from on-chain state at buy time — closing the gap where the
+    /// gate approved an entry whose vsol later moved above the band.
+    pub mcap_band_enable: bool,
+    /// The mcap band low bound in lamports (inclusive).
+    pub mcap_band_lo_lamports: u64,
+    /// The mcap band high bound in lamports (inclusive).
+    pub mcap_band_hi_lamports: u64,
 }
 
 /// The live outbound sink. Holds injected I/O trait objects + config.
@@ -168,6 +177,34 @@ impl OutboundSink for LiveOutboundSink {
             return OutboundOutcome::StateFetch(
                 "bonding curve complete — graduated to pumpswap".to_string(),
             );
+        }
+
+        // ── Rev-36: TOCTOU mcap band re-validation ──────────────────────
+        //
+        // The gate checks the mcap band using a vsol snapshot from gate-eval
+        // time, but the live sink fetches FRESH on-chain state here. Between
+        // gate approval and this buy, other traders may have pumped SOL into
+        // the curve, raising vsol and the mcap above the operator's band.
+        // Without this re-check the bot buys at a higher mcap than the gate
+        // ever approved — the "21 trades above 45 SOL cap" leak.
+        //
+        // mcap = vsol² / MCAP_DIVISOR (pump.fun constant-product curve).
+        // MCAP_DIVISOR_LAMPORTS = 32_190_000_000 (inlined to avoid a cross-
+        // crate dependency; the value is a venue constant, not a config knob).
+        if record.is_buy && self.config.mcap_band_enable {
+            const MCAP_DIVISOR_LAMPORTS: u128 = 32_190_000_000;
+            let vsol = state.virtual_sol_reserves;
+            if vsol > 0 {
+                let v = u128::from(vsol);
+                let mcap = v.saturating_mul(v) / MCAP_DIVISOR_LAMPORTS;
+                let lo = u128::from(self.config.mcap_band_lo_lamports);
+                let hi = u128::from(self.config.mcap_band_hi_lamports);
+                if mcap < lo || mcap > hi {
+                    return OutboundOutcome::StateFetch(format!(
+                        "mcap band TOCTOU reject: fresh mcap {mcap} lamports outside [{lo}, {hi}] (vsol={vsol})"
+                    ));
+                }
+            }
         }
 
         // ── Step 2: Build the unsigned transaction via tx_build ───────────
@@ -274,9 +311,40 @@ impl OutboundSink for LiveOutboundSink {
                 Err(e) => return OutboundOutcome::Construction(build_err_str(&e)),
             }
         } else {
-            // Sell: token_amount from the position, min_sol_out from slippage.
-            // The AdmitRecord carries size_lamports = token amount for sells.
-            // min_sol_out = expected_sol * (10000 - max_slippage_bps) / 10000
+            // Sell: fetch the REAL on-chain ATA balance before building the
+            // sell instruction. The paper-computed `record.size_lamports`
+            // (from exit_token_amount) can overestimate the actual balance
+            // due to price drift → on-chain error 6023 (NotEnoughTokensToSell).
+            // Using the real balance guarantees the sell succeeds.
+            let ata_balance = match self.state_fetcher.fetch_ata_balance(
+                &record.mint,
+                &real_user,
+                &state.curve_ctx.token_program,
+            ) {
+                Ok(bal) => bal,
+                Err(e) => {
+                    return OutboundOutcome::StateFetch(format!(
+                        "ATA balance fetch failed: {e:?}"
+                    ));
+                }
+            };
+
+            // If the ATA has 0 tokens, skip the sell (fail-safe — nothing to sell).
+            if ata_balance == 0 {
+                return OutboundOutcome::StateFetch(
+                    "ATA balance is 0 — nothing to sell".to_string(),
+                );
+            }
+
+            // Use the real on-chain balance, capped at the paper-computed amount
+            // to never sell more than the position tracking says we hold.
+            let sell_amount = ata_balance.min(record.size_lamports);
+            if sell_amount == 0 {
+                return OutboundOutcome::StateFetch(
+                    "sell_amount is 0 after min(ata, paper)".to_string(),
+                );
+            }
+
             let vtokens = state.virtual_token_reserves;
             let vsol = state.virtual_sol_reserves;
             if vtokens == 0 {
@@ -284,27 +352,29 @@ impl OutboundSink for LiveOutboundSink {
                     "virtual_token_reserves is zero — cannot compute min_sol".to_string(),
                 );
             }
-            // expected_sol = token_amount * vsol / vtokens
-            let expected_sol = (record.size_lamports as u128)
+            // expected_sol = sell_amount * vsol / vtokens
+            let expected_sol = (sell_amount as u128)
                 .saturating_mul(vsol as u128)
                 / (vtokens as u128);
             let slippage_factor = 10_000u32.saturating_sub(self.config.max_slippage_bps as u32);
             let min_sol = (expected_sol * slippage_factor as u128 / 10_000u128) as u64;
 
             let params = SellParams {
-                token_amount: record.size_lamports,
+                token_amount: sell_amount,
                 min_sol_out: min_sol,
             };
 
-            // For sells, close_token_account = true on a full exit.
-            // The engine decides this; for now we pass true (full exit).
-            // A partial ladder rung would pass false — that's a future
-            // refinement when the sink receives the close flag from the record.
+            // Only close the ATA if we're selling the ENTIRE balance (full exit).
+            // If ata_balance <= sell_amount, we're selling everything → close OK.
+            // If ata_balance > sell_amount (partial ladder rung), don't close.
+            // This prevents Custom:11 (CloseAccount fails when dust remains).
+            let close_token_account = ata_balance <= sell_amount;
+
             match build_pump_sell_message(
                 &state.curve_ctx,
                 params,
                 &build_env,
-                true, // close ATA on full exit
+                close_token_account,
             ) {
                 Ok(msg) => msg,
                 Err(e) => return OutboundOutcome::Construction(build_err_str(&e)),
@@ -462,6 +532,16 @@ mod tests {
         fn latest_blockhash(&self) -> Result<LiveBlockhash, StateFetchError> {
             Ok(self.blockhash)
         }
+
+        fn fetch_ata_balance(
+            &self,
+            _mint: &[u8; 32],
+            _user: &[u8; 32],
+            _token_program: &[u8; 32],
+        ) -> Result<u64, StateFetchError> {
+            // Return a non-zero balance so the sell path proceeds in tests.
+            Ok(500_000_000_000)
+        }
     }
 
     #[test]
@@ -505,6 +585,9 @@ mod tests {
                 tip: None,
                 fee_tail: FeeTail::None,
                 max_slippage_bps: 500,
+                mcap_band_enable: false, // test sink: no TOCTOU re-check
+                mcap_band_lo_lamports: 0,
+                mcap_band_hi_lamports: u64::MAX,
             },
             registry,
             Arc::new(fetcher),

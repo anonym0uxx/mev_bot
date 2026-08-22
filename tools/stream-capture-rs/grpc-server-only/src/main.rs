@@ -270,10 +270,19 @@ async fn main() {
                 ..Default::default()
             },
         )]),
+        // ── Rev-30: Subscribe to BOTH PumpSwap pool accounts AND pump.fun
+        // bonding-curve accounts. The bonding curve PDA is owned by
+        // PUMP_PROGRAM. By including it here, LaserStream delivers account
+        // notifications for every bonding curve — replacing the Helius WS
+        // accountSubscribe lane entirely when LS is active (primary).
+        // PumpSwap pools remain for the graduated-coin AMM path.
         accounts: HashMap::from([(
-            "pq_pools".to_string(),
+            "pq_pools_and_curves".to_string(),
             SubscribeRequestFilterAccounts {
-                owner: vec![PUMPSWAP_PROGRAM.to_string()],
+                owner: vec![
+                    PUMPSWAP_PROGRAM.to_string(),
+                    PUMP_PROGRAM.to_string(),
+                ],
                 ..Default::default()
             },
         )]),
