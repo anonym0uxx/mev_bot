@@ -11,3 +11,4 @@ supervisor_evidence.db-wal
 infra_manifest.json
 rust/data/
 tools/stream-capture-rs/grpc-server-only/target/
+tools/stream-capture-rs/grpc-server-only/training-data/
