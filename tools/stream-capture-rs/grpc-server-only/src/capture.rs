@@ -133,8 +133,8 @@ impl TrainingCapture {
 
         eprintln!("Subscribing (CONFIRMED, BROAD)...");
         let (stream, _handle) = subscribe(self.config.clone(), request.clone());
-        let mut stream: Option<_> = Some(Box::pin(stream));
-        let mut stream_ended = false;
+        let mut stream = Box::pin(stream);
+        let mut stream_alive = true;
 
         // ── Set up Ctrl+C / SIGINT handler ──
         let shutdown_flag = shutdown.clone();
@@ -142,6 +142,43 @@ impl TrainingCapture {
             tokio::signal::ctrl_c().await.ok();
             eprintln!("\n[SIGINT] Received Ctrl+C — initiating graceful shutdown...");
             shutdown_flag.store(true, Ordering::SeqCst);
+        });
+
+        // ── Spawn stats printer (independent of stream state) ──
+        let stats_total_raw = total_raw.clone();
+        let stats_total_events = total_events.clone();
+        let stats_normalizer = normalizer.clone();
+        let stats_shutdown = shutdown.clone();
+        let stats_start = start_instant;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+            interval.tick().await; // skip first immediate tick
+            loop {
+                if stats_shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
+                interval.tick().await;
+                if stats_shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
+                let raw = stats_total_raw.load(Ordering::Relaxed);
+                let events = stats_total_events.load(Ordering::Relaxed);
+                let elapsed_min = stats_start.elapsed().as_secs() / 60;
+                let norm = stats_normalizer.lock().unwrap();
+                eprintln!(
+                    "[stats {elapsed_min}min] raw={raw} events={events} | creates={} buys={}/{} sells={}/{} completes={} migrations={} pumpswap_buys={} pumpswap_sells={} pools={} dups={}",
+                    norm.creates,
+                    norm.pump_buys, norm.pumpswap_buys,
+                    norm.pump_sells, norm.pumpswap_sells,
+                    norm.pump_completes,
+                    norm.migrations,
+                    norm.pumpswap_buys,
+                    norm.pumpswap_sells,
+                    norm.pumpswap_create_pools,
+                    norm.duplicates(),
+                );
+                drop(norm);
+            }
         });
 
         // ── Main event loop ──
@@ -153,9 +190,8 @@ impl TrainingCapture {
         eprintln!("PID: {}", std::process::id());
         eprintln!("Duration: {effective_duration} minutes ({duration_ms} ms)");
 
-        // Print periodic stats every 30 seconds.
-        let mut stats_interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
-        stats_interval.tick().await; // skip first immediate tick
+        // Stream read timeout: if no data for 90s, treat as dead and reconnect.
+        const STREAM_TIMEOUT_SECS: u64 = 90;
 
         loop {
             // Check shutdown conditions.
@@ -168,79 +204,53 @@ impl TrainingCapture {
                 break;
             }
 
-            // Use select to interleave stream reads with timeout/stats.
-            tokio::select! {
-                biased;
-                _ = tokio::signal::ctrl_c() => {
-                    eprintln!("\n[SIGINT] Ctrl+C — graceful shutdown...");
-                    shutdown.store(true, Ordering::SeqCst);
-                    break;
-                }
-                update_result = async {
-                    match stream.as_mut() {
-                        Some(s) => s.next().await,
-                        None => None,
-                    }
-                } => {
-                    match update_result {
-                        None => {
-                            // Stream ended — try to reconnect after a short delay.
-                            eprintln!("\n[STREAM-END] LaserStream stream ended, reconnecting...");
-                            reconnects.fetch_add(1, Ordering::SeqCst);
-                            stream_ended = true;
-                        }
-                        Some(Ok(update)) => {
-                            stream_ended = false;
-                            self.process_update(
-                                &update,
-                                &raw_recorder,
-                                &events_writer,
-                                &normalizer,
-                                &total_raw,
-                                &total_events,
-                                &start_slot,
-                                &end_slot,
-                                &last_slot,
-                                &gaps,
-                                &self.our_wallet,
-                            );
-                        }
-                        Some(Err(e)) => {
-                            eprintln!("[STREAM-ERROR] {e}");
-                            reconnects.fetch_add(1, Ordering::SeqCst);
-                            stream_ended = true;
-                        }
-                    }
-                }
-                _ = stats_interval.tick() => {
-                    let raw = total_raw.load(Ordering::Relaxed);
-                    let events = total_events.load(Ordering::Relaxed);
-                    let elapsed_min = start_instant.elapsed().as_secs() / 60;
-                    let norm = normalizer.lock().unwrap();
-                    eprintln!(
-                        "[stats {elapsed_min}min] raw={raw} events={events} | creates={} buys={}/{} sells={}/{} completes={} migrations={} pumpswap_buys={} pumpswap_sells={} pools={} dups={}",
-                        norm.creates,
-                        norm.pump_buys, norm.pumpswap_buys,
-                        norm.pump_sells, norm.pumpswap_sells,
-                        norm.pump_completes,
-                        norm.migrations,
-                        norm.pumpswap_buys,
-                        norm.pumpswap_sells,
-                        norm.pumpswap_create_pools,
-                        norm.duplicates(),
-                    );
-                    drop(norm);
-                }
-            }
-
-            // If the stream ended, wait briefly then resubscribe.
-            if stream_ended {
+            if !stream_alive {
                 eprintln!("[RECONNECT] Waiting 5s before reconnecting...");
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                let (new_stream, _handle) = subscribe(self.config.clone(), request.clone());
-                stream = Some(Box::pin(new_stream));
+                if shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
+                let (new_stream, _h) = subscribe(self.config.clone(), request.clone());
+                stream = Box::pin(new_stream);
+                stream_alive = true;
+                reconnects.fetch_add(1, Ordering::SeqCst);
                 eprintln!("[RECONNECT] Resubscribed to LaserStream.");
-                stream_ended = false;
+                continue;
+            }
+
+            // Timeout on stream read: if no data in 90s, stream is likely half-open.
+            match tokio::time::timeout(
+                tokio::time::Duration::from_secs(STREAM_TIMEOUT_SECS),
+                stream.next(),
+            ).await {
+                Ok(Some(Ok(update))) => {
+                    self.process_update(
+                        &update,
+                        &raw_recorder,
+                        &events_writer,
+                        &normalizer,
+                        &total_raw,
+                        &total_events,
+                        &start_slot,
+                        &end_slot,
+                        &last_slot,
+                        &gaps,
+                        &self.our_wallet,
+                    );
+                }
+                Ok(Some(Err(e))) => {
+                    eprintln!("[STREAM-ERROR] {e}");
+                    stream_alive = false;
+                }
+                Ok(None) => {
+                    eprintln!("\n[STREAM-END] LaserStream stream ended.");
+                    stream_alive = false;
+                }
+                Err(_) => {
+                    // Timeout — stream is half-open / dead.
+                    eprintln!("\n[STREAM-TIMEOUT] No data in {STREAM_TIMEOUT_SECS}s — treating as dead, reconnecting...");
+                    stream_alive = false;
+                }
             }
         }
 
