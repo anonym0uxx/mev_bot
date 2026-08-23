@@ -1,0 +1,413 @@
+[MONITOR 14:04] elapsed=0min restarts=0 stalls=0 raw=200M events=16143
+  [stats 31min] raw=538494 events=16059 | creates=6 buys=7454/0 sells=8597/0 completes=0 migrations=2 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:07] elapsed=3min restarts=0 stalls=0 raw=222M events=17649
+  [stats 34min] raw=597447 events=17564 | creates=8 buys=8182/0 sells=9372/0 completes=0 migrations=2 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:10] elapsed=6min restarts=0 stalls=0 raw=237M events=19005
+  [stats 37min] raw=635956 events=18898 | creates=10 buys=8689/0 sells=10197/0 completes=0 migrations=2 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:13] elapsed=9min restarts=0 stalls=0 raw=255M events=20534
+  [stats 40min] raw=678081 events=20443 | creates=11 buys=9420/0 sells=11010/0 completes=0 migrations=2 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:16] elapsed=12min restarts=0 stalls=0 raw=273M events=21805
+  [stats 43min] raw=726400 events=21707 | creates=12 buys=9952/0 sells=11741/0 completes=0 migrations=2 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:19] elapsed=15min restarts=0 stalls=0 raw=293M events=23309
+  [stats 46min] raw=777867 events=23200 | creates=12 buys=10580/0 sells=12606/0 completes=0 migrations=2 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:22] elapsed=18min restarts=0 stalls=0 raw=313M events=24710
+  [stats 49min] raw=829722 events=24619 | creates=12 buys=11196/0 sells=13409/0 completes=0 migrations=2 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:25] elapsed=21min restarts=0 stalls=0 raw=335M events=25911
+  [stats 52min] raw=896884 events=25809 | creates=12 buys=11732/0 sells=14063/0 completes=0 migrations=2 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:28] elapsed=24min restarts=0 stalls=0 raw=353M events=27243
+  [stats 55min] raw=945766 events=27141 | creates=13 buys=12352/0 sells=14773/0 completes=0 migrations=3 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:31] elapsed=27min restarts=0 stalls=0 raw=381M events=28775
+  [stats 58min] raw=1020195 events=28616 | creates=13 buys=13018/0 sells=15581/0 completes=0 migrations=4 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:34] elapsed=30min restarts=0 stalls=0 raw=405M events=30155
+  [stats 61min] raw=1079353 events=29904 | creates=13 buys=13538/0 sells=16348/0 completes=0 migrations=5 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:37] elapsed=33min restarts=0 stalls=0 raw=437M events=31587
+  [stats 64min] raw=1186628 events=31458 | creates=14 buys=14225/0 sells=17214/0 completes=0 migrations=5 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:40] elapsed=36min restarts=0 stalls=0 raw=465M events=33347
+  [stats 67min] raw=1263790 events=33180 | creates=14 buys=14989/0 sells=18172/0 completes=0 migrations=5 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:43] elapsed=39min restarts=0 stalls=0 raw=492M events=34826
+  [stats 70min] raw=1339810 events=34681 | creates=14 buys=15666/0 sells=18996/0 completes=0 migrations=5 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:46] elapsed=42min restarts=0 stalls=0 raw=518M events=36075
+  [stats 73min] raw=1411390 events=35797 | creates=17 buys=16202/0 sells=19573/0 completes=0 migrations=5 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:49] elapsed=45min restarts=0 stalls=0 raw=546M events=37520
+  [stats 76min] raw=1499942 events=37326 | creates=17 buys=16837/0 sells=20467/0 completes=0 migrations=5 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:52] elapsed=48min restarts=0 stalls=0 raw=569M events=39340
+  [stats 79min] raw=1567009 events=39147 | creates=17 buys=17601/0 sells=21524/0 completes=0 migrations=5 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:55] elapsed=51min restarts=0 stalls=0 raw=594M events=41004
+  [stats 83min] raw=1642883 events=41003 | creates=19 buys=18451/0 sells=22528/0 completes=0 migrations=5 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 14:58] elapsed=54min restarts=0 stalls=0 raw=623M events=43278
+  [stats 86min] raw=1721184 events=43266 | creates=19 buys=19225/0 sells=24016/0 completes=0 migrations=6 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:02] elapsed=57min restarts=0 stalls=0 raw=649M events=45227
+  [stats 89min] raw=1789852 events=45181 | creates=20 buys=20056/0 sells=25099/0 completes=0 migrations=6 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:05] elapsed=60min restarts=0 stalls=0 raw=681M events=47131
+  [stats 92min] raw=1877701 events=47071 | creates=21 buys=20932/0 sells=26112/0 completes=0 migrations=6 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:08] elapsed=63min restarts=0 stalls=0 raw=711M events=48863
+  [stats 95min] raw=1966773 events=48805 | creates=21 buys=21682/0 sells=27096/0 completes=0 migrations=6 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:11] elapsed=66min restarts=0 stalls=0 raw=736M events=50170
+  [stats 98min] raw=2030597 events=50090 | creates=21 buys=22216/0 sells=27847/0 completes=0 migrations=6 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:14] elapsed=69min restarts=0 stalls=0 raw=769M events=51881
+  [stats 101min] raw=2124381 events=51702 | creates=21 buys=22932/0 sells=28743/0 completes=0 migrations=6 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:17] elapsed=72min restarts=0 stalls=0 raw=803M events=53752
+  [stats 104min] raw=2227231 events=53653 | creates=21 buys=23868/0 sells=29758/0 completes=0 migrations=6 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:20] elapsed=75min restarts=0 stalls=0 raw=834M events=55881
+  [stats 107min] raw=2304700 events=55611 | creates=21 buys=24836/0 sells=30748/0 completes=0 migrations=6 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:23] elapsed=78min restarts=0 stalls=0 raw=874M events=57916
+  [stats 110min] raw=2421328 events=57736 | creates=22 buys=25696/0 sells=32011/0 completes=0 migrations=7 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:26] elapsed=81min restarts=0 stalls=0 raw=914M events=60274
+  [stats 113min] raw=2538363 events=59935 | creates=22 buys=26640/0 sells=33266/0 completes=0 migrations=7 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:29] elapsed=84min restarts=0 stalls=0 raw=951M events=62248
+  [stats 116min] raw=2646138 events=62006 | creates=23 buys=27542/0 sells=34434/0 completes=0 migrations=7 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:32] elapsed=87min restarts=0 stalls=0 raw=987M events=64228
+  [stats 119min] raw=2744605 events=63936 | creates=23 buys=28282/0 sells=35624/0 completes=0 migrations=7 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:35] elapsed=90min restarts=0 stalls=0 raw=1.1G events=66662
+  [stats 122min] raw=2885551 events=66613 | creates=23 buys=29357/0 sells=37226/0 completes=0 migrations=7 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:38] elapsed=93min restarts=0 stalls=0 raw=1.1G events=68373
+  [stats 125min] raw=3001955 events=68331 | creates=24 buys=30058/0 sells=38242/0 completes=0 migrations=7 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:41] elapsed=96min restarts=0 stalls=0 raw=1.1G events=70407
+  [stats 128min] raw=3113034 events=70314 | creates=26 buys=30985/0 sells=39296/0 completes=0 migrations=7 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:44] elapsed=99min restarts=0 stalls=0 raw=1.2G events=71923
+  [stats 131min] raw=3187701 events=71818 | creates=26 buys=31643/0 sells=40142/0 completes=0 migrations=7 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:47] elapsed=102min restarts=0 stalls=0 raw=1.2G events=73383
+  [stats 134min] raw=3294608 events=73312 | creates=27 buys=32291/0 sells=40987/0 completes=0 migrations=7 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:50] elapsed=105min restarts=0 stalls=0 raw=1.2G events=75032
+  [stats 137min] raw=3380641 events=74857 | creates=27 buys=32937/0 sells=41886/0 completes=0 migrations=7 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:53] elapsed=108min restarts=0 stalls=0 raw=1.2G events=76417
+  [stats 140min] raw=3470035 events=76213 | creates=29 buys=33585/0 sells=42592/0 completes=0 migrations=7 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:56] elapsed=111min restarts=0 stalls=0 raw=1.3G events=77912
+  [stats 143min] raw=3558869 events=77696 | creates=31 buys=34264/0 sells=43394/0 completes=0 migrations=7 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 15:59] elapsed=114min restarts=0 stalls=0 raw=1.3G events=79380
+  [stats 146min] raw=3658862 events=79200 | creates=31 buys=34874/0 sells=44288/0 completes=0 migrations=7 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:02] elapsed=117min restarts=0 stalls=0 raw=1.4G events=81447
+  [stats 150min] raw=3823240 events=81435 | creates=32 buys=35943/0 sells=45452/0 completes=0 migrations=8 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:06] elapsed=120min restarts=0 stalls=0 raw=1.4G events=83370
+  [stats 153min] raw=3915786 events=83297 | creates=35 buys=36857/0 sells=46396/0 completes=0 migrations=9 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:09] elapsed=123min restarts=0 stalls=0 raw=1.4G events=85449
+  [stats 156min] raw=4021729 events=85370 | creates=35 buys=37861/0 sells=47463/0 completes=0 migrations=11 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:12] elapsed=126min restarts=0 stalls=0 raw=1.4G events=86970
+  [stats 159min] raw=4087714 events=86836 | creates=35 buys=38504/0 sells=48286/0 completes=0 migrations=11 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:15] elapsed=129min restarts=0 stalls=0 raw=1.5G events=88971
+  [stats 162min] raw=4219446 events=88748 | creates=35 buys=39358/0 sells=49344/0 completes=0 migrations=11 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:18] elapsed=132min restarts=0 stalls=0 raw=1.5G events=91087
+  [stats 165min] raw=4354281 events=90846 | creates=35 buys=40263/0 sells=50537/0 completes=0 migrations=11 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:21] elapsed=135min restarts=0 stalls=0 raw=1.6G events=93267
+  [stats 168min] raw=4462663 events=93267 | creates=36 buys=41374/0 sells=51844/0 completes=0 migrations=13 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:24] elapsed=138min restarts=0 stalls=0 raw=1.6G events=95542
+  [stats 171min] raw=4562082 events=95482 | creates=38 buys=42348/0 sells=53083/0 completes=0 migrations=13 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:27] elapsed=141min restarts=0 stalls=0 raw=1.6G events=97703
+  [stats 174min] raw=4663253 events=97599 | creates=38 buys=43308/0 sells=54239/0 completes=0 migrations=14 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:30] elapsed=144min restarts=0 stalls=0 raw=1.7G events=100287
+  [stats 177min] raw=4807034 events=100005 | creates=39 buys=44457/0 sells=55494/0 completes=0 migrations=15 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:33] elapsed=147min restarts=0 stalls=0 raw=1.7G events=103111
+  [stats 180min] raw=4919220 events=102857 | creates=39 buys=45552/0 sells=57251/0 completes=0 migrations=15 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:36] elapsed=150min restarts=0 stalls=0 raw=1.8G events=105710
+  [stats 183min] raw=5073152 events=105350 | creates=39 buys=46679/0 sells=58617/0 completes=0 migrations=15 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:39] elapsed=153min restarts=0 stalls=0 raw=1.8G events=108292
+  [stats 186min] raw=5224227 events=107981 | creates=39 buys=47829/0 sells=60097/0 completes=0 migrations=16 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:42] elapsed=156min restarts=0 stalls=0 raw=1.8G events=110188
+  [stats 190min] raw=5313006 events=110164 | creates=40 buys=48736/0 sells=61372/0 completes=0 migrations=16 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:46] elapsed=159min restarts=0 stalls=0 raw=1.9G events=112323
+  [stats 193min] raw=5418192 events=112255 | creates=40 buys=49597/0 sells=62600/0 completes=0 migrations=18 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:49] elapsed=162min restarts=0 stalls=0 raw=1.9G events=114352
+  [stats 196min] raw=5529838 events=114179 | creates=40 buys=50457/0 sells=63664/0 completes=0 migrations=18 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:52] elapsed=165min restarts=0 stalls=0 raw=2.0G events=116318
+  [stats 199min] raw=5644049 events=116082 | creates=40 buys=51236/0 sells=64788/0 completes=0 migrations=18 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:55] elapsed=168min restarts=0 stalls=0 raw=2.0G events=118405
+  [stats 202min] raw=5772594 events=118088 | creates=40 buys=52107/0 sells=65923/0 completes=0 migrations=18 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 16:58] elapsed=171min restarts=0 stalls=0 raw=2.0G events=120481
+  [stats 205min] raw=5936958 events=120466 | creates=40 buys=53151/0 sells=67255/0 completes=0 migrations=20 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:01] elapsed=174min restarts=0 stalls=0 raw=2.1G events=122324
+  [stats 208min] raw=6039361 events=122256 | creates=40 buys=53875/0 sells=68320/0 completes=0 migrations=21 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:04] elapsed=177min restarts=0 stalls=0 raw=2.1G events=124198
+  [stats 211min] raw=6122928 events=124055 | creates=41 buys=54671/0 sells=69321/0 completes=0 migrations=22 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:07] elapsed=180min restarts=0 stalls=0 raw=2.2G events=126155
+  [stats 214min] raw=6252521 events=126016 | creates=41 buys=55431/0 sells=70521/0 completes=0 migrations=23 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:10] elapsed=183min restarts=0 stalls=0 raw=2.2G events=128151
+  [stats 217min] raw=6368437 events=127932 | creates=41 buys=56220/0 sells=71648/0 completes=0 migrations=23 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:13] elapsed=186min restarts=0 stalls=0 raw=2.2G events=130053
+  [stats 220min] raw=6467484 events=129843 | creates=41 buys=57054/0 sells=72724/0 completes=0 migrations=24 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:16] elapsed=189min restarts=0 stalls=0 raw=2.3G events=132353
+  [stats 224min] raw=6587538 events=132342 | creates=41 buys=58014/0 sells=74262/0 completes=0 migrations=25 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:20] elapsed=192min restarts=0 stalls=0 raw=2.3G events=134821
+  [stats 227min] raw=6673819 events=134732 | creates=41 buys=59030/0 sells=75636/0 completes=0 migrations=25 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:23] elapsed=195min restarts=0 stalls=0 raw=2.3G events=137112
+  [stats 230min] raw=6773578 events=136994 | creates=41 buys=59893/0 sells=77033/0 completes=0 migrations=27 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:26] elapsed=198min restarts=0 stalls=0 raw=2.4G events=139233
+  [stats 233min] raw=6860839 events=139058 | creates=41 buys=60796/0 sells=78194/0 completes=0 migrations=27 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:29] elapsed=201min restarts=0 stalls=0 raw=2.4G events=141332
+  [stats 236min] raw=6974935 events=140970 | creates=43 buys=61561/0 sells=79339/0 completes=0 migrations=27 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:32] elapsed=204min restarts=0 stalls=0 raw=2.4G events=143443
+  [stats 239min] raw=7062591 events=143033 | creates=43 buys=62551/0 sells=80410/0 completes=0 migrations=29 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:35] elapsed=207min restarts=0 stalls=0 raw=2.5G events=145535
+  [stats 242min] raw=7217213 events=145463 | creates=44 buys=63532/0 sells=81856/0 completes=0 migrations=31 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:38] elapsed=210min restarts=0 stalls=0 raw=2.5G events=147466
+  [stats 245min] raw=7362238 events=147330 | creates=45 buys=64296/0 sells=82958/0 completes=0 migrations=31 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:41] elapsed=213min restarts=0 stalls=0 raw=2.5G events=149744
+  [stats 248min] raw=7489037 events=149507 | creates=46 buys=65176/0 sells=84252/0 completes=0 migrations=33 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:44] elapsed=216min restarts=0 stalls=0 raw=2.6G events=151953
+  [stats 251min] raw=7583012 events=151658 | creates=46 buys=66209/0 sells=85370/0 completes=0 migrations=33 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:47] elapsed=219min restarts=0 stalls=0 raw=2.6G events=154565
+  [stats 255min] raw=7702108 events=154561 | creates=46 buys=67357/0 sells=87124/0 completes=0 migrations=34 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:51] elapsed=222min restarts=0 stalls=0 raw=2.6G events=157191
+  [stats 258min] raw=7801972 events=157033 | creates=46 buys=68527/0 sells=88425/0 completes=0 migrations=35 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:54] elapsed=225min restarts=0 stalls=0 raw=2.7G events=160035
+  [stats 261min] raw=7965433 events=159834 | creates=46 buys=69787/0 sells=89965/0 completes=0 migrations=36 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 17:57] elapsed=228min restarts=0 stalls=0 raw=2.7G events=162350
+  [stats 264min] raw=8051767 events=161968 | creates=46 buys=70763/0 sells=91123/0 completes=0 migrations=36 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 18:00] elapsed=231min restarts=0 stalls=0 raw=2.8G events=165003
+  [stats 267min] raw=8174353 events=164552 | creates=47 buys=71858/0 sells=92610/0 completes=0 migrations=37 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 18:03] elapsed=234min restarts=0 stalls=0 raw=2.8G events=166885
+  [stats 270min] raw=8289823 events=166849 | creates=47 buys=72715/0 sells=94050/0 completes=0 migrations=37 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 18:06] elapsed=237min restarts=0 stalls=0 raw=2.8G events=168406
+  [stats 273min] raw=8365668 events=168322 | creates=47 buys=73397/0 sells=94839/0 completes=0 migrations=39 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 18:09] elapsed=240min restarts=0 stalls=0 raw=2.9G events=170277
+  [stats 276min] raw=8461574 events=170194 | creates=47 buys=74133/0 sells=95974/0 completes=0 migrations=40 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 18:12] elapsed=243min restarts=0 stalls=0 raw=2.9G events=172612
+  [stats 279min] raw=8577846 events=172277 | creates=47 buys=75075/0 sells=97113/0 completes=0 migrations=42 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 18:15] elapsed=246min restarts=0 stalls=0 raw=2.9G events=174436
+  [stats 283min] raw=8668235 events=174421 | creates=47 buys=76009/0 sells=98320/0 completes=0 migrations=45 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 18:19] elapsed=249min restarts=0 stalls=0 raw=3.0G events=176472
+  [stats 286min] raw=8762773 events=176381 | creates=48 buys=76639/0 sells=99649/0 completes=0 migrations=45 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 18:22] elapsed=252min restarts=0 stalls=0 raw=3.0G events=178368
+  [stats 289min] raw=8853326 events=178158 | creates=48 buys=77276/0 sells=100789/0 completes=0 migrations=45 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 18:25] elapsed=255min restarts=0 stalls=0 raw=3.0G events=180477
+  [stats 292min] raw=9002540 events=180168 | creates=48 buys=78216/0 sells=101859/0 completes=0 migrations=45 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 18:28] elapsed=258min restarts=0 stalls=0 raw=3.1G events=182011
+  [stats 295min] raw=9099460 events=181974 | creates=48 buys=79055/0 sells=102826/0 completes=0 migrations=45 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 18:31] elapsed=261min restarts=0 stalls=0 raw=3.1G events=183979
+  [stats 298min] raw=9187622 events=183858 | creates=48 buys=79810/0 sells=103955/0 completes=0 migrations=45 pumpswap_buys=0 pumpswap_sells=0 pools=0 dups=0
+[MONITOR 18:34] ✅ MANIFEST FOUND — capture completed normally!
+[MONITOR] Manifest: /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_manifest_v1_20260823_133256_000398.json
+
+[MONITOR] === MONITORING ENDED ===
+[MONITOR] Total elapsed: 264 minutes
+[MONITOR] Auto-restarts: 0
+
+[MONITOR] === FINAL FILE INVENTORY ===
+-rwxrwxrwx 1 alon alon 1.3G Aug 23 11:32 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_events_v1_20260823_133256_000398.ndjson
+-rwxrwxrwx 1 alon alon  40K Aug 23 11:33 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_manifest_v1_20260823_133256_000398.json
+-rwxrwxrwx 1 alon alon  19M Aug 23 06:36 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0000.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 06:38 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0001.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 06:40 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0002.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 06:43 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0003.ndjson.zst
+-rwxrwxrwx 1 alon alon  21M Aug 23 06:47 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0004.ndjson.zst
+-rwxrwxrwx 1 alon alon  20M Aug 23 06:50 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0005.ndjson.zst
+-rwxrwxrwx 1 alon alon  19M Aug 23 06:53 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0006.ndjson.zst
+-rwxrwxrwx 1 alon alon  19M Aug 23 06:56 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0007.ndjson.zst
+-rwxrwxrwx 1 alon alon  20M Aug 23 06:59 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0008.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 07:01 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0009.ndjson.zst
+-rwxrwxrwx 1 alon alon  19M Aug 23 07:05 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0010.ndjson.zst
+-rwxrwxrwx 1 alon alon  19M Aug 23 07:07 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0011.ndjson.zst
+-rwxrwxrwx 1 alon alon  20M Aug 23 07:11 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0012.ndjson.zst
+-rwxrwxrwx 1 alon alon  20M Aug 23 07:14 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0013.ndjson.zst
+-rwxrwxrwx 1 alon alon  20M Aug 23 07:17 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0014.ndjson.zst
+-rwxrwxrwx 1 alon alon  20M Aug 23 07:20 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0015.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 07:23 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0016.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 07:25 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0017.ndjson.zst
+-rwxrwxrwx 1 alon alon  20M Aug 23 07:28 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0018.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 07:30 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0019.ndjson.zst
+-rwxrwxrwx 1 alon alon  19M Aug 23 07:33 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0020.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 07:34 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0021.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 07:36 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0022.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 07:38 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0023.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 07:39 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0024.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 07:41 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0025.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 07:43 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0026.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 07:46 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0027.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 07:47 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0028.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 07:49 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0029.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 07:51 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0030.ndjson.zst
+-rwxrwxrwx 1 alon alon  20M Aug 23 07:54 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0031.ndjson.zst
+-rwxrwxrwx 1 alon alon  19M Aug 23 07:56 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0032.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 07:58 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0033.ndjson.zst
+-rwxrwxrwx 1 alon alon  19M Aug 23 08:00 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0034.ndjson.zst
+-rwxrwxrwx 1 alon alon  19M Aug 23 08:02 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0035.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:03 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0036.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:05 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0037.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:07 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0038.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:08 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0039.ndjson.zst
+-rwxrwxrwx 1 alon alon  20M Aug 23 08:11 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0040.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:13 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0041.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 08:14 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0042.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:16 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0043.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:17 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0044.ndjson.zst
+-rwxrwxrwx 1 alon alon  19M Aug 23 08:19 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0045.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 08:20 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0046.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:22 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0047.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 08:23 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0048.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 08:25 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0049.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:26 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0050.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:27 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0051.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:29 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0052.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 08:30 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0053.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:32 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0054.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 08:33 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0055.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:34 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0056.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:35 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0057.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 08:36 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0058.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 08:38 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0059.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:39 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0060.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 08:41 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0061.ndjson.zst
+-rwxrwxrwx 1 alon alon  19M Aug 23 08:43 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0062.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:44 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0063.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 08:45 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0064.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 08:47 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0065.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:49 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0066.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 08:51 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0067.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 08:52 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0068.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 08:54 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0069.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 08:55 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0070.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 08:57 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0071.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 08:59 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0072.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:00 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0073.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 09:01 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0074.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 09:02 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0075.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:03 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0076.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:05 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0077.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:06 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0078.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:08 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0079.ndjson.zst
+-rwxrwxrwx 1 alon alon  19M Aug 23 09:10 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0080.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:12 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0081.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:13 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0082.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 09:14 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0083.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:15 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0084.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 09:17 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0085.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 09:17 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0086.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:19 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0087.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 09:20 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0088.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 09:22 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0089.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 09:24 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0090.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:25 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0091.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:26 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0092.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 09:28 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0093.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:29 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0094.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:30 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0095.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 09:31 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0096.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:33 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0097.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:34 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0098.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 09:35 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0099.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 09:36 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0100.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:36 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0101.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:37 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0102.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:39 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0103.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:40 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0104.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 09:42 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0105.ndjson.zst
+-rwxrwxrwx 1 alon alon  19M Aug 23 09:44 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0106.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:45 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0107.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:46 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0108.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 09:48 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0109.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 09:49 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0110.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:50 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0111.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:52 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0112.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:53 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0113.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 09:54 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0114.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:55 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0115.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 09:56 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0116.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 09:57 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0117.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 09:58 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0118.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 10:00 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0119.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 10:01 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0120.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 10:03 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0121.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 10:05 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0122.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:06 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0123.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:07 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0124.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:08 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0125.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:09 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0126.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 10:11 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0127.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 10:13 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0128.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:14 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0129.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:16 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0130.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:17 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0131.ndjson.zst
+-rwxrwxrwx 1 alon alon  19M Aug 23 10:19 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0132.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:20 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0133.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:21 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0134.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 10:23 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0135.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:25 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0136.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 10:27 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0137.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 10:28 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0138.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 10:30 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0139.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 10:31 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0140.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:32 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0141.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 10:34 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0142.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 10:35 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0143.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 10:36 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0144.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 10:37 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0145.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 10:38 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0146.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 10:39 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0147.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 10:40 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0148.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:41 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0149.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 10:43 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0150.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 10:45 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0151.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:46 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0152.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 10:47 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0153.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 10:49 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0154.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 10:50 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0155.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:51 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0156.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:52 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0157.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:53 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0158.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:54 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0159.ndjson.zst
+-rwxrwxrwx 1 alon alon  19M Aug 23 10:56 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0160.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 10:57 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0161.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 10:59 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0162.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 11:00 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0163.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 11:02 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0164.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 11:04 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0165.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 11:05 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0166.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 11:07 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0167.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 11:08 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0168.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 11:10 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0169.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 11:11 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0170.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 11:12 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0171.ndjson.zst
+-rwxrwxrwx 1 alon alon  19M Aug 23 11:15 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0172.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 11:17 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0173.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 11:18 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0174.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 11:20 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0175.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 11:21 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0176.ndjson.zst
+-rwxrwxrwx 1 alon alon  16M Aug 23 11:22 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0177.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 11:23 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0178.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 11:24 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0179.ndjson.zst
+-rwxrwxrwx 1 alon alon  17M Aug 23 11:26 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0180.ndjson.zst
+-rwxrwxrwx 1 alon alon  20M Aug 23 11:28 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0181.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 11:30 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0182.ndjson.zst
+-rwxrwxrwx 1 alon alon  18M Aug 23 11:31 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0183.ndjson.zst
+-rwxrwxrwx 1 alon alon  11M Aug 23 11:32 /mnt/d/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_raw_v1_20260823_133256_000398_part0184.ndjson.zst
+
+[MONITOR] === MANIFEST SUMMARY ===
+{
+    "schema_version": "1",
+    "raw_schema_version": "1",
+    "events_schema_version": "1",
+    "repo_sha": "aa4be2abf174749590a8f5548d536841a97df15a",
+    "session_id": "20260823_133256_000398",
+    "endpoint_host": "https://laserstream-mainnet-lax.helius-rpc.com",
+    "commitment": "CONFIRMED",
+    "programs": [
+        "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+        "pPEEEJ5r9sRFMks2oBq1qjhtBf8V4qyGSz8xbxqHEBu"
+    ],
+    "start_unix_ms": 1787491976537,
+    "end_unix_ms": 1787509975710,
+    "start_slot": 441168277,
+    "end_slot": 441217520,
+    "duration_minutes": 299,
+    "raw_files": [
+        {
+            "filename": "pumpfun_laserstream_raw_v1_20260823_133256_000398_part0000.ndjson.zst",
+            "bytes": 19505136,
+            "sha256": "327b5810e329eec802ad438f11a0a08e620d19ef01cd1b67f5cd8a6aa59cf62b"
+        },
+        {
+            "filename": "pumpfun_laserstream_raw_v1_20260823_133256_000398_part0001.ndjson.zst",
+            "bytes": 18766737,
+            "sha256": "fc7f26f729f762151573ba3696f9b87a8af56cfd7b9bc1597802a58d8d7e1b6b"
+        },
+        {
+            "filename": "pumpfun_laserstream_raw_v1_20260823_133256_000398_part0002.ndjson.zst",
+            "bytes": 18223610,
+            "sha256": "0a50f8c98878079569921d7f7079c51a84078fe2b84a994201d253166ba7982c"
+        },
+        {
+            "filename": "pumpfun_laserstream_raw_v1_20260823_133256_000398_part0003.ndjson.zst",
+            "bytes": 18716660,
+            "sha256": "e66c5726053add29612d7129c2581355e5c742f4df88870b228e663dfa985d67"
+        },
+        {
+            "filename": "pumpfun_laserstream_raw_v1_20260823_133256_000398_part0004.ndjson.zst",
