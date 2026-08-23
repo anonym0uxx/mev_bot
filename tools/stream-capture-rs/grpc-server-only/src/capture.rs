@@ -132,8 +132,9 @@ impl TrainingCapture {
         request.commitment = Some(CommitmentLevel::Confirmed as i32);
 
         eprintln!("Subscribing (CONFIRMED, BROAD)...");
-        let (stream, _handle) = subscribe(self.config.clone(), request);
-        tokio::pin!(stream);
+        let (stream, _handle) = subscribe(self.config.clone(), request.clone());
+        let mut stream: Option<_> = Some(Box::pin(stream));
+        let mut stream_ended = false;
 
         // ── Set up Ctrl+C / SIGINT handler ──
         let shutdown_flag = shutdown.clone();
@@ -175,13 +176,21 @@ impl TrainingCapture {
                     shutdown.store(true, Ordering::SeqCst);
                     break;
                 }
-                update_result = stream.next() => {
+                update_result = async {
+                    match stream.as_mut() {
+                        Some(s) => s.next().await,
+                        None => None,
+                    }
+                } => {
                     match update_result {
                         None => {
-                            eprintln!("\n[STREAM-END] LaserStream stream ended.");
-                            break;
+                            // Stream ended — try to reconnect after a short delay.
+                            eprintln!("\n[STREAM-END] LaserStream stream ended, reconnecting...");
+                            reconnects.fetch_add(1, Ordering::SeqCst);
+                            stream_ended = true;
                         }
                         Some(Ok(update)) => {
+                            stream_ended = false;
                             self.process_update(
                                 &update,
                                 &raw_recorder,
@@ -199,6 +208,7 @@ impl TrainingCapture {
                         Some(Err(e)) => {
                             eprintln!("[STREAM-ERROR] {e}");
                             reconnects.fetch_add(1, Ordering::SeqCst);
+                            stream_ended = true;
                         }
                     }
                 }
@@ -221,6 +231,16 @@ impl TrainingCapture {
                     );
                     drop(norm);
                 }
+            }
+
+            // If the stream ended, wait briefly then resubscribe.
+            if stream_ended {
+                eprintln!("[RECONNECT] Waiting 5s before reconnecting...");
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                let (new_stream, _handle) = subscribe(self.config.clone(), request.clone());
+                stream = Some(Box::pin(new_stream));
+                eprintln!("[RECONNECT] Resubscribed to LaserStream.");
+                stream_ended = false;
             }
         }
 
