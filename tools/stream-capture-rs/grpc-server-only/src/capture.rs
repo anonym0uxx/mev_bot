@@ -35,7 +35,7 @@ use crate::raw_recorder::{
 /// Pump.fun program ID (base58).
 const PUMP_FUN_PROGRAM: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 /// PumpSwap program ID (base58).
-const PUMP_SWAP_PROGRAM: &str = "pPEEEJ5r9sRFMks2oBq1qjhtBf8V4qyGSz8xbxqHEBu";
+const PUMP_SWAP_PROGRAM: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
 
 pub struct TrainingCapture {
     config: LaserstreamConfig,
