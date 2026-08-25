@@ -1,0 +1,23 @@
+[package]
+name = "pump-quant-treasury"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "pump_quant_treasury"
+path = "src/lib.rs"
+
+[dependencies]
+# Reuses the existing WalletSigner (ring ed25519) — no new crypto deps.
+pq-stream-capture = { path = "../../../tools/stream-capture-rs" }
+# Base64 for RPC encoding (already vendored via stream-capture's dependency tree).
+base64 = "0.22"
+# ring for SHA-256 codeword hashing (already in stream-capture's vendored tree).
+ring = "0.17"
+# Minimal HTTP client for Helius RPC (matches pq-stream-capture's ureq usage).
+ureq = { version = "2.12", default-features = false, features = ["tls", "proxy-from-env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# In-crate tests use mock policy files and mock RPC.

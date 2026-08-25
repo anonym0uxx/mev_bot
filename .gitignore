@@ -11,3 +11,16 @@ supervisor_evidence.db-wal
 infra_manifest.json
 rust/data/
 tools/stream-capture-rs/grpc-server-only/target/
+
+# Future training-data captures (keep already-pushed history committed)
+tools/stream-capture-rs/grpc-server-only/training-data/
+
+# Treasury — policy contains whitelist addresses, limits, and codeword hash.
+# Never commit policy files, audit logs, or keypair files.
+rust/crates/pump-quant-treasury/config/treasury_policy.toml
+rust/crates/pump-quant-treasury/config/*.toml
+rust/crates/pump-quant-treasury/config/**/*.toml
+# Allow the example/template file to be committed (has no real values)
+!rust/crates/pump-quant-treasury/config/treasury_policy.example.toml
+rust/crates/pump-quant-treasury/**/*audit*.jsonl
+rust/crates/pump-quant-treasury/**/*keypair*

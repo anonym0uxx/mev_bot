@@ -32,6 +32,7 @@ members = [
     "crates/pq-research-runner",
     "crates/pq-regression",
     "crates/pump-quant-ostune",
+    "crates/pump-quant-treasury",
 ]
 
 [workspace.package]
@@ -80,6 +81,9 @@ overflow-checks = true
 [profile.release.package.pump-quant-watchlist]
 overflow-checks = true
 [profile.release.package.pump-quant-memory]
+overflow-checks = true
+[profile.release.package.pump-quant-treasury]
+# Money crate: silent money wrap is prohibited (§22). Overflow checks ON.
 overflow-checks = true
 
 [profile.dev]

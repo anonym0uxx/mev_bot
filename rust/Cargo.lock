@@ -1108,6 +1108,18 @@ name = "pump-quant-strategy"
 version = "0.1.0"
 
 [[package]]
+name = "pump-quant-treasury"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "pq-stream-capture",
+ "ring",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "pump-quant-wallet-graph"
 version = "0.1.0"
 

@@ -1,0 +1,46 @@
+# treasury_policy.toml — TEMPLATE
+#
+# Copy this file to `treasury_policy.toml` and fill in real values.
+# The real `treasury_policy.toml` is gitignored and stays LOCAL ONLY.
+#
+# All amounts are in LAMPORTS.
+# 1 SOL = 1,000,000,000 (1e9) lamports
+# 0.1 SOL = 100,000,000 lamports
+
+[limits]
+# Maximum lamports per single transfer.
+per_tx_limit_lamports = 50_000_000
+
+# Transfers above this threshold require 2-of-2 approval
+# (second signature from a separate approval keypair).
+approval_threshold_lamports = 10_000_000
+
+# Time-lock: the transfer is only valid after this many seconds
+# of delay (gives time to cancel if something looks wrong).
+time_lock_seconds = 0
+
+# Hard daily ceiling across ALL whitelisted addresses combined.
+daily_cap_lamports = 100_000_000_000
+
+# ── Codeword gate ──
+# SHA-256 hash of the codeword (hex string, lowercase).
+# The codeword is prompted on stdin when you run `pq_treasury transfer`.
+# It is NEVER stored in plaintext — only this hash is in the file.
+# To generate: echo -n "your_codeword" | sha256sum
+# Paste the hex digest here. Leave this line commented to disable the gate.
+# codeword_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+# ── Whitelisted destination addresses ──
+# Each entry specifies:
+# - address:       the base58 Solana pubkey to send SOL to
+# - label:         human-readable label for audit logs
+# - max_per_tx:    per-tx limit for THIS address (must be <= per_tx_limit_lamports)
+# - max_daily:     daily limit for THIS address
+
+[[whitelist]]
+address = "ExampleExampleExampleExampleExampleExampleExamp"
+label = "treasury_ops"
+max_per_tx_lamports = 50_000_000
+max_daily_lamports = 500_000_000
+
+# Add more [[whitelist]] entries as needed.
