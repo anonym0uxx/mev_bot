@@ -11,8 +11,8 @@ see the actual data we have to build the trading brain from.
 ## Crown jewel: `slinky21_data` (permissively licensed)
 
 Location: `D:/mev_bot-artifacts/rust-data/slinky21_data/`
-License: README declares MIT in YAML, CC BY 4.0 in prose — **conflict to resolve**
-before admission (both permissive, but the actual grant/revision must be pinned).
+License: **CLEARED** — operator contacted slinky; public hosted dataset, use authorized.
+(README's MIT-vs-CC-BY inconsistency is superseded by direct publisher authorization.)
 Temporal span: **2026-06-05 → 2026-07-14 (trades/tokens), snapshots to 07-16.**
 
 | Table | Rows | Cols | Maps to |
@@ -141,7 +141,7 @@ window — either dormant, wrong address, or outside the 39-day span.
 
 ## Immediate next actions (aggregation continues)
 
-1. **Resolve slinky21 license** (MIT vs CC BY 4.0) against publisher evidence — blocks admission.
+1. ~~Resolve slinky21 license~~ — **RESOLVED** (operator authorization from slinky).
 2. **Decode LaserStream raw** zst → validate against its two manifests (D01–D05 lineage).
 3. **Continue narrative capture** to lift D07/D08/D09 (strategy cards → GOLD, EX_ANTE rate up).
 4. **Build connected-wallet linking** (D06) and **size-specific depth** (D04) from the trades + snapshots.
