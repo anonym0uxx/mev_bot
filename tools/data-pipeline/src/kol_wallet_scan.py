@@ -35,14 +35,29 @@ def rpc_call(key, method, params, timeout=30):
         return json.loads(resp.read().decode())
 
 
+PUMP_PROGRAM = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'
+PUMPSWAP_PROGRAM = 'pAMMBay6oceH9fJKBRHGP5D4apD2cMChhx64UHd2wa9'
+
+
 def resolve_decision(tx, wallet):
-    """Return (mint, direction, ui_delta) from a parsed tx, or None if not a token trade."""
+    """Return (mint, direction, ui_delta) for a REAL pump.fun/PumpSwap trade, or None.
+
+    CRITICAL: a token balance change alone is NOT a trade — wallet receive/send
+    transfers (airdrops, distributions, consolidation) also move balances. Only count a
+    decision when the pump.fun or PumpSwap program is in the transaction.
+    """
+    # must involve pump.fun bonding curve or PumpSwap AMM
+    msg = (tx.get('transaction') or {}).get('message') or {}
+    accts = msg.get('accountKeys') or []
+    progs = set(a if isinstance(a, str) else a.get('pubkey') for a in accts)
+    if PUMP_PROGRAM not in progs and PUMPSWAP_PROGRAM not in progs:
+        return None
+
     meta = tx.get('meta', {}) or {}
     pre = meta.get('preTokenBalances', []) or []
     post = meta.get('postTokenBalances', []) or []
     logs = ' '.join(meta.get('logMessages', []) or [])
 
-    # token mints involved (exclude SOL/native which has no 'mint' key)
     mints = set()
     for b in pre + post:
         m = b.get('mint')
@@ -51,7 +66,6 @@ def resolve_decision(tx, wallet):
     if not mints:
         return None
 
-    # find the wallet's balance delta for each mint
     pre_by = {}
     for b in pre:
         if b.get('owner') == wallet and b.get('mint'):
@@ -61,19 +75,13 @@ def resolve_decision(tx, wallet):
         if b.get('owner') == wallet and b.get('mint'):
             post_by[b['mint']] = b.get('uiTokenAmount', {}).get('uiAmount') or 0.0
 
-    # direction from the wallet's own balance change
     for mint in mints:
         delta = post_by.get(mint, 0.0) - pre_by.get(mint, 0.0)
-        if abs(delta) > 1e-9:
-            direction = 'buy' if delta > 0 else 'sell'
-        else:
+        if abs(delta) <= 1e-9:
             continue
-        # fall back to log signal if balance delta zero but log says buy/sell
-        if abs(delta) <= 1e-9 and 'buy' in logs.lower() and 'bonding' in logs.lower():
-            direction = 'buy'
-        elif abs(delta) <= 1e-9 and 'sell' in logs.lower() and 'bonding' in logs.lower():
-            direction = 'sell'
-        return {'mint': mint, 'direction': direction, 'ui_delta': abs(delta), 'logs_buy': 'buy' in logs.lower(), 'logs_sell': 'sell' in logs.lower()}
+        direction = 'buy' if delta > 0 else 'sell'
+        return {'mint': mint, 'direction': direction, 'ui_delta': abs(delta),
+                'logs_buy': 'buy' in logs.lower(), 'logs_sell': 'sell' in logs.lower()}
     return None
 
 
