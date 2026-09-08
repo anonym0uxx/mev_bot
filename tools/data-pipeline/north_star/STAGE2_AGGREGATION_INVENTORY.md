@@ -31,12 +31,19 @@ Trade schema (the D03 core): `id, mint, tx_signature, event_time, seconds_since_
 is_buy, sol_amount, token_amount, user_wallet, v_tokens_bonding_curve, v_sol_bonding_curve,
 market_cap_sol, price_sol, curve_pct_depleted, source`.
 
-## Our own trades: `full_trades.pkl`
+## Our own trades: `full_trades.pkl` (→ REDUNDANT, subsumed by slinky21)
 
-Location: `D:/mev_bot-artifacts/rust-data/full_trades.pkl` — **4,636,777,631 bytes (4.6 GB)**.
-Maps to **D03 + D12 + D10** (our actual fills + inventory). NOT yet deserialized — per spec
-this requires an **isolated, no-credential, memory-budgeted process → Parquet streaming**.
-This is our authoritative D10 (account state) source, which slinky21 lacks.
+Location: `D:/mev_bot-artifacts/rust-data/full_trades.pkl` — 4,636,777,631 bytes (4.6 GB).
+Deserialized (isolated process) → `full_trades.parquet`: **27,457,292 rows × 10 cols**
+(`mint, seconds_since_launch, is_buy, sol_amount, market_cap_sol, price_sol,
+v_sol_bonding_curve, curve_pct_depleted, token_amount, user_wallet`).
+
+**Finding:** schema is a strict subset of slinky21 trades (missing `event_time`,
+`tx_signature`, `v_tokens_bonding_curve`, `source`, `id`). Distinct-mint check:
+602,038 mints, **all 602,038 present in slinky21** (which has 622,870). So `full_trades.pkl`
+is a **legacy reduced copy** of the slinky21 capture — adds zero new data and lacks
+absolute timestamps/on-chain tx identity. It is **deprioritized**: slinky21 is the single
+authoritative numerical source. (Kept as an untouched legacy copy; never deleted.)
 
 ## LaserStream raw capture
 
@@ -66,7 +73,7 @@ must continue (the 270 fresh events from this session's crawl begin to close it)
 | D07 narrative | ◐ thin | 1.5K claims, mostly ambiguous |
 | D08 propagation | ◐ thin | repost/echo graph not yet built |
 | D09 meta/rotation | ◐ thin | 1,183 states, no rotation model |
-| D10 account state | ○ gap | `full_trades.pkl` (undeserialized) is the source |
+| D10 account state | ○ gap | neither slinky21 nor full_trades is an account ledger — they're market-wide; our portfolio state must come from the bot's own execution feed |
 | D11 decisions | ○ gap | derive from on-chain counterfactual economics (L3) — no human history |
 | D12 outcomes | ● strong | trades + postgard + full_trades |
 | D13 protocol/numeracy | ◐ gap | build from versioned source docs |
@@ -75,7 +82,6 @@ must continue (the 270 fresh events from this session's crawl begin to close it)
 ## Immediate next actions (aggregation continues)
 
 1. **Resolve slinky21 license** (MIT vs CC BY 4.0) against publisher evidence — blocks admission.
-2. **Deserialize `full_trades.pkl`** in an isolated, memory-budgeted process → Parquet (D10 + our D12).
-3. **Decode LaserStream raw** zst → validate against its two manifests.
-4. **Continue narrative capture** to lift D07/D08/D09 (strategy cards → GOLD, EX_ANTE rate up).
-5. **Build connected-wallet linking** (D06) and **size-specific depth** (D04) from the trades + snapshots.
+2. **Decode LaserStream raw** zst → validate against its two manifests (D01–D05 lineage).
+3. **Continue narrative capture** to lift D07/D08/D09 (strategy cards → GOLD, EX_ANTE rate up).
+4. **Build connected-wallet linking** (D06) and **size-specific depth** (D04) from the trades + snapshots.
