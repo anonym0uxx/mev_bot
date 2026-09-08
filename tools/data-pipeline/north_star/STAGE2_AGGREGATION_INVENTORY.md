@@ -67,6 +67,17 @@ a *separate/later* window than slinky21's 06-05 → 07-14 — complementary, not
 AMBIGUOUS, **zero GOLD strategy cards**. Maps to **D07/D08/D09** — this is where capture
 must continue (the 270 fresh events from this session's crawl begin to close it).
 
+### Elite-wallet behavioral substitute (D06/D11 via on-chain, not X)
+
+The X/Twitter narrative lane is login-walled (13+ handles mapped, unscrapable per policy).
+Substitute: the seed registry maps **34 elite wallets** (Orangie/Cented/Cupsey/Megga/Potion/
+Ansem), and **12 are active in slinky21** (~30K trades, `elite_wallet_tracker.py` →
+`elite_wallet_profiles.json`). Profiles are revealing — e.g. Cented 79% buy (accumulating),
+Cupsey ~80% buy across 4 wallets, **Cented's dev wallet 12% buy / 88% sell (dumping)**.
+This is higher-authority than their X posts (on-chain truth > creator claims) and directly
+feeds D06 (wallet behavior) + D11 (decision-shaped events). 22/34 wallets inactive in this
+window — either dormant, wrong address, or outside the 39-day span.
+
 ---
 
 ## D-category coverage status (post-inventory)
