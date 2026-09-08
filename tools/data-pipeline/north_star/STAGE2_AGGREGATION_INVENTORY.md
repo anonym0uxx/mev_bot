@@ -133,7 +133,7 @@ window — either dormant, wrong address, or outside the 39-day span.
 | D07 narrative | ◐ thin | 1.5K claims, mostly ambiguous |
 | D08 propagation | ◐ thin | repost/echo graph not yet built |
 | D09 meta/rotation | ◐ thin | 1,183 states, no rotation model |
-| D10 account state | ○ gap | neither slinky21 nor full_trades is an account ledger — they're market-wide; our portfolio state must come from the bot's own execution feed |
+| D10 account state | ● sourced | `rust/data/tape.jsonl` (520 rec, ~260 trades) + `live_status.json`/`held_coins.json`/`cumulative_pnl.json` — hot wallet `7ZwrFiGVE8dsEknqx879C7oV31gtR95abk8SLDLTR9DC` |
 | D11 decisions | ○ gap | derive from on-chain counterfactual economics (L3) — no human history |
 | D12 outcomes | ● strong | trades + postgard + full_trades |
 | D13 protocol/numeracy | ◐ gap | build from versioned source docs |
