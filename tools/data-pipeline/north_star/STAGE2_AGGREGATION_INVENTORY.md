@@ -67,6 +67,26 @@ a *separate/later* window than slinky21's 06-05 → 07-14 — complementary, not
 AMBIGUOUS, **zero GOLD strategy cards**. Maps to **D07/D08/D09** — this is where capture
 must continue (the 270 fresh events from this session's crawl begin to close it).
 
+### Narrative gold rebuild (this session)
+
+Rebuilt the full 5-layer chain from raw (14,080 events / 23 files) through
+`content → claim → state → validation → strategy_card`:
+
+| Layer | Count | Note |
+|---|---|---|
+| creator_content | 1,346 | from 14,080 raw (8,213 rejected, 4,521 dedup) |
+| creator_claim | 1,060 | **EX_ANTE 33 → 253**, EX_POST 66, AMBIGUOUS 741 |
+| narrative_state | 1,060 | 395 unique mints |
+| narrative_validation | 363 | ⚠️ **0/317 mint overlap** (see break below) |
+| strategy_card | 65 | **GOLD 0 → 23**, 12 setup types |
+
+**Break:** the validation builder's slinky lookup (`slinky_gold_v3_compact`) was split by
+the artifact-store move — small parquet stayed in `output/`, large moved to
+`D:/mev_bot-artifacts/`. Builder sees only 2 `pump_outcome_v3` files → 0/317 mint overlap.
+Fix: consolidate the slinky parquet to one location and/or point validation at
+`slinky21_data` (richer: 622K mints). This is the next concrete step — it's what makes
+strategy cards evidence-backed (claim ↔ on-chain outcome).
+
 ### Social/narrative lanes (validated this session)
 
 | Lane | Status | Result |
