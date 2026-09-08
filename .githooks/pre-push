@@ -45,10 +45,13 @@ while read local_ref local_sha remote_ref remote_sha; do
     all_commits=$(git rev-list "$remote_sha..$local_sha")
   fi
 
-  # Pass 1: scan NEW commits for credentials → BLOCK
+  # Pass 1: scan NEW commits for credentials → BLOCK (Telegram token + API key
+  # only. UUID is WARN-only: it is overwhelmingly a data/record ID, and blocking
+  # it false-positives on every narrative/manifest UUID. Real secrets are caught
+  # by $TG and $APIK.)
   for c in $new_commits; do
     hits=$(git show --format= --no-color "$c" | grep '^+' | blank_benign \
-           | grep -e "$UUID" -e "$TG" -e "$APIK")
+           | grep -e "$TG" -e "$APIK")
     if [ -n "$hits" ]; then
       echo "pre-push: BLOCKED - credential in NEW commit $c ($local_ref)" >&2
       echo "$hits" >&2
@@ -68,9 +71,9 @@ while read local_ref local_sha remote_ref remote_sha; do
     fi
   done
 
-  # Tip tree scan (unchanged backstop)
-  hits=$(git grep -I -e "$UUID" -e "$TG" -e "$APIK" "$local_sha" \
-         2>/dev/null | blank_benign | grep -e "$UUID" -e "$TG" -e "$APIK")
+  # Tip tree scan (unchanged backstop, TG token + API key only — UUID warn-only)
+  hits=$(git grep -I -e "$TG" -e "$APIK" "$local_sha" \
+         2>/dev/null | blank_benign | grep -e "$TG" -e "$APIK")
   if [ -n "$hits" ]; then
     echo "pre-push: BLOCKED - credential in tree at $local_sha" >&2
     echo "$hits" >&2
