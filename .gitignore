@@ -24,3 +24,9 @@ rust/crates/pump-quant-treasury/config/**/*.toml
 !rust/crates/pump-quant-treasury/config/treasury_policy.example.toml
 rust/crates/pump-quant-treasury/**/*audit*.jsonl
 rust/crates/pump-quant-treasury/**/*keypair*
+
+# Data artifacts & build caches — live in the artifact store (D:/mev_bot-artifacts/), not git
+tools/data-pipeline/output/
+tools/data-pipeline/.tmp/
+tools/social-ingest-https-rs/target/
+tools/stream-capture-rs/target/

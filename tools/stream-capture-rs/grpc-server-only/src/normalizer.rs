@@ -24,7 +24,7 @@ use crate::encoding::{b58_encode, sha256_hex};
 // ─── Program IDs (base58) ───────────────────────────────────────────────
 
 const PUMP_FUN_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
-const PUMP_SWAP_PROGRAM_ID: &str = "pPEEEJ5r9sRFMks2oBq1qjhtBf8V4qyGSz8xbxqHEBu";
+const PUMP_SWAP_PROGRAM_ID: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
 
 // ─── Instruction discriminators (sha256("global:<name>")[..8]) ──────────
 

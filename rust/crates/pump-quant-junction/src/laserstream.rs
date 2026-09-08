@@ -41,11 +41,11 @@ pub const PUMP_FUN_PROGRAM: [u8; 32] = [
     0x51, 0x89, 0xCB, 0x97, 0xF5, 0xD2, 0xFF, 0x3B, 0x65, 0x5D, 0x2B, 0xB6, 0xFD, 0x6D, 0x18, 0xB0,
 ];
 
-/// PumpSwap program ID bytes — base58-decoded from pPEEEJ5r9sRFMks2oBq1qjhtBf8V4qyGSz8xbxqHEBu.
+/// PumpSwap program ID bytes — base58-decoded from pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA.
 /// Verified against on-chain program address via `solana_program::pubkey::Pubkey::from_str`.
 pub const PUMP_SWAP_PROGRAM: [u8; 32] = [
-    0x0C, 0x23, 0x6E, 0x6F, 0x4F, 0xDD, 0xBF, 0x03, 0x4F, 0xC8, 0xDD, 0x38, 0x84, 0xEC, 0xCB, 0x44,
-    0x9E, 0x6D, 0xE6, 0x88, 0x9E, 0xD1, 0xE9, 0xF7, 0xF0, 0xA4, 0x90, 0xB3, 0xD8, 0xC8, 0x2B, 0x2C,
+    0x0C, 0x14, 0xDE, 0xFC, 0x82, 0x5E, 0xC6, 0x76, 0x94, 0x25, 0x08, 0x18, 0xBB, 0x65, 0x40, 0x65,
+    0xF4, 0x29, 0x8D, 0x31, 0x56, 0xD5, 0x71, 0xB4, 0xD4, 0xF8, 0x09, 0x0C, 0x18, 0xE9, 0xA8, 0x63,
 ];
 
 /// One decoded instruction from a LaserStream transaction notification.
@@ -888,7 +888,7 @@ mod tests {
         use std::str::FromStr;
 
         let pump_str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
-        let pumpswap_str = "pPEEEJ5r9sRFMks2oBq1qjhtBf8V4qyGSz8xbxqHEBu";
+        let pumpswap_str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
 
         let pump_pk = Pubkey::from_str(pump_str).expect("pump.fun program id must parse");
         let pumpswap_pk = Pubkey::from_str(pumpswap_str).expect("pumpswap program id must parse");
@@ -896,7 +896,7 @@ mod tests {
         assert_eq!(pump_pk.to_bytes(), PUMP_FUN_PROGRAM,
             "PUMP_FUN_PROGRAM bytes must match base58-decoded 6EF8rrect...");
         assert_eq!(pumpswap_pk.to_bytes(), PUMP_SWAP_PROGRAM,
-            "PUMP_SWAP_PROGRAM bytes must match base58-decoded pPEEEJ5...");
+            "PUMP_SWAP_PROGRAM bytes must match base58-decoded pAMMBay6...");
     }
 
     #[test]

@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "pipeline_version": "1.1.0",
+  "run_uuid": "ed724f669793",
+  "git_sha": "5fc1036",
+  "created_at": "2026-08-26T22:57:09.679045Z",
+  "total_events": 428,
+  "total_files": 1,
+  "files": [
+    {
+      "filename": "raw_0000.jsonl",
+      "path": "D:\\repos\\mev_bot\\tools\\data-pipeline\\output\\narrative_gold_v1\\raw\\raw_social_event_v1\\raw_0000.jsonl",
+      "rows": 428,
+      "bytes": 756522,
+      "sha256": "adbe66d7a3161cab063a81944b3ef95ce23ff497cf185eafe0b37393de8a85e3"
+    }
+  ]
+}

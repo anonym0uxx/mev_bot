@@ -1,0 +1,21 @@
+{
+  "run_uuid": "ed724f669793",
+  "git_sha": "5fc1036",
+  "first_seen_utc": "2026-08-26T22:54:29.487330Z",
+  "first_seen_ms": 1787784869487,
+  "status": "COMPLETED_WEB_ACQUISITION",
+  "last_update": "2026-08-26T22:57:09.679562Z",
+  "events_acquired": 428,
+  "coverage": {
+    "scraped": 34,
+    "succeeded": 33,
+    "failed": 1,
+    "events": 428,
+    "gaps": [
+      {
+        "url": "https://t.me/s/PikalosiLounge",
+        "reason": "scrape_failed"
+      }
+    ]
+  }
+}

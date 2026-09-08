@@ -1,0 +1,51 @@
+{
+ "tokenizer_repo": "unsloth/Qwen3.8-27B",
+ "revision": "3ea932cee0a432ae86e9c7826cbe8aef52323a28",
+ "files": {
+  "tokenizer.json": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+  "tokenizer_config.json": "2e6eac2825dcd97362f8910ca75f6cb0405dd142e732386eb725af57926c91e5",
+  "config.json": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+  "chat_template.jinja": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+  "vocab.json": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003",
+  "merges.txt": "a9d356d7bdf1ef4949e3e748e95b8e10ad9d4e2e838eddc38a0a7b6b94d1db8d"
+ },
+ "vocab_size_len": 248077,
+ "bos_token": [
+  null,
+  null
+ ],
+ "eos_token": [
+  "<|im_end|>",
+  248046
+ ],
+ "pad_token": [
+  "<|endoftext|>",
+  248044
+ ],
+ "special_tokens_map": {
+  "eos_token": "<|im_end|>",
+  "pad_token": "<|endoftext|>",
+  "audio_bos_token": "<|audio_start|>",
+  "audio_eos_token": "<|audio_end|>",
+  "audio_token": "<|audio_pad|>",
+  "image_token": "<|image_pad|>",
+  "video_token": "<|video_pad|>",
+  "vision_bos_token": "<|vision_start|>",
+  "vision_eos_token": "<|vision_end|>"
+ },
+ "chat_template_sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+ "chat_template_len": 9993,
+ "model_config": {
+  "model_type": "qwen3_5",
+  "hidden_size": null,
+  "num_hidden_layers": null,
+  "num_attention_heads": null,
+  "num_key_value_heads": null,
+  "vocab_size": null,
+  "max_position_embeddings": null,
+  "rope_theta": null,
+  "torch_dtype": null,
+  "tie_word_embeddings": false,
+  "intermediate_size": null
+ }
+}

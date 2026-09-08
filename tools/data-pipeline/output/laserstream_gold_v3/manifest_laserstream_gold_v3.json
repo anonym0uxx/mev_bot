@@ -1,0 +1,320 @@
+{
+  "run_uuid": "bbaeb991-0834-4b53-8ca3-90dbb6db0a11",
+  "build_timestamp": "2026-08-29T01:41:26.178839+00:00",
+  "source": "raw_zst_capture2",
+  "source_format": "RAW .zst (authoritative)",
+  "capture_bounds": {
+    "start_ms": 1787549743959,
+    "end_ms": 1787567742985,
+    "duration_minutes": 299.98376666666667
+  },
+  "layer_counts": {
+    "l1_pump_state": 3790870,
+    "l2_pump_outcome": 3790870,
+    "l3_counterfactual": 94771750,
+    "l4_policy_eval": 3790870
+  },
+  "layer_cardinality": {
+    "l1_l2_l4_ratio": "1:1:1 by state_id",
+    "l3_cardinality": "1:N by state_id (N=5\u00d75 scenarios)",
+    "l3_expected_rows": 94771750,
+    "l3_actual_rows": 94771750,
+    "l3_feasible": 86046475,
+    "l3_infeasible": 8725275,
+    "l3_duplicate_scenario_ids": 0
+  },
+  "unique_mints": 7016,
+  "venue_distribution": {
+    "pumpswap": 3713569,
+    "pumpfun": 77301
+  },
+  "migration_stats": {
+    "total_mints": 7016,
+    "migrated_mints": 29,
+    "joined_lifecycles": 0,
+    "coverage_gap_mints": 29
+  },
+  "transaction_stats": {
+    "successful_tx": 7909098,
+    "pumpswap_sell": 2364581,
+    "price_recovered": 3790870,
+    "failed_tx": 3832202,
+    "pumpswap_buy": 1351147,
+    "pumpfun_buy": 32082,
+    "pumpfun_sell": 46394,
+    "pumpswap_withdraw": 529,
+    "pumpswap_create_pool": 395,
+    "no_mint_found": 1029,
+    "price_recovery_failed": 2305,
+    "pumpswap_deposit": 83,
+    "pumpfun_migrate": 29
+  },
+  "path_invariance_assumption": true,
+  "path_invariance_description": "Hypothetical trade is assumed not to alter the subsequently observed market path. Larger-size counterfactual PnL is conditional evidence, NOT guaranteed truth.",
+  "execution_model_version": "lsv3-corrected-1",
+  "execution_assumptions": {
+    "quote_source": "decoded_raw_account_snapshots",
+    "reserve_source": "raw_data_b64_account_state",
+    "fee_model": "venue-specific: pumpfun 1% buy / 0% sell, pumpswap 0.25% per swap",
+    "capacity_check": "exit_sol capped at real_sol (pumpfun) or quote_reserve (pumpswap)",
+    "confidence_levels": "high=executable entry+exit, medium=entry ok exit uncertain, low=capacity constrained"
+  },
+  "scenario_grid": {
+    "trade_sizes_sol": [
+      0.05,
+      0.1,
+      0.25,
+      0.5,
+      1.0
+    ],
+    "latency_scenarios_ms": [
+      0,
+      100,
+      500,
+      1000,
+      2000
+    ],
+    "fee_models": [
+      "pumpfun_1pct_buy_0pct_sell",
+      "pumpswap_0.25pct"
+    ],
+    "total_scenarios_per_state": 25,
+    "execution_model_version": "lsv3-corrected-1"
+  },
+  "sim_config": {
+    "tp_pct": 15.0,
+    "sl_pct": -15.0,
+    "max_hold_s": 300,
+    "trade_sizes_sol": [
+      0.05,
+      0.1,
+      0.25,
+      0.5,
+      1.0
+    ],
+    "latency_scenarios_ms": [
+      0,
+      100,
+      500,
+      1000,
+      2000
+    ]
+  },
+  "fat_tail_config": {
+    "method": "return_based_flags + price_scale_tier_feature",
+    "return_flags": {
+      "return_gt_10x": 288305,
+      "return_gt_100x": 80059,
+      "return_gt_1000x": 23713
+    },
+    "price_scale_tier_distribution": {
+      "sub_milli_lamport": 2426526,
+      "sub_centi_lamport": 734452,
+      "sub_deci_lamport": 322522,
+      "sub_lamport": 185702,
+      "lamport_range": 120436,
+      "ten_lamport_range": 1202,
+      "hecto_lamport_range": 17,
+      "kilo_lamport_plus": 13
+    },
+    "train_only_quantiles_300s": {
+      "p1": -99.68504377689378,
+      "p5": -94.93929149548273,
+      "p10": -76.73544217958313,
+      "p25": -12.508011199593327,
+      "p50": 1.9646471771362473,
+      "p75": 32.631766836194,
+      "p90": 373.6703282702636,
+      "p95": 2116.1180120326544,
+      "p99": 35453.267408185304
+    },
+    "note": "Quantile thresholds fit on TRAIN only, applied unchanged to val/test. Never clip objective truth."
+  },
+  "mint_level_distributions": {
+    "mean_300s_ret_by_mint": {
+      "p50": -4.6878802839917295,
+      "p90": 14.45117199406713,
+      "p99": 15248.55698294911
+    },
+    "max_300s_ret_by_mint": {
+      "p50": -0.04017079065186113,
+      "p90": 164.95601747290937,
+      "p99": 1929493.6390553406
+    },
+    "unique_mints_total": 7016,
+    "mints_with_10x_returns": 268,
+    "mints_with_100x_returns": 174,
+    "mints_with_1000x_returns": 98
+  },
+  "l2_fields": {
+    "multi_horizon_returns": [
+      "return_1s",
+      "return_2s",
+      "return_5s",
+      "return_10s",
+      "return_30s",
+      "return_60s",
+      "return_120s",
+      "return_300s"
+    ],
+    "mfe_mae": [
+      "mfe_pct",
+      "mae_pct",
+      "mfe_time_ms",
+      "mae_time_ms"
+    ],
+    "barrier_events": [
+      "barrier_first",
+      "barrier_first_time_ms",
+      "barrier_first_label"
+    ],
+    "barrier_thresholds": {
+      "up": [
+        10.0,
+        25.0,
+        50.0,
+        100.0,
+        200.0
+      ],
+      "dn": [
+        -10.0,
+        -20.0,
+        -30.0,
+        -50.0
+      ]
+    },
+    "peak": [
+      "peak_return_pct",
+      "peak_time_ms"
+    ],
+    "observed_through": [
+      "observed_through_1s",
+      "observed_through_2s",
+      "observed_through_5s",
+      "observed_through_10s",
+      "observed_through_30s",
+      "observed_through_60s",
+      "observed_through_120s",
+      "observed_through_300s"
+    ],
+    "has_trade_within": [
+      "has_trade_within_1s",
+      "has_trade_within_2s",
+      "has_trade_within_5s",
+      "has_trade_within_10s",
+      "has_trade_within_30s",
+      "has_trade_within_60s",
+      "has_trade_within_120s",
+      "has_trade_within_300s"
+    ],
+    "right_censored": [
+      "right_censored_1s",
+      "right_censored_2s",
+      "right_censored_5s",
+      "right_censored_10s",
+      "right_censored_30s",
+      "right_censored_60s",
+      "right_censored_120s",
+      "right_censored_300s"
+    ],
+    "migration_venue": [
+      "migration_outcome",
+      "venue_outcome"
+    ],
+    "price_quality": [
+      "price_quality",
+      "observation_completeness"
+    ],
+    "return_flags": [
+      "return_gt_10x",
+      "return_gt_100x",
+      "return_gt_1000x"
+    ]
+  },
+  "git_sha": "4e97b4b13238",
+  "horizons": [
+    1,
+    2,
+    5,
+    10,
+    30,
+    60,
+    120,
+    300
+  ],
+  "hashes": {
+    "l1_sha256": "60718136a3d357798b679437f5040762dd22c53a13a98cf7366107c31ea03510",
+    "l2_sha256": "572f056641f2bbeefc2073b1a1158d7fbcc7a76fa2874c4535ca7f1c9892ef99",
+    "l3_sha256": "65cb1b3ed6891cfea1ada58221c411055f853838609495d4d7af5007a78cb69c",
+    "l4_sha256": "f8f8e11d1714570b183d5a28bba4f72788501d4ee0c14bb77cc1678caea4f357"
+  },
+  "supersedes": "build_laserstream_gold_v3.py run 5 (UUID 8f15b1ae)",
+  "correction_notes": [
+    "Removed price<100 lamports/rawtok extreme_outlier threshold (was marking 99.999% as extreme)",
+    "Added price_scale_tier as descriptive feature (NOT a label)",
+    "Added return_gt_10x/100x/1000x flags from markout (in L2, not L1)",
+    "L2 enriched with 21+ policy-independent objective truth fields",
+    "L3 now emits ALL size\u00d7latency combos including infeasible with feasible=false+reason",
+    "L3 has scenario_id composite key for uniqueness",
+    "path_invariance_assumption recorded explicitly in L3 + manifest",
+    "Train-only quantile metadata recorded for future split-aware threshold fitting"
+  ],
+  "git_sha_at_build": "de0cba1a98ba - Build ran with untracked/dirty source files at this commit",
+  "git_sha_at_build_note": "Build ran with untracked/dirty source files at this commit",
+  "git_sha_post_commit": "4e97b4b13238 - All producing code + fix scripts committed",
+  "git_sha_post_commit_note": "Exact producing code committed post-hoc; source matches build-time content",
+  "build_tree_state": "dirty (untracked source at build time, committed post-hoc as 4c0b292..4e97b4b)",
+  "source_code_hashes": {
+    "rebuild_v3_corrected.py": "2495f25e405b60122c43c4849ed3e7543aef070cbce77b91606d94292bacdd91",
+    "build_laserstream_gold_v3.py": "358cd06df1927104e4f8afb436597a73c6526714c5520887b07bccdc81dbadb1"
+  },
+  "audit_code_hashes": {
+    "audit1_raw_reconciliation.py": "90248a6545025e9d76556f4fd2236dfd2052d6deb9e1007047eddd63e66b8938",
+    "audit1b_waterfall.py": "e027e736a9c3f3945d4e889e7269833e6f305c6dc920d6e85e7c2a7e195d8d39",
+    "audit2_fattail_corrected.py": "93ee4efad44939e8fdf29ae55d6b79e2fdec5c3a1ad7d4f5a2cd7944224830ac",
+    "audit2_fattail_forensics.py": "1e8071ac44de2bd7af77b38a2f7afa05d2282961f2d9fcbbe542f245fd68ec26",
+    "audit3_l2_corrected.py": "c1c4d3ef72ebe50a12397d14cc234e72d58c3f1b305999e66c2717e7f66f4aa4",
+    "audit3_l2_objective_truth.py": "5abcc77663190ec499b118e37397d2ecae6b216ff1360be45a72495d7953ff67",
+    "audit4_cf_corrected.py": "d125169c1f6f56c8ffcfd6711f6197ed419317a96e238e5034fb2f20501df83e",
+    "audit4_counterfactual_semantics.py": "2bb22087e19206c9379317bc0f0268dad756ae8b626020ef29647ffc5967c821",
+    "audit5_state_id_uniqueness.py": "b78c59afb90ebf38c5d0917ca969e64ea1af5e106f320fc627f06b05b24b90b7",
+    "audit6_price_coverage.py": "6c0353735272e020843ea213487f3fc100c1ecd43650c46a4d1a26653fa6ca63",
+    "audit7_final_qa.py": "89c6caee70d5206b9e04a2fc2e3267f3c9b7e9621bdd5c51c96657c01be37d1f",
+    "audit_final_certification.py": "5d56d8e770f2b53cd88ac4f97762e9708dc42fc26ae46a4f13a87f991d2f312b"
+  },
+  "parquet_hashes": {
+    "l1_pump_state_v3.parquet": "60718136a3d357798b679437f5040762dd22c53a13a98cf7366107c31ea03510",
+    "l2_pump_outcome_v3.parquet": "572f056641f2bbeefc2073b1a1158d7fbcc7a76fa2874c4535ca7f1c9892ef99",
+    "l3_counterfactual_v3.parquet": "65cb1b3ed6891cfea1ada58221c411055f853838609495d4d7af5007a78cb69c",
+    "l4_policy_eval_v3.parquet": "f8f8e11d1714570b183d5a28bba4f72788501d4ee0c14bb77cc1678caea4f357"
+  },
+  "l1_sha256": "60718136a3d35779",
+  "l2_sha256": "572f056641f2bbee",
+  "l3_sha256": "65cb1b3ed6891cfe",
+  "l4_sha256": "9f9171a9195acf03",
+  "provenance_regenerated_at": "2026-08-29T04:10:50.533421+00:00",
+  "l4_semantics": {
+    "champion_v1_config": "0.1_sol_0ms_tp15_sl15_maxhold300",
+    "oracle_best_scenario": "hindsight_best_size_from_l3_outcomes",
+    "oracle_is_future_derived": true,
+    "oracle_not_in_l1": true,
+    "l4_is_auxiliary_critique": true
+  },
+  "split_semantics": {
+    "monotonicity": "100% (7,016/7,016 mints chronologically monotonic)",
+    "split_method": "mint-disjoint by first-observation time",
+    "train_mints": 4912,
+    "val_mints": 1052,
+    "test_mints": 1052,
+    "mint_overlap": 0,
+    "long_lived_extension_documented": true
+  },
+  "l2_null_reconciliation": {
+    "return_300s_null_pct": 1.99,
+    "null_reasons": {
+      "right_censored_capture_ended": 59868,
+      "observed_no_trade_price_unavailable": 15457,
+      "uncategorized": 0
+    }
+  }
+}

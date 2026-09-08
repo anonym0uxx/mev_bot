@@ -1,0 +1,146 @@
+{
+  "freeze_uuid": "ng11_43bf56a50ed7",
+  "run_uuid": "nv11_48e7f58d6d91",
+  "version": "narrative_gold_v1.1",
+  "parent_version": "narrative_gold_v1",
+  "parent_freeze_uuid": "ng1_7a3f9c2b",
+  "freeze_timestamp_utc": "2026-08-29T14:46:26.897102+00:00",
+  "freeze_timestamp_pt": "2026-08-29T07:46:26.897102-07:00",
+  "git_sha": "cf97c33ee575",
+  "status": "FROZEN_IMMUTABLE",
+  "certification": "CERTIFIED",
+  "defects_fixed": 7,
+  "defects_remaining": 0,
+  "layer_counts": {
+    "content": 1471,
+    "claims": 1471,
+    "states": 1183,
+    "validations": 615,
+    "strategy": 97,
+    "trajectories": 490
+  },
+  "file_hashes_sha256": {
+    "content": "ed8ce91fcae3e4ca4f4ee846372535f4f72e6be675ff4a939c00eeb57efafeaf",
+    "claims": "45077c0562b0cd56165d4d37ab894b04accef406993dce514700b4393a1a0f0f",
+    "states": "a6f47540448683cc05db4189a7b8bf5f7fca6d8bbe847eb405eac60afd134e01",
+    "validations": "7d99c991f7934c248b64d0dc3595a0a266e02c8d1df40530e6aa4df1781e9773",
+    "strategy": "ecde7c8056d5ac58dcded181b8484af0d9ab883fc022e3d244eeb78a74fa7e0f",
+    "trajectories": "01f6703a7c533d1eeec2600c3fb999dae3432335bb37009a96fd62dbf823913c"
+  },
+  "source_hashes_sha256": {
+    "content": "e29ef7e105a9023330fdd376e7d762372a6f008354fdc6205b25ef9022934630",
+    "claims": "e7c98ff3176446045468ef9820254d459187f5d378c04fbc833e22439f23f9da",
+    "states": "06c8bb1d5f2515003c4a23a6086d563d273352cc1c494aa269fd17b7a8e0ec77",
+    "validations": "3a0e053c15645ed3760acf2a1521d299efd50fc56c0c8b6c44d9005ec4c7fe7b",
+    "strategy": "4d64c45d0706729f2f90028827cb938d8a9474f180c49c8b73a490e0b69fae0e"
+  },
+  "scope_distribution": {
+    "A_pump_specific": 404,
+    "B_solana_memecoin_regime": 443,
+    "C_generic_crypto": 217,
+    "D_unresolved": 407,
+    "training_admitted_AB": 847,
+    "pump_sft_excluded_C": 217
+  },
+  "temporal_distribution": {
+    "EX_ANTE": 33,
+    "RETROSPECTIVE": 14,
+    "AMBIGUOUS": 1424
+  },
+  "entity_propagation": {
+    "content_with_mints": 615,
+    "claims_with_mints": 615,
+    "states_with_mints": 530,
+    "resolution_methods": {
+      "direct_address": 615,
+      "cashtag_extracted": 337,
+      "unknown": 519
+    },
+    "confidence_distribution": {
+      "high_0.9_plus": 292,
+      "medium_0.5_0.9": 323,
+      "low_0.1_0.5": 337,
+      "none_0.0": 519
+    }
+  },
+  "dedup_clusters": {
+    "total_clusters": 51,
+    "clustered_records": 1151,
+    "unique_records": 320,
+    "avg_originality_confidence": 0.623
+  },
+  "strategy_cards": {
+    "total": 97,
+    "SILVER": 26,
+    "BRONZE": 71,
+    "GOLD": 0,
+    "with_failure_modes": 12,
+    "hollow": 0,
+    "evidence_derived": 97
+  },
+  "validation": {
+    "total": 615,
+    "GOLD_CAUSAL": 1,
+    "RETROSPECTIVE_CONTEXT": 7,
+    "UNRESOLVED": 607,
+    "slinky_matched": 8,
+    "ex_post_downgraded": 7
+  },
+  "trajectories": {
+    "total": 490,
+    "GOLD_4_plus_stages": 202,
+    "SILVER_3_stages": 288,
+    "unique_creators": 7
+  },
+  "quality_filtering": {
+    "rejected": 35,
+    "downranked": 100,
+    "quality_labels": {
+      "HIGH_SIGNAL": 326,
+      "TRADE_THESIS": 150,
+      "OBSERVATION": 294,
+      "CALL": 289,
+      "UNRESOLVED": 312,
+      "DOWNRANK": 100
+    }
+  },
+  "creator_gaps": {
+    "Pr6sper": "absent_from_source — gap accepted",
+    "Cupsey": "absent_from_source — gap accepted",
+    "DVCS": "absent_from_source — gap accepted",
+    "note": "No content fabricated to fill gaps. Coverage gap accepted per quality > quantity."
+  },
+  "training_admission": {
+    "primary_A_pump_specific": 404,
+    "supporting_B_solana_memecoin_regime": 443,
+    "excluded_C_generic_crypto": 217,
+    "retained_raw_D_unresolved": 407,
+    "total_training_eligible": 847,
+    "note": "A=primary for Pump SFT, B=supporting context, C=excluded from Pump SFT, D=retained raw"
+  },
+  "causal_safety": {
+    "ex_post_slinky_matches": 7,
+    "ex_ante_causal_validations": 1,
+    "rule": "Historical acquisitions teach strategy/language but cannot become live causal signals. Ex-post Slinky matches are RETROSPECTIVE_CONTEXT, not GOLD causal.",
+    "v1_defect": "3 GOLD validations were ex-post (67-81 day lead_lag) — now correctly downgraded"
+  },
+  "provenance": {
+    "source_corpus": "narrative_gold_v1 (FROZEN, read-only)",
+    "source_freeze_uuid": "ng1_7a3f9c2b",
+    "derivative_type": "clean_derivative",
+    "v1_untouched": true,
+    "build_script": "src/build_narrative_gold_v1_1.py",
+    "new_layers_in_v1.1": [
+      "human_reasoning_trajectory_v1"
+    ],
+    "export_constraint": "Qwen exporter MUST prevent repo_state_v1 leakage into repair eval tasks"
+  },
+  "validation_truth": {
+    "clippy": "FAIL (17 pre-existing)",
+    "fmt": "FAIL (Windows os error 206 pre-existing)",
+    "regression": "FAIL (1 pre-existing)",
+    "note": "All pre-existing in rust_gold_v1, NOT introduced by v1.1"
+  },
+  "no_cpt_sft": true,
+  "next_step": "curriculum_and_export_design (awaiting Alon direction)"
+}

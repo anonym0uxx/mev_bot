@@ -1,0 +1,99 @@
+{
+  "run_uuid": "1821a09d-4ef",
+  "git_sha": "af15ff3e42be",
+  "schema_version": "laserstream_gold_v1",
+  "builder": "build_laserstream_gold_v1.py",
+  "builder_code_hash": "3876c789887b074ce09375da344638c3c09c1255c37edb7fea3c0823a3c04313",
+  "built_at": "2026-08-27T17:10:58.224471+00:00",
+  "build_duration_s": 401.6,
+  "source": {
+    "events_file": "pumpfun_laserstream_events_v1_20260824_053543_000288.ndjson",
+    "events_file_size_gb": 60.03,
+    "manifest_file": "pumpfun_laserstream_manifest_v1_20260824_053543_000288.json",
+    "manifest_hash": "e43f5f46755a9090",
+    "capture_start_ms": 1787549743730,
+    "capture_end_ms": 1787567743007,
+    "capture_duration_min": 299.98794999999996
+  },
+  "counts": {
+    "total_events_scanned": 4243995,
+    "total_trades_extracted": 3414294,
+    "mints_with_trades": 2903,
+    "mints_processed": 2903,
+    "l1_states": 3414294,
+    "l2_outcomes": 3414294,
+    "l3_counterfactuals": 3414294,
+    "l4_policy_evals": 3414294
+  },
+  "cardinality": {
+    "states": 3414294,
+    "outcomes": 3414294,
+    "outcomes_match_states": true,
+    "counterfactuals": 3414294,
+    "cf_match_states": true,
+    "policy_evals": 3414294,
+    "pe_match_states": true
+  },
+  "right_censoring": {
+    "censored_states": 53969,
+    "uncensored_states": 3360325,
+    "censored_fraction": 0.0158
+  },
+  "outcome_classes": {
+    "FLAT": 1029019,
+    "STRONG_UP": 772137,
+    "STRONG_DOWN": 949774,
+    "DOWN": 224698,
+    "UP": 375377,
+    "NO_TRADES": 9320,
+    "RIGHT_CENSORED": 53969
+  },
+  "exit_reasons": {
+    "PRICE_UNRELIABLE": 3092254,
+    "SL_HIT": 229198,
+    "TP_HIT": 37976,
+    "NO_LIQUIDITY": 71,
+    "TIMEOUT": 826
+  },
+  "venue_distribution": {
+    "pumpswap": 3353918,
+    "pumpfun": 60376
+  },
+  "sim_config": {
+    "entry_fee_bps": 100,
+    "exit_fee_bps": 100,
+    "entry_tip_lamports": 10000,
+    "exit_tip_lamports": 10000,
+    "slippage_default_bp": 50,
+    "latency_ms": 250,
+    "tp_target_bp": 1500,
+    "stop_loss_bp": 1500,
+    "max_hold_seconds": 300,
+    "sim_version": "laserstream_v1_policy_independent"
+  },
+  "champion_config": {
+    "policy_version": "champion_v1",
+    "would_enter_threshold": 0.5,
+    "tp_target_bp": 1500,
+    "stop_loss_bp": 1500,
+    "max_hold_seconds": 300
+  },
+  "known_limitations": [
+    "Transaction-only capture: no periodic account snapshots. Curve/pool reserves derived from balance deltas, not direct account reads.",
+    "Right-censoring: states within 300s of capture end cannot have full forward labels. Marked right_censored=True.",
+    "Decimals unknown for most mints (field is null). Assumed 6 (pump.fun standard) for market cap calculations. Flagged decimals_assumed=True.",
+    "PumpSwap pool reserves (base_reserve, quote_reserve) are null in NDJSON. Price derived from balance deltas (largest non-pool SOL delta / token amount).",
+    "virtual_sol/virtual_token fields are null for all events. For pump.fun venue, bonding curve state reconstructed from cumulative trade flow if create event exists.",
+    "No our-wallet identification: is_our_wallet field not reliably populated."
+  ],
+  "files": {
+    "l1_pump_state": "l1_pump_state_v3.parquet",
+    "l2_pump_outcome": "l2_pump_outcome_v3.parquet",
+    "l3_counterfactual": "l3_counterfactual_v3.parquet",
+    "l4_policy_eval": "l4_policy_eval_v3.parquet",
+    "l1_size_mb": 748.7,
+    "l2_size_mb": 229.0,
+    "l3_size_mb": 153.8,
+    "l4_size_mb": 116.6
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "CPT": {
+    "records": 7600,
+    "sha256": "b92b844daed59d972550ef92e20adfcb7b16904aab74a349549291d8282519eb",
+    "tokens_true": 9207205,
+    "tokens_manifest_field_sum": 9207205,
+    "p50": 625,
+    "p90": 3807,
+    "p95": 3846,
+    "p99": 3884,
+    "max": 3999,
+    "chars_per_token": 2.244,
+    "over_context_32768": 0,
+    "eval_id_leak_records": 0,
+    "compression_meta_records": 5,
+    "exact_dup_texts": 0,
+    "unique_ids": true,
+    "manifest_hash_match": true,
+    "manifest_source_mix": {
+      "slinky_trajectory": 2922,
+      "slinky_panel": 1200,
+      "slinky_regime_catalog": 5,
+      "laserstream": 1498,
+      "rust_code_change": 165,
+      "rust_repair": 487,
+      "rust_trajectory": 143,
+      "narrative_trajectory": 280,
+      "narrative_content": 847,
+      "narrative_strategy": 97
+    }
+  },
+  "SFT": {
+    "records": 2158,
+    "sha256": "251a732bc080ea10f77a3cf7e8abd0fe9a8b29646cbf9038d01d5f27f0193041",
+    "tokens_true": 10977789,
+    "tokens_manifest_field_sum": 11026417,
+    "p50": 3479,
+    "p90": 9894,
+    "p95": 9952,
+    "p99": 10036,
+    "max": 10154,
+    "chars_per_token": 2.804,
+    "over_context_32768": 0,
+    "eval_id_leak_records": 0,
+    "compression_meta_records": 2,
+    "exact_dup_texts": 0,
+    "unique_ids": true,
+    "manifest_hash_match": true,
+    "manifest_source_mix": {
+      "cross_sectional": 1050,
+      "execution_surface": 150,
+      "postmortem": 600,
+      "rust_code_change": 165,
+      "rust_repair": 180,
+      "rust_trajectory": 120,
+      "narrative_trajectory": 120,
+      "narrative_content": 120,
+      "narrative_strategy": 60,
+      "hermes_tool": 150,
+      "general_retention": 21
+    }
+  },
+  "tokenizer": {
+    "id": "unsloth/Qwen3.8-27B",
+    "revision": "3ea932cee0a432ae86e9c7826cbe8aef52323a28",
+    "vocab": 248077,
+    "context_limit_checked": 32768
+  }
+}

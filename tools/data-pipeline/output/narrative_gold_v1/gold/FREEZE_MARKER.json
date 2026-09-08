@@ -1,0 +1,38 @@
+{
+  "schema": "freeze_marker_v1",
+  "corpus": "narrative_gold_v1",
+  "status": "FROZEN_IMMUTABLE",
+  "frozen_at": "2026-08-29T07:15:00Z",
+  "frozen_by": "Hermes Agent (glm-5.2)",
+  "certification_uuid": "ng1_7a3f9c2b-8e1d-4b2a-a3f7-c0492e58b1a6",
+  "git_sha_at_freeze": "cf97c33",
+  "validation_truth": {
+    "slinky_overlap": 6,
+    "gold_validated_claims": 3,
+    "unresolved_validations": 371,
+    "no_fabricated_success": true,
+    "note": "Low Slinky overlap is structural \u2014 alpha callers discuss a tiny fraction of Pump.fun mints, and only 7 of 147 pump calls fall in Slinky's June 5 - July 14 capture window."
+  },
+  "do_not_modify": [
+    "This corpus is FROZEN. Do not mutate after this marker.",
+    "Do not modify LaserStream Gold v3, Slinky Gold v3, or Rust Gold v1.",
+    "Creator claims remain HUMAN HYPOTHESES, never truth.",
+    "Validation truth preserved exactly \u2014 unresolved claims stay unresolved."
+  ],
+  "hashes": {
+    "CERTIFICATION_NARRATIVE_GOLD_V1.md": "97aa1b163542e42b29a45d704810fa9687b11dff502da35d7af4a8b554ca23c1",
+    "FREEZE_MARKER.json": "56446b707158d7e72f97c991856b61ae0a43ded46e1b05b44c8ab22184225e10",
+    "manifest_narrative_gold_v1.json": "f0ca850ef47d5c599ccd60318e3abd81d5e14ffada70186e2f09a35a5d2a6f6f",
+    "creator_claim_v1\\creator_claim_v1.jsonl": "e7c98ff3176446045468ef9820254d459187f5d378c04fbc833e22439f23f9da",
+    "creator_content_v1\\creator_content_v1.jsonl": "e29ef7e105a9023330fdd376e7d762372a6f008354fdc6205b25ef9022934630",
+    "creator_content_v1\\creator_content_v1_manifest.json": "6ee1bc4fd86b914bf7ae02f0d78592471de384515d8cdc6768048f55f0da889a",
+    "narrative_state_v1\\narrative_state_v1.jsonl": "06c8bb1d5f2515003c4a23a6086d563d273352cc1c494aa269fd17b7a8e0ec77",
+    "narrative_validation_v1\\narrative_validation_v1.jsonl": "3a0e053c15645ed3760acf2a1521d299efd50fc56c0c8b6c44d9005ec4c7fe7b",
+    "onchain_validation\\onchain_validation_oc_6a8f92b8.jsonl": "578797c82d03614d2f3149517b7ee92f81803f55b83a63ad15be6a0126750ff2",
+    "onchain_validation\\slinky_onchain_validation_6a8f9559.jsonl": "2a5d04c10eb48e91d44e4e47d9da19cc47c2b10ffbcf429e2f0e175ffc44e239",
+    "onchain_validation\\slinky_onchain_validation_full.jsonl": "bf57e53c569d855631eb9d869549d9f482881cd6c46519770bb7fe36d8006f93",
+    "onchain_validation\\slinky_onchain_validation_parallel.jsonl": "9d028e6e88eab252bf6160d727ad2aca044d8bf96fc6e00e1852abea96eddda6",
+    "strategy_card_v1\\strategy_card_v1.jsonl": "4d64c45d0706729f2f90028827cb938d8a9474f180c49c8b73a490e0b69fae0e"
+  },
+  "twitter_data_note": "343 Twitter events from Slinky v3 window (June-July 2026) included. Twitter traders use cashtags not mint addresses \u2014 0 mint overlap with Slinky but adds priority-trader sentiment/regime context (Cented7: 50, Megga: 29, Orangie: 29 tweets)."
+}

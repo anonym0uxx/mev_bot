@@ -1,0 +1,7 @@
+narrative_gold_v1 acquisition FIRST_SEEN (framework start)
+UTC: 2026-08-26T22:54:29.487330Z
+Unix_ms: 1787784869487
+Run_UUID: ed724f669793
+Git_SHA: 5fc1036
+Schema: 1.0.0
+Pipeline: 1.1.0

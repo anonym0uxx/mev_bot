@@ -1,0 +1,293 @@
+{
+ "schema": "training_approved_manifest_v1",
+ "status": "TRAINING_APPROVED",
+ "approved_by": "Alon (operator) \u2014 FINAL DATA CLOSEOUT directive 2026-08-31",
+ "generated_at_utc": "2026-08-31T13:31:58.899883+00:00",
+ "builder_git_sha": "94869619f36a196b3cd2568cb6032b33ad7bfbd6",
+ "artifacts": {
+  "cpt": {
+   "path": "tools/data-pipeline/output/qwen_curriculum_v1/cpt/qwen_cpt_v1.jsonl",
+   "sha256": "b92b844daed59d972550ef92e20adfcb7b16904aab74a349549291d8282519eb",
+   "records": 7600,
+   "exact_qwen_tokens": 9207205,
+   "manifest_sha256": "e10475bb6dd70117424bf0cc8c9de7c2882e851b7e7d20290c7c5fdd97ee2ea5"
+  },
+  "sft": {
+   "path": "tools/data-pipeline/output/qwen_curriculum_v1/sft/qwen_sft_v1.jsonl",
+   "sha256": "251a732bc080ea10f77a3cf7e8abd0fe9a8b29646cbf9038d01d5f27f0193041",
+   "records": 2158,
+   "exact_qwen_tokens": 10977789,
+   "manifest_sha256": "e29db8ff08b4c983d2ae26d37ffbd48f3474afe70738492f80ee76dab199e02b"
+  },
+  "retention_v1_1": {
+   "path": "tools/data-pipeline/output/qwen_curriculum_v1/retention/qwen_retention_v1.jsonl",
+   "sha256": "867da61a4a501f27ee41cedd7072cfaae952e354ee77d16d3f0a5c56e40a19d5",
+   "records": 1949,
+   "exact_qwen_tokens": 800022,
+   "allocation": "100% SFT mix-in, 0% CPT (approved; all records instruction-shaped)",
+   "modular": true,
+   "source": "HuggingFaceTB/smol-smoltalk",
+   "manifest_sha256": "2aa9fe1431a1ed3cf4b7aaa1c536e80f0366d193f4bb56a453a44aee009d86fc"
+  }
+ },
+ "tokenizer": {
+  "tokenizer_repo": "unsloth/Qwen3.8-27B",
+  "revision": "3ea932cee0a432ae86e9c7826cbe8aef52323a28",
+  "files": {
+   "tokenizer.json": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+   "tokenizer_config.json": "2e6eac2825dcd97362f8910ca75f6cb0405dd142e732386eb725af57926c91e5",
+   "config.json": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+   "chat_template.jinja": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+   "vocab.json": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003",
+   "merges.txt": "a9d356d7bdf1ef4949e3e748e95b8e10ad9d4e2e838eddc38a0a7b6b94d1db8d"
+  },
+  "vocab_size_len": 248077,
+  "bos_token": [
+   null,
+   null
+  ],
+  "eos_token": [
+   "<|im_end|>",
+   248046
+  ],
+  "pad_token": [
+   "<|endoftext|>",
+   248044
+  ],
+  "special_tokens_map": {
+   "eos_token": "<|im_end|>",
+   "pad_token": "<|endoftext|>",
+   "audio_bos_token": "<|audio_start|>",
+   "audio_eos_token": "<|audio_end|>",
+   "audio_token": "<|audio_pad|>",
+   "image_token": "<|image_pad|>",
+   "video_token": "<|video_pad|>",
+   "vision_bos_token": "<|vision_start|>",
+   "vision_eos_token": "<|vision_end|>"
+  },
+  "chat_template_sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+  "chat_template_len": 9993,
+  "model_config": {
+   "model_type": "qwen3_5",
+   "hidden_size": null,
+   "num_hidden_layers": null,
+   "num_attention_heads": null,
+   "num_key_value_heads": null,
+   "vocab_size": null,
+   "max_position_embeddings": null,
+   "rope_theta": null,
+   "torch_dtype": null,
+   "tie_word_embeddings": false,
+   "intermediate_size": null
+  }
+ },
+ "authoritative_token_counts_note": "CPT 9,207,205 and SFT 10,977,789 are exact counts from full tokenization with the pinned tokenizer (gate2_5_cert). Manifest estimator fields are diagnostic only.",
+ "certification": {
+  "gate2_5_cert": {
+   "CPT": {
+    "records": 7600,
+    "sha256": "b92b844daed59d972550ef92e20adfcb7b16904aab74a349549291d8282519eb",
+    "tokens_true": 9207205,
+    "tokens_manifest_field_sum": 9207205,
+    "p50": 625,
+    "p90": 3807,
+    "p95": 3846,
+    "p99": 3884,
+    "max": 3999,
+    "chars_per_token": 2.244,
+    "over_context_32768": 0,
+    "eval_id_leak_records": 0,
+    "compression_meta_records": 5,
+    "exact_dup_texts": 0,
+    "unique_ids": true,
+    "manifest_hash_match": true,
+    "manifest_source_mix": {
+     "slinky_trajectory": 2922,
+     "slinky_panel": 1200,
+     "slinky_regime_catalog": 5,
+     "laserstream": 1498,
+     "rust_code_change": 165,
+     "rust_repair": 487,
+     "rust_trajectory": 143,
+     "narrative_trajectory": 280,
+     "narrative_content": 847,
+     "narrative_strategy": 97
+    }
+   },
+   "SFT": {
+    "records": 2158,
+    "sha256": "251a732bc080ea10f77a3cf7e8abd0fe9a8b29646cbf9038d01d5f27f0193041",
+    "tokens_true": 10977789,
+    "tokens_manifest_field_sum": 11026417,
+    "p50": 3479,
+    "p90": 9894,
+    "p95": 9952,
+    "p99": 10036,
+    "max": 10154,
+    "chars_per_token": 2.804,
+    "over_context_32768": 0,
+    "eval_id_leak_records": 0,
+    "compression_meta_records": 2,
+    "exact_dup_texts": 0,
+    "unique_ids": true,
+    "manifest_hash_match": true,
+    "manifest_source_mix": {
+     "cross_sectional": 1050,
+     "execution_surface": 150,
+     "postmortem": 600,
+     "rust_code_change": 165,
+     "rust_repair": 180,
+     "rust_trajectory": 120,
+     "narrative_trajectory": 120,
+     "narrative_content": 120,
+     "narrative_strategy": 60,
+     "hermes_tool": 150,
+     "general_retention": 21
+    }
+   },
+   "tokenizer": {
+    "id": "unsloth/Qwen3.8-27B",
+    "revision": "3ea932cee0a432ae86e9c7826cbe8aef52323a28",
+    "vocab": 248077,
+    "context_limit_checked": 32768
+   }
+  },
+  "over_context_32768": 0,
+  "silent_truncation": 0,
+  "eval_overlap_records": 0,
+  "exact_duplicate_texts": 0,
+  "compression_policy": "compression fields are schema-level manifest metadata only; 0 occurrences in model-visible content (verified by direct scan of build 6)",
+  "contamination": "0 retained overlaps against the screened GSM8K-test/HumanEval/MBPP-test 8-gram sets (retention v1.1; 145,064 screened 8-grams, 80 dropped)"
+ },
+ "eval_v1_1": {
+  "dir": "tools/data-pipeline/output/qwen_curriculum_v1/eval_v1_1",
+  "file_sha256": {
+   "EVAL_MANIFEST_V1_1.json": "5a857205844090ab967c569c220934bd45dd477926e56581bbe80af6e8f9cc19",
+   "qwen_eval_v1_1.jsonl": "c891bb472dd8da61fa4b281b4c0babe8cb1592781cf378e6bf4586f8554980b5"
+  },
+  "exclusion": "13,722 mints / 15,274 state_ids / 2,672,383 rows removed pre-sampling; 28,996 eval IDs leak-checked"
+ },
+ "gold_sources": {
+  "slinky_gold_v3_compact": {
+   "freeze_marker": "slinky_gold_v3_compact_FROZEN",
+   "status": "IMMUTABLE",
+   "frozen_at": "2026-08-27T03:47:00Z",
+   "run_uuid": "ef113bd1-f5e",
+   "producing_git_sha": "fd43b8f1e9e8",
+   "source_hash": "42132c2533b9effd",
+   "rows_per_layer": 33581765,
+   "freeze_file_sha256": "f04999a4df7378c56e28586894d89eab0623d0694ac0fdbd1cba1c34513b1d11"
+  },
+  "laserstream_gold_v3": {
+   "run_uuid": "bbaeb991-0834-4b53-8ca3-90dbb6db0a11",
+   "producing_git_sha_post_commit": "4e97b4b13238",
+   "layer_sha256": {
+    "l1_sha256": "60718136a3d357798b679437f5040762dd22c53a13a98cf7366107c31ea03510",
+    "l2_sha256": "572f056641f2bbeefc2073b1a1158d7fbcc7a76fa2874c4535ca7f1c9892ef99",
+    "l3_sha256": "65cb1b3ed6891cfea1ada58221c411055f853838609495d4d7af5007a78cb69c",
+    "l4_sha256": "f8f8e11d1714570b183d5a28bba4f72788501d4ee0c14bb77cc1678caea4f357"
+   },
+   "manifest_sha256": "1d0eb271c95674da9e980ab3adfb481aadaf2d093a4f240670e2ec46d2948af1"
+  },
+  "rust_gold_v1": {
+   "status": "FROZEN_IMMUTABLE",
+   "frozen_at": "2026-08-29T06:24:00Z",
+   "certification_uuid": "55e19441-809f-432f-b57c-fcb32769420a",
+   "producing_git_sha": "cf97c33ee575a4ec3179712442b4497647ebac99",
+   "file_hashes": {
+    "git_commits_v1.jsonl": "931f2ad18086ee35",
+    "code_changes_v1.jsonl": "eeadbc3ab86c533d",
+    "trajectories_v1.jsonl": "115f86b98e95cc9f",
+    "repairs_v1.jsonl": "e86a61f50537d4b7",
+    "repo_state_v1.jsonl": "e88d133691df0280",
+    "splits_v1.json": "56145c6fd816d54f",
+    "validation_evidence_v1.json": "58779ad519019274",
+    "manifest_rust_gold_v1.json": "a4d6f0b3f38f9c95",
+    "CERTIFICATION_RUST_GOLD_V1.md": "35f2693b1a19f8ce"
+   }
+  },
+  "narrative_gold_v1": {
+   "status": "FROZEN_IMMUTABLE",
+   "frozen_at": "2026-08-29T07:15:00Z",
+   "certification_uuid": "ng1_7a3f9c2b-8e1d-4b2a-a3f7-c0492e58b1a6",
+   "producing_git_sha": "cf97c33",
+   "file_hashes": {
+    "CERTIFICATION_NARRATIVE_GOLD_V1.md": "97aa1b163542e42b29a45d704810fa9687b11dff502da35d7af4a8b554ca23c1",
+    "FREEZE_MARKER.json": "56446b707158d7e72f97c991856b61ae0a43ded46e1b05b44c8ab22184225e10",
+    "manifest_narrative_gold_v1.json": "f0ca850ef47d5c599ccd60318e3abd81d5e14ffada70186e2f09a35a5d2a6f6f",
+    "creator_claim_v1\\creator_claim_v1.jsonl": "e7c98ff3176446045468ef9820254d459187f5d378c04fbc833e22439f23f9da",
+    "creator_content_v1\\creator_content_v1.jsonl": "e29ef7e105a9023330fdd376e7d762372a6f008354fdc6205b25ef9022934630",
+    "creator_content_v1\\creator_content_v1_manifest.json": "6ee1bc4fd86b914bf7ae02f0d78592471de384515d8cdc6768048f55f0da889a",
+    "narrative_state_v1\\narrative_state_v1.jsonl": "06c8bb1d5f2515003c4a23a6086d563d273352cc1c494aa269fd17b7a8e0ec77",
+    "narrative_validation_v1\\narrative_validation_v1.jsonl": "3a0e053c15645ed3760acf2a1521d299efd50fc56c0c8b6c44d9005ec4c7fe7b",
+    "onchain_validation\\onchain_validation_oc_6a8f92b8.jsonl": "578797c82d03614d2f3149517b7ee92f81803f55b83a63ad15be6a0126750ff2",
+    "onchain_validation\\slinky_onchain_validation_6a8f9559.jsonl": "2a5d04c10eb48e91d44e4e47d9da19cc47c2b10ffbcf429e2f0e175ffc44e239",
+    "onchain_validation\\slinky_onchain_validation_full.jsonl": "bf57e53c569d855631eb9d869549d9f482881cd6c46519770bb7fe36d8006f93",
+    "onchain_validation\\slinky_onchain_validation_parallel.jsonl": "9d028e6e88eab252bf6160d727ad2aca044d8bf96fc6e00e1852abea96eddda6",
+    "strategy_card_v1\\strategy_card_v1.jsonl": "4d64c45d0706729f2f90028827cb938d8a9474f180c49c8b73a490e0b69fae0e"
+   },
+   "on_disk_verified": "12/12 sha256 match, 2026-08-31"
+  },
+  "narrative_gold_v1_1": {
+   "status": "FROZEN_IMMUTABLE",
+   "freeze_uuid": "ng11_43bf56a50ed7",
+   "run_uuid": "nv11_48e7f58d6d91",
+   "parent_freeze_uuid": "ng1_7a3f9c2b",
+   "producing_git_sha": "cf97c33ee575",
+   "frozen_at": "2026-08-29T14:46:26.897102+00:00",
+   "layer_sha256": {
+    "content": "ed8ce91fcae3e4ca4f4ee846372535f4f72e6be675ff4a939c00eeb57efafeaf",
+    "claims": "45077c0562b0cd56165d4d37ab894b04accef406993dce514700b4393a1a0f0f",
+    "states": "a6f47540448683cc05db4189a7b8bf5f7fca6d8bbe847eb405eac60afd134e01",
+    "validations": "7d99c991f7934c248b64d0dc3595a0a266e02c8d1df40530e6aa4df1781e9773",
+    "strategy": "ecde7c8056d5ac58dcded181b8484af0d9ab883fc022e3d244eeb78a74fa7e0f",
+    "trajectories": "01f6703a7c533d1eeec2600c3fb999dae3432335bb37009a96fd62dbf823913c"
+   },
+   "on_disk_verified": "6/6 layer sha256 match, 2026-08-31 (exact bytes read by build 6)",
+   "note": "This is the narrative input actually read by build_qwen_curriculum_v1.py (NARR path)."
+  }
+ },
+ "source_task_mix": {
+  "note": "records exact; token figures are manifest estimator (diagnostic) \u2014 authoritative totals are exact_qwen_tokens above",
+  "CPT": {
+   "records": {
+    "slinky_regime_trajectory_panel": 4127,
+    "laserstream_exec": 1498,
+    "rust_code": 783,
+    "narrative_content": 1192
+   },
+   "est_tokens": {
+    "slinky": 7806764,
+    "laserstream": 687973,
+    "rust": 180342,
+    "narrative": 532126
+   }
+  },
+  "SFT": {
+   "records": {
+    "slinky_cross_sectional": 1046,
+    "slinky_postmortem": 200,
+    "laserstream_exec_surface": 150,
+    "rust": 464,
+    "narrative": 273,
+    "general_retention_core": 21,
+    "hermes_tool": 4
+   },
+   "est_tokens": {
+    "slinky_cross_sectional": 9901274,
+    "slinky_postmortem": 670839,
+    "laserstream_exec_surface": 59823,
+    "rust": 202607,
+    "narrative": 175711,
+    "general_retention_core": 15547,
+    "hermes_tool": 616
+   }
+  },
+  "retention_v1_1_addon": {
+   "records": 1949,
+   "exact_tokens": 800022,
+   "allocation": "100% SFT phase"
+  }
+ },
+ "closeout": "DATA ENGINEERING IS DONE. No further curriculum redesign. Do not regenerate CPT/SFT. Training launch requires separate operator go."
+}

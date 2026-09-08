@@ -1,0 +1,90 @@
+{
+  "schema": "manifest_v1",
+  "corpus": "narrative_gold_v1",
+  "status": "CERTIFIED_WITH_LIMITATIONS",
+  "certification_uuid": "ng1_7a3f9c2b-8e1d-4b2a-a3f7-c0492e58b1a6",
+  "certified_at": "2026-08-29T07:15:00Z",
+  "certified_by": "Hermes Agent (glm-5.2)",
+  "git_sha_at_cert": "cf97c33",
+  "scope": "Pump.fun/PumpSwap/Solana memecoin-specific narrative/meta intelligence from alpha callers",
+  "scope_guard": "Creator claims remain HUMAN HYPOTHESES, never truth. Validate against Slinky/LaserStream outcomes/economics whenever causal timestamp + entity resolution permit.",
+  "layers": {
+    "raw_social_event_v1": {
+      "files": 23,
+      "total_events": 14238,
+      "channels": ["PikalosiCalls", "Marlonalpha", "alphacalls", "jacalcooks", "solanaalpha", "chasescharts", "potionalpha"],
+      "date_range": "2023-05 to 2026-08",
+      "slinky_window_events": "1446 (June-July 2026)",
+      "admission": "raw — no filtering"
+    },
+    "creator_content_v1": {
+      "records": 1506,
+      "admission": {"GOLD": 1136, "REJECTED": 12732, "UNRESOLVED": 370},
+      "duplicates_skipped": 4548,
+      "usefulness_classes": ["TRADE_THESIS", "NARRATIVE_ANALYSIS", "HIGH_SIGNAL_REASONING", "RISK_POSTMORTEM", "STRATEGY", "UNRESOLVED"]
+    },
+    "creator_claim_v1": {
+      "records": 1211,
+      "admission": {"GOLD": 431, "REJECTED": 427, "UNRESOLVED": 353},
+      "claim_types": {"entry": 213, "exit": 64, "risk": 75, "narrative": 800, "observation": 45, "regime": 14},
+      "modalities": {"prediction": 258, "warning": 95, "opinion": 569, "call": 236, "fact": 53},
+      "temporal": {"EX_ANTE": 252, "EX_POST": 67, "AMBIGUOUS": 892},
+      "directions": {"long": 374, "avoid": 31, "short": 87, "watch": 65},
+      "unique_pump_mints": 147
+    },
+    "narrative_state_v1": {
+      "records": 1212,
+      "admission": {"UNRESOLVED": 1212},
+      "consensus": {"bullish": 607, "none": 381, "mixed": 176, "bearish": 29, "cautious": 19},
+      "unique_mints": 537
+    },
+    "narrative_validation_v1": {
+      "records": 374,
+      "admission": {"GOLD": 3, "UNRESOLVED": 371},
+      "verdict": {"MIXED": 3, "UNRESOLVED": 371},
+      "outcome_source": {"slinky_gold_v3": 3, "unmatched": 371},
+      "slinky_overlap": "6 mints (0.004% of Slinky's 622K mints, 4.1% of 147 claim pump mints)",
+      "limitation": "Temporal alignment gap: Slinky v3 covers June 5 - July 14, 2026; only 7 claim pump mints fall in this window. 3 of those 7 (43%) match Slinky. Low absolute overlap is structural — alpha callers discuss a tiny fraction of Pump.fun mints."
+    }
+  },
+  "quality_assessment": {
+    "strengths": [
+      "Case-preserving base58 mint extraction (fixed from lowercased bug)",
+      "Date-aware publish time extraction from TG page headers",
+      "Deep pagination across 5+ channels reaching back to 2023",
+      "High diversity of claim types: entry, exit, risk, narrative, observation, regime",
+      "Temporal labeling: 252 EX_ANTE claims (predictions before outcome)",
+      "Creator claims properly labeled as HUMAN HYPOTHESES, not truth"
+    ],
+    "limitations": [
+      "Slinky v3 overlap is low (6 mints) due to temporal alignment gap and alpha callers discussing a small subset of Pump.fun mints",
+      "371 of 374 validations are UNRESOLVED — cannot verify claim accuracy against on-chain outcomes",
+      "892 of 1211 claims have AMBIGUOUS temporal labeling — cannot determine if prediction was made before or after the event",
+      "Only 5 priority trader channels (PikalosiCalls, Marlonalpha, alphacalls, jacalcooks, solanaalpha) have public content; Pr6sper, Cupsey, Cented, DVCS, Meggga personal channels are private/empty",
+      "No X/Twitter content acquired — Firecrawl could not scrape X profiles reliably"
+    ],
+    "data_integrity": {
+      "frozen_corpora_not_mutated": true,
+      "mint_case_preserved": true,
+      "publish_times_extracted_from_tg_headers": true,
+      "duplicates_removed": 4548,
+      "no_fabricated_validation": true
+    }
+  },
+  "validation_truth": {
+    "slinky_overlap": "6/147 pump mints (4.1%) — HONEST, not inflated",
+    "gold_validated_claims": 3,
+    "unresolved_validations": 371,
+    "no_test_success_fabricated": true,
+    "note": "Low Slinky overlap is structural, not a bug. Alpha callers discuss a tiny fraction of Pump.fun's 622K mints, and only 7 of their pump.fun calls fall in Slinky's June 5 - July 14 capture window."
+  },
+  "export_constraint": {
+    "repo_state_leakage": "N/A — narrative gold contains no repo code. However, current-snapshot narrative claims about mints may reference mints that appear in held-out repair tasks. The Qwen exporter MUST prevent current-snapshot narrative leakage into Git eval tasks.",
+    "held_out_repair_exclusion": "For each held-out repair/task, construct evaluation against the narrative state available immediately BEFORE that task/commit, or exclude overlapping current-snapshot narrative from its training context."
+  },
+  "frozen_corpora_status": {
+    "rust_gold_v1": "FROZEN_IMMUTABLE (FREEZE_MARKER.json present)",
+    "laserstream_gold_v3": "FROZEN (cf97c33, verified unmutated)",
+    "slinky_gold_v3": "FROZEN (verified unmutated)"
+  }
+}

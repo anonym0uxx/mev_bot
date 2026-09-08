@@ -1,0 +1,43 @@
+{
+  "recorded": "2026-08-31",
+  "purpose": "Pinned Blackwell (sm_120) training stack for Qwen3.8-27B full-FT. Do not upgrade mid-run.",
+  "host": {
+    "machine": "DESKTOP-CP8N3IC",
+    "gpus": "3x NVIDIA RTX PRO 6000 Blackwell Workstation Edition (96GB, sm_120)",
+    "ram_physical_gb": 256,
+    "wsl": "WSL2 Ubuntu 26.04",
+    "wslconfig": {
+      "path": "C:\\Users\\Alon\\.wslconfig",
+      "memory": "220GB",
+      "processors": 30,
+      "swap": "24GB",
+      "swapfile": "D:\\wsl\\swap\\wsl-swap.vhdx",
+      "verified_inside_wsl": "216GiB usable RAM, 30 CPUs, 24GB swap active, 3 GPUs visible (2026-08-31)"
+    }
+  },
+  "filesystems": {
+    "offload_and_checkpoints": "/training (ext4, dedicated 1.8TB expandable VHDX D:\\wsl\\training_ext4.vhdx on Crucial T710 4TB NVMe, bare-attached to WSL as /dev/sde)",
+    "note_mkfs": "mkfs.ext4 is agent-blocklisted; operator formats per LAUNCH.md one-time step",
+    "cold_data": "/mnt/d (NTFS 9p) — training data reads + cold artifact copies ONLY; never optimizer offload or checkpoint hot path"
+  },
+  "python": "3.12.13 (deadsnakes, venv ~/qwen-train)",
+  "packages": {
+    "torch": "2.9.1+cu128",
+    "transformers": "4.57.1",
+    "accelerate": "1.11.0",
+    "deepspeed": "0.18.2",
+    "numpy": "2.2.6"
+  },
+  "cuda": {
+    "wheel_cuda": "12.8",
+    "nvcc_toolkit": "12.8.93 (cuda-toolkit-12-8, WSL repo; CUDA_HOME=/usr/local/cuda-12.8 via venv cuda_env.sh)",
+    "libaio": "libaio-dev 0.3.113-8build1",
+    "sm_120_in_torch_arch_list": true,
+    "deepspeed_async_io": "compatible; JIT build+load verified OK (needs LIBRARY_PATH=/usr/lib/wsl/lib:...stubs for -lcuda, persisted in cuda_env.sh)"
+  },
+  "attention": {
+    "implementation": "pytorch_sdpa",
+    "backends_enabled": { "cudnn": true, "flash": true, "mem_efficient": true },
+    "flash_attention_2_package": "NOT installed, NOT required — SDPA preferred on sm_120 until FA2 explicitly verified"
+  }
+}

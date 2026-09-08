@@ -1,0 +1,29 @@
+{
+  "_comment": "FALLBACK config — evaluate ONLY if NVMe optimizer offload throughput is unacceptable, BEFORE considering LoRA. BF16 optimizer states + CPU offload: host optimizer memory ~= 3x27B x 2B (m, v, master) ~= 162GB, fits 216GB WSL RAM. Decision to use this must be made BEFORE a run starts — never switch optimizer precision mid-run.",
+  "bf16": { "enabled": true },
+  "zero_optimization": {
+    "stage": 3,
+    "offload_optimizer": {
+      "device": "cpu",
+      "pin_memory": true
+    },
+    "offload_param": { "device": "none" },
+    "overlap_comm": true,
+    "contiguous_gradients": true,
+    "sub_group_size": 1e8,
+    "reduce_bucket_size": "auto",
+    "stage3_prefetch_bucket_size": "auto",
+    "stage3_param_persistence_threshold": "auto",
+    "stage3_max_live_parameters": 1e9,
+    "stage3_max_reuse_distance": 1e9,
+    "stage3_gather_16bit_weights_on_model_save": true
+  },
+  "data_types": { "grad_accum_dtype": "bf16" },
+  "zero_force_ds_cpu_optimizer": true,
+  "gradient_clipping": 1.0,
+  "gradient_accumulation_steps": "auto",
+  "train_micro_batch_size_per_gpu": "auto",
+  "train_batch_size": "auto",
+  "steps_per_print": 1,
+  "wall_clock_breakdown": false
+}

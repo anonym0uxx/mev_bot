@@ -1,0 +1,93 @@
+{
+ "cpt": {
+  "phase": "cpt",
+  "train_items": 2199,
+  "steps_per_epoch": 92,
+  "max_window_ep": 1.75,
+  "total_steps_max": 161,
+  "warmup_steps": 7,
+  "mark_every": 23,
+  "marks_steps": [
+   23,
+   46,
+   69,
+   92,
+   115,
+   138,
+   161
+  ],
+  "marks_epochs": [
+   0.25,
+   0.5,
+   0.75,
+   1.0,
+   1.25,
+   1.5,
+   1.75
+  ],
+  "docs_train": 7398,
+  "docs_val": 202,
+  "val_blocks": 52
+ },
+ "sft": {
+  "phase": "sft",
+  "train_items": 2258,
+  "steps_per_epoch": 95,
+  "max_window_ep": 1.25,
+  "total_steps_max": 119,
+  "warmup_steps": 4,
+  "mark_every": 23,
+  "marks_steps": [
+   23,
+   46,
+   69,
+   92,
+   115,
+   119
+  ],
+  "marks_epochs": [
+   0.242,
+   0.484,
+   0.726,
+   0.968,
+   1.211,
+   1.253
+  ],
+  "recs_train": 2258,
+  "recs_val": 43,
+  "val_examples": 43,
+  "retention_selection": {
+   "domain_loss_tokens": 605884,
+   "retention_full_records": 1949,
+   "retention_kept_records": 139,
+   "retention_kept_loss_tokens": 25268,
+   "retention_share_of_loss_tokens": 0.04003473014424418
+  },
+  "supervision_geometry": {
+   "loss_tokens_by_bucket": {
+    "cross": 528044,
+    "post": 36333,
+    "rust": 17624,
+    "narrative": 11338,
+    "hermes": 1040,
+    "retention": 24183
+   },
+   "task_weights": {
+    "cross": 0.8227,
+    "post": 1.7081,
+    "rust": 3.5213,
+    "narrative": 2.7368,
+    "hermes": 4.0131,
+    "retention": 1.0265
+   },
+   "effective_gradient_shares": {
+    "cross": 0.7023,
+    "post": 0.1003,
+    "rust": 0.1003,
+    "narrative": 0.0502,
+    "hermes": 0.0067,
+    "retention": 0.0401
+   }
+  }
+ }
+}

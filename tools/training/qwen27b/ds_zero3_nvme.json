@@ -1,0 +1,43 @@
+{
+  "bf16": { "enabled": true },
+  "zero_optimization": {
+    "stage": 3,
+    "offload_optimizer": {
+      "device": "nvme",
+      "nvme_path": "/training/offload",
+      "pin_memory": false,
+      "buffer_count": 4,
+      "fast_init": false
+    },
+    "offload_param": {
+      "device": "nvme",
+      "nvme_path": "/training/offload",
+      "pin_memory": false,
+      "buffer_count": 8,
+      "buffer_size": 430000000,
+      "max_in_cpu": 500000000
+    },
+    "stage3_max_live_parameters": 300000000,
+    "stage3_max_reuse_distance": 0,
+    "overlap_comm": false,
+    "contiguous_gradients": false,
+    "sub_group_size": 3e7,
+    "reduce_bucket_size": 5e7,
+    "stage3_prefetch_bucket_size": 0,
+    "stage3_param_persistence_threshold": "auto",
+    "stage3_gather_16bit_weights_on_model_save": false
+  },
+  "aio": {
+    "block_size": 8388608,
+    "queue_depth": 32,
+    "single_submit": false,
+    "overlap_events": true,
+    "thread_count": 4
+  },
+  "gradient_clipping": 1.0,
+  "gradient_accumulation_steps": "auto",
+  "train_micro_batch_size_per_gpu": "auto",
+  "train_batch_size": "auto",
+  "steps_per_print": 1,
+  "wall_clock_breakdown": false
+}

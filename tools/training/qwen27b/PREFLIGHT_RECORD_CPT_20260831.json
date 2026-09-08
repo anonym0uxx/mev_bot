@@ -1,0 +1,43 @@
+{
+  "record": "CPT_LAUNCH_PREFLIGHT",
+  "timestamp_pt": "2026-08-31T10:0x PT (see runs log for exact launch ts)",
+  "vhdx_path_windows": "D:\\wsl\\training_ext4.vhdx",
+  "resolved_device_this_boot": "/dev/sdd",
+  "device_identity_evidence": {
+    "size_bytes": 1932735283200,
+    "pre_format_state": "no signature (blkid -p), no partition table, unmounted, all-zero at 0-64MiB and 8MiB samples @ 1/10/100/500/1000/1500/1800 GiB",
+    "exclusions": "docker disks are exactly 1099511627776 bytes w/ ext4 signatures; sdc=swap; sdg=rootfs",
+    "formatted_by": "OPERATOR (Alon) via elevated shell — mkfs.ext4 -L training -m 0 /dev/sdd (agent hardline-blocked from mkfs)"
+  },
+  "filesystem": {
+    "fstype": "ext4",
+    "label": "training",
+    "uuid": "3dd4ffb3-eaa4-400a-a236-e7c63b9b8334",
+    "reserved_blocks": "0% (-m 0)",
+    "findmnt": "/training /dev/sdd ext4 1.7T avail 1.7T",
+    "rw_test_as_alon": "PASS",
+    "offload_runs_on_ext4": "PASS (/training/offload, /training/runs)",
+    "headroom_vs_requirement": "1.8T avail vs ~1.46TB planned (1.14TB ckpt rotation + 324GB offload) — PASS"
+  },
+  "gpu_state": "3x NVIDIA RTX PRO 6000 Blackwell 97887 MiB; used 19/1135/19 MiB, util 0/0/0 — effectively free; no compute apps on training GPUs",
+  "host": "216 GiB RAM (206 free), 30 CPU, swap 24G; WSL2 Ubuntu",
+  "async_io": "ds_report previously [NO] — root-caused to stray ./specs dir breaking gcc probe cwd + libaio-dev; from clean cwd: AsyncIOBuilder.is_compatible=True, JIT load OK",
+  "manifest": {
+    "file": "tools/data-pipeline/output/qwen_curriculum_v1/TRAINING_APPROVED_MANIFEST_V2.json",
+    "sha256": "9ab9f22608df27cefede824015fc453205a16999c781c3b8856b9d3d490deb22",
+    "reverified_at_preflight": true,
+    "producing_git_sha": "6cba10df45e783828990d1a2aa7f674e834d3cd0"
+  },
+  "data_hashes_reverified": {
+    "cpt_qwen_cpt_v1.jsonl": "b92b844daed59d972550ef92e20adfcb7b16904aab74a349549291d8282519eb",
+    "sft_qwen_sft_v2.jsonl": "50df0927a3dd77dbf8c1def941e3b78ec72f1f85ffb3fb217c0ad1963acab9f4",
+    "eval_qwen_eval_v1_2.jsonl": "4d87dad981c7e15e7c1e384ea8dd67ad3401f1acfd9a74a8643b7d1e930f3c27",
+    "match_vs_manifest": "ALL MATCH"
+  },
+  "launch_git_sha": "2f23b66bbe1950e2abd3c94faec125f719b569c0",
+  "launch_git_sha_note": "post-manifest commits are ops-docs only (LAUNCH.md, mount_training.sh); training code/data identical to manifest-sealed bytes. Working-tree dirt: unrelated rust/laserstream + helius docs, outside training path.",
+  "deepspeed_config": "ds_zero3_nvme.json — ZeRO-3, AdamW FP32 moments, optimizer NVMe offload to /training/offload, offload_param none; accelerate_zero3.yaml num_processes=3",
+  "cpt_command": "cd /mnt/d/repos/mev_bot/tools/training/qwen27b && accelerate launch --config_file accelerate_zero3.yaml train_qwen27b.py --phase cpt",
+  "run_dir": "/training/runs/qwen27b_cpt_v1",
+  "status": "PASS — GO"
+}

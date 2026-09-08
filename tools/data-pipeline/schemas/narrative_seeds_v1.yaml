@@ -1,0 +1,309 @@
+# Seed source registry for narrative_gold_v1 acquisition.
+# All sources are PUBLIC_BURNED-presumed: score against on-chain truth, never trust.
+# Authority: on-chain truth > policy-independent economics > policy critique > creator/tool claims.
+#
+# SEED CREATORS (resolve IDs/aliases):
+# - Orangie:    X=@OrangeSBS, 10 known wallets (see wallet_list_raw.md)
+# - Prosper:    TBD (resolve X/TG handle)
+# - Megga:      2 known wallets
+# - Cented:     8 known wallets (incl. Cented dev, Cented's Friend)
+# - Cupsey:     6 known wallets (incl. Cupsey 1/2/3 multi)
+# - Potion/Potion Alpha: TG=potionalpha (Discord), 4 wallets (Frosty, Carlos, Valor, MonkeyNuts)
+# - Ansem/blknoiz06: X=@blknoiz06, amplifier tier
+#
+# ALPHA FLOW (upstream→downstream):
+#   deployer/insider wallets → TG call channels → mid-CT raids → big X-KOLs → aggregators → retail
+
+creators:
+  orangie:
+    aliases: ["Orangie", "ORANGIE", "ORANGIE3", "orangie fomo", "orangie 39q"]
+    x_handle: "OrangeSBS"
+    account_type: "kol"
+    tier: "amplifier"
+    wallets:
+      - { name: "ORANGIE",        address: "26kZ9rg8Y5pd4j1tdT4cbT8BQRu5uDbXkaVs3L5QasHy" }
+      - { name: "orangie",        address: "2V54c75rjibgh6NsDWP88tbpu8KjQ3APRrK5zNQVqx1T" }
+      - { name: "orangie 39q",    address: "39qpCe9zdyC2g53UJeyGh5jwGBKjFwidCbnD5W53aVBW" }
+      - { name: "orangie",        address: "4zq1iLpmepj2Rj7W6A3XQMRQA1HyjYqVpZiBzM6aPyH7" }
+      - { name: "ORANGIE3",       address: "6nRzbpSDdrPTf9m98Xh94c8brSwfj9LZagutH9dezHB4" }
+      - { name: "orangie",        address: "ATaHBG9gPwWPm6q1DA6PLGLhxp28mux39CcdWtN7v9tc" }
+      - { name: "Orangie",        address: "DJobMrbVvwRsbTEM9UBNiT6KHQmiu1j3VEnugJaDTM4z" }
+      - { name: "Orangie",        address: "ASSw3FMwV99rh4CvxLAucTVHX8f4LQ2pmi2JjDA337sN" }
+      - { name: "Orangie",        address: "DuQabFqdC9eeBULVa7TTdZYxe8vK8ct5DZr4Xcf7docy" }
+      - { name: "orangie fomo",   address: "83b2LMf12aLec92kur3duRA8VvUkLaXUtML31aCcZNCM" }
+    notes: "Amplifier tier. PUBLIC_BURNED. Used for wave-timing/FADE, never entry trigger."
+
+  cented:
+    aliases: ["Cented", "cented", "Cented's Friend", "Cented dev"]
+    account_type: "creator"
+    tier: "alpha"
+    twitch: "cented"           # 336K followers, clips w/ reasoning
+    twitch_twitter: "Cented7"
+    twitch_youtube: "UCQ8-bxOeEZ4M1I2YH8dJFag"
+    wallets:
+      - { name: "Cented",           address: "5VD46CMUb98ryVF5K5KSUraaVeZ1REmUPWLyaeknvXrC" }
+      - { name: "cented",           address: "6cpADLEZ9kgVD4yDFMxCsSV7eNnkagkF2dfVL9LXtNzG" }
+      - { name: "Cented",           address: "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o" }
+      - { name: "Cented's Friend",  address: "GPpEjfHJZ4Ey9bSBLzd9sggsHFJKuQ5SxsjRYsRDWkH2" }
+      - { name: "cented",           address: "XDgpjPubjN5soLAFmAMjD2uVR1XZxUKgNpMU6Eo97H7" }
+      - { name: "cented",           address: "4sKEmneKj4tRyjBj7nLLtEMzPBoSVcBeQeLD5hH2wakN" }
+      - { name: "cented",           address: "77kq9xNZg4Vb94UJMpeHsx7pKXUBU3Wpqsm5UXhjA9dd" }
+      - { name: "Cented dev",       address: "8YcbyX92UHTU23HZv3ccP9o13qibErQkKaUjoxqxd7SJ" }
+    notes: "Alpha caller. Twitch streamer (336K). Clips show reasoning: 'what to look for in a good coin', 'how to make 10m'. Twitter @Cented7, YouTube channel linked."
+
+  cupsey:
+    aliases: ["Cupsey", "cupsey multi", "Cupsey 1", "Cupsey 2", "Cupsey 3"]
+    account_type: "creator"
+    tier: "alpha"
+    x_handle: null  # @cupsey = drummer (not the memecoin trader). Need to resolve correct X handle.
+    wallets:
+      - { name: "Cupsey",         address: "suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK" }
+      - { name: "cupsey multi",   address: "G8n4gBsc9Z4P1q5JFJQUfxZs58zD7kF1CqowcTft18RL" }
+      - { name: "cupsey multi",   address: "EiGjwgAWG89bDMEWGVMAQJ7jKv7tV8hrxp4waCoiB1De" }
+      - { name: "Cupsey 1",       address: "2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f" }
+      - { name: "Cupsey 3",       address: "7NAd2EpYGGeFofpyvgehSXhH5vg6Ry6VRMW2Y6jiqCu1" }
+      - { name: "Cupsey 2",       address: "FxN3VZ4BosL5urG2yoeQ156JSdmavm9K5fdLxjkPmaMR" }
+    notes: "Alpha caller. Multiple sub-wallets (1/2/3 + multi). X handle NOT resolved (@cupsey on Twitter = drummer, not the memecoin trader). Need to find correct handle."
+
+  megga:
+    aliases: ["megga", "Megga side"]
+    account_type: "creator"
+    tier: "alpha"
+    twitch: "megga"            # 460K followers, memecoin trader
+    twitch_twitter: "Megga"
+    twitch_youtube: "UCOjxpeSVbHn75QoVizg"
+    wallets:
+      - { name: "megga",      address: "H31vEBxSJk1nQdUN11qZgZyhScyShhscKhvhZZU3dQoU" }
+      - { name: "Megga side", address: "6QRdkwTSk9Kop6VdqSkSPah7a3HfqKHU5DD4BqMFCUQP" }
+    notes: "Alpha caller. Twitch streamer (460K followers). 'trading memecoins!!! road to a milly pnl'. Twitter @Megga, YouTube linked."
+
+  prosper:
+    aliases: ["Prosper"]
+    account_type: "creator"
+    tier: "alpha"
+    wallets: []
+    x_handle: null
+    tg_handle: null
+    notes: "RESOLVE: need X/TG handle + wallet addresses. Currently unresolved."
+
+  potion:
+    aliases: ["Potion", "Potion Alpha", "potionalpha", "Frosty POTIONALPHA", "carlos potion", "valor potion", "MONKEYNUTS POTION"]
+    account_type: "creator"
+    tier: "alpha"
+    discord: "potionalpha"
+    wallets:
+      - { name: "Frosty POTIONALPHA", address: "Dy4FYHkwPXnp1MRt83FodbktAa8coEtNCJiNJaN9dRKx" }
+      - { name: "carlos potion 1",    address: "kwhcooMFSt8k8S1RbdygHiYkAtyVVwcPMhyqBecTzBU" }
+      - { name: "valor potion",      address: "4xRGFR3k18DYba9BQDH6FNue2MVJJemA5vUjFefNs31c" }
+      - { name: "MONKEYNUTS POTION", address: "9F1X92uBq9WSdUkj1KhfuQiNhMWtTd4NKBBk8oPnGfSJ" }
+    notes: "Potion Alpha Discord community. Multiple associated wallets."
+
+  ansem:
+    aliases: ["Ansem", "blknoiz06", "Fake Ansem", "fake ansem"]
+    x_handle: "blknoiz06"
+    account_type: "kol"
+    tier: "amplifier"
+    wallets:
+      - { name: "ansem",      address: "9hKZp6ub9SqCfPALuzWx8QmmKcqd2KkL8BVjHAc6wTnr" }
+      - { name: "Ansem",      address: "GV6UUmNxz2RpKxmNAPadYKb7uQpszwqQAu3qLJxVdC52" }
+      - { name: "Fake Ansem", address: "12zQYCKJbCkJtVQcNJd9hPtkC1YzUvU3EqLZAQ1JDN6m" }
+      - { name: "fake ansem", address: "AVAZvHLR2PcWpDf8BXY4rVxNHYRBytycHkcB5z5QNXYm" }
+    notes: "Top-tier amplifier. Fake/impersonator wallets flagged. Wayback CDX confirmed 100+ archived tweet snapshots."
+
+  kmoney:
+    aliases: ["kmoney", "Kmoney"]
+    x_handle: "kmoney"
+    account_type: "kol"
+    tier: "alpha"
+    wallets: []
+    notes: "'attention gambler' - elite memecoin trader. Discovered via bonkbot influencer list. vxtwitter confirms handle. 20 Wayback CDX snapshots confirmed."
+
+# Tier 2: Additional elite memecoin traders discovered from Ansem/Orangie tweet engagement + bonkbot list
+# These are accounts Ansem/Orangie interact with — their CT (Crypto Twitter) network
+additional_kols:
+  based16z:
+    x_handle: "based16z"
+    tier: 2
+    memecoin_relevance: "high"
+    notes: "Longpost trader Ansem frequently engages with. 'anticlimactic'. High-quality reasoning."
+  MissionGains:
+    x_handle: "MissionGains"
+    tier: 2
+    memecoin_relevance: "high"
+    notes: "On-chain analyst. Ansem retweets about memecoin onboarding."
+  socratesxbt:
+    x_handle: "socratesxbt"
+    tier: 2
+    memecoin_relevance: "high"
+    notes: "'high risk investor' - Ansem engages about $ANSEM coin. TroupeKZ affiliated."
+  NotSoEasyMoney:
+    x_handle: "NotSoEasyMoney"
+    tier: 2
+    memecoin_relevance: "medium"
+    notes: "'i like to trade' - live streams Mon-Fri 9am EST. Ansem retweets."
+  zeroxkyle:
+    x_handle: "zeroxkyle"
+    tier: 2
+    memecoin_relevance: "medium"
+    notes: "'discretionary investor' - DeFi research at DefiLlama. Ansem retweets."
+  lmrankhan:
+    x_handle: "lmrankhan"
+    tier: 2
+    memecoin_relevance: "medium"
+    notes: "From bonkbot memecoin influencer list."
+  MattWallace888:
+    x_handle: "MattWallace888"
+    tier: 2
+    memecoin_relevance: "medium"
+    notes: "From bonkbot memecoin influencer list."
+  Theunipcs:
+    x_handle: "Theunipcs"
+    tier: 2
+    memecoin_relevance: "medium"
+    notes: "From bonkbot memecoin influencer list."
+  DegenerateNews:
+    x_handle: "DegenerateNews"
+    tier: 2
+    memecoin_relevance: "medium"
+    notes: "From bonkbot memecoin influencer list. Crypto news."
+
+# Tracker / scanner sources (derived signals, NOT independent confirmation)
+trackers:
+  j7tracker:
+    aliases: ["J7Tracker", "J7Bora"]
+    account_type: "tracker"
+    x_handle: null
+    notes: "RESOLVE: need X/TG handle. Tracker signals are derived, not independent."
+  dexscreener:
+    account_type: "tracker"
+    url: "https://www.dexscreener.com/solana"
+    notes: "Aggregator/scanner. Legibility clock for crowding."
+  pumpfun_board:
+    account_type: "tracker"
+    url: "https://pump.fun/board"
+    notes: "Pump.fun board. Breadth + velocity."
+
+# Alpha groups — private communities that produce signal/context for traders.
+# Upstream of public CT/X amplifiers. Many are private (Discord/TG groups).
+# Accessible via TG web preview ONLY if channel is public. Private = coverage gap.
+alpha_groups:
+  potion:
+    aliases: ["Potion", "Potion Alpha", "potionalpha"]
+    type: "alpha_group"
+    platform: "telegram"
+    public_url: "https://t.me/s/potionalpha"
+    accessible: true
+    notes: "Potion Alpha. Discord community. TG web preview is public but thin (1.5KB)."
+
+  heaven_or_hell:
+    aliases: ["Heaven or Hell", "heavenorhell", "heavenorhelldao"]
+    type: "alpha_group"
+    platform: "telegram"
+    public_url: "https://t.me/s/heavenorhelldao"
+    accessible: false
+    notes: "PRIVATE GROUP. TG web preview exists but no message content. Coverage gap."
+
+  prosperitydao:
+    aliases: ["ProsperityDAO", "prosperitydao"]
+    type: "alpha_group"
+    platform: "telegram"
+    public_url: "https://t.me/s/prosperitydao"
+    accessible: false
+    notes: "PRIVATE GROUP. TG web preview exists but no message content. Coverage gap."
+
+  greek:
+    aliases: ["Greek", "GreekFnF", "Greek Cabal", "greekcabal"]
+    type: "alpha_group"
+    platform: "x"
+    public_url: "https://x.com/GreekFnF"
+    accessible: false
+    notes: "X profile (login wall). Greek Cabal alpha group. Referenced by Marlonalpha TG."
+
+# Tool platforms — used by traders to receive signals. Most are SPAs requiring auth.
+# PUBLIC landing pages accessible but no signal content. App = coverage gap.
+tool_platforms:
+  padre:
+    aliases: ["Padre", "TERMINAL", "padre.gg"]
+    type: "tool_platform"
+    platform: "web"
+    public_url: "https://padre.gg"
+    accessible: true
+    content_available: false
+    notes: "Padre.gg (TERMINAL). Landing scrapes (6.8KB marketing). App/calls/leaderboard require login — SPA. Coverage gap for signal content."
+
+  cielo:
+    aliases: ["Cielo", "cielo.fm"]
+    type: "tool_platform"
+    platform: "web"
+    public_url: "https://cielo.fm"
+    accessible: false
+    content_available: false
+    notes: "Cielo.fm. Returns empty (SPA, requires JS auth). Wallet feed profiles also empty. Coverage gap."
+
+  fomo:
+    aliases: ["FOMO", "fomo.wtf"]
+    type: "tool_platform"
+    platform: "web"
+    public_url: "https://fomo.wtf"
+    accessible: false
+    content_available: false
+    notes: "Domain parked/for sale. Dead. Coverage gap."
+
+# Telegram call channels (upstream of X-KOLs, per sources.yaml)
+telegram_channels:
+  - { handle: "crypticannouncements", tier: "primary" }
+  - { handle: "chasescharts",        tier: "primary" }
+  - { handle: "PikalosiCalls",       tier: "primary" }
+  - { handle: "PikalosiLounge",      tier: "primary" }
+  - { handle: "jacalcooks",          tier: "primary" }
+  - { handle: "Marlonalpha",         tier: "primary" }
+
+# Twitch streamers (live memecoin trading + clips with topic signals)
+# Quality-ranked (empirically verified 2026-08-26 via local Firecrawl)
+twitch_streamers:
+  - { handle: "cented",  followers: "336K", tier: 1, twitter: "Cented7", youtube: "UCQ8-bxOeEZ4M1I2YH8dJFag", notes: "Elite reasoning clips: 'what to look for in a good coin', 'how to make 10m', 'W trade'" }
+  - { handle: "megga",   followers: "460K", tier: 1, twitter: "Megga",   youtube: "UCOjxpeSVbHn75QoVizg",     notes: "Memecoin trader. 'trading memecoins!!! road to a milly pnl'" }
+  - { handle: "decu",    followers: "31K",  tier: 2, notes: "'Trading memecoins on the Solana blockchain'" }
+  - { handle: "dvces",   followers: "75.6K",tier: 2, notes: "Memecoin trading" }
+  - { handle: "zrool",   followers: "118K", tier: 2, notes: "Live crypto streamer" }
+  - { handle: "pullupso",followers: null,   tier: 3, notes: "Discovered live in crypto directory: 'blockchain genius pt.3'" }
+  - { handle: "esee6257",followers: null,   tier: 3, notes: "Discovered live: 'live 109m+ pnl'" }
+
+# X / CT amplifier watchlist (from sources.yaml)
+x_amplifiers:
+  - { handle: "blknoiz06",  tier: "amplifier", alias: "Ansem" }
+  - { handle: "OrangeSBS",  tier: "amplifier", alias: "Orangie" }
+  - { handle: "notthreadguy", tier: "amplifier" }
+  - { handle: "a1lon9",     tier: "amplifier" }
+
+x_lists:
+  - { id: "2074150651030876515", label: "greek-ct-cluster" }
+
+# Discord seeds
+discord:
+  - { handle: "pumpfuns",       tier: "community" }
+  - { handle: "heavenorhell",   tier: "community" }
+  - { handle: "potionalpha",    tier: "alpha" }
+
+# TikTok (slow-meta, polled not real-time)
+tiktok_hashtags:
+  - "solana"
+  - "memecoin"
+  - "pumpfun"
+  - "crypto"
+
+# Web (general-web breadth)
+web_pages:
+  - "https://www.dexscreener.com/solana"
+  - "https://pump.fun/board"
+
+# Operator family / coordination map
+operator_family:
+  - "GreekFnF"
+  - "xbd19z"
+  - "0xAvatar"
+
+# RESOLUTION STATUS
+unresolved:
+  - "Prosper: need X/TG handle + wallets"
+  - "J7Tracker: need X/TG handle"

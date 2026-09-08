@@ -1,0 +1,85 @@
+{
+  "corpus": "laserstream_gold_v2",
+  "version": "v2",
+  "run_uuid": "0619d001-5485-401d-b901-917d3d24e030",
+  "git_sha": "bb4003c83fe0",
+  "created_at": "2026-08-27T21:18:02.777487+00:00",
+  "source": {
+    "file": "D:/repos/mev_bot/tools/stream-capture-rs/grpc-server-only/training-data/pumpfun_laserstream_events_v1_20260824_053543_000288.ndjson",
+    "file_sha256": "61cd5471ec11865f",
+    "format": "normalized_ndjson",
+    "capture": "capture_2_20260824_053543_000288",
+    "capture_duration_min": 300
+  },
+  "code": {
+    "builder": "build_laserstream_gold_v2.py",
+    "code_sha256": "63a6f45f6132ac65"
+  },
+  "sim_config": {
+    "tp_pct": 0.15,
+    "sl_pct": 0.15,
+    "max_hold_s": 300,
+    "trade_size_sol": 0.1,
+    "entry_fee_bps": 100,
+    "exit_fee_bps": 100,
+    "slippage_bps": 50,
+    "sim_version": "lsv2"
+  },
+  "stats": {
+    "total_states": 3823481,
+    "unique_mints": 3244,
+    "recovered_exact": 3823408,
+    "unrecoverable": 0,
+    "recovery_pct": 99.99809074505666,
+    "extreme_outliers": 243687,
+    "right_censored": 0,
+    "venue_counts": {
+      "pumpswap": 3718462,
+      "pumpfun": 105019
+    },
+    "price_source_breakdown": {
+      "balance_delta_wsol_token": 3716224,
+      "balance_delta_max_sol_delta": 104783,
+      "balance_delta_native_sol_fallback": 2238,
+      "balance_delta_curve_sol": 163,
+      "instruction_args": 73
+    },
+    "exit_reason_breakdown": {
+      "TIMEOUT": 707933,
+      "TP_HIT": 1715386,
+      "SL_HIT": 1400162
+    }
+  },
+  "certification": {
+    "cross_layer_cardinality_1:1:1:1": true,
+    "causal_leakage_free": true,
+    "policy_auxiliary_only": true,
+    "venue_specific_pricing": true,
+    "exact_integer_units": true,
+    "failed_tx_filtered": true,
+    "migration_tracked": true,
+    "price_never_clamped": true
+  },
+  "files": {
+    "l1_pump_state_v3": {
+      "path": "D:/repos/mev_bot/tools/data-pipeline/output/laserstream_gold_v2\\l1_pump_state_v3.parquet",
+      "size_mb": 669.4,
+      "sha256": "4e6727f86ad85bb0"
+    },
+    "l2_pump_outcome_v3": {
+      "path": "D:/repos/mev_bot/tools/data-pipeline/output/laserstream_gold_v2\\l2_pump_outcome_v3.parquet",
+      "size_mb": 225.4,
+      "sha256": "d3522394581d32ab"
+    },
+    "l3_counterfactual_v3": {
+      "path": "D:/repos/mev_bot/tools/data-pipeline/output/laserstream_gold_v2\\l3_counterfactual_v3.parquet",
+      "size_mb": 275.7,
+      "sha256": "54937945f52391cf"
+    },
+    "l4_policy_eval_v3": {
+      "path": "D:/repos/mev_bot/tools/data-pipeline/output/laserstream_gold_v2\\l4_policy_eval_v3.parquet",
+      "size_mb": 66.1,
+      "sha256": "69eea9c517ef7d7b"
+    }
+  }
+}
