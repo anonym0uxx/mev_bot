@@ -28,7 +28,7 @@ import time as time_module
 from collections import Counter, defaultdict
 
 # Slinky v3 parquet path
-SLINKY_PATH = "D:/repos/mev_bot/tools/data-pipeline/output/slinky_gold_v3_compact"
+SLINKY_PATH = "D:/mev_bot-artifacts/gold/slinky_gold_v3_compact"
 
 
 def load_slinky_mints(slinky_path: str) -> set:
