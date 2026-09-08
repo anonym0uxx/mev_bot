@@ -45,11 +45,20 @@ is a **legacy reduced copy** of the slinky21 capture — adds zero new data and 
 absolute timestamps/on-chain tx identity. It is **deprioritized**: slinky21 is the single
 authoritative numerical source. (Kept as an untouched legacy copy; never deleted.)
 
-## LaserStream raw capture
+## LaserStream raw capture (canonical source truth)
 
-Location: `D:/mev_bot-artifacts/raw/` — 24 × `.ndjson.zst` parts + 1 `.ndjson` events file
-(from `tools/stream-capture-rs/grpc-server-only/training-data/`). Maps to **D01–D05** raw
-capture lineage. Not yet decoded/validated against manifests.
+Location: `D:/mev_bot-artifacts/raw/` — **70 GB, 369 `.ndjson.zst` + 1 `.ndjson`**.
+Schema (decoded, verified): Geyser stream records with `record_type ∈ {account,
+transaction}`, `slot`, `recv_unix_ms`, `record_index`. Accounts carry `pubkey_b58`,
+`lamports`, `owner_b58`, `executable`, `data_b64`, `write_version`, `txn_signature_b58`.
+Transactions carry the full `message` (account_keys, instructions, versioned), `meta`
+(`fee`, `compute_units_consumed`, `err`, **pre/post_balances**, **pre/post_token_balances**,
+`inner_instructions`, `log_messages`), `signature_b58`.
+
+Maps to **D01** (source truth) + **D03** (exact execution) + **D12** (exact fills via
+balance deltas — no modeling). This is the **canonical verification substrate** the derived
+`slinky21_data` can be checked against. Note: this capture window is **2026-08-23 → 08-24**,
+a *separate/later* window than slinky21's 06-05 → 07-14 — complementary, not the same period.
 
 ## Narrative (thin — the remaining gap)
 
