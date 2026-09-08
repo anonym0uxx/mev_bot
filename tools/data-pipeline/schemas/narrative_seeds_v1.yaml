@@ -257,6 +257,8 @@ telegram_channels:
   - { handle: "PikalosiLounge",      tier: "primary" }
   - { handle: "jacalcooks",          tier: "primary" }
   - { handle: "Marlonalpha",         tier: "primary" }
+  - { handle: "solanaalpha",         tier: "primary" }
+  - { handle: "alphacalls",          tier: "primary" }
 
 # Twitch streamers (live memecoin trading + clips with topic signals)
 # Quality-ranked (empirically verified 2026-08-26 via local Firecrawl)
