@@ -33,6 +33,15 @@ creators:
       - { name: "orangie fomo",   address: "83b2LMf12aLec92kur3duRA8VvUkLaXUtML31aCcZNCM" }
     notes: "Amplifier tier. PUBLIC_BURNED. Used for wave-timing/FADE, never entry trigger."
 
+  insentos:
+    aliases: ["Insentos", "in6entos", "@insentos"]
+    account_type: "creator"
+    tier: "alpha"
+    x_handle: "insentos"        # @insentos (28K followers, fomo-app top-500 trader)
+    wallets:
+      - { name: "Insentos", address: "7SDs3PjT2mswKQ7Zo4FTucn9gJdtuW4jaacPA65BseHS" }
+    notes: "Millionaire memecoin trader; top-500 on the fomo app. Trades with Orangie + SixSeven/Grand FNF group. Recent activity (Sep 2026) is co-temporal with current narrative — key D11 source."
+
   cented:
     aliases: ["Cented", "cented", "Cented's Friend", "Cented dev"]
     account_type: "creator"

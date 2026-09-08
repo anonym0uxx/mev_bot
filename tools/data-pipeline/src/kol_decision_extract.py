@@ -21,6 +21,7 @@ OUT = 'D:/repos/mev_bot/tools/data-pipeline/output/kol_decisions'
 
 # KOLs + which of their seed-registry wallets to use (drop 'fake' ansem).
 TARGETS = {
+    'insentos': ['Insentos'],
     'ansem':  ['ansem', 'Ansem'],            # exclude 'Fake Ansem' / 'fake ansem'
     'cupsey': ['Cupsey', 'cupsey multi', 'Cupsey 1', 'Cupsey 2', 'Cupsey 3'],
     'cented': ['Cented', 'cented', "Cented's Friend", 'Cented dev'],
