@@ -107,6 +107,38 @@ Reddit is the live narrative lane (free, no account, no wall). Relevant subs: r/
 Parser integration into narrative_gold is the next step; sustained pull benefits from the
 free Reddit "script" app OAuth (100 req/min vs 1) — a 1-min user registration, not a login.
 
+## D11 decision labels — decisive buys CONFIRMED (counterfactual, 33.5M scenarios)
+
+`counterfactual_trade_v3` carries the economically-derived decision labels. Distribution:
+
+| economic_class | scenarios | % | role |
+|---|---|---|---|
+| SKIP | 18,819,563 | 56% | no-trade (correctly dominant) |
+| STRONG | 4,638,818 | 13.8% | **decisive BUY** |
+| GOOD | 589,907 | 1.8% | buy |
+| BAD | 3,440,129 | 10.3% | avoid/SELL |
+| TOXIC | 5,888,935 | 17.5% | avoid (toxic/rug) |
+| MARGINAL | 174,855 | 0.5% | WATCH |
+
+Positive (STRONG+GOOD) = **5.2M** vs negative (BAD+TOXIC) = **9.3M** — a healthy ~36:64
+decision balance, *not* the prior 22-BUY starvation. Capacity-adjusted: at the 0.5 SOL
+bucket, **4,543,621** scenarios are `sz050_feasible=true` AND positive net return (an
+executable decisive buy at that size). Strike: the 22-BUY failure is dead.
+
+Remaining (Stage 4): export these into a class-balanced BUY/SELL/SKIP/WATCH episode set
+(undersample/weight SKIP; threshold MARGINAL), paired with the KOL decision trajectories.
+
+## KOL trade extraction — bundled-trade resolution
+
+`getTransaction` RPC is **blind to Jito-bundled trades** (trader's SOL/token delta reads
+0.0, no Buy/Sell instruction — verified on Cented, a known trader). Therefore:
+
+- **Authoritative D11 KOL source = `slinky21`** (raw Geyser, sees full account state):
+  Cupsey 15.7K / Cented 8.0K / Megga 2.8K = 26,427 correct buy+sell decisions.
+- `kol_wallet_scan.py` (getTransaction) is **deprecated for KOL trade extraction** — its
+  0-decisions results (Ansem, Insentos) are bundling artifacts, NOT inactivity.
+- Backfilling a KOL absent from slinky21 needs Geyser capture on that wallet, not RPC.
+
 ### Elite-wallet behavioral substitute (D06/D11 via on-chain, not X)
 
 The X/Twitter narrative lane is login-walled (13+ handles mapped, unscrapable per policy).
