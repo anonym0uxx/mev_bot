@@ -58,7 +58,7 @@ creators:
       - { name: "cented",           address: "4sKEmneKj4tRyjBj7nLLtEMzPBoSVcBeQeLD5hH2wakN" }
       - { name: "cented",           address: "77kq9xNZg4Vb94UJMpeHsx7pKXUBU3Wpqsm5UXhjA9dd" }
       - { name: "Cented dev",       address: "8YcbyX92UHTU23HZv3ccP9o13qibErQkKaUjoxqxd7SJ" }
-    notes: "Alpha caller. Twitch streamer (336K). Clips show reasoning: 'what to look for in a good coin', 'how to make 10m'. Twitter @Cented7, YouTube channel linked."
+    notes: "Alpha caller. Twitch streamer (336K). Clips show reasoning: 'what to look for in a good coin', 'how to make 10m'. Twitter @Cented7. YouTube UCQ8-bxOeEZ4M1I2YH8dJFag = FORTNITE channel (only 1 relevant memecoin vid 4euyrV50ovw, transcripts DISABLED) — reasoning-transcript lane blocked."
 
   cupsey:
     aliases: ["Cupsey", "cupsey multi", "Cupsey 1", "Cupsey 2", "Cupsey 3"]
@@ -84,7 +84,7 @@ creators:
     wallets:
       - { name: "megga",      address: "H31vEBxSJk1nQdUN11qZgZyhScyShhscKhvhZZU3dQoU" }
       - { name: "Megga side", address: "6QRdkwTSk9Kop6VdqSkSPah7a3HfqKHU5DD4BqMFCUQP" }
-    notes: "Alpha caller. Twitch streamer (460K followers). 'trading memecoins!!! road to a milly pnl'. Twitter @Megga, YouTube linked."
+    notes: "Alpha caller. Twitch streamer (460K followers). 'trading memecoins!!! road to a milly pnl'. Twitter @Megga. YouTube UCOjxpeSVbHn75QoVizg = 404/STALE channel ID — needs re-resolution before transcript lane can be wired."
 
   prosper:
     aliases: ["Prosper"]
