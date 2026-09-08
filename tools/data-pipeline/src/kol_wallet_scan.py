@@ -40,49 +40,50 @@ PUMPSWAP_PROGRAM = 'pAMMBay6oceH9fJKBRHGP5D4apD2cMChhx64UHd2wa9'
 
 
 def resolve_decision(tx, wallet):
-    """Return (mint, direction, ui_delta) for a REAL pump.fun/PumpSwap trade, or None.
+    """Return (mint, direction, sol_delta) for a REAL pump.fun/PumpSwap trade, or None.
 
-    CRITICAL: a token balance change alone is NOT a trade — wallet receive/send
-    transfers (airdrops, distributions, consolidation) also move balances. Only count a
-    decision when the pump.fun or PumpSwap program is in the transaction.
+    Lessons (hard-won):
+    * Require the pump.fun/PumpSwap program in accountKeys — transfers/airdrops also move
+      balances but are NOT trades.
+    * pre/postTokenBalances OMIT the trader's own account for bundles (only AMM/fee
+      accounts reported). Use the SOL-native pre/postBalances — always complete — for
+      DIRECTION, and any token-balance entry for the MINT.
     """
-    # must involve pump.fun bonding curve or PumpSwap AMM
     msg = (tx.get('transaction') or {}).get('message') or {}
-    accts = msg.get('accountKeys') or []
-    progs = set(a if isinstance(a, str) else a.get('pubkey') for a in accts)
-    if PUMP_PROGRAM not in progs and PUMPSWAP_PROGRAM not in progs:
+    keys = [a if isinstance(a, str) else (a.get('pubkey') if a else None) for a in (msg.get('accountKeys') or [])]
+    if PUMP_PROGRAM not in keys and PUMPSWAP_PROGRAM not in keys:
         return None
 
     meta = tx.get('meta', {}) or {}
-    pre = meta.get('preTokenBalances', []) or []
-    post = meta.get('postTokenBalances', []) or []
-    logs = ' '.join(meta.get('logMessages', []) or [])
+    pre_sol = meta.get('preBalances') or []
+    post_sol = meta.get('postBalances') or []
 
+    # wallet's SOL direction (always complete)
+    try:
+        wi = keys.index(wallet)
+    except ValueError:
+        return None
+    if wi >= len(pre_sol) or wi >= len(post_sol):
+        return None
+    sol_delta = (post_sol[wi] - pre_sol[wi]) / 1e9
+
+    # mint: any token balance entry in the tx (traded token)
     mints = set()
-    for b in pre + post:
-        m = b.get('mint')
-        if m:
-            mints.add(m)
+    for b in (meta.get('preTokenBalances') or []) + (meta.get('postTokenBalances') or []):
+        if b.get('mint'):
+            mints.add(b['mint'])
     if not mints:
         return None
 
-    pre_by = {}
-    for b in pre:
-        if b.get('owner') == wallet and b.get('mint'):
-            pre_by[b['mint']] = b.get('uiTokenAmount', {}).get('uiAmount') or 0.0
-    post_by = {}
-    for b in post:
-        if b.get('owner') == wallet and b.get('mint'):
-            post_by[b['mint']] = b.get('uiTokenAmount', {}).get('uiAmount') or 0.0
-
-    for mint in mints:
-        delta = post_by.get(mint, 0.0) - pre_by.get(mint, 0.0)
-        if abs(delta) <= 1e-9:
-            continue
-        direction = 'buy' if delta > 0 else 'sell'
-        return {'mint': mint, 'direction': direction, 'ui_delta': abs(delta),
-                'logs_buy': 'buy' in logs.lower(), 'logs_sell': 'sell' in logs.lower()}
-    return None
+    logs = ' '.join(meta.get('logMessages', []) or [])
+    if sol_delta < -0.01:       # wallet lost SOL -> buy
+        direction = 'buy'
+    elif sol_delta > 0.01:      # wallet gained SOL -> sell
+        direction = 'sell'
+    else:
+        return None
+    return {'mint': sorted(mints)[0], 'direction': direction, 'sol_delta': abs(sol_delta),
+            'logs_buy': 'buy' in logs.lower(), 'logs_sell': 'sell' in logs.lower()}
 
 
 def scan_wallet(key, wallet, max_tx=200):
