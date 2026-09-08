@@ -265,8 +265,8 @@ def estimate_publish_time(text: str, platform: str) -> int:
     # Also: "Month DD, YYYY" appears at end of message blocks
     # Try full date first: "June 5, 2026" or "June 5 2026"
     full_date_re = re.compile(
-        r'((?:January|February|March|April|May|June|July|August|September|October|November|December)'
-        r'\s+(\d{1,2})\s*,?\s*(\d{4}))',
+        r'(January|February|March|April|May|June|July|August|September|October|November|December)'
+        r'\s+(\d{1,2})\s*,?\s*(\d{4})',
         re.IGNORECASE,
     )
     m = full_date_re.search(text)
@@ -282,8 +282,8 @@ def estimate_publish_time(text: str, platform: str) -> int:
 
     # Try "Month DD" without year — assume current year (2026)
     short_date_re = re.compile(
-        r'((?:January|February|March|April|May|June|July|August|September|October|November|December)'
-        r'\s+(\d{1,2}))\s*$',
+        r'(January|February|March|April|May|June|July|August|September|October|November|December)'
+        r'\s+(\d{1,2})\s*$',
         re.IGNORECASE | re.MULTILINE,
     )
     m = short_date_re.search(text)
