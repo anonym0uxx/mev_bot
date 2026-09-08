@@ -67,6 +67,21 @@ a *separate/later* window than slinky21's 06-05 → 07-14 — complementary, not
 AMBIGUOUS, **zero GOLD strategy cards**. Maps to **D07/D08/D09** — this is where capture
 must continue (the 270 fresh events from this session's crawl begin to close it).
 
+### Social/narrative lanes (validated this session)
+
+| Lane | Status | Result |
+|---|---|---|
+| Telegram | ● live, free | 8 public channels, 2h cron (`be9ab5a0ed96`) |
+| Reddit | ● live, free | anonymous `.rss` feed works (r/solana pull returned live threads); throttled ~1 req/min/IP |
+| Wayback CDX (X archive) | ◐ historical | 14 handles, ~150 public snapshots (blknoiz06=37, notthreadguy=22) |
+| On-chain (LaserStream + Helius/DexScreener/Birdeye) | ● live, free | the real memecoin signal feed |
+| X/Twitter live text | ✗ no legit free route | login-walled; only paid API/licensed reseller |
+
+Reddit is the live narrative lane (free, no account, no wall). Relevant subs: r/solana
+(general), r/memecoins, r/SolanaMemeCoins, r/pumpfun (memecoin-specific — higher signal).
+Parser integration into narrative_gold is the next step; sustained pull benefits from the
+free Reddit "script" app OAuth (100 req/min vs 1) — a 1-min user registration, not a login.
+
 ### Elite-wallet behavioral substitute (D06/D11 via on-chain, not X)
 
 The X/Twitter narrative lane is login-walled (13+ handles mapped, unscrapable per policy).
