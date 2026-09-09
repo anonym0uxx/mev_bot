@@ -1,0 +1,89 @@
+{
+  "policy_version": "north_star_prospective_reservation_v3",
+  "reservation_status": "PROSPECTIVE_COLLECTION_RESERVED_FIT_BLOCKED",
+  "selected_at_utc_ms": 1788978233782,
+  "base_policy_sha256": "2e192cc90ccc331202f511667a58aefef8ed9326d11f1a502cd928191378aeaa",
+  "window": {
+    "start_utc_ms": 1789542000000,
+    "end_utc_ms": 1790146800000,
+    "split": "SEALED_ECONOMICS",
+    "source_scope": "ALL_FUTURE_SUPPORTED_CAPTURE_SOURCES"
+  },
+  "collection_authorized": false,
+  "fit_authorized": false,
+  "materialized_protected_ids": [],
+  "dependency_horizons_status": "UNKNOWN",
+  "collector_custody_status": "DEPLOYMENT_PENDING",
+  "selection_evidence": {
+    "observed_at_utc": "2026-09-09T18:23:53.782127+00:00",
+    "clock_command": "python datetime.now(timezone.utc); ZoneInfo('America/Los_Angeles') conversion; terminal tool exit 0",
+    "initial_clock_observation_utc": "2026-09-09T18:19:57.954554+00:00",
+    "requested_local_start": "2026-09-16T00:00:00-07:00",
+    "requested_local_end": "2026-09-23T00:00:00-07:00",
+    "timezone": "America/Los_Angeles",
+    "start_utc": "2026-09-16T07:00:00+00:00",
+    "end_utc": "2026-09-23T07:00:00+00:00",
+    "requested_dates_changed": false,
+    "selection_basis": "Parent-agent-selected fixed future week under operator-approved holdout separation in principle; exact dates were not selected or requested directly by the operator. Dates still future at selection. Conservative collection reservation only, not sufficiency guarantee. Legacy requested_local_start, requested_local_end and requested_dates_changed fields refer to the parent agent's bounded task, not direct operator date instructions.",
+    "base_file_sha256": "309d4b305b3e9dc7a2fd851997613041ca2c96f72a6fb6ab6dfac3252bb86ed3",
+    "branch_observed": "task/north-star-build",
+    "head_observed": "61417ced9a56526a9e6f1d4502e00f2348f4a973",
+    "custody_limit": "Tool-observed host clock and local preregistration, not independently signed timestamp or deployed collector custody."
+  },
+  "routing_rules": {
+    "source_neutral": "Protect the fixed dates across every future supported capture source; resolve actual exact source identifiers from acquisition metadata when known, never preinvent identifiers.",
+    "clocks": "Require exact nonnegative integer UTC ms event, availability, capture and collection-start timestamps; event <= availability <= capture; selection < collection-start <= capture. Event/availability/capture all in half-open reserved window. Unknown or inconsistent => QUARANTINED.",
+    "intervals": "For explicit intervals require known inclusive first and last dependency timestamps, containing event, wholly within window; crossing or touching exclusive end => QUARANTINED. Omitted interval means point record only.",
+    "exposure": "All historical/observed Megga remains exposed DEVELOPMENT in v2. Known exposed source, affirmative exposure, or unknown exposure in reservation routing => QUARANTINED; no pristine reclassification. v2 exposure inventory is not exhaustive.",
+    "outside": "Reservation returns QUARANTINED outside the fixed window, not automatic DEVELOPMENT, calibration, validation or challenge; no rolling partition shift.",
+    "ancestry": "Existing dependencies.parent_closure plus EvaluationBoundary.inherit resolve root and all declared transitive parents. Protected/development conflict, absent nodes/splits or cycles => QUARANTINED. Independently audit completeness of declared lineage.",
+    "purpose": "SEALED_ECONOMICS is a prospective custody-routing restriction, not a claim of captured, pristine, admitted or evaluable data."
+  },
+  "coverage_policy": {
+    "decision_basis": "ACQUISITION_HEALTH_ONLY",
+    "retain_partial_and_outages": true,
+    "move_dates_or_replace_on_outcomes": false,
+    "health_fields": [
+      "exact source/provider and permissions evidence",
+      "collector liveness and UTC coverage intervals",
+      "clock certainty and media mapping",
+      "disconnects, gaps, dropped records and backpressure",
+      "raw integrity, decode availability and lineage",
+      "protected custody enforcement",
+      "remaining approved acquisition budget evidence"
+    ],
+    "capabilities": [
+      "market tape and executable venue/account state",
+      "opportunity, portfolio, inventory and correlated context",
+      "narrative availability, media clock and identity linkage",
+      "execution evidence and failed/censored exits"
+    ],
+    "decision_rule": "Retain every acquired interval and outage/gap record. Mark each capability PRESENT, PARTIAL, ABSENT or UNKNOWN from acquisition-health metadata only; never inspect returns, labels, class yield or teacher/model performance to continue, drop or replace sessions.",
+    "stop_rule": "Pause affected acquisition on lost source/provider authorization, approved budget uncertainty/exhaustion, custody failure or unsafe acquisition health. Quarantine unsafe records, retain prior partials and gap ledger. Resume only within original dates when the health/permission gate recovers; no compensating days or extra streams.",
+    "later_sufficiency": "Assess natural-prevalence economic sufficiency, full capability coverage and censoring later under independent evaluation protocol. Seven days guarantees neither sample size nor sufficiency. Insufficient/outage-rich reservation stays insufficient with original dates.",
+    "challenge": "Separate balanced diagnostics remain separately preregistered/unresolved; never rebalance or replace primary natural-prevalence economics."
+  },
+  "permissions": {
+    "operator_principle_evidence": "north_star/EVALUATION_RESERVATION_DECISION.md records operator approval of holdout separation in principle only; the parent agent selected the exact dates in its bounded Stage1 reservation task, not by direct operator instruction.",
+    "new_exact_source_provider_approvals": [],
+    "acquisition": "No collection or spending is granted. Use existing pipeline only after separately verified exact source/provider, rights and budget approvals; metadata support flag is not approval.",
+    "paid_calls_made": false,
+    "collectors_modified_or_started": false,
+    "forbidden": [
+      "training",
+      "tuning",
+      "teacher selection on protected data",
+      "retrieval/CPT/SFT construction on protected data",
+      "live orders",
+      "budget overages",
+      "outcome-conditioned replacement"
+    ]
+  },
+  "immutability": {
+    "digest": "SHA256 UTF-8 sorted-key compact JSON, ensure_ascii=False, allow_nan=False, excluding reservation_sha256 field",
+    "pin": "Separately pin reservation_sha256 from EVAL_RESERVATION_V3.md and receipt before use; do not trust a recomputed self-hash alone.",
+    "version_rule": "Do not overwrite exercised reservation v3 or edit its dates. Changes require a separate version and explicit invalidation/assessment, never replacement selected on observed outcomes.",
+    "base_freeze": "Additive only; EVAL_FREEZE.json v2 bytes and pending fit gate remain unchanged."
+  },
+  "reservation_sha256": "8d018de9c530b97595d5a3ec9c69d92df497be16c882df12662398b6a8476fb8"
+}
