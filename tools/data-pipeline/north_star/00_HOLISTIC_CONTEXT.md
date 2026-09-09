@@ -82,6 +82,43 @@ admission or complete source registry certification.
 
 ## 5. Current Megga acquisition — preserve, do not overclaim
 
+**Later status supersedes the kickoff bullets below:** first LaserStream session
+finalized 09:49 PT; all 200 manifest-listed source files were preserved and rehashed
+(see `BUILD_CAPTURE_CONTINUATION.md`). Next bounded session
+`20260909_173928_000596` began 10:39:28 PT, after a recorded acquisition gap.
+At 11:41 PT the media partial was still being written. At 11:45 PT an exact-session
+five-second observation found raw +4,800,173 bytes and events +2,110,275 bytes;
+media had no flush during that short interval (not sufficient to infer failure).
+WSL PID596 was present; the expected session deadline is 12:39:28 PT.
+These observations are not finalization receipts or proof of a working supervisor.
+HLS metadata snapshots and pure clock validators do **not** resolve the older
+recording's PTS↔UTC offset.
+No collection continuity, verified speaker identity, or narrative admission claim.
+
+### Reviewed implementation checkpoint
+
+Remote task branch verified at `96fb932794381d8eb4781c9887fa6420fa1abc2c`:
+- `61417ced`: exact 250000000-lamport offline order cap, not live integration.
+- `dac3e1e1`: independently reviewed bounded Parquet envelope writer; actual
+  first100 raw sample preserves 98 envelopes, with two explicit rejections.
+- `ec2b576b`: reviewed media clock validator and Rust all-zero Base58 fix.
+  Encoder fix is source-only; no active collector binary was replaced.
+- `e47d494d`: exact transaction endpoint reconciliation, not venue fill decoding.
+  Malformed recorded system-program addresses stay literal and quarantined.
+- `96fb9327`: preregistered September 16–23 PT future window and reviewed routing.
+  Collector custody is not deployed and base fit authorization remains blocked.
+
+The subsequent development snapshot passed **1470 tests in 8.51 seconds**.
+New narrative source recovery produced 50 exact text/prefix joins; parent checked
+all 151 manifest-listed files and 50 spans. Rights, source timing and semantic
+verification remain unresolved, so **zero of these claims are admitted**.
+HLS transport/parser remediation, narrative proof-registry gate and source recovery
+remain separate independent-review workstreams at this snapshot. Do not conflate
+pending worktree files with the reviewed/pushed checkpoint. Current per-stage
+acceptance is tracked in `BUILD_STAGE_TRACKER.json`.
+
+### Historical kickoff observations
+
 - Twitch stream ID `320254509148`.
 - Media path `D:/mev_bot-artifacts/narrative/twitch_live/megga_320254509148.mp4.part`.
 - On-chain session `20260909_144906_000490`; standalone WSL launcher, **120-minute

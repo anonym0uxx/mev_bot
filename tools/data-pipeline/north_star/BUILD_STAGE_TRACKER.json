@@ -1,0 +1,124 @@
+{
+  "schema": "north_star_execution_stage_tracker_v1",
+  "updated_at_pt": "2026-09-09T11:44:23.136478-07:00",
+  "master": "master/NORTH_STAR_WINDOWS_MASTER_V5.md",
+  "goal": "complete enriched narrative-capable dataset; no numeric-only downgrade",
+  "training_run_authorized": false,
+  "stages": [
+    {
+      "stage": 1,
+      "name": "Protect evaluation and contracts",
+      "status": "IN_PROGRESS",
+      "remaining_acceptance": [
+        "collector custody enforcement",
+        "complete source/dependency exposure audit",
+        "development calibration split contracts and approved numeric operating regime before tuning"
+      ],
+      "existing_receipts": [
+        "EVAL_FREEZE.json",
+        "OPERATOR_SCOPE_UPDATE.json",
+        "EVAL_RESERVATION_V3.json",
+        "BUILD_RESERVATION_RECEIPT.md",
+        "BUILD_SIZING_CONSTRAINT_RECEIPT.md"
+      ]
+    },
+    {
+      "stage": 2,
+      "name": "Canonicalization and accounting",
+      "status": "IN_PROGRESS",
+      "remaining_acceptance": [
+        "authoritative instruction/finality decoding",
+        "independently reconciled real ledger examples",
+        "scale only verified transforms"
+      ],
+      "existing_receipts": [
+        "BUILD_ACCOUNTING_RECEIPT.md",
+        "BUILD_PARTITIONS_RECEIPT.md",
+        "BUILD_TRANSACTION_TRUTH_RECEIPT.md",
+        "BUILD_ENCODING_RECEIPT.md"
+      ]
+    },
+    {
+      "stage": 3,
+      "name": "Capture and context",
+      "status": "IN_PROGRESS",
+      "remaining_acceptance": [
+        "PTS/UTC media alignment and verified content identity",
+        "narrative semantic/timing/rights proof",
+        "opportunity/account/propagation/rival coverage",
+        "independent collector ownership"
+      ],
+      "existing_receipts": [
+        "BUILD_CAPTURE_CONTINUATION.md",
+        "BUILD_MEDIA_CLOCK_RECEIPT.md"
+      ],
+      "pending_independent_review": [
+        "BUILD_HLS_CLOCK_RECEIPT.md",
+        "BUILD_NARRATIVE_CONTEXT_RECEIPT.md",
+        "BUILD_NARRATIVE_SOURCES_RECEIPT.md"
+      ]
+    },
+    {
+      "stage": 4,
+      "name": "Development-only execution calibration",
+      "status": "BLOCKED",
+      "remaining_acceptance": [
+        "protected splits enforced",
+        "actual-fill calibration data and supported regimes"
+      ],
+      "existing_receipts": []
+    },
+    {
+      "stage": 5,
+      "name": "Episode reconstruction and labeling",
+      "status": "BLOCKED",
+      "remaining_acceptance": [
+        "canonical causal contexts",
+        "frozen calibrated economics",
+        "observed actions versus recommended targets"
+      ],
+      "existing_receipts": [
+        "ACTION_CONTRACT.md"
+      ]
+    },
+    {
+      "stage": 6,
+      "name": "Inherited splits and exports",
+      "status": "BLOCKED",
+      "remaining_acceptance": [
+        "eligible episodes",
+        "post-mask token audit",
+        "all-parent split inheritance"
+      ],
+      "existing_receipts": []
+    },
+    {
+      "stage": 7,
+      "name": "Independent whole-corpus certification",
+      "status": "BLOCKED",
+      "remaining_acceptance": [
+        "complete admitted/rejected/quarantined corpus accounting",
+        "source/license/token inclusion approval",
+        "independent semantic/economic/runtime review"
+      ],
+      "existing_receipts": []
+    },
+    {
+      "stage": 8,
+      "name": "Windows handback",
+      "status": "BLOCKED",
+      "remaining_acceptance": [
+        "all earlier acceptance evidence",
+        "portable dataset manifest and training proposal"
+      ],
+      "existing_receipts": []
+    }
+  ],
+  "verified_code_checkpoint": "96fb932794381d8eb4781c9887fa6420fa1abc2c",
+  "latest_regression": {
+    "passed": 1470,
+    "failed": 0,
+    "elapsed_s": "8.51",
+    "scope": "concurrent development snapshot, not corpus certification"
+  }
+}
