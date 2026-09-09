@@ -1,0 +1,31 @@
+{
+  "scope": "second implementation tranche; not corpus certification",
+  "accounting": {
+    "tests_passed": 58,
+    "independent_review": "deleg_8f701526",
+    "result": "no critical/high findings in reference-library scope"
+  },
+  "jobs": {
+    "tests_passed": 22,
+    "independent_review": "deleg_15b34399",
+    "result": "bounded pass, not deployed supervisor",
+    "actual_attempt": "D:/mev_bot-artifacts/north_star/jobs/accounting_fixture_v1",
+    "actual_job_id": "a3428ad9aaf9a55c38527c689cf6b30b9fcad8ce4c5315f39e8333b29836bf91",
+    "actual_result": "58 passed, child exit0, second run returned same verified result"
+  },
+  "dependencies": {
+    "tests_passed": 12,
+    "review_fix": "budget checks before parent scan"
+  },
+  "actions": {
+    "tests_passed": 19,
+    "review_fixes": [
+      "integer EXIT_ALL quantity",
+      "consistent deterministic recommendation origin"
+    ]
+  },
+  "raw_adapter": {
+    "review_status": "fixed; independent re-review deleg_e6910b36 passed envelope-only scope; 89 targeted tests, 693 combined tests; not corpus certification",
+    "sample": "100 raw prefix records,98 projected2unknown-status rejections; no training eligibility"
+  }
+}

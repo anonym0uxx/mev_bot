@@ -163,6 +163,31 @@ failing-before/passing-after tests and source-backed independent semantic valida
 
 ## 8. Build deliverables and next gates
 
+### Reviewed implementation tranche 2
+
+Task branch checkpoints: `5e801c17` foundations; `bf5f8b07` exact FIFO, explicit
+action semantics, bounded ancestry resolution, and Windows direct-child job runner.
+Both pushed and independently read back from origin; neither merged to main.
+Original worktree/collectors remain untouched by code edits.
+
+- FIFO accounting passed 58 synthetic tests plus independent conservation review.
+  Real-chain fee completeness, native cash/rent/rebate/migration adapters remain open.
+- Dependencies/actions passed 31 tests after independent review fixes. Supplied
+  graph closure is not proof the source producer declared all parents.
+- Job runner passed 22 tests and executed the actual accounting test target through
+  its owned subprocess with durable logs, exit0 and verified no-relaunch resume.
+  It remains a synchronous primitive, not deployed gateway-independent supervision.
+- Raw envelope adapter exercised first100 already-exposed source rows:98 projections,
+  two explicit unknown-slot rejections. No beneficiary/mint heuristics or training
+  eligibility; malformed JSON/Unicode review hardening precedes admission of code.
+- First live-session files finalized:199 raw parts plus events,200 files totaling
+  10059323128 bytes, hash-verified and copied outside legacy purge root. Later session
+  started at10:39 PT after the first ended09:49 PT. `BUILD_CAPTURE_CONTINUATION.md`
+  and artifact `CAPTURE_RESTART_GAP.json` preserve the known capture discontinuity.
+  Megga media kept recording; no UTC alignment claim.
+
+
+
 First implementation checkpoint evidence:
 - `BUILD_INVENTORY_RECEIPT.md`: original store manifest **818/818 files**, **126807316863 bytes**, all SHA256 rehashed with zero missing/mismatches.
 - `BUILD_RECOVERY_RECEIPT.md`: 184 recovered parts; complete raw rehash across roots gives August 23 **185/185**, August 24 **368/369**. Missing tail remains explicit.

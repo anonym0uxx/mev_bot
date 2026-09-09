@@ -1,0 +1,41 @@
+{
+  "scope": "combined local software verification; no stage/corpus certification",
+  "observed_at_pt": "2026-09-09T10:57:37.800598-07:00",
+  "command": "python -m pytest tools/data-pipeline/tests/north_star -q --tb=short",
+  "exit_code": 0,
+  "result": "693 passed in 4.79s",
+  "source_sha256": {
+    "accounting.py": "ace2174610836b8a4e4d5a3651c5ff82b466b52f674c39e21dd4bb45ceba138b",
+    "actions.py": "7426a3f9592f7093480b6c1b8c7a1fd2d88c7585851827279d267fa9b34fb813",
+    "admission.py": "551d4277d3c4c882f8032a54d0c278565a4d7d58a5565eb59d67f6da24a2b2f5",
+    "availability.py": "5178edd974b8798ddc11023347cd7fa595eb4d5802227a6164dd7b20306a0470",
+    "capture_health.py": "965527ba0ce0939a26d7678dbf0d144e117d97293001b19be14a2217c9004421",
+    "contracts.py": "9b4623449609aec098cdeaa85371d1618fc25d53429f84a35c9e7f2219312f93",
+    "dependencies.py": "3f73a25457b3aee5f16dd0d0354d5e7286c281074f6a0b69e7e44c9fb2b1a58a",
+    "fs_integrity.py": "46cf36b2d295a31036526823b87971e9545258b2e568daf0071d70f0f96d2b5e",
+    "inventory.py": "185c29b4052435ff85cac1214c94291511135f9ea133c478763cfa403b74e4a0",
+    "io.py": "8ae9f8d58e20762b047ce5927f196c914babd3314dcab7d017c6077ac1aa949f",
+    "jobs.py": "5f23e28b8656bb7658f91f7b2660d423d73798d9db5ff2e8d5d970d0aaaec897",
+    "raw_adapter.py": "6f11413dc4be53bac1e776485c9b1800879a2d10bc0d6d52e43bba01c14f3ec6",
+    "recovery.py": "bc684777835d1d8300263ed11201995b9dd03562d9f40ee68687488fb13ce5ec",
+    "requirements.py": "d8621e7740e78df88d498cdedbe6646c5c101b8a426f9faddac144fbc2d2a4d5",
+    "retention.py": "ad6912f61e1b9cb01b757bf957f915c000a09ed9044c2632a73ba6ce949af70e",
+    "schema.py": "17ede8827c9f30ee75b5d3b50244137c80b3634e496521617982c21db8914419",
+    "splits.py": "ef20358df2773108a6bd9eceba24892ef06ad8983d0af1809037aeeeed19a27c"
+  },
+  "source_prefix": "src/north_star",
+  "raw_adapter_real_sample": {
+    "rows_read": 100,
+    "accepted": 98,
+    "rejected": 2,
+    "training_eligible": false,
+    "path": "D:/mev_bot-artifacts/north_star/development/raw_adapter/part0000_first100_v2"
+  },
+  "remaining": [
+    "full stage1 protected reservation and exposed ancestry",
+    "semantic transaction decoder/real-chain ledger reconciliation",
+    "full table schemas/columnar consumers",
+    "durable service deployment/media UTC alignment",
+    "stages4-8"
+  ]
+}
