@@ -56,26 +56,40 @@ task weights, mirror the balance in eval. This is now enforced by a hard gate (�
 4. **Quality over speed.** Full 8-stage process; no "speed-to-data" shortcut.
 5. **Capital/risk = Kelly sizing.** 6. **Objective = maximize net returned SOL/trade.**
 
-## 5. Build-order status (8 stages)
+## 5. Build-order status (master Build DAG — stages 0–8, source of truth)
 
-| Stage | Name | Status |
+Source of truth: `F:/handoff-linux/northstar/2026-09-06-expert-v5/NORTH_STAR_WINDOWS_MASTER_V5.md` §7 ("Build DAG … corrected order"). All stage numbering and ordering below follows that, not any earlier internal stage doc.
+
+| Stage | Master definition (verbatim gist) | Status |
 |---|---|---|
-| 0 | Receiver/source inventory | ✅ DONE |
-| 1 | Protect evaluation (freeze eval, leakage contracts) | ✅ DONE |
-| 1b | Schema registry (L1–L4 verified) | ✅ DONE |
-| 2 | Market/narrative capture (D01–D14) | ◐ IN PROGRESS (D04/D06/D07/D08/D09/D11 open) |
-| 5 | Label-balance gate + BUY-count audit spec | ✅ SPEC FROZEN (build pending) |
-| 3 | Canonicalization/accounting | ⬜ next |
-| 4 | Execution calibration | ⬜ |
-| 6 | Independent corpus certification | ⬜ |
-| 7 | Operator admission / training proposal | ⬜ |
+| 0 | receive/inventory — verify workspace, sources, licenses; produce receiver ack + source/coverage registry + gap report | ✅ DONE |
+| 1 | protect evaluation + contracts — reserve protected time/entity/source boundaries before fitting | ✅ DONE |
+| 2 | bounded canonicalization — write new schemas/tests; parse trusted raw → Parquet; event identity/finality; source/rights + per-field availability; ledger reconciliation | ⬜ NOT STARTED |
+| 3 | parallel capture — prospective opportunity/account/execution capture + **narrative/message capture**; features; annotations; entity + propagation graphs | ◐ PARTIAL (lanes built; narrative P0 incomplete) |
+| 4 | development-only execution calibration | ⬜ |
+| 5 | episode reconstruction / labeling | ⬜ (balance-gate SPEC only) |
+| 6 | split inheritance + exports | ⬜ |
+| 7 | independent whole-corpus certification | ⬜ |
+| 8 | Windows handback (training proposal) | ⬜ |
 
-**Stage 2 is NOT complete.** Sourced/strong: D01, D02, D03, D05, D12, D13. Still open:
-D04 (size-specific depth), D06 (connected-wallet linking + Token-2022 holder
-enrichment), D07/D08/D09 (narrative/propagation/rotation — thin), D11 (decisions —
-the core gap). **Hard blocker:** narrative↔slinky overlap is **1/317** (narrative
-mints are current, slinky is Jun–Jul) — narrative and on-chain must be co-temporal
-or D07/D08/D09 never validate.
+**Corrected baseline.** Stages 0–1 are done. **Stage 2 (canonicalization) has not
+started** — the prior "Stage 1b schema registry" verified *existing* L1–L4 gold
+schemas (Stage 0 inventory), not the *new North Star namespace schemas* (§6 of the
+master: `sources`/`raw_objects`/`events`/`token_versions`/`opportunities`/
+`decision_contexts`/`episodes`/`splits`…), and the raw→Parquet parse, event
+identity/finality and ledger reconciliation are all unbuilt. Stage 3 capture lanes
+exist but are incomplete.
+
+**Narrative is P0, not optional.** Master line 302: *"narratives are a required
+collection dimension, not optional decoration."* D07/D08/D09 are each marked
+"P0 for narrative-capable release"; line 434: a numerical-only release "may be
+LIMITED, but cannot be advertised as the full narrative/meta North Star." §3 lists
+eight learning tasks, all narrative-linked.
+
+**Hard blocker:** narrative↔slinky overlap is **1/317** (narrative mints current,
+slinky Jun–Jul). Master line 302 requires narrative + numeric state at the SAME
+decision cutoff → co-temporal capture is mandatory, not a nice-to-have. Now running:
+live Megga stream + LaserStream co-temporal capture (§8).
 
 ## 6. Data inventory (measured, not estimated)
 
@@ -136,6 +150,17 @@ or D07/D08/D09 never validate.
   dev-rug 121 / narrative 82 / risk 53 segment counts). Quality high (correct jargon).
 - Caveat: **forward-only** (14-day VOD retention; Cented's YouTube = Fortnite, Megga's
   = 404). Transcript archived; audio deleted (transcribe-then-delete).
+
+### Live co-temporal capture (active 2026-09-09)
+- Megga live on Twitch (stream `320254509148`) → two lanes running co-temporally:
+  1. **LaserStream** on-chain capture (session `20260909_144906_000490`, 120-min bounded).
+  2. **yt-dlp** live audio download → `megga_320254509148.mp4` (no VOD buffer, so from now).
+- Context metadata: `D:/mev_bot-artifacts/narrative/twitch_live/CAPTURE_CONTEXT.json`
+  (streamer, stream_id, capture start, wallets, join keys).
+- Purpose: satisfy the master's co-temporality requirement (narrative + numeric state
+  at the SAME decision cutoff, line 302) — the fix for the 1/317 mismatch.
+- Join: transcript timestamps → mint via name extraction → cross-ref LaserStream
+  events in the capture window (Stage 3 work).
 
 ### Mint-centric on-chain confirmation stage
 - `confirm_stream_mint.py` — the corrected architecture (replaces wallet-history paging):
@@ -212,25 +237,24 @@ failure. Fail-closed exporter + pre-training audit:
   North Star milestone + criteria in the constitution) or register a gate result via
   `gate_verify` — both are supervisor-extension work, not capture work.
 
-## 12. Stage 2 completion + Stage 3 canonicalization
+## 12. Open data items → master-stage map
 
-**Stage 2 is NOT closed.** Remaining capture/derivation (from the inventory's own
-next-actions):
+The D-category gaps map onto the master DAG as follows (D = capture/derivation dimension):
 
-| Item | Work | Input | Blocker |
-|---|---|---|---|
-| D04 capacity | size-specific exit depth | `postgard_snapshots` (1.4M) + `snapshots` (27M) | none |
-| D06 holders | connected-wallet linking + Token-2022 holder enrichment | `wallet_stats` (1M) + Helius `getProgramAccounts` memcmp | account state beyond 24h (see §13.3) |
-| D07 narrative | lift EX_ANTE/GOLD (currently 253/23) | narrative_gold chain | temporal mismatch (1/317 vs slinky) |
-| D08 propagation | repost/echo graph | narrative claims (1.5K, thin) | thin source |
-| D09 rotation | theme/rotation model | `narrative_state_v1` (1,183 states) | no model yet |
-| D10 | reconcile category (STAGE0 "portfolio/opportunities" vs inventory "account state") | — | definition drift |
+| Item | Work | Master stage |
+|---|---|---|
+| D04 capacity | size-specific exit depth | Stage 2 (canonicalize depth) → Stage 4 (calibrate) |
+| D06 holders | connected-wallet linking + Token-2022 holder enrichment | Stage 2 (canonicalize) + Stage 3 (capture holders) |
+| D07 narrative | lift EX_ANTE/GOLD (253/23) | Stage 3 (narrative capture — P0) |
+| D08 propagation | repost/echo graph | Stage 3 (propagation graphs) |
+| D09 rotation | theme/rotation model | Stage 3 (narrative/meta) |
+| D10 account state | prospective account/opportunity capture | Stage 3 (prospective capture) |
+| D11 decisions | BUY/SELL/SKIP/WATCH labels | Stage 5 (episode labeling) — counterfactual economics |
 
-**Stage 3 (next, after Stage 2 closes) = canonicalization/accounting** per
-`STAGE2_CAPTURE.md`: exact lamport-rounded fills, fees/tips/slippage, real-fill vs
-modeled-exit separation — the numeric-truth layer the episode builder (Stage 4) sits
-on. **D11 (decisions)** is the load-bearing gap; it derives from on-chain
-counterfactual economics in Stage 4, not Stage 2/3 capture.
+**Canonicalization (Stage 2) precedes capture (Stage 3)** in the master order. The
+D07/D08/D09 narrative items are Stage 3 P0, currently blocked by the 1/317
+co-temporality gap — fixed only by the live co-temporal capture (Megga + LaserStream,
+now active).
 
 ## 13. Open threads & risks
 
