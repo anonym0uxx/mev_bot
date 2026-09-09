@@ -63,15 +63,19 @@ task weights, mirror the balance in eval. This is now enforced by a hard gate (�
 | 0 | Receiver/source inventory | ✅ DONE |
 | 1 | Protect evaluation (freeze eval, leakage contracts) | ✅ DONE |
 | 1b | Schema registry (L1–L4 verified) | ✅ DONE |
-| 2 | Market/narrative capture (D01–D14) | ✅ DONE (capture-complete, validated) |
+| 2 | Market/narrative capture (D01–D14) | ◐ IN PROGRESS (D04/D06/D07/D08/D09/D11 open) |
 | 5 | Label-balance gate + BUY-count audit spec | ✅ SPEC FROZEN (build pending) |
 | 3 | Canonicalization/accounting | ⬜ next |
 | 4 | Execution calibration | ⬜ |
 | 6 | Independent corpus certification | ⬜ |
 | 7 | Operator admission / training proposal | ⬜ |
 
-**Stage 2 is capture-complete** (D01–D14 sourced + validated). Remaining D04/D06/
-D08/D09/D10 work is *derivation*, not capture — that's Stage 3.
+**Stage 2 is NOT complete.** Sourced/strong: D01, D02, D03, D05, D12, D13. Still open:
+D04 (size-specific depth), D06 (connected-wallet linking + Token-2022 holder
+enrichment), D07/D08/D09 (narrative/propagation/rotation — thin), D11 (decisions —
+the core gap). **Hard blocker:** narrative↔slinky overlap is **1/317** (narrative
+mints are current, slinky is Jun–Jul) — narrative and on-chain must be co-temporal
+or D07/D08/D09 never validate.
 
 ## 6. Data inventory (measured, not estimated)
 
@@ -208,21 +212,25 @@ failure. Fail-closed exporter + pre-training audit:
   North Star milestone + criteria in the constitution) or register a gate result via
   `gate_verify` — both are supervisor-extension work, not capture work.
 
-## 12. Stage 3 canonicalization (NEXT — the training-data generation)
+## 12. Stage 2 completion + Stage 3 canonicalization
 
-Stage 2 is capture-complete; Stage 3 derives the training inputs. Five items:
+**Stage 2 is NOT closed.** Remaining capture/derivation (from the inventory's own
+next-actions):
 
-| Item | Derivation | Input | Blocker |
+| Item | Work | Input | Blocker |
 |---|---|---|---|
-| D04 capacity | size-specific exit depth | `postgard_snapshots` (1.4M) + `snapshots` (27M) | none — derive |
-| D06 holders | connected-wallet linking | `wallet_stats` (1M) + snapshots | account state beyond 24h (see §13.3) |
-| D08 propagation | repost/echo graph | narrative claims (1.5K, thin) | thin source — keep capturing |
-| D09 rotation | theme/rotation model | `narrative_state_v1` (1,183 states) | no rotation model yet |
-| D10 account state | canonicalize tape → gold | `rust/data/tape.jsonl` (520 rec) | none — canonicalize |
+| D04 capacity | size-specific exit depth | `postgard_snapshots` (1.4M) + `snapshots` (27M) | none |
+| D06 holders | connected-wallet linking + Token-2022 holder enrichment | `wallet_stats` (1M) + Helius `getProgramAccounts` memcmp | account state beyond 24h (see §13.3) |
+| D07 narrative | lift EX_ANTE/GOLD (currently 253/23) | narrative_gold chain | temporal mismatch (1/317 vs slinky) |
+| D08 propagation | repost/echo graph | narrative claims (1.5K, thin) | thin source |
+| D09 rotation | theme/rotation model | `narrative_state_v1` (1,183 states) | no model yet |
+| D10 | reconcile category (STAGE0 "portfolio/opportunities" vs inventory "account state") | — | definition drift |
 
-Feeds Stage 4 (execution calibration = the BUY/SELL/SKIP/WATCH labels). **D11
-(decisions) is the load-bearing gap** — no human history, so it derives from on-chain
-counterfactual economics in Stage 4, not Stage 3 capture.
+**Stage 3 (next, after Stage 2 closes) = canonicalization/accounting** per
+`STAGE2_CAPTURE.md`: exact lamport-rounded fills, fees/tips/slippage, real-fill vs
+modeled-exit separation — the numeric-truth layer the episode builder (Stage 4) sits
+on. **D11 (decisions)** is the load-bearing gap; it derives from on-chain
+counterfactual economics in Stage 4, not Stage 2/3 capture.
 
 ## 13. Open threads & risks
 
