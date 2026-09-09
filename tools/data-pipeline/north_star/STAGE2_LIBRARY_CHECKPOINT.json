@@ -1,0 +1,17 @@
+{
+  "scope": "reviewed library tranche; not Stage2 corpus certification",
+  "test_command": "python -m pytest tests/north_star/test_accounting.py tests/north_star/test_jobs.py tests/north_star/test_actions.py tests/north_star/test_dependencies.py tests/north_star/test_availability_integration.py -q",
+  "tests_passed": 113,
+  "independent_review_ids": [
+    "deleg_8f701526",
+    "deleg_15b34399",
+    "deleg_683cf26c"
+  ],
+  "source_sha256": {
+    "accounting.py": "ace2174610836b8a4e4d5a3651c5ff82b466b52f674c39e21dd4bb45ceba138b",
+    "actions.py": "7426a3f9592f7093480b6c1b8c7a1fd2d88c7585851827279d267fa9b34fb813",
+    "dependencies.py": "3f73a25457b3aee5f16dd0d0354d5e7286c281074f6a0b69e7e44c9fb2b1a58a",
+    "jobs.py": "5f23e28b8656bb7658f91f7b2660d423d73798d9db5ff2e8d5d970d0aaaec897"
+  },
+  "raw_adapter": "excluded while malformed-record hardening in progress"
+}
