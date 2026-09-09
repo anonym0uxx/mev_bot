@@ -6,6 +6,12 @@ Later operator decisions in the approved audit/build plan govern older master/v6
 
 The objective is Kelly-informed sizing and net returned SOL, with reconciled all-in portfolio equity, failed costs, open/unsellable inventory, capital-time, tail risk and equal-capital cash/frozen-baseline comparisons. Kelly is not a numeric bankroll, an approved leverage/risk cap, a fixed take-profit rule or evidence that estimated edge exists. Sizing distributions, uncertainty shrinkage, capacity/correlation and the supported execution envelope must be development-calibrated after reservation; no tuning in this tranche.
 
+## Operator refinement — 2026-09-09 PT
+
+`OPERATOR_SCOPE_UPDATE.json` records the direct answers: Helius Business account allowance 150 million credits/month; **max entry 0.25 SOL (250000000 lamports)** until explicitly lifted; starting bankroll **2–3 SOL, exact selection not made**. Existing Rust deterministic stop-loss/exit controls remain in place; later Rust rearchitecture follows dataset work. The dataset still covers management/exit choices; this does not authorize current model control or live orders. Account remaining credits/cycle/other consumers must be measured; no overage authorization is inferred. No response was received to the future-evaluation reservation approval question.
+
+These values supersede the corresponding unknown entry-cap and approximate-bankroll statements below, not the other required gates. Kelly remains constrained by the explicit hard cap; no arbitrary risk or drawdown value is inferred.
+
 ## Unknown production values remain unknown
 
 Unresolved: deployment capital; maximum order size; concurrent positions; maximum hold/runner policy; latency/freshness; drawdown; correlated exposure; fractional Kelly cap; meaningful incremental uplift; uncertainty confidence/sample sufficiency/stopping rules; cost/latency stress and fee model; frozen baseline hashes; risk-policy hash; approved numeric limits with evidence and effective timestamp. `EVAL_FREEZE.json` separately leaves all embargo durations null and future reservation pending. No values from test fixtures are production proposals.

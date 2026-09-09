@@ -1,0 +1,33 @@
+{
+  "schema": "north_star_operator_scope_update_v1",
+  "source": "Direct operator answers in Telegram to build-contract clarification, 2026-09-09 PT",
+  "helius": {
+    "plan": "Business",
+    "monthly_account_credit_allowance": 150000000,
+    "credits_remaining": null,
+    "billing_cycle_boundary": null,
+    "incremental_overage_authorized": false,
+    "note": "Account-wide allowance; must measure other consumers and remaining credits before committing collection budget."
+  },
+  "sizing": {
+    "max_entry_sol_literal": ".25",
+    "max_entry_lamports": 250000000,
+    "cap_lift_requires_explicit_operator_change": true,
+    "starting_bankroll_sol_range": [2, 3],
+    "selected_bankroll_lamports": null,
+    "maximum_drawdown": null,
+    "kelly_philosophy": "Prior objective retained; hard entry cap binds. No full-Kelly leverage or unrestricted sizing authorized."
+  },
+  "execution": {
+    "stop_loss_and_exit_controls": "remain deterministic in Rust",
+    "rust_rearchitecture": "after North Star dataset work",
+    "dataset_exit_and_position_management_coverage": "still required; future model decision authority and present Rust enforcement are distinct",
+    "live_orders_authorized_by_this_update": false
+  },
+  "evaluation": {
+    "future_reservation_question": "no response received",
+    "reservation_approval": false,
+    "training_or_curation_on_unreserved_holdout": false
+  },
+  "status": "PARTIAL_OPERATOR_CONTRACT_NOT_FULL_NUMERIC_APPROVAL"
+}

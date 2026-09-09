@@ -1,0 +1,2 @@
+# Operator source bytes are pinned by the offline sizing predicate.
+OPERATOR_SCOPE_UPDATE.json -text
