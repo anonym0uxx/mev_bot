@@ -76,7 +76,7 @@ impl TrainingCapture {
         // ── Initialize recorders ──
         let raw_recorder = Arc::new(RawRecorder::new(self.data_dir.clone(), &self.session_id)?);
         let events_path = self.data_dir.join(format!(
-            "pumpfun_laserstream_events_v1_{}.ndjson",
+            "pumpfun_laserstream_events_v1_{}.ndjson.zst",
             self.session_id
         ));
         let events_writer = Arc::new(EventsWriter::new(&events_path)?);
