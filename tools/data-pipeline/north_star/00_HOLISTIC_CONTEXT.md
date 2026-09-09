@@ -157,6 +157,11 @@ Implemented + measured:
 - **Projected resident rate:** events scalar Parquet ≈ **3 GB/day** (vs 290 GB/day
   uncompressed). Tiered: raw ring buffer (24h) + scalar Parquet (accumulating) +
   counterfactual features (daily).
+- **Step 3 (done):** resident daemon `capture_daemon.py` (launch→compact→purge→restart)
+  + creds-safe `run_capture.sh` (replaces the hardcoded-key `run_capture_300.sh` leak)
+  + raw ring-buffer purge (24h, verified 185 stale parts purged; canonical 369 intact).
+- **Open design item:** scalar-only Parquet drops token balances; D04/D06 holder data
+  beyond 24h needs a separate account-snapshot stream (or `--full` compaction).
 
 **Format decision:** **Parquet** for the intermediate events layer (matches slinky21,
 zero new deps, DuckDB/pyarrow native). **Lance** flagged as a *future* option for the
