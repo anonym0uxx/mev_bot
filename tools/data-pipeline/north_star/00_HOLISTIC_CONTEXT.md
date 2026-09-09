@@ -192,15 +192,47 @@ failure. Fail-closed exporter + pre-training audit:
 - `STAGE2_TWITCH_SPIKE_EVAL.md` — 21% yield + leverage design
 - `STAGE5_LABEL_BALANCE_GATE.md` — balance gate + BUY-count audit
 
-## 11. Open threads & risks
+## 11. Supervisor registration (status)
+
+- **Infra facts (registered, done):** `north_star_capture_daemon`,
+  `north_star_storage_architecture`, `north_star_laserstream_modes` — 3 facts in the
+  supervisor's facts ledger (facts_count 21). Provenance-stamped, Astra-visible.
+- **Formal component (`propose_amendment` `new_component`): BLOCKED.** The amendment
+  intake requires an `evidence_ref` that resolves to a real record in the evidence
+  store (`gate:`/`experiment:`/`artifact:`/`benchmark:`/`criterion:`), and that store
+  is **empty** — the certification battery (cargo build/clippy/tests) is
+  Rust-trading-bot-scoped; the capture daemon is a Python + WSL-Rust build that does
+  not map onto it. Tool rejected `artifact:live_status` ("does not resolve to a
+  record").
+- **Unblock path (parked):** extend the supervisor to certify the data pipeline (a
+  North Star milestone + criteria in the constitution) or register a gate result via
+  `gate_verify` — both are supervisor-extension work, not capture work.
+
+## 12. Stage 3 canonicalization (NEXT — the training-data generation)
+
+Stage 2 is capture-complete; Stage 3 derives the training inputs. Five items:
+
+| Item | Derivation | Input | Blocker |
+|---|---|---|---|
+| D04 capacity | size-specific exit depth | `postgard_snapshots` (1.4M) + `snapshots` (27M) | none — derive |
+| D06 holders | connected-wallet linking | `wallet_stats` (1M) + snapshots | account state beyond 24h (see §13.3) |
+| D08 propagation | repost/echo graph | narrative claims (1.5K, thin) | thin source — keep capturing |
+| D09 rotation | theme/rotation model | `narrative_state_v1` (1,183 states) | no rotation model yet |
+| D10 account state | canonicalize tape → gold | `rust/data/tape.jsonl` (520 rec) | none — canonicalize |
+
+Feeds Stage 4 (execution calibration = the BUY/SELL/SKIP/WATCH labels). **D11
+(decisions) is the load-bearing gap** — no human history, so it derives from on-chain
+counterfactual economics in Stage 4, not Stage 3 capture.
+
+## 13. Open threads & risks
 
 1. Cross-disk backup to `/training` (Linux boot required).
 2. `narrative_gold_v1` jsonl still git-tracked → move to store + untrack.
-3. **Stage 3 canonicalization** is the next build (D04/D06/D08/D09/D10 derivation).
-4. **Resident LaserStream capture** — wire daemon + cron + raw ring buffer (built
-   binary is ready; run via `smoke_capture.sh`; `run_capture_300.sh` still hardcodes
-   the API key → pull from creds).
-5. **SELL-label predicate** undefined (Stage 5 input, flagged to Astra).
-6. Twitch reasoning lane: **forward-only**; live confirmation needs Geyser co-temporal
+3. **D04/D06 account-snapshot stream** — scalar Parquet drops token balances; holder
+   data beyond 24h needs a separate snapshot stream (or `--full` compaction).
+4. **SELL-label predicate** undefined (Stage 5 input, flagged to Astra).
+5. Twitch reasoning lane: **forward-only**; live confirmation needs Geyser co-temporal
    with streams (paid/burst, not free).
-7. `run_capture_300.sh` API-key leak in git (same key as creds; fix to pull from creds).
+6. **Consolidation decision:** fold training-capture into pq-daemon's existing LS
+   child (single connection + free supervision) vs keep `capture_daemon.py` separate
+   (double LaserStream credits). Rust-side → Astra.
