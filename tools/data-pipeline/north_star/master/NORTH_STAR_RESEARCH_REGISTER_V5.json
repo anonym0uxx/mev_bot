@@ -1,0 +1,54 @@
+{
+  "scope": "Research references only; no transcript payloads distributed in handoff",
+  "records": [
+    {
+      "id": "S1",
+      "url": "https://www.youtube.com/watch?v=mK54UwtIHIk",
+      "retrieved_text_sha256": "2517241f5da94976bd012e950d652b74b14b3a4d2f24c3d42552b575cde89c57",
+      "evidence_kind": "public extracted page/transcript, not independently authenticated audiovisual sequence",
+      "rights": "UNVERIFIED",
+      "training_admission": "BLOCKED_PENDING_PERMISSIVE_LICENSE_AND_FULL_ADMISSION",
+      "named_pnl_independently_verified": false
+    },
+    {
+      "id": "S2",
+      "url": "https://www.youtube.com/watch?v=w0WtVwlR3cY",
+      "retrieved_text_sha256": "c39b8bbf89c9b2589451b64d19dacb4e73e3434b18970045ff801c9b6b84d80d",
+      "evidence_kind": "public extracted page/transcript, not independently authenticated audiovisual sequence",
+      "rights": "UNVERIFIED",
+      "training_admission": "BLOCKED_PENDING_PERMISSIVE_LICENSE_AND_FULL_ADMISSION",
+      "named_pnl_independently_verified": false
+    },
+    {
+      "id": "S3",
+      "url": "https://www.youtube.com/watch?v=hxXZTE9wWdA",
+      "retrieved_text_sha256": "945ebcace22d83a9f56e10c50500709dfccc9afa087459920020ad66c6fdad60",
+      "evidence_kind": "public extracted page/transcript, not independently authenticated audiovisual sequence",
+      "rights": "UNVERIFIED",
+      "training_admission": "BLOCKED_PENDING_PERMISSIVE_LICENSE_AND_FULL_ADMISSION",
+      "named_pnl_independently_verified": false
+    },
+    {
+      "id": "S4",
+      "url": "https://www.youtube.com/channel/UCOjxpeSVbHn75QoVizg7dDg",
+      "retrieved_text_sha256": "ed7d4320a82c8d963e21974db96728e12d278938becee6187ca1576f51380181",
+      "evidence_kind": "public extracted page/transcript, not independently authenticated audiovisual sequence",
+      "rights": "UNVERIFIED",
+      "training_admission": "BLOCKED_PENDING_PERMISSIVE_LICENSE_AND_FULL_ADMISSION",
+      "named_pnl_independently_verified": false
+    },
+    {
+      "id": "S5",
+      "url": "https://www.youtube.com/watch?v=efq61vbmotM",
+      "retrieved_text_sha256": "4acd0853a9a80513765878109a64fd5c171c8099cdf453a51fbe85c4ff0768ef",
+      "evidence_kind": "public extracted page/transcript, not independently authenticated audiovisual sequence",
+      "rights": "UNVERIFIED",
+      "training_admission": "BLOCKED_PENDING_PERMISSIVE_LICENSE_AND_FULL_ADMISSION",
+      "named_pnl_independently_verified": false
+    }
+  ],
+  "excluded_attribution": {
+    "url": "https://www.youtube.com/watch?v=-czWNiE5Qmw",
+    "reason": "starwifpump uploader, not named-Megga evidence"
+  }
+}

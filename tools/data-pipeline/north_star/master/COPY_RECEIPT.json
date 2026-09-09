@@ -1,0 +1,40 @@
+{
+  "authority": "original immutable v5 and V6; later explicit overrides in current ledger",
+  "files": [
+    {
+      "file": "NORTH_STAR_DATA_MIX_AMENDMENT_V6.md",
+      "original_sha256": "6af4760ae8ae247214a4a4ea5c61eb3bd3be314ce85e4b09a274d7015a5dda5f",
+      "repository_copy_sha256": "6af4760ae8ae247214a4a4ea5c61eb3bd3be314ce85e4b09a274d7015a5dda5f"
+    },
+    {
+      "file": "NORTH_STAR_DATA_SUMMARY_V5.md",
+      "original_sha256": "29e93ef56f473469976413fd253973f7761a31d8170c7d0af4c2948ea46af527",
+      "repository_copy_sha256": "29e93ef56f473469976413fd253973f7761a31d8170c7d0af4c2948ea46af527"
+    },
+    {
+      "file": "NORTH_STAR_EXPERT_GAP_AMENDMENT_V5.md",
+      "original_sha256": "8c2597118f201f1d7c00520ac01e1a0e0ececb01d98ba5ac5230368639bd0a07",
+      "repository_copy_sha256": "8c2597118f201f1d7c00520ac01e1a0e0ececb01d98ba5ac5230368639bd0a07"
+    },
+    {
+      "file": "NORTH_STAR_GAP_COVERAGE_V5.json",
+      "original_sha256": "965efd3978f78daaf888c8ce01748c222dc0919e6e523d566a35885b578f6caa",
+      "repository_copy_sha256": "965efd3978f78daaf888c8ce01748c222dc0919e6e523d566a35885b578f6caa"
+    },
+    {
+      "file": "NORTH_STAR_HANDOFF_MANIFEST_V5.json",
+      "original_sha256": "fb08e1686109c913ffec1239a6f5c5ffeb6339f594221aa5d51b151da7f03074",
+      "repository_copy_sha256": "fb08e1686109c913ffec1239a6f5c5ffeb6339f594221aa5d51b151da7f03074"
+    },
+    {
+      "file": "NORTH_STAR_RESEARCH_REGISTER_V5.json",
+      "original_sha256": "2fd39f04d4c29a1a140f3d7c628d4f663344fe7a7f24966f2f7d25ab5c70166d",
+      "repository_copy_sha256": "2fd39f04d4c29a1a140f3d7c628d4f663344fe7a7f24966f2f7d25ab5c70166d"
+    },
+    {
+      "file": "NORTH_STAR_WINDOWS_MASTER_V5.md",
+      "original_sha256": "ebee45d5b98a5daeed72edebf16e7ef2b8878d5cc96b191c451584a315cea57c",
+      "repository_copy_sha256": "ebee45d5b98a5daeed72edebf16e7ef2b8878d5cc96b191c451584a315cea57c"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "scope": "foundation synthetic/unit/integration tests only; no completed master stage or admitted dataset",
+  "time_pt": "2026-09-09T09:06:43.068289-07:00",
+  "command": "python -m pytest tools/data-pipeline/tests/north_star -q --tb=short",
+  "exit_code": 0,
+  "stdout": "........................................................................ [ 14%]\r\n........................................................................ [ 29%]\r\n........................................................................ [ 43%]\r\n........................................................................ [ 58%]\r\n........................................................................ [ 73%]\r\n........................................................................ [ 87%]\r\n...........................................................              [100%]\r\n491 passed in 1.54s",
+  "module_sha256": {
+    "tools/data-pipeline/src/north_star/admission.py": "551d4277d3c4c882f8032a54d0c278565a4d7d58a5565eb59d67f6da24a2b2f5",
+    "tools/data-pipeline/src/north_star/availability.py": "5178edd974b8798ddc11023347cd7fa595eb4d5802227a6164dd7b20306a0470",
+    "tools/data-pipeline/src/north_star/capture_health.py": "965527ba0ce0939a26d7678dbf0d144e117d97293001b19be14a2217c9004421",
+    "tools/data-pipeline/src/north_star/contracts.py": "9b4623449609aec098cdeaa85371d1618fc25d53429f84a35c9e7f2219312f93",
+    "tools/data-pipeline/src/north_star/fs_integrity.py": "46cf36b2d295a31036526823b87971e9545258b2e568daf0071d70f0f96d2b5e",
+    "tools/data-pipeline/src/north_star/inventory.py": "185c29b4052435ff85cac1214c94291511135f9ea133c478763cfa403b74e4a0",
+    "tools/data-pipeline/src/north_star/io.py": "8ae9f8d58e20762b047ce5927f196c914babd3314dcab7d017c6077ac1aa949f",
+    "tools/data-pipeline/src/north_star/recovery.py": "bc684777835d1d8300263ed11201995b9dd03562d9f40ee68687488fb13ce5ec",
+    "tools/data-pipeline/src/north_star/requirements.py": "d8621e7740e78df88d498cdedbe6646c5c101b8a426f9faddac144fbc2d2a4d5",
+    "tools/data-pipeline/src/north_star/retention.py": "ad6912f61e1b9cb01b757bf957f915c000a09ed9044c2632a73ba6ce949af70e",
+    "tools/data-pipeline/src/north_star/schema.py": "17ede8827c9f30ee75b5d3b50244137c80b3634e496521617982c21db8914419",
+    "tools/data-pipeline/src/north_star/splits.py": "ef20358df2773108a6bd9eceba24892ef06ad8983d0af1809037aeeeed19a27c"
+  },
+  "independent_reviews": {
+    "filesystem": "deleg_f1990d50 PASS limited trusted-tree scope",
+    "registry_admission_splits_contracts_inventory": "deleg_ca9ec71e PASS first-checkpoint scope",
+    "schema_availability": "deleg_b47cee0b PASS minimal primitives scope",
+    "capture_retention": "deleg_2ec9a44f no reported capture/retention blockers; passive only"
+  }
+}

@@ -1,5 +1,11 @@
 # North Star — Stage 0: Receiver Acknowledgment & Source/Coverage Registry
 
+> **Historical record, not current completion evidence.** Stage numbering and several
+> status/semantic claims below were superseded by the master-DAG audit. Consult
+> `00_HOLISTIC_CONTEXT.md`, `BUILD_PLAN.md`, and task receipts before implementation.
+> In particular, pseudo-tests, heuristic GOLD/EX_ANTE labels, and old PASS reports
+> do not certify North Star admission. Original content is retained for traceability.
+
 Status: **Stage 0 complete (receiver verified; source/coverage registry frozen).**
 Date: 2026-09-07. Author: Windows Hermes agent.
 

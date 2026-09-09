@@ -1,5 +1,11 @@
 # North Star — Stage 2: D13 Protocol & Numeracy Reference
 
+> **Historical record, not current completion evidence.** Stage numbering and several
+> status/semantic claims below were superseded by the master-DAG audit. Consult
+> `00_HOLISTIC_CONTEXT.md`, `BUILD_PLAN.md`, and task receipts before implementation.
+> In particular, pseudo-tests, heuristic GOLD/EX_ANTE labels, and old PASS reports
+> do not certify North Star admission. Original content is retained for traceability.
+
 Status: **source-verified corpus.** Every formula and constant is lifted from the Rust
 source, not reconstructed. Purpose: the protocol/numeracy knowledge the Qwen trading
 brain must hold (bonding-curve math, fees, graduation, units) so it reasons about

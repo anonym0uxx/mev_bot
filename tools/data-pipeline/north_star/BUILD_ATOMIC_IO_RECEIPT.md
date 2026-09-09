@@ -1,0 +1,3 @@
+# Stage 2 small-object publication primitive
+
+Implemented `src/north_star/io.py`; not a complete bulk Parquet writer. Test-first: 1 failed missing module → 1 passed; resume/corruption/config tests → 3 failed,2 passed; final combined recovery/publication tests → 9 passed. Uses fsynced temporary files, atomic no-clobber hard-link publication on same volume and separate receipt. Data without receipt is uncommitted and refused; it is never silently resumed as complete. Corruption, config mismatch and payload mismatch refused. Bulk streaming, orphan reconciliation and full crash/disk/Windows locking matrix remain Stage2 work. Independent review required before admission.

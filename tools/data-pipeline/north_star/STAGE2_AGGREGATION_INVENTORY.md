@@ -1,5 +1,11 @@
 # North Star — Stage 2: Aggregation Inventory (verified)
 
+> **Historical record, not current completion evidence.** Stage numbering and several
+> status/semantic claims below were superseded by the master-DAG audit. Consult
+> `00_HOLISTIC_CONTEXT.md`, `BUILD_PLAN.md`, and task receipts before implementation.
+> In particular, pseudo-tests, heuristic GOLD/EX_ANTE labels, and old PASS reports
+> do not certify North Star admission. Original content is retained for traceability.
+
 Status: **numerical foundation inventoried at full scale; permissively-licensed core
 located.** Date: 2026-09-07. All counts measured via DuckDB footer scans, not estimates.
 

@@ -1,0 +1,3835 @@
+{
+  "schema_version": "north_star_requirements_v1",
+  "artifact_kind": "SPECIFICATION_NOT_TRAINING_DATA",
+  "documents": {
+    "master_v5": {
+      "path": "F:/handoff-linux/northstar/2026-09-06-expert-v5/NORTH_STAR_WINDOWS_MASTER_V5.md",
+      "sha256": "ebee45d5b98a5daeed72edebf16e7ef2b8878d5cc96b191c451584a315cea57c",
+      "line_count": 935,
+      "cited_lines": {
+        "217": "### D01 — Source and observation truth [P0]",
+        "218": "- Source/provider/account, canonical URL or object ID, raw hash, decoder version, license identifier/version/evidence and permitted uses.",
+        "219": "- Capture start/end, received timestamp, timestamp provenance/precision, feed cursor, sequence/slot gaps, outage/error/rate-limit intervals, retention policy and revision/tombstone history.",
+        "220": "- Source status: discovered / local-unverified / rights-pending / raw-eligible / task-admissible / quarantined. Record bytes, rows and distinct identities only after counting.",
+        "221": "- Purpose: distinguish absent opportunity from blind collector; defend every downstream number.",
+        "368": "All new physical schemas use a new North Star namespace. Required types: nonnegative UTC-millisecond integer when known, native-unit integer amounts, bounded fraction with named denominator, categorical state with version, nullable values with reason, immutable identifiers and foreign keys. Prices derived with explicit quote/base decimals; monetary accounting must not use binary float. Observed commitment and later finality/correction travel separately.",
+        "369": "",
+        "370": "Canonical tables, primary keys and join direction:",
+        "371": "- `sources(source_id, version)` → `raw_objects(raw_id)` → `events(event_id, revision)`; immutable payload references and coverage intervals.",
+        "372": "- `token_versions(chain, mint, available_at, version)`, `venue_states(venue_state_id)`, `content_versions(content_id, version)` and `entity_links(link_id)`; links have their OWN available time.",
+        "373": "- `opportunities(opportunity_id)` + `portfolio_snapshots(portfolio_id)` → `decision_contexts(context_id)` containing allowlisted IDs and cutoff; no future fields.",
+        "374": "- `annotations(annotation_id)` points to frozen context, author, provenance tier and reveal times; `intents(intent_id)` → `execution_events(execution_id)` → `inventory_lots(lot_id)` / `realizations(realization_id)`.",
+        "375": "- `outcomes(outcome_id)` points to context/episode/horizon and cost model, observed end, censoring and label availability; outcome table cannot be joined into decision-context export.",
+        "376": "- `narrative_states(narrative_state_id)` references content/version/entity/coverage dependencies plus as-of semantic hypotheses, not hindsight outcome classes.",
+        "377": "- `episodes(episode_id)` references ordered decision/intention/fill states; `splits(group_id, split_version)` is inherited by EVERY derived object; `export_records(record_id)` traces source/label/model-visible bytes and mask.",
+        "378": "",
+        "379": "**Multi-parent split conflicts:** freeze a versioned split-resolution policy before export. A context inherits all candidate, position-episode, content-version and dependency restrictions, not just the chosen mint's label. Any training example referencing protected economic evidence or a protected narrative version is quarantined/excluded; never relabel a protected parent to make it fit. Where strict entity-disjoint evaluation requires grouping, resolve connected dependency groups before partition assignment and disclose coverage loss. A giant component is a design limitation, not permission to silently weaken the split. Distinguish ordinary shared, timeless permissive reference documentation (explicit allowlist) from protected empirical episodes/labels. Chronological deployment and strict unseen-entity challenges have separate policies; materialized conflicts must be counted. Test a multi-candidate training context with one protected mint and a shared protected social item: both must fail admission.",
+        "380": "",
+        "381": "**Target types:** observed action; human judgment; source-backed fact/span; deterministic economics; model-independent mechanics. Each names author/algorithm/version, dependencies, assumptions, confidence/uncertainty and applicability. No type is silently promoted to another. Build weak keyword/stage heuristics only as review suggestions, never expert gold. Claim outcome statuses require a falsifiable proposition and declared horizon; otherwise UNRESOLVED.",
+        "724": "For every live feature/document:",
+        "725": "`available_at <= decision_at`, with declared clock precision and latency model. For a derived feature, availability cannot precede the latest dependency plus compute delay. Missing or unverifiable timestamps fail closed for the task that requires them.",
+        "726": "",
+        "727": "Keep four separate objects:",
+        "728": "1. `decision_context` — allowlisted, causally available information;",
+        "729": "2. `decision_target` — action/rationale tier with evidence references and authoring time;",
+        "730": "3. `execution_observation` — actual submitted/landed/rejected result;",
+        "731": "4. `outcome_review` — future returns, postmortems, labels and censoring.",
+        "732": "",
+        "733": "Output-label timestamps may be later; those labels must never leak back into evidence or an alleged pre-outcome human rationale. Both input and rationale text need inspection. Denylist words alone do not prove no leakage; lineage, time joins, allowed-field contracts and adversarial perturbations are required.",
+        "734": "",
+        "735": "**Mandatory mutation tests:** change future returns, terminal market cap, later social popularity, later holder count, later expert win rate and outcome grade; decision input bytes must remain unchanged. A future-only event inserted into source data must not change any earlier causal feature, retrieved context or historical teacher ranking.",
+        "736": "",
+        "737": "Protect labels that expose outcome by construction: hindsight entry minima/exit maxima, post-hoc “winner” identifiers, future-confirmed chart pivots, token descriptions edited after the event and last-row aggregation. Exclude arbitrary UUID/filename/order cues that encode class.",
+        "738": "",
+        "739": "Censoring is per mint/venue/horizon/source coverage, not inferred from the global latest timestamp. Observed no-print, unavailable coverage and impossible execution are separate states. Closed-only reporting must not erase open losers.",
+        "801": "2. Export human-origin judgment/action supervision plus tested numerical/mechanics tasks. Use explicit provenance tiers; do not conceal simulator targets as expert preferences.",
+        "802": "3. Train only after source quality/coverage and operator-approved full-parameter feasibility/schedule gates. No smoke-training stage; bounded unit tests and data audits are not model training.",
+        "803": "4. Select checkpoints using a preregistered development/validation rule with anti-overfit/stop-and-ask controls; do not select on sealed economic test results. Evaluate economics separately from loss.",
+        "804": "5. Preference optimization/RL is a later research option, not a promised shortcut. Needs an approved preference/reward source, high-fidelity simulator, support constraints and reward-hacking audits. No generated training text or rolling live self-training under current rules.",
+        "805": "",
+        "806": "**Composition:** do not inherit the old cross70/post10/rust10/narrative5/hermes1 mix automatically. Allocate by validated capability needs and **post-mask loss-bearing label tokens**, not raw token volume. Keep expert episodes prominent without duplicating them; use contribution caps and bounded task-only weights. Retention share and any engineering mix require explicit next-run review; preserve the existing current-run 4% retention rule untouched. Never weight by realized PnL magnitude, moonshot status or hindsight utility.",
+        "807": "",
+        "808": "Publish per-source/task/tier: unique records, independent episodes/mints/teachers/regimes, raw tokens, visible tokens, label tokens, weighted share, truncation/drop reasons and train/dev/test counts. Fit token budget by useful evidence; do not pad to a requested corpus size.",
+        "809": "",
+        "810": "Audit exact tokenizer, masking, weighted global normalization and distributed behavior. Overlength samples must be reported and segmented causally, not silently dropped. Small high-quality datasets can still overfit full-parameter 27B; insufficient diverse supervision means collect or defer, not automatic extra epochs.",
+        "360": "- Message, post, clip or article VERSION is the unit—not a whole channel preview page assigned one timestamp. Preserve native ID, parent/reply/repost links and exact source text spans. Strip navigation, dates and image URLs from semantic body without losing their raw provenance.",
+        "361": "- Preserve original language, negation, uncertainty, numerical units, URLs/mints and slang. Translation/transcription provenance must be explicit; no generative paraphrase in training. Existing captions can contain errors; verify material claims against source where rights permit. If only an image/clip exists and no admissible verified text is available, mark missing modality—not a made-up transcript.",
+        "362": "- Timestamp extraction precedence uses authenticated/native timestamps when available; inferred visible dates require timezone/year confidence. Retrieval time is never assigned as historical publication time. Reject implausible cross-message shared timestamps, ordering reversals and future edits.",
+        "363": "- Exact hash dedup plus near-duplicate/echo graph; keep one canonical semantic item with all propagation edges. Separate duplicate deliveries from valid repeated actions. Deletion/revision tombstones preserve when corrections became knowable; honor legal deletion obligations through documented revocation/rebuild, not a universal “never delete raw” rule.",
+        "364": "- Broad neutral collection: ordinary/failed themes, nonmentioned control mints, abandoned catalysts, quiet sessions, bearish/skeptical voices, multiple languages and small creators. Selection based on what was observable then, not future success or fame. Control matches must use predecision features; no causal-effect claim from observational matching alone.",
+        "223": "### D02 — Token, creator and venue identity [P0]",
+        "224": "- Exact chain/mint, token program, decimals, supply semantics, mint/freeze authorities and Token-2022 extensions as of observation.",
+        "225": "- Creation transaction/slot/time, external relative-clock origin and offset proof, creator wallet attribution/evidence, name/symbol/description/URL versions.",
+        "226": "- Pool/curve addresses, venue/program/version, migration events and continuity, actual reserves/liquidity changes, route availability.",
+        "227": "- No ticker-only joins, assumed celebrity addresses, or launch-time offsets without validation. Chain-mint identity and wallet-owner attribution are separate.",
+        "229": "### D03 — Raw trades, transfers and execution [P0]",
+        "230": "- Signature, transaction/instruction/event index, commitment/finality, reorg correction, signer/payer, token accounts and economic owner where known.",
+        "231": "- Side, integer token/native deltas, actual fill quantities/prices, successful/failed status, route and slot/state used.",
+        "232": "- Separately reconciled swap/platform fees, base/priority fee, tip, transfer fee, rent lock/refund, rebate and failed-attempt cost.",
+        "233": "- Intent → quote → submit → landed → confirm → balance reconciliation timestamps; reason codes for rejection, expiry and duplicate intent.",
+        "234": "- Never double-charge impact already embedded in actual fills; never treat transfers as trades or intended orders as filled inventory.",
+        "236": "### D04 — Tradability and execution capacity [P0]",
+        "237": "- Size-specific quotes and min-receive, reserves and AMM/curve model version, available routes, transfer restrictions, exit capacity after migration.",
+        "238": "- State/quote age, confirmation/failure/expiry distributions, congestion and fee/tip regime, our measured decision and transport latency.",
+        "239": "- Mark observed vs reconstructed vs modeled execution. A volume proxy is not a depth measurement.",
+        "240": "- Training test: apparent profit that disappears at our size/cost/latency must become abstention, reduced size or an explicitly unsupported opportunity.",
+        "242": "### D05 — Chart structure and flow [P0]",
+        "243": "- Partial/completed trailing candles, returns, ranges, drawdowns, volatility, realized turnover and trades/second, signed flow, distinct active buyers/sellers, repeat buying/selling and flow persistence.",
+        "244": "- Pullback/reclaim, breakout/failed breakout, acceleration/deceleration, grind-then-crater precursors, price/flow divergence and migration discontinuities.",
+        "245": "- Past-only OHLCV/VWAP and event paths with gap flags. No centered indicators, future-confirmed pivots or terminal normalization.",
+        "246": "- Provisional feature windows: trailing 5/15/30/60 seconds and 5/15 minutes, plus since-launch for young tokens; preserve raw events. These are engineering starting points, not approved trading horizons. Emit insufficient-history flags, not padded histories. Choose/freeze final windows on development data only.",
+        "248": "### D06 — Holders, wallet behavior and connected risk [P1]",
+        "249": "- Actual account/supply snapshots where available; holder concentration, changes, new participants, retention of buyers, exits by earlier cohorts.",
+        "250": "- Creator/deployer history, allocation/transfer patterns, suspected linked-wallet or bundle activity, funding links, sell pressure, insider/unrepeatable access flags.",
+        "251": "- Distinct traders and trade-implied inventory stay explicitly named proxies when transfers/opening balances are missing. Cluster confidence is not identity proof; no claim that a public wallet identifies a natural person.",
+        "252": "- Expert skill is prior-data net equity/risk/capacity INCLUDING open losers and locked capital; no ranking on the period being taught/tested.",
+        "254": "### D07 — Narrative meaning and catalyst evidence [P0 for narrative-capable release]",
+        "255": "- Verbatim source span, language/slang, literal proposition, referenced event, event time/status, original vs copied/remixed meme, cultural/context explanation by a qualified human where needed.",
+        "256": "- Narrative/theme and parent-child relation; OG/derivative/competitor ties with evidence; actual catalyst vs rumor vs parody/satire vs sponsored claim vs debunk.",
+        "257": "- Narrative specificity, novelty relative to what was known then, relevance to this chain/mint, plausible attention mechanism, opposing evidence and explicit uncertainty.",
+        "258": "- Keep factual event truth, author's opinion/prediction, and economic outcome in separate fields. Narrative importance is not identical to bullish sentiment.",
+        "260": "### D08 — Propagation, attention quality and crowding [P0 for narrative-capable release]",
+        "261": "- Original post/version and earliest OBSERVED origin, repost/quote/reply edges, platform and community, message-level timestamps; unknown global origin remains unknown.",
+        "262": "- Independent-author breadth, platform/community diversity, arrival and decay of NEW independent participants, reach/engagement snapshots as of t, bot/promotional indicators, account/website reuse.",
+        "263": "- Actor roles: originator, early interpreter, tracker, amplifier, paid promoter, skeptical countervoice, ordinary participant; uncertain labels retained.",
+        "264": "- Lead/lag between catalyst, messages, wallets, price and volume; does attention precede flow, follow price, or disagree? Association is not causal proof.",
+        "265": "- Saturation, repeated recycled posts, coordinated amplification and copy-trade crowding. Keep spam/manipulation evidence for risk tasks when lawfully usable; exclude it as authoritative expert teaching. One post copied a hundred times is not a hundred independent endorsements.",
+        "267": "### D09 — Market meta, competition and rotations [P0 for narrative-capable release]",
+        "268": "- Which themes attract new independent attention and deployable capital; theme breadth, crowding, relative strength, participation persistence and liquidity/capital rotation between themes/chains.",
+        "269": "- Opportunity density, launch activity, graduation observations, failed launches, broad memecoin flow and SOL market/congestion context, defined on a measured eligible universe.",
+        "270": "- Theme stage candidates: emerging / broadening / crowded / weakening / revival / unresolved. These are as-of hypotheses with evidence, never retrospective certainty labels.",
+        "271": "- Compare simultaneous candidates: leader vs derivative, stronger story but late entry, weaker story with feasible near-term flow, no suitable candidate, crowded existing portfolio.",
+        "272": "- Cross-chain news may inform context; execution scope remains Solana Pump.fun/PumpSwap unless separately approved. Never equate “meta” with a fixed list of favored tickers.",
+        "274": "### D10 — Account and opportunity state [P0]",
+        "275": "- Candidate-generator version and eligible universe, available balance, committed/pending cash, current positions, cost basis, conservative liquidation equity, narrative correlations and risk limits.",
+        "276": "- Available alternatives and selection reason; watch triggers, current thesis/invalidation, prior actions and fills, max loss/exposure, next observation and action expiry.",
+        "277": "- Existing-position management and opportunity cost; do not train independent BUYs that all spend the same SOL.",
+        "279": "### D11 — Sequential human decisions and revisions [P1; gates expert-rationale release]",
+        "280": "- H1 contemporaneous human, H2 blind replay human, H3 retrospective review, A action-only, B deterministic/simulator: immutable origin tags, author/evidence/time and reviewer provenance.",
+        "281": "- Entry/skip, wait/hold, add/reduce/full exit, cancellation/re-entry; size in explicit units, strongest evidence/counterevidence, expiry, invalidation and management branches.",
+        "282": "- Position outcome is not proof of thought process. Keep human disagreement. Missing rationale stays null, not generated filler.",
+        "283": "- Whole episode shared ID; no adjacent-post sliding window is admitted as an actual trade trajectory without coherent mint/topic/position/time/evidence links.",
+        "285": "### D12 — Outcomes, economics and errors [P0; label-only futures]",
+        "286": "- Confirmed sale PnL, FIFO inventory lots, flat-to-flat episodes, conservative remaining equity, unknown cost basis, open/unsellable/censored positions, net costs and capital-time.",
+        "287": "- Forward returns/drawdowns/feasible exits by preregistered horizon, capacity/cost scenarios and confidence; primary outcome matches intended execution/holding envelope.",
+        "288": "- Per-mint/wallet/theme distributions with denominator/coverage, not a universal GOOD_COIN scalar. Time-to-invalidation, exit failures, runner capture and late chase loss separately.",
+        "289": "- Distinguish reasonable decision/unlucky result from poor decision/lucky result. No oracle peak-exit labels as human behavior.",
+        "291": "### D13 — Protocol, numeracy and operational knowledge [P1]",
+        "292": "- Versioned permissible protocol docs and real source-backed numerical cases for AMM/curve/fees, Token-2022, migration, transaction lifecycle and accounting.",
+        "293": "- Correct units/rounding, availability uncertainty, inability to sell, malformed data and injected instructions. Deterministic exact examples only; test fixtures stay test-only unless independently sourced/admitted.",
+        "295": "### D14 — Rust engineering quality [separate P1 track]",
+        "296": "- Real before/after code and relevant call context; human authorship/provenance; defect/invariant; actual compiler/clippy/test/benchmark evidence; review, repair and regression chain.",
+        "297": "- Unsafe/concurrency/allocations/performance tradeoffs. A merged commit or message alone is not correctness gold. Model-authored historical code requires no-self-generated policy review.",
+        "298": "- Separate dataset/evaluation and route by default. Do not dilute trader supervision with engineering bulk or silently apply historical mix percentages.",
+        "27": "### G01 — Discovery and attention allocation before BUY/SKIP",
+        "28": "**Gap:** a candidate panel omits what the trader searched, hid, missed, revisited or never received. S1/S3 motivate this; profitable outcomes alone cannot label a missed discovery as negligence.",
+        "29": "**Collect:** discovery_event_id, source/channel/filter version, first_observed_at, candidate eligibility at t, screen/list rank, inspected/hidden/watchlisted state with actor, alert visibility, inspection start/end, available time budget, refresh cadence, feed outage, open positions and queued alerts. For human attention use authorized interaction evidence, not invented gaze. Model analogue: query/tool calls, context truncation and queue delays.",
+        "30": "**Tasks:** choose inspect/verify/watch/ignore within a measured budget; revisit after new evidence; keep held-position risk monitoring alive while searching.",
+        "31": "**Test:** arrival-stream replay with unseen candidates absent until arrival; equal discovery sources and compute budgets across baselines; a hidden candidate is not automatically an informed SKIP. Report missed opportunities using hindsight only as evaluation labels.",
+        "32": "**Additional contract:** record priority, maximum unobserved position age, preemption/coalescing policy, dropped-event reason and independently sampled discovery-coverage audits. Evaluate whole discovery-plus-selection alongside fixed-panel evaluation; no automatic label that every later pump was an executable missed trade. Bursty launches plus concurrent sandbox development must not starve open-position risk handling.",
+        "33": "**Rust bridge:** priority queues, source heartbeat and bounded-latency watchlist scheduler.",
+        "35": "### G02 — Narrative tournament, canonical identity and rival monitoring",
+        "36": "**Gap:** strong theme does not identify the token that captures it. S3 describes image/ticker/name competition and a rival taking attention while the trader watches PnL.",
+        "37": "**Collect:** catalyst_id, all linked mints, launch/event/availability times, exact name/ticker/Unicode, metadata version, image hash and rights, source text span, entity-link confidence, original/revival/derivative/impersonator relation, source-endorsed address evidence, prior as-of format conventions, pairwise attention/flow/reserve trajectories. `canonical` is a time-varying evidence claim, not the eventual winner. Reuse D07–D09 without collapsing competitors.",
+        "38": "**Tasks:** compare variants, wait for a qualified representation, abstain on unresolved address, maintain competitor watch during holding, revise or rotate net of costs. Token-image cultural fit can matter, but no unsupported claim that an image is objectively better.",
+        "39": "**Test:** late-arriving rival, same ticker/different mint, misleading Unicode/logo, multiple viable winners, and unchanged theme with changing leader. No final-winner identifier or future rank in input.",
+        "40": "**Rust bridge:** entity graph, versioned rival-group joins, hot-path leader-change alerts.",
+        "42": "### G03 — Source verification, ambiguity and information worth paying time for",
+        "43": "**Gap:** checking an original article can resolve a rumor but consumes the entry window. S3 is a direct motivation; source claims about copyright or identity may themselves be wrong.",
+        "44": "**Collect:** claim atomic text, reference URL/content hash/exact span, author and publication evidence, authenticity status, contradiction history, query requested/completed times, information unavailable reasons, age and estimated decision deadline, verification outcome observed at t. Separate factual confidence, narrative attractiveness and executable expectancy.",
+        "45": "**Tasks:** answer 'what is this meme and why this token?', identify missing evidence, choose query/wait/abstain versus act only within allowed verified inputs. Probabilities require explicit event/horizon and calibration.",
+        "46": "**Test:** fake article, edited tweet, sarcasm/mistranslation, right fact/wrong token, verification arriving after order expiry; latency-inclusive value-of-information comparison, not free omniscience.",
+        "47": "**Rust bridge:** retrieval caches keyed by content version/as-of, timeout contracts and evidence-pointer validation.",
+        "49": "### G04 — Local market memory and changing conventions",
+        "50": "**Gap:** fixed rules like 'animal + coin name wins' can decay. S3 describes recent repeated patterns; S1 describes once-successful tweet narratives stopping working.",
+        "51": "**Collect:** as-of comparable episodes, eligible denominator including failures, similarity features, age, regime/venue/catalyst family, observed time-to-response, source coverage and retrieval version. Only resolved historical outcomes available at t enter the memory; current unresolved inventory remains conservatively represented.",
+        "52": "**Tasks:** retrieve analogues with disanalogies, distinguish novelty from repeated saturation, update belief after disconfirmation, decline analogy with weak support.",
+        "53": "**Test:** regime reversal and spoofed resemblance; compare no-memory/causal-memory/stale-memory baselines. Fit retrieval and analogue selection only on development data, preserving sealed split rules. Live context updates are not online weight training.",
+        "54": "**Rust bridge:** temporal feature store and snapshot-expiring analogue retrieval.",
+        "56": "### G05 — Who can buy next? Flow quality and participant replenishment",
+        "57": "**Gap:** raw activity may be repeated capital among the same traders rather than expanding demand. S2/S5 emphasize participation and flow; identity of a 'new human' is not derivable from a new wallet.",
+        "58": "**Collect:** qualified active-wallet cohorts, first_seen-in-dataset confidence, funded-versus-recycled balance flows, turnover, concentration/overlap across rival tokens, fresh liquidity, fee drain, independent attention, catalyst-to-buy latency, cohort retention, launch rate versus demand and market-relative performance. Exchange funding/new address is a proxy, not proof of retail onboarding.",
+        "59": "**Tasks:** distinguish viral-but-unbuyable, attention-without-inflows, liquid expansion and recycling; rank expected incremental participation with uncertainty, not force every narrative bullish.",
+        "60": "**Test:** equal volume with different wallet churn/concentration, wash-like flow, shrinking cohort and source outage; no equating missing coverage with zero demand.",
+        "61": "**Rust bridge:** causal cohort aggregates, reversible transfer classification, exact flow/cost reconciliation.",
+        "63": "### G06 — Reflexivity, tracked-wallet influence and nontransferable edge",
+        "64": "**Gap:** a public trader's action or broadcast can alter the market being imitated. Their fills may rely on audience response unavailable to us. S2 discusses this explicitly; S3 includes comms and wallet alerts.",
+        "65": "**Collect:** broadcast/call time plus delay, publicly observable stream state (not inferred absence), observed owner/follower action lag distributions, follow-on flows, identity confidence, funding/shared-entity uncertainty, exposure before announcement and venue size. Do not infer collusion or private intent from correlated trades.",
+        "66": "**Tasks:** separate information discovery from delayed copying; identify trades requiring unavailable audience/private information; refrain when expected residual edge after our arrival is uncertain.",
+        "67": "**Test:** matched public/private-visibility strata only where observed, delayed-follower replay, removal of named identity, audience-feature ablations and self-impact stress. Observational correlations cannot identify what price would have done without a broadcast; mark that counterfactual unsupported.",
+        "68": "**Boundary:** this is defensive market-understanding data, not instruction to mislead followers, coordinate pumping, fabricate volume or manipulate supply.",
+        "69": "**Rust bridge:** timestamped provenance/lag analysis and anti-copy-chase expiry checks.",
+        "71": "### G07 — Conviction updates, thesis clocks and falsification",
+        "72": "**Gap:** confidence must change with observed evidence, not merely price/PnL; an unfulfilled expected response can matter before a hard stop. Existing invalidation fields need event-time semantics.",
+        "73": "**Collect:** thesis_id/version, typed horizon, required and disconfirming signals, conditions expected by when, review triggers, time since catalyst/entry, attention-to-flow conversion, relative strength, volatility/liquidity context and evidence missingness. Human confidence only when expressed; model scores not retrofit as human feelings.",
+        "74": "**Tasks:** test buy/hold/add/reduce/exit/wait after sequential evidence; separate failed thesis from temporary noise, price stop from time stop, and stale thesis from fresh re-entry setup.",
+        "75": "**Test:** flat price with expiring catalyst, favorable price with worsening liquidity, delayed authentic confirmation, rival takeover, justified no-change. No posthoc redefinition to make every trade correct.",
+        "76": "**Timer contract:** distinguish order expiry, thesis expiry, soft no-progress review, hard exit deadline and maximum cumulative hold. Define meaningful progress, clock domain, outage behavior and allowed reset evidence. Dust prints, a partial exit or a trivial new high must not silently extend the hard deadline.",
+        "77": "**Rust bridge:** versioned thesis state machine, expiry timer and event-triggered reassessment.",
+        "79": "### G08 — Endogenous impact, staged liquidation and residual risk",
+        "80": "**Gap:** splitting exits is not automatically better; our prior trades change reserves and repeated clips add fees/delay. S3 explicitly discusses clipping rather than dumping all inventory and notes buggy marked PnL.",
+        "81": "**Collect:** parent decision/child order IDs, confirmed pre/post reserves, aggregated owner inventory, quote age, clip units and denominator (initial versus remaining tokens), pending amounts, min-out, fee/tip/compute settings, realized proceeds, new demand between clips, price impact and conservative residual liquidation value.",
+        "82": "**Tasks:** immediate liquidation versus paced clips versus residual position under risk/deadline constraints; handle adverse flow and partial fills, cancel remaining intents when invalidated. Do not hardcode any celebrity's percentages.",
+        "83": "**Test:** recursive reserve updates and self-impact in replay; no sell above unreserved inventory; repeated percentage semantics; no future buyers assumed to arrive; no free slicing into the historical price path. For significant market impact, simulator uncertainty and off-policy support must bound claims, not a fictitious exact replay.",
+        "84": "**Self-confirmation guard:** track features including/excluding verified own flow and own contribution to a volume/price trigger. Own buying is not independent external confirmation; actual reserve changes still count for tradability. Test repeated adds/exits, not only isolated trades.",
+        "85": "**Marginal sizing contract:** compare next-unit ADD/HOLD/REDUCE/REPLACE/CASH under current/pending inventory, shared exit liquidity, exit-fee reserves and replacement costs. Do not double-count common liquidity or cash; define rebalancing hysteresis to avoid costly churn.",
+        "86": "**Rust bridge:** parent/child state machine, reservation ledger, executable equity and idempotent retries.",
+        "88": "### G09 — Inventory ownership, account aggregation and return decomposition",
+        "89": "**Gap:** observed multi-wallet activity is not equivalent to multiple independent traders or extra capital. S3 describes using several wallets; seed list includes 'friend'/'dev' labels that do not prove common control.",
+        "90": "**Collect:** wallet_owner_evidence, effective intervals, account role, transfer lineage, opening inventory uncertainty, all owned wallet exposure, side payments, creator fees, cashback/rebates, referral/sponsor income separated from trade PnL, fee-entitlement and claim times.",
+        "91": "**Tasks:** consolidate only proven ownership; model uncertainty for suspected clusters; assess trading-only returns versus other income and reproducibility at our bankroll.",
+        "92": "**Test:** cross-wallet transfer not income, no double-counted exposure, unresolved owner not pooled as fact, realized rebates not assumed eligibility, leftover unsellable positions retained. Exclude unverifiable headline screenshots as economic ground truth.",
+        "93": "**Rust bridge:** multi-account reconciliation and separately typed income ledger. No wallet rotation for evasion or deceptive appearance.",
+        "95": "### G10 — Microstructure race and reliable intent delivery",
+        "96": "**Gap:** same signal and eventual landed timestamp can hide different decision-to-submit delays, fees, route selection and failed attempts. Pros claiming speed does not validate a transferable latency advantage.",
+        "97": "**Collect:** source-arrival/decision-start/end/simulation/submit/ack/land/finality timestamps, clock uncertainty, route/RPC, priority settings, blockhash lifetime, retries and signatures, timeout versus confirmed failure, rejection reason and quote expiry; access level of data (historical block data is not advance visibility).",
+        "98": "**Tasks:** abandon stale opportunity, resolve unknown transaction status before retry, choose feasible route under cost/latency cap, continue position safety while model is busy.",
+        "99": "**Test:** duplicate submissions, delayed confirmations, reorg/finality changes where applicable, stale blockhash, slot/clock ambiguity and budget exhaustion. Executable sequence uses what our infrastructure sees, not block history revealed later.",
+        "100": "**Rust bridge:** submission/reconciliation telemetry, retry deduplication, end-to-end deadline tests. Protected orders remain deterministic and independent of LLM availability.",
+        "102": "### G11 — Venue incentive regimes and deployment-versus-trading scope",
+        "103": "**Gap:** fee/cashback/creator incentives alter who supplies tokens and sells. S1/S2/S5 contain dated discussion, not reliable current fee schedules.",
+        "104": "**Collect:** venue/program/config version effective at t, empirically verified fee/rebate recipient eligibility, ownership/mint/freeze authorities, fee claims, deployer inventory/distributions, migration support, bot/launch modes only when verifiable on-chain, emissions/buybacks and incentive changes. Similar mode names across dates are not interchangeable.",
+        "105": "**Tasks:** judge incentives/overhang and risk-return of available trades without pretending creator revenue is trading alpha. Model a creator's incentive as a hypothesis conditional on verified economics.",
+        "106": "**Test:** changed fee recipient, ineligible cashback, repeated new launches in same theme, migration-route outage and constant narrative/different fee regime. Never propagate an interview's 'zero risk' language as truth.",
+        "107": "**Scope:** Rust engine development is NOT memecoin issuance. Studying deployer behavior does not authorize launching tokens, fake activity or extracting value from deceptive promotion. New chains are contextual observations until separately supported/approved execution mechanics exist.",
+        "108": "**Rust bridge:** versioned fee adapters and protocol-condition fixtures.",
+        "110": "### G12 — Session allocation, losses, restraint and sustainable edge",
+        "111": "**Gap:** selected clips omit losing sessions, idle periods, repeated failed re-entries, attention drain and crowding. Human tiredness/tilt must not be diagnosed from a wallet.",
+        "112": "**Collect:** full consenting sessions, capital-time, all eligible opportunities, losses/no-trades/failures, session duration, budgeted compute, queue load, observable strategy changes, daily concentration, catalyst count, turnover costs, planned cooldown/review rules and human self-reports separately typed.",
+        "113": "**Tasks:** reduce activity in weak opportunity sets, reserve capital/attention for better candidates, change thesis after evidence, avoid revenge-trade loops; debrief good-process losses and bad-process wins without rewriting decision-time facts.",
+        "114": "**Test:** selected-highlight versus whole-session evaluation, leave-largest-winners-out sensitivity, bad-regime abstention, sequential no-edge re-entry and inventory stranded across session boundaries. Do not use daily PnL alone as automatic size escalation or tuning signal.",
+        "115": "**Lesson lifecycle:** distinguish signal, execution, sizing, missing-information and ordinary-variance outcomes using evidence available at decision time. Record review_available_at, applicability, counterexamples, approval, supersedes and retirement condition. A lesson may influence only later eligible contexts; neither weights nor live risk limits self-update.",
+        "116": "**Rust bridge:** session resource budgeting and explicit risk governor/review telemetry.",
+        "391": "**Stage 0 — receive/inventory (read-only, no admission):** verify workspace and sources, current-run completion, license evidence and small metadata; produce receiver acknowledgment, source/coverage registry and gap report. Can finish without specifying live capital.",
+        "393": "**Stage 1 — protect evaluation and contracts:** reserve protected time/entity/source boundaries BEFORE teacher selection, feature/cluster fitting, execution calibration or curation. Unknown time sources enter relative-only quarantine, not randomly blended chronological tests. Record planned forward untouched window and inherited-weight uncertainty. Final numeric risk/economic limits must be approved before strategy tuning or promotion; they do not block safe file inventory and parser unit tests.",
+        "395": "**Stage 2 — bounded canonicalization:** write new schemas/tests; parse trusted raw to partitioned Parquet; event identity/finality corrections; source/rights and per-field availability; ledger balance reconciliation on small independently checked examples. Then scale ONLY successful transforms. No whole-frame all-data pickle loads or overnight blind runs.",
+        "397": "**Stage 3 — parallel capture and context:** prospective opportunity/account/execution capture and approved narrative/message capture; deterministic numerical features and human/verified semantic annotations; entity and propagation graphs. Capture callbacks must be bounded/nonblocking; never add latency to a live executor without separate instrumentation review.",
+        "399": "**Stage 4 — development-only execution calibration:** train/validate simulator on separate development slices, freeze error/cost/latency/capacity models and accepted operating regimes. Protected economic sessions cannot inform fitting, parameter search or residual-driven fixes.",
+        "401": "**Stage 5 — episode reconstruction/labeling:** observed trades and human episodes; relative-only local accounting remains separate from globally aligned sequences. Natural-distribution pool plus recorded targeted challenge pool. Freeze teacher selection from earlier data, outcome/semantic definitions and sampling contributions.",
+        "403": "**Stage 6 — split inheritance + exports:** materialize previously protected splits, purge horizon overlaps; CPT only if needed, SFT task exports; leave outcome reviews out of predecision inputs. No fixed old mix; exact post-mask label-token accounting, context-window/truncation report and all-stage/retrieval dedup.",
+        "405": "**Stage 7 — independent whole-corpus certification:** schemas, IDs/foreign keys, rights, unit/time invariants, anti-joins, manifest reconciliation and every output file hash; independent semantic/ledger/narrative review. Publish admitted/rejected/quarantined totals and remaining capability limits. Source/license/token report and explicit operator inclusion approval precede training admission.",
+        "407": "**Stage 8 — Windows handback:** manifest, evidence, unresolved decisions and training proposal. No new training until separately approved. No auto-extension, no live RL or automatic feedback ingestion. Final operational/economic tests remain appendix G0–G6.",
+        "120": "1. `expert_source_claim_v1`: identity candidate, exact source URL/locator, speaker certainty, verbatim-span pointer, live/retrospective status, authoring origin, rights gate, claim-versus-action-versus-economics type. Plans/hypotheses are never mislabeled human claims.",
+        "121": "2. `discovery_attention_event_v1`: event queue, source/filter/search/visibility state, permissioned interaction evidence and causal time.",
+        "122": "3. `narrative_competition_snapshot_v1`: catalyst, candidates and rivals known at t, semantic/visual evidence versions, attention/flow comparisons, unresolved identity reasons.",
+        "123": "4. `thesis_revision_event_v1`: expected response/horizon, evidence diff, confidence event definition, invalidation and chosen action; future resolution stored separately.",
+        "124": "5. `execution_parent_child_v1`: intent, reservations, quotes, signed submissions/status/fills, recursive inventory/reserve effect, final liquidation and exact cost components.",
+        "125": "6. `influence_incentive_context_v1`: timestamped public attention/visibility, lagged cohort behavior, protocol incentives and nontrading income with uncertainty.",
+        "126": "7. `session_opportunity_audit_v1`: complete opportunities/exposures/idle time/failed delivery, evaluation coverage and excluded-source reasons.",
+        "127": "8. `rust_market_bridge_episode_v1`: source issue, pre-change code/log context, accepted patch and real compiler/test/benchmark results, linked feature/fee/thesis/execution contract IDs. Trade outcomes or final fixes never enter pre-fix input.",
+        "343": "## 5. Acquisition design and source rights",
+        "344": "",
+        "345": "### 5.1 Three lanes",
+        "346": "- **Local revalidation:** bounded manifests/schema/sample inspection first, then streaming conversion/certification after SFT. No paid calls.",
+        "347": "- **Prospective market/capture:** after resource and access approval, append actual opportunities, feed/account states and quote/fill/failure events. Keep every eligible event or deterministic recorded sampling; deliberately passing a trade needs a decision record.",
+        "348": "- **Narrative/human acquisition:** approved permissively licensed sources and own/human-authored material with appropriate rights. Public access is not a license. No paid social APIs, SaaS credentials, login bypass or private-group collection absent a separate explicit directive. Reuse the local Firecrawl option only after Windows verifies service/version/port/access and terms.",
+        "349": "",
+        "350": "### 5.2 Source registry decision table in prose",
+        "351": "For every source, record `source_id`, owner/licensor, original/derivative status, exact permissive license and evidence hash, attribution obligations, train/transform/redistribution/collection rights, access method, quota/budget, historical availability, intended task, source/token report status and Alon approval. Unknown or restrictive licensing blocks training inclusion even if retrieval is technically possible. Approval for using a tool does not approve every fetched item. Own telemetry's embedded third-party content still needs review.",
+        "352": "",
+        "353": "Public Telegram/X/YouTube/Twitch/web content: discovery leads until rights pass; platform display permission is not a training grant. Contracted humans must provide the approved permissive grant, not merely private training permission, under the present rule. If this limits coverage, present the gap/options; never relax the rule by relabeling a source as “facts,” “permissioned” or “public.” Lawfully retained nonadmitted evidence remains segregated and cannot leak through retrieval into training/evaluation contrary to the policy.",
+        "354": "",
+        "355": "### Stage-specific authorization matrix",
+        "356": "",
+        "357": "Record independent explicit fields with approval evidence/time/scope: `collection_access_authorized`, `local_transform_authorized`, `rights_admissible`, `technical_task_eligible`, `candidate_export_status`, `training_inclusion_approved`, `training_run_approved`, `live_orders_authorized`. An earlier gate cannot imply a later one. Unknown defaults to blocked for that stage. Read-only inventory and test-only parser fixtures do not need invented live capital approvals. Candidate exports are quarantined by default, use distinct paths/manifests, and training loaders must reject them until rights, exact source/license/token disclosure and explicit inclusion approval pass. A dataset approval never grants trading keys/orders or authority to reboot the training host.",
+        "139": "- Before declaring a gap closed, show real source rows -> canonical records -> admitted task examples -> independent acceptance result. A field in a schema or a passing synthetic software fixture does not demonstrate corpus coverage.",
+        "140": "",
+        "141": "## Rust semantic-conformance release gate",
+        "142": "Map decision fields to concrete Rust symbols, commit, toolchain, effective configuration, units, clock/rounding semantics and branch/override precedence. Differentially replay source-backed events through canonical reference and Rust feature -> intent -> order -> fill transitions in a no-keys sandbox. Timer-unit, partial-exit and config-override repairs require failing-before/passing-after evidence plus causal invariants and latency measurements. Software fixtures may be synthetic for testing only; they are not human training records. Passing trading and code tests separately is insufficient if the actual engine interprets model actions differently.",
+        "143": "",
+        "144": "## Portable handback and measurable completion",
+        "145": "The package includes `NORTH_STAR_GAP_COVERAGE_V5.json`: twelve gap rows with required data, tasks, tests, Rust bridge and deliberately null coverage/token counts. It is a requirements checklist, not a dataset. Windows must replace nulls only with measured provenance-backed values, preserve version history, and attach source/producer/admission/test evidence. `NORTH_STAR_RESEARCH_REGISTER_V5.json` records research URLs and retrieved-text hashes; it does not convey rights or ship transcript training data. Future captures may differ from these text hashes and require versioned evidence, not fabricated matches.",
+        "146": "",
+        "147": "For every G-ID, specify schema fields/types/units/null reasons, source-to-field map, source rights, availability/ordering rules, task mask/target scope, conflict/dedup policy, split ancestry, producer and failure fixture IDs. Name each acceptance fixture and its expected result before implementation. A release matrix distinguishes IMPLEMENTED_AND_TESTED, DATA_PRESENT_UNADMITTED, ADMITTED_WITH_SUPPORT, MISSING_SOURCE and UNSUPPORTED; narrative/expert capability cannot be silently claimed through a lower-tier proxy. If a required capability lacks data, release other independently qualified tasks with that capability explicitly unsupported, or delay the full release—not fabricated completion."
+      }
+    },
+    "amendment_v6": {
+      "path": "F:/handoff-linux/northstar/2026-09-06-expert-v5/NORTH_STAR_DATA_MIX_AMENDMENT_V6.md",
+      "sha256": "6af4760ae8ae247214a4a4ea5c61eb3bd3be314ce85e4b09a274d7015a5dda5f",
+      "line_count": 98,
+      "cited_lines": {
+        "39": "## 2. Binding requirement for the North Star dataset",
+        "40": "",
+        "41": "The North Star training data aggregation (Windows side) MUST produce a dataset",
+        "42": "whose action distribution includes a robust, economically-justified mix of ALL",
+        "43": "decision classes:",
+        "44": "",
+        "45": "- **BUY (long/enter)** — a meaningful minority, target order-of-magnitude",
+        "46": "  **5–15% of action tokens** (not 0.2%), reflecting realistic profitable-entry",
+        "47": "  frequency on qualified panels.",
+        "48": "- **WATCH (hold / monitor / no-new-position)** — the majority, as in real markets.",
+        "49": "- **SKIP / SELL (exit, take-profit, cut-loss)** — must include BOTH:",
+        "50": "  - **SELL as an active take-profit / runner-management action** (North Star",
+        "51": "    specifically needs partial-profit-taking, runner-holding, and re-entry",
+        "52": "    decisions, not just a flat \"exit\").",
+        "53": "  - **SKIP as deliberate no-trade** (incl. missed-trade / idle-period honesty).",
+        "54": "",
+        "55": "### How to decide the right mix (do not guess)",
+        "56": "1. Compute the **reference action distribution** from the underlying labeled",
+        "57": "   gold corpus FIRST (the eval/training sources, wallet-derived ground truth).",
+        "58": "2. Ensure every class that appears in the reference appears in TRAINING with",
+        "59": "   enough count that it can be learned — as a rule of thumb **≥100–300 examples",
+        "60": "   per class** and **≥2–5% label share** per decision class the model must emit.",
+        "61": "3. If real-world buy frequency is genuinely rare in the raw data, DO NOT pad or",
+        "62": "   fabricate to hit a target (binding: no duplication/padding) — instead **over-",
+        "63": "   sample/upweight the genuine buy-labeled records in the loss** (the trainer",
+        "64": "   supports task weights), and expand collection toward qualified/graduation",
+        "65": "   candidates where buys are more common.",
+        "66": "4. Mirror the same balance in the eval split, so the eval can actually measure",
+        "67": "   buy-decision quality (precision, recall, false-buy rate).",
+        "68": "",
+        "69": "### Validation gate (must pass before training)",
+        "70": "Before any North Star SFT, run a class-balance audit on the training export:",
+        "71": "count BUY / WATCH / SKIP / SELL labels. FAIL the export if any action class the",
+        "72": "model must emit falls below the thresholds above. The current SFT shipped with a",
+        "73": "BUY class at 0.2% and a model that literally cannot say BUY — that is the failure",
+        "74": "mode this gate exists to prevent."
+      }
+    },
+    "approved_plan": {
+      "path": "D:/repos/mev_bot/.hermes/plans/2026-09-09_083313-north-star-master-audit-and-build-plan.md",
+      "sha256": "8c6a22f11ca7e7a1dd9975f08032e6b2899f8f28a4b504b1bbb3c07faf04419e",
+      "line_count": 498,
+      "cited_lines": {
+        "28": "Later explicit operator decisions govern conflicts with historical model-role prose:",
+        "29": "1. **Qwen = trading brain only. Astra = Rust developer.** Do not restore Rust SFT tasks from embedded v4. Preserve D14 engineering artifacts separately; retain the mandatory Rust/action semantic-conformance and runtime safety tests.",
+        "30": "2. **Kelly sizing philosophy; maximize net returned SOL per trade.** Keep all-in portfolio equity, capital-time, failed costs, tail risk and comparison to cash/frozen baselines as required safeguards. Optimizing average return on selected closed winners is not this objective. Kelly is not a numeric risk envelope or proof that estimated edge is trustworthy.",
+        "31": "3. **No existing human-labeled decision history.** A/B action/economics tracks can proceed on valid evidence; H1/H2 reasoning coverage cannot be invented. Human semantic review/rights capacity remains a real dependency for the complete relevant capabilities, not a task silently assigned to Alon.",
+        "32": "4. Narrative D07/D08/D09 is required for the requested full release. A numerical-only LIMITED release is not an acceptable substitute for this target.",
+        "116": "Add all v5 objects (M:L118–127):",
+        "117": "`expert_source_claim_v1`, `discovery_attention_event_v1`, `narrative_competition_snapshot_v1`, `thesis_revision_event_v1`, `execution_parent_child_v1`, `influence_incentive_context_v1`, `session_opportunity_audit_v1`.",
+        "118": "Keep `rust_market_bridge_episode_v1` in the separate engineering evidence namespace per the operator override, excluded from Qwen SFT. Its contract IDs still link differential runtime tests. Appendix WP7's `code_quality.py`, `export` code-teaching records and `test_code_quality.py` are explicitly out of the Qwen dataset build under that override; they remain separate engineering-track deliverables, not silently completed or silently deleted requirements. Rust/action semantic-conformance tests remain mandatory for the trading dataset.",
+        "87": "6. **The 22-BUY failure is not structurally prevented by a Markdown spec.** `STAGE5_LABEL_BALANCE_GATE.md` mixes proposed behavior with claims of implementation. Its 10,000 BUY/1,000-per-class floors are stricter derived proposals, not the text of V6. Preserve them as provisional restrictions until reconciled; do not weaken them silently or fabricate support. V6 concerns genuine action counts/shares; trainer optimization also requires post-mask label-token accounting.",
+        "88": "7. **Natural prevalence and balanced diagnostic evaluation are separate.** Keep untouched natural chronological sessions for primary economics and a separately labeled balanced challenge suite for V6 class diagnostics (M:L675,747; V6:L45–74). Do not rebalance primary economic prevalence using future labels.",
+        "165": "| D01 | Store/manifests/partial hash report PRESENT | S0 inventory; S1 rights/split policy; S2 coverage/corrections/lineage | Manifest exact membership/hash/count; source permissions separate; blind intervals/revisions/revocation inherited |",
+        "166": "| D02 | Token metadata PRESENT | S2 mint/program/decimals/creator/venue/metadata versions and migration continuity | Literal chain/mint; alias collision; as-of ownership/config; no terminal metadata in past |",
+        "167": "| D03 | Trade tape/raw transaction sources PRESENT | S2 exact deltas, failures, instructions, fees/transfers; S3 intent timings | Independently reconciled balances; no transfer-as-trade or intent-as-fill; unknown cost basis retained |",
+        "168": "| D04 | Reserve/liquidity/scenario proxies PRESENT | S2 venue truth; S3 quotes/route history; S4 empirical calibration | Size/age/fee/latency/migration supported; tape volume not depth; unsupported exit remains null |",
+        "169": "| D05 | Trade/bucket flow PRESENT | S2 ordering; S3 causal chart/flow producers | Partial candle, gap-aware paths, past-only windows; future perturbation leaves prior bytes unchanged |",
+        "170": "| D06 | Wallet totals/trade proxies PRESENT | S2 owner/transfer truth; S3 account snapshots/causal cohorts/clusters | Actual vs trade-implied holdings distinguished; open losers; uncertain identity; prior-only teacher skill |",
+        "171": "| D07 | Web text/transcript spike PRESENT, rights/semantics unadmitted | S3 versioned spans, catalysts, verification, semantic annotation | Correct mint, language/negation/satire, causal cutoff, provenance, missing modality; eight synthesis tasks |",
+        "172": "| D08 | Some URLs/social records PRESENT, graph not certified | S3 original/repost/reply/version graph + coverage | Echo storms not independent breadth; missing feed not no attention; observed origin not global origin |",
+        "173": "| D09 | Legacy heuristic states PRESENT | S3 eligible universe + rivals/themes/rotation snapshots | Same-time competition/capital/attention, failed/quiet controls; no hindsight theme winner or fixed favored list |",
+        "174": "| D10 | Tape/account fragments PRESENT | S3 opportunities/cash/pending inventory/alternatives | Entire candidate set at arrival; shared cash constraint; watch/expiry; hidden candidate not deliberate skip |",
+        "175": "| D11 | Claimed wallet action extraction; no supplied human labels | S3 provenance/capture; S5 A/B and qualified H tracks | H tiers never inferred from profit; stateful action labels; human-review capacity explicit |",
+        "176": "| D12 | Legacy outcomes/scenarios PRESENT | S2 lots/realizations; S4 calibrated replay; S5 labeled futures | Realized + conservative open equity, fees/failures, per-source censoring, independent denominator |",
+        "177": "| D13 | Rust-derived prose PRESENT with unit defect | S2 verified versioned mechanics; S5 permitted source-backed cases | Mint decimals/rounding/protocol fees proven; test fixtures not training; old AI code/prose not laundered |",
+        "178": "| D14 | Engineering legacy track PRESENT | Separate engineering evidence; S7 Rust/action conformance retained | Excluded Qwen SFT by operator; no secret/code-permission crossover; real differential tests |",
+        "186": "| G01 discovery/attention, 27–33 | discovery_attention_event; eligible arrivals, source/filter/rank, inspection/queue budget, dropped reasons, preemption, oldest unattended position | late unseen candidate; hidden≠skip; risk handling during search; equal-source/compute baseline; sampled discovery-coverage audit | 1 policy; 2 schema; 3 capture; 5 episodes; 7 tests |",
+        "187": "| G02 rivals/identity, 35–40 | narrative_competition_snapshot; all known mints, exact Unicode, metadata/image evidence versions, as-of canonical claim, pairwise flow/reserves | alias/logo collision; late rival; multiple winners; leader changes without theme change; visual unsupported explicit | 2/3/5/7 |",
+        "188": "| G03 verification/value of information, 42–47 | expert_source_claim + retrieval request/result; atomic span, authenticity, contradiction, query latency, deadline | fake/edited article; satire; right fact/wrong mint; query completes after expiry; uncertainty≠bullishness | 2/3/5/7 |",
+        "189": "| G04 local memory, 49–55 | causal episode retrieval; prior resolved outcomes, age/regime/disanalogies, failures denominator, index versions | stale memory; pattern reverses; spoofed resemblance; unresolved future lesson excluded; no live weight update | 1/3/5/6/7 |",
+        "190": "| G05 participant replenishment, 56–61 | qualified cohort/flow snapshots; funded/recycled proxies, overlap, retention, fee drain, liquidity/attention | equal volume different participants; recycled/wash-like flow; source outage; new wallet≠new human | 2/3/5/7 |",
+        "191": "| G06 influence/nontransferable edge, 63–69 | influence_incentive_context; broadcast delay, owner confidence, follower lags, prior exposure, venue/size | delayed copying; identity/audience ablation; unknown visibility; no causal no-broadcast counterfactual claim | 2/3/4/5/7 |",
+        "192": "| G07 thesis updates/clocks, 71–77 | thesis_revision_event; evidence diffs, typed horizons, expected response, distinct expiry/review/hard-hold clocks and reset rules | flat expired catalyst; rising price/worse liquidity; rival takeover; dust/partial exit must not reset hard deadline | 2/3/5/7 |",
+        "193": "| G08 impact/partial liquidation, 79–86 | execution_parent_child; inventory reservations, actual recursive reserves, clip denominator, conservative remainder, own-flow attribution; marginal add/hold/reduce/replace/cash | duplicate child/oversell; repeated percentage semantics; own buys not independent confirmation; no free historical slicing/future demand; shared liquidity | 2/3/4/5/7 |",
+        "194": "| G09 ownership/return decomposition, 88–94 | owner-evidence intervals + transfer/income ledgers; fees/rebates/referrals separate from trading return | transfer not income; uncertain owners not pooled; rebates not assumed; unsellable residuals retained | 2/3/5/7 |",
+        "195": "| G10 intent delivery/race, 95–100 | source→decision→simulation→submission→ack→landing→finality clocks, uncertainty, route/retry/signature/expiry | unknown timeout before retry; duplicate submit; stale hash; reorg; slot ambiguity; LLM busy while exit required | 2/3/4/5/7 |",
+        "196": "| G11 venue incentives, 102–108 | effective protocol/config/fee entitlement/claim/migration snapshots, deployer allocation and verified modes | wrong fee recipient; ineligible cashback; incentive regime changes; unsupported new chain; deployment not issuance authority | 2/3/4/5/7 |",
+        "197": "| G12 whole sessions/restraint, 110–116 | session_opportunity_audit; idle/loss/failed sessions, capital-time/compute/queue load, cooldown, lesson approval/availability/supersession | highlight-vs-session bias; largest-winner sensitivity; no-edge re-entry; stranded inventory; later lesson never affects earlier state | 1/3/5/6/7 |"
+      }
+    }
+  },
+  "sources": [
+    {
+      "source_id": "market_raw",
+      "description": "Raw trades, account and reserve observations",
+      "status": "MISSING_SOURCE",
+      "gap": "Authoritative source rows not inspected in this bounded S0 implementation.",
+      "collection_access_authorized": null,
+      "rights_admissible": null,
+      "training_inclusion_approved": false,
+      "provenance": "requirements-only source class; not a measured source inventory"
+    },
+    {
+      "source_id": "narrative_raw",
+      "description": "Versioned narrative text and media",
+      "status": "MISSING_SOURCE",
+      "gap": "Permissive rights, source-time, identity and semantic review unverified.",
+      "collection_access_authorized": null,
+      "rights_admissible": null,
+      "training_inclusion_approved": false,
+      "provenance": "requirements-only source class; not a measured source inventory"
+    },
+    {
+      "source_id": "human_sessions",
+      "description": "Consenting complete human decisions and sessions",
+      "status": "MISSING_SOURCE",
+      "gap": "No existing human-labeled decision history per operator.",
+      "collection_access_authorized": null,
+      "rights_admissible": null,
+      "training_inclusion_approved": false,
+      "provenance": "requirements-only source class; not a measured source inventory"
+    },
+    {
+      "source_id": "execution_raw",
+      "description": "Own intents, submissions, fills and failed attempts",
+      "status": "MISSING_SOURCE",
+      "gap": "Confirmed event-linked cost/inventory evidence not inspected.",
+      "collection_access_authorized": null,
+      "rights_admissible": null,
+      "training_inclusion_approved": false,
+      "provenance": "requirements-only source class; not a measured source inventory"
+    },
+    {
+      "source_id": "engineering_raw",
+      "description": "Real engineering traces, patches and test evidence",
+      "status": "UNSUPPORTED",
+      "gap": "Separate engineering evidence only; Qwen Rust SFT excluded.",
+      "collection_access_authorized": null,
+      "rights_admissible": null,
+      "training_inclusion_approved": false,
+      "provenance": "requirements-only source class; not a measured source inventory"
+    },
+    {
+      "source_id": "protocol_docs",
+      "description": "Versioned permissive protocol documentation",
+      "status": "MISSING_SOURCE",
+      "gap": "Source revision, grant and semantics need independent verification.",
+      "collection_access_authorized": null,
+      "rights_admissible": null,
+      "training_inclusion_approved": false,
+      "provenance": "requirements-only source class; not a measured source inventory"
+    }
+  ],
+  "overrides": [
+    {
+      "override_id": "OPERATOR-QWEN-TRADER-ONLY",
+      "citations": [
+        {
+          "document_id": "approved_plan",
+          "start_line": 28,
+          "end_line": 32
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 116,
+          "end_line": 118
+        }
+      ],
+      "qwen_role": "trading_brain_only",
+      "rust_developer": "Astra",
+      "rust_action_conformance_required": true,
+      "d14_qwen_sft_allowed": false
+    }
+  ],
+  "policy": {
+    "citations": [
+      {
+        "document_id": "master_v5",
+        "start_line": 343,
+        "end_line": 357
+      },
+      {
+        "document_id": "master_v5",
+        "start_line": 139,
+        "end_line": 147
+      },
+      {
+        "document_id": "amendment_v6",
+        "start_line": 39,
+        "end_line": 74
+      },
+      {
+        "document_id": "approved_plan",
+        "start_line": 87,
+        "end_line": 88
+      }
+    ],
+    "narrative_required": true,
+    "objective": "Kelly sizing philosophy; maximize net returned SOL per trade, with all-in equity, tail-risk and capital-time safeguards. No numeric envelope invented.",
+    "v6_balance": "Genuine action-class support and label-token audit mandatory; no fabricated/padded examples. Natural chronological economics separate from balanced diagnostic challenges; exact floor policy unresolved.",
+    "training_run_approved": false,
+    "live_orders_authorized": false
+  },
+  "stages": [
+    {
+      "stage_id": "STAGE-0",
+      "title": "receive/inventory (read-only, no admission)",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 391,
+          "end_line": 391
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "acceptance_status": "NOT_RUN",
+      "gaps": [
+        "S0 registry software does not close this full stage; independently verified stage evidence is outstanding."
+      ]
+    },
+    {
+      "stage_id": "STAGE-1",
+      "title": "protect evaluation and contracts",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 393,
+          "end_line": 393
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "acceptance_status": "NOT_RUN",
+      "gaps": [
+        "S0 registry software does not close this full stage; independently verified stage evidence is outstanding."
+      ]
+    },
+    {
+      "stage_id": "STAGE-2",
+      "title": "bounded canonicalization",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 395,
+          "end_line": 395
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "acceptance_status": "NOT_RUN",
+      "gaps": [
+        "S0 registry software does not close this full stage; independently verified stage evidence is outstanding."
+      ]
+    },
+    {
+      "stage_id": "STAGE-3",
+      "title": "parallel capture and context",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 397,
+          "end_line": 397
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "acceptance_status": "NOT_RUN",
+      "gaps": [
+        "S0 registry software does not close this full stage; independently verified stage evidence is outstanding."
+      ]
+    },
+    {
+      "stage_id": "STAGE-4",
+      "title": "development-only execution calibration",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 399,
+          "end_line": 399
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "acceptance_status": "NOT_RUN",
+      "gaps": [
+        "S0 registry software does not close this full stage; independently verified stage evidence is outstanding."
+      ]
+    },
+    {
+      "stage_id": "STAGE-5",
+      "title": "episode reconstruction/labeling",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 401,
+          "end_line": 401
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "acceptance_status": "NOT_RUN",
+      "gaps": [
+        "S0 registry software does not close this full stage; independently verified stage evidence is outstanding."
+      ]
+    },
+    {
+      "stage_id": "STAGE-6",
+      "title": "split inheritance + exports",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 403,
+          "end_line": 403
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "acceptance_status": "NOT_RUN",
+      "gaps": [
+        "S0 registry software does not close this full stage; independently verified stage evidence is outstanding."
+      ]
+    },
+    {
+      "stage_id": "STAGE-7",
+      "title": "independent whole-corpus certification",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 405,
+          "end_line": 405
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "acceptance_status": "NOT_RUN",
+      "gaps": [
+        "S0 registry software does not close this full stage; independently verified stage evidence is outstanding."
+      ]
+    },
+    {
+      "stage_id": "STAGE-8",
+      "title": "Windows handback",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 407,
+          "end_line": 407
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "acceptance_status": "NOT_RUN",
+      "gaps": [
+        "S0 registry software does not close this full stage; independently verified stage evidence is outstanding."
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "requirement_id": "D01",
+      "title": "Source and observation truth [P0]",
+      "stage_ids": [
+        "STAGE-0",
+        "STAGE-1",
+        "STAGE-2"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/inventory.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "market_raw",
+        "narrative_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 217,
+          "end_line": 221
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 165,
+          "end_line": 165
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/inventory.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/D01/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "D01-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. Manifest exact membership/hash/count; source permissions separate; blind intervals/revisions/revocation inherited",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "Manifest exact membership/hash/count; source permissions separate; blind intervals/revisions/revocation inherited"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "market_raw",
+          "narrative_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 217,
+          "end_line": 221
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      },
+      "historical_evidence_claim": "Store/manifests/partial hash report PRESENT",
+      "historical_evidence_qualification": "Plan-reported baseline only; no source/gold reads or renewed admission in this S0 task."
+    },
+    {
+      "requirement_id": "D02",
+      "title": "Token, creator and venue identity [P0]",
+      "stage_ids": [
+        "STAGE-2"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/events.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "market_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 223,
+          "end_line": 227
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 166,
+          "end_line": 166
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/events.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/D02/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "D02-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. Literal chain/mint; alias collision; as-of ownership/config; no terminal metadata in past",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "Literal chain/mint; alias collision; as-of ownership/config; no terminal metadata in past"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "market_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 223,
+          "end_line": 227
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      },
+      "historical_evidence_claim": "Token metadata PRESENT",
+      "historical_evidence_qualification": "Plan-reported baseline only; no source/gold reads or renewed admission in this S0 task."
+    },
+    {
+      "requirement_id": "D03",
+      "title": "Raw trades, transfers and execution [P0]",
+      "stage_ids": [
+        "STAGE-2",
+        "STAGE-3"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/accounting.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "market_raw",
+        "execution_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 229,
+          "end_line": 234
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 167,
+          "end_line": 167
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/accounting.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/D03/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "D03-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. Independently reconciled balances; no transfer-as-trade or intent-as-fill; unknown cost basis retained",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "Independently reconciled balances; no transfer-as-trade or intent-as-fill; unknown cost basis retained"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "market_raw",
+          "execution_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 229,
+          "end_line": 234
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      },
+      "historical_evidence_claim": "Trade tape/raw transaction sources PRESENT",
+      "historical_evidence_qualification": "Plan-reported baseline only; no source/gold reads or renewed admission in this S0 task."
+    },
+    {
+      "requirement_id": "D04",
+      "title": "Tradability and execution capacity [P0]",
+      "stage_ids": [
+        "STAGE-2",
+        "STAGE-3",
+        "STAGE-4"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/execution.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "market_raw",
+        "execution_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 236,
+          "end_line": 240
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 168,
+          "end_line": 168
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/execution.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/D04/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "D04-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. Size/age/fee/latency/migration supported; tape volume not depth; unsupported exit remains null",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "Size/age/fee/latency/migration supported; tape volume not depth; unsupported exit remains null"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "market_raw",
+          "execution_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 236,
+          "end_line": 240
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      },
+      "historical_evidence_claim": "Reserve/liquidity/scenario proxies PRESENT",
+      "historical_evidence_qualification": "Plan-reported baseline only; no source/gold reads or renewed admission in this S0 task."
+    },
+    {
+      "requirement_id": "D05",
+      "title": "Chart structure and flow [P0]",
+      "stage_ids": [
+        "STAGE-2",
+        "STAGE-3"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/causal_features.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "market_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 242,
+          "end_line": 246
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 169,
+          "end_line": 169
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/causal_features.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/D05/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "D05-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. Partial candle, gap-aware paths, past-only windows; future perturbation leaves prior bytes unchanged",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "Partial candle, gap-aware paths, past-only windows; future perturbation leaves prior bytes unchanged"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "market_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 242,
+          "end_line": 246
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      },
+      "historical_evidence_claim": "Trade/bucket flow PRESENT",
+      "historical_evidence_qualification": "Plan-reported baseline only; no source/gold reads or renewed admission in this S0 task."
+    },
+    {
+      "requirement_id": "D06",
+      "title": "Holders, wallet behavior and connected risk [P1]",
+      "stage_ids": [
+        "STAGE-2",
+        "STAGE-3"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/ownership.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "market_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 248,
+          "end_line": 252
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 170,
+          "end_line": 170
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/ownership.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/D06/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "D06-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. Actual vs trade-implied holdings distinguished; open losers; uncertain identity; prior-only teacher skill",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "Actual vs trade-implied holdings distinguished; open losers; uncertain identity; prior-only teacher skill"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "market_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 248,
+          "end_line": 252
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      },
+      "historical_evidence_claim": "Wallet totals/trade proxies PRESENT",
+      "historical_evidence_qualification": "Plan-reported baseline only; no source/gold reads or renewed admission in this S0 task."
+    },
+    {
+      "requirement_id": "D07",
+      "title": "Narrative meaning and catalyst evidence [P0 for narrative-capable release]",
+      "stage_ids": [
+        "STAGE-3"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/narrative_context.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "narrative_raw",
+        "human_sessions"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 254,
+          "end_line": 258
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 171,
+          "end_line": 171
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/narrative_context.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/D07/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "D07-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. Correct mint, language/negation/satire, causal cutoff, provenance, missing modality; eight synthesis tasks",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "Correct mint, language/negation/satire, causal cutoff, provenance, missing modality; eight synthesis tasks"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "narrative_raw",
+          "human_sessions"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 254,
+          "end_line": 258
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      },
+      "historical_evidence_claim": "Web text/transcript spike PRESENT, rights/semantics unadmitted",
+      "historical_evidence_qualification": "Plan-reported baseline only; no source/gold reads or renewed admission in this S0 task."
+    },
+    {
+      "requirement_id": "D08",
+      "title": "Propagation, attention quality and crowding [P0 for narrative-capable release]",
+      "stage_ids": [
+        "STAGE-3"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/propagation.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "narrative_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 260,
+          "end_line": 265
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 172,
+          "end_line": 172
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/propagation.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/D08/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "D08-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. Echo storms not independent breadth; missing feed not no attention; observed origin not global origin",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "Echo storms not independent breadth; missing feed not no attention; observed origin not global origin"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "narrative_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 260,
+          "end_line": 265
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      },
+      "historical_evidence_claim": "Some URLs/social records PRESENT, graph not certified",
+      "historical_evidence_qualification": "Plan-reported baseline only; no source/gold reads or renewed admission in this S0 task."
+    },
+    {
+      "requirement_id": "D09",
+      "title": "Market meta, competition and rotations [P0 for narrative-capable release]",
+      "stage_ids": [
+        "STAGE-3"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/competition.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "narrative_raw",
+        "market_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 267,
+          "end_line": 272
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 173,
+          "end_line": 173
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/competition.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/D09/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "D09-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. Same-time competition/capital/attention, failed/quiet controls; no hindsight theme winner or fixed favored list",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "Same-time competition/capital/attention, failed/quiet controls; no hindsight theme winner or fixed favored list"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "narrative_raw",
+          "market_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 267,
+          "end_line": 272
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      },
+      "historical_evidence_claim": "Legacy heuristic states PRESENT",
+      "historical_evidence_qualification": "Plan-reported baseline only; no source/gold reads or renewed admission in this S0 task."
+    },
+    {
+      "requirement_id": "D10",
+      "title": "Account and opportunity state [P0]",
+      "stage_ids": [
+        "STAGE-3"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/portfolio.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "market_raw",
+        "execution_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 274,
+          "end_line": 277
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 174,
+          "end_line": 174
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/portfolio.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/D10/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "D10-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. Entire candidate set at arrival; shared cash constraint; watch/expiry; hidden candidate not deliberate skip",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "Entire candidate set at arrival; shared cash constraint; watch/expiry; hidden candidate not deliberate skip"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "market_raw",
+          "execution_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 274,
+          "end_line": 277
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      },
+      "historical_evidence_claim": "Tape/account fragments PRESENT",
+      "historical_evidence_qualification": "Plan-reported baseline only; no source/gold reads or renewed admission in this S0 task."
+    },
+    {
+      "requirement_id": "D11",
+      "title": "Sequential human decisions and revisions [P1; gates expert-rationale release]",
+      "stage_ids": [
+        "STAGE-3",
+        "STAGE-5"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/annotation_ingest.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "human_sessions"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 279,
+          "end_line": 283
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 175,
+          "end_line": 175
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/annotation_ingest.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/D11/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "D11-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. H tiers never inferred from profit; stateful action labels; human-review capacity explicit",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "H tiers never inferred from profit; stateful action labels; human-review capacity explicit"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "human_sessions"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 279,
+          "end_line": 283
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      },
+      "historical_evidence_claim": "Claimed wallet action extraction; no supplied human labels",
+      "historical_evidence_qualification": "Plan-reported baseline only; no source/gold reads or renewed admission in this S0 task."
+    },
+    {
+      "requirement_id": "D12",
+      "title": "Outcomes, economics and errors [P0; label-only futures]",
+      "stage_ids": [
+        "STAGE-2",
+        "STAGE-4",
+        "STAGE-5"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/accounting.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "market_raw",
+        "execution_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 285,
+          "end_line": 289
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 176,
+          "end_line": 176
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/accounting.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/D12/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "D12-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. Realized + conservative open equity, fees/failures, per-source censoring, independent denominator",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "Realized + conservative open equity, fees/failures, per-source censoring, independent denominator"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "market_raw",
+          "execution_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 285,
+          "end_line": 289
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      },
+      "historical_evidence_claim": "Legacy outcomes/scenarios PRESENT",
+      "historical_evidence_qualification": "Plan-reported baseline only; no source/gold reads or renewed admission in this S0 task."
+    },
+    {
+      "requirement_id": "D13",
+      "title": "Protocol, numeracy and operational knowledge [P1]",
+      "stage_ids": [
+        "STAGE-2",
+        "STAGE-5"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/venues.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "protocol_docs"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 291,
+          "end_line": 293
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 177,
+          "end_line": 177
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/venues.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/D13/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "D13-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. Mint decimals/rounding/protocol fees proven; test fixtures not training; old AI code/prose not laundered",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "Mint decimals/rounding/protocol fees proven; test fixtures not training; old AI code/prose not laundered"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "protocol_docs"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 291,
+          "end_line": 293
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      },
+      "historical_evidence_claim": "Rust-derived prose PRESENT with unit defect",
+      "historical_evidence_qualification": "Plan-reported baseline only; no source/gold reads or renewed admission in this S0 task."
+    },
+    {
+      "requirement_id": "D14",
+      "title": "Rust engineering quality [separate P1 track]",
+      "stage_ids": [
+        "STAGE-7"
+      ],
+      "owner": "Astra engineering",
+      "module": "src/north_star/engineering_conformance.py",
+      "scope": "engineering_only",
+      "override_id": "OPERATOR-QWEN-TRADER-ONLY",
+      "source_ids": [
+        "engineering_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 295,
+          "end_line": 298
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 178,
+          "end_line": 178
+        }
+      ],
+      "evidence_status": "UNSUPPORTED",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/engineering_conformance.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/engineering/D14/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "D14-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. Excluded Qwen SFT by operator; no secret/code-permission crossover; real differential tests",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "Excluded Qwen SFT by operator; no secret/code-permission crossover; real differential tests"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified.",
+        "Excluded from Qwen SFT by explicit operator override; Rust/action conformance remains required."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "engineering_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 295,
+          "end_line": 298
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      },
+      "historical_evidence_claim": "Engineering legacy track PRESENT",
+      "historical_evidence_qualification": "Plan-reported baseline only; no source/gold reads or renewed admission in this S0 task."
+    },
+    {
+      "requirement_id": "G01",
+      "title": "Discovery and attention allocation before BUY/SKIP",
+      "stage_ids": [
+        "STAGE-1",
+        "STAGE-2",
+        "STAGE-3",
+        "STAGE-5",
+        "STAGE-7"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/opportunities.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "market_raw",
+        "human_sessions"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 27,
+          "end_line": 33
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 186,
+          "end_line": 186
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/opportunities.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/G01/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "G01-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. **Test:** arrival-stream replay with unseen candidates absent until arrival; equal discovery sources and compute budgets across baselines; a hidden candidate is not automatically an informed SKIP. Report missed opportunities using hindsight only as evaluation labels.",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "late unseen candidate; hidden≠skip; risk handling during search; equal-source/compute baseline; sampled discovery-coverage audit"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "market_raw",
+          "human_sessions"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 27,
+          "end_line": 33
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      }
+    },
+    {
+      "requirement_id": "G02",
+      "title": "Narrative tournament, canonical identity and rival monitoring",
+      "stage_ids": [
+        "STAGE-2",
+        "STAGE-3",
+        "STAGE-5",
+        "STAGE-7"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/competition.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "narrative_raw",
+        "market_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 35,
+          "end_line": 40
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 187,
+          "end_line": 187
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/competition.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/G02/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "G02-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. **Test:** late-arriving rival, same ticker/different mint, misleading Unicode/logo, multiple viable winners, and unchanged theme with changing leader. No final-winner identifier or future rank in input.",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "alias/logo collision; late rival; multiple winners; leader changes without theme change; visual unsupported explicit"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "narrative_raw",
+          "market_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 35,
+          "end_line": 40
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      }
+    },
+    {
+      "requirement_id": "G03",
+      "title": "Source verification, ambiguity and information worth paying time for",
+      "stage_ids": [
+        "STAGE-2",
+        "STAGE-3",
+        "STAGE-5",
+        "STAGE-7"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/narrative_context.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "narrative_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 42,
+          "end_line": 47
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 188,
+          "end_line": 188
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/narrative_context.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/G03/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "G03-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. **Test:** fake article, edited tweet, sarcasm/mistranslation, right fact/wrong token, verification arriving after order expiry; latency-inclusive value-of-information comparison, not free omniscience.",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "fake/edited article; satire; right fact/wrong mint; query completes after expiry; uncertainty≠bullishness"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "narrative_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 42,
+          "end_line": 47
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      }
+    },
+    {
+      "requirement_id": "G04",
+      "title": "Local market memory and changing conventions",
+      "stage_ids": [
+        "STAGE-1",
+        "STAGE-3",
+        "STAGE-5",
+        "STAGE-6",
+        "STAGE-7"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/memory.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "market_raw",
+        "narrative_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 49,
+          "end_line": 54
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 189,
+          "end_line": 189
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/memory.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/G04/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "G04-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. **Test:** regime reversal and spoofed resemblance; compare no-memory/causal-memory/stale-memory baselines. Fit retrieval and analogue selection only on development data, preserving sealed split rules. Live context updates are not online weight training.",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "stale memory; pattern reverses; spoofed resemblance; unresolved future lesson excluded; no live weight update"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "market_raw",
+          "narrative_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 49,
+          "end_line": 54
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      }
+    },
+    {
+      "requirement_id": "G05",
+      "title": "Who can buy next? Flow quality and participant replenishment",
+      "stage_ids": [
+        "STAGE-2",
+        "STAGE-3",
+        "STAGE-5",
+        "STAGE-7"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/cohorts.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "market_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 56,
+          "end_line": 61
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 190,
+          "end_line": 190
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/cohorts.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/G05/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "G05-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. **Test:** equal volume with different wallet churn/concentration, wash-like flow, shrinking cohort and source outage; no equating missing coverage with zero demand.",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "equal volume different participants; recycled/wash-like flow; source outage; new wallet≠new human"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "market_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 56,
+          "end_line": 61
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      }
+    },
+    {
+      "requirement_id": "G06",
+      "title": "Reflexivity, tracked-wallet influence and nontransferable edge",
+      "stage_ids": [
+        "STAGE-2",
+        "STAGE-3",
+        "STAGE-4",
+        "STAGE-5",
+        "STAGE-7"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/influence.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "market_raw",
+        "narrative_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 63,
+          "end_line": 69
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 191,
+          "end_line": 191
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/influence.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/G06/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "G06-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. **Test:** matched public/private-visibility strata only where observed, delayed-follower replay, removal of named identity, audience-feature ablations and self-impact stress. Observational correlations cannot identify what price would have done without a broadcast; mark that counterfactual unsupported.",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "delayed copying; identity/audience ablation; unknown visibility; no causal no-broadcast counterfactual claim"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "market_raw",
+          "narrative_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 63,
+          "end_line": 69
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      }
+    },
+    {
+      "requirement_id": "G07",
+      "title": "Conviction updates, thesis clocks and falsification",
+      "stage_ids": [
+        "STAGE-2",
+        "STAGE-3",
+        "STAGE-5",
+        "STAGE-7"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/thesis.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "human_sessions",
+        "market_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 71,
+          "end_line": 77
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 192,
+          "end_line": 192
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/thesis.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/G07/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "G07-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. **Test:** flat price with expiring catalyst, favorable price with worsening liquidity, delayed authentic confirmation, rival takeover, justified no-change. No posthoc redefinition to make every trade correct.",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "flat expired catalyst; rising price/worse liquidity; rival takeover; dust/partial exit must not reset hard deadline"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "human_sessions",
+          "market_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 71,
+          "end_line": 77
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      }
+    },
+    {
+      "requirement_id": "G08",
+      "title": "Endogenous impact, staged liquidation and residual risk",
+      "stage_ids": [
+        "STAGE-2",
+        "STAGE-3",
+        "STAGE-4",
+        "STAGE-5",
+        "STAGE-7"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/execution.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "execution_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 79,
+          "end_line": 86
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 193,
+          "end_line": 193
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/execution.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/G08/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "G08-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. **Test:** recursive reserve updates and self-impact in replay; no sell above unreserved inventory; repeated percentage semantics; no future buyers assumed to arrive; no free slicing into the historical price path. For significant market impact, simulator uncertainty and off-policy support must bound claims, not a fictitious exact replay.",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "duplicate child/oversell; repeated percentage semantics; own buys not independent confirmation; no free historical slicing/future demand; shared liquidity"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "execution_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 79,
+          "end_line": 86
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      }
+    },
+    {
+      "requirement_id": "G09",
+      "title": "Inventory ownership, account aggregation and return decomposition",
+      "stage_ids": [
+        "STAGE-2",
+        "STAGE-3",
+        "STAGE-5",
+        "STAGE-7"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/ownership.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "market_raw",
+        "execution_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 88,
+          "end_line": 93
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 194,
+          "end_line": 194
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/ownership.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/G09/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "G09-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. **Test:** cross-wallet transfer not income, no double-counted exposure, unresolved owner not pooled as fact, realized rebates not assumed eligibility, leftover unsellable positions retained. Exclude unverifiable headline screenshots as economic ground truth.",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "transfer not income; uncertain owners not pooled; rebates not assumed; unsellable residuals retained"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "market_raw",
+          "execution_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 88,
+          "end_line": 93
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      }
+    },
+    {
+      "requirement_id": "G10",
+      "title": "Microstructure race and reliable intent delivery",
+      "stage_ids": [
+        "STAGE-2",
+        "STAGE-3",
+        "STAGE-4",
+        "STAGE-5",
+        "STAGE-7"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/execution.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "execution_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 95,
+          "end_line": 100
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 195,
+          "end_line": 195
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/execution.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/G10/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "G10-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. **Test:** duplicate submissions, delayed confirmations, reorg/finality changes where applicable, stale blockhash, slot/clock ambiguity and budget exhaustion. Executable sequence uses what our infrastructure sees, not block history revealed later.",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "unknown timeout before retry; duplicate submit; stale hash; reorg; slot ambiguity; LLM busy while exit required"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "execution_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 95,
+          "end_line": 100
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      }
+    },
+    {
+      "requirement_id": "G11",
+      "title": "Venue incentive regimes and deployment-versus-trading scope",
+      "stage_ids": [
+        "STAGE-2",
+        "STAGE-3",
+        "STAGE-4",
+        "STAGE-5",
+        "STAGE-7"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/venues.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "protocol_docs",
+        "market_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 102,
+          "end_line": 108
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 196,
+          "end_line": 196
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/venues.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/G11/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "G11-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. **Test:** changed fee recipient, ineligible cashback, repeated new launches in same theme, migration-route outage and constant narrative/different fee regime. Never propagate an interview's 'zero risk' language as truth.",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "wrong fee recipient; ineligible cashback; incentive regime changes; unsupported new chain; deployment not issuance authority"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "protocol_docs",
+          "market_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 102,
+          "end_line": 108
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      }
+    },
+    {
+      "requirement_id": "G12",
+      "title": "Session allocation, losses, restraint and sustainable edge",
+      "stage_ids": [
+        "STAGE-1",
+        "STAGE-3",
+        "STAGE-5",
+        "STAGE-6",
+        "STAGE-7"
+      ],
+      "owner": "North Star data engineering; independent acceptance reviewer unassigned",
+      "module": "src/north_star/sessions.py",
+      "scope": "qwen_trader",
+      "override_id": null,
+      "source_ids": [
+        "human_sessions",
+        "execution_raw"
+      ],
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 110,
+          "end_line": 116
+        },
+        {
+          "document_id": "approved_plan",
+          "start_line": 197,
+          "end_line": 197
+        }
+      ],
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "measured_support": {
+        "raw_rows": null,
+        "canonical_rows": null,
+        "admitted_rows": null,
+        "independent_sessions": null,
+        "useful_label_tokens": null,
+        "measurement_evidence": null
+      },
+      "producer": {
+        "status": "PLANNED",
+        "module": "src/north_star/sessions.py",
+        "version": null,
+        "gap": "Source-to-canonical-to-export chain has not been demonstrated by S0 unit fixtures."
+      },
+      "output": {
+        "status": "PLANNED",
+        "path": "D:/mev_bot-artifacts/north_star_v1/<run_id>/canonical/G12/",
+        "manifest_sha256": null
+      },
+      "acceptance": {
+        "fixture_id": "G12-source-backed-acceptance",
+        "expected_result": "PASS only on independently checked source rows, canonical records, admitted examples and acceptance receipt. **Test:** selected-highlight versus whole-session evaluation, leave-largest-winners-out sensitivity, bad-regime abstention, sequential no-edge re-entry and inventory stranded across session boundaries. Do not use daily PnL alone as automatic size escalation or tuning signal.",
+        "status": "NOT_RUN",
+        "evidence": [],
+        "required_failure_fixtures": "highlight-vs-session bias; largest-winner sensitivity; no-edge re-entry; stranded inventory; later lesson never affects earlier state"
+      },
+      "gaps": [
+        "Raw/canonical/admitted coverage not measured; null is not zero.",
+        "Independent acceptance and complete source rights remain unverified."
+      ],
+      "source_to_field_map": {
+        "status": "MISSING",
+        "required_source_ids": [
+          "human_sessions",
+          "execution_raw"
+        ],
+        "required_fields_citation": {
+          "document_id": "master_v5",
+          "start_line": 110,
+          "end_line": 116
+        },
+        "gap": "Per-field decoder, upstream object IDs and actual availability evidence remain unimplemented."
+      },
+      "schema_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 368,
+          "end_line": 381
+        },
+        "gap": "Concrete field types/units/nullable reasons require source-backed S2 schemas."
+      },
+      "temporal_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 724,
+          "end_line": 739
+        },
+        "gap": "No measured timestamp support; each dependency must be available by cutoff."
+      },
+      "task_mask_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 801,
+          "end_line": 810
+        },
+        "gap": "No generated prose; mask/template/tokenizer and eligible target support not measured."
+      },
+      "dedup_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 360,
+          "end_line": 364
+        },
+        "gap": "Exact/version/echo and correction ancestry not materialized."
+      },
+      "split_contract": {
+        "status": "PLANNED",
+        "requirements_citation": {
+          "document_id": "master_v5",
+          "start_line": 379,
+          "end_line": 379
+        },
+        "gap": "All protected parents inherited; no split or fit performed in S0."
+      }
+    }
+  ],
+  "objects": [
+    {
+      "object_id": "expert_source_claim_v1",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 120,
+          "end_line": 120
+        }
+      ],
+      "scope": "qwen_trader",
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "gaps": [
+        "Object is a required contract, not demonstrated data coverage."
+      ]
+    },
+    {
+      "object_id": "discovery_attention_event_v1",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 121,
+          "end_line": 121
+        }
+      ],
+      "scope": "qwen_trader",
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "gaps": [
+        "Object is a required contract, not demonstrated data coverage."
+      ]
+    },
+    {
+      "object_id": "narrative_competition_snapshot_v1",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 122,
+          "end_line": 122
+        }
+      ],
+      "scope": "qwen_trader",
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "gaps": [
+        "Object is a required contract, not demonstrated data coverage."
+      ]
+    },
+    {
+      "object_id": "thesis_revision_event_v1",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 123,
+          "end_line": 123
+        }
+      ],
+      "scope": "qwen_trader",
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "gaps": [
+        "Object is a required contract, not demonstrated data coverage."
+      ]
+    },
+    {
+      "object_id": "execution_parent_child_v1",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 124,
+          "end_line": 124
+        }
+      ],
+      "scope": "qwen_trader",
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "gaps": [
+        "Object is a required contract, not demonstrated data coverage."
+      ]
+    },
+    {
+      "object_id": "influence_incentive_context_v1",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 125,
+          "end_line": 125
+        }
+      ],
+      "scope": "qwen_trader",
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "gaps": [
+        "Object is a required contract, not demonstrated data coverage."
+      ]
+    },
+    {
+      "object_id": "session_opportunity_audit_v1",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 126,
+          "end_line": 126
+        }
+      ],
+      "scope": "qwen_trader",
+      "evidence_status": "MISSING_SOURCE",
+      "evidence": [],
+      "gaps": [
+        "Object is a required contract, not demonstrated data coverage."
+      ]
+    },
+    {
+      "object_id": "rust_market_bridge_episode_v1",
+      "citations": [
+        {
+          "document_id": "master_v5",
+          "start_line": 127,
+          "end_line": 127
+        }
+      ],
+      "scope": "engineering_only",
+      "evidence_status": "UNSUPPORTED",
+      "evidence": [],
+      "gaps": [
+        "Object is a required contract, not demonstrated data coverage."
+      ]
+    }
+  ]
+}

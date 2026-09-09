@@ -1,0 +1,87 @@
+{
+  "policy_version": "north_star_eval_policy_v2",
+  "reservation_status": "POLICY_FROZEN_RESERVATION_PENDING",
+  "selected_at_utc_ms": null,
+  "source_assignments": {
+    "tools/data-pipeline/output/slinky_gold_v3/manifest_v3.json": "DEVELOPMENT",
+    "tools/data-pipeline/output/laserstream_gold_v3/manifest_laserstream_gold_v3.json": "DEVELOPMENT",
+    "tools/data-pipeline/output/narrative_gold_v1.1/gold/FREEZE_MARKER.json": "DEVELOPMENT",
+    "https://www.youtube.com/watch?v=hxXZTE9wWdA": "DEVELOPMENT",
+    "https://www.twitch.tv/videos/2866050335": "DEVELOPMENT",
+    "urn:twitch:stream:320254509148": "DEVELOPMENT",
+    "urn:laserstream:session:20260909_144906_000490": "DEVELOPMENT"
+  },
+  "exposed_sources": [
+    "tools/data-pipeline/output/slinky_gold_v3/manifest_v3.json",
+    "tools/data-pipeline/output/laserstream_gold_v3/manifest_laserstream_gold_v3.json",
+    "tools/data-pipeline/output/narrative_gold_v1.1/gold/FREEZE_MARKER.json",
+    "https://www.youtube.com/watch?v=hxXZTE9wWdA",
+    "https://www.twitch.tv/videos/2866050335",
+    "urn:twitch:stream:320254509148",
+    "urn:laserstream:session:20260909_144906_000490"
+  ],
+  "entity_assignments": {},
+  "windows": [],
+  "embargo_ms": {
+    "label_horizon": null,
+    "episode": null,
+    "feature": null,
+    "retrieval": null
+  },
+  "timeless_reference_ids": [],
+  "scope": {
+    "chain": "solana",
+    "venues": [
+      "pumpfun",
+      "pumpswap"
+    ]
+  },
+  "future_window_status": "NOT_SELECTED_NOT_PROTECTED",
+  "materialized_protected_ids": [],
+  "exposure_status": "Inspected legacy, historical Megga VOD/YouTube and current Megga Twitch/LaserStream capture evidence is DEVELOPMENT/EXPOSED; registry is not exhaustive. Unknown sources quarantine; no reclassification of exposed sources as pristine holdouts.",
+  "ancestry_status": "INCOMPLETE: legacy CPT/SFT/retention/retrieval membership and inherited checkpoint knowledge not fully audited",
+  "policy_rules": {
+    "assignment": "Exact source, exact verified entity IDs, absolute UTC half-open windows; unanimous applicable restrictions only; otherwise quarantine",
+    "primary": "Untouched chronological natural-prevalence sessions; no outcome-conditioned balancing",
+    "challenge": "Separate unseen-entity dependency components and class diagnostics; never replace primary economics",
+    "selection": "New version with exact boundaries, custody evidence and stop/coverage rules must be recorded before collection; no trailing-band selection",
+    "development_subpartitions": "Calibration-validation and validation reservations unresolved; no automatic random split",
+    "conflicts": "All transitive parents including candidates, inventory, content versions, duplicate families and retrieval/CPT/SFT ancestry; no protected-parent relabeling",
+    "relative_only": "Separate local ordering/accounting fixtures permitted, globally chronological fitting/export blocked",
+    "immutability": "Pin canonical policy digest externally; never overwrite an exercised version; changes require new version plus invalidation and new assessment where material",
+    "permissions": "Policy/testing only. No source admission, tuning, training or live order approval."
+  },
+  "supersession": {
+    "previous_policy_version": "north_star_eval_policy_v1",
+    "previous_policy_sha256": "de8479ca8a255f892b71332d55ab1182e76de8e57fdf048195b50b0a25e14137",
+    "reason": "Outcome-blind source inventory correction: register the actual historical Megga Twitch VOD and current Twitch/LaserStream session. Retain the distinct YouTube source because direct YouTube oEmbed metadata confirms Megga authorship; it is not the Twitch VOD or live stream.",
+    "prior_use_status": "Reservation pending; no fitting, training or evaluation artifacts exercised this policy, per bounded task context and prior Stage 1 receipt.",
+    "effect": "v1 superseded for future policy use, not silently rehashed. No fit artifact invalidation or assessment-window replacement is applicable because no fitting or protected reservation occurred. v2 remains pending and blocks fitting."
+  },
+  "source_inventory_provenance": {
+    "https://www.twitch.tv/videos/2866050335": {
+      "evidence": "STAGE2_TWITCH_SPIKE_EVAL.md identifies historical Megga VOD v2866050335; exact URL confirmed by operator task. Distinct from current live stream."
+    },
+    "urn:twitch:stream:320254509148": {
+      "evidence_path": "D:/mev_bot-artifacts/narrative/twitch_live/CAPTURE_CONTEXT.json",
+      "evidence_sha256": "76d3a4fb60472bc281e5069dca3b07b1f8e236a9c711d29ebaf68963bce5f74b",
+      "evidence_fields": {
+        "twitch_channel": "https://www.twitch.tv/megga",
+        "stream_id": "320254509148"
+      },
+      "identifier_semantics": "Local source identifier constructed from the recorded Twitch stream ID, not a provider-resolvable URL. https://www.twitch.tv/megga#stream=320254509148 is an invented fragment identifier only, not a Twitch archive link or an independently assigned source."
+    },
+    "urn:laserstream:session:20260909_144906_000490": {
+      "evidence_path": "D:/mev_bot-artifacts/narrative/twitch_live/CAPTURE_CONTEXT.json",
+      "evidence_sha256": "76d3a4fb60472bc281e5069dca3b07b1f8e236a9c711d29ebaf68963bce5f74b",
+      "evidence_fields": {
+        "laserstream_session": "20260909_144906_000490"
+      },
+      "identifier_semantics": "Local source identifier constructed from the recorded acquisition session ID; not a fresh protected acquisition window."
+    },
+    "https://www.youtube.com/watch?v=hxXZTE9wWdA": {
+      "evidence": "Direct YouTube oEmbed metadata lookup confirmed author_name=Megga and author_url=https://www.youtube.com/@Megga.; master v5 S3 separately lists this exact video. Retained as a distinct exposed source, not substituted for either Twitch source. No media, transcript or outcomes read."
+    }
+  },
+  "policy_sha256": "2e192cc90ccc331202f511667a58aefef8ed9326d11f1a502cd928191378aeaa"
+}

@@ -1,5 +1,11 @@
 # North Star — Stage 2 Capture Closure & Validation
 
+> **Historical record, not current completion evidence.** Stage numbering and several
+> status/semantic claims below were superseded by the master-DAG audit. Consult
+> `00_HOLISTIC_CONTEXT.md`, `BUILD_PLAN.md`, and task receipts before implementation.
+> In particular, pseudo-tests, heuristic GOLD/EX_ANTE labels, and old PASS reports
+> do not certify North Star admission. Original content is retained for traceability.
+
 Records the final closure of Stage 2 capture gaps: the LaserStream integrity
 validation (D01), the Reddit lane fix, and the honest status of the remaining
 social/streaming lanes. Frozen for Astra's Stage 1–2 review.

@@ -1,281 +1,189 @@
-# North Star — Holistic Context & Work Ledger (ASTRA REVIEW ENTRY POINT)
+# North Star — Current Build Ledger and Astra Review Entry Point
 
-Purpose: single authoritative entry point for a frontier model (Astra) to review the
-full North Star lineage — vision, prior training, all Stage 0–2 capture work, the
-capture-infra buildout, and every decision made. This supersedes all earlier versions.
+Status: **implementation kicked off; no complete North Star release certified**.
+Updated: 2026-09-09 PT. This replaces earlier overclaims in this derived document.
+Historical versions remain in Git; legacy stage filenames are not the governing DAG.
 
-Last updated: 2026-09-08. Updated by: Windows Hermes agent.
+## 1. Authority and objective
 
----
+Source of truth: `F:/handoff-linux/northstar/2026-09-06-expert-v5/NORTH_STAR_WINDOWS_MASTER_V5.md`
+(master SHA256 `ebee45d5b98a5daeed72edebf16e7ef2b8878d5cc96b191c451584a315cea57c`)
+and `NORTH_STAR_DATA_MIX_AMENDMENT_V6.md`. Original master-package file hashes were
+verified during the independent audit. The full audited implementation plan is
+[BUILD_PLAN.md](BUILD_PLAN.md); its stage contracts, tests, dependencies and D/G
+mapping govern execution. Its review-time findings are historical; this ledger and
+per-task receipts record subsequent changes.
 
-## 1. The bot vision (what we are building)
+Later operator decisions: Qwen is the memecoin **trading brain only**; Astra owns
+Rust development. Collect narrative as a required dimension, not optional decoration.
+Kelly sizing philosophy and net returned SOL per trade are objectives; exact sizing,
+risk/capital, execution-support and statistical thresholds require explicit contracts.
+Report full sequential net-SOL/cash/opportunity economics, not cherry-picked averages.
+No human-labeled decision history exists. Do not generate missing teaching rationale,
+pad examples or conflate observed trades with recommendations. Permissive-source and
+source/license/token inclusion gates remain. Dataset build permission is not training,
+live-order, reboot, disk/firmware or capital-escalation permission.
 
-A **memecoin scalping bot** split into two components:
+## 2. Governing stage map
 
-- **LLM = the trading brain** — market reasoning, inference, and *executable*
-  decisions (**BUY / SELL / SKIP / WATCH**). This is what **Qwen** is trained for.
-- **Rust = execution + real-time data** — buying/selling, data streaming/ingestion,
-  and terminal-style viewing/filtering (market-cap filters like GMGN / Padre).
-  Rust development is delegated to a **frontier model (Astra)**, NOT Qwen.
-
-**Objective function (SS13, binding):** maximize **net returned SOL per trade**,
-under *our* capital, latency, fee, and risk limits. Position sizing = **Kelly**.
-
-## 2. Hardware & cross-OS architecture
-
-- CPU EPYC 9655P, 3× RTX PRO 6000 Blackwell (96 GB each), 256 GB RAM.
-- Two ~4 TB NVMe: `nvme0n1` (Windows C: + Linux root + `/training` 2 TB ext4),
-  `nvme1n1` (D: Data — repo + artifact store).
-- Dual-boot **Windows (DESKTOP-CP8N3IC)** / **Ubuntu (qwen27b)**, each with its own
-  Hermes agent on the same Telegram bot; one OS booted at a time.
-- Agent-initiated reboot is **hard-blocked**; BMC Redfish (192.168.4.112) is the
-  sanctioned power path.
-
-## 3. Training lineage (the road that led here)
-
-- Qwen 27B **full-parameter** CPT then SFT (no smoke-test stage).
-- The prior SFT export `qwen_sft_v2.jsonl` (2,162 records) carried a **catastrophic
-  class imbalance**: WATCH 6,197 / SKIP 3,262 / **BUY 22 (0.2%)**.
-- Eval (`qwen_eval_v1.2`) showed **0 BUY actions emitted** — the model was never
-  taught what a BUY looks like. A supervised-signal absence, not a decode bug.
-- The ranking backbone was NOT the failure (full_rank_aux spearman ≈ 0.49); the
-  **action-label calibration** was. Keep ordering data; fix the action mix.
-
-### Binding lesson (V6 amendment)
-Every action class a model must emit needs **balanced, meaningful representation**
-(≥2–5% share). **Never pad/duplicate to hit a target** — upweight genuine BUY via
-task weights, mirror the balance in eval. This is now enforced by a hard gate (§10).
-
-## 4. North Star pivot decisions (user, 2026-09-07) — SS13
-
-1. **Qwen = trading brain only.** Rust removed from Qwen's training entirely.
-2. **Rust → Astra.** Astra reviews the Rust codebase and the North Star data.
-3. **No human decision history exists.** BUY labels must derive from on-chain
-   counterfactual economics (feasible + robust positive net return at our
-   size/latency/cost) — never from the 22 historical buys, never padded.
-4. **Quality over speed.** Full 8-stage process; no "speed-to-data" shortcut.
-5. **Capital/risk = Kelly sizing.** 6. **Objective = maximize net returned SOL/trade.**
-
-## 5. Build-order status (master Build DAG — stages 0–8, source of truth)
-
-Source of truth: `F:/handoff-linux/northstar/2026-09-06-expert-v5/NORTH_STAR_WINDOWS_MASTER_V5.md` §7 ("Build DAG … corrected order"). All stage numbering and ordering below follows that, not any earlier internal stage doc.
-
-| Stage | Master definition (verbatim gist) | Status |
+| Master stage | Scope | Evidence-backed baseline |
 |---|---|---|
-| 0 | receive/inventory — verify workspace, sources, licenses; produce receiver ack + source/coverage registry + gap report | ✅ DONE |
-| 1 | protect evaluation + contracts — reserve protected time/entity/source boundaries; freeze held-out partition; forward untouched window; inherited-weight uncertainty | ◐ PARTIAL (framework written; held-out ID freeze DEFERRED) |
-| 2 | bounded canonicalization — write new schemas/tests; parse trusted raw → Parquet; event identity/finality; source/rights + per-field availability; ledger reconciliation | ⬜ NOT STARTED |
-| 3 | parallel capture — prospective opportunity/account/execution capture + **narrative/message capture**; features; annotations; entity + propagation graphs | ◐ PARTIAL (lanes built; narrative P0 incomplete) |
-| 4 | development-only execution calibration | ⬜ |
-| 5 | episode reconstruction / labeling | ⬜ (balance-gate SPEC only) |
-| 6 | split inheritance + exports | ⬜ |
-| 7 | independent whole-corpus certification | ⬜ |
-| 8 | Windows handback (training proposal) | ⬜ |
+| 0 | Receiver, source/rights/coverage registry | IN PROGRESS; legacy inventory reusable, source recovery now verified; full registry closure pending |
+| 1 | Protect evaluation and operating/admission contracts | IN PROGRESS; tested policy implementation being built; protected future acquisition/membership not yet certified |
+| 2 | Bounded canonicalization, identities, time, exact ledger | NOT CLOSED; legacy parsers exist but audited defects prohibit treating their gold as canonical truth |
+| 3 | Parallel capture, narrative, features, annotation, entity/propagation graphs | PARTIAL; ongoing acquisition and prototype lanes; no full narrative admission |
+| 4 | Development-only empirical execution calibration | NOT CLOSED; legacy scenario grids are not measured calibration |
+| 5 | Sequential reconstruction and provenance-separated targets | NOT CLOSED; no complete position-aware episode corpus |
+| 6 | Inherited splits and tokenizer/mask-aware exports | NOT CLOSED; legacy exporter machinery reusable, North Star guards still required |
+| 7 | Independent whole-corpus certification | NOT CLOSED; historical PASS reports are not sufficient |
+| 8 | Verified portable handback and training proposal | NOT STARTED; no automatic training/live promotion |
 
-**Corrected baseline.** Stage 0 is done; **Stage 1 is partial** (framework written, but
-the core deliverable — the frozen held-out mint/time partition — was deferred and
-never done, see below). **Stage 2 (canonicalization) has not started** — the prior
-"Stage 1b schema registry" verified *existing* L1–L4 gold schemas (Stage 0
-inventory), not the *new North Star namespace schemas* (§6 of the master:
-`sources`/`raw_objects`/`events`/`token_versions`/`opportunities`/
-`decision_contexts`/`episodes`/`splits`…), and the raw→Parquet parse, event
-identity/finality and ledger reconciliation are all unbuilt. Stage 3 capture lanes
-exist but are incomplete.
+Stages 0–8, D01–D14, expert gap contracts G01–G12, and operational promotion gates
+G0–G6 are distinct axes. D14/code-teaching is explicitly superseded for Qwen by the
+operator override, while Rust semantic-conformance testing remains required.
+Stage 1 reserves outcome-blind source/entity/time boundaries before fitting/curation;
+Stage 6 materializes inherited membership. Stage 2 owns detailed ledger implementation.
+Authorized raw acquisition can continue while these foundations are built; no claim
+that a running collector closes Stage 3 or resolves causal availability.
 
-**Stage 1 residual (from `STAGE1_PROTECT_EVALUATION.md` §4, explicitly deferred):**
-1. freeze the held-out mint/time partition (hash-pinned ID list) — the core deliverable;
-2. write the export schema enforcing leakage rules programmatically (assert no post-`t`
-   field, group-disjoint);
-3. canonical accounting function (lamport-exact rounding).
-Plus master-Stage-1 items the doc does not cover: relative-only quarantine for unknown
-time sources, the planned forward untouched window, inherited-weight uncertainty, and
-numeric risk/economic-limit approval (pre-strategy-tuning).
+## 3. Execution workspace and durability
 
-**Narrative is P0, not optional.** Master line 302: *"narratives are a required
-collection dimension, not optional decoration."* D07/D08/D09 are each marked
-"P0 for narrative-capable release"; line 434: a numerical-only release "may be
-LIMITED, but cannot be advertised as the full narrative/meta North Star." §3 lists
-eight learning tasks, all narrative-linked.
+- Original repo/live sources: `D:/repos/mev_bot` — left dirty and intact; unrelated
+  supervisor/narrative modifications and raw deletions must not be reset or staged.
+- Isolated task worktree: `D:/repos/mev_bot-north-star`, `task/north-star-build`, from
+  fetched `origin/main` at `d17645623f764931b0b81866a0a2819103e0acdd`.
+- Sparse checkout avoids copying tracked output/raw/trading-data directories. No
+  current collector is redirected by creating this worktree.
+- Artifact store: `D:/mev_bot-artifacts`. Code/review receipts only in Git; no bulk
+  source data added. Task commits are pushed after real test/review checks; no direct
+  commits to main. A later reviewed merge must respect trunk/build invariants.
+- Windows owns build/management; the current capture binary runs in WSL. No dual-boot
+  Linux config, partition, credentials or boot changes are implied.
 
-**Hard blocker:** narrative↔slinky overlap is **1/317** (narrative mints current,
-slinky Jun–Jul). Master line 302 requires narrative + numeric state at the SAME
-decision cutoff → co-temporal capture is mandatory, not a nice-to-have. Now running:
-live Megga stream + LaserStream co-temporal capture (§8).
+## 4. Verified source preservation
 
-## 6. Data inventory (measured, not estimated)
+Both original raw manifests were reconciled by exact filename, not directory count.
+August 23 session `20260823_133256_000398` had 184 of 185 parts absent from both known
+raw locations. **All 184 have now been recovered** from exact Git blobs to:
 
-**On-chain (the core):**
-- **slinky21** `D:/mev_bot-artifacts/rust-data/slinky21_data/` — **64.5M rows**
-  (798K tokens, 33.5M trades [17.6M buy / 16.0M sell], 27M flow snapshots,
-  1.4M postgard, 1M wallets). Window **Jun 5 – Jul 14 2026** (39 days). License CLEARED.
-- **LaserStream raw** `D:/mev_bot-artifacts/raw/` — **70 GB**, 369 `.zst` parts.
-  Window Aug 23–24. **Integrity-validated 99.87%** (size+SHA256; only `part0368`,
-  the 18 MB tail = 0.128%, missing). 18.4M raw records / 4.24M events.
-- **Counterfactual** `gold/slinky_gold_v3_compact/counterfactual_trade_v3/` —
-  **33.5M scenarios**: STRONG 4.64M · GOOD 590K · MARGINAL 175K · BAD 3.44M ·
-  TOXIC 5.89M · SKIP 18.8M. Positive 5.2M vs negative 9.3M (~36:64).
-  **4.54M size-feasible (`sz050_feasible`) with positive net return @ 0.5 SOL.**
-- **Helius historical extract** `output/solana_historical_enrichment/` —
-  5,701 graduated mints, 874 MB, mint-keyed tx timelines + creator (co-temporal w/ slinky21).
+`D:/mev_bot-artifacts/recovered_raw/20260823_133256_000398/`
 
-**Decisions (D11):**
-- **KOL on-chain decisions (slinky21, authoritative):** 26,427 total —
-  Cupsey 15,672 (997 coins), Cented 7,992 (1,888 coins), Megga 2,763 (800 coins);
-  **156 consensus coins (≥2 KOLs)**. Insentos/Ansem excluded (obfuscated, see §8).
+**184 files / 3,270,751,952 bytes**, each validated against original manifest SHA256
+and size before publication; independent final readback found zero mismatches.
+Per-file provenance: `RECOVERY_RECEIPTS.jsonl` in that directory. Atomic no-clobber
+publication, mismatch refusal and resume validation were tested; see
+[BUILD_RECOVERY_RECEIPT.md](BUILD_RECOVERY_RECEIPT.md).
 
-**Narrative (D07–D09):**
-- 5-layer gold chain rebuilt: content 1,346 · claims 1,060 · states 1,060 ·
-  validations 363 · strategy cards 65. EX_ANTE 253, GOLD 23. Live 2h cron running.
+One August 23 part remains in the original artifact raw store and must be linked by
+the registry. August 24 session `20260824_053543_000288` has 368 of 369 parts in its
+known store; `part0368` is still missing. No "negligible for training" conclusion:
+map actual affected coverage, censoring and dependent tasks. Recovery is not source
+admission or complete source registry certification.
 
-**D10 (account state):** hot wallet `7ZwrFiGVE8dsEknqx879C7oV31gtR95abk8SLDLTR9DC`,
-`rust/data/tape.jsonl` (260 trades), 0 fills in slinky21 (live Aug 2026, post-window).
+## 5. Current Megga acquisition — preserve, do not overclaim
 
-## 7. Key findings / pitfalls (binding — do not relearn)
+- Twitch stream ID `320254509148`.
+- Media path `D:/mev_bot-artifacts/narrative/twitch_live/megga_320254509148.mp4.part`.
+- On-chain session `20260909_144906_000490`; standalone WSL launcher, **120-minute
+  bound**, started around 07:49 PT. No resident `capture_daemon.py` was seen at kickoff.
+- Preflight around 08:49 PT confirmed original media and raw/events files growing;
+  these are unfinished recordings, not finalized/integrity-certified episodes.
+- `CAPTURE_CONTEXT.json` is acquisition metadata, not a speech-epoch authority.
+  Capture-start metadata differs from first on-chain receive time and contains no
+  measured media PTS↔UTC anchor/discontinuity/buffering uncertainty. Relative ASR
+  timestamps cannot simply be added to this timestamp or broadcast start.
+- Required: finalization receipts, segment/media clock mapping, source/speaker/rights
+  provenance, exact mint/instruction/owner attribution, availability gating and
+  narrative→numeric→future-only outcomes. Uncertain joins stay unresolved.
+- The active stream is development/debug exposure, not a pristine sealed holdout.
+- Collector-health deadline/byte freshness must remain monitored while building;
+  extending/replacing capture must preserve semantics and avoid duplicate feeds.
 
-1. **SOL↔lamports = 1e9** (not 1e6). A 1000× bug was caught by a verify script.
-2. **pump.fun uses Token-2022** (`TokenzQd...`), NOT SPL Token. Holder queries must
-   use Token-2022 + `memcmp(mint)`, no dataSize filter.
-3. **Jito bundle-blindness (skill #25):** `getTransaction` cannot see a KOL's own
-   bundled trades — SOL/token delta reads 0.0, no Buy/Sell instruction. Only raw
-   Geyser (slinky21/LaserStream) sees full account state. **Applies to mint-centric
-   buyer attribution too** — the RPC-visible signer is the bundler, not the trader.
-4. **Insentos wallet `7SDs3PjT2…` = shill/airdrop receiver** (69K txs, zero pump.fun),
-   not a trader; flows through router → rotating Jito-bundle wallets. Not backfillable
-   via RPC. **Cented/Ansem: same bundled-blindness.**
-5. **Temporal mismatch:** narrative mints (current) vs slinky21 (Jun–Jul) → only
-   1/317 overlap; blocks claim↔outcome validation for that pairing.
-6. **full_trades.pkl (4.6 GB, 27.5M rows) is 100% subsumed** by slinky21 → dropped.
-7. **LaserStream SDK 0.5.0 → 0.6.4** (Helius gRPC update, Sep 1) was required; the
-   0.5.0 client connected but silently received zero data. Rebuilt binary now streams.
-8. **creds file is CRLF + must be read inside WSL** (inline `$(…)`/`source` from the
-   Windows shell yields empty vars → the "empty credentials" false-alarm).
+One historical Megga VOD was transcribed. Its reported 21% keyword-matching yield
+is a triage measure, not independently measured reasoning quality or narrative
+coverage. Narrative sources/versions have different stored counts and heuristic
+EX_ANTE/GOLD labels; count by source version and admission evidence, not aggregate
+incompatible inventories. Historical narrative↔Slinky 1/317 overlap is a recorded
+sample result, not a current full-corpus certification or proof that only live media
+can ever solve temporal support.
 
-## 8. Capture-infra buildout (this session — new)
+## 6. Reusable inputs versus admitted evidence
 
-### Twitch/VOD spoken-reasoning lane (D07/D11 enrichment)
-- `transcribe_vod.py` — yt-dlp (VOD audio) → faster-whisper large-v3 on GPU
-  (20× real-time steady-state), with the CUDA DLL-path fix (cublas/cudnn/cudart
-  pip wheels + PATH). Output: timestamped segments + text.
-- Spike: Megga "MILLY PNL" VOD (6h01m) → 33,211 words / 6,153 segments in 27 min.
-  **Reasoning yield = 21.0%** (entry 304 / exit 293 / mcap 172 / holders 124 /
-  dev-rug 121 / narrative 82 / risk 53 segment counts). Quality high (correct jargon).
-- Caveat: **forward-only** (14-day VOD retention; Cented's YouTube = Fortnite, Megga's
-  = 404). Transcript archived; audio deleted (transcribe-then-delete).
+Verified Slinky Parquet metadata: 798,430 token rows; 33,581,765 trade rows across 18
+shards; 26,934,864 flow-bucket snapshots; 1,392,133 post-graduation snapshots;
+1,016,374 wallet-stat rows. These establish input availability, not admission.
+`wallet_stats` has whole-window totals; flow snapshots are not historical token-account
+holder snapshots. Future/global token and wallet aggregates must not enter causal
+inputs without prior-only reconstruction.
 
-### Live co-temporal capture (active 2026-09-09)
-- Megga live on Twitch (stream `320254509148`) → two lanes running co-temporally:
-  1. **LaserStream** on-chain capture (session `20260909_144906_000490`, 120-min bounded).
-  2. **yt-dlp** live audio download → `megga_320254509148.mp4` (no VOD buffer, so from now).
-- Context metadata: `D:/mev_bot-artifacts/narrative/twitch_live/CAPTURE_CONTEXT.json`
-  (streamer, stream_id, capture start, wallets, join keys).
-- Purpose: satisfy the master's co-temporality requirement (narrative + numeric state
-  at the SAME decision cutoff, line 302) — the fix for the 1/317 mismatch.
-- Join: transcript timestamps → mint via name extraction → cross-ref LaserStream
-  events in the capture window (Stage 3 work).
+Legacy LaserStream raw projections, event compression, Arrow batching, human source
+text, ASR tooling, deterministic IDs and some exporter tokenizer accounting are
+reusable behind audited adapters. Raw JSON is a protobuf projection, not guaranteed
+wire-complete data. Scalar Parquet drops evidence needed for re-decoding and account
+reconstruction; even full normalized events do not replace raw account updates.
 
-### Mint-centric on-chain confirmation stage
-- `confirm_stream_mint.py` — the corrected architecture (replaces wallet-history paging):
-  transcript names → DexScreener name→mint (recency-filtered ±72h) → mint-buyer lookup
-  (Helius) → KOL-wallet cross-ref. **Bounded queries** (0.4s/mint vs 2M-deep wallet
-  paging that ran 6+ min without finishing).
-- Finding: Megga's wallets are **bot/bundle-burst addresses** (1000 tx/2min) — wallet
-  paging is intractable; mint-centric is correct AND fast, but **RPC buyer attribution
-  is still bundle-blind** (§7.3). True confirmation needs Geyser co-temporal with streams.
+Slinky permissions were reported granted by the operator; record the actual grant,
+permissive terms, version and permitted uses rather than silently inheriting an old
+CLEARED status. Every other source needs its own rights and exact token disclosure.
 
-### Storage optimization (the resident-capture plan)
-Diagnosis: raw `.zst` ≈ 68 GB/day, but **events `.ndjson` uncompressed ≈ 290 GB/day**
-(the real wall). **Measured field split: 90% of event volume is complex fields**
-(`log_messages` 36%, token balances 28%, inner instructions 15%, account keys 8%) —
-all redundant with the raw lossless capture. Scalar trading fields = **10%**.
+## 7. Blocking defects and withdrawn claims
 
-Implemented + measured:
-- **Step 1 (done):** events output zstd-compressed (`.ndjson.zst`) — 263 MB → 19.2 MB
-  (13.7×). Built into `pq-laserstream-grpc` (rebuilt + smoke-tested).
-- **Step 2 (done):** `compact_events.py` — daily compaction to **scalar-only Parquet**
-  (42 typed columns; complex fields excluded, stay in raw). **2.24 MB vs 19.2 MB zst =
-  8.6× smaller, ~100× vs uncompressed.** `--full` flag re-includes the JSON fields.
-- **Projected resident rate:** events scalar Parquet ≈ **3 GB/day** (vs 290 GB/day
-  uncompressed). Tiered: raw ring buffer (24h) + scalar Parquet (accumulating) +
-  counterfactual features (daily).
-- **Step 3 (done):** resident daemon `capture_daemon.py` (launch→compact→purge→restart)
-  + creds-safe `run_capture.sh` (replaces the hardcoded-key `run_capture_300.sh` leak)
-  + raw ring-buffer purge (24h, verified 185 stale parts purged; canonical 369 intact).
-- **Open design item:** scalar-only Parquet drops token balances; D04/D06 holder data
-  beyond 24h needs a separate account-snapshot stream (or `--full` compaction).
+- **Economic labels:** tested Slinky multi-size function can sell benchmark token
+  quantity for every size and ignores supplied tips in net PnL. Trace affected
+  producer/columns/exports before using positive-class counts as BUY support.
+- **Latency:** legacy corrected LaserStream writer repeats a size's quote/return
+  across latency IDs. Scenario rows/unique IDs do not demonstrate latency robustness.
+- **Causality:** future reserve fallback, forward no-trade/censoring fields in L1,
+  and whole-input quantiles labelled train-only need independent lineage fixes.
+- **Attribution:** static/loaded-key ordering and generic mint/trader account-index
+  heuristics need authoritative venue-version fixtures. Signer intersection, largest
+  SOL delta or missing RPC match do not prove a beneficial owner or bundle blindness.
+- **D13:** raw supply exponent is not token decimals. The earlier 15-decimal statement
+  contradicts its own supply figures. Mint metadata and event-version semantics govern.
+- **KOL records:** per-(creator,mint) whole-window totals/min/max/consensus are not
+  sequential decisions or human rationale. Preserve observed actions including bad
+  decisions; economically justified recommendations are a separate target origin.
+- **Retention:** old daemon deletes by mtime even after failed compaction; existing
+  filename skips can leave partial Parquet accepted. It must not be deployed as safe
+  supervision. New eligibility safeguards must be integrated and failure-tested before
+  any source deletion is enabled.
+- **Certification:** legacy vocabulary/count/sample checks do not prove economics,
+  all-parent split disjointness or full corpus hashes. Recompute actual invariants.
+- **Balance:** Markdown pseudo-tests are not a wired exporter/loader guard. V6 applies;
+  10,000 BUY / 1,000 per class are derived draft thresholds, not independently approved
+  restrictions. Resolve denominators and policy before export. Natural-prevalence
+  economic eval stays separate from preregistered class-support diagnostics.
+- **Supervision:** the three infra facts are metadata, not a running process owner.
+  Failed `artifact:live_status` lookup proves only that lookup failed, not an empty
+  evidence database. Actual Windows process ownership and gateway-survival tests are
+  required; double connections do not establish exactly double billed credits.
 
-**Format decision:** **Parquet** for the intermediate events layer (matches slinky21,
-zero new deps, DuckDB/pyarrow native). **Lance** flagged as a *future* option for the
-final training-loading layer (append-friendly, ML-oriented) — not now, because we're
-in Stage 2 and the consumer is DuckDB. **Vortex** = pre-1.0, revisit later. **FastLanes**
-= an encoding technique, not a format.
+No earlier GOLD/PASS/complete claim overrides these blockers. Root-cause repairs need
+failing-before/passing-after tests and source-backed independent semantic validation.
 
-## 9. Stage 5 label-balance gate (frozen — Astra to review)
+## 8. Build deliverables and next gates
 
-`STAGE5_LABEL_BALANCE_GATE.md` — the exact guard that would have caught the 22-BUY
-failure. Fail-closed exporter + pre-training audit:
-- No empty class (BUY/SELL/SKIP/WATCH each ≥1,000).
-- BUY ≥ 10,000 absolute AND ≥ 5% relative; SELL ≥ 5%; SKIP ≤ 80%.
-- Audit re-reads the serialized file (not the generator), asserts `balance_ok`.
-- Regression test feeds `{BUY:22, SELL:0, SKIP:2000, WATCH:0}` → must BLOCK.
-- **Open for Astra:** SELL's source predicate is undefined (exit-side counterfactual,
-  not entry `economic_class`) — Stage 5 must pin it before export.
+First implementation checkpoint evidence:
+- `BUILD_INVENTORY_RECEIPT.md`: original store manifest **818/818 files**, **126807316863 bytes**, all SHA256 rehashed with zero missing/mismatches.
+- `BUILD_RECOVERY_RECEIPT.md`: 184 recovered parts; complete raw rehash across roots gives August 23 **185/185**, August 24 **368/369**. Missing tail remains explicit.
+- `BUILD_S0_RECEIPT.md`: requirements/source-policy primitives and regression tests; corpus evidence is not admitted.
+- `BUILD_S1_RECEIPT.md`: outcome-blind split/contract primitives; actual protected-window reservation still pending.
+- `BUILD_CAPTURE_RECEIPT.md`: passive checks and retention eligibility predicates; NOT deployed process supervision.
+- `BUILD_ATOMIC_IO_RECEIPT.md`: small-object commit receipts and recovery integrity; not bulk Parquet canonicalization.
+- `BUILD_SCHEMA_RECEIPT.md`: initial 20 canonical + eight v5 object registry and per-field availability primitives; complete typed rows/adapters/ledger still pending.
 
-## 10. Doc index (detailed stage artifacts)
+Raw artifacts and original collectors remain in the original workspace. The isolated worktree contains code and documentation only. `MEGGA_MEDIA_PROBE.json` in the artifact build-receipt directory confirms the growing file is MPEG-TS audio/video; UTC anchor remains unknown.
 
-- `STAGE0_RECEIVER_REGISTRY.md` — source/coverage registry
-- `STAGE1_PROTECT_EVALUATION.md` — freeze-eval + leakage contracts
-- `STAGE1b_SCHEMA_REGISTRY.md` — L1–L4 verified schemas + BUY derivation
-- `STAGE2_CAPTURE.md` — gap→source map
-- `STAGE2_AGGREGATION_INVENTORY.md` — full measured D01–D14 ledger
-- `STAGE2_D13_PROTOCOL_NUMERACY.md` — bonding-curve math, fees, graduation
-- `STAGE2_CAPTURE_VALIDATION.md` — D01 99.87% + Reddit fix + Twitch/YouTube lane
-- `STAGE2_TWITCH_SPIKE_EVAL.md` — 21% yield + leverage design
-- `STAGE5_LABEL_BALANCE_GATE.md` — balance gate + BUY-count audit
+[BUILD_PLAN.md](BUILD_PLAN.md) gives the complete staged implementation, all canonical
+objects, D01–D14 and G01–G12, WP-to-stage map, test names and required handback files.
+First tranche: source preservation, requirement/source admission registry, outcome-blind
+split policies, operating contract and passive capture/retention safeguards. Per-task
+BUILD_*_RECEIPT.md files record real execution, not intentions. Subsequent gates are
+schema/ledger/restart truth; full narrative and account/opportunity capture; empirical
+execution; sequential labeled episodes; inherited exports; independent certification.
 
-## 11. Supervisor registration (status)
-
-- **Infra facts (registered, done):** `north_star_capture_daemon`,
-  `north_star_storage_architecture`, `north_star_laserstream_modes` — 3 facts in the
-  supervisor's facts ledger (facts_count 21). Provenance-stamped, Astra-visible.
-- **Formal component (`propose_amendment` `new_component`): BLOCKED.** The amendment
-  intake requires an `evidence_ref` that resolves to a real record in the evidence
-  store (`gate:`/`experiment:`/`artifact:`/`benchmark:`/`criterion:`), and that store
-  is **empty** — the certification battery (cargo build/clippy/tests) is
-  Rust-trading-bot-scoped; the capture daemon is a Python + WSL-Rust build that does
-  not map onto it. Tool rejected `artifact:live_status` ("does not resolve to a
-  record").
-- **Unblock path (parked):** extend the supervisor to certify the data pipeline (a
-  North Star milestone + criteria in the constitution) or register a gate result via
-  `gate_verify` — both are supervisor-extension work, not capture work.
-
-## 12. Open data items → master-stage map
-
-The D-category gaps map onto the master DAG as follows (D = capture/derivation dimension):
-
-| Item | Work | Master stage |
-|---|---|---|
-| D04 capacity | size-specific exit depth | Stage 2 (canonicalize depth) → Stage 4 (calibrate) |
-| D06 holders | connected-wallet linking + Token-2022 holder enrichment | Stage 2 (canonicalize) + Stage 3 (capture holders) |
-| D07 narrative | lift EX_ANTE/GOLD (253/23) | Stage 3 (narrative capture — P0) |
-| D08 propagation | repost/echo graph | Stage 3 (propagation graphs) |
-| D09 rotation | theme/rotation model | Stage 3 (narrative/meta) |
-| D10 account state | prospective account/opportunity capture | Stage 3 (prospective capture) |
-| D11 decisions | BUY/SELL/SKIP/WATCH labels | Stage 5 (episode labeling) — counterfactual economics |
-
-**Canonicalization (Stage 2) precedes capture (Stage 3)** in the master order. The
-D07/D08/D09 narrative items are Stage 3 P0, currently blocked by the 1/317
-co-temporality gap — fixed only by the live co-temporal capture (Megga + LaserStream,
-now active).
-
-## 13. Open threads & risks
-
-1. Cross-disk backup to `/training` (Linux boot required).
-2. `narrative_gold_v1` jsonl still git-tracked → move to store + untrack.
-3. **D04/D06 account-snapshot stream** — scalar Parquet drops token balances; holder
-   data beyond 24h needs a separate snapshot stream (or `--full` compaction).
-4. **SELL-label predicate** undefined (Stage 5 input, flagged to Astra).
-5. Twitch reasoning lane: **forward-only**; live confirmation needs Geyser co-temporal
-   with streams (paid/burst, not free).
-6. **Consolidation decision:** fold training-capture into pq-daemon's existing LS
-   child (single connection + free supervision) vs keep `capture_daemon.py` separate
-   (double LaserStream credits). Rust-side → Astra.
+The final dataset must retain source/license/time/units/null-reason/availability/
+lineage/split identity; human statements, actions, recommendations and later outcomes
+are distinct. No generated rationales; missing sources remain gaps. Whole-session
+coverage, losses, failures, idle opportunities, partial exits/runners/re-entry and
+causal rivals/memory/propagation are mandatory dimensions—not only successful buys.

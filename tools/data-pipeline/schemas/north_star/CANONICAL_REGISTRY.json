@@ -1,0 +1,760 @@
+{
+  "registry_version": "north_star_canonical_registry_v1",
+  "status": "INITIAL_SCHEMA_PRIMITIVES_ONLY",
+  "source_authority": {
+    "master": "north_star/master/NORTH_STAR_WINDOWS_MASTER_V5.md",
+    "canonical_inventory_lines": [
+      366,
+      385
+    ],
+    "supplemental_inventory_lines": [
+      118,
+      127
+    ],
+    "plan": "north_star/BUILD_PLAN.md",
+    "scope_override": "D14 engineering only; not Qwen SFT"
+  },
+  "synthetic_tests_are_corpus_coverage": false,
+  "contracts": {
+    "canonical_envelope_v1": {
+      "identity": {
+        "required": [
+          "schema_version",
+          "table-specific primary_key"
+        ],
+        "schema_version": "Nonempty exact version token",
+        "identifiers": "Immutable, case/Unicode preserving; no alias normalization or source token repair",
+        "versioned_references": "Foreign keys retain every primary-key component and schema version; edits/corrections append revisions, never overwrite historical knowledge",
+        "supplemental_keys": "Initial engineering proposal; consumer schemas and producer mappings incomplete"
+      },
+      "provenance": {
+        "required": [
+          "source_refs",
+          "raw_payload_refs",
+          "producer_id",
+          "producer_version",
+          "evidence_origin",
+          "rights_ancestry",
+          "split_ancestry"
+        ],
+        "source_refs": "Exact source_id/version plus raw_id, hash and locator/span where applicable; no fabricated evidence",
+        "origin_types": [
+          "OBSERVED_ACTION",
+          "HUMAN_JUDGMENT",
+          "SOURCE_BACKED_FACT",
+          "DETERMINISTIC_ECONOMICS",
+          "MODEL_INDEPENDENT_MECHANICS",
+          "SYNTHETIC_SOFTWARE_FIXTURE"
+        ],
+        "rule": "No type promotion; synthetic fixtures are engineering-only; rights and split references do not themselves authorize admission"
+      },
+      "null_reasons": {
+        "allowed": [
+          "UNKNOWN",
+          "NOT_OBSERVED",
+          "SOURCE_MISSING",
+          "SOURCE_OUTAGE",
+          "NOT_APPLICABLE",
+          "CLOCK_UNKNOWN",
+          "CLOCK_DOMAIN_MISMATCH",
+          "MISSING_DEPENDENCY",
+          "RIGHTS_BLOCKED",
+          "UNSUPPORTED_MODALITY",
+          "CENSORED",
+          "UNRESOLVED_IDENTITY"
+        ],
+        "rule": "Each null value requires a per-field reason; missing observations are not zero; non-null fields must not carry null reasons"
+      },
+      "time": {
+        "unit": "integer nonnegative milliseconds",
+        "clock_states": [
+          "UTC_KNOWN",
+          "RELATIVE_ONLY",
+          "UNKNOWN"
+        ],
+        "required_per_field": [
+          "clock",
+          "available_at",
+          "null_reason"
+        ],
+        "separate": [
+          "event_time",
+          "first_observed_at",
+          "ingested_at",
+          "observed_commitment",
+          "later_finality",
+          "correction_available_at"
+        ],
+        "relative_rule": "Relative milliseconds require an exact common clock_domain/session; never chronological admission or cross-domain joins",
+        "unknown_rule": "Null absolute availability; fail closed. Retrieval time is not historical publication time.",
+        "ordering": "Same-time events require independently evidenced ordering; timestamps alone do not establish causal order"
+      },
+      "units": {
+        "native_money": "Exact Python int, never bool/float/string coercion; unsigned u64 for individual lamport/raw_token on-chain amounts",
+        "token_decimals": "Verified mint u8 decimals required for raw_token quantities",
+        "ledger_totals": "Signed deltas and aggregates require separate explicit bounds; unsigned native-amount validator is not an entire accounting model",
+        "price": "Exact rational numerator/denominator and verified quote/base decimals; never binary float",
+        "fraction": "Bounded rational with named denominator; exact rounding policy/version; consumer validation incomplete"
+      },
+      "dependencies": {
+        "per_field": "Each value declares exact immutable source-field references; dependency clocks and times are carried, not inferred",
+        "formula": "available_at = max(dependency available_at) + nonnegative integer compute_delay_ms",
+        "missing_or_unknown": "Fail closed with null available_at/reason; relative-only allowed only inside the same evidenced domain",
+        "source_leaf": "Requires actual observed availability as a dependency; empty sets cannot invent a time",
+        "ancestry": "Inherit all parents source rights and split restrictions; split resolution owned by separate module",
+        "context_export": "Allowlisted field lineage only; no future outcomes, censoring or oracle labels in decision inputs; label bytes kept separate"
+      },
+      "validation_scope": "schema.py enforces native amounts and identity; availability.py enforces availability arithmetic/clock gating. Other contracts remain descriptive and incomplete."
+    }
+  },
+  "canonical_tables": {
+    "sources": {
+      "primary_key": [
+        "source_id",
+        "version"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "raw_objects": {
+      "primary_key": [
+        "raw_id"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "sources"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "events": {
+      "primary_key": [
+        "event_id",
+        "revision"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "raw_objects",
+        "sources",
+        "coverage_intervals"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "token_versions": {
+      "primary_key": [
+        "chain",
+        "mint",
+        "available_at",
+        "version"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "events",
+        "sources"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "venue_states": {
+      "primary_key": [
+        "venue_state_id"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "events",
+        "token_versions"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "content_versions": {
+      "primary_key": [
+        "content_id",
+        "version"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "raw_objects",
+        "sources"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "entity_links": {
+      "primary_key": [
+        "link_id"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "content_versions",
+        "token_versions"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ],
+      "own_available_at_required": true
+    },
+    "opportunities": {
+      "primary_key": [
+        "opportunity_id"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "events",
+        "token_versions",
+        "venue_states",
+        "coverage_intervals"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "portfolio_snapshots": {
+      "primary_key": [
+        "portfolio_id"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "inventory_lots",
+        "execution_events"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "decision_contexts": {
+      "primary_key": [
+        "context_id"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "opportunities",
+        "portfolio_snapshots",
+        "narrative_states",
+        "entity_links"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "annotations": {
+      "primary_key": [
+        "annotation_id"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "decision_contexts",
+        "content_versions"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "intents": {
+      "primary_key": [
+        "intent_id"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "decision_contexts"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "execution_events": {
+      "primary_key": [
+        "execution_id"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "intents",
+        "events",
+        "venue_states"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "inventory_lots": {
+      "primary_key": [
+        "lot_id"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "execution_events"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "realizations": {
+      "primary_key": [
+        "realization_id"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "inventory_lots",
+        "execution_events"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "outcomes": {
+      "primary_key": [
+        "outcome_id"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "decision_contexts",
+        "episodes",
+        "realizations",
+        "coverage_intervals"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ],
+      "model_input_eligible": false
+    },
+    "narrative_states": {
+      "primary_key": [
+        "narrative_state_id"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "content_versions",
+        "entity_links",
+        "coverage_intervals"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "episodes": {
+      "primary_key": [
+        "episode_id"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "decision_contexts",
+        "intents",
+        "execution_events"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "splits": {
+      "primary_key": [
+        "group_id",
+        "split_version"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    },
+    "export_records": {
+      "primary_key": [
+        "record_id"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "sources",
+        "decision_contexts",
+        "annotations",
+        "outcomes",
+        "episodes",
+        "splits"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    }
+  },
+  "supplemental_objects": {
+    "expert_source_claim_v1": {
+      "primary_key": [
+        "claim_id",
+        "version"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "content_versions",
+        "entity_links"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ],
+      "requirement_ids": [
+        "G03"
+      ]
+    },
+    "discovery_attention_event_v1": {
+      "primary_key": [
+        "discovery_event_id",
+        "version"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "events",
+        "opportunities",
+        "coverage_intervals"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ],
+      "requirement_ids": [
+        "G01"
+      ]
+    },
+    "narrative_competition_snapshot_v1": {
+      "primary_key": [
+        "competition_snapshot_id",
+        "version"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "narrative_states",
+        "token_versions",
+        "entity_links",
+        "venue_states"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ],
+      "requirement_ids": [
+        "G02"
+      ]
+    },
+    "thesis_revision_event_v1": {
+      "primary_key": [
+        "thesis_id",
+        "version"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "decision_contexts",
+        "annotations",
+        "narrative_states"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ],
+      "requirement_ids": [
+        "G07"
+      ]
+    },
+    "execution_parent_child_v1": {
+      "primary_key": [
+        "parent_child_id",
+        "version"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "intents",
+        "execution_events",
+        "inventory_lots",
+        "realizations"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ],
+      "requirement_ids": [
+        "G08",
+        "G10"
+      ]
+    },
+    "influence_incentive_context_v1": {
+      "primary_key": [
+        "influence_context_id",
+        "version"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "content_versions",
+        "events",
+        "entity_links",
+        "venue_states"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ],
+      "requirement_ids": [
+        "G05",
+        "G06",
+        "G09",
+        "G11"
+      ]
+    },
+    "session_opportunity_audit_v1": {
+      "primary_key": [
+        "session_audit_id",
+        "version"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "episodes",
+        "opportunities",
+        "coverage_intervals"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ],
+      "requirement_ids": [
+        "G01",
+        "G12"
+      ]
+    },
+    "rust_market_bridge_episode_v1": {
+      "primary_key": [
+        "bridge_episode_id",
+        "version"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "engineering_evidence",
+      "dependencies": [
+        "events",
+        "intents",
+        "execution_events"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ],
+      "requirement_ids": [
+        "D14"
+      ],
+      "qwen_sft_eligible": false,
+      "scope": "D14 engineering/source-contract conformance evidence only; no Rust Qwen SFT"
+    }
+  },
+  "supporting_objects": {
+    "coverage_intervals": {
+      "primary_key": [
+        "coverage_id",
+        "version"
+      ],
+      "common_contract": "canonical_envelope_v1",
+      "namespace": "north_star",
+      "dependencies": [
+        "sources",
+        "raw_objects"
+      ],
+      "dependency_semantics": "Candidate table references; row-level field dependencies must name exact immutable versions. Not a table-level topological DAG.",
+      "consumer_schema_status": "INCOMPLETE",
+      "corpus_coverage": null,
+      "training_admission": "NOT_ESTABLISHED",
+      "incomplete": [
+        "Full typed consumer fields and foreign-key validation",
+        "Source-to-field adapters and source-backed acceptance",
+        "Rights/split gate integration"
+      ]
+    }
+  }
+}

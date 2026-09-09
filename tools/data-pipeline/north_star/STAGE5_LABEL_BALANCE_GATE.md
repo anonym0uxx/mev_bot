@@ -1,5 +1,11 @@
 # North Star — Stage 5 Label Balance Gate & BUY-Count Audit (FROZEN SPEC)
 
+> **Historical record, not current completion evidence.** Stage numbering and several
+> status/semantic claims below were superseded by the master-DAG audit. Consult
+> `00_HOLISTIC_CONTEXT.md`, `BUILD_PLAN.md`, and task receipts before implementation.
+> In particular, pseudo-tests, heuristic GOLD/EX_ANTE labels, and old PASS reports
+> do not certify North Star admission. Original content is retained for traceability.
+
 Status: **spec frozen for Astra review.** Implemented as an acceptance test + fail-closed
 exporter guard before any training export is admitted. This is the single gate that would
 have caught the 22-BUY failure.

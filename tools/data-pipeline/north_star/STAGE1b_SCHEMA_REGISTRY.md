@@ -1,5 +1,11 @@
 # North Star — Stage 1b: Schema Registry & Held-out Freeze
 
+> **Historical record, not current completion evidence.** Stage numbering and several
+> status/semantic claims below were superseded by the master-DAG audit. Consult
+> `00_HOLISTIC_CONTEXT.md`, `BUILD_PLAN.md`, and task receipts before implementation.
+> In particular, pseudo-tests, heuristic GOLD/EX_ANTE labels, and old PASS reports
+> do not certify North Star admission. Original content is retained for traceability.
+
 Status: **schema inventory + freeze strategy complete.** The exact frozen ID list is
 produced by the exporter (Stage 5), not hand-written here.
 
