@@ -144,11 +144,19 @@ D08/D09/D10 work is *derivation*, not capture — that's Stage 3.
 
 ### Storage optimization (the resident-capture plan)
 Diagnosis: raw `.zst` ≈ 68 GB/day, but **events `.ndjson` uncompressed ≈ 290 GB/day**
-(the real wall). Plan (tiered + passive):
-- Tier 1 raw → bounded ring buffer (24h), safety net only.
-- Tier 2 events → **Parquet** (columnar + zstd + dict) ≈ 4–8 GB/day, partitioned daily.
-- Tier 3 counterfactual features → daily compaction, tiny.
-- Resident supervised daemon + daily cron; storage self-manages.
+(the real wall). **Measured field split: 90% of event volume is complex fields**
+(`log_messages` 36%, token balances 28%, inner instructions 15%, account keys 8%) —
+all redundant with the raw lossless capture. Scalar trading fields = **10%**.
+
+Implemented + measured:
+- **Step 1 (done):** events output zstd-compressed (`.ndjson.zst`) — 263 MB → 19.2 MB
+  (13.7×). Built into `pq-laserstream-grpc` (rebuilt + smoke-tested).
+- **Step 2 (done):** `compact_events.py` — daily compaction to **scalar-only Parquet**
+  (42 typed columns; complex fields excluded, stay in raw). **2.24 MB vs 19.2 MB zst =
+  8.6× smaller, ~100× vs uncompressed.** `--full` flag re-includes the JSON fields.
+- **Projected resident rate:** events scalar Parquet ≈ **3 GB/day** (vs 290 GB/day
+  uncompressed). Tiered: raw ring buffer (24h) + scalar Parquet (accumulating) +
+  counterfactual features (daily).
 
 **Format decision:** **Parquet** for the intermediate events layer (matches slinky21,
 zero new deps, DuckDB/pyarrow native). **Lance** flagged as a *future* option for the
