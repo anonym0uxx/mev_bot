@@ -8,7 +8,8 @@ use sha2::{Digest, Sha256};
 /// Bitcoin-alphabet base58 encoder (for pubkeys/signatures → string).
 pub fn b58_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-    let mut digits: Vec<u8> = vec![0];
+    // Zero has no significant digits; leading zero bytes are emitted below.
+    let mut digits: Vec<u8> = Vec::new();
     for &byte in bytes {
         let mut carry = byte as u32;
         for d in digits.iter_mut() {
@@ -26,6 +27,69 @@ pub fn b58_encode(bytes: &[u8]) -> String {
     out.extend(std::iter::repeat('1').take(zeros));
     out.extend(digits.iter().rev().map(|&d| ALPHABET[d as usize] as char));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::b58_encode;
+
+    #[test]
+    fn b58_empty_is_empty() {
+        assert_eq!(b58_encode(&[]), "");
+    }
+
+    #[test]
+    fn b58_one_zero_is_one_one() {
+        assert_eq!(b58_encode(&[0]), "1");
+    }
+
+    #[test]
+    fn b58_zero_pubkey_is_32_ones() {
+        assert_eq!(b58_encode(&[0; 32]), "1".repeat(32));
+    }
+
+    #[test]
+    fn b58_zero_signature_is_64_ones() {
+        assert_eq!(b58_encode(&[0; 64]), "1".repeat(64));
+    }
+
+    #[test]
+    fn b58_leading_zeros_preserve_nonzero_value() {
+        for (bytes, expected) in [
+            (&[0, 1][..], "12"),
+            (&[0, 0, 1][..], "112"),
+            (&[0, 58][..], "121"),
+            (&[0, 0, 255][..], "115Q"),
+            (&[0, 1, 0][..], "15R"),
+        ] {
+            assert_eq!(b58_encode(bytes), expected, "input: {bytes:?}");
+        }
+    }
+
+    #[test]
+    fn b58_known_bitcoin_alphabet_fixtures() {
+        for (bytes, expected) in [
+            (&[1][..], "2"),
+            (&[57][..], "z"),
+            (&[58][..], "21"),
+            (&[255][..], "5Q"),
+            (&[1, 0][..], "5R"),
+            (&b"a"[..], "2g"),
+            (&b"bbb"[..], "a3gV"),
+            (&b"ccc"[..], "aPEr"),
+            (&b"simply a long string"[..], "2cFupjhnEsSn59qHXstmK2ffpLv2"),
+            (&b"Hello World"[..], "JxF12TrwUP45BMd"),
+        ] {
+            assert_eq!(b58_encode(bytes), expected, "input: {bytes:?}");
+        }
+    }
+
+    #[test]
+    fn b58_all_zero_lengths_have_no_extra_digit() {
+        for len in 0..=256 {
+            assert_eq!(b58_encode(&vec![0; len]), "1".repeat(len), "length: {len}");
+        }
+    }
 }
 
 /// Standard-alphabet base64 encoder.
