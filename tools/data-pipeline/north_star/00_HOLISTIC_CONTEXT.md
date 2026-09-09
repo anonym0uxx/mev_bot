@@ -63,7 +63,7 @@ Source of truth: `F:/handoff-linux/northstar/2026-09-06-expert-v5/NORTH_STAR_WIN
 | Stage | Master definition (verbatim gist) | Status |
 |---|---|---|
 | 0 | receive/inventory — verify workspace, sources, licenses; produce receiver ack + source/coverage registry + gap report | ✅ DONE |
-| 1 | protect evaluation + contracts — reserve protected time/entity/source boundaries before fitting | ✅ DONE |
+| 1 | protect evaluation + contracts — reserve protected time/entity/source boundaries; freeze held-out partition; forward untouched window; inherited-weight uncertainty | ◐ PARTIAL (framework written; held-out ID freeze DEFERRED) |
 | 2 | bounded canonicalization — write new schemas/tests; parse trusted raw → Parquet; event identity/finality; source/rights + per-field availability; ledger reconciliation | ⬜ NOT STARTED |
 | 3 | parallel capture — prospective opportunity/account/execution capture + **narrative/message capture**; features; annotations; entity + propagation graphs | ◐ PARTIAL (lanes built; narrative P0 incomplete) |
 | 4 | development-only execution calibration | ⬜ |
@@ -72,13 +72,24 @@ Source of truth: `F:/handoff-linux/northstar/2026-09-06-expert-v5/NORTH_STAR_WIN
 | 7 | independent whole-corpus certification | ⬜ |
 | 8 | Windows handback (training proposal) | ⬜ |
 
-**Corrected baseline.** Stages 0–1 are done. **Stage 2 (canonicalization) has not
-started** — the prior "Stage 1b schema registry" verified *existing* L1–L4 gold
-schemas (Stage 0 inventory), not the *new North Star namespace schemas* (§6 of the
-master: `sources`/`raw_objects`/`events`/`token_versions`/`opportunities`/
+**Corrected baseline.** Stage 0 is done; **Stage 1 is partial** (framework written, but
+the core deliverable — the frozen held-out mint/time partition — was deferred and
+never done, see below). **Stage 2 (canonicalization) has not started** — the prior
+"Stage 1b schema registry" verified *existing* L1–L4 gold schemas (Stage 0
+inventory), not the *new North Star namespace schemas* (§6 of the master:
+`sources`/`raw_objects`/`events`/`token_versions`/`opportunities`/
 `decision_contexts`/`episodes`/`splits`…), and the raw→Parquet parse, event
 identity/finality and ledger reconciliation are all unbuilt. Stage 3 capture lanes
 exist but are incomplete.
+
+**Stage 1 residual (from `STAGE1_PROTECT_EVALUATION.md` §4, explicitly deferred):**
+1. freeze the held-out mint/time partition (hash-pinned ID list) — the core deliverable;
+2. write the export schema enforcing leakage rules programmatically (assert no post-`t`
+   field, group-disjoint);
+3. canonical accounting function (lamport-exact rounding).
+Plus master-Stage-1 items the doc does not cover: relative-only quarantine for unknown
+time sources, the planned forward untouched window, inherited-weight uncertainty, and
+numeric risk/economic-limit approval (pre-strategy-tuning).
 
 **Narrative is P0, not optional.** Master line 302: *"narratives are a required
 collection dimension, not optional decoration."* D07/D08/D09 are each marked
