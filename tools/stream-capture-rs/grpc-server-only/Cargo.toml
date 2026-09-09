@@ -14,7 +14,7 @@ name = "pq-laserstream-grpc"
 path = "src/main.rs"
 
 [dependencies]
-helius-laserstream = "0.5"
+helius-laserstream = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
