@@ -1,0 +1,22 @@
+{
+  "review_id": "deleg_52e04a2a",
+  "verdict": "boundedpass",
+  "mustfix": [],
+  "scope": "instruction layout only; not successful execution, economics, finality or training admission",
+  "reviewer_tests_passed": 215,
+  "reviewer_adversarial_checks": 112,
+  "parent_verified_reviewed_file_hashes": {
+    "src/north_star/instruction_truth.py": "4722fbf51acf79a899bf051d447b4328c0bc22af9a3b98ac096701761b84e535",
+    "tests/north_star/test_instruction_truth.py": "80ef14730276e38931966da533bce9f45859e367050e7aebbcff0af352d6edfa",
+    "north_star/BUILD_INSTRUCTION_TRUTH_RECEIPT.md": "e336415bb498ee196acd0673e4de43b777ff7d04bb9e60cf548af30c1856a786"
+  },
+  "parent_verified_receipt_and_trace_hashes": true,
+  "real_artifact": "D:\\mev_bot-artifacts\\north_star\\development\\instruction_truth_first10_v1",
+  "transactions": 10,
+  "instructions": 161,
+  "accepted_layouts": 38,
+  "rejected": 43,
+  "unknown": 80,
+  "executed_quantities": 0,
+  "remaining": "All accepted real layouts are CPI instructions with unknown individual execution outcome. Identity quarantine preserved."
+}

@@ -1,0 +1,28 @@
+{
+  "review_id": "deleg_9abb77f8",
+  "verdict": "BOUNDED_PASS",
+  "must_fix": [],
+  "scope": "arithmetic audit and declarative field-specific quarantine only",
+  "reviewer_independent_checks_passed": 11056,
+  "reviewer_reproduction_assertions_passed": 7432,
+  "parent_verified_hashes": {
+    "D:\\repos\\mev_bot-north-star\\tools\\data-pipeline\\north_star\\BUILD_SLINKY_ECONOMICS_AUDIT.md": "3faa25982a31ec379c52ded29825af3e3d1a8af986f1a6af1f60cda0f974ee34",
+    "D:\\repos\\mev_bot-north-star\\tools\\data-pipeline\\north_star\\SLINKY_ECONOMICS_QUARANTINE.json": "0019b3455d9c6aebcafa85ee5fe0139aa9933583089a4bbd4d4d001dc62a4c9b",
+    "D:\\mev_bot-artifacts\\north_star\\development\\slinky_economics_audit_v1\\EVIDENCE_INDEX.json": "609dc4a0f7176b9ae695532364c3ba26c682f1a4c59aa32f15b9dca46eb7219f",
+    "D:\\mev_bot-artifacts\\north_star\\development\\slinky_economics_audit_v1\\arithmetic_reproduction.json": "f4dd402ccc84874dbab6ab1bd327de5d7e05945a7fbe129be37af07306853aae"
+  },
+  "limitations": [
+    "not economic certification",
+    "loader enforcement pending",
+    "population defect prevalence unknown",
+    "diagnostic substitutions are not replacement training labels",
+    "tip-inclusive barrier branch not blanket-invalidated"
+  ],
+  "sample": {
+    "eligible_rows": 115,
+    "surface_scenarios": 575,
+    "quantity_mismatches": 460,
+    "surface_tip_omissions": 575,
+    "tip_inclusive_barrier_rows_verified": 45
+  }
+}

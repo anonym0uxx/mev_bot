@@ -1,0 +1,881 @@
+{
+  "arithmetic_receipt": {
+    "bytes": 1319463,
+    "path": "D:/mev_bot-artifacts/north_star/development/slinky_economics_audit_v1/arithmetic_reproduction.json",
+    "sha256": "f4dd402ccc84874dbab6ab1bd327de5d7e05945a7fbe129be37af07306853aae"
+  },
+  "artifact_inventory": {
+    "compact_counterfactual": {
+      "all_expected_files_located": true,
+      "files_claimed": 134,
+      "full_file_hashes_verified": false,
+      "original_location_files_present": 1,
+      "original_only_file": "D:/repos/mev_bot/tools/data-pipeline/output/slinky_gold_v3_compact/counterfactual_trade_v3/counterfactual_trade_v3_compact_part0133.parquet",
+      "rows_claimed": 33581765,
+      "size_mismatches": 0,
+      "status": "ECONOMIC_FIELDS_QUARANTINED_DIRECT_SAMPLE_REPRODUCTION",
+      "store_files_present": 133
+    },
+    "compaction_lineage": {
+      "code_path": "src/compact_slinky_gold_v3.py:171-212",
+      "compactor_producing_code_hash": null,
+      "manifest_source_path_literal": "D:\\repos\\mev_bot\\tools\\data-pipeline\\output\\slinky_gold_v3",
+      "operation": "row-group stream -> canonical schema cast -> write; no economic recomputation",
+      "status": "SOURCE_PATH_MANIFEST_AND_SAMPLE_LINKED_EXACT_BUILD_CODE_UNKNOWN"
+    },
+    "count_trust": "INHERITED_MANIFEST_COUNTS_NOT_FULLSCAN_OR_DIRECT_DEFECT_TOTALS",
+    "counts": {
+      "compact/counterfactual_trade_v3": {
+        "bytes_mismatch": [],
+        "manifest_bytes_sum": 9084547491,
+        "manifest_entries": 134,
+        "manifest_rows_sum": 33581765,
+        "missing_both": [],
+        "original_present": 1,
+        "store_present": 133
+      },
+      "compact/policy_eval_v3": {
+        "bytes_mismatch": [],
+        "manifest_bytes_sum": 599313472,
+        "manifest_entries": 134,
+        "manifest_rows_sum": 33581765,
+        "missing_both": [],
+        "original_present": 134,
+        "store_present": 0
+      },
+      "compact/pump_outcome_v3": {
+        "bytes_mismatch": [],
+        "manifest_bytes_sum": 4501560129,
+        "manifest_entries": 134,
+        "manifest_rows_sum": 33581765,
+        "missing_both": [],
+        "original_present": 0,
+        "store_present": 134
+      },
+      "compact/pump_state_v3": {
+        "bytes_mismatch": [],
+        "manifest_bytes_sum": 10274629669,
+        "manifest_entries": 134,
+        "manifest_rows_sum": 33581765,
+        "missing_both": [],
+        "original_present": 1,
+        "store_present": 133
+      },
+      "original/counterfactual_trade_v3": {
+        "manifest_bytes_sum": 7932952283,
+        "manifest_entries": 12460,
+        "manifest_rows_sum": 33581765
+      }
+    },
+    "downstream": {
+      "bytes": 8752,
+      "path": "D:/mev_bot-artifacts/north_star/development/slinky_economics_audit_v1/downstream_inventory.json",
+      "sha256": "d19e965331b82dc962bfc2f7bc5330a04a3764371447d39fd6110a07d5504d32"
+    },
+    "downstream_claims": [
+      {
+        "affected_claims": [
+          "size economics",
+          "continuous utility",
+          "relative panel rank",
+          "target gating dependent on feasibility/utility"
+        ],
+        "artifact": "qwen_curriculum_v1/eval_v1_2/qwen_eval_v1_2.jsonl",
+        "build_codehash": "UNKNOWN",
+        "direct_rows_inspected": 0,
+        "exact_invalid_labels": null,
+        "manifest_claimed_records": 279,
+        "manifest_claimed_slinky_panels": 235,
+        "source_link": "TRAINING_APPROVED_MANIFEST_V2 gold_sources identifies ef113bd1-f5e/42132c2533b9effd; build_eval_v1_2.py:133-175 invokes compute_slinky_cf_compressed and utility; exporter uses inherited utility/ranks."
+      },
+      {
+        "affected_claims": [
+          "Slinky-derived cross-section utility/ranking/feasibility targets",
+          "carried economic target descendants pending exact ancestry"
+        ],
+        "artifact": "qwen_curriculum_v1/sft/qwen_sft_v2.jsonl",
+        "build_codehash": "UNKNOWN",
+        "direct_rows_inspected": 0,
+        "exact_invalid_labels": null,
+        "exact_slinky_cross_records": null,
+        "manifest_claimed_cross_records": 1050,
+        "manifest_claimed_records": 2162,
+        "source_link": "SFT_MANIFEST_V2 says cross-section rebuilt with sft_cross_exporter_v2, others byte-identical. Exporter decide_v2 depends on utility sign and feasibility, rank auxiliaries emit utility. _bp conversion repair and pump gate do not repair AMM quantities."
+      },
+      {
+        "artifact": "qwen_curriculum_v1/cpt/qwen_cpt_v1.jsonl",
+        "claim": "Dependency-exposed Slinky content needs record-level economic ancestry audit; not all CPT records proven to carry defective surface values.",
+        "direct_rows_inspected": 0,
+        "exact_invalid_records": null,
+        "manifest_claimed_records": 7600,
+        "manifest_claimed_slinky_composition": {
+          "slinky_panel": 1200,
+          "slinky_regime_catalog": 5,
+          "slinky_trajectory": 2922
+        }
+      },
+      {
+        "artifact": "qwen_curriculum_v1/eval_v1_1/qwen_eval_v1_1.jsonl and eval/qwen_eval_v1.jsonl and candidate_2026-08-30_2647881 CPT/SFT and sft/qwen_sft_v1.jsonl",
+        "claim": "Metadata snapshots/claimed hashes retained in downstream inventory. Historical pct-column mismatch can null utilities; do not project present _bp reader behavior backward without producing code hashes.",
+        "direct_rows_inspected": 0,
+        "exact_invalid_records": null
+      }
+    ],
+    "downstream_status": "DEPENDENCY_EXPOSURE_IDENTIFIED_EXACT_AFFECTED_TARGET_COUNTS_UNKNOWN",
+    "exact_inventory": {
+      "bytes": 6973016,
+      "path": "D:/mev_bot-artifacts/north_star/development/slinky_economics_audit_v1/artifact_inventory.json",
+      "sha256": "a5cf0ecb3a9a8f927bfa458113b97784a5cf70192690e90594361310e57268ba"
+    },
+    "original_full_counterfactual": {
+      "files_claimed": 12460,
+      "full_file_hashes_verified": false,
+      "original_file_existence": "not individually rechecked; exact per-file paths and claimed digests recorded from disk manifest",
+      "path": "D:/repos/mev_bot/tools/data-pipeline/output/slinky_gold_v3/counterfactual_trade_v3",
+      "rows_claimed": 33581765,
+      "status": "ECONOMIC_FIELDS_QUARANTINED_BY_LINEAGE"
+    },
+    "other_layers": {
+      "policy_eval_v3": "Not read. Uses barrier net_return/economic_class, not multi-size returns: this audit does not attribute all policy labels to quantity reuse/tip omission. Existing correctness/economic metrics remain inherited untrusted.",
+      "pump_outcome_v3": "128 rows read for exit reserve/censoring join; outcome labels not rewritten or declared globally clean.",
+      "pump_state_v3": "128 provenance/entry reserve rows read for join; not economically invalidated wholesale by these defects and not admitted."
+    }
+  },
+  "corrected_builder_boundary": {
+    "data_rows_inspected": 0,
+    "disposition": "SEPARATE_LINEAGE_REVIEW_NOT_QUARANTINED_AS_SAME_QUANTITY_BUG; remains unadmitted",
+    "economic_completeness_status": "NOT_CERTIFIED: sim_pnl=exit_sol-size_sol; execution fees are in quote helpers, but this code has no explicit tip accounting or calibrated execution proof. Do not transfer Slinky configured 20000-lamport assumption to LS.",
+    "exact_code_to_output_status": "UNKNOWN_NO_PRODUCER_CODEHASH_OR_AVAILABLE_GIT_OBJECT",
+    "execution_model_version": "lsv3-corrected-1",
+    "git_object_available": false,
+    "imports": "build_laserstream_gold_v3, not build_slinky_gold_v3",
+    "manifest_claimed_l3_rows": 94771750,
+    "manifest_git_literal": "4e97b4b13238",
+    "manifest_path": "D:/repos/mev_bot/tools/data-pipeline/output/laserstream_gold_v3/manifest_laserstream_gold_v3.json",
+    "output_path": "D:/mev_bot-artifacts/gold/laserstream_gold_v3/l3_counterfactual_v3.parquet",
+    "path": "D:/repos/mev_bot/tools/data-pipeline/src/rebuild_v3_corrected.py",
+    "producing_code_hash": null,
+    "quantity_defect_status": "NOT_SHARED_IN_INSPECTED_CODE: entry_tokens is recomputed per size inside scenario loop and used in sell quote. No Slinky benchmark override.",
+    "run_uuid": "bbaeb991-0834-4b53-8ca3-90dbb6db0a11",
+    "sha256": "2495f25e405b60122c43c4849ed3e7543aef070cbce77b91606d94292bacdd91",
+    "source": "raw_zst_capture2"
+  },
+  "created_at_utc": "2026-09-09T18:56:02.704788+00:00",
+  "defects": [
+    {
+      "affected_field_patterns": [
+        "sz005_exit_*",
+        "sz010_exit_*",
+        "sz025_exit_*",
+        "sz100_exit_*",
+        "sz005_gross_*",
+        "sz010_gross_*",
+        "sz025_gross_*",
+        "sz100_gross_*",
+        "sz005_net_*",
+        "sz010_net_*",
+        "sz025_net_*",
+        "sz100_net_*"
+      ],
+      "code": "src/build_slinky_gold_v3.py:1531-1559 -> compute_multi_size_economics:1023-1058",
+      "directly_reproduced_quantity_mismatched_scenarios": 460,
+      "directly_reproduced_rows": 115,
+      "id": "SLINKY_BENCHMARK_EXIT_QUANTITY_REUSE",
+      "mechanism": "0.5 SOL benchmark tokens are passed as exit_tokens_micro for every size; et_tok at line 1040 overrides each scenario own tokens. Smaller entries sell excess tokens; 1.0 SOL entries sell only benchmark tokens. sz050 quantity is not mismatched.",
+      "population_affected_rows": null,
+      "status": "CODE_AND_BOUNDED_REAL_ROWS_REPRODUCED"
+    },
+    {
+      "affected_field_patterns": [
+        "exact_net_*",
+        "sz005_net_*",
+        "sz010_net_*",
+        "sz025_net_*",
+        "sz050_net_*",
+        "sz100_net_*"
+      ],
+      "code": "src/build_slinky_gold_v3.py:969-1008,1044-1048,1545-1550",
+      "directly_reproduced_exact_rows": 115,
+      "directly_reproduced_surface_scenarios": 575,
+      "excluded_fields": "barrier-based net_pnl_sol/net_return_pct/net_return_bp explicitly include tips at 1652; do not claim they share this omission.",
+      "id": "SLINKY_EXACT_AND_SURFACE_TIPS_OMITTED",
+      "mechanism": "Helpers calculate total_cost and net_rev including tips, but exact/surface net uses gross minus entry/exit fees only. Configured 10000 lamport entry and 10000 lamport exit tips are omitted.",
+      "omitted_lamports_per_roundtrip": 20000,
+      "population_affected_rows": null,
+      "status": "CODE_AND_BOUNDED_REAL_ROWS_REPRODUCED"
+    },
+    {
+      "code": "src/build_slinky_gold_v3.py:1037-1058,1539-1544,1602-1608,1699-1707",
+      "directly_reproduced_fallback_rows": 70,
+      "id": "SLINKY_CENSORED_SURFACE_FEASIBILITY_IS_NOT_EXIT_TRUTH",
+      "mechanism": "Missing exit reserves fall back to entry reserves and non-null quote sets sz*_feasible true even when barrier exit_feasible false and observed_through_300s false. This audit preserves censoring.",
+      "population_affected_rows": null,
+      "status": "CODE_AND_BOUNDED_REAL_ROWS_REPRODUCED"
+    }
+  ],
+  "direct_reproduction": {
+    "all_sample_states_single_mint": false,
+    "assertions_passed": 7432,
+    "barrier_net_rows_verified_tip_inclusive": 45,
+    "corrected_training_positives_created": 0,
+    "eligible_reproduced_rows": 115,
+    "exact_net_rows_verified_tip_omission": 115,
+    "failures": 0,
+    "fallback_entry_reserve_reproduced_rows": 70,
+    "full_dataset_defect_count": null,
+    "logical_rows_per_layer": 128,
+    "observed_exit_diagnostic_positive_to_nonpositive": 90,
+    "observed_exit_reserve_reproduced_rows": 45,
+    "parquet_files_opened_for_sampling": 3,
+    "quantity_mismatched_scenarios": 460,
+    "surface_scenarios_reproduced": 575,
+    "tips_omitted_scenarios": 575,
+    "true_profitable_rows": null,
+    "unique_sample_mints": 5,
+    "unique_sample_states": 128
+  },
+  "enforcement_status": "DECLARATIVE_REGISTRY_ONLY_NOT_WIRED_TO_LOADERS",
+  "evidence": [
+    {
+      "bytes": 10546,
+      "path": "D:/mev_bot-artifacts/north_star/development/slinky_economics_audit_v1/EVIDENCE_INDEX.json",
+      "sha256": "609dc4a0f7176b9ae695532364c3ba26c682f1a4c59aa32f15b9dca46eb7219f"
+    },
+    {
+      "bytes": 8399,
+      "path": "D:/mev_bot-artifacts/north_star/development/slinky_economics_audit_v1/original_integrity_check.json",
+      "sha256": "9f4c466d54580552163838bd146bce96e88bb90bd97a761f08f533d626f0a0f2"
+    },
+    {
+      "bytes": 10310,
+      "path": "D:/mev_bot-artifacts/north_star/development/slinky_economics_audit_v1/sample_metadata.json",
+      "sha256": "52ad2607f8dbd8c7e44697e58e4058b89f4362755b51275d70d5cb0e3210bdb4"
+    },
+    {
+      "bytes": 1531054,
+      "path": "D:/mev_bot-artifacts/north_star/development/slinky_economics_audit_v1/development_samples.json",
+      "sha256": "d1068309e3c16053d32c7ba55f8fcb7e6d44851c4ca8c03004331716f6054ae7"
+    },
+    {
+      "bytes": 9153,
+      "path": "D:/mev_bot-artifacts/north_star/development/slinky_economics_audit_v1/audit.py",
+      "sha256": "d18bbdedd1537cbfe277597df10f780d106344acd3fc1adf161fda3c55b21ca8"
+    },
+    {
+      "bytes": 8520,
+      "path": "D:/mev_bot-artifacts/north_star/development/slinky_economics_audit_v1/reproduce.py",
+      "sha256": "0720de85de9e5feae787e357a2b9b5971a1278fbbbbe25d744ecbf6eedf05319"
+    },
+    {
+      "bytes": 28709,
+      "path": "D:/mev_bot-artifacts/north_star/development/slinky_economics_audit_v1/publish.py",
+      "sha256": "3bb96e760da465d49effc60bc39a0468c436a5e7c802c5722f315b8626773e27"
+    }
+  ],
+  "inherited_untrusted_claims": {
+    "class_distribution": {
+      "BAD": 3440392,
+      "GOOD": 590149,
+      "MARGINAL": 174876,
+      "SKIP": 18839983,
+      "STRONG": 4643066,
+      "TOXIC": 5893299
+    },
+    "origin": "original_manifest_summary.json (pinned original manifest)",
+    "policy_eval_distribution": {
+      "AMBIGUOUS": 3688645,
+      "CORRECT_ENTER": 1663163,
+      "CORRECT_SKIP": 22160012,
+      "FALSE_POSITIVE": 2499893,
+      "MISSED_OPPORTUNITY": 3570052
+    },
+    "qa_coverage_censored_count": 16661965,
+    "qa_eligible_states": 14741782,
+    "qa_metrics": {
+      "classic_fpr": 0.1014,
+      "losing_share_of_entries": 0.6005,
+      "missed_among_skips": 0.1388,
+      "missed_share_of_profitable": 0.6822
+    },
+    "warning": "These are preserved prior claims, not this audit reproduction counts, not independent trades and not quantities directly invalidated by the multi-size defect. Counterfactual row count is not profitable/affected-target count."
+  },
+  "lineage": {
+    "composite_limit": "64-bit truncated producer self-report; matches present bytes and sampled state provenance, not cryptographic proof of all execution/runtime inputs. Does not pin parallel wrapper, compactor or downstream builders.",
+    "composite_match": true,
+    "composite_recipe": "SHA256(hex SHA256 script bytes + hex SHA256 schema bytes + json.dumps(exec,sort_keys=True) + json.dumps(eligibility,sort_keys=True))[:16]",
+    "downstream_source_receipts": [
+      {
+        "bytes": 20274,
+        "path": "D:/repos/mev_bot/tools/data-pipeline/src/sft_cross_exporter_v2.py",
+        "producing_code_hash_in_manifests": null,
+        "sha256": "d9396bf1c3a71570902cf280f6e9fe505e9696f835e612df420862c8d7c758f3"
+      },
+      {
+        "bytes": 20842,
+        "path": "D:/repos/mev_bot/tools/data-pipeline/src/build_eval_v1_2.py",
+        "producing_code_hash_in_manifests": null,
+        "sha256": "26dbe190bae05cf95aee67a2e6d26c3b7f8fbd57144eec295804f8b2aa1c290d"
+      }
+    ],
+    "execution_config_hash_literal": "89207735e3c0f866",
+    "git_limit": "Manifest commit exists but requested producer/schema/wrapper paths absent. Never substitute a different commit. See lineage.json git errors.",
+    "git_tree_contains_producer": false,
+    "lineage_receipt": {
+      "bytes": 24361,
+      "path": "D:/mev_bot-artifacts/north_star/development/slinky_economics_audit_v1/lineage.json",
+      "sha256": "5c050c630bcfeaad8adf7084f8793d58f2071bbf5c979b469e779a40dc2465c8"
+    },
+    "manifest_code_config_hash_literal": "af87ffefd9988a42",
+    "manifest_git_sha_literal": "fd43b8f1e9e8",
+    "pipeline_version": "3.1.0",
+    "recomputed_code_config_hash": "af87ffefd9988a42",
+    "run_uuid": "ef113bd1-f5e",
+    "source": "slinky21",
+    "source_hash_literal": "42132c2533b9effd",
+    "source_receipts": [
+      {
+        "bytes": 107476,
+        "functions": {
+          "build_counterfactuals_for_mint": [
+            1454,
+            1829
+          ],
+          "build_outcomes_for_mint": [
+            1071,
+            1449
+          ],
+          "build_policy_eval_for_mint": [
+            1834,
+            1977
+          ],
+          "build_states_for_mint": [
+            347,
+            962
+          ],
+          "check_ram_ceiling": [
+            201,
+            206
+          ],
+          "compute_code_config_hash": [
+            152,
+            160
+          ],
+          "compute_multi_size_economics": [
+            1011,
+            1068
+          ],
+          "compute_source_hash": [
+            231,
+            236
+          ],
+          "enumerate_mints": [
+            240,
+            254
+          ],
+          "exact_curve_buy": [
+            969,
+            986
+          ],
+          "exact_curve_sell": [
+            989,
+            1008
+          ],
+          "file_size_bytes": [
+            149,
+            150
+          ],
+          "get_git_sha": [
+            125,
+            136
+          ],
+          "get_rss_mb": [
+            189,
+            193
+          ],
+          "get_system_ram_gb": [
+            195,
+            199
+          ],
+          "hash_file": [
+            138,
+            147
+          ],
+          "inventory_sources": [
+            220,
+            229
+          ],
+          "load_champion_config": [
+            162,
+            185
+          ],
+          "load_migrations": [
+            292,
+            301
+          ],
+          "load_mint_trades": [
+            335,
+            343
+          ],
+          "load_token_meta": [
+            272,
+            290
+          ],
+          "load_wallet_stats": [
+            312,
+            331
+          ],
+          "load_wallet_stats_schema": [
+            303,
+            310
+          ],
+          "main": [
+            2024,
+            2326
+          ],
+          "make_duckdb": [
+            210,
+            216
+          ],
+          "mint_disjoint_split": [
+            258,
+            268
+          ],
+          "sanitize_row": [
+            1984,
+            1988
+          ],
+          "write_batch_parquet": [
+            1990,
+            2019
+          ]
+        },
+        "path": "D:/repos/mev_bot/tools/data-pipeline/src/build_slinky_gold_v3.py",
+        "sha256": "db2530be539a1cfb03f01aa096e74a88d4eb920c458b0e13e029e25379722034"
+      },
+      {
+        "bytes": 25868,
+        "functions": {
+          "config_hash": [
+            101,
+            105
+          ],
+          "stable_id": [
+            96,
+            99
+          ]
+        },
+        "path": "D:/repos/mev_bot/tools/data-pipeline/schemas/gold_schema_v3.py",
+        "sha256": "c89b18a5e3bcd3ea19b8efe584866e6bff157dc03da9f9f7e5572a27d9112356"
+      },
+      {
+        "bytes": 46846,
+        "functions": {
+          "build_counterfactuals_corrected": [
+            367,
+            658
+          ],
+          "build_l1_corrected": [
+            663,
+            688
+          ],
+          "build_l4_corrected": [
+            693,
+            720
+          ],
+          "build_price_timelines": [
+            82,
+            118
+          ],
+          "build_rich_l2": [
+            123,
+            362
+          ],
+          "main": [
+            897,
+            1035
+          ],
+          "revalidate_fat_tails_corrected": [
+            44,
+            77
+          ],
+          "write_manifest_corrected": [
+            725,
+            892
+          ]
+        },
+        "path": "D:/repos/mev_bot/tools/data-pipeline/src/rebuild_v3_corrected.py",
+        "sha256": "2495f25e405b60122c43c4849ed3e7543aef070cbce77b91606d94292bacdd91"
+      },
+      {
+        "bytes": 72539,
+        "functions": {
+          "b58_decode": [
+            95,
+            113
+          ],
+          "b58_encode": [
+            77,
+            93
+          ],
+          "build_account_index": [
+            584,
+            629
+          ],
+          "build_account_snapshot_index": [
+            636,
+            678
+          ],
+          "build_censoring_semantics": [
+            1272,
+            1326
+          ],
+          "build_counterfactuals": [
+            1072,
+            1266
+          ],
+          "build_layers": [
+            1372,
+            1448
+          ],
+          "classify_instruction": [
+            268,
+            299
+          ],
+          "compute_censoring": [
+            965,
+            1001
+          ],
+          "decode_ix_args": [
+            301,
+            426
+          ],
+          "decode_pumpfun_curve": [
+            117,
+            143
+          ],
+          "decode_pumpswap_pool": [
+            145,
+            169
+          ],
+          "main": [
+            1503,
+            1652
+          ],
+          "make_state_id": [
+            258,
+            264
+          ],
+          "process_transactions": [
+            680,
+            895
+          ],
+          "pumpfun_buy_quote": [
+            173,
+            199
+          ],
+          "pumpfun_sell_quote": [
+            201,
+            222
+          ],
+          "pumpswap_buy_quote": [
+            240,
+            246
+          ],
+          "pumpswap_sell_quote": [
+            248,
+            254
+          ],
+          "pumpswap_swap_quote": [
+            224,
+            238
+          ],
+          "reconstruct_migration_lifecycles": [
+            1008,
+            1070
+          ],
+          "reconstruct_migrations": [
+            899,
+            961
+          ],
+          "recover_price_from_raw": [
+            430,
+            541
+          ],
+          "revalidate_fat_tails": [
+            1330,
+            1368
+          ],
+          "stream_raw_zst_files": [
+            545,
+            580
+          ],
+          "write_manifest": [
+            1452,
+            1499
+          ]
+        },
+        "path": "D:/repos/mev_bot/tools/data-pipeline/src/build_laserstream_gold_v3.py",
+        "sha256": "358cd06df1927104e4f8afb436597a73c6526714c5520887b07bccdc81dbadb1"
+      },
+      {
+        "bytes": 12580,
+        "functions": {
+          "build_canonical_schema": [
+            61,
+            115
+          ],
+          "cast_table_to_canonical": [
+            118,
+            151
+          ],
+          "compact_layer": [
+            171,
+            257
+          ],
+          "main": [
+            260,
+            307
+          ],
+          "sorted_file_list": [
+            154,
+            168
+          ]
+        },
+        "path": "D:/repos/mev_bot/tools/data-pipeline/src/compact_slinky_gold_v3.py",
+        "sha256": "5f85bf83abc40421c2b98d587bde5c4acf8c5be7d1188533fe1856b0c4088797"
+      },
+      {
+        "bytes": 23490,
+        "functions": {
+          "_empty_result": [
+            54,
+            61
+          ],
+          "main": [
+            203,
+            521
+          ],
+          "process_mint_chunk": [
+            64,
+            200
+          ]
+        },
+        "path": "D:/repos/mev_bot/tools/data-pipeline/src/run_slinky_gold_v3_parallel_v2.py",
+        "sha256": "a52565f341969f33087f1a0552d78f41e0fcdade44b28504df8a4eb1f8dd275a"
+      },
+      {
+        "bytes": 160667,
+        "functions": {
+          "_cf_net_return": [
+            322,
+            338
+          ],
+          "_load_narrative_records": [
+            2387,
+            2419
+          ],
+          "_load_rust_train_records": [
+            2338,
+            2384
+          ],
+          "add_outcome_stratification": [
+            1642,
+            1677
+          ],
+          "assemble_laserstream_panel": [
+            1047,
+            1163
+          ],
+          "assemble_slinky_panel": [
+            910,
+            1044
+          ],
+          "build_cpt_v1": [
+            2422,
+            3006
+          ],
+          "build_eval_freeze": [
+            1198,
+            1426
+          ],
+          "build_eval_freeze_v1_1": [
+            1697,
+            2318
+          ],
+          "build_sft_v1": [
+            3009,
+            3473
+          ],
+          "build_slinky_lightweight_index": [
+            532,
+            557
+          ],
+          "build_train_filtered_lightweight_index": [
+            840,
+            854
+          ],
+          "classify_eval_category": [
+            1170,
+            1195
+          ],
+          "classify_eval_category_v11": [
+            1445,
+            1568
+          ],
+          "compute_causal_similarity": [
+            1571,
+            1592
+          ],
+          "compute_file_hash": [
+            416,
+            425
+          ],
+          "compute_l3_compressed": [
+            221,
+            319
+          ],
+          "compute_panel_overlap": [
+            1633,
+            1639
+          ],
+          "compute_robust_utility_v1": [
+            186,
+            206
+          ],
+          "compute_slinky_cf_compressed": [
+            341,
+            403
+          ],
+          "derive_buy_watch_skip": [
+            209,
+            218
+          ],
+          "find_dense_time_windows": [
+            857,
+            907
+          ],
+          "find_divergent_pairs": [
+            1595,
+            1630
+          ],
+          "get_safe_columns": [
+            603,
+            607
+          ],
+          "get_slinky_time_index": [
+            510,
+            529
+          ],
+          "hash_creator": [
+            411,
+            413
+          ],
+          "hash_mint": [
+            406,
+            408
+          ],
+          "load_laserstream_l1": [
+            802,
+            813
+          ],
+          "load_laserstream_l2": [
+            816,
+            823
+          ],
+          "load_laserstream_l3": [
+            826,
+            833
+          ],
+          "load_narrative_mints": [
+            1680,
+            1694
+          ],
+          "load_slinky_causal_for_mints": [
+            560,
+            600
+          ],
+          "load_slinky_counterfactuals": [
+            789,
+            795
+          ],
+          "load_slinky_outcomes": [
+            780,
+            786
+          ],
+          "make_provenance": [
+            428,
+            437
+          ],
+          "normalize_laserstream_causal": [
+            471,
+            494
+          ],
+          "normalize_slinky_causal": [
+            444,
+            468
+          ],
+          "preload_slinky_counterfactuals": [
+            734,
+            777
+          ],
+          "preload_slinky_outcomes": [
+            654,
+            731
+          ]
+        },
+        "path": "D:/repos/mev_bot/tools/data-pipeline/src/build_qwen_curriculum_v1.py",
+        "sha256": "92fd7b1a9c6b0cdc5e24a0397edc4bc9ffda450d3fa91242fd677a192dc245d9"
+      }
+    ]
+  },
+  "registry_id": "SLINKY_ECONOMICS_QUARANTINE_V1",
+  "release_conditions": [
+    "Independently pin exact producing code/schema/config and source/derivative membership.",
+    "Use actual per-scenario owned quantity; account configured tips/fees without duplication and verify lot cash conservation.",
+    "Preserve unknown/censored exits; quote math is not fill evidence.",
+    "Recompute only under separately approved new immutable lineage with calibrated execution support; do not overwrite or relabel legacy.",
+    "Reaudit dependent utility/targets/export manifests and transitive CPT/SFT/retrieval/checkpoint exposure; no automatic North Star admission."
+  ],
+  "schema_version": "north_star_slinky_economics_quarantine_v1",
+  "scope": {
+    "audit_root": "D:/mev_bot-artifacts/north_star/development/slinky_economics_audit_v1",
+    "compact_store_root": "D:/mev_bot-artifacts/gold/slinky_gold_v3_compact",
+    "exposure": "DEVELOPMENT_EXPOSED",
+    "no_commits": true,
+    "no_fitting_or_training": true,
+    "no_original_mutations_or_deletions": true,
+    "no_protected_future_sources": true,
+    "no_relabels": true,
+    "no_source_admission": true,
+    "original_root": "D:/repos/mev_bot/tools/data-pipeline",
+    "source_id": "tools/data-pipeline/output/slinky_gold_v3/manifest_v3.json"
+  },
+  "status": "QUARANTINED_FOR_ECONOMIC_TRUTH_AND_TARGET_ADMISSION",
+  "task_claims": [
+    {
+      "claim": "Legacy size/capacity/profit surfaces and exact net economics cannot establish calibrated executable support or residuals; this arithmetic audit is not calibration.",
+      "status": "BLOCKED_FOR_LEGACY_SURFACE_CALIBRATION_EVIDENCE",
+      "task": "S4.1; D04; D12"
+    },
+    {
+      "claim": "No BUY/SELL/HOLD/add/reduce/exit/size recommendations from affected surface economics or dependent utility; observed A-track action is not relabeled.",
+      "status": "QUARANTINED_FOR_RECOMMENDED_B_TARGETS",
+      "task": "S5.1"
+    },
+    {
+      "claim": "Manifest profitable classes/rows and panels are neither independently verified positive examples nor independent trades. No balancing/padding using these counts.",
+      "status": "BLOCKED_FOR_DISTRIBUTION_OR_CLASS_SUPPORT_CLAIMS",
+      "task": "S5.2"
+    },
+    {
+      "claim": "Retain source/row/scenario identities and transitive dependency restrictions; unknown derivative codehash cannot be admitted based on corrected filename. Declarative registry still requires owner integration.",
+      "status": "QUARANTINE_DEPENDENT_EXPORT_AND_ANCESTRY_CLAIMS",
+      "task": "S6.1; S6.2"
+    },
+    {
+      "claim": "Prior GOLD/CERTIFIED/TRAINING_APPROVED descriptions are historical evidence, not North Star acceptance. Full release remains blocked where these are required evidence.",
+      "status": "NO_ECONOMIC_CERTIFICATION_OR_RELEASE_FROM_LEGACY_PASS_LABELS",
+      "task": "S7.1; S7.2; S8"
+    }
+  ]
+}

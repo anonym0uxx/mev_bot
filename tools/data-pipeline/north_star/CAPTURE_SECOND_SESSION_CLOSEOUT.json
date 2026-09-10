@@ -1,0 +1,23 @@
+{
+  "schema": "north_star_capture_closeout_v1",
+  "session": "20260909_173928_000596",
+  "checked_at_pt": "2026-09-09T18:35:02.250477-07:00",
+  "source_files_preserved_and_rehashed": 206,
+  "bytes": 10549496800,
+  "receipt": "D:\\mev_bot-artifacts\\north_star\\capture\\20260909_173928_000596\\INTEGRITY_RECEIPT.json",
+  "receipt_sha256": "a504041ab4c9614d1d9a8949e2446e51b6a4048477dafad8a180739863f13b93",
+  "producer_reported_counts": {
+    "raw": 10244602,
+    "events": 2756417
+  },
+  "records_semantically_verified": false,
+  "process_present_at_parent_check": false,
+  "automatic_restart_performed": false,
+  "limitations": [
+    "encoder correction not deployed in this session",
+    "manifest gap assertions need validation",
+    "subscription configuration preflight in progress",
+    "no continuity claim after bounded stop"
+  ],
+  "originals_deleted": false
+}

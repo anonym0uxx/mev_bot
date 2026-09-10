@@ -1,0 +1,18 @@
+{
+  "review_id": "deleg_7850000a",
+  "verdict": "boundedpass",
+  "mustfix": [],
+  "scope": "development event journal, not chain verification or admission",
+  "reviewer_tests_passed": 53,
+  "reviewer_adversarial_cases": 141,
+  "reviewer_real_permutation_checks": 20,
+  "parent_verified_file_hashes": {
+    "src/north_star/event_revisions.py": "2dc63cfc8752af30e4c02d76e5169ef34a8880d840835f47f6ba49f4cc1184a9",
+    "tests/north_star/test_event_revisions.py": "611779b86a5682ad5a1af12ed2bf34c196551210a825a91c5eaaf0a4ded5d06f",
+    "north_star/BUILD_EVENT_REVISIONS_RECEIPT.md": "3b68ead4232db6905a2027062aaaddc5e88bf85e68b58649523f5936527f0a01"
+  },
+  "real_event_states": 96,
+  "verified_finalized_events": 0,
+  "training_eligible": false,
+  "remaining": "Authenticated chain/fork evidence and full payload digests; no stage closure."
+}

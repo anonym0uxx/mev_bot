@@ -1,0 +1,29 @@
+{
+  "review_id": "deleg_6c221d93",
+  "verdict": "boundedpass",
+  "must_fix": [],
+  "scope": "Trusted-directory Windows source recovery only",
+  "reviewer_tests_passed": 207,
+  "reviewer_independent_probes_passed": 43,
+  "parent_verified_hashes": {
+    "D:\\repos\\mev_bot-north-star\\tools\\data-pipeline\\src\\north_star\\narrative_sources.py": "8ecb07d39d0cf1756cb9f6982a33c8723435aec3f30484fda4a086cf6f7617d7",
+    "D:\\repos\\mev_bot-north-star\\tools\\data-pipeline\\tests\\north_star\\test_narrative_sources.py": "ef10cb951cad1c690d218a3652d834b0707519c57a17e7669d3e08b3e02716a7",
+    "D:\\repos\\mev_bot-north-star\\tools\\data-pipeline\\north_star\\BUILD_NARRATIVE_SOURCES_RECEIPT.md": "d25debb3028f1fdd1eed4c1d34f798e139e9aebc42217b4d633b384139461327",
+    "D:\\repos\\mev_bot-north-star\\tools\\data-pipeline\\src\\north_star\\fs_integrity.py": "46cf36b2d295a31036526823b87971e9545258b2e568daf0071d70f0f96d2b5e",
+    "D:\\mev_bot-artifacts\\north_star\\development\\narrative_sources\\first50_exact_v2\\manifest.json": "4c809e8aefb13ee32ddbf95200f43c123b6df7235728444aab764b4404baa53a",
+    "D:\\mev_bot-artifacts\\north_star\\development\\narrative_sources\\first50_exact_v1\\manifest.json": "65af14eb5a4707b7348fff0a81fe09728385e89a1ea056faef3dba8eb3287040"
+  },
+  "closed_findings": [
+    "strict JSON validation",
+    "symlink/reparse rejection",
+    "observable source identity changes",
+    "atomic no-clobber publication and retry"
+  ],
+  "artifact_admitted_rows": 0,
+  "integration_policy": "Existing integrated v1 remains immutable and pinned to recovery v1; new reviewed recovery v2 may be explicitly selected in a separately versioned run, not silently substituted.",
+  "limitations": [
+    "no rights/timing/semantic certification",
+    "no hostile-filesystem sandbox",
+    "no power-loss durability guarantee"
+  ]
+}

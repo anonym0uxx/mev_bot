@@ -1,6 +1,6 @@
 # Helius collection budget — account statement versus public pricing
 
-Operator states current Business account allowance is **150,000,000 credits/month**. Preserve that account-specific statement. Remaining credits, billing-cycle boundary, other consumers, add-ons and autoscaling status have not been verified.
+Operator states current Business account allowance is **150,000,000 credits/month**. The operator subsequently reports **1,700,000 credits used**. If that is total usage in the same billing cycle against the stated allowance, the calculated remaining balance is **148,300,000 credits**, with approximately **1.13% used**. This is operator-reported usage plus conditional arithmetic, not an independently queried account balance or a LaserStream-only consumption rate. Billing-cycle boundary, whether usage covers all consumers, add-ons and autoscaling status remain unverified. Preserve the account-specific allowance rather than substituting public standard pricing.
 
 Public provider documentation retrieved 2026-09-09 PT:
 - https://www.helius.dev/docs/billing/credits

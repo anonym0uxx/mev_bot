@@ -1,0 +1,24 @@
+{
+  "review_id": "deleg_23abb2f7",
+  "verdict": "boundedpass",
+  "must_fix": [],
+  "scope": "Registry binding only; not production admission or Stage 3 closure",
+  "reviewer_execution": {
+    "focused_passed": 96,
+    "combined_passed": 182,
+    "independent_adversarial_probes": 222,
+    "probe_failures": 0
+  },
+  "parent_verification": {
+    "all_three_reviewed_file_hashes_match": true,
+    "source_sha256": "84a9e5c67a90b7c09d7eefe67b4f6f1e3c3cc79a7b630cf1693e25f92ed1bb90",
+    "tests_sha256": "13e9eacdcd0c4984adb96cb44f72705c63983d8d3afd4ae41f1ab37fd16f36bd",
+    "receipt_sha256": "96dec05d385df5b545c6d17850520d63c74deff4697ec08a4f1b3175b05713ca"
+  },
+  "first50_audit": {
+    "rows": 50,
+    "context_eligible": 0,
+    "training_admitted": 0
+  },
+  "authority_boundary": "Caller must authenticate independent immutable registry snapshots. Matching attestations does not independently establish semantic truth, rights, numerical reconstruction or complete dependencies."
+}

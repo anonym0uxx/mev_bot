@@ -1,0 +1,21 @@
+{
+  "review_id": "deleg_a46cc6eb",
+  "verdict": "boundedpass",
+  "mustfix": [],
+  "scope": "bounded HLS utility offline review; no live endpoint/media alignment certification",
+  "parent_verified_hashes": {
+    "src/north_star/hls_clock_capture.py": "2c1d3f5e6dfaa844f50e816bcea28672999e1a476eb514276ee7df1b522d1086",
+    "tests/north_star/test_hls_clock_capture.py": "e4022eef72332c5b8610dbd0db8999c35271761b4791b52cda427e7e65918ce5",
+    "north_star/BUILD_HLS_CLOCK_RECEIPT.md": "5bae90b6da05f4fb88dc4e837ecffeda85a08fcd763f127a9b4c65ca0ce20b30"
+  },
+  "reviewer_focused_tests_passed": 158,
+  "reviewer_reported_independent_probes_passed": 34442,
+  "probe_execution_caveat": "Probe Python assertions completed, but shell wrapper returned exit2 from extra quote. Separate followup and hash checks exit0; not an entirely clean probe command exit.",
+  "remaining": [
+    "soft deadline only",
+    "decoded body and request caps not wire byte or memory guarantees",
+    "old recording UTC offset unresolved",
+    "publisher anchors do not authenticate creator content"
+  ],
+  "live_collectors_changed": false
+}
