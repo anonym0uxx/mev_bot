@@ -1,0 +1,13 @@
+{
+  "scope": "same-provider finalized RPC corroboration; not global corpus admission",
+  "recorded_at_pt": "2026-09-09T19:07:22.112694-07:00",
+  "path": "D:\\mev_bot-artifacts\\north_star\\aggregation\\finalized_rpc_first10_v1",
+  "receipt_sha256": "16139513fdd394a7a266a8d65722160aad384e739506b101aa11c598a71111af",
+  "request_count": 11,
+  "verified_response_files": 11,
+  "signature_slot_status_fee_native_endpoint_matches": 10,
+  "provider": "Helius",
+  "second_independent_provider": false,
+  "finality_evidence_available_at": "per-response completed_at_utc, not historical receipt time",
+  "source_admission": false
+}

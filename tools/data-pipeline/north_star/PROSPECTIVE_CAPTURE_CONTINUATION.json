@@ -1,0 +1,17 @@
+{
+  "session_id": "20260910_020917_000592",
+  "directory": "D:/mev_bot-artifacts/north_star/aggregation/prospective_capture_120_v1",
+  "process_handle": "proc_f4ff84b8f34b",
+  "duration_minutes": 120,
+  "started_at_utc": "2026-09-10T02:09:17Z",
+  "expected_end_pt": "2026-09-09T21:09:17-07:00",
+  "binary_sha256": "e87d98ac982d149b2f4afcfabc71b7fbbdb36e782f343566d243de15169cfc59",
+  "parent_observation": "Launch provenance duration and binary pin verified; raw and normalized compressed files grew over a 3-second read-only interval at 19:09 PT",
+  "collection_mode": "CONFIRMED broad Pump.fun/PumpSwap; includes failed transactions and account/slot/block-metadata observations",
+  "supervision": "bounded child wrapper with timeout and completion notification; not a resident service",
+  "historical_gap": "Earlier two-hour session stopped at 12:39 PT; one-minute validation was separate. No continuous historical coverage claimed.",
+  "budget": "Operator reports1.7Mused against150Mallocated; this is bounded120minute capture, not overage approval or verified remaining provider balance",
+  "training_eligible": false,
+  "original_data_deleted": false,
+  "trading_configuration_changed": false
+}

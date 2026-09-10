@@ -1,6 +1,6 @@
 {
   "schema": "north_star_execution_stage_tracker_v1",
-  "updated_at_pt": "2026-09-09T18:37:22.768232-07:00",
+  "updated_at_pt": "2026-09-09T19:09:40.906328-07:00",
   "master": "master/NORTH_STAR_WINDOWS_MASTER_V5.md",
   "goal": "complete enriched narrative-capable dataset; no numeric-only downgrade",
   "training_run_authorized": false,
@@ -116,16 +116,37 @@
       "existing_receipts": []
     }
   ],
-  "verified_code_checkpoint": "53397655279ca9f81c0670394d261ffb832fb6a7",
+  "verified_code_checkpoint": "524eee0bcba47589dbe636aca3980762c1073bf8",
   "latest_regression": {
-    "passed": 1973,
+    "passed": 2224,
     "failed": 0,
-    "elapsed_s": "13.92",
-    "scope": "parent full engineering suite; no corpus admission"
+    "elapsed_s": "16.19",
+    "scope": "prior full engineering suite; workers now modifying owned modules; not corpus certification"
   },
   "completion_target": "Operator requests same-day highest-quality dataset; no unverified completion promise or calendar wait for safe development",
   "open_reviews": {
     "cash_ledger": "BOUNDED_PASS deleg_aa1b34a1-1",
     "development_pipeline": "BOUNDED_PASS deleg_aa1b34a1-2"
+  },
+  "production_runs": {
+    "prospective_capture": {
+      "status": "RUNNING_BYTES_VERIFIED",
+      "session": "20260910_020917_000592",
+      "directory": "D:/mev_bot-artifacts/north_star/aggregation/prospective_capture_120_v1",
+      "process": "proc_f4ff84b8f34b",
+      "duration_minutes": 120,
+      "supervision_scope": "bounded wrapper, not resident service"
+    },
+    "full_narrative_recovery": "RUNNING",
+    "full_megga_asr": "RUNNING",
+    "full_slinky_census": "RUNNING",
+    "whole_corrected_capture_aggregation": "RUNNING",
+    "venue_evidence": "IN_PROGRESS",
+    "slinky_economics_reconstruction": "IN_PROGRESS",
+    "finalized_rpc": {
+      "actual_signatures": 10,
+      "matches": 10,
+      "review_pending": true
+    }
   }
 }
