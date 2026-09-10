@@ -1,0 +1,22 @@
+{
+  "review_id": "deleg_a3a1edc9",
+  "verdict": "BOUNDED_PASS",
+  "mustfix": [],
+  "parent_verified_hashes": {
+    "src/north_star/observed_episodes.py": "7b7b678d235ad73503ac34401d1a0990dd3734252cb72e4f4135a294f3f204ec",
+    "tests/north_star/test_observed_episodes.py": "7c8bd16cfb7e7295125899587272464a5042b8128d52c6ea8ad8400210021e29",
+    "north_star/BUILD_OBSERVED_EPISODES_RECEIPT.md": "1d14680d070c6854c9c36e3bf6e165cf1f5fec8a7ad01f7e45fb5030ddc1658c"
+  },
+  "scope": "Trusted-caller structural assembly; proof claims not authenticated; no admission",
+  "reviewer_checks": {
+    "focused_tests": 147,
+    "with_dependencies": 284,
+    "randomized_checks": 400
+  },
+  "real_valid_episodes": 0,
+  "limitations": [
+    "Copied VERIFIED claims remain caller claims",
+    "No explicit STRUCTURAL_ONLY output field; false training/imitation eligibility and API contract govern",
+    "Signature/order and fee authentication require source integration"
+  ]
+}

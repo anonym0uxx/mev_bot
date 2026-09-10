@@ -1,0 +1,30 @@
+{
+  "review_id": "deleg_8739476d",
+  "verdict": "BOUNDED_PASS",
+  "scope": "One-minute prospective capture integrity and first10 exact endpoint validation; not admission",
+  "parent_verified_support_hashes": {
+    "pumpfun_laserstream_manifest_v1_20260910_015052_000575.json": "0c80e5816948851de1d6f06c3279e732aa7d72c76707419ec14bc5050b0a758e",
+    "FIRST10_PARENT_RECONCILIATION_V2.json": "069b245859d6e28badad48de9b3e1daf6076ae27ed3b0c47f6e31fd71eac92c3",
+    "LAUNCH_PROVENANCE.json": "643f37e03b4c6672e81a446dc9e83b956673310940e008cd17bca593e1fccd35",
+    "PROCESS_EXIT.json": "11ed31792977c07a795478a6359210f3c3fdbc0105981a3843863120cc9871a2"
+  },
+  "independent_checks": {
+    "raw_prefix": 100,
+    "transactions": 10,
+    "reconciled": 8,
+    "missing_token_counterpart": 2,
+    "native_accounts_checked": 331,
+    "token_pairs_compared": 53,
+    "literal32ones": 10,
+    "literal33ones": 0,
+    "payload_files_verified": 4
+  },
+  "identity_status": "format_valid_only",
+  "training_eligible": false,
+  "limitations": [
+    "Producer record totals not independently censused",
+    "Execution fills, ownership, settlement and finality unverified",
+    "Runtime repo_sha empty; external source/Windows HEAD/binary pins verified",
+    "V1 parent invocation errors not source rejections"
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "review_id": "deleg_7172c6a4",
+  "verdict": "BOUNDED_PASS_CONDITIONAL_ON_PINNED_MATRIX",
+  "parent_verified_hashes": {
+    "src/north_star/build_acceptance.py": "fe3d1dfe197bfccfda0fed330a681fd5fa3614b0bac0c6dfbdddd71389a90391",
+    "tests/north_star/test_build_acceptance.py": "fdac7bdd43c837a1edb615fef445d8a9c7f8daec65d165185f87e2b02345e582",
+    "north_star/REQUIREMENTS_MATRIX.json": "37f2d18335fb4254db48332b150a91ee7bce570240135c89532c7bf39dcf9be4",
+    "north_star/BUILD_ACCEPTANCE_RECEIPT.md": "fd1e9529b04aa98f8638a1a0bffb79530920a9bd1a235a94543292ffc6f6c058"
+  },
+  "scope": "Declared receipt metadata consistency only, NOT authenticated certification",
+  "reviewer_tests": 25,
+  "reported_actual_audit": {
+    "blocked_requirements": 26,
+    "blocked_stages": 9,
+    "supporting_metadata_artifacts": 18,
+    "corpus_population": null,
+    "training_run_authorized": false
+  },
+  "critical_boundaries": [
+    "API trusts caller matrix; altered stage memberships can pass",
+    "Self-authored mutually consistent declarations can pass; no semantic or reviewer authentication",
+    "Reviewer versus producer inequality is per receipt, not whole chain"
+  ],
+  "production_acceptance_authority": false
+}
