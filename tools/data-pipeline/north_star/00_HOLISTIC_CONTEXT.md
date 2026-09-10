@@ -117,6 +117,33 @@ remain separate independent-review workstreams at this snapshot. Do not conflate
 pending worktree files with the reviewed/pushed checkpoint. Current per-stage
 acceptance is tracked in `BUILD_STAGE_TRACKER.json`.
 
+### Evening continuation — supersedes liveness/review status above
+
+At 18:32 PT on September 9 the second LaserStream session had stopped normally;
+its manifest ends at 12:39:28 PT. All **206 files / 10,549,496,800 bytes** were
+copied into a new artifact directory and independently rehashed; originals remain.
+See `CAPTURE_SECOND_SESSION_CLOSEOUT.json`. No resident collector or continuous
+coverage is claimed. Subscription identity and corrected encoder deployment are
+under a separate preflight; no automatic restart has been performed.
+
+Megga's finalized `.mp4` exists and no yt-dlp/ffmpeg process was present. ffprobe
+reports audio duration 30546.283292 seconds, video 302.718267 seconds and file size
+803908618 bytes. Container readability is not content/speaker/UTC certification.
+A bounded cached-local ASR task is separate from temporal or semantic admission.
+
+Reviewed source recovery, context binding, instruction layouts, event revisions,
+HLS utility and Slinky audit are pushed in `75a24670`; review JSONs retain exact
+scope and hashes. Parent full suite passed **1973 tests in 13.92 seconds**.
+Cash-ledger aliasing and integration resume defects have passing repairs but final
+independent verdicts were interrupted by inference-provider HTTP402; replacement
+reviews are running. The post-fix integrated v2 run has actual verified file/row
+conservation and successful completed resume in `INTEGRATED_V2_PARENT_VERIFICATION.json`.
+It still contains no admitted trades or narrative joins. Existing v1 was not repinned.
+
+Future evaluation dates are not a reason to idle development or aggregation.
+Missing real execution/narrative proof and incomplete stage acceptance—not merely
+the calendar—prevent full dataset certification. No deadline-driven downgrade.
+
 ### Historical kickoff observations
 
 - Twitch stream ID `320254509148`.

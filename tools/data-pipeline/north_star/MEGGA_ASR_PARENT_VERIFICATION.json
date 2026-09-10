@@ -1,0 +1,13 @@
+{
+  "manifest": "D:/mev_bot-artifacts/north_star/development/megga_live_asr_v1/completed_sample/manifest.json",
+  "manifest_sha256": "754c9d9f2a3acca59ae36400ecf0346ee886bda99f24064d623532ee233e1ac7",
+  "parent_verified_files": 13,
+  "segments": 176,
+  "whitespace_words": 1050,
+  "timestamp_out_of_bounds_segments": 1,
+  "all_training_eligible_false": true,
+  "semantic_verification": false,
+  "clock_mapping": null,
+  "scope": "900 cumulative decoded seconds; not exact source-PTS duration",
+  "receipt_location_correction": "Worker wrote receipt in original checkout; parent copied it to isolated worktree without deleting original. No original data or code changed."
+}

@@ -1,6 +1,6 @@
 {
   "schema": "north_star_execution_stage_tracker_v1",
-  "updated_at_pt": "2026-09-09T11:44:23.136478-07:00",
+  "updated_at_pt": "2026-09-09T18:37:22.768232-07:00",
   "master": "master/NORTH_STAR_WINDOWS_MASTER_V5.md",
   "goal": "complete enriched narrative-capable dataset; no numeric-only downgrade",
   "training_run_authorized": false,
@@ -35,7 +35,9 @@
         "BUILD_ACCOUNTING_RECEIPT.md",
         "BUILD_PARTITIONS_RECEIPT.md",
         "BUILD_TRANSACTION_TRUTH_RECEIPT.md",
-        "BUILD_ENCODING_RECEIPT.md"
+        "BUILD_ENCODING_RECEIPT.md",
+        "BUILD_EVENT_REVISIONS_RECEIPT.md",
+        "BUILD_INSTRUCTION_TRUTH_RECEIPT.md"
       ]
     },
     {
@@ -50,13 +52,13 @@
       ],
       "existing_receipts": [
         "BUILD_CAPTURE_CONTINUATION.md",
-        "BUILD_MEDIA_CLOCK_RECEIPT.md"
-      ],
-      "pending_independent_review": [
+        "BUILD_MEDIA_CLOCK_RECEIPT.md",
         "BUILD_HLS_CLOCK_RECEIPT.md",
         "BUILD_NARRATIVE_CONTEXT_RECEIPT.md",
-        "BUILD_NARRATIVE_SOURCES_RECEIPT.md"
-      ]
+        "BUILD_NARRATIVE_SOURCES_RECEIPT.md",
+        "CAPTURE_SECOND_SESSION_CLOSEOUT.json"
+      ],
+      "pending_independent_review": []
     },
     {
       "stage": 4,
@@ -114,11 +116,16 @@
       "existing_receipts": []
     }
   ],
-  "verified_code_checkpoint": "96fb932794381d8eb4781c9887fa6420fa1abc2c",
+  "verified_code_checkpoint": "53397655279ca9f81c0670394d261ffb832fb6a7",
   "latest_regression": {
-    "passed": 1470,
+    "passed": 1973,
     "failed": 0,
-    "elapsed_s": "8.51",
-    "scope": "concurrent development snapshot, not corpus certification"
+    "elapsed_s": "13.92",
+    "scope": "parent full engineering suite; no corpus admission"
+  },
+  "completion_target": "Operator requests same-day highest-quality dataset; no unverified completion promise or calendar wait for safe development",
+  "open_reviews": {
+    "cash_ledger": "BOUNDED_PASS deleg_aa1b34a1-1",
+    "development_pipeline": "BOUNDED_PASS deleg_aa1b34a1-2"
   }
 }
