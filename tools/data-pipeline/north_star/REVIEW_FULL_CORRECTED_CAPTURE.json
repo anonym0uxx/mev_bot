@@ -1,0 +1,10 @@
+{
+  "review_id": "deleg_03c7ab2b",
+  "verdict": "BOUNDED_PASS",
+  "script_sha256": "5123e91c9dfdeb76700adebaafc887520e347b799263d59d6f9b3d88204016d2",
+  "actual_records_verified": 107912,
+  "accepted": 107338,
+  "rejected": 574,
+  "scope": "full-source envelope conservation; no trade or training admission",
+  "review_evidence": "Independent original raw pointer/byte/hash replay and verify-only passed; parent separately checked all25 output file hashes and counts."
+}
