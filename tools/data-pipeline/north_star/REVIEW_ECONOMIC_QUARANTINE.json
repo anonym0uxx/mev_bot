@@ -1,0 +1,17 @@
+{
+  "review_id": "deleg_8fa17483",
+  "verdict": "BOUNDED_PASS",
+  "must_fix": [],
+  "source_hashes_parent_verified": {
+    "src/north_star/economic_quarantine.py": "71c77452abefcfdc28776bd50dc339967507142e6daa182832b8ea65544a056e",
+    "tests/north_star/test_economic_quarantine.py": "587ca1509fa9b0ba7bc04db0dee6b24cfd85f3367687d6f808e4cb88eed4cee7",
+    "north_star/BUILD_ECONOMIC_QUARANTINE_RECEIPT.md": "a60be5a53cbee4b6e28e37988951f2f97bbe4ba257299823c6e7a06aaddd84e4"
+  },
+  "reviewer_execution": {
+    "tests": 79,
+    "target_refusals": 616,
+    "payload_opens_during_target_refusals": 0
+  },
+  "scope": "Bounded saved-sample API only; not global loader integration or admission",
+  "remaining": "Wire reviewed API into applicable consumers before claiming corpus-wide enforcement"
+}
