@@ -1,0 +1,38 @@
+{
+  "verdict": "BOUNDED_PASS",
+  "review_id": "deleg_aa1b34a1-1",
+  "verification": {
+    "focused_tests": 192,
+    "related_tests": 250,
+    "mutated_fields": 252,
+    "conservation_transactions": 600
+  },
+  "parent_source_hashes_verified": {
+    "src/north_star/cash_ledger.py": "8efc41acb861a4244541d427fcd05502201d236bbca4e54bee2eff6a47f2a2ed",
+    "src/north_star/development_pipeline.py": "c3146fcb9134aeba43079875f1f7de1d9c04f2143872eb2effb76ba730aac659"
+  },
+  "supersedes_review": {
+    "review_id": "deleg_82c87c46",
+    "verdict": "MUST_FIX",
+    "must_fix": [
+      {
+        "id": "CL-1",
+        "severity": "high",
+        "finding": "Frozen dataclass inputs and returned snapshots/receipts alias internal state; bypassing ordinary assignment can corrupt cash conservation or retained fee history.",
+        "required_fix": "Isolate nested inputs at ingress and results at egress; add mutation and subsequent conservation/history regressions.",
+        "fix_delegation": "deleg_4b20f156"
+      }
+    ],
+    "reviewer_execution": {
+      "focused_passed": 94,
+      "related_passed": 152,
+      "adversarial_groups_passed": 8,
+      "adversarial_groups_failed": 2,
+      "assertions_executed": 4412
+    },
+    "reviewed_source_sha256": "9d3a9d0cb5a53f0a798d5806ad192fbc15b629121e9cf6643cdf44c89c842d50",
+    "acceptance": "Withheld pending remediation and independent re-review",
+    "scope": "Synthetic reference ledger; no actual economic certification, training admission or live integration."
+  },
+  "scope": "component repair only; no admission, stage closure or training clearance"
+}

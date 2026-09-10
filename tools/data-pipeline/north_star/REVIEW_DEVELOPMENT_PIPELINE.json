@@ -1,0 +1,37 @@
+{
+  "verdict": "BOUNDED_PASS",
+  "review_id": "deleg_aa1b34a1-2",
+  "verification": {
+    "focused_tests": 41,
+    "related_tests": 766,
+    "missing_inventory_refuses_without_writes": true,
+    "current_synthetic_resume_read_only": true
+  },
+  "parent_source_hashes_verified": {
+    "src/north_star/cash_ledger.py": "8efc41acb861a4244541d427fcd05502201d236bbca4e54bee2eff6a47f2a2ed",
+    "src/north_star/development_pipeline.py": "c3146fcb9134aeba43079875f1f7de1d9c04f2143872eb2effb76ba730aac659"
+  },
+  "supersedes_review": {
+    "review_id": "deleg_da5d3544",
+    "verdict": "MUST_FIX",
+    "scope": "Bounded development integration; no admission or training clearance",
+    "finding": {
+      "severity": "P2",
+      "issue": "Malformed completed manifest can omit missing Parquet files and trigger their recreation before resume refuses.",
+      "required": "Exact required child inventory and read-only partition verification; refusal must not mutate output tree.",
+      "fix_delegation": "deleg_c5228468"
+    },
+    "reviewer_verification": {
+      "focused_passed": 27,
+      "related_passed": 678,
+      "real_artifact": "D:/mev_bot-artifacts/north_star/development/integrated/first100raw_10tx_50existing_v1",
+      "real_artifact_integrity_passed": true,
+      "real_exact_resume_nonmutating": true,
+      "source_policy_bypass_found": false,
+      "canonical_admissions": 0
+    },
+    "historical_artifact_policy": "Preserve v1. Fix changes code identity; do not repin or silently heal old completed runs.",
+    "acceptance": "Wrapper acceptance withheld until fix and independent re-review. Existing verified data is not invalidated by this synthetic resume defect."
+  },
+  "scope": "component repair only; no admission, stage closure or training clearance"
+}

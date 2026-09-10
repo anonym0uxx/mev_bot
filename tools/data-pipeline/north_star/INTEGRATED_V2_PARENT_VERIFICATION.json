@@ -1,0 +1,51 @@
+{
+  "scope": "postfix current-code integrated development run; independent component review still pending",
+  "artifact": "D:\\mev_bot-artifacts\\north_star\\development\\integrated\\first100raw_10tx_50existing_v2",
+  "manifest_sha256": "9cba12869f48e4956d4058f42057bacd99c838b3adbad128c5beeefa5dfd94ff",
+  "verified_child_files": 8,
+  "exact_parquet_rows": 98,
+  "conservation": {
+    "partition": {
+      "input": 98,
+      "output": 98
+    },
+    "raw_projection": {
+      "accepted": 98,
+      "input": 100,
+      "rejected": 2
+    },
+    "recovery_input": {
+      "input": 50,
+      "referenced": 50,
+      "transformed": 0
+    },
+    "transaction_truth": {
+      "attempted": 10,
+      "native_endpoint_rows": 305,
+      "raw_lines_scanned": 23,
+      "reconciled": 9,
+      "rejected": 1,
+      "token_endpoint_rows": 69
+    }
+  },
+  "joins": {
+    "available_at_ms": null,
+    "mint": null,
+    "reason": "NO_VERIFIED_CLOCK_AND_MINT_PROOF",
+    "source_context": null
+  },
+  "states": {
+    "canonical_transaction_admissions": 0,
+    "export_authorized": false,
+    "exposure": "DEVELOPMENT_EXPOSED",
+    "fit_authorized": false,
+    "mint_context_join": "UNKNOWN",
+    "narrative_clock": "UNKNOWN",
+    "recovery_review": "NOT_RELIED_ON_INPUT_ONLY",
+    "rights": "UNKNOWN",
+    "source_admission": "UNADMITTED",
+    "training_eligible": false
+  },
+  "completed_resume_parent_verified": true,
+  "historical_v1_rewritten": false
+}
