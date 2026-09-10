@@ -1,0 +1,9 @@
+{
+  "report_sha256": "624d25a415586e2378113fc4bd27f9ec3f3b35e46e0a1b3043b797c5cc908f8f",
+  "checkpoint_hashes_checked": 21,
+  "row_count": 33581765,
+  "null_sol_amounts": 2357752,
+  "timestamp_decreases": 26840835,
+  "source_semantics": "provider observations, not verified executed fills or calibrated economics",
+  "independent_source_rescan": "running"
+}
