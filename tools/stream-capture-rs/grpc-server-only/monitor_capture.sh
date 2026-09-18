@@ -9,7 +9,10 @@ MAX_SECS=21600     # 6 hours hard cap
 POLL=180           # 3 minutes
 RESTART_MAX=5      # max auto-restarts
 
-export HELIUS_API_KEY="997e4da5-22ad-4b66-af51-c7a7721f2c50"
+# Credentials come from the environment — never from this file. The key that used to
+# live here was committed to a public remote by accident and MUST be treated as
+# compromised: rotate it at Helius and export the new one before running.
+: "${HELIUS_API_KEY:?HELIUS_API_KEY must be exported (rotate the leaked key first)}"
 export LASERSTREAM_ENDPOINT="https://laserstream-mainnet-lax.helius-rpc.com"
 export WALLET_ADDRESS="7ZwrFiGVE8dsEknqx879C7oV31gtR95abk8SLDLTR9DC"
 export TRAINING_CAPTURE_DIR="$DATA_DIR"
