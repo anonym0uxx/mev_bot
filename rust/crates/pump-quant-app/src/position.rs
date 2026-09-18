@@ -513,9 +513,10 @@ impl HeldPosition {
     ///   exactly, on every tranche, from the single curve authority. Keeping both was
     ///   double-counting.
     /// * `tip_lamports` (10_000 a tranche) becomes
-    ///   [`crate::cost_model::FIXED_LAMPORTS_PER_LEG`] (150_000 a tranche), the same
-    ///   per-signature figure the gate now amortises. The old pair disagreed by 10×
-    ///   about the price of one transaction.
+    ///   [`crate::cost_model::FIXED_LAMPORTS_PER_LEG`] (10_000 a tranche — the
+    ///   authority's measured p50 per leg, `cost_authority.py::FIXED_LAMPORTS_PER_LEG_P50`),
+    ///   the same per-signature figure the gate now amortises. The old pair disagreed
+    ///   by 10× about the price of one transaction.
     ///
     /// The ATA deposit is NOT charged here. It is a per-MINT cost, not a per-tranche
     /// one, and a function that sees one tranche of one position cannot know whether a

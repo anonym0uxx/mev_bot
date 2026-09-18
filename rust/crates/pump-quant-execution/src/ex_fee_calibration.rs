@@ -25,7 +25,11 @@
 /// The flat fallback per-leg cost in lamports (mirrors the app crate's
 /// `FIXED_LAMPORTS_PER_LEG`). Inlined here to avoid a cyclic dependency
 /// (app depends on execution, not vice versa).
-const FIXED_LAMPORTS_PER_LEG: u64 = 150_000;
+///
+/// SOURCE OF TRUTH: `cost_authority.py::FIXED_LAMPORTS_PER_LEG_P50` = 10_000
+/// lamports/leg. This mirror must track it; it read 150_000 while the app crate
+/// read the same value, and was left stale by the cost-authority refactor.
+const FIXED_LAMPORTS_PER_LEG: u64 = 10_000;
 
 /// A fee-calibration record (version 1). Produced by the sampler from
 /// observed priority-fee market data.

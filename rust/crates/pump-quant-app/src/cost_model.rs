@@ -108,16 +108,19 @@ const BPS_DENOM: u128 = 10_000;
 
 /// **The fixed lamports one landed transaction costs: priority fee + Jito tip.**
 ///
-/// Operator-set, deliberately conservative (2026-07-28 decision). It replaces BOTH
-/// numbers the split cost model carried — the gate's `gate_base_fixed_lamports` of
-/// 200_000 for a whole round trip (i.e. ~100_000 a leg) and the lifecycle's
-/// `tip_lamports` of 10_000 a tranche, which were a 10× disagreement about the price
-/// of the same signature.
+/// The SINGLE source of truth is `cost_authority.py::FIXED_LAMPORTS_PER_LEG_P50`
+/// (re-exported from `exit_mechanics.py`): **10_000 lamports**, the measured p50
+/// network+priority fee for one landed leg. It replaces BOTH numbers the split cost
+/// model carried — the gate's `gate_base_fixed_lamports` of 200_000 for a whole round
+/// trip (i.e. ~100_000 a leg) and the lifecycle's `tip_lamports` of 10_000 a tranche —
+/// which were a 20× disagreement about the price of the same signature. Pinned by
+/// `the_fixed_per_leg_cost_is_the_cost_authoritys_ten_thousand_lamports` so it cannot
+/// drift from the authority again.
 ///
 /// This is a PER-LEG figure. A round trip pays it `1 + exit_tranches` times, and the
 /// fail-rate multiplier inflates it further, because a transaction that does not land
 /// still paid its priority fee and its tip.
-pub const FIXED_LAMPORTS_PER_LEG: u64 = 150_000;
+pub const FIXED_LAMPORTS_PER_LEG: u64 = 10_000;
 
 // ---------------------------------------------------------------------------
 // COMPUTE-UNIT COST MODEL
@@ -128,15 +131,15 @@ pub const FIXED_LAMPORTS_PER_LEG: u64 = 150_000;
 //
 // A pump.fun buy (create ATA + transfer) consumes ~25k–40k CU depending on
 // account count. A sell (transfer + close ATA) consumes ~15k–25k CU. The
-// `FIXED_LAMPORTS_PER_LEG` above is a conservative flat estimate, but for
-// accurate net-SOL modelling we need a CU-aware component that scales with
-// actual compute consumption and the current priority-fee market price.
+// authority's flat `FIXED_LAMPORTS_PER_LEG` (10_000) is the measured p50 per leg,
+// NOT an upper bound: the CU-aware component below can and does exceed it, and it
+// scales with actual compute consumption and the current priority-fee market price.
 //
 // The model: `leg_fee = base_gas + cu_priority_fee + jito_tip`, where
 // `cu_priority_fee = ceil(cu_consumed * cu_price_lamports / BPS_DENOM)`.
 // When `cu_price_lamports == 0` (no priority-fee market data), the model
-// falls back to the flat `FIXED_LAMPORTS_PER_LEG` — fail-closed to the
-// conservative flat estimate, never a fabricated low number.
+// returns the flat `FIXED_LAMPORTS_PER_LEG` — fail-closed to the authority's
+// measured per-leg figure, never a fabricated CU price.
 
 /// Conservative estimate of compute units consumed by a pump.fun buy
 /// (create-ATA + bonding-curve buy instruction). 40k CU covers the
@@ -179,10 +182,11 @@ pub fn cu_priority_fee(cu_consumed: u64, cu_price_lamports: u64) -> u64 {
 /// Total per-leg cost when CU-aware pricing is available.
 /// `leg_cost = base_gas + cu_priority_fee + jito_tip`.
 ///
-/// When `cu_price_lamports == 0`, falls back to `FIXED_LAMPORTS_PER_LEG`
-/// (the conservative flat estimate). Never returns less than the flat
-/// fallback — CU-aware pricing can only ADD cost, never subtract it,
-/// because the flat estimate already assumes the worst case.
+/// When `cu_price_lamports == 0`, returns `FIXED_LAMPORTS_PER_LEG` (the
+/// authority's measured per-leg figure) directly. For any nonzero CU price the
+/// CU-aware total is base gas + priority + Jito tip = 5_000 + … + 100_000, which
+/// is always ABOVE that flat figure, so the `.max()` floor below is inert on this
+/// path and retained only as a belt-and-braces guard.
 #[inline]
 #[must_use]
 pub fn leg_cost_lamports(cu_consumed: u64, cu_price_lamports: u64) -> u64 {
@@ -211,13 +215,29 @@ pub fn sell_leg_cost_lamports(cu_price_lamports: u64) -> u64 {
     leg_cost_lamports(CU_SELL_ESTIMATE, cu_price_lamports)
 }
 
-/// pump.fun's per-trade fee **on the bonding curve**: 1.25% = 125 bps, charged on
-/// EACH leg.
+/// The bonding-curve venue fee **per leg**, in integer bps: the MEASURED rate.
+///
+/// This was 125 — pump.fun's *nominal* 1.25% schedule — while the model's prompt and
+/// every label were built from the measured **94.63 bp/side** (`cost_authority.py::
+/// BONDING_FEE_BPS_MEASURED`, measured over 65,927 clean single-hop swaps; the exact
+/// value is `VENUE_FEE_BPS_MEASURED_X100` below). The engine therefore believed a round
+/// trip cost ~61 bp more than the model was told, in both directions: it refused real
+/// edges, and it let the model add into moves that do not clear the true cost.
+///
+/// 95 is that measurement rounded to whole bps — the residual is 0.37 bp/side, against
+/// the 30 bp/side being corrected. The corpus and reward engine carry the exact 94.63.
 ///
 /// The schedule is tiered on SOL-denominated market cap and the first tier break sits
 /// at 420 SOL of market cap. See [`venue_fee_bps_per_leg`] for why that fact means
 /// this rate is the only one a pre-graduation strategy can ever pay.
-pub const VENUE_FEE_BPS_CURVE: u32 = 125;
+pub const VENUE_FEE_BPS_CURVE: u32 = 95;
+
+/// The measured curve fee in hundredths of a bp: 9_463 = 94.63 bp/side.
+///
+/// This is the authority — `cost_authority.py::BONDING_FEE_BPS_MEASURED` and the number
+/// the model's prompt states. [`VENUE_FEE_BPS_CURVE`] is this value in whole bps, and
+/// the drift-guard test below pins them together so the two can never diverge again.
+pub const VENUE_FEE_BPS_MEASURED_X100: u32 = 9_463;
 
 /// The per-leg venue fee **after graduation**, on the migrated PumpSwap pool: 30 bps.
 ///
@@ -245,7 +265,8 @@ pub const FIRST_FEE_TIER_BREAK_MCAP_LAMPORTS: u128 = 420_000_000_000;
 /// **The tier break sits 9 SOL of market cap ABOVE the end of the curve.** That
 /// single fact is why no pre-graduation band can buy fee relief: every reserve a
 /// bonding-curve strategy can ever hold — launch, the operator's $9k–$20k target
-/// band, the last lamport before migration — pays the top 125 bps a leg. A band
+/// band, the last lamport before migration — pays the top tier a leg, which for
+/// this venue is the authority's measured 95 whole bps (94.63 exact). A band
 /// choice buys own-impact (a deeper pool is a smaller participation rate) and buys
 /// nothing at all on fee. Any proposal that justifies a market-cap band by "we move
 /// into a cheaper fee tier" is arithmetically impossible on this venue, and
@@ -822,7 +843,9 @@ mod tests {
     /// **THE FEE TIER BREAK IS UNREACHABLE.** pump.fun's first fee-tier boundary is
     /// at 420 SOL of market cap; the curve is exhausted at 410.88. The whole bonding
     /// curve — launch, the operator's band, the last lamport before migration — pays
-    /// 125 bps a leg, and no pre-graduation band selection can change that.
+    /// the authority's measured curve rate (95 whole bps a leg, 94.63 exact), and no
+    /// pre-graduation band selection can change that. The tier break buys no fee
+    /// relief on this curve regardless of which rate the tier carries.
     #[test]
     fn the_fee_tier_break_is_unreachable_before_graduation() {
         let grad_mcap = crate::curve_state::mcap_lamports(GRADUATION_VSOL_LAMPORTS).unwrap();
@@ -840,7 +863,8 @@ mod tests {
             GRADUATION_VSOL_LAMPORTS - 1,
         ] {
             assert_eq!(venue_fee_bps_per_leg(vsol), VENUE_FEE_BPS_CURVE, "{vsol}");
-            assert_eq!(gate_protocol_bps(vsol), 250, "two legs of curve fee");
+            // Two legs at the authority's measured curve rate: 2 × 95 = 190.
+            assert_eq!(gate_protocol_bps(vsol), 190, "two legs of curve fee");
         }
         // …and only the migrated pool pays less.
         assert_eq!(
@@ -891,8 +915,19 @@ mod tests {
     /// not the deposit — the lazy-hold, close-on-full-exit policy priced.
     #[test]
     fn the_gate_fixed_term_is_legs_of_tip_plus_one_closing_signature() {
-        assert_eq!(gate_base_fixed_lamports(1), 2 * 150_000 + 5_000);
-        assert_eq!(gate_base_fixed_lamports(3), 4 * 150_000 + 5_000);
+        // Structural relation, then the literal, both pinned: the fixed term is
+        // (1 + exit_tranches) legs of the authority's 10_000/leg plus the one close
+        // signature — NOT the ATA deposit.
+        assert_eq!(
+            gate_base_fixed_lamports(1),
+            2 * FIXED_LAMPORTS_PER_LEG + ATA_CLOSE_LAMPORTS
+        );
+        assert_eq!(gate_base_fixed_lamports(1), 25_000);
+        assert_eq!(
+            gate_base_fixed_lamports(3),
+            4 * FIXED_LAMPORTS_PER_LEG + ATA_CLOSE_LAMPORTS
+        );
+        assert_eq!(gate_base_fixed_lamports(3), 45_000);
         // A zero-tranche exit is not free; it is one tranche.
         assert_eq!(gate_base_fixed_lamports(0), gate_base_fixed_lamports(1));
         // It is nowhere near the abandoned-deposit figure, and that is the point.
@@ -922,9 +957,12 @@ mod tests {
         // A 3.3× shift in the right size to trade, from one closing signature.
         assert_eq!(abandoned * 100 / reclaimed, 330);
 
-        // The SHIPPED per-leg fixed cost (150_000) is larger, so both optima move up
-        // together and the ratio compresses — stated so the shipped figure is on the
-        // record next to the anchor's, not inferred from it.
+        // The SHIPPED per-leg fixed cost is now the authority's 10_000 (was 150_000),
+        // so the shipped figures land LOWER than the anchor's, which still charges
+        // 100_000/leg: the reclaimed optimum is set purely by the small fixed term and
+        // falls to ~0.028 SOL, while the abandoned optimum is dominated by the
+        // 2_039_280 deposit and stays near the anchor's ~0.263 SOL. Pinned on the
+        // record so the shipped figure is never inferred from the anchor's.
         let ship_reclaimed =
             optimal_clip_lamports(BAND_VSOL, 2 * FIXED_LAMPORTS_PER_LEG + ATA_CLOSE_LAMPORTS)
                 .unwrap();
@@ -940,8 +978,8 @@ mod tests {
     /// `the_reclaimed_deposit_moves_the_optimal_clip_by_three_times`.
     const MEASURED_OPTIMAL_RECLAIMED: u64 = 79_551_512;
     const MEASURED_OPTIMAL_ABANDONED: u64 = 262_921_263;
-    const MEASURED_SHIP_OPTIMAL_RECLAIMED: u64 = 97_033_440;
-    const MEASURED_SHIP_OPTIMAL_ABANDONED: u64 = 268_727_810;
+    const MEASURED_SHIP_OPTIMAL_RECLAIMED: u64 = 27_780_593;
+    const MEASURED_SHIP_OPTIMAL_ABANDONED: u64 = 252_132_721;
 
     /// `optimal_clip_lamports` really is the minimiser: the cost at `S*` is no worse
     /// than the cost anywhere near it. Verified against the SAME arithmetic
@@ -1015,26 +1053,130 @@ mod tests {
 
     #[test]
     fn leg_cost_never_below_flat_fallback() {
-        // Even with a tiny CU price, the CU-aware cost should never go below
-        // the flat fallback. With CU price = 1, the priority fee is 4 lamports
-        // (40k * 1 / 10k = 4), total = 5_000 + 4 + 100_000 = 105_004, which
-        // is less than FIXED_LAMPORTS_PER_LEG, so the .max() floor kicks in.
-        assert_eq!(buy_leg_cost_lamports(1), FIXED_LAMPORTS_PER_LEG);
+        // PREMISE PARTLY REWRITTEN. The flat fallback is now the authority's measured
+        // p50 of 10_000/leg (was 150_000), so the CU-aware total (base gas 5_000 +
+        // priority + Jito tip 100_000) is ALWAYS ABOVE it for any nonzero CU price and
+        // the `.max()` floor no longer binds on this path — only the `cu_price == 0`
+        // branch returns the flat figure. The property (never below the fallback) still
+        // holds; the old assertion of the exact flat value at CU price 1 was the wrong
+        // number. At CU price 1: 5_000 + 4 + 100_000 = 105_004.
+        assert_eq!(buy_leg_cost_lamports(1), 105_004);
+        assert!(buy_leg_cost_lamports(1) >= FIXED_LAMPORTS_PER_LEG);
     }
 
     #[test]
     fn leg_cost_scales_with_cu_price() {
-        // At CU price = 100, priority fee = 400, total = 105_400 → still < 150k
-        assert_eq!(buy_leg_cost_lamports(100), FIXED_LAMPORTS_PER_LEG);
-        // At CU price = 10_000, priority fee = 40k, total = 145k → still < 150k
-        assert_eq!(buy_leg_cost_lamports(10_000), FIXED_LAMPORTS_PER_LEG);
-        // At CU price = 12_500, priority fee = 50k, total = 155k → exceeds flat
-        assert!(buy_leg_cost_lamports(12_500) > FIXED_LAMPORTS_PER_LEG);
+        // PREMISE REWRITTEN. These used to floor to the flat fallback because that
+        // estimate (150_000) sat above the CU-aware total; with the fallback now the
+        // authority's 10_000/leg the CU-aware path dominates at every nonzero price.
+        // Assert the true computed totals, each base gas 5_000 + priority + 100_000 tip.
+        assert_eq!(buy_leg_cost_lamports(100), 105_400); // 5_000 + 400 + 100_000
+        assert_eq!(buy_leg_cost_lamports(10_000), 145_000); // 5_000 + 40_000 + 100_000
+        assert_eq!(buy_leg_cost_lamports(12_500), 155_000); // 5_000 + 50_000 + 100_000
+        // Monotone in CU price, and never below the flat fallback.
+        assert!(buy_leg_cost_lamports(12_500) > buy_leg_cost_lamports(10_000));
+        assert!(buy_leg_cost_lamports(100) >= FIXED_LAMPORTS_PER_LEG);
     }
 
     #[test]
     fn sell_leg_cost_lower_than_buy_at_same_cu_price() {
         // Sell uses CU_SELL_ESTIMATE (25k) vs buy CU_BUY_ESTIMATE (40k)
         assert!(sell_leg_cost_lamports(20_000) <= buy_leg_cost_lamports(20_000));
+    }
+
+    // -----------------------------------------------------------------------
+    // COST-AUTHORITY DRIFT GUARDS
+    // -----------------------------------------------------------------------
+    //
+    // SOURCE OF TRUTH: `/training/v2/code/src/v2/rl/cost_authority.py`, which
+    // re-exports the measured constants from `exit_mechanics.py`:
+    //
+    //     BONDING_FEE_BPS_MEASURED   = 94.63   (65,927 clean single-hop swaps)
+    //     AMM_VENUE_FEE_BPS_PER_LEG  = 30      (25 bp LP + 5 bp protocol)
+    //     FIXED_LAMPORTS_PER_LEG_P50 = 10_000  (lamports, network+priority per leg)
+    //
+    // The constants in this module MUST track that authority. The 125-vs-94.63
+    // schism persisted for months because the engine owned one number (125, the
+    // venue's nominal schedule) while the model's prompt and every label were built
+    // from another (94.63, the measured rate). These tests read the authority's
+    // values as LITERALS — not off the very constants they guard — so any change to
+    // just one side of the pair fails here instead of silently re-baselining, which
+    // is what makes the schism structurally impossible to reintroduce.
+
+    /// `cost_authority.py::BONDING_FEE_BPS_MEASURED` in hundredths of a bp.
+    /// 9_463 == 94.63 bp/side. A literal, deliberately: a guard that reads the value
+    /// it guards proves nothing.
+    const AUTHORITY_CURVE_FEE_X100: i64 = 9_463;
+    /// `cost_authority.py::FIXED_LAMPORTS_PER_LEG_P50`, lamports per landed leg.
+    const AUTHORITY_FIXED_LAMPORTS_PER_LEG: u64 = 10_000;
+    /// `cost_authority.py::AMM_VENUE_FEE_BPS_PER_LEG` — 25 bp LP + 5 bp protocol.
+    const AUTHORITY_AMM_FEE_BPS: u32 = 30;
+
+    /// **The two curve-fee constants must be the SAME measured rate.** `…_X100` is
+    /// the exact 94.63 bp/side; `VENUE_FEE_BPS_CURVE` is that value rounded to whole
+    /// bps, which can never move it by more than 0.50 bp = 50 hundredths. If either is
+    /// edited independently — the exact failure mode of the old 125-vs-94.63 split —
+    /// this fails.
+    #[test]
+    fn the_two_curve_fee_constants_never_diverge_beyond_whole_bp_rounding() {
+        let rounded_x100 = i64::from(VENUE_FEE_BPS_CURVE) * 100;
+        let drift = (rounded_x100 - i64::from(VENUE_FEE_BPS_MEASURED_X100)).abs();
+        assert!(
+            drift <= 50,
+            "VENUE_FEE_BPS_CURVE ({}) and VENUE_FEE_BPS_MEASURED_X100 ({}) disagree by \
+             {drift}/100 bp. They must both be the ONE measured rate — the whole-bp \
+             rounding of the exact value — tolerance 0.50 bp. Authority: \
+             cost_authority.py::BONDING_FEE_BPS_MEASURED = 94.63 bp/side.",
+            VENUE_FEE_BPS_CURVE,
+            VENUE_FEE_BPS_MEASURED_X100,
+        );
+    }
+
+    /// **Both curve-fee constants must equal the authority**, and `…_CURVE` must be
+    /// exactly the whole-bp rounding of the authority's exact value (round half up:
+    /// (9_463 + 50) / 100 = 95). A drift guard on the pair alone cannot catch BOTH
+    /// being moved together; this one can, because it is anchored off the literal.
+    #[test]
+    fn the_curve_fee_constants_match_the_cost_authority() {
+        assert_eq!(
+            VENUE_FEE_BPS_MEASURED_X100,
+            u32::try_from(AUTHORITY_CURVE_FEE_X100).unwrap(),
+            "VENUE_FEE_BPS_MEASURED_X100 must equal cost_authority.py::\
+             BONDING_FEE_BPS_MEASURED x100 (9_463 == 94.63 bp/side); NOT the venue's \
+             nominal 1.25% schedule (125).",
+        );
+        let rounded_half_up = (AUTHORITY_CURVE_FEE_X100 + 50) / 100;
+        assert_eq!(
+            i64::from(VENUE_FEE_BPS_CURVE),
+            rounded_half_up,
+            "VENUE_FEE_BPS_CURVE must be the whole-bp rounding of the authority's \
+             measured curve fee, i.e. round(94.63) = 95.",
+        );
+        assert_eq!(VENUE_FEE_BPS_CURVE, 95);
+    }
+
+    /// **FIXED_LAMPORTS_PER_LEG must not drift from the authority's 10_000.**
+    /// Pinned to the literal so a bump back toward the old 150_000 (or the gate's
+    /// ~100_000-a-leg figure) fails CI, and re-stated symbolically so the reason is
+    /// legible: this is the measured p50 per landed leg.
+    #[test]
+    fn the_fixed_per_leg_cost_is_the_cost_authoritys_ten_thousand_lamports() {
+        assert_eq!(
+            FIXED_LAMPORTS_PER_LEG, AUTHORITY_FIXED_LAMPORTS_PER_LEG,
+            "FIXED_LAMPORTS_PER_LEG must equal the authority's \
+             cost_authority.py::FIXED_LAMPORTS_PER_LEG_P50 = 10_000 lamports/leg.",
+        );
+        assert_eq!(FIXED_LAMPORTS_PER_LEG, 10_000);
+    }
+
+    /// The AMM leg of the authority — 30 bp/side (25 LP + 5 protocol) — is the other
+    /// half of the binding schedule and must not drift either.
+    #[test]
+    fn the_amm_venue_fee_matches_the_cost_authoritys_thirty_bps() {
+        assert_eq!(
+            VENUE_FEE_BPS_POST_GRADUATION, AUTHORITY_AMM_FEE_BPS,
+            "the AMM venue fee must equal cost_authority.py::\
+             AMM_VENUE_FEE_BPS_PER_LEG = 30 bp/side (25 LP + 5 protocol).",
+        );
     }
 }
