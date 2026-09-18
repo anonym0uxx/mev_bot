@@ -234,10 +234,13 @@ pub struct Config {
     /// notional per round trip that the wallet would never have seen.
     ///
     /// **DEFAULT `false`.** The curve math is built, tested and pinned
-    /// ([`crate::curve_fill`]) but is deliberately NOT yet read by any decision path.
-    /// Arming it changes fill prices and therefore net SOL, so it is a separate gated
-    /// change with its own A/B — leaving it off here keeps this addition a §19
-    /// seed-only digest move with every golden decision number unchanged.
+    /// ([`crate::curve_fill`]) and IS read by the decision path (`engine.rs` →
+    /// `LifecycleParams.curve_exact_fill`). Selling at the observed print credits a price
+    /// the curve would never have given: a 1 SOL tranche into a 30 SOL pool is ~333 bp,
+    /// larger than an AMM's entire modelled round trip. It therefore defaults ON — paper
+    /// fills that omit own-impact are phantom, and every champion-selection or PnL number
+    /// ranked on them is wrong. `false` reproduces the historical (optimistic) fills for
+    /// pinned-number A/Bs.
     pub curve_exact_fill_enable: bool,
 
     // ---- operator target band + per-candidate expected move (both default OFF) ----
@@ -1344,7 +1347,7 @@ impl Config {
             // separate gated change with its own A/B (§56: no decision-plane law is
             // armed before it has paid for itself). Off/zero reproduces today's
             // behaviour byte-for-byte.
-            curve_exact_fill_enable: false,
+            curve_exact_fill_enable: true,
             mcap_band_enable: false,
             mcap_band_lo_lamports: 118_420_000_000,
             mcap_band_hi_lamports: 263_160_000_000,

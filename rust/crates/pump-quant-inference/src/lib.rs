@@ -133,6 +133,40 @@ pub struct InferenceClient {
     agent: ureq::Agent,
 }
 
+/// The pinned SFT chat-template kwargs, mirrored from the training renderer.
+///
+/// THE SERVED PROMPT MUST EQUAL THE TRAINED PROMPT, and this is the half that byte-parity
+/// on the user line cannot prove. Training renders with
+/// `apply_chat_template(..., add_generation_prompt=True, enable_thinking=False)`
+/// (`/training/v2/code/src/v2/rl/prompt_format.py`), which starts generation inside an
+/// **empty, closed** think block: `assistant\n thinking\n\n</think>\n\n`. llama-server's
+/// default template does not do that — it opens a ` thinking` block and leaves it
+/// unclosed, a shape the model never saw in SFT. It then reasons in a register it was not
+/// trained on and drifts off the `DECISION:`/`SIZE:` contract, which the fail-closed parser
+/// turns into *no trade* rather than a visible error.
+///
+/// `enable_thinking: false` is the whole of the training renderer's `TEMPLATE_KWARGS`; the
+/// server applies it to its own template, so the wire form stays the canonical chat request.
+pub const CHAT_TEMPLATE_KWARGS: &str = "{\"enable_thinking\": false}";
+
+/// Build the chat-completions body. Factored out so the template kwargs are a *testable*
+/// property of every request rather than a literal buried in the send path.
+#[must_use]
+pub fn request_body(system: &str, user: &str) -> serde_json::Value {
+    serde_json::json!({
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0.0,
+        "max_tokens": 512,
+        "stream": false,
+        // Served-prompt parity (§9/P1): without this the model is handed an unclosed
+        // think block it never saw in SFT.
+        "chat_template_kwargs": {"enable_thinking": false},
+    })
+}
+
 impl InferenceClient {
     /// Build a client against a llama-server OpenAI-compatible base URL
     /// (e.g. `http://127.0.0.1:8080`), with a per-request timeout.
@@ -155,15 +189,7 @@ impl InferenceClient {
     /// text. Fail-closed: any transport error, non-200, or malformed body is an
     /// `Err`.
     pub fn complete(&self, system: &str, user: &str) -> Result<String, InferenceError> {
-        let body = serde_json::json!({
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": 0.0,
-            "max_tokens": 512,
-            "stream": false,
-        });
+        let body = request_body(system, user);
 
         let resp = self
             .agent
@@ -226,5 +252,29 @@ mod tests {
     fn parse_decision_fails_closed_on_garbage() {
         assert!(parse_decision("hello world").is_err());
         assert!(parse_decision("DECISION: SELL").is_err());
+    }
+}
+
+#[cfg(test)]
+mod served_prompt_parity {
+    use super::*;
+
+    /// THE TEST THAT WOULD HAVE CAUGHT THE GAP. Byte-parity on the rendered user line
+    /// proves the renderer; it says nothing about what the server hands the model. This
+    /// pins the template kwargs on every request body, so the served conversation keeps the
+    /// pinned SFT shape (`enable_thinking: false`) instead of llama-server's default.
+    #[test]
+    fn every_request_pins_the_trained_chat_template_kwargs() {
+        let body = request_body("SYSTEM", "USER");
+        assert_eq!(
+            body["chat_template_kwargs"]["enable_thinking"],
+            serde_json::json!(false),
+            "served prompt would drift off the trained template"
+        );
+        assert_eq!(body["temperature"], serde_json::json!(0.0));
+        assert_eq!(body["stream"], serde_json::json!(false));
+        assert_eq!(body["messages"][0]["role"], serde_json::json!("system"));
+        // The documented constant and the wire body must not disagree.
+        assert!(CHAT_TEMPLATE_KWARGS.contains("enable_thinking"));
     }
 }

@@ -151,7 +151,7 @@ impl LifecycleParams {
             fee_bps: crate::cost_model::VENUE_FEE_BPS_CURVE,
             fixed_lamports_per_leg: crate::cost_model::FIXED_LAMPORTS_PER_LEG,
             exit_impair_bps: 0, // Mode A/B default; engine sets from cfg.fill_mode
-            curve_exact_fill: false, // fill fidelity; MUST be armed for real-data backtests
+            curve_exact_fill: true, // fill fidelity: own-impact ON by default — omitting it makes every paper fill phantom
             into_strength_exit_enable: false, // LAW 5 off by default; operator/challenger arms
             conditional_moon_bag_enable: false, // §Quant-Rev-5 off by default
             moon_bag_acceleration_window: 10, // ~4 seconds at 400ms slot rate
