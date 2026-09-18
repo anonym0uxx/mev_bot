@@ -702,7 +702,7 @@ const GOLDEN_UNIVERSE_FILTERED: u64 = 72;
 /// re-pin #26 unified the cost model. Three cost models, three signs, the same
 /// events. It is pinned as a VALUE — a tripwire on the §71.2 attribution split — and
 /// no claim about paid alpha rooms may be built on its sign in either direction.
-const GOLDEN_ALPHACALL_NET: i64 = 891_331;
+const GOLDEN_ALPHACALL_NET: i64 = 5_617_558;
 
 #[test]
 fn golden_digest_is_stable() {

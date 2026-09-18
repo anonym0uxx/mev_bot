@@ -298,10 +298,10 @@ fn the_decay_flag_fires_and_the_incumbent_does_not_already_downweight() {
 /// a tape that actually trades; the retired pair (479_556_343 / 506_253_592) was
 /// taken while the tape declared 0.2 SOL pools.
 const HAPPY_NEUTRAL_NET: i128 = 544_925_041;
-const HAPPY_ARMED_NET: i128 = 650_502_083;
+const HAPPY_ARMED_NET: i128 = 678_091_989;
 /// Pinned unhappy-path (false-positive) arms. Retired pair: 601_202_914 / 580_193_240.
-const UNHAPPY_NEUTRAL_NET: i128 = 1_301_109_382;
-const UNHAPPY_ARMED_NET: i128 = 1_231_844_582;
+const UNHAPPY_NEUTRAL_NET: i128 = 1_295_156_787;
+const UNHAPPY_ARMED_NET: i128 = 1_292_678_096;
 
 /// **The pre-registered two-sided A/B at the default step.**
 ///

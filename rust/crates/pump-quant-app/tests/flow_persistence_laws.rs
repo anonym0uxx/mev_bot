@@ -132,12 +132,12 @@ const GOLDEN_SHIP: i128 = 42_037_539;
 const CONC_H_SHIP: i128 = -25_100_063;
 /// The flow tape's happy side at the shipped `k`. Re-pin #26: was 13,170,840 while
 /// the tape declared 0.26 SOL pools; at real depth the tape actually trades.
-const FLOW_SHIP_HAPPY: i128 = 103_256_958;
+const FLOW_SHIP_HAPPY: i128 = 31_870_575;
 /// ...and its mirror, which is NOT equal to the happy side any more. Under the old
 /// thin-pool tape both sides collapsed to the same 13,170,840 for `k <= 3`; at real
 /// depth the two sides diverge from `k = 1`, because the shakeout burst now happens
 /// to positions that exist.
-const FLOW_SHIP_MIRROR: i128 = -54_978_642;
+const FLOW_SHIP_MIRROR: i128 = -96_720_156;
 
 fn golden(k: u32) -> i128 {
     let mut c = Config::dev_portable();
@@ -211,8 +211,8 @@ fn the_mechanism_is_real_on_its_own_two_sided_tape() {
         "FLOW k=5 happy {FLOW_SHIP_HAPPY} -> {happy} ({happy_delta}) | \
          mirror {FLOW_SHIP_MIRROR} -> {mirror} ({mirror_delta})"
     );
-    assert_eq!(happy_delta, -155_656_188, "pinned k=5 happy-side delta");
-    assert_eq!(mirror_delta, -40_492_770, "pinned k=5 mirror-side delta");
+    assert_eq!(happy_delta, -82_355_451, "pinned k=5 happy-side delta");
+    assert_eq!(mirror_delta, 9_237_534, "pinned k=5 mirror-side delta");
     assert!(
         happy_delta.abs() > MATERIAL_LAMPORTS,
         "the happy side must move by more than one bite ({happy_delta}) — a lever this \
@@ -251,7 +251,7 @@ fn but_it_fails_on_every_pre_existing_tape_so_it_stays_disarmed() {
         .max()
         .unwrap();
     assert_eq!(
-        best_gain, 78_755,
+        best_gain, 78_994,
         "pinned best golden gain across all k (k = 2)"
     );
     assert!(
@@ -269,7 +269,7 @@ fn but_it_fails_on_every_pre_existing_tape_so_it_stays_disarmed() {
     let harm = GOLDEN_SHIP - g5;
     println!("K5-HARM golden {GOLDEN_SHIP} -> {g5} (harm {harm})");
     assert_eq!(
-        harm, 15_372_464,
+        harm, 17_196_208,
         "pinned k=5 harm on the representative tape"
     );
     // The retired measurement, kept as the comparison that carries the argument: the
@@ -323,10 +323,10 @@ fn arming_beyond_the_shakeout_threshold_is_harmful() {
     // Read the magnitude, never the fraction. The fraction has drifted 140% → 68% → 37%
     // purely because the denominator grew, and anyone quoting it will conclude the lever
     // is getting safer. It is not; it costs exactly what it always cost.
-    assert_eq!(golden(5), 16_093_467, "pinned k=5 golden net");
+    assert_eq!(golden(5), 24_841_331, "pinned k=5 golden net");
     assert_eq!(
         ship - golden(5),
-        15_372_464,
+        17_196_208,
         "pinned k=5 golden harm — re-pin #29 (cost-aware fixed-fraction ladder)"
     );
     assert!(

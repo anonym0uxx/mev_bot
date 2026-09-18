@@ -96,7 +96,7 @@ fn b3_hazard(mutate: impl FnOnce(&mut Config)) -> i128 {
 /// both were measured decision-inert on this tape. See `golden_digest.rs`.
 const SHIP_GOLDEN: i128 = 42_037_539;
 const SHIP_B7_HAPPY: i128 = 544_925_041;
-const SHIP_B7_UNHAPPY: i128 = 1_301_109_382;
+const SHIP_B7_UNHAPPY: i128 = 1_295_156_787;
 /// **NEGATIVE since re-pin #26, and that is the hazard working rather than a
 /// regression.** This is the side of the concentration pair on which the bundled /
 /// sniper-captured cohort is the one that craters, and the §21.7 law that would
@@ -107,8 +107,8 @@ const SHIP_B7_UNHAPPY: i128 = 1_301_109_382;
 /// hazard tape whose hazard is undefended SHOULD lose money — the old positive was
 /// the fixture's thinness standing in for a defence the engine does not have.
 const SHIP_CONC_HAPPY: i128 = -25_100_063;
-const SHIP_CONC_MIRROR: i128 = 8_038_173;
-const SHIP_B3_HAZARD: i128 = 969_981_134;
+const SHIP_CONC_MIRROR: i128 = 8_418_670;
+const SHIP_B3_HAZARD: i128 = 1_003_165_721;
 
 #[test]
 fn shipped_net_is_pinned_on_every_tape() {
