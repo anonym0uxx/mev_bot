@@ -1,7 +1,18 @@
 //! Leaf th_build: deterministic per-entry thesis construction (criterion 43).
 
-use pump_quant_strategy::strategy_id::fnv1a_64;
 use pump_quant_strategy::thesis::{build_thesis, Direction, ThesisCondition, ThesisInputs};
+
+/// FNV-1a (64-bit), an INDEPENDENT reference implementation. Deliberately not the
+/// crate's own helper (now private in `thesis.rs`): this test must check the id
+/// against the published algorithm, not against itself.
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
 
 fn sample_inputs() -> ThesisInputs {
     ThesisInputs {
