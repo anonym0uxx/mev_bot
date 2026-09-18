@@ -20,7 +20,7 @@
 //! - The decomposition is additive: entry_edge + exit_edge + sizing_edge +
 //!   selection_edge + residual = total_pnl.
 //!
-//! ## Constitution compliance
+//! ## Operator compliance
 //! - §56.12: Edge decomposition for attribution
 //! - §22: Integer-only, no floats
 //! - §16: No look-ahead — only uses past trade data

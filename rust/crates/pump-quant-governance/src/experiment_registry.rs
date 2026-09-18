@@ -1,5 +1,5 @@
 //! Narrative/social/meta feature-experiment registry + admission binding
-//! (constitution §46; criterion 84).
+//! (operator §46; criterion 84).
 //!
 //! ## Why this exists
 //! The generic feature-admission guard (`pump_quant_strategy::feature_admission`)
@@ -23,7 +23,7 @@
 //! before a narrative-scoped feature may enter shadow. The generic per-feature
 //! guard stays where it is; this is the *family-scoped* binding on top of it.
 //!
-//! ## Constitution constraints (§19, §22)
+//! ## Operator constraints (§19, §22)
 //! Pure, total, deterministic. No floating point, no wall-clock, no RNG, no I/O.
 //! Required-experiment order is fixed (ascending [`ExperimentId`]) so the reject
 //! reason for a given registry state is always identical.

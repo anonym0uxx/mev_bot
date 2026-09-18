@@ -1,5 +1,5 @@
 //! `fdr` — Benjamini–Hochberg false-discovery-rate control within an experiment
-//! family (constitution §51).
+//! family (operator §51).
 //!
 //! When many strategy variants are tested against the same reconciled data, the
 //! best raw p-value is not evidence — the family must be corrected for multiple

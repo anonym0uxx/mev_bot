@@ -19,7 +19,7 @@
 //! the instruction targets a known program AND (when wired) the RPC
 //! explicitly reports a successful simulation with no errors.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - criterion 77(b): live-state simulation rung.
 //! - §22: deterministic core stays pure; this module is the I/O boundary.
 //! - §41: construction parity — simulation validates the built instruction

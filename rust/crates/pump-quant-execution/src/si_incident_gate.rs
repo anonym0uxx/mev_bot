@@ -30,7 +30,7 @@
 //! a model-derived type into the deterministic exit path therefore fails to
 //! compile.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - **Criterion 80:** incident-branch (model-produced) remediations cannot
 //!   reach chain without passing live-state simulation and the signing policy.
 //! - **Criterion 79:** the deterministic ExitRemediationLadder recovers exits
@@ -91,7 +91,7 @@ pub enum SellUnprovable {
 /// unconstructible market, an empty position, empty reserves, or a rounded-to-
 /// zero out-amount all yield an error.
 ///
-/// Constitution §22: widened `u128` intermediates, no floats; overflow on the
+/// Operator §22: widened `u128` intermediates, no floats; overflow on the
 /// widened multiply/add is handled with `checked_*`.
 pub fn simulate_sell(pos: &Position, state: &DecodedMarket) -> Result<SellProof, SellUnprovable> {
     if !state.constructible {
@@ -132,7 +132,7 @@ pub fn simulate_sell(pos: &Position, state: &DecodedMarket) -> Result<SellProof,
 /// Deterministic signing mixer used by [`KeyHandle`]. Exposed as a free
 /// function so tests can compute the expected signature independently; it is a
 /// boundary demonstration, **not** a real signature scheme. Uses
-/// `wrapping_*`-by-contract arithmetic (constitution: explicit overflow).
+/// `wrapping_*`-by-contract arithmetic (operator: explicit overflow).
 pub fn sign_digest(seed: u64, digest: u64) -> u64 {
     digest
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)

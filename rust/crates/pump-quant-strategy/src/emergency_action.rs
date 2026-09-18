@@ -4,11 +4,11 @@
 //! action only when it is **monotonically non-increasing** on every risk/exposure
 //! axis relative to the current settings — an emergency fix may disable entries,
 //! reduce size, tighten a bound, or shrink route authority, but may never increase
-//! size, loosen risk, enable entries, or expand route authority (constitution
+//! size, loosen risk, enable entries, or expand route authority (operator
 //! §42). Any risk-increasing axis rejects the action; an admitted action is
 //! automatically flagged for mandatory retrospective validation (quarantine).
 //!
-//! ## Constitution
+//! ## Operator
 //! §42 Emergency Fix Boundary. §22 integer/fixed-point; deterministic, pure.
 
 /// Risk/exposure parameters an emergency action may touch. Every field is

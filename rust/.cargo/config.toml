@@ -1,4 +1,4 @@
-# Pinned build configuration (constitution §24, criterion 109).
+# Pinned build configuration (operator §24, criterion 109).
 # The CPU pin is compiled-in so it doesn't rely on RUSTFLAGS being set
 # in every shell. The release profile in the workspace Cargo.toml carries
 # the deploy-level LTO and panic=abort; this config pins the baseline

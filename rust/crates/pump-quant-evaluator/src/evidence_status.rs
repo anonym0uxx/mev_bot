@@ -1,5 +1,5 @@
 //! `evidence_status` — evidence-status label enum and the proven-live-edge guard
-//! (constitution §55, §26, §64).
+//! (operator §55, §26, §64).
 //!
 //! Responsibility: give every cohort a single, ordered evidence label and forbid
 //! the central honesty violation — a paper or shadow cohort claiming a *proven
@@ -11,7 +11,7 @@
 //!
 //! Pure type + guard, no arithmetic — trivially deterministic.
 
-/// Ordered evidence-strength label for a cohort/edge claim (constitution §55).
+/// Ordered evidence-strength label for a cohort/edge claim (operator §55).
 ///
 /// The ordering is the promotion ladder: each variant strictly outranks the
 /// ones before it. Only [`EvidenceStatus::ReconciledLive`] and above rest on
@@ -22,9 +22,9 @@ pub enum EvidenceStatus {
     Paper,
     /// Live market data, decisions recorded, but orders not actually sent.
     Shadow,
-    /// Minimum real capital deployed as a paid probe (constitution §26, §64).
+    /// Minimum real capital deployed as a paid probe (operator §26, §64).
     LiveProbe,
-    /// Live fills reconciled to finalized chain truth (constitution §14).
+    /// Live fills reconciled to finalized chain truth (operator §14).
     ReconciledLive,
     /// Reconciled-live evidence that has additionally cleared the promotion
     /// gates — the only status that asserts a proven live edge.
@@ -34,7 +34,7 @@ pub enum EvidenceStatus {
 impl EvidenceStatus {
     /// True iff this status is backed by real, reconciled live capital.
     ///
-    /// Responsibility (constitution §55): paper and shadow are counterfactual;
+    /// Responsibility (operator §55): paper and shadow are counterfactual;
     /// live-probe and above put real capital at risk. This is the dividing line
     /// the guard below enforces.
     pub fn is_live_backed(&self) -> bool {
@@ -57,7 +57,7 @@ impl EvidenceStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvidenceError {
     /// A paper or shadow cohort tried to claim a proven live edge — forbidden
-    /// outright (constitution §55): no counterfactual cohort is ever promotable
+    /// outright (operator §55): no counterfactual cohort is ever promotable
     /// straight to proven-live.
     CounterfactualCohort {
         /// The offending source status.
@@ -73,7 +73,7 @@ pub enum EvidenceError {
 
 /// Attempt to tag a cohort as having a proven live edge.
 ///
-/// Responsibility (constitution §55): the type guard the leaf exists for. A
+/// Responsibility (operator §55): the type guard the leaf exists for. A
 /// promotion to [`EvidenceStatus::ProvenLiveEdge`] is granted **only** from
 /// [`EvidenceStatus::ReconciledLive`]. Paper and shadow are rejected as
 /// [`EvidenceError::CounterfactualCohort`] — they can *never* be tagged

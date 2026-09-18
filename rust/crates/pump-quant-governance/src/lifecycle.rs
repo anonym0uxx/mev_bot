@@ -1,4 +1,4 @@
-//! Source-registry lifecycle finite-state machine (constitution §18.8).
+//! Source-registry lifecycle finite-state machine (operator §18.8).
 //!
 //! ## Responsibility
 //! Enforce the legal lifecycle transitions of an observation source in the
@@ -15,7 +15,7 @@
 //! fabricate Jito continuity past the announced shutdown").
 //!
 //! ## "Replaced" is a field, not a state (§18.8 fidelity)
-//! The constitution's authoritative lifecycle-state set is exactly the seven
+//! The operator's authoritative lifecycle-state set is exactly the seven
 //! above; `replacement status` is a *separate* registry field, not a lifecycle
 //! state. So the "TRANSITIONAL → SUNSET → Replaced" story is modeled as a
 //! source reaching [`SourceLifecycleStatus::Retired`] while carrying a
@@ -44,7 +44,7 @@ pub enum SourceAuthorityClass {
     ReconciledExecution,
 }
 
-/// Source lifecycle states (§18.8), exactly the constitution's authoritative
+/// Source lifecycle states (§18.8), exactly the operator's authoritative
 /// seven.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SourceLifecycleStatus {
@@ -162,7 +162,7 @@ pub struct TransitionRecord {
 /// A registered source with its immutable authority, current lifecycle status,
 /// optional replacement pointer, and a bounded transition audit trail.
 ///
-/// ## Constitution §18.8 / §57
+/// ## Operator §18.8 / §57
 /// Models one source-registry row. `authority` is immutable. `replaced_by`
 /// records the §18.8 "replacement status" as a field. The audit `log` is a
 /// fixed-capacity ring buffer (§57 memory bound): once full, the oldest record

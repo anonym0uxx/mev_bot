@@ -1,5 +1,5 @@
 //! `convexity_enrich` — builder for real (non-degenerate) convexity events
-//! (constitution §49).
+//! (operator §49).
 //!
 //! The unified ledger in [`crate::convexity_ledger`] folds [`ConvexityEvent`]s,
 //! but those events have to be *constructed* from what actually happened at each

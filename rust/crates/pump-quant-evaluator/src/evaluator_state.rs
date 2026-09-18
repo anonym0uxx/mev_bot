@@ -1,4 +1,4 @@
-//! `evaluator_state` — persistent state across refiner cycles (constitution §51, §56.3).
+//! `evaluator_state` — persistent state across refiner cycles (operator §51, §56.3).
 //!
 //! The refiner (`pq-refiner`) is invoked as a cron-triggered batch job. Without
 //! persistent state, each cycle is stateless: it cannot accumulate SPRT evidence
@@ -19,7 +19,7 @@
 //! If the state file is missing (first cycle), `initial()` produces a clean
 //! state with zero trials and uniform Beta(1,1) posteriors.
 //!
-//! ## Constitution compliance
+//! ## Operator compliance
 //!
 //! - §51: Cumulative trial count for FDR persisted across all cycles
 //! - §56.3: Strategy lifecycle stages tracked reproducibly

@@ -155,7 +155,7 @@ pub fn launch_age(concentrated: bool, k: u64, age: u32) -> u32 {
 /// Seed one mint's launch: creation sighting (⇒ `Exact` basis), on-chain confirm,
 /// then the accumulation phase described by [`launch_base`].
 ///
-/// `wash` adds round-trip QUOTE churn — the corroborating leg the constitution
+/// `wash` adds round-trip QUOTE churn — the corroborating leg the operator
 /// requires before concentration may refuse rather than merely shrink. It is the
 /// one place the two cohorts' quote flow is allowed to differ, and it applies to
 /// only half the concentrated cohort so that both the haircut-only path and the

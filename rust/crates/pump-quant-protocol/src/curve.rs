@@ -10,7 +10,7 @@
 //!   with a basis-point fee, computed full-width in `u128` with no precision
 //!   loss.
 //!
-//! # Constitution
+//! # Operator
 //! * §22 — no `f64`. The legacy `priceImpactPct` (the only float in the source)
 //!   is intentionally NOT ported: it never controlled an outcome. All math is
 //!   integer; intermediate products are widened to `u128` so `k` cannot
@@ -39,7 +39,7 @@ const FEE_DENOMINATOR: u128 = 10_000;
 /// Returns `None` on overflow, on an empty/zero-reserve curve that would
 /// divide by zero, or if the result does not fit in `u64`.
 ///
-/// # Constitution
+/// # Operator
 /// §22 — integer-only; all arithmetic widened to `u128` and checked.
 pub fn pump_amount_out(curve: &PumpCurve, sol_in: u64) -> Option<u64> {
     let v_sol = curve.virtual_sol as u128;
@@ -80,7 +80,7 @@ pub fn pump_amount_out(curve: &PumpCurve, sol_in: u64) -> Option<u64> {
 /// Returns `None` if `fee_bps > 10_000` (nonsensical fee), on any arithmetic
 /// overflow, or when `reserve_in + amount_in_net == 0` (empty pool).
 ///
-/// # Constitution
+/// # Operator
 /// §22 — integer-only, full-width, checked at every step.
 pub fn pumpswap_amount_out(
     reserve_in: u128,

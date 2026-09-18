@@ -7,7 +7,7 @@
 //! `tools/social-ingest/normalize.py` defines and
 //! `pump_quant_ingest::social_parse::parse_social_event` consumes.
 //!
-//! # Constitution discipline (binding)
+//! # Operator discipline (binding)
 //! * **§22 determinism boundary.** The wall clock ([`SystemTime`]) is read here
 //!   and ONLY here, at the capture edge, to stamp `observed_at_ns`. The parse and
 //!   emit modules are pure; `--replay` mode is fully deterministic (synthetic

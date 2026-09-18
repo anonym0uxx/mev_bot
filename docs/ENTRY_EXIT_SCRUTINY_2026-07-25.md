@@ -146,7 +146,7 @@ now far past one bite). This is textbook overbetting past the Kelly-optimal frac
 P1, P2, and P5.** The shipped 667 is the only value positive on all six tapes — the principled
 conservative point, with comfortable margin below the blow-up. **Argue against raising it.** (It is also
 derived from Kelly theory, not tape-fitted; replacing a principled risk parameter with an in-sample
-curve-fit is the exact mistake the constitution forbids.)
+curve-fit is the exact mistake the operator forbids.)
 
 **`total_risk_cap_bp` (2,100), `max_concurrent_positions` (3), `floor_fraction_bps` (2,500):** lowering
 any of them hurts (fewer/smaller positions → less net on golden/B7); raising them is **saturated** on the
@@ -191,7 +191,7 @@ that makes the negative machine-checked, plus the drift remediation surfaced by 
    504/13/457); the most dangerous was the activation one-shot ordering Hermes to verify the WRONG digest,
    which would false-trigger a determinism-break halt on a healthy build. Also corrected: BRAIN_SYSTEM.md
    still calling B3 "DEFAULT OFF" (it is ARMED), the recall-radius default (8, not 12), and closed gaps
-   described as open. The byte-frozen constitution + mirror were not touched.
+   described as open. The byte-frozen operator + mirror were not touched.
 
 **Golden digest is unchanged (3_604_954_302_921_337_343 / net 15,410,801): no decision path changed, no
 re-pin.** The study added measurement and guards only.

@@ -5,7 +5,7 @@
 //! scorer: a **two-point** signed velocity in **basis points per second**,
 //! derived from a previous and current fixed-point price plus the elapsed time.
 //!
-//! # Constitution constraints (§22)
+//! # Operator constraints (§22)
 //!
 //! Pure, stateless, deterministic, and integer-only. Intermediate products use
 //! `i128` to avoid overflow, and the result is saturated into `i64` -- there is
@@ -32,7 +32,7 @@
 ///
 /// Responsibility: turn two fixed-point price samples + a time delta into the
 /// signed bps/sec velocity consumed by pre-entry momentum scoring.
-/// Constitution §22: integer-only, `i128` intermediates, saturating into `i64`.
+/// Operator §22: integer-only, `i128` intermediates, saturating into `i64`.
 #[inline]
 pub fn velocity_bps_per_s(prev_price_fp: u64, cur_price_fp: u64, dt_ms: u64) -> i64 {
     if prev_price_fp == 0 || dt_ms == 0 {

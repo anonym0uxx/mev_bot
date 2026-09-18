@@ -39,7 +39,7 @@ on-chain confirmation and §97 makes per-swap event-driven position state law. *
 same mint at the same time** — that is the redundancy to eliminate, and the way to eliminate it is
 not to dedupe after the fact but to keep the two subscription sets **disjoint by construction**.
 
-The constitution already forces most of this. PumpPortal is DISCOVERY tier, so it *cannot* be the
+The operator already forces most of this. PumpPortal is DISCOVERY tier, so it *cannot* be the
 canonical input to a gate decision no matter how cheap it is; and LaserStream is the only thing that
 *can*, so paying for it to deliver mints we will never trade is pure waste. The allocation below is
 what those two facts imply once you follow them.
@@ -245,7 +245,7 @@ catches only for *total* silence, not for partial loss.
 
 ## 6. Four unbounded paths, all in the capture lanes and none in the Rust workspace
 
-**(1) No credit meter, no byte counter, no cost monitor — and the constitution requires all three.**
+**(1) No credit meter, no byte counter, no cost monitor — and the operator requires all three.**
 §18.4 demands *"Continuously calculate and monitor: LaserStream data usage, credits consumed,
 estimated monthly cost, data-volume projections… Cost monitoring is production health."* §31
 enumerates the metrics by name. Nothing in `tools/stream-capture-rs` counts a byte.

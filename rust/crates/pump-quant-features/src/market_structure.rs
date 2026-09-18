@@ -1,6 +1,6 @@
-//! Deterministic bar-level market-structure feature family (constitution 21.6).
+//! Deterministic bar-level market-structure feature family (operator 21.6).
 //!
-//! Responsibility: compute the *price-structure* states the constitution names in
+//! Responsibility: compute the *price-structure* states the operator names in
 //! the "Bar and market-structure feature family" — compression/expansion,
 //! breakout-and-retest, failed-breakdown/reclaim, and sweep-and-reclaim — over the
 //! multi-timeframe [`Bar`] sequences produced by [`crate::bar::BarBuilder`]. These
@@ -9,12 +9,12 @@
 //! flow accumulates.
 //!
 //! Every function here is pure and deterministic over the bar slice it is given
-//! (constitution 20 point-in-time: a detector only ever reads bars at or before the
+//! (operator 20 point-in-time: a detector only ever reads bars at or before the
 //! decision index — the caller passes the closed bars it is allowed to see). All
 //! arithmetic is integer / fixed-point [`i128`] in [`crate::types::PRICE_SCALE`]
-//! units with explicit saturating overflow contracts (constitution 22) — no
+//! units with explicit saturating overflow contracts (operator 22) — no
 //! floating point, no wall clock, no RNG, no I/O. State is bounded by the input
-//! slice; nothing here retains growing internal state (constitution 57/99).
+//! slice; nothing here retains growing internal state (operator 57/99).
 //!
 //! These are *research-gated structural features*, not assumed-predictive signals:
 //! this module computes them faithfully; admission lives in other planes.
@@ -24,27 +24,27 @@ use crate::bar::Bar;
 /// Price range of a bar in [`crate::types::PRICE_SCALE`] units: `high_fp - low_fp`.
 ///
 /// Bars satisfy `high_fp >= low_fp` by construction, so the result is non-negative;
-/// `saturating_sub` is the explicit overflow contract (constitution 22).
+/// `saturating_sub` is the explicit overflow contract (operator 22).
 #[must_use]
 pub fn bar_range_fp(bar: &Bar) -> i128 {
     bar.high_fp.saturating_sub(bar.low_fp)
 }
 
-/// Highest `high_fp` across `bars`, or `None` if `bars` is empty (constitution 21.6
+/// Highest `high_fp` across `bars`, or `None` if `bars` is empty (operator 21.6
 /// prior-range high). This is the resistance level breakout/sweep detectors test.
 #[must_use]
 pub fn highest_high_fp(bars: &[Bar]) -> Option<i128> {
     bars.iter().map(|b| b.high_fp).max()
 }
 
-/// Lowest `low_fp` across `bars`, or `None` if `bars` is empty (constitution 21.6
+/// Lowest `low_fp` across `bars`, or `None` if `bars` is empty (operator 21.6
 /// prior-range low). This is the support level breakdown/sweep detectors test.
 #[must_use]
 pub fn lowest_low_fp(bars: &[Bar]) -> Option<i128> {
     bars.iter().map(|b| b.low_fp).min()
 }
 
-/// Compression vs expansion of range width (constitution 21.6).
+/// Compression vs expansion of range width (operator 21.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RangeState {
     /// Recent mean bar range has contracted relative to the baseline (a squeeze).
@@ -57,7 +57,7 @@ pub enum RangeState {
 
 /// Classify compression/expansion by comparing the mean bar range over the most
 /// recent `recent` bars against the mean over the `baseline` bars immediately
-/// preceding them (constitution 21.6 compression/expansion).
+/// preceding them (operator 21.6 compression/expansion).
 ///
 /// The comparison is done by cross-multiplication so it stays exact integer math
 /// with no division rounding: recent is a *compression* if
@@ -112,7 +112,7 @@ pub fn range_state(
     }
 }
 
-/// Indices of swing-high pivots in `bars` (constitution 21.6 swing structure).
+/// Indices of swing-high pivots in `bars` (operator 21.6 swing structure).
 ///
 /// A bar at index `i` is a swing high when it has at least `left` bars before it
 /// and `right` bars after it, and its `high_fp` is *strictly* greater than the
@@ -122,7 +122,7 @@ pub fn swing_highs(bars: &[Bar], left: usize, right: usize) -> Vec<usize> {
     pivots(bars, left, right, |a, b| a.high_fp > b.high_fp)
 }
 
-/// Indices of swing-low pivots in `bars` (constitution 21.6 swing structure).
+/// Indices of swing-low pivots in `bars` (operator 21.6 swing structure).
 ///
 /// A bar at index `i` is a swing low when it has at least `left` bars before and
 /// `right` after, and its `low_fp` is *strictly* less than every neighbour's
@@ -157,7 +157,7 @@ fn pivots(
     out
 }
 
-/// Swing-structure trend classification (constitution 21.6 higher-high/lower-low).
+/// Swing-structure trend classification (operator 21.6 higher-high/lower-low).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrendStructure {
     /// Higher high and higher low: the last two swing highs and lows both rose.
@@ -171,7 +171,7 @@ pub enum TrendStructure {
 }
 
 /// Classify trend structure from the last two swing highs and last two swing lows
-/// (constitution 21.6). Uptrend requires a higher high *and* a higher low;
+/// (operator 21.6). Uptrend requires a higher high *and* a higher low;
 /// downtrend a lower high *and* a lower low; otherwise `Range`. With fewer than two
 /// pivots of either kind the structure is `Undefined`.
 #[must_use]
@@ -203,7 +203,7 @@ pub fn swing_structure(bars: &[Bar], left: usize, right: usize) -> TrendStructur
 }
 
 /// Breakout-and-retest state of `action` bars against a resistance `level_fp`
-/// (constitution 21.6).
+/// (operator 21.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BreakoutState {
     /// No action bar closed strictly above the level.
@@ -218,7 +218,7 @@ pub enum BreakoutState {
 }
 
 /// Detect breakout-and-retest structure over `action` bars against `level_fp`
-/// (constitution 21.6). `level_fp` is typically [`highest_high_fp`] of the leading
+/// (operator 21.6). `level_fp` is typically [`highest_high_fp`] of the leading
 /// reference bars.
 ///
 /// The scan is left-to-right and terminal-priority: the first bar closing strictly
@@ -256,7 +256,7 @@ pub fn breakout_retest_state(action: &[Bar], level_fp: i128) -> BreakoutState {
 }
 
 /// Failed-breakdown / reclaim state of `action` bars against a support `level_fp`
-/// (constitution 21.6).
+/// (operator 21.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BreakdownState {
     /// No action bar's `low_fp` pierced below the level.
@@ -270,7 +270,7 @@ pub enum BreakdownState {
 }
 
 /// Detect failed-breakdown/reclaim structure over `action` bars against `level_fp`
-/// (constitution 21.6). `level_fp` is typically [`lowest_low_fp`] of the leading
+/// (operator 21.6). `level_fp` is typically [`lowest_low_fp`] of the leading
 /// reference bars.
 ///
 /// A breakdown is *attempted* when some bar's `low_fp` pierces strictly below the
@@ -290,7 +290,7 @@ pub fn failed_breakdown_state(action: &[Bar], level_fp: i128) -> BreakdownState 
 }
 
 /// True when `bar` swept liquidity below `level_fp` and reclaimed it within the same
-/// bar: `low_fp < level_fp` (stops run) but `close_fp > level_fp` (constitution 21.6
+/// bar: `low_fp < level_fp` (stops run) but `close_fp > level_fp` (operator 21.6
 /// sweep-and-reclaim of a support level).
 #[must_use]
 pub fn is_bullish_sweep(bar: &Bar, level_fp: i128) -> bool {
@@ -298,14 +298,14 @@ pub fn is_bullish_sweep(bar: &Bar, level_fp: i128) -> bool {
 }
 
 /// True when `bar` swept liquidity above `level_fp` and was rejected within the same
-/// bar: `high_fp > level_fp` but `close_fp < level_fp` (constitution 21.6
+/// bar: `high_fp > level_fp` but `close_fp < level_fp` (operator 21.6
 /// sweep-and-reject of a resistance level).
 #[must_use]
 pub fn is_bearish_sweep(bar: &Bar, level_fp: i128) -> bool {
     bar.high_fp > level_fp && bar.close_fp < level_fp
 }
 
-/// Kind of single-bar liquidity sweep detected (constitution 21.6).
+/// Kind of single-bar liquidity sweep detected (operator 21.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepKind {
     /// Swept below support and reclaimed it (bullish stop run).
@@ -315,7 +315,7 @@ pub enum SweepKind {
 }
 
 /// Scan `action` bars for single-bar sweep-and-reclaim structure against a support
-/// `low_level_fp` and resistance `high_level_fp` (constitution 21.6). Returns each
+/// `low_level_fp` and resistance `high_level_fp` (operator 21.6). Returns each
 /// hit as `(index_in_action, kind)` in ascending index order. A bar that is both a
 /// low reclaim and a high rejection (which requires `low < low_level` and
 /// `close > low_level` and `high > high_level` and `close < high_level`, hence
@@ -361,7 +361,7 @@ pub struct StructureState {
 }
 
 /// Compute the full market-structure bundle for `bars`, splitting at `ref_len`
-/// reference bars (constitution 21.6). `swing_left`/`swing_right` parametrise the
+/// reference bars (operator 21.6). `swing_left`/`swing_right` parametrise the
 /// pivot neighbourhood used for the swing-trend classification.
 ///
 /// Returns `None` when `ref_len == 0`, when `ref_len >= bars.len()` (no action bars

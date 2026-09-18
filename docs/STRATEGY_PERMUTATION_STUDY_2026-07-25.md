@@ -238,7 +238,7 @@ and RNG — the exact opposite of our §22 integer-only, RNG-free decision path.
 inference is pure integer/bitwise with **no floating point and no RNG** (training needs RNG, but
 that is offline; we would ship a frozen bitmask), it is ~5 KB and L1-resident, runs in the low
 hundreds of nanoseconds with constant tail latency, and its clauses read out as human-auditable
-propositional rules — which suits a constitution-governed system unusually well.
+propositional rules — which suits a operator-governed system unusually well.
 
 **But the honest case against adopting it now is strong, and it is the same argument this study
 keeps arriving at:**
@@ -260,7 +260,7 @@ keeps arriving at:**
 
 **Recommended (cheap, no hot-path risk):** use a TM *offline as a rule miner* — train a small one
 (100–400 clauses) on our existing signatures and labels, read out the highest-weighted clauses, and
-treat them as human-auditable **candidate laws** for the constitution. That captures the
+treat them as human-auditable **candidate laws** for the operator. That captures the
 interpretability benefit with zero live exposure. Before any Rust is written, the falsifiable
 go/no-go is a purged walk-forward comparison against the existing recall on **balanced accuracy AND
 net PnL after fees** — and per the same standard every law here is held to, it ships only if it

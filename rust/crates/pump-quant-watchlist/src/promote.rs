@@ -7,7 +7,7 @@
 //! read of state — it does not mutate the watchlist and it does not submit
 //! anything (submission is out of scope [S]).
 //!
-//! Constitution: §22 (deterministic selection, integer rank), §99 (result
+//! Operator: §22 (deterministic selection, integer rank), §99 (result
 //! bounded by `k`).
 
 use crate::candidate::Candidate;

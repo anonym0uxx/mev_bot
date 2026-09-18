@@ -1,7 +1,7 @@
 //! safety_integrity — the safety-boundary and data-integrity core.
 //!
 //! This module contains the pure, laptop-buildable functions that enforce the
-//! trading constitution's hardest guarantees *by construction*: bad data, model
+//! trading operator's hardest guarantees *by construction*: bad data, model
 //! output, un-simulated orders and copy-trading are kept OUT of the live path,
 //! and cost math stays honest across quote mints.
 //!

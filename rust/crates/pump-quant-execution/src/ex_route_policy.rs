@@ -2,7 +2,7 @@
 //!
 //! Ported from `execution/route-policy.ts` (`selectRoute` / `selectForcedExitRoute`
 //! / `computeRouteEV`), adapted to the three routes this bot actually ships and
-//! to integer lamport / basis-point math (constitution §22 — the TS original
+//! to integer lamport / basis-point math (operator §22 — the TS original
 //! scored routes in floating-point SOL).
 //!
 //! ## Route mapping
@@ -20,7 +20,7 @@
 //! Choose the route that maximizes integer expected net value (in lamports),
 //! with a dedicated fast path for forced exits that never waits.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §22: edges/slippage/fail-rates in basis points; sizes/EV in lamports;
 //!   all EV math in `i128`.
 //! - Deterministic: pure function of [`RouteCtx`]; no clock, no RNG.

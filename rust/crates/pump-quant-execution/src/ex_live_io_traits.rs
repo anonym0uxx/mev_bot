@@ -23,7 +23,7 @@
 //! - **Hot path**: `fetch_state_hot` returns cached state or fetches synchronously
 //!   as a fallback. The cached path is ~0ms; the fallback is ~50-100ms.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §24(b): paper/replay mode is byte-identical — these traits are only
 //!   implemented in live mode; paper mode uses `NoopSink`.
 //! - §36: the failure taxonomy (Construction, StateFetch, Signer, Sender) maps

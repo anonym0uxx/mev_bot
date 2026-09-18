@@ -1,5 +1,5 @@
 //! Leaf `ex_builder_quarantine`: the builder-quarantine circuit breaker
-//! (constitution **criterion 78 / §36**).
+//! (operator **criterion 78 / §36**).
 //!
 //! ## Why this exists
 //! The §36 6-class failure taxonomy ([`pump_quant_protocol::errors::FailureClass6`],
@@ -43,7 +43,7 @@
 //!   least-recently-updated **non-quarantined** slot; quarantined slots are
 //!   never evicted (stickiness dominates capacity pressure).
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - criterion 78 — builder-quarantine circuit breaker.
 //! - §36 — 6-class failure taxonomy (source of the classified input).
 //! - §18.2 — fail closed: an unknown-code `Fatal` counts toward quarantine.

@@ -3,7 +3,7 @@
 //! Responsibility: when two events carry the *same* replay timestamp, the
 //! replay engine must still order them identically on every run, or
 //! `DecisionRecord`s would not be byte-equivalent across replays (§19's
-//! reproducibility contract). The full constitution ordering is
+//! reproducibility contract). The full operator ordering is
 //! `replay timestamp → source sequence → connection epoch → slot →
 //! transaction index → signature → observation ID`; this crate implements the
 //! stable leading key `(ts_ns, source, seq)` that the strategy seam needs,

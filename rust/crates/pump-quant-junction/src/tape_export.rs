@@ -93,7 +93,7 @@ pub enum TapeRecord {
     /// from `TradeRecord`. This is the enriched format that preserves mint
     /// address, entry/exit prices, slot, slippage, strategy_id, trade size,
     /// outcome type, and latencies for attribution analysis and A/B testing.
-    /// Constitution §43 (tables/journal schema), §62 (artifact inputs).
+    /// Operator §43 (tables/journal schema), §62 (artifact inputs).
     TradeFull {
         slot: u64,
         mint_b58: String,
@@ -320,7 +320,7 @@ pub fn trade_record_to_tape(rec: &TradeRecord) -> TapeRecord {
 /// `TradeRecord` for attribution analysis, A/B testing, and strategy-type
 /// discovery.
 ///
-/// Constitution §43 (tables/journal schema), §62 (artifact inputs):
+/// Operator §43 (tables/journal schema), §62 (artifact inputs):
 /// the tape must carry enough fidelity to answer "which strategy type,
 /// archetype, and parameter config produced which outcome?" The coarse
 /// 5-field `Trade` format cannot answer this; `TradeFull` can.

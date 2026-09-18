@@ -9,7 +9,7 @@
 //! nanosecond samples is a server concern and is out of scope here — this module
 //! only *stores* and *reads* samples that are handed to [`LatencyHistogram::record`].
 //!
-//! Constitutional discipline observed here (§22):
+//! operator-mandated discipline observed here (§22):
 //! * No `f32`/`f64` anywhere — every value is an integer; quantile fractions are
 //!   expressed as integers scaled by [`QUANTILE_SCALE`].
 //! * No allocation after construction — the backing store is a fixed
@@ -69,7 +69,7 @@ pub const P999: u64 = 99_900;
 /// Responsibility: the single, deterministic value→bucket mapping shared by
 /// [`LatencyHistogram::record`] and every quantile read. Monotonic
 /// non-decreasing in `ns`, and the returned index is always `< NUM_BUCKETS`.
-/// No float, no clock, no alloc (§22). Constitution criterion 20.
+/// No float, no clock, no alloc (§22). Operator criterion 20.
 #[inline]
 pub fn bucket_index(ns: u64) -> usize {
     if ns < SUB_COUNT {

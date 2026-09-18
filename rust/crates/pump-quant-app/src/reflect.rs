@@ -1,6 +1,6 @@
 //! The reflection pass: let realized net-SOL reshape future discovery.
 //!
-//! The constitution's §71 closes a loop most scanners leave open — reflection must
+//! The operator's §71 closes a loop most scanners leave open — reflection must
 //! *enhance discovery*, not just grade it. Here that is mechanical: each lane's
 //! realized net-SOL (tracked in `watchlist::LanePerformance`) nudges that lane's
 //! discovery weight. A lane that has been paying its way gains emphasis; a lane

@@ -1,6 +1,6 @@
 //! The independent discovery lanes.
 //!
-//! The constitution's §71 mandate is *union, not intersection*: each lane scans the
+//! The operator's §71 mandate is *union, not intersection*: each lane scans the
 //! world its own way and can surface a mint onto the watchlist on its own, without
 //! waiting for any other lane to agree. A loud social call and a quiet on-chain
 //! accumulation are both admitted to the watchlist; they are reconciled later, at

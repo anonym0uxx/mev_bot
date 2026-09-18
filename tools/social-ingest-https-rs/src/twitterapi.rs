@@ -3,7 +3,7 @@
 //!
 //! Endpoint, query construction, filter classes, cursor pagination, dedupe and
 //! cadence semantics replicate the Python twin EXACTLY — same
-//! `advanced_search` URL, same `sources.yaml` keys, same three constitution
+//! `advanced_search` URL, same `sources.yaml` keys, same three operator
 //! filter classes (`firehose` breadth, `amplifier` = the PUBLIC_BURNED KOL
 //! watchlist for WAVE-TIMING + FADE only (§28/§29), `list` = a curated CT
 //! list), same `X-API-Key` env credential (`TWITTERAPI_IO_KEY`, never

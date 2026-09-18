@@ -8,7 +8,7 @@
 //! cap is exhausted. Calibration losses are research data-acquisition costs, never
 //! claims of profitable deployment.
 //!
-//! ## Constitution
+//! ## Operator
 //! §43 (calibration budget) / §39 ExecutionCalibrationBudget: lifetime,
 //! per-trade, daily, **and per-route** caps + minimum-information-gain; §22
 //! integer fixed-point; deterministic (the day bucket is supplied by the caller,

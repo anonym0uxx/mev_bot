@@ -1,7 +1,7 @@
 //! `memory_bank` — per-mint and per-strategy performance summaries for
 //! continuous optimization toward maximum net SOL.
 //!
-//! Constitution reference: **§29.9** (QuantMemoryStore), **§74** (net-SOL
+//! Operator reference: **§29.9** (QuantMemoryStore), **§74** (net-SOL
 //! expectancy exit policies), **§43** (tables/journal schema), **§100**
 //! (scalp time-stops hazard-estimated), **§96** (signal-horizon matching),
 //! **§85** (meta-rotation detection/allocation).

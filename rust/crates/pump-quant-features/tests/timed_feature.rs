@@ -1,4 +1,4 @@
-//! Leaf tests for point-in-time feature serving (constitution 20).
+//! Leaf tests for point-in-time feature serving (operator 20).
 //!
 //! Centerpiece: a property test proving the no-look-ahead guarantee across many
 //! generated inputs with independently-computed expectations.

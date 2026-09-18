@@ -245,7 +245,7 @@ failure. Fail-closed exporter + pre-training audit:
   not map onto it. Tool rejected `artifact:live_status` ("does not resolve to a
   record").
 - **Unblock path (parked):** extend the supervisor to certify the data pipeline (a
-  North Star milestone + criteria in the constitution) or register a gate result via
+  North Star milestone + criteria in the operator) or register a gate result via
   `gate_verify` — both are supervisor-extension work, not capture work.
 
 ## 12. Open data items → master-stage map

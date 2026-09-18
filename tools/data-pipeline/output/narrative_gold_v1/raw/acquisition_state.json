@@ -1,19 +1,151 @@
 {
-  "run_uuid": "ed724f669793",
-  "git_sha": "5fc1036",
-  "first_seen_utc": "2026-08-26T22:54:29.487330Z",
-  "first_seen_ms": 1787784869487,
+  "run_uuid": "6cf29c5eb11e",
+  "git_sha": "d1764562",
+  "first_seen_utc": "2026-09-11T23:39:06.420431Z",
+  "first_seen_ms": 1789169946420,
   "status": "COMPLETED_WEB_ACQUISITION",
-  "last_update": "2026-08-26T22:57:09.679562Z",
-  "events_acquired": 428,
+  "last_update": "2026-09-11T23:40:16.779242Z",
+  "events_acquired": 0,
   "coverage": {
     "scraped": 34,
-    "succeeded": 33,
-    "failed": 1,
-    "events": 428,
+    "succeeded": 0,
+    "failed": 34,
+    "events": 0,
     "gaps": [
       {
+        "url": "https://t.me/s/crypticannouncements",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://t.me/s/chasescharts",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://t.me/s/PikalosiCalls",
+        "reason": "scrape_failed"
+      },
+      {
         "url": "https://t.me/s/PikalosiLounge",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://t.me/s/Marlonalpha",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://t.me/s/jacalcooks",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://t.me/s/potionalpha",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://t.me/s/solanaalpha",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://t.me/s/alphacalls",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://pump.fun/board",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://pump.fun/explore",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://dexscreener.com/solana",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://dexscreener.com/solana/pumpswap",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.youtube.com/results?search_query=solana+memecoin+trading+strategy",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.youtube.com/results?search_query=pump+fun+trading+alpha",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.youtube.com/results?search_query=solana+degen+strategy+2026",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.youtube.com/results?search_query=Orangie+memecoin+pump+fun+strategy",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.youtube.com/results?search_query=Cented+memecoin+trading+strategy",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.youtube.com/results?search_query=Megga+memecoin+trading+interview",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.youtube.com/results?search_query=Cupsey+memecoin+trading+strategy",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.youtube.com/results?search_query=Prosper+memecoin+pump+fun+interview",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.youtube.com/results?search_query=Ansem+blknoiz06+memecoin+strategy",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.twitch.tv/cented/clips?filter=clips&range=7d",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.twitch.tv/cented/clips?filter=clips&range=30d",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.twitch.tv/megga/clips?filter=clips&range=7d",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.twitch.tv/megga/clips?filter=clips&range=30d",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.twitch.tv/decu/clips?filter=clips&range=7d",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.twitch.tv/dvces/clips?filter=clips&range=7d",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.twitch.tv/cented/about",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.twitch.tv/megga/about",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.twitch.tv/decu/about",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.twitch.tv/dvces/about",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://www.twitch.tv/directory/category/crypto",
+        "reason": "scrape_failed"
+      },
+      {
+        "url": "https://padre.gg",
         "reason": "scrape_failed"
       }
     ]

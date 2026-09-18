@@ -1,0 +1,32 @@
+# ════════════════════════════════════════════════════════════════
+# Qwen 27B Full-Parameter BF16 Training Requirements
+# Exact package versions for ZeRO-3 full-FT on 3×96GB GPUs
+# ════════════════════════════════════════════════════════════════
+# Core
+torch>=2.1.0,<2.5.0
+torchvision>=0.16.0
+transformers>=4.43.0,<4.46.0
+accelerate>=0.33.0,<0.35.0
+datasets>=2.20.0,<3.0.0
+deepspeed>=0.14.0,<0.16.0
+
+# Unsloth acceleration (optional but recommended for speed)
+unsloth>=2024.8
+
+# Flash attention (optional, significant speedup if available)
+# Build from source: pip install flash-attn --no-build-isolation
+flash-attn>=2.6.0; platform_machine == "x86_64"
+
+# Tokenization / data
+sentencepiece>=0.2.0
+protobuf>=4.25.0
+tokenizers>=0.19.0
+
+# Logging / monitoring
+wandb>=0.17.0; platform_machine == "x86_64"  # uncomment if using W&B
+tensorboard>=2.14.0
+
+# Utilities
+numpy<2.0.0
+pyarrow>=15.0.0
+tqdm>=4.66.0

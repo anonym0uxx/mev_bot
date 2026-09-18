@@ -1,5 +1,5 @@
 //! Meta-lifecycle history — "what is the state of the meta this week, and does it
-//! rhyme with one I have already been through?" (constitution 21.4).
+//! rhyme with one I have already been through?" (operator 21.4).
 //!
 //! A memecoin meta is not a static category, it is a *trajectory*: it emerges,
 //! goes hot, saturates, and decays, and the money is made on a specific stretch of
@@ -20,13 +20,13 @@
 //! # Determinism and boundedness
 //!
 //! The timeline is a ring of [`META_SNAPSHOT_CAP`] snapshots with oldest-first
-//! eviction (constitution 57/99). Snapshots must arrive in non-decreasing
+//! eviction (operator 57/99). Snapshots must arrive in non-decreasing
 //! information time — an out-of-order snapshot is rejected rather than silently
 //! reordered, because a lifecycle whose arrow of time can be rewritten is not a
 //! lifecycle. Every returned `Vec` is sorted by an explicit total order, so no
 //! result depends on iteration order.
 //!
-//! # Fail-closed matching (constitution 46)
+//! # Fail-closed matching (operator 46)
 //!
 //! [`MetaMatchParams::min_snapshots`] excludes categories that have too little
 //! history to have a shape at all. A past meta observed twice is a rumour, not a
@@ -35,28 +35,28 @@
 
 use crate::fingerprint::{signed_decade, MetaSaturationState};
 
-/// Bounded capacity of the meta timeline (constitution 57/99). Oldest-first
+/// Bounded capacity of the meta timeline (operator 57/99). Oldest-first
 /// eviction; at one snapshot per meta per few minutes this is weeks of history.
 pub const META_SNAPSHOT_CAP: usize = 4_096;
 
 /// Minimum snapshots a past meta needs before it can be offered as a precedent
-/// (constitution 46 small-n guard).
+/// (operator 46 small-n guard).
 pub const META_MIN_SNAPSHOTS_DEFAULT: u32 = 4;
 
-/// Default maximum feature distance for a past-meta match (constitution 102).
+/// Default maximum feature distance for a past-meta match (operator 102).
 pub const META_MAX_DISTANCE_DEFAULT: u32 = 6;
 
-/// Default cap on returned matches (constitution 57 bounded output).
+/// Default cap on returned matches (operator 57 bounded output).
 pub const META_MAX_MATCHES_DEFAULT: usize = 8;
 
-/// Distance weight on the saturation-state gap (constitution 102). Highest,
+/// Distance weight on the saturation-state gap (operator 102). Highest,
 /// because *where on the curve you are* dominates everything else.
 pub const MW_SATURATION: u32 = 4;
-/// Distance weight on the participant-breadth decade gap (constitution 102).
+/// Distance weight on the participant-breadth decade gap (operator 102).
 pub const MW_BREADTH_DECADE: u32 = 2;
-/// Distance weight on the aggregate-net decade gap (constitution 102).
+/// Distance weight on the aggregate-net decade gap (operator 102).
 pub const MW_NET_DECADE: u32 = 1;
-/// Distance weight on the episode-count decade gap (constitution 102).
+/// Distance weight on the episode-count decade gap (operator 102).
 pub const MW_EPISODE_DECADE: u32 = 1;
 
 /// One observation of a meta at a point in information time.
@@ -98,7 +98,7 @@ pub struct MetaMatchParams {
     /// Maximum number of matches returned.
     pub max_matches: usize,
     /// Minimum recorded snapshots before a category counts as a precedent
-    /// (constitution 46).
+    /// (operator 46).
     pub min_snapshots: u32,
 }
 
@@ -138,7 +138,7 @@ pub struct PastMetaMatch {
 pub struct MetaLifecycleStats {
     /// The category described.
     pub meta_category_id: u32,
-    /// Snapshots recorded for it (constitution 46 evidence weight).
+    /// Snapshots recorded for it (operator 46 evidence weight).
     pub n_snapshots: u32,
     /// First observation time.
     pub first_seen_ns: u64,
@@ -360,7 +360,7 @@ impl MetaTimeline {
                 continue;
             };
             if stats.n_snapshots < params.min_snapshots {
-                continue; // constitution 46: not enough history to be a precedent.
+                continue; // operator 46: not enough history to be a precedent.
             }
             // Best-matching snapshot within that category, tie-broken by earliest
             // information time so the answer is a total order.

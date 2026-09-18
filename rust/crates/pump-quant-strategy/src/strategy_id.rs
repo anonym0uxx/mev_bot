@@ -7,7 +7,7 @@
 //! The versioned ID/registry lives in the supervisor; this module is only the
 //! deterministic leaf that produces the digest.
 //!
-//! ## Constitution
+//! ## Operator
 //! §22: no `f32`/`f64` anywhere — the config is entirely integer/enumerated and
 //! the hash is pure integer arithmetic (FNV-1a, `wrapping` by contract). The
 //! function is total and deterministic: identical bytes always yield the

@@ -15,7 +15,7 @@
 //! - The blockhash is fetched alongside the accounts so the builder gets a
 //!   single `BuildEnv`-ready bundle.
 //!
-//! ## Constitution
+//! ## Operator
 //! §18.2 — every account is identity-verified by the decode function before
 //! any field is trusted. §22 — integer-only, bounds-checked. §41 — the layout
 //! gate (LayoutRegistry) gates the *build*, not the fetch; this layer fetches

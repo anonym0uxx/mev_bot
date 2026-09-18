@@ -1,7 +1,7 @@
 //! Source classification and observation-source-mix labeling (leaf
 //! `in_source_registry`).
 //!
-//! Responsibility: implement the constitution's source-authority /
+//! Responsibility: implement the operator's source-authority /
 //! source-lifecycle taxonomy as pure functions.
 //!   - §14.5: repository Jito ShredStream code is classified TRANSITIONAL;
 //!     Helius WS-era code is LEGACY pending the LaserStream gRPC adapter.

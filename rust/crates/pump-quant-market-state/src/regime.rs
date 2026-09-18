@@ -45,7 +45,7 @@ pub enum RegimeLevel {
 /// A signed three-step ordinal for symmetric components (imbalance, price
 /// shock) where both directions matter.
 ///
-/// Constitution: §21.3 (market-wide buy/sell imbalance; SOL price shock).
+/// Operator: §21.3 (market-wide buy/sell imbalance; SOL price shock).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Skew {
     /// Strongly negative (sell-skewed / price crash).
@@ -321,7 +321,7 @@ pub fn classify(obs: &RegimeObservation, th: &RegimeThresholds) -> MarketRegimeS
 
 /// Market-wide event feeding the [`MarketRegimeReducer`].
 ///
-/// Constitution: §21.3 component list.
+/// Operator: §21.3 component list.
 #[derive(Clone, Copy, Debug)]
 pub enum MarketEvent {
     /// A new token launch.

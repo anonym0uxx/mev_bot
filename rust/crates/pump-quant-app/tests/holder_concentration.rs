@@ -15,7 +15,7 @@
 //! 3. **The dormant screen is fed** (`screen_*`) — `top_holder_concentration_bps`
 //!    at the §21.5 universe screen has been a hard-coded `0` against a `u32::MAX`
 //!    bar since inception. It now carries the real number and actually binds.
-//! 4. **The veto is never standalone** (`veto_*`) — the constitution names this
+//! 4. **The veto is never standalone** (`veto_*`) — the operator names this
 //!    exact feature "a feature family and prior, never a standalone veto". The
 //!    refusal is conjunctive with an INDEPENDENT §21.7 authenticity signature, and
 //!    that is asserted rather than described.
@@ -372,7 +372,7 @@ fn screen_binds_on_a_mature_concentrated_market_and_is_inert_when_disarmed() {
 
 #[test]
 fn veto_is_never_standalone_without_an_independent_authenticity_signature() {
-    // The constitution's rule, asserted at the metric level: a veto-grade shape
+    // The operator's rule, asserted at the metric level: a veto-grade shape
     // WITHOUT corroboration is a haircut, and only WITH it a refusal. This is the
     // whole difference between "a feature family and prior" and the standalone
     // veto §21.7 forbids.

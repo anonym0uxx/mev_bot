@@ -1,5 +1,5 @@
 //! Parameter-envelope bounds enforcement — the fast-path guard of two-speed
-//! governance (constitution §56.2).
+//! governance (operator §56.2).
 //!
 //! ## Responsibility
 //! A promoted champion carries *validated parameter ranges* — a
@@ -28,7 +28,7 @@
 
 /// How to treat an online change that falls **outside** a registered envelope.
 ///
-/// ## Constitution §56.2
+/// ## Operator §56.2
 /// Both are legitimate fast-path responses; neither ever crosses the envelope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnforcementMode {
@@ -51,7 +51,7 @@ pub enum EnvelopeError {
 
 /// The classification of an enforced online change.
 ///
-/// ## Constitution §56.2
+/// ## Operator §56.2
 /// Distinguishes an in-envelope fast-path adaptation from an envelope-crossing
 /// attempt that was clamped or rejected — the audit distinction governance
 /// needs (a `Clamped`/`Rejected` outcome signals a slow-path pressure point).
@@ -72,7 +72,7 @@ pub enum ChangeOutcome {
 
 /// A single dimension of a promoted strategy's validated parameter ranges.
 ///
-/// ## Constitution §56.2
+/// ## Operator §56.2
 /// The `[min, max]` are validated ranges (the *whole* envelope was validated
 /// per §53 neighborhood stability, not a point). `step` is the discrete grid a
 /// fast-path controller selects from; `step == 1` means every integer in range
@@ -223,7 +223,7 @@ pub struct EnvelopeDecision {
 
 /// A stable identifier for a governed parameter dimension.
 ///
-/// ## Constitution §56.2
+/// ## Operator §56.2
 /// Identifies one envelope dimension (a sizing knob, a fee bound, a per-window
 /// exposure range, …). A plain `u32` keeps registry iteration deterministic and
 /// float-free.
@@ -257,7 +257,7 @@ pub enum RegistryError {
 
 /// A memory-bounded set of governed parameters and their live values.
 ///
-/// ## Constitution §56.2 / §57
+/// ## Operator §56.2 / §57
 /// Holds one [`ParameterEnvelope`] per dimension and applies fast-path changes
 /// against it. Capacity is fixed at construction (§57: every collection has an
 /// explicit bound); entries are kept sorted by [`DimensionId`] for deterministic

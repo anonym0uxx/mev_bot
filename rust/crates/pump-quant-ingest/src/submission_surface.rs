@@ -4,7 +4,7 @@
 //! surfaces (Block Engine, bundles, tips) as a dimension of the source registry
 //! that is **independent** of the Jito ShredStream *data-feed* sunset.
 //!
-//! Constitution basis:
+//! Operator basis:
 //!   - §18.3.1: "Do not conflate the ShredStream data-feed sunset with Jito's
 //!     transaction-submission surfaces (Block Engine, bundles, tips): as of
 //!     verification these are separately operated products with no announced

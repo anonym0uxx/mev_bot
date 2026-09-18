@@ -5,7 +5,7 @@
 //! needing live network feeds. Each line is a compact JSON object with
 //! the event kind, the slot it was processed at, and the key fields.
 //!
-//! Constitution: §13 (paper/live parity), §16 (no look-ahead), §22 (integer-only).
+//! Operator: §13 (paper/live parity), §16 (no look-ahead), §22 (integer-only).
 //! The event stream is the raw input — replaying it deterministically
 //! guarantees that any config mutation is tested against identical input.
 

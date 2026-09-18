@@ -1,5 +1,5 @@
 //! `SetupFingerprint` — quantize a decision-time market/setup state into a compact
-//! integer signature (constitution 22 integer-only, 102 named thresholds).
+//! integer signature (operator 22 integer-only, 102 named thresholds).
 //!
 //! # What this module is
 //!
@@ -90,25 +90,25 @@
 
 use crate::hash::mix_u32;
 
-/// Number of fields in a fingerprint (constitution 102).
+/// Number of fields in a fingerprint (operator 102).
 pub const FIELD_COUNT: usize = 21;
 
 /// Hamming cost charged when two [`FieldKind::Nominal`] fields differ: one-hot
-/// codes differ in exactly two bit positions (constitution 102).
+/// codes differ in exactly two bit positions (operator 102).
 pub const NOMINAL_MISMATCH_COST: u32 = 2;
 
-/// Basis-point scale: `10_000 bp == 100%` (constitution 22 fixed-point ratios).
+/// Basis-point scale: `10_000 bp == 100%` (operator 22 fixed-point ratios).
 pub const BPS_SCALE: i64 = 10_000;
 
-/// Nanoseconds in one 24-hour day (constitution 102). Used only for *information
+/// Nanoseconds in one 24-hour day (operator 102). Used only for *information
 /// time* modulo arithmetic — never a wall-clock read.
 pub const NS_PER_DAY: u64 = 86_400 * 1_000_000_000;
 
-/// Number of time-of-day buckets (constitution 102): eight three-hour blocks.
+/// Number of time-of-day buckets (operator 102): eight three-hour blocks.
 pub const TIME_OF_DAY_BUCKETS: u64 = 8;
 
 /// Number of nominal slots the `meta_category_id` space is mixed down into
-/// (constitution 102). Distinct metas can share a slot in the *prefilter*; exact
+/// (operator 102). Distinct metas can share a slot in the *prefilter*; exact
 /// meta identity is preserved in [`crate::episode::EpisodeContext`] and enforced by
 /// [`crate::recall::RecallFilter`], so a slot collision can only ever widen the
 /// candidate set, never corrupt a conditioned estimate.
@@ -118,7 +118,7 @@ pub const META_CATEGORY_SLOTS: u32 = 16;
 // Field enums
 // ---------------------------------------------------------------------------
 
-/// Swing-structure classification of recent price action (constitution 21.6).
+/// Swing-structure classification of recent price action (operator 21.6).
 /// Treated as *ordinal* — `Down < Range < Up` is a real axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TrendStructure {
@@ -142,7 +142,7 @@ impl TrendStructure {
     }
 }
 
-/// Range compression / expansion state (constitution 21.6). Ordinal.
+/// Range compression / expansion state (operator 21.6). Ordinal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RangeState {
     /// Volatility squeeze; range is contracting.
@@ -165,7 +165,7 @@ impl RangeState {
     }
 }
 
-/// Where the current volume burst sits in its lifecycle (constitution 21.7).
+/// Where the current volume burst sits in its lifecycle (operator 21.7).
 /// Ordinal — this is a time-ordered lifecycle, not a set of labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BurstPhase {
@@ -192,7 +192,7 @@ impl BurstPhase {
     }
 }
 
-/// Which venue the token is trading on (constitution 100).
+/// Which venue the token is trading on (operator 100).
 ///
 /// **Nominal, and deliberately so.** The bonding curve and the migrated pool have
 /// different fee, slippage and adversary structure; there is no "half way between"
@@ -227,7 +227,7 @@ impl VenuePhase {
     }
 }
 
-/// Coarse narrative family a token belongs to (constitution 21.4). Nominal.
+/// Coarse narrative family a token belongs to (operator 21.4). Nominal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NarrativeClass {
     /// No identifiable narrative.
@@ -265,7 +265,7 @@ impl NarrativeClass {
     }
 }
 
-/// Prior-behaviour classification of the token's creator (constitution 29.9).
+/// Prior-behaviour classification of the token's creator (operator 29.9).
 /// Nominal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CreatorClass {
@@ -292,7 +292,7 @@ impl CreatorClass {
     }
 }
 
-/// Where a meta sits in its own lifecycle (constitution 21.4). Ordinal — this is a
+/// Where a meta sits in its own lifecycle (operator 21.4). Ordinal — this is a
 /// time axis, and "how far through the meta are we" is exactly the question.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MetaSaturationState {
@@ -332,28 +332,28 @@ impl MetaSaturationState {
 }
 
 // ---------------------------------------------------------------------------
-// Bucket ladders (constitution 102: every boundary is a named const)
+// Bucket ladders (operator 102: every boundary is a named const)
 // ---------------------------------------------------------------------------
 
-/// Order-flow-imbalance ladder, basis points of signed flow (constitution 21.7).
+/// Order-flow-imbalance ladder, basis points of signed flow (operator 21.7).
 /// Seven buckets: heavy sell / sell / mild sell / balanced / mild buy / buy / heavy buy.
 pub const OFI_EDGES_BPS: [i64; 6] = [-2_000, -500, -100, 100, 500, 2_000];
 
 /// Signed-decade ladder for cumulative volume delta, where the decade is of
-/// *lamports* (constitution 22). `+9` is one SOL of net buying; `+11` is ~100 SOL.
+/// *lamports* (operator 22). `+9` is one SOL of net buying; `+11` is ~100 SOL.
 pub const CVD_DECADE_EDGES: [i64; 6] = [-11, -9, -7, 7, 9, 11];
 
-/// Realized-volatility ladder, basis points per bar (constitution 21.6).
+/// Realized-volatility ladder, basis points per bar (operator 21.6).
 pub const REALIZED_VOL_EDGES_BPS: [i64; 5] = [50, 150, 400, 1_000, 2_500];
 
-/// Pool-liquidity ladder as a decade of lamports (constitution 22).
+/// Pool-liquidity ladder as a decade of lamports (operator 22).
 /// `9` is ~1 SOL, `12` is ~1_000 SOL.
 pub const LIQUIDITY_DECADE_EDGES: [i64; 6] = [8, 9, 10, 11, 12, 13];
 
-/// Distinct-buyer-count ladder over the feature window (constitution 21.7).
+/// Distinct-buyer-count ladder over the feature window (operator 21.7).
 pub const BUYER_BREADTH_EDGES: [i64; 4] = [3, 8, 20, 50];
 
-/// Token-age ladder in nanoseconds of information time (constitution 20):
+/// Token-age ladder in nanoseconds of information time (operator 20):
 /// 60 s, 5 min, 30 min, 6 h, 24 h.
 pub const TOKEN_AGE_EDGES_NS: [i64; 5] = [
     60 * 1_000_000_000,
@@ -364,19 +364,19 @@ pub const TOKEN_AGE_EDGES_NS: [i64; 5] = [
 ];
 
 /// Attention-velocity ladder, basis points of window-over-window growth
-/// (constitution 21.4). The first edge is `0`, so bucket `0` is *decaying* attention.
+/// (operator 21.4). The first edge is `0`, so bucket `0` is *decaying* attention.
 pub const ATTENTION_VELOCITY_EDGES_BPS: [i64; 5] = [0, 500, 2_000, 7_500, 20_000];
 
-/// Social-authenticity ladder, basis points (constitution 21.4). `10_000 bp` is
+/// Social-authenticity ladder, basis points (operator 21.4). `10_000 bp` is
 /// fully organic; low values indicate bot amplification.
 pub const AUTHENTICITY_EDGES_BPS: [i64; 4] = [2_500, 5_000, 7_500, 9_000];
 
-/// Holder-growth *acceleration* ladder, signed basis points (constitution 21.4).
+/// Holder-growth *acceleration* ladder, signed basis points (operator 21.4).
 pub const HOLDER_GROWTH_ACCEL_EDGES_BPS: [i64; 4] = [-500, 0, 500, 2_000];
 
 /// Holder-growth *velocity* ladder, signed basis points of relative holder growth
 /// per `pump_quant_features::holder_growth::HOLDER_GROWTH_NORM_NS` (one minute)
-/// — the FIRST derivative (constitution 21.4 / 70.1, schema 2).
+/// — the FIRST derivative (operator 21.4 / 70.1, schema 2).
 ///
 /// Six rungs, chosen so the ladder brackets the neutral point on BOTH sides and
 /// then spans the range a real launch actually traverses:
@@ -411,7 +411,7 @@ const _: () = assert!(
 );
 
 /// Expected round-trip cost ladder in basis points — fee plus spread plus expected
-/// slippage, both ways (constitution 24). This is the hurdle every edge must clear.
+/// slippage, both ways (operator 24). This is the hurdle every edge must clear.
 pub const ROUND_TRIP_COST_EDGES_BPS: [i64; 5] = [50, 100, 200, 400, 800];
 
 /// Bucket `x` on a strictly-ascending ladder of inclusive lower bounds.
@@ -442,7 +442,7 @@ pub fn ladder_bucket(x: i64, edges: &[i64]) -> u8 {
 /// `signed_decade(0) == 0`.
 ///
 /// This is the standard scale-reducer for money-like quantities that span many
-/// orders of magnitude (constitution 22): it is exact integer arithmetic, it is
+/// orders of magnitude (operator 22): it is exact integer arithmetic, it is
 /// monotone non-decreasing in `x`, and it compresses a lamport range of `1e0..1e18`
 /// into a small ordinal the fingerprint can afford to carry. Provided as a public
 /// helper so callers produce `cvd_decade` / `liquidity_decade` the one canonical way
@@ -720,7 +720,7 @@ pub const FIELD_SPECS: [FieldSpec; FIELD_COUNT] = [
     },
 ];
 
-/// Total number of packed signature bits actually used (constitution 102).
+/// Total number of packed signature bits actually used (operator 102).
 /// The remaining `128 - SIGNATURE_BITS` bits are always zero in every fingerprint,
 /// so they can never contribute to a Hamming distance.
 ///
@@ -760,7 +760,7 @@ pub const fn encode_field(spec: &FieldSpec, bucket: u8) -> u128 {
 
 /// The raw, unquantized decision-time state the engine hands to the brain.
 ///
-/// Every member is an integer or a small enum (constitution 22). Deliberately this
+/// Every member is an integer or a small enum (operator 22). Deliberately this
 /// struct takes **raw** quantities — nanoseconds of age, basis points of OFI — and
 /// not pre-computed buckets: bucketing lives here, behind named-const ladders, so
 /// two call sites can never disagree about where a boundary is. That is the whole
@@ -785,7 +785,7 @@ pub struct SetupInputs {
     pub buyer_breadth: u32,
     /// Token age in nanoseconds of *information time*.
     pub token_age_ns: u64,
-    /// Bonding curve or migrated pool (constitution 100).
+    /// Bonding curve or migrated pool (operator 100).
     pub venue_phase: VenuePhase,
     /// Attention growth window-over-window, signed basis points.
     pub attention_velocity_bps: i64,
@@ -853,38 +853,38 @@ impl Default for SetupInputs {
 // Weights
 // ---------------------------------------------------------------------------
 
-/// Default weight, order-flow imbalance (constitution 102). Flow is the signal.
+/// Default weight, order-flow imbalance (operator 102). Flow is the signal.
 pub const W_OFI: u32 = 6;
-/// Default weight, CVD decade (constitution 102).
+/// Default weight, CVD decade (operator 102).
 pub const W_CVD_DECADE: u32 = 5;
-/// Default weight, trend structure (constitution 102). Structure is the signal.
+/// Default weight, trend structure (operator 102). Structure is the signal.
 pub const W_TREND_STRUCTURE: u32 = 8;
-/// Default weight, range state (constitution 102).
+/// Default weight, range state (operator 102).
 pub const W_RANGE_STATE: u32 = 6;
-/// Default weight, burst phase (constitution 102).
+/// Default weight, burst phase (operator 102).
 pub const W_BURST_PHASE: u32 = 7;
-/// Default weight, realized volatility (constitution 102).
+/// Default weight, realized volatility (operator 102).
 pub const W_REALIZED_VOL: u32 = 4;
-/// Default weight, liquidity decade (constitution 102).
+/// Default weight, liquidity decade (operator 102).
 pub const W_LIQUIDITY_DECADE: u32 = 5;
-/// Default weight, buyer breadth (constitution 102).
+/// Default weight, buyer breadth (operator 102).
 pub const W_BUYER_BREADTH: u32 = 4;
-/// Default weight, token age (constitution 102).
+/// Default weight, token age (operator 102).
 pub const W_TOKEN_AGE: u32 = 3;
-/// Default weight, venue phase (constitution 100/102). Highest weight in the table:
+/// Default weight, venue phase (operator 100/102). Highest weight in the table:
 /// even though [`crate::recall::RecallFilter`] already hard-partitions on phase,
 /// weighting it heavily means an accidentally unfiltered comparison still cannot
 /// rank a cross-phase episode as "near".
 pub const W_VENUE_PHASE: u32 = 10;
-/// Default weight, attention velocity (constitution 102).
+/// Default weight, attention velocity (operator 102).
 pub const W_ATTENTION_VELOCITY: u32 = 4;
-/// Default weight, narrative class (constitution 102).
+/// Default weight, narrative class (operator 102).
 pub const W_NARRATIVE_CLASS: u32 = 3;
-/// Default weight, authenticity (constitution 102).
+/// Default weight, authenticity (operator 102).
 pub const W_AUTHENTICITY: u32 = 3;
-/// Default weight, holder-growth acceleration (constitution 102).
+/// Default weight, holder-growth acceleration (operator 102).
 pub const W_HOLDER_GROWTH_ACCEL: u32 = 3;
-/// Default weight, holder-growth velocity (constitution 102).
+/// Default weight, holder-growth velocity (operator 102).
 ///
 /// Equal to [`W_HOLDER_GROWTH_ACCEL`] deliberately. There is no evidence in hand
 /// that either derivative dominates the other, and picking an asymmetric pair
@@ -892,19 +892,19 @@ pub const W_HOLDER_GROWTH_ACCEL: u32 = 3;
 /// weigh 6 — the same as [`W_OFI`] — so the holder family as a whole is now on par
 /// with order flow rather than a rounding error next to it.
 pub const W_HOLDER_GROWTH_VELOCITY: u32 = 3;
-/// Default weight, creator class (constitution 102).
+/// Default weight, creator class (operator 102).
 pub const W_CREATOR_CLASS: u32 = 2;
-/// Default weight, meta category (constitution 102).
+/// Default weight, meta category (operator 102).
 pub const W_META_CATEGORY: u32 = 6;
-/// Default weight, meta saturation (constitution 102).
+/// Default weight, meta saturation (operator 102).
 pub const W_META_SATURATION: u32 = 5;
-/// Default weight, designated caller present (constitution 102).
+/// Default weight, designated caller present (operator 102).
 pub const W_DESIGNATED_CALLER: u32 = 2;
-/// Default weight, round-trip cost (constitution 102). Cost is not a nuisance
+/// Default weight, round-trip cost (operator 102). Cost is not a nuisance
 /// variable — a setup that only worked at 50 bp of friction is not the same setup
 /// at 400 bp.
 pub const W_ROUND_TRIP_COST: u32 = 5;
-/// Default weight, time of day (constitution 102). Lowest in the table: session
+/// Default weight, time of day (operator 102). Lowest in the table: session
 /// identity is a weak prior and the encoding of a cyclic axis is lossy.
 pub const W_TIME_OF_DAY: u32 = 1;
 
@@ -1028,7 +1028,7 @@ impl SetupFingerprint {
     /// Rebuild a fingerprint from a persisted bucket vector.
     ///
     /// The signature is *recomputed* rather than trusted, so a corrupted or
-    /// stale-schema signature on disk can never enter the index (constitution 22
+    /// stale-schema signature on disk can never enter the index (operator 22
     /// replay-safety: the encoding is derived, never restored).
     #[must_use]
     pub fn from_buckets(buckets: [u8; FIELD_COUNT]) -> Self {
@@ -1063,7 +1063,7 @@ impl SetupFingerprint {
         self.buckets.get(field).copied()
     }
 
-    /// The venue phase this fingerprint was taken in (constitution 100). Recall
+    /// The venue phase this fingerprint was taken in (operator 100). Recall
     /// uses this to partition the index; it is never a free parameter.
     #[must_use]
     pub fn venue_phase(&self) -> VenuePhase {
@@ -1122,7 +1122,7 @@ pub fn unweighted_distance(a: &SetupFingerprint, b: &SetupFingerprint) -> u32 {
 
 /// Weighted stage-2 distance: `sum_i weight_i * cost_i`.
 ///
-/// Accumulated in `u64` and saturating (constitution 22 explicit overflow
+/// Accumulated in `u64` and saturating (operator 22 explicit overflow
 /// strategy). The true maximum is far below `u64::MAX` — max field cost is 15,
 /// times 20 fields, times a weight — so saturation is a belt-and-braces guard
 /// rather than a live path.

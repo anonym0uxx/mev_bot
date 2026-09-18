@@ -1,5 +1,5 @@
 //! `sizing_validator` — Layer-2 canonical research sizing validator
-//! (constitution §33).
+//! (operator §33).
 //!
 //! This is the frozen-evaluator port of `analysis/kelly_montecarlo.py`: given an
 //! empirical, already-reconciled per-trade return distribution, it computes the

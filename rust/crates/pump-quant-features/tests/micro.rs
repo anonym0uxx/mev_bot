@@ -1,4 +1,4 @@
-//! Leaf tests for the AMM microstructure catalog (constitution 21.7), with
+//! Leaf tests for the AMM microstructure catalog (operator 21.7), with
 //! independently-computed expectations and a cross-check property test for the
 //! streaming rolling window against from-scratch recomputation.
 

@@ -1,14 +1,14 @@
-//! `evaluator_pin` — frozen-evaluator hash-pin verification (constitution §51, §44).
+//! `evaluator_pin` — frozen-evaluator hash-pin verification (operator §51, §44).
 //!
 //! Responsibility: before any grade produced by the evaluator is accepted, the
 //! evaluator artifact/config must hash to the value pinned in the release
 //! manifest. A mismatch is a Tier-0 event — the evaluator has been mutated and
 //! its verdicts can no longer be trusted, so results are refused rather than
 //! acted upon. The write-authority / re-pinning side lives in the supervisor
-//! (constitution §44 trust-on-first-use, operator-only re-pin); this module is
+//! (operator §44 trust-on-first-use, operator-only re-pin); this module is
 //! the pure, deterministic *verify* half named as the missing PARTIAL leaf.
 //!
-//! Everything here is integer-only (constitution §22): the digest is a 64-bit
+//! Everything here is integer-only (operator §22): the digest is a 64-bit
 //! FNV-1a hash computed with wrapping arithmetic *by contract* (FNV is defined
 //! over the wrapping 2^64 ring). No floats, no wall-clock, no RNG.
 
@@ -20,7 +20,7 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// Deterministic 64-bit FNV-1a digest of an arbitrary byte artifact.
 ///
 /// Responsibility: reduce the evaluator artifact/config bytes to a single
-/// comparable fingerprint (constitution §51). FNV-1a is defined over the
+/// comparable fingerprint (operator §51). FNV-1a is defined over the
 /// wrapping 2^64 ring, so the multiply/xor are wrapping *by contract*, not by
 /// accident. The empty input hashes to [`FNV_OFFSET_BASIS`].
 pub fn fnv1a_64(bytes: &[u8]) -> u64 {
@@ -32,7 +32,7 @@ pub fn fnv1a_64(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// A pinned digest recorded in the release manifest (constitution §44).
+/// A pinned digest recorded in the release manifest (operator §44).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PinnedDigest(pub u64);
 
@@ -59,7 +59,7 @@ impl PinVerdict {
 
 /// Verify evaluator artifact bytes against a pinned manifest digest.
 ///
-/// Responsibility (constitution §51): compute the digest of `artifact_bytes`
+/// Responsibility (operator §51): compute the digest of `artifact_bytes`
 /// and compare it to `pinned`. Returns [`PinVerdict::Verified`] on an exact
 /// match, otherwise [`PinVerdict::Mismatch`] carrying both digests so the caller
 /// can escalate. Pure function of its inputs — deterministic.
@@ -77,7 +77,7 @@ pub fn verify_evaluator_pin(artifact_bytes: &[u8], pinned: PinnedDigest) -> PinV
 
 /// Accept a result only if the evaluator artifact matches its pin.
 ///
-/// Responsibility (constitution §51): this is the guard the whole leaf exists
+/// Responsibility (operator §51): this is the guard the whole leaf exists
 /// for — a result is returned as `Ok(result)` iff the artifact is [verified],
 /// and refused as `Err(PinVerdict::Mismatch { .. })` otherwise. No verdict from
 /// a mutated evaluator can ever be accepted through this function.

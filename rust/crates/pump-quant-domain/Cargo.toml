@@ -2,7 +2,7 @@
 name = "pump-quant-domain"
 version = "0.1.0"
 edition = "2021"
-description = "Shared domain vocabulary (canonical newtypes + stable enums) for the pump-quant memecoin scalping system (constitution Section 17)."
+description = "Shared domain vocabulary (canonical newtypes + stable enums) for the pump-quant memecoin scalping system (operator Section 17)."
 license = "UNLICENSED"
 
 [dependencies]

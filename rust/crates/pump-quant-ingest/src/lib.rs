@@ -4,7 +4,7 @@
 //! WebSocket feeds into pure, deterministic, std-only functions that turn raw
 //! provider bytes into the crate-local canonical transaction type. No live
 //! subscription, no network, no wall-clock, no floating point in any
-//! outcome-controlling path (constitution §22). Live I/O (RPC / streams /
+//! outcome-controlling path (operator §22). Live I/O (RPC / streams /
 //! submission) is explicitly OUT OF SCOPE and would sit behind a trait at the
 //! edge (ARCHITECTURE rule 4).
 //!
@@ -29,7 +29,7 @@
 // and it contained zero `unsafe` when this was added. `forbid` makes that a
 // property the compiler holds rather than one a reviewer has to re-verify —
 // and unlike `deny` it cannot be locally overridden by an `#[allow]`.
-// Constitution §24(b): an `unsafe` block requires a dossier-registered,
+// Operator §24(b): an `unsafe` block requires a dossier-registered,
 // property-tested safety argument. There is no such dossier entry for this
 // crate, so there is no `unsafe` this attribute could legitimately block.
 #![forbid(unsafe_code)]

@@ -7,7 +7,7 @@
 //! into `u64` (a monotonic, safe-by-contract saturation, documented below).
 //! No floats, no clocks, no RNG — pure function of its inputs.
 //!
-//! Constitution: §22 (fixed-point, deterministic), §102 (every scale is a named
+//! Operator: §22 (fixed-point, deterministic), §102 (every scale is a named
 //! const with rationale).
 
 use crate::candidate::{Candidate, Lane};

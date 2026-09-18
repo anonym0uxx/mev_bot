@@ -6,7 +6,7 @@
 //! discovery. No behaviour beyond construction, accessors, and the per-lane
 //! evidence priors that ranking and dedup depend on.
 //!
-//! Constitution: §22 (all fields integer / fixed-point, deterministic),
+//! Operator: §22 (all fields integer / fixed-point, deterministic),
 //! §102 (per-lane weight priors are named constants with rationale, not magic).
 
 /// A Solana mint address: a 32-byte public key.
@@ -30,7 +30,7 @@ impl Mint {
     }
 }
 
-/// A discovery lane: one of the constitution's independently-attributed setup
+/// A discovery lane: one of the operator's independently-attributed setup
 /// families that can surface a candidate (§ StrategyRuntime opportunity lens).
 ///
 /// Responsibility: identify *which* lane observed a mint, so evidence can be

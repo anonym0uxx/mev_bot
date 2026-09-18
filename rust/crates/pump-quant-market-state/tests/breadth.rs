@@ -73,7 +73,7 @@ fn raw_uniqueness_counts_distinct_dimensions() {
     assert_eq!(s.unique_funding_roots, 1);
     assert_eq!(s.cluster_adjusted_actors, 1);
     // raw wallet count (2) exceeds cluster-adjusted actors (1): the exact point
-    // of the constitution's "raw wallet count is not organic breadth".
+    // of the operator's "raw wallet count is not organic breadth".
     assert!(s.raw_unique_buyers > s.cluster_adjusted_actors);
 }
 

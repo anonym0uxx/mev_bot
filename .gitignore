@@ -30,3 +30,7 @@ tools/data-pipeline/output/
 tools/data-pipeline/.tmp/
 tools/social-ingest-https-rs/target/
 tools/stream-capture-rs/target/
+evidence.db-shm
+evidence.db-wal
+.env
+.hermes/

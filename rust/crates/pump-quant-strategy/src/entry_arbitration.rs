@@ -16,7 +16,7 @@
 //!   expected net SOL of eligible candidates that lost the arbitration — is
 //!   recorded, satisfying §23's "entry-stage opportunity cost" preservation.
 //!
-//! ## Constitution
+//! ## Operator
 //! §22/§99: integer/fixed-point only, bounded state (output is bounded by the
 //! candidate slice), deterministic. Ranking is a total order — ties break on the
 //! candidate id ascending, so input order never changes the result. Conditional

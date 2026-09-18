@@ -2,18 +2,18 @@
   "layer": "creator_content_v1",
   "schema_version": "1.0.0",
   "pipeline_version": "1.0.0",
-  "run_uuid": "cc_1788001539",
-  "git_sha": "cf97c33",
+  "run_uuid": "cc_1788850895",
+  "git_sha": "f4003d8",
   "input_raw_path": "output/narrative_gold_v1/raw/raw_social_event_v1",
   "output_path": "output/narrative_gold_v1/gold/creator_content_v1\\creator_content_v1.jsonl",
-  "total_raw_events": 14238,
-  "total_output_records": 1506,
-  "rejected_count": 8184,
-  "duplicate_count": 4548,
+  "total_raw_events": 14080,
+  "total_output_records": 1346,
+  "rejected_count": 8213,
+  "duplicate_count": 4521,
   "admission_stats": {
-    "GOLD": 1136,
-    "REJECTED": 12732,
-    "UNRESOLVED": 370
+    "GOLD": 1124,
+    "REJECTED": 12734,
+    "UNRESOLVED": 222
   },
-  "created_at": "2026-08-29T11:05:41.223394+00:00"
+  "created_at": "2026-09-08T07:01:36.943733+00:00"
 }

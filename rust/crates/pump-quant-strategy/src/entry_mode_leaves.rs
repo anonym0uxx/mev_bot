@@ -1,7 +1,7 @@
 //! # entry_mode_leaves — §24 EntryMode detector leaves (missing modes)
 //!
 //! §24's EntryMode set enumerates the admissible ways a lane opens a position.
-//! Two modes named by the constitution had no detector leaf yet:
+//! Two modes named by the operator had no detector leaf yet:
 //!
 //! * **PullbackContinuation** — an established uptrend that pulls back in a
 //!   *controlled* way to a retest level which then *holds*, offering a
@@ -45,7 +45,7 @@
 //! (No dependency edge is added here — signals owns the climax detector; this
 //! doc pins the composition the engine wires.)
 //!
-//! ## Constitution
+//! ## Operator
 //! §22: integer-only, no floats, no wall-clock, deterministic — identical
 //! features always yield the same [`EntrySignal`]. §24: EntryMode detectors are
 //! shared leaves that must run identically in LIVE/SHADOW/REPLAY; every

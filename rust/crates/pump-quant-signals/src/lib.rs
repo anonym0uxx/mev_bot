@@ -5,7 +5,7 @@
 //! `pump-quant-core::momentum::velocity`), adapted to clean, idiomatic,
 //! std-only Rust.
 //!
-//! # Constitution constraints (§22 -- integer-only outcome paths)
+//! # Operator constraints (§22 -- integer-only outcome paths)
 //!
 //! - **No `f32`/`f64` anywhere in an outcome-controlling path.** All money is
 //!   in lamports (`u64`/`u128`), all prices are fixed-point integers, and all

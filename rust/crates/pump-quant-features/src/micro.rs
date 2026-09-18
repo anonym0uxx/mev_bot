@@ -1,27 +1,27 @@
-//! Integer AMM order-flow / microstructure feature catalog (constitution 21.7).
+//! Integer AMM order-flow / microstructure feature catalog (operator 21.7).
 //!
 //! Responsibility: compute the swap-flow-derived microstructure features that
 //! *do* transfer to constant-product AMMs — CVD and delta velocity, order-flow
 //! imbalance, VWAP / anchored VWAP, trade-size distribution and large-print
 //! detection, swap-arrival intensity, and CVD/price divergence — with **no**
-//! floating point (constitution 22) and **no** imagined limit-order-book concept
-//! (constitution 21.7: "classical LOB microstructure ... must not be imported as
+//! floating point (operator 22) and **no** imagined limit-order-book concept
+//! (operator 21.7: "classical LOB microstructure ... must not be imported as
 //! if it did"). Every function is pure and computed point-in-time from the trade
 //! slice it is given; the [`RollingFlowWindow`] adds a memory-bounded streaming
-//! form (constitution 57).
+//! form (operator 57).
 //!
 //! These are *research-gated hypotheses*, not assumed-predictive signals
-//! (constitution 21.7 / 46): this module computes them faithfully; admission and
+//! (operator 21.7 / 46): this module computes them faithfully; admission and
 //! wash/cluster screening live in other planes.
 
 use crate::types::{FeatureError, Side, TradeEvent, PRICE_SCALE};
 use std::collections::VecDeque;
 
 /// Cumulative volume delta: running net of buy-side minus sell-side quote volume
-/// over `trades` (constitution 21.7). The primary order-flow-intent proxy.
+/// over `trades` (operator 21.7). The primary order-flow-intent proxy.
 ///
 /// Accumulates in [`i128`] with `saturating_add` as the explicit overflow
-/// contract (constitution 22); realistic lamport volumes over any bounded window
+/// contract (operator 22); realistic lamport volumes over any bounded window
 /// are far below the [`i128`] range, so saturation is a hard safety backstop, not
 /// an expected path.
 #[must_use]
@@ -34,13 +34,13 @@ pub fn cumulative_volume_delta(trades: &[TradeEvent]) -> i128 {
 }
 
 /// CVD delta velocity: change in CVD per second between two samples
-/// (constitution 21.7 "delta velocity/acceleration"), scaled by [`PRICE_SCALE`]
+/// (operator 21.7 "delta velocity/acceleration"), scaled by [`PRICE_SCALE`]
 /// to retain fractional resolution without floating point.
 ///
 /// Returns `None` when `to_ts_ns <= from_ts_ns` (no positive time base). Units are
 /// quote-units per second, computed as `delta * NS_PER_SEC / dt_ns` (integer,
 /// truncating), using [`i128`] and `saturating_mul` for the widening step
-/// (constitution 22). `PRICE_SCALE` is not applied here — CVD is a quote-volume
+/// (operator 22). `PRICE_SCALE` is not applied here — CVD is a quote-volume
 /// quantity, not a price.
 #[must_use]
 pub fn cvd_velocity_per_sec(
@@ -59,7 +59,7 @@ pub fn cvd_velocity_per_sec(
     Some(delta.saturating_mul(ns_per_sec) / dt)
 }
 
-/// Signed order-flow imbalance in base units over `trades` (constitution 21.7):
+/// Signed order-flow imbalance in base units over `trades` (operator 21.7):
 /// buy base volume minus sell base volume. [`i128`], saturating.
 #[must_use]
 pub fn order_flow_imbalance_base(trades: &[TradeEvent]) -> i128 {
@@ -71,7 +71,7 @@ pub fn order_flow_imbalance_base(trades: &[TradeEvent]) -> i128 {
 }
 
 /// Order-flow imbalance normalized to basis points of total base volume
-/// (constitution 21.7 aggressor-side skew): `(buy - sell) / (buy + sell) * 10_000`.
+/// (operator 21.7 aggressor-side skew): `(buy - sell) / (buy + sell) * 10_000`.
 ///
 /// Returns `None` when total base volume is zero (imbalance undefined). The result
 /// lies in `[-10_000, 10_000]`. Computed with [`i128`] widening then narrowed to
@@ -97,11 +97,11 @@ pub fn order_flow_imbalance_bps(trades: &[TradeEvent]) -> Option<i32> {
 }
 
 /// Volume-weighted average price over `trades` in [`PRICE_SCALE`] units
-/// (constitution 21.7 VWAP). Weight is base volume.
+/// (operator 21.7 VWAP). Weight is base volume.
 ///
 /// Returns `None` when total base volume is zero. Uses [`i128`] for the weighted
 /// sum with `saturating_mul`/`saturating_add` as the explicit overflow contract
-/// (constitution 22): with prices in `PRICE_SCALE` units the product `price_fp *
+/// (operator 22): with prices in `PRICE_SCALE` units the product `price_fp *
 /// base_qty` is comfortably within [`i128`] for any realistic AMM print.
 #[must_use]
 pub fn vwap_fp(trades: &[TradeEvent]) -> Option<i128> {
@@ -120,7 +120,7 @@ pub fn vwap_fp(trades: &[TradeEvent]) -> Option<i128> {
 }
 
 /// Anchored VWAP: [`vwap_fp`] restricted to trades with `ts_ns >= anchor_ns`
-/// (constitution 21.7 anchored VWAP, anchored to launch/migration/session).
+/// (operator 21.7 anchored VWAP, anchored to launch/migration/session).
 ///
 /// Returns `None` if no trade at or after the anchor carries base volume.
 #[must_use]
@@ -143,7 +143,7 @@ pub fn anchored_vwap_fp(trades: &[TradeEvent], anchor_ns: u64) -> Option<i128> {
 }
 
 /// Count of "large prints": trades whose `base_qty` is `>= threshold_base`
-/// (constitution 21.7 large-print / whale-print detection).
+/// (operator 21.7 large-print / whale-print detection).
 #[must_use]
 pub fn large_print_count(trades: &[TradeEvent], threshold_base: u64) -> u32 {
     let mut n: u32 = 0;
@@ -156,7 +156,7 @@ pub fn large_print_count(trades: &[TradeEvent], threshold_base: u64) -> u32 {
 }
 
 /// Trade-size distribution as counts over caller-supplied ascending base-size
-/// edges (constitution 21.7 trade-size distribution / histogram shape).
+/// edges (operator 21.7 trade-size distribution / histogram shape).
 ///
 /// `edges` must be sorted ascending. The returned vector has `edges.len() + 1`
 /// buckets: bucket `i < edges.len()` counts trades with `base_qty < edges[i]` and
@@ -175,7 +175,7 @@ pub fn trade_size_histogram(trades: &[TradeEvent], edges: &[u64]) -> Vec<u32> {
 }
 
 /// Swap-arrival intensity: number of trades whose `ts_ns` falls in the half-open
-/// window `(now_ns - window_ns, now_ns]` (constitution 21.7 swap-arrival intensity
+/// window `(now_ns - window_ns, now_ns]` (operator 21.7 swap-arrival intensity
 /// / burst dynamics). A higher count is a denser arrival burst.
 ///
 /// `window_ns` of zero yields zero (an empty window). Uses `saturating_sub` so a
@@ -195,7 +195,7 @@ pub fn arrival_intensity(trades: &[TradeEvent], now_ns: u64, window_ns: u64) -> 
     n
 }
 
-/// CVD / price divergence classification (constitution 21.7): price making a
+/// CVD / price divergence classification (operator 21.7): price making a
 /// higher high while CVD fails to confirm is buy-pressure exhaustion; the inverse
 /// is the bullish case; same-sign moves are confirmation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,7 +212,7 @@ pub enum CvdDivergence {
 }
 
 /// Classify divergence between a price change and a CVD change over the same
-/// interval (constitution 21.7). Pure integer sign comparison.
+/// interval (operator 21.7). Pure integer sign comparison.
 #[must_use]
 pub fn classify_divergence(price_delta_fp: i128, cvd_delta: i128) -> CvdDivergence {
     use core::cmp::Ordering;
@@ -236,7 +236,7 @@ pub fn classify_divergence(price_delta_fp: i128, cvd_delta: i128) -> CvdDivergen
 }
 
 /// A memory-bounded rolling window of recent trades with O(1) incremental
-/// aggregates (constitution 21.7 rolling-window features, 57 memory bound).
+/// aggregates (operator 21.7 rolling-window features, 57 memory bound).
 ///
 /// Responsibility: maintain CVD, order-flow imbalance, buy/sell volume, and
 /// arrival count over the most recent `window_ns` of information time, subject to
@@ -293,7 +293,7 @@ impl RollingFlowWindow {
         }
     }
 
-    /// Push a trade. Enforces non-decreasing information time (constitution 20):
+    /// Push a trade. Enforces non-decreasing information time (operator 20):
     /// an out-of-order trade is rejected with
     /// [`FeatureError::NonMonotonicTimestamp`]. After insertion, evicts trades
     /// that fell outside `window_ns` and, if still over `capacity`, evicts oldest.
@@ -326,7 +326,7 @@ impl RollingFlowWindow {
                 }
             }
         }
-        // Capacity eviction: hard memory bound (constitution 57).
+        // Capacity eviction: hard memory bound (operator 57).
         while self.ring.len() > self.capacity {
             if let Some(old) = self.ring.pop_front() {
                 self.remove_aggregates(&old);
@@ -391,7 +391,7 @@ impl RollingFlowWindow {
 }
 
 /// Convert a raw price and [`PRICE_SCALE`] into a fixed-point price, saturating on
-/// overflow (constitution 22 helper). Provided for tests/consumers constructing
+/// overflow (operator 22 helper). Provided for tests/consumers constructing
 /// [`TradeEvent`]s from integer prices.
 #[must_use]
 pub fn to_price_fp(price: i128) -> i128 {

@@ -2,7 +2,7 @@
 //! scalping bot.
 //!
 //! This crate implements the deterministic, integer-only wallet-intelligence
-//! primitives required by the constitution:
+//! primitives required by the operator:
 //!
 //! * [`tier1_hot_summary`] — Section 28 Tier-1 *bounded production summaries*:
 //!   deterministic, memory-bounded hot-path-eligible reducers (same-block

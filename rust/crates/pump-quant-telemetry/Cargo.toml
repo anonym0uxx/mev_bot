@@ -1,0 +1,17 @@
+[package]
+name = "pump-quant-telemetry"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Integer live-telemetry for the pump-quant book: equity, drawdown bps, position count and band health, with an alert surface that pages on real faults and stays silent while the bot is merely idle."
+
+[lib]
+name = "pump_quant_telemetry"
+path = "src/lib.rs"
+
+[dependencies]
+# NONE, deliberately. This crate is std-only: telemetry that sits on the critical path
+# of a pager must not be able to fail because a dependency failed.
+
+[dev-dependencies]
+# NONE. The alert tests exercise the library with std alone.

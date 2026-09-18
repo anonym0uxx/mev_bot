@@ -36,7 +36,7 @@ mod tag {
 
 /// A configuration value in the canonical, float-free model.
 ///
-/// ## Constitution
+/// ## Operator
 /// The neutral config representation hashed for §56.3 registry pinning. Uses a
 /// [`BTreeMap`] for maps so key ordering is canonical by construction.
 #[derive(Clone, Debug, PartialEq, Eq)]

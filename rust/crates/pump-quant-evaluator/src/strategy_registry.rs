@@ -9,7 +9,7 @@
 //! gate verdicts). The registry enforces these requirements and prevents
 //! skipping stages or regressing (except via explicit demotion/retirement).
 //!
-//! ## Constitution compliance
+//! ## Operator compliance
 //! - §56.3: Strategy lifecycle stages tracked reproducibly
 //! - §64: Strategy registry and lifecycle management
 //! - §22: Integer-only, no floats
@@ -62,7 +62,7 @@ pub enum BlockReason {
 // ============================================================================
 
 /// Minimum trades required before advancing FROM each stage.
-/// These are conservative thresholds based on constitution §56.3.
+/// These are conservative thresholds based on operator §56.3.
 #[must_use]
 pub fn min_trades_for_advance(from: LifecycleStage) -> u64 {
     match from {

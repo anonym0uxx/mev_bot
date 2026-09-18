@@ -893,13 +893,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pq-evaluator"
-version = "0.1.0"
-dependencies = [
- "pump-quant-evaluator",
-]
-
-[[package]]
 name = "pq-regression"
 version = "0.1.0"
 dependencies = [
@@ -993,10 +986,6 @@ name = "pump-quant-brain"
 version = "0.1.0"
 
 [[package]]
-name = "pump-quant-canonical"
-version = "0.1.0"
-
-[[package]]
 name = "pump-quant-clock"
 version = "0.1.0"
 
@@ -1030,6 +1019,15 @@ version = "0.1.0"
 [[package]]
 name = "pump-quant-governance"
 version = "0.1.0"
+
+[[package]]
+name = "pump-quant-inference"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "ureq",
+]
 
 [[package]]
 name = "pump-quant-ingest"
@@ -1071,10 +1069,10 @@ name = "pump-quant-narrative"
 version = "0.1.0"
 
 [[package]]
-name = "pump-quant-ostune"
+name = "pump-quant-proposal"
 version = "0.1.0"
 dependencies = [
- "pump-quant-core",
+ "serde_json",
 ]
 
 [[package]]
@@ -1082,13 +1080,6 @@ name = "pump-quant-protocol"
 version = "0.1.0"
 dependencies = [
  "serde_json",
-]
-
-[[package]]
-name = "pump-quant-replay"
-version = "0.1.0"
-dependencies = [
- "pump-quant-clock",
 ]
 
 [[package]]
@@ -1105,6 +1096,14 @@ version = "0.1.0"
 
 [[package]]
 name = "pump-quant-strategy"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-tape"
+version = "0.1.0"
+
+[[package]]
+name = "pump-quant-telemetry"
 version = "0.1.0"
 
 [[package]]
@@ -2366,6 +2365,8 @@ dependencies = [
  "once_cell",
  "rustls",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "url",
  "webpki-roots 0.26.11",
 ]

@@ -2,7 +2,7 @@
 //! against the LaserStream parser, trade journal, and memory bank to prove
 //! the system fails closed under malformed, truncated, and random data.
 //!
-//! Constitution refs:
+//! Operator refs:
 //! * §56 — chaos testing (adversarial inputs must not panic or corrupt).
 //! * §18.2 — fail closed on unknown, never guess benign.
 //! * §22 — integer-only, deterministic, no float / clock / RNG / I/O.

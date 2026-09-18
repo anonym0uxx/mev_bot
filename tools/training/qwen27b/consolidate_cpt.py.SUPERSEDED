@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Consolidate the sharded ZeRO-3 CPT checkpoint -> single BF16 model.
+
+WHY zero_to_fp32.py FAILS (root cause):
+  The run used `offload_param: nvme` (NOT just offload_optimizer). That offloads
+  the FP32 master weights themselves to NVMe, so the per-rank optim_states.pt
+  holds EMPTY placeholders (fp32_flat_groups = 163 tensors of numel=0). The real
+  weights live in offloaded_tensors/*.tensor.swp (301GB). zero_to_fp32.py naively
+  reads fp32_flat_groups from optim_states.pt and reconstructs from those empty
+  tensors -> "consumed 26895999267 numels out of 677361".
+
+FIX:
+  Re-load the checkpoint under the SAME ZeRO-3 topology and use DeepSpeed's
+  save_16bit_model() (the same gather the trainer uses with
+  stage3_gather_16bit_weights_on_model_save=true). It correctly swaps the
+  offloaded BF16 params back and gathers them into one consolidated model.
+  load_optimizer_states=False skips the 301GB Adam/FP32 master state (we only
+  need the BF16 weights for the SFT handoff).
+
+RUN (3 GPUs required, matching world_size=3):
+  cd /mnt/d/repos/mev_bot/tools/training/qwen27b && \
+  accelerate launch --config_file accelerate_zero3.yaml consolidate_cpt.py
+"""
+import json
+import torch
+import deepspeed
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from deepspeed.runtime.checkpoint_engine import TorchCheckpointEngine
+
+TOKENIZER_REPO = "unsloth/Qwen3.8-27B"
+TOKENIZER_REV = "3ea932cee0a432ae86e9c7826cbe8aef52323a28"
+CKPT_DIR = "/training/runs/qwen27b_cpt_v1/final"
+OUT_DIR = "/training/runs/qwen27b_cpt_v1/cpt_final_bf16"
+
+
+def main():
+    model = AutoModelForCausalLM.from_pretrained(
+        TOKENIZER_REPO, revision=TOKENIZER_REV, torch_dtype=torch.bfloat16,
+    )
+    with open("ds_zero3_nvme.json") as f:
+        cfg = json.load(f)
+    # Resolve HF-Trainer "auto" fields (unused for load/save, but initialize() needs them
+    # and enforces train_batch = micro_batch * grad_acc * world_size = 1*1*3).
+    cfg["train_micro_batch_size_per_gpu"] = 1
+    cfg["gradient_accumulation_steps"] = 1
+    cfg["train_batch_size"] = 3
+
+    engine, *_ = deepspeed.initialize(model=model, config=cfg)
+    # Bare deepspeed.initialize() (no HF Trainer/accelerate wrapper) skips
+    # _configure_checkpointing, leaving engine.checkpoint_engine=None. Set the
+    # default torch engine so _load_zero_checkpoint can read the optimizer state.
+    engine.checkpoint_engine = TorchCheckpointEngine()
+    # NOTE: use DEFAULT load_optimizer_states=True. Setting it False forces
+    # engine._load_checkpoint into the get_fp32_state_dict_from_zero_checkpoint path,
+    # which cannot read NVMe-offloaded fp32_flat_groups (offload_param/offload_optimizer).
+    # load_optimizer_states=True uses the universal-checkpoint shard loader + offload
+    # restore instead, which is the only path that handles this checkpoint correctly.
+    engine.load_checkpoint(CKPT_DIR)
+    engine.save_16bit_model(OUT_DIR)
+
+    # Rank 0 also writes the tokenizer alongside the consolidated weights.
+    import torch.distributed as dist
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        tok = AutoTokenizer.from_pretrained(CKPT_DIR)
+        tok.save_pretrained(OUT_DIR)
+    print("CONSOLIDATED", OUT_DIR, flush=True)
+
+
+if __name__ == "__main__":
+    main()

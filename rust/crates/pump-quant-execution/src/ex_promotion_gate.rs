@@ -29,7 +29,7 @@
 //! subset that happened to arrive. [`PromotionCriteria::max_slot_gap_bps`]
 //! makes that a hard refusal rather than a caveat in a report.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §22: every quantity integer. PnL in lamports as `i64`, sums and the
 //!   significance test widened to `i128`. The t-test is rearranged to avoid
 //!   both division and any square root, so no float appears anywhere.

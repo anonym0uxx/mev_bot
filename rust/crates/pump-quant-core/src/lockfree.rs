@@ -4,7 +4,7 @@
 //!
 //! * [`MutexQueue`] — a verified-safe, boring, bounded FIFO queue built on a
 //!   single mutex. It is the honest baseline that any lock-free structure must
-//!   beat on the benchmark before it is allowed to ship (constitution §57).
+//!   beat on the benchmark before it is allowed to ship (operator §57).
 //! * [`Spsc`] — a bounded single-producer/single-consumer ring buffer using
 //!   acquire/release ordering and cache-line-padded indices.
 //! * [`SeqCell`] — a seqlock snapshot cell: one writer publishes a fixed-size
@@ -12,7 +12,7 @@
 //! * [`Backoff`] / [`backoff_step`] — deterministic bounded busy-wait backoff
 //!   that never issues a syscall inside the hot window.
 //!
-//! Constitutional discipline observed here:
+//! operator-mandated discipline observed here:
 //! * No `f32`/`f64` anywhere in outcome-controlling logic — integer only.
 //! * No allocation after construction in any primitive.
 //! * All shared cross-thread indices are cache-line padded (`#[repr(align(64))]`).
@@ -85,7 +85,7 @@ impl<T, const N: usize> Drop for RingInner<T, N> {
 ///
 /// This is intentionally boring: correctness under arbitrary thread counts is
 /// trivial because the mutex serializes every operation. It exists so the
-/// lock-free benchmark has an honest opponent (constitution §57). Bounded at
+/// lock-free benchmark has an honest opponent (operator §57). Bounded at
 /// `N`; a `push` on a full queue returns `Err(v)` — the value is returned, never
 /// dropped. FIFO order is preserved and there is no allocation after `new`.
 pub struct MutexQueue<T, const N: usize> {

@@ -1,0 +1,193 @@
+HISTORICAL UNSAFE CONTENT - DO NOT EXECUTE
+#!/usr/bin/env bash
+# =============================================================================
+# bootstrap_linux.sh — ONE-command native-Linux setup for Qwen27B SFT.
+#
+# Run this AFTER you have installed Ubuntu 24.04 + the NVIDIA driver (§7 of the
+# runbook) and rebooted. It does everything else: CUDA toolkit, python env,
+# deps, data migration from the staged D:\linux_export, native DS config, and
+# (optionally) launches SFT.
+#
+#   sudo bash bootstrap_linux.sh            # full setup, then launch SFT
+#   sudo bash bootstrap_linux.sh --dry-run  # setup only, do NOT launch
+#
+# Idempotent and non-destructive: every phase checks before it acts, nothing
+# formats/wipes, D: is mounted READ-ONLY. Safe to re-run.
+# =============================================================================
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Tunables (edit these once, if your layout differs)
+# ---------------------------------------------------------------------------
+VENV_DIR="${HOME}/qwen-train"
+TRAIN_MOUNT="/training"
+DATA_MOUNT="/mnt/d"
+EXPORT_ROOT="/mnt/d/linux_export"     # staged on D: by the Windows-side export
+CODE_DIR="${HOME}/mev_bot/tools/training/qwen27b"
+LAUNCH="${1:-}"
+
+log()  { printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
+warn() { printf '\033[1;33mWARN: %s\033[0m\n' "$*"; }
+die()  { printf '\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# 0. Prereq gates — fail loud if the machine isn't what we expect
+# ---------------------------------------------------------------------------
+log "0. Prerequisites"
+[ "$(id -u)" -eq 0 ] || die "run with sudo: sudo bash bootstrap_linux.sh"
+
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+  die "nvidia-smi not found — install the NVIDIA driver first (runbook §7), reboot, then re-run."
+fi
+NGPU=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
+[ "$NGPU" -eq 3 ] || warn "expected 3 GPUs, found $NGPU — continuing, but verify."
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)
+DRIVER_MAJOR=$(echo "$DRIVER" | cut -d. -f1)
+[ "$DRIVER_MAJOR" -ge 570 ] || die "driver $DRIVER < R570 — Blackwell (sm_120) needs R570+. Install nvidia-driver-580 (§7)."
+
+# ---------------------------------------------------------------------------
+# 1. Build tools + CUDA 12.8 toolkit (for DeepSpeed nvcc JIT + fused ops)
+# ---------------------------------------------------------------------------
+log "1. Build tools + CUDA 12.8 toolkit"
+apt-get update -y
+apt-get install -y gcc make build-essential git curl python3.12 python3.12-venv python3-pip libaio-dev
+if ! command -v nvcc >/dev/null 2>&1 || ! nvcc --version 2>/dev/null | grep -q "12.8"; then
+  CUDA_DEB=cuda-repo-ubuntu2404-12-8-local_12.8.1-1_amd64.deb
+  [ -f "$CUDA_DEB" ] || wget "https://developer.download.nvidia.com/compute/cuda/12.8.1/local_installers/$CUDA_DEB"
+  dpkg -i "$CUDA_DEB"
+  apt-get update -y
+  apt-get install -y cuda-toolkit-12-8
+fi
+# persist CUDA env for the venv activation
+mkdir -p /etc/profile.d
+cat > /etc/profile.d/cuda-12.8.sh <<'EOF'
+export CUDA_HOME=/usr/local/cuda-12.8
+export PATH="$CUDA_HOME/bin:$PATH"
+export LD_LIBRARY_PATH="$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
+EOF
+
+# ---------------------------------------------------------------------------
+# 2. Python venv + pinned deps (exact WSL stack for reproducibility)
+# ---------------------------------------------------------------------------
+log "2. Python venv + pinned deps"
+if [ ! -d "$VENV_DIR" ]; then
+  python3.12 -m venv "$VENV_DIR"
+fi
+# shellcheck disable=SC1090
+source "$VENV_DIR/bin/activate"
+pip install --upgrade pip
+pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cu128
+pip install deepspeed==0.18.2 transformers==5.16.1 accelerate==1.11.0
+pip install datasets tokenizers numpy tqdm tensorboard
+
+# ---------------------------------------------------------------------------
+# 3. Mount /training (the native ext4 partition created at install time)
+# ---------------------------------------------------------------------------
+log "3. Mount $TRAIN_MOUNT"
+if ! findmnt -n -o SOURCE,FSTYPE "$TRAIN_MOUNT" 2>/dev/null | grep -q ext4; then
+  warn "$TRAIN_MOUNT not mounted. Looking for an ext4 partition to use..."
+  # Prefer a partition by label 'training'; otherwise list candidates.
+  if blkid -L training >/dev/null 2>&1; then
+    TPART=$(blkid -L training)
+  else
+    TPART=""
+    warn "no partition labeled 'training'. List of ext4 partitions:"
+    blkid -t TYPE=ext4 || true
+    die "create/label the /training ext4 partition at install time (runbook §6), then re-run."
+  fi
+  mkdir -p "$TRAIN_MOUNT"
+  mount "$TPART" "$TRAIN_MOUNT"
+fi
+df -h "$TRAIN_MOUNT"
+
+# ---------------------------------------------------------------------------
+# 4. Mount D: READ-ONLY and migrate staged data
+# ---------------------------------------------------------------------------
+log "4. Migrate staged data from D:"
+mkdir -p "$DATA_MOUNT"
+if ! findmnt -n "$DATA_MOUNT" >/dev/null 2>&1; then
+  # find the NTFS data disk (largest ntfs partition, not the boot disk)
+  DDISK=$(blkid -t TYPE=ntfs -o device | while read -r d; do
+            if ! echo "$d" | grep -qE 'nvme0n1p[0-9]'; then echo "$d"; fi
+          done | head -1)
+  [ -n "$DDISK" ] || DDISK=$(blkid -t TYPE=ntfs -o device | head -1)
+  [ -n "$DDISK" ] || die "no NTFS partition found to mount as D:."
+  mount -t ntfs3 -o ro "$DDISK" "$DATA_MOUNT" || mount -t ntfs-3g -o ro "$DDISK" "$DATA_MOUNT"
+fi
+df -h "$DATA_MOUNT"
+
+[ -d "$EXPORT_ROOT" ] || die "$EXPORT_ROOT not found — run the Windows-side export first (stages checkpoint/code/data to D:\\linux_export)."
+
+mkdir -p "$TRAIN_MOUNT/checkpoint" "$TRAIN_MOUNT/data" "$TRAIN_MOUNT/offload" "$HOME/mev_bot"
+
+log "4a. Copy code (tools/training/qwen27b) -> ~/mev_bot"
+cp -a "$EXPORT_ROOT/code/qwen27b" "$CODE_DIR"
+log "4b. Copy data (qwen_curriculum_v1) -> /training/data"
+cp -a "$EXPORT_ROOT/data/qwen_curriculum_v1" "$TRAIN_MOUNT/data/"
+log "4c. Copy consolidated CPT checkpoint -> /training/checkpoint (51GB, takes a few min)"
+cp -a "$EXPORT_ROOT/checkpoint/cpt_final_bf16" "$TRAIN_MOUNT/checkpoint/"
+
+# ---------------------------------------------------------------------------
+# 5. Verify checkpoint integrity (sha256 vs the Windows-side manifest)
+# ---------------------------------------------------------------------------
+log "5. Verify checkpoint integrity"
+CKPT_BIN="$TRAIN_MOUNT/checkpoint/cpt_final_bf16/pytorch_model.bin"
+MANIFEST_SHA="$EXPORT_ROOT/checkpoint/pytorch_model.bin.sha256"
+[ -f "$CKPT_BIN" ] || die "checkpoint pytorch_model.bin missing after copy."
+if [ -f "$MANIFEST_SHA" ]; then
+  echo "computing sha256 (51GB, ~1-2 min)..."
+  LOCAL_SHA=$(sha256sum "$CKPT_BIN" | cut -d' ' -f1)
+  EXPORT_SHA=$(cut -d' ' -f1 "$MANIFEST_SHA")
+  if [ "$LOCAL_SHA" = "$EXPORT_SHA" ]; then
+    echo "OK: checkpoint checksum matches ($LOCAL_SHA)"
+  else
+    die "CHECKSUM MISMATCH: local=$LOCAL_SHA export=$EXPORT_SHA — re-copy from D:."
+  fi
+else
+  warn "no sha256 manifest found — skipping checksum (re-run the export with manifest)."
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Point accelerate at the native DS config
+# ---------------------------------------------------------------------------
+log "6. Native DeepSpeed config"
+cd "$CODE_DIR"
+[ -f ds_zero3_native.json ] || die "ds_zero3_native.json missing from staged code."
+# Rewrite the deepspeed_config_file line in accelerate_zero3.yaml
+sed -i "s#deepspeed_config_file:.*#deepspeed_config_file: $CODE_DIR/ds_zero3_native.json#" accelerate_zero3.yaml
+grep deepspeed_config_file accelerate_zero3.yaml
+
+# ---------------------------------------------------------------------------
+# 7. Launch SFT (from the consolidated CPT checkpoint) — or dry-run
+# ---------------------------------------------------------------------------
+if [ "$LAUNCH" = "--dry-run" ]; then
+  log "DRY-RUN complete — SFT NOT launched. To launch:"
+  echo "  cd $CODE_DIR && source $VENV_DIR/bin/activate"
+  echo "  accelerate launch --config_file accelerate_zero3.yaml train_qwen27b.py \\"
+  echo "      --phase sft --init_from $TRAIN_MOUNT/checkpoint/cpt_final_bf16 \\"
+  echo "      --data_root $TRAIN_MOUNT/data/qwen_curriculum_v1"
+  exit 0
+fi
+
+log "7. Launch SFT (from consolidated CPT checkpoint)"
+cd "$CODE_DIR"
+INIT_FROM="$TRAIN_MOUNT/checkpoint/cpt_final_bf16"
+DATA_ROOT="$TRAIN_MOUNT/data/qwen_curriculum_v1"
+[ -f "$INIT_FROM/pytorch_model.bin" ] || die "init checkpoint missing: $INIT_FROM/pytorch_model.bin"
+[ -d "$DATA_ROOT" ] || die "data root missing: $DATA_ROOT"
+
+# native: drop the WSL/dxg NCCL workarounds (harmless-but-unneeded natively)
+unset NCCL_CUMEM_ENABLE PYTORCH_CUDA_ALLOC_CONF TORCH_NCCL_AVOID_RECORD_STREAMS 2>/dev/null || true
+export TQDM_MININTERVAL=30
+ulimit -n 1048576
+
+echo "=== SFT launch $(date -Is) ===" | tee -a train.log
+setsid accelerate launch --config_file accelerate_zero3.yaml train_qwen27b.py \
+  --phase sft --init_from "$INIT_FROM" --data_root "$DATA_ROOT" >> train.log 2>&1 < /dev/null &
+LAUNCHER_PID=$!
+disown
+sleep 30
+pgrep -af "train_qwen27b[.]py --phase sft" || { echo "LAUNCH FAILED — tail:"; tail -30 train.log; exit 1; }
+echo "SFT launched (pid $LAUNCHER_PID). Monitor: tail -f $CODE_DIR/train.log"

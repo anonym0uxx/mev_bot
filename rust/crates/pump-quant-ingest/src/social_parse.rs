@@ -8,7 +8,7 @@
 //! scraper, Firecrawl) is OUT OF SCOPE here — it is `[S]` live-I/O behind the
 //! [`crate::social_source`] trait. This module is the pure decoder only.
 //!
-//! # Constitution discipline (binding)
+//! # Operator discipline (binding)
 //! * **§22 determinism / integer.** No floating point, no wall-clock, no RNG, no
 //!   network. The observation instant is supplied by the caller as an
 //!   already-measured `u64` nanosecond value (`observed_at_ns`); this module never

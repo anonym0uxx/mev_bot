@@ -22,7 +22,7 @@
 //! priced. The *which-treatment-wins-out-of-sample* decision is server-side; this
 //! leaf produces the candidate set and a deterministic default recommendation.
 //!
-//! ## Constitution
+//! ## Operator
 //! §22: integer-only, no floats, deterministic. Thresholds are supplied via
 //! [`RiskThresholds`] (operator-tunable), never hardcoded in the decision path.
 

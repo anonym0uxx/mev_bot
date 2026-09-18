@@ -36,7 +36,7 @@
 //! are served from cache. If the cache is cold, the state fetch falls back to
 //! a synchronous RPC round-trip (~50-100ms) — a degradation, not a failure.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §24(b): paper/replay mode is byte-identical — the `NoopSink` is used
 //!   there; this sink is only wired in live mode.
 //! - §36: the failure taxonomy classifies every rejection.

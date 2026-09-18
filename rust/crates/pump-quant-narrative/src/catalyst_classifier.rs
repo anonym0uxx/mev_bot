@@ -5,7 +5,7 @@
 //! and from the §29.8 per-source `SocialSourceQualityLedger` (which classifies an
 //! account's track record). Here the subject is the attention trigger itself.
 //!
-//! Hard invariants (constitution):
+//! Hard invariants (operator):
 //! * §22 — integer / fixed-point only, no float on the outcome path.
 //! * Deterministic, total, ordered classifier (first matching rule wins), so
 //!   every variant is reachable and the mapping is a pure function of inputs.
@@ -21,7 +21,7 @@
 
 /// The ten enumerated social-catalyst classes (§29.6).
 ///
-/// Ordering is the canonical constitution order and is load-bearing: variants
+/// Ordering is the canonical operator order and is load-bearing: variants
 /// earlier in manipulation severity are matched first by [`classify`]. `Unknown`
 /// is last — the §29.5 fade-first no-data default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

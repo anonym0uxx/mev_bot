@@ -1,0 +1,127 @@
+HISTORICAL UNSAFE CONTENT - DO NOT EXECUTE
+# Linux Migration — Console Checklist (print this / read from phone)
+
+**Status 2026-09-04:** ISO downloaded + checksum-verified. All data staged on `D:\linux_export\`.
+Screen recovered after reboot. Remaining steps are the physical-console ones below.
+
+---
+
+## What's already done (don't redo)
+
+| Item | Where | State |
+|---|---|---|
+| Ubuntu 24.04.4 desktop ISO | `D:\linux_export\ubuntu-24.04.4-desktop-amd64.iso` | ✅ 6.19 GiB, sha256 verified |
+| Consolidated CPT checkpoint | `D:\linux_export\checkpoint\cpt_final_bf16\` | ✅ 51 GiB + sha256 |
+| Training code + bootstrap | `D:\linux_export\code\qwen27b\` | ✅ |
+| Training + eval data | `D:\linux_export\data\qwen_curriculum_v1\` | ✅ 262 MB |
+| Fast Startup / hibernation | — | ✅ already OFF (HiberbootEnabled=0) |
+
+---
+
+## STEP 1 — Disable Secure Boot (BIOS, physical)
+
+Currently **ON** (`UEFISecureBootEnabled=0x1`). Must be OFF or the NVIDIA driver won't load.
+
+1. Reboot the machine.
+2. At POST, hammer **F2** or **Del** to enter firmware setup (your board: try F2 first).
+3. Find **Security → Secure Boot → Disabled**.
+4. **Save & Exit** (usually F10).
+
+> This is the one step no remote tool can do — you must be at the keyboard.
+
+---
+
+## STEP 2 — Boot the installer (NO USB — from the drive)
+
+You have the ISO on `D:` but no USB stick. Two ways, **pick one**:
+
+### Option A (RECOMMENDED) — grub2win loopback boot
+Boots the ISO file directly from the hard drive. No extra partition, nothing destructive.
+
+1. In Windows, open a browser → go to `https://sourceforge.net/projects/grub2win/` → download `grub2win-*.exe`.
+2. Run it **as Administrator**.
+3. Click **Install** (it adds itself to the Windows boot menu — it does NOT touch your partitions).
+4. Open **GRUB2Win** → **Manage Boot Menu** → **Add a new entry**.
+5. Choose the **Ubuntu** preset, point the **ISO path** at `D:\linux_export\ubuntu-24.04.4-desktop-amd64.iso`.
+6. Reboot → in the boot menu choose **GRUB2Win** → then **Ubuntu ISO**.
+7. You land in the **Try/Install Ubuntu** live session.
+
+> grub2win needs Secure Boot OFF (already handled in Step 1). It leaves Windows boot untouched otherwise.
+
+### Option B — extract ISO to a spare FAT32 partition
+No third-party tool, but more manual and more care required.
+
+1. After Step 3's shrink (below), create a small **8 GB FAT32** partition in the free space.
+2. Mount the ISO (double-click it in Windows) and copy **all files** into that FAT32 partition.
+3. Reboot → boot menu (F8/Del) → pick that FAT32 partition (UEFI entry).
+4. Live session loads → install.
+
+> Requires care: label the partition clearly, e.g. `UBUNTU_INST`; do not confuse it with `C:` or `D:`.
+
+---
+
+## STEP 3 — Shrink C: to free space for Ubuntu (Windows, admin)
+
+1. Right-click **Start → Disk Management** (or run `diskpart`).
+2. On the **C:** partition, choose **Shrink Volume**.
+3. Shrink by about **2 TB** (2,000,000 MB).
+4. Leave the resulting **Unallocated** space alone — Ubuntu will use it.
+
+> If shrink offers far less than 2 TB, STOP and escalate. Do not force with third-party tools.
+
+---
+
+## STEP 4 — Install Ubuntu (dual-boot)
+
+Boot into the installer (Step 2), choose **Install Ubuntu**, then:
+
+- **Installation type → "Something else"** (manual).
+- In the ~2 TB unallocated space on the **NVMe holding C:** (disk 0), create:
+
+| Mount point | Size | FS | Purpose |
+|---|---|---|---|
+| `/` | 100 GB | ext4 | OS + driver + venv + code |
+| `/training` | ~1.85 TB | ext4 | data + NVMe offload + checkpoints |
+| swap | 32 GB | swap | (optional with 256 GB RAM) |
+
+- **Boot loader device:** the existing EFI System Partition (`/dev/nvme0n1p1`). This adds GRUB beside Windows Boot Manager.
+- Finish install → reboot → GRUB menu → **Ubuntu**.
+
+---
+
+## STEP 5 — NVIDIA driver (in Ubuntu)
+
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y gcc make build-essential
+sudo add-apt-repository -y ppa:graphics-drivers/ppa
+sudo apt update
+sudo apt install -y nvidia-driver-580 nvidia-utils-580
+sudo reboot
+```
+
+Verify after reboot: `nvidia-smi` → expect **3× RTX PRO 6000, 96 GB, driver 580.x**.
+
+---
+
+## STEP 6 — Run the bootstrap (does everything else)
+
+```bash
+sudo mkdir -p /mnt/d
+sudo mount -t ntfs3 -o ro /dev/nvme1n1p1 /mnt/d    # D: read-only (Disk 1)
+sudo bash /mnt/d/linux_export/code/qwen27b/bootstrap_linux.sh
+```
+
+This one script installs CUDA 12.8, the exact pinned Python stack, mounts `/training`, copies code/data/checkpoint, re-verifies the 51 GB checksum, and launches SFT.
+
+> First run it with `--dry-run` to see what it would do without launching:
+> `sudo bash .../bootstrap_linux.sh --dry-run`
+
+---
+
+## SAFETY (read once, remember)
+
+- **Never** target `C:` (nvme0n1 Windows partition) or `D:` (nvme1n1) when creating/deleting partitions.
+- `D:` (Disk 1, nvme1n1) is **untouched** throughout — it's the rollback path.
+- The 51 GB checkpoint lives on `D:\linux_export\checkpoint\` and is the thing you must NOT lose.
+- If anything looks wrong at partition time, **STOP** and message Hermes.

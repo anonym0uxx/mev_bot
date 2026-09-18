@@ -1,5 +1,5 @@
 //! `tape` — the recorded decision/outcome JSONL schema and a std-only,
-//! integer-exact parser (constitution §62 artifact inputs).
+//! integer-exact parser (operator §62 artifact inputs).
 //!
 //! The `pq-evaluator` and `pq-research-runner` binaries read a recorded
 //! decision/outcome *tape*: newline-delimited JSON objects, one record per line,
@@ -326,7 +326,7 @@ pub struct AblationRecord {
 
 /// A full-fidelity enriched trade record (kind: "trade_full") carrying all 16
 /// fields from the engine's TradeRecord. Used for attribution analysis, A/B
-/// testing, and strategy-type discovery. Constitution §43, §62.
+/// testing, and strategy-type discovery. Operator §43, §62.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TradeFull {
     /// Slot at which the trade decision was made (the timebase).

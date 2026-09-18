@@ -234,7 +234,7 @@ impl Sha256 {
 
 /// One-shot convenience: the SHA-256 digest of `data`.
 ///
-/// ## Constitution
+/// ## Operator
 /// The deterministic primitive under §56.3 hashing / §44 evaluator pinning.
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut h = Sha256::new();

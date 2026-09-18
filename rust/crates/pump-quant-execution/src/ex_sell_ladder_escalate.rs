@@ -10,7 +10,7 @@
 //! attempt, how much of the order is still unfilled, and the per-level
 //! thresholds, decide whether to escalate to the next level.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §22: integer-only. Elapsed time is `u64` ms; unfilled fraction is `bps`.
 //! - Deterministic: a pure function of its inputs, no clock read.
 

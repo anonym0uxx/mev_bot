@@ -1,7 +1,7 @@
 //! Section 28 **smart-money authentication**.
 //!
 //! On-chain "profitability" is an adversarial, manufactured quantity by
-//! default. This module implements the two gates the constitution requires
+//! default. This module implements the two gates the operator requires
 //! before any wallet may be treated as "smart":
 //!
 //! 1. [`PnlScreen`] — the **PnL truth rules** and **skill-vs-luck statistics**:

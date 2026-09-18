@@ -1,0 +1,10 @@
+[package]
+name = "pump-quant-tape"
+version = "0.1.0"
+edition = "2021"
+description = "Durable append-only sink for the live training tape: renders every captured on-chain trade as one line of the c12 schema (key order fixed, integers never quoted) plus the trailing regime tag, with a byte-bounded writer that never leaves a partial line."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "pump_quant_tape"
+path = "src/lib.rs"

@@ -1,4 +1,4 @@
-//! Attention-velocity narrative leaves (constitution §29 / §21.4 / §46 / §783).
+//! Attention-velocity narrative leaves (operator §29 / §21.4 / §46 / §783).
 //!
 //! All ratios and scores are fixed-point over [`FP_ONE`] (1.0 == 10_000). No
 //! floating point is used or produced. Overflow-prone steps widen to 128-bit

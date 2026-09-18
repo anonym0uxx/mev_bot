@@ -8,7 +8,7 @@
 //! ([`gate_with_annotation`] returns the gate's own verdict unchanged, so a
 //! "positive" note cannot flip a failing gate to pass).
 //!
-//! ## Constitution
+//! ## Operator
 //! §30 (annotations may never bypass automated risk controls, authorize live
 //! trades, or override thesis invalidation / wallet survival / sellability /
 //! economic gates / replay). Pure and deterministic.

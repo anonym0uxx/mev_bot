@@ -2,14 +2,14 @@
 //!
 //! Canonical decoded events are applied by *pure* transition functions to versioned
 //! state. Identical event sequences produce bit-identical state and decisions
-//! (constitution criterion 12); live, shadow, and replay share this exact code
+//! (operator criterion 12); live, shadow, and replay share this exact code
 //! (criterion 13).
 //!
 //! Design constraints enforced throughout this module:
 //! - No clocks, no IO, no RNG, no ambient reads in any transition function.
 //! - No `HashMap` iteration-order dependence: keyed collections are iterated in a
 //!   deterministic (sorted) order wherever the order affects output.
-//! - No `f32`/`f64` in outcome-controlling state (constitution §22). Money is
+//! - No `f32`/`f64` in outcome-controlling state (operator §22). Money is
 //!   `u64`/`u128` lamports; ratios are basis points; all math is integer/fixed-point.
 //!   The single, documented exception is [`quantize_feature`], a boundary adapter
 //!   that lives *outside* the hot path.

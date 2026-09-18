@@ -1,7 +1,7 @@
 //! `pump_quant_watchlist` — the always-scanning "eye" of the memecoin scalping bot.
 //!
 //! Responsibility: continuous candidate discovery. Multiple discovery lanes
-//! (per the StrategyRuntime setup families of the constitution — CreationSniper,
+//! (per the StrategyRuntime setup families of the operator — CreationSniper,
 //! EarlyConfirmation, GraduationTransition, ActiveMarketScalp) each surface
 //! mints they consider interesting. This crate unions those observations,
 //! deduplicates them by mint keeping the strongest lane evidence, holds them in
@@ -9,7 +9,7 @@
 //! downstream scalp pipeline. It also accumulates realized net-SOL per lane so
 //! lane quality can feed back into ranking.
 //!
-//! Constitution alignment:
+//! Operator alignment:
 //! - §22 — all outcome-path arithmetic is integer / fixed-point. There is **no**
 //!   `f32`/`f64` anywhere in this crate. Every operation is deterministic: no
 //!   wall-clock, no RNG, no network, no float. Logical time is an explicit `u64`
@@ -35,13 +35,17 @@
 pub mod candidate;
 pub mod lane_ingest;
 pub mod lane_performance;
+pub mod price_cache;
 pub mod promote;
+pub mod search;
 pub mod rank;
 pub mod state;
 
 pub use candidate::{Candidate, Features, Lane, Mint};
 pub use lane_ingest::ingest_union;
 pub use lane_performance::LanePerformance;
+pub use price_cache::{PriceCache, PriceLookup, PriceVenue, Quote};
 pub use promote::promote_top;
+pub use search::{search, Hit, SearchQuery};
 pub use rank::{recency_factor, score_rank, LaneWeights, RankParams, RECENCY_ONE, WEIGHT_ONE};
 pub use state::WatchlistState;

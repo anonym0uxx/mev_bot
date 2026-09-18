@@ -1,4 +1,4 @@
-# HELIUS INTEGRATION — product map, constitutional roles, and what is built
+# HELIUS INTEGRATION — product map, operator-mandated roles, and what is built
 
 Researched against live docs (www.helius.dev/docs, 2026-07; re-verify at activation).
 Governing laws: §6.1 (canonical raw sources), §6.3 (raw-bytes-first), §6.6 (auxiliary

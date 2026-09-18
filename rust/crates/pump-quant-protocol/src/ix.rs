@@ -15,7 +15,7 @@
 //! 16      8     arg1 (u64 LE)
 //! ```
 //!
-//! # Constitution
+//! # Operator
 //! * §22 — integer-only; amounts are `u64` lamports / token base units.
 //! * Deterministic: identical params always serialize to identical bytes.
 
@@ -58,7 +58,7 @@ pub struct SellParams {
 /// (u64 LE) — exactly `encodeBuyData`, which writes `minTokens` at offset 8 and
 /// `solAmount` at offset 16.
 ///
-/// # Constitution
+/// # Operator
 /// §22 — integer-only, deterministic.
 pub fn build_buy_ix(params: BuyParams) -> Vec<u8> {
     let mut data = Vec::with_capacity(IX_DATA_LEN);
@@ -73,7 +73,7 @@ pub fn build_buy_ix(params: BuyParams) -> Vec<u8> {
 /// Layout: `SELL_DISCRIMINATOR` ++ `token_amount` (u64 LE) ++ `min_sol_out`
 /// (u64 LE) — exactly `encodeSellData`.
 ///
-/// # Constitution
+/// # Operator
 /// §22 — integer-only, deterministic.
 pub fn build_sell_ix(params: SellParams) -> Vec<u8> {
     let mut data = Vec::with_capacity(IX_DATA_LEN);

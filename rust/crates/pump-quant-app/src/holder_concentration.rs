@@ -74,9 +74,9 @@
 //! non-degenerate ledger. There is no accessor, anywhere, that yields a
 //! concentration number from a delta-only basis.
 //!
-//! # NEVER A STANDALONE VETO (constitution §21.7)
+//! # NEVER A STANDALONE VETO (operator §21.7)
 //!
-//! The constitution is explicit about this exact feature: bundle-adjusted top-N
+//! The operator is explicit about this exact feature: bundle-adjusted top-N
 //! holding concentration is *"a feature family and prior, **never a standalone
 //! veto**, with its veto/downweight effects audited in the
 //! ConvexityPreservationLedger like every other rule"*, and separately *"only
@@ -335,7 +335,7 @@ pub enum ConcentrationRisk {
     /// Size is cut by [`CONCENTRATION_HAIRCUT_MULT_BPS`].
     Haircut,
     /// Pre-entry refusal. Reachable ONLY with independent corroboration (see the
-    /// module docs on the constitution's never-a-standalone-veto rule).
+    /// module docs on the operator's never-a-standalone-veto rule).
     Veto,
 }
 
@@ -374,7 +374,7 @@ impl ConcentrationMetrics {
     ///
     /// `corroborated` is an INDEPENDENT extraction signature supplied by the
     /// caller. When it is false a veto-grade shape degrades to
-    /// [`ConcentrationRisk::Haircut`] — the constitution forbids this family from
+    /// [`ConcentrationRisk::Haircut`] — the operator forbids this family from
     /// vetoing alone, and this method is where that is enforced rather than
     /// remembered.
     #[must_use]

@@ -1,4 +1,4 @@
-//! MetaRotationState time-safe category-assignment validator (constitution
+//! MetaRotationState time-safe category-assignment validator (operator
 //! §21.4, criterion 81 — the pure, fixture-testable time-safety core).
 //!
 //! The full MetaRotationState feature family is research/governance (the
@@ -15,7 +15,7 @@
 //!   observation_ts`). A future-dated assignment consumed at an earlier
 //!   observation is look-ahead leakage and is rejected.
 //!
-//! # Constitution constraints (§22)
+//! # Operator constraints (§22)
 //!
 //! Deterministic, integer-only, no wall-clock (timestamps are inputs).
 //! `BTreeSet` gives stable membership iteration. No floats.
@@ -28,7 +28,7 @@ pub type TokenId = u64;
 /// A versioned narrative-category taxonomy snapshot (§21.4a).
 ///
 /// Responsibility: the set of valid category ids at a pinned `version`.
-/// Categories emerge and die, so the version is load-bearing. Constitution §22:
+/// Categories emerge and die, so the version is load-bearing. Operator §22:
 /// integer version, `BTreeSet` for deterministic membership.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Taxonomy {
@@ -41,7 +41,7 @@ pub struct Taxonomy {
 impl Taxonomy {
     /// Build a taxonomy from a version and an iterator of category ids.
     ///
-    /// Responsibility: convenience constructor (§21.4). Constitution §22: pure.
+    /// Responsibility: convenience constructor (§21.4). Operator §22: pure.
     pub fn new(version: u32, categories: impl IntoIterator<Item = u32>) -> Self {
         Taxonomy {
             version,
@@ -51,7 +51,7 @@ impl Taxonomy {
 
     /// Whether `category_id` is defined in this taxonomy version.
     ///
-    /// Responsibility: category-existence check (§21.4a). Constitution §22: pure.
+    /// Responsibility: category-existence check (§21.4a). Operator §22: pure.
     #[inline]
     pub fn contains(&self, category_id: u32) -> bool {
         self.categories.contains(&category_id)
@@ -63,7 +63,7 @@ impl Taxonomy {
 /// Responsibility: the record the time-safety guard validates. `assignment_ts_ms`
 /// is when the assignment was made; `observation_ts_ms` is the point-in-time at
 /// which it is being consumed. `taxonomy_version` is the version pinned at
-/// assignment time. Constitution §22: integer timestamps.
+/// assignment time. Operator §22: integer timestamps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CategoryAssignment {
     /// Token being categorized.
@@ -81,7 +81,7 @@ pub struct CategoryAssignment {
 /// Verdict of the time-safe category-assignment validator.
 ///
 /// Responsibility: enumerate accept + every rejection reason so violations are
-/// explicit and auditable (§21.4, criterion 81). Constitution §22: data only.
+/// explicit and auditable (§21.4, criterion 81). Operator §22: data only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssignmentVerdict {
     /// Valid: category exists, version pinned correctly, and not retroactive.
@@ -111,7 +111,7 @@ pub enum AssignmentVerdict {
 /// Passing all three yields [`AssignmentVerdict::Accepted`].
 ///
 /// Responsibility: the pure time-safety core of MetaRotationState assignment
-/// (§21.4). Constitution §22: integer comparisons, deterministic, no wall-clock.
+/// (§21.4). Operator §22: integer comparisons, deterministic, no wall-clock.
 pub fn validate_assignment(
     assignment: &CategoryAssignment,
     active_taxonomy: &Taxonomy,

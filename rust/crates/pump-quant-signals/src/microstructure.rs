@@ -1,4 +1,4 @@
-//! AMM order-flow / microstructure feature catalog (constitution §21.7, criterion 95).
+//! AMM order-flow / microstructure feature catalog (operator §21.7, criterion 95).
 //!
 //! Memecoin venues are constant-product AMMs with **no central limit order
 //! book**, so classical LOB microstructure does not transfer. What transfers is
@@ -16,7 +16,7 @@
 //! - Reserve-depth dynamics + executable constant-product price-impact curve
 //! - Swap-arrival intensity + burst onset/climax/exhaustion signatures
 //!
-//! # Constitution constraints (§22)
+//! # Operator constraints (§22)
 //!
 //! Pure, stateless, deterministic and integer-only. Quote volume is in lamports
 //! (`u64`), prices are fixed-point integers, rates are basis points (bps).
@@ -31,7 +31,7 @@
 /// Direction of an AMM swap, from the taker's perspective.
 ///
 /// Responsibility: encode aggressor side so buy-side and sell-side quote
-/// volume can be netted. Constitution §21.7 (order-flow intent proxy).
+/// volume can be netted. Operator §21.7 (order-flow intent proxy).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwapDir {
     /// Quote (SOL) in, base (token) out — buy-side aggression.
@@ -45,7 +45,7 @@ pub enum SwapDir {
 /// Responsibility: the atomic unit every §21.7 feature is computed over.
 /// `entity_id` is the Section 28 deduplicated cluster id (NOT the raw wallet);
 /// `is_new_buyer` marks Section 28 breadth-decomposed net-new-buyer flow.
-/// Constitution §22: all quantities integer / fixed-point.
+/// Operator §22: all quantities integer / fixed-point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Swap {
     /// Swap landing time in milliseconds (monotonic within a sequence).
@@ -72,7 +72,7 @@ pub struct Swap {
 /// overflow for any realistic swap count.
 ///
 /// Responsibility: net directional quote pressure over a swap sequence.
-/// Constitution §22: signed integer, `i128` accumulator.
+/// Operator §22: signed integer, `i128` accumulator.
 #[inline]
 pub fn cumulative_volume_delta(swaps: &[Swap]) -> i128 {
     let mut cvd: i128 = 0;
@@ -91,7 +91,7 @@ pub fn cumulative_volume_delta(swaps: &[Swap]) -> i128 {
 /// Positive = accelerating net buying, negative = accelerating net selling.
 ///
 /// Responsibility: rate of change of order-flow intent (§21.7 delta velocity).
-/// Constitution §22: integer, `i128` intermediates, `dt_ms == 0` guard.
+/// Operator §22: integer, `i128` intermediates, `dt_ms == 0` guard.
 #[inline]
 pub fn cvd_velocity_lamports_per_s(cvd_delta: i128, dt_ms: u64) -> i128 {
     if dt_ms == 0 {
@@ -112,7 +112,7 @@ pub fn cvd_velocity_lamports_per_s(cvd_delta: i128, dt_ms: u64) -> i128 {
 /// - otherwise (either side flat) => [`Divergence::Neutral`]
 ///
 /// Responsibility: detect order-flow/price disagreement as a
-/// reversal/confirmation feature. Constitution §22: integer sign comparison.
+/// reversal/confirmation feature. Operator §22: integer sign comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Divergence {
     /// Price up and CVD up: momentum confirmed.
@@ -130,7 +130,7 @@ pub enum Divergence {
 /// Classify CVD-vs-price divergence from window endpoints.
 ///
 /// Responsibility: pure sign-comparison of price vs CVD change (§21.7).
-/// Constitution §22: integer arithmetic only.
+/// Operator §22: integer arithmetic only.
 #[inline]
 pub fn cvd_price_divergence(
     price_start_fp: u64,
@@ -159,7 +159,7 @@ pub fn cvd_price_divergence(
 ///
 /// Responsibility: aggressor-side skew, separated (Section 28 breadth) into
 /// net-new-buyer flow vs repeat/bot flow so manufactured repeat flow does not
-/// masquerade as genuine breadth. Constitution §22: integer bps.
+/// masquerade as genuine breadth. Operator §22: integer bps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OfiBreakdown {
     /// OFI over all flow.
@@ -183,7 +183,7 @@ fn ofi_bps(buy: u128, sell: u128) -> i32 {
 /// Compute breadth-decomposed OFI over a swap window.
 ///
 /// Responsibility: aggressor skew + Section 28 breadth decomposition (§21.7).
-/// Constitution §22: `u128` accumulation, integer bps normalization.
+/// Operator §22: `u128` accumulation, integer bps normalization.
 #[inline]
 pub fn order_flow_imbalance(swaps: &[Swap]) -> OfiBreakdown {
     let (mut agg_b, mut agg_s) = (0u128, 0u128);
@@ -237,7 +237,7 @@ pub const BUCKET_EDGES: [u64; SIZE_BUCKETS] = [
 /// Responsibility: histogram shape (retail vs concentrated flow), the integer
 /// median print size, and large-print (whale) arrival count. Distribution
 /// shifts are the accumulation/distribution signal, not raw volume.
-/// Constitution §22: integer bucketing and median.
+/// Operator §22: integer bucketing and median.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SizeDistribution {
     /// Per-bucket swap counts (see [`BUCKET_EDGES`]).
@@ -257,7 +257,7 @@ pub struct SizeDistribution {
 /// median print size (whale-print arrival). Empty input yields all-zero.
 ///
 /// Responsibility: distributional microstructure of prints (§21.7).
-/// Constitution §22: sorts a local copy; integer median and multiple test.
+/// Operator §22: sorts a local copy; integer median and multiple test.
 #[inline]
 pub fn trade_size_distribution(swaps: &[Swap], large_print_multiple: u64) -> SizeDistribution {
     let mut out = SizeDistribution::default();
@@ -297,7 +297,7 @@ pub fn trade_size_distribution(swaps: &[Swap], large_print_multiple: u64) -> Siz
 ///
 /// Responsibility: distinguish reserve-buffered absorption (large quote inflow,
 /// little price response ≈ accumulation) from one-sided aggression stalling
-/// near a level (exhaustion). Constitution §22: integer bps.
+/// near a level (exhaustion). Operator §22: integer bps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlowResponse {
     /// Large net buy inflow but price barely moved up: reserve-buffered
@@ -317,7 +317,7 @@ pub enum FlowResponse {
 /// - otherwise (notable inflow with a real up-move) => [`FlowResponse::Normal`]
 ///
 /// Responsibility: quote-inflow-vs-price-response feature (§21.7).
-/// Constitution §22: integer bps computed by [`price_change_bps`].
+/// Operator §22: integer bps computed by [`price_change_bps`].
 #[inline]
 pub fn absorption_exhaustion(
     net_buy_quote_lamports: u128,
@@ -343,7 +343,7 @@ pub fn absorption_exhaustion(
 /// Returns `0` when `start == 0`.
 ///
 /// Responsibility: shared fixed-point price-change helper (§21.7).
-/// Constitution §22: `i128` intermediates, saturating into `i64`.
+/// Operator §22: `i128` intermediates, saturating into `i64`.
 #[inline]
 pub fn price_change_bps(price_start_fp: u64, price_end_fp: u64) -> i64 {
     if price_start_fp == 0 {
@@ -363,7 +363,7 @@ pub fn price_change_bps(price_start_fp: u64, price_end_fp: u64) -> i64 {
 /// Returns `0` when total quote volume is zero.
 ///
 /// Responsibility: mean-reversion location reference (§21.7 anchored VWAP).
-/// Constitution §22: `u128` numerator accumulation, integer division.
+/// Operator §22: `u128` numerator accumulation, integer division.
 #[inline]
 pub fn anchored_vwap_fp(swaps: &[Swap]) -> u64 {
     let mut num: u128 = 0;
@@ -382,7 +382,7 @@ pub fn anchored_vwap_fp(swaps: &[Swap]) -> u64 {
 /// confirmation by the supervisor — this function reports location only.
 ///
 /// Responsibility: transition of price across the anchored VWAP.
-/// Constitution §22: integer comparison.
+/// Operator §22: integer comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VwapState {
     /// Crossed from at/below VWAP to above: reclaim.
@@ -398,7 +398,7 @@ pub enum VwapState {
 /// Classify the VWAP location transition from previous/current price.
 ///
 /// Responsibility: reclaim/rejection/hold state around anchored VWAP (§21.7).
-/// Constitution §22: pure integer comparison.
+/// Operator §22: pure integer comparison.
 #[inline]
 pub fn vwap_state(prev_price_fp: u64, cur_price_fp: u64, vwap_fp: u64) -> VwapState {
     let prev_above = prev_price_fp > vwap_fp;
@@ -421,7 +421,7 @@ pub fn vwap_state(prev_price_fp: u64, cur_price_fp: u64, vwap_fp: u64) -> VwapSt
 /// `k = base_reserve * quote_reserve`. Returns `0` on degenerate reserves.
 ///
 /// Responsibility: executable fill size at current depth (§21.7 / §55 capacity).
-/// Constitution §22: `u128` product for `k`, integer division.
+/// Operator §22: `u128` product for `k`, integer division.
 #[inline]
 pub fn constant_product_base_out(base_reserve: u128, quote_reserve: u128, quote_in: u128) -> u128 {
     if base_reserve == 0 || quote_reserve == 0 || quote_in == 0 {
@@ -441,7 +441,7 @@ pub fn constant_product_base_out(base_reserve: u128, quote_reserve: u128, quote_
 /// consistently to both. Returns `0` when the fill is empty.
 ///
 /// Responsibility: size-conditioned impact function determining fillable size
-/// (§21.7 executable price-impact curve). Constitution §22: `u128` throughout.
+/// (§21.7 executable price-impact curve). Operator §22: `u128` throughout.
 #[inline]
 pub fn price_impact_bps(base_reserve: u128, quote_reserve: u128, quote_in: u128) -> u64 {
     let base_out = constant_product_base_out(base_reserve, quote_reserve, quote_in);
@@ -466,7 +466,7 @@ pub fn price_impact_bps(base_reserve: u128, quote_reserve: u128, quote_in: u128)
 /// Returns `0` when `dt_ms == 0`.
 ///
 /// Responsibility: liquidity-add/-remove velocity (§21.7 reserve-depth
-/// dynamics). Constitution §22: `i128` intermediates, `dt_ms == 0` guard.
+/// dynamics). Operator §22: `i128` intermediates, `dt_ms == 0` guard.
 #[inline]
 pub fn reserve_velocity_lamports_per_s(
     quote_reserve_start: u128,
@@ -486,7 +486,7 @@ pub fn reserve_velocity_lamports_per_s(
 /// rate: `count * 1_000_000 / window_ms`. Returns `0` when `window_ms == 0`.
 ///
 /// Responsibility: per-window arrival-rate estimate (§21.7 swap-arrival
-/// intensity). Constitution §22: integer rate, no float, `window_ms == 0` guard.
+/// intensity). Operator §22: integer rate, no float, `window_ms == 0` guard.
 #[inline]
 pub fn arrival_rate_millihz(count: u32, window_ms: u64) -> u64 {
     if window_ms == 0 {
@@ -500,7 +500,7 @@ pub fn arrival_rate_millihz(count: u32, window_ms: u64) -> u64 {
 /// milli-Hz unit from [`arrival_rate_millihz`]).
 ///
 /// Responsibility: burst onset/climax/exhaustion signature — the microstructure
-/// of "candles that peak within seconds." Constitution §22: integer comparison.
+/// of "candles that peak within seconds." Operator §22: integer comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BurstPhase {
     /// Recent rate at or below baseline: no burst.
@@ -523,7 +523,7 @@ pub enum BurstPhase {
 /// [`BurstPhase::Exhaustion`], otherwise [`BurstPhase::Onset`].
 ///
 /// Responsibility: deterministic burst-state machine over rates (§21.7).
-/// Constitution §22: pure integer comparisons.
+/// Operator §22: pure integer comparisons.
 #[inline]
 pub fn burst_phase(
     recent_millihz: u64,

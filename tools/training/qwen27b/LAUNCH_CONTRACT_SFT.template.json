@@ -1,0 +1,68 @@
+{
+  "_template": "LAUNCH_CONTRACT_SFT.template.json",
+  "_schema": "Enforced by launch_native.py validate_contract() for --phase sft, plus release_data.verify_seed/verify_training_request. Token placeholders are FILL_*; every FILL_SHA256_64HEX must be a 64-char lowercase hex digest and every FILL_ABS_PATH must be an absolute native-Linux path with no symlinks and no '..'. This pipeline was never run natively; nothing here is approval.",
+  "_note_tokenizer_effective_sha256": "93214b2d6d9f99f2d152ce44b8dad5be7b5cdf610b96f261c458eacb7e6d54ae (must be preserved by the Linux-bound release rebuild)",
+  "schema_version": "qwen27b_launch_v2",
+  "phase": "sft",
+  "run_id": "FILL_RUN_ID_SFT",
+  "release_id": "FILL_APPROVED_RELEASE_ID",
+  "release_manifest": {
+    "path": "FILL_ABS_PATH_APPROVED_RELEASE_MANIFEST_JSON",
+    "sha256": "FILL_SHA256_64HEX"
+  },
+  "code_files": [
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/train_qwen27b.py", "sha256": "FILL_SHA256_64HEX" },
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/release_data.py", "sha256": "FILL_SHA256_64HEX" },
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/launch_native.py", "sha256": "FILL_SHA256_64HEX" },
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/verify_clean_seed.py", "sha256": "FILL_SHA256_64HEX" },
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/dryrun_loss_tokens.py", "sha256": "FILL_SHA256_64HEX" },
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/dryrun_step_plan.py", "sha256": "FILL_SHA256_64HEX" },
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/test_launcher_cli.py", "sha256": "FILL_SHA256_64HEX" },
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/test_release_repair.py", "sha256": "FILL_SHA256_64HEX" },
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/test_weighted_loss.py", "sha256": "FILL_SHA256_64HEX" }
+  ],
+  "_code_files_note": "Must contain EVERY *.py in the trainer's directory (validate_contract requires set(trainer.parent.glob('*.py')).issubset(code)); add any file missing from the list above rather than dropping entries.",
+  "trainer": {
+    "path": "FILL_ABS_PATH_QWEN27B_DIR/train_qwen27b.py",
+    "sha256": "FILL_SHA256_64HEX"
+  },
+  "deepspeed": {
+    "path": "FILL_ABS_PATH_QWEN27B_DIR/ds_zero3_native.json",
+    "sha256": "FILL_SHA256_64HEX"
+  },
+  "training_mount": "/training",
+  "run_dir": "/training/runs/FILL_RUN_ID_SFT",
+  "gpu_uuids": [
+    "FILL_GPU_UUID_1",
+    "FILL_GPU_UUID_2",
+    "FILL_GPU_UUID_3"
+  ],
+  "min_gpu_memory_mib": 95000,
+  "min_available_ram_bytes": 128000000000,
+  "min_free_disk_bytes": 1500000000000,
+  "mount_uuid": "FILL_MOUNT_UUID",
+  "disk_serial": "25375338A05C",
+  "seed": {
+    "_note": "SFT requires kind=='selected_new_cpt', selection=='best_internal_validation', a non-empty run_id that is DIFFERENT from this contract's run_id, release_id/release_sha256 of THIS release, and a parent_run receipt (phase=='cpt', completed true, clean_upstream true, matching run_id/release_id/release_sha256). 'path' is the selected & consolidated BF16 CPT weight directory; 'files' must be its EXACT inventory (config.json + weights/safetensors at minimum).",
+    "kind": "selected_new_cpt",
+    "path": "FILL_ABS_PATH_SELECTED_CPT_CONSOLIDATED_DIR",
+    "files": [
+      { "path": "FILL_ABS_PATH_SELECTED_CPT_CONSOLIDATED_DIR/config.json", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_SELECTED_CPT_CONSOLIDATED_DIR/model.safetensors", "sha256": "FILL_SHA256_64HEX" }
+    ],
+    "verification": {
+      "path": "FILL_ABS_PATH_SFT_SELECTED_CPT_RECEIPT_JSON",
+      "sha256": "FILL_SHA256_64HEX"
+    },
+    "release_id": "FILL_APPROVED_RELEASE_ID",
+    "release_sha256": "FILL_SHA256_64HEX_OF_RELEASE_MANIFEST",
+    "run_id": "FILL_PARENT_CPT_RUN_ID",
+    "selection": "best_internal_validation",
+    "parent_run": {
+      "path": "FILL_ABS_PATH_PARENT_RUN_RECEIPT_JSON",
+      "sha256": "FILL_SHA256_64HEX"
+    }
+  },
+  "resume": null,
+  "_resume_note": "For a resume run, replace 'resume': null with {\"path\": \"/training/runs/FILL_RUN_ID_SFT/FILL_RELEASE_ID_sft/checkpoint-N\", \"files\": [ {\"path\": \"<ABS>\", \"sha256\": \"FILL_SHA256_64HEX\"} ], \"complete\": true, \"run_identity\": {\"path\": \"/training/runs/FILL_RUN_ID_SFT/run_identity.json\", \"sha256\": \"FILL_SHA256_64HEX\"}}, and launch the launcher with --resume. 'files' must be the exact inventory of checkpoint-N; three-rank optimizer + scheduler + RNG state are required."
+}

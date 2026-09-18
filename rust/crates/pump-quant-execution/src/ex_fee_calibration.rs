@@ -18,7 +18,7 @@
 //!   which triggers the flat `FIXED_LAMPORTS_PER_LEG` fallback in
 //!   the app-layer `cost_model::leg_cost_lamports`.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §22: integer math only. CU prices are u64 lamports.
 //! - §24(b): paper/replay mode uses the flat fallback (CU price = 0).
 

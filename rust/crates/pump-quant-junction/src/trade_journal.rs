@@ -1,6 +1,6 @@
 //! `trade_journal` — the operational trade journal for the pump.fun scalping bot.
 //!
-//! Constitution reference: **§12** (append-only journals), **§43** (tables/journal
+//! Operator reference: **§12** (append-only journals), **§43** (tables/journal
 //! schema), **§65** (provenance), **§74** (net-SOL expectancy), **§111** (no
 //! unrecorded experiment), **§105** (no fabricated observation).
 //!

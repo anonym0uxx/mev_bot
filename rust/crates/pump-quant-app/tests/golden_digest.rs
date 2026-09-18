@@ -121,7 +121,7 @@ use tape_golden::*;
 // report-only analytics rings (convexity enrichment, post-exit markouts, terminal-
 // state reflections) which never enter the journal digest or the Report counts.
 // Each law's effect is proven by its own test.
-// Re-pin #12 (§24 defect-#3 reversal GOING LIVE — "constitution wins"): this is a
+// Re-pin #12 (§24 defect-#3 reversal GOING LIVE — "operator wins"): this is a
 // REAL decision-level re-pin, NOT seed-only. The operator ruled that fixed global
 // TP constants (13_500/25_000/50_000) are FORBIDDEN as the live default; cost-
 // derived profit targets MUST be THE behaviour. Accordingly LAW 2
@@ -134,7 +134,7 @@ use tape_golden::*;
 // −8_718_822 — the reversal net-moves DOWN on THIS tape). This is measured, honest
 // lamports: the golden tape's grind-then-crater waves reward the fixed ladder's
 // aggressive 13_500/25_000/50_000 rungs, so pricing exits off each market's true
-// round-trip cost banks smaller-but-principled tranches here; the constitution
+// round-trip cost banks smaller-but-principled tranches here; the operator
 // forbids the fixed constants as the live default regardless of this tape's net, and
 // LAW 2's causal out-performance on its OWN hazard tape (a low-cost grind that never
 // reaches the fixed rungs) is still proven in audit_wave2_laws.rs. LAWs 5/6 and the
@@ -559,7 +559,7 @@ use tape_golden::*;
 //       exactly this case — but the supporting claim "and it earns more anyway" is
 //       now false and has been removed rather than re-argued. A 1.1%-of-book
 //       difference on 12 trades is noise either way; the reason cost-derived ships
-//       is the constitution, not this number.
+//       is the operator, not this number.
 //
 // The digest also necessarily moves: §19 folds `fnv1a_64(format!("{cfg:?}"))` into
 // the journal seed and the decision stream itself changed.

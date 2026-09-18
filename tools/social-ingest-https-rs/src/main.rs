@@ -30,7 +30,7 @@
 //! `telegram_stream.py` stays PRIMARY there behind the same NDJSON contract
 //! (see README).
 //!
-//! # Constitution discipline (binding)
+//! # Operator discipline (binding)
 //! * **§22 determinism boundary.** [`now_ns`] below is the ONE wall-clock read
 //!   in the binary, injected into the adapters at the capture edge. `--replay`
 //!   never calls it: synthetic monotone timestamps, zero network, byte-stable.
@@ -68,7 +68,7 @@ const USAGE: &str = "usage: pq-social-capture \
   birdeye     --ohlcv-watch mints-file  --overview-watch mints-file\n\
               --security-watch mints-file  --time-from secs  --time-to secs\n\
               --interval-secs n  --budget-per-min n  --once  --replay fixture\n\
-              (REQUIRED 1D-candle backfill + token-data lane, constitution\n\
+              (REQUIRED 1D-candle backfill + token-data lane, operator\n\
               \u{a7}6.7 — MARKET data, MarketIntel records, NOT SocialEvent;\n\
               BIRDEYE_API_KEY required: missing key exits 3 fail-closed;\n\
               token_security needs Starter+ plan, 401/403 disables that mode)\n\

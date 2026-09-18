@@ -1,5 +1,5 @@
 //! `convexity_ledger` — unified per-rule convexity-preservation ledger
-//! (constitution §49).
+//! (operator §49).
 //!
 //! §49 requires a *single* frozen ledger that scores every suppression-class rule
 //! — vetoes, confidence-reducers, EntryMode rules, entry-zone / setup / social /
@@ -270,7 +270,7 @@ pub fn build_ledger(events: &[ConvexityEvent], runner_threshold_bps: i64) -> Vec
 }
 
 // ---------------------------------------------------------------------------
-// Launch-family convexity-preservation audit sink (constitution §21.7,
+// Launch-family convexity-preservation audit sink (operator §21.7,
 // criterion 104).
 //
 // The launch-sale-trajectory + creation-window feature families

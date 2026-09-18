@@ -2,7 +2,7 @@
 //!
 //! ## Responsibility
 //! Reduce a stream of per-trade flow events for a single market into the
-//! *decomposed* breadth structure the constitution demands: raw uniqueness
+//! *decomposed* breadth structure the operator demands: raw uniqueness
 //! counts, entity/cluster-adjusted counts, manipulation-suspect counts, and
 //! genuine-net-exposure breadth — **stored separately, never collapsed into one
 //! opaque score** (§21.7/§28: "store separately raw unique buyers, unique token
@@ -25,7 +25,7 @@ use crate::macros::bitflags_like;
 
 /// Side of a flow event.
 ///
-/// Constitution: §21.2 (buyer sequence, buy/sell velocity).
+/// Operator: §21.2 (buyer sequence, buy/sell velocity).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
     /// A buy (quote-in, tokens-out).
@@ -121,7 +121,7 @@ struct ClusterAgg {
 
 /// Configuration for the breadth reducer.
 ///
-/// Constitution: §102 (no silent magic numbers — every threshold is an explicit,
+/// Operator: §102 (no silent magic numbers — every threshold is an explicit,
 /// versioned input), §99 (capacity bounds).
 #[derive(Clone, Copy, Debug)]
 pub struct BreadthConfig {
@@ -258,7 +258,7 @@ impl BreadthReducer {
 
     /// Ingest one flow event. Buys and sells both update net inventory /
     /// exposure; only buys create the "buyer" uniqueness records, matching the
-    /// constitution's buyer-breadth semantics.
+    /// operator's buyer-breadth semantics.
     ///
     /// Overflow discipline: value sums use `i128` saturating accumulation;
     /// counts saturate; distinct-id capacity is enforced by the bounded

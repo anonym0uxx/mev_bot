@@ -4,10 +4,10 @@
 //! guard ([`emit_entry`]) that can never produce an entry [`OrderIntent`] from
 //! `NoEdge` (or from `Searching`). "Idle but searching" is a valid, non-failure
 //! operating state — the null-hypothesis conclusion that a *tested thing* shows no
-//! edge must never license a forced trade to "stay active" (constitution §2/§50,
+//! edge must never license a forced trade to "stay active" (operator §2/§50,
 //! anti-idle mandate).
 //!
-//! ## Constitution
+//! ## Operator
 //! §2 null hypothesis, §50 no-forced-entry. Pure, deterministic; no I/O.
 
 /// Kind of order an intent represents.

@@ -1,0 +1,75 @@
+{
+  "schema": "qwen27b_loader_dryrun_v2",
+  "release_id": "astra_support_repair_v2",
+  "manifest_sha256": "106163cfd9819530f497f88a4918019fe6bc3fc4a76da1ad3304830b941a9e3e",
+  "phase": "sft",
+  "training_authorized": false,
+  "model_loaded": false,
+  "training_launched": false,
+  "tokenizer_effective_sha256": "93214b2d6d9f99f2d152ce44b8dad5be7b5cdf610b96f261c458eacb7e6d54ae",
+  "train": {
+    "records": 5805,
+    "dataset_items": 5805,
+    "raw_tokens": 18414566,
+    "shifted_loss_tokens": 1481836,
+    "weighted_loss_token_mass": 1481836.0000000107,
+    "tail_tokens": null
+  },
+  "validation": {
+    "records": 590,
+    "dataset_items": 590,
+    "raw_tokens": 1882779,
+    "shifted_loss_tokens": 150944,
+    "weighted_loss_token_mass": 150944.0,
+    "tail_tokens": null
+  },
+  "geometry": {
+    "train_supervised_tokens": 1481836,
+    "tokens_by_task_target": {
+      "observed_action_attribution::REDUCE_RECORDED": 102682,
+      "observed_action_attribution::EXIT_RECORDED": 612634,
+      "observed_action_attribution::BUY_RECORDED": 377805,
+      "observed_action_attribution::ADD_RECORDED": 388715
+    },
+    "weights": {
+      "observed_action_attribution::REDUCE_RECORDED": 3.607828051654623,
+      "observed_action_attribution::EXIT_RECORDED": 0.6046987271356145,
+      "observed_action_attribution::BUY_RECORDED": 0.9805561069864084,
+      "observed_action_attribution::ADD_RECORDED": 0.9530349999356855
+    },
+    "weighted_mass_by_task_target": {
+      "observed_action_attribution::REDUCE_RECORDED": 370459.0,
+      "observed_action_attribution::EXIT_RECORDED": 370459.0,
+      "observed_action_attribution::BUY_RECORDED": 370459.0,
+      "observed_action_attribution::ADD_RECORDED": 370459.0
+    },
+    "method": "train_only_inverse_semantic_token_mass_within_task; no outcome reward weighting"
+  },
+  "step_plan": {
+    "world_size": 3,
+    "per_device_batch_size": 1,
+    "gradient_accumulation_steps": 8,
+    "steps_per_epoch": 242,
+    "total_steps_max": 303,
+    "max_window_ep": 1.25,
+    "warmup_steps": 10,
+    "mark_every": 60,
+    "marks_steps": [
+      60,
+      120,
+      180,
+      240,
+      300,
+      303
+    ],
+    "marks_epochs": [
+      0.247934,
+      0.495868,
+      0.743802,
+      0.991736,
+      1.239669,
+      1.252066
+    ]
+  },
+  "validation_weights": "unit weights; no fitting or resplitting"
+}

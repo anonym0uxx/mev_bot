@@ -20,7 +20,7 @@
 //! consistent. The zero signature is the signal that no real transaction was
 //! sent.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §24(b): paper/replay mode is byte-identical to pre-junction — the sink is
 //!   `None` (or `NoopSink`) and `on_admit` is a no-op.
 //! - §36: the failure taxonomy (Construction, Guard, StateDrift, Route,

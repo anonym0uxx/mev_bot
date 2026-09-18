@@ -1,5 +1,5 @@
 //! `reflection_cadence` — per-mint terminal-state reflection cadence
-//! (constitution §47a).
+//! (operator §47a).
 //!
 //! [`crate::evaluator_stats::label_terminal`] answers "is this token dead?" for a
 //! single swap series and a single `(delta_t, window_end)` parameterization. §47a

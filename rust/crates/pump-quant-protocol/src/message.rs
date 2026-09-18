@@ -28,7 +28,7 @@
 //! * Compiled message over [`MAX_TX_BYTES`] (1232, the IPv6-MTU packet cap
 //!   Solana enforces) → refuse at build time, not at the RPC boundary.
 //!
-//! ## Constitution
+//! ## Operator
 //! * §22 — integer only, deterministic, no I/O; identical inputs → identical
 //!   bytes (what makes a signed transaction reproducible in replay).
 //! * §18.2 — refusal over substitution on every bound.

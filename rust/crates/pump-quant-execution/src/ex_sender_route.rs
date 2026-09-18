@@ -37,7 +37,7 @@
 //! 3. Score Sender against the best legacy route by the same integer EV shape.
 //! 4. Build the endpoint query suffix and select a tip account deterministically.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §22: all edge/slippage/fail terms in basis points, all sizes and EV in
 //!   lamports, all EV math widened to `i128` / `u128`.
 //! - Explicit overflow: `checked_*` / `saturating_*` / widened intermediates.

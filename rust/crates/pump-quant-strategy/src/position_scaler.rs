@@ -12,7 +12,7 @@
 //! gate ([`crate::economic_gate::SizeBand`]) rather than reimplementing sizing:
 //! scale-ins stay strictly inside `[x_min, x_max]` and never grow past `x_max`.
 //!
-//! ## Constitution
+//! ## Operator
 //! §33: enter with a minimal probe, scale in **only** on deterministic confirmation,
 //! cap total per-position size at `x_max`; §22: integer/fixed-point, saturating.
 //! Deterministic — confirmation is computed from decoded flow, never a clock/RNG.

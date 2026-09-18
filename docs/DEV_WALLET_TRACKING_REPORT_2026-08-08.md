@@ -3,7 +3,7 @@
 **Date:** 2026-08-08
 **Author:** Principal Citadel Pump.fun Memecoin Quant
 **Status:** Informational — areas of opportunity for end-to-end feature build
-**Constitution refs:** §27 (creator taxonomy), §28 (smart money), §29.9 (creator ledger), §26 (dump veto), §6.4 (unknown-stays-unknown)
+**Operator refs:** §27 (creator taxonomy), §28 (smart money), §29.9 (creator ledger), §26 (dump veto), §6.4 (unknown-stays-unknown)
 
 ---
 
@@ -264,7 +264,7 @@ The `CreatorLedger` evicts the lexicographically-smallest `WalletId` when full (
 - Unknown → 1.0× (identity, current behavior)
 - Serial/Toxic → existing haircut/veto (unchanged)
 - Cap the boost at 1.20× to prevent runaway position sizing
-- Constitution check: this must be reduce-only in the aggregate (the boost can't exceed what the gate would have allowed without it — it shifts allocation, doesn't increase total risk)
+- Operator check: this must be reduce-only in the aggregate (the boost can't exceed what the gate would have allowed without it — it shifts allocation, doesn't increase total risk)
 
 ### OPP-4: Brain Enum Expansion (MODERATE IMPACT, LOW RISK)
 
@@ -347,7 +347,7 @@ The `CreatorLedger` evicts the lexicographically-smallest `WalletId` when full (
 
 2. **Point-in-time discipline is non-negotiable.** Every creator feature must be computed as-of the decision slot. A launch that hasn't happened yet is invisible. This is already enforced in the library code and must be preserved in any new wiring.
 
-3. **Unknown stays unknown.** A first-time creator with no history is `Unknown`, not "probably good" or "probably bad." The system must never coerce absence into a benign label. This is constitutionally binding (§6.4).
+3. **Unknown stays unknown.** A first-time creator with no history is `Unknown`, not "probably good" or "probably bad." The system must never coerce absence into a benign label. This is operator-mandated binding (§6.4).
 
 4. **Social reach and partnership data are not currently collected.** The `deployer_credibility` module supports key-follower and mutual-follower inputs, but no data feed populates them. Adding social data would enrich the deployer credibility bundle but requires a social API integration (pump.fun social, Twitter/X, Telegram).
 

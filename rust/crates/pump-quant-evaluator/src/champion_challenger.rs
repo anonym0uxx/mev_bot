@@ -1,20 +1,20 @@
 //! `champion_challenger` — champion/challenger comparison verdict primitive
-//! (constitution §35, §51).
+//! (operator §35, §51).
 //!
 //! Responsibility: the frozen, hash-pinned evaluator must be able to render the
-//! pass/fail promotion verdict itself (constitution §51 — the evaluator verifies
+//! pass/fail promotion verdict itself (operator §51 — the evaluator verifies
 //! before any result is accepted), rather than trusting an orchestrator's claim.
 //! This is the deterministic net-SOL margin comparison: a challenger policy
 //! defeats the reigning champion only if its reconciled net SOL exceeds the
 //! champion's by at least a required margin. Promotion *orchestration* stays in
 //! the supervisor; the verdict is an evaluator leaf.
 //!
-//! Integer-only (constitution §22): reuses [`NetSol`] lamport aggregates from
+//! Integer-only (operator §22): reuses [`NetSol`] lamport aggregates from
 //! `evaluator_stats`; no floats.
 
 use crate::evaluator_stats::NetSol;
 
-/// Verdict of a challenger-vs-champion comparison (constitution §35).
+/// Verdict of a challenger-vs-champion comparison (operator §35).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChampionVerdict {
     /// Challenger beat the champion by at least the required margin.
@@ -39,7 +39,7 @@ impl ChampionVerdict {
 
 /// Does the challenger defeat the champion by the required net-SOL margin?
 ///
-/// Responsibility (constitution §35, §51): a deterministic verdict the
+/// Responsibility (operator §35, §51): a deterministic verdict the
 /// hash-pinned evaluator can run. Rules:
 ///
 /// * A challenger with no reconciled trades ([`NetSol::is_missing`]) yields

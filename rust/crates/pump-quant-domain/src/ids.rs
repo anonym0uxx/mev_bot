@@ -7,7 +7,7 @@
 //! identity, ordering, hashing, and (for [`Mint`]) a total, dependency-free
 //! hex codec.
 //!
-//! ## Constitution alignment
+//! ## Operator alignment
 //! Section 17 — these are the neutral id types used inside `RawObservation`
 //! (`ProviderId`, `ObservationSourceId`), `CanonicalTransaction`, and
 //! `DecisionRecord` (`mint`, `slot`). No provider SDK type leaks through them.
@@ -21,7 +21,7 @@ use core::fmt;
 /// A dependency-free lowercase-hex [`fmt::Display`]/[`Mint::to_hex`] and
 /// [`Mint::from_hex`] codec is provided for logs, fixtures, and journals.
 ///
-/// Constitution Section 17 / 18: the canonical token identity in every schema.
+/// Operator Section 17 / 18: the canonical token identity in every schema.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Mint(pub [u8; 32]);
 
@@ -163,7 +163,7 @@ impl fmt::Display for Slot {
 
 /// Opaque identifier for one round-trip trade / order-intent lineage created by
 /// the strategy core. Monotonic within a run; compared and hashed, never
-/// interpreted arithmetically. Constitution Section 17 (`DecisionRecord`).
+/// interpreted arithmetically. Operator Section 17 (`DecisionRecord`).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct TradeId(pub u64);
 
@@ -175,6 +175,6 @@ pub struct SourceId(pub u32);
 
 /// Opaque identifier for a data/execution provider (e.g. Helius, Jito, canonical
 /// RPC). Distinct from [`SourceId`]: one provider can back several sources.
-/// Constitution Section 17 (`ProviderId`) / 18.8 capability-based role model.
+/// Operator Section 17 (`ProviderId`) / 18.8 capability-based role model.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct ProviderId(pub u32);

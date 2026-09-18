@@ -9,7 +9,7 @@
 //!   preserving the earliest local arrival timestamp.
 //! * [`slot_parity`]    — §18.3.5 parity gate: shred-derived tx set vs. canonical.
 //!
-//! Design constraints (constitution): no floating point in outcome-controlling
+//! Design constraints (operator): no floating point in outcome-controlling
 //! logic (integer / fixed-point only), all arithmetic overflow is explicit,
 //! decode paths never panic on arbitrary bytes, and a transaction is only ever
 //! produced from a *complete, verified* reassembly — partial data never becomes a

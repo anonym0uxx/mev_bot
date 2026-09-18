@@ -1,4 +1,4 @@
-//! Setup-archetype / scalp setup-family classifier (constitution §24, §22).
+//! Setup-archetype / scalp setup-family classifier (operator §24, §22).
 //!
 //! `archetype` is an externally-supplied `u16` discriminator everywhere it
 //! appears in the wider workspace (StrategyConfig, thesis identity, evaluator
@@ -29,7 +29,7 @@
 //! the precedence order (as listed above) is part of the contract. The result
 //! also carries the stable `u16` archetype id the rest of the system consumes.
 //!
-//! # Constitution constraints (§22)
+//! # Operator constraints (§22)
 //!
 //! Pure, deterministic, integer/fixed-point only. Prices are fixed-point,
 //! ranges/margins are basis points, CVD is signed `i128`. Reuses
@@ -44,7 +44,7 @@ use crate::microstructure::{cvd_price_divergence, price_change_bps, Divergence};
 ///
 /// Responsibility: the integer feature bundle a caller reconstructs from
 /// decoded flow — window endpoints, intrabar extremes, prior structural levels,
-/// the anchored VWAP, net CVD, and range measures. Constitution §22: all
+/// the anchored VWAP, net CVD, and range measures. Operator §22: all
 /// fixed-point / integer, `Copy` for cheap threading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MarketState {
@@ -73,7 +73,7 @@ pub struct MarketState {
 /// Tunable thresholds for the setup-family classifier (§24).
 ///
 /// Responsibility: the recorded-prior margins separating each family from
-/// noise. Constitution §22: integer/bps, `Copy`.
+/// noise. Operator §22: integer/bps, `Copy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SetupThresholds {
     /// Minimum depth (bps below prior support) an intrabar breach must reach to
@@ -101,7 +101,7 @@ pub struct SetupThresholds {
 impl SetupThresholds {
     /// A neutral default parameterization.
     ///
-    /// Responsibility: portable default prior (§24). Constitution §22: pure.
+    /// Responsibility: portable default prior (§24). Operator §22: pure.
     pub const fn neutral() -> Self {
         SetupThresholds {
             breach_depth_bps: 50,
@@ -125,7 +125,7 @@ impl Default for SetupThresholds {
 ///
 /// Responsibility: the classifier's output — a named family plus, via
 /// [`SetupFamily::archetype_id`], the stable `u16` discriminator the wider
-/// system carries. Constitution §22: data only.
+/// system carries. Operator §22: data only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupFamily {
     /// Broke prior resistance, retested it, holding.
@@ -150,7 +150,7 @@ impl SetupFamily {
     /// grouping) carries. `None` maps to `0`.
     ///
     /// Responsibility: bridge the derived family to the externally-consumed
-    /// `archetype:u16` (§24). Constitution §22: pure, total.
+    /// `archetype:u16` (§24). Operator §22: pure, total.
     #[inline]
     pub const fn archetype_id(self) -> u16 {
         match self {
@@ -172,7 +172,7 @@ impl SetupFamily {
 /// short-horizon mean reversion, order-flow dislocation, else `None`.
 ///
 /// Responsibility: the single mapping from reconstructed state to a named
-/// family (§24), composing the §21.6/§21.7 primitives. Constitution §22:
+/// family (§24), composing the §21.6/§21.7 primitives. Operator §22:
 /// integer comparisons, division guards inside the reused bps helpers.
 pub fn classify_setup(state: &MarketState, t: &SetupThresholds) -> SetupFamily {
     // 1. Failed-breakdown reversal: breached prior support intrabar (beyond the

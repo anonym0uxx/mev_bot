@@ -6,7 +6,7 @@
 //! axis. Determinism (§22) makes the comparison exact, not statistical.
 //!
 //! ## §26 confirmed-creator-dump HARD VETO + held-position exit
-//! (operator-approved constitution reversal of the prior "creator distribution
+//! (operator-approved operator reversal of the prior "creator distribution
 //! is fade-only, never a veto" behaviour). Two limbs, two isolated A/Bs:
 //!   * PRE-ENTRY: a market whose deployer has already distributed past the veto
 //!     threshold is refused before entry (a NEW reject code, 13) — avoiding the

@@ -14,7 +14,7 @@
 //! exec plane has a single, unified classification across custom, runtime,
 //! and transport errors.
 //!
-//! ## Constitution
+//! ## Operator
 //! * §36 — decoded custom-error table + failure taxonomy (extended here).
 //! * §18.2 — fail closed on unknown, never guess benign.
 //! * §22 — integer-only, deterministic, no float / clock / RNG / I/O.

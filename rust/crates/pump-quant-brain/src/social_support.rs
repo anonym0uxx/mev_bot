@@ -1,5 +1,5 @@
 //! `SocialSupportScore` — "does this coin actually have strong social support?"
-//! (constitution 21.4 attention, 22 integer-only, 46 small-n, 57/99 bounded,
+//! (operator 21.4 attention, 22 integer-only, 46 small-n, 57/99 bounded,
 //! 102 named thresholds).
 //!
 //! # What "support" is, and what it is not
@@ -61,7 +61,7 @@
 //! Twelve accounts posting the same sentence are one originator, and the honest
 //! breadth count is the cluster count, which is what the small-n gate is applied to.
 //!
-//! # Fail-closed (constitution 46)
+//! # Fail-closed (operator 46)
 //!
 //! [`SocialSupportVerdict`] mirrors [`crate::recall::RecallVerdict`]:
 //! `Known(SocialSupportScore)` or `Unknown(SupportUnknown)`, and
@@ -84,104 +84,104 @@ use crate::social_recall::{CallRecord, Platform, SocialRecallIndex};
 use crate::trust::{SocialTrust, SourceExposure, TrustSnapshot, TrustTier, TrustVerdict};
 
 // ---------------------------------------------------------------------------
-// Named constants (constitution 102)
+// Named constants (operator 102)
 // ---------------------------------------------------------------------------
 
-/// Default support window: 24 hours of information time (constitution 102).
+/// Default support window: 24 hours of information time (operator 102).
 /// A memecoin's social life is measured in hours, not weeks.
 pub const SUPPORT_WINDOW_NS: u64 = 86_400 * 1_000_000_000;
 
 /// Number of equal sub-windows the support window is split into for the velocity
-/// derivative (constitution 102).
+/// derivative (operator 102).
 pub const SUPPORT_SUBWINDOWS: usize = 3;
 
 /// Minimum **effective** distinct originators before support is scored at all
-/// (constitution 46 small-n guard). Two accounts is a conversation, not support.
+/// (operator 46 small-n guard). Two accounts is a conversation, not support.
 pub const SUPPORT_MIN_ORIGINATORS: u32 = 3;
 
-/// Weight of one fully-trusted originator (constitution 102).
+/// Weight of one fully-trusted originator (operator 102).
 pub const ORIGINATOR_WEIGHT_UNIT: u64 = 64;
 
-/// Weight of an originator whose track record is `Unknown` (constitution 46/102).
+/// Weight of an originator whose track record is `Unknown` (operator 46/102).
 /// Deliberately near-nothing: an unproven account is a rumour with a handle.
 pub const UNPROVEN_ORIGINATOR_WEIGHT_UNITS: u64 = 1;
 
-/// Weight of a [`TrustTier::Watch`] originator (constitution 102).
+/// Weight of a [`TrustTier::Watch`] originator (operator 102).
 pub const WATCH_ORIGINATOR_WEIGHT_UNITS: u64 = 8;
 
-/// Floor weight of a [`TrustTier::Trusted`] originator (constitution 102); the
+/// Floor weight of a [`TrustTier::Trusted`] originator (operator 102); the
 /// weight then scales linearly with trust score up to [`ORIGINATOR_WEIGHT_UNIT`].
 pub const TRUSTED_ORIGINATOR_WEIGHT_FLOOR_UNITS: u64 = 16;
 
-/// Trust-weighted breadth at which the base score saturates (constitution 102):
+/// Trust-weighted breadth at which the base score saturates (operator 102):
 /// four fully-trusted originators.
 pub const SUPPORT_SATURATION_UNITS: u64 = 4 * ORIGINATOR_WEIGHT_UNIT;
 
 /// Basis points of score the cross-platform spread factor controls
-/// (constitution 102). The remaining `10_000 - PLATFORM_WEIGHT_BP` is unconditional.
+/// (operator 102). The remaining `10_000 - PLATFORM_WEIGHT_BP` is unconditional.
 pub const PLATFORM_WEIGHT_BP: u32 = 4_000;
 
 /// Basis points of platform-spread credit granted per distinct platform
-/// (constitution 102). Four platforms saturate the spread term.
+/// (operator 102). Four platforms saturate the spread term.
 pub const PLATFORM_SPREAD_STEP_BP: u32 = 2_500;
 
-/// Basis points of score the velocity term controls (constitution 102).
+/// Basis points of score the velocity term controls (operator 102).
 pub const VELOCITY_WEIGHT_BP: i64 = 3_000;
 
 /// Maximum absolute basis-point swing the velocity term may apply
-/// (constitution 102). Velocity modulates; it never dominates.
+/// (operator 102). Velocity modulates; it never dominates.
 pub const VELOCITY_MAX_EFFECT_BP: i64 = 3_000;
 
-/// Clamp on the raw window-over-window velocity reading (constitution 102).
+/// Clamp on the raw window-over-window velocity reading (operator 102).
 pub const SUPPORT_VELOCITY_CLAMP_BP: i64 = 30_000;
 
-/// Denominator floor for the velocity ratio (constitution 22): one `Watch`-tier
+/// Denominator floor for the velocity ratio (operator 22): one `Watch`-tier
 /// originator's worth of weight, so "from nothing to something" cannot divide by
 /// almost-zero.
 pub const SUPPORT_VELOCITY_FLOOR_UNITS: u64 = WATCH_ORIGINATOR_WEIGHT_UNITS;
 
 /// Velocity at or above which support is [`SupportTrend::Accelerating`]
-/// (constitution 102).
+/// (operator 102).
 pub const SUPPORT_ACCELERATING_MIN_BP: i64 = 2_000;
 
 /// Velocity at or below which support is [`SupportTrend::Decaying`]
-/// (constitution 102).
+/// (operator 102).
 pub const SUPPORT_DECAYING_MAX_BP: i64 = -2_000;
 
-/// Width of the temporal cluster used for burst detection (constitution 102):
+/// Width of the temporal cluster used for burst detection (operator 102):
 /// sixty seconds of information time.
 pub const ECHO_BURST_WINDOW_NS: u64 = 60 * 1_000_000_000;
 
 /// Burst concentration below which no burst penalty is charged
-/// (constitution 102). Organic discovery does cluster somewhat.
+/// (operator 102). Organic discovery does cluster somewhat.
 pub const BURST_TOLERANCE_BP: u32 = 5_000;
 
 /// Maximum penalty contribution from temporal burst concentration
-/// (constitution 102).
+/// (operator 102).
 pub const BURST_PENALTY_WEIGHT_BP: u32 = 4_000;
 
 /// Maximum penalty contribution from near-duplicate content clustering
-/// (constitution 102). The heaviest of the three: identical text from "independent"
+/// (operator 102). The heaviest of the three: identical text from "independent"
 /// accounts is the least ambiguous coordination signature there is.
 pub const ECHO_DUP_PENALTY_WEIGHT_BP: u32 = 6_000;
 
 /// Maximum penalty contribution from aggregator/repeat echo share
-/// (constitution 102).
+/// (operator 102).
 pub const ECHO_RELAY_PENALTY_WEIGHT_BP: u32 = 2_500;
 
-/// Ceiling on the total coordination penalty (constitution 102). Even a maximally
+/// Ceiling on the total coordination penalty (operator 102). Even a maximally
 /// coordinated burst leaves a residue, because the score is evidence, not a verdict.
 pub const MAX_COORDINATION_PENALTY_BP: u32 = 8_000;
 
-/// Capacity of the per-evaluation originator table (constitution 57/99). Overflow
+/// Capacity of the per-evaluation originator table (operator 57/99). Overflow
 /// only reduces measured breadth.
 pub const SUPPORT_ORIGINATOR_CAP: usize = 256;
 
 /// Capacity of the content-witness side table accepted per evaluation
-/// (constitution 57/99).
+/// (operator 57/99).
 pub const SUPPORT_WITNESS_CAP: usize = 4_096;
 
-/// Cap on the number of information needs returned (constitution 57 bounded output).
+/// Cap on the number of information needs returned (operator 57 bounded output).
 pub const SUPPORT_NEEDS_CAP: usize = 16;
 
 // ---------------------------------------------------------------------------
@@ -202,12 +202,12 @@ pub struct ContentEchoWitness {
     pub content_digest: u64,
 }
 
-/// Tunables for support scoring. Defaults are named consts (constitution 102).
+/// Tunables for support scoring. Defaults are named consts (operator 102).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SupportParams {
     /// Lookback window in nanoseconds of information time.
     pub window_ns: u64,
-    /// Minimum effective originators before a score is produced (constitution 46).
+    /// Minimum effective originators before a score is produced (operator 46).
     pub min_originators: u32,
     /// Trust-weighted breadth at which the base score saturates.
     pub saturation_units: u64,
@@ -230,7 +230,7 @@ impl Default for SupportParams {
 // Verdict
 // ---------------------------------------------------------------------------
 
-/// The sign of the support derivative (constitution 102 named thresholds).
+/// The sign of the support derivative (operator 102 named thresholds).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SupportTrend {
     /// Trust-weighted breadth is falling across the window.
@@ -279,7 +279,7 @@ impl SupportTrend {
 /// Why support declined to score.
 ///
 /// **Counts and floors only** — no score, no basis points of support, no partial
-/// estimate (constitution 46).
+/// estimate (operator 46).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupportUnknown {
     /// No call at all for this mint in the window.
@@ -319,7 +319,7 @@ pub struct SocialSupportScore {
     /// Distinct originators after near-duplicate content clustering. This is the
     /// number the small-n gate is applied to.
     pub n_effective_originators: u32,
-    /// Originators that did not fit the bounded table (constitution 57/99).
+    /// Originators that did not fit the bounded table (operator 57/99).
     pub originators_dropped: u32,
     /// Sum of per-cluster trust weights, in [`ORIGINATOR_WEIGHT_UNIT`]s.
     pub trust_weighted_units: u64,
@@ -355,7 +355,7 @@ pub struct SocialSupportScore {
     pub support_score_bp: u32,
 }
 
-/// Social support, or an explicit refusal to guess (constitution 46).
+/// Social support, or an explicit refusal to guess (operator 46).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocialSupportVerdict {
     /// Evidence was sufficient; here is the picture.
@@ -424,7 +424,7 @@ pub enum SupportInputNeed {
         /// The author to build a record for.
         author_id: u64,
     },
-    /// This originator scores as trusted but their crowding is unknown. Constitution
+    /// This originator scores as trusted but their crowding is unknown. Operator
     /// 28 needs an operator judgement on how public they are before we lean on them.
     SourceExposure {
         /// The author whose exposure is unset.
@@ -1206,7 +1206,7 @@ mod tests {
             .expect("known");
         assert_eq!(
             s.n_originators, 3,
-            "an amplifier is not an originator (constitution 21.4)"
+            "an amplifier is not an originator (operator 21.4)"
         );
         assert_eq!(s.n_echo_calls, 20);
     }

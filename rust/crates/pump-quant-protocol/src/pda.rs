@@ -37,7 +37,7 @@
 //! valid curve points* before 253 can be the answer. A broken curve check
 //! cannot reproduce those addresses.
 //!
-//! ## Constitution
+//! ## Operator
 //! * §22 — integer only, deterministic, no I/O.
 //! * §18.2 — fail closed: no candidate found ⇒ `None`, never a placeholder.
 //! * §102 — every address constant carries its base58 citation.

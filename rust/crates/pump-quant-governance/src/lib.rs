@@ -1,7 +1,7 @@
 //! # pump-quant-governance
 //!
 //! Governance guards for the memecoin scalping bot. This crate is the
-//! *enforcement spine* for the two-speed governance model (constitution
+//! *enforcement spine* for the two-speed governance model (operator
 //! §56.2) and the provider-neutral source registry (§18.8), plus the
 //! reproducible configuration hashing that lets every strategy version and
 //! evaluator release be pinned and audited (§56.3, §44).
@@ -37,7 +37,7 @@
 //!   encoding ([`canonical`]) so byte-equivalent inputs always hash identically
 //!   regardless of map insertion order.
 //!
-//! ## Constitutional invariants honored crate-wide
+//! ## operator-mandated invariants honored crate-wide
 //! * **§22 — no floating point in outcome-controlling logic.** There is no
 //!   `f32`/`f64` anywhere in this crate. Envelope values are integer
 //!   fixed-point (`i128`; the caller chooses the scale — lamports, basis

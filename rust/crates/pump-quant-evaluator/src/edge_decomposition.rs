@@ -1,5 +1,5 @@
 //! `edge_decomposition` — per-trade edge attribution and aggregate decomposition
-//! (constitution §50).
+//! (operator §50).
 //!
 //! §50 requires the frozen evaluator to decompose reconciled PnL into its edge
 //! sources — selection edge, EntryMode contribution, latency decay, price

@@ -7,7 +7,7 @@
 //! crate only owns the shared *names* and their invariants so every crate agrees
 //! on what "terminal" means.
 //!
-//! ## Constitution alignment
+//! ## Operator alignment
 //! Section 23 — `CandidateLifecycleState` and the rule that every candidate,
 //! including never-traded and rejected ones, remains queryable forever (so
 //! terminal states are archival, not deletion).

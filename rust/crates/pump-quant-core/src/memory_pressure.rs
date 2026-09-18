@@ -1,5 +1,5 @@
 //! Continuous memory-pressure awareness and graceful load-shedding
-//! (constitution §57 memory mandate (b); acceptance criterion 99).
+//! (operator §57 memory mandate (b); acceptance criterion 99).
 //!
 //! ## Responsibility
 //! §57(a) — bounded growth — is enforced elsewhere (`pump-quant-memory`

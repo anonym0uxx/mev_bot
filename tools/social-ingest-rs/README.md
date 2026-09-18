@@ -17,7 +17,7 @@ That makes it the ONE social lane where a proudly dependency-free Rust capture i
 feasible today — a removable adapter (§67): delete this binary and the system
 loses one lane, nothing else changes.
 
-## Access model (constitution §29.7e)
+## Access model (operator §29.7e)
 
 No credentials exist or are needed — we read *public* chat as an anonymous
 `justinfan` identity. Per §29.7e the reading identity is presumed sacrificial:

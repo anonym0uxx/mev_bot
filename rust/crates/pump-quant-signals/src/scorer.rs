@@ -14,7 +14,7 @@
 //! | Pre-entry momentum   | 10  | Observed price velocity during the observation window|
 //! | Cold-miss bonus      |  5  | Applied externally when enrichment data is cold     |
 //!
-//! # Constitution constraints (§22)
+//! # Operator constraints (§22)
 //!
 //! All arithmetic here is integer / fixed-point. Inputs use *centisol*
 //! (SOL x 100) for volume and basis points (bps) for rates/discounts so that
@@ -91,7 +91,7 @@ impl GraduationScore {
 /// demand. Piecewise-linear in integer arithmetic.
 ///
 /// Responsibility: map creation->graduation seconds to a speed dimension score.
-/// Constitution §22: integer-only, no floats.
+/// Operator §22: integer-only, no floats.
 #[inline]
 pub fn score_speed(grad_speed_s: u32) -> u8 {
     if grad_speed_s <= 60 {
@@ -114,7 +114,7 @@ pub fn score_speed(grad_speed_s: u32) -> u8 {
 /// both dust and whale-sized volume score low.
 ///
 /// Responsibility: map total BC volume (centisol) to a volume-tier score.
-/// Constitution §22: integer-only, centisol input avoids fractional SOL.
+/// Operator §22: integer-only, centisol input avoids fractional SOL.
 #[inline]
 pub fn score_volume_tier(volume_sol_x100: u32) -> u8 {
     if volume_sol_x100 < 25 {
@@ -143,7 +143,7 @@ pub fn score_volume_tier(volume_sol_x100: u32) -> u8 {
 /// volume indicate organic demand rather than a single whale deposit.
 ///
 /// Responsibility: map buy count + volume to a normalized-demand score.
-/// Constitution §22: integer-only; `saturating_mul` guards the widening.
+/// Operator §22: integer-only; `saturating_mul` guards the widening.
 #[inline]
 pub fn score_velocity(buys_5s: u32, volume_sol_x100: u32) -> u8 {
     let vol = volume_sol_x100.max(1);
@@ -160,7 +160,7 @@ pub fn score_velocity(buys_5s: u32, volume_sol_x100: u32) -> u8 {
 /// Ported leaf `sg_buy_sell_ratio_gate`. Returns `u32` in `0..=10`.
 ///
 /// Responsibility: quantify unidirectional buy pressure, discounted when the
-/// sample is too thin to be trustworthy. Constitution §22: integer-only.
+/// sample is too thin to be trustworthy. Operator §22: integer-only.
 #[inline]
 pub fn buy_sell_ratio_score(buys_5s: u32, sells_5s: u32, min_buys_for_full: u32) -> u32 {
     let sells = sells_5s.max(1);
@@ -182,7 +182,7 @@ pub fn buy_sell_ratio_score(buys_5s: u32, sells_5s: u32, min_buys_for_full: u32)
 /// Ported leaf `sg_entry_discount`. Returns `u32` in `0..=10`.
 ///
 /// Responsibility: reward buying strictly below the bonding-curve terminal
-/// price. Constitution §22: integer-only; `u128` widening on the bps multiply
+/// price. Operator §22: integer-only; `u128` widening on the bps multiply
 /// prevents overflow for large fixed-point prices.
 #[inline]
 pub fn entry_discount_score(entry_price_fp: u64, bc_terminal_price_fp: u64) -> u32 {
@@ -205,7 +205,7 @@ pub fn entry_discount_score(entry_price_fp: u64, bc_terminal_price_fp: u64) -> u
 /// while very large pools (Raydium majors / market makers) dampen momentum.
 ///
 /// Responsibility: map pooled SOL reserve (lamports) to a tradeability score.
-/// Constitution §22: integer-only; lamports->SOL is integer division.
+/// Operator §22: integer-only; lamports->SOL is integer division.
 #[inline]
 pub fn score_lp_reserve(reserve_lamports: u64) -> u8 {
     let sol = reserve_lamports / 1_000_000_000;
@@ -234,7 +234,7 @@ pub fn score_lp_reserve(reserve_lamports: u64) -> u8 {
 /// - `> 300`: possible spike top -> 5 (partial credit, revert risk)
 ///
 /// Responsibility: reward organic upward momentum visible *before* entry.
-/// Constitution §22: integer-only, signed velocity input.
+/// Operator §22: integer-only, signed velocity input.
 #[inline]
 pub fn score_pre_entry_momentum(velocity_bps_per_s: i64) -> u8 {
     if velocity_bps_per_s <= 0 {
@@ -269,7 +269,7 @@ pub fn score_pre_entry_momentum(velocity_bps_per_s: i64) -> u8 {
 /// - `min_buys_for_full_ratio`: minimum `buys_5s` for a full buy/sell ratio score.
 ///
 /// Responsibility: single entry point producing the full per-dimension entry
-/// signal breakdown. Constitution §22: integer-only throughout.
+/// signal breakdown. Operator §22: integer-only throughout.
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub fn score_graduation(

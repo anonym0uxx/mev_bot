@@ -2,7 +2,7 @@
 //!
 //! Responsibility: run a qualified strategy's fill model at each mandated position
 //! size and report how price impact, landing probability, expectancy, drawdown, and
-//! terminal-loss exposure vary with size (constitution §55: "Run qualified
+//! terminal-loss exposure vary with size (operator §55: "Run qualified
 //! strategies at 0.01, 0.025, 0.05, 0.10, 0.25, 0.50, and 1.00 SOL ... Scaling never
 //! assumes linear PnL"). The impact model is size-dependent, so per-unit economics
 //! degrade with size rather than scaling linearly.

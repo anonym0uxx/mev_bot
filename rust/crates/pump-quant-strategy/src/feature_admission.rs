@@ -3,13 +3,13 @@
 //! A deterministic guard ([`admit_feature`]) that refuses any feature which lacks
 //! a stated causal hypothesis, a registered experiment, or a defeated-baseline
 //! result. No feature enters production solely because it correlates
-//! (constitution §46): it must answer *why* it should causally influence future
+//! (operator §46): it must answer *why* it should causally influence future
 //! outcomes, be tied to a registered experiment, and have beaten its baseline.
 //!
 //! This is distinct from the specific safety-integrity gates already built: it is
 //! the generic pre-production feature-admission predicate.
 //!
-//! ## Constitution
+//! ## Operator
 //! §46: causal rationale + experiment + baseline-defeat are mandatory. Pure and
 //! deterministic; no I/O.
 

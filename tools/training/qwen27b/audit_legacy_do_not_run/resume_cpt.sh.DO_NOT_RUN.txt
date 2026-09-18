@@ -1,0 +1,76 @@
+HISTORICAL UNSAFE CONTENT - DO NOT EXECUTE
+#!/usr/bin/env bash
+# resume_cpt.sh — RESUME launcher for qwen27b CPT.
+#
+# Unlike launch_cpt_detached.sh (FRESH-START, which PURGES all checkpoints), this
+# script does NOT touch checkpoints — it relaunches and lets train_qwen27b.py's
+# resume_from_checkpoint logic restore optimizer/scheduler/step from the latest
+# checkpoint. Used by the self-heal watchdog to revive a crashed run in-place.
+#
+# Usage (from Windows): wsl -d Ubuntu -- bash /mnt/d/repos/mev_bot/tools/training/qwen27b/resume_cpt.sh
+set -euo pipefail
+RUN_DIR=/training/runs/qwen27b_cpt_v1
+LOG=$RUN_DIR/train.log
+
+# 1. DOUBLE-LAUNCH GUARD — refuse if the trainer is already alive (the most
+#    dangerous self-heal failure is two optimizers fighting over the GPUs).
+if pgrep -f "train_qwen27b[.]py --phase cpt" >/dev/null; then
+  echo "ALREADY RUNNING — refusing to double-launch"; exit 0
+fi
+
+# 2. CHECKPOINT-EXISTS GUARD — nothing to resume from -> do not launch.
+LATEST=$(ls -dt "$RUN_DIR"/checkpoint-*/ 2>/dev/null | head -1 || true)
+if [ -z "$LATEST" ]; then
+  echo "FATAL: no checkpoint to resume from — use launch_cpt_detached.sh for a fresh start"; exit 1
+fi
+
+# 3. VALIDITY GUARD — a complete save HAS trainer_state.json (HF Trainer writes it
+#    last). Absence => the crash interrupted the save => partial, not resumable.
+if ! python3 -c "import json,os; p='$LATEST/trainer_state.json'; \
+    d=json.load(open(p)) if os.path.exists(p) else {}; \
+    assert d.get('global_step') is not None; \
+    print('resume_target=global_step_%s' % d['global_step'])" 2>/dev/null; then
+  echo "FATAL: latest checkpoint $LATEST is incomplete (partial/interrupted save)."
+  echo "Remove it manually and re-run to fall back to the prior checkpoint."; exit 1
+fi
+
+# 4. MOUNT GUARD (same as fresh-start — a lost mount silently writes to rootfs).
+findmnt -n -o SOURCE,FSTYPE /training | grep -q ext4 || { echo "FATAL: /training not mounted (ext4)."; exit 1; }
+
+# 5. .swp purge ONLY (transient swap files; safe with no active run). NEVER purges
+#    checkpoints or non-.swp offload state.
+OFFLOAD_DIR=$(grep -oE '"nvme_path":[[:space:]]*"[^"]+"' \
+  /mnt/d/repos/mev_bot/tools/training/qwen27b/ds_zero3_nvme.json \
+  | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+if [ -n "$OFFLOAD_DIR" ] && [ -d "$OFFLOAD_DIR" ]; then
+  STALE=$(find "$OFFLOAD_DIR" -type f -name '*.swp' 2>/dev/null | wc -l)
+  if [ "$STALE" -gt 0 ]; then
+    echo "purging stale NVMe .swp ($STALE) — safe: no active run"
+    find "$OFFLOAD_DIR" -type f -name '*.swp' -delete 2>/dev/null || true
+  fi
+fi
+
+# 6. DISK PREFLIGHT — resume needs only one more ~380GB save transient (checkpoints
+#    already on disk), so the threshold is lower than fresh-start's 1000GB.
+FREE_G=$(df -BG --output=avail /training 2>/dev/null | tail -1 | tr -dc '0-9')
+if [ -n "$FREE_G" ] && [ "$FREE_G" -lt 450 ]; then
+  echo "FATAL: /training ${FREE_G}G free (< 450G) — refusing resume; would die at next save."; exit 1
+fi
+
+# 7. Env + patch + launch (identical to fresh-start, minus the checkpoint purge).
+source ~/qwen-train/bin/activate
+bash /mnt/d/repos/mev_bot/tools/training/qwen27b/patch_deepspeed_save.sh
+cd /mnt/d/repos/mev_bot/tools/training/qwen27b
+export NCCL_CUMEM_ENABLE=0
+unset PYTORCH_CUDA_ALLOC_CONF 2>/dev/null || true
+export TORCH_NCCL_AVOID_RECORD_STREAMS=1
+export TQDM_MININTERVAL=30
+ulimit -n 1048576
+echo "=== resume $(date -Is) from $LATEST ===" >> "$LOG"
+setsid accelerate launch --config_file accelerate_zero3.yaml train_qwen27b.py --phase cpt \
+  >> "$LOG" 2>&1 < /dev/null &
+LAUNCHER_PID=$!
+disown
+sleep 30
+echo "resumed: launcher_pid=$LAUNCHER_PID"
+pgrep -af "train_qwen27b[.]py --phase cpt" || { echo "RESUME FAILED — tail:"; tail -20 "$LOG"; exit 1; }

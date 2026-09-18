@@ -16,7 +16,7 @@
 //! `birdeye_token_security_v1`), NOT the SocialEvent schema: market data is
 //! not social evidence and never enters the §29 social plane.
 //!
-//! # Constitution discipline (binding)
+//! # Operator discipline (binding)
 //! * **§22 determinism boundary.** The wall clock is read only in `main.rs` at
 //!   the capture edge; every module in this library is a pure function of its
 //!   inputs. `--replay` mode is fully deterministic (synthetic monotone

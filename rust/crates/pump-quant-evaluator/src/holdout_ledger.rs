@@ -1,5 +1,5 @@
 //! `holdout_ledger` — deterministic holdout-access reuse accounting
-//! (constitution §19, §53).
+//! (operator §19, §53).
 //!
 //! Responsibility: make silent re-tuning against a holdout *detectable*. Each
 //! holdout set is keyed by a content hash; the ledger records how many times it
@@ -8,20 +8,20 @@
 //! very data meant to validate it. The persistent store and governance response
 //! live in the supervisor; the hash-and-count logic is this laptop leaf.
 //!
-//! Integer-only (constitution §22): counts are `u32`, the key is a 64-bit
+//! Integer-only (operator §22): counts are `u32`, the key is a 64-bit
 //! content hash; no floats. The hash reuses the frozen-evaluator FNV-1a digest
 //! (`evaluator_pin`) so the same bytes always key to the same slot.
 
 use crate::evaluator_pin::fnv1a_64;
 use std::collections::BTreeMap;
 
-/// Content hash identifying a holdout set (constitution §19).
+/// Content hash identifying a holdout set (operator §19).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HoldoutHash(pub u64);
 
 /// Deterministically hash a holdout set's member ids into a [`HoldoutHash`].
 ///
-/// Responsibility (constitution §19): identical membership → identical key, so
+/// Responsibility (operator §19): identical membership → identical key, so
 /// re-presenting the same holdout under a different name still collides. The ids
 /// are folded in *sorted, de-duplicated* order via a `BTreeSet` so that member
 /// *order* does not change the key — the set is the identity, not the listing.
@@ -44,7 +44,7 @@ pub struct AccessRecord {
     pub budget: u32,
 }
 
-/// Outcome of attempting to access a holdout set (constitution §19).
+/// Outcome of attempting to access a holdout set (operator §19).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccessOutcome {
     /// Access granted within budget.
@@ -70,7 +70,7 @@ pub enum AccessOutcome {
 
 /// Deterministic holdout-access ledger keyed by content hash.
 ///
-/// Responsibility (constitution §19): track access counts against per-holdout
+/// Responsibility (operator §19): track access counts against per-holdout
 /// budgets so reuse is detectable. Backed by a `BTreeMap` for deterministic
 /// iteration; contains no wall-clock, RNG, or floats.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -88,7 +88,7 @@ impl HoldoutLedger {
 
     /// Register a holdout set with an access budget.
     ///
-    /// Responsibility (constitution §19): declare a holdout and how many times
+    /// Responsibility (operator §19): declare a holdout and how many times
     /// it may legitimately be touched (typically once). Re-registering the same
     /// hash resets its budget and zeroes its count — an explicit governance act,
     /// distinct from a silent access. Returns the prior record if one existed.
@@ -103,7 +103,7 @@ impl HoldoutLedger {
 
     /// Record one access against a holdout set.
     ///
-    /// Responsibility (constitution §19): increment the access count and decide
+    /// Responsibility (operator §19): increment the access count and decide
     /// the outcome. An unregistered hash yields [`AccessOutcome::Unregistered`]
     /// and is *not* counted (there is no budget to charge it against). A
     /// registered access increments `count` (saturating by contract — the count

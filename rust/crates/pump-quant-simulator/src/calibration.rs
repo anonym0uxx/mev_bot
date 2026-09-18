@@ -3,7 +3,7 @@
 //!
 //! Responsibility: hold the calibrated execution model (fees, impairment, impact,
 //! terminal-loss rule, mode) keyed by execution condition, and replay recorded
-//! fills through it deterministically (constitution §38: "Calibrate ... stored in a
+//! fills through it deterministically (operator §38: "Calibrate ... stored in a
 //! versioned CalibrationStore"; §39 execution-calibration budget). The store is
 //! memory-bounded: a hard cap on the number of keys and on retained versions per
 //! key, with deterministic FIFO eviction of the oldest version — no unbounded

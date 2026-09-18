@@ -1,6 +1,6 @@
 # Discord — the paid real-time ALPHA-CALL source (§29/§6.6, Amendment A-5)
 
-Constitutional status: named real-time alpha-call social source (Amendment A-5, human-directed
+operator-mandated status: named real-time alpha-call social source (Amendment A-5, human-directed
 2026-07-23). Capture code laptop-built + fixture-tested; live connection is [S] server (Phase-B).
 This is the §6.6 external-tool evaluation record for the dependency.
 

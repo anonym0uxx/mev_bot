@@ -7,7 +7,7 @@
 //! (`crate::store`) owns insertion/lookup and the capacity contract, the sealing
 //! logic lives on `Experiment`, and the VOI logic reads `Hypothesis`.
 //!
-//! Constitution mapping: §29.9 (table set), §29.8 (source-quality determinants
+//! Operator mapping: §29.9 (table set), §29.8 (source-quality determinants
 //! and classification states), §29.7 (amplification-graph edges), §21.4 / §29.9
 //! (meta categories, assignments, rotation snapshots), §56.10 (inference
 //! lifecycle states).

@@ -1,4 +1,4 @@
-//! `ActiveMarketUniverse` selector (constitution §21.5, criterion 90).
+//! `ActiveMarketUniverse` selector (operator §21.5, criterion 90).
 //!
 //! Deterministic, computationally-bounded active-market screening/qualification:
 //! the pipeline that *produces* `ActiveMarketScalp`-lane candidates rather than
@@ -18,7 +18,7 @@
 //! DiscoverySource::ActiveMarketQualification`, the provenance tag introduced
 //! here (no such enum/field existed anywhere before).
 //!
-//! # Constitution constraints (§22)
+//! # Operator constraints (§22)
 //!
 //! Pure, deterministic, integer-only. Liquidity/volume are lamports (`u128`),
 //! sub-scores and weights are basis points, the composite is an integer.
@@ -29,7 +29,7 @@
 ///
 /// Responsibility: the previously-absent `discovery_source` discriminator so a
 /// candidate produced by active-market qualification is attributable as such
-/// (§21.5, criterion 90). Constitution §22: data only.
+/// (§21.5, criterion 90). Operator §22: data only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiscoverySource {
     /// Surfaced from the launch discovery feed.
@@ -43,7 +43,7 @@ pub enum DiscoverySource {
 /// Reconstructed per-market criteria the selector screens over (§21.5).
 ///
 /// Responsibility: the integer feature bundle a caller reconstructs from
-/// market-state reducers. Constitution §22: lamports / bps / ms integers,
+/// market-state reducers. Operator §22: lamports / bps / ms integers,
 /// `Copy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MarketObservation {
@@ -70,7 +70,7 @@ pub struct MarketObservation {
 ///
 /// Responsibility: the qualification criteria. Broad-screen fields gate cheap
 /// liquidity/volume/activity/breadth; progressive fields gate spread /
-/// concentration / age band. Constitution §22: integer thresholds, `Copy`.
+/// concentration / age band. Operator §22: integer thresholds, `Copy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScreenCriteria {
     /// Broad screen: minimum reserve depth (lamports).
@@ -97,7 +97,7 @@ pub struct ScreenCriteria {
 /// priority score. Each positive criterion is normalized to `0..=10_000`
 /// against its reference and weighted; the two penalty criteria contribute an
 /// inverted quality. Weights are bps and are expected to sum to 10_000 (they
-/// are re-normalized by the `/ 10_000` divide regardless). Constitution §22:
+/// are re-normalized by the `/ 10_000` divide regardless). Operator §22:
 /// integer references/weights, `Copy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AnalysisConfig {
@@ -126,7 +126,7 @@ pub struct AnalysisConfig {
 /// Full pipeline configuration (§21.5).
 ///
 /// Responsibility: bundle screen criteria, analysis weights, and the bounded
-/// output controls (floor score + capacity, §99). Constitution §22: `Copy`.
+/// output controls (floor score + capacity, §99). Operator §22: `Copy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UniverseConfig {
     /// Broad-screen + progressive-filter gates.
@@ -142,7 +142,7 @@ pub struct UniverseConfig {
 /// A candidate produced by the active-market qualification pipeline (§21.5).
 ///
 /// Responsibility: a screened, scored, ranked, provenance-stamped candidate —
-/// the output the watchlist ingest sink consumes. Constitution §22: integer.
+/// the output the watchlist ingest sink consumes. Operator §22: integer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QualifiedCandidate {
     /// Token identity.
@@ -158,7 +158,7 @@ pub struct QualifiedCandidate {
 /// Broad screen: cheap liquidity / volume / activity / breadth gates (§21.5).
 ///
 /// Responsibility: stage 1 — reject obviously-inactive markets before any
-/// expensive analysis. Constitution §22: integer comparisons.
+/// expensive analysis. Operator §22: integer comparisons.
 #[inline]
 pub fn passes_broad_screen(obs: &MarketObservation, c: &ScreenCriteria) -> bool {
     obs.liquidity_lamports >= c.min_liquidity_lamports
@@ -171,7 +171,7 @@ pub fn passes_broad_screen(obs: &MarketObservation, c: &ScreenCriteria) -> bool 
 ///
 /// Responsibility: stage 2 — reject markets that pass the broad screen but are
 /// un-executable (wide spread), unsafe (concentrated), or out of the age band.
-/// Constitution §22: integer comparisons.
+/// Operator §22: integer comparisons.
 #[inline]
 pub fn passes_progressive_filter(obs: &MarketObservation, c: &ScreenCriteria) -> bool {
     obs.spread_bps <= c.max_spread_bps
@@ -197,7 +197,7 @@ fn sub_score(value: u128, reference: u128) -> u128 {
 /// (`10_000 - min(bps, 10_000)`). The weighted sum is divided by 10_000, so a
 /// weight set summing to 10_000 yields a score in `0..=10_000`.
 ///
-/// Responsibility: stage 3 — the single scoring function (§21.5). Constitution
+/// Responsibility: stage 3 — the single scoring function (§21.5). Operator
 /// §22: `u128` accumulation, integer division, saturating casts.
 #[inline]
 pub fn analyze_candidate(obs: &MarketObservation, a: &AnalysisConfig) -> u64 {
@@ -223,7 +223,7 @@ pub fn analyze_candidate(obs: &MarketObservation, a: &AnalysisConfig) -> u64 {
 /// ascending `token_id` for determinism, then assign zero-based ranks (§21.5).
 ///
 /// Responsibility: stage 4 — deterministic ordering + rank assignment.
-/// Constitution §22: total order, no floats.
+/// Operator §22: total order, no floats.
 #[inline]
 pub fn reprioritize(cands: &mut [QualifiedCandidate]) {
     cands.sort_by(|a, b| {
@@ -243,7 +243,7 @@ pub fn reprioritize(cands: &mut [QualifiedCandidate]) {
 /// beyond `capacity`). Returns the bounded, ranked universe.
 ///
 /// Responsibility: the single producer of `ActiveMarketScalp`-lane candidates
-/// (§21.5, criterion 90). Constitution §22: deterministic, integer, bounded
+/// (§21.5, criterion 90). Operator §22: deterministic, integer, bounded
 /// output (§99).
 pub fn select_active_market_universe(
     observations: &[MarketObservation],

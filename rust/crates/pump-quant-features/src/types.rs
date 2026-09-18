@@ -2,19 +2,19 @@
 //!
 //! Responsibility: define the leakage-relevant primitives — event identity,
 //! aggressor side, the canonical [`TradeEvent`], completeness tri-state, and the
-//! fixed-point price scale — used by every module. Constitution 17 (event
+//! fixed-point price scale — used by every module. Operator 17 (event
 //! schemas), 20 (time-safe features), 22 (integer/fixed-point only).
 
-/// Stable identifier of a source event (constitution 17). Ties every derived
+/// Stable identifier of a source event (operator 17). Ties every derived
 /// feature/bar back to the raw on-chain observation it was computed from, so
 /// provenance and point-in-time correctness remain auditable.
 pub type EventId = u64;
 
-/// Version of a feature schema (constitution 20). Bumped whenever the meaning of
+/// Version of a feature schema (operator 20). Bumped whenever the meaning of
 /// a served value changes so that live and replay never conflate schema versions.
 pub type FeatureVersion = u32;
 
-/// Fixed-point scale applied to every price in this crate (constitution 22).
+/// Fixed-point scale applied to every price in this crate (operator 22).
 ///
 /// A `price_fp` value equals `real_price * PRICE_SCALE`, held as [`i128`]. Using a
 /// fixed integer scale keeps all price math exact and float-free. `1e9` gives nine
@@ -22,7 +22,7 @@ pub type FeatureVersion = u32;
 /// leaving enormous [`i128`] head-room for weighted sums.
 pub const PRICE_SCALE: i128 = 1_000_000_000;
 
-/// Aggressor side of a swap (constitution 21.7). In a constant-product AMM the
+/// Aggressor side of a swap (operator 21.7). In a constant-product AMM the
 /// "side" is the direction of the swap: `Buy` removes base token from the pool
 /// (quote in), `Sell` adds base token (quote out). Order-flow-intent features are
 /// built from this direction, not from any resting-order book.
@@ -35,16 +35,16 @@ pub enum Side {
 }
 
 /// A single canonical swap/trade, the atomic input to bars and microstructure
-/// features (constitution 21.6/21.7).
+/// features (operator 21.6/21.7).
 ///
 /// Responsibility: carry exactly the leakage-relevant facts of one decoded swap.
 /// `ts_ns` is the *information time* of the event (when the fact became known),
 /// used for point-in-time ordering. `price_fp` is the reserve-derived execution
 /// price in [`PRICE_SCALE`] units. `base_qty`/`quote_qty` are integer base-unit /
-/// lamport amounts. All fields are integers — no floating point (constitution 22).
+/// lamport amounts. All fields are integers — no floating point (operator 22).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TradeEvent {
-    /// Provenance link to the raw observation (constitution 17).
+    /// Provenance link to the raw observation (operator 17).
     pub event_id: EventId,
     /// Information time in nanoseconds — the time this fact became observable.
     pub ts_ns: u64,
@@ -60,7 +60,7 @@ pub struct TradeEvent {
 
 impl TradeEvent {
     /// Signed quote flow of this trade: `+quote_qty` for a buy, `-quote_qty` for a
-    /// sell (constitution 21.7 CVD). Widened to [`i128`] so no single trade can
+    /// sell (operator 21.7 CVD). Widened to [`i128`] so no single trade can
     /// overflow the accumulator.
     #[must_use]
     pub fn signed_quote(&self) -> i128 {
@@ -72,7 +72,7 @@ impl TradeEvent {
     }
 
     /// Signed base flow of this trade: `+base_qty` for a buy, `-base_qty` for a
-    /// sell (constitution 21.7 order-flow imbalance). Widened to [`i128`].
+    /// sell (operator 21.7 order-flow imbalance). Widened to [`i128`].
     #[must_use]
     pub fn signed_base(&self) -> i128 {
         let b = i128::from(self.base_qty);
@@ -83,7 +83,7 @@ impl TradeEvent {
     }
 }
 
-/// Completeness tri-state of a served value (constitution 20).
+/// Completeness tri-state of a served value (operator 20).
 ///
 /// Missing or partial inputs must become an explicit status rather than a silent
 /// zero or a fabricated value. This propagates through the feature so a consumer
@@ -101,12 +101,12 @@ pub enum Completeness {
 /// Errors surfaced by the streaming feature reducers.
 ///
 /// Responsibility: make ordering and domain violations explicit rather than
-/// panicking or silently corrupting state (constitution 22 determinism).
+/// panicking or silently corrupting state (operator 22 determinism).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeatureError {
     /// A trade arrived with `ts_ns` strictly earlier than the previously ingested
     /// trade. Bar/window reducers require non-decreasing information time to
-    /// preserve point-in-time correctness (constitution 20).
+    /// preserve point-in-time correctness (operator 20).
     NonMonotonicTimestamp {
         /// Timestamp of the previously ingested trade.
         previous_ns: u64,

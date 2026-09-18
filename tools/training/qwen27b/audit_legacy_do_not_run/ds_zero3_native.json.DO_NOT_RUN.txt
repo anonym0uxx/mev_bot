@@ -1,0 +1,32 @@
+HISTORICAL UNSAFE CONTENT - DO NOT EXECUTE
+{
+  "bf16": { "enabled": true },
+  "zero_optimization": {
+    "stage": 3,
+    "offload_optimizer": {
+      "device": "nvme",
+      "nvme_path": "/training/offload",
+      "pin_memory": false,
+      "buffer_count": 4,
+      "fast_init": false
+    },
+    "overlap_comm": false,
+    "contiguous_gradients": false,
+    "sub_group_size": 30000000,
+    "reduce_bucket_size": 50000000,
+    "stage3_gather_16bit_weights_on_model_save": true
+  },
+  "aio": {
+    "block_size": 8388608,
+    "queue_depth": 32,
+    "single_submit": false,
+    "overlap_events": true,
+    "thread_count": 4
+  },
+  "gradient_clipping": 1.0,
+  "train_batch_size": 24,
+  "train_micro_batch_size_per_gpu": 1,
+  "gradient_accumulation_steps": 8,
+  "steps_per_print": 1,
+  "wall_clock_breakdown": false
+}

@@ -24,13 +24,13 @@
 |-------|-------|
 | **Project name** | Hermes (system) · `pump-quant` (the Rust engine workspace) |
 | **Repository** | `anonym0uxx/mev_bot` on GitHub |
-| **Purpose** | Autonomously discover and scalp net-SOL-positive Solana memecoin opportunities under a mechanically-enforced risk constitution. |
+| **Purpose** | Autonomously discover and scalp net-SOL-positive Solana memecoin opportunities under a mechanically-enforced risk operator. |
 | **Objective function** | Maximize realized **net SOL** (SOL in minus SOL out, after all costs). Net SOL is the single scalar the system optimizes. |
 | **Primary language** | Rust (a 25-crate Cargo workspace) + Rust capture-lane tools + a Python supervisor (Hermes). |
 | **Target market** | Solana memecoins on Pump.fun (bonding curve) and PumpSwap / Raydium (AMM pools). |
 | **Trading style** | High-frequency scalping — many small, fast, net-positive round trips; not long holds. |
 | **Determinism** | Integer/fixed-point only in outcome paths; no floating point, no wall-clock, no RNG in decisions. Byte-exact under replay. |
-| **Current phase** | **Phase-A (laptop) COMPLETE + ingestion plane laptop-built**: paper/replay engine fully built, gate-verified, constitution-aligned; the Phase-B stream/data-ingestion *code* (Helius LaserStream WS + gRPC, PumpPortal, whale webhooks, PumpSwap decode, Birdeye, RPC failover, fee sampler) is now built and fixture-tested so server bringup is keys + soak + tune, not code-from-zero. Deploy-hardware items (OS tuning, PGO, live submission, key custody) remain Phase-B — see [`docs/SERVER_BUILD_MANIFEST.md`](docs/SERVER_BUILD_MANIFEST.md). |
+| **Current phase** | **Phase-A (laptop) COMPLETE + ingestion plane laptop-built**: paper/replay engine fully built, gate-verified, operator-aligned; the Phase-B stream/data-ingestion *code* (Helius LaserStream WS + gRPC, PumpPortal, whale webhooks, PumpSwap decode, Birdeye, RPC failover, fee sampler) is now built and fixture-tested so server bringup is keys + soak + tune, not code-from-zero. Deploy-hardware items (OS tuning, PGO, live submission, key custody) remain Phase-B — see [`docs/SERVER_BUILD_MANIFEST.md`](docs/SERVER_BUILD_MANIFEST.md). |
 | **Live capital** | Tier-0: key custody + enablement are human-held; no code path in this build signs or moves funds. Live execution (Phase-B) is autonomous under those human-held keys. Qualified strategies park in `AwaitingLiveCapability` — a missing-capability state, never a human-approval queue. |
 | **Tests** | ~1,942 workspace tests (0 failing) + a dedicated `pq-regression` invariant crate (50) + Rust capture-lane suites (134 stream-capture / 191 https / 23 twitch); 191 SHA-locked dossier property tests (`scripts/materialize_tests.py --verify`). |
 | **CI gate** | `hermes-gate/portable-gate`: fmt + clippy(-D warnings) + build + test + dossier `--verify` + supervisor portable gate + hot-path purity lint (enforcing the real hot crates) + memory soak gate. `scripts/regression_e2e.py` runs the whole repo end-to-end against pinned baselines. |
@@ -57,7 +57,7 @@ The goal is a system that **relentlessly and autonomously searches for, validate
 on-chain net-SOL edge in Solana memecoins, without human prompting, for as long as it operates** — while
 never risking capital outside an explicit human gate. Profitable on-chain scalping demonstrably exists in
 this market; the system's job is to find the forms of it that survive its own risk gates and execute them,
-and to keep finding new edge as old edge decays. This is the constitution's *Continuous-Improvement
+and to keep finding new edge as old edge decays. This is the operator's *Continuous-Improvement
 Mandate*: never idle, always hunting for the next testable source of net-SOL edge, prioritized by expected
 value.
 
@@ -187,14 +187,14 @@ On a configured cadence, the reflection stage aggregates realized net-SOL per di
 lane's weight up (if paying its way) or down (if bleeding), bounded by a governance envelope: a maximum
 single-step change, and a floor and ceiling so no lane is ever silently killed or allowed to dominate. The
 adaptation is a pure function of performance, weights, and config, so replay reproduces the adapted weights
-exactly. This closes the loop the constitution demands: reflection must *enhance discovery*, not merely
+exactly. This closes the loop the operator demands: reflection must *enhance discovery*, not merely
 grade it.
 
 ## Evidence & authority — nothing gets to lie in its own favor
 
 Every run is labeled with the fill model that produced it and the evidence status it may claim
 (`Paper` on any laptop run). The optimistic ceiling (Mode B) can **never** satisfy promotion — the
-governance crate's `strategy_registry` implements the constitution's full 14-status promotion
+governance crate's `strategy_registry` implements the operator's full 14-status promotion
 lifecycle (RESEARCH_CANDIDATE → … → CHAMPION) with a fail-closed ProbeReadinessGate: advancement past
 the Mode-C boundary requires calibrated-adversarial evidence, live-ward transitions additionally
 require live capability to be present, and every criterion the laptop cannot attest is hard `false`.
@@ -301,7 +301,7 @@ not the trading engine; it is the disciplined process around it. Its responsibil
 leaf-by-leaf build against dossier contracts, running the CI gate, maintaining the knowledge base and the
 research/experiment loop, enforcing promotion gates, and escalating anything that requires a human. Critically,
 Hermes never authorises live capital — promotion checks for live-capital scope always return
-`human_gate_required`. Hermes reads this repository (including this README and the constitution in
+`human_gate_required`. Hermes reads this repository (including this README and the operator in
 `docs/`) as the ground truth for what the system is and must do.
 
 ---
@@ -399,7 +399,7 @@ supervisor/                  Hermes — the Python governance/build supervisor
   reinforcement/dossiers/     45 component contracts (the correctness authority)
   gates/                      portable CI checks (no-stubs, secrets, hot-path lint)
 scripts/                     materialize_tests.py (dossier lock) · ci_gate.py (portable gate)
-docs/                        ARCHITECTURE.md · SERVER_BUILD_MANIFEST.md · the constitution
+docs/                        ARCHITECTURE.md · SERVER_BUILD_MANIFEST.md · the operator
 .github/workflows/gate.yml   the portable-gate CI workflow
 ```
 
@@ -443,7 +443,7 @@ principles, including two that failed — are [`docs/VENUE_TX_LAYOUTS.md`](docs/
    shadow → Mode-C calibration → ProbeReadinessGate → minimum probe → reconciled scale. Key custody and
    funding are human actions no agent tool can perform.
 
-Hermes (the Python supervisor) reads this repository — this README and the constitution in `docs/` — as
+Hermes (the Python supervisor) reads this repository — this README and the operator in `docs/` — as
 ground truth for what to build and verify next.
 
 ## Status
@@ -451,7 +451,7 @@ ground truth for what to build and verify next.
 Phase-A (laptop) is complete and the Phase-B ingestion plane is laptop-built: 25 workspace crates + 3 Rust
 capture-lane tools, 191 SHA-locked dossier property tests, ~1,942 workspace tests passing (0 failing), the
 portable gate + hot-path lint + memory soak gate green, and an end-to-end regression runner over the whole
-repo. The engine is aligned to the constitution end-to-end (all §1–§71 sections and acceptance criteria
+repo. The engine is aligned to the operator end-to-end (all §1–§71 sections and acceptance criteria
 1–114 audited; the wired laws are per-law A/B-attributed). The next step is bringing the workspace to the
 deployment box and executing the Phase-B server manifest above. Live trading remains behind the Tier-0
 human gate.
@@ -480,7 +480,7 @@ Domain and project terms, defined for unambiguous reference.
 - **Phase-A / Phase-B** — laptop (paper/replay, this build) vs deployment server (live IO, OS tuning, live capital).
 - **Hermes** — the overall system and its Python supervisor that governs the build and research loop.
 - **pump-quant** — the Rust engine workspace in this repository.
-- **§N** — a reference to section N of the project constitution (`docs/HERMES_ONE_SHOT_PROMPT.md`).
+- **§N** — a reference to section N of the project operator (`docs/HERMES_ONE_SHOT_PROMPT.md`).
 
 ## Disclaimer
 

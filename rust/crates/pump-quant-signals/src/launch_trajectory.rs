@@ -1,5 +1,5 @@
 //! Launch-sale-trajectory + creation-window competition feature families
-//! (constitution §21.7, criterion 104).
+//! (operator §21.7, criterion 104).
 //!
 //! Two deterministic §21.7 families computed on Section 28 entity-deduplicated
 //! flow. Both are **recorded empirical priors, re-measured rather than
@@ -14,7 +14,7 @@
 //!   distribution of *other participants'* priority fees/tips (max/mean/count/
 //!   unique tippers), bundle participation, and Tier-2 sniper-cohort presence.
 //!
-//! # Constitution constraints (§22)
+//! # Operator constraints (§22)
 //!
 //! Pure, deterministic, integer-only. Concentration and breadth are basis
 //! points; SOL is lamports; time is milliseconds. Entity aggregation is on the
@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 ///
 /// Responsibility: atomic unit of the launch-sale trajectory family (§21.7).
 /// `buyer_entity` is the Section 28 deduplicated cluster id. `base_amount` is
-/// tokens acquired (base units). Constitution §22: integer quantities.
+/// tokens acquired (base units). Operator §22: integer quantities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SaleTx {
     /// Landing time in milliseconds.
@@ -42,7 +42,7 @@ pub struct SaleTx {
 ///
 /// Responsibility: the sale-phase feature vector consumed as a prior by
 /// graduation/post-migration lane admission and hazard features (never a
-/// standalone veto). Constitution §22: integer / bps fields.
+/// standalone veto). Operator §22: integer / bps fields.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SaleTrajectory {
     /// Wall-clock span of the sale (last ts - first ts), milliseconds.
@@ -74,7 +74,7 @@ pub struct SaleTrajectory {
 /// all-zero.
 ///
 /// Responsibility: single entry point producing the launch-sale trajectory
-/// vector (§21.7). Constitution §22: integer aggregation, `u128` widening on
+/// vector (§21.7). Operator §22: integer aggregation, `u128` widening on
 /// the concentration ratio, division guards on empty/zero denominators.
 pub fn analyze_sale_trajectory(
     txs: &[SaleTx],
@@ -123,7 +123,7 @@ pub fn analyze_sale_trajectory(
 ///
 /// Responsibility: atomic unit of the creation-window competition family
 /// (§21.7 adverse-selection meter). `tipper_entity` is the Section 28
-/// deduplicated cluster id. Constitution §22: integer lamports.
+/// deduplicated cluster id. Operator §22: integer lamports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FirstSlotTx {
     /// Section 28 entity-deduplicated tipper cluster id.
@@ -142,7 +142,7 @@ pub struct FirstSlotTx {
 ///
 /// Responsibility: the adverse-selection meter for early-entry lanes —
 /// evaluator-weighed, two-sided by construction, **never a binary veto**.
-/// Constitution §22: integer lamports / bps counts.
+/// Operator §22: integer lamports / bps counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CreationWindowStats {
     /// Number of first-slot competitor transactions.
@@ -166,7 +166,7 @@ pub struct CreationWindowStats {
 /// insider extraction) and is left to the supervisor's evaluator.
 ///
 /// Responsibility: single entry point for creation-window competition (§21.7).
-/// Constitution §22: `saturating_add` on spend, `u128` widening on mean,
+/// Operator §22: `saturating_add` on spend, `u128` widening on mean,
 /// division guards on empty input.
 pub fn analyze_creation_window(txs: &[FirstSlotTx]) -> CreationWindowStats {
     let mut out = CreationWindowStats::default();

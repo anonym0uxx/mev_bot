@@ -1,4 +1,4 @@
-//! Extended bar / market-structure detector family (constitution 21.6).
+//! Extended bar / market-structure detector family (operator 21.6).
 //!
 //! Responsibility: complete the §21.6 "bar and market-structure feature family"
 //! with the members that [`crate::market_structure`] does not yet cover —
@@ -10,13 +10,13 @@
 //!
 //! This module is *additive*: it never touches [`crate::market_structure`]
 //! (dossier-adjacent). Every function is pure and deterministic over the input it
-//! is given (constitution 20 point-in-time / 57 / 99): detectors read only the
+//! is given (operator 20 point-in-time / 57 / 99): detectors read only the
 //! bars at or before the decision index the caller passes, and the time helpers
 //! take caller-supplied *information-time* nanoseconds — there is no wall clock,
 //! no RNG, and no I/O anywhere here. All arithmetic is integer / fixed-point
-//! [`i128`]/[`u64`] with explicit saturating overflow contracts (constitution 22);
+//! [`i128`]/[`u64`] with explicit saturating overflow contracts (operator 22);
 //! no floating point appears in any outcome-controlling path. Every threshold is a
-//! named const with a citation (constitution 102), surfaced through a small params
+//! named const with a citation (operator 102), surfaced through a small params
 //! struct so callers tune behaviour without magic numbers.
 //!
 //! These are *research-gated structural features*, not assumed-predictive signals:
@@ -24,11 +24,11 @@
 
 use crate::bar::Bar;
 
-/// Basis-point scale: `10_000 bp == 100%` (constitution 22 fixed-point ratios).
+/// Basis-point scale: `10_000 bp == 100%` (operator 22 fixed-point ratios).
 /// Ratios are carried as integer basis points so no floating point is required.
 pub const BPS_SCALE: i128 = 10_000;
 
-/// Nanoseconds in one 24-hour day: `86_400 * 1_000_000_000` (constitution 102).
+/// Nanoseconds in one 24-hour day: `86_400 * 1_000_000_000` (operator 102).
 /// Used only for *information-time* modulo arithmetic in [`time_of_day_bucket`] —
 /// this is a fold of the caller-supplied info-time, never a wall-clock read.
 pub const NS_PER_DAY: u64 = 86_400 * 1_000_000_000;
@@ -38,18 +38,18 @@ pub const NS_PER_DAY: u64 = 86_400 * 1_000_000_000;
 // ---------------------------------------------------------------------------
 
 /// Default lower edge of the "golden" retrace pocket, in basis points of the
-/// prior swing (constitution 102): `3_820 bp == 38.2%`, the 0.382 Fibonacci level.
+/// prior swing (operator 102): `3_820 bp == 38.2%`, the 0.382 Fibonacci level.
 pub const RETRACE_GOLDEN_LO_BPS: i128 = 3_820;
 
 /// Default upper edge of the "golden" retrace pocket, in basis points of the prior
-/// swing (constitution 102): `6_180 bp == 61.8%`, the 0.618 Fibonacci level.
+/// swing (operator 102): `6_180 bp == 61.8%`, the 0.618 Fibonacci level.
 pub const RETRACE_GOLDEN_HI_BPS: i128 = 6_180;
 
-/// Default full-reversal edge, in basis points of the prior swing (constitution
+/// Default full-reversal edge, in basis points of the prior swing (operator
 /// 102): `10_000 bp == 100%` — the pullback erased the entire swing.
 pub const RETRACE_FULL_BPS: i128 = 10_000;
 
-/// Threshold parameters for [`retrace_state`] (constitution 102: named, tunable,
+/// Threshold parameters for [`retrace_state`] (operator 102: named, tunable,
 /// no magic numbers). All values are basis points of the prior swing; sane use
 /// requires `golden_lo_bps <= golden_hi_bps <= full_bps`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +73,7 @@ impl Default for RetraceParams {
     }
 }
 
-/// Classified depth of a peak-to-trough pullback (constitution 21.6 drawdown/retrace).
+/// Classified depth of a peak-to-trough pullback (operator 21.6 drawdown/retrace).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetraceState {
     /// Pullback is shallower than the golden pocket (strong trend continuation).
@@ -87,7 +87,7 @@ pub enum RetraceState {
 }
 
 /// Peak-to-trough retrace over `bars`, in basis points of the prior up-swing
-/// (constitution 21.6). Returns `None` when it is undefined.
+/// (operator 21.6). Returns `None` when it is undefined.
 ///
 /// Construction (all point-in-time over the slice): `peak_idx` is the index of the
 /// first bar carrying the maximum `high_fp`; `swing_low` is the minimum `low_fp`
@@ -132,7 +132,7 @@ pub fn retrace_bps(bars: &[Bar]) -> Option<i128> {
 }
 
 /// Classify the peak-to-trough pullback over `bars` into a [`RetraceState`] using
-/// `params` thresholds (constitution 21.6). Returns `None` exactly when
+/// `params` thresholds (operator 21.6). Returns `None` exactly when
 /// [`retrace_bps`] does. Boundaries are exact: a value equal to `golden_lo_bps`
 /// is [`RetraceState::Golden`], one equal to `golden_hi_bps` is still `Golden`,
 /// and one equal to `full_bps` is [`RetraceState::FullReversal`].
@@ -156,18 +156,18 @@ pub fn retrace_state(bars: &[Bar], params: &RetraceParams) -> Option<RetraceStat
 // ---------------------------------------------------------------------------
 
 /// Default upper edge of the compressed regime, in basis points of the baseline
-/// mean range (constitution 102): `7_000 bp == 70%`.
+/// mean range (operator 102): `7_000 bp == 70%`.
 pub const VOL_COMPRESSED_BPS: i128 = 7_000;
 
 /// Default lower edge of the expanded regime, in basis points of the baseline mean
-/// range (constitution 102): `15_000 bp == 150%`.
+/// range (operator 102): `15_000 bp == 150%`.
 pub const VOL_EXPANDED_BPS: i128 = 15_000;
 
 /// Default lower edge of the explosive (high-tail) regime, in basis points of the
-/// baseline mean range (constitution 102): `30_000 bp == 300%`.
+/// baseline mean range (operator 102): `30_000 bp == 300%`.
 pub const VOL_EXPLOSIVE_BPS: i128 = 30_000;
 
-/// Threshold parameters for [`vol_regime`] (constitution 102). All values are
+/// Threshold parameters for [`vol_regime`] (operator 102). All values are
 /// basis points of the baseline mean range; sane use requires
 /// `compressed_bps < expanded_bps < explosive_bps`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,7 +191,7 @@ impl Default for VolRegimeParams {
     }
 }
 
-/// Graded volatility regime from bar-range dispersion (constitution 21.6).
+/// Graded volatility regime from bar-range dispersion (operator 21.6).
 ///
 /// Distinct from [`crate::market_structure::RangeState`], which is a squeeze-only
 /// compression/expansion/neutral triple: this is a four-way graded regime with an
@@ -209,7 +209,7 @@ pub enum VolRegime {
     Explosive,
 }
 
-/// Sum of `high_fp - low_fp` over `slice`, saturating (constitution 22). Private
+/// Sum of `high_fp - low_fp` over `slice`, saturating (operator 22). Private
 /// helper shared by the volatility-regime computations.
 fn range_sum(slice: &[Bar]) -> i128 {
     slice.iter().fold(0i128, |acc, b| {
@@ -218,7 +218,7 @@ fn range_sum(slice: &[Bar]) -> i128 {
 }
 
 /// Ratio of the recent-window mean bar range to the baseline-window mean bar range,
-/// in basis points (constitution 21.6). The recent window is the last `recent`
+/// in basis points (operator 21.6). The recent window is the last `recent`
 /// bars; the baseline window is the `baseline` bars immediately preceding them.
 ///
 /// Computed as `recent_sum * baseline_n * BPS_SCALE / (baseline_sum * recent_n)`
@@ -246,7 +246,7 @@ pub fn mean_range_ratio_bps(bars: &[Bar], recent: usize, baseline: usize) -> Opt
 
 /// Classify the graded volatility regime by comparing the mean bar range over the
 /// last `recent` bars against the mean over the `baseline` bars immediately before
-/// them (constitution 21.6). Uses cross-multiplication so every boundary is exact
+/// them (operator 21.6). Uses cross-multiplication so every boundary is exact
 /// integer math with no division rounding.
 ///
 /// Returns `None` under the same conditions as [`mean_range_ratio_bps`] (zero
@@ -294,18 +294,18 @@ pub fn vol_regime(
 // ---------------------------------------------------------------------------
 
 /// Default maximum body ratio for a [`WickShape::Doji`], in basis points of the
-/// bar range (constitution 102): `1_000 bp == 10%`.
+/// bar range (operator 102): `1_000 bp == 10%`.
 pub const WICK_DOJI_BODY_BPS: i128 = 1_000;
 
 /// Default minimum body ratio for a [`WickShape::Marubozu`], in basis points of the
-/// bar range (constitution 102): `8_000 bp == 80%`.
+/// bar range (operator 102): `8_000 bp == 80%`.
 pub const WICK_MARUBOZU_BODY_BPS: i128 = 8_000;
 
 /// Default minimum wick ratio for a rejection classification, in basis points of the
-/// bar range (constitution 102): `4_000 bp == 40%`.
+/// bar range (operator 102): `4_000 bp == 40%`.
 pub const WICK_REJECTION_BPS: i128 = 4_000;
 
-/// Threshold parameters for [`wick_shape`] (constitution 102). All values are basis
+/// Threshold parameters for [`wick_shape`] (operator 102). All values are basis
 /// points of the bar range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WickParams {
@@ -327,7 +327,7 @@ impl Default for WickParams {
     }
 }
 
-/// Decomposition of one bar into wick and body ratios (constitution 21.6). Each
+/// Decomposition of one bar into wick and body ratios (operator 21.6). Each
 /// field is basis points of the bar range; the three sum to `BPS_SCALE` up to
 /// integer-division truncation, since `upper_wick + lower_wick + body == range`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -340,7 +340,7 @@ pub struct WickMetrics {
     pub body_bps: i128,
 }
 
-/// Single-bar candle shape classification (constitution 21.6 wick microstructure).
+/// Single-bar candle shape classification (operator 21.6 wick microstructure).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WickShape {
     /// Body is tiny relative to range (indecision).
@@ -356,7 +356,7 @@ pub enum WickShape {
 }
 
 /// Absolute difference of two `i128` values with a saturating contract
-/// (constitution 22), avoiding the `i128::MIN.abs()` panic edge.
+/// (operator 22), avoiding the `i128::MIN.abs()` panic edge.
 fn abs_diff(a: i128, b: i128) -> i128 {
     if a >= b {
         a.saturating_sub(b)
@@ -365,7 +365,7 @@ fn abs_diff(a: i128, b: i128) -> i128 {
     }
 }
 
-/// Decompose `bar` into wick/body ratios (constitution 21.6). Returns `None` when
+/// Decompose `bar` into wick/body ratios (operator 21.6). Returns `None` when
 /// the bar range is zero (`high_fp == low_fp`): the ratios are undefined and a
 /// degenerate flat bar has no wick structure. Never panics.
 #[must_use]
@@ -386,7 +386,7 @@ pub fn wick_metrics(bar: &Bar) -> Option<WickMetrics> {
     })
 }
 
-/// Classify the candle shape of `bar` under `params` (constitution 21.6). A
+/// Classify the candle shape of `bar` under `params` (operator 21.6). A
 /// zero-range bar has no structure and is reported as [`WickShape::Doji`] (a body
 /// of zero is the limiting doji), so this never panics.
 ///
@@ -418,7 +418,7 @@ pub fn wick_shape(bar: &Bar, params: &WickParams) -> WickShape {
 }
 
 /// Aggregate upper-wick ("sell-wick") pressure over `bars`, in basis points of
-/// total range (constitution 21.6): the fraction of cumulative bar range that is
+/// total range (operator 21.6): the fraction of cumulative bar range that is
 /// upper wick, i.e. `sum(upper_wick) * BPS_SCALE / sum(range)`.
 ///
 /// A high value means price repeatedly probed higher and was sold back down — a
@@ -450,18 +450,18 @@ pub fn sell_wick_pressure_bps(bars: &[Bar]) -> Option<i128> {
 // ---------------------------------------------------------------------------
 
 /// Default upper edge (exclusive) of the newborn age bucket, in seconds
-/// (constitution 102): `300 s == 5 min`.
+/// (operator 102): `300 s == 5 min`.
 pub const AGE_NEWBORN_MAX_SECS: u64 = 300;
 
 /// Default upper edge (exclusive) of the young age bucket, in seconds
-/// (constitution 102): `3_600 s == 1 h`.
+/// (operator 102): `3_600 s == 1 h`.
 pub const AGE_YOUNG_MAX_SECS: u64 = 3_600;
 
 /// Default upper edge (exclusive) of the mature age bucket, in seconds
-/// (constitution 102): `86_400 s == 24 h`; at or beyond it the token is old.
+/// (operator 102): `86_400 s == 24 h`; at or beyond it the token is old.
 pub const AGE_MATURE_MAX_SECS: u64 = 86_400;
 
-/// Coarse token-lifecycle bucket (constitution 21.6 token-age conditioning).
+/// Coarse token-lifecycle bucket (operator 21.6 token-age conditioning).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenAgeBucket {
     /// Below `newborn_max_units` (fresh launch — highest reflexivity).
@@ -474,7 +474,7 @@ pub enum TokenAgeBucket {
     Old,
 }
 
-/// Threshold parameters for [`token_age_bucket`] (constitution 102). Edges are in
+/// Threshold parameters for [`token_age_bucket`] (operator 102). Edges are in
 /// the same *unit* the age is expressed in (see [`token_age_in_units`]); sane use
 /// requires `newborn_max_units <= young_max_units <= mature_max_units`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -499,7 +499,7 @@ impl Default for AgeBucketParams {
 }
 
 /// Info-time age of a token in nanoseconds: `info_time_ns - creation_ns`
-/// (constitution 20/21.6). Both arguments are caller-supplied *information time* —
+/// (operator 20/21.6). Both arguments are caller-supplied *information time* —
 /// there is no wall clock. Returns `None` when `info_time_ns < creation_ns` (the
 /// decision instant precedes creation, which has no non-negative age) rather than
 /// wrapping.
@@ -513,7 +513,7 @@ pub fn info_age_ns(info_time_ns: u64, creation_ns: u64) -> Option<u64> {
 }
 
 /// Token age in caller-chosen units — slots or seconds — via a supplied `unit_ns`
-/// scale (constitution 21.6): `info_age_ns / unit_ns` (integer, truncating). For
+/// scale (operator 21.6): `info_age_ns / unit_ns` (integer, truncating). For
 /// seconds pass `1_000_000_000`; for a slot pass the slot duration in ns. Returns
 /// `None` when `unit_ns == 0` (undefined scale) or when [`info_age_ns`] is `None`.
 #[must_use]
@@ -526,7 +526,7 @@ pub fn token_age_in_units(info_time_ns: u64, creation_ns: u64, unit_ns: u64) -> 
 }
 
 /// Bucket a token age (already in the params' unit) into a [`TokenAgeBucket`]
-/// under `params` (constitution 21.6). Boundaries are exclusive on the low side:
+/// under `params` (operator 21.6). Boundaries are exclusive on the low side:
 /// an age exactly equal to `newborn_max_units` is [`TokenAgeBucket::Young`], and
 /// one exactly equal to `mature_max_units` is [`TokenAgeBucket::Old`].
 #[must_use]
@@ -543,7 +543,7 @@ pub fn token_age_bucket(age_units: u64, params: &AgeBucketParams) -> TokenAgeBuc
 }
 
 /// Nanoseconds-of-day of an information-time instant: `info_time_ns % NS_PER_DAY`
-/// (constitution 21.6). This is a pure integer modulo of the caller-supplied
+/// (operator 21.6). This is a pure integer modulo of the caller-supplied
 /// info-time — explicitly **not** a wall-clock read and carrying no calendar-date
 /// meaning; it exists only to condition features on intra-day phase.
 #[must_use]
@@ -552,7 +552,7 @@ pub fn ns_of_day(info_time_ns: u64) -> u64 {
 }
 
 /// Time-of-day bucket index in `[0, num_buckets)` derived from the info-time
-/// nanoseconds-of-day (constitution 21.6). The day is partitioned into
+/// nanoseconds-of-day (operator 21.6). The day is partitioned into
 /// `num_buckets` equal slices of width `NS_PER_DAY / num_buckets`; the returned
 /// index is `ns_of_day / width`, clamped to `num_buckets - 1` so integer-division
 /// remainder at the very end of the day never yields an out-of-range index.
@@ -578,7 +578,7 @@ pub fn time_of_day_bucket(info_time_ns: u64, num_buckets: u32) -> Option<u32> {
 // ---------------------------------------------------------------------------
 
 /// Realized volatility over `bars`, in basis points of the mean close price
-/// (constitution 21.6). This is the helper the execution engine consumes in Wave 2
+/// (operator 21.6). This is the helper the execution engine consumes in Wave 2
 /// to scale stops.
 ///
 /// **Definition (integer-exact, chosen and documented):** the sum of absolute
@@ -603,7 +603,7 @@ pub fn time_of_day_bucket(info_time_ns: u64, num_buckets: u32) -> Option<u32> {
 ///
 /// Returns `None` when `bars.len() < 2` (no close-to-close return exists) or when
 /// the close sum is non-positive (mean undefined). All arithmetic is saturating
-/// [`i128`] (constitution 22).
+/// [`i128`] (operator 22).
 #[must_use]
 pub fn realized_vol_bps(bars: &[Bar]) -> Option<i128> {
     let n = bars.len();

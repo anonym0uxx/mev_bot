@@ -4,7 +4,7 @@
 //! compared logged (estimated) P&L against actual on-chain wallet SOL deltas and
 //! classified each trade. The legacy code carried SOL amounts as `f64`; here
 //! every amount is integer **lamports** so the reconciliation is exact and
-//! constitution §22 compliant (no floats in an outcome-controlling path).
+//! operator §22 compliant (no floats in an outcome-controlling path).
 //!
 //! ## Responsibility
 //! Given the expected (logged) fill and the confirmed on-chain fill, compute the
@@ -17,7 +17,7 @@
 //! - `|discrepancy| > tolerance` ⇒ `Discrepancy`, else `Reconciled`.
 //! - Failure / stale short-circuits map to `BuyNotConfirmed` / `SellNotConfirmed`.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §22: lamports as `u64` inputs, widened to `i128` for signed differences.
 //! - Overflow: all arithmetic is done in `i128`, which cannot overflow for any
 //!   pair of `u64` lamport magnitudes.

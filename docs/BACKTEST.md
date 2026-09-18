@@ -88,7 +88,7 @@ and confirmed the shape directly. Example, a real pump.fun mint (`23ENcg…J1pum
   blind.
 
 A "backtest" on hourly candles would measure an **hourly swing strategy that we do not run**, and
-reporting it as validation of this bot would be precisely the fabrication the constitution forbids.
+reporting it as validation of this bot would be precisely the fabrication the operator forbids.
 It is rejected for that reason, not for lack of effort.
 
 *(The dataset remains useful for one thing: measuring the real pump.fun outcome distribution to
@@ -310,7 +310,7 @@ example at real pump.fun reserves.
 
 The replay observes a swap and fills at that same price in the same slot. Real landing is ≥ 1 slot
 (~400 ms) later, and **criterion 103 already requires evaluating at expected LANDING state, never
-observation state.** The harness was breaking a constitutional rule in the flattering direction.
+observation state.** The harness was breaking a operator-mandated rule in the flattering direction.
 
 **Built this pass:** `fill_landing_slots` config (default `0` = today's behaviour, so nothing moves
 until deliberately enabled).
@@ -571,7 +571,7 @@ committed, without exception, however obviously local it looks.**
 
 ## Fixture declarations, per Amendment A-13
 
-A-13 was written into the constitution (`§51.2 / §56.10`) as a direct consequence of this defect. Its
+A-13 was written into the operator (`§51.2 / §56.10`) as a direct consequence of this defect. Its
 first clause requires that every fixture pricing an order declare the depth it walks. That has been
 applied down to the unit tests: `position.rs` and `shadow.rs` now carry
 `TEST_LIQ_LAMPORTS = 30_000_000_000` with the participation rate stated, decision-inert today because

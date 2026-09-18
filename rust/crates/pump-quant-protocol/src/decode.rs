@@ -7,7 +7,7 @@
 //! or whose boolean fields are out of range, yields `None` rather than a panic
 //! or a garbage value.
 //!
-//! # Constitution
+//! # Operator
 //! * §22 — integer-only; no floats are produced or consumed here.
 //! * Bounds are checked on every field access, so malformed input can never
 //!   trigger a silent out-of-range read.
@@ -59,7 +59,7 @@ const CURVE_MIN_LEN: usize = 49;
 /// `BondingCurve` identity (§18.2 fail-closed), or when the `complete` byte is
 /// not a canonical boolean (`0` or `1`).
 ///
-/// # Constitution
+/// # Operator
 /// * §22 — pure integer decode; bounds checked on every field.
 /// * §18.2 — account identity is verified before any field is trusted.
 pub fn decode_pump_curve(account: &[u8]) -> Option<PumpCurve> {
@@ -120,7 +120,7 @@ const POOL_MIN_LEN: usize = 35;
 /// leading 8-byte discriminator does not match the registry's expected `Pool`
 /// identity (§18.2 fail-closed).
 ///
-/// # Constitution
+/// # Operator
 /// * §22 — pure integer decode; bounds checked on every field.
 /// * §18.2 — account identity is verified before any field is trusted.
 pub fn decode_pumpswap_pool(account: &[u8]) -> Option<PumpSwapPool> {
@@ -178,7 +178,7 @@ pub struct PumpCurveTail {
 /// The fixed prefix must decode first ([`decode_pump_curve`] semantics,
 /// including the discriminator check); the tail then decodes sequentially.
 ///
-/// # Constitution
+/// # Operator
 /// §22 integer-only; §18.2 identity verified first; every access bounds-checked.
 pub fn decode_pump_curve_tail(account: &[u8]) -> Option<PumpCurveTail> {
     // Identity and prefix validity first — a tail on an unverified account is

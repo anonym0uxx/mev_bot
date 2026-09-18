@@ -17,7 +17,7 @@
 //! - Exactly one tip transaction, and it is the **last** entry.
 //! - At least one trade transaction precedes the tip.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §22: integer byte/count bookkeeping only.
 //! - Deterministic: pure function of the input slice.
 

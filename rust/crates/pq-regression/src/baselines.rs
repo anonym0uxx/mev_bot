@@ -206,7 +206,7 @@ pub const GOLDEN_ARC_REPIN12_DELTA: i128 = -8_718_822;
 pub const LAW_BOOL_DEFAULTS: &[(&str, bool)] = &[
     // §26 confirmed-creator-dump hard veto (operator-approved reversal).
     ("creator_dump_veto_enable", true),
-    // §24 cost-derived profit targets — the mandated live default ("constitution wins").
+    // §24 cost-derived profit targets — the mandated live default ("operator wins").
     ("derived_targets_enable", true),
     // §24(d) exit-into-strength — situational, report-only until flipped.
     ("into_strength_exit_enable", false),

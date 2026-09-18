@@ -14,7 +14,7 @@
 //! fresh/organic and fallback classes. First match wins, so the outcome is a
 //! total, order-independent function of the inputs.
 //!
-//! ## Constitution
+//! ## Operator
 //! §22: integer-only, no floats, deterministic. §25: this is the shared
 //! classifier that must run identically in LIVE/SHADOW/REPLAY. Every threshold
 //! is supplied via [`ClassifierThresholds`] (operator-tunable, versioned) rather

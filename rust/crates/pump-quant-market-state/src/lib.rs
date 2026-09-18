@@ -5,7 +5,7 @@
 //!
 //! ## Responsibility
 //! This crate implements the *market-state reducer* family called out in the
-//! constitution architecture (`pq-market-state`: "reducers, breadth
+//! operator architecture (`pq-market-state`: "reducers, breadth
 //! decomposition, creator state, MarketRegimeState"). It provides pure integer
 //! reducers over event streams that produce inspectable, multi-dimensional
 //! state:
@@ -32,7 +32,7 @@
 //!   healthy. Refuses with `None` below its sample floor and for states the
 //!   measures do not name (§6.4).
 //!
-//! ## Constitution invariants honored here (§22)
+//! ## Operator invariants honored here (§22)
 //! * **No `f32`/`f64` anywhere in outcome logic** — every derived quantity is
 //!   an integer or a fixed-point ratio in basis points (bps, parts per 10 000).
 //! * **Explicit overflow discipline** — counts saturate by contract, value
@@ -52,7 +52,7 @@
 // and it contained zero `unsafe` when this was added. `forbid` makes that a
 // property the compiler holds rather than one a reviewer has to re-verify —
 // and unlike `deny` it cannot be locally overridden by an `#[allow]`.
-// Constitution §24(b): an `unsafe` block requires a dossier-registered,
+// Operator §24(b): an `unsafe` block requires a dossier-registered,
 // property-tested safety argument. There is no such dossier entry for this
 // crate, so there is no `unsafe` this attribute could legitimately block.
 #![forbid(unsafe_code)]
@@ -62,6 +62,7 @@ mod macros;
 pub mod breadth;
 pub mod common;
 pub mod creator;
+pub mod flow_reducer;
 pub mod meta;
 pub mod meta_phase;
 pub mod regime;

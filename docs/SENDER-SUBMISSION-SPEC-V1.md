@@ -5,7 +5,7 @@
 **Crate:** `pump-quant-execution` → `ex_sender_route`
 **Supersedes, in part:** the multi-sender blast described in `7cb1452`
 (`sniper RPC fallback blasts Nozomi+Helius+public mainnet in parallel`).
-**Constitution refs:** §22 (integer/bps only), §24(b) (no `unsafe`; see §9).
+**Operator refs:** §22 (integer/bps only), §24(b) (no `unsafe`; see §9).
 
 ---
 

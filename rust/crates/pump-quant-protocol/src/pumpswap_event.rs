@@ -22,7 +22,7 @@
 //! dynamic and market-cap-tiered since 2025-09-01, routed through
 //! [`crate::pumpswap::PUMP_FEES_PROGRAM`]. Never hardcode a schedule.
 //!
-//! # Constitution
+//! # Operator
 //! * §22 — integer-only; the fixed-point price helpers use
 //!   [`PUMPSWAP_PRICE_SCALE`] with `u128` widening, never a float.
 //! * §99 — fixed-size structs from borrowed slices; zero allocation.
@@ -599,7 +599,7 @@ pub fn trade_from_sell_event(ev: &SellEvent) -> PumpSwapTrade {
 /// Returns `false` for perturbed/forged reserves or amounts. Used by tests
 /// and as a live stream cross-check before an event is trusted.
 ///
-/// # Constitution
+/// # Operator
 /// §22 — pure `u128` integer math; deterministic; no panic on any input.
 pub fn verify_buy_event(ev: &BuyEvent) -> bool {
     // Internal identity: with-lp-fee amount is exactly the CP leg plus lp fee.

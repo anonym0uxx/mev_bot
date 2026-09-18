@@ -1,4 +1,4 @@
-//! `eight_gate` — the 8-gate AND promotion system (constitution §45-56).
+//! `eight_gate` — the 8-gate AND promotion system (operator §45-56).
 //!
 //! A challenger must pass ALL 8 gates before it can be promoted to champion.
 //! Each gate is a statistical test that checks a different form of self-deception:

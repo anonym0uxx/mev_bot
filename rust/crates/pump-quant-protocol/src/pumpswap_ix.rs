@@ -16,7 +16,7 @@
 //! provided list. Likewise, trailing optional *args* (e.g. `buy.track_volume`)
 //! decode as `None` when absent and unknown trailing bytes are ignored.
 //!
-//! # Constitution
+//! # Operator
 //! * §22 — integer-only.
 //! * §99 — borrowed slices, fixed-size outputs, zero allocation.
 //! * §102 — discriminators and account indices are named constants.

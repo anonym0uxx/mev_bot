@@ -1,5 +1,5 @@
 //! Durable local storage for the episodic brain — pure `std`, no database, no
-//! dependencies, crash-safe (constitution 22, 57).
+//! dependencies, crash-safe (operator 22, 57).
 //!
 //! Everything else in this crate is a pure function of its inputs. This module is
 //! the single, explicit, isolated exception where I/O happens, and it is fenced
@@ -76,7 +76,7 @@ use crate::fingerprint::{SetupFingerprint, VenuePhase, FIELD_COUNT};
 use crate::hash::fnv1a_64;
 use crate::recall::{EpisodicIndex, IndexError};
 
-/// File magic identifying a Hermes brain store (constitution 102).
+/// File magic identifying a Hermes brain store (operator 102).
 pub const MAGIC: [u8; 8] = *b"HRMBRAIN";
 
 /// On-disk format version. Bumped on any framing or record-layout change.
@@ -102,7 +102,7 @@ pub const HEADER_LEN: usize = 8 + 4 + 8;
 /// Frame preamble length in bytes: payload length + checksum.
 pub const FRAME_HEADER_LEN: usize = 4 + 8;
 
-/// Fixed serialized length of one [`Episode`] payload (constitution 102).
+/// Fixed serialized length of one [`Episode`] payload (operator 102).
 ///
 /// `2` schema + `8` id + `16` signature + [`FIELD_COUNT`] buckets + `30` context
 /// + `7` parallel stream + `42` outcome.

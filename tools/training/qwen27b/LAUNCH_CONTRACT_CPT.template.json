@@ -1,0 +1,86 @@
+{
+  "_template": "LAUNCH_CONTRACT_CPT.template.json",
+  "_schema": "Enforced by launch_native.py validate_contract() for --phase cpt. Token placeholders are FILL_*; every FILL_SHA256_64HEX must be a 64-char lowercase hex digest and every FILL_ABS_PATH must be an absolute native-Linux path with no symlinks and no '..'. This pipeline was never run natively; nothing here is approval.",
+  "_note_tokenizer_effective_sha256": "93214b2d6d9f99f2d152ce44b8dad5be7b5cdf610b96f261c458eacb7e6d54ae (must be preserved by the Linux-bound release rebuild)",
+  "schema_version": "qwen27b_launch_v2",
+  "phase": "cpt",
+  "run_id": "FILL_RUN_ID_CPT",
+  "release_id": "FILL_APPROVED_RELEASE_ID",
+  "release_manifest": {
+    "path": "FILL_ABS_PATH_APPROVED_RELEASE_MANIFEST_JSON",
+    "sha256": "FILL_SHA256_64HEX"
+  },
+  "code_files": [
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/train_qwen27b.py", "sha256": "FILL_SHA256_64HEX" },
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/release_data.py", "sha256": "FILL_SHA256_64HEX" },
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/launch_native.py", "sha256": "FILL_SHA256_64HEX" },
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/verify_clean_seed.py", "sha256": "FILL_SHA256_64HEX" },
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/dryrun_loss_tokens.py", "sha256": "FILL_SHA256_64HEX" },
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/dryrun_step_plan.py", "sha256": "FILL_SHA256_64HEX" },
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/test_launcher_cli.py", "sha256": "FILL_SHA256_64HEX" },
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/test_release_repair.py", "sha256": "FILL_SHA256_64HEX" },
+    { "path": "FILL_ABS_PATH_QWEN27B_DIR/test_weighted_loss.py", "sha256": "FILL_SHA256_64HEX" }
+  ],
+  "_code_files_note": "Must contain EVERY *.py in the trainer's directory (validate_contract requires set(trainer.parent.glob('*.py')).issubset(code)); add any file missing from the list above rather than dropping entries.",
+  "trainer": {
+    "path": "FILL_ABS_PATH_QWEN27B_DIR/train_qwen27b.py",
+    "sha256": "FILL_SHA256_64HEX"
+  },
+  "deepspeed": {
+    "path": "FILL_ABS_PATH_QWEN27B_DIR/ds_zero3_native.json",
+    "sha256": "FILL_SHA256_64HEX"
+  },
+  "training_mount": "/training",
+  "run_dir": "/training/runs/FILL_RUN_ID_CPT",
+  "gpu_uuids": [
+    "FILL_GPU_UUID_1",
+    "FILL_GPU_UUID_2",
+    "FILL_GPU_UUID_3"
+  ],
+  "min_gpu_memory_mib": 95000,
+  "min_available_ram_bytes": 128000000000,
+  "min_free_disk_bytes": 1500000000000,
+  "mount_uuid": "FILL_MOUNT_UUID",
+  "disk_serial": "25375338A05C",
+  "seed": {
+    "_note": "CPT requires kind=='clean_upstream', verified_clean true, repo/revision as pinned. 'files' must be the EXACT inventory of the seed directory (exact_inventory requires set(files)==set(directory.rglob('*'))) - no more, no fewer: 18 safetensors shards + model.safetensors.index.json + config.json + tokenizer.json + tokenizer_config.json + chat_template.jinja + vocab.json + merges.txt (+ any other regular file actually present).",
+    "kind": "clean_upstream",
+    "verified_clean": true,
+    "repo": "unsloth/Qwen3.8-27B",
+    "revision": "3ea932cee0a432ae86e9c7826cbe8aef52323a28",
+    "path": "/home/alon/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B/snapshots/3ea932cee0a432ae86e9c7826cbe8aef52323a28",
+    "files": [
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00001-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00002-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00003-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00004-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00005-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00006-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00007-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00008-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00009-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00010-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00011-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00012-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00013-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00014-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00015-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00016-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00017-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model-00018-of-00018.safetensors", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/model.safetensors.index.json", "sha256": "FILL_SHA256_64HEX" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/config.json", "sha256": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/tokenizer.json", "sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/tokenizer_config.json", "sha256": "2e6eac2825dcd97362f8910ca75f6cb0405dd142e732386eb725af57926c91e5" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/chat_template.jinja", "sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/vocab.json", "sha256": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003" },
+      { "path": "FILL_ABS_PATH_LINUX_SNAPSHOT/merges.txt", "sha256": "a9d356d7bdf1ef4949e3e748e95b8e10ad9d4e2e838eddc38a0a7b6b94d1db8d" }
+    ],
+    "verification": {
+      "path": "FILL_ABS_PATH_CLEAN_SEED_RECEIPT_JSON",
+      "sha256": "FILL_SHA256_64HEX"
+    }
+  },
+  "resume": null,
+  "_resume_note": "For a resume run, replace 'resume': null with {\"path\": \"/training/runs/FILL_RUN_ID_CPT/FILL_RELEASE_ID_cpt/checkpoint-N\", \"files\": [ {\"path\": \"<ABS>\", \"sha256\": \"FILL_SHA256_64HEX\"} ], \"complete\": true, \"run_identity\": {\"path\": \"/training/runs/FILL_RUN_ID_CPT/run_identity.json\", \"sha256\": \"FILL_SHA256_64HEX\"}}, and launch the launcher with --resume. 'files' must be the exact inventory of checkpoint-N."
+}

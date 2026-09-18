@@ -1,6 +1,6 @@
 # NET-SOL SANITY AUDIT — end-to-end (2026-07-25)
 
-**Mandate:** end-to-end sanity check across code, constitution, and instructions — are we actually
+**Mandate:** end-to-end sanity check across code, operator, and instructions — are we actually
 optimizing for realized net SOL, and is the approach sane?
 
 **Method:** four independent audit lenses (objective alignment, armed-law evidence, dead weight,
@@ -133,11 +133,11 @@ un-tuned. Both are now called out for the server pass.
   recovered exactly once and the tranche fractions sum to exactly 10,000.
 * **Bankroll origin separation holds.** `PaperSeed` / `LiveReconciled` are distinct; a paper seed
   provably cannot back a live trade (`require_live_verified` fail-closes).
-* **Authenticity enters the sizing chain exactly once** — the constitutional concern is not
+* **Authenticity enters the sizing chain exactly once** — the operator-mandated concern is not
   violated. Concentration and authenticity were confirmed to measure genuinely disjoint quantities.
 * **Entry arbitration, the economic gate, retirement review, sequential retirement, and author
   trust all rank on realized net lamports.** Correctly aligned.
-* **Every armed flag has test coverage**, and the armed set is either constitutionally mandated
+* **Every armed flag has test coverage**, and the armed set is either operator-mandated mandated
   (`derived_targets` per §24, `creator_dump_veto` per §26) or earned via permutation sweep (B3).
 * Rounding bias inside `realize` is +1 to +5 lamports per trade in the bot's favour (~5e-9 SOL) —
   immaterial, no fix warranted.

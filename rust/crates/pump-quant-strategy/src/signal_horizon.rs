@@ -9,7 +9,7 @@
 //! content/virality is confined to hold/exit-context, source-quality, and
 //! meta-emergence; on-chain flow is admissible everywhere.
 //!
-//! ## Constitution
+//! ## Operator
 //! §46 Signal-Horizon Matching Law, §29.7 horizon classification. §22 integer
 //! (latencies in ns); pure deterministic lookup + compare.
 

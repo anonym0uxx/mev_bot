@@ -1,5 +1,5 @@
 //! `regression_gate` — regression-battery pass/fail aggregation gate
-//! (constitution §36, §56.8).
+//! (operator §36, §56.8).
 //!
 //! Responsibility: a promotion is blocked if *any* regression check fails. This
 //! is the thin, deterministic all-must-pass aggregator that sits beside the
@@ -7,7 +7,7 @@
 //! run, on what fixtures) stays in the supervisor, but the go/no-go reduction is
 //! an evaluator leaf so a single silent failure can never be waved through.
 //!
-//! Integer-only (constitution §22): ids are opaque `u64`; no floats.
+//! Integer-only (operator §22): ids are opaque `u64`; no floats.
 
 /// Stable identifier for one regression check. Ordering drives deterministic
 /// failure-report order only.
@@ -33,7 +33,7 @@ impl RegressionResult {
     }
 }
 
-/// Aggregate verdict of the regression battery (constitution §36).
+/// Aggregate verdict of the regression battery (operator §36).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GateOutcome {
     /// Every check passed — promotion may proceed on this axis.
@@ -55,7 +55,7 @@ impl GateOutcome {
 
 /// Aggregate a regression battery into a single go/no-go verdict.
 ///
-/// Responsibility (constitution §36): [`GateOutcome::Pass`] iff **every**
+/// Responsibility (operator §36): [`GateOutcome::Pass`] iff **every**
 /// result passed; otherwise [`GateOutcome::Blocked`] listing all failing ids in
 /// input order. An empty battery passes vacuously — there is no regression to
 /// block on — which callers must pair with their own "battery is non-empty"

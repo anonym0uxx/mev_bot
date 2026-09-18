@@ -1,4 +1,4 @@
-//! Launch-discovery completeness auditor (constitution §62-M1 / criterion 73:
+//! Launch-discovery completeness auditor (operator §62-M1 / criterion 73:
 //! "complete-discovery-or-explicit-INCOMPLETE").
 //!
 //! Discovery must maximize recall (§14/§59) and M1 completion is blocked without
@@ -12,7 +12,7 @@
 //! Distinct from the §21.5 `ActiveMarketUniverse` selector (criterion 90): this
 //! audits *coverage of the launch feed*, it does not *select* active markets.
 //!
-//! # Constitution constraints (§22)
+//! # Operator constraints (§22)
 //!
 //! Deterministic set arithmetic over integer launch ids, with `BTreeSet` for
 //! stable ordering (no nondeterministic iteration). Recall is basis points
@@ -27,7 +27,7 @@ pub type LaunchId = u64;
 ///
 /// Responsibility: carry the raw counts, integer recall, and the exact
 /// shortfall so an auditor can prove or refute completeness (§62-M1 /
-/// criterion 73). Constitution §22: integer counts, bps recall.
+/// criterion 73). Operator §22: integer counts, bps recall.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CoverageAudit {
     /// Size of the known universe (deduplicated).
@@ -51,7 +51,7 @@ pub struct CoverageAudit {
 /// The completeness verdict emitted by the auditor.
 ///
 /// Responsibility: the binary `COMPLETE | INCOMPLETE` decision plus the
-/// explicit shortfall that criterion 73 requires. Constitution §22: integer bps.
+/// explicit shortfall that criterion 73 requires. Operator §22: integer bps.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoverageVerdict {
     /// Every known launch was observed (recall == 10_000 bps).
@@ -78,7 +78,7 @@ pub enum CoverageVerdict {
 /// counts once), so the audit is robust to double-delivery.
 ///
 /// Responsibility: the offline completeness core (§62-M1 / criterion 73).
-/// Constitution §22: `BTreeSet` for deterministic ordering, integer bps recall,
+/// Operator §22: `BTreeSet` for deterministic ordering, integer bps recall,
 /// `u128` widening on the recall multiply.
 pub fn audit_launch_coverage(known: &[LaunchId], observed: &[LaunchId]) -> CoverageAudit {
     let known_set: BTreeSet<LaunchId> = known.iter().copied().collect();
@@ -109,7 +109,7 @@ impl CoverageAudit {
     /// Derive the `COMPLETE | INCOMPLETE` verdict from this audit.
     ///
     /// Responsibility: turn measured coverage into the criterion-73 verdict.
-    /// Constitution §22: integer comparison; explicit INCOMPLETE with shortfall.
+    /// Operator §22: integer comparison; explicit INCOMPLETE with shortfall.
     pub fn verdict(&self) -> CoverageVerdict {
         if self.recall_bps >= 10_000 {
             CoverageVerdict::Complete

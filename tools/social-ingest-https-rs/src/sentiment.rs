@@ -10,7 +10,7 @@
 //! are preserved verbatim otherwise: the filter never re-serializes, never
 //! blocks, never drops, never reorders.
 //!
-//! # Constitution discipline (binding)
+//! # Operator discipline (binding)
 //! * **The LLM is never a fact source (§65 crit. 8: "LLM output cannot enter
 //!   factual state").** Its output here is an ENRICHMENT annotation with
 //!   provenance (`sentiment_model`), recorded at the seam as an INPUT so

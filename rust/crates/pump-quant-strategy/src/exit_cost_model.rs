@@ -14,7 +14,7 @@
 //! supplying the pool model in the curve phase (or vice-versa) returns
 //! [`PhaseModelError`] rather than silently mispricing.
 //!
-//! ## Constitution
+//! ## Operator
 //! §22 (no floats — bps integer/fixed-point, `u128` intermediates), §34.4/§21.7
 //! (decoded-curve/reserve impact), §715(b) expected-landing-state evaluation. Pure
 //! and deterministic given decoded state.

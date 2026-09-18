@@ -12,7 +12,7 @@
 //! contains no I/O, no clock, no network, no floating point, and no strategy
 //! logic — those live in downstream crates that import this one.
 //!
-//! ## Constitution alignment
+//! ## Operator alignment
 //! * **Section 17 (Required event schemas):** the newtypes and enums here are the
 //!   neutral vocabulary that `RawObservation`, `CanonicalTransaction`,
 //!   `DecisionRecord`, and `CandidateRecord` are built from — no provider-specific
@@ -31,7 +31,7 @@
 // and it contained zero `unsafe` when this was added. `forbid` makes that a
 // property the compiler holds rather than one a reviewer has to re-verify —
 // and unlike `deny` it cannot be locally overridden by an `#[allow]`.
-// Constitution §24(b): an `unsafe` block requires a dossier-registered,
+// Operator §24(b): an `unsafe` block requires a dossier-registered,
 // property-tested safety argument. There is no such dossier entry for this
 // crate, so there is no `unsafe` this attribute could legitimately block.
 #![forbid(unsafe_code)]

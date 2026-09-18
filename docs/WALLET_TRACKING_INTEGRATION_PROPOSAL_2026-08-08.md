@@ -162,7 +162,7 @@ From arXiv:2512.11850: pump.fun generates **71.1% of all Solana token mints** wi
 
 4. **Creator ledger check**: The persisted ledger is queried for this creator's historical rug rate. A creator with >50% rug rate gets a gate penalty. A creator with >70% migration rate gets the trust boost.
 
-**Constitution note:** The trust boost (G5) requires a §27 amendment. The current law says "don't trust unverified claims." Empirically-verified Proven creators with migration-survival evidence are a different category — the law was written before tracked wallets existed. The amendment would add a "verified-creator boost" clause, distinct from the "unverified-claim penalty" the law currently addresses.
+**Operator note:** The trust boost (G5) requires a §27 amendment. The current law says "don't trust unverified claims." Empirically-verified Proven creators with migration-survival evidence are a different category — the law was written before tracked wallets existed. The amendment would add a "verified-creator boost" clause, distinct from the "unverified-claim penalty" the law currently addresses.
 
 ### Stage 4: Hold (position management)
 
@@ -397,7 +397,7 @@ Phase 6 (Wallet Graph) ─────────→ (feeds Phase 4 via cluster
 
 ---
 
-## §27 Constitution Amendment Required
+## §27 Operator Amendment Required
 
 **Current law (§27):** Creator credibility is reduce-only. Bad creators get penalized (veto exit, size haircut). No positive signal path exists.
 

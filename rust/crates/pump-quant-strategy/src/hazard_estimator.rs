@@ -17,7 +17,7 @@
 //!   the baseline reverts individually, and if the pooled comparison loses, every
 //!   cell reverts.
 //!
-//! ## Constitution
+//! ## Operator
 //! §24 Hold-horizon calibration law (hierarchical partial pooling, min-effective
 //! sample, per-cell + pooled Experiment #9 revert). §22 integer fixed-point
 //! (hazard in bps, 0..=10_000); pure statistics, no floats, deterministic.

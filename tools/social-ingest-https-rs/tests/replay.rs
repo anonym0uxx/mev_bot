@@ -684,7 +684,7 @@ fn birdeye_missing_key_fails_closed_with_exit_3() {
     );
     assert!(
         stderr.contains("REQUIRED") && stderr.contains("6.7"),
-        "cites the constitutional mandate: {stderr}"
+        "cites the operator-mandated mandate: {stderr}"
     );
     assert!(out.stdout.is_empty(), "stdout stays NDJSON-only");
 }

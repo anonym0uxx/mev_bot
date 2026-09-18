@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Telegram MTProto → normalized SocialEvent JSON (the `[S]` Telegram adapter).
 
-This is the constitution's **designated primary** machine-friendly capture path
+This is the operator's **designated primary** machine-friendly capture path
 (§29.7): Telegram call-channels sit UPSTREAM of X-KOL amplification, so their
 signals carry shorter measured latency (Signal-Horizon Law). It streams public
 call channels in real time, captures **edits and deletions as first-class D6

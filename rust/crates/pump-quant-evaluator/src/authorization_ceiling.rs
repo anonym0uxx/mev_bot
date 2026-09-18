@@ -1,5 +1,5 @@
 //! `authorization_ceiling` — backtest→shadow/probe authorization ceiling
-//! (constitution §26, §64).
+//! (operator §26, §64).
 //!
 //! Responsibility: encode the §64 authority path as a deterministic ceiling the
 //! supervisor enforces but that is *proven* in Rust. Evidence that is only
@@ -8,9 +8,9 @@
 //! scaled capital. The mapping is total and monotone: stronger evidence never
 //! authorizes *less*.
 //!
-//! Pure enum mapping, no arithmetic — trivially deterministic (constitution §22).
+//! Pure enum mapping, no arithmetic — trivially deterministic (operator §22).
 
-/// Strength of the evidence standing behind a policy (constitution §64).
+/// Strength of the evidence standing behind a policy (operator §64).
 ///
 /// Ordered from weakest to strongest; the ordering is the authority ladder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -27,7 +27,7 @@ pub enum EvidenceStage {
     ReconciledLiveEdge,
 }
 
-/// The maximum action a given evidence stage may authorize (constitution §64).
+/// The maximum action a given evidence stage may authorize (operator §64).
 ///
 /// Ordered from least to most powerful; a *ceiling* is the highest action
 /// permitted, so anything at or below it is allowed.
@@ -47,7 +47,7 @@ pub enum ActionCeiling {
 
 /// Map an evidence stage to the maximum action it may authorize.
 ///
-/// Responsibility (constitution §26, §64): the deterministic ceiling. In
+/// Responsibility (operator §26, §64): the deterministic ceiling. In
 /// particular **backtest-only and walk-forward-validated evidence can never
 /// exceed [`ActionCeiling::MinimumProbe`]** — no amount of in-sample or
 /// out-of-sample *simulation* authorizes scaled capital. Only
@@ -70,7 +70,7 @@ pub fn max_authorized_action(evidence_stage: EvidenceStage) -> ActionCeiling {
 
 /// True iff the stage may authorize scaled capital.
 ///
-/// Responsibility (constitution §64): the single most safety-critical query —
+/// Responsibility (operator §64): the single most safety-critical query —
 /// only [`EvidenceStage::ReconciledLiveEdge`] returns `true`.
 pub fn authorizes_scaled_capital(evidence_stage: EvidenceStage) -> bool {
     max_authorized_action(evidence_stage) == ActionCeiling::ScaledCapital

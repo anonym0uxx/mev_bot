@@ -20,7 +20,7 @@
 //! the failure is classified by its `OutboundError` variant, which maps to a
 //! §36 failure class for the circuit breaker. No partial state is forwarded.
 //!
-//! ## Constitution
+//! ## Operator
 //! §41 — the LayoutRegistry gates the build. §18.2 — state-fetch decodes
 //! account identity before trusting fields. §22 — integer-only, no floats.
 //! §36 — every failure is classified into one of six classes.

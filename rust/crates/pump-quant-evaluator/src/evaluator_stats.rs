@@ -1,7 +1,7 @@
 //! `evaluator_stats` — the frozen evaluator's statistics core.
 //!
 //! Every statistic in this module is computed with integer / fixed-point
-//! arithmetic only (constitution §22): all money is integer lamports carried in
+//! arithmetic only (operator §22): all money is integer lamports carried in
 //! `i128` accumulators, and all ratios are basis points (bps). There are no
 //! `f32`/`f64` values anywhere in outcome-controlling logic.
 //!

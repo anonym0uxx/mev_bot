@@ -1,7 +1,7 @@
 //! Predeclared terminal-loss accounting.
 //!
 //! Responsibility: value a position that has become **terminally unexitable**
-//! (constitution §38: "An unexitable position may never be valued at displayed
+//! (operator §38: "An unexitable position may never be valued at displayed
 //! price; use predeclared terminal-loss rules"). The policy is declared *before*
 //! the outcome is known and is applied to the position's cost basis — never to the
 //! appreciated displayed mark — so the simulator cannot manufacture phantom value

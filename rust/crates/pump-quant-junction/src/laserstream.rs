@@ -4,7 +4,7 @@
 //! `transactionSubscribe` (Geyser-fed, lowest latency, self-healing via
 //! SDK-internal `from_slot` resume) into `ProvenancedEvent`s.
 //!
-//! Constitution criteria:
+//! Operator criteria:
 //! - §61: LaserStream gRPC operates on mainnet, not only devnet.
 //! - §64: LaserStream disconnects do not create fabricated state.
 //! - §65: Provider replay is distinguished from original live observation.

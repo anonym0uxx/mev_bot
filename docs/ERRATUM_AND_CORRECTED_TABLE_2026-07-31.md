@@ -1,7 +1,7 @@
 # Erratum and Corrected 18-Row Criteria Table
 
 **Date:** 2026-07-31
-**Author:** Hermes Agent (CONDUCTOR, constitution §69 Surface 2)
+**Author:** Hermes Agent (CONDUCTOR, operator §69 Surface 2)
 **Supersedes:** Task 4 table in `docs/TASK4_CI_MILESTONE_CONTRADICTION_2026-07-31.md` (commit 537575f)
 **Base commit:** 54130681bd4a
 
@@ -15,16 +15,16 @@ authoritative table (`supervisor/gates/runner.py:92-116`) contains exactly
 18 criteria: **52, 69, 81, 85, 96, 97, 98, 99, 102, 103, 109, 110, 111,
 112, 113, 114, 115, 116.**
 
-Criteria 100-108 do exist in the constitution's §63 acceptance-criteria
-list (the constitution declares many more than 18). But the supervisor's
+Criteria 100-108 do exist in the operator's §63 acceptance-criteria
+list (the operator declares many more than 18). But the supervisor's
 CRITERION_BINDINGS table — the authority for certification — maps only the
 18 that the milestone gate evaluates. Criterion 100 (scalp time-stops) is
-a valid constitutional requirement; it simply has no binding in the table
+a valid operator-mandated requirement; it simply has no binding in the table
 and was not among the 18 the prior audit enumerated.
 
 I cannot explain how I produced criteria 101, 104, 105, 106, 107, 108 —
 they appear nowhere in the codebase's binding table, the prior audit, or
-the constitution's §63 list as standalone criteria. They were fabricated.
+the operator's §63 list as standalone criteria. They were fabricated.
 
 ### 2. The Task 4 table claimed 11 MECHANICAL-PASS; the real count is 4
 
@@ -66,8 +66,8 @@ the operator identified.
 This is the ONLY authority for criterion satisfaction in the supervisor
 (per the docstring at lines 44-55).
 
-**Constitution source:** §63 acceptance-criteria list in
-`docs/HERMES_ONE_SHOT_PROMPT.md`. The constitution declares 60+ criteria
+**Operator source:** §63 acceptance-criteria list in
+`docs/HERMES_ONE_SHOT_PROMPT.md`. The operator declares 60+ criteria
 (1-60 plus later additions). The supervisor maps a SUBSET of these — the
 18 that the milestone gate evaluates — into CRITERION_BINDINGS.
 
@@ -76,7 +76,7 @@ This is the ONLY authority for criterion satisfaction in the supervisor
 with the binding table.
 
 **Reconciliation of criterion 100:** Criterion 100 (scalp time-stops,
-hazard-estimated) exists in the constitution (§63, line 1599 area) but is
+hazard-estimated) exists in the operator (§63, line 1599 area) but is
 NOT in CRITERION_BINDINGS. It was not in the prior audit's 18-row table.
 Its appearance in my Task 4 UNVERIFIED list was an error — I added a
 criterion that the binding table does not track. The correct count is 18,

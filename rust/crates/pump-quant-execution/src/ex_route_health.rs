@@ -25,7 +25,7 @@
 //! [`crate::ex_route_policy::route_health_is_measured`] returning `false` and the
 //! system failing closed rather than acting on three data points.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §22: counts and rates are integers; failure rate in basis points; latency
 //!   in integer milliseconds. No floats anywhere.
 //! - Explicit overflow: `saturating_*` on every accumulator.

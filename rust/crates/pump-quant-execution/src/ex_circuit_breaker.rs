@@ -11,9 +11,9 @@
 //! ## Responsibility
 //! Advance the breaker state given the outcome of a send (or a timer tick),
 //! deterministically. Wall-clock time is supplied by the caller as `now_ms`
-//! (constitution §22: no clock reads in the logic path).
+//! (operator §22: no clock reads in the logic path).
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §22: integer counters and millisecond timestamps only.
 //! - Overflow: the failure counter uses `saturating_add`; elapsed time uses
 //!   `saturating_sub`.

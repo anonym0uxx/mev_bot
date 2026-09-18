@@ -154,7 +154,7 @@ The binary is at `target/release/pq-laserstream-grpc` (Linux ELF).
 | `Cargo.toml` | Dependencies: serde, serde_json, sha2, zstd, chrono |
 | `.gitignore` | Added `training-data/` to ignored paths |
 
-## Constitution Compliance
+## Operator Compliance
 
 - §22: No f32/f64 on outcome-controlling paths. All amounts are u64/u128 integers.
 - §61: LaserStream gRPC on mainnet.

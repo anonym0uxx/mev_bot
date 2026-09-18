@@ -7,7 +7,7 @@
 //!   added progressively larger priority premiums.
 //!
 //! The legacy TS used floats; here the whole computation is integer basis-point
-//! math with a widened `u128` intermediate (constitution §22).
+//! math with a widened `u128` intermediate (operator §22).
 //!
 //! ## Responsibility
 //! Turn a base tip plus two live signals — network congestion (basis points)
@@ -24,7 +24,7 @@
 //! — the configured base is a hard floor, matching the legacy
 //! `max(cfg.jito_tip_lamports, ...)` behavior.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §22: integer basis-point math only.
 //! - Overflow: intermediates are `u128`; the result is saturated back to `u64`.
 

@@ -40,9 +40,12 @@
 #![forbid(unsafe_code)]
 
 pub mod amplification;
+pub mod callout_impact;
 pub mod classification;
 pub mod copy_echo;
 pub mod determinants;
 pub mod fixedpoint;
 pub mod ledger;
 pub mod types;
+
+pub use callout_impact::{build_features, CalloutImpactConfig, CalloutImpactFeatures};

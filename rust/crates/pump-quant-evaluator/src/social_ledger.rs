@@ -1,5 +1,5 @@
 //! `social_ledger` — SocialSourceQualityLedger reconciliation reducer
-//! (constitution §82, §29.8).
+//! (operator §82, §29.8).
 //!
 //! Responsibility: reconcile every attributable social call to chain truth,
 //! per source, producing a deterministic quality scorecard. The mandatory
@@ -10,7 +10,7 @@
 //! on future information is fraud. The cadence / experiment-registration side is
 //! supervisor governance; this is the pure, fixture-testable reducer.
 //!
-//! Integer-only (constitution §22): realized outcomes are `i128` lamports, the
+//! Integer-only (operator §22): realized outcomes are `i128` lamports, the
 //! quality ratio is basis points, timestamps are `u64` ns; no floats.
 
 use std::collections::BTreeMap;
@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourceId(pub u64);
 
-/// One attributable social call reconciled to chain truth (constitution §82).
+/// One attributable social call reconciled to chain truth (operator §82).
 ///
 /// Carries the D3 timestamps needed to prove state-at-call time-safety: the
 /// moment the call was made (`call_ts_ns`) and the moment the feature evidence
@@ -43,7 +43,7 @@ pub struct SocialCall {
 
 impl SocialCall {
     /// True iff this call is D3-admissible: its grading evidence was knowable at
-    /// call time (constitution §82 state-at-call selection control).
+    /// call time (operator §82 state-at-call selection control).
     pub fn is_time_safe(&self) -> bool {
         self.feature_ts_ns <= self.call_ts_ns
     }
@@ -65,7 +65,7 @@ impl QualityBps {
     }
 }
 
-/// Per-source reconciled quality scorecard (constitution §82).
+/// Per-source reconciled quality scorecard (operator §82).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceScorecard {
     /// The source this scorecard describes.
@@ -86,7 +86,7 @@ pub struct SourceScorecard {
 
 /// Reconcile a batch of social calls into per-source quality scorecards.
 ///
-/// Responsibility (constitution §82, §29.8): fold every call into its source's
+/// Responsibility (operator §82, §29.8): fold every call into its source's
 /// scorecard, but admit **only D3 time-safe calls** ([`SocialCall::is_time_safe`])
 /// into the net-lamports sum, favorable count, and quality ratio. Look-ahead
 /// calls are counted solely in `n_total` and `n_lookahead_rejected` so the

@@ -1,6 +1,6 @@
 //! The [`Clock`] trait and its three implementations.
 //!
-//! Responsibility: the determinism seam of constitution §19 / §22. Every read
+//! Responsibility: the determinism seam of operator §19 / §22. Every read
 //! of "now" in the decision path is routed through a `&dyn Clock`, so the
 //! strategy core is a pure reducer whose only source of time is injected. This
 //! module provides:
@@ -56,7 +56,7 @@ impl ClockReading {
 }
 
 /// The determinism seam: the only interface through which decision-path code
-/// reads time (constitution §19).
+/// reads time (operator §19).
 ///
 /// Responsibility: abstract the three time quantities the system needs so that
 /// the same `StrategyRuntime` runs unchanged in LIVE, SHADOW, and REPLAY

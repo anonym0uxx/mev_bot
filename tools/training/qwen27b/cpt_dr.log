@@ -1,0 +1,62 @@
+{
+  "schema": "qwen27b_loader_dryrun_v2",
+  "release_id": "astra_support_repair_v2",
+  "manifest_sha256": "106163cfd9819530f497f88a4918019fe6bc3fc4a76da1ad3304830b941a9e3e",
+  "phase": "cpt",
+  "training_authorized": false,
+  "model_loaded": false,
+  "training_launched": false,
+  "tokenizer_effective_sha256": "93214b2d6d9f99f2d152ce44b8dad5be7b5cdf610b96f261c458eacb7e6d54ae",
+  "train": {
+    "records": 3638,
+    "dataset_items": 296,
+    "raw_tokens": 1208864,
+    "shifted_loss_tokens": 1208568,
+    "weighted_loss_token_mass": 1208568,
+    "tail_tokens": 544
+  },
+  "validation": {
+    "records": 408,
+    "dataset_items": 34,
+    "raw_tokens": 137038,
+    "shifted_loss_tokens": 137004,
+    "weighted_loss_token_mass": 137004,
+    "tail_tokens": 1870
+  },
+  "geometry": {
+    "method": "unweighted_factual_cpt_tokens; no task/class/outcome reweighting",
+    "tail_policy": "preserve_every_token",
+    "task_targets_applied": false
+  },
+  "step_plan": {
+    "world_size": 3,
+    "per_device_batch_size": 1,
+    "gradient_accumulation_steps": 8,
+    "steps_per_epoch": 13,
+    "total_steps_max": 23,
+    "max_window_ep": 1.75,
+    "warmup_steps": 1,
+    "mark_every": 3,
+    "marks_steps": [
+      3,
+      6,
+      9,
+      12,
+      15,
+      18,
+      21,
+      23
+    ],
+    "marks_epochs": [
+      0.230769,
+      0.461538,
+      0.692308,
+      0.923077,
+      1.153846,
+      1.384615,
+      1.615385,
+      1.769231
+    ]
+  },
+  "validation_weights": "unit weights; no fitting or resplitting"
+}

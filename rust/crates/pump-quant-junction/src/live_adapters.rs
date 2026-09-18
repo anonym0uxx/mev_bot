@@ -22,7 +22,7 @@
 //! (~100μs via ring ed25519). The submit is the only network I/O (~5-50ms RTT
 //! to Helius Sender, unavoidable).
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §36: failure taxonomy maps 1:1 to the error variants here.
 //! - §41: construction parity — the fetcher returns decoded on-chain facts.
 //! - §24(b): paper/replay mode never touches these adapters.

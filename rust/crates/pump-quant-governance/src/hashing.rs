@@ -70,7 +70,7 @@ fn domain_digest(domain: &[u8], config: &CanonicalValue) -> [u8; 32] {
 
 /// Compute the [`StrategyHash`] of a strategy configuration.
 ///
-/// ## Constitution §56.3
+/// ## Operator §56.3
 /// Deterministic: byte-equivalent configs (any map order) map to equal hashes.
 pub fn strategy_hash(config: &CanonicalValue) -> StrategyHash {
     StrategyHash(domain_digest(STRATEGY_DOMAIN, config))
@@ -78,7 +78,7 @@ pub fn strategy_hash(config: &CanonicalValue) -> StrategyHash {
 
 /// Compute the [`EvaluatorReleaseHash`] of an evaluator-release configuration.
 ///
-/// ## Constitution §56.3 / §44
+/// ## Operator §56.3 / §44
 /// Deterministic and domain-separated from [`strategy_hash`]; the same config
 /// yields a different digest in each domain.
 pub fn evaluator_release_hash(config: &CanonicalValue) -> EvaluatorReleaseHash {

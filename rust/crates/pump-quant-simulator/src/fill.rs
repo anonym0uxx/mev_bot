@@ -2,7 +2,7 @@
 //!
 //! Responsibility: turn a recorded market observation plus a cost/impairment model
 //! into an explicit success/failure fill and a net-SOL round-trip result
-//! (constitution §38). Never fills at signal price, next candle, best price, or an
+//! (operator §38). Never fills at signal price, next candle, best price, or an
 //! arbitrary percentage — every fill applies fees, tips, price impact, a recorded
 //! price move, and (for the adversarial mode) exit impairment. All math is integer
 //! lamports / basis points (§22).

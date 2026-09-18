@@ -9,7 +9,7 @@
 //! This is the Level 3 strategy-discovery allocator. The refiner calls
 //! `allocate()` each cycle to decide which strategy types get paper capital.
 //!
-//! Constitution: §247 (shadow/experiment), §6.5 (parallel testing), §56.3
+//! Operator: §247 (shadow/experiment), §6.5 (parallel testing), §56.3
 //! (lifecycle FSM), A-14 (mcap band constraints). Integer-only (§22), no
 //! floats. Deterministic given the RNG seed (§13).
 

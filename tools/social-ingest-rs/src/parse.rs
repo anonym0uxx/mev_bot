@@ -5,7 +5,7 @@
 //! we normalize and emit), everything else (silently ignored). This is the `[S]`
 //! capture side of the social lane; it never makes a decision.
 //!
-//! # Constitution discipline (binding)
+//! # Operator discipline (binding)
 //! * **§22 determinism boundary.** Parsing here is a pure `&str -> IrcEvent`
 //!   function: no clock, no network, no RNG, no float. The wall clock is read only
 //!   in `main` at the capture edge (the one place it is allowed); the deterministic

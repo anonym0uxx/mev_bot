@@ -11,7 +11,7 @@
 //! Decide whether a cached blockhash is still within its validity window given
 //! the current slot, and provide a tiny cache state type wrapping that check.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §22: integer slots only (`u64`).
 //! - Overflow: age uses `saturating_sub`, so a current slot behind the cached
 //!   slot yields age `0` (treated as valid) rather than underflowing.

@@ -2,7 +2,7 @@
 
 **Status:** written 2026-07-29, immediately before `legacy/` was removed from the repo.
 **Scope:** pump.fun bonding curve (`6EF8rrec…`) and PumpSwap AMM (`pAMMBay6…`) `buy`/`sell`.
-**Constitution:** §18.2 (fail closed), §102 (named constants with citations), criterion 77 /
+**Operator:** §18.2 (fail closed), §102 (named constants with citations), criterion 77 /
 criterion 113 (construction validation gate), §18.2 registry discipline ("never accept a
 program or PDA because a model, website, or social post claims relevance — verify through
 raw on-chain relationships").

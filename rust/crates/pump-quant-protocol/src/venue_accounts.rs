@@ -37,7 +37,7 @@
 //! > these lists before the first live entry. IDL corroboration narrows the
 //! > risk; it does not discharge the gate.
 //!
-//! ## Constitution
+//! ## Operator
 //! * §18.2 — fail closed on every unknown; account identity from decoded
 //!   state, never assumption.
 //! * §22 — integer only, deterministic.

@@ -1,4 +1,4 @@
-//! `exit_markout` — exit-side markout / foregone-upside API (constitution §47).
+//! `exit_markout` — exit-side markout / foregone-upside API (operator §47).
 //!
 //! §47 asks the frozen evaluator to score every *exit* on a ruler finer than the
 //! coarse per-fill horizon carried by [`crate::evaluator_stats::FillRow`]: after a

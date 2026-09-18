@@ -7,7 +7,7 @@
 //! ties online adaptation to the hardcoded-parameter law: adaptation may move a
 //! parameter only inside bounds someone registered and reviewed.
 //!
-//! ## Constitution
+//! ## Operator
 //! §102 parameter law / §57 fast-path discipline. §22: integer/fixed-point only,
 //! deterministic; no clock/RNG.
 

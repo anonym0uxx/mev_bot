@@ -9,7 +9,7 @@
 //! [`EvidenceStage`], derived from its discriminants so `Ord` is total and
 //! meaningful.
 //!
-//! ## Constitution alignment
+//! ## Operator alignment
 //! * **Section 17:** `authority_class` (`EarliestSignal | StructuredObservation |
 //!   CanonicalRepair | ReconciledExecution`).
 //! * **Section 16 / 18.6:** [`DeliveryMode`] with replay never equated to live.
@@ -24,7 +24,7 @@ use core::fmt;
 /// and derived [`Ord`] answers "is this at least as canonical as X?".
 ///
 /// This ordering is a **claim about trust, not about timing**: an earliest signal
-/// arrives first in wall time but ranks *lowest* in authority. Constitution
+/// arrives first in wall time but ranks *lowest* in authority. Operator
 /// Section 17 (`SourceAuthorityClass`) and Section 18 (canonical authority is
 /// never changed by latency/quality measurements).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -147,7 +147,7 @@ impl fmt::Display for DeliveryMode {
 /// The fidelity class of a whole dataset / result, ordered from weakest
 /// (arithmetic-only backfill) to strongest (reconciled live execution). Derived
 /// `Ord` answers "is this dataset at least as trustworthy for calibration as X?".
-/// Constitution Section 16 fidelity ladder.
+/// Operator Section 16 fidelity ladder.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[repr(u8)]
 pub enum DatasetFidelity {

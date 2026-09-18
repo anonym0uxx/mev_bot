@@ -1,4 +1,4 @@
-# Hot-path constitution lint scope + extra rules (criterion 109 / §24).
+# Hot-path operator lint scope + extra rules (criterion 109 / §24).
 #
 # This file is the AUTHORITATIVE, committed source of the hot/money lint scope,
 # so the enforcement is an explicit data decision — not a silent code default

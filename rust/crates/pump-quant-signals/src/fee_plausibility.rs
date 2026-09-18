@@ -1,5 +1,5 @@
 //! Anti-bundle economic heuristic — cumulative-fees-vs-activity FLOOR filter
-//! (constitution §70.10, §21.7/§26 risk-priced participation).
+//! (operator §70.10, §21.7/§26 risk-priced participation).
 //!
 //! A genuine, broadly-traded token pays a *plausible* amount of cumulative
 //! priority/tip fees relative to its apparent on-chain activity: real competing
@@ -16,7 +16,7 @@
 //! implausibly HIGH competitor spend (adverse selection). Here we flag
 //! implausibly LOW cumulative spend (manufactured/wash activity).
 //!
-//! # Constitution constraints (§22)
+//! # Operator constraints (§22)
 //!
 //! Pure, deterministic, integer-only. Fees are lamports (`u64`/`u128`),
 //! intensity is scaled micro-lamports-per-activity, the fade is basis points.
@@ -35,7 +35,7 @@ pub const INTENSITY_SCALE: u128 = 1_000_000;
 ///
 /// Responsibility: the (externally-tuned, recorded-prior) thresholds separating
 /// a plausible fee footprint from an implausibly-cheap manufactured one.
-/// Constitution §22: integer parameters, `Copy` for cheap threading.
+/// Operator §22: integer parameters, `Copy` for cheap threading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FeeFloorConfig {
     /// Minimum activity below which the sample is too small to judge — the
@@ -51,7 +51,7 @@ impl FeeFloorConfig {
     /// average combined fee below 5_000 lamports/activity as implausibly cheap
     /// (`5_000 * INTENSITY_SCALE` in scaled units).
     ///
-    /// Responsibility: portable default prior (§70.10). Constitution §22: pure.
+    /// Responsibility: portable default prior (§70.10). Operator §22: pure.
     pub const fn neutral() -> Self {
         FeeFloorConfig {
             min_activity: 8,
@@ -69,7 +69,7 @@ impl Default for FeeFloorConfig {
 /// Coarse verdict of the fee-floor heuristic.
 ///
 /// Responsibility: enumerate the three economically-distinct outcomes so the
-/// supervisor can branch explicitly (§70.10). Constitution §22: data only.
+/// supervisor can branch explicitly (§70.10). Operator §22: data only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeeFloorStatus {
     /// Too little activity to judge — no fade applied.
@@ -85,7 +85,7 @@ pub enum FeeFloorStatus {
 ///
 /// Responsibility: the fade covariate consumed by `safety_integrity` and
 /// `economic_gate`. `fade_bps` is a magnitude in `0..=10_000`: 0 = no fade,
-/// larger = a stronger (bundle/wash) fade prior. Constitution §22: integer/bps.
+/// larger = a stronger (bundle/wash) fade prior. Operator §22: integer/bps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FeePlausibility {
     /// Coarse verdict.
@@ -104,7 +104,7 @@ pub struct FeePlausibility {
 ///
 /// `intensity = total_fees_lamports * INTENSITY_SCALE / activity_count`.
 ///
-/// Responsibility: the pure floor metric (§70.10). Constitution §22: `u128`
+/// Responsibility: the pure floor metric (§70.10). Operator §22: `u128`
 /// widening, integer division, `activity_count == 0` guard, saturating cast.
 #[inline]
 pub fn fee_intensity(total_fees_lamports: u128, activity_count: u64) -> u64 {
@@ -128,7 +128,7 @@ pub fn fee_intensity(total_fees_lamports: u128, activity_count: u64) -> u64 {
 ///    the further below the floor, the stronger the fade.
 ///
 /// Responsibility: single entry point emitting the two-sided fade covariate
-/// (§70.10). Constitution §22: integer/bps, division guards, no veto here.
+/// (§70.10). Operator §22: integer/bps, division guards, no veto here.
 #[inline]
 pub fn assess_fee_floor(
     total_fees_lamports: u128,
@@ -166,7 +166,7 @@ pub fn assess_fee_floor(
 /// creation-window / first-slot transactions.
 ///
 /// Responsibility: cumulative-fee accumulator reusing the already-decoded fee
-/// fields on [`FirstSlotTx`] (§70.10). Constitution §22: `u128` accumulation,
+/// fields on [`FirstSlotTx`] (§70.10). Operator §22: `u128` accumulation,
 /// `saturating_add` per tx.
 #[inline]
 pub fn cumulative_fees_lamports(txs: &[FirstSlotTx]) -> u128 {
@@ -182,7 +182,7 @@ pub fn cumulative_fees_lamports(txs: &[FirstSlotTx]) -> u128 {
 /// the transaction count as the activity denominator (§70.10).
 ///
 /// Responsibility: end-to-end helper composing [`cumulative_fees_lamports`] and
-/// [`assess_fee_floor`] over [`FirstSlotTx`] fixtures. Constitution §22: pure.
+/// [`assess_fee_floor`] over [`FirstSlotTx`] fixtures. Operator §22: pure.
 #[inline]
 pub fn assess_first_slot_fee_floor(txs: &[FirstSlotTx], cfg: &FeeFloorConfig) -> FeePlausibility {
     let total = cumulative_fees_lamports(txs);

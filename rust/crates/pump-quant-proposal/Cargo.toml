@@ -1,0 +1,15 @@
+[package]
+name = "pump-quant-proposal"
+version = "0.1.0"
+edition = "2021"
+description = "Render the Qwen decision-bundle (LIVE FLOW STATE + FLOW CITATION) byte-identically to the c11 training prompt. Parity is the correctness requirement: the live proposal must tokenize identically to the corpus."
+
+[lib]
+name = "pump_quant_proposal"
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
+# fixtures only: the parity harness reads the corpus-derived rows in tests/fixtures
+serde_json = { version = "1", features = ["arbitrary_precision"] }

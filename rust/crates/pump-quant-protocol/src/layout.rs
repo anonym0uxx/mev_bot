@@ -39,7 +39,7 @@
 //! measurable and a re-verification cadence can be enforced, not so it can be
 //! claimed once and forgotten.
 //!
-//! ## Constitution
+//! ## Operator
 //! * §18.2 — fail closed; account identity from decoded evidence, never a
 //!   document's assertion.
 //! * §22 — integer only, deterministic, no I/O.

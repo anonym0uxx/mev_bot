@@ -5,7 +5,7 @@
 //! the governance and reflection systems read and write — hypotheses,
 //! experiments and their sealed results, the social-call / markout / source-quality
 //! ledger, the amplification graph, and the meta-rotation record — and rank the
-//! open-hypothesis research queue by value-of-information. Constitution mapping:
+//! open-hypothesis research queue by value-of-information. Operator mapping:
 //!
 //! * **§29.9** — QuantMemoryStore tables (`meta_categories`, `category_assignments`,
 //!   `meta_rotation_snapshots`, `social_calls`, `call_markouts`,

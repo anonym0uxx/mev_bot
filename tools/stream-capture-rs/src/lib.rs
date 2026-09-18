@@ -22,7 +22,7 @@
 //!   never prints key material. Uses `ring`, already vendored via rustls;
 //! * [`fees`] — priority-fee calibration sampler (`fee_calibration_v1`).
 //!
-//! # Constitution discipline (binding)
+//! # Operator discipline (binding)
 //! * **§6.3 raw-bytes-first.** Every lane emits the vendor payload untouched
 //!   (verbatim text, or the lossless [`json`] round trip) BEFORE any derived
 //!   view. Normalized lines (whale, fee calibration) are additive, never a
@@ -36,7 +36,7 @@
 //! * **§99 bounded state.** Every buffer has a named cap (WS message 8 MiB,
 //!   webhook body 2 MiB, dedupe rings, handshake head); every loop a bound.
 //! * **§102 named constants.** All tunables are named constants with their
-//!   constitution citations at the definition site.
+//!   operator citations at the definition site.
 //! * **§18.8 loud degradation.** Missing credentials are fail-closed exit 3
 //!   at arming; schema drift, slot gaps, staleness and oversize drops are
 //!   loud stderr sentinels, never silence.
@@ -46,7 +46,7 @@
 // authorises moving money. It contains zero `unsafe`. `forbid` makes that a
 // property the compiler holds rather than one a reviewer re-verifies, and
 // unlike `deny` it cannot be locally overridden by an `#[allow]`.
-// Constitution §24(b): an `unsafe` block requires a dossier-registered,
+// Operator §24(b): an `unsafe` block requires a dossier-registered,
 // property-tested safety argument. There is no such entry for this crate, so
 // there is no `unsafe` this attribute could legitimately block.
 #![forbid(unsafe_code)]

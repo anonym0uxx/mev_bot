@@ -24,13 +24,13 @@
 //!    across platforms, differentiated over time, penalised for coordination.
 //! 6. *"Can I trust the accounts saying it?"* → [`trust`] — trust earned
 //!    **exclusively** from realized net SOL, shrunk toward a population prior,
-//!    decayed in information time, demoted when public (constitution 28). Follower
+//!    decayed in information time, demoted when public (operator 28). Follower
 //!    counts and badges are not merely ignored, they are unreachable from the data
 //!    that module reads.
 //! 7. *"Should I be following someone I am not?"* → [`follow_reco`] — authors whose
 //!    calls **preceded** our realized winners, weighted by lead time. Research only:
 //!    that module contains no posting or promotional capability and none may be
-//!    added (constitution 110).
+//!    added (operator 110).
 //! 8. *"Which style does this setup suit, and which style is actually paying us?"* →
 //!    [`archetype`] — named, measurable style lenses over the fingerprint, each
 //!    validated only against our own realized net SOL.
@@ -50,7 +50,7 @@
 //! versions; a hosted embedding endpoint is not even reproducible with itself. An
 //! integer fingerprint over named-const bucket ladders is bit-exact by
 //! construction, which is why [`fingerprint`] contains no `f32`/`f64` anywhere —
-//! nor does any other module (constitution 22).
+//! nor does any other module (operator 22).
 //!
 //! **2. Latency.** The decision window on a fresh mint is measured in
 //! milliseconds, and recall is one of several things that must happen inside it.
@@ -101,7 +101,7 @@
 //! the packed signature is *exactly* the unweighted ordinal distance rather than an
 //! artefact of bit layout (see [`fingerprint`]).
 //!
-//! # Purity contract (constitution 22)
+//! # Purity contract (operator 22)
 //!
 //! Every module except [`persist`] is a pure function of its inputs: no wall clock
 //! (all times are caller-supplied *information time*), no RNG, no I/O, no floating
@@ -109,7 +109,7 @@
 //! and its I/O is fenced behind the [`persist::BlobStore`] trait so the rest of the
 //! crate can be tested without a filesystem.
 //!
-//! # Bounded state (constitution 57/99)
+//! # Bounded state (operator 57/99)
 //!
 //! Every store here is a fixed-capacity ring with documented oldest-first eviction:
 //! [`recall::EPISODE_CAP`], [`meta_timeline::META_SNAPSHOT_CAP`],
@@ -117,7 +117,7 @@
 //! Memory is constant regardless of uptime. Durable history is not lost to
 //! eviction: the [`persist`] journal is append-only and keeps everything on disk.
 //!
-//! # Fail-closed everywhere (constitution 46)
+//! # Fail-closed everywhere (operator 46)
 //!
 //! Seven separate estimators live here — setup recall, past-meta matching, author
 //! track records, social support, source trust, follow recommendation and per-lens

@@ -2,7 +2,7 @@
 // and it contained zero `unsafe` when this was added. `forbid` makes that a
 // property the compiler holds rather than one a reviewer has to re-verify —
 // and unlike `deny` it cannot be locally overridden by an `#[allow]`.
-// Constitution §24(b): an `unsafe` block requires a dossier-registered,
+// Operator §24(b): an `unsafe` block requires a dossier-registered,
 // property-tested safety argument. There is no such dossier entry for this
 // crate, so there is no `unsafe` this attribute could legitimately block.
 #![forbid(unsafe_code)]
@@ -17,8 +17,8 @@ pub mod edge_attribution;
 pub mod strategy_registry;
 pub mod defense_in_depth;
 
-// Constitution spec-gap leaves added alongside the frozen evaluator's stats
-// core. Each is a pure, deterministic verdict/guard primitive (constitution
+// Operator spec-gap leaves added alongside the frozen evaluator's stats
+// core. Each is a pure, deterministic verdict/guard primitive (operator
 // §44/§51 — the frozen evaluator verifies before results are accepted).
 pub mod ablation;
 pub mod authorization_ceiling;

@@ -4,7 +4,7 @@
 Reference live adapter for X/Twitter — the only place a clock and the network are
 touched. It captures matching tweets and normalizes each into the vendor-agnostic
 JSON the deterministic Rust decoder consumes (one NDJSON object per line). It runs
-the constitution's three X filter classes, driven by `sources.yaml`:
+the operator's three X filter classes, driven by `sources.yaml`:
 
   --class firehose   cashtag / contract-address firehose (breadth + mention velocity)
   --class amplifier  from: the KOL watchlist — PUBLIC_BURNED, for WAVE-TIMING + FADE,

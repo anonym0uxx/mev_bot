@@ -7,7 +7,7 @@
 //! discriminant so persisted journals and `DecisionRecord`s remain stable across
 //! rebuilds. No arithmetic, no float — pure classification.
 //!
-//! ## Constitution alignment
+//! ## Operator alignment
 //! * **Section 18.1:** initial required protocols — Pump.fun, PumpSwap, Raydium.
 //! * **Section 22 lane law / Section 24:** the independently-attributed setup
 //!   families (early entry, graduation transition, active-market scalp); blending
@@ -37,7 +37,7 @@ impl Venue {
     pub const ALL: [Venue; 3] = [Venue::PumpFun, Venue::PumpSwap, Venue::Raydium];
 
     /// `true` for venues whose price comes from a bonding curve rather than a
-    /// constant-product pool. Constitution Section 24 hold-horizon law treats
+    /// constant-product pool. Operator Section 24 hold-horizon law treats
     /// bonding-curve and pool markets as mechanically distinct phases.
     #[inline]
     pub const fn is_bonding_curve(self) -> bool {
@@ -84,7 +84,7 @@ impl fmt::Display for Venue {
 /// strictly separate per lane; no lane is privileged by name and PnL is never
 /// blended across lanes.
 ///
-/// Constitution Section 22 (lane law) / Section 24 (EntryModes) / Section 69.
+/// Operator Section 22 (lane law) / Section 24 (EntryModes) / Section 69.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[repr(u8)]
 pub enum Lane {

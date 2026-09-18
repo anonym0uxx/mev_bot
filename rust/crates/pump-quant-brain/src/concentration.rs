@@ -1,5 +1,5 @@
 //! The holder-distribution **parallel stream** — a conditioning channel that rides
-//! *beside* the fingerprint, never inside it (constitution 6.4, 22, 102).
+//! *beside* the fingerprint, never inside it (operator 6.4, 22, 102).
 //!
 //! # Why this is not a fingerprint field
 //!

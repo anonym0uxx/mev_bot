@@ -2,7 +2,7 @@
 //!
 //! Every threshold, weight, cadence and cost that the discovery→gate→scalp loop
 //! consults lives here as a **named, operator-supplied field** — never as a magic
-//! number buried in a decision path. This is the constitution's hardcoded-parameter
+//! number buried in a decision path. This is the operator's hardcoded-parameter
 //! law (§22 / no-hardcode): the engine's logic reads `cfg.<name>`, and the values
 //! come from a config file the operator controls. A `dev_portable()` constructor is
 //! provided for tests and laptop dry-runs; it is explicitly labelled a *starting
@@ -559,7 +559,7 @@ pub struct Config {
     /// Master switch for the §26 confirmed-creator-dump law. When true, a market
     /// whose creator has distributed more than the configured fraction of peak is
     /// a HARD pre-entry veto (a NEW reject code) AND forces the exit of any held
-    /// position attributed to that creator. Constitution reversal of the prior
+    /// position attributed to that creator. Operator reversal of the prior
     /// "creator distribution is fade-only, never a veto" behaviour (§22 clause is
     /// superseded by §26 for the *confirmed-dump* regime, operator-approved).
     pub creator_dump_veto_enable: bool,
@@ -1461,7 +1461,7 @@ impl Config {
             creator_dump_veto_strict_bp: CREATOR_DUMP_VETO_STRICT_BP_DEFAULT,
 
             // Batch-2a exit/sizing mechanics. §24 cost-derived profit targets
-            // (LAW 2) is DEFAULT ON per the operator's "constitution wins" ruling
+            // (LAW 2) is DEFAULT ON per the operator's "operator wins" ruling
             // on the §24 reversal (defect #3): fixed global TP constants
             // (13_500/25_000/50_000) are FORBIDDEN as the live default — cost-
             // derived targets MUST be the live behaviour. LAWs 5/6 (§24(d)

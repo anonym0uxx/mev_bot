@@ -26,7 +26,7 @@
 //! correcting for non-normality and selection bias. If `DSR ≤ 0`, the observed
 //! performance is indistinguishable from chance.
 //!
-//! ## Constitution
+//! ## Operator
 //! §45 (statistical gates), §51 (multiple-testing correction via cumulative
 //! trial count), §56.3 (reproducibility — all state is deterministic integer
 //! arithmetic, no floats in the stored state).

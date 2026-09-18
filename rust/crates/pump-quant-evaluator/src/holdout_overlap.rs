@@ -1,5 +1,5 @@
 //! `holdout_overlap` — creator/cluster Tier-2 family-holdout leakage checker
-//! (constitution §17, §53).
+//! (operator §17, §53).
 //!
 //! Responsibility: prove, on the frozen-evaluator side, that no creator/cluster
 //! *family* appears in both the training set and the holdout set. Tokens from
@@ -9,7 +9,7 @@
 //! laptop-testable and independent of the research harness that assembled the
 //! sets.
 //!
-//! Integer-only (constitution §22): family ids are opaque `u64`; no floats.
+//! Integer-only (operator §22): family ids are opaque `u64`; no floats.
 
 use std::collections::BTreeSet;
 
@@ -36,7 +36,7 @@ impl Overlap {
 
 /// Assert zero family overlap between the train and holdout sets.
 ///
-/// Responsibility (constitution §17, §53): compute the set intersection of
+/// Responsibility (operator §17, §53): compute the set intersection of
 /// `train_family_ids` and `holdout_family_ids`. The result is
 /// [`Overlap::is_clean`]` == true` iff the intersection is empty; any shared
 /// families are reported in deterministic ascending order. Because both inputs

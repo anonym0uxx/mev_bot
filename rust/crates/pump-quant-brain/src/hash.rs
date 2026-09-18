@@ -1,4 +1,4 @@
-//! Deterministic integer hashing primitives (constitution 22).
+//! Deterministic integer hashing primitives (operator 22).
 //!
 //! Two consumers, one implementation, zero dependencies:
 //!
@@ -15,10 +15,10 @@
 //! same digest on every machine, forever. That stability is load-bearing — a
 //! snapshot written today must verify byte-identically after a restart tomorrow.
 
-/// FNV-1a 64-bit offset basis (constitution 102: named const, no magic numbers).
+/// FNV-1a 64-bit offset basis (operator 102: named const, no magic numbers).
 pub const FNV1A_64_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 
-/// FNV-1a 64-bit prime (constitution 102).
+/// FNV-1a 64-bit prime (operator 102).
 pub const FNV1A_64_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// FNV-1a 64-bit digest of `bytes`.
@@ -26,7 +26,7 @@ pub const FNV1A_64_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// Deterministic and endian-independent: the algorithm consumes one byte at a
 /// time, so the digest of a byte slice is identical on every target. Multiplication
 /// is `wrapping_mul` by construction — wrapping *is* the FNV specification here,
-/// not an overflow accident (constitution 22 requires the overflow strategy be
+/// not an overflow accident (operator 22 requires the overflow strategy be
 /// explicit at the site; this is it).
 #[must_use]
 pub fn fnv1a_64(bytes: &[u8]) -> u64 {
@@ -38,11 +38,11 @@ pub fn fnv1a_64(bytes: &[u8]) -> u64 {
     acc
 }
 
-/// Multiplier for the 32-bit avalanche mixer (constitution 102). This is the
+/// Multiplier for the 32-bit avalanche mixer (operator 102). This is the
 /// well-known MurmurHash3 finalizer constant `0x85eb_ca6b`.
 pub const MIX_U32_M1: u32 = 0x85eb_ca6b;
 
-/// Second multiplier for the 32-bit avalanche mixer (constitution 102):
+/// Second multiplier for the 32-bit avalanche mixer (operator 102):
 /// MurmurHash3 finalizer constant `0xc2b2_ae35`.
 pub const MIX_U32_M2: u32 = 0xc2b2_ae35;
 

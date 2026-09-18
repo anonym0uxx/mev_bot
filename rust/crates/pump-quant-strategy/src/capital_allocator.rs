@@ -13,7 +13,7 @@
 //!   ones (rotation is detected from on-chain flow, never chased on a drawdown or
 //!   a narrative).
 //!
-//! ## Constitution
+//! ## Operator
 //! §85 CapitalAllocator, §56.2 rotation detection. §22 integer bps; deterministic,
 //! pure — the continuous-detection orchestration lives in the supervisor.
 

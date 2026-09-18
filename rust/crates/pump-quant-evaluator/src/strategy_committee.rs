@@ -6,7 +6,7 @@
 //! an ensemble, reducing the risk of any single strategy type's bias
 //! dominating execution decisions.
 //!
-//! Constitution §56.4 (strategy committee), §13 (determinism), §22 (integer-only).
+//! Operator §56.4 (strategy committee), §13 (determinism), §22 (integer-only).
 //! All values are integers (bps, lamports). No floats. No unsafe. Deterministic.
 
 use crate::evaluator_state::LifecycleStage;

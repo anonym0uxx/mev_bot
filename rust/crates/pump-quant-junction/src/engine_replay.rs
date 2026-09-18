@@ -10,7 +10,7 @@
 //! config. Different configs now produce different trade sequences, different
 //! P&L, and actually different `netsol` values.
 //!
-//! Constitution: §13 (paper/live parity), §16 (no look-ahead), §22 (integer-only).
+//! Operator: §13 (paper/live parity), §16 (no look-ahead), §22 (integer-only).
 
 use std::path::Path;
 

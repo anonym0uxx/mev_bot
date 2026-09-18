@@ -1,5 +1,5 @@
 //! `overfitting` — combinatorially-symmetric cross-validation (CSCV) and the
-//! probability of backtest overfitting (PBO) (constitution §51).
+//! probability of backtest overfitting (PBO) (operator §51).
 //!
 //! §51 requires the frozen evaluator to compute PBO / CSCV overfitting
 //! diagnostics as promotion-blocking gates. Given a performance matrix over many

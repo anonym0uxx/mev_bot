@@ -1,4 +1,4 @@
-//! `follow_reco` — "should I be following someone I am not?" (constitution 22
+//! `follow_reco` — "should I be following someone I am not?" (operator 22
 //! integer-only, 46 small-n, 57/99 bounded, 102 named thresholds, 110 scope).
 //!
 //! # Scope boundary — read this first
@@ -8,7 +8,7 @@
 //! worth dropping. That is research — deciding what to read.
 //!
 //! It deliberately contains **no posting, engagement, amplification, promotion or
-//! outreach capability of any kind**, and none may be added here. Constitution
+//! outreach capability of any kind**, and none may be added here. Operator
 //! criterion 110 forbids purchasing or instigating promotion for tokens we hold,
 //! trade, or research; auto-posting, reply-farming, paid shilling or coordinated
 //! amplification around a position is promotional market manipulation regardless of
@@ -52,7 +52,7 @@
 //! **once**, on their earliest qualifying call (their best lead). Spamming a mint
 //! cannot inflate attribution.
 //!
-//! # Fail-closed (constitution 46)
+//! # Fail-closed (operator 46)
 //!
 //! [`FollowRecoVerdict`] mirrors [`crate::recall::RecallVerdict`]:
 //! `Known(Vec<FollowRecommendation>)` or `Unknown(FollowRecoUnknown)` carrying
@@ -83,64 +83,64 @@ use crate::social_recall::{Platform, SocialRecallIndex};
 use crate::trust::{SocialTrust, TrustSnapshot, TrustTier};
 
 // ---------------------------------------------------------------------------
-// Named constants (constitution 102)
+// Named constants (operator 102)
 // ---------------------------------------------------------------------------
 
-/// Full lead-time weight (constitution 102). Weights are integer fractions of this.
+/// Full lead-time weight (operator 102). Weights are integer fractions of this.
 pub const LEAD_WEIGHT_UNIT: u64 = 64;
 
-/// Oldest lead that is attributed at all (constitution 102): 24 hours. Beyond this
+/// Oldest lead that is attributed at all (operator 102): 24 hours. Beyond this
 /// a call did not cause the trade, it merely preceded it.
 pub const FOLLOW_LOOKBACK_NS: u64 = 86_400 * 1_000_000_000;
 
-/// Shortest lead that earns any weight (constitution 102): five seconds. Below
+/// Shortest lead that earns any weight (operator 102): five seconds. Below
 /// this the caller was not ahead of us in any way we could have acted on.
 pub const FOLLOW_MIN_LEAD_NS: u64 = 5 * 1_000_000_000;
 
-/// Lead at which weight reaches [`LEAD_WEIGHT_UNIT`] (constitution 102): ten
+/// Lead at which weight reaches [`LEAD_WEIGHT_UNIT`] (operator 102): ten
 /// minutes — enough time to have read them, sized, and got a fill.
 pub const FOLLOW_FULL_LEAD_NS: u64 = 600 * 1_000_000_000;
 
-/// Lead beyond which weight begins decaying back to zero (constitution 102):
+/// Lead beyond which weight begins decaying back to zero (operator 102):
 /// six hours. Past here the call is not a trigger, it is trivia.
 pub const FOLLOW_STALE_LEAD_NS: u64 = 6 * 3_600 * 1_000_000_000;
 
 /// Minimum attributed calls before an author may be recommended
-/// (constitution 46 small-n guard).
+/// (operator 46 small-n guard).
 pub const FOLLOW_MIN_ATTRIBUTED_CALLS: u32 = 5;
 
-/// Attributed calls at which confidence saturates (constitution 102).
+/// Attributed calls at which confidence saturates (operator 102).
 pub const FOLLOW_CONFIDENCE_SATURATION_CALLS: u32 = 20;
 
-/// Confidence multiplier for a [`TrustTier::Trusted`] candidate (constitution 102).
+/// Confidence multiplier for a [`TrustTier::Trusted`] candidate (operator 102).
 pub const CONFIDENCE_TRUSTED_BP: u32 = 10_000;
 
-/// Confidence multiplier for a [`TrustTier::Watch`] candidate (constitution 102).
+/// Confidence multiplier for a [`TrustTier::Watch`] candidate (operator 102).
 pub const CONFIDENCE_WATCH_BP: u32 = 7_000;
 
 /// Confidence multiplier for a candidate with no trust record at all
-/// (constitution 102). Their lead-time attribution is real but uncorroborated.
+/// (operator 102). Their lead-time attribution is real but uncorroborated.
 pub const CONFIDENCE_UNPROVEN_BP: u32 = 3_000;
 
 /// Attributed net at or below which a **followed** author becomes an unfollow
-/// candidate (constitution 102). Strictly-negative attribution only.
+/// candidate (operator 102). Strictly-negative attribution only.
 pub const UNFOLLOW_MAX_NET_LAMPORTS: i128 = 0;
 
-/// Cap on returned recommendations (constitution 57 bounded output).
+/// Cap on returned recommendations (operator 57 bounded output).
 pub const FOLLOW_RECO_CAP: usize = 16;
 
-/// Capacity of the candidate table (constitution 57/99).
+/// Capacity of the candidate table (operator 57/99).
 pub const FOLLOW_AUTHOR_CAP: usize = 1_024;
 
-/// Per-author cap on retained lead samples (constitution 57/99). The median lead is
+/// Per-author cap on retained lead samples (operator 57/99). The median lead is
 /// taken over the first this-many attributed leads, oldest episode first.
 pub const FOLLOW_LEAD_SAMPLE_CAP: usize = 256;
 
-/// Per-episode cap on distinct attributed authors (constitution 57/99). A mint that
+/// Per-episode cap on distinct attributed authors (operator 57/99). A mint that
 /// more than this many tracked accounts called is a raid, not a signal.
 pub const FOLLOW_EPISODE_AUTHOR_CAP: usize = 64;
 
-/// Capacity of a [`FollowSet`] (constitution 57/99).
+/// Capacity of a [`FollowSet`] (operator 57/99).
 pub const FOLLOW_SET_CAP: usize = 512;
 
 // ---------------------------------------------------------------------------
@@ -159,7 +159,7 @@ pub enum FollowSetError {
     },
 }
 
-/// The bounded set of authors we already follow (constitution 57/99).
+/// The bounded set of authors we already follow (operator 57/99).
 ///
 /// Held sorted so membership is a binary search and every derived listing is
 /// deterministic.
@@ -262,7 +262,7 @@ impl FollowSet {
 // Params
 // ---------------------------------------------------------------------------
 
-/// Tunables for follow recommendation. Defaults are named consts (constitution 102).
+/// Tunables for follow recommendation. Defaults are named consts (operator 102).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FollowParams {
     /// Oldest lead attributed at all.
@@ -273,14 +273,14 @@ pub struct FollowParams {
     pub full_lead_ns: u64,
     /// Lead beyond which weight decays back to zero.
     pub stale_lead_ns: u64,
-    /// Minimum attributed calls before an author may be surfaced (constitution 46).
+    /// Minimum attributed calls before an author may be surfaced (operator 46).
     pub min_attributed_calls: u32,
     /// Cap on returned rows.
     pub max_recommendations: usize,
     /// Cap on the candidate table.
     pub author_cap: usize,
     /// Optional venue-phase restriction on the episodes that may be attributed
-    /// (constitution 100). `None` attributes realized money from both phases, which
+    /// (operator 100). `None` attributes realized money from both phases, which
     /// is sound here because this is a P&L attribution, not a conditional estimate.
     pub venue_phase: Option<VenuePhase>,
 }
@@ -346,7 +346,7 @@ pub struct UnfollowCandidate {
 /// Why no recommendation could be made.
 ///
 /// **Counts and floors only** — no partial ranking, no provisional scores
-/// (constitution 46).
+/// (operator 46).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FollowRecoUnknown {
     /// The episodic index holds no admitted, decisive episode in scope.
@@ -371,7 +371,7 @@ pub enum FollowRecoUnknown {
     },
 }
 
-/// A ranked follow list, or an explicit refusal to guess (constitution 46).
+/// A ranked follow list, or an explicit refusal to guess (operator 46).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FollowRecoVerdict {
     /// At least one candidate cleared every gate; ranked best first.
@@ -482,7 +482,7 @@ impl Candidate {
 /// Ranks authors by lead-time-weighted realized attribution over our own data.
 ///
 /// Read-only by construction: it borrows the episodic index and the social index
-/// and returns rows. See the module docs for the constitution-110 scope boundary.
+/// and returns rows. See the module docs for the operator-110 scope boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FollowRecommender {
     params: FollowParams,

@@ -1,7 +1,7 @@
 //! `birdeye` subcommand — the REQUIRED 1D-candle backfill + token-data
 //! capture lane (Birdeye Data Services REST API → MarketIntel NDJSON).
 //!
-//! Constitutional status: **required source** (§6.7, Amendment A-3,
+//! operator-mandated status: **required source** (§6.7, Amendment A-3,
 //! human-directed 2026-07-23; build obligation `SERVER_BUILD_MANIFEST.md` §10;
 //! §6.6 evaluation record `docs/BIRDEYE_SOURCE.md`). Birdeye supplies exactly
 //! two capabilities, both consumed through **MarketIntelCache only** on the
@@ -633,7 +633,7 @@ pub fn run(args: &[String], now_ns: fn() -> u64) -> u8 {
     if key.is_empty() {
         eprintln!(
             "error: set BIRDEYE_API_KEY (Birdeye Data Services key, X-API-KEY header) — \
-             birdeye is the REQUIRED 1D-candle backfill source (constitution \u{a7}6.7) and \
+             birdeye is the REQUIRED 1D-candle backfill source (operator \u{a7}6.7) and \
              refuses to start keyless; exiting {EXIT_NO_KEY}"
         );
         return EXIT_NO_KEY;

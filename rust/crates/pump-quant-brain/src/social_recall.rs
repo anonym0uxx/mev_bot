@@ -1,5 +1,5 @@
 //! Social recall — "who was tweeting about this, when, and do they actually make
-//! money?" (constitution 29.9 social-call and source-quality ledger).
+//! money?" (operator 29.9 social-call and source-quality ledger).
 //!
 //! Two bounded, time-ordered rings that are deliberately *separate*:
 //!
@@ -14,7 +14,7 @@
 //! history is mutable, and a mutable track record is one that quietly improves
 //! every time you look at it.
 //!
-//! # Fail-closed author scoring (constitution 46)
+//! # Fail-closed author scoring (operator 46)
 //!
 //! [`AuthorTrackRecord`] is the same shape as
 //! [`crate::recall::RecallVerdict`]: `Known(AuthorStats)` or `Unknown` with **no
@@ -25,18 +25,18 @@
 
 use crate::recall::{nearest_rank_index, order_stat_i128, BPS_SCALE_U32, P50};
 
-/// Bounded capacity of the call ring (constitution 57/99), oldest-first eviction.
+/// Bounded capacity of the call ring (operator 57/99), oldest-first eviction.
 pub const SOCIAL_CALL_CAP: usize = 32_768;
 
-/// Bounded capacity of the markout ring (constitution 57/99), oldest-first eviction.
+/// Bounded capacity of the markout ring (operator 57/99), oldest-first eviction.
 pub const SOCIAL_MARKOUT_CAP: usize = 32_768;
 
 /// Minimum attributed markouts before an author gets a track record
-/// (constitution 46 small-n guard).
+/// (operator 46 small-n guard).
 pub const AUTHOR_MIN_SAMPLE: u32 = 8;
 
 /// Default lookback window for [`SocialRecallIndex::who_called`]: seven days of
-/// information time in nanoseconds (constitution 102). This is the literal
+/// information time in nanoseconds (operator 102). This is the literal
 /// "who was tweeting about it last week" window.
 pub const DEFAULT_CALL_WINDOW_NS: u64 = 7 * 86_400 * 1_000_000_000;
 
@@ -146,7 +146,7 @@ pub struct AuthorStats {
 pub enum AuthorTrackRecord {
     /// Enough attributed calls to say something.
     Known(AuthorStats),
-    /// Not enough evidence (constitution 46).
+    /// Not enough evidence (operator 46).
     Unknown {
         /// Attributed markouts found.
         n_markouts: u32,
@@ -395,7 +395,7 @@ impl SocialRecallIndex {
 
     /// **Does this author actually make money?**
     ///
-    /// Fail-closed below `min_sample` attributed markouts (constitution 46).
+    /// Fail-closed below `min_sample` attributed markouts (operator 46).
     #[must_use]
     pub fn author_track_record(&self, author_id: u64, min_sample: u32) -> AuthorTrackRecord {
         let mut nets: Vec<i128> = self

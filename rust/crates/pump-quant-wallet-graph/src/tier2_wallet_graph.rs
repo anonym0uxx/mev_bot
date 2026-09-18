@@ -274,7 +274,7 @@ impl WalletGraph {
     }
 
     /// Point-in-time family grouping: uses only edges of the given kinds whose
-    /// `discovery_slot <= as_of_slot`. This enforces the constitution's rule
+    /// `discovery_slot <= as_of_slot`. This enforces the operator's rule
     /// that future wallet/cluster knowledge may never be used at an earlier
     /// decision time (Section 28, Section 6.5).
     #[must_use]

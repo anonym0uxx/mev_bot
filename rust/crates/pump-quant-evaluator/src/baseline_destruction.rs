@@ -1,9 +1,9 @@
-//! `baseline_destruction` — baseline-destruction verdict (constitution §42, §52,
+//! `baseline_destruction` — baseline-destruction verdict (operator §42, §52,
 //! §35).
 //!
 //! Responsibility: a challenger earns promotion only by *destroying* — beating
 //! by a required margin — not just the reigning champion but every naive
-//! baseline it is measured against (constitution §52 baselines: fixed ratios and
+//! baseline it is measured against (operator §52 baselines: fixed ratios and
 //! trivial rules are challenger baselines that a real edge must dominate). To
 //! guard against the multiple-comparisons trap of picking the best of many
 //! contests, the required margin is inflated family-wise by the number of
@@ -11,10 +11,10 @@
 //! more rivals you test against and cherry-pick from, the larger the edge you
 //! must show to claim it is real).
 //!
-//! Integer-only (constitution §22): reconciled metric values are `i128`
+//! Integer-only (operator §22): reconciled metric values are `i128`
 //! (lamports or any fixed-point metric); no floats.
 
-/// What kind of rival a competitor value represents (constitution §52).
+/// What kind of rival a competitor value represents (operator §52).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CompetitorKind {
     /// The reigning champion policy.
@@ -50,7 +50,7 @@ impl Competitor {
     }
 }
 
-/// Verdict of a baseline-destruction test (constitution §42).
+/// Verdict of a baseline-destruction test (operator §42).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DestructionVerdict {
     /// Challenger beat every competitor by the corrected margin.
@@ -84,7 +84,7 @@ impl DestructionVerdict {
 /// Does the challenger destroy the champion *and* every naive baseline by the
 /// family-wise-corrected required margin?
 ///
-/// Responsibility (constitution §42, §52): let `K = competitors.len()` and the
+/// Responsibility (operator §42, §52): let `K = competitors.len()` and the
 /// corrected bar be `effective_margin = required_margin · K` (saturating,
 /// non-negative by contract). The challenger destroys the field iff for **every**
 /// competitor `challenger − competitor.value ≥ effective_margin`. If any rival is

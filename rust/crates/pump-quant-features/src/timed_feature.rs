@@ -1,16 +1,16 @@
-//! Point-in-time-correct feature serving (constitution 20).
+//! Point-in-time-correct feature serving (operator 20).
 //!
 //! Responsibility: hold a time-ordered history of [`TimedFeature`] snapshots and
 //! serve, for any decision cutoff `T`, only the freshest snapshot that was *fully
 //! knowable* by `T`. This is the leakage guard for the whole system: a value may
 //! be consumed only when both its `max_information_time_ns` and its
-//! `computation_complete_ns` are `<= decision_cutoff_ns` (constitution 20). The
-//! store is memory-bounded (constitution 22/57): a hard capacity with
+//! `computation_complete_ns` are `<= decision_cutoff_ns` (operator 20). The
+//! store is memory-bounded (operator 22/57): a hard capacity with
 //! oldest-first eviction.
 
 use crate::types::{Completeness, EventId, FeatureVersion};
 
-/// A single point-in-time feature snapshot (constitution 20).
+/// A single point-in-time feature snapshot (operator 20).
 ///
 /// Responsibility: bind a computed value to the exact time boundary at which it
 /// became legitimately consumable, plus the events it was derived from. Serving
@@ -22,15 +22,15 @@ pub struct TimedFeature<T> {
     pub value: T,
     /// Provenance: identifiers of every source event that fed this value.
     pub source_event_ids: Vec<EventId>,
-    /// Latest information time of any input (constitution 20). No input observed
+    /// Latest information time of any input (operator 20). No input observed
     /// after this instant contributed, so consuming before it would be look-ahead.
     pub max_information_time_ns: u64,
     /// Time the computation itself finished. A value cannot be served before it
-    /// physically exists, even if its inputs are old (constitution 20).
+    /// physically exists, even if its inputs are old (operator 20).
     pub computation_complete_ns: u64,
-    /// Schema version of this value (constitution 20 live/replay parity).
+    /// Schema version of this value (operator 20 live/replay parity).
     pub feature_version: FeatureVersion,
-    /// Completeness status of the inputs (constitution 20 missing-is-explicit).
+    /// Completeness status of the inputs (operator 20 missing-is-explicit).
     pub completeness: Completeness,
 }
 
@@ -57,7 +57,7 @@ impl<T> TimedFeature<T> {
     }
 
     /// Earliest decision cutoff at which this snapshot may be consumed
-    /// (constitution 20): the later of its information time and its computation
+    /// (operator 20): the later of its information time and its computation
     /// time. A snapshot is servable at cutoff `T` iff `servable_at() <= T`.
     #[must_use]
     pub fn servable_at(&self) -> u64 {
@@ -66,7 +66,7 @@ impl<T> TimedFeature<T> {
     }
 
     /// Whether this snapshot may be consumed at `decision_cutoff_ns` without
-    /// look-ahead (constitution 20). Both the information time and the computation
+    /// look-ahead (operator 20). Both the information time and the computation
     /// time must not exceed the cutoff.
     #[must_use]
     pub fn is_servable_at(&self, decision_cutoff_ns: u64) -> bool {
@@ -76,7 +76,7 @@ impl<T> TimedFeature<T> {
 }
 
 /// A memory-bounded, point-in-time-correct store of feature snapshots
-/// (constitution 20, 22, 57).
+/// (operator 20, 22, 57).
 ///
 /// Responsibility: accept snapshots in any push order and answer `as_of(T)` with
 /// the freshest snapshot legitimately available at `T`. The store keeps at most
@@ -123,7 +123,7 @@ impl<T: Clone> TimedFeatureStore<T> {
 
     /// Sort key giving a total, deterministic order over snapshots. Ordering by
     /// `servable_at` first is what makes `as_of` correct; the further keys only
-    /// break ties deterministically (constitution 22 stable ordering).
+    /// break ties deterministically (operator 22 stable ordering).
     fn key(f: &TimedFeature<T>) -> (u64, u64, u64) {
         (
             f.servable_at(),
@@ -133,9 +133,9 @@ impl<T: Clone> TimedFeatureStore<T> {
     }
 
     /// Insert a snapshot, preserving sorted order and the capacity bound
-    /// (constitution 20/57).
+    /// (operator 20/57).
     ///
-    /// Overflow strategy (explicit, constitution 22): once `capacity` is exceeded
+    /// Overflow strategy (explicit, operator 22): once `capacity` is exceeded
     /// the front element (smallest `servable_at`) is removed. Because `as_of(T)`
     /// returns the element with the *largest* servable key `<= T`, evicting the
     /// smallest keys can only ever drop answers for very old cutoffs, never for
@@ -151,7 +151,7 @@ impl<T: Clone> TimedFeatureStore<T> {
     }
 
     /// Serve the freshest snapshot legitimately available at `decision_cutoff_ns`
-    /// (constitution 20).
+    /// (operator 20).
     ///
     /// Returns the retained snapshot with the greatest `max_information_time_ns`
     /// among those whose `servable_at() <= decision_cutoff_ns`, breaking ties by

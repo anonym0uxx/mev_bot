@@ -1,5 +1,5 @@
 //! Paid-attention-spend intelligence + Tier-0 no-self-promotion guard
-//! (constitution §29.10, criterion 110).
+//! (operator §29.10, criterion 110).
 //!
 //! Two halves:
 //!
@@ -19,7 +19,7 @@
 //! returns a [`PromotionAuthorization`] whose only variant is `Refused`, so an
 //! approval is *unrepresentable* — the guard cannot be bypassed.
 //!
-//! # Constitution constraints (§22)
+//! # Operator constraints (§22)
 //!
 //! Deterministic, integer-only. Spend is lamports (`u128`, since cumulative
 //! boost spend can be large); timestamps are milliseconds. No floats, no I/O.
@@ -32,7 +32,7 @@ pub type TokenId = u64;
 ///
 /// Responsibility: journaled boost observation (§29.10). `observed_ts_ms` is the
 /// local-arrival timestamp used for staleness. `package_id` indexes the
-/// versioned price table. Constitution §22: integer count/timestamp.
+/// versioned price table. Operator §22: integer count/timestamp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BoostEvent {
     /// Which package/tier was purchased (indexes [`PriceTable`]).
@@ -46,7 +46,7 @@ pub struct BoostEvent {
 /// One entry of a versioned price/package table.
 ///
 /// Responsibility: the platform-published unit price of a boost package.
-/// Constitution §22: integer lamports.
+/// Operator §22: integer lamports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PricePackage {
     /// Package identifier matched against [`BoostEvent::package_id`].
@@ -60,7 +60,7 @@ pub struct PricePackage {
 /// table's freshness for Missing-on-stale semantics.
 ///
 /// Responsibility: the versioned pricing basis of a spend estimate (§29.10).
-/// Constitution §22: integer version / timestamp.
+/// Operator §22: integer version / timestamp.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PriceTable {
     /// Monotonic table version pinned into every computed estimate.
@@ -89,7 +89,7 @@ impl PriceTable {
 /// masquerading as a real spend.
 ///
 /// Responsibility: Missing-on-stale spend estimate (§29.10, §6.6 D-class).
-/// Constitution §22: integer lamports.
+/// Operator §22: integer lamports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpendEstimate {
     /// A real, versioned spend figure.
@@ -116,7 +116,7 @@ pub enum SpendEstimate {
 /// the operator verifiably spent nothing), distinct from the Missing variants.
 ///
 /// Responsibility: the deterministic, replayable half of §29.10.
-/// Constitution §22: `u128` accumulation, `saturating_mul`/`saturating_add`,
+/// Operator §22: `u128` accumulation, `saturating_mul`/`saturating_add`,
 /// staleness compared as integers, no float.
 pub fn compute_spend(events: &[BoostEvent], table: &PriceTable, as_of_ts_ms: u64) -> SpendEstimate {
     if as_of_ts_ms > table.valid_until_ts_ms {
@@ -159,7 +159,7 @@ pub trait AttentionSpendSource {
 /// The system's relationship to a token, for the self-promotion prohibition.
 ///
 /// Responsibility: enumerate every relationship the prohibition must cover
-/// (§29.10(d)). Constitution: exhaustive so the guard's proof covers all cases.
+/// (§29.10(d)). Operator: exhaustive so the guard's proof covers all cases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemRelationship {
     /// The system currently holds the token.
@@ -176,7 +176,7 @@ pub enum SystemRelationship {
 /// harmless: it can never be *authorized* (see [`authorize_paid_promotion`]).
 ///
 /// Responsibility: model an attempted self-promotion so the guard can refuse it
-/// (§29.10(d)). Constitution §22: plain data.
+/// (§29.10(d)). Operator §22: plain data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaidPromotionRequest {
     /// Token the promotion would target.
@@ -190,7 +190,7 @@ pub struct PaidPromotionRequest {
 /// Why a self-promotion purchase was refused. Tier-0 severity is unwaivable and
 /// cannot be overridden from chat (§29.10(d)).
 ///
-/// Responsibility: carry the refusal reason for audit. Constitution: data only.
+/// Responsibility: carry the refusal reason for audit. Operator: data only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SelfPromotionRefusal {
     /// The relationship that triggered the refusal.
@@ -206,7 +206,7 @@ pub struct SelfPromotionRefusal {
 /// no-self-promotion guard, the direct analogue of `si_no_copy_trade`.
 ///
 /// Responsibility: make self-promotion approval *unrepresentable*.
-/// Constitution §22 / §29.10(d): compile-enforced prohibition.
+/// Operator §22 / §29.10(d): compile-enforced prohibition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromotionAuthorization {
     /// The only possible outcome: the purchase is refused at Tier-0 severity.
@@ -223,7 +223,7 @@ pub enum PromotionAuthorization {
 /// result. That is the by-construction proof of the Tier-0 prohibition.
 ///
 /// Responsibility: refuse all self-promotion purchases (§29.10(d)).
-/// Constitution §22: deterministic, total, no I/O.
+/// Operator §22: deterministic, total, no I/O.
 #[inline]
 pub fn authorize_paid_promotion(req: PaidPromotionRequest) -> PromotionAuthorization {
     PromotionAuthorization::Refused(SelfPromotionRefusal {
@@ -235,7 +235,7 @@ pub fn authorize_paid_promotion(req: PaidPromotionRequest) -> PromotionAuthoriza
 /// `false`. Useful as a compile/test-enforced invariant in higher layers.
 ///
 /// Responsibility: expose the prohibition as a boolean for guard sites
-/// (§29.10(d)). Constitution §22: total, constant-false by construction.
+/// (§29.10(d)). Operator §22: total, constant-false by construction.
 #[inline]
 pub fn paid_promotion_permitted(_req: PaidPromotionRequest) -> bool {
     match authorize_paid_promotion(_req) {

@@ -1,5 +1,5 @@
 //! Leaf `ex_construction_gate`: the Construction Validation Gate
-//! (constitution **criteria 77 / 113**).
+//! (operator **criteria 77 / 113**).
 //!
 //! ## Why this exists
 //! Criterion 113 requires that a *construction validation gate* exist **from
@@ -25,7 +25,7 @@
 //! ([`build_ix`]) — sufficient to exercise the gate against fixtures. It is
 //! integer-only and credential-free; it is NOT a signing / submission path.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - criterion 77 — construction validation (laptop-side rungs).
 //! - criterion 113 — the gate must exist from authoring time.
 //! - §22 — integer-only, deterministic, no clock / RNG / float / I/O.

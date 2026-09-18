@@ -60,7 +60,7 @@
 //! buffer; stage 2 allocates bounded scratch of at most `top_m` elements. Nothing
 //! allocates per candidate.
 //!
-//! # Fail-closed recall (constitution 46) — the safety property
+//! # Fail-closed recall (operator 46) — the safety property
 //!
 //! [`RecallVerdict`] is an enum with exactly two shapes:
 //!
@@ -86,7 +86,7 @@
 //! * nothing lies within [`RecallParams::max_distance`] of the query;
 //! * fewer than [`RecallParams::min_sample`] episodes matched.
 //!
-//! # Phase separation (constitution 100) — enforced by the type, not by discipline
+//! # Phase separation (operator 100) — enforced by the type, not by discipline
 //!
 //! §100 forbids pooling bonding-curve and migrated-pool outcomes into one estimate.
 //! Rather than document that and hope, [`RecallFilter`] has **no constructor that
@@ -106,7 +106,7 @@ use crate::fingerprint::{
     signature_hamming, weighted_distance, FeatureWeights, SetupFingerprint, VenuePhase,
 };
 
-/// Bounded capacity of the default episodic index (constitution 57/99).
+/// Bounded capacity of the default episodic index (operator 57/99).
 ///
 /// Eviction is **oldest-first**: the index is a ring, and slot `head` — the oldest
 /// live episode — is the one a full index overwrites. Memory is therefore constant
@@ -116,17 +116,17 @@ use crate::fingerprint::{
 pub const EPISODE_CAP: usize = 16_384;
 
 /// Minimum number of matched episodes before recall will report an estimate
-/// (constitution 46 small-n guard). Below this the verdict is
+/// (operator 46 small-n guard). Below this the verdict is
 /// [`RecallUnknown::InsufficientSample`] and carries no numbers.
 pub const MIN_SAMPLE_DEFAULT: u32 = 8;
 
 /// Maximum stage-1 Hamming distance at which an episode still counts as "a setup
-/// like this" (constitution 102). Twelve bits is roughly "three or four fields
+/// like this" (operator 102). Twelve bits is roughly "three or four fields
 /// differ by a bucket or two" under the thermometer/one-hot encoding.
 pub const MAX_DISTANCE_DEFAULT: u32 = 12;
 
 /// Maximum number of candidates promoted from stage 1 into stage 2
-/// (constitution 57 bounded work). Caps stage-2 cost independent of index size.
+/// (operator 57 bounded work). Caps stage-2 cost independent of index size.
 ///
 /// Sixty-four is chosen on statistical grounds first and latency grounds second.
 /// A recall estimate is only as good as the *similarity* of the episodes it
@@ -157,7 +157,7 @@ pub const P50: u32 = 50;
 pub const P75: u32 = 75;
 
 /// Worst-case op budget for one recall over a completely full [`EPISODE_CAP`]
-/// index (constitution 24 performance is a compiled-in contract, not a memory).
+/// index (operator 24 performance is a compiled-in contract, not a memory).
 ///
 /// Derivation, and it is a real bound rather than a hopeful one:
 /// * the single stage-1 popcount pass performs exactly `len` popcounts (the
@@ -227,7 +227,7 @@ pub fn pack_filter_key(e: &Episode) -> u64 {
 
 /// Which episodes a recall is allowed to see.
 ///
-/// The venue phase is **mandatory** — see the module docs on constitution 100.
+/// The venue phase is **mandatory** — see the module docs on operator 100.
 /// Meta category, discovery lane and the [`crate::concentration`] band are optional
 /// pins layered on top of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -436,10 +436,10 @@ impl RecallFilter {
 // Params / verdict
 // ---------------------------------------------------------------------------
 
-/// Tunables for one recall. All named-const defaults (constitution 102).
+/// Tunables for one recall. All named-const defaults (operator 102).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecallParams {
-    /// Minimum matched episodes before an estimate is produced (constitution 46).
+    /// Minimum matched episodes before an estimate is produced (operator 46).
     pub min_sample: u32,
     /// Stage-1 Hamming radius defining "a setup like this".
     pub max_distance: u32,
@@ -482,7 +482,7 @@ pub enum RecallUnknown {
         /// The radius that was applied.
         max_distance: u32,
     },
-    /// Similar episodes exist, but too few to say anything (constitution 46).
+    /// Similar episodes exist, but too few to say anything (operator 46).
     InsufficientSample {
         /// How many episodes matched.
         n_matched: u32,
@@ -503,7 +503,7 @@ pub struct RecallStats {
     /// sample this is the lower median — no interpolation, no rounding artefact).
     pub median_net_lamports: i128,
     /// Arithmetic mean of realized net lamports, integer division truncating
-    /// toward zero (constitution 22: the rounding rule is stated, not implied).
+    /// toward zero (operator 22: the rounding rule is stated, not implied).
     pub mean_net_lamports: i128,
     /// Episodes with strictly positive realized net.
     pub win_count: u32,
@@ -565,7 +565,7 @@ impl RecallVerdict {
     }
 }
 
-/// Deterministic operation counters for one recall (constitution 24).
+/// Deterministic operation counters for one recall (operator 24).
 ///
 /// Returned by [`EpisodicIndex::recall_probe`] so the latency contract is an
 /// assertion in CI rather than a claim in a comment.
@@ -615,7 +615,7 @@ pub enum IndexError {
 // ---------------------------------------------------------------------------
 
 /// Bounded, append-only-in-spirit ring of episodes plus the two contiguous hot
-/// streams recall scans (constitution 57/99).
+/// streams recall scans (operator 57/99).
 #[derive(Debug, Clone)]
 pub struct EpisodicIndex {
     capacity: usize,
@@ -741,7 +741,7 @@ impl EpisodicIndex {
         self.episodes.iter().find(|e| e.episode_id() == episode_id)
     }
 
-    /// Recall over episodes in the **query's own venue phase** (constitution 100).
+    /// Recall over episodes in the **query's own venue phase** (operator 100).
     ///
     /// There is no phase-pooled variant of this function, and there never will be.
     #[must_use]
@@ -764,7 +764,7 @@ impl EpisodicIndex {
         self.recall_inner(query, params, filter, &mut ops)
     }
 
-    /// Recall plus its deterministic operation counters (constitution 24).
+    /// Recall plus its deterministic operation counters (operator 24).
     #[must_use]
     pub fn recall_probe(
         &self,
@@ -1564,7 +1564,7 @@ mod tests {
     #[test]
     fn recall_filter_cannot_be_built_without_a_phase() {
         // The only constructors both demand a phase; this test documents the API
-        // shape that makes constitution 100 structurally enforced.
+        // shape that makes operator 100 structurally enforced.
         let q = fp(600, 10, VenuePhase::Pool);
         assert_eq!(RecallFilter::for_query(&q).venue_phase(), VenuePhase::Pool);
         assert_eq!(

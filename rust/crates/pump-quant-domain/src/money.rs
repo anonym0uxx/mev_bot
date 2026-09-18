@@ -7,7 +7,7 @@
 //! semantics — `checked_*` returns `Option`, `saturating_*` clamps at the type
 //! bound — because silent wraparound in money math is a build defect.
 //!
-//! ## Constitution alignment
+//! ## Operator alignment
 //! * **Section 22:** no floating point in outcome-controlling logic; money is
 //!   lamports / token base units / basis points, integer only.
 //! * **Section 57(a) hardcoded-parameter/perf law:** "all money/fixed-point
@@ -22,7 +22,7 @@ use core::fmt;
 /// is SOL; USDC-quoted markets carry their own base-unit amount in the same
 /// representation (quote-mint-parametric per Section 18.2).
 ///
-/// Constitution Section 22: the canonical integer money type.
+/// Operator Section 22: the canonical integer money type.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct Lamports(pub u64);
 
@@ -118,7 +118,7 @@ impl fmt::Display for Lamports {
 /// A **signed** lamport delta, held in `i128` so that sums of many `u64`-scale
 /// amounts (aggregate PnL, running balance deltas) cannot overflow in practice.
 ///
-/// Constitution Section 22: signed money is still integer money.
+/// Operator Section 22: signed money is still integer money.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct SignedLamports(pub i128);
 
@@ -179,7 +179,7 @@ impl fmt::Display for SignedLamports {
 
 /// An amount denominated in a token's smallest base unit (respecting the mint's
 /// decimals; the strategy core never carries fractional/`f64` token amounts).
-/// Constitution Section 22 ("token base units").
+/// Operator Section 22 ("token base units").
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct TokenAmount(pub u64);
 
@@ -208,7 +208,7 @@ impl TokenAmount {
 /// fractions. Held as `u32`, so rates well above 100% (e.g. a 3× move = 30_000
 /// bps) are representable.
 ///
-/// Constitution Section 22 (basis points, not floats) and Section 34.4 (economic
+/// Operator Section 22 (basis points, not floats) and Section 34.4 (economic
 /// gate arithmetic).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct BasisPoints(pub u32);

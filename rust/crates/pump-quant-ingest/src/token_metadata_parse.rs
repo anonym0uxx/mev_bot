@@ -8,7 +8,7 @@
 //! is OUT OF SCOPE here — it is `[S]` live-I/O behind [`crate::social_source`] and
 //! the on-chain decoders. This module is the pure decoder only.
 //!
-//! # Constitution discipline (binding)
+//! # Operator discipline (binding)
 //! * **§22 determinism / integer.** No floating point, no wall-clock, no RNG, no
 //!   network. The assignment instant is supplied by the caller as an already-
 //!   measured `u64` `slot`; this module never reads a clock. The variable-length

@@ -8,7 +8,7 @@
 //! stable across processes and machines so that a version mismatch is
 //! detectable without any network call.
 //!
-//! # Constitution
+//! # Operator
 //! * Deterministic — identical `venue` always yields identical output; no RNG,
 //!   clock, or network involved.
 //! * §22 — integer-only.
@@ -46,7 +46,7 @@ impl Venue {
 /// the venue's program-id bytes, expanded to fill the array. It is a stable
 /// placeholder — swap for a real digest when the registry is finalized.
 ///
-/// # Constitution
+/// # Operator
 /// Deterministic and integer-only; no floats, RNG, clock, or I/O.
 pub fn registry_version(venue: Venue) -> (u16, [u8; 32]) {
     (
@@ -264,7 +264,7 @@ impl RegistryEntry {
     /// discriminator, a swapped migration target — changes the digest, so a
     /// caller can pin an expected value and detect drift with a byte compare.
     ///
-    /// # Constitution
+    /// # Operator
     /// §22 — integer-only, deterministic; no floats, RNG, clock, or I/O.
     pub fn content_digest(&self) -> [u8; 32] {
         let mut acc = FNV_OFFSET;
@@ -357,7 +357,7 @@ const fn slot_opt_bytes(slot: Option<u64>) -> [u8; 9] {
 
 /// Return the version-controlled [`RegistryEntry`] for `venue`.
 ///
-/// # Constitution
+/// # Operator
 /// Deterministic and integer-only; no floats, RNG, clock, or I/O.
 pub const fn entry(venue: Venue) -> &'static RegistryEntry {
     match venue {
@@ -372,7 +372,7 @@ pub const fn entry(venue: Venue) -> &'static RegistryEntry {
 /// account buffer before it will trust the remaining bytes (fail-closed
 /// identity check, §18.2).
 ///
-/// # Constitution
+/// # Operator
 /// Deterministic and integer-only.
 pub const fn account_discriminator(venue: Venue) -> [u8; 8] {
     entry(venue).account_discriminator

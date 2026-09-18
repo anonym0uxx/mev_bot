@@ -19,7 +19,7 @@
 //! Same-mint re-discovery keeps the strongest lane evidence, exactly as
 //! [`crate::lane_ingest`] does, so state and ingest agree.
 //!
-//! Constitution: §22 (deterministic, integer), §99 (bounded + eviction), §102.
+//! Operator: §22 (deterministic, integer), §99 (bounded + eviction), §102.
 
 use crate::candidate::{Candidate, Mint};
 use crate::lane_ingest;

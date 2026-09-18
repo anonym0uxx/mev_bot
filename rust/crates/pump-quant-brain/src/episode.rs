@@ -1,4 +1,4 @@
-//! The episodic record — one immutable "this happened" row (constitution 22, 57).
+//! The episodic record — one immutable "this happened" row (operator 22, 57).
 //!
 //! An [`Episode`] binds three things that must never drift apart: **what the setup
 //! looked like** ([`crate::fingerprint::SetupFingerprint`]), **where and when it
@@ -26,7 +26,7 @@
 use crate::concentration::{ConcentrationReading, ConcentrationTrajectory};
 use crate::fingerprint::{SetupFingerprint, VenuePhase};
 
-/// Wire/schema version of the episode record (constitution 56 versioned memory).
+/// Wire/schema version of the episode record (operator 56 versioned memory).
 /// Bumped whenever the field set or its encoding changes; [`crate::persist`]
 /// refuses to load a record whose version it does not understand.
 ///
@@ -43,7 +43,7 @@ use crate::fingerprint::{SetupFingerprint, VenuePhase};
 /// [`crate::persist::decode_episode`] on the way off disk — never reinterpreted.
 pub const EPISODE_SCHEMA_VERSION: u16 = 2;
 
-/// Which discovery lane surfaced this token (constitution 29.9). Nominal.
+/// Which discovery lane surfaced this token (operator 29.9). Nominal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DiscoveryLane {
     /// Fresh mint observed on the launch stream.
@@ -89,7 +89,7 @@ impl DiscoveryLane {
     }
 }
 
-/// How the position ended (constitution 21.8 exit lifecycle).
+/// How the position ended (operator 21.8 exit lifecycle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ExitReason {
     /// Setup was never admitted; there is no position and no realized P&L.
@@ -149,7 +149,7 @@ pub struct EpisodeContext {
     /// Dense internal mint identifier (not the base58 address — the brain is
     /// integer-only, and the address mapping lives in the canonical plane).
     pub mint_id: u64,
-    /// Bonding curve or migrated pool at decision time (constitution 100).
+    /// Bonding curve or migrated pool at decision time (operator 100).
     pub venue_phase: VenuePhase,
     /// Exact meta-category identifier — the un-mixed id, so conditioned recall can
     /// filter precisely even though the signature only carries a 16-slot digest.
@@ -203,7 +203,7 @@ impl EpisodeContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EpisodeOutcome {
     /// Realized net proceeds in lamports, **after** fees, priority fees, tips and
-    /// slippage (constitution 22 money is integer lamports). Signed: this is net
+    /// slippage (operator 22 money is integer lamports). Signed: this is net
     /// SOL, the only number that matters. Structurally `0` when `was_admitted` is
     /// false.
     pub realized_net_lamports: i128,

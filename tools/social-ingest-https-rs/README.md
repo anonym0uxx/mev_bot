@@ -48,7 +48,7 @@ the same crash-free, bounded-memory, `-D warnings` discipline as the rest of
 the Rust surface. That is the honest win: **tighter, more deterministic
 capture stamps and a hardened edge — not a faster vendor**.
 
-## Constitution discipline (binding)
+## Operator discipline (binding)
 
 - **§22 determinism boundary** — wall clock read in exactly one function
   (`main.rs::now_ns`); `--replay` is a pure function of the fixture file
@@ -211,7 +211,7 @@ confidence maps the audience-size field it does publish:
 
 ## `birdeye` — the REQUIRED 1D-candle backfill + token-data lane (§6.7, MARKET data)
 
-**Constitutional status: REQUIRED source.** Amendment A-3 (constitution §6.7,
+**operator-mandated status: REQUIRED source.** Amendment A-3 (operator §6.7,
 human-directed 2026-07-23) designates Birdeye Data Services the provider of
 record for **1D OHLCV candle backfill/cross-check** and **token-data
 enrichment for candle analysis** (§21.6 bar/market-structure family). Build
@@ -373,7 +373,7 @@ fixtures. Example line:
 where the local LLM (the operator's llama.cpp server — the same
 `http://127.0.0.1:8080` endpoint the supervisor's `llama_server.yaml`
 describes and its `bench_endpoint` health-checks) touches the social stream,
-and the architecture keeps it in its constitutional place:
+and the architecture keeps it in its operator-mandated place:
 
 ```
 capture (Rust/Python lanes)  →  sentiment-enrich  →  deterministic core

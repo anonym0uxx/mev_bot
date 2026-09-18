@@ -243,7 +243,7 @@ The audit found genuinely excellent, research-grounded components that must be p
 
 6. **Denylist** — Correctly blocks 4 envelope-affecting parameters from mutation. Defense-in-depth at both generation and promotion. Source: `pq_refiner.rs:148-172`.
 
-7. **Integer-Only Math (§22)** — All money quantities in lamports, no floats in the decision path. FNV-1a hashing for dedup. Constitution-compliant.
+7. **Integer-Only Math (§22)** — All money quantities in lamports, no floats in the decision path. FNV-1a hashing for dedup. Operator-compliant.
 
 8. **Determinism (§13)** — BTreeMap sorted iteration, fixed RNG seed. Reproducible across runs.
 
@@ -332,7 +332,7 @@ The core insight: **the refiner should prioritize parameters by their expected i
 - `generate_challengers()` rewritten to use the priority queue + rotation
 - Determinism preserved: within a tier, parameters are iterated alphabetically (BTreeMap), and the RNG seed is deterministic
 
-**Constitution compliance:**
+**Operator compliance:**
 - §13 (determinism): Tier assignment is static, rotation index is deterministic, within-tier order is BTreeMap sorted
 - §22 (integer-only): No changes to money math
 - §45-56 (evaluation): The 8-gate, SPRT, FDR, PBO, DSR are all preserved

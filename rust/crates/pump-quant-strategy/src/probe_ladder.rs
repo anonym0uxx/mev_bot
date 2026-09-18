@@ -10,7 +10,7 @@
 //!   the reconciled balance below the survival floor (`deployable = balance −
 //!   floor`), regardless of what the ladder wants.
 //!
-//! ## Constitution
+//! ## Operator
 //! §22: integer/fixed-point only, explicit overflow (checked/saturating). Pure and
 //! deterministic — the reconciled-balance and outcome inputs are supplied by the
 //! caller; no clock, RNG, or I/O here.

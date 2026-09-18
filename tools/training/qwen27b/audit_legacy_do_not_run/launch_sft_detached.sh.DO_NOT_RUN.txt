@@ -1,0 +1,66 @@
+HISTORICAL UNSAFE CONTENT - DO NOT EXECUTE
+#!/usr/bin/env bash
+# Detached SFT launcher — survives wsl.exe/wrapper death.
+# Usage (from Windows): wsl -d Ubuntu -- bash /mnt/d/repos/mev_bot/tools/training/qwen27b/launch_sft_detached.sh
+set -euo pipefail
+RUN_DIR=/training/runs/qwen27b_sft_v1
+LOG=$RUN_DIR/train.log
+INIT_FROM=/training/runs/qwen27b_cpt_v1/cpt_final_bf16
+# HARD GUARD: /training must be the ext4 LABEL=training disk, not rootfs.
+findmnt -n -o SOURCE,FSTYPE /training | grep -q ext4 || { echo "FATAL: /training not mounted (ext4). Run: wsl --mount D:\\wsl\\training_ext4.vhdx --vhd --bare, then mount -L training /training"; exit 1; }
+# INIT_FROM guard: SFT is a weights-only load from the consolidated CPT BF16.
+# Refuse if it's missing (a bare from_pretrained on TOKENIZER_REPO would silently
+# train from the base model, wasting the whole CPT phase).
+if [ ! -f "$INIT_FROM/pytorch_model.bin" ] && [ ! -f "$INIT_FROM/model.safetensors" ]; then
+  echo "FATAL: $INIT_FROM has no consolidated weights (pytorch_model.bin/model.safetensors)." >&2
+  echo "Consolidate CPT first: train_qwen27b.py --phase cpt --consolidate --consolidate_out $INIT_FROM"; exit 1
+fi
+mkdir -p "$RUN_DIR"
+# [.] so a bash -c cmdline carrying this pattern never self-matches.
+if pgrep -f "train_qwen27b[.]py --phase sft" >/dev/null; then
+  echo "ALREADY RUNNING:"; pgrep -af "train_qwen27b[.]py --phase sft"; exit 0
+fi
+# Fresh-start hygiene: remove stale checkpoint dirs from any interrupted save.
+if compgen -G "$RUN_DIR/checkpoint-*" >/dev/null; then
+  echo "purging stale checkpoints:"; ls -d "$RUN_DIR"/checkpoint-*
+  rm -rf "$RUN_DIR"/checkpoint-*
+fi
+# Disk/RAM headroom preflight (same 27B NVMe offload / 380GB sharded-ckpt model).
+OFFLOAD_DIR=$(grep -oE '"nvme_path":[[:space:]]*"[^"]+"' \
+  /mnt/d/repos/mev_bot/tools/training/qwen27b/ds_zero3_nvme.json \
+  | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+if [ -n "$OFFLOAD_DIR" ] && [ -d "$OFFLOAD_DIR" ]; then
+  STALE=$(find "$OFFLOAD_DIR" -type f -name '*.swp' 2>/dev/null | wc -l)
+  if [ "$STALE" -gt 0 ]; then
+    echo "purging stale NVMe offload swap files ($STALE .swp) — safe: no active run"
+    find "$OFFLOAD_DIR" -type f -name '*.swp' -delete 2>/dev/null || true
+  fi
+fi
+FREE_G=$(df -BG --output=avail /training 2>/dev/null | tail -1 | tr -dc '0-9')
+AVL_G=$(free -g | awk '/^Mem:/{print $7}')
+echo "[preflight] /training free=${FREE_G}G guest-RAM-avail=${AVL_G}G"
+if [ -n "$FREE_G" ] && [ "$FREE_G" -lt 1000 ]; then
+  echo "FATAL: /training has ${FREE_G}G free (< 1000G). Refusing launch to prevent" \
+       "disk exhaustion at the next checkpoint save. Free space or reduce" \
+       "save_total_limit before relaunching."; exit 1
+fi
+source ~/qwen-train/bin/activate
+# Durability: re-apply the DeepSpeed 0.18.2 NVMe-offload save copytree patch.
+bash /mnt/d/repos/mev_bot/tools/training/qwen27b/patch_deepspeed_save.sh
+cd /mnt/d/repos/mev_bot/tools/training/qwen27b
+# --- Stability env (single source of truth) ---
+export NCCL_CUMEM_ENABLE=0
+unset PYTORCH_CUDA_ALLOC_CONF 2>/dev/null || true
+export TORCH_NCCL_AVOID_RECORD_STREAMS=1
+export TQDM_MININTERVAL=30
+ulimit -n 1048576
+echo "=== launch $(date -Is) ===" >> "$LOG"
+setsid accelerate launch --config_file accelerate_zero3.yaml train_qwen27b.py \
+  --phase sft --init_from "$INIT_FROM" \
+  >> "$LOG" 2>&1 < /dev/null &
+LAUNCHER_PID=$!
+disown
+# ZeRO-3 init failures often surface after >5s — verify at 30s.
+sleep 30
+echo "launched: launcher_pid=$LAUNCHER_PID"
+pgrep -af "train_qwen27b[.]py --phase sft" || { echo "LAUNCH FAILED — tail:"; tail -20 "$LOG"; exit 1; }

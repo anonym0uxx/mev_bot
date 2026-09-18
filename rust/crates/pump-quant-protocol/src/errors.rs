@@ -20,7 +20,7 @@
 //! clock, RNG, network, or float; every function is a pure, total lookup /
 //! match.
 //!
-//! ## Constitution
+//! ## Operator
 //! * §36 — decoded custom-error table + failure taxonomy.
 //! * §18.2 — per-venue, version-controlled recorded facts; fail closed on
 //!   unknown (`Unknown(code)` / `FailureClass6::Fatal`), never guess benign.

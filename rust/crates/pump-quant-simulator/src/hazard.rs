@@ -3,7 +3,7 @@
 //! Responsibility: estimate the probability of an adverse terminal / near-terminal
 //! event over a short forward interval, *separately per lifecycle phase* but
 //! *partially pooled* toward a global rate so thin phases borrow strength from the
-//! whole (constitution §48 hazard-model family; §47 terminal-state base rates as
+//! whole (operator §48 hazard-model family; §47 terminal-state base rates as
 //! re-measured priors). Pure integer / fixed-point arithmetic (§22); the estimator
 //! is memory-bounded by a hard cap on the number of phases.
 //!

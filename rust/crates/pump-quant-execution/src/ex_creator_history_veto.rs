@@ -25,7 +25,7 @@
 //! queried. A re-query is only issued when the cached entry is older than the
 //! TTL or absent.
 //!
-//! Constitution refs: §22 (engine purity preserved — all I/O in this wrapper,
+//! Operator refs: §22 (engine purity preserved — all I/O in this wrapper,
 //!   not in the engine), §6.4 (fail-open on unknown), §99 (bounded cache).
 
 use crate::ex_outbound_sink::{AdmitRecord, OutboundOutcome, OutboundSink};

@@ -1,6 +1,6 @@
 //! Append-only binary journal codec and the deterministic replayer.
 //!
-//! This module implements the write/read path for the "hot journal" (constitution
+//! This module implements the write/read path for the "hot journal" (operator
 //! §43): length-prefixed, CRC-protected frames carrying schema version, connection
 //! epoch and sequence number; a crash-recovery scan that returns exactly the
 //! sealed-frame prefix while truncating any torn tail; a deterministic
@@ -8,7 +8,7 @@
 //! journaled events through the SAME reducer the live path uses and asserts
 //! state-hash parity against recorded checkpoints, reporting the FIRST divergence.
 //!
-//! Constitution §22 compliance: NO floating point anywhere in outcome-controlling
+//! Operator §22 compliance: NO floating point anywhere in outcome-controlling
 //! logic. All checksums, hashes and ordering are integer / fixed-point. Overflow
 //! is always explicit (checked / wrapping-by-contract). Every code path is
 //! bounds-checked so that arbitrary bytes can never panic the recovery scan.

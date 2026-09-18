@@ -14,9 +14,9 @@
 //! `first_attempt_ms`, `last_attempt_ms`, `queued_at_ms`) and mutated them in
 //! `process_sell` based on the `SellAttemptResult`. That mutation is reproduced
 //! here as a pure `LadderState -> LadderState` transition so it is deterministic
-//! and testable in isolation (constitution §22: no wall-clock; time is an input).
+//! and testable in isolation (operator §22: no wall-clock; time is an input).
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §22: integer-only; all durations are `u64` milliseconds.
 //! - Overflow: attempt counters use `saturating_add`; time uses `saturating_*`.
 
@@ -36,7 +36,7 @@ pub enum SellStrategy {
 
 /// Immutable configuration for a single escalation level. Mirrors the legacy
 /// `SellEscalation` struct, with the `timeout` `Duration` replaced by an integer
-/// `timeout_ms` (constitution §22: no non-integer time in the logic path).
+/// `timeout_ms` (operator §22: no non-integer time in the logic path).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SellEscalation {
     /// 0-indexed level number.

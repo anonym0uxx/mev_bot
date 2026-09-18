@@ -1,4 +1,4 @@
-//! `ablation` — deterministic feature-family ablation harness (constitution §50).
+//! `ablation` — deterministic feature-family ablation harness (operator §50).
 //!
 //! §50 requires that each feature family's marginal contribution be *measured*,
 //! not asserted: for every family we re-run the recorded experiment with that

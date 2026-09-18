@@ -67,7 +67,7 @@ The bot has THREE rug-related modules, but they are architected for post-entry r
 - Computes: top-10 hold %, dev_hold_pct, bundle_hold_pct, early_top10_hold_pct, Whale Dominance Score
 - Has a pre-entry refusal mode (Code 17, REJECT_HOLDER_CONCENTRATION) — but it's DISABLED
 - Has a size-haircut mode (reduce-only) — also disabled
-- The module explicitly notes: "NEVER A STANDALONE VETO (constitution §21.7)" — it's designed as a conjunctive filter, not a sole gate
+- The module explicitly notes: "NEVER A STANDALONE VETO (operator §21.7)" — it's designed as a conjunctive filter, not a sole gate
 
 ### 3.2 Creator Dump Veto (config.rs, §26)
 - **STATUS: ENABLED** (`creator_dump_veto_enable = 1`, `creator_dump_veto_bp = 6000`)

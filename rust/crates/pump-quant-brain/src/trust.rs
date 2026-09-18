@@ -1,5 +1,5 @@
 //! `SocialTrust` — "can I actually trust the accounts saying this?"
-//! (constitution 22 integer-only, 28 public-burned edge, 46 small-n, 57/99
+//! (operator 22 integer-only, 28 public-burned edge, 46 small-n, 57/99
 //! bounded state, 102 named thresholds).
 //!
 //! # The load-bearing law: trust is earned in lamports, and only in lamports
@@ -71,13 +71,13 @@
 //! The population prior is itself estimated from our own markout ring, so a lucky
 //! fortnight across *all* callers would inflate every author's posterior at once.
 //! [`TRUST_PRIOR_POSITIVE_CAP_LAMPORTS`] caps the prior's positive side at half of
-//! reference while leaving its negative side unclamped (constitution 46: an
+//! reference while leaving its negative side unclamped (operator 46: an
 //! estimator is allowed to be pessimistic for free, never optimistic for free). And
 //! below [`TRUST_POPULATION_MIN_SAMPLE`] markouts the prior is the neutral
 //! [`TRUST_NEUTRAL_PRIOR_NET_LAMPORTS`] `= 0` — "a caller drawn at random makes us
 //! nothing", which is both honest and conservative.
 //!
-//! # Public-burned presumption (constitution 28)
+//! # Public-burned presumption (operator 28)
 //!
 //! A source that everybody reads has no edge left to give: by the time a widely
 //! legible caller has spoken, the fill is gone and what remains is the privilege of
@@ -91,7 +91,7 @@
 //! Demotion only ever removes positive trust. It never improves a negative score,
 //! because "everyone follows them" is not an excuse for having lost us money.
 //!
-//! # Fail-closed (constitution 46)
+//! # Fail-closed (operator 46)
 //!
 //! [`TrustVerdict`] mirrors [`crate::recall::RecallVerdict`] exactly:
 //! `Known(TrustScore)` or `Unknown(TrustUnknown)`, where [`TrustUnknown`] carries
@@ -119,77 +119,77 @@ use crate::recall::BPS_SCALE_U32;
 use crate::social_recall::{CallMarkout, SocialRecallIndex};
 
 // ---------------------------------------------------------------------------
-// Named constants (constitution 102)
+// Named constants (operator 102)
 // ---------------------------------------------------------------------------
 
-/// Fixed-point unit of one *fresh* evidence sample (constitution 22). A markout of
+/// Fixed-point unit of one *fresh* evidence sample (operator 22). A markout of
 /// age zero weighs exactly this; the decay curve is expressed as a fraction of it.
 pub const TRUST_WEIGHT_UNIT: u64 = 1 << 16;
 
 /// Number of halvings after which [`decay_weight_units`] returns exactly zero
-/// (constitution 102). At `TRUST_WEIGHT_UNIT = 2^16` the weight has already
+/// (operator 102). At `TRUST_WEIGHT_UNIT = 2^16` the weight has already
 /// truncated to zero by the sixteenth halving, so this is exact rather than a cut-off.
 pub const TRUST_DECAY_MAX_HALVINGS: u64 = 16;
 
 /// Half-life of attributed evidence, nanoseconds of information time
-/// (constitution 102). Fourteen days: long enough that a genuine caller keeps their
+/// (operator 102). Fourteen days: long enough that a genuine caller keeps their
 /// record across a slow week, short enough that a caller who was right in a dead
 /// meta three months ago is back at the prior today.
 pub const TRUST_HALF_LIFE_NS: u64 = 14 * 86_400 * 1_000_000_000;
 
 /// Minimum in-scope attributed markouts before an author can be scored
-/// (constitution 46 small-n guard).
+/// (operator 46 small-n guard).
 pub const TRUST_MIN_SAMPLE: u32 = 8;
 
 /// Minimum *decayed* evidence mass before an author can be scored
-/// (constitution 46). Three fresh-equivalent samples. This is the gate that stops
+/// (operator 46). Three fresh-equivalent samples. This is the gate that stops
 /// an old track record from speaking for a caller who has gone quiet or gone cold.
 pub const TRUST_MIN_EFFECTIVE_WEIGHT_UNITS: u64 = 3 * TRUST_WEIGHT_UNIT;
 
-/// Strength of the population prior in pseudo-observations (constitution 102).
+/// Strength of the population prior in pseudo-observations (operator 102).
 /// An author needs this much of their own fresh evidence mass before their record
 /// outweighs the population's.
 pub const TRUST_PRIOR_PSEUDO_SAMPLES: u32 = 12;
 
 /// Per-call realized net that defines a full `+10_000 bp` trust score
-/// (constitution 102): 0.05 SOL of attributed net per call, sustained.
+/// (operator 102): 0.05 SOL of attributed net per call, sustained.
 pub const TRUST_REFERENCE_NET_LAMPORTS: i128 = 50_000_000;
 
 /// Minimum markouts across the whole population before the prior is pooled from
-/// data rather than set to neutral (constitution 46).
+/// data rather than set to neutral (operator 46).
 pub const TRUST_POPULATION_MIN_SAMPLE: u32 = 32;
 
-/// The neutral prior (constitution 46): a caller drawn at random makes us nothing.
+/// The neutral prior (operator 46): a caller drawn at random makes us nothing.
 pub const TRUST_NEUTRAL_PRIOR_NET_LAMPORTS: i128 = 0;
 
-/// Cap on the *positive* side of the pooled prior (constitution 46). The prior may
+/// Cap on the *positive* side of the pooled prior (operator 46). The prior may
 /// pull an author down without limit; it may only lift them to half of reference.
 pub const TRUST_PRIOR_POSITIVE_CAP_LAMPORTS: i128 = TRUST_REFERENCE_NET_LAMPORTS / 2;
 
-/// Score at or below which an author is [`TrustTier::Demoted`] (constitution 102).
+/// Score at or below which an author is [`TrustTier::Demoted`] (operator 102).
 pub const TRUST_DEMOTED_MAX_BP: i32 = -500;
 
 /// Score at or above which an author reaches [`TrustTier::Watch`]
-/// (constitution 102).
+/// (operator 102).
 pub const TRUST_WATCH_MIN_BP: i32 = 500;
 
 /// Score at or above which an author reaches [`TrustTier::Trusted`]
-/// (constitution 102).
+/// (operator 102).
 pub const TRUST_TRUSTED_MIN_BP: i32 = 2_500;
 
 /// Demotion applied to a source that is legible to a broad audience
-/// (constitution 28).
+/// (operator 28).
 pub const CROWDED_DEMOTION_BP: u32 = 3_000;
 
 /// Demotion applied to a source that is fully public and front-run by everyone
-/// (constitution 28).
+/// (operator 28).
 pub const PUBLIC_BURNED_DEMOTION_BP: u32 = 7_500;
 
-/// Capacity of the exposure registry (constitution 57/99). **Refuses** rather than
+/// Capacity of the exposure registry (operator 57/99). **Refuses** rather than
 /// evicts when full — see the module docs.
 pub const TRUST_EXPOSURE_CAP: usize = 1_024;
 
-/// Capacity of a [`TrustSnapshot`]'s author table (constitution 57/99). Authors
+/// Capacity of a [`TrustSnapshot`]'s author table (operator 57/99). Authors
 /// beyond the bound are dropped and score `Unknown`.
 pub const TRUST_AUTHOR_CAP: usize = 4_096;
 
@@ -233,11 +233,11 @@ pub fn decay_weight_units(age_ns: u64, half_life_ns: u64) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// Exposure (constitution 28)
+// Exposure (operator 28)
 // ---------------------------------------------------------------------------
 
 /// How legible a source is to the rest of the market — an **operator-set** fact,
-/// never inferred (constitution 28).
+/// never inferred (operator 28).
 ///
 /// The demotion ladder is the price of crowding: an edge that everyone can read is
 /// an edge that has already been taken by the time you read it.
@@ -247,7 +247,7 @@ pub enum SourceExposure {
     Niche,
     /// Legible to a broad audience; partially front-run.
     Crowded,
-    /// Fully public and reliably front-run (constitution 28). Demoted hard **and**
+    /// Fully public and reliably front-run (operator 28). Demoted hard **and**
     /// capped at [`TrustTier::Watch`] whatever the realized record says.
     PublicBurned,
 }
@@ -275,7 +275,7 @@ impl SourceExposure {
     }
 
     /// Fraction of a *positive* trust score removed by this exposure level, in
-    /// basis points (constitution 28/102).
+    /// basis points (operator 28/102).
     #[must_use]
     pub const fn demotion_bp(self) -> u32 {
         match self {
@@ -290,14 +290,14 @@ impl SourceExposure {
 // Tiers
 // ---------------------------------------------------------------------------
 
-/// Coarse trust classification with named thresholds (constitution 102).
+/// Coarse trust classification with named thresholds (operator 102).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TrustTier {
     /// Not enough realized evidence to say anything. The only tier a
     /// [`TrustVerdict::Unknown`] can map to.
     Unproven,
     /// Scored, but with no demonstrated edge worth sizing on. Also the ceiling for
-    /// a [`SourceExposure::PublicBurned`] source (constitution 28).
+    /// a [`SourceExposure::PublicBurned`] source (operator 28).
     Watch,
     /// Demonstrated, decay-adjusted, partially-pooled positive realized net.
     Trusted,
@@ -354,12 +354,12 @@ impl TrustTier {
 // Params
 // ---------------------------------------------------------------------------
 
-/// Tunables for the trust model. All defaults are named consts (constitution 102).
+/// Tunables for the trust model. All defaults are named consts (operator 102).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrustParams {
-    /// Minimum in-scope attributed markouts before scoring (constitution 46).
+    /// Minimum in-scope attributed markouts before scoring (operator 46).
     pub min_sample: u32,
-    /// Minimum decayed evidence mass before scoring (constitution 46).
+    /// Minimum decayed evidence mass before scoring (operator 46).
     pub min_effective_weight_units: u64,
     /// Evidence half-life in nanoseconds of information time.
     pub half_life_ns: u64,
@@ -395,7 +395,7 @@ impl Default for TrustParams {
 ///
 /// **Carries counts and floors only.** No lamports, no mean, no score, no tier
 /// beyond [`TrustTier::Unproven`]. There is no way to coax a number out of this
-/// type (constitution 46).
+/// type (operator 46).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustUnknown {
     /// No attributed markout for this author at or before `as_of_ns`.
@@ -411,7 +411,7 @@ pub enum TrustUnknown {
         min_sample: u32,
     },
     /// Enough markouts, but all of them too old to mean anything after decay —
-    /// a caller proven in a regime that is over (constitution 28/46).
+    /// a caller proven in a regime that is over (operator 28/46).
     StaleEvidence {
         /// In-scope attributed markouts found.
         n_markouts: u32,
@@ -420,7 +420,7 @@ pub enum TrustUnknown {
         /// The mass floor it failed to reach.
         min_effective_weight_units: u64,
     },
-    /// The author is not in the snapshot's bounded table (constitution 57/99).
+    /// The author is not in the snapshot's bounded table (operator 57/99).
     NotInSnapshot {
         /// How many authors the snapshot had to drop.
         authors_dropped: u64,
@@ -448,7 +448,7 @@ pub struct TrustScore {
     /// Score in basis points of [`TrustParams::reference_net_lamports`], clamped to
     /// `±10_000`, **before** the exposure demotion.
     pub pre_demotion_score_bp: i32,
-    /// Score after the constitution-28 exposure demotion. The published number.
+    /// Score after the operator-28 exposure demotion. The published number.
     pub trust_score_bp: i32,
     /// The operator-set exposure applied.
     pub exposure: SourceExposure,
@@ -457,7 +457,7 @@ pub struct TrustScore {
     pub tier: TrustTier,
 }
 
-/// An author's trust, or an explicit refusal to guess (constitution 46).
+/// An author's trust, or an explicit refusal to guess (operator 46).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustVerdict {
     /// Evidence was sufficient; here is the score.
@@ -509,7 +509,7 @@ impl TrustVerdict {
 ///
 /// `pooled == false` means the population itself was below
 /// [`TrustParams::population_min_sample`] and the prior is the neutral
-/// [`TRUST_NEUTRAL_PRIOR_NET_LAMPORTS`] (constitution 46).
+/// [`TRUST_NEUTRAL_PRIOR_NET_LAMPORTS`] (operator 46).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PopulationPrior {
     /// Prior mean net per call, after the positive-side cap.
@@ -539,7 +539,7 @@ pub struct AuthorMass {
 }
 
 /// A single-pass, capacity-bounded view of every author's evidence mass as of one
-/// information-time instant (constitution 57/99).
+/// information-time instant (operator 57/99).
 ///
 /// Built once and reused, so scoring twenty callers on a mint costs one pass over
 /// the markout ring rather than twenty. Authors are held sorted by id, so every
@@ -682,7 +682,7 @@ impl SocialTrust {
         self.author_capacity
     }
 
-    /// Record how legible a source is (constitution 28). Returns the previous
+    /// Record how legible a source is (operator 28). Returns the previous
     /// marking, if any. Overwriting an existing author never consumes capacity.
     pub fn set_exposure(
         &mut self,
@@ -800,7 +800,7 @@ impl SocialTrust {
         }
     }
 
-    /// Score one author against a prebuilt snapshot (constitution 46 fail-closed).
+    /// Score one author against a prebuilt snapshot (operator 46 fail-closed).
     #[must_use]
     pub fn trust_from_snapshot(&self, snap: &TrustSnapshot, author_id: u64) -> TrustVerdict {
         let Some(mass) = snap.author_mass(author_id) else {
@@ -871,7 +871,7 @@ impl SocialTrust {
             });
         }
 
-        // Raw decay-weighted mean, truncating toward zero (constitution 22: the
+        // Raw decay-weighted mean, truncating toward zero (operator 22: the
         // rounding rule is stated, not implied).
         let raw_mean = mass.weighted_net_lamports / i128::from(mass.weight_units);
 
@@ -890,7 +890,7 @@ impl SocialTrust {
 
         let mut tier = TrustTier::from_score_bp(trust_score_bp);
         if exposure == SourceExposure::PublicBurned && tier == TrustTier::Trusted {
-            // Constitution 28: a source everyone reads cannot be sized on, however
+            // Operator 28: a source everyone reads cannot be sized on, however
             // good its realized record looks.
             tier = TrustTier::Watch;
         }
@@ -912,7 +912,7 @@ impl SocialTrust {
 }
 
 /// Express a per-call net against the reference net, in basis points clamped to
-/// `±10_000` (constitution 22 fixed-point, 102 named scale).
+/// `±10_000` (operator 22 fixed-point, 102 named scale).
 #[must_use]
 pub fn score_bp_of(net_lamports: i128, reference_net_lamports: i128) -> i32 {
     if reference_net_lamports <= 0 {
@@ -929,7 +929,7 @@ pub fn score_bp_of(net_lamports: i128, reference_net_lamports: i128) -> i32 {
     }
 }
 
-/// Apply the constitution-28 exposure demotion.
+/// Apply the operator-28 exposure demotion.
 ///
 /// Removes a documented fraction of a **positive** score and leaves a negative one
 /// untouched: being crowded is not a defence against having lost us money.
@@ -1321,7 +1321,7 @@ mod tests {
         assert_eq!(
             burned.tier,
             TrustTier::Watch,
-            "a source everyone reads is never sizable (constitution 28)"
+            "a source everyone reads is never sizable (operator 28)"
         );
         assert!(!burned.tier.is_sizable());
     }

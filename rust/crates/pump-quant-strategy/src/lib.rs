@@ -3,7 +3,7 @@ pub mod exit_ladder;
 pub mod safety_integrity;
 pub mod scalp_position;
 
-// --- Extension leaves closing constitution spec-gaps ---
+// --- Extension leaves closing operator spec-gaps ---
 pub mod adaptation_envelope;
 pub mod annotation_boundary;
 pub mod calibration_budget;

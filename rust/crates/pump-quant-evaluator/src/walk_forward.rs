@@ -1,5 +1,5 @@
 //! `walk_forward` — chronological walk-forward / no-look-ahead split validator
-//! (constitution §16, §53).
+//! (operator §16, §53).
 //!
 //! Responsibility: prove, deterministically and on the frozen-evaluator side,
 //! that a set of walk-forward folds contains no look-ahead. Every test window
@@ -9,7 +9,7 @@
 //! future into training. Any Python bug that shuffles or overlaps folds is
 //! caught here rather than silently inflating backtest results.
 //!
-//! Integer-only (constitution §22): timestamps are `u64` nanoseconds; no floats.
+//! Integer-only (operator §22): timestamps are `u64` nanoseconds; no floats.
 
 /// One walk-forward fold: a training window ending at `train_end_ns`, then a
 /// test window `[test_start_ns, test_end_ns]`. Times are `u64` nanoseconds.
@@ -58,7 +58,7 @@ pub enum Leak {
 
 /// Assert that every fold is chronological and the folds march forward.
 ///
-/// Responsibility (constitution §16, §53): returns `Ok(())` iff
+/// Responsibility (operator §16, §53): returns `Ok(())` iff
 ///
 /// * every fold has `test_start_ns > train_end_ns` (test strictly post-dates
 ///   train — the core no-look-ahead condition), and

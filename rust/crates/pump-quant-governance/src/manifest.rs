@@ -1,5 +1,5 @@
 //! Infrastructure manifest — the versioned sibling of the source registry
-//! (constitution §13, §18.9, §43, §62).
+//! (operator §13, §18.9, §43, §62).
 //!
 //! ## Responsibility
 //! `pq-governance hosts source registry + infrastructure manifest` (§13). The
@@ -264,7 +264,7 @@ impl ManifestStatus {
 /// A registered infrastructure manifest: its current versioned capability, its
 /// status, an optional supersede pointer, and a bounded revision history.
 ///
-/// ## Constitution §18.9 / §43 / §57
+/// ## Operator §18.9 / §43 / §57
 /// Models one `infrastructure_manifest` row. `version` is monotone and increases
 /// by exactly one per [`revise`](InfrastructureManifest::revise). The revision
 /// `history` is a fixed-capacity ring buffer (§57): once full, the oldest prior

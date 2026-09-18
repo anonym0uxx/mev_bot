@@ -8,7 +8,7 @@
 //! "creator risk" is a *derived* value that must remain separable from raw
 //! truth).
 //!
-//! The constitution is explicit that high creator ownership must **not**
+//! The operator is explicit that high creator ownership must **not**
 //! automatically become a binary rejection (§22 behavioral-risk clause): it is
 //! evaluated alongside buyer independence, cluster-adjusted breadth, exit
 //! capacity, etc. Accordingly this reducer produces *measures*, never a verdict.

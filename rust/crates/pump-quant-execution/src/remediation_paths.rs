@@ -19,7 +19,7 @@
 //! The model never supplies authority (signatures, out-amounts); the gate
 //! recomputes those from live state.
 //!
-//! ## Constitution
+//! ## Operator
 //! * §80 — incident-branch remediations cannot reach chain without gate.
 //! * §36 — 6-class failure taxonomy (extended in runtime_errors.rs).
 //! * §79 — deterministic exit path is model-independent.

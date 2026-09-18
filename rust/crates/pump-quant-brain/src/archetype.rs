@@ -1,5 +1,5 @@
 //! `archetype` — named, measurable **style lenses** over the setup fingerprint
-//! (constitution 22 integer-only, 46 small-n, 57 bounded, 100 phase separation,
+//! (operator 22 integer-only, 46 small-n, 57 bounded, 100 phase separation,
 //! 102 named thresholds).
 //!
 //! # What these are, and what they are explicitly not
@@ -60,7 +60,7 @@
 //! at [`ARCHETYPE_FIT_MIN_BP`]. Ties on the best lens break by ascending
 //! [`StyleLens::ordinal`] — deterministic, never by iteration order.
 //!
-//! # Phase separation (constitution 100)
+//! # Phase separation (operator 100)
 //!
 //! [`archetype_performance`] takes a mandatory [`VenuePhase`], exactly as
 //! [`RecallFilter`] does. There is no phase-pooled per-lens statistic and there
@@ -88,20 +88,20 @@ use crate::recall::{
 };
 
 // ---------------------------------------------------------------------------
-// Named constants (constitution 102)
+// Named constants (operator 102)
 // ---------------------------------------------------------------------------
 
-/// Number of style lenses defined here (constitution 102).
+/// Number of style lenses defined here (operator 102).
 pub const LENS_COUNT: usize = 4;
 
-/// Affinity at or above which a setup is said to *fit* a lens (constitution 102).
+/// Affinity at or above which a setup is said to *fit* a lens (operator 102).
 /// Sixty percent of the lens's available points: enough that most of the style's
 /// defining features are present, loose enough that one missing feature does not
 /// disqualify a setup.
 pub const ARCHETYPE_FIT_MIN_BP: u32 = 6_000;
 
 /// Default minimum matched episodes before a per-lens statistic is reported
-/// (constitution 46). Inherited from [`MIN_SAMPLE_DEFAULT`] so the whole crate has
+/// (operator 46). Inherited from [`MIN_SAMPLE_DEFAULT`] so the whole crate has
 /// one small-n floor.
 pub const ARCHETYPE_MIN_SAMPLE: u32 = MIN_SAMPLE_DEFAULT;
 
@@ -161,7 +161,7 @@ pub struct AffinityRule {
     pub points: u32,
 }
 
-/// Affinity table for [`StyleLens::EarlyRotation`] (constitution 102).
+/// Affinity table for [`StyleLens::EarlyRotation`] (operator 102).
 ///
 /// Young token, attention already accelerating, meta not yet saturated, holders
 /// compounding. Attention velocity and meta position carry the most points because
@@ -175,7 +175,7 @@ pub const EARLY_ROTATION_RULES: &[AffinityRule] = &[
     rule(F_AUTHENTICITY, FieldPreference::AtLeast(2), 3),
 ];
 
-/// Affinity table for [`StyleLens::FlowScalper`] (constitution 102).
+/// Affinity table for [`StyleLens::FlowScalper`] (operator 102).
 ///
 /// A live burst, decisive signed flow, enough volatility to pay for the round trip,
 /// and — the rule that keeps the style honest — **low friction**. A scalper who
@@ -190,7 +190,7 @@ pub const FLOW_SCALPER_RULES: &[AffinityRule] = &[
     rule(F_LIQUIDITY_DECADE, FieldPreference::AtLeast(3), 3),
 ];
 
-/// Affinity table for [`StyleLens::Sniper`] (constitution 102).
+/// Affinity table for [`StyleLens::Sniper`] (operator 102).
 ///
 /// The creation window: the earliest age bucket, on the curve, before breadth or
 /// liquidity exist. Corroboration is structurally unavailable this early, which is
@@ -204,7 +204,7 @@ pub const SNIPER_RULES: &[AffinityRule] = &[
     rule(F_ROUND_TRIP_COST, FieldPreference::AtMost(3), 3),
 ];
 
-/// Affinity table for [`StyleLens::ConvictionSize`] (constitution 102).
+/// Affinity table for [`StyleLens::ConvictionSize`] (operator 102).
 ///
 /// Nine rules — the most of any lens, deliberately. This style's edge is *not*
 /// taking most setups, so its signature is confluence: structure **and** flow
@@ -314,7 +314,7 @@ impl StyleLens {
     ///
     /// Note every lens keeps [`F_VENUE_PHASE`] at the maximum weight, matching
     /// [`crate::fingerprint::W_VENUE_PHASE`]: even though the recall filter already
-    /// hard-partitions on phase (constitution 100), an accidentally unfiltered
+    /// hard-partitions on phase (operator 100), an accidentally unfiltered
     /// comparison must still never rank a cross-phase episode as near.
     #[must_use]
     pub fn weights(self) -> FeatureWeights {
@@ -428,7 +428,7 @@ impl StyleLens {
     }
 
     /// The lens's recall-filter shape, on top of the mandatory venue-phase pin
-    /// (constitution 100).
+    /// (operator 100).
     ///
     /// * `EarlyRotation` pins the meta category: rotation is a question *about* a
     ///   meta, and pooling across metas would answer a different one.
@@ -967,7 +967,7 @@ mod tests {
             assert_eq!(f.meta_category_id(), None);
             assert_eq!(f.discovery_lane(), None);
         }
-        // The mandatory phase pin survives every shape (constitution 100).
+        // The mandatory phase pin survives every shape (operator 100).
         for lens in STYLE_LENSES {
             assert_eq!(lens.recall_filter(&q, 42).venue_phase(), q.venue_phase());
         }
@@ -1224,7 +1224,7 @@ mod tests {
         assert_eq!(
             c.median_net_lamports + p.median_net_lamports,
             0,
-            "the two cohorts must be disjoint, not averaged (constitution 100)"
+            "the two cohorts must be disjoint, not averaged (operator 100)"
         );
     }
 

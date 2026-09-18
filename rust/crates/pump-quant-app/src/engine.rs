@@ -3272,7 +3272,7 @@ impl Engine {
                 // thin ledger, or the law disarmed all yield `Clear`, which is the
                 // identity).
                 //
-                // The refusal is CONJUNCTIVE by constitutional requirement: §21.7
+                // The refusal is CONJUNCTIVE by operator-mandated requirement: §21.7
                 // states that bundle-adjusted top-N holding concentration is "a
                 // feature family and prior, never a standalone veto", and that
                 // "only extreme fabrication signatures may hard-reject". So the
@@ -3293,7 +3293,7 @@ impl Engine {
                         reason: REJECT_HOLDER_CONCENTRATION,
                     });
                     // Feeds the §49 ConvexityPreservationLedger through the shared
-                    // veto path, which is the audit the constitution requires of
+                    // veto path, which is the audit the operator requires of
                     // this family's veto/downweight effects.
                     self.record_reject_sample(REJECT_HOLDER_CONCENTRATION, mint_bytes);
                     return None;
@@ -6973,7 +6973,7 @@ const REJECT_BRAIN_BLED: u8 = 16;
 /// whale dominance past the named-const veto bar) AND an independent §21.7
 /// flow-authenticity signature corroborates it.
 ///
-/// **The conjunction is constitutional, not stylistic.** §21.7 names this exact
+/// **The conjunction is operator-mandated, not stylistic.** §21.7 names this exact
 /// feature — bundle-adjusted top-N holding concentration — "a feature family and
 /// prior, never a standalone veto", and separately restricts hard rejection to
 /// "extreme fabrication signatures". Concentration alone therefore only ever

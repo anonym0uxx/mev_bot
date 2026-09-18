@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 publish = false
-description = "Hermes end-to-end regression harness: durable, fast, deterministic tripwires over the golden decision-journal digest, the newly-wired constitution-law toggles, the fail-closed invariants (no live variant, UNKNOWN-stays-UNKNOWN, bounded state), and the PumpSwap decoder panic-safety. Adds coverage only — pins nothing new about behaviour, mirrors the pinned baselines in one auditable manifest (see BASELINES.md and src/baselines.rs)."
+description = "Hermes end-to-end regression harness: durable, fast, deterministic tripwires over the golden decision-journal digest, the newly-wired operator-law toggles, the fail-closed invariants (no live variant, UNKNOWN-stays-UNKNOWN, bounded state), and the PumpSwap decoder panic-safety. Adds coverage only — pins nothing new about behaviour, mirrors the pinned baselines in one auditable manifest (see BASELINES.md and src/baselines.rs)."
 
 [lib]
 name = "pq_regression"

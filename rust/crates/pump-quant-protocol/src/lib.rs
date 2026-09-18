@@ -37,7 +37,7 @@
 //!   registry gate that makes an UNVERIFIED layout unbuildable. Added
 //!   2026-08-02 after a live check falsified the shipped account lists.
 //!
-//! # Constitution
+//! # Operator
 //! * §22 — NO `f32`/`f64` on any outcome-controlling path. Every calculation
 //!   in this crate is integer / fixed-point (lamports as `u64`/`u128`, ratios
 //!   in basis points). There is not a single float in the crate.

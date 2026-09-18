@@ -17,12 +17,12 @@ use std::collections::{BTreeMap, BTreeSet};
 /// same entity MUST map to the same id for the reducer counts to be meaningful.
 pub type EntityId = u64;
 
-/// Completeness of a derived value, mirroring the constitution's
+/// Completeness of a derived value, mirroring the operator's
 /// UNKNOWN / INCOMPLETE labeling (§6.4): a reducer that has hit its memory
 /// bound reports [`Completeness::Incomplete`] instead of silently under- or
 /// over-counting.
 ///
-/// Constitution: §6.4 ("When raw data is incomplete, label the result UNKNOWN,
+/// Operator: §6.4 ("When raw data is incomplete, label the result UNKNOWN,
 /// INCOMPLETE, or UNRESOLVED. Never silently infer missing truth."), §99
 /// (capacity-bounded structures with defined behavior at the bound).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -56,7 +56,7 @@ impl Completeness {
 /// (§22). The `numerator * 10_000` step uses `saturating_mul`, so pathological
 /// inputs saturate rather than wrap.
 ///
-/// Constitution: §6.4 (derived ratios), §22 (integer/fixed-point only).
+/// Operator: §6.4 (derived ratios), §22 (integer/fixed-point only).
 #[must_use]
 pub fn ratio_bps(numerator: u128, denominator: u128) -> Option<u64> {
     if denominator == 0 {
@@ -73,7 +73,7 @@ pub fn ratio_bps(numerator: u128, denominator: u128) -> Option<u64> {
 /// Returns `None` when `denominator == 0`. Saturates to `i64::MIN`/`i64::MAX`
 /// at the extremes. Uses an `i128` intermediate. No float (§22).
 ///
-/// Constitution: §21.3 (market-wide buy/sell imbalance component).
+/// Operator: §21.3 (market-wide buy/sell imbalance component).
 #[must_use]
 pub fn signed_ratio_bps(numerator: i128, denominator: i128) -> Option<i64> {
     if denominator == 0 {

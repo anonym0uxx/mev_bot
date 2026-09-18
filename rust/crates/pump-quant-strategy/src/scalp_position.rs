@@ -5,7 +5,7 @@
 //! Position state is advanced by every decoded swap event through a pure §22 reducer
 //! ([`apply_swap`]) — never by a poll loop. All money/percent quantities are integer
 //! fixed-point (lamports as `u64`/`u128`, ratios as `bps`/`fp` in `u32`/`i64`). There is
-//! **no** `f32`/`f64` in any outcome-controlling path (constitution §22), overflow is always
+//! **no** `f32`/`f64` in any outcome-controlling path (operator §22), overflow is always
 //! explicit (checked / saturating), and every function here is deterministic: identical
 //! inputs and identical event sequences yield identical outputs, with time sourced only from
 //! event timestamps.

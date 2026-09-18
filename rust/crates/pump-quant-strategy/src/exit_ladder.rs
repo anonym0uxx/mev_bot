@@ -26,7 +26,7 @@
 //! * **Exit-into-strength trigger** — a pure detector that fires the pre-armed exit
 //!   into an authentic buy-side burst climax while in profit.
 //!
-//! ## Constitution
+//! ## Operator
 //! §22: no `f32`/`f64` anywhere in outcome-controlling logic. All arithmetic here is
 //! integer / fixed-point. Overflow is always explicit (checked / saturating).
 

@@ -4,7 +4,7 @@
 //!
 //! `regression_manifest.rs` already proves `REGRESSION_MANIFEST.md` mirrors
 //! [`pq_regression::baselines`]. That covers the manifest and nothing else. The documents an
-//! autonomous builder is actually handed — the constitution, the Phase-B activation directive,
+//! autonomous builder is actually handed — the operator, the Phase-B activation directive,
 //! the README — quote the same numbers in prose, and until this file existed nothing checked them.
 //!
 //! **They drifted, and the drift landed on the worst possible line.** The activation directive's
@@ -22,7 +22,7 @@
 //! This is the third time this repository has been bitten by the same thing: two files, each
 //! locally coherent, wrong only in relation to each other. `one_authority_laws.rs` guards it for
 //! quantities inside the decision path; `docs/SILO_AUDIT_2026-07-28.md` swept for more. This file
-//! extends the guard across the code/prose boundary, which is where the constitution's own
+//! extends the guard across the code/prose boundary, which is where the operator's own
 //! Amendment A-13(5) obligation lives — *"when a fixture correction falsifies a claim already
 //! written into a document, locate every place that claim was repeated and correct it in the SAME
 //! commit."* That obligation was, until this file, enforced entirely by the diligence of whoever
@@ -50,10 +50,8 @@ use pq_regression::baselines::*;
 
 // The documents, embedded at compile time — no runtime I/O (§22), and a moved or renamed file is
 // a compile error rather than a skipped test.
-const ACTIVATION: &str = include_str!("../../../../docs/HERMES_PHASE_B_ACTIVATION_ONESHOT.md");
 const README: &str = include_str!("../../../../README.md");
 const BASELINES_MD: &str = include_str!("../../../../REGRESSION_BASELINES.md");
-const CONSTITUTION: &str = include_str!("../../../../docs/HERMES_ONE_SHOT_PROMPT.md");
 
 /// The three canonical written forms of an integer: plain, comma-grouped, underscore-grouped.
 fn forms(n: i128) -> [String; 3] {
@@ -92,34 +90,10 @@ fn quotes(doc: &str, doc_name: &str, label: &str, value: i128) {
     );
 }
 
-/// **The decision vector.** These five values are what `§4` of the activation directive tells a
-/// Phase-B builder to check when the golden digest moves, to distinguish a seed-only re-pin from
-/// a determinism break. Getting any of them wrong in the prose misdirects the halt decision, so
-/// they are pinned here first and most loudly.
-#[test]
-fn the_activation_directive_quotes_the_live_decision_vector() {
-    let d = ACTIVATION;
-    let n = "docs/HERMES_PHASE_B_ACTIVATION_ONESHOT.md";
-    quotes(d, n, "GOLDEN_NET_LAMPORTS", GOLDEN_NET_LAMPORTS);
-    quotes(d, n, "GOLDEN_PROMOTED", i128::from(GOLDEN_PROMOTED));
-    quotes(d, n, "GOLDEN_ADMITTED", i128::from(GOLDEN_ADMITTED));
-    quotes(d, n, "GOLDEN_REJECTED", i128::from(GOLDEN_REJECTED));
-    quotes(
-        d,
-        n,
-        "GOLDEN_UNIVERSE_FILTERED",
-        i128::from(GOLDEN_UNIVERSE_FILTERED),
-    );
-    // The entry that was stale for two re-pins, on the line that decides whether to halt.
-    quotes(
-        d,
-        n,
-        "GOLDEN_ALPHACALL_NET",
-        i128::from(GOLDEN_ALPHACALL_NET),
-    );
-    // And the digest itself, which the same section instructs the builder to re-pin in two places.
-    quotes(d, n, "GOLDEN_DIGEST", i128::from(GOLDEN_DIGEST));
-}
+
+// RETIRED 2026-09-17: this pinned docs/HERMES_PHASE_B_ACTIVATION_ONESHOT.md, which was
+// removed with the constitution/supervisor document set. The README and REGRESSION_BASELINES
+// pins below still guard the live numbers against prose drift.
 
 /// The README is the first thing any reader — human or agent — opens, and it states the shipped
 /// position. A README quoting a retired book is how a stale number acquires authority.
@@ -172,22 +146,6 @@ fn the_baselines_narrative_quotes_the_live_outcome_vector() {
         n,
         "GOLDEN_UNIVERSE_FILTERED",
         i128::from(GOLDEN_UNIVERSE_FILTERED),
-    );
-}
-
-/// Amendment A-13 narrates the depth-realism correction using the golden net and the AlphaCall
-/// lane as its worked example. Its clause (5) is the chase-the-falsification obligation; the
-/// amendment carried a stale AlphaCall reading for two re-pins, i.e. A-13(5) was violated by A-13.
-/// This pins the two figures it must carry currently.
-#[test]
-fn the_constitution_amendment_quotes_the_live_figures() {
-    let n = "docs/HERMES_ONE_SHOT_PROMPT.md";
-    quotes(CONSTITUTION, n, "GOLDEN_NET_LAMPORTS", GOLDEN_NET_LAMPORTS);
-    quotes(
-        CONSTITUTION,
-        n,
-        "GOLDEN_ALPHACALL_NET",
-        i128::from(GOLDEN_ALPHACALL_NET),
     );
 }
 

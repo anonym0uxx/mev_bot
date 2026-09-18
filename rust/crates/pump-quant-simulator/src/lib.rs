@@ -1,7 +1,7 @@
 //! `pump_quant_simulator` — deterministic backtest / PAPER execution engine.
 //!
 //! Responsibility: run the same production decision core over *recorded* inputs
-//! before any live capital is risked (constitution §38 execution simulator, §39
+//! before any live capital is risked (operator §38 execution simulator, §39
 //! execution-calibration budget). Everything in this crate is a pure, deterministic
 //! function of its inputs: no wall-clock, no RNG, no network, no filesystem, and
 //! **no floating-point arithmetic in any outcome-controlling path** (§22). All

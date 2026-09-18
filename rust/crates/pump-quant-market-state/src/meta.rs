@@ -114,7 +114,7 @@ pub const TAXONOMY_VERSION_V0: u32 = 0;
 /// Version stamp of [`TAXONOMY_V1`] — the word-boundary-disciplined lexicon.
 pub const TAXONOMY_VERSION_V1: u32 = 1;
 
-/// A deterministic v0 taxonomy covering the constitution's named rotation
+/// A deterministic v0 taxonomy covering the operator's named rotation
 /// examples (animals, political, celebrity, AI) plus a few common memecoin
 /// tropes. Illustrative and versioned; production supplies the live taxonomy.
 ///
@@ -125,7 +125,7 @@ pub const TAXONOMY_VERSION_V1: u32 = 1;
 /// meaning, and re-running v0 must reproduce them. New assignments use
 /// [`TAXONOMY_V1`]; the fix is forward, never retroactive.
 ///
-/// Constitution: §21.4 (documented rotation sequences), criterion 81.
+/// Operator: §21.4 (documented rotation sequences), criterion 81.
 pub const TAXONOMY_V0: CategoryTaxonomy = CategoryTaxonomy {
     version: TAXONOMY_VERSION_V0,
     categories: &[
@@ -209,7 +209,7 @@ pub const TAXONOMY_V0: CategoryTaxonomy = CategoryTaxonomy {
 /// tickers (`dogwifhat`, `dogbrain`) are exactly the population the Animal
 /// category exists to catch.
 ///
-/// Constitution: §21.4, criterion 81 (non-retroactive versioned assignment),
+/// Operator: §21.4, criterion 81 (non-retroactive versioned assignment),
 /// §102 (every needle and its mode is a named, reviewable constant).
 pub const TAXONOMY_V1: CategoryTaxonomy = CategoryTaxonomy {
     version: TAXONOMY_VERSION_V1,
@@ -725,7 +725,7 @@ impl MetaRotationReducer {
 /// Net buy/sell flow imbalance for a category in signed bps, a convenience
 /// derived measure used by saturation research. `None` when there is no flow.
 ///
-/// Constitution: §21.4 (per-category on-chain measures), §22 (fixed-point).
+/// Operator: §21.4 (per-category on-chain measures), §22 (fixed-point).
 #[must_use]
 pub fn category_flow_imbalance_bps(m: &CategoryMeasures) -> Option<i64> {
     let total = m.buy_quote.saturating_add(m.sell_quote);

@@ -1,6 +1,6 @@
 # Birdeye — the REQUIRED 1D-candle backfill + token-data source (§6.7)
 
-Constitutional status: **required source** (Amendment A-3, constitution §6.7,
+operator-mandated status: **required source** (Amendment A-3, operator §6.7,
 human-directed 2026-07-23). Build obligation: `docs/SERVER_BUILD_MANIFEST.md` §10.
 This document is the §6.6 **external-tool evaluation record** for the dependency.
 

@@ -25,7 +25,7 @@
 //! against it. Disarming stops the bot *opening* risk; it must never stop it
 //! *closing* risk. [`LiveGate::admit_exit`] therefore cannot return a denial.
 //!
-//! ## Constitution refs
+//! ## Operator refs
 //! - §22: sizes and PnL in lamports, rates in basis points, all integer. PnL is
 //!   `i64` because it is signed; every accumulator saturates.
 //! - Determinism: no clock, no RNG. Wall time and day boundaries are supplied by

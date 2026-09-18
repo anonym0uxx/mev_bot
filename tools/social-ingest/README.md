@@ -34,7 +34,7 @@ makes a decision. Every adapter emits the SAME one-object-per-line schema:
 
 `normalize.py` is the shared schema builder every adapter uses. `sources.yaml` holds
 the seed inventory (TG channels, the X KOL watchlist + Greek-CT list, TikTok
-hashtags, web pages) from constitution §29.7 — all PUBLIC_BURNED-presumed, to score,
+hashtags, web pages) from operator §29.7 — all PUBLIC_BURNED-presumed, to score,
 never to trust. `run_all.py` multiplexes several adapters into one stream.
 
 ## Prove the whole pipeline with no keys

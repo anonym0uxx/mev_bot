@@ -1,4 +1,4 @@
-//! `metrics` — required trading-metrics suite (constitution §54).
+//! `metrics` — required trading-metrics suite (operator §54).
 //!
 //! §54 names a suite the frozen evaluator must compute over reconciled outcomes:
 //! CVaR / tail-loss, profit factor, median return, Brier score, and calibration

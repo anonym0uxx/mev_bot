@@ -3,13 +3,13 @@
 //! Responsibility: the deterministic, research-plane feature layer that turns
 //! timestamp-safe attention observations into narrative-state features for the
 //! StrategyRuntime's corroboration tier. It implements the ten narrative leaves
-//! of the constitution's attention/narrative specification (§29 Narrative
+//! of the operator's attention/narrative specification (§29 Narrative
 //! interpretation stack — `AttentionStateReducer`, `AttentionDecayModel`,
 //! `SocialCatalystClassifier`; §21.4 `MetaRotationState`; §29.7/§46
 //! Signal-Horizon Matching Law; §783 pre-legibility doctrine), aggregated here
 //! as the attention-velocity engine.
 //!
-//! Hard invariants (constitution):
+//! Hard invariants (operator):
 //! * §22 — NO `f32`/`f64` anywhere on the outcome path. All quantities are
 //!   integer or fixed-point over [`FP_ONE`]. Overflow is explicit: every
 //!   arithmetic step that can overflow widens to `i128`/`u128` and then
@@ -39,7 +39,7 @@
 // and it contained zero `unsafe` when this was added. `forbid` makes that a
 // property the compiler holds rather than one a reviewer has to re-verify —
 // and unlike `deny` it cannot be locally overridden by an `#[allow]`.
-// Constitution §24(b): an `unsafe` block requires a dossier-registered,
+// Operator §24(b): an `unsafe` block requires a dossier-registered,
 // property-tested safety argument. There is no such dossier entry for this
 // crate, so there is no `unsafe` this attribute could legitimately block.
 #![forbid(unsafe_code)]

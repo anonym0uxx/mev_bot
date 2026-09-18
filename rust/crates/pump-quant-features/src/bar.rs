@@ -1,17 +1,17 @@
-//! Streaming bar builder over canonical trade flow (constitution 21.6).
+//! Streaming bar builder over canonical trade flow (operator 21.6).
 //!
 //! Responsibility: fold an ordered stream of [`TradeEvent`]s into OHLCV bars,
 //! either fixed-interval **time bars** or cumulative **volume bars**, built
 //! *primarily from our own canonical flow* — the only leakage-proof, wash-
 //! screenable source. Every emitted [`Bar`] binds back to the first and last
 //! event it covers and never peeks past the trade that closed it, so bars are
-//! point-in-time safe by construction (constitution 20). All arithmetic is
-//! integer/fixed-point (constitution 22); the reducer holds at most one open bar,
-//! so memory is bounded (constitution 57).
+//! point-in-time safe by construction (operator 20). All arithmetic is
+//! integer/fixed-point (operator 22); the reducer holds at most one open bar,
+//! so memory is bounded (operator 57).
 
 use crate::types::{EventId, FeatureError, Side, TradeEvent};
 
-/// An OHLCV bar with order-flow decomposition and provenance (constitution 21.6).
+/// An OHLCV bar with order-flow decomposition and provenance (operator 21.6).
 ///
 /// Prices are fixed-point [`i128`] in [`crate::types::PRICE_SCALE`] units. Volumes
 /// are integer base/quote units. Buy/sell decomposition supports the 21.7 order-
@@ -21,7 +21,7 @@ pub struct Bar {
     /// Information time of the first trade in the bar (bar open time).
     pub open_time_ns: u64,
     /// Information time of the last trade in the bar (bar close time). The bar
-    /// contains no information after this instant (constitution 20).
+    /// contains no information after this instant (operator 20).
     pub close_time_ns: u64,
     /// Price of the first trade.
     pub open_fp: i128,
@@ -41,7 +41,7 @@ pub struct Bar {
     pub sell_base_volume: u64,
     /// Number of trades folded into the bar.
     pub trade_count: u32,
-    /// Provenance: first event id covered (constitution 21.6 bind-to-flow).
+    /// Provenance: first event id covered (operator 21.6 bind-to-flow).
     pub first_event_id: EventId,
     /// Provenance: last event id covered.
     pub last_event_id: EventId,
@@ -71,7 +71,7 @@ impl Bar {
     }
 
     /// Fold one trade into an open bar. Volumes use `saturating_add` as an explicit
-    /// overflow contract (constitution 22): a bar's cumulative volume saturates at
+    /// overflow contract (operator 22): a bar's cumulative volume saturates at
     /// `u64::MAX`/`u32::MAX` rather than wrapping, which for the volume-bar close
     /// test still trips the threshold correctly.
     fn absorb(&mut self, t: &TradeEvent) {
@@ -94,13 +94,13 @@ impl Bar {
     }
 }
 
-/// Bar aggregation policy (constitution 21.6 multi-timeframe bars).
+/// Bar aggregation policy (operator 21.6 multi-timeframe bars).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BarSpec {
     /// Fixed-interval time bars. A trade at time `t` belongs to bucket
     /// `(t - epoch_ns) / interval_ns`. Bars are emitted sparsely: only buckets
     /// that actually contained a trade produce a bar (empty buckets are skipped,
-    /// so the builder never fabricates zero-volume candles — constitution 21.6
+    /// so the builder never fabricates zero-volume candles — operator 21.6
     /// "detect and reject missing/stale candles").
     Time {
         /// Bucket width in nanoseconds (must be non-zero).
@@ -118,7 +118,7 @@ pub enum BarSpec {
     },
 }
 
-/// Streaming, memory-bounded bar reducer (constitution 21.6/22/57).
+/// Streaming, memory-bounded bar reducer (operator 21.6/22/57).
 ///
 /// Feed trades in non-decreasing `ts_ns` order via [`BarBuilder::push`]; each call
 /// returns `Some(bar)` when a bar closes. Call [`BarBuilder::flush`] to emit the
@@ -162,7 +162,7 @@ impl BarBuilder {
 
     /// Ingest one trade. Returns `Some(bar)` if this trade caused a bar to close
     /// (the *previous* bar for time bars, or the just-completed bar for volume
-    /// bars). Enforces non-decreasing information time (constitution 20): a trade
+    /// bars). Enforces non-decreasing information time (operator 20): a trade
     /// older than the last one is rejected with
     /// [`FeatureError::NonMonotonicTimestamp`] rather than silently reordered.
     pub fn push(&mut self, t: TradeEvent) -> Result<Option<Bar>, FeatureError> {

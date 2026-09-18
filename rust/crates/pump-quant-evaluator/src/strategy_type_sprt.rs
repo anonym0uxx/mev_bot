@@ -21,7 +21,7 @@
 //! validate good ones fast (SPRT adopt), and let Thompson sampling focus
 //! capital on the survivors.
 //!
-//! ## Constitution compliance
+//! ## Operator compliance
 //! - §45: SPRT (Wald 1945) for sequential probability assessment
 //! - §56.3: Strategy lifecycle stages advanced based on evidence
 //! - §22: Integer-only, no floats, no RNG

@@ -40,7 +40,7 @@
 //!   expressed as `tip: None`, never as `tip_lamports: 0`.
 //! * Sign or submit. No key material and no I/O exist in this crate.
 //!
-//! ## Constitution
+//! ## Operator
 //! * §22 — integer only, deterministic, identical inputs → identical bytes.
 //! * §18.2 — fail closed everywhere; every account decoded or derived.
 //! * criterion 77/113 — the output is the byte surface the construction gate

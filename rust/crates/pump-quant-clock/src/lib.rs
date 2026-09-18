@@ -3,7 +3,7 @@
 //!
 //! Responsibility: provide the single injection point through which *all*
 //! decision-path time reads flow, so that strategy logic never touches a
-//! wall clock and every replay is reproducible (constitution §19
+//! wall clock and every replay is reproducible (operator §19
 //! "Deterministic Replay Engine", §22 "Deterministic Strategy Core").
 //!
 //! This crate contains two independent, self-contained pieces:
@@ -19,7 +19,7 @@
 //!   [`tie_break_cmp`](tie_break::tie_break_cmp)), so that two runs over the
 //!   same journal see events in byte-identical order (§19 "Tie-breaking").
 //!
-//! Constitution hard rules honored here (§22): no floating point anywhere in
+//! Operator hard rules honored here (§22): no floating point anywhere in
 //! this crate (all time is integer nanoseconds / integer slots); overflow is
 //! explicit (advancing clocks saturate by contract); everything the tests
 //! touch is `pub`; there is no I/O, RNG, network, or real wall-clock call —

@@ -13,7 +13,7 @@
 //!    - `pumpfun_laserstream_events_v1_<SESSION>.ndjson` (causal events)
 //!    - `pumpfun_laserstream_manifest_v1_<SESSION>.json` (metadata)
 //!
-//! ## Constitution
+//! ## Operator
 //! * No secrets are ever logged. The endpoint host is recorded in the manifest
 //!   but the API key is never written to any file.
 //! * Training capture uses CONFIRMED commitment (not PROCESSED) to avoid

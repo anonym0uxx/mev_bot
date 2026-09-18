@@ -1,5 +1,5 @@
 //! `entry_zone` — dynamic entry-zone taxonomy and per-zone outcome
-//! stratification (constitution §25).
+//! stratification (operator §25).
 //!
 //! §25 requires the frozen evaluator to stratify reconciled outcomes by *entry
 //! zone* — a decision-time classification combining a token's market-cap band

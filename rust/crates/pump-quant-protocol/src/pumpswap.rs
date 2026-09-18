@@ -22,7 +22,7 @@
 //!   absent or malformed field, so a partially-present tail never yields a
 //!   field read past its predecessor).
 //!
-//! # Constitution
+//! # Operator
 //! * §22 — integer-only; no float is produced or consumed.
 //! * §99 — no allocation or unbounded state: every decode is a fixed-size
 //!   struct read out of a borrowed slice.
@@ -189,7 +189,7 @@ pub const POOL_FIXED_LEN: usize = 211;
 /// the first absent or non-canonical field, so a truncated or corrupt tail
 /// yields `None` for that field and everything after it — never a panic.
 ///
-/// # Constitution
+/// # Operator
 /// §22 integer-only; §18.2 identity verified first; every access bounds-checked.
 pub fn decode_pool_account(account: &[u8]) -> Option<PoolAccount> {
     if account.get(0..8)? != registry::PUMPSWAP_ACCOUNT_DISCRIMINATOR {
@@ -316,7 +316,7 @@ const GLOBAL_CONFIG_TAIL_OFFSET: usize = 313;
 /// [`GLOBAL_CONFIG_DISCRIMINATOR`] (§18.2 fail-closed). The appended tail
 /// decodes sequentially and stops at the first absent/malformed field.
 ///
-/// # Constitution
+/// # Operator
 /// §22 integer-only; §18.2 identity verified first; every access bounds-checked.
 pub fn decode_global_config(account: &[u8]) -> Option<GlobalConfigAccount> {
     if account.get(0..8)? != GLOBAL_CONFIG_DISCRIMINATOR {

@@ -3,12 +3,12 @@
 //! [`StrategyState`] holds four **orthogonal** decision dimensions — entry, size,
 //! exit, hold — each an independently inspectable [`Dimension`] preserving its raw
 //! input, derived value, completeness, freshness, confidence, and source
-//! provenance (constitution §31). "No single collapsed score drives entry + size +
+//! provenance (operator §31). "No single collapsed score drives entry + size +
 //! exit + hold" is enforced *by construction*: the only constructor takes four
 //! separate dimensions, there is no `from_composite`, and mutating one dimension
 //! provably leaves the other three unchanged.
 //!
-//! ## Constitution
+//! ## Operator
 //! §31: orthogonal, independently observable dimensions; composite scores never
 //! erase the underlying dimensions and a single composite may never override a
 //! hard per-dimension failure. §22: all values integer/fixed-point.

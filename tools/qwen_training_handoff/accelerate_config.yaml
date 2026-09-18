@@ -1,0 +1,20 @@
+# ════════════════════════════════════════════════════════════════
+# Accelerate Config — Qwen 27B Full-Parameter BF16 Training
+# 3× NVIDIA RTX PRO 6000 (96GB VRAM each = 288GB total)
+# DeepSpeed ZeRO-3 + gradient checkpointing
+# ════════════════════════════════════════════════════════════════
+compute_environment: LOCAL_MACHINE
+debug: false
+distributed_type: MULTI_GPU
+downcase_fp16: false
+gpu_ids: 0,1,2
+machine_rank: 0
+main_training_function: main
+mixed_precision: bf16
+num_machines: 1
+num_processes: 3
+rdzv_backend: static
+same_network: true
+tpu_base_host: ""
+tpu_name: ""
+use_cpu: false

@@ -20,7 +20,7 @@
 //!
 //! It is tempting — and the original plan for this module proposed it — to collapse
 //! the two into a single number and let the lane's realized expectancy price admission
-//! as well as ranking. **That is a constitutional over-reach and it was measured to be
+//! as well as ranking. **That is a operator-mandated over-reach and it was measured to be
 //! expensive.** Two independent reasons:
 //!
 //! 1. **§24/§38 scope.** The lane expectancy is built from PAPER-realized fills.
@@ -28,7 +28,7 @@
 //!    are never promotion evidence (§38 — the fill model is graded separately)."*
 //!    §24 grants that quantity exactly one job, conditioning §23 arbitration. Making
 //!    it an admission veto hands a paper quantity authority over capital that the
-//!    constitution does not give it.
+//!    operator does not give it.
 //! 2. **It was measured, and it costs.** Wiring lane expectancy into admission was
 //!    built and run. On LAW B3's own hazard tape the admitted count collapses 48 → 13,
 //!    the armed arm's net falls from **+276_922_370 to −27_981_846**, and — worse —

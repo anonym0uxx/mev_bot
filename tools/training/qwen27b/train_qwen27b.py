@@ -33,7 +33,11 @@ checkpoint saves only. This is NOT qwen_eval_v1.1.
 Attention: PyTorch SDPA (cuDNN/flash backend as available on sm_120).
 FA2 deliberately NOT required.
 """
-import argparse, hashlib, json, math, os, random, resource
+import argparse, hashlib, json, math, os, random
+try:
+    import resource
+except ImportError:  # Windows supports loader-only dryruns.
+    resource = None
 
 import torch
 from torch.utils.data import Dataset
@@ -46,103 +50,10 @@ TOKENIZER_REV = "3ea932cee0a432ae86e9c7826cbe8aef52323a28"
 CPT_SEQ_LEN = 4096      # max CPT record = 3,999 tok — one bin fits any record
 SFT_SEQ_LEN = 12288     # max SFT record = 10,154 tok — headroom, zero truncation
 SEED = 42
-VAL_FRACTION = 0.025    # internal validation, group-disjoint
 NUM_GPUS = 3
-# Retention target share of SUPERVISED LOSS-BEARING LABEL TOKENS (directive:
-# 3-5% initially). Raw token share is wrong: domain prompts are masked -100, so
-# optimization share = share of labels != -100 after chat templating/masking.
-RETENTION_TARGET = 0.04
-
-# ── SUPERVISION GEOMETRY (task-level gradient budget, BINDING) ──
-# Target OPTIMIZATION shares measured in post-mask LOSS-BEARING label tokens.
-# Enforced by bounded per-task LOSS WEIGHTS (no repetition/padding — quality
-# over scale). Weight = target_share / measured_share, clipped to
-# [1/TASK_WEIGHT_CAP, TASK_WEIGHT_CAP], then renormalized so the weighted
-# token count equals the raw token count (keeps the effective LR unchanged).
-# CRITICAL: weights derive ONLY from task identity — NEVER from realized
-# return, MFE, net SOL, robust_utility magnitude, or moonshot status.
-TASK_TARGETS = {
-    "cross":     0.70,   # cross-sectional Pump decisions/ranking (+ exec surface)
-    "post":      0.10,   # Pump postmortem/contrast
-    "rust":      0.10,   # Rust/Solana engineering
-    "narrative": 0.05,   # narrative/meta strategy
-    "hermes":    0.01,   # Hermes/tool behavior
-    "retention": 0.04,   # general retention
-}
-TASK_WEIGHT_CAP = 4.0
-
-_BUCKET_BY_PREFIX = (
-    ("sft_cross", "cross"), ("sft_exec", "cross"),
-    ("sft_post", "post"),
-    ("sft_rust", "rust"),
-    ("sft_narr", "narrative"),
-    ("sft_hermes", "hermes"), ("sft_gen", "hermes"),
-)
-
-
-def task_bucket(rec):
-    """Map a record to its supervision-geometry bucket. Retention records use
-    the messages schema (no curriculum id) -> 'retention'."""
-    rid = str(rec.get("id", ""))
-    for pfx, bucket in _BUCKET_BY_PREFIX:
-        if rid.startswith(pfx):
-            return bucket
-    return "retention"
-
-
-def compute_task_weights(recs_with_loss):
-    """(bucket, loss_tokens) pairs -> {bucket: weight}.
-    Bounded ratio weights, renormalized to preserve total token mass."""
-    per = {}
-    for bucket, lt in recs_with_loss:
-        per[bucket] = per.get(bucket, 0) + lt
-    total = sum(per.values())
-    w = {}
-    for bucket, lt in per.items():
-        share = lt / total
-        target = TASK_TARGETS.get(bucket, share)
-        w[bucket] = min(max(target / share, 1.0 / TASK_WEIGHT_CAP),
-                        TASK_WEIGHT_CAP)
-    # Renormalize: sum(w_b * tokens_b) == total  (unchanged effective LR)
-    scale = total / sum(w[b] * per[b] for b in per)
-    w = {b: w[b] * scale for b in w}
-    eff = {b: round(w[b] * per[b] / total, 4) for b in per}
-    return w, per, eff
-
-
-def load_jsonl(path):
-    with open(path, encoding="utf-8") as f:
-        return [json.loads(l) for l in f if l.strip()]
-
-
-def group_key(rec):
-    """Group-disjoint validation key: mint / trajectory / repair chain / source doc.
-    Falls back to content hash (its own group) when no grouping field exists."""
-    prov = rec.get("provenance") or {}
-    meta = rec.get("meta") or {}
-    for src in (rec, prov, meta):
-        for k in ("mint", "mint_address", "trajectory_id", "chain_id",
-                  "repair_chain_id", "group_id", "source_doc", "source_url",
-                  "doc_id", "source_id"):
-            v = src.get(k)
-            if v:
-                return f"{k}:{v}"
-    sids = rec.get("source_ids")
-    if sids:
-        return "sids:" + ",".join(sorted(str(s) for s in sids))
-    basis = rec.get("content") or rec.get("output") or rec
-    if not isinstance(basis, str):
-        basis = json.dumps(basis, sort_keys=True, ensure_ascii=False, default=str)
-    return "hash:" + hashlib.sha256(basis.encode()).hexdigest()[:16]
-
-
-def split_train_val(recs):
-    """Deterministic group-disjoint split: hash group key -> ~VAL_FRACTION to val."""
-    train, val = [], []
-    for r in recs:
-        h = int(hashlib.sha256(group_key(r).encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
-        (val if h < VAL_FRACTION else train).append(r)
-    return train, val
+from release_data import (load_jsonl, task_bucket, build_example, loss_tokens,
+                          derive_train_weights, weight_key, load_release, require,
+                          resolve, sha256, tokenizer_fingerprint, verify_tokenizer, verify_training_request)
 
 
 class PackedCPTDataset(Dataset):
@@ -161,7 +72,7 @@ class PackedCPTDataset(Dataset):
             while len(buf) >= CPT_SEQ_LEN:
                 self.blocks.append(buf[:CPT_SEQ_LEN])
                 buf = buf[CPT_SEQ_LEN:]
-        if len(buf) > CPT_SEQ_LEN // 8:
+        if buf:
             self.blocks.append(buf)
 
     def __len__(self):
@@ -171,70 +82,6 @@ class PackedCPTDataset(Dataset):
         ids = torch.tensor(self.blocks[i], dtype=torch.long)
         return {"input_ids": ids, "labels": ids.clone(),
                 "attention_mask": torch.ones_like(ids)}
-
-
-def build_example(r, tok):
-    """One record -> (full_ids, labels) with prompt masking, or None if over-length.
-    Canonical serialization MUST match certify_curriculum_v1.py:
-    non-string input/output -> json.dumps(..., ensure_ascii=False)."""
-    if "messages" in r:
-        msgs = r["messages"]
-    else:
-        def _s(v):
-            return v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
-        user = _s(r["instruction"]) + (
-            "\n\n" + _s(r["input"]) if r.get("input") else "")
-        msgs = [{"role": "user", "content": user},
-                {"role": "assistant", "content": _s(r["output"])}]
-    # transformers >=5.x: apply_chat_template(tokenize=True) returns a BatchEncoding,
-    # not a raw list[int] (4.x). Extract ["input_ids"] (flat list of token ids).
-    prompt_ids = tok.apply_chat_template(msgs[:-1], add_generation_prompt=True,
-                                         tokenize=True)["input_ids"]
-    full_ids = tok.apply_chat_template(msgs, add_generation_prompt=False,
-                                       tokenize=True)["input_ids"]
-    if len(full_ids) > SFT_SEQ_LEN:
-        return None  # cert max = 10,154 < 12,288 -> expect never
-    labels = [-100] * len(prompt_ids) + full_ids[len(prompt_ids):]
-    return full_ids, labels
-
-
-def loss_tokens(labels):
-    return sum(1 for x in labels if x != -100)
-
-
-def select_retention(domain, retention, tok, target=RETENTION_TARGET):
-    """Deterministically subsample the retention shard so retention contributes
-    ~target of SUPERVISED LOSS-BEARING LABEL TOKENS (post-templating/masking).
-    Full shard stays preserved on disk/modular — this only governs what is FED.
-    Order: sha256 of the record's canonical JSON (stable, data-derived, seedless).
-    Returns (kept_records, stats)."""
-    dom_loss = 0
-    for r in domain:
-        ex = build_example(r, tok)
-        if ex:
-            dom_loss += loss_tokens(ex[1])
-    per = []
-    for r in retention:
-        ex = build_example(r, tok)
-        if not ex:
-            continue
-        key = hashlib.sha256(json.dumps(
-            r, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        per.append((key, r, loss_tokens(ex[1])))
-    per.sort(key=lambda t: t[0])
-    budget = dom_loss * target / (1.0 - target)   # R/(D+R) = target
-    keep, acc = [], 0
-    for key, r, lt in per:
-        if acc >= budget:
-            break
-        keep.append(r)
-        acc += lt
-    stats = {"domain_loss_tokens": dom_loss,
-             "retention_full_records": len(retention),
-             "retention_kept_records": len(keep),
-             "retention_kept_loss_tokens": acc,
-             "retention_share_of_loss_tokens": acc / (dom_loss + acc)}
-    return keep, stats
 
 
 class SFTDataset(Dataset):
@@ -256,7 +103,7 @@ class SFTDataset(Dataset):
                 continue
             w = 1.0
             if task_weights is not None:
-                w = float(task_weights.get(task_bucket(r), 1.0))
+                w = float(task_weights[weight_key(r)])
             self.examples.append((ex[0], ex[1], w))
         if skipped:
             print(f"[WARN] skipped {skipped} over-length records (expected 0)")
@@ -454,6 +301,36 @@ class WeightedLossTrainer(Trainer):
             loss = weighted / wdenom
         return (loss, outputs) if return_outputs else loss
 
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        # Gather per-example sufficient statistics while Accelerate still knows
+        # the final-batch remainder; this removes distributed sampler duplicates.
+        inputs=self._prepare_inputs(dict(inputs))
+        labels=inputs.pop('labels')
+        weights=inputs.pop('task_weight',None)
+        require(weights is None or bool(weights.eq(1).all()), 'Validation weights must be unit weights')
+        with torch.no_grad(), self.compute_loss_context_manager():
+            outputs=model(**inputs)
+            logits=outputs.logits if hasattr(outputs,'logits') else outputs['logits']
+            per_token=self._chunked_ce(logits[:,:-1,:],labels[:,1:])
+            totals=torch.stack((per_token.double().sum(1),labels[:,1:].ne(-100).double().sum(1)),dim=1)
+        gathered=self.accelerator.gather_for_metrics(totals)
+        self._eval_totals += gathered.sum(0).cpu()
+        self._eval_examples += len(gathered)
+        return totals[:,0].sum()/totals[:,1].sum().clamp(min=1),None,None
+
+    def evaluation_loop(self, dataloader, description, prediction_loss_only=None,
+                        ignore_keys=None, metric_key_prefix='eval'):
+        self._eval_totals=torch.zeros(2,dtype=torch.float64)
+        self._eval_examples=0
+        output=super().evaluation_loop(dataloader,description,True,ignore_keys,metric_key_prefix)
+        numerator,denominator=self._eval_totals.tolist()
+        require(denominator>0 and math.isfinite(numerator), 'Invalid validation token totals')
+        require(self._eval_examples==output.num_samples, 'Validation population mismatch')
+        output.metrics[metric_key_prefix+'_loss']=numerator/denominator
+        output.metrics[metric_key_prefix+'_loss_tokens']=int(denominator)
+        output.metrics[metric_key_prefix+'_loss_sum']=numerator
+        return output
+
     def denom_stats_summary(self):
         if not self._denom_stats:
             return {}
@@ -544,21 +421,116 @@ class ValHistoryCallback(TrainerCallback):
               f"(best so far: {state.best_metric})")
 
 
-def main():
-    # Belt-and-suspenders: raise RLIMIT_NOFILE to the hard cap IN-PROCESS before
-    # DeepSpeed's NVMe aio opens any swap file. The shell `ulimit -n 1048576`
-    # DOES reach the ranks (verified soft=1048576), but DeepSpeed's aio leaks one
-    # fd per completed op (deepspeed_py_io_handle.cpp:213 is missing its close()),
-    # exhausting even 1048576 in ~103 steps (attempt #19 crash, error 24). This
-    # setrlimit is a no-op today but guarantees the full cap survives any future
-    # launch-mechanism change. The REAL fix is re-adding close() — deferred to
-    # the native-Linux migration (where offload_param is dropped entirely).
-    _soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    resource.setrlimit(resource.RLIMIT_NOFILE, (_hard, _hard))
+def step_plan(phase, count, epochs=None):
+    window = (1.75 if phase=='cpt' else 1.25) if epochs is None else epochs
+    steps = math.ceil(count / (NUM_GPUS * 8))
+    total = math.ceil(steps * window)
+    mark = max(1, steps // 4)
+    marks = list(range(mark,total+1,mark))
+    if total not in marks: marks.append(total)
+    return {'world_size':NUM_GPUS,'per_device_batch_size':1,'gradient_accumulation_steps':8,
+            'steps_per_epoch':steps,'total_steps_max':total,'max_window_ep':window,
+            'warmup_steps':math.ceil(total*(.04 if phase=='cpt' else .03)),
+            'mark_every':mark,'marks_steps':marks,
+            'marks_epochs':[round(s/steps,6) for s in marks]}
+
+
+def prepare_datasets(release, phase, tok):
+    verify_tokenizer(tok,release['manifest']['tokenizer'])
+    parts=release['phases'][phase]
+    if phase=='sft':
+        weights,geometry=derive_train_weights(parts['train'],tok,release['manifest']['phases'][phase]['task_targets'])
+        train=SFTDataset(parts['train'],tok,task_weights=weights)
+        val=SFTDataset(parts['validation'],tok,shuffle=False)
+    else:
+        train=PackedCPTDataset(parts['train'],tok)
+        val=PackedCPTDataset(parts['validation'],tok,shuffle=False)
+        geometry={'method':'unweighted_factual_cpt_tokens; no task/class/outcome reweighting',
+                  'tail_policy':'preserve_every_token','task_targets_applied':False}
+    require(len(train)>0 and len(val)>0,'Empty resulting dataset')
+    verify_tokenizer(tok,release['manifest']['tokenizer'])
+    return train,val,geometry
+
+
+def dataset_report(release,phase,train,val,geometry):
+    def census(ds,partition):
+        if phase=='sft':
+            raw=sum(len(ids) for ids,labels,w in ds.examples)
+            loss=sum(loss_tokens(labels) for ids,labels,w in ds.examples)
+            weighted=sum(loss_tokens(labels)*w for ids,labels,w in ds.examples)
+        else:
+            raw=sum(map(len,ds.blocks));loss=sum(max(0,len(b)-1) for b in ds.blocks);weighted=loss
+        return {'records':len(release['phases'][phase][partition]),'dataset_items':len(ds),
+                'raw_tokens':raw,'shifted_loss_tokens':loss,'weighted_loss_token_mass':weighted,
+                'tail_tokens':len(ds.blocks[-1]) if phase=='cpt' else None}
+    return {'schema':'qwen27b_loader_dryrun_v2','release_id':release['manifest']['release_id'],
+            'manifest_sha256':release['sha256'],'phase':phase,'training_authorized':False,
+            'model_loaded':False,'training_launched':False,
+            'tokenizer_effective_sha256':release['manifest']['tokenizer']['effective_sha256'],
+            'train':census(train,'train'),'validation':census(val,'validation'),
+            'geometry':geometry,'step_plan':step_plan(phase,len(train)),
+            'validation_weights':'unit weights; no fitting or resplitting'}
+
+
+def write_runtime_evidence(path, payload):
+    """Best-effort runtime receipt. Never raises: collecting evidence must not be
+    able to fail a training run."""
+    try:
+        tmp = str(path) + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(payload, fh, indent=1, sort_keys=True)
+        os.replace(tmp, path)
+        print(f"[runtime-evidence] wrote {path}")
+        return True
+    except Exception as exc:                      # noqa: BLE001 - deliberate
+        print(f"[runtime-evidence] NOT written ({type(exc).__name__}: {exc}); "
+              "training is unaffected")
+        return False
+
+
+def collect_runtime_evidence(trainer, release, args, stopped_early, total_steps):
+    """Assemble the receipt from state the trainer already tracks."""
+    st = trainer.state
+    eval_mass, eval_loss = None, None
+    for entry in getattr(st, "log_history", []) or []:
+        if "eval_loss_tokens" in entry:
+            eval_mass = int(entry["eval_loss_tokens"])
+            eval_loss = entry.get("eval_loss")
+    try:
+        zero_stage = trainer.accelerator.state.deepspeed_plugin.zero_stage
+    except Exception:                             # noqa: BLE001
+        zero_stage = None
+    return {
+        "schema": "qwen27b_runtime_evidence_v1",
+        "phase": args.phase,
+        "release_id": release.get("release_id"),
+        "release_manifest": args.release_manifest,
+        "world_size": int(getattr(trainer.args, "world_size", 0) or 0),
+        "global_rank": int(getattr(trainer.args, "process_index", 0) or 0),
+        "deepspeed_zero_stage": zero_stage,
+        "native_deepspeed": zero_stage == 3,
+        "steps_completed": int(st.global_step),
+        "total_steps_planned": int(total_steps),
+        "stopped_early": bool(stopped_early),
+        "validation_loss_token_mass": eval_mass,
+        "validation_loss": eval_loss,
+        "denom_audit": (getattr(trainer, "denom_stats_summary", lambda: {})()),
+        "note": ("Emitted by the training run itself. Reconcile validation_loss_token_mass "
+                 "against the loader dry-run reference to obtain "
+                 "weighted_loss_relative_error for the distributed_loss_runtime gate."),
+    }
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", choices=["cpt", "sft"], required=True)
-    ap.add_argument("--data_root",
-                    default="/mnt/d/repos/mev_bot/tools/data-pipeline/output/qwen_curriculum_v1")
+    ap.add_argument("--release_manifest", required=True)
+    ap.add_argument("--dry_run", action="store_true")
+    ap.add_argument("--report")
+    ap.add_argument("--launch_contract")
+    ap.add_argument("--contract_sha256")
+    ap.add_argument("--resume_from_checkpoint")
+    ap.add_argument("--preflight_only", action="store_true")
     ap.add_argument("--out_root", default="/training/runs")
     ap.add_argument("--init_from", default=None,
                     help="SFT: path to Phase-A consolidated BF16 final weights. "
@@ -567,6 +539,12 @@ def main():
                     help="Override training window WITHIN the hard max only "
                          "(CPT 1.75 / SFT 1.25). Values beyond the max are REFUSED — "
                          "extending past the window requires a new operator directive.")
+    ap.add_argument("--runtime_evidence_out", default=None,
+                    help="Write a runtime execution receipt here (world size, ZeRO stage, "
+                         "steps and the gathered validation supervised-token mass) so the "
+                         "distributed_loss_runtime gate can be verified from a REAL run "
+                         "instead of a fixture. Best effort: never raises, never alters "
+                         "training.")
     ap.add_argument("--consolidate", action="store_true",
                     help="Load the final DeepSpeed checkpoint via the trainer's "
                          "correctly-configured engine and emit a consolidated BF16 "
@@ -574,57 +552,43 @@ def main():
                          "and --consolidate_out.")
     ap.add_argument("--consolidate_out", default=None,
                     help="Output dir for --consolidate.")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+    release = load_release(args.release_manifest, real_training=not args.dry_run)
+    require(args.phase in release['phases'], 'Phase absent from release')
+    request=None
+    if not args.dry_run or args.init_from or args.resume_from_checkpoint or args.preflight_only:
+        request=verify_training_request(release,args.phase,args.init_from,args.out_root,
+            args.resume_from_checkpoint,args.launch_contract,args.contract_sha256)
+    if args.preflight_only:
+        print(json.dumps(dict(request,model_loaded=False,training_launched=False)))
+        return request
+    tok = AutoTokenizer.from_pretrained(release['tokenizer_path'], local_files_only=True)
+    train_ds, val_ds, geometry = prepare_datasets(release, args.phase, tok)
+    max_window = 1.75 if args.phase == 'cpt' else 1.25
+    lr, warmup, wd = (4e-6, .04, .1) if args.phase == 'cpt' else (2e-6, .03, .01)
+    if args.dry_run:
+        report = dataset_report(release, args.phase, train_ds, val_ds, geometry)
+        if args.report:
+            from pathlib import Path
+            Path(args.report).write_text(json.dumps(report, indent=2)+'\n', encoding='utf-8')
+        print(json.dumps(report, indent=2))
+        return report
+    require(not args.consolidate, 'Legacy checkpoint consolidation disabled for clean release')
+    # Use the same pre-model authority exercised by launch and resume preflight.
+    out_dir = request['out_dir']
+    model_src = request['model_src']
+    if resource is not None:
+        _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (hard,hard))
     set_seed(SEED)
-
-    tok = AutoTokenizer.from_pretrained(TOKENIZER_REPO, revision=TOKENIZER_REV)
-    model_src = args.init_from or TOKENIZER_REPO
     model = AutoModelForCausalLM.from_pretrained(
-        model_src, revision=None if args.init_from else TOKENIZER_REV,
-        torch_dtype=torch.bfloat16, attn_implementation="sdpa")
+        model_src, local_files_only=True,
+        torch_dtype=torch.bfloat16, attn_implementation='sdpa')
     model.config.use_cache = False
-    # gradient checkpointing enabled via TrainingArguments with
-    # use_reentrant=False (non-reentrant: lower memory churn, plays
-    # correctly with ZeRO-3 hooks; reentrant fallback is deprecated).
+    require(all(p.requires_grad for p in model.parameters()), 'Full-parameter training required')
 
-    if args.phase == "cpt":
-        docs = load_jsonl(f"{args.data_root}/cpt/qwen_cpt_v1.jsonl")
-        tr, va = split_train_val(docs)
-        train_ds = PackedCPTDataset(tr, tok)
-        val_ds = PackedCPTDataset(va, tok, shuffle=False)
-        max_window = 1.75            # MAXIMUM WINDOW, not a target
-        lr, warmup, wd = 4e-6, 0.04, 0.1
-    else:
-        domain = load_jsonl(f"{args.data_root}/sft/qwen_sft_v2.jsonl")
-        retention_full = load_jsonl(
-            f"{args.data_root}/retention/qwen_retention_v1.jsonl")
-        # Retention weighting by LOSS-BEARING LABEL TOKENS (not raw tokens, not
-        # record count): deterministic subsample to ~RETENTION_TARGET of the
-        # supervised optimization signal. Full shard preserved on disk.
-        retention, rstats = select_retention(domain, retention_full, tok)
-        print(f"[retention] {json.dumps(rstats)}")
-        recs = domain + retention
-        tr, va = split_train_val(recs)
-        # SUPERVISION GEOMETRY: bounded task-level loss weights from measured
-        # post-mask loss-token shares of the REAL train split (never outcomes).
-        pairs = []
-        for r in tr:
-            ex = build_example(r, tok)
-            if ex:
-                pairs.append((task_bucket(r), loss_tokens(ex[1])))
-        task_w, per_bucket, eff_shares = compute_task_weights(pairs)
-        print(f"[geometry] loss_tokens_by_bucket={per_bucket}")
-        print(f"[geometry] task_weights={ {b: round(w, 4) for b, w in task_w.items()} }")
-        print(f"[geometry] effective_gradient_shares={eff_shares}")
-        train_ds = SFTDataset(tr, tok, task_weights=task_w)
-        # Eval stays UNWEIGHTED: eval_loss remains a pure token-normalized CE
-        # (checkpoint selection must not chase the reweighted objective).
-        val_ds = SFTDataset(va, tok, shuffle=False)
-        max_window = 1.25            # MAXIMUM WINDOW, not a target
-        lr, warmup, wd = 2e-6, 0.03, 0.01
-
-    epochs = args.extend_epochs or max_window
-    assert epochs <= max_window, (
+    epochs = max_window if args.extend_epochs is None else args.extend_epochs
+    assert math.isfinite(epochs) and 0 < epochs <= max_window, (
         f"REFUSED: {args.phase} window is capped at {max_window} epochs. "
         f"Extending beyond it requires a new operator directive (STOP AND ASK).")
 
@@ -646,7 +610,6 @@ def main():
           f"eval+ckpt every {mark} steps -> marks(epochs): "
           f"{[round(s/steps_per_epoch, 3) for s in marks]}")
 
-    out_dir = f"{args.out_root}/qwen27b_{args.phase}_v1"
     os.makedirs(out_dir, exist_ok=True)
     targs = TrainingArguments(
         output_dir=out_dir,
@@ -691,8 +654,9 @@ def main():
         # batch tensors are tiny (4096 int64) — pinning buys nothing here.
         dataloader_pin_memory=False,
         seed=SEED,
+        remove_unused_columns=False,
     )
-    trainer_cls = WeightedLossTrainer if args.phase == "sft" else Trainer
+    trainer_cls = WeightedLossTrainer  # both phases use global validation token mean
     trainer = trainer_cls(model=model, args=targs,
                       train_dataset=train_ds, eval_dataset=val_ds,
                       data_collator=lambda b: collate(b, tok.pad_token_id),
@@ -747,62 +711,7 @@ def main():
         f"STARTUP ASSERT FAILED: DeepSpeed ZeRO stage={ds_stage}, expected 3 "
         f"(deepspeed_plugin={'present' if hf_ds_cfg else 'MISSING'}). "
         f"REFUSING to train.")
-    if args.phase == "sft":
-        expected_buckets = {"cross", "post", "rust", "narrative", "hermes",
-                            "retention"}
-        assert isinstance(trainer, WeightedLossTrainer), (
-            "STARTUP ASSERT FAILED: SFT phase but trainer is not "
-            "WeightedLossTrainer. REFUSING to train.")
-        loaded = set(task_w.keys())
-        assert loaded == expected_buckets, (
-            f"STARTUP ASSERT FAILED: task-weight mapping {sorted(loaded)} != "
-            f"expected {sorted(expected_buckets)}. REFUSING to train.")
-        assert all(0.0 < w <= 4.0 * 1.05 for w in task_w.values()), (
-            f"STARTUP ASSERT FAILED: task weights outside (0, 4x-cap "
-            f"(+token-mass renorm tolerance)]: {task_w}. REFUSING to train.")
-    print(f"[startup-assert] world_size={ws} OK; ZeRO stage={ds_stage} OK; "
-          f"average_tokens_across_devices={targs.average_tokens_across_devices} OK; "
-          f"task_weight_mapping="
-          f"{'n/a (CPT)' if args.phase == 'cpt' else 'loaded+validated'} — "
-          f"numerator/denominator finiteness asserted in-run at the first "
-          f"GA window ([startup-assert] lines from WeightedLossTrainer).")
-    ckpt = None
-    if os.path.isdir(out_dir):
-        cks = [d for d in os.listdir(out_dir) if d.startswith("checkpoint-")]
-        if cks:
-            ckpt = os.path.join(out_dir, max(cks, key=lambda x: int(x.split("-")[1])))
-            print(f"[resume] {ckpt}")
-    if args.consolidate:
-        # offload_param: nvme checkpoints cannot be read by bare
-        # deepspeed.initialize() (it skips _configure_checkpointing / NVMe-offload
-        # setup, so load_checkpoint routes into the broken get_fp32_state_dict /
-        # _get_zero_param_shapes paths). The trainer's accelerate+DeepSpeed engine
-        # IS correctly configured (this is the exact path the self-heal resume used),
-        # so load here and gather the BF16 weights with save_16bit_model.
-        assert args.consolidate_out and args.phase == "cpt", \
-            "--consolidate requires --phase cpt and --consolidate_out"
-        # DeepSpeed init is deferred to train() in this transformers version.
-        # _prepare_for_training runs the FULL deepspeed_init -> accelerator.prepare
-        # -> self.deepspeed sequence the training run used, so load_checkpoint can
-        # read the offload_param:nvme checkpoint (a bare deepspeed.initialize()
-        # cannot — it skips the NVMe-offload wiring and routes into broken paths).
-        trainer._prepare_for_training(total_steps, None, None)
-        engine = getattr(trainer, "deepspeed", None)
-        if engine is not None and hasattr(engine, "engine"):
-            engine = engine.engine  # unwrap accelerate DeepSpeedEngineWrapper if present
-        print(f"[consolidate] engine={type(engine).__name__} "
-              f"has_load_checkpoint={hasattr(engine, 'load_checkpoint')}", flush=True)
-        assert engine is not None and hasattr(engine, "load_checkpoint"), \
-            "Deepspeed engine not available on trainer"
-        engine.load_checkpoint(f"{out_dir}/final")
-        # gather was deliberately disabled during training (avoid 54GB gather OOM
-        # on busy GPUs); enable it now for offline consolidation (GPUs are empty).
-        engine._config.zero_config.gather_16bit_weights_on_model_save = True
-        engine.save_16bit_model(args.consolidate_out)
-        tok.save_pretrained(args.consolidate_out)
-        print("CONSOLIDATED", args.consolidate_out, flush=True)
-        return
-    trainer.train(resume_from_checkpoint=ckpt)
+    trainer.train(resume_from_checkpoint=request['resume_from_checkpoint'])
     st = trainer.state
     stopped_early = (st.global_step < total_steps)
     ds = getattr(trainer, "denom_stats_summary", lambda: {})()
@@ -810,6 +719,11 @@ def main():
         print(f"[denom-audit] {json.dumps(ds)}")
         with open(f"{out_dir}/denom_audit.json", "w") as f:
             json.dump(ds, f, indent=1)
+    if getattr(args, "runtime_evidence_out", None) and \
+            int(getattr(trainer.args, "process_index", 0) or 0) == 0:
+        write_runtime_evidence(
+            args.runtime_evidence_out,
+            collect_runtime_evidence(trainer, release, args, stopped_early, total_steps))
     print(f"[select] best checkpoint: step {getattr(st, 'best_model_checkpoint', None)} "
           f"val_loss {st.best_metric}")
     if stopped_early:

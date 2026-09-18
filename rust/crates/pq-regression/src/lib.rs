@@ -2,7 +2,7 @@
 //!
 //! A durable, fast (<30s), fully deterministic (integer-only, no wall-clock, no
 //! RNG) tripwire suite that would CATCH a regression in any of the recently-wired
-//! constitution laws or core invariants. It ADDS coverage; it pins nothing new
+//! operator laws or core invariants. It ADDS coverage; it pins nothing new
 //! about behaviour. If a test here fails against the current green HEAD, the
 //! HARNESS is wrong — fix the harness, not the engine.
 //!

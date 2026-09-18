@@ -1,5 +1,5 @@
 //! CPU topology modelling, hot-thread pin-plan derivation, and mockable OS
-//! application (constitution §57, performance-engineering law §24).
+//! application (operator §57, performance-engineering law §24).
 //!
 //! The **decision logic is pure and fully portable**: raw processor records go in,
 //! a validated [`Topology`] and a disjoint [`PinPlan`] come out, with no OS calls

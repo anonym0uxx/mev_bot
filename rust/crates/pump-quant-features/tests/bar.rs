@@ -1,4 +1,4 @@
-//! Leaf tests for the bar builder (constitution 21.6), with computed expectations.
+//! Leaf tests for the bar builder (operator 21.6), with computed expectations.
 
 use pump_quant_features::bar::{Bar, BarBuilder, BarSpec};
 use pump_quant_features::types::{FeatureError, Side, TradeEvent};
@@ -88,7 +88,7 @@ fn time_bars_bucket_and_ohlcv() {
 #[test]
 fn time_bars_skip_empty_buckets() {
     // A large time gap must NOT fabricate empty candles: only buckets with trades
-    // emit bars (constitution 21.6 no fabricated/stale candles).
+    // emit bars (operator 21.6 no fabricated/stale candles).
     let mut b = BarBuilder::new(BarSpec::Time {
         interval_ns: 100,
         epoch_ns: 0,

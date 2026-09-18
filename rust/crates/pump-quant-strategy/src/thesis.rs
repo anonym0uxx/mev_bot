@@ -14,7 +14,7 @@
 //! cannot flip an `Invalidated` verdict, because the boundary does not exist in
 //! the type signature.
 //!
-//! ## Constitution
+//! ## Operator
 //! §22: no floats; feature values are `i64` fixed-point, completeness/confidence
 //! in bps, freshness in ns. Deterministic: identical inputs → identical thesis
 //! and identical verdict. Missing/stale/incomplete evidence for a required

@@ -2,7 +2,7 @@
 //!
 //! Responsibility: provide the only sanctioned way to do proportional (basis-point)
 //! math in this crate so that no outcome-controlling code touches floating point
-//! (constitution §22). Every routine documents its overflow contract explicitly:
+//! (operator §22). Every routine documents its overflow contract explicitly:
 //! widening is done through `u128`/`i128`, and any narrowing back to the native
 //! width is saturating-by-contract (never a silent wrap).
 

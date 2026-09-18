@@ -1,4 +1,4 @@
-//! Strategy-registry promotion lifecycle + probe-readiness gate (constitution
+//! Strategy-registry promotion lifecycle + probe-readiness gate (operator
 //! §56.3, §64).
 //!
 //! ## Responsibility
@@ -51,7 +51,7 @@ use crate::hashing::{EvaluatorReleaseHash, StrategyHash};
 pub const TRANSITION_LOG_CAPACITY: usize = 64;
 
 /// Number of §16 observation-source-mix labels a [`SourceMixAssumptions`] bitset
-/// can carry (one bit per label). The constitution enumerates exactly eight §16
+/// can carry (one bit per label). The operator enumerates exactly eight §16
 /// labels (§16 / §53), so a `u8` holds the full set with no spare bits.
 pub const SOURCE_MIX_LABEL_COUNT: u32 = 8;
 
@@ -156,7 +156,7 @@ pub struct StrategyLineage {
     pub created_by: CreatedBy,
 }
 
-/// Strategy promotion statuses (§56.3), exactly the constitution's
+/// Strategy promotion statuses (§56.3), exactly the operator's
 /// authoritative fourteen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PromotionStatus {
@@ -406,7 +406,7 @@ pub enum AdvanceError {
 /// One §56.3 strategy-registry row: pinned identity hashes, current promotion
 /// status, lane, and a bounded transition audit trail.
 ///
-/// ## Constitution §56.3 / §57
+/// ## Operator §56.3 / §57
 /// `strategy_hash` and `evaluator_hash` pin the exact configuration and
 /// evaluator release the record's evidence refers to; `config_hash_fnv`,
 /// `protocol_registry_hash`, and `feature_schema_version` pin the runtime
@@ -648,7 +648,7 @@ impl StrategyLifecycle {
     /// injected clock ordering, never a wall-clock read — §22). On success the
     /// transition is recorded in the bounded audit trail and the status
     /// updated.
-    // The argument list mirrors the constitution's advance signature verbatim
+    // The argument list mirrors the operator's advance signature verbatim
     // (§64): each input is a distinct, independently-sourced governance fact,
     // and bundling them would blur which subsystem attests to what.
     #[allow(clippy::too_many_arguments)]

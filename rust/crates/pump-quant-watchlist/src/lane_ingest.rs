@@ -16,7 +16,7 @@
 //! Every comparison is integer; there is no path where two distinct records
 //! compare equal, so the result is independent of input order.
 //!
-//! Constitution: §22 (deterministic, integer), §99 (output is bounded by the
+//! Operator: §22 (deterministic, integer), §99 (output is bounded by the
 //! number of distinct mints in the input; a `BTreeMap` gives ordered, non-random
 //! iteration).
 

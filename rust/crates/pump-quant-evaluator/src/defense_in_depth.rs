@@ -15,7 +15,7 @@
 //!    freeze all trading immediately. This is a global, not per-strategy,
 //!    control. The daemon checks this flag before every trade.
 //!
-//! ## Constitution compliance
+//! ## Operator compliance
 //! - §57: Cliff veto (catastrophic drawdown)
 //! - §58: Circuit breaker (consecutive losses)
 //! - §59: Kill switch (manual emergency stop)

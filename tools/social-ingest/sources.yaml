@@ -2,7 +2,7 @@
 #
 # Every entry enters the SocialSourceQualityLedger at INSUFFICIENT_SAMPLE and is
 # PUBLIC_BURNED-presumed: these are things to SCORE against our own reconstructed
-# market state (D1-D10), NEVER to trust or copy. Seeded from the constitution's
+# market state (D1-D10), NEVER to trust or copy. Seeded from the operator's
 # §29.7 sourcing decisions. Operator-editable; discovery expands it empirically
 # (ChannelDiscoveryEngine), it is never a fixed allow-list.
 
