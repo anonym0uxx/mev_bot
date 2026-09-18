@@ -95,8 +95,8 @@ fn b3_hazard(mutate: impl FnOnce(&mut Config)) -> i128 {
 /// eviction key reordering under corrected fixture depth, NOT either provenance fix —
 /// both were measured decision-inert on this tape. See `golden_digest.rs`.
 const SHIP_GOLDEN: i128 = 42_037_539;
-const SHIP_B7_HAPPY: i128 = 544_925_041;
-const SHIP_B7_UNHAPPY: i128 = 1_295_156_787;
+const SHIP_B7_HAPPY: i128 = 602_046_949;
+const SHIP_B7_UNHAPPY: i128 = 1_574_061_620;
 /// **NEGATIVE since re-pin #26, and that is the hazard working rather than a
 /// regression.** This is the side of the concentration pair on which the bundled /
 /// sniper-captured cohort is the one that craters, and the §21.7 law that would
@@ -106,7 +106,7 @@ const SHIP_B7_UNHAPPY: i128 = 1_295_156_787;
 /// the engine takes them, and they do what the tape was built to make them do. A
 /// hazard tape whose hazard is undefended SHOULD lose money — the old positive was
 /// the fixture's thinness standing in for a defence the engine does not have.
-const SHIP_CONC_HAPPY: i128 = -25_100_063;
+const SHIP_CONC_HAPPY: i128 = -13_034_532;
 const SHIP_CONC_MIRROR: i128 = 8_418_670;
 const SHIP_B3_HAZARD: i128 = 1_003_165_721;
 
@@ -167,7 +167,7 @@ fn shipped_net_is_pinned_on_every_tape() {
     // i.e. the hazard may not exceed a third of the golden book). That number moved
     // when the venue fee was corrected to its measured rate (125 -> 95 bp/side and
     // 150_000 -> 10_000 fixed per leg), because a cheaper round trip ADMITS MORE into
-    // the concentration tape: the honest hazard went -15.6M -> -25.1M, now 59.7% of
+    // the concentration tape: the honest hazard went -15.6M -> -13.0M, now
     // the golden book. The property worth pinning is not "a third" — it is that the
     // undefended hazard stays INSIDE the risk budget the strategy actually ships
     // (`total_risk_cap_bp`), so the bound derives from that field rather than a

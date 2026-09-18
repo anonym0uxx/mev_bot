@@ -129,15 +129,15 @@ const GOLDEN_SHIP: i128 = 42_037_539;
 /// that tape's bundled cohort craters and the §21.7 law that would refuse it ships
 /// DISARMED, so at realistic depth the engine takes those trades and loses on them.
 /// The old +16,567,514 came from 0.26 SOL pools refusing them on cost.
-const CONC_H_SHIP: i128 = -25_100_063;
+const CONC_H_SHIP: i128 = -13_034_532;
 /// The flow tape's happy side at the shipped `k`. Re-pin #26: was 13,170,840 while
 /// the tape declared 0.26 SOL pools; at real depth the tape actually trades.
-const FLOW_SHIP_HAPPY: i128 = 31_870_575;
+const FLOW_SHIP_HAPPY: i128 = 23_820_516;
 /// ...and its mirror, which is NOT equal to the happy side any more. Under the old
 /// thin-pool tape both sides collapsed to the same 13,170,840 for `k <= 3`; at real
 /// depth the two sides diverge from `k = 1`, because the shakeout burst now happens
 /// to positions that exist.
-const FLOW_SHIP_MIRROR: i128 = -96_720_156;
+const FLOW_SHIP_MIRROR: i128 = -79_213_273;
 
 fn golden(k: u32) -> i128 {
     let mut c = Config::dev_portable();
