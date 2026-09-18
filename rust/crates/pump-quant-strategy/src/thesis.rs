@@ -21,7 +21,17 @@
 //! condition is conservatively treated as *not satisfied* (never defaulted to a
 //! passing number), consistent with the missingness law.
 
-use crate::strategy_id::fnv1a_64;
+/// FNV-1a 64-bit digest — the entry-evidence reference hash. Kept local because the
+/// deterministic-strategy id module (its original home) was retired with the
+/// inference-control layer; the digest itself is a plain hash, not a control.
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3_u64);
+    }
+    hash
+}
 
 // ===========================================================================
 // Condition model
