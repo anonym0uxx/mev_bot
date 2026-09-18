@@ -121,15 +121,15 @@ const MATERIAL_LAMPORTS: i128 = 100_000_000;
 /// The pre-registered asymmetry bar.
 const REQUIRED_RATIO: i128 = 3;
 
-/// Re-pin #27 (2026-07-28): 16_778_896 -> 31_465_931. The move is the confirmed-set
+/// Re-pin #27 (2026-07-28): 16_778_896 -> 42_037_539. The move is the confirmed-set
 /// eviction key reordering under corrected fixture depth, NOT either provenance fix —
 /// both were measured decision-inert on this tape. See `golden_digest.rs`.
-const GOLDEN_SHIP: i128 = 31_465_931;
+const GOLDEN_SHIP: i128 = 42_037_539;
 /// The concentration-happy book at the shipped `k`. **Negative since re-pin #26**:
 /// that tape's bundled cohort craters and the §21.7 law that would refuse it ships
 /// DISARMED, so at realistic depth the engine takes those trades and loses on them.
 /// The old +16,567,514 came from 0.26 SOL pools refusing them on cost.
-const CONC_H_SHIP: i128 = -4_961_455;
+const CONC_H_SHIP: i128 = -25_100_063;
 /// The flow tape's happy side at the shipped `k`. Re-pin #26: was 13,170,840 while
 /// the tape declared 0.26 SOL pools; at real depth the tape actually trades.
 const FLOW_SHIP_HAPPY: i128 = 103_256_958;

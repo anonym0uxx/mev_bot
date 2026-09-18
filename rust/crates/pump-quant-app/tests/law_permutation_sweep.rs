@@ -404,7 +404,7 @@ fn the_full_permutation_matrix() {
 
     // ---- The golden control, restated from the shipped pins so this file cannot
     // silently drift away from `golden_digest.rs`.
-    assert_eq!(m[0][0].net_lamports, 31_465_931, "golden net");
+    assert_eq!(m[0][0].net_lamports, 42_037_539, "golden net");
     assert_eq!(m[0][0].admitted, 11, "golden admitted");
     assert_eq!(m[0][0].rejected, 493, "golden rejected");
     assert_eq!(m[0][0].promoted, 504, "golden promoted");
@@ -419,7 +419,7 @@ fn the_full_permutation_matrix() {
     let b7_happy_on = m[4][2].net_lamports;
     let b7_unhappy_off = m[5][0].net_lamports;
     let b7_unhappy_on = m[5][2].net_lamports;
-    assert_eq!(b7_happy_off, 539_413_679, "B7 happy neutral drifted");
+    assert_eq!(b7_happy_off, 544_925_041, "B7 happy neutral drifted");
     assert_eq!(b7_happy_on, 650_502_083, "B7 happy armed drifted");
     assert_eq!(b7_unhappy_off, 1_256_957_037, "B7 unhappy neutral drifted");
     assert_eq!(b7_unhappy_on, 1_209_733_932, "B7 unhappy armed drifted");

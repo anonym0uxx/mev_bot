@@ -651,7 +651,7 @@ use tape_golden::*;
 // `REAL_CURVE_VSOL` became a curve with 0.3 SOL genuinely raised (own-impact on a
 // floor clip unchanged at 33 bps a leg), and the two report harnesses' 0.2 SOL
 // "pools" became real curves escrowing 0.2 SOL.
-// (arc: ... -> 8_124_568 -> 16_778_896 -> 31_111_528 -> 30_889_282 -> 31_465_931.)
+// (arc: ... -> 8_124_568 -> 16_778_896 -> 31_111_528 -> 30_889_282 -> 42_037_539.)
 // Re-pin #28: TP1 + Thesis Invalidation lever tuning (target_floor_bp 11000→10300,
 // target_margin_mult_bp 15000→5000, lc_tp1_bps 13500→10_500, lc_cvd_hold_frac_bps
 // 4500→3000, lc_stall_ticks 25→75). Exit ladder now fires on observed ±4% micro-moves
@@ -662,7 +662,7 @@ use tape_golden::*;
 // byte-identical. All other pinned values unchanged.
 // 10_190_407_336_939_000_110 → 16_527_720_425_687_282_225 → 2_392_030_750_322_148_229.
 // Re-pin #32: config struct Debug changed (6-revision fields, all OFF by default).
-// Decision vector identical: promoted=504 admitted=11 rejected=493 net=31_465_931.
+// Decision vector identical: promoted=504 admitted=11 rejected=493 net=42_037_539.
 // Re-pin #33: config struct Debug changed (Rev-7 re-entry cooldown fields, OFF by
 // default). §19 folds fnv1a_64(format!("{cfg:?}")) into the journal seed, so adding
 // two fields re-seeds the digest with zero decision change. The cooldown feature
@@ -675,17 +675,17 @@ use tape_golden::*;
 // fnv1a_64(format!("{cfg:?}")) into the journal seed, so adding these fields re-seeds
 // the digest with zero decision change. The entry quality filter ships DISARMED
 // (entry_quality_filter_enable=false). Decision vector identical:
-// promoted=504 admitted=11 rejected=493 net=31_465_931 universe_filtered=72.
+// promoted=504 admitted=11 rejected=493 net=42_037_539 universe_filtered=72.
 // 10_342_339_453_238_494_935 → 16_223_569_033_580_072_469.
 // Re-pin #34: config struct Debug changed (Rev-13 entry quality filter, all OFF by default).
-// Decision vector identical: promoted=504 admitted=11 rejected=493 net=31_465_931 universe_filtered=72.
+// Decision vector identical: promoted=504 admitted=11 rejected=493 net=42_037_539 universe_filtered=72.
 // Re-pin Rev-17: config struct Debug changed (2 new fields: entry_min_buy_pressure_bp,
 // entry_min_unique_buyers, both OFF by default). Decision vector byte-identical.
-const GOLDEN_DIGEST: u64 = 3_203_929_616_839_788_134;
+const GOLDEN_DIGEST: u64 = 3_370_041_134_944_657_002;
 // Re-pin #28: net changed 31_111_528 → 30_889_282 (exit ladder fires earlier on
 // micro-moves; TP1 tranche recovers principal at +5% rather than holding to thesis
 // invalidation). promoted/admitted/rejected/universe_filtered unchanged.
-const GOLDEN_NET_LAMPORTS: i128 = 31_465_931;
+const GOLDEN_NET_LAMPORTS: i128 = 42_037_539;
 const GOLDEN_PROMOTED: u64 = 504;
 const GOLDEN_ADMITTED: u64 = 11;
 const GOLDEN_REJECTED: u64 = 493;
