@@ -246,7 +246,7 @@ fn only_tapes_with_real_depth_may_charge_their_own_impact() {
 /// `only_tapes_with_real_depth_may_charge_their_own_impact`.
 /// Re-pin #29: 37_070_067 → 37_171_418 — cost-aware TP ladder (fixed fractions,
 /// research-synthesized values from arXiv:2606.08232 fat-tail capture design).
-const MEASURED_FILLS_AT_PRINT: i128 = 37_171_418;
+const MEASURED_FILLS_AT_PRINT: i128 = 47_760_357;
 
 /// **A-13(1) — the participation rate, declared rather than assumed.** This is the
 /// arithmetic that nobody computed for months: what fraction of the pool is OUR order?

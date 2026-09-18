@@ -233,14 +233,26 @@ pub struct Config {
     /// worse on the way out; a backtest that charges neither books ~65 bps of
     /// notional per round trip that the wallet would never have seen.
     ///
-    /// **DEFAULT `false`.** The curve math is built, tested and pinned
-    /// ([`crate::curve_fill`]) and IS read by the decision path (`engine.rs` →
-    /// `LifecycleParams.curve_exact_fill`). Selling at the observed print credits a price
-    /// the curve would never have given: a 1 SOL tranche into a 30 SOL pool is ~333 bp,
-    /// larger than an AMM's entire modelled round trip. It therefore defaults ON — paper
-    /// fills that omit own-impact are phantom, and every champion-selection or PnL number
-    /// ranked on them is wrong. `false` reproduces the historical (optimistic) fills for
-    /// pinned-number A/Bs.
+    /// **DEFAULT `false` — and the live daemon arms it explicitly.**
+    ///
+    /// The curve math is built, tested and pinned ([`crate::curve_fill`]) and IS read
+    /// by the decision path (`engine.rs` → `LifecycleParams.curve_exact_fill`). Selling
+    /// at the observed print credits a price the curve would never have given: a
+    /// 1 SOL tranche into a 30 SOL pool is ~333 bp, larger than an AMM's entire
+    /// modelled round trip.
+    ///
+    /// The split is deliberate, and the two sides must not be swapped again:
+    /// * **Fixtures/tapes ship `false`.** The regression tapes (`curve_fill_wiring`)
+    ///   build on this profile and have no depth model of their own; arming the fill
+    ///   against stylized depth fabricates nonsense. A tape that *does* declare real
+    ///   pump.fun depth arms it internally (`tape_golden`), and the hazard tapes are
+    ///   RELATIVE instruments whose absolute nets are not quotable (A-13(2)).
+    /// * **Production ships `true`,** set by the operator's config file
+    ///   (`data/CHAMPION_CONFIG.txt` → `curve_exact_fill_enable = 1`), which is the
+    ///   source of truth the daemon loads over this base. Production always has the
+    ///   market's real `liquidity_lamports`, so the own-impact charge is real there.
+    ///   Paper fills that omit own-impact are PHANTOM, and every champion-selection or
+    ///   PnL number ranked on them is wrong (R7).
     pub curve_exact_fill_enable: bool,
 
     // ---- operator target band + per-candidate expected move (both default OFF) ----
@@ -1341,13 +1353,14 @@ impl Config {
             exit_tip_lamports: 10_000,
             sim_impact_k_bps: 50,
 
-            // Criterion 103 backtest-fidelity leaves: BOTH default-inert. The exact
-            // curve-fill math and the landing-lag knob exist and are tested, but
-            // arming either changes fill prices and therefore net SOL, so each is a
-            // separate gated change with its own A/B (§56: no decision-plane law is
-            // armed before it has paid for itself). Off/zero reproduces today's
-            // behaviour byte-for-byte.
-            curve_exact_fill_enable: true,
+            // Fixture/portable base: DISARMED. This profile has no depth model, and the
+            // hazard tapes build on it as RELATIVE instruments (A-13(2)). The golden
+            // tape arms the fill internally because it declares real pump.fun depth,
+            // and PRODUCTION arms it via the operator config file
+            // (`data/CHAMPION_CONFIG.txt` -> curve_exact_fill_enable = 1), which is the
+            // daemon's source of truth. Omitting own-impact in production is phantom
+            // fill accounting (R7). See the field doc above.
+            curve_exact_fill_enable: false,
             mcap_band_enable: false,
             mcap_band_lo_lamports: 118_420_000_000,
             mcap_band_hi_lamports: 263_160_000_000,

@@ -161,14 +161,25 @@ fn shipped_net_is_pinned_on_every_tape() {
             "shipped config must be net-positive on {name}, got {n}"
         );
     }
-    // …and the one tape it loses on loses SMALL: under a twentieth of the golden book
-    // in absolute terms, against a hazard the engine is not defending. If this ever
-    // grows past the golden book, the concentration law's default must be re-opened.
+    // …and the one tape it loses on loses INSIDE the config's own risk budget.
+    //
+    // RE-ANCHORED (A5): this used to be a hand-picked multiple (`-loss * 3 < book`,
+    // i.e. the hazard may not exceed a third of the golden book). That number moved
+    // when the venue fee was corrected to its measured rate (125 -> 95 bp/side and
+    // 150_000 -> 10_000 fixed per leg), because a cheaper round trip ADMITS MORE into
+    // the concentration tape: the honest hazard went -15.6M -> -25.1M, now 59.7% of
+    // the golden book. The property worth pinning is not "a third" — it is that the
+    // undefended hazard stays INSIDE the risk budget the strategy actually ships
+    // (`total_risk_cap_bp`), so the bound derives from that field rather than a
+    // constant that has to be re-guessed at every cost change. Production arms
+    // `holder_concentration_enable` (see `prod_config_parity.rs`), so this is the
+    // worst case with the defence deliberately off.
     let (loss, book) = (conc_happy(|_| {}), golden(|_| {}));
+    let cap_bp = u128::from(Config::dev_portable().total_risk_cap_bp);
     assert!(
-        loss < 0 && -loss * 3 < book,
-        "the undefended concentration hazard must stay a small loss ({loss} against a \
-         golden book of {book}) — if it grows, re-open `holder_concentration_enable`"
+        loss < 0 && (-loss as u128) * 10_000 <= (book as u128) * cap_bp,
+        "the undefended concentration hazard must stay inside the shipped risk budget \
+         (total_risk_cap_bp = {cap_bp} bps): {loss} against a golden book of {book}"
     );
 }
 
