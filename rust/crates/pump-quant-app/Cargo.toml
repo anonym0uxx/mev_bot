@@ -13,6 +13,8 @@ name = "pump-quant-app"
 path = "src/main.rs"
 
 [dependencies]
+pump-quant-proposal = { path = "../pump-quant-proposal" }
+pump-quant-inference = { path = "../pump-quant-inference" }
 pump-quant-domain = { path = "../pump-quant-domain" }
 pump-quant-features = { path = "../pump-quant-features" }
 pump-quant-ingest = { path = "../pump-quant-ingest" }

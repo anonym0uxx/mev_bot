@@ -63,6 +63,7 @@ pub mod holder_concentration;
 pub mod holder_flow;
 pub mod journal_log;
 pub mod lane;
+pub mod model_authority;
 pub mod live_status;
 pub mod market_context;
 pub mod measured_state;
