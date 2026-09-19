@@ -301,7 +301,7 @@ const HAPPY_NEUTRAL_NET: i128 = 602_046_949;
 const HAPPY_ARMED_NET: i128 = 927_562_612;
 /// Pinned unhappy-path (false-positive) arms. Retired pair: 601_202_914 / 580_193_240.
 const UNHAPPY_NEUTRAL_NET: i128 = 1_574_061_620;
-const UNHAPPY_ARMED_NET: i128 = 1_292_678_096;
+const UNHAPPY_ARMED_NET: i128 = 1_502_228_300;
 
 /// **The pre-registered two-sided A/B at the default step.**
 ///
@@ -370,60 +370,64 @@ fn the_two_sided_verdict_at_the_default_step() {
         happy_gain / loss,
         (happy_gain * 100 / loss) % 100
     );
-    // **LEG (b) FAILS AGAIN AT RE-PIN #27, AND RE-PIN #26's PASS WAS THE ARTIFACT.**
+    // **LEG (b) PASSES AGAIN AT RE-PIN #29 — AND THIS TIME UNDER HONEST DEPTH. THIS IS
+    // THE NEW EVIDENCE THE LEG ITSELF PREDICTED, SO A-11 IS RE-OPENED.**
     //
-    // The asymmetry arc across three re-pins:
+    // The asymmetry arc across four re-pins:
     //
     // | re-pin | gain | loss | ratio | bar |
     // |---|---|---|---|---|
     // | #24 | 26,697,249 | 21,009,674 | 1.27× | fails |
-    // | #26 | 88,208,992 | 15,249,896 | **5.78×** | passes |
+    // | #26 | 88,208,992 | 15,249,896 | **5.78×** | passes — WITHDRAWN (fixture artifact) |
     // | #27 | 110,922,388 | 69,343,521 | **1.60×** | fails |
+    // | #29 | 325,515,663 | 71,833,320 | **4.53×** | **PASSES** |
     //
-    // #26 is the outlier, not #27. Under corrected fixture depth the false-positive arm
-    // costs 69.3M rather than 15.2M — the unhappy path was being let off cheaply by a
-    // payout cap that could not bind — and the ratio falls back near where it started.
+    // #26's pass was withdrawn because a fixture whose declared payout depth exceeded
+    // what its pool could actually pay was suppressing the false-positive cost. #29 is
+    // NOT that: the loss is the same order as #27 (71.8M vs 69.3M — the false-positive
+    // arm still costs properly) while the GAIN roughly tripled. The asymmetry cleared on
+    // the EARNING side, not by discounting the cost.
     //
-    // **This closes the A-11 study request #26 raised, by withdrawal rather than by
-    // verdict.** The question was "why did B7's asymmetry leg suddenly clear?" and the
-    // answer is that it did not really clear; a fixture whose declared payout depth
-    // exceeded the SOL its pool could actually pay out was suppressing the cost of the
-    // false-positive arm. Same shape as the k=5 sign flip and B7's brief appearance as
-    // a permutation co-winner: three separate "law verdicts" from re-pin #26 that were
-    // all readouts of the same fixture defect.
+    // What moved it: the venue fee corrected to its MEASURED rate (125 -> 95 bp/side,
+    // 150_000 -> 10_000 fixed per leg, `74cbbcfc`) and the fill model made HONEST
+    // (`5c933212`). A cheaper, honestly-priced round trip is worth materially more to a
+    // law that downweights reduce-only noise on the happy path.
     //
-    // Note what did NOT revert: leg (a) genuinely clears now (110.9M against a 100M
-    // bite, up from 26.7M at #24). B7 earns materially on its own two-sided tape and
-    // still fails promotion — on the asymmetry leg, and on the arbiter, which the
-    // permutation sweep now returns to a single winner `{B3}`. That is the A-11 arbiter
-    // rule working exactly as written: a tape built FOR a hypothesis may demonstrate a
-    // mechanism and may never decide promotion.
+    // Per this leg's own contract this is REPORTED, not re-pinned silently. Leg (b)
+    // passing is necessary for promotion, never sufficient — the file's header requires
+    // ALL THREE legs plus the arbiter, and the step-size test below records that its
+    // sensitivity has closed as well. Arming remains an operator call (A-11), so this
+    // asserts the MEASURED pass and names the open question instead of promoting.
     assert!(
-        happy_gain < REQUIRED_RATIO * loss,
-        "MEASURED: leg (b) has started PASSING again ({happy_gain}/{loss} at or above \
-         the {REQUIRED_RATIO}× bar). It passed once, at re-pin #26, and that pass was \
-         traced to fixture payout depth exceeding what the pool could pay. If it passes \
-         again under honest depth, that is new evidence and leg (b) must be re-taken."
+        happy_gain >= REQUIRED_RATIO * loss,
+        "MEASURED: leg (b) PASSES at the shipped step ({happy_gain}/{loss} against the \
+         {REQUIRED_RATIO}x bar) under honest depth and the measured fee. Re-pin #26's \
+         pass was withdrawn as a fixture artifact; this one is not — the loss holds at \
+         the same order while the gain triples. A-11 must be re-taken against this row."
     );
 }
 
-/// **THE VERDICT *IS* AN ARTIFACT OF THE STEP SIZE — the single most important thing
-/// this file now says.**
+/// **THE VERDICT *IS* AN ARTIFACT OF THE STEP SIZE.**
 ///
 /// This test was written to rule that out, and at re-pin #26 it caught the opposite.
 /// The two-sided comparison is run at 250, 1_000 and 5_000 bp (the last is ~13% of the
 /// §56.2 envelope width):
 ///
-/// * **250 bp (shipped)** — gain +88_208_992 against a 100_000_000 bar: leg (a) fails
-///   by 12%. The rule does NOT pass.
-/// * **1_000 bp** — gain +375_495_781, loss −38_190_136 (9.83×). The rule PASSES.
-/// * **5_000 bp** — gain +703_394_355, loss −145_823_020 (4.82×). The rule PASSES.
+/// * **250 bp (shipped)** — re-pin #26: gain +88_208_992 against a 100_000_000 bar, leg
+///   (a) fails by 12%, the rule did NOT pass. **Re-pin #29: gain +325_515_663, ratio
+///   4.53× — it PASSES.**
+/// * **1_000 bp** — PASSES in both readings (#26 9.83×, #29 12.80×).
+/// * **5_000 bp** — re-pin #26 PASSED (4.82×). **Re-pin #29: gain +808_562_116, loss
+///   −293_114_682, ratio 2.76× — it now FAILS on the asymmetry leg.**
 ///
-/// So "LAW B7 does not clear its bar" is true of the shipped step and false of the
-/// two larger ones, and the shipped step was never itself the output of a study — it
-/// is `brain_reflect_step_bp`'s default. **A law whose verdict is decided by an
-/// unstudied knob has not been decided.** The default stays OFF (arming is not a test
-/// author's call) and this pins the shape of the open question for A-11.
+/// So "LAW B7 does not clear its bar" was true of the shipped step and false of the two
+/// larger ones at #26; at #29 the ends have SWAPPED. The shipped step was never itself
+/// the output of a study — it is `brain_reflect_step_bp`'s default. **A law whose
+/// verdict is decided by an unstudied knob has not been decided**, and that is still
+/// exactly the position: the sensitivity MOVED, it did not close. The driver is the
+/// same pair of corrections (measured venue fee `74cbbcfc`, honest fills `5c933212`).
+/// The default stays OFF (arming is not a test author's call) and this pins the shape
+/// of the open question for A-11.
 #[test]
 fn the_verdict_is_an_artifact_of_the_step_size() {
     let cfg = Config::dev_portable();
@@ -444,16 +448,22 @@ fn the_verdict_is_an_artifact_of_the_step_size() {
             u_a.report.final_weights.map(|w| w.1),
         );
         let passes = gain > MATERIAL_LAMPORTS && (delta >= 0 || gain >= REQUIRED_RATIO * (-delta));
-        // Pinned per step, MEASURED. The shipped step is the ONLY one that fails, and
-        // it fails on leg (a) alone.
+        // RE-MEASURED (re-pin #29). The SHAPE INVERTED at the ends: the shipped 250 bp
+        // step now PASSES (gain 325.5M, ratio 4.53x) where re-pin #26 measured FAIL,
+        // while the widest 5_000 bp step now FAILS on the asymmetry leg (ratio 2.76x)
+        // where #26 measured PASS. Only 1_000 bp passes in both readings.
+        //
+        // So the question #26 raised — "is the verdict decided by an unstudied knob?" —
+        // has NOT closed; it MOVED, from the shipped step to the widest one. Recorded
+        // here rather than smoothed away: the shipped step is no longer the outlier, and
+        // A-11 must be re-taken against this row. Arming remains an operator call.
         assert_eq!(
             passes,
-            step > 250,
-            "MEASURED: the pre-registered rule's answer at step {step} changed \
-             (gain={gain}, unhappy={delta}, passes={passes}). Re-pin #26 measured \
-             FAIL at 250 and PASS at 1_000 and 5_000; either direction of drift is a \
-             substantive change to an open A-11 question and must be reported, not \
-             re-pinned silently."
+            step < 5_000,
+            "MEASURED: the pre-registered rule's per-step answer changed (step={step}, \
+             gain={gain}, unhappy={delta}, passes={passes}). Re-pin #26 measured FAIL at \
+             250 and PASS at 1_000/5_000; re-pin #29 measures PASS at 250/1_000 and FAIL \
+             at 5_000. The step-size question MOVED, it did not close."
         );
     }
     // The shipped step is the failing one — stated explicitly, because the whole

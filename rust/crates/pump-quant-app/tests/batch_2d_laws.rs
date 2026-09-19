@@ -172,14 +172,13 @@ fn admitted_record_carries_band_and_provenance() {
 /// A tiny-bankroll tape: deployable is small enough that the §33 sizing lands
 /// BELOW the economic x_min cost floor, so every viable candidate hits the
 /// sub-x_min branch.
-fn drive_sub_xmin(probe_budget: bool) -> Engine {
+fn drive_sub_xmin(probe_budget: bool, bankroll_lamports: u64) -> Engine {
     let mut cfg = Config::dev_portable();
-    // 0.52 SOL ⇒ deployable ~0.02 SOL (floor 0.5): with the recalibrated f_base=667 a
-    // base bite is ~1.3M lamports, comfortably BELOW the per-market economic x_min, so
-    // every viable candidate still lands on the sub-x_min branch. (The pre-A-6 0.6-SOL
-    // bankroll now sizes ABOVE x_min under f_base=667, so it no longer exercises this
-    // path — the deployable is lowered to preserve the sub-x_min regime the test needs.)
-    cfg.bankroll_initial_lamports = 520_000_000;
+    // The initial bankroll is a PARAMETER. Under the measured cost model no bankroll
+    // lands a candidate below the economic `x_min`, so the SWEPT RANGE is the evidence
+    // (see the test) — kept explicit rather than pinned at one value that quietly
+    // stopped exercising the branch.
+    cfg.bankroll_initial_lamports = bankroll_lamports;
     // The §33/§43 LAW 13 sub-x_min paid-information probe is a SUB-FLOOR bet, so the
     // criterion-112 / A-6 operator floor switches it OFF whenever it is active. This
     // test exercises the legacy sub-x_min path, so it explicitly disables the floor
@@ -204,45 +203,95 @@ fn drive_sub_xmin(probe_budget: bool) -> Engine {
 
 #[test]
 fn sub_xmin_probe_is_budget_accounted_and_labeled_vs_raw() {
-    // ON: sub-x_min candidates route through the calibration budget → labeled
-    // Probe records + accounted spend, and are NOT opened as positions.
-    let mut on = drive_sub_xmin(true);
-    let ron = on.report();
-    let (spend_on, probes_on) = on.probe_budget_report();
-    let probe_records = on
-        .journal()
-        .recent()
-        .filter(|d| matches!(**d, Decision::Probe { .. }))
-        .count();
+    // PREMISE INVALIDATED BY THE MEASURED COST MODEL (A1-A4 / re-pin #29), AND REWRITTEN
+    // TO ASSERT THE CORRECT NEW BEHAVIOUR.
+    //
+    // This test used to drive a 0.52-SOL bankroll and assert that every viable candidate
+    // landed on the §33/§43 LAW 13 sub-x_min probe branch: budget-accounted
+    // paid-information probes, journal-labelled `Probe` records, and never a raw open.
+    //
+    // It cannot any more, and the cause is the cost correction rather than a bug. With
+    // the venue fee at its MEASURED rate — 94.63 bp/side instead of the 125 bp
+    // placeholder, and 10_000 instead of 150_000 fixed lamports per leg — the economic
+    // `x_min` (the lower feasibility crossing, where a bite's expected move stops
+    // covering its round trip) falls BELOW every deployable sizing. Nothing sizes under
+    // it, so the sub-x_min branch is unreachable and the arbiter resolves the candidates
+    // upstream (the histogram shows REJECT_ARBITRATION, not REJECT_BELOW_COST_FLOOR).
+    //
+    // Verified by sweep: 0.52, 0.10, 0.02, 0.005, 0.002 and 0.001 SOL all produce zero
+    // probes. A 500x range with no hit is not a tuning problem.
+    //
+    // So the correct assertion is the INERT property below — enabling
+    // `probe_budget_enable` is a no-op versus the raw path, because the path it gates no
+    // longer fires. That is a real thing worth pinning: it is the LAW 13 probe path
+    // going dead under the measured cost model, which is a finding about the cost
+    // correction, not a licence to delete the test. The `Probe` label remains reachable
+    // only through `account_sub_xmin_probe`'s direct callers.
+    const BANKROLLS: [u64; 6] = [
+        520_000_000,
+        100_000_000,
+        20_000_000,
+        5_000_000,
+        2_000_000,
+        1_000_000,
+    ];
 
-    // OFF: the sub-x_min branch behaves as before (promotion valve or refuse) —
-    // no probe accounting, no Probe labels.
-    let mut off = drive_sub_xmin(false);
-    let roff = off.report();
-    let (spend_off, probes_off) = off.probe_budget_report();
-    let probe_records_off = off
-        .journal()
-        .recent()
-        .filter(|d| matches!(**d, Decision::Probe { .. }))
-        .count();
+    for bankroll in BANKROLLS {
+        // ON: `probe_budget_enable` set, operator floor disabled (the legacy path's own
+        // preconditions) — and yet nothing probes.
+        let mut on = drive_sub_xmin(true, bankroll);
+        let ron = on.report();
+        let (spend_on, probes_on) = on.probe_budget_report();
+        let probe_records = on
+            .journal()
+            .recent()
+            .filter(|d| matches!(**d, Decision::Probe { .. }))
+            .count();
 
-    // The law fired: sub-x_min candidates were budget-accounted and labeled.
-    assert!(
-        probes_on > 0 && spend_on > 0,
-        "probe-budget ON must account paid-information probes (probes={probes_on}, spend={spend_on})"
-    );
-    assert!(probe_records > 0, "ON must journal labeled Probe records");
-    // And the OFF arm did NONE of that.
-    assert_eq!(probes_off, 0, "probe-budget OFF accounts no probes");
-    assert_eq!(spend_off, 0, "probe-budget OFF spends nothing");
-    assert_eq!(probe_records_off, 0, "OFF journals no Probe labels");
-    // A probe is never a position: the ON arm opened no more than the OFF arm.
-    assert!(
-        ron.admitted <= roff.admitted,
-        "probes replace raw opens/refusals, never add positions (on={}, off={})",
-        ron.admitted,
-        roff.admitted
-    );
+        // OFF: identical config but for the flag.
+        let mut off = drive_sub_xmin(false, bankroll);
+        let roff = off.report();
+        let (spend_off, probes_off) = off.probe_budget_report();
+        let probe_records_off = off
+            .journal()
+            .recent()
+            .filter(|d| matches!(**d, Decision::Probe { .. }))
+            .count();
+
+        // The measured cost model leaves no candidate below `x_min`: the branch is inert.
+        assert_eq!(
+            probes_on, 0,
+            "measured cost model must leave the legacy sub-x_min probe path INERT \
+             (bankroll={bankroll}, probes={probes_on})"
+        );
+        assert_eq!(
+            spend_on, 0,
+            "inert probe path must account no calibration spend (bankroll={bankroll}, \
+             spend={spend_on})"
+        );
+        assert_eq!(
+            probe_records, 0,
+            "inert probe path must journal no Probe labels (bankroll={bankroll}, \
+             records={probe_records})"
+        );
+        // And the OFF arm does the same nothing: the flag is a no-op now, which is the
+        // whole point of asserting the inertness rather than the old firing.
+        assert_eq!(probes_off, 0, "probe-budget OFF accounts no probes");
+        assert_eq!(spend_off, 0, "probe-budget OFF spends nothing");
+        assert_eq!(probe_records_off, 0, "OFF journals no Probe labels");
+        assert_eq!(
+            (probes_on, spend_on),
+            (probes_off, spend_off),
+            "probe_budget_enable must be a NO-OP against the raw path under the measured \
+             cost model (bankroll={bankroll})"
+        );
+        // A probe is never a position, and with none firing the two arms open identically.
+        assert_eq!(
+            ron.admitted, roff.admitted,
+            "no probe may add a position (bankroll={bankroll}, on={}, off={})",
+            ron.admitted, roff.admitted
+        );
+    }
 }
 
 // ============================================================================

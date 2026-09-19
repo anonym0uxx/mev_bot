@@ -421,8 +421,8 @@ fn the_full_permutation_matrix() {
     let b7_unhappy_on = m[5][2].net_lamports;
     assert_eq!(b7_happy_off, 602_046_949, "B7 happy neutral drifted");
     assert_eq!(b7_happy_on, 927_562_612, "B7 happy armed drifted");
-    assert_eq!(b7_unhappy_off, 1_252_083_041, "B7 unhappy neutral drifted");
-    assert_eq!(b7_unhappy_on, 1_233_088_050, "B7 unhappy armed drifted");
+    assert_eq!(b7_unhappy_off, 1_561_311_854, "B7 unhappy neutral drifted");
+    assert_eq!(b7_unhappy_on, 1_471_865_938, "B7 unhappy armed drifted");
 
     // Every tape must actually trade under all-OFF, else its row proves nothing.
     for (ti, t) in TAPES.iter().enumerate() {

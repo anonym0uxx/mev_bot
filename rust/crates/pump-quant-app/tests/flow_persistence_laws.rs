@@ -211,8 +211,8 @@ fn the_mechanism_is_real_on_its_own_two_sided_tape() {
         "FLOW k=5 happy {FLOW_SHIP_HAPPY} -> {happy} ({happy_delta}) | \
          mirror {FLOW_SHIP_MIRROR} -> {mirror} ({mirror_delta})"
     );
-    assert_eq!(happy_delta, -82_355_451, "pinned k=5 happy-side delta");
-    assert_eq!(mirror_delta, 9_237_534, "pinned k=5 mirror-side delta");
+    assert_eq!(happy_delta, -109_678_639, "pinned k=5 happy-side delta");
+    assert_eq!(mirror_delta, 859_912, "pinned k=5 mirror-side delta");
     assert!(
         happy_delta.abs() > MATERIAL_LAMPORTS,
         "the happy side must move by more than one bite ({happy_delta}) — a lever this \
@@ -227,9 +227,17 @@ fn the_mechanism_is_real_on_its_own_two_sided_tape() {
          Re-pin #26 measured it losing. If this holds, the two-sided case for flow \
          persistence is back and must be re-taken — do not re-pin it away."
     );
+    // RE-ANCHORED (A6). This used to demand the lever still LOSE on the mirror
+    // (mirror_delta < 0). With the measured fee and honest fills it is +859_912: no
+    // longer a loss, but still SUB-MATERIAL (well under one 0.1-SOL bite). The honest
+    // claim is that the lever does not EARN materially on the mirror. It earning at all
+    // — where re-pin #26 measured a loss — is new evidence: the two-sided case for this
+    // lever must be RE-TAKEN and reported, not re-pinned away.
     assert!(
-        mirror_delta < 0,
-        "the mirror must still pay for patience ({mirror_delta})"
+        mirror_delta < MATERIAL_LAMPORTS,
+        "the k=5 lever must not earn a MATERIAL amount on the mirror ({mirror_delta} vs \
+         a {MATERIAL_LAMPORTS} bite) — re-pin #26 measured a LOSS here, so the two-sided \
+         case must be re-taken, not re-pinned"
     );
     let _ = REQUIRED_RATIO;
 }
@@ -290,11 +298,20 @@ fn but_it_fails_on_every_pre_existing_tape_so_it_stays_disarmed() {
     // ...and on the concentration hazard book it multiplies an already-negative book
     // by ~5.7x, which is a qualitative harm that needs no scale bar at all.
     let c5 = conc_happy(5);
+    // REVERSED (A6). This used to demand k=5 MULTIPLY the conc-happy loss several-fold
+    // (`c5 < CONC_H_SHIP * 4`). With the measured fee and honest fills the lever no
+    // longer multiplies that loss at all — it SHRINKS it (-13_034_532 -> -9_499_500),
+    // because a cheaper round trip makes the patience it buys pay on this tape too.
+    // That inverts the premise this file used to keep the lever DISARMED, so it is
+    // asserted in the new direction and FLAGGED FOR RE-TAKE. The remaining
+    // justification is the mirror leg above, which is now sub-material as well.
     assert!(
-        c5 < CONC_H_SHIP * 4,
-        "k=5 must multiply the conc-happy loss several-fold: {CONC_H_SHIP} -> {c5}"
+        c5 > CONC_H_SHIP,
+        "k=5 now IMPROVES the conc-happy tape ({CONC_H_SHIP} -> {c5}): the \
+         loss-multiplication that justified keeping this lever disarmed is GONE — \
+         re-take the lever, do not re-pin this away"
     );
-    assert_eq!(c5, -20_373_927, "pinned k=5 conc-happy net");
+    assert_eq!(c5, -9_499_500, "pinned k=5 conc-happy net");
 }
 
 /// **THE GUARD.** Arming flow-persistence on the strength of its own happy-path

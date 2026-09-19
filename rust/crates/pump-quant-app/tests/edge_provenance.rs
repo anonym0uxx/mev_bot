@@ -317,19 +317,26 @@ fn the_book_is_dominated_by_end_of_tape_force_closure() {
     assert_eq!(total, 42_037_539);
     let forced = total - natural;
     assert_eq!(forced, -10_091_993, "force-closed subtotal drifted");
+    // REVERSED (A5/A6), and the reversal is the GOOD direction. This used to demand the
+    // force-closed remainder be a LARGE fraction (`-forced * 4 > natural`, i.e. >=25%
+    // of the naturally-closed subtotal). Correcting the venue fee to its measured rate
+    // and pricing honest fills moved it to 19%: the headline net is now LESS of a
+    // boundary artifact. The property worth pinning is therefore that the artifact
+    // stays a MINORITY — a majority would mean the headline net is mostly an
+    // end-of-tape accounting event rather than realized trades.
     assert!(
-        -forced * 4 > natural,
-        "end-of-tape force closure erases a LARGE FRACTION of what the strategy \
-         actually earned ({natural} earned, {forced} forced) — the headline net is in \
-         large part a boundary artifact, and no re-pin that raises the net may be \
-         quoted without this number beside it"
+        (-forced) * 2 < natural,
+        "the end-of-tape force-closed remainder must stay a MINORITY of the \
+         naturally-closed subtotal ({natural} earned, {forced} forced) — the headline \
+         net must not be mostly a boundary artifact"
     );
-    // The fraction itself, so a future change that improved it is visible rather than
-    // merely non-failing. 77% at re-pin #24, 60% then, 25% now (re-pin #29).
+    // The fraction itself, so a change that improves it is visible rather than merely
+    // non-failing. 77% at re-pin #24, 60% then, 25% at #29, 19% now (measured fee +
+    // honest fills).
     println!("MEASURE boundary_fraction={}", -forced * 100 / natural);
     assert_eq!(
         -forced * 100 / natural,
-        25,
+        19,
         "boundary-artifact fraction drifted"
     );
 }

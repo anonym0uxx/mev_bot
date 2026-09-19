@@ -128,7 +128,16 @@ impl TreasuryPolicy {
                     whitelist.push(entry);
                 }
 
-                let section = &line[1..line.len() - 1];
+                // `[[whitelist]]` (TOML array-of-tables) and `[whitelist]` name the same
+                // section to this parser. Strip EVERY surrounding bracket rather than
+                // one layer: the old `&line[1..line.len() - 1]` turned `[[whitelist]]`
+                // into `[whitelist]`, which matched no arm and fell through to the
+                // ignore case — so the operator's config
+                // (`config/treasury_policy.example.toml`, which uses the `[[whitelist]]`
+                // form) parsed to an EMPTY whitelist and `from_toml` failed closed with
+                // "whitelist is empty — no transfers allowed". Fail-closed, but wrong:
+                // a policy file that parses to nothing is worse than one that refuses.
+                let section = line.trim_matches(|c| c == '[' || c == ']');
                 match section {
                     "limits" => {}
                     "whitelist" => {
