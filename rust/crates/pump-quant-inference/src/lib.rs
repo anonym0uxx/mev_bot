@@ -17,10 +17,10 @@
 pub mod seam;
 
 pub use seam::{
-    management_fraction_bps, management_base, resolve_management_clip_lamports,
-    parse_decision_payload, resolve_entry_clip_lamports, route, Decision, ManagementBase,
-    DriftLedger, OffContract, PayloadError, Route, SizeError, SizeTier, DEPLOY_LAMPORTS_CANONICAL,
-    FEE_BUFFER_LAMPORTS, MIN_CLIP_LAMPORTS,
+    management_base, management_fraction_bps, parse_decision_payload, parse_headline,
+    resolve_entry_clip_lamports, resolve_management_clip_lamports, route, Decision, DriftLedger,
+    Headline, ManagementBase, OffContract, PayloadError, Route, SizeError, SizeTier,
+    DEPLOY_LAMPORTS_CANONICAL, FEE_BUFFER_LAMPORTS, MIN_CLIP_LAMPORTS,
 };
 
 /// A completion that failed the trained-format contract converts to the client's error type
@@ -32,6 +32,8 @@ impl From<PayloadError> for InferenceError {
     }
 }
 
+use std::io::{BufRead, BufReader, Read};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// The seven actions the c11 corpus actually trains (union of the `decision`
@@ -168,6 +170,16 @@ pub fn request_body(system: &str, user: &str) -> serde_json::Value {
     })
 }
 
+/// The streaming twin of [`request_body`]: byte-identical except `"stream": true`, so the
+/// served prompt parity (`enable_thinking: false`, `temperature: 0.0`, same messages) is
+/// preserved while the client reads the completion incrementally instead of all at once.
+#[must_use]
+pub fn streaming_request_body(system: &str, user: &str) -> serde_json::Value {
+    let mut body = request_body(system, user);
+    body["stream"] = serde_json::json!(true);
+    body
+}
+
 impl InferenceClient {
     /// Build a client against a llama-server OpenAI-compatible base URL
     /// (e.g. `http://127.0.0.1:8080`), with a per-request timeout.
@@ -209,12 +221,239 @@ impl InferenceClient {
         let text = resp
             .into_string()
             .map_err(|e| InferenceError::Transport(e.to_string()))?;
-        let v: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| InferenceError::Transport(e.to_string()))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| InferenceError::Transport(e.to_string()))?;
         v["choices"][0]["message"]["content"]
             .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| InferenceError::Unparseable(text))
+    }
+
+    /// Send a streaming completion and return the moment the decision headline
+    /// (`DECISION:` + `SIZE:` on a `BUY`) has arrived, before the reasoning tail.
+    ///
+    /// The returned [`StreamedDecision`] carries the [`Headline`] to act on now; the
+    /// caller drains it (in place or on a worker thread) for the full completion. This is
+    /// the latency lever: the execution route reads only the headline, so the several
+    /// seconds of reasoning the model emits afterwards are no longer on the critical
+    /// path — they still get produced and journaled, just not waited on.
+    pub fn complete_streaming(
+        &self,
+        system: &str,
+        user: &str,
+    ) -> Result<StreamedDecision, InferenceError> {
+        let body = streaming_request_body(system, user);
+        let resp = self
+            .agent
+            .post(&format!("{}/v1/chat/completions", self.endpoint))
+            .set("Content-Type", "application/json")
+            .send_json(body)
+            .map_err(|e| InferenceError::Transport(e.to_string()))?;
+
+        if resp.status() != 200 {
+            return Err(InferenceError::Transport(format!(
+                "status {}",
+                resp.status()
+            )));
+        }
+
+        let reader: Box<dyn Read + Send + Sync> = resp.into_reader();
+        let mut sd = StreamedDecision {
+            headline: Err(OffContract::NoDecisionLine),
+            reader: Some(BufReader::new(reader)),
+            buf: String::new(),
+        };
+
+        // Drive the SSE stream until the headline is complete (or definitely broken).
+        loop {
+            match sd.next_event()? {
+                SseEvent::Delta(d) => {
+                    sd.buf.push_str(&d);
+                    if let Some(headline) = parse_headline(&sd.buf) {
+                        sd.headline = headline;
+                        break;
+                    }
+                }
+                SseEvent::Done => {
+                    // Ended before a usable headline: NoDecisionLine (or the more
+                    // specific kind already recorded) is the honest answer.
+                    sd.reader = None;
+                    break;
+                }
+                SseEvent::Ignore => {}
+            }
+        }
+        Ok(sd)
+    }
+
+    /// Prime the pooled connection to a warm llama-server and prove it answers, with one
+    /// `GET /health` (llama-server's liveness probe).
+    ///
+    /// Call once at startup so the first real decision does not pay TCP/TLS setup, and so
+    /// an unreachable server is found before capital is in play. The answer is never
+    /// cached — health is probed fresh on every call. The `ureq::Agent` this client holds
+    /// already reuses the keep-alive connection across decisions, which is the other half
+    /// of warm serving; the one requirement is that a single client is shared, never
+    /// rebuilt per decision.
+    pub fn warmup(&self) -> Result<(), InferenceError> {
+        let resp = self
+            .agent
+            .get(&format!("{}/health", self.endpoint))
+            .call()
+            .map_err(|e| InferenceError::Transport(e.to_string()))?;
+        if resp.status() == 200 {
+            Ok(())
+        } else {
+            Err(InferenceError::Transport(format!(
+                "health status {}",
+                resp.status()
+            )))
+        }
+    }
+}
+
+/// One event off an OpenAI-compatible SSE stream.
+enum SseEvent {
+    /// A content delta (may be empty — a final `""` delta often precedes the stop).
+    Delta(String),
+    /// The stream ended (`[DONE]`, a `finish_reason`, or EOF).
+    Done,
+    /// A blank line, a comment, or a malformed frame — carry on.
+    Ignore,
+}
+
+/// Classify one SSE text line.
+fn sse_event(line: &str) -> SseEvent {
+    let payload = match line.strip_prefix("data:") {
+        Some(p) => p.trim(),
+        None => return SseEvent::Ignore,
+    };
+    if payload == "[DONE]" {
+        return SseEvent::Done;
+    }
+    match serde_json::from_str::<serde_json::Value>(payload) {
+        Ok(v) => {
+            if v.pointer("/choices/0/finish_reason")
+                .and_then(|f| f.as_str())
+                .is_some()
+            {
+                return SseEvent::Done;
+            }
+            match v
+                .pointer("/choices/0/delta/content")
+                .and_then(|c| c.as_str())
+            {
+                Some(s) => SseEvent::Delta(s.to_string()),
+                None => SseEvent::Ignore,
+            }
+        }
+        Err(_) => SseEvent::Ignore,
+    }
+}
+
+/// A decision returned the moment its headline streamed in, before the reasoning tail
+/// finished. Read [`StreamedDecision::headline`] to act now; call
+/// [`StreamedDecision::drain`] later (or on a worker thread) to recover the full
+/// completion for the journal.
+pub struct StreamedDecision {
+    headline: Result<Headline, OffContract>,
+    reader: Option<BufReader<Box<dyn Read + Send + Sync>>>,
+    buf: String,
+}
+
+impl StreamedDecision {
+    /// The headline (action + size-on-`BUY`) parsed from the first-arrived tokens.
+    ///
+    /// `Err` means the stream ended or emitted a definitely-untrained token before the
+    /// headline completed: fail-closed at streaming speed, without waiting for the tail.
+    /// The specific [`OffContract`] cause is recoverable here so the caller can record it
+    /// on a [`DriftLedger`] immediately.
+    #[must_use]
+    pub fn headline(&self) -> Result<Headline, OffContract> {
+        self.headline
+    }
+
+    /// Finish reading the SSE tail and return the full completion text (headline plus
+    /// reasoning) for [`parse_decision_payload`] and the journal.
+    pub fn drain(mut self) -> Result<String, InferenceError> {
+        while self.reader.is_some() {
+            match self.next_event()? {
+                SseEvent::Delta(d) => self.buf.push_str(&d),
+                SseEvent::Done => self.reader = None,
+                SseEvent::Ignore => {}
+            }
+        }
+        Ok(self.buf)
+    }
+
+    /// Read one more SSE event. Returns the content delta WITHOUT appending it, so the
+    /// caller decides whether to buffer it (headline loop) or append it (drain).
+    fn next_event(&mut self) -> Result<SseEvent, InferenceError> {
+        let reader = self
+            .reader
+            .as_mut()
+            .ok_or_else(|| InferenceError::Transport("stream already drained".to_string()))?;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = reader
+                .read_line(&mut line)
+                .map_err(|e| InferenceError::Transport(e.to_string()))?;
+            if n == 0 {
+                self.reader = None;
+                return Ok(SseEvent::Done);
+            }
+            let line = line.trim_end_matches(['\r', '\n']);
+            if line.is_empty() {
+                continue;
+            }
+            match sse_event(line) {
+                SseEvent::Ignore => continue,
+                ev @ (SseEvent::Delta(_) | SseEvent::Done) => return Ok(ev),
+            }
+        }
+    }
+}
+
+/// A single-slot, latest-wins mailbox for one decision subject (one mint).
+///
+/// The P6 decision loop's coalesce-to-newest rule: when a newer snapshot for the same
+/// subject arrives while an inference is still in flight, the newer snapshot REPLACES the
+/// pending one — the loop never queues stale decisions, it runs once for the newest state.
+/// This is that rule as a type, shareable across the loop's worker threads.
+///
+/// A `Mutex` is the honest choice here, not a hot-path shortcut: the slot swap is a
+/// register-sized store gated by a ~100 ms inference, so any lock cost is orders of
+/// magnitude below the decision itself. The lockfree primitives in `pump_quant_core`
+/// exist for the sub-microsecond tape path; this is not that path.
+pub struct LatestWins<T> {
+    inner: Arc<Mutex<Option<T>>>,
+}
+
+impl<T> LatestWins<T> {
+    /// An empty mailbox.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Publish the newest snapshot, discarding whatever is still pending.
+    pub fn publish(&self, value: T) {
+        *self.inner.lock().expect("latest-wins slot poisoned") = Some(value);
+    }
+
+    /// Take the newest snapshot if one is pending, leaving the slot empty.
+    #[must_use]
+    pub fn take(&self) -> Option<T> {
+        self.inner.lock().expect("latest-wins slot poisoned").take()
+    }
+}
+
+impl<T> Default for LatestWins<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -277,5 +516,200 @@ mod served_prompt_parity {
         assert_eq!(body["messages"][0]["role"], serde_json::json!("system"));
         // The documented constant and the wire body must not disagree.
         assert!(CHAT_TEMPLATE_KWARGS.contains("enable_thinking"));
+    }
+
+    #[test]
+    fn the_streaming_body_differs_only_in_the_stream_flag() {
+        let base = request_body("SYSTEM", "USER");
+        let stream = streaming_request_body("SYSTEM", "USER");
+        assert_eq!(stream["stream"], serde_json::json!(true));
+        assert_eq!(base["stream"], serde_json::json!(false));
+        // served-prompt parity is untouched: flip the flag back and they must be equal.
+        let mut expected = base;
+        expected["stream"] = serde_json::json!(true);
+        assert_eq!(stream, expected);
+        assert_eq!(
+            stream["chat_template_kwargs"]["enable_thinking"],
+            serde_json::json!(false)
+        );
+    }
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+
+    /// Build one OpenAI-compatible SSE `data:` frame carrying a content delta.
+    fn sse_delta(content: &str) -> String {
+        let v = serde_json::json!({"choices": [{"delta": {"content": content}}]});
+        format!("data: {}\n\n", v)
+    }
+
+    /// Serve a canned SSE completion that TRICKLES: the headline frame is written and
+    /// flushed, then the server signals and blocks; only after the test releases it does
+    /// the tail get written. Returns (url, headline_sent_rx, release_tail_tx, handle).
+    ///
+    /// This makes "the decision is returned before the tail" a DETERMINISTIC property
+    /// rather than a timing race: the tail cannot even be written while the caller is
+    /// still blocked on `complete_streaming`.
+    fn spawn_trickle_server(
+        headline: &'static str,
+        tail: &'static str,
+    ) -> (
+        String,
+        mpsc::Receiver<()>,
+        mpsc::Sender<()>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (head_sent_tx, head_sent_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let handle = thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            // Drain the request head+body so the client's write completes.
+            let mut buf = [0u8; 8192];
+            let mut req = String::new();
+            loop {
+                let n = conn.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                req.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if req.contains("\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let head_frame = sse_delta(headline);
+            let tail_frame = sse_delta(tail);
+            let done = "data: [DONE]\n\n";
+            let full = format!("{head_frame}{tail_frame}{done}");
+
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                full.len()
+            );
+            conn.write_all(head.as_bytes()).unwrap();
+            // write the headline, flush, then stall until the test releases the tail
+            conn.write_all(head_frame.as_bytes()).unwrap();
+            conn.flush().unwrap();
+            head_sent_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            conn.write_all(format!("{tail_frame}{done}").as_bytes())
+                .unwrap();
+            conn.flush().unwrap();
+        });
+
+        (
+            format!("http://127.0.0.1:{port}"),
+            head_sent_rx,
+            release_tx,
+            handle,
+        )
+    }
+
+    #[test]
+    fn streaming_returns_the_headline_before_the_tail_is_written() {
+        let (url, head_sent, release, handle) = spawn_trickle_server(
+            "DECISION: BUY\nSIZE: FULL\n",
+            "PRICE LIMIT: 0.02\nINVALIDATION: none\nEVIDENCE: flow sustained\n",
+        );
+        let client = InferenceClient::new(url, Duration::from_secs(10));
+
+        // complete_streaming returns as soon as the headline is in.
+        let sd = client.complete_streaming("SYS", "USER").unwrap();
+        let hl = sd.headline().unwrap();
+        assert_eq!(hl.action, Action::Buy);
+        assert_eq!(hl.size, Some(SizeTier::Full));
+
+        // The only thing the server could have written so far is the headline: it must be
+        // stalled on the release channel, proving the tail was NOT yet on the wire.
+        head_sent
+            .recv_timeout(Duration::from_secs(5))
+            .expect("server must have stalled at the headline");
+
+        // Release the tail and drain the full completion for the journal.
+        release.send(()).unwrap();
+        let full = sd.drain().unwrap();
+        assert!(full.contains("PRICE LIMIT: 0.02"));
+        assert!(full.contains("EVIDENCE: flow sustained"));
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn independent_decisions_run_in_parallel_and_finish_independently() {
+        let (url1, h1, r1, j1) =
+            spawn_trickle_server("DECISION: WATCH\nSIZE: NONE\n", "EVIDENCE: quiet book\n");
+        let (url2, h2, r2, j2) =
+            spawn_trickle_server("DECISION: BUY\nSIZE: SMALL\n", "EVIDENCE: inflow\n");
+
+        let a = thread::spawn(move || {
+            let client = InferenceClient::new(url1, Duration::from_secs(10));
+            let sd = client.complete_streaming("S", "U").unwrap();
+            let hl = sd.headline().unwrap();
+            h1.recv_timeout(Duration::from_secs(5)).unwrap();
+            r1.send(()).unwrap();
+            (hl, sd.drain().unwrap())
+        });
+        let b = thread::spawn(move || {
+            let client = InferenceClient::new(url2, Duration::from_secs(10));
+            let sd = client.complete_streaming("S", "U").unwrap();
+            let hl = sd.headline().unwrap();
+            h2.recv_timeout(Duration::from_secs(5)).unwrap();
+            r2.send(()).unwrap();
+            (hl, sd.drain().unwrap())
+        });
+
+        let (ha, ta) = a.join().unwrap();
+        let (hb, tb) = b.join().unwrap();
+        assert_eq!(ha.action, Action::Watch);
+        assert_eq!(hb.action, Action::Buy);
+        assert_eq!(hb.size, Some(SizeTier::Small));
+        assert!(ta.contains("quiet book"));
+        assert!(tb.contains("inflow"));
+        j1.join().unwrap();
+        j2.join().unwrap();
+    }
+
+    #[test]
+    fn the_client_is_shareable_across_threads() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<InferenceClient>();
+        assert_send_sync::<LatestWins<u64>>();
+    }
+
+    #[test]
+    fn warmup_probes_the_health_endpoint_and_accepts_200() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = conn.read(&mut buf);
+            conn.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .unwrap();
+        });
+        let client =
+            InferenceClient::new(format!("http://127.0.0.1:{port}"), Duration::from_secs(5));
+        client.warmup().unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn latest_wins_discards_stale_snapshots() {
+        let slot = LatestWins::new();
+        slot.publish(1_u64);
+        slot.publish(2_u64); // the newer snapshot replaces the pending one
+        assert_eq!(slot.take(), Some(2));
+        assert_eq!(slot.take(), None); // consumed
+        slot.publish(3_u64);
+        assert_eq!(slot.take(), Some(3));
     }
 }

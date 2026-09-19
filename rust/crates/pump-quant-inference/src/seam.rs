@@ -159,7 +159,12 @@ impl PayloadError {
 
 impl std::fmt::Display for PayloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "off-contract completion ({}): {}", self.kind.as_str(), self.detail)
+        write!(
+            f,
+            "off-contract completion ({}): {}",
+            self.kind.as_str(),
+            self.detail
+        )
     }
 }
 
@@ -254,12 +259,10 @@ impl DriftLedger {
 /// error: it means the completion has drifted off-distribution, and honoring it would let a
 /// `HOLD` size a position.
 pub fn parse_decision_payload(completion: &str) -> Result<Decision, PayloadError> {
-    let raw_action = field(completion, "DECISION").ok_or_else(|| {
-        PayloadError::new(OffContract::NoDecisionLine, completion.to_string())
-    })?;
-    let action = Action::parse(raw_action).ok_or_else(|| {
-        PayloadError::new(OffContract::UntrainedAction, raw_action.to_string())
-    })?;
+    let raw_action = field(completion, "DECISION")
+        .ok_or_else(|| PayloadError::new(OffContract::NoDecisionLine, completion.to_string()))?;
+    let action = Action::parse(raw_action)
+        .ok_or_else(|| PayloadError::new(OffContract::UntrainedAction, raw_action.to_string()))?;
 
     let size_raw = field(completion, "SIZE");
     if action == Action::Buy {
@@ -296,18 +299,86 @@ pub fn parse_decision_payload(completion: &str) -> Result<Decision, PayloadError
                 Some(p)
             }
         };
-        return Ok(Decision { action, size: Some(size), price_limit: price });
+        return Ok(Decision {
+            action,
+            size: Some(size),
+            price_limit: price,
+        });
     }
 
     if let Some(tok) = size_raw {
         if tok != "NONE" {
             return Err(PayloadError::new(
                 OffContract::SizeOnNonBuy,
-                format!("`{}` carries a size (`{tok}`) — off-distribution completion", action.as_str()),
+                format!(
+                    "`{}` carries a size (`{tok}`) — off-distribution completion",
+                    action.as_str()
+                ),
             ));
         }
     }
-    Ok(Decision { action, size: None, price_limit: None })
+    Ok(Decision {
+        action,
+        size: None,
+        price_limit: None,
+    })
+}
+
+/// The execution-relevant prefix of a completion: the action, and on `BUY` the size
+/// tier. Everything after the headline (`INVALIDATION`, `EVIDENCE`, `COUNTEREVIDENCE`,
+/// the optional `PRICE LIMIT`, and the citations) is reasoning the journal keeps but the
+/// route never reads, so a streaming client may act on this the instant it arrives and
+/// let the tail finish in the background.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Headline {
+    /// The trained action token.
+    pub action: Action,
+    /// The size tier on `BUY` (`None` otherwise).
+    pub size: Option<SizeTier>,
+}
+
+/// Parse the headline out of a *partial* completion, for streaming early-fire.
+///
+/// Returns:
+/// * `Some(Ok(headline))` once the action — and, on `BUY`, the size — has fully arrived;
+/// * `Some(Err(kind))` when a definitely-untrained token is already visible;
+/// * `None` while the headline is still incomplete (the caller keeps streaming).
+///
+/// Deliberately narrower than [`parse_decision_payload`]: it never waits for the
+/// optional `PRICE LIMIT` or any reasoning line, because the execution path does not
+/// read them (the clip resolves from the tier, not the price limit). The full contract
+/// is still enforced on the *drained* completion by [`parse_decision_payload`], which
+/// feeds the [`DriftLedger`] — early fire changes only *when* the action is taken, never
+/// what the journal judges.
+#[must_use]
+pub fn parse_headline(text: &str) -> Option<Result<Headline, OffContract>> {
+    let action_line = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("DECISION:").map(str::trim))?;
+
+    let action = match Action::parse(action_line) {
+        Some(a) => a,
+        None => return Some(Err(OffContract::UntrainedAction)),
+    };
+
+    if action == Action::Buy {
+        let size_line = text
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("SIZE:").map(str::trim))?;
+        let size = match SizeTier::parse(size_line) {
+            Some(s) => s,
+            None => return Some(Err(OffContract::BuyWithUntrainedSize)),
+        };
+        Some(Ok(Headline {
+            action,
+            size: Some(size),
+        }))
+    } else {
+        // A non-BUY action is routable the moment the action token lands: its magnitude
+        // is corpus-fixed (`route` needs only the action), so there is nothing else to
+        // wait for. The full parse still refuses a shifted `SIZE` on the drained text.
+        Some(Ok(Headline { action, size: None }))
+    }
 }
 
 /// Where an action goes in the existing position lifecycle.
@@ -560,11 +631,13 @@ INVALIDATION: execution cost: round trip 66 bp\nEVIDENCE_STATUS: complete";
     fn a_tier_is_a_fraction_of_notional_never_of_the_account() {
         let one = DEPLOY_LAMPORTS_CANONICAL;
         assert_eq!(
-            resolve_entry_clip_lamports(SizeTier::Full, 10 * one, one, FEE_BUFFER_LAMPORTS).unwrap(),
+            resolve_entry_clip_lamports(SizeTier::Full, 10 * one, one, FEE_BUFFER_LAMPORTS)
+                .unwrap(),
             one
         );
         assert_eq!(
-            resolve_entry_clip_lamports(SizeTier::Small, 10 * one, one, FEE_BUFFER_LAMPORTS).unwrap(),
+            resolve_entry_clip_lamports(SizeTier::Small, 10 * one, one, FEE_BUFFER_LAMPORTS)
+                .unwrap(),
             250_000_000
         );
         assert_eq!(
@@ -578,12 +651,18 @@ INVALIDATION: execution cost: round trip 66 bp\nEVIDENCE_STATUS: complete";
         let one = DEPLOY_LAMPORTS_CANONICAL;
         // 0.60 SOL free, 0.05 buffer -> 0.55 payable, so FULL (1.0) caps to 0.55
         assert_eq!(
-            resolve_entry_clip_lamports(SizeTier::Full, 600_000_000, one, FEE_BUFFER_LAMPORTS).unwrap(),
+            resolve_entry_clip_lamports(SizeTier::Full, 600_000_000, one, FEE_BUFFER_LAMPORTS)
+                .unwrap(),
             550_000_000
         );
         // exactly the buffer: nothing is payable
         assert_eq!(
-            resolve_entry_clip_lamports(SizeTier::Full, FEE_BUFFER_LAMPORTS, one, FEE_BUFFER_LAMPORTS),
+            resolve_entry_clip_lamports(
+                SizeTier::Full,
+                FEE_BUFFER_LAMPORTS,
+                one,
+                FEE_BUFFER_LAMPORTS
+            ),
             Err(SizeError::InsufficientFreeCash)
         );
         // payable, but below the minimum viable clip
@@ -611,7 +690,10 @@ INVALIDATION: execution cost: round trip 66 bp\nEVIDENCE_STATUS: complete";
         assert_eq!(l.count(OffContract::BuyWithoutSize), 1);
         assert_eq!(l.rate_bp(), 10);
         assert!(l.alarm(1_000, 5));
-        assert!(!l.alarm(1_001, 5), "one short of the sample floor must stay quiet");
+        assert!(
+            !l.alarm(1_001, 5),
+            "one short of the sample floor must stay quiet"
+        );
     }
 
     #[test]
@@ -628,7 +710,10 @@ INVALIDATION: execution cost: round trip 66 bp\nEVIDENCE_STATUS: complete";
         assert_eq!(t("garbage"), OffContract::NoDecisionLine);
         assert_eq!(t("DECISION: SELL"), OffContract::UntrainedAction);
         assert_eq!(t("DECISION: BUY"), OffContract::BuyWithoutSize);
-        assert_eq!(t("DECISION: BUY\nSIZE: NONE"), OffContract::BuyWithUntrainedSize);
+        assert_eq!(
+            t("DECISION: BUY\nSIZE: NONE"),
+            OffContract::BuyWithUntrainedSize
+        );
         assert_eq!(
             t("DECISION: BUY\nSIZE: FULL\nPRICE LIMIT: 0"),
             OffContract::BuyWithUnusablePriceLimit
@@ -637,5 +722,71 @@ INVALIDATION: execution cost: round trip 66 bp\nEVIDENCE_STATUS: complete";
         for k in OffContract::ALL {
             assert!(!k.as_str().is_empty());
         }
+    }
+
+    #[test]
+    fn headline_fires_non_buy_on_the_action_alone_and_waits_for_buy_size() {
+        // non-BUY: the action token alone is enough to route, so it fires immediately
+        assert_eq!(
+            parse_headline("DECISION: WATCH").unwrap().unwrap(),
+            Headline {
+                action: Action::Watch,
+                size: None
+            }
+        );
+        assert_eq!(
+            parse_headline("DECISION: EXIT").unwrap().unwrap(),
+            Headline {
+                action: Action::Exit,
+                size: None
+            }
+        );
+        // BUY: the size is required before the headline is complete
+        assert!(parse_headline("DECISION: BUY").is_none());
+    }
+
+    #[test]
+    fn headline_streams_against_partial_text() {
+        // no DECISION line yet
+        assert!(parse_headline("").is_none());
+        assert!(parse_headline("DECIS").is_none());
+        // a leading blank line / indentation does not break the scan
+        assert_eq!(
+            parse_headline("\n  DECISION: BUY\nSIZE: FULL")
+                .unwrap()
+                .unwrap(),
+            Headline {
+                action: Action::Buy,
+                size: Some(SizeTier::Full)
+            }
+        );
+        // an untrained action errors immediately (nothing to wait for)
+        assert_eq!(
+            parse_headline("DECISION: SELL").unwrap().unwrap_err(),
+            OffContract::UntrainedAction
+        );
+        // an untrained size errors immediately
+        assert_eq!(
+            parse_headline("DECISION: BUY\nSIZE: HUGE")
+                .unwrap()
+                .unwrap_err(),
+            OffContract::BuyWithUntrainedSize
+        );
+    }
+
+    #[test]
+    fn headline_never_waits_for_the_optional_price_limit_or_reasoning() {
+        // The execution path reads only action + size; the optional PRICE LIMIT and the
+        // reasoning lines are journal-only, so a BUY headline is complete without them.
+        let hl = parse_headline("DECISION: BUY\nSIZE: SMALL")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            hl,
+            Headline {
+                action: Action::Buy,
+                size: Some(SizeTier::Small)
+            }
+        );
     }
 }
