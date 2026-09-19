@@ -315,7 +315,9 @@ pub fn parse_decision_payload(completion: &str) -> Result<Decision, PayloadError
 pub enum Route {
     /// `ScalpLifecycle::open` — deploy the resolved clip.
     Open,
-    /// `ScalpLifecycle::scale_in` — add 50% of inventory, bounded by free cash.
+    /// `ScalpLifecycle::scale_in` — add 50% of **ACCOUNT CAPITAL**, bounded by free
+    /// cash. That is the corpus base (see [`ManagementBase`]); sizing it off
+    /// inventory is the ~4x defect the parity test pins.
     AddToPosition,
     /// `ScalpLifecycle::close_at` with a 50% trim.
     ReducePosition,
@@ -336,6 +338,66 @@ pub fn management_fraction_bps(action: Action) -> Option<u32> {
         Action::Exit => Some(10_000),
         _ => None,
     }
+}
+
+/// What a management action's magnitude is a FRACTION OF.
+///
+/// The corpus (the single label authority) sizes the two management families off
+/// different bases, and conflating them is a ~4x error on the highest-stakes action:
+///
+/// - `ADD`    — the ACCOUNT's capital: `min(max(cash,0), add_fraction * capital_sol)`
+/// - `REDUCE` — the CURRENT position:  `reduce_fraction * qty`
+/// - `EXIT`   — the CURRENT position:  all of it
+///
+/// Worked example (0.25 SOL position, 0.76 cash, 1.01 account): the corpus ADD is
+/// 0.505 SOL; sizing ADD off inventory gives 0.125 SOL — 4.04x smaller. A policy
+/// cannot learn sizing if serving shrinks the bet it is graded on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagementBase {
+    /// `ADD` — a fraction of the account's capital, capped by free cash.
+    AccountCapital,
+    /// `REDUCE`/`EXIT` — a fraction of the position actually held.
+    Inventory,
+}
+
+/// The base [`management_fraction_bps`] is a fraction OF, per action.
+///
+/// `None` for actions that are not management magnitudes, mirroring
+/// [`management_fraction_bps`].
+#[must_use]
+pub fn management_base(action: Action) -> Option<ManagementBase> {
+    match action {
+        Action::Add => Some(ManagementBase::AccountCapital),
+        Action::Reduce | Action::Exit => Some(ManagementBase::Inventory),
+        _ => None,
+    }
+}
+
+/// Resolve the lamport magnitude of a management action the way the CORPUS does.
+///
+/// The serving-side counterpart of the label authority: given the same inputs the
+/// simulator sees, it must return the same number — otherwise the policy is graded
+/// on one bet and executes another. Integer-only and saturating.
+///
+/// Returns `None` for `BUY`/`WATCH`/`HOLD`/`SKIP`: those are not management
+/// magnitudes, and inventing one would be the engine deciding the bet.
+#[must_use]
+pub fn resolve_management_clip_lamports(
+    action: Action,
+    inventory_value_lamports: u64,
+    account_capital_lamports: u64,
+    free_cash_lamports: u64,
+) -> Option<u64> {
+    let bps = u128::from(management_fraction_bps(action)?);
+    let clip = match management_base(action)? {
+        ManagementBase::AccountCapital => {
+            let by_fraction = u128::from(account_capital_lamports) * bps / 10_000;
+            // The corpus caps by the cash actually on hand (negative cash clamps to 0).
+            by_fraction.min(u128::from(free_cash_lamports))
+        }
+        ManagementBase::Inventory => u128::from(inventory_value_lamports) * bps / 10_000,
+    };
+    Some(u64::try_from(clip).unwrap_or(u64::MAX))
 }
 
 /// Map an action to its lifecycle route.

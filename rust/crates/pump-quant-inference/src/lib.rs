@@ -17,7 +17,8 @@
 pub mod seam;
 
 pub use seam::{
-    management_fraction_bps, parse_decision_payload, resolve_entry_clip_lamports, route, Decision,
+    management_fraction_bps, management_base, resolve_management_clip_lamports,
+    parse_decision_payload, resolve_entry_clip_lamports, route, Decision, ManagementBase,
     DriftLedger, OffContract, PayloadError, Route, SizeError, SizeTier, DEPLOY_LAMPORTS_CANONICAL,
     FEE_BUFFER_LAMPORTS, MIN_CLIP_LAMPORTS,
 };

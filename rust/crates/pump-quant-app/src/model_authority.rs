@@ -30,7 +30,8 @@
 //! Every refusal is typed, so telemetry can count causes instead of parsing log text.
 
 use pump_quant_inference::seam::{
-    management_fraction_bps, parse_decision_payload, resolve_entry_clip_lamports, route, Decision,
+    management_base, management_fraction_bps, parse_decision_payload, resolve_entry_clip_lamports,
+    route, Decision, ManagementBase,
     DriftLedger, OffContract, Route, SizeError, SizeTier, DEPLOY_LAMPORTS_CANONICAL,
     FEE_BUFFER_LAMPORTS,
 };
@@ -373,10 +374,14 @@ pub struct ManagementRequest<'a> {
 pub enum ManagementAuthority {
     /// Do nothing this clock. Keeps the position open — and keeps every safety trigger armed.
     Hold,
-    /// `ADD` — scale in by the corpus fraction of current inventory.
+    /// `ADD` — scale in by the corpus fraction of the ACCOUNT's capital.
+    ///
+    /// The field NAMES its unit on purpose: a generic name is how the ~4x defect got
+    /// in. `ADD` is a fraction of capital, `REDUCE` a fraction of inventory, and one
+    /// shared name let the two be swapped silently.
     ScaleIn {
-        /// Basis points of current inventory to add (5_000 = +50%).
-        inventory_fraction_bps: u32,
+        /// Basis points of ACCOUNT CAPITAL committed (5_000 = +50% of the account).
+        account_fraction_bps: u32,
     },
     /// `REDUCE` — trim the corpus fraction of current inventory.
     Trim {
@@ -436,16 +441,22 @@ pub fn decide_management<S: ModelSource + ?Sized>(
             ledger.record_accepted();
             ManagementAuthority::Hold
         }
-        Route::AddToPosition => match management_fraction_bps(decision.action) {
-            Some(bps) => {
+        Route::AddToPosition => match (
+            management_fraction_bps(decision.action),
+            management_base(decision.action),
+        ) {
+            // The unit is DERIVED from the seam, never restated here: an `ADD` that
+            // resolves against inventory must not be expressible.
+            (Some(bps), Some(ManagementBase::AccountCapital)) => {
                 ledger.record_accepted();
                 ManagementAuthority::ScaleIn {
-                    inventory_fraction_bps: bps,
+                    account_fraction_bps: bps,
                 }
             }
             // Unreachable while the seam is the single source of the magnitudes; refusing
-            // beats inventing one if that ever changes.
-            None => ManagementAuthority::NoAction(ManagementNoAction::OffContract(
+            // beats inventing one if that ever changes. Also catches a base that is not
+            // AccountCapital, so an ADD cannot quietly resolve against inventory.
+            _ => ManagementAuthority::NoAction(ManagementNoAction::OffContract(
                 OffContract::UntrainedAction,
             )),
         },
@@ -499,7 +510,7 @@ mod management_tests {
         assert_eq!(
             decide_management(&Stub(ADD), &mreq(), &mut l),
             ManagementAuthority::ScaleIn {
-                inventory_fraction_bps: 5_000
+                account_fraction_bps: 5_000
             }
         );
         assert_eq!(
