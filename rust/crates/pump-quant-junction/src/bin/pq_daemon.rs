@@ -1430,90 +1430,31 @@ fn construct_live_engine(
     //   Buy:  18 accounts regardless of token_2022/cashback
     //   Sell: 16 accounts (cashback=false), 17 accounts (cashback=true)
     //
-    // We populate the full 2×2 Buy matrix and the 2×2 Sell matrix so the
-    // gate never refuses a legitimate pump.fun trade.  The placeholder
-    // signatures are non-zero to pass the record_verified guard; a future
-    // re-verification cadence will replace them with real mainnet sigs.
+    // We register the counts OBSERVED on mainnet (see `layout_fixtures` for the
+    // probe that produced them and the real signatures that back them). The
+    // registry is fail-closed: a layout this engine builds but never observed on
+    // chain is refused rather than waved through.
     let mut registry = LayoutRegistry::new();
 
-    // Buy layouts — 18 accounts for all variants (BuybackVault fee-tail path).
-    // The builder's pump_buy_accounts() produces 17 accounts [0]-[16]
-    // including bonding_curve_v2, plus 1 BuybackVault tail = 18 total.
-    // With FeeTail::None (paper/test mode) only 17 are produced.
-    for &token_2022 in &[false, true] {
-        for &cashback in &[false, true] {
-            let key = LayoutKey {
-                venue: Venue::PumpFun,
-                side: Side::Buy,
-                variant: Variant {
-                    cashback,
-                    token_2022,
-                    non_sol_quote: false,
-                    reversed_pool: false,
-                },
-            };
-            let sig_byte = if token_2022 { 0xCC } else { 0xAA }
-                + if cashback { 0x10 } else { 0 };
-            let mut sig = [0u8; 64];
-            sig[0] = sig_byte;
-            sig[31] = sig_byte;
-            // Register both 17 (FeeTail::None, paper/test) and 18
-            // (FeeTail::BuybackVault, live) account counts so the gate
-            // accepts either layout.
-            for &count in &[17usize, 18usize] {
-                registry
-                    .record_verified(VerifiedLayout {
-                        key,
-                        account_count: count,
-                        verifying_slot: 439_558_014,
-                        verifying_signature: sig,
-                    })
-                    .expect("buy layout record should succeed");
-            }
-        }
-    }
-
-    // Sell layouts — Rev-29 (2026-08-20): sell IDL has 14 named accounts.
-    // Sell does NOT include global_volume_accumulator (buy-only). Remaining:
-    // user_volume_accumulator (cashback only) + bonding_curve_v2 (always).
-    // FeeTail::BuybackVault adds 1 more (live mode uses Global account BV).
-    //   Non-cashback + BV: 14 + 1 (bc_v2) + 1 (BV) = 16
-    //   Cashback + BV:     14 + 1 (uva) + 1 (bc_v2) + 1 (BV) = 17
-    //   Non-cashback, None: 14 + 1 (bc_v2) = 15
-    //   Cashback, None:     14 + 1 (uva) + 1 (bc_v2) = 16
-    for &token_2022 in &[false, true] {
-        for &cashback in &[false, true] {
-            let key = LayoutKey {
-                venue: Venue::PumpFun,
-                side: Side::Sell,
-                variant: Variant {
-                    cashback,
-                    token_2022,
-                    non_sol_quote: false,
-                    reversed_pool: false,
-                },
-            };
-            // Rev-29: base count depends on cashback (uva adds 1 account).
-            let base_count = if cashback { 16usize } else { 15usize }; // FeeTail::None
-            let bv_count = base_count + 1; // FeeTail::BuybackVault
-            let sig_byte = if token_2022 { 0xDD } else { 0xBB }
-                + if cashback { 0x10 } else { 0 };
-            let mut sig = [0u8; 64];
-            sig[0] = sig_byte;
-            sig[31] = sig_byte;
-            // Register both base (FeeTail::None) and +1 (BuybackVault) counts.
-            for &count in &[base_count, bv_count] {
-                registry
-                    .record_verified(VerifiedLayout {
-                        key,
-                        account_count: count,
-                        verifying_slot: 439_558_014,
-                        verifying_signature: sig,
-                    })
-                    .expect("sell layout record should succeed");
-            }
-        }
-    }
+    // §41 layouts are populated ONLY from observed mainnet transactions.
+    //
+    // This block used to hand-roll placeholder signatures (bytes 0 and 31 set,
+    // everything else zero) and register BOTH the `FeeTail::None` count and the
+    // `BuybackVault` count so the gate would accept whichever the builder
+    // emitted. Two things were wrong with that:
+    //
+    //   1. The 17-account BUY does not exist on chain. A 400-transaction mainnet
+    //      probe found `buy` = 18 accounts for every variant; 17 is what
+    //      `FeeTail::None` produces, and per Rev-18 a 17-account buy fails
+    //      `Custom(6062)` (BuybackFeeRecipientMissing). Registering it meant the
+    //      gate waved through a layout the chain rejects.
+    //   2. The signatures were fabricated, so "verified" meant nothing.
+    //
+    // The table in `layout_fixtures` carries the real signature and slot of a
+    // transaction that exhibited each count, and `record_verified` now refuses
+    // placeholders — so a fabricated fixture can never re-enter.
+    pump_quant_junction::layout_fixtures::register_observed_pumpfun_layouts(&mut registry)
+        .expect("observed layout fixtures must register");
 
     // ── 5. Sink config ─────────────────────────────────────────────────
     let compute = ComputePlan {

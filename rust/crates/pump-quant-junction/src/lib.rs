@@ -125,6 +125,7 @@ pub mod engine_replay; // Phase 3: config-driven engine re-simulation
 pub mod memory_bank;
 pub mod autonomous_bridge;
 pub mod wallet_loader;
+pub mod layout_fixtures;
 #[cfg(test)] mod chaos_tests;
 
 pub use queue::BoundedJunctionQueue;

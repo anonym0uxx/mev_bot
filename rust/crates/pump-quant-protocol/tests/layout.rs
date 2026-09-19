@@ -39,8 +39,15 @@ fn key(side: Side) -> LayoutKey {
     }
 }
 
-fn sig(b: u8) -> [u8; 64] {
-    [b; 64]
+/// A plausible 64-byte signature for fixtures: `(i*37 + seed) mod 256` covers 64
+/// distinct byte values for every seed (37 is coprime with 256), so it clears the
+/// `record_verified` placeholder guard while staying deterministic and RNG-free.
+fn sig(seed: u8) -> [u8; 64] {
+    let mut s = [0u8; 64];
+    for (i, b) in s.iter_mut().enumerate() {
+        *b = ((i as u32 * 37 + seed as u32) % 256) as u8;
+    }
+    s
 }
 
 // -- the gate refuses by default ---------------------------------------------
@@ -62,6 +69,11 @@ fn negative_control_empty_registry_refuses_everything() {
 
 /// Provenance cannot be manufactured: an all-zero signature is a default, not
 /// a transaction, and recording it must fail.
+///
+/// Updated for E9: the refusal is now the specific `PlaceholderSignature`, not
+/// the generic `Unverified` — the old variant could not distinguish "never
+/// submitted" from "submitted a fabricated filler", which is how a placeholder
+/// got to stand in for proof.
 #[test]
 fn negative_control_zero_signature_is_not_provenance() {
     let mut reg = LayoutRegistry::new();
@@ -73,7 +85,7 @@ fn negative_control_zero_signature_is_not_provenance() {
     };
     assert_eq!(
         reg.record_verified(bad),
-        Err(LayoutError::Unverified(key(Side::Buy)))
+        Err(LayoutError::PlaceholderSignature(key(Side::Buy)))
     );
     assert!(reg.get(&key(Side::Buy)).is_none());
 }
@@ -402,6 +414,63 @@ fn coverage_report_starts_at_zero_and_tracks_what_is_proven() {
         15,
         "one permutation down, fifteen to go"
     );
+}
+
+// -- E9: the gate must refuse PLACEHOLDER signatures -------------------------
+
+/// `record_verified` used to refuse only `[0u8; 64]` — the narrowest possible
+/// reading of "default". Every other fabricated fill passed, which is how
+/// production came to register TWO account counts for one side (17 and 18 for a
+/// pump.fun buy) off signatures no chain ever produced, letting the gate accept
+/// whichever layout the builder happened to emit. A gate that takes a
+/// placeholder as proof of verification is fail-open on the money path, so each
+/// placeholder shape is refused explicitly.
+#[test]
+fn record_verified_refuses_placeholder_signatures() {
+    let spike = {
+        let mut s = [0u8; 64];
+        s[0] = 0xAA;
+        s[31] = 0xAA;
+        s
+    };
+    let placeholders: [(&str, [u8; 64]); 4] = [
+        ("all zero", [0u8; 64]),
+        ("constant one", [1u8; 64]),
+        ("constant 0xAB", [0xABu8; 64]),
+        ("sparse spike (bytes 0 and 31 only)", spike),
+    ];
+    for (name, signature) in placeholders {
+        let mut reg = LayoutRegistry::new();
+        let err = reg
+            .record_verified(VerifiedLayout {
+                key: key(Side::Buy),
+                account_count: 18,
+                verifying_slot: 436_828_370,
+                verifying_signature: signature,
+            })
+            .expect_err("a placeholder signature must not verify a layout");
+        assert_eq!(
+            err,
+            LayoutError::PlaceholderSignature(key(Side::Buy)),
+            "placeholder `{name}` must be refused as a placeholder"
+        );
+        assert!(
+            reg.get(&key(Side::Buy)).is_none(),
+            "a refused fixture must not be recorded (`{name}`)"
+        );
+    }
+
+    // …and a plausible signature still records, so the guard is a filter rather
+    // than a wall.
+    let mut reg = LayoutRegistry::new();
+    reg.record_verified(VerifiedLayout {
+        key: key(Side::Buy),
+        account_count: 18,
+        verifying_slot: 436_828_370,
+        verifying_signature: sig(1),
+    })
+    .expect("a plausible signature must still record");
+    assert!(reg.get(&key(Side::Buy)).is_some());
 }
 
 /// AccountMeta flags survive the round trip the differ depends on.

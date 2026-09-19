@@ -1,0 +1,92 @@
+{
+ "stats": {
+  "tx": 400,
+  "fail": 0,
+  "pump_ix": 547,
+  "matched": 259,
+  "unmatched": {
+   "c2ab1c46684d5b2f": 33,
+   "e445a52e51cb9a1d": 235,
+   "cf118af204221338": 1,
+   "623691610246ad2b": 8,
+   "d6904cec5f8b31b4": 3,
+   "f945a4da9667548a": 6,
+   "1416567bc61cdb84": 1,
+   "ea66c2cb96483ee5": 1
+  }
+ },
+ "matrix": {
+  "buy_exact_sol_in|18|2022": {
+   "ix": "buy_exact_sol_in",
+   "n": 18,
+   "token": "2022",
+   "count": 63,
+   "example_sig": "3W5zGgDyaRUbySJyUuTtE1B7mUahoZV8JGhorZ15hNvsZUWXvDoHj6ymRDYURgfcCpLFTNWkwewYWFZuewjc8LkW",
+   "example_slot": 448249388
+  },
+  "buy_v2|27|2022": {
+   "ix": "buy_v2",
+   "n": 27,
+   "token": "2022",
+   "count": 7,
+   "example_sig": "5jU51HXqrEXMMv8FDicjmnYykgXGCSMs23xgwmnKz6tCaYRPQinAAz9HhzXRQhx1jmojkSg11c7geqALhFQEczDe",
+   "example_slot": 448249387
+  },
+  "buy|18|2022": {
+   "ix": "buy",
+   "n": 18,
+   "token": "2022",
+   "count": 77,
+   "example_sig": "LUG4CkAwtVri9F7PmpzrHDQ7BFxiG3f99U1YpuYcseJ1rrmH21bruduaKcixWUdLPYEBvgarZ7rMo95kT3mtrd2",
+   "example_slot": 448249388
+  },
+  "buy|18|spl": {
+   "ix": "buy",
+   "n": 18,
+   "token": "spl",
+   "count": 1,
+   "example_sig": "4tVaUzbFNff8zDB5xVziZ27wj2wTA2NKfpMCmUNc1sYWpTA1FJs6CJLpeykvQHKwHgEuikJLgcdNUrAtfB7zYKHr",
+   "example_slot": 448249373
+  },
+  "sell_v2|26|2022": {
+   "ix": "sell_v2",
+   "n": 26,
+   "token": "2022",
+   "count": 26,
+   "example_sig": "5sLwEzt2kcMwmEtu2XgAH4Mip52eMsFghNcboKLY9qGCJiwikRrTSgZ431YtERpjf12v7azHRtY8ufpa1vhtT8M2",
+   "example_slot": 448249388
+  },
+  "sell_v2|27|2022": {
+   "ix": "sell_v2",
+   "n": 27,
+   "token": "2022",
+   "count": 1,
+   "example_sig": "3trAzbFcssBuEfLb9z88LEMCJpFNiYFjPaxSBMdzgX7rcC2mnRWVa4QmfFpN72GJC3hXVY89MCDETp2gCApc5yF8",
+   "example_slot": 448249380
+  },
+  "sell|16|2022": {
+   "ix": "sell",
+   "n": 16,
+   "token": "2022",
+   "count": 80,
+   "example_sig": "3gDWxztvzgfHnSi9XPCk5ovZkfjmJiFrtkjKvLbt6XtgHuagsyvX7tZ3CitmhFKS6RRJnhnh3sWQMADJnRaTc24",
+   "example_slot": 448249388
+  },
+  "sell|16|spl": {
+   "ix": "sell",
+   "n": 16,
+   "token": "spl",
+   "count": 2,
+   "example_sig": "rBucJ2XkaoM8EHuuYVVcfS2iS6DCqxDAJNA9FWXKp4HnXMbUMBykEnPoFU1sGcU7U1gHivojMtafcYoh5fmf8WJ",
+   "example_slot": 448249374
+  },
+  "sell|17|2022": {
+   "ix": "sell",
+   "n": 17,
+   "token": "2022",
+   "count": 2,
+   "example_sig": "62Aa5o9pY1FMtjWgMMFJCGjE5QTiDXDNGtZYvJJBENeRmAVKzmrXpdTQY5Dy1tnruk952Y38LSsa1rzz7pUitbK4",
+   "example_slot": 448249379
+  }
+ }
+}

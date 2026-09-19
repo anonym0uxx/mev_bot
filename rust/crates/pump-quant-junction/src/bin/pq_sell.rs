@@ -60,7 +60,7 @@ fn main() -> ExitCode {
     use pump_quant_execution::ex_live_sink::{LiveOutboundSink, LiveSinkConfig};
     use pump_quant_execution::ex_outbound_sink::{AdmitRecord, OutboundSink, OutboundOutcome};
     use pump_quant_protocol::layout::{
-        LayoutKey, LayoutRegistry, Side, Variant, Venue, VerifiedLayout,
+        LayoutRegistry,
     };
     use pump_quant_protocol::tx_build::{ComputePlan, TipPlan};
     use pump_quant_protocol::venue_accounts::FeeTail;
@@ -185,53 +185,16 @@ fn main() -> ExitCode {
     };
     eprintln!("[pq-sell] Submitter constructed (Helius Sender)");
 
-    // ── Build LayoutRegistry (identical to daemon) ───────────────────────
+    // ── §41 LayoutRegistry — populated ONLY from observed mainnet fixtures ──
+    // Was: hand-rolled placeholder signatures (bytes 0 and 31 set) registering
+    // BOTH the FeeTail::None count and the BuybackVault count so the gate
+    // accepted either. The 17-account buy it registered does not exist on chain
+    // (a 17-account buy fails `Custom(6062)`); a 400-transaction mainnet probe
+    // found buy = 18 for every variant. The fixtures now carry real signatures,
+    // and `record_verified` refuses placeholders, so this cannot regress.
     let mut registry = LayoutRegistry::new();
-    for &token_2022 in &[false, true] {
-        for &cashback in &[false, true] {
-            // Buy layouts
-            let buy_key = LayoutKey {
-                venue: Venue::PumpFun, side: Side::Buy,
-                variant: Variant { cashback, token_2022, non_sol_quote: false, reversed_pool: false },
-            };
-            let mut sig = [0u8; 64];
-            sig[0] = (if token_2022 { 0xCC } else { 0xAA }) + if cashback { 0x10 } else { 0 };
-            sig[31] = sig[0];
-            for &count in &[17usize, 18usize] {
-                registry.record_verified(VerifiedLayout {
-                    key: buy_key, account_count: count,
-                    verifying_slot: 439_558_014, verifying_signature: sig,
-                }).expect("buy layout record should succeed");
-            }
-            // Sell layouts
-            let sell_key = LayoutKey {
-                venue: Venue::PumpFun, side: Side::Sell,
-                variant: Variant { cashback, token_2022, non_sol_quote: false, reversed_pool: false },
-            };
-            // Rev-29 (2026-08-20): sell IDL has 14 named accounts (NOT 17).
-            // Sell does NOT include global_volume_accumulator (buy-only).
-            // Remaining accounts: user_volume_accumulator (cashback only) + bonding_curve_v2 (always).
-            // FeeTail::BuybackVault adds 1 more (always used in live mode via Global account).
-            //   Non-cashback + BV: 14 + 1 (bc_v2) + 1 (BV) = 16
-            //   Cashback + BV:     14 + 1 (uva) + 1 (bc_v2) + 1 (BV) = 17
-            //   Non-cashback, None: 14 + 1 (bc_v2) = 15
-            //   Cashback, None:     14 + 1 (uva) + 1 (bc_v2) = 16
-            // Register the counts the builder actually produces. record_verified
-            // replaces same-key entries, so we register the BuybackVault count
-            // (the live-mode default) as the last entry to survive.
-            let base_count = if cashback { 16usize } else { 15usize }; // FeeTail::None
-            let bv_count = base_count + 1; // FeeTail::BuybackVault
-            let mut sig2 = [0u8; 64];
-            sig2[0] = (if token_2022 { 0xDD } else { 0xBB }) + if cashback { 0x10 } else { 0 };
-            sig2[31] = sig2[0];
-            for &count in &[base_count, bv_count] {
-                registry.record_verified(VerifiedLayout {
-                    key: sell_key, account_count: count,
-                    verifying_slot: 439_558_014, verifying_signature: sig2,
-                }).expect("sell layout record should succeed");
-            }
-        }
-    }
+    pump_quant_junction::layout_fixtures::register_observed_pumpfun_layouts(&mut registry)
+        .expect("observed layout fixtures must register");
     eprintln!("[pq-sell] LayoutRegistry populated");
 
     // ── Sink config (same as daemon) ─────────────────────────────────────

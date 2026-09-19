@@ -148,6 +148,10 @@ pub enum LayoutError {
         now: u64,
         max_age_slots: u64,
     },
+    /// The fixture's `verifying_signature` is a placeholder, not a transaction
+    /// signature: the fixture was never proven against a chain, so it may not
+    /// back a build.
+    PlaceholderSignature(LayoutKey),
 }
 
 /// How a built account list differs from an observed one, at one position.
@@ -273,6 +277,35 @@ pub struct LayoutRegistry {
     entries: Vec<VerifiedLayout>,
 }
 
+/// Fewest distinct byte values a genuinely observed 64-byte Ed25519 signature
+/// can be expected to carry.
+///
+/// A real signature is two near-uniform 32-byte fields (an `R` point encoding
+/// and an `S` scalar); its byte histogram is broad. 16 is far below any genuine
+/// observation and far above every placeholder fill.
+pub const MIN_SIG_DISTINCT_BYTES: usize = 16;
+
+/// Is this plausibly a signature observed on chain, rather than a placeholder?
+///
+/// The old guard refused only `[0u8; 64]` — the narrowest possible reading of
+/// "default". Every other constant fill (`[1u8; 64]`, `[0xAB; 64]`) and every
+/// sparse spike (bytes 0 and 31 set, the rest zero) sailed through, which is how
+/// `pq_daemon` came to register two account counts for one side off signatures
+/// no chain ever produced. A low-entropy 64-byte array is a placeholder by
+/// inspection, and this refuses it.
+#[must_use]
+pub fn is_plausible_signature(sig: &[u8; 64]) -> bool {
+    let mut seen = [false; 256];
+    let mut distinct = 0usize;
+    for &b in sig.iter() {
+        if !seen[b as usize] {
+            seen[b as usize] = true;
+            distinct += 1;
+        }
+    }
+    distinct >= MIN_SIG_DISTINCT_BYTES
+}
+
 impl LayoutRegistry {
     /// An empty registry. Builds nothing until a fixture is recorded.
     pub fn new() -> Self {
@@ -289,8 +322,8 @@ impl LayoutRegistry {
     /// a program upgrade moves the slot forward rather than accumulating
     /// contradictory records.
     pub fn record_verified(&mut self, v: VerifiedLayout) -> Result<(), LayoutError> {
-        if v.verifying_signature == [0u8; 64] {
-            return Err(LayoutError::Unverified(v.key));
+        if !is_plausible_signature(&v.verifying_signature) {
+            return Err(LayoutError::PlaceholderSignature(v.key));
         }
         self.entries.retain(|e| e.key != v.key);
         self.entries.push(v);

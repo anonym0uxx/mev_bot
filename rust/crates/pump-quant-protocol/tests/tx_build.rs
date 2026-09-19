@@ -46,17 +46,28 @@ fn verified_registry() -> LayoutRegistry {
         key: lkey(Side::Buy),
         account_count: 18,
         verifying_slot: 436_828_370,
-        verifying_signature: [1u8; 64],
+        verifying_signature: sig(1),
     })
     .unwrap();
     r.record_verified(VerifiedLayout {
         key: lkey(Side::Sell),
         account_count: 16,
         verifying_slot: 436_828_370,
-        verifying_signature: [2u8; 64],
+        verifying_signature: sig(2),
     })
     .unwrap();
     r
+}
+
+/// A plausible 64-byte signature for fixtures: `(i*37 + seed) mod 256` covers 64
+/// distinct byte values for every seed (37 is coprime with 256), so it clears the
+/// `record_verified` placeholder guard while staying deterministic and RNG-free.
+fn sig(seed: u8) -> [u8; 64] {
+    let mut s = [0u8; 64];
+    for (i, b) in s.iter_mut().enumerate() {
+        *b = ((i as u32 * 37 + seed as u32) % 256) as u8;
+    }
+    s
 }
 
 fn pk(tag: u8) -> [u8; 32] {
