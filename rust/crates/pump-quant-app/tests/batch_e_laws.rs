@@ -84,6 +84,7 @@ fn drive_zombies(cfg: Config) -> (Report, Engine) {
                         buyer_entity: 200 + (z + i) % 9,
                         age_slots: 200,
                         recv_unix_ms: None,
+                        trader_pubkey: None,
                     });
                 }
             }
@@ -184,6 +185,7 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
                 buyer_entity: 40 + i % 7,
                 age_slots: 12,
                 recv_unix_ms: None,
+                trader_pubkey: None,
             });
         }
     }
@@ -197,6 +199,7 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
         buyer_entity: 47,
         age_slots: 12,
         recv_unix_ms: None,
+        trader_pubkey: None,
     });
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
@@ -217,6 +220,7 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
             buyer_entity: 40 + i % 7,
             age_slots: 12,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
     for _ in 0..3 {
@@ -298,6 +302,7 @@ fn drive_squatter(cfg: Config) -> (Report, Engine) {
             buyer_entity: 60 + i % 5,
             age_slots: 15,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
     eng.tick(AppEvent::OnchainConfirm {
@@ -324,6 +329,7 @@ fn drive_squatter(cfg: Config) -> (Report, Engine) {
                 buyer_entity: 60 + i % 5,
                 age_slots: 15,
                 recv_unix_ms: None,
+                trader_pubkey: None,
             });
         }
     }

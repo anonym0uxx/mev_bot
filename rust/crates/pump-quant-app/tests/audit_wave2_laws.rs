@@ -81,6 +81,7 @@ fn pump(eng: &mut Engine, base_mult: i128, n: u64) {
             buyer_entity: 40 + i % 7,
             age_slots: 12,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
 }
@@ -97,6 +98,7 @@ fn crater(eng: &mut Engine, top_mult: i128, n: u64) {
             buyer_entity: 40 + i % 7,
             age_slots: 12,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
 }
@@ -293,6 +295,7 @@ fn one(eng: &mut Engine, price_mult: i128, signed_base: i64, entity: u64) {
         buyer_entity: entity,
         age_slots: 12,
         recv_unix_ms: None,
+        trader_pubkey: None,
     });
 }
 
@@ -595,6 +598,7 @@ fn sell_flow(eng: &mut Engine, tag: u64, base: i128, n: u64) {
             buyer_entity: 60 + i % 7,
             age_slots: 12,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
 }
@@ -713,6 +717,7 @@ fn bar8(eng: &mut Engine, tag: u64, prices: [i128; 8], entity0: u64) {
             buyer_entity: entity0 + i as u64 % 7,
             age_slots: 12,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
 }
@@ -744,6 +749,7 @@ fn drive_classifier(cfg: Config) -> (Report, Vec<u16>) {
             buyer_entity: 44,
             age_slots: 12,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
     eng.tick(AppEvent::OnchainConfirm {
@@ -848,6 +854,7 @@ fn drive_pullback(cfg: Config) -> Report {
         buyer_entity: 47,
         age_slots: 12,
         recv_unix_ms: None,
+        trader_pubkey: None,
     });
     ticks(&mut eng, 3);
     eng.report()
@@ -1180,6 +1187,7 @@ fn pump_mf(eng: &mut Engine, n: u64) {
             buyer_entity: 40 + i % 7,
             age_slots: 12,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
 }

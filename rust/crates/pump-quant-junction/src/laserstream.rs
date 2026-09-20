@@ -306,6 +306,7 @@ pub fn instructions_to_events(
                         liquidity_lamports: 0, // Filled by OnchainConfirm
                         signed_base: i64::try_from(*amount_lamports).unwrap_or(i64::MAX),
                         buyer_entity: wallet_entity_id(buyer),
+                        trader_pubkey: Some(*buyer),
                         age_slots: 0, // Not available from ix data alone
                         recv_unix_ms,
                     },
@@ -328,6 +329,7 @@ pub fn instructions_to_events(
                         liquidity_lamports: 0,
                         signed_base: -i64::try_from(*amount_tokens).unwrap_or(i64::MAX),
                         buyer_entity: wallet_entity_id(seller),
+                        trader_pubkey: Some(*seller),
                         age_slots: 0,
                         recv_unix_ms,
                     },
@@ -350,6 +352,7 @@ pub fn instructions_to_events(
                         liquidity_lamports: 0,
                         signed_base: i64::try_from(*amount_lamports).unwrap_or(i64::MAX),
                         buyer_entity: wallet_entity_id(buyer),
+                        trader_pubkey: Some(*buyer),
                         age_slots: 0,
                         recv_unix_ms,
                     },
@@ -372,6 +375,7 @@ pub fn instructions_to_events(
                         liquidity_lamports: 0,
                         signed_base: -i64::try_from(*amount_tokens).unwrap_or(i64::MAX),
                         buyer_entity: wallet_entity_id(seller),
+                        trader_pubkey: Some(*seller),
                         age_slots: 0,
                         recv_unix_ms,
                     },

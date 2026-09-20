@@ -164,6 +164,7 @@ mod tests {
                     buyer_entity: (m + i) % 13,
                     age_slots: 12,
                     recv_unix_ms: None,
+                    trader_pubkey: None,
                 });
             }
             // RE-EXPRESSED (2026-07-28): this harness used to declare a 0.2 SOL

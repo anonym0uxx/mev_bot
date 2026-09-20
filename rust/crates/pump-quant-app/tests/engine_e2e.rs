@@ -70,6 +70,7 @@ fn scenario() -> Vec<AppEvent> {
             buyer_entity: i,
             age_slots: 30,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
     ev.push(AppEvent::OnchainConfirm {
@@ -253,6 +254,7 @@ fn social_source_earns_quality_from_realized_outcomes() {
             buyer_entity: i,
             age_slots: 30,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
     eng.tick(AppEvent::OnchainConfirm {
@@ -274,6 +276,7 @@ fn social_source_earns_quality_from_realized_outcomes() {
         buyer_entity: 5,
         age_slots: 31,
         recv_unix_ms: None,
+        trader_pubkey: None,
     });
     eng.tick(AppEvent::MarketTrade {
         mint: mkt,
@@ -284,6 +287,7 @@ fn social_source_earns_quality_from_realized_outcomes() {
         buyer_entity: 6,
         age_slots: 32,
         recv_unix_ms: None,
+        trader_pubkey: None,
     });
     let reflect_ticks = Config::dev_portable().reflect_every_ticks + 2;
     for _ in 0..reflect_ticks {
@@ -405,6 +409,7 @@ fn creator_distribution_fades_size_but_never_vetoes() {
                 buyer_entity: i,
                 age_slots: 30,
                 recv_unix_ms: None,
+                trader_pubkey: None,
             });
         }
         e.tick(AppEvent::OnchainConfirm {
@@ -425,6 +430,7 @@ fn creator_distribution_fades_size_but_never_vetoes() {
             buyer_entity: 5,
             age_slots: 31,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
         e.tick(AppEvent::MarketTrade {
             mint: m,
@@ -435,6 +441,7 @@ fn creator_distribution_fades_size_but_never_vetoes() {
             buyer_entity: 6,
             age_slots: 32,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
         e.report()
     };
@@ -486,6 +493,7 @@ fn fed_meta_path_is_live_and_deterministic() {
                         buyer_entity: (i + round) % 7,
                         age_slots: 20,
                         recv_unix_ms: None,
+                        trader_pubkey: None,
                     });
                 }
                 e.tick(AppEvent::OnchainConfirm {
@@ -528,6 +536,7 @@ fn fed_meta_path_is_live_and_deterministic() {
                 buyer_entity: i,
                 age_slots: 20,
                 recv_unix_ms: None,
+                trader_pubkey: None,
             });
         }
     }
@@ -562,6 +571,7 @@ fn numeric_lane_discovers_buy_flow_not_sell_flow() {
                 buyer_entity: i,
                 age_slots: 30,
                 recv_unix_ms: None,
+                trader_pubkey: None,
             });
         }
         e.tick(AppEvent::OnchainConfirm {
@@ -605,6 +615,7 @@ fn admissible_stream(tag: u8) -> Vec<AppEvent> {
             buyer_entity: i,
             age_slots: 30,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
     ev.push(AppEvent::OnchainConfirm {
@@ -637,6 +648,7 @@ fn deep_admissible_stream(tag: u8) -> Vec<AppEvent> {
             buyer_entity: i,
             age_slots: 30,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
     ev.push(AppEvent::OnchainConfirm {
@@ -702,6 +714,7 @@ fn bankroll_size_is_proportional_to_deployable_capital() {
             buyer_entity: 9,
             age_slots: 31,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
         e.tick(AppEvent::MarketTrade {
             mint: mint(0x92),
@@ -712,6 +725,7 @@ fn bankroll_size_is_proportional_to_deployable_capital() {
             buyer_entity: 10,
             age_slots: 32,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
         let rr = e.report();
         let codes: Vec<u8> = e
@@ -804,6 +818,7 @@ fn vpin_sell_dump_vetoes_admission() {
             buyer_entity: i % 7,
             age_slots: 30,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
     // 66 tiny-quote buys with big base: the trade ring now holds ONLY buys (CVD>0,
@@ -818,6 +833,7 @@ fn vpin_sell_dump_vetoes_admission() {
             buyer_entity: i % 9,
             age_slots: 31,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
     e.tick(AppEvent::OnchainConfirm {

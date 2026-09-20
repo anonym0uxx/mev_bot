@@ -104,6 +104,7 @@ pub fn canonical_tx_to_market_trade(
         liquidity_lamports,
         signed_base,
         buyer_entity,
+        trader_pubkey: Some(tx.trader),
         age_slots,
         // The PumpPortal ingest `tx` carries no receive time, so this producer cannot stamp
         // one. `None` is honest: the state ledger refuses to serve a tape whose clocks it
@@ -268,8 +269,13 @@ mod tests {
             buyer_entity,
             age_slots,
             recv_unix_ms: None,
+            trader_pubkey,
         } = result.event
         {
+            // The PumpPortal path decodes the transaction, so it KNOWS the trader's address:
+            // this is the identity the address-keyed derivations (flow reducer) key on, and the
+            // hashed `buyer_entity` cannot substitute for it.
+            assert_eq!(trader_pubkey, Some([0xCD; 32]));
             assert_eq!(mint.0, [0xAB; 32]);
             assert!(price_fp > 0);
             assert_eq!(quote_lamports, 500_000_000);

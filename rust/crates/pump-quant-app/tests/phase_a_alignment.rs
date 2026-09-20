@@ -72,6 +72,7 @@ fn feed_flow(eng: &mut Engine, mt: Mint, trades: u64) {
             buyer_entity: 10 + i % 9,
             age_slots: 12,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
 }
@@ -304,6 +305,7 @@ fn expectancy_is_prior_until_lane_sample_gate() {
             buyer_entity: 10 + i % 9,
             age_slots: 12,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
     for _ in 0..3 {

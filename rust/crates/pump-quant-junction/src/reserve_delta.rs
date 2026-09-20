@@ -136,7 +136,10 @@ pub fn derive_market_trade_from_delta(
         liquidity_lamports,
         signed_base,
         buyer_entity: 0, // Unknown trader — conservative for unique-buyer counting.
-        age_slots: 0,    // Unknown age — conservative for hold-horizon.
+        // Account data has no signer, so this path cannot name the trader: the junction's
+        // `(mint, slot)` join supplies the address from the instruction print.
+        trader_pubkey: None,
+        age_slots: 0, // Unknown age — conservative for hold-horizon.
         // The account notification's wire receive time (see `LaserStreamUpdate::Account`).
         // This producer is the only one with a real `price_fp`, so its clock is what the
         // live ledger's windows are keyed on.

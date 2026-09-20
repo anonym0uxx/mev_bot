@@ -41,6 +41,7 @@ pub fn parse_events(text: &str) -> Result<Vec<AppEvent>, String> {
                 buyer_entity: num(f[6])?.max(0) as u64,
                 age_slots: num(f[7])?.max(0) as u32,
                 recv_unix_ms: if f.len() == 9 { Some(num(f[8])?) } else { None },
+                trader_pubkey: None,
             },
             "narr" if f.len() == 4 => AppEvent::NarrativeSample {
                 mint: mint(f[1])?,

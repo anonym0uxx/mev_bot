@@ -80,6 +80,11 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
                 // lines. Making this key REQUIRED would turn every legacy tape into a stream
                 // of dropped trades that still reports success.
                 recv_unix_ms: extract_int_field(line, "recv_unix_ms"),
+                // Also optional, and also never guessed: a tape without the address simply has
+                // no address, and the address-keyed derivations refuse rather than hash.
+                trader_pubkey: extract_string_field(line, "trader_pubkey")
+                    .and_then(|s| parse_mint(&s).ok())
+                    .map(|m| *m.as_bytes()),
             })
         }
         "OnchainConfirm" => {
@@ -422,6 +427,7 @@ fn event_fields_json(event: &AppEvent) -> String {
             liquidity_lamports,
             signed_base,
             buyer_entity,
+            trader_pubkey,
             age_slots,
             recv_unix_ms,
             ..
@@ -437,6 +443,15 @@ fn event_fields_json(event: &AppEvent) -> String {
             // look like it had a clock.
             if let Some(ms) = recv_unix_ms {
                 parts.push(format!(r#""recv_unix_ms":{}"#, ms));
+            }
+            // Written only when the producer knew it. The address is what address-keyed
+            // derivations (the flow reducer's freshness / smart-wallet / co-entry rules) need,
+            // and it cannot be recovered from `buyer_entity`.
+            if let Some(pk) = trader_pubkey {
+                parts.push(format!(
+                    r#""trader_pubkey":"{}""#,
+                    mint_to_base58(&Mint(*pk))
+                ));
             }
         }
         AppEvent::NarrativeSample {
@@ -626,6 +641,7 @@ mod tests {
             buyer_entity: 42,
             age_slots: 100,
             recv_unix_ms: None,
+            trader_pubkey: None,
         };
         writer.write_event(&event, 12345).expect("write");
         writer.flush().expect("flush");
@@ -754,6 +770,7 @@ mod tests {
             buyer_entity: 42,
             age_slots: 100,
             recv_unix_ms: None,
+            trader_pubkey: None,
         };
         writer.write_event(&event, 12345).expect("write");
         writer.flush().expect("flush");
@@ -805,6 +822,7 @@ mod tests {
                     buyer_entity: 5,
                     age_slots: 20,
                     recv_unix_ms: None,
+                    trader_pubkey: None,
                 },
                 2,
             )
@@ -878,6 +896,7 @@ garbage line 2
             buyer_entity: 42,
             age_slots: 12,
             recv_unix_ms: Some(1_700_000_000_000),
+            trader_pubkey: None,
         };
         let line = event_to_json(&stamped, 9);
         assert!(
@@ -901,12 +920,58 @@ garbage line 2
             buyer_entity: 42,
             age_slots: 12,
             recv_unix_ms: None,
+            trader_pubkey: None,
         };
         let line = event_to_json(&unstamped, 9);
         assert!(!line.contains("recv_unix_ms"), "nothing fabricated: {line}");
         // And the legacy shape (the key absent) parses to `None`, NOT to a skipped line.
         match parse_event_line(&line).expect("legacy line still parses") {
             AppEvent::MarketTrade { recv_unix_ms, .. } => assert_eq!(recv_unix_ms, None),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// The trader's ADDRESS survives the tape, and its absence stays absent. The engine's hashed
+    /// `buyer_entity` cannot be turned back into it, which is why it rides separately.
+    #[test]
+    fn the_traders_address_round_trips_through_the_tape() {
+        use pump_quant_domain::ids::Mint;
+        let wallet = [0x9Au8; 32];
+        let stamped = AppEvent::MarketTrade {
+            mint: Mint([7u8; 32]),
+            price_fp: 25_000_000_000,
+            quote_lamports: 400_000_000,
+            liquidity_lamports: 30_000_000_000,
+            signed_base: 2_000_000,
+            buyer_entity: 42,
+            age_slots: 12,
+            recv_unix_ms: Some(1_700_000_000_000),
+            trader_pubkey: Some(wallet),
+        };
+        let line = event_to_json(&stamped, 9);
+        assert!(line.contains("trader_pubkey"), "{line}");
+        match parse_event_line(&line).expect("round trip") {
+            AppEvent::MarketTrade { trader_pubkey, .. } => {
+                assert_eq!(trader_pubkey, Some(wallet))
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // A print whose producer had no signer writes no address, and reads back as none.
+        let anonymous = AppEvent::MarketTrade {
+            mint: Mint([7u8; 32]),
+            price_fp: 25_000_000_000,
+            quote_lamports: 400_000_000,
+            liquidity_lamports: 30_000_000_000,
+            signed_base: 2_000_000,
+            buyer_entity: 42,
+            age_slots: 12,
+            recv_unix_ms: Some(1_700_000_000_000),
+            trader_pubkey: None,
+        };
+        let line = event_to_json(&anonymous, 9);
+        assert!(!line.contains("trader_pubkey"), "{line}");
+        match parse_event_line(&line).expect("parses") {
+            AppEvent::MarketTrade { trader_pubkey, .. } => assert_eq!(trader_pubkey, None),
             other => panic!("wrong variant: {other:?}"),
         }
     }

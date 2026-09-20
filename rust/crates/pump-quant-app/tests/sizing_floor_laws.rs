@@ -84,6 +84,7 @@ fn drive_golden_style(mut cfg: Config) -> Engine {
                     buyer_entity: (m + i) % 31,
                     age_slots: 12 + (m as u32 % 20),
                     recv_unix_ms: None,
+                    trader_pubkey: None,
                 });
             }
             if round == m % 4 {
@@ -259,6 +260,7 @@ fn too_thin_market_refuses_rather_than_sizing_below_floor() {
                     buyer_entity: i % 9,
                     age_slots: 14,
                     recv_unix_ms: None,
+                    trader_pubkey: None,
                 });
             }
             if round == 0 {

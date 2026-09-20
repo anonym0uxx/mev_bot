@@ -112,6 +112,17 @@ pub enum AppEvent {
         buyer_entity: u64,
         /// Market age at this trade, in slots.
         age_slots: u32,
+        /// The TRADER'S WALLET, when the producing path knows it.
+        ///
+        /// `buyer_entity` is a hash, and it is the right thing for the engine's bitsets — but it
+        /// is the wrong thing for anything that reasons about an ADDRESS: the flow reducer's
+        /// freshness, smart-wallet and co-entry rules are address-keyed, and the corpus's
+        /// identity is the pubkey. Hashing first and comparing hashes afterwards would make
+        /// collisions real where they are currently negligible.
+        ///
+        /// `None` on the reserve-delta path, which diffs account data and has no signer; the
+        /// junction's `(mint, slot)` join supplies it from the instruction print.
+        trader_pubkey: Option<[u8; 32]>,
         /// The producer's receive time for this print, unix milliseconds, when the wire
         /// carried one. `None` means "not recorded", and is NOT a licence to substitute a
         /// clock: the causal state ledger's windows are keyed on this quantity, and a

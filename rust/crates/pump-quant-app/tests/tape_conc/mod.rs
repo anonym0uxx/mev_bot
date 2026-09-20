@@ -60,6 +60,7 @@ pub fn swap(
         buyer_entity: entity,
         age_slots,
         recv_unix_ms: None,
+        trader_pubkey: None,
     });
 }
 

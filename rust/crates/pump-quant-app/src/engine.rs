@@ -1796,6 +1796,12 @@ impl Engine {
                 // C6/C7 wiring. Bound to `_` on purpose: a silent default here would be the
                 // one place a fabricated clock could enter the causal windows.
                 recv_unix_ms: _,
+                // The trader's address, when the producing path knew it. Bound to `_` for the
+                // same reason as the clock: nothing in the engine's decision path reads it yet
+                // (the address-keyed derivations are the flow reducer's and the corpus's), and
+                // a pattern that demanded `None` would silently stop matching once the wire
+                // started supplying it.
+                trader_pubkey: _,
             } => {
                 self.numeric.observe(
                     mint,

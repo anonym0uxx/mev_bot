@@ -34,6 +34,10 @@ use std::collections::BTreeMap;
 pub struct PendingIdentity {
     /// The trader's stable entity id (never `0` — a zero is not noted).
     pub buyer_entity: u64,
+    /// The trader's WALLET. This is what an address-keyed derivation needs (the flow reducer's
+    /// freshness / smart-wallet / co-entry rules), and the hash cannot stand in for it: hashing
+    /// first and comparing hashes afterwards makes collisions real where they are negligible.
+    pub pubkey: [u8; 32],
     /// Which side the instruction was.
     pub is_buy: bool,
     /// When the instruction was observed, for diagnostics.
@@ -43,8 +47,13 @@ pub struct PendingIdentity {
 /// What the join could say about a reserve print's identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinOutcome {
-    /// Exactly one matching instruction: this is the trader.
-    Identity(u64),
+    /// Exactly one matching instruction: this is the trader, by id and by address.
+    Identity {
+        /// The engine's hashed entity id (what its bitsets key on).
+        entity: u64,
+        /// The trader's wallet bytes (what address-keyed derivations key on).
+        pubkey: [u8; 32],
+    },
     /// No matching instruction (or it was pruned): the print stays identity-unknown.
     Unknown,
     /// More than one same-side instruction on this key: refuse to choose.
@@ -56,8 +65,17 @@ impl JoinOutcome {
     #[must_use]
     pub fn entity(self) -> u64 {
         match self {
-            JoinOutcome::Identity(e) => e,
+            JoinOutcome::Identity { entity, .. } => entity,
             JoinOutcome::Unknown | JoinOutcome::Ambiguous => 0,
+        }
+    }
+
+    /// The trader's wallet, when the join could honestly name one.
+    #[must_use]
+    pub fn pubkey(self) -> Option<[u8; 32]> {
+        match self {
+            JoinOutcome::Identity { pubkey, .. } => Some(pubkey),
+            JoinOutcome::Unknown | JoinOutcome::Ambiguous => None,
         }
     }
 }
@@ -98,10 +116,11 @@ impl TradeJoin {
         mint: &[u8; 32],
         slot: u64,
         buyer_entity: u64,
+        pubkey: [u8; 32],
         is_buy: bool,
         recv_unix_ms: Option<i64>,
     ) {
-        if buyer_entity == 0 {
+        if buyer_entity == 0 || pubkey == [0u8; 32] {
             return;
         }
         self.newest_slot = self.newest_slot.max(slot);
@@ -127,6 +146,7 @@ impl TradeJoin {
         if entry.len() < 8 {
             entry.push(PendingIdentity {
                 buyer_entity,
+                pubkey,
                 is_buy,
                 recv_unix_ms,
             });
@@ -154,12 +174,13 @@ impl TradeJoin {
             0 => JoinOutcome::Unknown,
             1 => {
                 let entity = entry[matching[0]].buyer_entity;
+                let pubkey = entry[matching[0]].pubkey;
                 entry.remove(matching[0]);
                 if entry.is_empty() {
                     self.pending.remove(&key);
                 }
                 self.joined += 1;
-                JoinOutcome::Identity(entity)
+                JoinOutcome::Identity { entity, pubkey }
             }
             _ => {
                 // Leave the candidates in place: the other reserve print on this key may still
@@ -226,11 +247,14 @@ mod tests {
     #[test]
     fn an_instruction_and_its_reserve_print_reunite_the_two_halves() {
         let mut join = TradeJoin::new(64, 32);
-        join.note_instruction(&MINT, 100, 0xAB, true, Some(1_700_000_000));
+        join.note_instruction(&MINT, 100, 0xAB, [0xCD; 32], true, Some(1_700_000_000));
         assert_eq!(join.pending_keys(), 1);
         assert_eq!(
             join.take_identity(&MINT, 100, true),
-            JoinOutcome::Identity(0xAB)
+            JoinOutcome::Identity {
+                entity: 0xAB,
+                pubkey: [0xCD; 32]
+            }
         );
         assert_eq!(join.joined(), 1);
         // Consumed: a second reserve print on the same key cannot re-use it.
@@ -250,27 +274,33 @@ mod tests {
     #[test]
     fn two_same_side_instructions_are_ambiguous_and_never_guessed() {
         let mut join = TradeJoin::new(64, 32);
-        join.note_instruction(&MINT, 9, 1, true, None);
-        join.note_instruction(&MINT, 9, 2, true, None);
+        join.note_instruction(&MINT, 9, 1, [1u8; 32], true, None);
+        join.note_instruction(&MINT, 9, 2, [2u8; 32], true, None);
         assert_eq!(join.take_identity(&MINT, 9, true), JoinOutcome::Ambiguous);
         assert_eq!(join.ambiguous(), 1);
         // The candidates survive: a buy and a sell in one slot are still separable.
         assert_eq!(join.take_identity(&MINT, 9, true), JoinOutcome::Ambiguous);
-        join.note_instruction(&MINT, 9, 3, false, None);
+        join.note_instruction(&MINT, 9, 3, [3u8; 32], false, None);
         assert_eq!(
             join.take_identity(&MINT, 9, false),
-            JoinOutcome::Identity(3)
+            JoinOutcome::Identity {
+                entity: 3,
+                pubkey: [3u8; 32]
+            }
         );
     }
 
     #[test]
     fn redelivery_of_one_instruction_is_not_ambiguity() {
         let mut join = TradeJoin::new(64, 32);
-        join.note_instruction(&MINT, 11, 7, true, None);
-        join.note_instruction(&MINT, 11, 7, true, None);
+        join.note_instruction(&MINT, 11, 7, [7u8; 32], true, None);
+        join.note_instruction(&MINT, 11, 7, [7u8; 32], true, None);
         assert_eq!(
             join.take_identity(&MINT, 11, true),
-            JoinOutcome::Identity(7)
+            JoinOutcome::Identity {
+                entity: 7,
+                pubkey: [7u8; 32]
+            }
         );
         assert_eq!(join.ambiguous(), 0);
     }
@@ -278,7 +308,7 @@ mod tests {
     #[test]
     fn a_zero_entity_is_not_an_identity_to_join_to() {
         let mut join = TradeJoin::new(64, 32);
-        join.note_instruction(&MINT, 12, 0, true, None);
+        join.note_instruction(&MINT, 12, 0, [0u8; 32], true, None);
         assert_eq!(join.pending_keys(), 0);
         assert_eq!(join.take_identity(&MINT, 12, true), JoinOutcome::Unknown);
     }
@@ -286,15 +316,15 @@ mod tests {
     #[test]
     fn the_table_is_bounded_and_prunes_stale_keys() {
         let mut join = TradeJoin::new(2, 5);
-        join.note_instruction(&MINT, 10, 1, true, None);
-        join.note_instruction(&MINT, 11, 2, true, None);
+        join.note_instruction(&MINT, 10, 1, [1u8; 32], true, None);
+        join.note_instruction(&MINT, 11, 2, [2u8; 32], true, None);
         // Third key at capacity: the OLDEST (slot 10) is dropped, and the count shows it.
-        join.note_instruction(&MINT, 12, 3, true, None);
+        join.note_instruction(&MINT, 12, 3, [3u8; 32], true, None);
         assert_eq!(join.pending_keys(), 2);
         assert!(join.dropped() >= 1);
         assert_eq!(join.take_identity(&MINT, 10, true), JoinOutcome::Unknown);
         // Pruning by slot horizon: insert far ahead and the old keys go.
-        join.note_instruction(&[6u8; 32], 400, 9, true, None);
+        join.note_instruction(&[6u8; 32], 400, 9, [9u8; 32], true, None);
         assert_eq!(
             join.pending_keys(),
             1,

@@ -2440,17 +2440,23 @@ fn main() -> ExitCode {
                             mint,
                             signed_base,
                             buyer_entity,
+                            trader_pubkey,
                             recv_unix_ms,
                             ..
                         } = &ev.event
                         {
-                            trade_join.note_instruction(
-                                mint.as_bytes(),
-                                ev.slot,
-                                *buyer_entity,
-                                *signed_base > 0,
-                                *recv_unix_ms,
-                            );
+                            // Only a known address is worth noting: the join exists to supply
+                            // the address, so a hash-only print has nothing to contribute.
+                            if let Some(pk) = trader_pubkey {
+                                trade_join.note_instruction(
+                                    mint.as_bytes(),
+                                    ev.slot,
+                                    *buyer_entity,
+                                    *pk,
+                                    *signed_base > 0,
+                                    *recv_unix_ms,
+                                );
+                            }
                         }
                     }
                     for ev in &events {
@@ -2538,17 +2544,26 @@ fn main() -> ExitCode {
                                 // legs, the instruction print knows the trader. An ambiguous or
                                 // missing match leaves `buyer_entity: 0` — the ledger reports
                                 // `identity_known: false` rather than a guessed concentration.
-                                if let AppEvent::MarketTrade {
-                                    signed_base,
-                                    buyer_entity,
-                                    ..
-                                } = &mut trade_pe.event
-                                {
-                                    if let JoinOutcome::Identity(id) =
-                                        trade_join.take_identity(&mb, slot, *signed_base > 0)
-                                    {
-                                        *buyer_entity = id;
+                                let side_is_buy = match &trade_pe.event {
+                                    AppEvent::MarketTrade { signed_base, .. } => *signed_base > 0,
+                                    _ => false,
+                                };
+                                match trade_join.take_identity(&mb, slot, side_is_buy) {
+                                    JoinOutcome::Identity { entity, pubkey } => {
+                                        if let AppEvent::MarketTrade {
+                                            buyer_entity,
+                                            trader_pubkey,
+                                            ..
+                                        } = &mut trade_pe.event
+                                        {
+                                            *buyer_entity = entity;
+                                            // The address is what the flow reducer's
+                                            // freshness / smart-wallet / co-entry rules key on;
+                                            // the engine's hashed id cannot stand in for it.
+                                            *trader_pubkey = Some(pubkey);
+                                        }
                                     }
+                                    JoinOutcome::Unknown | JoinOutcome::Ambiguous => {}
                                 }
                                 queue.push(trade_pe, slot);
                                 stats.delta_trades_derived += 1;

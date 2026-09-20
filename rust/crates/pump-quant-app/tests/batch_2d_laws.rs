@@ -53,6 +53,7 @@ fn pump(eng: &mut Engine, tag: u64, base_mult: i128, n: u64, liq: u64) {
             buyer_entity: 40 + i % 7,
             age_slots: 12,
             recv_unix_ms: None,
+            trader_pubkey: None,
         });
     }
 }
@@ -84,6 +85,7 @@ fn drive_positions(cfg: Config) -> Engine {
                     buyer_entity: 40 + i % 7,
                     age_slots: 12,
                     recv_unix_ms: None,
+                    trader_pubkey: None,
                 });
             }
         }
