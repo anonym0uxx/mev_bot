@@ -1258,7 +1258,14 @@ fn construct_live_engine(
     cfg: pump_quant_app::config::Config,
     args: &DaemonArgs,
     creator_pubkey_map: CreatorPubkeyMap,
-) -> Result<(pump_quant_app::engine::Engine, &'static pump_quant_junction::async_sink::AsyncOutboundSink), u8> {
+) -> Result<
+    (
+        pump_quant_app::engine::Engine,
+        &'static pump_quant_junction::async_sink::AsyncOutboundSink,
+        std::sync::Arc<pump_quant_junction::live_adapters::RpcLiveStateFetcher>,
+    ),
+    u8,
+> {
     use pump_quant_app::engine::Engine;
     use pump_quant_execution::ex_live_io_traits::{
         LiveSigner, LiveStateFetcher, LiveSubmitter,
@@ -1570,7 +1577,7 @@ fn construct_live_engine(
         "[pq-daemon] AsyncOutboundSink installed — submissions run off the decision thread ({OUTBOUND_LANES} per-mint lanes, {OUTBOUND_QUEUE_DEPTH} deep each)"
     );
 
-    Ok((eng, async_sink))
+    Ok((eng, async_sink, state_fetcher))
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────────
@@ -1708,10 +1715,15 @@ fn main() -> ExitCode {
     // E3: the async outbound handle lives in main's scope so the tick loop can drain
     // the worker's verdicts. `None` in paper mode — there is no sink there at all.
     let mut async_outbound: Option<&'static pump_quant_junction::async_sink::AsyncOutboundSink> = None;
+    // C1: the curve cache, so decoded stream reserves can be published into it.
+    let mut live_state_fetcher: Option<
+        std::sync::Arc<pump_quant_junction::live_adapters::RpcLiveStateFetcher>,
+    > = None;
     let mut engine = if args.live_mode {
         match construct_live_engine(cfg, &args, creator_pubkey_map.clone()) {
-            Ok((e, async_sink)) => {
+            Ok((e, async_sink, fetcher)) => {
                 async_outbound = Some(async_sink);
+                live_state_fetcher = Some(fetcher);
                 e
             }
             Err(code) => return ExitCode::from(code),
@@ -2433,6 +2445,19 @@ fn main() -> ExitCode {
                                 virtual_token: curve.virtual_token,
                                 slot,
                             });
+                            // C1: publish these reserves into the curve cache. The hot path (and the
+                            // outbound sink's state fetch) then answers from the stream instead of paying a
+                            // cold 4-RTT fetch. Returns false for a mint whose ctx was never learned — the
+                            // stream carries no fee_recipient, so nothing is fabricated here.
+                            if let Some(fetcher) = live_state_fetcher.as_ref() {
+                                fetcher.note_stream_reserves(
+                                    &mb,
+                                    curve.virtual_sol,
+                                    curve.virtual_token,
+                                    curve.complete,
+                                    slot,
+                                );
+                            }
                         }
                     } else {
                         // PDA not in reverse map — this happens for bonding
@@ -2922,6 +2947,19 @@ fn main() -> ExitCode {
                                                 virtual_token: curve.virtual_token,
                                                 slot,
                                             });
+                                            // C1: publish these reserves into the curve cache. The hot path (and the
+                                            // outbound sink's state fetch) then answers from the stream instead of paying a
+                                            // cold 4-RTT fetch. Returns false for a mint whose ctx was never learned — the
+                                            // stream carries no fee_recipient, so nothing is fabricated here.
+                                            if let Some(fetcher) = live_state_fetcher.as_ref() {
+                                                fetcher.note_stream_reserves(
+                                                    &mb,
+                                                    curve.virtual_sol,
+                                                    curve.virtual_token,
+                                                    curve.complete,
+                                                    slot,
+                                                );
+                                            }
                                         }
                                     }
                                 }
@@ -3005,6 +3043,19 @@ fn main() -> ExitCode {
                                                     virtual_token: curve.virtual_token,
                                                     slot,
                                                 });
+                                                // C1: publish these reserves into the curve cache. The hot path (and the
+                                                // outbound sink's state fetch) then answers from the stream instead of paying a
+                                                // cold 4-RTT fetch. Returns false for a mint whose ctx was never learned — the
+                                                // stream carries no fee_recipient, so nothing is fabricated here.
+                                                if let Some(fetcher) = live_state_fetcher.as_ref() {
+                                                    fetcher.note_stream_reserves(
+                                                        &mb,
+                                                        curve.virtual_sol,
+                                                        curve.virtual_token,
+                                                        curve.complete,
+                                                        slot,
+                                                    );
+                                                }
                                             }
                                         }
                                     }

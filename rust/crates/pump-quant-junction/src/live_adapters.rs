@@ -27,6 +27,7 @@
 //! - §41: construction parity — the fetcher returns decoded on-chain facts.
 //! - §24(b): paper/replay mode never touches these adapters.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -267,7 +268,33 @@ fn decode_signature_bytes(sig_str: &str) -> Result<[u8; 64], SubmitError> {
 #[derive(Clone)]
 struct CachedCurveState {
     state: LiveCurveState,
+    /// The last slot the STREAM published for this mint. Kept separate from
+    /// `state.observed_slot`, which the fetch path also writes: mixing the two clocks
+    /// would let a fetch that observed a higher slot permanently reject every stream
+    /// update (the stream's ordering rule is its own), or let a replayed event
+    /// overwrite fresh reserves.
+    stream_slot: u64,
 }
+
+/// The multi-mint curve cache.
+///
+/// The ctx inside each entry (mint, creator, fee_recipient, token_program,
+/// cashback flag, quote mint) is IMMUTABLE account data: it is learned from one
+/// cold fetch and then reused. The RESERVES are not — they move on every trade, and
+/// they are what the hot path needs. Those come from the stream (see
+/// [`RpcLiveStateFetcher::note_stream_reserves`]), so a mint that has traded once
+/// never pays another state RPC.
+///
+/// Bounded: on overflow the entry with the OLDEST observed slot is evicted. A mint
+/// evicted this way simply pays one cold fetch again — the cache is a latency
+/// optimisation and never a source of truth.
+struct CurveCache {
+    entries: HashMap<[u8; 32], CachedCurveState>,
+}
+
+/// Max mints whose curve ctx + reserves are retained. Well above any sane position
+/// count; the bound exists so a long session cannot grow without limit (§99).
+const CURVE_CACHE_CAP: usize = 256;
 
 /// Cached blockhash: the 32-byte blockhash + slot. Stored behind `Mutex`
 /// because updates are rare and we want write-priority (the background thread
@@ -313,10 +340,11 @@ pub struct RpcLiveStateFetcher {
     rpc_url: String,
 
     // ── Curve-state cache: keyed by mint (32 bytes) ───────────────────────
-    // A single-entry cache is sufficient because the bot trades one mint at a
-    // time. The key is the mint pubkey; the value is the decoded state + the
-    // slot at which it was observed.
-    curve_cache: RwLock<Option<CachedCurveState>>,
+    // C1: multi-mint. The daemon holds several positions at once, so a single-entry
+    // cache forced a cold 4-RTT fetch on every submission that followed a different
+    // mint. The ctx is learned once per mint; the reserves are then kept current by
+    // the account stream.
+    curve_cache: RwLock<CurveCache>,
 
     // ── Blockhash cache: refreshed every ~5s by the background thread ─────
     blockhash_cache: Mutex<Option<CachedBlockhash>>,
@@ -339,7 +367,9 @@ impl RpcLiveStateFetcher {
         Self {
             transport: UreqTransport::new(),
             rpc_url,
-            curve_cache: RwLock::new(None),
+            curve_cache: RwLock::new(CurveCache {
+                entries: HashMap::new(),
+            }),
             blockhash_cache: Mutex::new(None),
             newest_slot: AtomicU64::new(0),
             max_stale_slots: 150, // ≈ 60 s at ~2.5 slots/s (400 ms/slot) — NOT ~5 s
@@ -360,6 +390,90 @@ impl RpcLiveStateFetcher {
     /// Check if shutdown has been requested.
     pub fn is_shutdown(&self) -> bool {
         self.shutdown.load(Ordering::SeqCst)
+    }
+
+    /// C1: publish reserves decoded from the live account stream into the curve
+    /// cache.
+    ///
+    /// Returns `true` when an entry was updated. It returns `false` for a mint whose
+    /// ctx has not been learned yet: the stream carries the curve's reserves but NOT
+    /// the `Global.fee_recipient` (a different account, one RPC), so a buildable ctx
+    /// cannot be fabricated from a stream event alone. That mint pays one cold fetch
+    /// on its first trade, and is stream-fed from then on. Never invent an entry.
+    pub fn note_stream_reserves(
+        &self,
+        mint: &[u8; 32],
+        virtual_sol: u64,
+        virtual_token: u64,
+        is_complete: bool,
+        slot: u64,
+    ) -> bool {
+        let mut cache = self.curve_cache.write().unwrap();
+        let Some(entry) = cache.entries.get_mut(mint) else {
+            return false;
+        };
+        // Only ever make the entry FRESHER. A replayed or out-of-order notification
+        // must not drag the cache backwards — the hot path decides against these
+        // reserves, and stale reserves are a slippage bound derived from a market
+        // that no longer exists.
+        if slot < entry.stream_slot {
+            return false;
+        }
+        entry.stream_slot = slot;
+        entry.state.virtual_sol_reserves = virtual_sol;
+        entry.state.virtual_token_reserves = virtual_token;
+        entry.state.is_complete = is_complete;
+        entry.state.observed_slot = slot;
+        self.newest_slot.fetch_max(slot, Ordering::Relaxed);
+        true
+    }
+
+    /// Insert (or refresh) a mint's entry, evicting the oldest observation when the
+    /// cache is at its bound.
+    fn store_curve(&self, state: &LiveCurveState) {
+        let mint = state.curve_ctx.mint;
+        let mut cache = self.curve_cache.write().unwrap();
+        if cache.entries.len() >= CURVE_CACHE_CAP && !cache.entries.contains_key(&mint) {
+            if let Some(oldest) = cache
+                .entries
+                .iter()
+                .min_by_key(|(_, e)| e.state.observed_slot)
+                .map(|(m, _)| *m)
+            {
+                cache.entries.remove(&oldest);
+            }
+        }
+        // Carry the stream clock forward across a refresh: resetting it to 0 would
+        // re-admit stream events we have already superseded.
+        let stream_slot = cache.entries.get(&mint).map_or(0, |e| e.stream_slot);
+        cache.entries.insert(
+            mint,
+            CachedCurveState {
+                state: state.clone(),
+                stream_slot,
+            },
+        );
+    }
+
+    /// C1: is a cached entry fresh enough to answer a hot read?
+    ///
+    /// Measured in SLOTS against the newest observation this adapter has seen from
+    /// any source (stream, fetch, blockhash refresh) — never a wall clock (§E2/E7).
+    /// With no observation to compare against, the entry is accepted: the caller has
+    /// nothing better, and the sink's own TOCTOU mcap band re-check still runs on the
+    /// state it receives.
+    fn cached_is_fresh(&self, cached: &CachedCurveState) -> bool {
+        let newest = self.newest_slot.load(Ordering::Relaxed);
+        if newest == 0 {
+            return true;
+        }
+        newest.saturating_sub(cached.state.observed_slot) <= self.max_stale_slots
+    }
+
+    /// Test-only: seed the cache without an RPC.
+    #[cfg(test)]
+    fn seed_curve_for_test(&self, state: LiveCurveState) {
+        self.store_curve(&state);
     }
 
     /// E7: may the cached blockhash still be handed to a builder?
@@ -484,52 +598,27 @@ impl LiveStateFetcher for RpcLiveStateFetcher {
         mint: &[u8; 32],
         user: &[u8; 32],
     ) -> Result<LiveCurveState, StateFetchError> {
-        // Try the cache first.
+        // C1: the cache is keyed by mint, so "is this the right mint's state?" is
+        // structural now rather than a comparison that can be forgotten.
         {
             let cache = self.curve_cache.read().unwrap();
-            if let Some(ref cached) = *cache {
-                // CRITICAL: verify the cached state is for the SAME mint.
-                // The single-entry cache can hold state for a different mint
-                // if the daemon bought mint A and is now selling mint B.
-                // Returning the wrong mint's state causes the sell instruction
-                // to be built with wrong accounts → on-chain error 3012
-                // (AccountNotInitialized).  This was the root cause of every
-                // sell failure in Rev-22 through Rev-26.
-                if cached.state.curve_ctx.mint != *mint {
-                    // Cache is for a different mint — bypass and fetch fresh.
-                    drop(cache);
-                    let state = self.fetch_fresh(mint, user)?;
-                    *self.curve_cache.write().unwrap() = Some(CachedCurveState {
-                        state: state.clone(),
-                    });
+            if let Some(cached) = cache.entries.get(mint) {
+                if self.cached_is_fresh(cached) {
+                    // The ctx is signer-agnostic — `user` is the only field that
+                    // varies per caller, and the builder's account list depends on
+                    // it. Patch it in rather than returning a ctx baked with another
+                    // wallet (the wrong-user twin of the Rev-22/26 wrong-mint bug
+                    // that produced AccountNotInitialized).
+                    let mut state = cached.state.clone();
+                    state.curve_ctx.user = *user;
                     return Ok(state);
-                }
-                // Check freshness: if the blockhash cache has a newer slot,
-                // the curve state is still valid as long as it's within the
-                // staleness threshold.
-                let bh = self.blockhash_cache.lock().unwrap();
-                if let Some(ref bh_cached) = *bh {
-                    let staleness = bh_cached.slot.saturating_sub(cached.state.observed_slot);
-                    if staleness <= self.max_stale_slots {
-                        return Ok(cached.state.clone());
-                    }
-                } else {
-                    // No blockhash cache yet but we have curve state — return
-                    // it. The caller will fall back to a fresh fetch if the
-                    // blockhash is stale.
-                    return Ok(cached.state.clone());
                 }
             }
         }
 
-        // Cache miss or stale: fetch synchronously.
+        // Cache miss or stale: fetch synchronously, then remember the ctx.
         let state = self.fetch_fresh(mint, user)?;
-
-        // Update the cache.
-        *self.curve_cache.write().unwrap() = Some(CachedCurveState {
-            state: state.clone(),
-        });
-
+        self.store_curve(&state);
         Ok(state)
     }
 
@@ -549,9 +638,7 @@ impl LiveStateFetcher for RpcLiveStateFetcher {
         drop(bh);
 
         // Update the curve cache.
-        *self.curve_cache.write().unwrap() = Some(CachedCurveState {
-            state: state.clone(),
-        });
+        self.store_curve(&state);
 
         Ok(state)
     }
@@ -1087,5 +1174,134 @@ mod e7_blockhash_validity {
             f.cached_blockhash_is_usable(&c),
             "no observation cannot prove expiry → the ceiling decides"
         );
+    }
+}
+
+
+#[cfg(test)]
+mod c1_stream_fed_cache {
+    //! C1: a mint that has traded once is thereafter answered from the stream, and
+    //! the caller's own signer is patched into the ctx it gets back.
+    //!
+    //! Every test here builds the fetcher against port 1 — an unreachable endpoint.
+    //! Any attempt to reach the RPC therefore FAILS, which is exactly how these tests
+    //! prove a hot read never left the process.
+    use super::*;
+
+    fn ctx(mint_byte: u8) -> PumpCurveCtx {
+        PumpCurveCtx {
+            mint: [mint_byte; 32],
+            user: [0u8; 32],
+            fee_recipient: [7u8; 32],
+            creator: [8u8; 32],
+            token_program: [9u8; 32],
+            is_cashback_coin: false,
+            quote_mint: [0u8; 32],
+        }
+    }
+
+    fn state(mint_byte: u8, vsol: u64, vtok: u64, slot: u64) -> LiveCurveState {
+        LiveCurveState {
+            curve_ctx: ctx(mint_byte),
+            virtual_sol_reserves: vsol,
+            virtual_token_reserves: vtok,
+            is_complete: false,
+            observed_slot: slot,
+            buyback_fee_recipients: [[0u8; 32]; 8],
+        }
+    }
+
+    fn fetcher() -> RpcLiveStateFetcher {
+        RpcLiveStateFetcher::new("http://127.0.0.1:1".to_string())
+    }
+
+    #[test]
+    fn a_cached_mint_is_served_without_an_rpc() {
+        let f = fetcher();
+        f.seed_curve_for_test(state(1, 1_000, 2_000, 100));
+        let s = f
+            .fetch_state_hot(&[1u8; 32], &[0xAAu8; 32])
+            .expect("served from the cache — an RPC to port 1 would have failed");
+        assert_eq!(s.virtual_sol_reserves, 1_000);
+        assert_eq!(
+            s.curve_ctx.user, [0xAAu8; 32],
+            "the caller's signer must be patched into the cached ctx"
+        );
+        assert_eq!(s.curve_ctx.creator, [8u8; 32], "immutable ctx is retained");
+    }
+
+    #[test]
+    fn streamed_reserves_reach_the_hot_path() {
+        let f = fetcher();
+        f.seed_curve_for_test(state(1, 1_000, 2_000, 100));
+        assert!(f.note_stream_reserves(&[1u8; 32], 5_000, 6_000, false, 110));
+        let s = f.fetch_state_hot(&[1u8; 32], &[0xAAu8; 32]).unwrap();
+        assert_eq!(s.virtual_sol_reserves, 5_000, "the stream's reserves win");
+        assert_eq!(s.virtual_token_reserves, 6_000);
+        assert_eq!(s.observed_slot, 110);
+        assert_eq!(s.curve_ctx.user, [0xAAu8; 32]);
+    }
+
+    #[test]
+    fn an_unknown_mint_is_never_fabricated_from_the_stream() {
+        let f = fetcher();
+        assert!(
+            !f.note_stream_reserves(&[2u8; 32], 1, 1, false, 5),
+            "the stream carries no fee_recipient — a buildable ctx cannot be invented"
+        );
+        // Nothing was learned, so the hot read must fall through to the RPC, which
+        // here is an unreachable port: an error, never a fabricated state.
+        assert!(f.fetch_state_hot(&[2u8; 32], &[0u8; 32]).is_err());
+    }
+
+    #[test]
+    fn an_older_notification_never_moves_the_cache_backwards() {
+        let f = fetcher();
+        // The fetch learned this mint at slot 500; the stream is its own clock, so
+        // its first event is admitted whatever the fetch saw.
+        f.seed_curve_for_test(state(3, 1_000, 2_000, 500));
+        assert!(f.note_stream_reserves(&[3u8; 32], 3_000, 4_000, false, 400));
+        assert_eq!(
+            f.fetch_state_hot(&[3u8; 32], &[1u8; 32])
+                .unwrap()
+                .virtual_sol_reserves,
+            3_000
+        );
+        // A replayed older event must NOT overwrite the fresh reserves.
+        assert!(
+            !f.note_stream_reserves(&[3u8; 32], 9, 9, false, 399),
+            "a replayed older notification must be refused"
+        );
+        assert_eq!(
+            f.fetch_state_hot(&[3u8; 32], &[1u8; 32])
+                .unwrap()
+                .virtual_sol_reserves,
+            3_000,
+            "reserves unchanged by the replay"
+        );
+        // The same slot is accepted — latest wins within a slot.
+        assert!(f.note_stream_reserves(&[3u8; 32], 4_000, 5_000, false, 400));
+        assert_eq!(
+            f.fetch_state_hot(&[3u8; 32], &[1u8; 32])
+                .unwrap()
+                .virtual_sol_reserves,
+            4_000
+        );
+    }
+
+    #[test]
+    fn two_mints_are_cached_independently() {
+        // The single-entry cache forced a cold fetch whenever the daemon switched
+        // mints — the Rev-22/26 wrong-mint bug class. Keying by mint retires it.
+        let f = fetcher();
+        f.seed_curve_for_test(state(4, 100, 200, 10));
+        f.seed_curve_for_test(state(5, 300, 400, 10));
+        assert!(f.note_stream_reserves(&[4u8; 32], 111, 222, false, 20));
+        let a = f.fetch_state_hot(&[4u8; 32], &[0u8; 32]).unwrap();
+        let b = f.fetch_state_hot(&[5u8; 32], &[0u8; 32]).unwrap();
+        assert_eq!((a.virtual_sol_reserves, b.virtual_sol_reserves), (111, 300));
+        assert_eq!(a.curve_ctx.mint, [4u8; 32]);
+        assert_eq!(b.curve_ctx.mint, [5u8; 32]);
+        assert_eq!(b.curve_ctx.user, [0u8; 32]);
     }
 }
