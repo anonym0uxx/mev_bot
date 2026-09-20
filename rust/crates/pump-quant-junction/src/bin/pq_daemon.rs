@@ -206,6 +206,11 @@ const HELIUS_SUB_CAP: usize = 1000;
 /// low and the stagnation detector catches death-spiral symptoms within 120s.
 const SUB_CAP_RECONNECT_THRESHOLD: f64 = 0.95;
 
+/// E3: how many submissions the async outbound worker may have backlogged before the
+/// decision thread refuses further ones. Refusal reverses the position (safe
+/// direction) and is counted, so a saturated queue is visible rather than silent.
+const OUTBOUND_QUEUE_DEPTH: usize = 64;
+
 /// OnchainConfirm stagnation detection: if confirms don't advance for this
 /// many seconds while the daemon is running and LS is healthy, the Helius WS
 /// lane is dead (likely subscription cap death-spiral). This is the
@@ -1248,7 +1253,7 @@ fn construct_live_engine(
     cfg: pump_quant_app::config::Config,
     args: &DaemonArgs,
     creator_pubkey_map: CreatorPubkeyMap,
-) -> Result<pump_quant_app::engine::Engine, u8> {
+) -> Result<(pump_quant_app::engine::Engine, &'static pump_quant_junction::async_sink::AsyncOutboundSink), u8> {
     use pump_quant_app::engine::Engine;
     use pump_quant_execution::ex_live_io_traits::{
         LiveSigner, LiveStateFetcher, LiveSubmitter,
@@ -1517,7 +1522,10 @@ fn construct_live_engine(
     // Clone the RPC URL for the R-3 query (already has api-key injected).
     let r3_rpc_url = helius_rpc_url.clone();
 
-    if r3_enabled {
+    // The veto (when armed) wraps the live sink; the async worker wraps whichever
+    // one ends up being the inner pipeline, so the decision thread pays neither the
+    // veto's RPC nor the build+sign+submit round trip.
+    let inner_sink: &'static dyn OutboundSink = if r3_enabled {
         eprintln!(
             "[pq-daemon] R-3 creator history veto ENABLED (max_launches={})",
             r3_max_launches
@@ -1535,14 +1543,28 @@ fn construct_live_engine(
             r3_max_launches,
         ));
         let static_veto: &'static CreatorHistoryVetoSink = Box::leak(veto_sink);
-        eng.install_outbound_sink(static_veto as &'static dyn OutboundSink);
         eprintln!("[pq-daemon] CreatorHistoryVetoSink installed — R-3 live execution ARMED");
+        static_veto as &'static dyn OutboundSink
     } else {
-        eng.install_outbound_sink(static_sink as &'static dyn OutboundSink);
-        eprintln!("[pq-daemon] LiveOutboundSink installed — live execution ARMED");
-    }
+        static_sink as &'static dyn OutboundSink
+    };
 
-    Ok(eng)
+    // ── E3: get submission off the decision thread ──────────────────────────
+    // The engine's `tick()` no longer pays the build+sign+submit round trip (nor the
+    // veto's RPC): `on_admit` hands the record to a worker and returns `Queued`. The
+    // worker's verdict is drained in the tick loop below, and the engine finishes the
+    // accounting there — including reversing a phantom buy position.
+    let async_sink: &'static pump_quant_junction::async_sink::AsyncOutboundSink =
+        Box::leak(Box::new(pump_quant_junction::async_sink::AsyncOutboundSink::new(
+            inner_sink,
+            OUTBOUND_QUEUE_DEPTH,
+        )));
+    eng.install_outbound_sink(async_sink as &'static dyn OutboundSink);
+    eprintln!(
+        "[pq-daemon] AsyncOutboundSink installed — submissions run off the decision thread (queue depth {OUTBOUND_QUEUE_DEPTH})"
+    );
+
+    Ok((eng, async_sink))
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────────
@@ -1677,9 +1699,15 @@ fn main() -> ExitCode {
         std::sync::Mutex::new(HashMap::new()),
     );
 
+    // E3: the async outbound handle lives in main's scope so the tick loop can drain
+    // the worker's verdicts. `None` in paper mode — there is no sink there at all.
+    let mut async_outbound: Option<&'static pump_quant_junction::async_sink::AsyncOutboundSink> = None;
     let mut engine = if args.live_mode {
         match construct_live_engine(cfg, &args, creator_pubkey_map.clone()) {
-            Ok(e) => e,
+            Ok((e, async_sink)) => {
+                async_outbound = Some(async_sink);
+                e
+            }
             Err(code) => return ExitCode::from(code),
         }
     } else {
@@ -3431,6 +3459,54 @@ fn main() -> ExitCode {
             next_tick = Instant::now() + tick_period;
             tick_counter += 1;
 
+            // ── E3: drain finished async submissions ────────────────────
+            // The decision thread handed these off without waiting. Reporting the
+            // verdict back is where the accounting happens: acceptance registers the
+            // pending tx for the confirmation poller below, refusal reverses a
+            // phantom buy position. Ordering matters — this runs BEFORE the poll so a
+            // just-accepted signature is eligible on the same pass.
+            if let Some(sink) = async_outbound {
+                for r in sink.drain_results() {
+                    let (accepted, submit_rpc_us) = match &r.outcome {
+                        pump_quant_execution::ex_outbound_sink::OutboundOutcome::Accepted {
+                            signature,
+                            submit_rpc_us,
+                        } => (Some(*signature), *submit_rpc_us),
+                        _ => (None, 0),
+                    };
+                    match accepted {
+                        Some(sig) if sig != [0u8; 64] => {
+                            if engine.complete_async_outbound(r.ticket, sig, r.worker_us, submit_rpc_us)
+                            {
+                                eprintln!(
+                                    "[pq-daemon] outbound ticket={} {:?} ACCEPTED in {}µs (worker)",
+                                    r.ticket,
+                                    if r.record.is_buy { "buy" } else { "sell" },
+                                    r.worker_us
+                                );
+                            } else {
+                                eprintln!(
+                                    "[pq-daemon] outbound ticket={} verdict for an evicted ticket — ignored (never treated as a confirmation)",
+                                    r.ticket
+                                );
+                            }
+                        }
+                        _ => {
+                            if engine.fail_async_outbound(r.ticket, r.worker_us) {
+                                eprintln!(
+                                    "[pq-daemon] outbound ticket={} {:?} NOT SUBMITTED ({:?}) after {}µs",
+                                    r.ticket,
+                                    if r.record.is_buy { "buy" } else { "sell" },
+                                    r.outcome,
+                                    r.worker_us
+                                );
+                            }
+                        }
+                    }
+                    sink.note_delivered();
+                }
+            }
+
             // ── Rev-19: On-chain confirmation feedback poll ──────────────
             // Poll getSignaturesForAddress for our wallet every
             // confirm_poll_interval_secs to check if pending buy/sell txs
@@ -3976,6 +4052,23 @@ fn main() -> ExitCode {
             mfe_bps: t.mfe_bps,
             mae_bps: t.mae_bps,
         });
+    }
+    // ── E3: outbound worker totals ──────────────────────────────────────
+    // Nothing here was surfaced while the daemon ran except per-verdict lines; the
+    // summary makes a saturated/refusing queue auditable after the fact.
+    if let Some(sink) = async_outbound {
+        eprintln!(
+            "[pq-daemon] outbound worker: {} verdicts delivered, {} refused, {} still in flight",
+            sink.delivered(),
+            sink.refused(),
+            sink.in_flight()
+        );
+        if sink.in_flight() > 0 {
+            eprintln!(
+                "[pq-daemon] WARNING: {} submission(s) never reported a verdict — the chain state of those txs is unknown",
+                sink.in_flight()
+            );
+        }
     }
     match tape_exporter.flush() {
         Ok(n) => eprintln!(

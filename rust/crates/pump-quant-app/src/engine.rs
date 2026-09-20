@@ -346,6 +346,10 @@ const LAST_TRADE_TABLE_CAP: usize = 8_192;
 /// the daemon must flush. Prevents unbounded memory growth on long runs.
 const TAPE_TRADE_CAP: usize = 10_000;
 
+/// E3: bound on the handed-off-submission registry. Matches the ±256 bounds used by
+/// the pending-tx registries (§99).
+const INFLIGHT_OUTBOUND_CAP: usize = 256;
+
 /// §99 bound on [`Engine::ata_open`], the set of mints holding an open Associated
 /// Token Account. Membership tracks live positions, which `max_concurrent_positions`
 /// already caps far below this, so the bound is a leak backstop rather than a working
@@ -789,6 +793,26 @@ pub struct ReflectionSnapshot {
 }
 
 /// **Rev-19 on-chain feedback**: A pending buy or sell tx awaiting on-chain
+/// E3: an outbound submission handed to the async worker. The decision thread no
+/// longer waits for build+sign+submit, so everything the engine needs to finish the
+/// bookkeeping when the worker reports back is parked here, under the ticket the
+/// sink returned. Diagnostic-only state: nothing here is a decision input (§24(b)).
+#[derive(Clone, Copy, Debug)]
+struct InflightOutbound {
+    mint: [u8; 32],
+    is_buy: bool,
+    /// The size handed to the sink (probe for a buy, token amount for a sell) — the
+    /// value a later on-chain failure reverses, exactly as the synchronous path did.
+    register_size: u64,
+    /// The full committed size at admit — what a never-submitted buy reverses.
+    rollback_size: u64,
+    /// Committed entry cost released from `bankroll_committed` on that rollback.
+    entry_cost: u64,
+    price_fp: u64,
+    /// The tick the record was handed off on (eviction order + diagnostics).
+    submit_tick: u64,
+}
+
 /// confirmation. Created when the live sink submits a tx, consumed when the
 /// daemon's `getSignaturesForAddress` poller reports back.
 #[derive(Clone, Copy, Debug)]
@@ -1131,6 +1155,10 @@ pub struct Engine {
     /// Keyed by the first 8 bytes of the signature (compact). Bounded (§99) —
     /// evicts the oldest entry at capacity.
     pending_buys: BTreeMap<[u8; 8], PendingTx>,
+
+    /// E3: submissions currently on the async worker, keyed by ticket. Bounded —
+    /// the oldest is evicted at capacity, matching the pending-tx bounds.
+    inflight_outbound: BTreeMap<u64, InflightOutbound>,
     /// **Rev-19 on-chain feedback**: pending sell txs awaiting on-chain confirmation.
     pending_sells: BTreeMap<[u8; 8], PendingTx>,
     /// Count of buy txs confirmed on-chain (landed successfully).
@@ -1425,6 +1453,7 @@ impl Engine {
             live_sell_successes: 0,
             live_sell_failures: 0,
             pending_buys: BTreeMap::new(),
+            inflight_outbound: BTreeMap::new(),
             pending_sells: BTreeMap::new(),
             buy_confirmed_count: 0,
             buy_failed_count: 0,
@@ -4699,6 +4728,25 @@ impl Engine {
                             );
                         }
                     }
+                    // ── E3: HANDED TO THE ASYNC WORKER ──────────────────────────
+                    // The submission is in flight off the decision thread. The
+                    // position stays open and the accounting is finished when the
+                    // worker reports back — `complete_async_outbound` on acceptance,
+                    // `fail_async_outbound` on refusal. Falling into the `other` arm
+                    // below would reverse a position that is still being submitted.
+                    pump_quant_execution::ex_outbound_sink::OutboundOutcome::Queued { ticket } => {
+                        let mint_hex: String = e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
+                        eprintln!("[engine] sink: queued ticket={ticket} buy mint={mint_hex}");
+                        self.note_inflight_outbound(*ticket, InflightOutbound {
+                            mint: e.mint,
+                            is_buy: true,
+                            register_size: probe,
+                            rollback_size: e.size,
+                            entry_cost: e.entry_cost,
+                            price_fp: e.entry_price,
+                            submit_tick: self.now,
+                        });
+                    }
                     // ── Rev-27: SINK-FAIL ROLLBACK ───────────────────────────────
                     // When the sink rejects the buy (R-3 veto, construction error,
                     // state fetch failure, etc.), the on-chain buy NEVER happens.
@@ -4714,21 +4762,10 @@ impl Engine {
                         let mint_hex: String = e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
                         eprintln!("[engine] sink FAILED for buy mint={mint_hex}: {other:?}");
                         self.live_outbound_failures += 1;
-                        // Reverse the paper position opened at line 4544.
-                        let reversed = self.positions.reverse_paper_entry(&e.mint, e.size);
-                        if reversed {
-                            eprintln!("[engine] phantom position REVERSED for mint={mint_hex} (buy never landed on-chain)");
-                        }
-                        // Decrement admitted (incremented at line 4546).
-                        self.admitted = self.admitted.saturating_sub(1);
-                        // Release the committed bankroll (added at line 4604-4606).
-                        self.bankroll_committed = self
-                            .bankroll_committed
-                            .saturating_sub(u128::from(e.entry_cost));
-                        // Remove from ata_open (inserted at line 4601-4603).
-                        self.ata_open.remove(&e.mint);
-                        // Remove from open_lane (inserted at line 4607-4623).
-                        self.open_lane.remove(&e.mint);
+                        // Reverse the paper position opened at line 4544. The same
+                        // method serves the async worker's failure report (E3), so
+                        // there is exactly one rollback implementation.
+                        self.rollback_unsubmitted_buy(e.mint, e.size, e.entry_cost);
                         // Skip the rest of the admit sequence — the position is gone.
                         return;
                     }
@@ -4920,6 +4957,22 @@ impl Engine {
                                 e.exit_price_fp,
                             );
                         }
+                    }
+                    // ── E3: HANDED TO THE ASYNC WORKER (sell) ──────────────────
+                    // Tokens are still in the wallet until the worker reports; a
+                    // queued sell is not a failed sell, so it must not count as one.
+                    pump_quant_execution::ex_outbound_sink::OutboundOutcome::Queued { ticket } => {
+                        let mint_hex: String = e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
+                        eprintln!("[engine] sell sink: queued ticket={ticket} mint={mint_hex} tokens={}", e.token_amount);
+                        self.note_inflight_outbound(*ticket, InflightOutbound {
+                            mint: e.mint,
+                            is_buy: false,
+                            register_size: e.token_amount,
+                            rollback_size: 0,
+                            entry_cost: 0,
+                            price_fp: e.exit_price_fp,
+                            submit_tick: self.now,
+                        });
                     }
                     other => {
                         let mint_hex: String = e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
@@ -6854,6 +6907,111 @@ impl Engine {
         });
     }
 
+    /// E3: park a handed-off submission until its worker reports a verdict.
+    /// Bounded like the pending-tx registries — the oldest ticket is evicted at
+    /// capacity (an evicted ticket's verdict is then reported as unknown, never
+    /// guessed at).
+    fn note_inflight_outbound(&mut self, ticket: u64, entry: InflightOutbound) {
+        if self.inflight_outbound.len() >= INFLIGHT_OUTBOUND_CAP
+            && !self.inflight_outbound.contains_key(&ticket)
+        {
+            if let Some(first) = self.inflight_outbound.keys().next().copied() {
+                self.inflight_outbound.remove(&first);
+            }
+        }
+        self.inflight_outbound.insert(ticket, entry);
+    }
+
+    /// E3: how many submissions are still on the worker. Diagnostic.
+    #[must_use]
+    pub fn inflight_outbound_len(&self) -> usize {
+        self.inflight_outbound.len()
+    }
+
+    /// Rev-27 (§24(b)): reverse a position whose BUY never reached the wire — a
+    /// synchronous sink-level refusal, or (E3) the async worker reporting that the
+    /// build/sign/submit never produced a signature. `OurBuyFailed` covers only txs
+    /// that were SUBMITTED and failed on-chain; a submission that never happened
+    /// never reaches that path, so the rollback lives here.
+    ///
+    /// Logs distinctly when the position is already gone (a late verdict) but still
+    /// applies the accounting: the committed capital must never leak, whether or not
+    /// the position record survived.
+    fn rollback_unsubmitted_buy(&mut self, mint: [u8; 32], size: u64, entry_cost: u64) {
+        let mint_hex: String = mint[..4].iter().map(|b| format!("{b:02x}")).collect();
+        // Reverse the paper position opened at admit.
+        let reversed = self.positions.reverse_paper_entry(&mint, size);
+        if reversed {
+            eprintln!("[engine] phantom position REVERSED for mint={mint_hex} (buy never landed on-chain)");
+        } else {
+            eprintln!("[engine] phantom position NOT FOUND for mint={mint_hex} — bookkeeping applied anyway");
+        }
+        // Decrement admitted (incremented when the position opened).
+        self.admitted = self.admitted.saturating_sub(1);
+        // Release the committed bankroll (added when the position opened).
+        self.bankroll_committed = self
+            .bankroll_committed
+            .saturating_sub(u128::from(entry_cost));
+        // Remove from ata_open and open_lane (inserted when the position opened).
+        self.ata_open.remove(&mint);
+        self.open_lane.remove(&mint);
+    }
+
+    /// E3: the async worker's verdict — the venue ACCEPTED the submission. Finishes
+    /// the bookkeeping the decision thread skipped when it handed the record off:
+    /// the pending-confirmation registration and the report counter. Returns false
+    /// when the ticket is unknown (evicted), so a caller can never mistake an
+    /// unattributable report for a confirmation.
+    /// `worker_us` is how long the worker spent inside the inner sink and
+    /// `submit_rpc_us` the submit call alone (E11). They belong to the trade's
+    /// latency trace, which the decision thread could not fill in: it handed the
+    /// record off before the work happened. Without stamping them here the tape would
+    /// read 0 for a submission that really took time — indistinguishable from
+    /// "no data", and exactly the fabricated-zero class E11 removed.
+    pub fn complete_async_outbound(
+        &mut self,
+        ticket: u64,
+        signature: [u8; 64],
+        worker_us: u64,
+        submit_rpc_us: u64,
+    ) -> bool {
+        let Some(entry) = self.inflight_outbound.remove(&ticket) else {
+            return false;
+        };
+        if entry.is_buy {
+            self.live_outbound_successes = self.live_outbound_successes.saturating_add(1);
+            self.register_pending_buy(signature, entry.mint, entry.register_size, entry.price_fp);
+            // The entry trace is still open (the position has not closed), so the real
+            // numbers can land where the tape will read them.
+            if let Some(att) = self.open_lane.get_mut(&entry.mint) {
+                att.latency.trace.submit_call_us = worker_us;
+                att.latency.trace.submit_rpc_us = submit_rpc_us;
+            }
+        } else {
+            self.live_sell_successes = self.live_sell_successes.saturating_add(1);
+            self.register_pending_sell(signature, entry.mint, entry.register_size, entry.price_fp);
+        }
+        true
+    }
+
+    /// E3: the async worker's verdict — the submission never reached the venue. A
+    /// queued buy is then a phantom position and is reversed exactly as the
+    /// synchronous sink-fail path reverses it. Returns false for an unknown ticket.
+    pub fn fail_async_outbound(&mut self, ticket: u64, worker_us: u64) -> bool {
+        let Some(entry) = self.inflight_outbound.remove(&ticket) else {
+            return false;
+        };
+        let _ = worker_us; // logged by the caller; the rollback needs no timing
+        if entry.is_buy {
+            self.live_outbound_failures = self.live_outbound_failures.saturating_add(1);
+            self.rollback_unsubmitted_buy(entry.mint, entry.rollback_size, entry.entry_cost);
+        } else {
+            self.live_sell_failures = self.live_sell_failures.saturating_add(1);
+            // Tokens remain in the wallet: nothing to reverse, the exit ladder retries.
+        }
+        true
+    }
+
     /// Register a pending sell tx for on-chain confirmation tracking.
     pub fn register_pending_sell(&mut self, signature: [u8; 64], mint: [u8; 32], size: u64, price_fp: u64) {
         let key = sig_key(&signature);
@@ -7498,6 +7656,130 @@ mod e11_latency_trace {
                 exit_submit_call_us: 0,
                 exit_submit_rpc_us: 0,
             }
+        );
+    }
+}
+
+#[cfg(test)]
+mod e3_async_outbound {
+    //! E3: the decision thread hands a submission off and the WORKER's verdict
+    //! finishes the bookkeeping — including reversing a phantom position, exactly as
+    //! the synchronous sink-fail path does.
+    use super::*;
+
+    fn inflight(mint: [u8; 32], is_buy: bool, register_size: u64) -> InflightOutbound {
+        InflightOutbound {
+            mint,
+            is_buy,
+            register_size,
+            rollback_size: register_size,
+            entry_cost: register_size,
+            price_fp: 1_000,
+            submit_tick: 0,
+        }
+    }
+
+    #[test]
+    fn an_unknown_ticket_never_becomes_a_confirmation() {
+        let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
+        assert!(!eng.complete_async_outbound(99, [1u8; 64], 1, 1));
+        assert!(!eng.fail_async_outbound(99, 1));
+        assert!(
+            eng.pending_buy_signatures().is_empty(),
+            "an unattributable verdict must not register a pending tx"
+        );
+        assert_eq!(eng.live_outbound_successes, 0);
+        assert_eq!(eng.live_outbound_failures, 0);
+        assert_eq!(eng.inflight_outbound_len(), 0);
+    }
+
+    #[test]
+    fn an_accepted_verdict_registers_the_pending_buy() {
+        let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
+        let mint = [4u8; 32];
+        eng.note_inflight_outbound(1, inflight(mint, true, 777));
+        assert_eq!(eng.inflight_outbound_len(), 1);
+        assert!(eng.complete_async_outbound(1, [0xAB; 64], 4_200, 900));
+        assert_eq!(eng.live_outbound_successes, 1);
+        assert_eq!(
+            eng.pending_buy_signatures(),
+            vec![(mint, [0xAB; 64])],
+            "the worker's signature is what the confirmation poller must follow"
+        );
+        assert_eq!(eng.inflight_outbound_len(), 0);
+        // Consumed exactly once: a replayed verdict cannot double-count.
+        assert!(!eng.complete_async_outbound(1, [0xAB; 64], 4_200, 900));
+        assert_eq!(eng.live_outbound_successes, 1);
+    }
+
+    #[test]
+    fn a_failed_verdict_reverses_the_phantom_position_and_releases_capital() {
+        let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
+        let mint = [5u8; 32];
+        // The state open_pending leaves behind when the sink was handed the record.
+        assert!(eng.positions.open(mint, 1_000, 500, 500, 0));
+        eng.admitted = 1;
+        eng.bankroll_committed = u128::from(500u64);
+        eng.ata_open.insert(mint);
+        eng.note_inflight_outbound(7, inflight(mint, true, 500));
+
+        assert!(eng.fail_async_outbound(7, 3_100));
+        assert_eq!(eng.live_outbound_failures, 1);
+        assert_eq!(eng.admitted, 0, "the admission is not a real one");
+        assert_eq!(eng.bankroll_committed, 0, "committed capital must not leak");
+        assert!(eng.open_lane.is_empty());
+        assert!(!eng.ata_open.contains(&mint));
+        assert_eq!(eng.inflight_outbound_len(), 0);
+        // Consumed once.
+        assert!(!eng.fail_async_outbound(7, 3_100));
+        assert_eq!(eng.live_outbound_failures, 1);
+    }
+
+    #[test]
+    fn an_accepted_verdict_stamps_the_worker_timing_onto_the_open_trace() {
+        // E11 × E3: the decision thread handed the record off before any work
+        // happened, so the real submit timing can only be written back at verdict
+        // time. Leaving it at 0 would be indistinguishable from "never measured".
+        let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
+        let mint = [8u8; 32];
+        assert!(eng.positions.open(mint, 1_000, 500, 500, 0));
+        eng.open_lane.insert(
+            mint,
+            OpenAttribution {
+                lane: WlLane::CreationSniper,
+                discovery_lane: DiscoveryLane::ActiveMarket,
+                archetype: 0,
+                realized_acc: 0,
+                entry_spend: 500,
+                scale_add: 0,
+                scale_cost: 0,
+                entry_price: 1_000,
+                brain: None,
+                entry_tick: 0,
+                entry_vsol: 0,
+                entry_obs: SignalObs::none(),
+                latency: LatencyAnchor::default(),
+            },
+        );
+        eng.note_inflight_outbound(2, inflight(mint, true, 500));
+        assert!(eng.complete_async_outbound(2, [0xCD; 64], 6_400, 1_250));
+        let att = eng.open_lane.get(&mint).expect("entry trace still open");
+        assert_eq!(att.latency.trace.submit_call_us, 6_400);
+        assert_eq!(att.latency.trace.submit_rpc_us, 1_250);
+    }
+
+    #[test]
+    fn a_failed_sell_verdict_leaves_the_position_alone() {
+        let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
+        let mint = [6u8; 32];
+        assert!(eng.positions.open(mint, 1_000, 500, 500, 0));
+        eng.admitted = 1;
+        eng.note_inflight_outbound(3, inflight(mint, false, 250));
+        assert!(eng.fail_async_outbound(3, 2_500));
+        assert_eq!(eng.live_sell_failures, 1);
+        assert_eq!(
+            eng.admitted, 1,
+            "tokens stay in the wallet on a failed sell — the ladder retries"
         );
     }
 }

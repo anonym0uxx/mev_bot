@@ -60,6 +60,14 @@ pub enum OutboundOutcome {
         signature: [u8; 64],
         submit_rpc_us: u64,
     },
+    /// E3: the record was handed to an ASYNC worker and is being built/signed/
+    /// submitted off the decision thread. `ticket` identifies it until the worker
+    /// reports the real outcome back (the daemon drains those reports on a later
+    /// tick and calls back into the engine). Nothing is known yet about whether the
+    /// transaction landed — this is explicitly NOT a failure, and the engine must
+    /// not roll the position back on it. The decision thread never blocks on the
+    /// ~5-50 ms build+submit round trip.
+    Queued { ticket: u64 },
     /// The construction gate refused — the LayoutRegistry has no verified
     /// fixture for this layout. This is a §41 parity failure.
     Construction(String),
@@ -75,7 +83,9 @@ pub enum OutboundOutcome {
 /// The junction contract. The engine holds an optional `&dyn OutboundSink` and
 /// calls `on_admit` after a position is admitted. In paper/replay mode the sink
 /// is `None`; in live mode it is the `OutboundJunction`.
-pub trait OutboundSink {
+/// Implementors are shared across threads: E3 runs the pipeline on a dedicated
+/// worker, so `Send + Sync` is part of the contract, not an accident.
+pub trait OutboundSink: Send + Sync {
     /// Execute the outbound pipeline for an admitted trade. The return value is
     /// logged for the report; it never feeds an engine decision (§24(b)).
     fn on_admit(&self, record: &AdmitRecord) -> OutboundOutcome;

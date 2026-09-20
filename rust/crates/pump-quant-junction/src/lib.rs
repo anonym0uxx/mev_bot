@@ -118,6 +118,7 @@ pub mod state_fetch;
 pub mod outbound;
 pub mod live_adapters;
 pub mod laserstream;
+pub mod async_sink;
 pub mod trade_journal;
 pub mod tape_export;
 pub mod event_stream;
