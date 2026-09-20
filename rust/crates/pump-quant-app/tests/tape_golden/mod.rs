@@ -186,6 +186,7 @@ fn drive_eng_with_fill(cfg: Config, curve_exact_fill: bool) -> Engine {
                     signed_base,
                     buyer_entity: (m + i) % 97,
                     age_slots: 10 + (m as u32 % 40),
+                    recv_unix_ms: None,
                 });
             }
             // Each market "launches" (emits its discovery evidence) in ONE staggered
@@ -250,6 +251,7 @@ fn drive_eng_with_fill(cfg: Config, curve_exact_fill: bool) -> Engine {
                         signed_base: 800_000 + (z as i64) * 500,
                         buyer_entity: 200 + (z + i) % 9,
                         age_slots: 200,
+                        recv_unix_ms: None,
                     });
                 }
             }
@@ -298,6 +300,7 @@ fn drive_eng_with_fill(cfg: Config, curve_exact_fill: bool) -> Engine {
                     },
                     buyer_entity: 300 + (d + i) % 11,
                     age_slots: 10 + d as u32,
+                    recv_unix_ms: None,
                 });
             }
             if round == 0 {
@@ -354,6 +357,7 @@ fn drive_eng_with_fill(cfg: Config, curve_exact_fill: bool) -> Engine {
                 },
                 buyer_entity: 400 + i % 7,
                 age_slots: 10,
+                recv_unix_ms: None,
             });
         }
         if round == 0 {
@@ -432,6 +436,7 @@ fn drive_eng_with_fill(cfg: Config, curve_exact_fill: bool) -> Engine {
                 },
                 buyer_entity: 500 + i % 7,
                 age_slots: 10,
+                recv_unix_ms: None,
             });
         }
         if round == 0 {

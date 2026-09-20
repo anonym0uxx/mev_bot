@@ -350,6 +350,7 @@ pub fn apply_tape(
                     signed_base: sgn * mag,
                     buyer_entity: 1_000 + (m.tag * 7 + i) % 23,
                     age_slots: 10 + (m.tag as u32 % 20),
+                    recv_unix_ms: None,
                 });
             }
             if age == 0 {

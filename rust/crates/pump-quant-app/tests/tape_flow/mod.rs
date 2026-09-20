@@ -124,6 +124,7 @@ fn swap(eng: &mut Engine, m: Mint, price_bp: i128, signed_base: i64, entity: u64
         signed_base,
         buyer_entity: entity,
         age_slots: AGE,
+        recv_unix_ms: None,
     });
 }
 

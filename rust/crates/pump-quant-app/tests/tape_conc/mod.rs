@@ -59,6 +59,7 @@ pub fn swap(
         signed_base,
         buyer_entity: entity,
         age_slots,
+        recv_unix_ms: None,
     });
 }
 

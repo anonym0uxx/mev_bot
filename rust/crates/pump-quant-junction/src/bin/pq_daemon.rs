@@ -2421,7 +2421,8 @@ fn main() -> ExitCode {
                     stats.ls_transactions_received += 1;
                     let classified = classify_pump_instructions(&tx);
                     stats.ls_instructions_classified += classified.len() as u64;
-                    let events = instructions_to_events(&classified, tx.slot, tx.is_live);
+                    let events =
+                        instructions_to_events(&classified, tx.slot, tx.is_live, tx.recv_unix_ms);
                     for ev in &events {
                         stats.ls_events_emitted += 1;
                         if !queue.push(ev.clone(), tx.slot) {
@@ -2440,6 +2441,7 @@ fn main() -> ExitCode {
                     owner,
                     data,
                     slot,
+                    recv_unix_ms,
                 }) => {
                     did_work = true;
                     stats.ls_account_received += 1;
@@ -2491,9 +2493,17 @@ fn main() -> ExitCode {
                             // Derive market trade from reserve delta — same
                             // logic as the WS account notification handler.
                             let prev = reserve_tracker.get(&mb).copied();
-                            if let Some(trade_pe) =
-                                derive_market_trade_from_delta(&mb, prev, &curve, slot, true)
-                            {
+                            // The account notification's wire receive time is the print's
+                            // clock: this is the only producer with a real `price_fp`, so it
+                            // is the feed the live state ledger's windows key on.
+                            if let Some(trade_pe) = derive_market_trade_from_delta(
+                                &mb,
+                                prev,
+                                &curve,
+                                slot,
+                                true,
+                                recv_unix_ms,
+                            ) {
                                 queue.push(trade_pe, slot);
                                 stats.delta_trades_derived += 1;
                             } else {
@@ -3016,8 +3026,11 @@ fn main() -> ExitCode {
                                             }
 
                                             let prev = reserve_tracker.get(&mb).copied();
+                                            // The WS feed records no receive time, so this
+                                            // print cannot be windowed on a clock it does not
+                                            // have. `None` is the honest value.
                                             if let Some(trade_pe) = derive_market_trade_from_delta(
-                                                &mb, prev, &curve, slot, true,
+                                                &mb, prev, &curve, slot, true, None,
                                             ) {
                                                 queue.push(trade_pe, slot);
                                                 stats.delta_trades_derived += 1;
@@ -3123,7 +3136,7 @@ fn main() -> ExitCode {
                                                 let prev = reserve_tracker.get(&mb).copied();
                                                 if let Some(trade_pe) =
                                                     derive_market_trade_from_delta(
-                                                        &mb, prev, &curve, slot, true,
+                                                        &mb, prev, &curve, slot, true, None,
                                                     )
                                                 {
                                                     queue.push(trade_pe, slot);

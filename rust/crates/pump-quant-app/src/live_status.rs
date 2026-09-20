@@ -246,6 +246,7 @@ mod tests {
                     signed_base: 600_000,
                     buyer_entity: m % 7,
                     age_slots: 12,
+                    recv_unix_ms: None,
                 });
             }
             // RE-EXPRESSED (2026-07-28): this harness used to declare a 0.2 SOL

@@ -103,6 +103,7 @@ pub fn one_at(
         signed_base,
         buyer_entity: entity,
         age_slots,
+        recv_unix_ms: None,
     });
 }
 

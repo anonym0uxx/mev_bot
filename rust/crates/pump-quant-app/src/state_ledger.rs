@@ -49,6 +49,12 @@ pub const CONC_WINDOW: usize = 2_000;
 pub const VENUE_WINDOW: usize = 200;
 /// Hard per-mint ring bound. Must exceed [`CONC_WINDOW`] and any realistic 300 s of tape.
 pub const RING_CAP: usize = 8_192;
+/// Hard bound on tracked mints (§99: every live table is capped). A NEW mint beyond this is
+/// REFUSED and counted rather than evicting an older one: eviction would silently make an
+/// existing mint's snapshot inexact, whereas a refusal is visible and costs only the
+/// unwatched mint. The caller frees real capacity with [`StateLedger::forget`] when a mint
+/// leaves the watchlist.
+pub const MAX_TRACKED_MINTS: usize = 4_096;
 /// `pump_quant_features::types::PRICE_SCALE` — `price_fp` is **lamports per raw token**, so
 /// SOL per raw token is `price_fp / (PRICE_SCALE * LAMPORTS_PER_SOL)` = `price_fp / 1e18`.
 ///
@@ -103,6 +109,11 @@ pub struct StateTrade {
     pub price_sol_per_raw: Option<f64>,
     /// Signed SOL volume in lamports (buys negative on the tape; magnitude is the volume).
     pub sol_lamports_signed: i64,
+    /// Signed base (token) volume in raw units, `None` when the producer could not supply it.
+    /// The corpus's dust floors require BOTH legs (`build_states_v2.py`: `|sol| >= 100_000`
+    /// AND `|tok| >= 1_000_000`), because a healthy SOL leg against a rounding-residue token
+    /// leg is a pass-through whose price is meaningless.
+    pub base_qty: Option<i64>,
     /// Which side.
     pub is_buy: bool,
     /// Stable per-entity trader id.
@@ -138,8 +149,9 @@ impl StateTrade {
         signed_base: i64,
         buyer_entity: u64,
         venue: VenueLabel,
+        base_qty: Option<i64>,
     ) -> Option<StateTrade> {
-        if price_fp <= 0 || buyer_entity == 0 || signed_base == 0 || quote_lamports == 0 {
+        if price_fp <= 0 || signed_base == 0 || quote_lamports == 0 {
             return None;
         }
         let is_buy = signed_base > 0;
@@ -152,7 +164,13 @@ impl StateTrade {
             // engine's own `entry_price_fp / 1e18` in `live_status.rs`)).
             price_sol_per_raw: Some(price_fp as f64 / (PRICE_SCALE * LAMPORTS_PER_SOL)),
             sol_lamports_signed,
+            base_qty,
             is_buy,
+            // `0` is the producer's unknown-trader sentinel, and the reserve-delta path — the
+            // ONLY producer that carries a real price — sets it by design. Refusing those
+            // prints would starve the ledger of every usable trade, so they are admitted and
+            // the snapshot reports `identity_known: false`, which is what stops a prompt being
+            // built from a number the corpus would not have printed.
             trader: buyer_entity,
             venue,
         })
@@ -165,9 +183,17 @@ impl StateTrade {
     }
 
     /// Whether the trade is pass-through dust by the corpus's own floors.
+    ///
+    /// BOTH legs are checked, as `build_states_v2` does. An unknown token leg cannot be
+    /// cleared, so it is treated as unknown rather than assumed healthy: [`MintLedger`] counts
+    /// those prints and the snapshot reports `identity_known`/`token_leg_known` so a caller
+    /// refuses instead of averaging a print it could not clear.
     #[must_use]
     pub fn is_dust(self) -> bool {
         self.volume_lamports() < MIN_SOL_LAMPORTS
+            || self
+                .base_qty
+                .is_some_and(|q| q.unsigned_abs() < MIN_TOKENS_RAW as u64)
     }
 }
 
@@ -220,6 +246,16 @@ pub struct StateSnapshot {
     /// Whether every window could be computed from a tape the ledger fully retained.
     /// **A caller must not build a prompt from an incomplete snapshot.**
     pub complete: bool,
+    /// Whether every print in the concentration window carried a real trader id. False when
+    /// any print came from a path that marks the trader unknown (the reserve-delta producer
+    /// sets `buyer_entity: 0` by design), which makes `unique_traders` and the top-1/top-5
+    /// shares NOT the corpus's numbers. **The builder must require this as well as
+    /// `complete`.** The fix is to join the instruction print (which carries the wallet) with
+    /// the reserve print (which carries the price) on `(mint, slot)`.
+    pub identity_known: bool,
+    /// Whether every print in the concentration window carried a token leg that could be
+    /// cleared against [`MIN_TOKENS_RAW`].
+    pub token_leg_known: bool,
 }
 
 #[derive(Debug, Default)]
@@ -235,6 +271,13 @@ struct MintLedger {
     cum_sell_vol: i64,
     /// All-time count of non-finite prices (drives `evidence_status`).
     cum_nonfinite: u64,
+    /// All-time count of prints whose trader id was the unknown sentinel (`buyer_entity == 0`).
+    cum_unknown_identity: u64,
+    /// All-time count of prints whose token leg could not be cleared against the floor.
+    cum_unknown_token_leg: u64,
+    /// Prints refused for arriving out of order. Non-zero makes the tape not the corpus's tape,
+    /// so it is folded into `complete` instead of vanishing.
+    dropped_out_of_order: u64,
     /// First trade time of the mint (for `age_s`).
     first_t_ms: Option<i64>,
     /// Trades dropped by the ring bound, oldest first.
@@ -245,6 +288,10 @@ struct MintLedger {
 #[derive(Debug, Default)]
 pub struct StateLedger {
     mints: BTreeMap<[u8; 32], MintLedger>,
+    /// New mints refused because [`MAX_TRACKED_MINTS`] was reached.
+    refused_mints: u64,
+    /// Prints refused because their mint was not tracked.
+    refused_prints: u64,
 }
 
 impl StateLedger {
@@ -260,6 +307,24 @@ impl StateLedger {
         self.mints.len()
     }
 
+    /// New mints refused at [`MAX_TRACKED_MINTS`]. Non-zero means the caller is not calling
+    /// [`Self::forget`] when mints leave the watchlist.
+    #[must_use]
+    pub fn refused_mints(&self) -> u64 {
+        self.refused_mints
+    }
+
+    /// Prints refused because their mint was not tracked, or because they arrived out of order.
+    #[must_use]
+    pub fn refused_prints(&self) -> u64 {
+        self.refused_prints
+            + self
+                .mints
+                .values()
+                .map(|m| m.dropped_out_of_order)
+                .sum::<u64>()
+    }
+
     /// Drop a mint's history (used when a mint leaves the watchlist).
     pub fn forget(&mut self, mint: &[u8; 32]) -> bool {
         self.mints.remove(mint).is_some()
@@ -271,9 +336,15 @@ impl StateLedger {
         if trade.is_dust() {
             return false;
         }
+        if !self.mints.contains_key(mint) && self.mints.len() >= MAX_TRACKED_MINTS {
+            self.refused_mints = self.refused_mints.saturating_add(1);
+            self.refused_prints = self.refused_prints.saturating_add(1);
+            return false;
+        }
         let l = self.mints.entry(*mint).or_default();
         if let Some(last) = l.ring.back() {
             if trade.recv_unix_ms < last.recv_unix_ms {
+                l.dropped_out_of_order = l.dropped_out_of_order.saturating_add(1);
                 return false;
             }
         }
@@ -290,6 +361,12 @@ impl StateLedger {
         }
         if trade.price_sol_per_raw.is_none() {
             l.cum_nonfinite += 1;
+        }
+        if trade.trader == 0 {
+            l.cum_unknown_identity = l.cum_unknown_identity.saturating_add(1);
+        }
+        if trade.base_qty.is_none() {
+            l.cum_unknown_token_leg = l.cum_unknown_token_leg.saturating_add(1);
         }
         l.ring.push_back(trade);
         while l.ring.len() > RING_CAP {
@@ -337,8 +414,6 @@ impl StateLedger {
         if !(price > 0.0) {
             return None;
         }
-        let buys = before.iter().filter(|t| t.is_buy).count() as u64;
-        let sells = n_prior - buys;
         let last_t = before.last()?.recv_unix_ms;
         let first_t = l.first_t_ms?;
 
@@ -370,6 +445,10 @@ impl StateLedger {
             .filter(|t| t.price_sol_per_raw.is_none())
             .count() as u64;
         let nonfinite_before = l.cum_nonfinite - nonfinite_after;
+        let unknown_identity_after = after_ring.iter().filter(|t| t.trader == 0).count() as u64;
+        let unknown_identity_before = l.cum_unknown_identity - unknown_identity_after;
+        let unknown_leg_after = after_ring.iter().filter(|t| t.base_qty.is_none()).count() as u64;
+        let unknown_leg_before = l.cum_unknown_token_leg - unknown_leg_after;
 
         // Concentration: the last CONC_WINDOW trades before the clock, volume-weighted.
         let lo = before.len().saturating_sub(CONC_WINDOW);
@@ -430,7 +509,11 @@ impl StateLedger {
             ret_5s_bp: ret_bp(&before, price, t_dec_ms, 5),
             ret_30s_bp: ret_bp(&before, price, t_dec_ms, 30),
             ret_300s_bp: ret_bp(&before, price, t_dec_ms, 300),
-            complete,
+            // A refused or dropped print means this is not the corpus's tape, so the snapshot
+            // says so rather than serving numbers that look clean.
+            complete: complete && l.dropped_out_of_order == 0,
+            identity_known: unknown_identity_before == 0,
+            token_leg_known: unknown_leg_before == 0,
         })
     }
 }
@@ -483,50 +566,49 @@ fn volatility_30s(before: &[&StateTrade], _price: f64, t_dec_ms: i64) -> Option<
 mod tests {
     use super::*;
 
-    /// A real print: 2.5e-8 SOL per raw token, 0.4 SOL bought.
+    /// A real print: 2.5e-8 SOL per raw token, 0.4 SOL bought, a 2M-token leg.
     fn buy_print(t: i64) -> Option<StateTrade> {
         StateTrade::from_market_trade(
             t,
-            25_000_000_000, // price_fp = 2.5e-8 SOL/raw-token * 1e18
+            25_000_000_000,
             400_000_000,
-            1_234_567, // positive base = buy on the EVENT's convention (signed_base > 0)
+            1,
             42,
             VenueLabel::Pumpfun,
+            Some(2_000_000),
         )
     }
 
     #[test]
     fn a_real_print_converts_with_the_corpus_units() {
-        let t = buy_print(1_700_000_000_000).expect("accepted");
-        assert_eq!(t.price_sol_per_raw, Some(2.5e-8));
-        assert!(t.is_buy);
-        assert_eq!(t.volume_lamports(), 400_000_000);
+        let t = buy_print(1_700_000_000_000).expect("admitted");
         assert_eq!(
-            t.sol_lamports_signed, -400_000_000,
-            "the tape records buys negative"
+            t.price_sol_per_raw,
+            Some(2.5e-8),
+            "price_fp is lamports per raw token: / (PRICE_SCALE * LAMPORTS_PER_SOL)"
         );
+        assert!(
+            t.is_buy,
+            "signed_base > 0 is a buy on the engine's convention"
+        );
+        assert!(
+            t.sol_lamports_signed < 0,
+            "the tape carries buys negative, as build_states_v2 abs()es them"
+        );
+        assert_eq!(t.volume_lamports(), 400_000_000);
         assert_eq!(t.trader, 42);
         assert!(!t.is_dust());
     }
 
-    /// Every refusal is a print that would otherwise corrupt a corpus-parity number.
     #[test]
     fn prints_that_cannot_honestly_contribute_are_refused() {
         let t = 1_700_000_000_000;
-        // The LaserStream placeholder: price_fp is filled by the reserve-delta step, not here.
+        // The LaserStream placeholder: price_fp is 0 until the reserve-delta step fills it.
+        // A zero here is not a price, and admitting it drags every window's reference to 0.
         assert!(
-            StateTrade::from_market_trade(t, 0, 400_000_000, 1, 42, VenueLabel::Pumpfun).is_none()
+            StateTrade::from_market_trade(t, 0, 400_000_000, 1, 42, VenueLabel::Pumpfun, None)
+                .is_none()
         );
-        // Unknown-trader sentinel: every unknown wallet would collapse into one entity.
-        assert!(StateTrade::from_market_trade(
-            t,
-            25_000_000_000,
-            400_000_000,
-            -1,
-            0,
-            VenueLabel::Pumpfun
-        )
-        .is_none());
         // No base movement, or no quote paid: not a swap.
         assert!(StateTrade::from_market_trade(
             t,
@@ -534,50 +616,190 @@ mod tests {
             400_000_000,
             0,
             42,
-            VenueLabel::Pumpfun
+            VenueLabel::Pumpfun,
+            Some(2_000_000)
         )
         .is_none());
+        assert!(StateTrade::from_market_trade(
+            t,
+            25_000_000_000,
+            0,
+            1,
+            42,
+            VenueLabel::Pumpfun,
+            Some(2_000_000)
+        )
+        .is_none());
+        // The unknown-trader sentinel is ADMITTED and flagged, never refused: the
+        // reserve-delta path (the only producer with a real price) sets it by design.
+        let unknown = StateTrade::from_market_trade(
+            t,
+            25_000_000_000,
+            400_000_000,
+            1,
+            0,
+            VenueLabel::Pumpfun,
+            Some(2_000_000),
+        )
+        .expect("admitted, flagged");
+        assert_eq!(unknown.trader, 0);
         assert!(
-            StateTrade::from_market_trade(t, 25_000_000_000, 0, 1, 42, VenueLabel::Pumpfun)
-                .is_none()
+            !unknown.is_dust(),
+            "an unknown IDENTITY is not unknown SIZE: it must still be tradeable"
         );
     }
 
-    /// A refused print changes nothing downstream: not a count, not a price, not a window.
     #[test]
-    fn a_refused_print_never_reaches_a_window() {
-        let mut ledger = StateLedger::new();
-        let mint = [21u8; 32];
-        assert!(ledger.on_trade(&mint, buy_print(1_000).expect("accepted")));
-        // The unpatched placeholder arrives between two real prints.
-        let placeholder =
-            StateTrade::from_market_trade(1_500, 0, 400_000_000, 1, 42, VenueLabel::Pumpfun);
-        assert!(placeholder.is_none(), "refused, so nothing is fed");
-        assert!(ledger.on_trade(&mint, buy_print(2_000).expect("accepted")));
-        let s = ledger.serve(&mint, 3_000).expect("snapshot");
-        assert_eq!(s.n_prior_trades, 2, "the placeholder is not a trade");
-        assert_eq!(s.price_sol_per_raw, 2.5e-8, "nor a price");
-    }
-
-    /// Dust is refused by the LEDGER, not the adapter: one authority for the floor, so a future
-    /// caller cannot bypass it by constructing a `StateTrade` directly.
-    #[test]
-    fn the_dust_floor_has_exactly_one_authority() {
+    fn the_dust_floor_has_exactly_one_authority_and_clears_both_legs() {
         let mut ledger = StateLedger::new();
         let mint = [22u8; 32];
-        let dust = StateTrade::from_market_trade(
+        // A healthy token leg against a sub-floor SOL leg: pass-through.
+        let small_sol = StateTrade::from_market_trade(
             1_000,
             25_000_000_000,
             99_999,
-            -1,
+            1,
             42,
             VenueLabel::Pumpswap,
+            Some(2_000_000),
         )
-        .expect("the adapter is not the floor");
-        assert!(!ledger.on_trade(&mint, dust), "the ledger refuses it");
+        .expect("the adapter admits it");
+        assert!(small_sol.is_dust(), "the ledger refuses it");
+        assert!(!ledger.on_trade(&mint, small_sol));
+        // A healthy SOL leg against a residue token leg is the same pass-through, and the
+        // corpus clears BOTH legs. Bypassing the adapter does not bypass the floor.
+        let residue = StateTrade::from_market_trade(
+            2_000,
+            25_000_000_000,
+            400_000_000,
+            1,
+            42,
+            VenueLabel::Pumpswap,
+            Some(1_000),
+        )
+        .expect("the adapter admits it");
+        assert!(residue.is_dust(), "the token leg fails the second floor");
+        assert!(!ledger.on_trade(&mint, residue));
         assert!(
-            ledger.serve(&mint, 2_000).is_none(),
-            "and no snapshot exists"
+            ledger.serve(&mint, 3_000).is_none(),
+            "a mint whose every print was dust has no snapshot to serve, not a zeroed one"
         );
+    }
+
+    #[test]
+    fn a_refused_print_never_reaches_a_window() {
+        let mut ledger = StateLedger::new();
+        let mint = [7u8; 32];
+        assert!(ledger.on_trade(&mint, buy_print(1_000).unwrap()));
+        // The placeholder that the instruction path emits (price_fp still 0).
+        assert!(StateTrade::from_market_trade(
+            2_000,
+            0,
+            400_000_000,
+            1,
+            42,
+            VenueLabel::Pumpfun,
+            Some(2_000_000)
+        )
+        .is_none());
+        assert!(ledger.on_trade(&mint, buy_print(2_500).unwrap()));
+        let s = ledger.serve(&mint, 3_000).expect("snapshot");
+        assert_eq!(s.n_prior_trades, 2, "the placeholder is not a trade");
+        assert_eq!(
+            s.price_sol_per_raw, 2.5e-8,
+            "nor a price: the reference stays the last real print"
+        );
+        assert!(s.identity_known && s.token_leg_known);
+    }
+
+    #[test]
+    fn an_unknown_identity_or_leg_is_reported_not_hidden() {
+        let mut ledger = StateLedger::new();
+        let mint = [8u8; 32];
+        assert!(ledger.on_trade(&mint, buy_print(1_000).unwrap()));
+        // What the reserve-delta producer actually emits: real price, unknown trader, and a
+        // token leg it does carry.
+        let delta = StateTrade::from_market_trade(
+            2_000,
+            25_000_000_000,
+            400_000_000,
+            2,
+            0,
+            VenueLabel::Pumpfun,
+            Some(2_000_000),
+        )
+        .expect("admitted");
+        assert!(ledger.on_trade(&mint, delta));
+        let s = ledger.serve(&mint, 3_000).expect("snapshot");
+        assert_eq!(s.n_prior_trades, 2);
+        assert!(
+            !s.identity_known,
+            "unique_traders / top1 / top5 are NOT the corpus's numbers here"
+        );
+        assert!(s.token_leg_known);
+        // The join that fixes it (instruction print carries the wallet, reserve print the
+        // price, both carry the slot) is a junction-side job, and until it exists the builder
+        // must refuse on `identity_known`.
+        let no_leg = StateTrade::from_market_trade(
+            3_000,
+            25_000_000_000,
+            400_000_000,
+            3,
+            42,
+            VenueLabel::Pumpfun,
+            None,
+        )
+        .expect("admitted");
+        assert!(ledger.on_trade(&mint, no_leg));
+        assert!(
+            !ledger
+                .serve(&mint, 4_000)
+                .expect("snapshot")
+                .token_leg_known
+        );
+    }
+
+    #[test]
+    fn a_dropped_out_of_order_print_makes_the_tape_inexact() {
+        let mut ledger = StateLedger::new();
+        let mint = [9u8; 32];
+        assert!(ledger.on_trade(&mint, buy_print(2_000).unwrap()));
+        assert!(
+            !ledger.on_trade(&mint, buy_print(1_000).unwrap()),
+            "older than the newest retained print: refused"
+        );
+        assert_eq!(ledger.refused_prints(), 1);
+        let s = ledger.serve(&mint, 3_000).expect("snapshot");
+        assert_eq!(s.n_prior_trades, 1);
+        assert!(
+            !s.complete,
+            "a tape that lost a print is not the corpus's tape"
+        );
+    }
+
+    #[test]
+    fn the_mint_table_is_capped_and_refusals_are_visible() {
+        let mut ledger = StateLedger::new();
+        for i in 0..MAX_TRACKED_MINTS {
+            let mut mint = [0u8; 32];
+            mint[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            assert!(ledger.on_trade(&mint, buy_print(1_000).unwrap()));
+        }
+        let mut extra = [0u8; 32];
+        extra[..8].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(
+            !ledger.on_trade(&extra, buy_print(1_000).unwrap()),
+            "a new mint past the cap is refused, never an eviction"
+        );
+        assert_eq!(ledger.refused_mints(), 1);
+        assert_eq!(ledger.refused_prints(), 1);
+        assert_eq!(ledger.tracked_mints(), MAX_TRACKED_MINTS);
+        // Freeing a TRACKED mint restores capacity (the refused one was never tracked).
+        let mut tracked = [0u8; 32];
+        tracked[..8].copy_from_slice(&7u64.to_le_bytes());
+        assert_eq!(ledger.tracked_mints(), MAX_TRACKED_MINTS);
+        ledger.forget(&tracked);
+        assert_eq!(ledger.tracked_mints(), MAX_TRACKED_MINTS - 1);
+        assert!(ledger.on_trade(&extra, buy_print(1_000).unwrap()));
     }
 }

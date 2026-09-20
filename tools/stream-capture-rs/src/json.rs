@@ -62,6 +62,28 @@ impl Value {
         }
     }
 
+    /// Signed integer view of a JSON number, the signed counterpart of [`Self::as_u64`]. Integer text parses exactly; float/exponent text truncates toward
+    /// zero through f64; non-numbers are `None`.
+    ///
+    /// Exists because receive timestamps are signed in the ledger's contract even though a
+    /// wall-clock instant is positive here: coercing through `as_u64` would turn a garbage
+    /// negative into a huge positive time, which is a fabricated window, not a parse failure.
+    #[must_use]
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Value::Number(raw) => {
+                if let Ok(n) = raw.parse::<i64>() {
+                    return Some(n);
+                }
+                match raw.parse::<f64>() {
+                    Ok(f) if f.is_finite() => Some(f.trunc() as i64),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Non-negative integer view of a JSON number. Integer text parses
     /// exactly; float/exponent text truncates toward zero through f64 (slots
     /// and lamports are far below the 2^53 precision edge); negatives and

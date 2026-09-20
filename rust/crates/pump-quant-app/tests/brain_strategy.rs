@@ -149,6 +149,7 @@ fn drive(cfg: Config, decayed: bool) -> Engine {
                     signed_base,
                     buyer_entity: (m + i) % 89,
                     age_slots: 10 + (m as u32 % 35),
+                    recv_unix_ms: None,
                 });
             }
             if round == m % 4 {

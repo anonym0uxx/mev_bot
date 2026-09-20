@@ -112,6 +112,13 @@ pub enum AppEvent {
         buyer_entity: u64,
         /// Market age at this trade, in slots.
         age_slots: u32,
+        /// The producer's receive time for this print, unix milliseconds, when the wire
+        /// carried one. `None` means "not recorded", and is NOT a licence to substitute a
+        /// clock: the causal state ledger's windows are keyed on this quantity, and a
+        /// replay-time or logical-tick substitute would fabricate a window the tape never
+        /// had. The LaserStream sidecar emits it on every notification; the PumpPortal path
+        /// has no such field yet, so it passes `None` and the ledger refuses to serve.
+        recv_unix_ms: Option<i64>,
     },
 
     /// A narrative attention sample for a market: how many fresh mentions arrived

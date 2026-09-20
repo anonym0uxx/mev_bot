@@ -79,6 +79,7 @@ pub fn derive_market_trade_from_delta(
     current: &PumpCurve,
     slot: u64,
     is_live: bool,
+    recv_unix_ms: Option<i64>,
 ) -> Option<ProvenancedEvent> {
     let prev = previous?;
 
@@ -136,6 +137,10 @@ pub fn derive_market_trade_from_delta(
         signed_base,
         buyer_entity: 0, // Unknown trader — conservative for unique-buyer counting.
         age_slots: 0,    // Unknown age — conservative for hold-horizon.
+        // The account notification's wire receive time (see `LaserStreamUpdate::Account`).
+        // This producer is the only one with a real `price_fp`, so its clock is what the
+        // live ledger's windows are keyed on.
+        recv_unix_ms,
     };
 
     Some(ProvenancedEvent {
@@ -180,6 +185,7 @@ mod tests {
             &curve,
             1000,
             true,
+            None,
         );
         assert!(result.is_none());
     }
@@ -193,7 +199,8 @@ mod tests {
         };
         // Buy: vsol up, vtoken down
         let curve = make_curve(31_000_000_000, 990_000_000);
-        let result = derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true);
+        let result =
+            derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true, None);
         assert!(result.is_some());
         let pe = result.unwrap();
         if let AppEvent::MarketTrade {
@@ -227,7 +234,8 @@ mod tests {
         };
         // Sell: vsol down, vtoken up
         let curve = make_curve(34_000_000_000, 910_000_000);
-        let result = derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true);
+        let result =
+            derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true, None);
         assert!(result.is_some());
         let pe = result.unwrap();
         if let AppEvent::MarketTrade { signed_base, .. } = pe.event {
@@ -247,7 +255,8 @@ mod tests {
         };
         // Same reserves — only the `complete` flag changed (migration)
         let curve = make_curve(30_000_000_000, 1_000_000_000);
-        let result = derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true);
+        let result =
+            derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true, None);
         assert!(result.is_none());
     }
 
@@ -260,12 +269,14 @@ mod tests {
         };
         // Both up — not a valid constant-product trade
         let mut curve = make_curve(31_000_000_000, 1_100_000_000);
-        let result = derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true);
+        let result =
+            derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true, None);
         assert!(result.is_none());
 
         // Both down — also inconsistent
         curve = make_curve(29_000_000_000, 900_000_000);
-        let result = derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true);
+        let result =
+            derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true, None);
         assert!(result.is_none());
     }
 
@@ -279,7 +290,8 @@ mod tests {
         // Buy: vsol=31, vtoken=990M → price = 31e9 * 1e9 / 990M
         let curve = make_curve(31_000_000_000, 990_000_000);
         let result =
-            derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true).unwrap();
+            derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true, None)
+                .unwrap();
         if let AppEvent::MarketTrade { price_fp, .. } = result.event {
             // 31_000_000_000 * 1_000_000_000 / 990_000_000
             let expected = (31_000_000_000_000_000_000u128 / 990_000_000) as i128;
@@ -297,7 +309,8 @@ mod tests {
             slot: 900,
         };
         let curve = make_curve(31_000_000_000, 0);
-        let result = derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true);
+        let result =
+            derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true, None);
         assert!(result.is_none());
     }
 }

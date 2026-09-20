@@ -52,6 +52,7 @@ fn pump(eng: &mut Engine, tag: u64, base_mult: i128, n: u64, liq: u64) {
             signed_base: 900_000 - (i as i64),
             buyer_entity: 40 + i % 7,
             age_slots: 12,
+            recv_unix_ms: None,
         });
     }
 }
@@ -82,6 +83,7 @@ fn drive_positions(cfg: Config) -> Engine {
                     signed_base: -900_000,
                     buyer_entity: 40 + i % 7,
                     age_slots: 12,
+                    recv_unix_ms: None,
                 });
             }
         }

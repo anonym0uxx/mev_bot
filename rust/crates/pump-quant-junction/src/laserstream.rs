@@ -76,6 +76,11 @@ pub struct LaserStreamTx {
     /// Whether this is a live observation (true) or replay (false).
     /// §65: replay must be distinguished from live in every record.
     pub is_live: bool,
+    /// The sidecar's receive time for this notification, unix milliseconds, straight off the
+    /// wire (`parse_ndjson_line`). This is the *information time* the corpus's causal windows
+    /// are keyed on. It is carried, never re-derived: a local clock would be a different
+    /// quantity, and the engine's logical tick is not a wall clock at all.
+    pub recv_unix_ms: Option<i64>,
 }
 
 /// Classification of a pump.fun instruction found in a LaserStream transaction.
@@ -281,6 +286,7 @@ pub fn instructions_to_events(
     instructions: &[PumpInstruction],
     slot: u64,
     is_live: bool,
+    recv_unix_ms: Option<i64>,
 ) -> Vec<ProvenancedEvent> {
     let mut events = Vec::with_capacity(instructions.len());
 
@@ -301,6 +307,7 @@ pub fn instructions_to_events(
                         signed_base: i64::try_from(*amount_lamports).unwrap_or(i64::MAX),
                         buyer_entity: wallet_entity_id(buyer),
                         age_slots: 0, // Not available from ix data alone
+                        recv_unix_ms,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -322,6 +329,7 @@ pub fn instructions_to_events(
                         signed_base: -i64::try_from(*amount_tokens).unwrap_or(i64::MAX),
                         buyer_entity: wallet_entity_id(seller),
                         age_slots: 0,
+                        recv_unix_ms,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -343,6 +351,7 @@ pub fn instructions_to_events(
                         signed_base: i64::try_from(*amount_lamports).unwrap_or(i64::MAX),
                         buyer_entity: wallet_entity_id(buyer),
                         age_slots: 0,
+                        recv_unix_ms,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -364,6 +373,7 @@ pub fn instructions_to_events(
                         signed_base: -i64::try_from(*amount_tokens).unwrap_or(i64::MAX),
                         buyer_entity: wallet_entity_id(seller),
                         age_slots: 0,
+                        recv_unix_ms,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -454,6 +464,10 @@ pub enum LaserStreamUpdate {
         owner: [u8; 32],
         data: Vec<u8>,
         slot: u64,
+        /// Receive time off the wire, when the sidecar emits it. The account path is what
+        /// produces the reserve-delta print — the only producer with a real `price_fp` — so
+        /// its receive time is what the live state ledger's windows need.
+        recv_unix_ms: Option<i64>,
     },
     /// A slot notification — heartbeat for staleness detection.
     Slot { slot: u64 },
@@ -490,6 +504,9 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
     match kind {
         "transaction" => {
             let slot = v.get("slot")?.as_u64()?;
+            // The sidecar's schema emits `recv_unix_ms` on every notification. Parsed, not
+            // assumed: a line without it yields None, never a fabricated time.
+            let recv_unix_ms = v.get("recv_unix_ms").and_then(|n| n.as_i64());
 
             // Parse signature (base58 → 64 bytes)
             let sig_str = v.get("signature_b58")?.as_str()?;
@@ -558,6 +575,9 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                 account_keys,
                 instructions,
                 is_live: true, // gRPC stream is always live (§65)
+                // Straight off the wire, into the event: this is the clock the corpus's
+                // causal windows are keyed on, and it is never re-derived.
+                recv_unix_ms,
             }))
         }
         "account" => {
@@ -575,6 +595,7 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                 owner,
                 data,
                 slot,
+                recv_unix_ms: v.get("recv_unix_ms").and_then(|n| n.as_i64()),
             })
         }
         "slot" => {
@@ -635,6 +656,7 @@ mod tests {
             account_keys: vec![],
             instructions: vec![],
             is_live,
+            recv_unix_ms: None,
         }
     }
 
@@ -735,7 +757,7 @@ mod tests {
             buyer: [0x42; 32],
         }];
 
-        let events = instructions_to_events(&instructions, 123, true);
+        let events = instructions_to_events(&instructions, 123, true, None);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].source, ProvenanceSource::LaserStream);
         assert!(events[0].is_live);
@@ -765,7 +787,7 @@ mod tests {
             seller: [0x43; 32],
         }];
 
-        let events = instructions_to_events(&instructions, 456, false);
+        let events = instructions_to_events(&instructions, 456, false, None);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].source, ProvenanceSource::LaserStream);
         assert!(!events[0].is_live); // Replay, not live (§65)
@@ -783,7 +805,7 @@ mod tests {
         let base_mint = [0xFF; 32];
         let instructions = vec![PumpInstruction::CreatePool { pool, base_mint }];
 
-        let events = instructions_to_events(&instructions, 789, true);
+        let events = instructions_to_events(&instructions, 789, true, None);
         assert_eq!(events.len(), 1);
         match &events[0].event {
             AppEvent::Migration { mint, slot } => {
@@ -799,7 +821,7 @@ mod tests {
         let mint = [0xAA; 32];
         let instructions = vec![PumpInstruction::Migrate { mint }];
 
-        let events = instructions_to_events(&instructions, 100, true);
+        let events = instructions_to_events(&instructions, 100, true, None);
         assert_eq!(events.len(), 1);
         match &events[0].event {
             AppEvent::Migration { mint: m, slot } => {
@@ -894,11 +916,11 @@ mod tests {
             buyer: [0x42; 32],
         }];
 
-        let live_events = instructions_to_events(&instructions, 1, true);
+        let live_events = instructions_to_events(&instructions, 1, true, None);
         assert!(live_events[0].is_live);
         assert_eq!(live_events[0].source, ProvenanceSource::LaserStream);
 
-        let replay_events = instructions_to_events(&instructions, 1, false);
+        let replay_events = instructions_to_events(&instructions, 1, false, None);
         assert!(!replay_events[0].is_live);
         assert_eq!(replay_events[0].source, ProvenanceSource::LaserStream);
     }
@@ -1044,8 +1066,8 @@ mod tests {
         assert_eq!(classified_paper.len(), classified_live.len());
 
         // Convert to events.
-        let events_paper = instructions_to_events(&classified_paper, 100, true);
-        let events_live = instructions_to_events(&classified_live, 100, true);
+        let events_paper = instructions_to_events(&classified_paper, 100, true, None);
+        let events_live = instructions_to_events(&classified_live, 100, true, None);
 
         assert_eq!(events_paper.len(), events_live.len());
         for (ep, el) in events_paper.iter().zip(events_live.iter()) {
@@ -1136,8 +1158,8 @@ mod tests {
         let classified = classify_pump_instructions(&tx);
         assert!(!classified.is_empty());
 
-        let events_live = instructions_to_events(&classified, 777, true);
-        let events_replay = instructions_to_events(&classified, 777, false);
+        let events_live = instructions_to_events(&classified, 777, true, None);
+        let events_replay = instructions_to_events(&classified, 777, false, None);
 
         assert_eq!(events_live.len(), events_replay.len());
         for (el, er) in events_live.iter().zip(events_replay.iter()) {
@@ -1163,6 +1185,26 @@ mod tests {
                 }
                 _ => panic!("event type mismatch"),
             }
+        }
+    }
+
+    /// The sidecar's receive time rides off the wire onto the transaction, and its absence is
+    /// `None` rather than a fabricated instant.
+    #[test]
+    fn the_sidecar_receive_time_rides_onto_the_transaction() {
+        let stamped = r#"{"lane":"laserstream","kind":"transaction","slot":1,"recv_unix_ms":1700000000123,"signature_b58":"1","account_keys":[],"instructions":[]}"#;
+        match parse_ndjson_line(stamped).expect("parses") {
+            LaserStreamUpdate::Transaction(tx) => {
+                assert_eq!(tx.recv_unix_ms, Some(1_700_000_000_123));
+                assert_eq!(tx.slot, 1);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // A line without the key (an older sidecar) is still a transaction, with no clock.
+        let legacy = r#"{"lane":"laserstream","kind":"transaction","slot":2,"signature_b58":"1","account_keys":[],"instructions":[]}"#;
+        match parse_ndjson_line(legacy).expect("parses") {
+            LaserStreamUpdate::Transaction(tx) => assert_eq!(tx.recv_unix_ms, None),
+            other => panic!("wrong variant: {other:?}"),
         }
     }
 }

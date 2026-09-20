@@ -69,6 +69,7 @@ fn scenario() -> Vec<AppEvent> {
             signed_base: 1_000_000,
             buyer_entity: i,
             age_slots: 30,
+            recv_unix_ms: None,
         });
     }
     ev.push(AppEvent::OnchainConfirm {
@@ -251,6 +252,7 @@ fn social_source_earns_quality_from_realized_outcomes() {
             signed_base: 1_000_000,
             buyer_entity: i,
             age_slots: 30,
+            recv_unix_ms: None,
         });
     }
     eng.tick(AppEvent::OnchainConfirm {
@@ -271,6 +273,7 @@ fn social_source_earns_quality_from_realized_outcomes() {
         signed_base: 1_000_000,
         buyer_entity: 5,
         age_slots: 31,
+        recv_unix_ms: None,
     });
     eng.tick(AppEvent::MarketTrade {
         mint: mkt,
@@ -280,6 +283,7 @@ fn social_source_earns_quality_from_realized_outcomes() {
         signed_base: -4_000_000,
         buyer_entity: 6,
         age_slots: 32,
+        recv_unix_ms: None,
     });
     let reflect_ticks = Config::dev_portable().reflect_every_ticks + 2;
     for _ in 0..reflect_ticks {
@@ -400,6 +404,7 @@ fn creator_distribution_fades_size_but_never_vetoes() {
                 signed_base: 1_000_000,
                 buyer_entity: i,
                 age_slots: 30,
+                recv_unix_ms: None,
             });
         }
         e.tick(AppEvent::OnchainConfirm {
@@ -419,6 +424,7 @@ fn creator_distribution_fades_size_but_never_vetoes() {
             signed_base: 1_000_000,
             buyer_entity: 5,
             age_slots: 31,
+            recv_unix_ms: None,
         });
         e.tick(AppEvent::MarketTrade {
             mint: m,
@@ -428,6 +434,7 @@ fn creator_distribution_fades_size_but_never_vetoes() {
             signed_base: -4_000_000,
             buyer_entity: 6,
             age_slots: 32,
+            recv_unix_ms: None,
         });
         e.report()
     };
@@ -478,6 +485,7 @@ fn fed_meta_path_is_live_and_deterministic() {
                         signed_base: 2_000_000,
                         buyer_entity: (i + round) % 7,
                         age_slots: 20,
+                        recv_unix_ms: None,
                     });
                 }
                 e.tick(AppEvent::OnchainConfirm {
@@ -519,6 +527,7 @@ fn fed_meta_path_is_live_and_deterministic() {
                 signed_base: 2_000_000,
                 buyer_entity: i,
                 age_slots: 20,
+                recv_unix_ms: None,
             });
         }
     }
@@ -552,6 +561,7 @@ fn numeric_lane_discovers_buy_flow_not_sell_flow() {
                 signed_base: sign * 1_000_000,
                 buyer_entity: i,
                 age_slots: 30,
+                recv_unix_ms: None,
             });
         }
         e.tick(AppEvent::OnchainConfirm {
@@ -594,6 +604,7 @@ fn admissible_stream(tag: u8) -> Vec<AppEvent> {
             signed_base: 1_000_000,
             buyer_entity: i,
             age_slots: 30,
+            recv_unix_ms: None,
         });
     }
     ev.push(AppEvent::OnchainConfirm {
@@ -625,6 +636,7 @@ fn deep_admissible_stream(tag: u8) -> Vec<AppEvent> {
             signed_base: 1_000_000,
             buyer_entity: i,
             age_slots: 30,
+            recv_unix_ms: None,
         });
     }
     ev.push(AppEvent::OnchainConfirm {
@@ -689,6 +701,7 @@ fn bankroll_size_is_proportional_to_deployable_capital() {
             signed_base: 1_000_000,
             buyer_entity: 9,
             age_slots: 31,
+            recv_unix_ms: None,
         });
         e.tick(AppEvent::MarketTrade {
             mint: mint(0x92),
@@ -698,6 +711,7 @@ fn bankroll_size_is_proportional_to_deployable_capital() {
             signed_base: -4_000_000,
             buyer_entity: 10,
             age_slots: 32,
+            recv_unix_ms: None,
         });
         let rr = e.report();
         let codes: Vec<u8> = e
@@ -789,6 +803,7 @@ fn vpin_sell_dump_vetoes_admission() {
             signed_base: -10_000,
             buyer_entity: i % 7,
             age_slots: 30,
+            recv_unix_ms: None,
         });
     }
     // 66 tiny-quote buys with big base: the trade ring now holds ONLY buys (CVD>0,
@@ -802,6 +817,7 @@ fn vpin_sell_dump_vetoes_admission() {
             signed_base: 1_000_000,
             buyer_entity: i % 9,
             age_slots: 31,
+            recv_unix_ms: None,
         });
     }
     e.tick(AppEvent::OnchainConfirm {

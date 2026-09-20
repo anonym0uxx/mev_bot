@@ -1038,6 +1038,7 @@ fn holder_flow_money_term_is_exactly_neutral_on_this_tape() {
         signed_base: 500_000,
         buyer_entity: 3,
         age_slots: 12,
+        recv_unix_ms: None,
     });
     assert_eq!(
         probe
@@ -1101,6 +1102,7 @@ fn holder_concentration_is_exactly_neutral_on_this_tape() {
             signed_base: 500_000,
             buyer_entity: e,
             age_slots: 12,
+            recv_unix_ms: None,
         });
     }
     assert_eq!(
@@ -1129,6 +1131,7 @@ fn holder_concentration_is_exactly_neutral_on_this_tape() {
             signed_base: 500_000,
             buyer_entity: e,
             age_slots: 12,
+            recv_unix_ms: None,
         });
     }
     assert!(

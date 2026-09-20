@@ -548,7 +548,8 @@ fn main() -> ExitCode {
                     ls_state.connected = true;
                     let classified = classify_pump_instructions(&tx);
                     stats.ls_instructions_classified += classified.len() as u64;
-                    let events = instructions_to_events(&classified, tx.slot, tx.is_live);
+                    // Replay: the tape records no receive time for this feed, so the print carries none.
+                    let events = instructions_to_events(&classified, tx.slot, tx.is_live, None);
                     for ev in &events {
                         stats.ls_events_emitted += 1;
                         if !queue.push(ev.clone(), tx.slot) {
@@ -769,7 +770,7 @@ fn main() -> ExitCode {
                                             // ── Reserve-delta: derive MarketTrade from reserve change ──
                                             let prev = reserve_tracker.get(&mb).copied();
                                             if let Some(trade_pe) = derive_market_trade_from_delta(
-                                                &mb, prev, &curve, slot, true,
+                                                &mb, prev, &curve, slot, true, None,
                                             ) {
                                                 queue.push(trade_pe, slot);
                                                 stats.delta_trades_derived += 1;
@@ -846,7 +847,7 @@ fn main() -> ExitCode {
                                                 let prev = reserve_tracker.get(&mb).copied();
                                                 if let Some(trade_pe) =
                                                     derive_market_trade_from_delta(
-                                                        &mb, prev, &curve, slot, true,
+                                                        &mb, prev, &curve, slot, true, None,
                                                     )
                                                 {
                                                     queue.push(trade_pe, slot);

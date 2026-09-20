@@ -1791,6 +1791,11 @@ impl Engine {
                 signed_base,
                 buyer_entity,
                 age_slots,
+                // The producer's wire receive time. Nothing in the decision path reads it
+                // yet — it is the state ledger's key (C2), and its feed lands with the
+                // C6/C7 wiring. Bound to `_` on purpose: a silent default here would be the
+                // one place a fabricated clock could enter the causal windows.
+                recv_unix_ms: _,
             } => {
                 self.numeric.observe(
                     mint,

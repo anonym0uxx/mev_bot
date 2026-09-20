@@ -105,6 +105,10 @@ pub fn canonical_tx_to_market_trade(
         signed_base,
         buyer_entity,
         age_slots,
+        // The PumpPortal ingest `tx` carries no receive time, so this producer cannot stamp
+        // one. `None` is honest: the state ledger refuses to serve a tape whose clocks it
+        // cannot key, rather than windowing on a time this path invented.
+        recv_unix_ms: None,
     };
 
     Some(ProvenancedEvent {
@@ -263,6 +267,7 @@ mod tests {
             signed_base,
             buyer_entity,
             age_slots,
+            recv_unix_ms: None,
         } = result.event
         {
             assert_eq!(mint.0, [0xAB; 32]);

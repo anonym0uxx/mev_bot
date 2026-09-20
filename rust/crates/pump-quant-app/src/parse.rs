@@ -28,7 +28,11 @@ pub fn parse_events(text: &str) -> Result<Vec<AppEvent>, String> {
                 mint: mint(f[1])?,
                 slot: num(f[2])?.max(0) as u64,
             },
-            "trade" if f.len() == 8 => AppEvent::MarketTrade {
+            // The 8-field form is FROZEN: the golden digest is a property of this parser's
+            // output (§54), and existing tapes must keep parsing to the identical event. The
+            // optional 9th field is the producer's receive time; absent means `None`, never a
+            // substituted clock.
+            "trade" if f.len() == 8 || f.len() == 9 => AppEvent::MarketTrade {
                 mint: mint(f[1])?,
                 price_fp: f[2].parse::<i128>().map_err(|_| err("bad price_fp"))?,
                 quote_lamports: num(f[3])?.max(0) as u64,
@@ -36,6 +40,7 @@ pub fn parse_events(text: &str) -> Result<Vec<AppEvent>, String> {
                 signed_base: num(f[5])?,
                 buyer_entity: num(f[6])?.max(0) as u64,
                 age_slots: num(f[7])?.max(0) as u32,
+                recv_unix_ms: if f.len() == 9 { Some(num(f[8])?) } else { None },
             },
             "narr" if f.len() == 4 => AppEvent::NarrativeSample {
                 mint: mint(f[1])?,
