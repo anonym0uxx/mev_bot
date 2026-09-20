@@ -19,18 +19,57 @@
 use crate::Action;
 
 /// The entry-family size tiers, exactly as the corpus trains them.
+///
+/// SIZE vocabulary is `{NONE, SMALL, FULL}` with `MID` RETIRED (`KELLY_AUDIT_C12`,
+/// 2026-09-19): *"MID dropped. Deterministic rule from row meta (train==serve): action!=BUY
+/// -> NONE; regime==amm -> FULL; regime==bonding_curve -> SMALL. No mu table, no lambda at
+/// serve time."*
+///
+/// `Mid` stays deliberately PARSEABLE and is the one tier that never sizes anything. The
+/// trained prompt still offers it: `candidate_sft_c12` renders the same three-line menu
+/// (`SMALL`/`MID`/`FULL` at 0.25/0.50/1.00 SOL) in 132,326 rows, while its labels never
+/// choose MID at all. A parser that refused MID would reject an answer the served prompt
+/// invites - a train!=serve break in the opposite direction. The ban belongs where the size
+/// is resolved (`EntryVenue::ruled_size`), not at the parse site: a MID answer is drift -
+/// counted, and never allowed to size a position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SizeTier {
-    /// 0.25 x the traded notional.
+    /// 0.25 x the deployed notional — the bonding-curve satellite size.
     Small,
-    /// 0.50 x the traded notional.
+    /// 0.50 x the deployed notional. **Retired from the policy** — parseable because the
+    /// prompt still offers it, never served.
     Mid,
-    /// 1.00 x the traded notional.
+    /// 1.00 x the deployed notional — the AMM size.
     Full,
 }
 
+/// The venue a candidate would trade on.
+///
+/// This is the "row meta" the ruled size policy reads. Deriving the served size from the
+/// SAME field the corpus labels were derived from is what makes train==serve structural
+/// rather than a hope: there is no fitted quantity between the venue and the size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryVenue {
+    /// The PumpSwap AMM.
+    Amm,
+    /// The pump.fun bonding curve.
+    BondingCurve,
+}
+
+impl EntryVenue {
+    /// The ruled serve-time size: **AMM -> FULL, curve -> SMALL.** Deterministic and
+    /// integer; no mu, no lambda, nothing fitted at serve time.
+    #[must_use]
+    pub fn ruled_size(self) -> SizeTier {
+        match self {
+            EntryVenue::Amm => SizeTier::Full,
+            EntryVenue::BondingCurve => SizeTier::Small,
+        }
+    }
+}
+
 impl SizeTier {
-    /// Parse a bare tier token. Strict: only the three trained tokens.
+    /// Parse a bare tier token. Strict: only the tokens the corpus trains OR offers.
     pub fn parse(s: &str) -> Option<SizeTier> {
         match s.trim() {
             "SMALL" => Some(SizeTier::Small),
@@ -104,17 +143,23 @@ pub enum OffContract {
     /// A non-BUY action carrying a size — off-distribution; honoring it would let a `HOLD`
     /// size a position.
     SizeOnNonBuy,
+    /// `BUY` whose emitted size is not the size the ruled venue policy serves (an AMM BUY
+    /// labelled SMALL, or a curve BUY labelled FULL). Not fatal — the ruled rule sizes the
+    /// trade — but it is the signal that the model's size dimension has drifted away from
+    /// the policy the corpus was rebuilt under (`KELLY_AUDIT_C12`).
+    BuyWithVenueMismatchedSize,
 }
 
 impl OffContract {
     /// Every variant, for telemetry registration and exhaustive iteration.
-    pub const ALL: [OffContract; 6] = [
+    pub const ALL: [OffContract; 7] = [
         OffContract::NoDecisionLine,
         OffContract::UntrainedAction,
         OffContract::BuyWithoutSize,
         OffContract::BuyWithUntrainedSize,
         OffContract::BuyWithUnusablePriceLimit,
         OffContract::SizeOnNonBuy,
+        OffContract::BuyWithVenueMismatchedSize,
     ];
 
     /// The stable wire/log label (never reword — dashboards key on it).
@@ -127,6 +172,7 @@ impl OffContract {
             OffContract::BuyWithUntrainedSize => "buy_with_untrained_size",
             OffContract::BuyWithUnusablePriceLimit => "buy_with_unusable_price_limit",
             OffContract::SizeOnNonBuy => "size_on_non_buy",
+            OffContract::BuyWithVenueMismatchedSize => "buy_with_venue_mismatched_size",
         }
     }
 
@@ -138,6 +184,7 @@ impl OffContract {
             OffContract::BuyWithUntrainedSize => 3,
             OffContract::BuyWithUnusablePriceLimit => 4,
             OffContract::SizeOnNonBuy => 5,
+            OffContract::BuyWithVenueMismatchedSize => 6,
         }
     }
 }
@@ -179,7 +226,7 @@ impl std::error::Error for PayloadError {}
 /// it is comparable across traffic levels.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DriftLedger {
-    counts: [u64; 6],
+    counts: [u64; OffContract::ALL.len()],
     accepted: u64,
 }
 
@@ -557,11 +604,7 @@ SIZE_BASIS: creator_past_launches=0 holders_at_t=968 top1_float_share=0.682561 -
 
     #[test]
     fn parses_every_tier_and_the_none_form() {
-        for (tok, want) in [
-            ("SMALL", SizeTier::Small),
-            ("MID", SizeTier::Mid),
-            ("FULL", SizeTier::Full),
-        ] {
+        for (tok, want) in [("SMALL", SizeTier::Small), ("FULL", SizeTier::Full)] {
             let c = format!("DECISION: BUY\nSIZE: {tok}\nPRICE LIMIT: 1.5\n");
             assert_eq!(parse_decision_payload(&c).unwrap().size, Some(want));
         }
@@ -640,10 +683,19 @@ INVALIDATION: execution cost: round trip 66 bp\nEVIDENCE_STATUS: complete";
                 .unwrap(),
             250_000_000
         );
-        assert_eq!(
-            resolve_entry_clip_lamports(SizeTier::Mid, 10 * one, one, FEE_BUFFER_LAMPORTS).unwrap(),
-            500_000_000
-        );
+    }
+
+    /// M1 (`KELLY_AUDIT_C12`): the served size is the venue rule, and no venue ever serves
+    /// `MID` — which still parses, because the trained prompt still offers it.
+    #[test]
+    fn the_venue_rule_is_the_served_size_and_never_mid() {
+        assert_eq!(EntryVenue::Amm.ruled_size(), SizeTier::Full);
+        assert_eq!(EntryVenue::BondingCurve.ruled_size(), SizeTier::Small);
+        for v in [EntryVenue::Amm, EntryVenue::BondingCurve] {
+            assert_ne!(v.ruled_size(), SizeTier::Mid, "MID must never be served");
+        }
+        let d = parse_decision_payload("DECISION: BUY\nSIZE: MID\nPRICE LIMIT: 1.5\n").unwrap();
+        assert_eq!(d.size, Some(SizeTier::Mid), "the prompt offers it, so it parses");
     }
 
     #[test]

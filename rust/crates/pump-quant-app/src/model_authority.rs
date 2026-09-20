@@ -35,7 +35,7 @@ use pump_quant_inference::seam::{
     DriftLedger, OffContract, Route, SizeError, SizeTier, DEPLOY_LAMPORTS_CANONICAL,
     FEE_BUFFER_LAMPORTS,
 };
-use pump_quant_inference::{InferenceClient, InferenceError};
+use pump_quant_inference::{EntryVenue, InferenceClient, InferenceError};
 
 /// Anything that can answer a completion request — the live llama-server client, or a
 /// stub in tests. Kept as a trait so the authority logic is testable without a model.
@@ -62,6 +62,8 @@ pub struct EntryRequest<'a> {
     pub free_cash_lamports: u64,
     /// Lamports that must remain free after the clip is deployed (survival floor).
     pub bankroll_floor_lamports: u64,
+    /// The venue this candidate would trade on — the row meta the ruled size policy reads.
+    pub venue: EntryVenue,
 }
 
 /// What the authority concluded. `Buy` is the only variant that may move capital.
@@ -69,7 +71,9 @@ pub struct EntryRequest<'a> {
 pub enum EntryAuthority {
     /// The model chose to buy; the clip is what the account can actually pay.
     Buy {
-        /// The model's own size tier (kept for the journal — it is the model's answer).
+        /// The SERVED size tier — the ruled venue size (AMM FULL / curve SMALL), which is
+        /// what the corpus was labelled under. The model's own emitted token is graded
+        /// against it in the drift ledger, never used to size.
         tier: SizeTier,
         /// Lamports to deploy, after payability capping.
         clip_lamports: u64,
@@ -125,7 +129,7 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
 
     match route(decision.action) {
         Route::Open => {
-            let Some(tier) = decision.size else {
+            let Some(model_tier) = decision.size else {
                 // The corpus asked for a size on all 13,376 trained BUYs and got one every
                 // time. Refuse; never guess.
                 ledger.record(OffContract::BuyWithoutSize);
@@ -133,6 +137,16 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
                     OffContract::BuyWithoutSize,
                 ));
             };
+            // M1 (`KELLY_AUDIT_C12`): the size that SIZES the trade is the ruled venue rule
+            // (amm -> FULL, curve -> SMALL), not the token the model emitted. The rule is the
+            // label authority the corpus was rebuilt under, so serving it is what makes
+            // train==serve structural; the model's own token is an ordinal consent that gets
+            // graded against the rule and journalled. A mismatch is drift — counted, not fatal,
+            // and never allowed to size the position in either direction.
+            let tier = req.venue.ruled_size();
+            if model_tier != tier {
+                ledger.record(OffContract::BuyWithVenueMismatchedSize);
+            }
             match resolve_entry_clip_lamports(
                 tier,
                 req.free_cash_lamports,
@@ -193,13 +207,19 @@ mod tests {
         }
     }
 
-    fn req(free: u64, floor: u64) -> EntryRequest<'static> {
+    fn req(free: u64, floor: u64, venue: EntryVenue) -> EntryRequest<'static> {
         EntryRequest {
             system_prompt: "SYSTEM",
             user_prompt: "USER",
             free_cash_lamports: free,
             bankroll_floor_lamports: floor,
+            venue,
         }
+    }
+
+    /// The common case in these tests: an AMM candidate (the ruled FULL venue).
+    fn amm(free: u64, floor: u64) -> EntryRequest<'static> {
+        req(free, floor, EntryVenue::Amm)
     }
 
     /// Real corpus completions, verbatim shapes from the c11 fixtures.
@@ -217,7 +237,7 @@ mod tests {
     #[test]
     fn a_buy_deploys_the_models_own_tier_capped_by_payable_cash() {
         let mut l = DriftLedger::new();
-        let a = decide_entry(&Stub(BUY_FULL), &req(2_000_000_000, 0), &mut l);
+        let a = decide_entry(&Stub(BUY_FULL), &amm(2_000_000_000, 0), &mut l);
         // FULL = 100% of the 1 SOL canonical notional; cash 2 SOL so nothing caps it.
         assert_eq!(
             a,
@@ -232,9 +252,14 @@ mod tests {
     #[test]
     fn cash_caps_the_clip_but_never_enlarges_it() {
         let mut l = DriftLedger::new();
-        // SMALL = 0.25 SOL of a 1 SOL notional: the account having 5 SOL does not make it
-        // bigger. Rust resolves the model's tier; it does not re-size it upward.
-        let a = decide_entry(&Stub(BUY_SMALL), &req(5_000_000_000, 0), &mut l);
+        // A curve candidate: the ruled size is SMALL = 0.25 SOL of the 1 SOL notional, and
+        // an account holding 5 SOL does not make it bigger. Rust resolves the ruled size; it
+        // never scales it upward.
+        let a = decide_entry(
+            &Stub(BUY_SMALL),
+            &req(5_000_000_000, 0, EntryVenue::BondingCurve),
+            &mut l,
+        );
         assert_eq!(
             a,
             EntryAuthority::Buy {
@@ -243,7 +268,7 @@ mod tests {
             }
         );
         // And the fee buffer is respected: 0.30 SOL free cannot fund FULL's 1.00 SOL.
-        let a = decide_entry(&Stub(BUY_FULL), &req(300_000_000, 0), &mut l);
+        let a = decide_entry(&Stub(BUY_FULL), &amm(300_000_000, 0), &mut l);
         assert_eq!(
             a,
             EntryAuthority::Buy {
@@ -253,10 +278,31 @@ mod tests {
         );
     }
 
+    /// M1 (`KELLY_AUDIT_C12`): the venue rule sizes the trade. A model token that disagrees
+    /// is drift — counted and visible — and it moves the clip in neither direction.
+    #[test]
+    fn the_venue_rule_sizes_the_trade_not_the_models_token() {
+        let mut l = DriftLedger::new();
+        // SMALL emitted on an AMM candidate: the ruled AMM size is FULL, and FULL deploys.
+        let a = decide_entry(&Stub(BUY_SMALL), &amm(2_000_000_000, 0), &mut l);
+        assert_eq!(
+            a,
+            EntryAuthority::Buy {
+                tier: SizeTier::Full,
+                clip_lamports: 1_000_000_000
+            }
+        );
+        assert_eq!(l.count(OffContract::BuyWithVenueMismatchedSize), 1);
+        // The agreeing case stays silent.
+        let mut l2 = DriftLedger::new();
+        let _ = decide_entry(&Stub(BUY_FULL), &amm(2_000_000_000, 0), &mut l2);
+        assert_eq!(l2.count(OffContract::BuyWithVenueMismatchedSize), 0);
+    }
+
     #[test]
     fn a_buy_without_a_size_is_no_trade_and_flags_the_drift_alarm() {
         let mut l = DriftLedger::new();
-        let a = decide_entry(&Stub(BUY_NO_SIZE), &req(2_000_000_000, 0), &mut l);
+        let a = decide_entry(&Stub(BUY_NO_SIZE), &amm(2_000_000_000, 0), &mut l);
         assert_eq!(
             a,
             EntryAuthority::NoTrade(NoTradeReason::OffContract(OffContract::BuyWithoutSize))
@@ -269,14 +315,14 @@ mod tests {
     #[test]
     fn garbage_and_unreachable_models_both_fail_closed() {
         let mut l = DriftLedger::new();
-        let a = decide_entry(&Stub(GARBAGE), &req(2_000_000_000, 0), &mut l);
+        let a = decide_entry(&Stub(GARBAGE), &amm(2_000_000_000, 0), &mut l);
         assert!(matches!(
             a,
             EntryAuthority::NoTrade(NoTradeReason::OffContract(_))
         ));
 
         let dead = Unreachable(InferenceClient::new("http://127.0.0.1:1", Duration::from_millis(50)));
-        let a = decide_entry(&dead, &req(2_000_000_000, 0), &mut l);
+        let a = decide_entry(&dead, &amm(2_000_000_000, 0), &mut l);
         assert_eq!(a, EntryAuthority::NoTrade(NoTradeReason::ModelUnreachable));
     }
 
@@ -284,10 +330,10 @@ mod tests {
     fn the_bankroll_floor_vetoes_a_trade_that_would_strand_the_account() {
         let mut l = DriftLedger::new();
         // 1 SOL free, floor 0.9 SOL: FULL's 1 SOL clip leaves 0 free → refused.
-        let a = decide_entry(&Stub(BUY_FULL), &req(1_000_000_000, 900_000_000), &mut l);
+        let a = decide_entry(&Stub(BUY_FULL), &amm(1_000_000_000, 900_000_000), &mut l);
         assert_eq!(a, EntryAuthority::NoTrade(NoTradeReason::BreachesBankrollFloor));
         // Floor 0.2 SOL: the same trade leaves 0.25 SOL free (cash 1.25) → allowed.
-        let a = decide_entry(&Stub(BUY_FULL), &req(1_250_000_000, 200_000_000), &mut l);
+        let a = decide_entry(&Stub(BUY_FULL), &amm(1_250_000_000, 200_000_000), &mut l);
         assert_eq!(
             a,
             EntryAuthority::Buy {
@@ -301,13 +347,23 @@ mod tests {
     fn unwatchable_cash_is_refused_not_rounded_up() {
         let mut l = DriftLedger::new();
         // 0.05 SOL free is exactly the fee buffer: nothing is payable.
-        let a = decide_entry(&Stub(BUY_SMALL), &req(50_000_000, 0), &mut l);
+        // A curve candidate: the ruled size here is SMALL, so the cash question is the only
+        // thing under test.
+        let a = decide_entry(
+            &Stub(BUY_SMALL),
+            &req(50_000_000, 0, EntryVenue::BondingCurve),
+            &mut l,
+        );
         assert!(matches!(
             a,
             EntryAuthority::NoTrade(NoTradeReason::UnpayableClip(_))
         ));
         // 0.06 SOL leaves 0.01 SOL payable == the venue minimum → a real (tiny) clip.
-        let a = decide_entry(&Stub(BUY_SMALL), &req(60_000_000, 0), &mut l);
+        let a = decide_entry(
+            &Stub(BUY_SMALL),
+            &req(60_000_000, 0, EntryVenue::BondingCurve),
+            &mut l,
+        );
         assert_eq!(
             a,
             EntryAuthority::Buy {
@@ -321,11 +377,11 @@ mod tests {
     fn watch_and_skip_pass_through_without_capital() {
         let mut l = DriftLedger::new();
         assert_eq!(
-            decide_entry(&Stub(WATCH), &req(2_000_000_000, 0), &mut l),
+            decide_entry(&Stub(WATCH), &amm(2_000_000_000, 0), &mut l),
             EntryAuthority::Watch
         );
         assert_eq!(
-            decide_entry(&Stub(SKIP), &req(2_000_000_000, 0), &mut l),
+            decide_entry(&Stub(SKIP), &amm(2_000_000_000, 0), &mut l),
             EntryAuthority::Skip
         );
         assert_eq!(l.accepted(), 2);
@@ -338,12 +394,12 @@ mod tests {
         // EXIT/ADD/REDUCE are answered on the management family; on an entry prompt they are
         // a caller routing error, not an entry decision.
         assert_eq!(
-            decide_entry(&Stub(EXIT), &req(2_000_000_000, 0), &mut l),
+            decide_entry(&Stub(EXIT), &amm(2_000_000_000, 0), &mut l),
             EntryAuthority::NoTrade(NoTradeReason::ManagementVerb)
         );
         // HOLD on an empty book is the seam's NoOp — a deliberate non-trade, not an error.
         assert_eq!(
-            decide_entry(&Stub(HOLD), &req(2_000_000_000, 0), &mut l),
+            decide_entry(&Stub(HOLD), &amm(2_000_000_000, 0), &mut l),
             EntryAuthority::Skip
         );
         assert_eq!(l.accepted(), 1);

@@ -1,11 +1,12 @@
 //! Corpus-parity harness for the decision parser.
 //!
-//! Each fixture is one **real** c11 completion (assistant message) plus the action and the
+//! Each fixture is one **real** c12 completion (assistant message) plus the action and the
 //! size/price the corpus itself carries. The parser must reproduce the corpus's own reading
 //! of its own text — a parser that is stricter than the corpus refuses valid BUYs, and one
 //! that is looser invents sizes the model never chose. Both are failures here.
 //!
-//! Regenerate with `gen_decision_fixtures.py` (see `tests/fixtures/README.md`).
+//! Regenerate with `gen_decision_fixtures.py` (see `tests/fixtures/README.md`). c12 is the
+//! corpus built AFTER the `KELLY_AUDIT_C12` ruling, so its vocabulary is `{NONE, SMALL, FULL}`.
 
 use pump_quant_inference::{parse_decision_payload, Action, SizeTier};
 use serde_json::Value;
