@@ -54,6 +54,7 @@ pub mod curve_depth;
 pub mod curve_fill;
 pub mod curve_state;
 pub mod engine;
+pub mod enrichment;
 pub mod event;
 pub mod expected_move;
 pub mod extraction_risk;
