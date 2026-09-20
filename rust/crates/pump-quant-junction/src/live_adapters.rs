@@ -296,6 +296,13 @@ struct CurveCache {
 /// count; the bound exists so a long session cannot grow without limit (§99).
 const CURVE_CACHE_CAP: usize = 256;
 
+/// C1: how stale the STREAM may go before cached curve state is no longer trusted.
+/// The cache is only as good as the feed behind it: if no account event has arrived
+/// for this many slots, the reserves held here may have moved unseen, so the hot
+/// read falls back to a real fetch. Conservative direction - a false alarm costs one
+/// RPC, a missed one would hand a builder stale reserves.
+const STREAM_LIVENESS_SLOTS: u64 = 150;
+
 /// Cached blockhash: the 32-byte blockhash + slot. Stored behind `Mutex`
 /// because updates are rare and we want write-priority (the background thread
 /// should never be blocked by a reader).
@@ -353,6 +360,11 @@ pub struct RpcLiveStateFetcher {
     // or a blockhash refresh. This is the reference height for blockhash validity.
     newest_slot: AtomicU64,
 
+    /// C1: slot of the most recent account-stream note received for ANY mint.
+    /// 0 = no stream wired to this fetcher (dev/paper): the cache then holds only
+    /// what a fetch learned, and the liveness gate is inert.
+    last_stream_slot: AtomicU64,
+
     // ── Staleness threshold: if the cached state is older than this many
     // slots, the hot path falls back to a synchronous fetch.
     max_stale_slots: u64,
@@ -372,6 +384,7 @@ impl RpcLiveStateFetcher {
             }),
             blockhash_cache: Mutex::new(None),
             newest_slot: AtomicU64::new(0),
+            last_stream_slot: AtomicU64::new(0),
             max_stale_slots: 150, // ≈ 60 s at ~2.5 slots/s (400 ms/slot) — NOT ~5 s
             shutdown: Arc::new(AtomicBool::new(false)),
         }
@@ -408,6 +421,11 @@ impl RpcLiveStateFetcher {
         is_complete: bool,
         slot: u64,
     ) -> bool {
+        // The feed is alive the moment an event arrives — whether or not this mint has
+        // an entry, and whether or not the slot is newer. Liveness is a property of the
+        // STREAM, and the hot read uses it to decide how far to trust a cached entry.
+        // Recorded before any early return.
+        self.last_stream_slot.fetch_max(slot, Ordering::Relaxed);
         let mut cache = self.curve_cache.write().unwrap();
         let Some(entry) = cache.entries.get_mut(mint) else {
             return false;
@@ -466,6 +484,14 @@ impl RpcLiveStateFetcher {
         let newest = self.newest_slot.load(Ordering::Relaxed);
         if newest == 0 {
             return true;
+        }
+        // C1: a cache fed by a stream that has since gone quiet is not evidence.
+        // `vsol` moves only on a trade, and every trade is an account event - so a
+        // live stream makes the cached reserves current by construction, while a
+        // stalled one leaves them unverifiable. Distrust it and pay the fetch.
+        let stream = self.last_stream_slot.load(Ordering::Relaxed);
+        if stream != 0 && newest.saturating_sub(stream) > STREAM_LIVENESS_SLOTS {
+            return false;
         }
         newest.saturating_sub(cached.state.observed_slot) <= self.max_stale_slots
     }
@@ -1286,6 +1312,24 @@ mod c1_stream_fed_cache {
                 .unwrap()
                 .virtual_sol_reserves,
             4_000
+        );
+    }
+
+    /// C1: the cache is only as good as the feed behind it. Once the stream goes
+    /// quiet while slots keep advancing, the hot read must stop trusting it.
+    #[test]
+    fn a_stalled_stream_demotes_the_cache_to_a_real_fetch() {
+        let f = fetcher();
+        f.seed_curve_for_test(state(6, 1_000, 2_000, 100));
+        assert!(f.note_stream_reserves(&[6u8; 32], 1_100, 2_100, false, 100));
+        let served = f.fetch_state_hot(&[6u8; 32], &[0u8; 32]).expect("a live feed answers");
+        assert_eq!(served.virtual_sol_reserves, 1_100);
+        // The stream stops; the chain does not.
+        f.newest_slot
+            .store(100 + STREAM_LIVENESS_SLOTS + 1, Ordering::Relaxed);
+        assert!(
+            f.fetch_state_hot(&[6u8; 32], &[0u8; 32]).is_err(),
+            "a quiet feed must not answer the hot path — it must pay the fetch"
         );
     }
 
