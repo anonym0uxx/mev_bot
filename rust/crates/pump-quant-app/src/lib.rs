@@ -82,6 +82,7 @@ pub mod state_ledger;
 pub mod structure;
 pub mod token_ingest;
 pub mod toxicity;
+pub mod venue;
 
 pub use config::{Config, ConfigError, FillModeCfg};
 pub use engine::{Engine, Report, RunMode};
