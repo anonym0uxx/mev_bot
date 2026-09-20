@@ -60,8 +60,16 @@ pub struct EntryRequest<'a> {
     pub system_prompt: &'a str,
     /// The rendered user prompt for this candidate, as-of-decision.
     pub user_prompt: &'a str,
-    /// Free (uncommitted) lamports available to deploy.
+    /// Free (uncommitted) lamports available to deploy. This is the PAYABLE source only: it
+    /// shrinks as positions are committed, so it must never be the sizing basis — that would
+    /// make each successive admit smaller than the last, which is order-dependent per-row
+    /// sizing of exactly the kind `KELLY_AUDIT_C12` §2 retired.
     pub free_cash_lamports: u64,
+    /// The portfolio's sizing basis: the account's deployable capital (balance − survival
+    /// floor) for the episode, BEFORE this admit's commitments. Order-independent by
+    /// construction — `k_max` positions at FULL deploy exactly this much, and the tenth admit
+    /// is sized like the first.
+    pub portfolio_deployable_lamports: u64,
     /// Lamports that must remain free after the clip is deployed (survival floor).
     pub bankroll_floor_lamports: u64,
     /// The venue this candidate would trade on — the row meta the ruled size policy reads.
@@ -169,9 +177,7 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
             // fixed 1 SOL reference: under the cap a full book is the account's deployable
             // budget rather than a multiple of it, and the survival floor is respected by
             // construction because it is carved out before the split.
-            let deployable = req
-                .free_cash_lamports
-                .saturating_sub(req.bankroll_floor_lamports);
+            let deployable = req.portfolio_deployable_lamports;
             // No deployable capital means the survival floor is the whole account: a hard
             // veto, and the only way this path may refuse for the floor. On every other path
             // the floor is structural — the clip cannot exceed `deployable / k_max`, so it
@@ -243,10 +249,14 @@ mod tests {
     }
 
     fn req(free: u64, floor: u64, venue: EntryVenue) -> EntryRequest<'static> {
+        // The portfolio basis is the account's deployable capital, NOT the shrinking free
+        // cash: sizing off `free` would make each admit depend on what the previous ones left.
+        let deployable = free.saturating_sub(floor);
         EntryRequest {
             system_prompt: "SYSTEM",
             user_prompt: "USER",
             free_cash_lamports: free,
+            portfolio_deployable_lamports: deployable,
             bankroll_floor_lamports: floor,
             venue,
             mint: MINT,
@@ -386,6 +396,41 @@ mod tests {
         ));
         let a = decide_entry(&dead, &amm(2_000_000_000, 0), &mut l);
         assert_eq!(a, EntryAuthority::NoTrade(NoTradeReason::ModelUnreachable));
+    }
+
+    /// The audit retired per-row sizing because it is not an exposure control; the same
+    /// argument kills a *shrinking* basis. An admit into an empty book and one into a
+    /// half-committed book must size identically, or the last admit is systematically smallest.
+    #[test]
+    fn the_per_position_notional_does_not_shrink_with_the_book() {
+        let mut l = DriftLedger::new();
+        let empty = decide_entry(&Stub(BUY_FULL), &amm(2_000_000_000, 0), &mut l);
+        // The SAME portfolio basis, but half the cash is already committed to live positions.
+        // Payability still covers the clip, so the two admits must be identical: if the basis
+        // were free cash, the second would come out smaller purely because it came second.
+        let mut half_committed = amm(1_000_000_000, 0);
+        half_committed.portfolio_deployable_lamports = 2_000_000_000;
+        let later = decide_entry(&Stub(BUY_FULL), &half_committed, &mut l);
+        assert_eq!(empty, later, "book occupancy must not size the next row");
+        assert_eq!(
+            empty,
+            EntryAuthority::Buy {
+                tier: SizeTier::Full,
+                clip_lamports: 666_666_666
+            }
+        );
+        // When cash genuinely cannot cover the slot, PAYABILITY caps the clip. That is a
+        // different mechanism from sizing, and the only one allowed to shrink a row.
+        let mut short = amm(500_000_000, 0);
+        short.portfolio_deployable_lamports = 2_000_000_000;
+        assert_eq!(
+            decide_entry(&Stub(BUY_FULL), &short, &mut l),
+            EntryAuthority::Buy {
+                tier: SizeTier::Full,
+                clip_lamports: 450_000_000
+            },
+            "the payable cap binds; the notional does not move"
+        );
     }
 
     #[test]

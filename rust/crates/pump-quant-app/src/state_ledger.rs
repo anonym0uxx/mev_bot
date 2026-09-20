@@ -49,6 +49,61 @@ pub const CONC_WINDOW: usize = 2_000;
 pub const VENUE_WINDOW: usize = 200;
 /// Hard per-mint ring bound. Must exceed [`CONC_WINDOW`] and any realistic 300 s of tape.
 pub const RING_CAP: usize = 8_192;
+/// The corpus's clock-formation gate: a decision clock exists only with at least this many
+/// strictly-prior trades (`build_states_v2.MIN_PRIOR`).
+pub const MIN_PRIOR_TRADES: u64 = 20;
+/// The corpus's liveness gate: a clock requires a trade within this many ms, so a mint seen in
+/// two capture sessions weeks apart does not emit ticks across the dead gap.
+pub const MAX_IDLE_MS: i64 = 60_000;
+
+/// Why a clock the corpus would never have formed must not be served.
+///
+/// [`MintLedger`]-level derivation can be exact on a state the model has never been trained to
+/// see, which is the same silent out-of-distribution damage as a wrong action vocabulary. These
+/// are the gates the corpus's own stage-3 builder applied when it decided a clock exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClockRefusal {
+    /// Fewer than [`MIN_PRIOR_TRADES`] strictly-prior trades.
+    FewPriorTrades {
+        /// How many the tape has.
+        have: u64,
+        /// How many the corpus requires.
+        need: u64,
+    },
+    /// No trade within [`MAX_IDLE_MS`] of the clock: the market was not alive.
+    IdleTooLong {
+        /// Milliseconds since the last trade before the clock.
+        idle_ms: i64,
+        /// The corpus's ceiling.
+        max_ms: i64,
+    },
+    /// The venue window was empty. The corpus renders `unknown` on 0 of its 170,654 rows, so a
+    /// clock with no venue observation is a state the model has never seen.
+    VenueUnknown,
+    /// The tape's retention could not cover the clock's windows.
+    TapeIncomplete,
+    /// A print in the concentration window had no trader id, so the trader-derived fields are
+    /// not the corpus's numbers.
+    IdentityUnknown,
+    /// A print in the concentration window had no token leg to clear against the floor.
+    TokenLegUnknown,
+}
+
+impl ClockRefusal {
+    /// Stable label for logs and telemetry — never reword.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ClockRefusal::FewPriorTrades { .. } => "few_prior_trades",
+            ClockRefusal::IdleTooLong { .. } => "idle_too_long",
+            ClockRefusal::VenueUnknown => "venue_unknown",
+            ClockRefusal::TapeIncomplete => "tape_incomplete",
+            ClockRefusal::IdentityUnknown => "identity_unknown",
+            ClockRefusal::TokenLegUnknown => "token_leg_unknown",
+        }
+    }
+}
+
 /// Hard bound on tracked mints (§99: every live table is capped). A NEW mint beyond this is
 /// REFUSED and counted rather than evicting an older one: eviction would silently make an
 /// existing mint's snapshot inexact, whereas a refusal is visible and costs only the
@@ -381,6 +436,47 @@ impl StateLedger {
     /// `None` when the ledger has nothing usable (no trades before the clock, or no finite
     /// price before it) — the corpus's own builder has no honest answer there either, and a
     /// fabricated one would be out-of-distribution input.
+    /// Whether the corpus would have formed this clock at all, and if so whether every field
+    /// in its state block is the corpus's own number.
+    ///
+    /// [`Self::serve`] answers what the tape says; this answers whether the clock exists in the
+    /// distribution the model was trained on. A caller builds a prompt only on `Ok`.
+    pub fn eligibility(&self, mint: &[u8; 32], t_dec_ms: i64) -> Result<(), ClockRefusal> {
+        let Some(snap) = self.serve(mint, t_dec_ms) else {
+            return Err(ClockRefusal::FewPriorTrades {
+                have: 0,
+                need: MIN_PRIOR_TRADES,
+            });
+        };
+        if snap.n_prior_trades < MIN_PRIOR_TRADES {
+            return Err(ClockRefusal::FewPriorTrades {
+                have: snap.n_prior_trades,
+                need: MIN_PRIOR_TRADES,
+            });
+        }
+        // `last_trade_age_s` is the corpus's own (t_dec - last trade) / 1000.
+        let idle_ms = (snap.last_trade_age_s * 1000.0) as i64;
+        if idle_ms > MAX_IDLE_MS {
+            return Err(ClockRefusal::IdleTooLong {
+                idle_ms,
+                max_ms: MAX_IDLE_MS,
+            });
+        }
+        if snap.venue == "unknown" {
+            return Err(ClockRefusal::VenueUnknown);
+        }
+        if !snap.complete {
+            return Err(ClockRefusal::TapeIncomplete);
+        }
+        if !snap.identity_known {
+            return Err(ClockRefusal::IdentityUnknown);
+        }
+        if !snap.token_leg_known {
+            return Err(ClockRefusal::TokenLegUnknown);
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn serve(&self, mint: &[u8; 32], t_dec_ms: i64) -> Option<StateSnapshot> {
         let l = self.mints.get(mint)?;
@@ -775,6 +871,51 @@ mod tests {
         assert!(
             !s.complete,
             "a tape that lost a print is not the corpus's tape"
+        );
+    }
+
+    /// The gates the corpus's stage-3 builder applied before it would form a clock at all.
+    #[test]
+    fn the_corpus_clock_gates_are_enforced() {
+        let mut ledger = StateLedger::new();
+        let mint = [31u8; 32];
+        // 19 strictly-prior trades: one short of the floor.
+        for i in 0..19 {
+            assert!(ledger.on_trade(&mint, buy_print(1_000 + i * 100).unwrap()));
+        }
+        assert_eq!(
+            ledger.eligibility(&mint, 1_000 + 19 * 100),
+            Err(ClockRefusal::FewPriorTrades { have: 19, need: 20 })
+        );
+        // The twentieth opens the gate (all prints carry identity and both legs).
+        assert!(ledger.on_trade(&mint, buy_print(1_000 + 19 * 100).unwrap()));
+        assert!(ledger.eligibility(&mint, 1_000 + 20 * 100).is_ok());
+        // A clock more than MAX_IDLE_MS after the last trade is not a live market.
+        let idle = 1_000 + 20 * 100 + MAX_IDLE_MS + 1;
+        assert_eq!(
+            ledger.eligibility(&mint, idle),
+            Err(ClockRefusal::IdleTooLong {
+                // The clock sits MAX_IDLE_MS + 1 past the LAST trade, which is at 2 900.
+                idle_ms: 60_101,
+                max_ms: MAX_IDLE_MS
+            })
+        );
+        // An unknown-trader print makes the trader-derived fields unservable (the join that
+        // fixes it is a junction job; until then the refusal is the honest answer).
+        let delta = StateTrade::from_market_trade(
+            9_000,
+            25_000_000_000,
+            400_000_000,
+            1,
+            0,
+            VenueLabel::Pumpfun,
+            Some(2_000_000),
+        )
+        .expect("admitted");
+        assert!(ledger.on_trade(&mint, delta));
+        assert_eq!(
+            ledger.eligibility(&mint, 9_001),
+            Err(ClockRefusal::IdentityUnknown)
         );
     }
 
