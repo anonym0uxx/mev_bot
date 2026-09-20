@@ -50,6 +50,28 @@ impl ImpactVeto {
     }
 }
 
+/// The own-impact limit the champion runs with, basis points.
+///
+/// **Why this is a published constant and not a `Config` field.** `Config` enters the
+/// decision-journal seed through `strategy_identity`'s `Debug` hash (`authority.rs`), so adding a
+/// config FIELD — any field, whatever its default — moves the sealed golden digest on every tape.
+/// A safety bound must not move a sealed artifact as a side effect: the digest re-pin is its own
+/// decision, made by the operator, on the record. Until that decision is taken this value is
+/// published here, asserted against the corpus cost floor, and read by the decision call site.
+///
+/// **The derivation.** The trained entry prompt's own evidence line states a 92 bp round-trip
+/// cost floor. A single leg must never spend more on its own price impact than the strategy's
+/// whole cost budget assumes for the round trip, so the limit sits just under it. Consequence,
+/// and the point of the bound: on a 100 SOL book this admits roughly 0.9 SOL at FULL; on a thin
+/// 10 SOL pool it admits roughly 0.09 SOL and VETOES the rest — which is where the risk lives,
+/// because a thin pool is exactly where a FULL leg would wreck its own fill (~1,000 bp at the
+/// retired payout clamp's worst case).
+pub const CHAMPION_MAX_OWN_IMPACT_BPS: u64 = 90;
+
+/// The corpus's round-trip cost floor, bp — the number the limit above is derived against. Kept
+/// as a constant so the drift guard cannot silently compare against a stale literal.
+pub const CORPUS_ROUND_TRIP_COST_FLOOR_BP: u64 = 92;
+
 /// Price our own impact and veto the leg if it is unsafe.
 ///
 /// Returns the impact in basis points when the leg may proceed, so the caller can journal the
@@ -141,6 +163,44 @@ mod tests {
         assert_eq!(
             veto_bp,
             crate::curve_fill::own_impact_bps(depth, notional).unwrap()
+        );
+    }
+
+    /// The pin is a SAFETY bound, so it is guarded rather than commented: the limit must stay
+    /// strictly under the cost floor it is derived from, or an entry leg can be vetoed at a size
+    /// that still costs more than the entire round trip it is aiming to clear.
+    #[test]
+    fn the_champions_limit_stays_under_the_cost_floor_it_is_derived_from() {
+        assert!(
+            CHAMPION_MAX_OWN_IMPACT_BPS < CORPUS_ROUND_TRIP_COST_FLOOR_BP,
+            "own-impact limit {} bp must stay under the {} bp round-trip cost floor",
+            CHAMPION_MAX_OWN_IMPACT_BPS,
+            CORPUS_ROUND_TRIP_COST_FLOOR_BP
+        );
+        // And it must bind somewhere real: a limit at or above the retired clamp's worst case
+        // (~1,000 bp) would never fire on the trades it exists to catch.
+        assert!(CHAMPION_MAX_OWN_IMPACT_BPS < 1_000);
+        // The pin and the veto agree about what it means, at both sides of the boundary:
+        // 0.9 SOL into a 100 SOL book is exactly 90 bp and is allowed...
+        assert_eq!(
+            own_impact_veto(
+                Some(100_000_000_000),
+                900_000_000,
+                CHAMPION_MAX_OWN_IMPACT_BPS
+            ),
+            Ok(90)
+        );
+        // ...while a full 1 SOL (100 bp) is refused for the pin, with both numbers reported.
+        assert_eq!(
+            own_impact_veto(
+                Some(100_000_000_000),
+                1_000_000_000,
+                CHAMPION_MAX_OWN_IMPACT_BPS
+            ),
+            Err(ImpactVeto::TooLarge {
+                impact_bps: 100,
+                max_bps: 90
+            })
         );
     }
 }
