@@ -410,6 +410,10 @@ impl OutboundSink for LiveOutboundSink {
         // For lowest latency, we return the signature on sendTransaction
         // success without waiting for full confirmation — the reconciliation
         // layer confirms asynchronously.
+        // E11: time the submit leg on its own. `submit_call_us` (measured by the
+        // engine around this whole call) folds in the state fetch and the local
+        // build/sign work; this is the pure network round trip.
+        let t_submit = std::time::Instant::now();
         let on_chain_sig = match self.submitter.submit(&wire_tx, record.is_buy) {
             Ok(sig) => sig,
             Err(e) => {
@@ -426,6 +430,7 @@ impl OutboundSink for LiveOutboundSink {
         // from a real on-chain submission.
         OutboundOutcome::Accepted {
             signature: on_chain_sig,
+            submit_rpc_us: t_submit.elapsed().as_micros() as u64,
         }
     }
 }
@@ -621,7 +626,7 @@ mod tests {
                     "expected construction refusal, got: {msg}"
                 );
             }
-            OutboundOutcome::Accepted { signature } => {
+            OutboundOutcome::Accepted { signature, .. } => {
                 // If somehow the registry had entries, verify non-zero sig.
                 assert!(
                     *signature != [0u8; 64],
@@ -637,7 +642,7 @@ mod tests {
 
         // The critical assertion: we NEVER get a zero-signature Accepted.
         // That's NoopSink's job, not the live sink's.
-        if let OutboundOutcome::Accepted { signature } = &outcome {
+        if let OutboundOutcome::Accepted { signature, .. } = &outcome {
             assert!(
                 *signature != [0u8; 64],
                 "live sink must never fabricate a zero-signature acceptance"
@@ -658,7 +663,7 @@ mod tests {
         };
         let outcome = sink.on_admit(&record);
         match outcome {
-            OutboundOutcome::Accepted { signature } => assert!(signature == [0u8; 64]),
+            OutboundOutcome::Accepted { signature, .. } => assert!(signature == [0u8; 64]),
             _ => panic!("noop sink must accept with zero signature"),
         }
     }

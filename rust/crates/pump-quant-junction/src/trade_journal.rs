@@ -160,6 +160,18 @@ pub struct TradeRecord {
     pub decision_latency_us: u64,
     /// On-chain confirmation latency: order-submitted → confirmed, in microseconds.
     pub confirm_latency_us: u64,
+    /// E11: duration of the buy outbound call (state fetch + build + sign + submit
+    /// round trip), in microseconds. `decision_latency_us` covers decision→submit,
+    /// this covers submit→accepted, `confirm_latency_us` covers submit→confirmed.
+    pub submit_call_us: u64,
+    /// E11: the buy submit network round trip ALONE, in microseconds (excludes the
+    /// state fetch and local build/sign that `submit_call_us` folds in).
+    pub submit_rpc_us: u64,
+    /// E11: duration of the SELL outbound call at exit, in microseconds — the leg the
+    /// exit fill-probability model is priced against.
+    pub exit_submit_call_us: u64,
+    /// E11: the sell submit network round trip ALONE, in microseconds.
+    pub exit_submit_rpc_us: u64,
     /// Paper or live.
     pub run_mode: RunMode,
     /// Solana program error code if `outcome == OnChainFailure` (0 otherwise).
@@ -206,6 +218,10 @@ impl TradeRecord {
         s.push_str(&format!(",\"slippage_lamports\":{}", self.slippage_lamports));
         s.push_str(&format!(",\"decision_latency_us\":{}", self.decision_latency_us));
         s.push_str(&format!(",\"confirm_latency_us\":{}", self.confirm_latency_us));
+        s.push_str(&format!(",\"submit_call_us\":{}", self.submit_call_us));
+        s.push_str(&format!(",\"submit_rpc_us\":{}", self.submit_rpc_us));
+        s.push_str(&format!(",\"exit_submit_call_us\":{}", self.exit_submit_call_us));
+        s.push_str(&format!(",\"exit_submit_rpc_us\":{}", self.exit_submit_rpc_us));
         s.push_str(&format!(",\"run_mode\":\"{}\"", self.run_mode.tag()));
         s.push_str(&format!(",\"error_code\":{}", self.error_code));
         s.push_str(&format!(",\"seq\":{}", self.seq));
@@ -409,6 +425,10 @@ mod tests {
             slippage_lamports: 0,
             decision_latency_us: 150,
             confirm_latency_us: 400,
+            submit_call_us: 0,
+            submit_rpc_us: 0,
+            exit_submit_rpc_us: 0,
+            exit_submit_call_us: 0,
             run_mode: RunMode::Paper,
             error_code: 0,
             seq: 0,

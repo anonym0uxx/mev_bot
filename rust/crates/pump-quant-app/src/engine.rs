@@ -13,6 +13,8 @@
 //! Every step is a pure function of prior state and the event, so the same event
 //! stream always produces the same decisions and the same net-SOL (§22, §54).
 
+use std::time::Instant;
+
 use crate::analytics::ReflectionAnalytics;
 use crate::brain::{
     burst_phase_of, discovery_lane_of, exit_reason_of, narrative_class_of, platform_of,
@@ -203,6 +205,9 @@ struct OpenAttribution {
     entry_vsol: u64,
     /// Phase 2: the entry-time signal observation for `MoveTable::record()` at close.
     entry_obs: SignalObs,
+    /// E11: the live-mode latency trace captured at admit and closed out on the
+    /// on-chain confirmation. All-zero in paper/replay (no clock is ever read).
+    latency: LatencyAnchor,
 }
 
 /// A gate-approved, fully-priced candidate awaiting §23 slot arbitration.
@@ -257,6 +262,10 @@ struct PendingEntry {
     /// LAW B1: the entry-time episodic capture, computed inside the gate from
     /// strictly pre-entry state. `None` when the brain plane is disabled.
     brain: Option<BrainEntry>,
+    /// E11: the instant the gate admitted this candidate, sampled in LIVE mode only
+    /// (an outbound sink is installed). `None` in paper/replay, so no clock is ever
+    /// read there and the tick stays reproducible.
+    t_dec: Option<Instant>,
 }
 
 /// Index of an evaluator lane into the running-accumulator array.
@@ -505,6 +514,40 @@ impl std::fmt::Display for BankrollOriginError {
 
 impl std::error::Error for BankrollOriginError {}
 
+/// E11 (v2): the three-stage latency split for one round trip, measured in LIVE mode
+/// only. Every field is a real `Instant` delta — nothing here is estimated, and
+/// nothing here is ever read by a decision (§24(b)).
+///
+/// Paper/replay mode never samples a clock (the tracer is armed iff an outbound sink
+/// is installed), so every field stays `0` and a golden run is byte-identical.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LatencyTrace {
+    /// Entry decision (gate-admit) → the instant the buy submit call was entered.
+    pub decision_to_submit_us: u64,
+    /// Duration of the buy outbound call itself (state fetch + build + sign + submit RTT).
+    pub submit_call_us: u64,
+    /// The buy submit call ALONE — the network round trip, excluding the state fetch
+    /// and the local build/sign work folded into `submit_call_us`. This is the leg a
+    /// tip/inclusion model prices against.
+    pub submit_rpc_us: u64,
+    /// Buy submit call → the on-chain buy confirmation (`OurBuyConfirmed`).
+    /// Zero until the confirmation arrives; stays zero when it never does.
+    pub submit_to_confirm_us: u64,
+    /// Duration of the SELL outbound call at exit (the leg M4's fill-probability
+    /// model prices against). Zero when the exit never reached the sink.
+    pub exit_submit_call_us: u64,
+    /// The sell submit call ALONE — the network round trip at exit.
+    pub exit_submit_rpc_us: u64,
+}
+
+/// The three-stage latency trace plus the submit instant it is anchored on.
+#[derive(Clone, Copy, Debug, Default)]
+struct LatencyAnchor {
+    trace: LatencyTrace,
+    /// Set at the buy submit call, so the confirm delta can be closed out later.
+    t_submit: Option<Instant>,
+}
+
 /// A single closed trade for tape export (Phase 2). Simplified view of the
 /// evaluator's `ReconTrade`, without the cross-crate dependency. The daemon
 /// maps these into `TapeRecord::Trade` for JSONL serialization.
@@ -538,6 +581,18 @@ pub struct TapeTrade {
     pub mae_bps: i64,
     /// The logical tick at which the position was opened.
     pub entry_tick: u64,
+    /// E11: entry decision → buy submit call (µs). Live mode only, else 0.
+    pub decision_to_submit_us: u64,
+    /// E11: duration of the buy outbound call (µs). Live mode only, else 0.
+    pub submit_call_us: u64,
+    /// E11: the buy submit network round trip alone (µs). Live mode only, else 0.
+    pub submit_rpc_us: u64,
+    /// E11: buy submit call → on-chain confirmation (µs). Live mode only, else 0.
+    pub submit_to_confirm_us: u64,
+    /// E11: duration of the sell outbound call at exit (µs). Live mode only, else 0.
+    pub exit_submit_call_us: u64,
+    /// E11: the sell submit network round trip alone (µs). Live mode only, else 0.
+    pub exit_submit_rpc_us: u64,
 }
 
 /// The end-of-run summary.
@@ -790,6 +845,10 @@ pub struct Engine {
     /// Bounded by `TAPE_TRADE_CAP` to prevent unbounded growth; the daemon
     /// flushes and clears this periodically via `take_tape_trades()`.
     tape_trades: Vec<pump_quant_evaluator::evaluator_stats::ReconTrade>,
+    /// E11: the closed-trade latency traces, INDEX-ALIGNED with `tape_trades`
+    /// (pushed under the same `TAPE_TRADE_CAP` guard, drained together). Only ever
+    /// read at export — never a decision input.
+    tape_latency: Vec<LatencyTrace>,
     journal: DecisionJournal,
 
     /// Live social attention-velocity field (`virality = attention = money`), fed by
@@ -1284,6 +1343,7 @@ impl Engine {
             disc_perf: DiscoveryLanePerformance::new(),
             recon: [ReconAccum::default(); 2],
             tape_trades: Vec::new(),
+            tape_latency: Vec::new(),
             journal,
             attention: AttentionField::new(AttentionParams {
                 // §70.6/§70.8 LAW 8 + §70.7 LAW 9: thread the operator flags into
@@ -2112,6 +2172,15 @@ impl Engine {
                 let key = sig_key(&signature);
                 if self.pending_buys.remove(&key).is_some() {
                     self.buy_confirmed_count = self.buy_confirmed_count.saturating_add(1);
+                    // E11: close out the third latency stage — buy submit → on-chain
+                    // confirm. A position that already closed before its confirmation
+                    // arrives keeps the stage at 0 (never a fabricated number).
+                    if let Some(att) = self.open_lane.get_mut(mint.as_bytes()) {
+                        if let Some(t) = att.latency.t_submit {
+                            att.latency.trace.submit_to_confirm_us =
+                                t.elapsed().as_micros() as u64;
+                        }
+                    }
                     // Mark the position as on-chain confirmed.
                     self.positions
                         .mark_onchain_confirmed(mint.as_bytes(), true);
@@ -3869,6 +3938,11 @@ impl Engine {
                     priced_move,
                     depth_basis: confirmation.map_or(0, |c| c.depth.basis_code()),
                     brain: brain_entry,
+                    t_dec: if self.outbound_sink.is_some() {
+                        Some(Instant::now())
+                    } else {
+                        None
+                    },
                 })
             }
             GateDecision::Reject(reason) => {
@@ -4566,6 +4640,7 @@ impl Engine {
             // logged for the report, never fed into a decision (§24(b)).
             // In paper/replay mode `outbound_sink` is `None` and this is a
             // no-op (golden-digest safe).
+            let mut latency = LatencyAnchor::default();
             if let Some(sink) = self.outbound_sink {
                 // In paper mode this branch is never reached (sink is None).
                 // In live mode the junction owns the real wallet pubkey and
@@ -4579,12 +4654,33 @@ impl Engine {
                     entry_price: e.entry_price,
                     max_slippage_bps: 500, // 5% default; sink may override
                 };
+                let t_call = Instant::now();
                 let outcome = sink.on_admit(&record);
+                // E11: the book build+sign+submit round trip, and the decision→submit
+                // gap that preceded it. Real clocks, live mode only.
+                latency = LatencyAnchor {
+                    trace: LatencyTrace {
+                        decision_to_submit_us: e
+                            .t_dec
+                            .map_or(0, |t| t_call.duration_since(t).as_micros() as u64),
+                        submit_call_us: t_call.elapsed().as_micros() as u64,
+                        submit_rpc_us: 0,
+                        submit_to_confirm_us: 0,
+                        exit_submit_call_us: 0,
+                        exit_submit_rpc_us: 0,
+                    },
+                    t_submit: Some(t_call),
+                };
                 // Log the outcome for observability. The outcome is NEVER fed
                 // into a decision (§24(b)) — it is diagnostic only. In paper
                 // mode the sink is None and this branch is skipped entirely.
                 match &outcome {
-                    pump_quant_execution::ex_outbound_sink::OutboundOutcome::Accepted { signature } => {
+                    pump_quant_execution::ex_outbound_sink::OutboundOutcome::Accepted {
+                        signature,
+                        submit_rpc_us,
+                    } => {
+                        // E11: the network leg, separated from the local work.
+                        latency.trace.submit_rpc_us = *submit_rpc_us;
                         if signature == &[0u8; 64] {
                             eprintln!("[engine] sink: Accepted (paper placeholder)");
                         } else {
@@ -4665,6 +4761,7 @@ impl Engine {
                     entry_tick: self.now,
                     entry_vsol: e.entry_vsol,
                     entry_obs: e.entry_obs,
+                    latency,
                 },
             );
             // LAW B1/B2: remember the setup CLASS that was actually traded, so the
@@ -4767,6 +4864,9 @@ impl Engine {
     /// high-water mark, and attribute the market's total realized net back to its
     /// social callers (§82).
     fn book_exit(&mut self, mut e: Exit) {
+        // E11: the sell leg's outbound-call duration, folded into the round-trip trace.
+        let mut exit_call_us: u64 = 0;
+        let mut exit_rpc_us: u64 = 0;
         // ── LIVE SELL SUBMISSION (2026-08-17 fix for tape-vs-on-chain gap) ──
         //
         // When the outbound sink is installed (live mode), every exit with a
@@ -4795,9 +4895,15 @@ impl Engine {
                     entry_price: e.exit_price_fp, // current exit price for slippage bound
                     max_slippage_bps: 500, // 5% default; sink may override
                 };
+                let t_call = Instant::now();
                 let outcome = sink.on_admit(&record);
+                exit_call_us = t_call.elapsed().as_micros() as u64;
                 match &outcome {
-                    pump_quant_execution::ex_outbound_sink::OutboundOutcome::Accepted { signature } => {
+                    pump_quant_execution::ex_outbound_sink::OutboundOutcome::Accepted {
+                        signature,
+                        submit_rpc_us,
+                    } => {
+                        exit_rpc_us = *submit_rpc_us;
                         if signature == &[0u8; 64] {
                             eprintln!("[engine] sell sink: Accepted (paper placeholder)");
                         } else {
@@ -4844,8 +4950,8 @@ impl Engine {
         let attribution = self
             .open_lane
             .get(&e.mint)
-            .map(|a| (a.lane, a.discovery_lane, a.archetype));
-        if let Some((lane, discovery_lane, archetype)) = attribution {
+            .map(|a| (a.lane, a.discovery_lane, a.archetype, a.latency));
+        if let Some((lane, discovery_lane, archetype, mut latency)) = attribution {
             // Saturate in the CORRECT DIRECTION: `try_from` fails at BOTH ends, so
             // `unwrap_or(i64::MAX)` would turn an out-of-range LOSS into a maximal
             // GAIN — and this value feeds `lane_perf`/`disc_perf`, which drive
@@ -4876,8 +4982,11 @@ impl Engine {
             };
             self.recon[accum_index(recon.lane)].add(&recon);
             // Phase 2: accumulate for tape export.
+            latency.trace.exit_submit_call_us = exit_call_us;
+            latency.trace.exit_submit_rpc_us = exit_rpc_us;
             if self.tape_trades.len() < TAPE_TRADE_CAP {
                 self.tape_trades.push(recon);
+                self.tape_latency.push(latency.trace);
             }
         }
         self.journal.record(Decision::Filled {
@@ -5560,9 +5669,11 @@ impl Engine {
     /// clears the internal buffer. The daemon calls this periodically to
     /// flush the tape to disk.
     pub fn take_tape_trades(&mut self) -> Vec<TapeTrade> {
+        let latency = std::mem::take(&mut self.tape_latency);
         std::mem::take(&mut self.tape_trades)
             .into_iter()
-            .map(|t| TapeTrade {
+            .enumerate()
+            .map(|(i, t)| TapeTrade {
                 scalp: matches!(t.lane, pump_quant_evaluator::evaluator_stats::Lane::Scalp),
                 gross: t.gross_lamports,
                 fees: t.fees,
@@ -5577,6 +5688,12 @@ impl Engine {
                 mfe_bps: t.mfe_bps,
                 mae_bps: t.mae_bps,
                 entry_tick: t.entry_tick,
+                decision_to_submit_us: latency.get(i).map_or(0, |l| l.decision_to_submit_us),
+                submit_call_us: latency.get(i).map_or(0, |l| l.submit_call_us),
+                submit_rpc_us: latency.get(i).map_or(0, |l| l.submit_rpc_us),
+                submit_to_confirm_us: latency.get(i).map_or(0, |l| l.submit_to_confirm_us),
+                exit_submit_call_us: latency.get(i).map_or(0, |l| l.exit_submit_call_us),
+                exit_submit_rpc_us: latency.get(i).map_or(0, |l| l.exit_submit_rpc_us),
             })
             .collect()
     }
@@ -7297,5 +7414,90 @@ mod criterion_94_quote_mint {
         let snap_copy = snap; // copy, not move
         // If it weren't Copy, this line would fail to compile.
         assert_eq!(snap.retired, snap_copy.retired);
+    }
+}
+
+#[cfg(test)]
+mod e11_latency_trace {
+    //! E11: the three-stage latency split is measured in LIVE mode only, reaches the
+    //! exported tape indexed against the trade it belongs to, and stays at zero —
+    //! never a fabricated number — when there is no trace to attribute.
+    use super::*;
+
+    fn recon(mint: [u8; 32], gross: i128) -> pump_quant_evaluator::evaluator_stats::ReconTrade {
+        pump_quant_evaluator::evaluator_stats::ReconTrade {
+            lane: EvalLane::Scalp,
+            gross_lamports: gross,
+            fees: 0,
+            tips: 0,
+            failed_costs: 0,
+            mint,
+            entry_price_fp: 1,
+            exit_price_fp: 2,
+            size_lamports: 3,
+            archetype: 0,
+            exit_reason_code: 0,
+            mfe_bps: 0,
+            mae_bps: 0,
+            entry_tick: 0,
+        }
+    }
+
+    /// A paper/replay engine holds no outbound sink, so no clock is ever sampled:
+    /// every exported latency is 0 and the run stays reproducible.
+    #[test]
+    fn paper_mode_exports_zero_latency_without_a_sink() {
+        let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
+        assert!(eng.outbound_sink.is_none(), "paper engine must hold no sink");
+        eng.tape_trades.push(recon([9u8; 32], -5));
+        let out = eng.take_tape_trades();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].decision_to_submit_us, 0);
+        assert_eq!(out[0].submit_call_us, 0);
+        assert_eq!(out[0].submit_to_confirm_us, 0);
+        assert_eq!(out[0].exit_submit_call_us, 0);
+        assert_eq!(out[0].submit_rpc_us, 0);
+        assert_eq!(out[0].exit_submit_rpc_us, 0);
+    }
+
+    /// The trace travels indexed against its own trade, and both buffers drain
+    /// together — a trace can never land on the wrong trade.
+    #[test]
+    fn export_carries_the_split_for_the_matching_trade() {
+        let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
+        eng.tape_trades.push(recon([1u8; 32], 100));
+        eng.tape_latency.push(LatencyTrace {
+            decision_to_submit_us: 11,
+            submit_call_us: 22,
+            submit_rpc_us: 23,
+            submit_to_confirm_us: 33,
+            exit_submit_call_us: 44,
+            exit_submit_rpc_us: 45,
+        });
+        eng.tape_trades.push(recon([2u8; 32], 200));
+        let out = eng.take_tape_trades();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].submit_call_us, 22);
+        assert_eq!(out[0].submit_rpc_us, 23);
+        assert_eq!(out[0].submit_to_confirm_us, 33);
+        // The second trade has no trace: zero, not a neighbour's numbers.
+        assert_eq!(out[1].decision_to_submit_us, 0);
+        assert_eq!(out[1].exit_submit_call_us, 0);
+        assert!(eng.take_tape_trades().is_empty(), "both buffers drain together");
+    }
+
+    #[test]
+    fn default_trace_is_all_zero() {
+        assert_eq!(
+            LatencyTrace::default(),
+            LatencyTrace {
+                decision_to_submit_us: 0,
+                submit_call_us: 0,
+                submit_rpc_us: 0,
+                submit_to_confirm_us: 0,
+                exit_submit_call_us: 0,
+                exit_submit_rpc_us: 0,
+            }
+        );
     }
 }

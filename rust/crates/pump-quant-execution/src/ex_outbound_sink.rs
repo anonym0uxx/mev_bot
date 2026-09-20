@@ -52,7 +52,14 @@ pub struct AdmitRecord {
 pub enum OutboundOutcome {
     /// The transaction was built, signed, and submitted. The signature is the
     /// on-chain transaction signature (base58 in the junction impl).
-    Accepted { signature: [u8; 64] },
+    ///
+    /// `submit_rpc_us` is the measured duration of the submit call alone — the
+    /// network leg, excluding the state fetch and the local build/sign work that
+    /// `LatencyTrace::submit_call_us` folds in. Real clock, live mode only.
+    Accepted {
+        signature: [u8; 64],
+        submit_rpc_us: u64,
+    },
     /// The construction gate refused — the LayoutRegistry has no verified
     /// fixture for this layout. This is a §41 parity failure.
     Construction(String),
@@ -82,6 +89,9 @@ pub struct NoopSink;
 
 impl OutboundSink for NoopSink {
     fn on_admit(&self, _record: &AdmitRecord) -> OutboundOutcome {
-        OutboundOutcome::Accepted { signature: [0u8; 64] }
+        OutboundOutcome::Accepted {
+            signature: [0u8; 64],
+            submit_rpc_us: 0,
+        }
     }
 }

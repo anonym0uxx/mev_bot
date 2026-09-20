@@ -53,6 +53,14 @@ pub struct MintSummary {
     pub total_decision_latency_us: u64,
     /// Sum of confirmation latencies.
     pub total_confirm_latency_us: u64,
+    /// E11: sum of buy outbound-call durations.
+    pub total_submit_call_us: u64,
+    /// E11: sum of buy submit network round trips.
+    pub total_submit_rpc_us: u64,
+    /// E11: sum of exit (sell) submit network round trips.
+    pub total_exit_submit_rpc_us: u64,
+    /// E11: sum of exit (sell) outbound-call durations.
+    pub total_exit_submit_call_us: u64,
     /// Last slot this mint was traded.
     pub last_slot: u64,
     /// Best single-trade net (lamports).
@@ -87,6 +95,22 @@ impl MintSummary {
             return 0;
         }
         self.net_lamports / self.trades as i64
+    }
+
+    /// E11: average buy submit network round trip, in microseconds.
+    pub fn avg_submit_rpc_us(&self) -> u64 {
+        if self.trades == 0 {
+            return 0;
+        }
+        self.total_submit_rpc_us / self.trades
+    }
+
+    /// E11: average exit (sell) submit network round trip, in microseconds.
+    pub fn avg_exit_submit_rpc_us(&self) -> u64 {
+        if self.trades == 0 {
+            return 0;
+        }
+        self.total_exit_submit_rpc_us / self.trades
     }
 
     /// Edge score: positive expectancy = profitable to scalp.
@@ -176,6 +200,14 @@ pub struct GlobalSummary {
     pub slippage_lamports: u64,
     pub total_decision_latency_us: u64,
     pub total_confirm_latency_us: u64,
+    /// E11: sum of buy outbound-call durations (state fetch + build + sign + submit).
+    pub total_submit_call_us: u64,
+    /// E11: sum of buy submit network round trips.
+    pub total_submit_rpc_us: u64,
+    /// E11: sum of exit (sell) submit network round trips.
+    pub total_exit_submit_rpc_us: u64,
+    /// E11: sum of exit (sell) outbound-call durations.
+    pub total_exit_submit_call_us: u64,
     /// Paper vs live trade counts.
     pub paper_trades: u64,
     pub live_trades: u64,
@@ -213,6 +245,38 @@ impl GlobalSummary {
             return 0;
         }
         self.total_confirm_latency_us / self.total_trades
+    }
+
+    /// E11: average buy submit network round trip, in microseconds.
+    pub fn avg_submit_rpc_us(&self) -> u64 {
+        if self.total_trades == 0 {
+            return 0;
+        }
+        self.total_submit_rpc_us / self.total_trades
+    }
+
+    /// E11: average exit (sell) submit network round trip, in microseconds.
+    pub fn avg_exit_submit_rpc_us(&self) -> u64 {
+        if self.total_trades == 0 {
+            return 0;
+        }
+        self.total_exit_submit_rpc_us / self.total_trades
+    }
+
+    /// E11: mean buy outbound-call duration (µs).
+    pub fn avg_submit_call_us(&self) -> u64 {
+        if self.total_trades == 0 {
+            return 0;
+        }
+        self.total_submit_call_us / self.total_trades
+    }
+
+    /// E11: mean exit (sell) outbound-call duration (µs).
+    pub fn avg_exit_submit_call_us(&self) -> u64 {
+        if self.total_trades == 0 {
+            return 0;
+        }
+        self.total_exit_submit_call_us / self.total_trades
     }
 }
 
@@ -289,6 +353,10 @@ impl MemoryBank {
         self.global.slippage_lamports = self.global.slippage_lamports.saturating_add(rec.slippage_lamports);
         self.global.total_decision_latency_us = self.global.total_decision_latency_us.saturating_add(rec.decision_latency_us);
         self.global.total_confirm_latency_us = self.global.total_confirm_latency_us.saturating_add(rec.confirm_latency_us);
+        self.global.total_submit_call_us = self.global.total_submit_call_us.saturating_add(rec.submit_call_us);
+        self.global.total_submit_rpc_us = self.global.total_submit_rpc_us.saturating_add(rec.submit_rpc_us);
+        self.global.total_exit_submit_rpc_us = self.global.total_exit_submit_rpc_us.saturating_add(rec.exit_submit_rpc_us);
+        self.global.total_exit_submit_call_us = self.global.total_exit_submit_call_us.saturating_add(rec.exit_submit_call_us);
 
         match rec.run_mode {
             RunMode::Paper => self.global.paper_trades = self.global.paper_trades.saturating_add(1),
@@ -325,6 +393,10 @@ impl MemoryBank {
         mint.slippage_lamports = mint.slippage_lamports.saturating_add(rec.slippage_lamports);
         mint.total_decision_latency_us = mint.total_decision_latency_us.saturating_add(rec.decision_latency_us);
         mint.total_confirm_latency_us = mint.total_confirm_latency_us.saturating_add(rec.confirm_latency_us);
+        mint.total_submit_call_us = mint.total_submit_call_us.saturating_add(rec.submit_call_us);
+        mint.total_submit_rpc_us = mint.total_submit_rpc_us.saturating_add(rec.submit_rpc_us);
+        mint.total_exit_submit_rpc_us = mint.total_exit_submit_rpc_us.saturating_add(rec.exit_submit_rpc_us);
+        mint.total_exit_submit_call_us = mint.total_exit_submit_call_us.saturating_add(rec.exit_submit_call_us);
         mint.last_slot = rec.slot;
         if net > mint.best_trade_lamports {
             mint.best_trade_lamports = net;
@@ -426,11 +498,13 @@ impl MemoryBank {
     pub fn global_json(&self) -> String {
         let g = &self.global;
         format!(
-            "{{\"trades\":{},\"wins\":{},\"losses\":{},\"net_lamports\":{},\"fees\":{},\"slippage\":{},\"win_rate_bps\":{},\"avg_net_per_trade\":{},\"avg_decision_us\":{},\"avg_confirm_us\":{},\"paper\":{},\"live\":{},\"outcome\":[{},{},{},{},{},{}]}}",
+            "{{\"trades\":{},\"wins\":{},\"losses\":{},\"net_lamports\":{},\"fees\":{},\"slippage\":{},\"win_rate_bps\":{},\"avg_net_per_trade\":{},\"avg_decision_us\":{},\"avg_confirm_us\":{},\"avg_submit_call_us\":{},\"avg_submit_rpc_us\":{},\"avg_exit_submit_rpc_us\":{},\"avg_submit_call_us\":{},\"avg_exit_submit_us\":{},\"paper\":{},\"live\":{},\"outcome\":[{},{},{},{},{},{}]}}",
             g.total_trades, g.total_wins, g.total_losses,
             g.net_lamports, g.fees_lamports, g.slippage_lamports,
             g.win_rate_bps(), g.avg_net_per_trade(),
             g.avg_decision_latency_us(), g.avg_confirm_latency_us(),
+            g.avg_submit_call_us(), g.avg_submit_rpc_us(), g.avg_exit_submit_rpc_us(),
+            g.avg_submit_call_us(), g.avg_exit_submit_call_us(),
             g.paper_trades, g.live_trades,
             g.outcome_counts[0], g.outcome_counts[1], g.outcome_counts[2],
             g.outcome_counts[3], g.outcome_counts[4], g.outcome_counts[5],
@@ -485,6 +559,10 @@ mod tests {
             slippage_lamports: 0,
             decision_latency_us: 100 * slot.max(1),
             confirm_latency_us: 200 * slot.max(1),
+            submit_call_us: 0,
+            submit_rpc_us: 0,
+            exit_submit_rpc_us: 0,
+            exit_submit_call_us: 0,
             run_mode: RunMode::Paper,
             error_code: 0,
             seq: 0,

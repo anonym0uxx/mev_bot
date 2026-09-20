@@ -243,7 +243,7 @@ fn main() -> ExitCode {
     let outcome = live_sink.on_admit(&record);
 
     match &outcome {
-        OutboundOutcome::Accepted { signature } => {
+        OutboundOutcome::Accepted { signature, .. } => {
             let sig_b58 = encode_base58_64(signature);
             eprintln!("[pq-sell] *** SELL SUBMITTED SUCCESSFULLY ***");
             eprintln!("[pq-sell] Signature: {sig_b58}");

@@ -250,7 +250,10 @@ mod tests {
     impl OutboundSink for RecordingSink {
         fn on_admit(&self, _record: &AdmitRecord) -> OutboundOutcome {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            OutboundOutcome::Accepted { signature: [0u8; 64] }
+            OutboundOutcome::Accepted {
+                signature: [0u8; 64],
+                submit_rpc_us: 0,
+            }
         }
     }
 
