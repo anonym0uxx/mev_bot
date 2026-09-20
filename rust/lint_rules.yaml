@@ -67,6 +67,25 @@ hot_globs:
   # (§24/criterion 109). hotpath_lint must cover it before code is written.
   - "rust/crates/pump-quant-junction/src/**/*.rs"
 
+# --- App decision-path modules declared 2026-09-20 (C2 builder work) ---
+# These compute what the LLM decision bundle STATES. The crate root's §22 prose ("no
+# floating point reaches any outcome decision") was true only because nobody had written
+# them yet, so they are declared here rather than left in neither scope:
+#   * portfolio.rs       — integer only (the per-position notional is integer division).
+#   * model_authority.rs — integer only (clip resolution is integer lamports).
+#   * state_ledger.rs    — CARRIES f64 ON PURPOSE. It is a port of the corpus authority
+#     (`build_states_v2._episode`), whose state block is float (log returns, numpy's
+#     population std, rounded shares), and byte-parity with that corpus is a correctness
+#     requirement (§1.4) a fixed-point rewrite would risk in the last digit. The float is
+#     confined to reading the producers' wire values and the derivation itself; every value
+#     reaching a money path leaves as `PyNum` or integer lamports. Each cast is annotated
+#     inline with LINT-ALLOW(money_float_cast).
+# NOTE for whoever runs hotpath_lint: these were written on the Linux side, where the
+# linter does not run. These paths have NOT been linted yet.
+  - "rust/crates/pump-quant-app/src/portfolio.rs"
+  - "rust/crates/pump-quant-app/src/model_authority.rs"
+  - "rust/crates/pump-quant-app/src/state_ledger.rs"
+
 # MONEY — every crate that computes or carries money / outcome quantities, where
 # an `as f32`/`as f64` cast is a §22 integrity violation.
 money_globs:

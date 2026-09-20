@@ -162,7 +162,7 @@ impl StateTrade {
             recv_unix_ms,
             // lamports-per-raw-token / 1e9 = SOL per raw token (cross-check against the
             // engine's own `entry_price_fp / 1e18` in `live_status.rs`)).
-            price_sol_per_raw: Some(price_fp as f64 / (PRICE_SCALE * LAMPORTS_PER_SOL)),
+            price_sol_per_raw: Some(price_fp as f64 / (PRICE_SCALE * LAMPORTS_PER_SOL)), // LINT-ALLOW(money_float_cast): corpus price is SOL per raw token; the wire value is fixed-point
             sol_lamports_signed,
             base_qty,
             is_buy,
@@ -455,6 +455,7 @@ impl StateLedger {
         let mut per_trader: BTreeMap<u64, f64> = BTreeMap::new();
         for t in &before[lo..] {
             *per_trader.entry(t.trader).or_insert(0.0) += t.volume_lamports() as f64;
+            // LINT-ALLOW(money_float_cast): the corpus accumulates volume shares in f64 (np.bincount weights)
         }
         let unique_traders = per_trader.values().filter(|v| **v > 0.0).count() as u64;
         let tot: f64 = per_trader.values().sum();
@@ -490,12 +491,12 @@ impl StateLedger {
             sell_volume_lamports: sell_vol,
             net_flow_lamports: buy_vol.saturating_sub(sell_vol),
             price_sol_per_raw: price,
-            age_s: (t_dec_ms - first_t) as f64 / 1000.0,
-            last_trade_age_s: (t_dec_ms - last_t) as f64 / 1000.0,
+            age_s: (t_dec_ms - first_t) as f64 / 1000.0, // LINT-ALLOW(money_float_cast): age_s is rendered by the corpus from (t_dec - t0) / 1000.0
+            last_trade_age_s: (t_dec_ms - last_t) as f64 / 1000.0, // LINT-ALLOW(money_float_cast): last_trade_age_s, same division as the authority
             top1_trader_share: top1,
             top5_trader_share: top5,
             buyer_seller_ratio: if sell_count > 0 {
-                Some(buy_count as f64 / sell_count as f64)
+                Some(buy_count as f64 / sell_count as f64) // LINT-ALLOW(money_float_cast): buyer_seller_ratio is a corpus float division
             } else {
                 None
             },
@@ -557,8 +558,8 @@ fn volatility_30s(before: &[&StateTrade], _price: f64, t_dec_ms: i64) -> Option<
     }
     // np.std default is ddof=0 and numpy uses the two-pass formula for float input, so the
     // mean is removed first and the squared deviations are averaged — not E[x^2] - E[x]^2.
-    let mean = rets.iter().sum::<f64>() / rets.len() as f64;
-    let var = rets.iter().map(|r| (r - mean) * (r - mean)).sum::<f64>() / rets.len() as f64;
+    let mean = rets.iter().sum::<f64>() / rets.len() as f64; // LINT-ALLOW(money_float_cast): the authority's mean of returns (np.mean)
+    let var = rets.iter().map(|r| (r - mean) * (r - mean)).sum::<f64>() / rets.len() as f64; // LINT-ALLOW(money_float_cast): the authority's population variance (np.var, ddof=0)
     Some(var.sqrt() * 10_000.0)
 }
 
