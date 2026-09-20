@@ -25,15 +25,15 @@
 //! account identity before trusting fields. §22 — integer-only, no floats.
 //! §36 — every failure is classified into one of six classes.
 
+use pq_stream_capture::rpc::Transport as _;
+use pq_stream_capture::sender::{Accepted, SenderClient, SenderError};
+use pq_stream_capture::signer::WalletSigner;
 use pump_quant_protocol::layout::LayoutRegistry;
 use pump_quant_protocol::tx_build::{
     build_pump_buy_message, build_pump_sell_message, BuildEnv, ComputePlan, TipPlan, TxBuildError,
 };
 use pump_quant_protocol::venue_accounts::FeeTail;
 use pump_quant_protocol::{ix::BuyParams, ix::SellParams, message::assemble_transaction};
-use pq_stream_capture::rpc::Transport as _;
-use pq_stream_capture::sender::{Accepted, SenderClient, SenderError};
-use pq_stream_capture::signer::WalletSigner;
 
 use crate::state_fetch::{FetchedState, StateFetch, StateFetchError};
 
@@ -152,7 +152,11 @@ impl<'a> OutboundJunction<'a> {
     /// Returns `Accepted` on success (the Sender endpoint took the transaction
     /// — accepted is NOT landed, confirmation is a separate observation).
     /// Returns `OutboundError` on any failure, classified by §36 class.
-    pub fn execute(&self, decision: &TradeDecision, request_id: &str) -> Result<Accepted, OutboundError> {
+    pub fn execute(
+        &self,
+        decision: &TradeDecision,
+        request_id: &str,
+    ) -> Result<Accepted, OutboundError> {
         // ── 1. State-fetch ─────────────────────────────────────────────────
         let fetched = self
             .state_fetch
@@ -345,7 +349,7 @@ mod tests {
     /// unverified) as `OutboundError::Construction`.
     #[test]
     fn outbound_construction_failure_classified() {
-        use pump_quant_protocol::layout::{LayoutError, LayoutKey, Venue, Side, Variant};
+        use pump_quant_protocol::layout::{LayoutError, LayoutKey, Side, Variant, Venue};
         let key = LayoutKey {
             venue: Venue::PumpFun,
             side: Side::Buy,

@@ -304,7 +304,10 @@ pub enum OsErr {
     /// A Winmm API call returned a non-zero MMRESULT.
     Mm { call: &'static str, code: u32 },
     /// Read-back verification failed: requested and observed differ.
-    ReadBackMismatch { requested: GroupAffinity, observed: GroupAffinity },
+    ReadBackMismatch {
+        requested: GroupAffinity,
+        observed: GroupAffinity,
+    },
     /// Read-back verification failed for a u32 value (priority class).
     ReadBackMismatchU32 { requested: u32, observed: u32 },
     /// `lock_region` was called with length 0.
@@ -805,9 +808,7 @@ impl OsTune for RecordingOs {
 
 #[cfg(windows)]
 pub mod win_adapter {
-    use super::{
-        GroupAffinity, OsErr, OsTune, Prio, ThreadId,
-    };
+    use super::{GroupAffinity, OsErr, OsTune, Prio, ThreadId};
     use core::mem::MaybeUninit;
 
     // --- Win32 FFI declarations (no external crate; raw `extern "system"`) ---
@@ -861,10 +862,7 @@ pub mod win_adapter {
             GroupAffinity: *const GroupAffinityWin,
             PreviousAffinity: *mut GroupAffinityWin,
         ) -> BOOL;
-        fn GetThreadGroupAffinity(
-            hThread: HANDLE,
-            GroupAffinity: *mut GroupAffinityWin,
-        ) -> BOOL;
+        fn GetThreadGroupAffinity(hThread: HANDLE, GroupAffinity: *mut GroupAffinityWin) -> BOOL;
         fn GetCurrentThread() -> HANDLE;
         fn GetLastError() -> DWORD;
         fn SetPriorityClass(hProcess: HANDLE, dwPriorityClass: DWORD) -> BOOL;
@@ -875,11 +873,7 @@ pub mod win_adapter {
         fn timeEndPeriod(uPeriod: UINT) -> MMRESULT;
         fn VirtualLock(lpAddress: *mut core::ffi::c_void, dwSize: SIZE_T) -> BOOL;
         fn VirtualUnlock(lpAddress: *mut core::ffi::c_void, dwSize: SIZE_T) -> BOOL;
-        fn SetProcessWorkingSetSize(
-            hProcess: HANDLE,
-            dwMin: SIZE_T,
-            dwMax: SIZE_T,
-        ) -> BOOL;
+        fn SetProcessWorkingSetSize(hProcess: HANDLE, dwMin: SIZE_T, dwMax: SIZE_T) -> BOOL;
         fn GetSystemInfo(lpSystemInfo: *mut SystemInfo);
     }
 
@@ -925,12 +919,13 @@ pub mod win_adapter {
             // `timeBeginPeriod` receives a period clamped to the device caps
             // range, so it is valid for this system.
             let (rc_caps, caps, rc_begin) = unsafe {
-                let rc_c = timeGetDevCaps(
-                    caps.as_mut_ptr(),
-                    core::mem::size_of::<TimeCaps>() as UINT,
-                );
+                let rc_c =
+                    timeGetDevCaps(caps.as_mut_ptr(), core::mem::size_of::<TimeCaps>() as UINT);
                 if rc_c != 0 {
-                    return Err(OsErr::Mm { call: "timeGetDevCaps", code: rc_c });
+                    return Err(OsErr::Mm {
+                        call: "timeGetDevCaps",
+                        code: rc_c,
+                    });
                 }
                 let caps = caps.assume_init();
                 let period = requested_ms.clamp(caps.wPeriodMin, caps.wPeriodMax);
@@ -939,11 +934,17 @@ pub mod win_adapter {
             };
             let (_, _, (rc_begin_val, period)) = (rc_caps, caps, rc_begin);
             if rc_begin_val != 0 {
-                return Err(OsErr::Mm { call: "timeBeginPeriod", code: rc_begin_val });
+                return Err(OsErr::Mm {
+                    call: "timeBeginPeriod",
+                    code: rc_begin_val,
+                });
             }
             // Drop the unused tuple components to satisfy the borrow checker.
             let _ = (rc_caps, caps);
-            Ok(Self { period_ms: period, active: true })
+            Ok(Self {
+                period_ms: period,
+                active: true,
+            })
         }
     }
 
@@ -1009,7 +1010,10 @@ pub mod win_adapter {
                 let ok = SetProcessWorkingSetSize(GetCurrentProcess(), min_ws, max_ws);
                 if ok == 0 {
                     let code = GetLastError();
-                    return Err(OsErr::Win32 { call: "SetProcessWorkingSetSize", code });
+                    return Err(OsErr::Win32 {
+                        call: "SetProcessWorkingSetSize",
+                        code,
+                    });
                 }
                 ok
             };
@@ -1025,14 +1029,20 @@ pub mod win_adapter {
                 // SAFETY: each (ptr, len) pair was successfully VirtualLock'd
                 // by a prior call to lock_region. VirtualUnlock is symmetric
                 // and always safe to call with a region that was locked.
-                unsafe { let _ = VirtualUnlock(ptr, len); }
+                unsafe {
+                    let _ = VirtualUnlock(ptr, len);
+                }
             }
             // TimerResGuard drop restores the timer period.
         }
     }
 
     impl OsTune for WinOsTune {
-        fn set_affinity(&mut self, _th: ThreadId, aff: GroupAffinity) -> Result<GroupAffinity, OsErr> {
+        fn set_affinity(
+            &mut self,
+            _th: ThreadId,
+            aff: GroupAffinity,
+        ) -> Result<GroupAffinity, OsErr> {
             // --- Safe validation BEFORE the unsafe block ---
             // We need the group count and CPU count to validate bounds. These
             // are FFI calls, so they go inside the single unsafe block, but
@@ -1064,22 +1074,35 @@ pub mod win_adapter {
                     return Err(OsErr::TopologyImplausible { cpus: 0 });
                 }
                 if aff.group >= groups {
-                    return Err(OsErr::InvalidGroup { requested: aff.group, groups });
+                    return Err(OsErr::InvalidGroup {
+                        requested: aff.group,
+                        groups,
+                    });
                 }
                 let cpus = GetActiveProcessorCount(aff.group);
                 if cpus == 0 || cpus > 64 {
                     return Err(OsErr::TopologyImplausible { cpus });
                 }
-                let legal_mask: usize = if cpus == 64 { !0usize } else { (1usize << cpus) - 1 };
+                let legal_mask: usize = if cpus == 64 {
+                    !0usize
+                } else {
+                    (1usize << cpus) - 1
+                };
                 if aff.mask as usize & !legal_mask != 0 {
-                    return Err(OsErr::InvalidMask { mask: aff.mask as usize, legal: legal_mask });
+                    return Err(OsErr::InvalidMask {
+                        mask: aff.mask as usize,
+                        legal: legal_mask,
+                    });
                 }
 
                 let h = GetCurrentThread();
                 let ok_set = SetThreadGroupAffinity(h, &ga, prev.as_mut_ptr());
                 if ok_set == 0 {
                     let code = GetLastError();
-                    return Err(OsErr::Win32 { call: "SetThreadGroupAffinity", code });
+                    return Err(OsErr::Win32 {
+                        call: "SetThreadGroupAffinity",
+                        code,
+                    });
                 }
                 // Read-back via GetThreadGroupAffinity (NOT
                 // GetCurrentProcessorNumberEx, which shows the *current* CPU;
@@ -1088,7 +1111,10 @@ pub mod win_adapter {
                 let ok_get = GetThreadGroupAffinity(h, observed.as_mut_ptr());
                 if ok_get == 0 {
                     let code = GetLastError();
-                    return Err(OsErr::Win32 { call: "GetThreadGroupAffinity", code });
+                    return Err(OsErr::Win32 {
+                        call: "GetThreadGroupAffinity",
+                        code,
+                    });
                 }
                 let observed_val = observed.assume_init();
                 (groups, cpus, h, ok_set, ok_get, observed_val)
@@ -1101,7 +1127,10 @@ pub mod win_adapter {
                 mask: observed_val.Mask as u64,
             };
             if read_back != aff {
-                return Err(OsErr::ReadBackMismatch { requested: aff, observed: read_back });
+                return Err(OsErr::ReadBackMismatch {
+                    requested: aff,
+                    observed: read_back,
+                });
             }
             Ok(read_back)
         }
@@ -1123,12 +1152,18 @@ pub mod win_adapter {
                 let ok_set = SetPriorityClass(h, class);
                 if ok_set == 0 {
                     let code = GetLastError();
-                    return Err(OsErr::Win32 { call: "SetPriorityClass", code });
+                    return Err(OsErr::Win32 {
+                        call: "SetPriorityClass",
+                        code,
+                    });
                 }
                 let observed_class = GetPriorityClass(h);
                 if observed_class == 0 {
                     let code = GetLastError();
-                    return Err(OsErr::Win32 { call: "GetPriorityClass", code });
+                    return Err(OsErr::Win32 {
+                        call: "GetPriorityClass",
+                        code,
+                    });
                 }
                 (h, ok_set, observed_class)
             };
@@ -1159,7 +1194,13 @@ pub mod win_adapter {
             // drops the old guard and acquires a new one with the requested
             // period. The granted period has NO read-back API — it is
             // UNVERIFIABLE.
-            let old = core::mem::replace(&mut self.timer, TimerResGuard { period_ms: 0, active: false });
+            let old = core::mem::replace(
+                &mut self.timer,
+                TimerResGuard {
+                    period_ms: 0,
+                    active: false,
+                },
+            );
             drop(old);
             self.timer = TimerResGuard::acquire(ms)?;
             // The granted period is UNVERIFIABLE — we report what we requested
@@ -1214,13 +1255,19 @@ pub mod win_adapter {
             };
             if ok == 0 {
                 if code == ERROR_WORKING_SET_QUOTA {
-                    return Err(OsErr::WorkingSetQuota { requested: aligned_len });
+                    return Err(OsErr::WorkingSetQuota {
+                        requested: aligned_len,
+                    });
                 }
-                return Err(OsErr::Win32 { call: "VirtualLock", code });
+                return Err(OsErr::Win32 {
+                    call: "VirtualLock",
+                    code,
+                });
             }
 
             // Track for unlock-on-drop.
-            self.locked_ranges.push((aligned_start as *mut core::ffi::c_void, aligned_len));
+            self.locked_ranges
+                .push((aligned_start as *mut core::ffi::c_void, aligned_len));
             self.locked_total = self.locked_total.saturating_add(aligned_len);
 
             // Return the ALIGNED length so the budget cannot under-count.

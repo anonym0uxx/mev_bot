@@ -4,8 +4,6 @@
 //! The RPC URL and API key are provided by the daemon's environment —
 //! this crate never reads credential files directly.
 
-
-
 /// Helius RPC client for Solana mainnet.
 pub struct HeliusRpc {
     rpc_url: String,
@@ -34,20 +32,24 @@ impl HeliusRpc {
             "id": 1,
             "method": "getLatestBlockhash",
             "params": []
-        }).to_string();
+        })
+        .to_string();
 
-        let req = self.client
+        let req = self
+            .client
             .post(&self.rpc_url)
             .set("Content-Type", "application/json");
 
-        let resp = req.send_string(&body)
+        let resp = req
+            .send_string(&body)
             .map_err(|e| format!("getLatestBlockhash: {e}"))?;
 
-        let text = resp.into_string()
+        let text = resp
+            .into_string()
             .map_err(|e| format!("blockhash response read: {e}"))?;
 
-        let json: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| format!("blockhash response parse: {e}"))?;
+        let json: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("blockhash response parse: {e}"))?;
 
         let blockhash_b58 = json["result"]["value"]["blockhash"]
             .as_str()
@@ -82,16 +84,20 @@ impl HeliusRpc {
                     "maxRetries": 3
                 }
             ]
-        }).to_string();
+        })
+        .to_string();
 
-        let req = self.client
+        let req = self
+            .client
             .post(&self.rpc_url)
             .set("Content-Type", "application/json");
 
-        let resp = req.send_string(&body)
+        let resp = req
+            .send_string(&body)
             .map_err(|e| format!("sendTransaction: {e}"))?;
 
-        let text = resp.into_string()
+        let text = resp
+            .into_string()
             .map_err(|e| format!("sendTransaction response read: {e}"))?;
 
         let json: serde_json::Value = serde_json::from_str(&text)
@@ -99,7 +105,8 @@ impl HeliusRpc {
 
         // Check for RPC error
         if let Some(err) = json.get("error") {
-            let msg = err.get("message")
+            let msg = err
+                .get("message")
                 .and_then(|m| m.as_str())
                 .unwrap_or("unknown RPC error");
             return Err(msg.to_string());
@@ -119,23 +126,28 @@ impl HeliusRpc {
             "id": 1,
             "method": "getBalance",
             "params": [address, {"commitment": "confirmed"}]
-        }).to_string();
+        })
+        .to_string();
 
-        let req = self.client
+        let req = self
+            .client
             .post(&self.rpc_url)
             .set("Content-Type", "application/json");
 
-        let resp = req.send_string(&body)
+        let resp = req
+            .send_string(&body)
             .map_err(|e| format!("getBalance: {e}"))?;
 
-        let text = resp.into_string()
+        let text = resp
+            .into_string()
             .map_err(|e| format!("getBalance response read: {e}"))?;
 
-        let json: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| format!("getBalance response parse: {e}"))?;
+        let json: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("getBalance response parse: {e}"))?;
 
         if let Some(err) = json.get("error") {
-            let msg = err.get("message")
+            let msg = err
+                .get("message")
                 .and_then(|m| m.as_str())
                 .unwrap_or("unknown RPC error");
             return Err(msg.to_string());

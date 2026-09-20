@@ -30,21 +30,21 @@
 //!   subcommand or a signed operator-order file — both human-initiated.
 
 // ── Module layout ──
-pub mod policy;
-pub mod transfer;
-pub mod rpc;
 pub mod audit;
+pub mod policy;
+pub mod rpc;
+pub mod transfer;
 
 // Re-exports for ergonomic access.
-pub use policy::{TreasuryPolicy, WhitelistEntry, TransferLimits};
-pub use transfer::{TransferRequest, TransferOutcome, TransferError};
-pub use rpc::HeliusRpc;
 pub use audit::AuditEntry;
+pub use policy::{TransferLimits, TreasuryPolicy, WhitelistEntry};
+pub use rpc::HeliusRpc;
+pub use transfer::{TransferError, TransferOutcome, TransferRequest};
 
 // ── Treasury facade ──
 
-use std::sync::Arc;
 use std::path::Path;
+use std::sync::Arc;
 
 use pq_stream_capture::signer::WalletSigner;
 
@@ -80,10 +80,10 @@ impl Treasury {
     ) -> Result<Self, TreasuryError> {
         let signer = WalletSigner::load_solana_keypair(keypair_path, expected_address)
             .map_err(TreasuryError::Signer)?;
-        let policy_text = std::fs::read_to_string(policy_path)
-            .map_err(|e| TreasuryError::PolicyRead(policy_path.display().to_string(), e.to_string()))?;
-        let policy = TreasuryPolicy::from_toml(&policy_text)
-            .map_err(TreasuryError::PolicyParse)?;
+        let policy_text = std::fs::read_to_string(policy_path).map_err(|e| {
+            TreasuryError::PolicyRead(policy_path.display().to_string(), e.to_string())
+        })?;
+        let policy = TreasuryPolicy::from_toml(&policy_text).map_err(TreasuryError::PolicyParse)?;
 
         Ok(Self {
             signer: Arc::new(signer),

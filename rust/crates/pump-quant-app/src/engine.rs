@@ -55,9 +55,9 @@ use crate::holder_concentration::{
 };
 use pump_quant_brain::concentration::ConcentrationTrajectory as BrainTrajectory;
 
+use crate::expected_move::SignalObs;
 use crate::holder_flow::{HolderCountBasis, HolderFlow, HolderReading};
 use crate::priced_move::PricedMove;
-use crate::expected_move::SignalObs;
 use crate::social_earn::{SocialEarn, SocialEarnParams};
 use crate::social_ingest::{ledger_quality, to_mention, SourceQualityPolicy};
 use crate::social_plane::{
@@ -108,9 +108,9 @@ use pump_quant_social::types::SourceRef;
 use pump_quant_strategy::calibration_budget::{
     admit_calibration, CalibrationLedger, CalibrationRequest, RouteId,
 };
-use pump_quant_strategy::economic_gate::{effective_fixed_lamports, round_trip_cost_bps};
 #[cfg(test)]
 use pump_quant_strategy::economic_gate::ImpactCurve;
+use pump_quant_strategy::economic_gate::{effective_fixed_lamports, round_trip_cost_bps};
 use pump_quant_strategy::entry_arbitration::{arbitrate, ArbitrationParams, EntryCandidate};
 use pump_quant_strategy::entry_mode_leaves::{
     detect_narrative_confirmation, detect_pullback_continuation, NarrativeConfirmationFeatures,
@@ -2028,84 +2028,86 @@ impl Engine {
                         ) {
                             self.book_exit(exit);
                         } else if self.positions.has(mint.as_bytes()) {
-                        // §33 probe→confirm scale-in (one-shot; scale_in refuses after
-                        // any de-risking): in profit + authentic flow ⇒ full target.
-                        // §21.6 reduce-only structure block: never ADD risk while the
-                        // bar-structure trend contradicts the long (Downtrend). The
-                        // probe keeps managing itself — structure blocks additions,
-                        // never authorizes anything.
-                        if price_fp > 0
-                            && self
-                                .structure
-                                .trend(mint.as_bytes(), self.cfg.structure_min_bars)
-                                != TrendStructure::Downtrend
-                        {
-                            // §6.4: the flow screen's thin-sample NEUTRAL PRIOR is a
-                            // label for missing evidence, never confirmation. Adding
-                            // risk requires an EVIDENCED authenticity reading at or
-                            // above the operator's bar — absence of evidence can no
-                            // longer scale a probe to full target.
-                            let (auth, _) = self.flow_screen.authenticity(mint.as_bytes());
-                            if self.flow_screen.has_auth_evidence(mint.as_bytes())
-                                && auth >= self.cfg.scale_confirm_auth_min_bp
+                            // §33 probe→confirm scale-in (one-shot; scale_in refuses after
+                            // any de-risking): in profit + authentic flow ⇒ full target.
+                            // §21.6 reduce-only structure block: never ADD risk while the
+                            // bar-structure trend contradicts the long (Downtrend). The
+                            // probe keeps managing itself — structure blocks additions,
+                            // never authorizes anything.
+                            if price_fp > 0
+                                && self
+                                    .structure
+                                    .trend(mint.as_bytes(), self.cfg.structure_min_bars)
+                                    != TrendStructure::Downtrend
                             {
-                                if let Some(att) = self.open_lane.get(mint.as_bytes()).copied() {
-                                    if att.scale_add > 0
-                                        && self.positions.scale_in(
-                                            mint.as_bytes(),
-                                            att.scale_add,
-                                            att.scale_cost,
-                                            // The mark the added lamports are ACTUALLY
-                                            // bought at — blends the cost basis so the
-                                            // add cannot book phantom profit.
-                                            price_u,
-                                        )
+                                // §6.4: the flow screen's thin-sample NEUTRAL PRIOR is a
+                                // label for missing evidence, never confirmation. Adding
+                                // risk requires an EVIDENCED authenticity reading at or
+                                // above the operator's bar — absence of evidence can no
+                                // longer scale a probe to full target.
+                                let (auth, _) = self.flow_screen.authenticity(mint.as_bytes());
+                                if self.flow_screen.has_auth_evidence(mint.as_bytes())
+                                    && auth >= self.cfg.scale_confirm_auth_min_bp
+                                {
+                                    if let Some(att) = self.open_lane.get(mint.as_bytes()).copied()
                                     {
-                                        if let Some(e) = self.open_lane.get_mut(mint.as_bytes()) {
-                                            e.scale_add = 0;
+                                        if att.scale_add > 0
+                                            && self.positions.scale_in(
+                                                mint.as_bytes(),
+                                                att.scale_add,
+                                                att.scale_cost,
+                                                // The mark the added lamports are ACTUALLY
+                                                // bought at — blends the cost basis so the
+                                                // add cannot book phantom profit.
+                                                price_u,
+                                            )
+                                        {
+                                            if let Some(e) = self.open_lane.get_mut(mint.as_bytes())
+                                            {
+                                                e.scale_add = 0;
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
-                        // §32 thesis evaluation: deterministic invalidation forces the
-                        // exit; no score may override it.
-                        // Rev-31: gate on on-chain confirmation in live mode.
-                        let thesis_exit = self.thesis_forces_exit(mint.as_bytes())
-                            && !(self.mode == RunMode::Live
-                                && !self.positions.is_onchain_confirmed(mint.as_bytes()));
-                        if thesis_exit {
-                            if let Some(exit) = self.positions.close_at(
-                                mint.as_bytes(),
-                                price_u,
-                                ExitReason::ThesisInvalidation,
-                            ) {
-                                self.book_exit(exit);
-                            }
-                        } else {
-                            // VPIN exit escalation: the extreme sell-dominant tier is a
-                            // distributed multi-swap dump the single-print rug-precursor
-                            // cannot see — force the thesis-invalidation exit (§21.7/§32).
+                            // §32 thesis evaluation: deterministic invalidation forces the
+                            // exit; no score may override it.
                             // Rev-31: gate on on-chain confirmation in live mode.
-                            let vpin_ok = !(self.mode == RunMode::Live
-                                && !self.positions.is_onchain_confirmed(mint.as_bytes()));
-                            if vpin_ok {
-                                let vp = self.vpin_params();
-                                let reading = self
-                                    .vpin
-                                    .get(mint.as_bytes())
-                                    .and_then(|v| v.reading(self.now, &vp));
-                                if vpin_exit_escalates(reading, &self.vpin_thresholds()) {
-                                    if let Some(exit) = self.positions.close_at(
-                                        mint.as_bytes(),
-                                        price_u,
-                                        ExitReason::ThesisInvalidation,
-                                    ) {
-                                        self.book_exit(exit);
+                            let thesis_exit = self.thesis_forces_exit(mint.as_bytes())
+                                && !(self.mode == RunMode::Live
+                                    && !self.positions.is_onchain_confirmed(mint.as_bytes()));
+                            if thesis_exit {
+                                if let Some(exit) = self.positions.close_at(
+                                    mint.as_bytes(),
+                                    price_u,
+                                    ExitReason::ThesisInvalidation,
+                                ) {
+                                    self.book_exit(exit);
+                                }
+                            } else {
+                                // VPIN exit escalation: the extreme sell-dominant tier is a
+                                // distributed multi-swap dump the single-print rug-precursor
+                                // cannot see — force the thesis-invalidation exit (§21.7/§32).
+                                // Rev-31: gate on on-chain confirmation in live mode.
+                                let vpin_ok = !(self.mode == RunMode::Live
+                                    && !self.positions.is_onchain_confirmed(mint.as_bytes()));
+                                if vpin_ok {
+                                    let vp = self.vpin_params();
+                                    let reading = self
+                                        .vpin
+                                        .get(mint.as_bytes())
+                                        .and_then(|v| v.reading(self.now, &vp));
+                                    if vpin_exit_escalates(reading, &self.vpin_thresholds()) {
+                                        if let Some(exit) = self.positions.close_at(
+                                            mint.as_bytes(),
+                                            price_u,
+                                            ExitReason::ThesisInvalidation,
+                                        ) {
+                                            self.book_exit(exit);
+                                        }
                                     }
                                 }
                             }
-                        }
                         } // close `else if self.positions.has(...)`
                     } // Rev-31: close `if !skip_exit`
                 }
@@ -2197,7 +2199,9 @@ impl Engine {
             // ─── Rev-19 on-chain feedback loop ──────────────────────────────
             // Our buy tx landed on-chain. Reconcile the paper position: mark it
             // as on-chain confirmed so the sell path knows tokens are real.
-            AppEvent::OurBuyConfirmed { mint, signature, .. } => {
+            AppEvent::OurBuyConfirmed {
+                mint, signature, ..
+            } => {
                 let key = sig_key(&signature);
                 if self.pending_buys.remove(&key).is_some() {
                     self.buy_confirmed_count = self.buy_confirmed_count.saturating_add(1);
@@ -2206,28 +2210,31 @@ impl Engine {
                     // arrives keeps the stage at 0 (never a fabricated number).
                     if let Some(att) = self.open_lane.get_mut(mint.as_bytes()) {
                         if let Some(t) = att.latency.t_submit {
-                            att.latency.trace.submit_to_confirm_us =
-                                t.elapsed().as_micros() as u64;
+                            att.latency.trace.submit_to_confirm_us = t.elapsed().as_micros() as u64;
                         }
                     }
                     // Mark the position as on-chain confirmed.
-                    self.positions
-                        .mark_onchain_confirmed(mint.as_bytes(), true);
+                    self.positions.mark_onchain_confirmed(mint.as_bytes(), true);
                 }
             }
             // Our buy tx failed on-chain. Reverse the paper position — we
             // never received tokens. The fee is already burned irrecoverably.
-            AppEvent::OurBuyFailed { mint, signature, .. } => {
+            AppEvent::OurBuyFailed {
+                mint, signature, ..
+            } => {
                 let key = sig_key(&signature);
                 if let Some(pending) = self.pending_buys.remove(&key) {
                     self.buy_failed_count = self.buy_failed_count.saturating_add(1);
                     // Remove the paper position — tokens were never received.
-                    self.positions.reverse_paper_entry(mint.as_bytes(), pending.size);
+                    self.positions
+                        .reverse_paper_entry(mint.as_bytes(), pending.size);
                 }
             }
             // Our sell tx landed on-chain. SOL was recovered — the paper exit
             // is now confirmed as on-chain truth.
-            AppEvent::OurSellConfirmed { mint, signature, .. } => {
+            AppEvent::OurSellConfirmed {
+                mint, signature, ..
+            } => {
                 let key = sig_key(&signature);
                 if self.pending_sells.remove(&key).is_some() {
                     self.sell_confirmed_count = self.sell_confirmed_count.saturating_add(1);
@@ -2238,7 +2245,9 @@ impl Engine {
             }
             // Our sell tx failed on-chain. Tokens remain in wallet — SOL was
             // NOT recovered. The paper exit must be reversed so we can retry.
-            AppEvent::OurSellFailed { mint, signature, .. } => {
+            AppEvent::OurSellFailed {
+                mint, signature, ..
+            } => {
                 let key = sig_key(&signature);
                 if let Some(pending) = self.pending_sells.remove(&key) {
                     self.sell_failed_count = self.sell_failed_count.saturating_add(1);
@@ -3006,9 +3015,11 @@ impl Engine {
             // Rev-31: In live mode, filter out unconfirmed positions before
             // the time-stop exit fires — prevents selling phantom positions.
             let is_live = self.mode == RunMode::Live;
-            let exits = self.positions.on_tick_filtered(self.now, &|m| {
-                numeric.latest_price_fp(DomainMint::from_bytes(*m))
-            }, is_live);
+            let exits = self.positions.on_tick_filtered(
+                self.now,
+                &|m| numeric.latest_price_fp(DomainMint::from_bytes(*m)),
+                is_live,
+            );
             for e in exits {
                 self.book_exit(e);
             }
@@ -3715,16 +3726,15 @@ impl Engine {
                 let sized = {
                     let mut boost_bp: u32 = 0;
                     if self.cfg.tracked_wallet_boost_enable {
-                        boost_bp = boost_bp.saturating_add(self.tracked_wallet_boost_bp(&mint_bytes));
+                        boost_bp =
+                            boost_bp.saturating_add(self.tracked_wallet_boost_bp(&mint_bytes));
                     }
                     if self.cfg.smart_money_boost_enable {
                         boost_bp = boost_bp.saturating_add(self.smart_money_boost_bp(&mint_bytes));
                     }
                     if boost_bp > 0 {
                         let lifted = sized * u128::from(10_000u32 + boost_bp) / 10_000;
-                        lifted
-                            .min(u128::from(band.x_max))
-                            .min(available_risk)
+                        lifted.min(u128::from(band.x_max)).min(available_risk)
                     } else {
                         sized
                     }
@@ -4563,7 +4573,13 @@ impl Engine {
     /// larger first-tranche fraction). Entry mcap in the late portion → late-curve
     /// profile (wider TP1, smaller fractions, higher TP2/TP3 to capture
     /// post-graduation volatility). The cost-derived rung count is preserved.
-    fn derive_targets(&self, size: u64, rt_bps: u32, vsol: u64, entry_mcap_lamports: u64) -> Option<DerivedTargets> {
+    fn derive_targets(
+        &self,
+        size: u64,
+        rt_bps: u32,
+        vsol: u64,
+        entry_mcap_lamports: u64,
+    ) -> Option<DerivedTargets> {
         if !self.cfg.derived_targets_enable {
             return None;
         }
@@ -4714,18 +4730,14 @@ impl Engine {
                             eprintln!("[engine] sink: Accepted (paper placeholder)");
                         } else {
                             // Hex-encode the first 8 bytes of the sig for a compact log tag.
-                            let sig_hex: String = signature[..8].iter().map(|b| format!("{b:02x}")).collect();
+                            let sig_hex: String =
+                                signature[..8].iter().map(|b| format!("{b:02x}")).collect();
                             eprintln!("[engine] sink: Accepted sig={sig_hex}");
                             self.live_outbound_successes += 1;
                             // Rev-19: register the pending buy for on-chain confirmation polling.
                             // The daemon will poll getSignaturesForAddress and feed
                             // OurBuyConfirmed/OurBuyFailed back into the engine.
-                            self.register_pending_buy(
-                                *signature,
-                                e.mint,
-                                probe,
-                                e.entry_price,
-                            );
+                            self.register_pending_buy(*signature, e.mint, probe, e.entry_price);
                         }
                     }
                     // ── E3: HANDED TO THE ASYNC WORKER ──────────────────────────
@@ -4735,17 +4747,21 @@ impl Engine {
                     // `fail_async_outbound` on refusal. Falling into the `other` arm
                     // below would reverse a position that is still being submitted.
                     pump_quant_execution::ex_outbound_sink::OutboundOutcome::Queued { ticket } => {
-                        let mint_hex: String = e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
+                        let mint_hex: String =
+                            e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
                         eprintln!("[engine] sink: queued ticket={ticket} buy mint={mint_hex}");
-                        self.note_inflight_outbound(*ticket, InflightOutbound {
-                            mint: e.mint,
-                            is_buy: true,
-                            register_size: probe,
-                            rollback_size: e.size,
-                            entry_cost: e.entry_cost,
-                            price_fp: e.entry_price,
-                            submit_tick: self.now,
-                        });
+                        self.note_inflight_outbound(
+                            *ticket,
+                            InflightOutbound {
+                                mint: e.mint,
+                                is_buy: true,
+                                register_size: probe,
+                                rollback_size: e.size,
+                                entry_cost: e.entry_cost,
+                                price_fp: e.entry_price,
+                                submit_tick: self.now,
+                            },
+                        );
                     }
                     // ── Rev-27: SINK-FAIL ROLLBACK ───────────────────────────────
                     // When the sink rejects the buy (R-3 veto, construction error,
@@ -4759,7 +4775,8 @@ impl Engine {
                     // were SUBMITTED and failed on-chain — a sink-level veto never
                     // reaches that path, so the rollback must happen HERE.
                     other => {
-                        let mint_hex: String = e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
+                        let mint_hex: String =
+                            e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
                         eprintln!("[engine] sink FAILED for buy mint={mint_hex}: {other:?}");
                         self.live_outbound_failures += 1;
                         // Reverse the paper position opened at line 4544. The same
@@ -4822,7 +4839,8 @@ impl Engine {
                 let v = u128::from(e.entry_vsol);
                 (v.saturating_mul(v) / crate::curve_state::MCAP_DIVISOR_LAMPORTS) as u64
             };
-            let derived = self.derive_targets(e.size, e.round_trip_cost_bps, e.entry_vsol, entry_mcap);
+            let derived =
+                self.derive_targets(e.size, e.round_trip_cost_bps, e.entry_vsol, entry_mcap);
             self.positions.arm_context(&e.mint, vol_bps, derived);
             self.tournament.open(
                 e.mint,
@@ -4944,8 +4962,10 @@ impl Engine {
                         if signature == &[0u8; 64] {
                             eprintln!("[engine] sell sink: Accepted (paper placeholder)");
                         } else {
-                            let sig_hex: String = signature[..8].iter().map(|b| format!("{b:02x}")).collect();
-                            let mint_hex: String = e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
+                            let sig_hex: String =
+                                signature[..8].iter().map(|b| format!("{b:02x}")).collect();
+                            let mint_hex: String =
+                                e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
                             eprintln!("[engine] sell sink: Accepted sig={sig_hex} mint={mint_hex} tokens={}",
                                 e.token_amount);
                             self.live_sell_successes += 1;
@@ -4962,20 +4982,28 @@ impl Engine {
                     // Tokens are still in the wallet until the worker reports; a
                     // queued sell is not a failed sell, so it must not count as one.
                     pump_quant_execution::ex_outbound_sink::OutboundOutcome::Queued { ticket } => {
-                        let mint_hex: String = e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
-                        eprintln!("[engine] sell sink: queued ticket={ticket} mint={mint_hex} tokens={}", e.token_amount);
-                        self.note_inflight_outbound(*ticket, InflightOutbound {
-                            mint: e.mint,
-                            is_buy: false,
-                            register_size: e.token_amount,
-                            rollback_size: 0,
-                            entry_cost: 0,
-                            price_fp: e.exit_price_fp,
-                            submit_tick: self.now,
-                        });
+                        let mint_hex: String =
+                            e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
+                        eprintln!(
+                            "[engine] sell sink: queued ticket={ticket} mint={mint_hex} tokens={}",
+                            e.token_amount
+                        );
+                        self.note_inflight_outbound(
+                            *ticket,
+                            InflightOutbound {
+                                mint: e.mint,
+                                is_buy: false,
+                                register_size: e.token_amount,
+                                rollback_size: 0,
+                                entry_cost: 0,
+                                price_fp: e.exit_price_fp,
+                                submit_tick: self.now,
+                            },
+                        );
                     }
                     other => {
-                        let mint_hex: String = e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
+                        let mint_hex: String =
+                            e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
                         eprintln!("[engine] sell sink FAILED: {other:?} mint={mint_hex}");
                         self.live_sell_failures += 1;
                     }
@@ -5143,7 +5171,8 @@ impl Engine {
                 // every candidate fell back to the cold-start constant. We
                 // record on FULL CLOSE only (partial tranche exits do not yet
                 // carry enough signal about the full round-trip outcome).
-                self.expected_move.record(entry_vsol, entry_obs, realized_bps);
+                self.expected_move
+                    .record(entry_vsol, entry_obs, realized_bps);
                 // §49 LAW 15: the exit-policy event as a full-participation ALLOW
                 // built through the enrich layer — the position was allowed to run
                 // to its exit, so the ledger credits realized-vs-MFE (not a
@@ -5234,13 +5263,11 @@ impl Engine {
         let numeric = &self.numeric;
         // Rev-31: In live mode, force-close only confirmed positions.
         let exits = if self.mode == RunMode::Live {
-            self.positions.force_close_all_filtered(&|m| {
-                numeric.latest_price_fp(DomainMint::from_bytes(*m))
-            })
+            self.positions
+                .force_close_all_filtered(&|m| numeric.latest_price_fp(DomainMint::from_bytes(*m)))
         } else {
-            self.positions.force_close_all(&|m| {
-                numeric.latest_price_fp(DomainMint::from_bytes(*m))
-            })
+            self.positions
+                .force_close_all(&|m| numeric.latest_price_fp(DomainMint::from_bytes(*m)))
         };
         for e in exits {
             self.book_exit(e);
@@ -6051,12 +6078,12 @@ impl Engine {
         match self.numeric.latest_price_fp(DomainMint::from_bytes(*mint)) {
             Some(price) if price > 0 => {
                 // Rev-31: gate on on-chain confirmation in live mode.
-                let creator_dump_ok = !(self.mode == RunMode::Live
-                    && !self.positions.is_onchain_confirmed(mint));
+                let creator_dump_ok =
+                    !(self.mode == RunMode::Live && !self.positions.is_onchain_confirmed(mint));
                 if creator_dump_ok {
-                    if let Some(exit) = self
-                        .positions
-                        .close_at(mint, price, ExitReason::CreatorDump)
+                    if let Some(exit) =
+                        self.positions
+                            .close_at(mint, price, ExitReason::CreatorDump)
                     {
                         self.book_exit(exit);
                     }
@@ -6733,11 +6760,11 @@ impl Engine {
         // >= ceil(first_n * max_share / 10_000) of the first-N entities,
         // that's coordinated funding.
         let threshold = ((first_n * max_share as usize) + 9_999) / 10_000; // ceil division
-        // The family must have at least `threshold` members AND those members
-        // must include entities that transacted on this mint. We approximate
-        // the "transacted on this mint" check using the wallet_graph_node indices:
-        // if the mint's last buyer is in a large family, and that family is
-        // large enough, it's coordinated.
+                                                                           // The family must have at least `threshold` members AND those members
+                                                                           // must include entities that transacted on this mint. We approximate
+                                                                           // the "transacted on this mint" check using the wallet_graph_node indices:
+                                                                           // if the mint's last buyer is in a large family, and that family is
+                                                                           // large enough, it's coordinated.
         let buyer = self.last_mint_buyer.get(mint).copied().unwrap_or(0);
         if buyer == 0 {
             return false; // no buyer recorded, fail-open
@@ -6890,7 +6917,13 @@ impl Engine {
     /// Register a pending buy tx for on-chain confirmation tracking.
     /// Called by the daemon immediately after the live sink submits a buy tx.
     /// The signature comes from `OutboundOutcome` returned by `on_admit`.
-    pub fn register_pending_buy(&mut self, signature: [u8; 64], mint: [u8; 32], size: u64, price_fp: u64) {
+    pub fn register_pending_buy(
+        &mut self,
+        signature: [u8; 64],
+        mint: [u8; 32],
+        size: u64,
+        price_fp: u64,
+    ) {
         let key = sig_key(&signature);
         // §99 bounded: evict oldest at capacity (256 entries).
         if self.pending_buys.len() >= 256 && !self.pending_buys.contains_key(&key) {
@@ -6898,13 +6931,16 @@ impl Engine {
                 self.pending_buys.remove(&first);
             }
         }
-        self.pending_buys.insert(key, PendingTx {
-            signature,
-            mint,
-            submit_tick: self.now,
-            size,
-            price_fp,
-        });
+        self.pending_buys.insert(
+            key,
+            PendingTx {
+                signature,
+                mint,
+                submit_tick: self.now,
+                size,
+                price_fp,
+            },
+        );
     }
 
     /// E3: park a handed-off submission until its worker reports a verdict.
@@ -7013,32 +7049,47 @@ impl Engine {
     }
 
     /// Register a pending sell tx for on-chain confirmation tracking.
-    pub fn register_pending_sell(&mut self, signature: [u8; 64], mint: [u8; 32], size: u64, price_fp: u64) {
+    pub fn register_pending_sell(
+        &mut self,
+        signature: [u8; 64],
+        mint: [u8; 32],
+        size: u64,
+        price_fp: u64,
+    ) {
         let key = sig_key(&signature);
         if self.pending_sells.len() >= 256 && !self.pending_sells.contains_key(&key) {
             if let Some(first) = self.pending_sells.keys().next().copied() {
                 self.pending_sells.remove(&first);
             }
         }
-        self.pending_sells.insert(key, PendingTx {
-            signature,
-            mint,
-            submit_tick: self.now,
-            size,
-            price_fp,
-        });
+        self.pending_sells.insert(
+            key,
+            PendingTx {
+                signature,
+                mint,
+                submit_tick: self.now,
+                size,
+                price_fp,
+            },
+        );
     }
 
     /// Return all pending buy signatures for daemon polling.
     /// Returns (mint_bytes, signature) pairs.
     pub fn pending_buy_signatures(&self) -> Vec<([u8; 32], [u8; 64])> {
-        self.pending_buys.values().map(|p| (p.mint, p.signature)).collect()
+        self.pending_buys
+            .values()
+            .map(|p| (p.mint, p.signature))
+            .collect()
     }
 
     /// Return all pending sell signatures for daemon polling.
     /// Returns (mint_bytes, signature) pairs.
     pub fn pending_sell_signatures(&self) -> Vec<([u8; 32], [u8; 64])> {
-        self.pending_sells.values().map(|p| (p.mint, p.signature)).collect()
+        self.pending_sells
+            .values()
+            .map(|p| (p.mint, p.signature))
+            .collect()
     }
 
     /// Evict pending txs older than `max_age_ticks` — called by the daemon
@@ -7060,7 +7111,8 @@ impl Engine {
         let threshold = self.now.saturating_sub(max_age_ticks);
         let mut evicted = 0;
         // Evict stale buys — reverse the paper position (tokens never received)
-        let stale_buy_keys: Vec<([u8; 8], PendingTx)> = self.pending_buys
+        let stale_buy_keys: Vec<([u8; 8], PendingTx)> = self
+            .pending_buys
             .iter()
             .filter(|(_, p)| p.submit_tick < threshold)
             .map(|(k, v)| (*k, *v))
@@ -7070,8 +7122,13 @@ impl Engine {
             // Reverse the paper entry — the buy never confirmed, so tokens
             // were never received. Without this, the exit ladder sells phantom
             // positions and hits 3012 on-chain.
-            let mint_hex: String = pending.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
-            let reversed = self.positions.reverse_paper_entry(&pending.mint, pending.size);
+            let mint_hex: String = pending.mint[..4]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            let reversed = self
+                .positions
+                .reverse_paper_entry(&pending.mint, pending.size);
             if reversed {
                 eprintln!(
                     "[engine] STALE BUY EVICTED + phantom position REVERSED: mint={mint_hex} (pending since tick {}, now {})",
@@ -7085,7 +7142,8 @@ impl Engine {
             evicted += 1;
         }
         // Evict stale sells — reverse the paper exit so the ladder can retry
-        let stale_sell_keys: Vec<([u8; 8], PendingTx)> = self.pending_sells
+        let stale_sell_keys: Vec<([u8; 8], PendingTx)> = self
+            .pending_sells
             .iter()
             .filter(|(_, p)| p.submit_tick < threshold)
             .map(|(k, v)| (*k, *v))
@@ -7094,8 +7152,13 @@ impl Engine {
             self.pending_sells.remove(&k);
             // Reverse the paper exit — the sell never confirmed, so tokens
             // are still in the wallet. Restore the position for retry.
-            let mint_hex: String = pending.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
-            let reversed = self.positions.reverse_paper_exit(&pending.mint, pending.size);
+            let mint_hex: String = pending.mint[..4]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            let reversed = self
+                .positions
+                .reverse_paper_exit(&pending.mint, pending.size);
             if reversed {
                 eprintln!(
                     "[engine] STALE SELL EVICTED + paper exit REVERSED: mint={mint_hex} (pending since tick {}, now {})",
@@ -7459,7 +7522,9 @@ mod criterion_94_quote_mint {
     //! §94 quote-mint parametrization: the SOL path is byte-identical to the
     //! pre-§94 cost expression (digest-safe), the USDC path is reachable, and an
     //! undecoded quote refuses (fail-closed).
-    use super::{round_trip_cost_bps, round_trip_cost_bps_quoted, ImpactCurve, QuoteMint, ReflectionSnapshot};
+    use super::{
+        round_trip_cost_bps, round_trip_cost_bps_quoted, ImpactCurve, QuoteMint, ReflectionSnapshot,
+    };
     use pump_quant_strategy::safety_integrity::{round_trip_cost_quote, Market};
 
     /// The default SOL quote reproduces `round_trip_cost_bps(..).unwrap_or(MAX)`
@@ -7570,7 +7635,7 @@ mod criterion_94_quote_mint {
             brain_reflect_enable: false,
         };
         let snap_copy = snap; // copy, not move
-        // If it weren't Copy, this line would fail to compile.
+                              // If it weren't Copy, this line would fail to compile.
         assert_eq!(snap.retired, snap_copy.retired);
     }
 }
@@ -7606,7 +7671,10 @@ mod e11_latency_trace {
     #[test]
     fn paper_mode_exports_zero_latency_without_a_sink() {
         let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
-        assert!(eng.outbound_sink.is_none(), "paper engine must hold no sink");
+        assert!(
+            eng.outbound_sink.is_none(),
+            "paper engine must hold no sink"
+        );
         eng.tape_trades.push(recon([9u8; 32], -5));
         let out = eng.take_tape_trades();
         assert_eq!(out.len(), 1);
@@ -7641,7 +7709,10 @@ mod e11_latency_trace {
         // The second trade has no trace: zero, not a neighbour's numbers.
         assert_eq!(out[1].decision_to_submit_us, 0);
         assert_eq!(out[1].exit_submit_call_us, 0);
-        assert!(eng.take_tape_trades().is_empty(), "both buffers drain together");
+        assert!(
+            eng.take_tape_trades().is_empty(),
+            "both buffers drain together"
+        );
     }
 
     #[test]

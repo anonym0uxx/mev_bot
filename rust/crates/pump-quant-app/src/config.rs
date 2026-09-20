@@ -1383,9 +1383,9 @@ impl Config {
             max_concurrent_positions: 3, // 3 × 667bp ≈ 2000bp; cap adds fee headroom
             x_min_promote_cap_bp: 800, // 0.1 SOL = 6.67% deployable ⇒ cap must exceed
             promote_min_haircut_bp: 6_000, // never promote a risk-faded trade; lowered from 8000 to admit moderate-VPIN candidates
-            dd_tier1_bp: 1_500,        // −15% dd → half fraction
-            dd_tier2_bp: 3_000,        // −30% dd → quarter fraction
-            dd_tier3_bp: 5_000,        // −50% dd → probe-only survival
+            dd_tier1_bp: 1_500,            // −15% dd → half fraction
+            dd_tier2_bp: 3_000,            // −30% dd → quarter fraction
+            dd_tier3_bp: 5_000,            // −50% dd → probe-only survival
             probe_f_bp: 50,
             probe_frac_bp: 4_000, // open 40% as the probe; scale to full on confirmation
             arb_min_expected_net_lamports: 0,
@@ -1413,14 +1413,14 @@ impl Config {
             lc_trail_base_bps: 2_200,
             lc_trail_k_div: 4,
             lc_trail_max_bps: 12_000,
-            lc_tp1_bps: 11_000,       // Re-pin #29: +10% cost-aware fallback (derived ladder overrides per-market)
-            lc_tp1_frac_bps: 3_500,   // Re-pin #29: FIXED 35% — lock profit, leave 65% (was cost-recovery ~97%)
-            lc_tp2_bps: 25_000,       // Re-pin #29: 2.5× moderate runner (arXiv:2606.08232 fat-tail capture)
-            lc_tp2_frac_bps: 2_500,   // Re-pin #29: 25% — trim quarter (was 3000)
-            lc_tp3_bps: 50_000,       // Re-pin #29: 5× strong runner — fat-tail zone
-            lc_tp3_frac_bps: 3_000,   // 30% — leaves 10% moon bag to trail
+            lc_tp1_bps: 11_000, // Re-pin #29: +10% cost-aware fallback (derived ladder overrides per-market)
+            lc_tp1_frac_bps: 3_500, // Re-pin #29: FIXED 35% — lock profit, leave 65% (was cost-recovery ~97%)
+            lc_tp2_bps: 25_000, // Re-pin #29: 2.5× moderate runner (arXiv:2606.08232 fat-tail capture)
+            lc_tp2_frac_bps: 2_500, // Re-pin #29: 25% — trim quarter (was 3000)
+            lc_tp3_bps: 50_000, // Re-pin #29: 5× strong runner — fat-tail zone
+            lc_tp3_frac_bps: 3_000, // 30% — leaves 10% moon bag to trail
             lc_cvd_hold_frac_bps: 3_000, // Re-pin #28: 30% — survive deeper drawdowns so TP1 can fire
-            lc_stall_ticks: 75,       // Re-pin #28: 3× wider — let winners breathe before stall exit
+            lc_stall_ticks: 75, // Re-pin #28: 3× wider — let winners breathe before stall exit
             lc_max_hold_ticks: 300,
             lc_precursor_drop_bps: 3_000,
             // 1 == exit on the first adverse flow observation (historical behaviour).
@@ -1594,17 +1594,17 @@ impl Config {
             // edge post-24h-data. The boost is reduce-ONLY (never bypasses
             // the gate or entry_mode_leaves_enable).
             tracked_wallet_boost_enable: false,
-            tracked_dev_boost_max_bps: 200,          // 2% max boost
-            tracked_whale_min_corroboration: 2,      // MadeOnSol: 3-10 focused > 50 random
-            tracked_corroboration_window_slots: 50,  // ~25 seconds at 400ms slot cadence
-            tracked_wallet_path: CfgPath::empty(),      // empty = no boost applied
+            tracked_dev_boost_max_bps: 200,         // 2% max boost
+            tracked_whale_min_corroboration: 2,     // MadeOnSol: 3-10 focused > 50 random
+            tracked_corroboration_window_slots: 50, // ~25 seconds at 400ms slot cadence
+            tracked_wallet_path: CfgPath::empty(),  // empty = no boost applied
 
             // §28 amendment: smart-money PnL screening (Phase 7) — default OFF.
             // The amendment is armed but inert until the refiner verifies the
             // edge post-24h-data. The boost is reduce-ONLY (never bypasses
             // the gate or entry_mode_leaves_enable).
             smart_money_boost_enable: false,
-            smart_money_boost_max_bps: 300,           // 3% max boost
+            smart_money_boost_max_bps: 300, // 3% max boost
 
             // §Quant-Rev-1 through §Quant-Rev-6: ALL default OFF per §56.2
             // envelope — report-only until operator flips. Fail-open
@@ -1612,15 +1612,15 @@ impl Config {
 
             // Rev-1: bundle detection hard veto
             bundle_detect_enable: false,
-            bundle_detect_min_same_slot_buys: 3,     // ScorpTrader: 3+ = bundled
-            bundle_concentration_max_bps: 2_500,     // 25% same-slot supply
+            bundle_detect_min_same_slot_buys: 3, // ScorpTrader: 3+ = bundled
+            bundle_concentration_max_bps: 2_500, // 25% same-slot supply
 
             // Rev-2: dev wallet grading hard veto
             dev_history_reject_enable: false,
-            dev_history_min_launches: 5,             // 5+ prior mints
-            dev_graduation_min_rate_bp: 1_000,       // <10% graduation = serial rugger
-            r3_creator_history_enable: false,        // R-3: daemon-level veto, default OFF
-            r3_creator_max_launches: 1_000,          // R-3: ≥1000 recent signatures = serial rugger
+            dev_history_min_launches: 5,       // 5+ prior mints
+            dev_graduation_min_rate_bp: 1_000, // <10% graduation = serial rugger
+            r3_creator_history_enable: false,  // R-3: daemon-level veto, default OFF
+            r3_creator_max_launches: 1_000,    // R-3: ≥1000 recent signatures = serial rugger
 
             // Rev-3: coordinated funding hard veto
             coordinated_funding_reject_enable: false,
@@ -1629,63 +1629,63 @@ impl Config {
 
             // Rev-4: dynamic mcap-position TP ladder (Option C)
             mcap_position_tp_enable: false,
-            mcap_position_lo_lamports: 118_420_000_000,      // $9k
-            mcap_position_hi_lamports: 263_160_000_000,      // $20k
-            mcap_position_early_tp1_bps: 11_200,              // +12%
-            mcap_position_early_tp1_frac_bps: 5_000,          // 50%
-            mcap_position_early_tp2_bps: 20_000,             // 2×
-            mcap_position_early_tp2_frac_bps: 2_500,          // 25%
-            mcap_position_early_tp3_bps: 40_000,             // 4×
-            mcap_position_early_tp3_frac_bps: 1_500,          // 15% moon bag
-            mcap_position_late_tp1_bps: 12_000,              // +20%
-            mcap_position_late_tp1_frac_bps: 2_500,          // 25%
-            mcap_position_late_tp2_bps: 30_000,             // 3×
-            mcap_position_late_tp2_frac_bps: 2_000,          // 20%
-            mcap_position_late_tp3_bps: 60_000,             // 6×
-            mcap_position_late_tp3_frac_bps: 2_000,          // 20% moon bag
+            mcap_position_lo_lamports: 118_420_000_000, // $9k
+            mcap_position_hi_lamports: 263_160_000_000, // $20k
+            mcap_position_early_tp1_bps: 11_200,        // +12%
+            mcap_position_early_tp1_frac_bps: 5_000,    // 50%
+            mcap_position_early_tp2_bps: 20_000,        // 2×
+            mcap_position_early_tp2_frac_bps: 2_500,    // 25%
+            mcap_position_early_tp3_bps: 40_000,        // 4×
+            mcap_position_early_tp3_frac_bps: 1_500,    // 15% moon bag
+            mcap_position_late_tp1_bps: 12_000,         // +20%
+            mcap_position_late_tp1_frac_bps: 2_500,     // 25%
+            mcap_position_late_tp2_bps: 30_000,         // 3×
+            mcap_position_late_tp2_frac_bps: 2_000,     // 20%
+            mcap_position_late_tp3_bps: 60_000,         // 6×
+            mcap_position_late_tp3_frac_bps: 2_000,     // 20% moon bag
 
             // Rev-5: conditional moon bag (graduation velocity)
             conditional_moon_bag_enable: false,
-            moon_bag_velocity_threshold_bps: 1,   // any positive accelerating rate
-            moon_bag_acceleration_window: 10,     // ~4 seconds at 400ms slot rate
+            moon_bag_velocity_threshold_bps: 1, // any positive accelerating rate
+            moon_bag_acceleration_window: 10,   // ~4 seconds at 400ms slot rate
 
             // Rev-6: exit liquidity verification
             exit_liquidity_reject_enable: false,
-            exit_liquidity_min_holders: 30,       // ScorpTrader: <30 = illiquid exit
+            exit_liquidity_min_holders: 30, // ScorpTrader: <30 = illiquid exit
 
             // Rev-7: re-entry cooldown — prevent death-by-a-thousand-cuts
             reentry_cooldown_enable: false,
-            reentry_cooldown_ticks: 2400,         // 10 min at 250ms/tick = max_hold window
+            reentry_cooldown_ticks: 2400, // 10 min at 250ms/tick = max_hold window
 
             // Rev-13: entry quality filter (walk-forward validated 2026-08-12)
             entry_quality_filter_enable: false,
-            entry_min_buy_ratio_bp: 5_500,           // 55% of trades must be buys
-            entry_max_sol_per_trade_lamports: 750_000_000,  // 0.75 SOL max single trade
-            entry_min_trades_observed: 8,            // minimum for statistical meaning
+            entry_min_buy_ratio_bp: 5_500, // 55% of trades must be buys
+            entry_max_sol_per_trade_lamports: 750_000_000, // 0.75 SOL max single trade
+            entry_min_trades_observed: 8,  // minimum for statistical meaning
             // Rev-14: age + volume filters (reversion strategy)
-            entry_min_age_slots: 0,                  // disabled by default (Rev-13 compat)
-            entry_min_volume_lamports: 0,            // disabled by default (Rev-13 compat)
+            entry_min_age_slots: 0, // disabled by default (Rev-13 compat)
+            entry_min_volume_lamports: 0, // disabled by default (Rev-13 compat)
             // Rev-17: pre-entry momentum signals (ArXiv research-backed)
-            entry_min_buy_pressure_bp: 0,            // disabled by default (Rev-16 compat)
-            entry_min_unique_buyers: 0,              // disabled by default (Rev-16 compat)
+            entry_min_buy_pressure_bp: 0, // disabled by default (Rev-16 compat)
+            entry_min_unique_buyers: 0,   // disabled by default (Rev-16 compat)
 
             // Rev-14 wangr intelligence filters — ALL disabled by default.
             // A golden tape that never feeds MarketAuxiliary / TimeSignal events
             // produces byte-identical decisions because every filter checks its
             // enable flag first and the sentinel values (0, 255) are no-ops.
             wangr_require_legacy_enable: false,
-            wangr_required_token_standard: 1,        // 1 = Legacy SPL
+            wangr_required_token_standard: 1, // 1 = Legacy SPL
             wangr_dow_filter_enable: false,
-            wangr_dow_suppress_mask: 2,              // bit 1 = Tuesday
+            wangr_dow_suppress_mask: 2, // bit 1 = Tuesday
             wangr_hour_filter_enable: false,
-            wangr_hour_preferred_mask: 0x0C18,       // bits 3,4,5,10,11 = 3096
+            wangr_hour_preferred_mask: 0x0C18, // bits 3,4,5,10,11 = 3096
             wangr_symbol_len_filter_enable: false,
             wangr_symbol_len_min: 4,
             wangr_symbol_len_max: 6,
-            wangr_creator_min_launches: 0,           // disabled (needs TokenMetadata feed)
+            wangr_creator_min_launches: 0, // disabled (needs TokenMetadata feed)
             wangr_liq_zone_filter_enable: false,
-            wangr_liq_zone_lo_lamports: 1_000_000_000_000,   // 1_000 SOL
-            wangr_liq_zone_hi_lamports: 10_000_000_000_000,  // 10_000 SOL
+            wangr_liq_zone_lo_lamports: 1_000_000_000_000, // 1_000 SOL
+            wangr_liq_zone_hi_lamports: 10_000_000_000_000, // 10_000 SOL
         }
     }
 
@@ -1737,9 +1737,7 @@ impl Config {
                 self.gate_exit_tranches = u32::try_from(nonneg(value)?.max(1))
                     .map_err(|_| ConfigError::OutOfRange(key.to_string(), value))?
             }
-            "paper_tick_period_ms" => {
-                self.paper_tick_period_ms = nonneg(value)?.max(1)
-            }
+            "paper_tick_period_ms" => self.paper_tick_period_ms = nonneg(value)?.max(1),
             "fill_mode" => {
                 self.fill_mode = FillModeCfg::from_code(value)
                     .ok_or(ConfigError::OutOfRange(key.to_string(), value))?
@@ -1887,14 +1885,20 @@ impl Config {
             // §27 amendment: tracked-wallet trust boost (G5)
             "tracked_wallet_boost_enable" => self.tracked_wallet_boost_enable = value != 0,
             "tracked_dev_boost_max_bps" => self.tracked_dev_boost_max_bps = bp(value)?,
-            "tracked_whale_min_corroboration" => self.tracked_whale_min_corroboration = bp(value)?.max(1),
-            "tracked_corroboration_window_slots" => self.tracked_corroboration_window_slots = bp(value)?.max(1) as u64,
+            "tracked_whale_min_corroboration" => {
+                self.tracked_whale_min_corroboration = bp(value)?.max(1)
+            }
+            "tracked_corroboration_window_slots" => {
+                self.tracked_corroboration_window_slots = bp(value)?.max(1) as u64
+            }
             // §28 amendment: smart-money PnL screening (Phase 7)
             "smart_money_boost_enable" => self.smart_money_boost_enable = value != 0,
             "smart_money_boost_max_bps" => self.smart_money_boost_max_bps = bp(value)?,
             // §Quant-Rev-1: bundle detection hard veto
             "bundle_detect_enable" => self.bundle_detect_enable = value != 0,
-            "bundle_detect_min_same_slot_buys" => self.bundle_detect_min_same_slot_buys = bp(value)?,
+            "bundle_detect_min_same_slot_buys" => {
+                self.bundle_detect_min_same_slot_buys = bp(value)?
+            }
             "bundle_concentration_max_bps" => self.bundle_concentration_max_bps = bp(value)?,
             // §Quant-Rev-2: dev wallet grading hard veto
             "dev_history_reject_enable" => self.dev_history_reject_enable = value != 0,
@@ -1905,19 +1909,31 @@ impl Config {
             }
             "r3_creator_max_launches" => self.r3_creator_max_launches = bp(value)?,
             // §Quant-Rev-3: coordinated funding hard veto
-            "coordinated_funding_reject_enable" => self.coordinated_funding_reject_enable = value != 0,
-            "coordinated_funding_max_share_bps" => self.coordinated_funding_max_share_bps = bp(value)?,
-            "coordinated_funding_first_n_buyers" => self.coordinated_funding_first_n_buyers = bp(value)?,
+            "coordinated_funding_reject_enable" => {
+                self.coordinated_funding_reject_enable = value != 0
+            }
+            "coordinated_funding_max_share_bps" => {
+                self.coordinated_funding_max_share_bps = bp(value)?
+            }
+            "coordinated_funding_first_n_buyers" => {
+                self.coordinated_funding_first_n_buyers = bp(value)?
+            }
             // §Quant-Rev-4: mcap-position TP ladder
             "mcap_position_tp_enable" => self.mcap_position_tp_enable = value != 0,
             "mcap_position_lo_lamports" => self.mcap_position_lo_lamports = nonneg(value)?,
             "mcap_position_hi_lamports" => self.mcap_position_hi_lamports = nonneg(value)?,
             "mcap_position_early_tp1_bps" => self.mcap_position_early_tp1_bps = bp(value)?,
-            "mcap_position_early_tp1_frac_bps" => self.mcap_position_early_tp1_frac_bps = bp(value)?,
+            "mcap_position_early_tp1_frac_bps" => {
+                self.mcap_position_early_tp1_frac_bps = bp(value)?
+            }
             "mcap_position_early_tp2_bps" => self.mcap_position_early_tp2_bps = bp(value)?,
-            "mcap_position_early_tp2_frac_bps" => self.mcap_position_early_tp2_frac_bps = bp(value)?,
+            "mcap_position_early_tp2_frac_bps" => {
+                self.mcap_position_early_tp2_frac_bps = bp(value)?
+            }
             "mcap_position_early_tp3_bps" => self.mcap_position_early_tp3_bps = bp(value)?,
-            "mcap_position_early_tp3_frac_bps" => self.mcap_position_early_tp3_frac_bps = bp(value)?,
+            "mcap_position_early_tp3_frac_bps" => {
+                self.mcap_position_early_tp3_frac_bps = bp(value)?
+            }
             "mcap_position_late_tp1_bps" => self.mcap_position_late_tp1_bps = bp(value)?,
             "mcap_position_late_tp1_frac_bps" => self.mcap_position_late_tp1_frac_bps = bp(value)?,
             "mcap_position_late_tp2_bps" => self.mcap_position_late_tp2_bps = bp(value)?,
@@ -1955,7 +1971,9 @@ impl Config {
             "entry_min_unique_buyers" => self.entry_min_unique_buyers = bp(value)?,
             // ---- Rev-14 wangr intelligence ----
             "wangr_require_legacy_enable" => self.wangr_require_legacy_enable = value != 0,
-            "wangr_required_token_standard" => self.wangr_required_token_standard = bp(value)? as u8,
+            "wangr_required_token_standard" => {
+                self.wangr_required_token_standard = bp(value)? as u8
+            }
             "wangr_dow_filter_enable" => self.wangr_dow_filter_enable = value != 0,
             "wangr_dow_suppress_mask" => self.wangr_dow_suppress_mask = nonneg(value)? as u32,
             "wangr_hour_filter_enable" => self.wangr_hour_filter_enable = value != 0,
@@ -1978,7 +1996,6 @@ impl Config {
         Ok(())
     }
 
-
     /// Dump all apply()-recognized integer/bool/enum config fields as `key = value`
     /// text, suitable for the refiner's `parse_config_params` to read.
     /// This is the inverse of `from_str_over_default` for the integer/bool/enum
@@ -1987,73 +2004,233 @@ impl Config {
     pub fn dump_to_text(&self) -> String {
         use std::fmt::Write as _;
         let mut s = String::new();
-        let _ = writeln!(s, "alpha_call_lane_enable = {}", self.alpha_call_lane_enable as i64);
-        let _ = writeln!(s, "alpha_exit_pressure_enable = {}", self.alpha_exit_pressure_enable as i64);
-        let _ = writeln!(s, "arb_min_expected_net_lamports = {}", self.arb_min_expected_net_lamports as i64);
-        let _ = writeln!(s, "bankroll_initial_lamports = {}", self.bankroll_initial_lamports as i64);
+        let _ = writeln!(
+            s,
+            "alpha_call_lane_enable = {}",
+            self.alpha_call_lane_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "alpha_exit_pressure_enable = {}",
+            self.alpha_exit_pressure_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "arb_min_expected_net_lamports = {}",
+            self.arb_min_expected_net_lamports as i64
+        );
+        let _ = writeln!(
+            s,
+            "bankroll_initial_lamports = {}",
+            self.bankroll_initial_lamports as i64
+        );
         let _ = writeln!(s, "bar_trades_per_bar = {}", self.bar_trades_per_bar as i64);
-        let _ = writeln!(s, "baseline_margin_lamports = {}", self.baseline_margin_lamports as i64);
-        let _ = writeln!(s, "baseline_min_trades = {}", self.baseline_min_trades as i64);
-        let _ = writeln!(s, "brain_analysis_enable = {}", self.brain_analysis_enable as i64);
-        let _ = writeln!(s, "brain_decay_min_sample = {}", self.brain_decay_min_sample as i64);
+        let _ = writeln!(
+            s,
+            "baseline_margin_lamports = {}",
+            self.baseline_margin_lamports as i64
+        );
+        let _ = writeln!(
+            s,
+            "baseline_min_trades = {}",
+            self.baseline_min_trades as i64
+        );
+        let _ = writeln!(
+            s,
+            "brain_analysis_enable = {}",
+            self.brain_analysis_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "brain_decay_min_sample = {}",
+            self.brain_decay_min_sample as i64
+        );
         let _ = writeln!(s, "brain_enable = {}", self.brain_enable as i64);
-        let _ = writeln!(s, "brain_haircut_enable = {}", self.brain_haircut_enable as i64);
-        let _ = writeln!(s, "brain_haircut_mult_bp = {}", self.brain_haircut_mult_bp as i64);
-        let _ = writeln!(s, "brain_haircut_win_rate_bp = {}", self.brain_haircut_win_rate_bp as i64);
+        let _ = writeln!(
+            s,
+            "brain_haircut_enable = {}",
+            self.brain_haircut_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "brain_haircut_mult_bp = {}",
+            self.brain_haircut_mult_bp as i64
+        );
+        let _ = writeln!(
+            s,
+            "brain_haircut_win_rate_bp = {}",
+            self.brain_haircut_win_rate_bp as i64
+        );
         let _ = writeln!(s, "brain_min_sample = {}", self.brain_min_sample as i64);
-        let _ = writeln!(s, "brain_persist_enable = {}", self.brain_persist_enable as i64);
-        let _ = writeln!(s, "brain_recall_max_distance = {}", self.brain_recall_max_distance as i64);
-        let _ = writeln!(s, "brain_reflect_enable = {}", self.brain_reflect_enable as i64);
-        let _ = writeln!(s, "brain_reflect_step_bp = {}", self.brain_reflect_step_bp as i64);
-        let _ = writeln!(s, "brain_veto_win_rate_bp = {}", self.brain_veto_win_rate_bp as i64);
+        let _ = writeln!(
+            s,
+            "brain_persist_enable = {}",
+            self.brain_persist_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "brain_recall_max_distance = {}",
+            self.brain_recall_max_distance as i64
+        );
+        let _ = writeln!(
+            s,
+            "brain_reflect_enable = {}",
+            self.brain_reflect_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "brain_reflect_step_bp = {}",
+            self.brain_reflect_step_bp as i64
+        );
+        let _ = writeln!(
+            s,
+            "brain_veto_win_rate_bp = {}",
+            self.brain_veto_win_rate_bp as i64
+        );
         let _ = writeln!(s, "confirm_ttl_ticks = {}", self.confirm_ttl_ticks as i64);
-        let _ = writeln!(s, "confirmed_capacity_mult = {}", self.confirmed_capacity_mult as i64);
+        let _ = writeln!(
+            s,
+            "confirmed_capacity_mult = {}",
+            self.confirmed_capacity_mult as i64
+        );
         let _ = writeln!(s, "creation_score = {}", self.creation_score as i64);
         let _ = writeln!(s, "creation_ttl_ticks = {}", self.creation_ttl_ticks as i64);
-        let _ = writeln!(s, "creator_dump_veto_bp = {}", self.creator_dump_veto_bp as i64);
-        let _ = writeln!(s, "creator_dump_veto_enable = {}", self.creator_dump_veto_enable as i64);
-        let _ = writeln!(s, "creator_dump_veto_strict_bp = {}", self.creator_dump_veto_strict_bp as i64);
-        let _ = writeln!(s, "creator_fade_sold_bps = {}", self.creator_fade_sold_bps as i64);
+        let _ = writeln!(
+            s,
+            "creator_dump_veto_bp = {}",
+            self.creator_dump_veto_bp as i64
+        );
+        let _ = writeln!(
+            s,
+            "creator_dump_veto_enable = {}",
+            self.creator_dump_veto_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "creator_dump_veto_strict_bp = {}",
+            self.creator_dump_veto_strict_bp as i64
+        );
+        let _ = writeln!(
+            s,
+            "creator_fade_sold_bps = {}",
+            self.creator_fade_sold_bps as i64
+        );
         let _ = writeln!(s, "creator_track_cap = {}", self.creator_track_cap as i64);
-        let _ = writeln!(s, "curve_exact_fill_enable = {}", self.curve_exact_fill_enable as i64);
+        let _ = writeln!(
+            s,
+            "curve_exact_fill_enable = {}",
+            self.curve_exact_fill_enable as i64
+        );
         let _ = writeln!(s, "dd_tier1_bp = {}", self.dd_tier1_bp as i64);
         let _ = writeln!(s, "dd_tier2_bp = {}", self.dd_tier2_bp as i64);
         let _ = writeln!(s, "dd_tier3_bp = {}", self.dd_tier3_bp as i64);
-        let _ = writeln!(s, "deployer_screen_enable = {}", self.deployer_screen_enable as i64);
-        let _ = writeln!(s, "derived_targets_enable = {}", self.derived_targets_enable as i64);
-        let _ = writeln!(s, "designated_caller_enable = {}", self.designated_caller_enable as i64);
-        let _ = writeln!(s, "designated_caller_weight = {}", self.designated_caller_weight as i64);
+        let _ = writeln!(
+            s,
+            "deployer_screen_enable = {}",
+            self.deployer_screen_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "derived_targets_enable = {}",
+            self.derived_targets_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "designated_caller_enable = {}",
+            self.designated_caller_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "designated_caller_weight = {}",
+            self.designated_caller_weight as i64
+        );
         let _ = writeln!(s, "entry_fee_bps = {}", self.entry_fee_bps as i64);
-        let _ = writeln!(s, "entry_mode_leaves_enable = {}", self.entry_mode_leaves_enable as i64);
+        let _ = writeln!(
+            s,
+            "entry_mode_leaves_enable = {}",
+            self.entry_mode_leaves_enable as i64
+        );
         let _ = writeln!(s, "entry_tip_lamports = {}", self.entry_tip_lamports as i64);
         let _ = writeln!(s, "exit_fee_bps = {}", self.exit_fee_bps as i64);
         let _ = writeln!(s, "exit_tip_lamports = {}", self.exit_tip_lamports as i64);
-        let _ = writeln!(s, "expectancy_min_lane_trades = {}", self.expectancy_min_lane_trades as i64);
-        let _ = writeln!(s, "expected_move_min_sample = {}", self.expected_move_min_sample as i64);
-        let _ = writeln!(s, "expected_move_model_enable = {}", self.expected_move_model_enable as i64);
-        let _ = writeln!(s, "expected_move_prior_weight = {}", self.expected_move_prior_weight as i64);
+        let _ = writeln!(
+            s,
+            "expectancy_min_lane_trades = {}",
+            self.expectancy_min_lane_trades as i64
+        );
+        let _ = writeln!(
+            s,
+            "expected_move_min_sample = {}",
+            self.expected_move_min_sample as i64
+        );
+        let _ = writeln!(
+            s,
+            "expected_move_model_enable = {}",
+            self.expected_move_model_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "expected_move_prior_weight = {}",
+            self.expected_move_prior_weight as i64
+        );
         let _ = writeln!(s, "f_base_bp = {}", self.f_base_bp as i64);
         let _ = writeln!(s, "fee_floor_enable = {}", self.fee_floor_enable as i64);
         let _ = writeln!(s, "fill_landing_slots = {}", self.fill_landing_slots as i64);
         let _ = writeln!(s, "fill_mode = {}", self.fill_mode.code());
         let _ = writeln!(s, "floor_fraction_bps = {}", self.floor_fraction_bps as i64);
-        let _ = writeln!(s, "gate_base_fixed_lamports = {}", self.gate_base_fixed_lamports as i64);
+        let _ = writeln!(
+            s,
+            "gate_base_fixed_lamports = {}",
+            self.gate_base_fixed_lamports as i64
+        );
         let _ = writeln!(s, "gate_exit_tranches = {}", self.gate_exit_tranches as i64);
-        let _ = writeln!(s, "gate_expected_move_bps = {}", self.gate_expected_move_bps as i64);
+        let _ = writeln!(
+            s,
+            "gate_expected_move_bps = {}",
+            self.gate_expected_move_bps as i64
+        );
         let _ = writeln!(s, "gate_fail_rate_bps = {}", self.gate_fail_rate_bps as i64);
         let _ = writeln!(s, "gate_impact_den = {}", self.gate_impact_den as i64);
         let _ = writeln!(s, "gate_margin_bps = {}", self.gate_margin_bps as i64);
         let _ = writeln!(s, "gate_protocol_bps = {}", self.gate_protocol_bps as i64);
-        let _ = writeln!(s, "holder_concentration_enable = {}", self.holder_concentration_enable as i64);
-        let _ = writeln!(s, "into_strength_climax_bp = {}", self.into_strength_climax_bp as i64);
-        let _ = writeln!(s, "into_strength_exit_enable = {}", self.into_strength_exit_enable as i64);
+        let _ = writeln!(
+            s,
+            "holder_concentration_enable = {}",
+            self.holder_concentration_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "into_strength_climax_bp = {}",
+            self.into_strength_climax_bp as i64
+        );
+        let _ = writeln!(
+            s,
+            "into_strength_exit_enable = {}",
+            self.into_strength_exit_enable as i64
+        );
         let _ = writeln!(s, "landing_base_bps = {}", self.landing_base_bps as i64);
-        let _ = writeln!(s, "landing_penalty_k_bps = {}", self.landing_penalty_k_bps as i64);
-        let _ = writeln!(s, "lane_evidence_ttl_ticks = {}", self.lane_evidence_ttl_ticks as i64);
-        let _ = writeln!(s, "lc_cvd_hold_frac_bps = {}", self.lc_cvd_hold_frac_bps as i64);
+        let _ = writeln!(
+            s,
+            "landing_penalty_k_bps = {}",
+            self.landing_penalty_k_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "lane_evidence_ttl_ticks = {}",
+            self.lane_evidence_ttl_ticks as i64
+        );
+        let _ = writeln!(
+            s,
+            "lc_cvd_hold_frac_bps = {}",
+            self.lc_cvd_hold_frac_bps as i64
+        );
         let _ = writeln!(s, "lc_hard_sl_bps = {}", self.lc_hard_sl_bps as i64);
         let _ = writeln!(s, "lc_max_hold_ticks = {}", self.lc_max_hold_ticks as i64);
-        let _ = writeln!(s, "lc_precursor_drop_bps = {}", self.lc_precursor_drop_bps as i64);
+        let _ = writeln!(
+            s,
+            "lc_precursor_drop_bps = {}",
+            self.lc_precursor_drop_bps as i64
+        );
         let _ = writeln!(s, "lc_stall_ticks = {}", self.lc_stall_ticks as i64);
         let _ = writeln!(s, "lc_tp1_bps = {}", self.lc_tp1_bps as i64);
         let _ = writeln!(s, "lc_tp1_frac_bps = {}", self.lc_tp1_frac_bps as i64);
@@ -2064,143 +2241,534 @@ impl Config {
         let _ = writeln!(s, "lc_trail_base_bps = {}", self.lc_trail_base_bps as i64);
         let _ = writeln!(s, "lc_trail_k_div = {}", self.lc_trail_k_div as i64);
         let _ = writeln!(s, "lc_trail_max_bps = {}", self.lc_trail_max_bps as i64);
-        let _ = writeln!(s, "max_concurrent_positions = {}", self.max_concurrent_positions as i64);
+        let _ = writeln!(
+            s,
+            "max_concurrent_positions = {}",
+            self.max_concurrent_positions as i64
+        );
         let _ = writeln!(s, "mcap_band_enable = {}", self.mcap_band_enable as i64);
-        let _ = writeln!(s, "mcap_band_hi_lamports = {}", self.mcap_band_hi_lamports as i64);
-        let _ = writeln!(s, "mcap_band_lo_lamports = {}", self.mcap_band_lo_lamports as i64);
-        let _ = writeln!(s, "meta_accel_threshold = {}", self.meta_accel_threshold as i64);
-        let _ = writeln!(s, "meta_max_categories = {}", self.meta_max_categories as i64);
-        let _ = writeln!(s, "meta_max_creators_per_cat = {}", self.meta_max_creators_per_cat as i64);
+        let _ = writeln!(
+            s,
+            "mcap_band_hi_lamports = {}",
+            self.mcap_band_hi_lamports as i64
+        );
+        let _ = writeln!(
+            s,
+            "mcap_band_lo_lamports = {}",
+            self.mcap_band_lo_lamports as i64
+        );
+        let _ = writeln!(
+            s,
+            "meta_accel_threshold = {}",
+            self.meta_accel_threshold as i64
+        );
+        let _ = writeln!(
+            s,
+            "meta_max_categories = {}",
+            self.meta_max_categories as i64
+        );
+        let _ = writeln!(
+            s,
+            "meta_max_creators_per_cat = {}",
+            self.meta_max_creators_per_cat as i64
+        );
         let _ = writeln!(s, "meta_min_breadth = {}", self.meta_min_breadth as i64);
         let _ = writeln!(s, "meta_min_share_bps = {}", self.meta_min_share_bps as i64);
         let _ = writeln!(s, "meta_rank_bonus_bp = {}", self.meta_rank_bonus_bp as i64);
-        let _ = writeln!(s, "meta_saturation_haircut_bp = {}", self.meta_saturation_haircut_bp as i64);
-        let _ = writeln!(s, "meta_taxonomy_version = {}", self.meta_taxonomy_version as i64);
-        let _ = writeln!(s, "min_trade_size_lamports = {}", self.min_trade_size_lamports as i64);
+        let _ = writeln!(
+            s,
+            "meta_saturation_haircut_bp = {}",
+            self.meta_saturation_haircut_bp as i64
+        );
+        let _ = writeln!(
+            s,
+            "meta_taxonomy_version = {}",
+            self.meta_taxonomy_version as i64
+        );
+        let _ = writeln!(
+            s,
+            "min_trade_size_lamports = {}",
+            self.min_trade_size_lamports as i64
+        );
         let _ = writeln!(s, "money_proxy_enable = {}", self.money_proxy_enable as i64);
-        let _ = writeln!(s, "money_proxy_holder_flow_enable = {}", self.money_proxy_holder_flow_enable as i64);
-        let _ = writeln!(s, "narrative_class_enable = {}", self.narrative_class_enable as i64);
+        let _ = writeln!(
+            s,
+            "money_proxy_holder_flow_enable = {}",
+            self.money_proxy_holder_flow_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "narrative_class_enable = {}",
+            self.narrative_class_enable as i64
+        );
         let _ = writeln!(s, "narrative_decay_bp = {}", self.narrative_decay_bp as i64);
-        let _ = writeln!(s, "narrative_decay_floor = {}", self.narrative_decay_floor as i64);
-        let _ = writeln!(s, "narrative_decay_step_ticks = {}", self.narrative_decay_step_ticks as i64);
-        let _ = writeln!(s, "narrative_stage_hi_fp = {}", self.narrative_stage_hi_fp as i64);
-        let _ = writeln!(s, "narrative_stage_lo_fp = {}", self.narrative_stage_lo_fp as i64);
+        let _ = writeln!(
+            s,
+            "narrative_decay_floor = {}",
+            self.narrative_decay_floor as i64
+        );
+        let _ = writeln!(
+            s,
+            "narrative_decay_step_ticks = {}",
+            self.narrative_decay_step_ticks as i64
+        );
+        let _ = writeln!(
+            s,
+            "narrative_stage_hi_fp = {}",
+            self.narrative_stage_hi_fp as i64
+        );
+        let _ = writeln!(
+            s,
+            "narrative_stage_lo_fp = {}",
+            self.narrative_stage_lo_fp as i64
+        );
         let _ = writeln!(s, "numeric_ofi_min_bp = {}", self.numeric_ofi_min_bp as i64);
-        let _ = writeln!(s, "paper_tick_period_ms = {}", self.paper_tick_period_ms as i64);
-        let _ = writeln!(s, "platform_lead_enable = {}", self.platform_lead_enable as i64);
-        let _ = writeln!(s, "probe_budget_enable = {}", self.probe_budget_enable as i64);
+        let _ = writeln!(
+            s,
+            "paper_tick_period_ms = {}",
+            self.paper_tick_period_ms as i64
+        );
+        let _ = writeln!(
+            s,
+            "platform_lead_enable = {}",
+            self.platform_lead_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "probe_budget_enable = {}",
+            self.probe_budget_enable as i64
+        );
         let _ = writeln!(s, "probe_f_bp = {}", self.probe_f_bp as i64);
         let _ = writeln!(s, "probe_frac_bp = {}", self.probe_frac_bp as i64);
-        let _ = writeln!(s, "promote_corroboration_quota = {}", self.promote_corroboration_quota as i64);
+        let _ = writeln!(
+            s,
+            "promote_corroboration_quota = {}",
+            self.promote_corroboration_quota as i64
+        );
         let _ = writeln!(s, "promote_k = {}", self.promote_k as i64);
-        let _ = writeln!(s, "promote_min_haircut_bp = {}", self.promote_min_haircut_bp as i64);
+        let _ = writeln!(
+            s,
+            "promote_min_haircut_bp = {}",
+            self.promote_min_haircut_bp as i64
+        );
         let _ = writeln!(s, "promote_min_rank = {}", self.promote_min_rank as i64);
-        let _ = writeln!(s, "reflect_every_ticks = {}", self.reflect_every_ticks as i64);
-        let _ = writeln!(s, "reflect_weight_ceiling_bp = {}", self.reflect_weight_ceiling_bp as i64);
-        let _ = writeln!(s, "reflect_weight_floor_bp = {}", self.reflect_weight_floor_bp as i64);
-        let _ = writeln!(s, "reflect_weight_step_bp = {}", self.reflect_weight_step_bp as i64);
+        let _ = writeln!(
+            s,
+            "reflect_every_ticks = {}",
+            self.reflect_every_ticks as i64
+        );
+        let _ = writeln!(
+            s,
+            "reflect_weight_ceiling_bp = {}",
+            self.reflect_weight_ceiling_bp as i64
+        );
+        let _ = writeln!(
+            s,
+            "reflect_weight_floor_bp = {}",
+            self.reflect_weight_floor_bp as i64
+        );
+        let _ = writeln!(
+            s,
+            "reflect_weight_step_bp = {}",
+            self.reflect_weight_step_bp as i64
+        );
         let _ = writeln!(s, "revert_ofi_min_bp = {}", self.revert_ofi_min_bp as i64);
-        let _ = writeln!(s, "revert_size_mult_bp = {}", self.revert_size_mult_bp as i64);
+        let _ = writeln!(
+            s,
+            "revert_size_mult_bp = {}",
+            self.revert_size_mult_bp as i64
+        );
         let _ = writeln!(s, "roll_revert_bp = {}", self.roll_revert_bp as i64);
         let _ = writeln!(s, "roll_trend_bp = {}", self.roll_trend_bp as i64);
-        let _ = writeln!(s, "scale_confirm_auth_min_bp = {}", self.scale_confirm_auth_min_bp as i64);
-        let _ = writeln!(s, "setup_classifier_enable = {}", self.setup_classifier_enable as i64);
+        let _ = writeln!(
+            s,
+            "scale_confirm_auth_min_bp = {}",
+            self.scale_confirm_auth_min_bp as i64
+        );
+        let _ = writeln!(
+            s,
+            "setup_classifier_enable = {}",
+            self.setup_classifier_enable as i64
+        );
         let _ = writeln!(s, "sim_impact_k_bps = {}", self.sim_impact_k_bps as i64);
-        let _ = writeln!(s, "structure_downtrend_haircut_bp = {}", self.structure_downtrend_haircut_bp as i64);
+        let _ = writeln!(
+            s,
+            "structure_downtrend_haircut_bp = {}",
+            self.structure_downtrend_haircut_bp as i64
+        );
         let _ = writeln!(s, "structure_min_bars = {}", self.structure_min_bars as i64);
         let _ = writeln!(s, "target_ceiling_bp = {}", self.target_ceiling_bp as i64);
         let _ = writeln!(s, "target_floor_bp = {}", self.target_floor_bp as i64);
-        let _ = writeln!(s, "target_margin_mult_bp = {}", self.target_margin_mult_bp as i64);
+        let _ = writeln!(
+            s,
+            "target_margin_mult_bp = {}",
+            self.target_margin_mult_bp as i64
+        );
         let _ = writeln!(s, "thesis_persist_obs = {}", self.thesis_persist_obs as i64);
         let _ = writeln!(s, "total_risk_cap_bp = {}", self.total_risk_cap_bp as i64);
-        let _ = writeln!(s, "tracked_corroboration_window_slots = {}", self.tracked_corroboration_window_slots as i64);
-        let _ = writeln!(s, "tracked_dev_boost_max_bps = {}", self.tracked_dev_boost_max_bps as i64);
-        let _ = writeln!(s, "tracked_wallet_boost_enable = {}", self.tracked_wallet_boost_enable as i64);
+        let _ = writeln!(
+            s,
+            "tracked_corroboration_window_slots = {}",
+            self.tracked_corroboration_window_slots as i64
+        );
+        let _ = writeln!(
+            s,
+            "tracked_dev_boost_max_bps = {}",
+            self.tracked_dev_boost_max_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "tracked_wallet_boost_enable = {}",
+            self.tracked_wallet_boost_enable as i64
+        );
         // tracked_wallet_path is a CfgPath (path-valued), handled by apply_path, not dump_to_text.
-        let _ = writeln!(s, "tracked_whale_min_corroboration = {}", self.tracked_whale_min_corroboration as i64);
+        let _ = writeln!(
+            s,
+            "tracked_whale_min_corroboration = {}",
+            self.tracked_whale_min_corroboration as i64
+        );
         // §28 amendment: smart-money PnL screening (Phase 7)
-        let _ = writeln!(s, "smart_money_boost_enable = {}", self.smart_money_boost_enable as i64);
-        let _ = writeln!(s, "smart_money_boost_max_bps = {}", self.smart_money_boost_max_bps as i64);
+        let _ = writeln!(
+            s,
+            "smart_money_boost_enable = {}",
+            self.smart_money_boost_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "smart_money_boost_max_bps = {}",
+            self.smart_money_boost_max_bps as i64
+        );
         // §Quant-Rev-1 through §Quant-Rev-6 dump
-        let _ = writeln!(s, "bundle_detect_enable = {}", self.bundle_detect_enable as i64);
-        let _ = writeln!(s, "bundle_detect_min_same_slot_buys = {}", self.bundle_detect_min_same_slot_buys as i64);
-        let _ = writeln!(s, "bundle_concentration_max_bps = {}", self.bundle_concentration_max_bps as i64);
-        let _ = writeln!(s, "dev_history_reject_enable = {}", self.dev_history_reject_enable as i64);
-        let _ = writeln!(s, "dev_history_min_launches = {}", self.dev_history_min_launches as i64);
-        let _ = writeln!(s, "dev_graduation_min_rate_bp = {}", self.dev_graduation_min_rate_bp as i64);
-        let _ = writeln!(s, "r3_creator_history_enable = {}", self.r3_creator_history_enable as i64);
-        let _ = writeln!(s, "r3_creator_max_launches = {}", self.r3_creator_max_launches as i64);
-        let _ = writeln!(s, "coordinated_funding_reject_enable = {}", self.coordinated_funding_reject_enable as i64);
-        let _ = writeln!(s, "coordinated_funding_max_share_bps = {}", self.coordinated_funding_max_share_bps as i64);
-        let _ = writeln!(s, "coordinated_funding_first_n_buyers = {}", self.coordinated_funding_first_n_buyers as i64);
-        let _ = writeln!(s, "mcap_position_tp_enable = {}", self.mcap_position_tp_enable as i64);
-        let _ = writeln!(s, "mcap_position_lo_lamports = {}", self.mcap_position_lo_lamports as i64);
-        let _ = writeln!(s, "mcap_position_hi_lamports = {}", self.mcap_position_hi_lamports as i64);
-        let _ = writeln!(s, "mcap_position_early_tp1_bps = {}", self.mcap_position_early_tp1_bps as i64);
-        let _ = writeln!(s, "mcap_position_early_tp1_frac_bps = {}", self.mcap_position_early_tp1_frac_bps as i64);
-        let _ = writeln!(s, "mcap_position_early_tp2_bps = {}", self.mcap_position_early_tp2_bps as i64);
-        let _ = writeln!(s, "mcap_position_early_tp2_frac_bps = {}", self.mcap_position_early_tp2_frac_bps as i64);
-        let _ = writeln!(s, "mcap_position_early_tp3_bps = {}", self.mcap_position_early_tp3_bps as i64);
-        let _ = writeln!(s, "mcap_position_early_tp3_frac_bps = {}", self.mcap_position_early_tp3_frac_bps as i64);
-        let _ = writeln!(s, "mcap_position_late_tp1_bps = {}", self.mcap_position_late_tp1_bps as i64);
-        let _ = writeln!(s, "mcap_position_late_tp1_frac_bps = {}", self.mcap_position_late_tp1_frac_bps as i64);
-        let _ = writeln!(s, "mcap_position_late_tp2_bps = {}", self.mcap_position_late_tp2_bps as i64);
-        let _ = writeln!(s, "mcap_position_late_tp2_frac_bps = {}", self.mcap_position_late_tp2_frac_bps as i64);
-        let _ = writeln!(s, "mcap_position_late_tp3_bps = {}", self.mcap_position_late_tp3_bps as i64);
-        let _ = writeln!(s, "mcap_position_late_tp3_frac_bps = {}", self.mcap_position_late_tp3_frac_bps as i64);
-        let _ = writeln!(s, "conditional_moon_bag_enable = {}", self.conditional_moon_bag_enable as i64);
-        let _ = writeln!(s, "moon_bag_velocity_threshold_bps = {}", self.moon_bag_velocity_threshold_bps as i64);
-        let _ = writeln!(s, "moon_bag_acceleration_window = {}", self.moon_bag_acceleration_window as i64);
-        let _ = writeln!(s, "exit_liquidity_reject_enable = {}", self.exit_liquidity_reject_enable as i64);
-        let _ = writeln!(s, "exit_liquidity_min_holders = {}", self.exit_liquidity_min_holders as i64);
+        let _ = writeln!(
+            s,
+            "bundle_detect_enable = {}",
+            self.bundle_detect_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "bundle_detect_min_same_slot_buys = {}",
+            self.bundle_detect_min_same_slot_buys as i64
+        );
+        let _ = writeln!(
+            s,
+            "bundle_concentration_max_bps = {}",
+            self.bundle_concentration_max_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "dev_history_reject_enable = {}",
+            self.dev_history_reject_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "dev_history_min_launches = {}",
+            self.dev_history_min_launches as i64
+        );
+        let _ = writeln!(
+            s,
+            "dev_graduation_min_rate_bp = {}",
+            self.dev_graduation_min_rate_bp as i64
+        );
+        let _ = writeln!(
+            s,
+            "r3_creator_history_enable = {}",
+            self.r3_creator_history_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "r3_creator_max_launches = {}",
+            self.r3_creator_max_launches as i64
+        );
+        let _ = writeln!(
+            s,
+            "coordinated_funding_reject_enable = {}",
+            self.coordinated_funding_reject_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "coordinated_funding_max_share_bps = {}",
+            self.coordinated_funding_max_share_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "coordinated_funding_first_n_buyers = {}",
+            self.coordinated_funding_first_n_buyers as i64
+        );
+        let _ = writeln!(
+            s,
+            "mcap_position_tp_enable = {}",
+            self.mcap_position_tp_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "mcap_position_lo_lamports = {}",
+            self.mcap_position_lo_lamports as i64
+        );
+        let _ = writeln!(
+            s,
+            "mcap_position_hi_lamports = {}",
+            self.mcap_position_hi_lamports as i64
+        );
+        let _ = writeln!(
+            s,
+            "mcap_position_early_tp1_bps = {}",
+            self.mcap_position_early_tp1_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "mcap_position_early_tp1_frac_bps = {}",
+            self.mcap_position_early_tp1_frac_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "mcap_position_early_tp2_bps = {}",
+            self.mcap_position_early_tp2_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "mcap_position_early_tp2_frac_bps = {}",
+            self.mcap_position_early_tp2_frac_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "mcap_position_early_tp3_bps = {}",
+            self.mcap_position_early_tp3_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "mcap_position_early_tp3_frac_bps = {}",
+            self.mcap_position_early_tp3_frac_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "mcap_position_late_tp1_bps = {}",
+            self.mcap_position_late_tp1_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "mcap_position_late_tp1_frac_bps = {}",
+            self.mcap_position_late_tp1_frac_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "mcap_position_late_tp2_bps = {}",
+            self.mcap_position_late_tp2_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "mcap_position_late_tp2_frac_bps = {}",
+            self.mcap_position_late_tp2_frac_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "mcap_position_late_tp3_bps = {}",
+            self.mcap_position_late_tp3_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "mcap_position_late_tp3_frac_bps = {}",
+            self.mcap_position_late_tp3_frac_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "conditional_moon_bag_enable = {}",
+            self.conditional_moon_bag_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "moon_bag_velocity_threshold_bps = {}",
+            self.moon_bag_velocity_threshold_bps as i64
+        );
+        let _ = writeln!(
+            s,
+            "moon_bag_acceleration_window = {}",
+            self.moon_bag_acceleration_window as i64
+        );
+        let _ = writeln!(
+            s,
+            "exit_liquidity_reject_enable = {}",
+            self.exit_liquidity_reject_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "exit_liquidity_min_holders = {}",
+            self.exit_liquidity_min_holders as i64
+        );
         // §Quant-Rev-7: re-entry cooldown
-        let _ = writeln!(s, "reentry_cooldown_enable = {}", self.reentry_cooldown_enable as i64);
-        let _ = writeln!(s, "reentry_cooldown_ticks = {}", self.reentry_cooldown_ticks as i64);
+        let _ = writeln!(
+            s,
+            "reentry_cooldown_enable = {}",
+            self.reentry_cooldown_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "reentry_cooldown_ticks = {}",
+            self.reentry_cooldown_ticks as i64
+        );
         // Rev-13: entry quality filter
-        let _ = writeln!(s, "entry_quality_filter_enable = {}", self.entry_quality_filter_enable as i64);
-        let _ = writeln!(s, "entry_min_buy_ratio_bp = {}", self.entry_min_buy_ratio_bp as i64);
-        let _ = writeln!(s, "entry_max_sol_per_trade_lamports = {}", self.entry_max_sol_per_trade_lamports as i64);
-        let _ = writeln!(s, "entry_min_trades_observed = {}", self.entry_min_trades_observed as i64);
-        let _ = writeln!(s, "entry_min_age_slots = {}", self.entry_min_age_slots as i64);
-        let _ = writeln!(s, "entry_min_volume_lamports = {}", self.entry_min_volume_lamports as i64);
-        let _ = writeln!(s, "entry_min_buy_pressure_bp = {}", self.entry_min_buy_pressure_bp as i64);
-        let _ = writeln!(s, "entry_min_unique_buyers = {}", self.entry_min_unique_buyers as i64);
+        let _ = writeln!(
+            s,
+            "entry_quality_filter_enable = {}",
+            self.entry_quality_filter_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "entry_min_buy_ratio_bp = {}",
+            self.entry_min_buy_ratio_bp as i64
+        );
+        let _ = writeln!(
+            s,
+            "entry_max_sol_per_trade_lamports = {}",
+            self.entry_max_sol_per_trade_lamports as i64
+        );
+        let _ = writeln!(
+            s,
+            "entry_min_trades_observed = {}",
+            self.entry_min_trades_observed as i64
+        );
+        let _ = writeln!(
+            s,
+            "entry_min_age_slots = {}",
+            self.entry_min_age_slots as i64
+        );
+        let _ = writeln!(
+            s,
+            "entry_min_volume_lamports = {}",
+            self.entry_min_volume_lamports as i64
+        );
+        let _ = writeln!(
+            s,
+            "entry_min_buy_pressure_bp = {}",
+            self.entry_min_buy_pressure_bp as i64
+        );
+        let _ = writeln!(
+            s,
+            "entry_min_unique_buyers = {}",
+            self.entry_min_unique_buyers as i64
+        );
         // Rev-14 wangr intelligence filters
-        let _ = writeln!(s, "wangr_require_legacy_enable = {}", self.wangr_require_legacy_enable as i64);
-        let _ = writeln!(s, "wangr_required_token_standard = {}", self.wangr_required_token_standard as i64);
-        let _ = writeln!(s, "wangr_dow_filter_enable = {}", self.wangr_dow_filter_enable as i64);
-        let _ = writeln!(s, "wangr_dow_suppress_mask = {}", self.wangr_dow_suppress_mask as i64);
-        let _ = writeln!(s, "wangr_hour_filter_enable = {}", self.wangr_hour_filter_enable as i64);
-        let _ = writeln!(s, "wangr_hour_preferred_mask = {}", self.wangr_hour_preferred_mask as i64);
-        let _ = writeln!(s, "wangr_symbol_len_filter_enable = {}", self.wangr_symbol_len_filter_enable as i64);
-        let _ = writeln!(s, "wangr_symbol_len_min = {}", self.wangr_symbol_len_min as i64);
-        let _ = writeln!(s, "wangr_symbol_len_max = {}", self.wangr_symbol_len_max as i64);
-        let _ = writeln!(s, "wangr_creator_min_launches = {}", self.wangr_creator_min_launches as i64);
-        let _ = writeln!(s, "wangr_liq_zone_filter_enable = {}", self.wangr_liq_zone_filter_enable as i64);
-        let _ = writeln!(s, "wangr_liq_zone_lo_lamports = {}", self.wangr_liq_zone_lo_lamports as i64);
-        let _ = writeln!(s, "wangr_liq_zone_hi_lamports = {}", self.wangr_liq_zone_hi_lamports as i64);
-        let _ = writeln!(s, "universe_min_entities = {}", self.universe_min_entities as i64);
-        let _ = writeln!(s, "universe_min_liquidity_lamports = {}", self.universe_min_liquidity_lamports as i64);
-        let _ = writeln!(s, "universe_min_trades = {}", self.universe_min_trades as i64);
-        let _ = writeln!(s, "universe_wash_ratio_max = {}", self.universe_wash_ratio_max as i64);
-        let _ = writeln!(s, "universe_window_ticks = {}", self.universe_window_ticks as i64);
+        let _ = writeln!(
+            s,
+            "wangr_require_legacy_enable = {}",
+            self.wangr_require_legacy_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "wangr_required_token_standard = {}",
+            self.wangr_required_token_standard as i64
+        );
+        let _ = writeln!(
+            s,
+            "wangr_dow_filter_enable = {}",
+            self.wangr_dow_filter_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "wangr_dow_suppress_mask = {}",
+            self.wangr_dow_suppress_mask as i64
+        );
+        let _ = writeln!(
+            s,
+            "wangr_hour_filter_enable = {}",
+            self.wangr_hour_filter_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "wangr_hour_preferred_mask = {}",
+            self.wangr_hour_preferred_mask as i64
+        );
+        let _ = writeln!(
+            s,
+            "wangr_symbol_len_filter_enable = {}",
+            self.wangr_symbol_len_filter_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "wangr_symbol_len_min = {}",
+            self.wangr_symbol_len_min as i64
+        );
+        let _ = writeln!(
+            s,
+            "wangr_symbol_len_max = {}",
+            self.wangr_symbol_len_max as i64
+        );
+        let _ = writeln!(
+            s,
+            "wangr_creator_min_launches = {}",
+            self.wangr_creator_min_launches as i64
+        );
+        let _ = writeln!(
+            s,
+            "wangr_liq_zone_filter_enable = {}",
+            self.wangr_liq_zone_filter_enable as i64
+        );
+        let _ = writeln!(
+            s,
+            "wangr_liq_zone_lo_lamports = {}",
+            self.wangr_liq_zone_lo_lamports as i64
+        );
+        let _ = writeln!(
+            s,
+            "wangr_liq_zone_hi_lamports = {}",
+            self.wangr_liq_zone_hi_lamports as i64
+        );
+        let _ = writeln!(
+            s,
+            "universe_min_entities = {}",
+            self.universe_min_entities as i64
+        );
+        let _ = writeln!(
+            s,
+            "universe_min_liquidity_lamports = {}",
+            self.universe_min_liquidity_lamports as i64
+        );
+        let _ = writeln!(
+            s,
+            "universe_min_trades = {}",
+            self.universe_min_trades as i64
+        );
+        let _ = writeln!(
+            s,
+            "universe_wash_ratio_max = {}",
+            self.universe_wash_ratio_max as i64
+        );
+        let _ = writeln!(
+            s,
+            "universe_window_ticks = {}",
+            self.universe_window_ticks as i64
+        );
         let _ = writeln!(s, "vol_stop_enable = {}", self.vol_stop_enable as i64);
         let _ = writeln!(s, "vol_stop_scale_bp = {}", self.vol_stop_scale_bp as i64);
         let _ = writeln!(s, "vpin_min_buckets = {}", self.vpin_min_buckets as i64);
         let _ = writeln!(s, "vpin_sell_dom_bp = {}", self.vpin_sell_dom_bp as i64);
         let _ = writeln!(s, "vpin_stale_ticks = {}", self.vpin_stale_ticks as i64);
         let _ = writeln!(s, "vpin_toxic_bp = {}", self.vpin_toxic_bp as i64);
-        let _ = writeln!(s, "vpin_v_max_lamports = {}", self.vpin_v_max_lamports as i64);
-        let _ = writeln!(s, "vpin_v_min_lamports = {}", self.vpin_v_min_lamports as i64);
+        let _ = writeln!(
+            s,
+            "vpin_v_max_lamports = {}",
+            self.vpin_v_max_lamports as i64
+        );
+        let _ = writeln!(
+            s,
+            "vpin_v_min_lamports = {}",
+            self.vpin_v_min_lamports as i64
+        );
         let _ = writeln!(s, "vpin_veto_bp = {}", self.vpin_veto_bp as i64);
         let _ = writeln!(s, "vpin_warn_bp = {}", self.vpin_warn_bp as i64);
         let _ = writeln!(s, "wallet_score_scale = {}", self.wallet_score_scale as i64);
         let _ = writeln!(s, "watchlist_capacity = {}", self.watchlist_capacity as i64);
-        let _ = writeln!(s, "watchlist_ttl_ticks = {}", self.watchlist_ttl_ticks as i64);
-        let _ = writeln!(s, "x_min_promote_cap_bp = {}", self.x_min_promote_cap_bp as i64);
+        let _ = writeln!(
+            s,
+            "watchlist_ttl_ticks = {}",
+            self.watchlist_ttl_ticks as i64
+        );
+        let _ = writeln!(
+            s,
+            "x_min_promote_cap_bp = {}",
+            self.x_min_promote_cap_bp as i64
+        );
         s
     }
-
 
     /// Apply a single `key = <path>` override for the small set of PATH-valued
     /// keys. Returns `Err` on an unknown key or a path longer than
@@ -2228,7 +2796,10 @@ impl Config {
     /// [`Config::apply_path`] rather than the integer [`Config::apply`].
     #[must_use]
     pub fn is_path_key(key: &str) -> bool {
-        matches!(key, "brain_path" | "brain_analysis_path" | "tracked_wallet_path")
+        matches!(
+            key,
+            "brain_path" | "brain_analysis_path" | "tracked_wallet_path"
+        )
     }
 
     /// Parse a dependency-free config document over a `dev_portable()` base.
@@ -2455,23 +3026,40 @@ impl Config {
         }
         // TP fractions must be valid bps (0..=100%).
         for (name, val) in [
-            ("mcap_position_early_tp1_frac_bps", self.mcap_position_early_tp1_frac_bps),
-            ("mcap_position_early_tp2_frac_bps", self.mcap_position_early_tp2_frac_bps),
-            ("mcap_position_early_tp3_frac_bps", self.mcap_position_early_tp3_frac_bps),
-            ("mcap_position_late_tp1_frac_bps", self.mcap_position_late_tp1_frac_bps),
-            ("mcap_position_late_tp2_frac_bps", self.mcap_position_late_tp2_frac_bps),
-            ("mcap_position_late_tp3_frac_bps", self.mcap_position_late_tp3_frac_bps),
+            (
+                "mcap_position_early_tp1_frac_bps",
+                self.mcap_position_early_tp1_frac_bps,
+            ),
+            (
+                "mcap_position_early_tp2_frac_bps",
+                self.mcap_position_early_tp2_frac_bps,
+            ),
+            (
+                "mcap_position_early_tp3_frac_bps",
+                self.mcap_position_early_tp3_frac_bps,
+            ),
+            (
+                "mcap_position_late_tp1_frac_bps",
+                self.mcap_position_late_tp1_frac_bps,
+            ),
+            (
+                "mcap_position_late_tp2_frac_bps",
+                self.mcap_position_late_tp2_frac_bps,
+            ),
+            (
+                "mcap_position_late_tp3_frac_bps",
+                self.mcap_position_late_tp3_frac_bps,
+            ),
         ] {
             if val > 10_000 {
-                return Err(ConfigError::Inconsistent(
-                    "TP fraction exceeds 100%",
-                ));
+                return Err(ConfigError::Inconsistent("TP fraction exceeds 100%"));
             }
             let _ = name; // suppress unused-assignment warning
         }
         // The combined early-curve TP fractions must not exceed 100% (the
         // remainder is the moon bag). Same for late-curve.
-        let early_total = self.mcap_position_early_tp1_frac_bps
+        let early_total = self
+            .mcap_position_early_tp1_frac_bps
             .saturating_add(self.mcap_position_early_tp2_frac_bps)
             .saturating_add(self.mcap_position_early_tp3_frac_bps);
         if early_total > 10_000 {
@@ -2479,7 +3067,8 @@ impl Config {
                 "early-curve TP fractions exceed 100% (no room for moon bag)",
             ));
         }
-        let late_total = self.mcap_position_late_tp1_frac_bps
+        let late_total = self
+            .mcap_position_late_tp1_frac_bps
             .saturating_add(self.mcap_position_late_tp2_frac_bps)
             .saturating_add(self.mcap_position_late_tp3_frac_bps);
         if late_total > 10_000 {

@@ -161,7 +161,11 @@ mod tests {
     /// Positive control: from_lookup fails when HELIUS_API_KEY is absent.
     #[test]
     fn from_lookup_fails_when_helius_unset() {
-        let lookup = make_lookup(None, Some("https://laserstream-mainnet-slc.helius-rpc.com"), Some("wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"));
+        let lookup = make_lookup(
+            None,
+            Some("https://laserstream-mainnet-slc.helius-rpc.com"),
+            Some("wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"),
+        );
         let result = Creds::from_lookup(lookup);
         assert!(result.is_err());
         let err_msg = format!("{}", result.err().unwrap());
@@ -178,7 +182,11 @@ mod tests {
     /// Positive control: from_lookup fails when LASERSTREAM_ENDPOINT is absent.
     #[test]
     fn from_lookup_fails_when_laserstream_unset() {
-        let lookup = make_lookup(Some("fake-key-1234"), None, Some("wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"));
+        let lookup = make_lookup(
+            Some("fake-key-1234"),
+            None,
+            Some("wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"),
+        );
         let result = Creds::from_lookup(lookup);
         assert!(result.is_err());
         let err_msg = format!("{}", result.err().unwrap());
@@ -191,7 +199,11 @@ mod tests {
     /// Positive control: from_lookup fails when HELIUS_WS_URL is absent.
     #[test]
     fn from_lookup_fails_when_ws_url_unset() {
-        let lookup = make_lookup(Some("fake-key-1234"), Some("https://laserstream-mainnet-slc.helius-rpc.com"), None);
+        let lookup = make_lookup(
+            Some("fake-key-1234"),
+            Some("https://laserstream-mainnet-slc.helius-rpc.com"),
+            None,
+        );
         let result = Creds::from_lookup(lookup);
         assert!(result.is_err());
         let err_msg = format!("{}", result.err().unwrap());
@@ -204,9 +216,16 @@ mod tests {
     /// Positive control: from_lookup fails when HELIUS_API_KEY is empty.
     #[test]
     fn from_lookup_fails_when_helius_empty() {
-        let lookup = make_lookup(Some("   "), Some("https://laserstream-mainnet-slc.helius-rpc.com"), Some("wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"));
+        let lookup = make_lookup(
+            Some("   "),
+            Some("https://laserstream-mainnet-slc.helius-rpc.com"),
+            Some("wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"),
+        );
         let result = Creds::from_lookup(lookup);
-        assert!(result.is_err(), "from_lookup must fail when HELIUS_API_KEY is whitespace-only");
+        assert!(
+            result.is_err(),
+            "from_lookup must fail when HELIUS_API_KEY is whitespace-only"
+        );
         let err_msg = format!("{}", result.err().unwrap());
         assert!(err_msg.contains("HELIUS_API_KEY"));
     }
@@ -214,11 +233,21 @@ mod tests {
     /// Positive control: from_lookup succeeds when both vars are present.
     #[test]
     fn from_lookup_succeeds_when_both_set() {
-        let lookup = make_lookup(Some("fake-key-1234"), Some("https://laserstream-mainnet-slc.helius-rpc.com"), Some("wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"));
+        let lookup = make_lookup(
+            Some("fake-key-1234"),
+            Some("https://laserstream-mainnet-slc.helius-rpc.com"),
+            Some("wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"),
+        );
         let creds = Creds::from_lookup(lookup).expect("both vars set must succeed");
         assert_eq!(creds.helius_api_key.expose(), "fake-key-1234");
-        assert_eq!(creds.laserstream_endpoint, "https://laserstream-mainnet-slc.helius-rpc.com");
-        assert_eq!(creds.helius_ws_base, "wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com");
+        assert_eq!(
+            creds.laserstream_endpoint,
+            "https://laserstream-mainnet-slc.helius-rpc.com"
+        );
+        assert_eq!(
+            creds.helius_ws_base,
+            "wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"
+        );
     }
 
     /// Positive control: the Debug output of Creds must NOT contain the key value.
@@ -308,10 +337,8 @@ mod tests {
     #[test]
     fn creds_file_missing_is_error() {
         let _guard = ENV_LOCK.lock().unwrap();
-        let bogus = std::env::temp_dir().join(format!(
-            "pq-creds-nonexistent-{}",
-            std::process::id()
-        ));
+        let bogus =
+            std::env::temp_dir().join(format!("pq-creds-nonexistent-{}", std::process::id()));
         let _ = std::fs::remove_file(&bogus);
 
         let saved_pq = std::env::var_os("PQ_CREDS_FILE");
@@ -348,8 +375,16 @@ mod tests {
         {
             let mut f = std::fs::File::create(&creds_path).unwrap();
             writeln!(f, "HELIUS_API_KEY=fake-key-for-loading-test").unwrap();
-            writeln!(f, "LASERSTREAM_ENDPOINT=https://laserstream-mainnet-slc.helius-rpc.com").unwrap();
-            writeln!(f, "HELIUS_WS_URL=wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com").unwrap();
+            writeln!(
+                f,
+                "LASERSTREAM_ENDPOINT=https://laserstream-mainnet-slc.helius-rpc.com"
+            )
+            .unwrap();
+            writeln!(
+                f,
+                "HELIUS_WS_URL=wss://marielle-qe2lvr-fast-mainnet.helius-rpc.com"
+            )
+            .unwrap();
         }
 
         let saved_pq = std::env::var_os("PQ_CREDS_FILE");

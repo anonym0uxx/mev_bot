@@ -21,11 +21,19 @@ pub fn py_float(v: f64) -> String {
         return "nan".to_string();
     }
     if v.is_infinite() {
-        return if v > 0.0 { "inf".to_string() } else { "-inf".to_string() };
+        return if v > 0.0 {
+            "inf".to_string()
+        } else {
+            "-inf".to_string()
+        };
     }
     if v == 0.0 {
         // Python keeps the sign of a negative zero.
-        return if v.is_sign_negative() { "-0.0".to_string() } else { "0.0".to_string() };
+        return if v.is_sign_negative() {
+            "-0.0".to_string()
+        } else {
+            "0.0".to_string()
+        };
     }
     // Python switches to scientific notation outside [-4, 16); Rust's Display never does.
     let e = format!("{:e}", v);
@@ -54,10 +62,18 @@ pub fn py_g(v: f64, p: usize) -> String {
         return "nan".to_string();
     }
     if v.is_infinite() {
-        return if v < 0.0 { "-inf".to_string() } else { "inf".to_string() };
+        return if v < 0.0 {
+            "-inf".to_string()
+        } else {
+            "inf".to_string()
+        };
     }
     if v == 0.0 {
-        return if v.is_sign_negative() { "-0".to_string() } else { "0".to_string() };
+        return if v.is_sign_negative() {
+            "-0".to_string()
+        } else {
+            "0".to_string()
+        };
     }
     let p = p.max(1);
     let e = format!("{v:.*e}", p - 1);

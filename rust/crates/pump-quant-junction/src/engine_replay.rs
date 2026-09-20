@@ -139,7 +139,10 @@ pub fn replay_event_stream_windowed<P: AsRef<Path>>(
 /// dangling references to tokens that were admitted before the window.
 fn apply_rolling_window(events: Vec<AppEvent>, window_ticks: u64) -> Vec<AppEvent> {
     // Count total ticks in the stream.
-    let total_ticks = events.iter().filter(|e| matches!(e, AppEvent::Tick)).count();
+    let total_ticks = events
+        .iter()
+        .filter(|e| matches!(e, AppEvent::Tick))
+        .count();
     if total_ticks <= window_ticks as usize {
         // Fewer ticks than the window — keep everything.
         return events;
@@ -196,7 +199,8 @@ mod tests {
             "../../data/event_stream.jsonl",
             "../../../data/event_stream.jsonl",
         ];
-        let tape_path = candidates.iter()
+        let tape_path = candidates
+            .iter()
             .map(|p| std::path::Path::new(p))
             .find(|p| p.exists());
 
@@ -232,8 +236,14 @@ mod tests {
         let result_high = replay_event_stream(tape_path, cfg_hi_margin);
 
         // Both replays must produce results.
-        assert!(result_lo.is_some(), "lo-margin replay must produce a result");
-        assert!(result_high.is_some(), "hi-margin replay must produce a result");
+        assert!(
+            result_lo.is_some(),
+            "lo-margin replay must produce a result"
+        );
+        assert!(
+            result_high.is_some(),
+            "hi-margin replay must produce a result"
+        );
 
         let lo = result_lo.unwrap();
         let high = result_high.unwrap();
@@ -244,7 +254,8 @@ mod tests {
         assert!(
             high.report.admitted <= lo.report.admitted,
             "high margin (50000) must admit <= low margin (50): got high={} low={}",
-            high.report.admitted, lo.report.admitted
+            high.report.admitted,
+            lo.report.admitted
         );
         // And if the low-margin config admits anything, the high-margin must
         // admit strictly less (the extreme margin should refuse all trades).
@@ -252,7 +263,8 @@ mod tests {
             assert!(
                 high.report.admitted < lo.report.admitted,
                 "extreme margin must reduce admissions: high={} low={}",
-                high.report.admitted, lo.report.admitted
+                high.report.admitted,
+                lo.report.admitted
             );
         }
     }
@@ -283,9 +295,14 @@ mod tests {
             virtual_sol_lamports: 100_000_000_000,
             real_sol_lamports: 30_000_000_000,
         }]);
-        assert!(injected.len() >= 2, "injected stream must have at least one Tick");
-        assert!(injected.iter().any(|e| matches!(e, AppEvent::Tick)),
-            "injected stream must contain at least one Tick");
+        assert!(
+            injected.len() >= 2,
+            "injected stream must have at least one Tick"
+        );
+        assert!(
+            injected.iter().any(|e| matches!(e, AppEvent::Tick)),
+            "injected stream must contain at least one Tick"
+        );
     }
 
     /// Tick injection: a stream that already has Ticks must NOT be modified.
@@ -293,8 +310,11 @@ mod tests {
     fn tick_injection_preserves_streams_with_ticks() {
         let events = vec![AppEvent::Tick, AppEvent::Tick, AppEvent::Tick];
         let injected = inject_missing_ticks(events.clone());
-        assert_eq!(injected.len(), events.len(),
-            "stream with existing Ticks must not be modified");
+        assert_eq!(
+            injected.len(),
+            events.len(),
+            "stream with existing Ticks must not be modified"
+        );
     }
 
     /// Tick injection: the interval must be respected.
@@ -312,10 +332,20 @@ mod tests {
         }
         let injected = inject_missing_ticks(events);
         // Original 50 + 1 interval Tick + 1 final Tick = 52.
-        assert_eq!(injected.len(), TICK_INJECTION_INTERVAL + 2,
-            "expected {}+2 events after injection", TICK_INJECTION_INTERVAL);
-        let tick_count = injected.iter().filter(|e| matches!(e, AppEvent::Tick)).count();
-        assert_eq!(tick_count, 2, "expected 2 injected Ticks (interval + final)");
+        assert_eq!(
+            injected.len(),
+            TICK_INJECTION_INTERVAL + 2,
+            "expected {}+2 events after injection",
+            TICK_INJECTION_INTERVAL
+        );
+        let tick_count = injected
+            .iter()
+            .filter(|e| matches!(e, AppEvent::Tick))
+            .count();
+        assert_eq!(
+            tick_count, 2,
+            "expected 2 injected Ticks (interval + final)"
+        );
     }
 
     /// Replaying the same events with the same config is deterministic.

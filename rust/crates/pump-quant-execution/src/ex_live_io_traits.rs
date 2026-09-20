@@ -101,8 +101,11 @@ pub trait LiveStateFetcher: Send + Sync {
     /// This is the hot-path entry. When the cache is warm (prefetched), this
     /// returns in ~0ms. When cold, it falls back to a synchronous RPC
     /// round-trip (~50-100ms).
-    fn fetch_state_hot(&self, mint: &[u8; 32], user: &[u8; 32])
-        -> Result<LiveCurveState, StateFetchError>;
+    fn fetch_state_hot(
+        &self,
+        mint: &[u8; 32],
+        user: &[u8; 32],
+    ) -> Result<LiveCurveState, StateFetchError>;
 
     /// Warm the cache for `mint` / `user`. Called by a background updater
     /// thread, not the hot path. Returns the fetched state so the caller can

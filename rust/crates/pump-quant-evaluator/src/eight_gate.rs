@@ -151,14 +151,46 @@ const MIN_FOLD_MAJORITY: u8 = 4;
 #[must_use]
 pub fn evaluate_8gate(input: &GateInput, _state: &EvaluatorState) -> GateVerdict {
     let mut gates: [GateResult; 8] = [
-        GateResult { name: "G1_margin", passed: false, rationale: String::new() },
-        GateResult { name: "G2_fdr", passed: false, rationale: String::new() },
-        GateResult { name: "G3_walkforward", passed: false, rationale: String::new() },
-        GateResult { name: "G4_pbo", passed: false, rationale: String::new() },
-        GateResult { name: "G5_regression", passed: false, rationale: String::new() },
-        GateResult { name: "G6_holdout", passed: false, rationale: String::new() },
-        GateResult { name: "G7_dsr", passed: false, rationale: String::new() },
-        GateResult { name: "G8_rankreversal", passed: false, rationale: String::new() },
+        GateResult {
+            name: "G1_margin",
+            passed: false,
+            rationale: String::new(),
+        },
+        GateResult {
+            name: "G2_fdr",
+            passed: false,
+            rationale: String::new(),
+        },
+        GateResult {
+            name: "G3_walkforward",
+            passed: false,
+            rationale: String::new(),
+        },
+        GateResult {
+            name: "G4_pbo",
+            passed: false,
+            rationale: String::new(),
+        },
+        GateResult {
+            name: "G5_regression",
+            passed: false,
+            rationale: String::new(),
+        },
+        GateResult {
+            name: "G6_holdout",
+            passed: false,
+            rationale: String::new(),
+        },
+        GateResult {
+            name: "G7_dsr",
+            passed: false,
+            rationale: String::new(),
+        },
+        GateResult {
+            name: "G8_rankreversal",
+            passed: false,
+            rationale: String::new(),
+        },
     ];
 
     let mut passed_count: u8 = 0;
@@ -168,10 +200,14 @@ pub fn evaluate_8gate(input: &GateInput, _state: &EvaluatorState) -> GateVerdict
     gates[0].passed = margin >= input.margin_lamports;
     gates[0].rationale = format!(
         "challenger={} champion={} margin={} required={}",
-        input.challenger_netsol_lamports, input.champion_netsol_lamports,
-        margin, input.margin_lamports
+        input.challenger_netsol_lamports,
+        input.champion_netsol_lamports,
+        margin,
+        input.margin_lamports
     );
-    if gates[0].passed { passed_count += 1; }
+    if gates[0].passed {
+        passed_count += 1;
+    }
 
     // G2: FDR — Benjamini-Hochberg with cumulative trials
     // The adjusted p-value threshold is q / n_trials (simple BH).
@@ -186,7 +222,9 @@ pub fn evaluate_8gate(input: &GateInput, _state: &EvaluatorState) -> GateVerdict
         "p_ppm={} threshold={} trials={}",
         input.challenger_p_ppm, fdr_threshold_ppm, input.cumulative_trials
     );
-    if gates[1].passed { passed_count += 1; }
+    if gates[1].passed {
+        passed_count += 1;
+    }
 
     // G3: Walk-forward + purge gap
     let fold_majority = input.fold_results.n_passed >= MIN_FOLD_MAJORITY;
@@ -194,15 +232,18 @@ pub fn evaluate_8gate(input: &GateInput, _state: &EvaluatorState) -> GateVerdict
     gates[2].passed = fold_majority && purge_ok;
     gates[2].rationale = format!(
         "folds={}/{} purge={} majority_{}",
-        input.fold_results.n_passed, input.fold_results.n_folds,
-        purge_ok, fold_majority
+        input.fold_results.n_passed, input.fold_results.n_folds, purge_ok, fold_majority
     );
-    if gates[2].passed { passed_count += 1; }
+    if gates[2].passed {
+        passed_count += 1;
+    }
 
     // G4: PBO/CSCV — probability of backtested overfitting <50%
     gates[3].passed = input.pbo_pct < 50;
     gates[3].rationale = format!("pbo_pct={}", input.pbo_pct);
-    if gates[3].passed { passed_count += 1; }
+    if gates[3].passed {
+        passed_count += 1;
+    }
 
     // G5: Regression — no regression vs prior champion
     gates[4].passed = input.regression_lamports.is_none();
@@ -210,20 +251,23 @@ pub fn evaluate_8gate(input: &GateInput, _state: &EvaluatorState) -> GateVerdict
         Some(r) => format!("regression={}", r),
         None => "no regression".to_string(),
     };
-    if gates[4].passed { passed_count += 1; }
+    if gates[4].passed {
+        passed_count += 1;
+    }
 
     // G6: Holdout — 20% reserve, access budget=1, not yet consulted
     gates[5].passed = !input.holdout_accessible;
-    gates[5].rationale = format!(
-        "holdout_peeked={}",
-        input.holdout_accessible
-    );
-    if gates[5].passed { passed_count += 1; }
+    gates[5].rationale = format!("holdout_peeked={}", input.holdout_accessible);
+    if gates[5].passed {
+        passed_count += 1;
+    }
 
     // G7: DSR — deflated Sharpe ratio >0
     gates[6].passed = input.dsr_bps > 0;
     gates[6].rationale = format!("dsr_bps={}", input.dsr_bps);
-    if gates[6].passed { passed_count += 1; }
+    if gates[6].passed {
+        passed_count += 1;
+    }
 
     // G8: Rank reversal — champion doesn't rank-reverse under dual objectives
     // Uses the input rank fields directly (computed by the caller from
@@ -254,7 +298,9 @@ pub fn evaluate_8gate(input: &GateInput, _state: &EvaluatorState) -> GateVerdict
         "reversal={} champion_netsol_rank={} champion_maxdd_rank={}",
         reversal, input.champion_netsol_rank, input.champion_dd_rank
     );
-    if gates[7].passed { passed_count += 1; }
+    if gates[7].passed {
+        passed_count += 1;
+    }
 
     // Defense-in-depth: catastrophic veto
     // Catastrophic DD: >50% of the bankroll (2 SOL = 2e9 lamports).

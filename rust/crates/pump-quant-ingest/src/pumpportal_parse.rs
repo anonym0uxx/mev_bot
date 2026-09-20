@@ -228,7 +228,10 @@ mod pump_native_tests {
         assert_eq!(raw.symbol, "TEST");
         assert_ne!(raw.creator, 0);
         // R-3: the traderPublicKey should decode as a valid 32-byte pubkey.
-        assert!(raw.creator_pubkey.is_some(), "creator_pubkey must be Some for a valid base58 pubkey");
+        assert!(
+            raw.creator_pubkey.is_some(),
+            "creator_pubkey must be Some for a valid base58 pubkey"
+        );
         assert_eq!(raw.slot, 0, "no slot claimed when none is carried");
     }
 

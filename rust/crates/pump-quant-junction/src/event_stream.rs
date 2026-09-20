@@ -64,18 +64,17 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             let mint = parse_mint(&mint_str)?;
             Ok(AppEvent::MarketTrade {
                 mint,
-                price_fp: extract_int_field(line, "price_fp")
-                    .ok_or("missing price_fp")? as i128,
+                price_fp: extract_int_field(line, "price_fp").ok_or("missing price_fp")? as i128,
                 quote_lamports: extract_int_field(line, "quote_lamports")
                     .ok_or("missing quote_lamports")? as u64,
                 liquidity_lamports: extract_int_field(line, "liquidity_lamports")
-                    .ok_or("missing liquidity_lamports")? as u64,
-                signed_base: extract_int_field(line, "signed_base")
-                    .ok_or("missing signed_base")? as i64,
+                    .ok_or("missing liquidity_lamports")?
+                    as u64,
+                signed_base: extract_int_field(line, "signed_base").ok_or("missing signed_base")?
+                    as i64,
                 buyer_entity: extract_int_field(line, "buyer_entity")
                     .ok_or("missing buyer_entity")? as u64,
-                age_slots: extract_int_field(line, "age_slots")
-                    .ok_or("missing age_slots")? as u32,
+                age_slots: extract_int_field(line, "age_slots").ok_or("missing age_slots")? as u32,
             })
         }
         "OnchainConfirm" => {
@@ -84,7 +83,8 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             Ok(AppEvent::OnchainConfirm {
                 mint,
                 virtual_sol_lamports: extract_int_field(line, "virtual_sol_lamports")
-                    .ok_or("missing virtual_sol_lamports")? as u64,
+                    .ok_or("missing virtual_sol_lamports")?
+                    as u64,
                 real_sol_lamports: extract_int_field(line, "real_sol_lamports")
                     .ok_or("missing real_sol_lamports")? as u64,
             })
@@ -114,8 +114,7 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             let mint = parse_mint(&mint_str)?;
             Ok(AppEvent::WalletAction {
                 mint,
-                followable: extract_int_field(line, "followable")
-                    .ok_or("missing followable")? != 0,
+                followable: extract_int_field(line, "followable").ok_or("missing followable")? != 0,
                 size_lamports: extract_int_field(line, "size_lamports")
                     .ok_or("missing size_lamports")? as u64,
             })
@@ -125,14 +124,13 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             let mint = parse_mint(&mint_str)?;
             Ok(AppEvent::TokenMetadata {
                 mint,
-                category_id: extract_int_field(line, "category_id")
-                    .ok_or("missing category_id")? as u64,
+                category_id: extract_int_field(line, "category_id").ok_or("missing category_id")?
+                    as u64,
                 taxonomy_version: extract_int_field(line, "taxonomy_version")
                     .ok_or("missing taxonomy_version")? as u32,
-                creator: extract_int_field(line, "creator")
-                    .ok_or("missing creator")? as u64,
-                slot: extract_int_field(line, "metadata_slot")
-                    .ok_or("missing metadata_slot")? as u64,
+                creator: extract_int_field(line, "creator").ok_or("missing creator")? as u64,
+                slot: extract_int_field(line, "metadata_slot").ok_or("missing metadata_slot")?
+                    as u64,
             })
         }
         "CreatorAction" => {
@@ -142,38 +140,29 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             // Parse the creator action kind from the nested JSON fragment.
             let kind_str = extract_creator_action_kind(line)?;
             let kind = match kind_str.as_str() {
-                "creator_init" => {
-                    CreatorActionKind::Init {
-                        initial_tokens: extract_nested_int(line, "initial_tokens")
-                            .ok_or("missing initial_tokens")? as u64,
-                        total_supply: extract_nested_int(line, "total_supply")
-                            .ok_or("missing total_supply")? as u64,
-                    }
-                }
-                "creator_buy" => {
-                    CreatorActionKind::Buy {
-                        tokens: extract_nested_int(line, "tokens")
-                            .ok_or("missing tokens")? as u64,
-                        quote_lamports: extract_nested_int(line, "quote_lamports")
-                            .ok_or("missing quote_lamports")? as u64,
-                    }
-                }
-                "creator_sell" => {
-                    CreatorActionKind::Sell {
-                        tokens: extract_nested_int(line, "tokens")
-                            .ok_or("missing tokens")? as u64,
-                        quote_lamports: extract_nested_int(line, "quote_lamports")
-                            .ok_or("missing quote_lamports")? as u64,
-                    }
-                }
-                "creator_linked_buy" => {
-                    CreatorActionKind::LinkedBuy {
-                        cluster: extract_nested_int(line, "cluster")
-                            .ok_or("missing cluster")? as u64,
-                        tokens: extract_nested_int(line, "tokens")
-                            .ok_or("missing tokens")? as u64,
-                    }
-                }
+                "creator_init" => CreatorActionKind::Init {
+                    initial_tokens: extract_nested_int(line, "initial_tokens")
+                        .ok_or("missing initial_tokens")?
+                        as u64,
+                    total_supply: extract_nested_int(line, "total_supply")
+                        .ok_or("missing total_supply")? as u64,
+                },
+                "creator_buy" => CreatorActionKind::Buy {
+                    tokens: extract_nested_int(line, "tokens").ok_or("missing tokens")? as u64,
+                    quote_lamports: extract_nested_int(line, "quote_lamports")
+                        .ok_or("missing quote_lamports")?
+                        as u64,
+                },
+                "creator_sell" => CreatorActionKind::Sell {
+                    tokens: extract_nested_int(line, "tokens").ok_or("missing tokens")? as u64,
+                    quote_lamports: extract_nested_int(line, "quote_lamports")
+                        .ok_or("missing quote_lamports")?
+                        as u64,
+                },
+                "creator_linked_buy" => CreatorActionKind::LinkedBuy {
+                    cluster: extract_nested_int(line, "cluster").ok_or("missing cluster")? as u64,
+                    tokens: extract_nested_int(line, "tokens").ok_or("missing tokens")? as u64,
+                },
                 _ => return Err(format!("unknown creator action kind: {kind_str}")),
             };
             Ok(AppEvent::CreatorAction { mint, kind, slot })
@@ -183,8 +172,8 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             let mint = parse_mint(&mint_str)?;
             Ok(AppEvent::Migration {
                 mint,
-                slot: extract_int_field(line, "migration_slot")
-                    .ok_or("missing migration_slot")? as u64,
+                slot: extract_int_field(line, "migration_slot").ok_or("missing migration_slot")?
+                    as u64,
             })
         }
         // Rev-14 wangr intelligence: parse auxiliary + time signal events.
@@ -195,18 +184,14 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
                 mint,
                 token_standard: extract_int_field(line, "token_standard")
                     .ok_or("missing token_standard")? as u8,
-                symbol_len: extract_int_field(line, "symbol_len")
-                    .ok_or("missing symbol_len")? as u8,
+                symbol_len: extract_int_field(line, "symbol_len").ok_or("missing symbol_len")?
+                    as u8,
             })
         }
-        "TimeSignal" => {
-            Ok(AppEvent::TimeSignal {
-                dow: extract_int_field(line, "dow")
-                    .ok_or("missing dow")? as u8,
-                hour_utc: extract_int_field(line, "hour_utc")
-                    .ok_or("missing hour_utc")? as u8,
-            })
-        }
+        "TimeSignal" => Ok(AppEvent::TimeSignal {
+            dow: extract_int_field(line, "dow").ok_or("missing dow")? as u8,
+            hour_utc: extract_int_field(line, "hour_utc").ok_or("missing hour_utc")? as u8,
+        }),
         // Rev-19 on-chain feedback: parse confirmation events.
         "OurBuyConfirmed" => {
             let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
@@ -216,8 +201,7 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             Ok(AppEvent::OurBuyConfirmed {
                 mint,
                 signature,
-                slot: extract_int_field(line, "confirm_slot")
-                    .ok_or("missing confirm_slot")? as u64,
+                slot: extract_int_field(line, "confirm_slot").ok_or("missing confirm_slot")? as u64,
             })
         }
         "OurBuyFailed" => {
@@ -228,10 +212,8 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             Ok(AppEvent::OurBuyFailed {
                 mint,
                 signature,
-                err_code: extract_int_field(line, "err_code")
-                    .ok_or("missing err_code")? as u8,
-                slot: extract_int_field(line, "confirm_slot")
-                    .ok_or("missing confirm_slot")? as u64,
+                err_code: extract_int_field(line, "err_code").ok_or("missing err_code")? as u8,
+                slot: extract_int_field(line, "confirm_slot").ok_or("missing confirm_slot")? as u64,
             })
         }
         "OurSellConfirmed" => {
@@ -242,8 +224,7 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             Ok(AppEvent::OurSellConfirmed {
                 mint,
                 signature,
-                slot: extract_int_field(line, "confirm_slot")
-                    .ok_or("missing confirm_slot")? as u64,
+                slot: extract_int_field(line, "confirm_slot").ok_or("missing confirm_slot")? as u64,
             })
         }
         "OurSellFailed" => {
@@ -254,10 +235,8 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             Ok(AppEvent::OurSellFailed {
                 mint,
                 signature,
-                err_code: extract_int_field(line, "err_code")
-                    .ok_or("missing err_code")? as u8,
-                slot: extract_int_field(line, "confirm_slot")
-                    .ok_or("missing confirm_slot")? as u64,
+                err_code: extract_int_field(line, "err_code").ok_or("missing err_code")? as u8,
+                slot: extract_int_field(line, "confirm_slot").ok_or("missing confirm_slot")? as u64,
             })
         }
         other => Err(format!("unknown event kind: {other}")),
@@ -433,8 +412,13 @@ fn event_fields_json(event: &AppEvent) -> String {
     let mut parts: Vec<String> = Vec::new();
     match event {
         AppEvent::MarketTrade {
-            price_fp, quote_lamports, liquidity_lamports,
-            signed_base, buyer_entity, age_slots, ..
+            price_fp,
+            quote_lamports,
+            liquidity_lamports,
+            signed_base,
+            buyer_entity,
+            age_slots,
+            ..
         } => {
             parts.push(format!(r#""price_fp":{}"#, price_fp));
             parts.push(format!(r#""quote_lamports":{}"#, quote_lamports));
@@ -443,22 +427,45 @@ fn event_fields_json(event: &AppEvent) -> String {
             parts.push(format!(r#""buyer_entity":{}"#, buyer_entity));
             parts.push(format!(r#""age_slots":{}"#, age_slots));
         }
-        AppEvent::NarrativeSample { prior_active, new_mentions, .. } => {
+        AppEvent::NarrativeSample {
+            prior_active,
+            new_mentions,
+            ..
+        } => {
             parts.push(format!(r#""prior_active":{}"#, prior_active));
             parts.push(format!(r#""new_mentions":{}"#, new_mentions));
         }
-        AppEvent::SocialCall { source_quality_bp, .. } => {
+        AppEvent::SocialCall {
+            source_quality_bp, ..
+        } => {
             parts.push(format!(r#""source_quality_bp":{}"#, source_quality_bp));
         }
-        AppEvent::WalletAction { followable, size_lamports, .. } => {
+        AppEvent::WalletAction {
+            followable,
+            size_lamports,
+            ..
+        } => {
             parts.push(format!(r#""followable":{}"#, followable));
             parts.push(format!(r#""size_lamports":{}"#, size_lamports));
         }
-        AppEvent::OnchainConfirm { virtual_sol_lamports, real_sol_lamports, .. } => {
-            parts.push(format!(r#""virtual_sol_lamports":{}"#, virtual_sol_lamports));
+        AppEvent::OnchainConfirm {
+            virtual_sol_lamports,
+            real_sol_lamports,
+            ..
+        } => {
+            parts.push(format!(
+                r#""virtual_sol_lamports":{}"#,
+                virtual_sol_lamports
+            ));
             parts.push(format!(r#""real_sol_lamports":{}"#, real_sol_lamports));
         }
-        AppEvent::TokenMetadata { category_id, taxonomy_version, creator, slot, .. } => {
+        AppEvent::TokenMetadata {
+            category_id,
+            taxonomy_version,
+            creator,
+            slot,
+            ..
+        } => {
             parts.push(format!(r#""category_id":{}"#, category_id));
             parts.push(format!(r#""taxonomy_version":{}"#, taxonomy_version));
             parts.push(format!(r#""creator":{}"#, creator));
@@ -472,7 +479,11 @@ fn event_fields_json(event: &AppEvent) -> String {
             parts.push(format!(r#""migration_slot":{}"#, slot));
         }
         // Rev-14 wangr intelligence: serialize auxiliary + time signals.
-        AppEvent::MarketAuxiliary { token_standard, symbol_len, .. } => {
+        AppEvent::MarketAuxiliary {
+            token_standard,
+            symbol_len,
+            ..
+        } => {
             parts.push(format!(r#""token_standard":{}"#, token_standard));
             parts.push(format!(r#""symbol_len":{}"#, symbol_len));
         }
@@ -481,20 +492,34 @@ fn event_fields_json(event: &AppEvent) -> String {
             parts.push(format!(r#""hour_utc":{}"#, hour_utc));
         }
         // Rev-19 on-chain feedback: serialize signature + slot for confirmation events.
-        AppEvent::OurBuyConfirmed { signature, slot, .. } => {
+        AppEvent::OurBuyConfirmed {
+            signature, slot, ..
+        } => {
             parts.push(format!(r#""signature":"{}""#, sig_to_hex(signature)));
             parts.push(format!(r#""confirm_slot":{}"#, slot));
         }
-        AppEvent::OurBuyFailed { signature, err_code, slot, .. } => {
+        AppEvent::OurBuyFailed {
+            signature,
+            err_code,
+            slot,
+            ..
+        } => {
             parts.push(format!(r#""signature":"{}""#, sig_to_hex(signature)));
             parts.push(format!(r#""err_code":{}"#, err_code));
             parts.push(format!(r#""confirm_slot":{}"#, slot));
         }
-        AppEvent::OurSellConfirmed { signature, slot, .. } => {
+        AppEvent::OurSellConfirmed {
+            signature, slot, ..
+        } => {
             parts.push(format!(r#""signature":"{}""#, sig_to_hex(signature)));
             parts.push(format!(r#""confirm_slot":{}"#, slot));
         }
-        AppEvent::OurSellFailed { signature, err_code, slot, .. } => {
+        AppEvent::OurSellFailed {
+            signature,
+            err_code,
+            slot,
+            ..
+        } => {
             parts.push(format!(r#""signature":"{}""#, sig_to_hex(signature)));
             parts.push(format!(r#""err_code":{}"#, err_code));
             parts.push(format!(r#""confirm_slot":{}"#, slot));
@@ -507,17 +532,38 @@ fn event_fields_json(event: &AppEvent) -> String {
 /// Encode a CreatorActionKind as a JSON key-value pair.
 fn creator_action_kind_json(kind: &CreatorActionKind) -> String {
     match kind {
-        CreatorActionKind::Init { initial_tokens, total_supply } => {
-            format!(r#""creator_init":{{"initial_tokens":{},"total_supply":{}}}"#, initial_tokens, total_supply)
+        CreatorActionKind::Init {
+            initial_tokens,
+            total_supply,
+        } => {
+            format!(
+                r#""creator_init":{{"initial_tokens":{},"total_supply":{}}}"#,
+                initial_tokens, total_supply
+            )
         }
-        CreatorActionKind::Buy { tokens, quote_lamports } => {
-            format!(r#""creator_buy":{{"tokens":{},"quote_lamports":{}}}"#, tokens, quote_lamports)
+        CreatorActionKind::Buy {
+            tokens,
+            quote_lamports,
+        } => {
+            format!(
+                r#""creator_buy":{{"tokens":{},"quote_lamports":{}}}"#,
+                tokens, quote_lamports
+            )
         }
-        CreatorActionKind::Sell { tokens, quote_lamports } => {
-            format!(r#""creator_sell":{{"tokens":{},"quote_lamports":{}}}"#, tokens, quote_lamports)
+        CreatorActionKind::Sell {
+            tokens,
+            quote_lamports,
+        } => {
+            format!(
+                r#""creator_sell":{{"tokens":{},"quote_lamports":{}}}"#,
+                tokens, quote_lamports
+            )
         }
         CreatorActionKind::LinkedBuy { cluster, tokens } => {
-            format!(r#""creator_linked_buy":{{"cluster":{},"tokens":{}}}"#, cluster, tokens)
+            format!(
+                r#""creator_linked_buy":{{"cluster":{},"tokens":{}}}"#,
+                cluster, tokens
+            )
         }
     }
 }
@@ -540,7 +586,7 @@ fn hex_to_sig(hex: &str) -> Result<[u8; 64], String> {
     }
     let mut sig = [0u8; 64];
     for i in 0..64 {
-        sig[i] = u8::from_str_radix(&hex[i*2..i*2+2], 16)
+        sig[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
             .map_err(|e| format!("hex decode at byte {i}: {e}"))?;
     }
     Ok(sig)
@@ -549,8 +595,8 @@ fn hex_to_sig(hex: &str) -> Result<[u8; 64], String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pump_quant_domain::ids::Mint;
     use pump_quant_app::event::AppEvent;
+    use pump_quant_domain::ids::Mint;
     use std::fs;
 
     #[test]
@@ -620,7 +666,11 @@ mod tests {
         }
         let content = fs::read_to_string(&tmp).expect("read");
         let lines: Vec<&str> = content.lines().collect();
-        assert_eq!(lines.len(), 5, "append mode should preserve existing events");
+        assert_eq!(
+            lines.len(),
+            5,
+            "append mode should preserve existing events"
+        );
         let _ = fs::remove_file(&tmp);
     }
 
@@ -730,28 +780,30 @@ mod tests {
 
         // Write a Tick, a MarketTrade, an OnchainConfirm, and another Tick.
         writer.write_event(&AppEvent::Tick, 1).expect("write");
-        writer.write_event(
-            &AppEvent::MarketTrade {
-                mint,
-                price_fp: 2_000_000_000,
-                quote_lamports: 100_000,
-                liquidity_lamports: 500_000_000,
-                signed_base: 10_000,
-                buyer_entity: 5,
-                age_slots: 20,
-            },
-            2,
-        )
-        .expect("write");
-        writer.write_event(
-            &AppEvent::OnchainConfirm {
-                mint,
-                virtual_sol_lamports: 80_000_000_000,
-                real_sol_lamports: 30_000_000_000,
-            },
-            3,
-        )
-        .expect("write");
+        writer
+            .write_event(
+                &AppEvent::MarketTrade {
+                    mint,
+                    price_fp: 2_000_000_000,
+                    quote_lamports: 100_000,
+                    liquidity_lamports: 500_000_000,
+                    signed_base: 10_000,
+                    buyer_entity: 5,
+                    age_slots: 20,
+                },
+                2,
+            )
+            .expect("write");
+        writer
+            .write_event(
+                &AppEvent::OnchainConfirm {
+                    mint,
+                    virtual_sol_lamports: 80_000_000_000,
+                    real_sol_lamports: 30_000_000_000,
+                },
+                3,
+            )
+            .expect("write");
         writer.write_event(&AppEvent::Tick, 4).expect("write");
         writer.flush().expect("flush");
         drop(writer);

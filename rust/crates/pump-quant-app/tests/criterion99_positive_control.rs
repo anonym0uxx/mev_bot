@@ -36,9 +36,7 @@ fn holder_last_ns_bounded_vs_unbounded() {
 
     if len == n as usize {
         // Caps are reverted — unbounded growth confirmed.
-        eprintln!(
-            "holder_last_ns: {len} entries for {n} keys — UNBOUNDED (caps reverted)"
-        );
+        eprintln!("holder_last_ns: {len} entries for {n} keys — UNBOUNDED (caps reverted)");
     } else if len == CAP_WHEN_PRESENT {
         // Caps are present — bounded growth confirmed.
         eprintln!(
@@ -83,9 +81,7 @@ fn meta_prev_totals_bounded_vs_unbounded() {
     let len = ms.meta_prev_totals_len();
 
     if len == n as usize {
-        eprintln!(
-            "meta_prev_totals: {len} entries for {n} keys — UNBOUNDED (caps reverted)"
-        );
+        eprintln!("meta_prev_totals: {len} entries for {n} keys — UNBOUNDED (caps reverted)");
     } else if len == CAP_WHEN_PRESENT {
         eprintln!(
             "meta_prev_totals: {len} entries for {n} keys — BOUNDED at {CAP_WHEN_PRESENT} (caps present)"

@@ -85,7 +85,9 @@ fn parse_args() -> Result<ReplayArgs, String> {
         match arg.as_str() {
             "--tape" => {
                 idx += 1;
-                if idx >= raw.len() { return Err("--tape requires a value".to_string()); }
+                if idx >= raw.len() {
+                    return Err("--tape requires a value".to_string());
+                }
                 args.tape_path = raw[idx].clone();
             }
             "--margin-lamports" => {
@@ -110,12 +112,16 @@ fn parse_args() -> Result<ReplayArgs, String> {
             }
             "--lane" => {
                 idx += 1;
-                if idx >= raw.len() { return Err("--lane requires a value".to_string()); }
+                if idx >= raw.len() {
+                    return Err("--lane requires a value".to_string());
+                }
                 args.lane = parse_lane_arg(&raw[idx])?;
             }
             "--output" => {
                 idx += 1;
-                if idx >= raw.len() { return Err("--output requires a value".to_string()); }
+                if idx >= raw.len() {
+                    return Err("--output requires a value".to_string());
+                }
                 args.output_path = Some(raw[idx].clone());
             }
             "--help" | "-h" => {
@@ -133,16 +139,28 @@ fn parse_args() -> Result<ReplayArgs, String> {
 }
 
 fn parse_i128(raw: &[String], idx: &mut usize, flag: &str) -> Result<i128, String> {
-    if *idx >= raw.len() { return Err(format!("{flag} requires a value")); }
-    raw[*idx].parse::<i128>().map_err(|_| format!("{flag} requires a signed integer"))
+    if *idx >= raw.len() {
+        return Err(format!("{flag} requires a value"));
+    }
+    raw[*idx]
+        .parse::<i128>()
+        .map_err(|_| format!("{flag} requires a signed integer"))
 }
 fn parse_u128(raw: &[String], idx: &mut usize, flag: &str) -> Result<u128, String> {
-    if *idx >= raw.len() { return Err(format!("{flag} requires a value")); }
-    raw[*idx].parse::<u128>().map_err(|_| format!("{flag} requires a non-negative integer"))
+    if *idx >= raw.len() {
+        return Err(format!("{flag} requires a value"));
+    }
+    raw[*idx]
+        .parse::<u128>()
+        .map_err(|_| format!("{flag} requires a non-negative integer"))
 }
 fn parse_u64(raw: &[String], idx: &mut usize, flag: &str) -> Result<u64, String> {
-    if *idx >= raw.len() { return Err(format!("{flag} requires a value")); }
-    raw[*idx].parse::<u64>().map_err(|_| format!("{flag} requires a non-negative integer"))
+    if *idx >= raw.len() {
+        return Err(format!("{flag} requires a value"));
+    }
+    raw[*idx]
+        .parse::<u64>()
+        .map_err(|_| format!("{flag} requires a non-negative integer"))
 }
 
 // ─── Replay ─────────────────────────────────────────────────────────────────
@@ -201,41 +219,49 @@ fn run_replay(tape_text: &str, args: &ReplayArgs) -> Result<ReplayResult, String
         tape.trades.clone()
     } else {
         // Convert full_trades to coarse ReconTrade
-        tape.full_trades.iter().map(|ft| {
-            // Hash the base58 mint string into a [u8; 32] for attribution.
-            // This is NOT a cryptographic decode — it's a deterministic
-            // identifier so the refiner can attribute trades to specific mints.
-            let mint = {{
-                let bytes = ft.mint_b58.as_bytes();
-                let mut arr = [0u8; 32];
-                for (i, b) in bytes.iter().enumerate().take(32) {{
-                    arr[i] = *b;
-                }}
-                arr
-            }};
-            ReconTrade {
-                lane: args.lane,
-                gross_lamports: ft.realized_pnl_lamports as i128,
-                fees: ft.fees_lamports as u128,
-                tips: 0,
-                failed_costs: ft.slippage_lamports as u128,
-                mint,
-                entry_price_fp: ft.entry_price_fp as u64,
-                exit_price_fp: ft.exit_price_fp as u64,
-                size_lamports: ft.size_lamports,
-                archetype: ft.strategy_id as u16,
-                exit_reason_code: ft.error_code as u8,
-                mfe_bps: 0,
-                mae_bps: 0,
-                entry_tick: 0,
-            }
-        }).collect()
+        tape.full_trades
+            .iter()
+            .map(|ft| {
+                // Hash the base58 mint string into a [u8; 32] for attribution.
+                // This is NOT a cryptographic decode — it's a deterministic
+                // identifier so the refiner can attribute trades to specific mints.
+                let mint = {
+                    {
+                        let bytes = ft.mint_b58.as_bytes();
+                        let mut arr = [0u8; 32];
+                        for (i, b) in bytes.iter().enumerate().take(32) {
+                            {
+                                arr[i] = *b;
+                            }
+                        }
+                        arr
+                    }
+                };
+                ReconTrade {
+                    lane: args.lane,
+                    gross_lamports: ft.realized_pnl_lamports as i128,
+                    fees: ft.fees_lamports as u128,
+                    tips: 0,
+                    failed_costs: ft.slippage_lamports as u128,
+                    mint,
+                    entry_price_fp: ft.entry_price_fp as u64,
+                    exit_price_fp: ft.exit_price_fp as u64,
+                    size_lamports: ft.size_lamports,
+                    archetype: ft.strategy_id as u16,
+                    exit_reason_code: ft.error_code as u8,
+                    mfe_bps: 0,
+                    mae_bps: 0,
+                    entry_tick: 0,
+                }
+            })
+            .collect()
     };
 
     let baseline_ns = net_sol(&baseline_trades, args.lane);
 
     // Replay: apply parameter overrides and re-derive net-SOL
-    let replay_trades: Vec<ReconTrade> = baseline_trades.iter()
+    let replay_trades: Vec<ReconTrade> = baseline_trades
+        .iter()
         .filter_map(|t| apply_overrides(t, args))
         .collect();
 
@@ -342,14 +368,25 @@ fn main() -> std::process::ExitCode {
         }
     };
 
-    eprintln!("[pq-replay] baseline: net={} n={}", result.baseline_net_sol.net_lamports, result.baseline_net_sol.n);
-    eprintln!("[pq-replay] replay:   net={} n={}", result.replay_net_sol.net_lamports, result.replay_net_sol.n);
+    eprintln!(
+        "[pq-replay] baseline: net={} n={}",
+        result.baseline_net_sol.net_lamports, result.baseline_net_sol.n
+    );
+    eprintln!(
+        "[pq-replay] replay:   net={} n={}",
+        result.replay_net_sol.net_lamports, result.replay_net_sol.n
+    );
     eprintln!("[pq-replay] delta:    {} lamports", result.delta_lamports);
-    eprintln!("[pq-replay] trades:   baseline={} replay={}", result.n_trades_baseline, result.n_trades_replay);
+    eprintln!(
+        "[pq-replay] trades:   baseline={} replay={}",
+        result.n_trades_baseline, result.n_trades_replay
+    );
 
     let json = result.to_json();
     if let Some(ref path) = args.output_path {
-        if let Some(parent) = Path::new(path).parent() { let _ = fs::create_dir_all(parent); }
+        if let Some(parent) = Path::new(path).parent() {
+            let _ = fs::create_dir_all(parent);
+        }
         if let Err(e) = fs::write(path, &json) {
             eprintln!("[pq-replay] ERROR: cannot write output: {e}");
             return std::process::ExitCode::from(5);
@@ -392,7 +429,10 @@ mod tests {
     fn test_replay_no_overrides_matches_baseline() {
         // Tape format: kind=trade, lane, gross, fees, tips, failed
         let tape_text = "{\"kind\":\"trade\",\"lane\":\"scalp\",\"gross\":100000,\"fees\":5000,\"tips\":0,\"failed\":1000}\n{\"kind\":\"trade\",\"lane\":\"scalp\",\"gross\":-50000,\"fees\":8000,\"tips\":0,\"failed\":2000}\n{\"kind\":\"trade\",\"lane\":\"scalp\",\"gross\":200000,\"fees\":6000,\"tips\":0,\"failed\":1500}\n";
-        let args = ReplayArgs { tape_path: "test".to_string(), ..ReplayArgs::default() };
+        let args = ReplayArgs {
+            tape_path: "test".to_string(),
+            ..ReplayArgs::default()
+        };
         let result = run_replay(&tape_text, &args).unwrap();
         assert_eq!(result.delta_lamports, 0);
         assert_eq!(result.n_trades_baseline, result.n_trades_replay);
@@ -403,7 +443,11 @@ mod tests {
         // Trade 1: net = 10000 - 5000 - 0 - 1000 = 4000
         // Trade 2: net = 90000 - 8000 - 0 - 2000 = 80000
         let tape_text = "{\"kind\":\"trade\",\"lane\":\"scalp\",\"gross\":10000,\"fees\":5000,\"tips\":0,\"failed\":1000}\n{\"kind\":\"trade\",\"lane\":\"scalp\",\"gross\":90000,\"fees\":8000,\"tips\":0,\"failed\":2000}\n";
-        let args = ReplayArgs { tape_path: "test".to_string(), margin_lamports: 50_000, ..ReplayArgs::default() };
+        let args = ReplayArgs {
+            tape_path: "test".to_string(),
+            margin_lamports: 50_000,
+            ..ReplayArgs::default()
+        };
         let result = run_replay(&tape_text, &args).unwrap();
         assert_eq!(result.n_trades_baseline, 2);
         assert_eq!(result.n_trades_replay, 1);
@@ -412,9 +456,16 @@ mod tests {
     #[test]
     fn test_replay_fee_override_changes_net() {
         let tape_text = "{\"kind\":\"trade\",\"lane\":\"scalp\",\"gross\":100000,\"fees\":5000,\"tips\":0,\"failed\":1000}\n";
-        let args_default = ReplayArgs { tape_path: "test".to_string(), ..ReplayArgs::default() };
+        let args_default = ReplayArgs {
+            tape_path: "test".to_string(),
+            ..ReplayArgs::default()
+        };
         // fee_bps=1000 = 10% -> fee = 100000 * 1000 / 10000 = 10000 (more than original 5000)
-        let args_high_fee = ReplayArgs { tape_path: "test".to_string(), fee_bps: 1000, ..ReplayArgs::default() };
+        let args_high_fee = ReplayArgs {
+            tape_path: "test".to_string(),
+            fee_bps: 1000,
+            ..ReplayArgs::default()
+        };
         let r1 = run_replay(&tape_text, &args_default).unwrap();
         let r2 = run_replay(&tape_text, &args_high_fee).unwrap();
         assert!(r2.replay_net_sol.net_lamports < r1.replay_net_sol.net_lamports);
@@ -423,7 +474,10 @@ mod tests {
     #[test]
     fn test_replay_json_output_format() {
         let tape_text = "{\"kind\":\"trade\",\"lane\":\"scalp\",\"gross\":100000,\"fees\":5000,\"tips\":0,\"failed\":1000}\n";
-        let args = ReplayArgs { tape_path: "test".to_string(), ..ReplayArgs::default() };
+        let args = ReplayArgs {
+            tape_path: "test".to_string(),
+            ..ReplayArgs::default()
+        };
         let result = run_replay(&tape_text, &args).unwrap();
         let json = result.to_json();
         assert!(json.contains("\"baseline_net_sol\""));
@@ -435,7 +489,10 @@ mod tests {
     #[test]
     fn test_replay_empty_tape_errors() {
         let tape_text = "# just a comment\n";
-        let args = ReplayArgs { tape_path: "test".to_string(), ..ReplayArgs::default() };
+        let args = ReplayArgs {
+            tape_path: "test".to_string(),
+            ..ReplayArgs::default()
+        };
         let result = run_replay(&tape_text, &args);
         assert!(result.is_err());
     }
@@ -443,8 +500,15 @@ mod tests {
     #[test]
     fn test_replay_slippage_override_reduces_net() {
         let tape_text = "{\"kind\":\"trade\",\"lane\":\"scalp\",\"gross\":100000,\"fees\":5000,\"tips\":0,\"failed\":1000}\n";
-        let args_no_slip = ReplayArgs { tape_path: "test".to_string(), ..ReplayArgs::default() };
-        let args_with_slip = ReplayArgs { tape_path: "test".to_string(), slippage_bps: 100, ..ReplayArgs::default() };
+        let args_no_slip = ReplayArgs {
+            tape_path: "test".to_string(),
+            ..ReplayArgs::default()
+        };
+        let args_with_slip = ReplayArgs {
+            tape_path: "test".to_string(),
+            slippage_bps: 100,
+            ..ReplayArgs::default()
+        };
         let r1 = run_replay(&tape_text, &args_no_slip).unwrap();
         let r2 = run_replay(&tape_text, &args_with_slip).unwrap();
         assert!(r2.replay_net_sol.net_lamports < r1.replay_net_sol.net_lamports);
@@ -453,8 +517,15 @@ mod tests {
     #[test]
     fn test_replay_exit_delay_adds_slippage() {
         let tape_text = "{\"kind\":\"trade\",\"lane\":\"scalp\",\"gross\":100000,\"fees\":5000,\"tips\":0,\"failed\":1000}\n";
-        let args_no_delay = ReplayArgs { tape_path: "test".to_string(), ..ReplayArgs::default() };
-        let args_with_delay = ReplayArgs { tape_path: "test".to_string(), exit_delay_slots: 10, ..ReplayArgs::default() };
+        let args_no_delay = ReplayArgs {
+            tape_path: "test".to_string(),
+            ..ReplayArgs::default()
+        };
+        let args_with_delay = ReplayArgs {
+            tape_path: "test".to_string(),
+            exit_delay_slots: 10,
+            ..ReplayArgs::default()
+        };
         let r1 = run_replay(&tape_text, &args_no_delay).unwrap();
         let r2 = run_replay(&tape_text, &args_with_delay).unwrap();
         assert!(r2.replay_net_sol.net_lamports < r1.replay_net_sol.net_lamports);

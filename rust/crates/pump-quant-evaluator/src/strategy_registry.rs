@@ -14,9 +14,7 @@
 //! - §64: Strategy registry and lifecycle management
 //! - §22: Integer-only, no floats
 
-use crate::evaluator_state::{
-    CusumVerdict, LifecycleEvidence, LifecycleStage, LifecycleState,
-};
+use crate::evaluator_state::{CusumVerdict, LifecycleEvidence, LifecycleStage, LifecycleState};
 
 // ============================================================================
 // Registry Types
@@ -400,7 +398,7 @@ mod tests {
         with_states(|mut reg| {
             reg.register(1, 0);
             reg.try_advance(1, 1, false, 0); // -> RegisteredChallenger
-            // RegisteredChallenger -> Backtested requires 10 trades
+                                             // RegisteredChallenger -> Backtested requires 10 trades
             let result = reg.try_advance(1, 2, false, 0);
             match result {
                 AdvancementResult::InsufficientEvidence {
@@ -424,7 +422,9 @@ mod tests {
             let result = reg.try_advance(1, 2, false, 0);
             assert!(matches!(
                 result,
-                AdvancementResult::Advanced { new_stage: LifecycleStage::Backtested }
+                AdvancementResult::Advanced {
+                    new_stage: LifecycleStage::Backtested
+                }
             ));
         });
     }
@@ -556,11 +556,14 @@ mod tests {
             // Manually set to Champion by advancing all the way
             // (simplified: just insert at Champion)
             let mut map: HashMap<u64, LifecycleState> = HashMap::new();
-            map.insert(1, LifecycleState {
-                stage: LifecycleStage::Champion,
-                stage_entered_cycle: 0,
-                evidence: LifecycleEvidence::default(),
-            });
+            map.insert(
+                1,
+                LifecycleState {
+                    stage: LifecycleStage::Champion,
+                    stage_entered_cycle: 0,
+                    evidence: LifecycleEvidence::default(),
+                },
+            );
             let mut reg = StrategyRegistry::new(&mut map);
             let result = reg.try_advance(1, 10, true, 8);
             assert_eq!(result, AdvancementResult::AlreadyAtMax);

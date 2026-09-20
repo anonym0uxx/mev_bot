@@ -16,15 +16,17 @@
 
 use std::fmt::Write as _;
 
-pub mod cost;
 pub mod bundle_gate;
+pub mod cost;
 pub mod decision;
 pub mod fmt;
 pub mod management;
 pub mod pynum;
 pub mod system;
 
-pub use cost::{cost_line, decompose, size_options, CostBreakdown, Regime, BPS_ONE, LAMPORTS_PER_SOL};
+pub use cost::{
+    cost_line, decompose, size_options, CostBreakdown, Regime, BPS_ONE, LAMPORTS_PER_SOL,
+};
 pub use decision::{render_decision, DecisionBundle};
 pub use fmt::py_float;
 pub use management::{render_management, ManagementBundle};

@@ -198,7 +198,9 @@ pub fn leg_cost_lamports(cu_consumed: u64, cu_price_lamports: u64) -> u64 {
         .checked_add(cu_fee)
         .and_then(|v| v.checked_add(JITO_TIP_LAMPORTS));
     // Never return less than the flat fallback.
-    total.unwrap_or(FIXED_LAMPORTS_PER_LEG).max(FIXED_LAMPORTS_PER_LEG)
+    total
+        .unwrap_or(FIXED_LAMPORTS_PER_LEG)
+        .max(FIXED_LAMPORTS_PER_LEG)
 }
 
 /// Same as [`leg_cost_lamports`] but for a buy leg (uses CU_BUY_ESTIMATE).
@@ -1046,7 +1048,10 @@ mod tests {
 
     #[test]
     fn leg_cost_falls_back_to_flat_on_no_market_data() {
-        assert_eq!(leg_cost_lamports(CU_BUY_ESTIMATE, 0), FIXED_LAMPORTS_PER_LEG);
+        assert_eq!(
+            leg_cost_lamports(CU_BUY_ESTIMATE, 0),
+            FIXED_LAMPORTS_PER_LEG
+        );
         assert_eq!(buy_leg_cost_lamports(0), FIXED_LAMPORTS_PER_LEG);
         assert_eq!(sell_leg_cost_lamports(0), FIXED_LAMPORTS_PER_LEG);
     }
@@ -1073,7 +1078,7 @@ mod tests {
         assert_eq!(buy_leg_cost_lamports(100), 105_400); // 5_000 + 400 + 100_000
         assert_eq!(buy_leg_cost_lamports(10_000), 145_000); // 5_000 + 40_000 + 100_000
         assert_eq!(buy_leg_cost_lamports(12_500), 155_000); // 5_000 + 50_000 + 100_000
-        // Monotone in CU price, and never below the flat fallback.
+                                                            // Monotone in CU price, and never below the flat fallback.
         assert!(buy_leg_cost_lamports(12_500) > buy_leg_cost_lamports(10_000));
         assert!(buy_leg_cost_lamports(100) >= FIXED_LAMPORTS_PER_LEG);
     }

@@ -62,21 +62,30 @@ fn main() -> std::process::ExitCode {
         }
     };
 
-    eprintln!("[pq-engine-replay] config loaded: gate_expected_move_bps={}, tranches={}, em_model={}",
-        cfg.gate_expected_move_bps, cfg.gate_exit_tranches, cfg.expected_move_model_enable);
+    eprintln!(
+        "[pq-engine-replay] config loaded: gate_expected_move_bps={}, tranches={}, em_model={}",
+        cfg.gate_expected_move_bps, cfg.gate_exit_tranches, cfg.expected_move_model_enable
+    );
 
     // ─── Run engine replay ────────────────────────────────────────────────
     let result = match replay_event_stream_windowed(&event_stream_path, cfg, replay_window_ticks) {
         Some(r) => r,
         None => {
-            eprintln!("[pq-engine-replay] ERROR: replay produced no result (empty or unreadable stream)");
+            eprintln!(
+                "[pq-engine-replay] ERROR: replay produced no result (empty or unreadable stream)"
+            );
             return std::process::ExitCode::from(4);
         }
     };
 
-    eprintln!("[pq-engine-replay] events_fed={} parse_skipped={}", result.events_fed, result.parse_skipped);
-    eprintln!("[pq-engine-replay] admitted={} rejected={} net_lamports={}",
-        result.report.admitted, result.report.rejected, result.report.net_lamports);
+    eprintln!(
+        "[pq-engine-replay] events_fed={} parse_skipped={}",
+        result.events_fed, result.parse_skipped
+    );
+    eprintln!(
+        "[pq-engine-replay] admitted={} rejected={} net_lamports={}",
+        result.report.admitted, result.report.rejected, result.report.net_lamports
+    );
 
     // ─── Emit JSON on stdout ──────────────────────────────────────────────
     let json = format!(

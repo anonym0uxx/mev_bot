@@ -86,14 +86,18 @@ impl OpenPositionSnapshot {
     pub fn to_json_list(positions: &[Self]) -> String {
         let mut s = String::from("[");
         for (i, p) in positions.iter().enumerate() {
-            if i > 0 { s.push(','); }
+            if i > 0 {
+                s.push(',');
+            }
             // Convert fp18 prices to SOL for readability
             let entry_sol = p.entry_price_fp as f64 / 1e18;
             let mark_sol = p.mark_price_fp as f64 / 1e18;
             let pnl_sol = p.unrealized_pnl_lamports as f64 / 1e9;
             let ret_pct = if p.entry_price_fp > 0 {
                 (p.mark_price_fp as f64 / p.entry_price_fp as f64 - 1.0) * 100.0
-            } else { 0.0 };
+            } else {
+                0.0
+            };
             // Encode mint bytes as hex without external dependency
             let mint_hex: String = p.mint.iter().map(|b| format!("{:02x}", b)).collect();
             s.push_str(&format!(
@@ -137,7 +141,9 @@ impl LiveStatus {
         // Render reject_counts as a JSON array of 32 integers.
         let mut rc = String::from("[");
         for (i, &c) in self.reject_counts.iter().enumerate() {
-            if i > 0 { rc.push(','); }
+            if i > 0 {
+                rc.push(',');
+            }
             rc.push_str(&c.to_string());
         }
         rc.push(']');
@@ -287,7 +293,11 @@ mod tests {
         }
         // The reject histogram invariant: sum(reject_counts) == rejected.
         let sum: u64 = a.reject_counts.iter().sum();
-        assert_eq!(sum, a.rejected, "histogram sum {} != rejected {}", sum, a.rejected);
+        assert_eq!(
+            sum, a.rejected,
+            "histogram sum {} != rejected {}",
+            sum, a.rejected
+        );
         // Info-time is the event-stream tick, not a wall-clock — non-zero after the
         // driven ticks and identical across replays (already asserted equal above).
         assert!(a.info_time_tick > 0);

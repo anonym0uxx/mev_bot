@@ -28,8 +28,8 @@
 
 use pump_quant_protocol::errors::FailureClass6;
 use pump_quant_protocol::runtime_errors::{
-    RuntimeError, TransactionError, RpcError,
-    classify_runtime_error, classify_transaction_error, classify_rpc_error,
+    classify_rpc_error, classify_runtime_error, classify_transaction_error, RpcError, RuntimeError,
+    TransactionError,
 };
 
 // ---------------------------------------------------------------------------
@@ -98,15 +98,9 @@ pub enum RemediationReject {
         failure_class: FailureClass6,
     },
     /// The new slippage exceeds the max allowed bound.
-    SlippageExceedsBound {
-        proposed: u32,
-        max_allowed: u32,
-    },
+    SlippageExceedsBound { proposed: u32, max_allowed: u32 },
     /// The new slippage is not higher than the previous (retry must increase).
-    SlippageNotIncreased {
-        proposed: u32,
-        previous: u32,
-    },
+    SlippageNotIncreased { proposed: u32, previous: u32 },
     /// The target venue is not registered.
     VenueNotRegistered { venue: u8 },
     /// The attempt count exceeds the max.
@@ -137,10 +131,10 @@ pub struct RemediationConfig {
 impl Default for RemediationConfig {
     fn default() -> Self {
         Self {
-            max_slippage_bps: 1000, // 10%
+            max_slippage_bps: 1000,        // 10%
             min_slippage_increase_bps: 10, // 0.1%
             max_retry_attempts: 5,
-            base_delay_slots: 30, // ~12s at 400ms/slot
+            base_delay_slots: 30,    // ~12s at 400ms/slot
             registered_venues: 0x03, // both pump.fun and PumpSwap
         }
     }
@@ -175,7 +169,10 @@ pub fn remediation_gate(
 
     // Gate 2: validate action-specific parameters.
     match action {
-        RemediationAction::RepriceRetry { new_slippage_bps, prev_slippage_bps } => {
+        RemediationAction::RepriceRetry {
+            new_slippage_bps,
+            prev_slippage_bps,
+        } => {
             // New slippage must not exceed the configured max.
             if new_slippage_bps > config.max_slippage_bps {
                 return Err(RemediationReject::SlippageExceedsBound {
@@ -203,7 +200,9 @@ pub fn remediation_gate(
             // Target venue must be registered.
             let venue_bit = 1u8 << target_venue;
             if config.registered_venues & venue_bit == 0 {
-                return Err(RemediationReject::VenueNotRegistered { venue: target_venue });
+                return Err(RemediationReject::VenueNotRegistered {
+                    venue: target_venue,
+                });
             }
             Ok(AdmittedAction::ReRoute { target_venue })
         }
@@ -213,7 +212,10 @@ pub fn remediation_gate(
             Ok(AdmittedAction::Quarantine)
         }
 
-        RemediationAction::BackoffRetry { attempt, max_attempts } => {
+        RemediationAction::BackoffRetry {
+            attempt,
+            max_attempts,
+        } => {
             // Attempt must be 1-indexed (non-zero).
             if attempt == 0 {
                 return Err(RemediationReject::ZeroAttempt);
@@ -226,9 +228,13 @@ pub fn remediation_gate(
                 });
             }
             // Exponential backoff: delay = base * 2^(attempt-1).
-            let delay_slots = config.base_delay_slots
+            let delay_slots = config
+                .base_delay_slots
                 .saturating_mul(1u64 << (attempt - 1).min(20));
-            Ok(AdmittedAction::BackoffRetry { attempt, delay_slots })
+            Ok(AdmittedAction::BackoffRetry {
+                attempt,
+                delay_slots,
+            })
         }
 
         RemediationAction::Abort => {
@@ -291,7 +297,7 @@ pub fn default_action_for_rpc_error(err: RpcError) -> RemediationAction {
 pub fn default_action_for_class(class: FailureClass6) -> RemediationAction {
     match class {
         FailureClass6::GuardOrSlippage => RemediationAction::RepriceRetry {
-            new_slippage_bps: 200, // 2% — a reasonable first retry
+            new_slippage_bps: 200,  // 2% — a reasonable first retry
             prev_slippage_bps: 100, // 1% — the previous that failed
         },
         FailureClass6::StateDrift => RemediationAction::Replan,
@@ -340,7 +346,10 @@ mod tests {
         let result = remediation_gate(action, FailureClass6::GuardOrSlippage, &config);
         assert!(matches!(
             result,
-            Err(RemediationReject::SlippageExceedsBound { proposed: 2000, max_allowed: 1000 })
+            Err(RemediationReject::SlippageExceedsBound {
+                proposed: 2000,
+                max_allowed: 1000
+            })
         ));
     }
 
@@ -352,16 +361,26 @@ mod tests {
             prev_slippage_bps: 100,
         };
         let result = remediation_gate(action, FailureClass6::GuardOrSlippage, &config);
-        assert!(matches!(result, Err(RemediationReject::SlippageNotIncreased { .. })));
+        assert!(matches!(
+            result,
+            Err(RemediationReject::SlippageNotIncreased { .. })
+        ));
     }
 
     #[test]
     fn backoff_retry_admitted_within_bounds() {
         let config = RemediationConfig::default();
-        let action = RemediationAction::BackoffRetry { attempt: 2, max_attempts: 5 };
+        let action = RemediationAction::BackoffRetry {
+            attempt: 2,
+            max_attempts: 5,
+        };
         let result = remediation_gate(action, FailureClass6::Transient, &config);
         assert!(result.is_ok());
-        if let Ok(AdmittedAction::BackoffRetry { attempt, delay_slots }) = result {
+        if let Ok(AdmittedAction::BackoffRetry {
+            attempt,
+            delay_slots,
+        }) = result
+        {
             assert_eq!(attempt, 2);
             // delay = base * 2^(attempt-1) = 30 * 2^1 = 60
             assert_eq!(delay_slots, 60);
@@ -373,15 +392,24 @@ mod tests {
     #[test]
     fn backoff_retry_rejects_too_many_attempts() {
         let config = RemediationConfig::default();
-        let action = RemediationAction::BackoffRetry { attempt: 10, max_attempts: 5 };
+        let action = RemediationAction::BackoffRetry {
+            attempt: 10,
+            max_attempts: 5,
+        };
         let result = remediation_gate(action, FailureClass6::Transient, &config);
-        assert!(matches!(result, Err(RemediationReject::TooManyAttempts { .. })));
+        assert!(matches!(
+            result,
+            Err(RemediationReject::TooManyAttempts { .. })
+        ));
     }
 
     #[test]
     fn backoff_retry_rejects_zero_attempt() {
         let config = RemediationConfig::default();
-        let action = RemediationAction::BackoffRetry { attempt: 0, max_attempts: 5 };
+        let action = RemediationAction::BackoffRetry {
+            attempt: 0,
+            max_attempts: 5,
+        };
         let result = remediation_gate(action, FailureClass6::Transient, &config);
         assert!(matches!(result, Err(RemediationReject::ZeroAttempt)));
     }
@@ -391,7 +419,10 @@ mod tests {
         let config = RemediationConfig::default();
         let action = RemediationAction::ReRoute { target_venue: 5 }; // not registered
         let result = remediation_gate(action, FailureClass6::RouteError, &config);
-        assert!(matches!(result, Err(RemediationReject::VenueNotRegistered { venue: 5 })));
+        assert!(matches!(
+            result,
+            Err(RemediationReject::VenueNotRegistered { venue: 5 })
+        ));
     }
 
     #[test]
@@ -406,12 +437,24 @@ mod tests {
     fn quarantine_and_abort_always_admitted() {
         let config = RemediationConfig::default();
         // Quarantine only matches VersionDrift
-        assert!(remediation_gate(RemediationAction::Quarantine, FailureClass6::VersionDrift, &config).is_ok());
-        assert!(remediation_gate(RemediationAction::Quarantine, FailureClass6::Fatal, &config).is_err());
+        assert!(remediation_gate(
+            RemediationAction::Quarantine,
+            FailureClass6::VersionDrift,
+            &config
+        )
+        .is_ok());
+        assert!(
+            remediation_gate(RemediationAction::Quarantine, FailureClass6::Fatal, &config).is_err()
+        );
 
         // Abort matches ANY class (fallback)
         assert!(remediation_gate(RemediationAction::Abort, FailureClass6::Fatal, &config).is_ok());
-        assert!(remediation_gate(RemediationAction::Abort, FailureClass6::GuardOrSlippage, &config).is_ok());
+        assert!(remediation_gate(
+            RemediationAction::Abort,
+            FailureClass6::GuardOrSlippage,
+            &config
+        )
+        .is_ok());
     }
 
     #[test]
@@ -466,24 +509,47 @@ mod tests {
         let config = RemediationConfig::default();
         // Attempt 1: delay = 30 * 2^0 = 30
         let a1 = remediation_gate(
-            RemediationAction::BackoffRetry { attempt: 1, max_attempts: 5 },
-            FailureClass6::Transient, &config,
-        ).unwrap();
+            RemediationAction::BackoffRetry {
+                attempt: 1,
+                max_attempts: 5,
+            },
+            FailureClass6::Transient,
+            &config,
+        )
+        .unwrap();
         // Attempt 2: delay = 30 * 2^1 = 60
         let a2 = remediation_gate(
-            RemediationAction::BackoffRetry { attempt: 2, max_attempts: 5 },
-            FailureClass6::Transient, &config,
-        ).unwrap();
+            RemediationAction::BackoffRetry {
+                attempt: 2,
+                max_attempts: 5,
+            },
+            FailureClass6::Transient,
+            &config,
+        )
+        .unwrap();
         // Attempt 3: delay = 30 * 2^2 = 120
         let a3 = remediation_gate(
-            RemediationAction::BackoffRetry { attempt: 3, max_attempts: 5 },
-            FailureClass6::Transient, &config,
-        ).unwrap();
+            RemediationAction::BackoffRetry {
+                attempt: 3,
+                max_attempts: 5,
+            },
+            FailureClass6::Transient,
+            &config,
+        )
+        .unwrap();
 
         match (a1, a2, a3) {
-            (AdmittedAction::BackoffRetry { delay_slots: d1, .. },
-             AdmittedAction::BackoffRetry { delay_slots: d2, .. },
-             AdmittedAction::BackoffRetry { delay_slots: d3, .. }) => {
+            (
+                AdmittedAction::BackoffRetry {
+                    delay_slots: d1, ..
+                },
+                AdmittedAction::BackoffRetry {
+                    delay_slots: d2, ..
+                },
+                AdmittedAction::BackoffRetry {
+                    delay_slots: d3, ..
+                },
+            ) => {
                 assert_eq!(d1, 30);
                 assert_eq!(d2, 60);
                 assert_eq!(d3, 120);
@@ -496,8 +562,15 @@ mod tests {
     fn action_class_mismatch_rejected() {
         let config = RemediationConfig::default();
         // Replan on GuardOrSlippage → mismatch
-        let result = remediation_gate(RemediationAction::Replan, FailureClass6::GuardOrSlippage, &config);
-        assert!(matches!(result, Err(RemediationReject::ActionClassMismatch { .. })));
+        let result = remediation_gate(
+            RemediationAction::Replan,
+            FailureClass6::GuardOrSlippage,
+            &config,
+        );
+        assert!(matches!(
+            result,
+            Err(RemediationReject::ActionClassMismatch { .. })
+        ));
     }
 
     #[test]

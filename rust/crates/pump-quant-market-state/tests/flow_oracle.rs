@@ -47,12 +47,18 @@ fn hex32(s: &str) -> [u8; 32] {
 }
 
 fn i64t(line: &str, key: &str) -> i64 {
-    tok(line, key).unwrap_or_else(|| panic!("missing {key} in {line}")).parse().expect("int")
+    tok(line, key)
+        .unwrap_or_else(|| panic!("missing {key} in {line}"))
+        .parse()
+        .expect("int")
 }
 
 fn fixture(name: &str) -> String {
-    std::fs::read_to_string(format!("{}/tests/fixtures/flow_oracle/{name}", env!("CARGO_MANIFEST_DIR")))
-        .unwrap_or_else(|e| panic!("read {name}: {e}"))
+    std::fs::read_to_string(format!(
+        "{}/tests/fixtures/flow_oracle/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap_or_else(|e| panic!("read {name}: {e}"))
 }
 
 /// The same double Python produced, compared bit-for-bit.
@@ -86,14 +92,23 @@ fn live_flow_reducer_matches_the_c11_builder_on_the_micro_tape() {
     let mut clocks: Vec<(i64, String)> = clocks_raw
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| (i64t(l, "t_dec_ms"), tok(l, "mint").expect("mint").to_string()))
+        .map(|l| {
+            (
+                i64t(l, "t_dec_ms"),
+                tok(l, "mint").expect("mint").to_string(),
+            )
+        })
         .collect();
     clocks.sort();
     let clock_mints: BTreeSet<String> = clocks.iter().map(|(_, m)| m.clone()).collect();
     for m in &clock_mints {
         r.track_mint(hex32(m));
     }
-    assert_eq!(clock_mints.len(), 4, "expected four distinct clock mints in the fixture");
+    assert_eq!(
+        clock_mints.len(),
+        4,
+        "expected four distinct clock mints in the fixture"
+    );
 
     let events: Vec<FlowEvent> = tape
         .lines()
@@ -101,7 +116,11 @@ fn live_flow_reducer_matches_the_c11_builder_on_the_micro_tape() {
         .map(|l| FlowEvent {
             mint: hex32(tok(l, "mint").expect("mint")),
             trader: hex32(tok(l, "trader").expect("trader")),
-            side: if tok(l, "side") == Some("buy") { Side::Buy } else { Side::Sell },
+            side: if tok(l, "side") == Some("buy") {
+                Side::Buy
+            } else {
+                Side::Sell
+            },
             slot: i64t(l, "slot") as u64,
             recv_unix_ms: i64t(l, "recv_unix_ms"),
             sol_lamports: i64t(l, "sol_lamports"),
@@ -126,25 +145,68 @@ fn live_flow_reducer_matches_the_c11_builder_on_the_micro_tape() {
 
         match r.serve(&hex32(mint), *t) {
             FlowOutcome::NoPriorFlow => {
-                assert_eq!(tok(row, "no_prior_flow"), Some("true"), "row {i}: builder served flow, reducer said no_prior_flow");
+                assert_eq!(
+                    tok(row, "no_prior_flow"),
+                    Some("true"),
+                    "row {i}: builder served flow, reducer said no_prior_flow"
+                );
             }
             FlowOutcome::Aggregates(a) => {
-                assert!(tok(row, "no_prior_flow").is_none(), "row {i}: builder said no_prior_flow, reducer served flow");
-                assert_eq!(a.entrants_60s, i64t(row, "entrants_60s") as u32, "row {i} entrants_60s");
-                assert_eq!(a.entrants_300s, i64t(row, "entrants_300s") as u32, "row {i} entrants_300s");
-                assert_eq!(a.smart_entrants_300s, i64t(row, "smart_entrants_300s") as u32, "row {i} smart_entrants");
-                assert_eq!(a.coentry_wallets_300s, i64t(row, "coentry_wallets_300s") as u32, "row {i} coentry");
+                assert!(
+                    tok(row, "no_prior_flow").is_none(),
+                    "row {i}: builder said no_prior_flow, reducer served flow"
+                );
+                assert_eq!(
+                    a.entrants_60s,
+                    i64t(row, "entrants_60s") as u32,
+                    "row {i} entrants_60s"
+                );
+                assert_eq!(
+                    a.entrants_300s,
+                    i64t(row, "entrants_300s") as u32,
+                    "row {i} entrants_300s"
+                );
+                assert_eq!(
+                    a.smart_entrants_300s,
+                    i64t(row, "smart_entrants_300s") as u32,
+                    "row {i} smart_entrants"
+                );
+                assert_eq!(
+                    a.coentry_wallets_300s,
+                    i64t(row, "coentry_wallets_300s") as u32,
+                    "row {i} coentry"
+                );
                 assert_eq!(
                     a.creator_trading_own_mint,
                     tok(row, "creator_trading_own_mint") == Some("true"),
                     "row {i} creator_trading_own_mint"
                 );
-                assert_eq!(a.entrant_fee_p90_lamports, tok(row, "entrant_fee_p90_lamports").map(|v| v.parse().unwrap()), "row {i} fee p90");
-                assert_eq!(a.entrant_cu_p50, tok(row, "entrant_cu_p50").map(|v| v.parse().unwrap()), "row {i} cu p50");
+                assert_eq!(
+                    a.entrant_fee_p90_lamports,
+                    tok(row, "entrant_fee_p90_lamports").map(|v| v.parse().unwrap()),
+                    "row {i} fee p90"
+                );
+                assert_eq!(
+                    a.entrant_cu_p50,
+                    tok(row, "entrant_cu_p50").map(|v| v.parse().unwrap()),
+                    "row {i} cu p50"
+                );
                 let v = a.to_corpus_values();
-                f64_eq(v.net_flow_sol_300s, opt_f64(row, "net_flow_sol_300s").expect("net_flow"), "net_flow_sol_300s");
-                f64_eq(v.smart_net_flow_sol_300s, opt_f64(row, "smart_net_flow_sol_300s").expect("smart_flow"), "smart_net_flow_sol_300s");
-                f64_eq(v.flow_lookback_d, opt_f64(row, "flow_lookback_d").expect("lookback"), "flow_lookback_d");
+                f64_eq(
+                    v.net_flow_sol_300s,
+                    opt_f64(row, "net_flow_sol_300s").expect("net_flow"),
+                    "net_flow_sol_300s",
+                );
+                f64_eq(
+                    v.smart_net_flow_sol_300s,
+                    opt_f64(row, "smart_net_flow_sol_300s").expect("smart_flow"),
+                    "smart_net_flow_sol_300s",
+                );
+                f64_eq(
+                    v.flow_lookback_d,
+                    opt_f64(row, "flow_lookback_d").expect("lookback"),
+                    "flow_lookback_d",
+                );
                 let shares = [
                     ("fresh_wallet_share_300s", a.fresh_wallet_share_300s_micro),
                     ("sniper_share_300s", a.sniper_share_300s_micro),
@@ -160,5 +222,9 @@ fn live_flow_reducer_matches_the_c11_builder_on_the_micro_tape() {
             }
         }
     }
-    assert_eq!(applied, events.len(), "every fixture event should be applied by the last clock");
+    assert_eq!(
+        applied,
+        events.len(),
+        "every fixture event should be applied by the last clock"
+    );
 }

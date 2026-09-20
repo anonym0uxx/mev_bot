@@ -223,12 +223,7 @@ pub struct ThompsonPosterior {
 
 impl ThompsonPosterior {
     /// Create a fresh posterior with uniform prior Beta(1, 1).
-    pub fn initial(
-        entry_mode: &str,
-        archetype: &str,
-        sizing: &str,
-        lane: &str,
-    ) -> Self {
+    pub fn initial(entry_mode: &str, archetype: &str, sizing: &str, lane: &str) -> Self {
         Self {
             alpha: 1,
             beta: 1,
@@ -461,10 +456,7 @@ impl CusumState {
             self.deficit_lamports += delta;
         } else {
             // Trade met or exceeded reference — decay the deficit.
-            self.deficit_lamports = self
-                .deficit_lamports
-                .saturating_add(delta)
-                .max(0);
+            self.deficit_lamports = self.deficit_lamports.saturating_add(delta).max(0);
         }
 
         // Retirement can only bind after min_samples (§56.11).
@@ -765,7 +757,11 @@ impl EvaluatorState {
             first = false;
             s.push_str(&format!(
                 "{{\"id\":{},\"llr\":{},\"pairs\":{},\"verdict\":\"{}\",\"hash\":{}}}",
-                k, v.llr_millinats, v.pairs_scored, v.verdict.tag(), v.params_hash
+                k,
+                v.llr_millinats,
+                v.pairs_scored,
+                v.verdict.tag(),
+                v.params_hash
             ));
         }
         s.push_str("],\n");
@@ -875,7 +871,10 @@ impl EvaluatorState {
         s.push_str("}\n");
 
         // Rev-11 §4: Last cycle duration (for adaptive challenger cap).
-        s.push_str(&format!("  \"last_cycle_duration_secs\":{}\n", self.last_cycle_duration_secs));
+        s.push_str(&format!(
+            "  \"last_cycle_duration_secs\":{}\n",
+            self.last_cycle_duration_secs
+        ));
 
         s.push_str("}\n");
         s
@@ -885,18 +884,15 @@ impl EvaluatorState {
     pub fn save(&self, path: &str) -> Result<(), String> {
         let json = self.to_json();
         if let Some(parent) = std::path::Path::new(path).parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("mkdir failed: {e}"))?;
+            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
         }
-        std::fs::write(path, json)
-            .map_err(|e| format!("write failed: {e}"))
+        std::fs::write(path, json).map_err(|e| format!("write failed: {e}"))
     }
 
     /// Load state from a file path. Returns an error if the file can't be
     /// read or parsed. Use `EvaluatorState::initial()` as a fallback.
     pub fn load(path: &str) -> Result<Self, String> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| format!("read failed: {e}"))?;
+        let text = std::fs::read_to_string(path).map_err(|e| format!("read failed: {e}"))?;
         Self::from_json(&text)
     }
 
@@ -958,9 +954,7 @@ impl EvaluatorState {
                         .unwrap_or_else(|| "unknown".to_string());
                     // Leak to &'static str — these are small, bounded strings
                     // created only during state load (once per cycle).
-                    let verdict: &'static str = Box::leak(
-                        verdict_str.into_boxed_str()
-                    );
+                    let verdict: &'static str = Box::leak(verdict_str.into_boxed_str());
                     let cycle = extract_u64(&entry_str, "cycle").unwrap_or(0);
                     let netsol = extract_i64(&entry_str, "netsol").unwrap_or(0);
                     let n_trades = extract_u64(&entry_str, "n_trades").unwrap_or(0);
@@ -988,24 +982,26 @@ impl EvaluatorState {
                     let beta = extract_u64(&entry_str, "beta").unwrap_or(1);
                     let n_trades = extract_u64(&entry_str, "n_trades").unwrap_or(0);
                     let netsol = extract_i64(&entry_str, "netsol").unwrap_or(0);
-                    let entry_mode = extract_string(&entry_str, "entry_mode")
-                        .unwrap_or_else(|| String::new());
-                    let archetype = extract_string(&entry_str, "archetype")
-                        .unwrap_or_else(|| String::new());
-                    let sizing = extract_string(&entry_str, "sizing")
-                        .unwrap_or_else(|| String::new());
-                    let lane = extract_string(&entry_str, "lane")
-                        .unwrap_or_else(|| String::new());
-                    state.thompson_posteriors.insert(id, ThompsonPosterior {
-                        alpha,
-                        beta,
-                        n_trades,
-                        cumulative_netsol_lamports: netsol,
-                        entry_mode,
-                        archetype,
-                        sizing,
-                        lane,
-                    });
+                    let entry_mode =
+                        extract_string(&entry_str, "entry_mode").unwrap_or_else(|| String::new());
+                    let archetype =
+                        extract_string(&entry_str, "archetype").unwrap_or_else(|| String::new());
+                    let sizing =
+                        extract_string(&entry_str, "sizing").unwrap_or_else(|| String::new());
+                    let lane = extract_string(&entry_str, "lane").unwrap_or_else(|| String::new());
+                    state.thompson_posteriors.insert(
+                        id,
+                        ThompsonPosterior {
+                            alpha,
+                            beta,
+                            n_trades,
+                            cumulative_netsol_lamports: netsol,
+                            entry_mode,
+                            archetype,
+                            sizing,
+                            lane,
+                        },
+                    );
                 }
             }
         }
@@ -1247,7 +1243,12 @@ mod tests {
 
     #[test]
     fn thompson_posterior_uniform_prior() {
-        let tp = ThompsonPosterior::initial("PullbackContinuation", "FreshMintFlow", "ProbeTier", "CreationSniper");
+        let tp = ThompsonPosterior::initial(
+            "PullbackContinuation",
+            "FreshMintFlow",
+            "ProbeTier",
+            "CreationSniper",
+        );
         assert_eq!(tp.alpha, 1);
         assert_eq!(tp.beta, 1);
         assert_eq!(tp.mean_bps(), 5000); // 1/(1+1) = 0.5 = 5000 bps
@@ -1276,8 +1277,8 @@ mod tests {
     #[test]
     fn cusum_retires_after_sustained_underperformance() {
         let mut c = CusumState::new(100_000); // reference: 100k lamports per trade
-        // Each trade loses 100k, deficit accumulates at 200k/trade.
-        // After 30 trades (min_samples), deficit = 6000k, reference*3 = 300k.
+                                              // Each trade loses 100k, deficit accumulates at 200k/trade.
+                                              // After 30 trades (min_samples), deficit = 6000k, reference*3 = 300k.
         for _ in 0..30 {
             c.push_trade(-100_000);
         }
@@ -1328,7 +1329,16 @@ mod tests {
         let mut s = EvaluatorState::initial();
         s.cumulative_trial_count = 5;
         s.cumulative_netsol_lamports = -537_000;
-        s.record_challenger(0xDEAD, "dropped", 1, -100_000, 10, -2944, 50_000, vec!["mcap_band_lo".to_string()]);
+        s.record_challenger(
+            0xDEAD,
+            "dropped",
+            1,
+            -100_000,
+            10,
+            -2944,
+            50_000,
+            vec!["mcap_band_lo".to_string()],
+        );
         let json = s.to_json();
         // Verify key fields are present in the JSON.
         assert!(json.contains("\"version\":2")); // Rev-11: version bumped

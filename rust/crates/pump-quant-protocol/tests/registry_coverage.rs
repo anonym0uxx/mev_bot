@@ -79,14 +79,8 @@ fn registry_coverage_report() {
     let mut skipped = 0u32;
 
     for entry in layouts {
-        let venue_s = entry
-            .get("venue")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let side_s = entry
-            .get("side")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let venue_s = entry.get("venue").and_then(|v| v.as_str()).unwrap_or("");
+        let side_s = entry.get("side").and_then(|v| v.as_str()).unwrap_or("");
         let count = entry
             .get("account_count")
             .and_then(|v| v.as_u64())
@@ -172,6 +166,8 @@ fn registry_coverage_report() {
     }
 
     eprintln!();
-    eprintln!("  Honest status: builder coverage starts at {} of 48 required layouts.",
-        registry.verified().len());
+    eprintln!(
+        "  Honest status: builder coverage starts at {} of 48 required layouts.",
+        registry.verified().len()
+    );
 }

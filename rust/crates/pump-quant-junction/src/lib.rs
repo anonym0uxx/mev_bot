@@ -13,7 +13,7 @@
 #![warn(
     clippy::all,
     clippy::integer_arithmetic,
-    clippy::cast_possible_truncation,
+    clippy::cast_possible_truncation
 )]
 
 // ─── Provenance ───────────────────────────────────────────────────────────
@@ -109,33 +109,33 @@ pub struct OverflowStats {
 
 // ─── Translation ──────────────────────────────────────────────────────────
 
-pub mod translate;
+pub mod async_sink;
+pub mod autonomous_bridge;
+#[cfg(test)]
+mod chaos_tests;
 pub mod decode;
-pub mod queue;
+pub mod engine_replay; // Phase 3: config-driven engine re-simulation
+pub mod event_stream;
+pub mod laserstream;
+pub mod layout_fixtures;
+pub mod live_adapters;
+pub mod memory_bank;
+pub mod outbound;
 pub mod pumpportal;
+pub mod queue;
 pub mod reserve_delta;
 pub mod state_fetch;
-pub mod outbound;
-pub mod live_adapters;
-pub mod laserstream;
-pub mod async_sink;
-pub mod trade_journal;
 pub mod tape_export;
-pub mod event_stream;
-pub mod engine_replay; // Phase 3: config-driven engine re-simulation
-pub mod memory_bank;
-pub mod autonomous_bridge;
+pub mod trade_journal;
+pub mod translate;
 pub mod wallet_loader;
-pub mod layout_fixtures;
-#[cfg(test)] mod chaos_tests;
 
+pub use laserstream::{
+    classify_pump_instructions, instructions_to_events, parse_ndjson_line, LaserStreamInstruction,
+    LaserStreamState, LaserStreamTx, LaserStreamUpdate, PumpInstruction,
+};
+pub use pumpportal::{handle_create_payload, handle_migration_payload, handle_trade_payload};
 pub use queue::BoundedJunctionQueue;
+pub use reserve_delta::{derive_market_trade_from_delta, ReserveSnapshot};
 pub use translate::canonical_tx_to_market_trade;
 pub use translate::raw_token_metadata_to_event;
-pub use pumpportal::{handle_trade_payload, handle_create_payload, handle_migration_payload};
-pub use reserve_delta::{derive_market_trade_from_delta, ReserveSnapshot};
-pub use laserstream::{
-    classify_pump_instructions, instructions_to_events,
-    parse_ndjson_line, LaserStreamTx, LaserStreamInstruction,
-    LaserStreamUpdate, PumpInstruction, LaserStreamState,
-};

@@ -6,16 +6,16 @@
 // property-tested safety argument. There is no such dossier entry for this
 // crate, so there is no `unsafe` this attribute could legitimately block.
 #![forbid(unsafe_code)]
+pub mod defense_in_depth;
+pub mod deflated_sharpe;
+pub mod edge_attribution;
+pub mod eight_gate;
 pub mod evaluator_state;
 pub mod evaluator_stats;
-pub mod deflated_sharpe;
-pub mod thompson_sampling;
-pub mod eight_gate;
 pub mod strategy_committee;
-pub mod strategy_type_sprt;
-pub mod edge_attribution;
 pub mod strategy_registry;
-pub mod defense_in_depth;
+pub mod strategy_type_sprt;
+pub mod thompson_sampling;
 
 // Operator spec-gap leaves added alongside the frozen evaluator's stats
 // core. Each is a pure, deterministic verdict/guard primitive (operator

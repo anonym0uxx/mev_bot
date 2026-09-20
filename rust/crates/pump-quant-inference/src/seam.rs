@@ -541,9 +541,14 @@ pub enum SizeError {
     InvalidInput,
 }
 
-/// The canonical traded notional the tiers are fractions of (`exit_mechanics.
-/// DEPLOY_SOL_CANONICAL`, 1 SOL), in lamports. A tier is **never** a fraction of the
-/// account: the buffer stays free so the priority fee can be paid.
+/// The canonical 1 SOL reference notional, in lamports — the historical basis the tiers were
+/// documented against, and the value the tier arithmetic is still pinned to in tests.
+///
+/// **It is NOT the served sizing basis.** Under `KELLY_AUDIT_C12` the notional that sizes a
+/// live position is the per-position notional — the account's deployable budget split across
+/// the concurrency cap (`PortfolioCap::per_position_notional`) — so a full book is the account
+/// rather than a multiple of it. A tier is **never** a fraction of the account either way: the
+/// fee buffer stays free so the priority fee can be paid.
 pub const DEPLOY_LAMPORTS_CANONICAL: u64 = 1_000_000_000;
 
 /// Reserved so the priority fee can still be paid after the clip is deployed (0.05 SOL).
@@ -565,10 +570,31 @@ pub fn resolve_entry_clip_lamports(
     notional_lamports: u64,
     fee_buffer_lamports: u64,
 ) -> Result<u64, SizeError> {
+    resolve_clip_at_fraction_bps(
+        tier.fraction_bps(),
+        free_cash_lamports,
+        notional_lamports,
+        fee_buffer_lamports,
+    )
+}
+
+/// The same resolution against a raw fraction in bps.
+///
+/// The tier form covers the venue rule; this form exists for the portfolio layer's
+/// unenforceable-cap fallback, where the served fraction is a **Rust policy** (uniform half)
+/// rather than a tier the model named. Keeping one body means the capping, the fee buffer and
+/// the minimum are identical on both paths — the fallback can change the fraction, never the
+/// safety arithmetic.
+pub fn resolve_clip_at_fraction_bps(
+    fraction_bps: u32,
+    free_cash_lamports: u64,
+    notional_lamports: u64,
+    fee_buffer_lamports: u64,
+) -> Result<u64, SizeError> {
     if notional_lamports == 0 {
         return Err(SizeError::InvalidInput);
     }
-    let want = (u128::from(notional_lamports) * u128::from(tier.fraction_bps()) / 10_000) as u64;
+    let want = (u128::from(notional_lamports) * u128::from(fraction_bps) / 10_000) as u64;
     let payable = free_cash_lamports.saturating_sub(fee_buffer_lamports);
     if payable == 0 {
         return Err(SizeError::InsufficientFreeCash);
@@ -695,7 +721,11 @@ INVALIDATION: execution cost: round trip 66 bp\nEVIDENCE_STATUS: complete";
             assert_ne!(v.ruled_size(), SizeTier::Mid, "MID must never be served");
         }
         let d = parse_decision_payload("DECISION: BUY\nSIZE: MID\nPRICE LIMIT: 1.5\n").unwrap();
-        assert_eq!(d.size, Some(SizeTier::Mid), "the prompt offers it, so it parses");
+        assert_eq!(
+            d.size,
+            Some(SizeTier::Mid),
+            "the prompt offers it, so it parses"
+        );
     }
 
     #[test]

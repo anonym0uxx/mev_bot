@@ -100,9 +100,12 @@ impl EdgeAttribution {
     pub fn add(&mut self, d: &EdgeDecomposition) {
         self.total_entry_edge = self.total_entry_edge.saturating_add(d.entry_edge_lamports);
         self.total_exit_edge = self.total_exit_edge.saturating_add(d.exit_edge_lamports);
-        self.total_sizing_edge = self.total_sizing_edge.saturating_add(d.sizing_edge_lamports);
-        self.total_selection_edge =
-            self.total_selection_edge.saturating_add(d.selection_edge_lamports);
+        self.total_sizing_edge = self
+            .total_sizing_edge
+            .saturating_add(d.sizing_edge_lamports);
+        self.total_selection_edge = self
+            .total_selection_edge
+            .saturating_add(d.selection_edge_lamports);
         self.total_residual = self.total_residual.saturating_add(d.residual_lamports);
         self.total_pnl = self.total_pnl.saturating_add(d.total_pnl_lamports);
         self.n_trades += 1;
@@ -312,18 +315,18 @@ mod tests {
     #[test]
     fn decomposition_is_additive() {
         let d = decompose_trade(
-            90_000, // actual entry (below TWAP = good entry)
+            90_000,  // actual entry (below TWAP = good entry)
             100_000, // TWAP
             110_000, // actual exit (above midpoint = good exit)
             105_000, // midpoint
-            100,    // actual size (larger than equal weight = good sizing on profitable trade)
-            50,     // equal weight size
-            200,    // per unit pnl (profitable)
-            500,    // selection pnl
+            100,     // actual size (larger than equal weight = good sizing on profitable trade)
+            50,      // equal weight size
+            200,     // per unit pnl (profitable)
+            500,     // selection pnl
         );
         assert!(d.is_additive());
         assert!(d.entry_edge_lamports > 0); // bought below TWAP
-        assert!(d.exit_edge_lamports > 0);  // sold above midpoint
+        assert!(d.exit_edge_lamports > 0); // sold above midpoint
         assert!(d.sizing_edge_lamports > 0); // larger size on profitable trade
         assert!(d.selection_edge_lamports > 0);
         assert!(d.total_pnl_lamports > 0);
@@ -336,10 +339,10 @@ mod tests {
             100_000, // TWAP
             110_000, // actual exit
             110_000, // midpoint (same as exit = neutral exit)
-            100,    // size
-            100,    // equal weight (same = neutral sizing)
-            0,      // per unit pnl (neutral)
-            0,      // no selection edge
+            100,     // size
+            100,     // equal weight (same = neutral sizing)
+            0,       // per unit pnl (neutral)
+            0,       // no selection edge
         );
         assert!(d.entry_edge_lamports < 0); // bought above TWAP
         assert_eq!(d.exit_edge_lamports, 0); // sold at midpoint
@@ -350,14 +353,8 @@ mod tests {
     #[test]
     fn aggregation_sums_correctly() {
         let mut attr = EdgeAttribution::new(42);
-        attr.add_trade(
-            90_000, 100_000, 110_000, 105_000,
-            100, 50, 200, 500,
-        );
-        attr.add_trade(
-            80_000, 100_000, 120_000, 110_000,
-            100, 50, 400, 800,
-        );
+        attr.add_trade(90_000, 100_000, 110_000, 105_000, 100, 50, 200, 500);
+        attr.add_trade(80_000, 100_000, 120_000, 110_000, 100, 50, 400, 800);
         assert_eq!(attr.n_trades, 2);
         assert!(attr.total_pnl > 0);
         assert!(attr.total_entry_edge > 0);
@@ -368,10 +365,7 @@ mod tests {
     fn dominant_source_identifies_entry() {
         let mut attr = EdgeAttribution::new(1);
         // Only entry edge is positive, everything else is zero.
-        attr.add_trade(
-            50_000, 100_000, 100_000, 100_000,
-            100, 100, 0, 0,
-        );
+        attr.add_trade(50_000, 100_000, 100_000, 100_000, 100, 100, 0, 0);
         let (source, bps) = attr.dominant_source();
         assert_eq!(source, EdgeSource::Entry);
         assert!(bps > 8000); // highly concentrated
@@ -382,10 +376,7 @@ mod tests {
     fn robust_when_edges_spread() {
         let mut attr = EdgeAttribution::new(1);
         // All four edge sources contribute equally.
-        attr.add_trade(
-            90, 100, 110, 100,
-            10, 5, 20, 50,
-        );
+        attr.add_trade(90, 100, 110, 100, 10, 5, 20, 50);
         // entry = (100-90)*10 = 100
         // exit = (110-100)*10 = 100
         // sizing = (10-5)*20 = 100
@@ -420,14 +411,14 @@ mod tests {
             100_000, // TWAP
             80_000,  // actual exit (below midpoint = bad exit)
             90_000,  // midpoint
-            100,    // size
-            100,    // equal weight (neutral sizing)
-            -200,   // per unit pnl (losing trade)
-            0,      // no selection edge
+            100,     // size
+            100,     // equal weight (neutral sizing)
+            -200,    // per unit pnl (losing trade)
+            0,       // no selection edge
         );
         assert_eq!(d.entry_edge_lamports, 0); // neutral entry
-        assert!(d.exit_edge_lamports < 0);   // sold below midpoint
-        assert!(d.total_pnl_lamports < 0);   // losing trade
+        assert!(d.exit_edge_lamports < 0); // sold below midpoint
+        assert!(d.total_pnl_lamports < 0); // losing trade
         assert!(d.is_additive());
     }
 
@@ -436,9 +427,7 @@ mod tests {
         // Create a decomposition where edges don't naturally sum to total.
         // The residual should capture the difference.
         let d = decompose_trade(
-            100, 100, 200, 100,
-            10, 10,
-            5,   // per unit pnl
+            100, 100, 200, 100, 10, 10, 5,   // per unit pnl
             300, // selection pnl (deliberately large)
         );
         // entry = (100-100)*10 = 0

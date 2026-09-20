@@ -60,12 +60,18 @@ fn action_of(name: &str) -> Action {
 #[test]
 fn the_fixture_exercises_both_branches_of_the_corpus_min() {
     let rs = rows();
-    assert!(rs.len() >= 3, "expected at least 3 fixture rows, got {}", rs.len());
-    let capital_binds = rs
+    assert!(
+        rs.len() >= 3,
+        "expected at least 3 fixture rows, got {}",
+        rs.len()
+    );
+    let capital_binds = rs.iter().any(|r| {
+        r.inventory_value_lamports != r.python_clip_lamports
+            && r.python_clip_lamports < r.free_cash_lamports
+    });
+    let cash_binds = rs
         .iter()
-        .any(|r| r.inventory_value_lamports != r.python_clip_lamports
-            && r.python_clip_lamports < r.free_cash_lamports);
-    let cash_binds = rs.iter().any(|r| r.python_clip_lamports == r.free_cash_lamports);
+        .any(|r| r.python_clip_lamports == r.free_cash_lamports);
     assert!(capital_binds, "no row is capital-limited: {rs:#?}");
     assert!(cash_binds, "no row is cash-limited: {rs:#?}");
 }
@@ -139,11 +145,24 @@ fn the_inventory_base_would_not_reproduce_the_corpus() {
 /// The base is named per action, and non-management actions have none.
 #[test]
 fn management_base_names_the_unit_per_action() {
-    assert_eq!(management_base(Action::Add), Some(ManagementBase::AccountCapital));
-    assert_eq!(management_base(Action::Reduce), Some(ManagementBase::Inventory));
-    assert_eq!(management_base(Action::Exit), Some(ManagementBase::Inventory));
+    assert_eq!(
+        management_base(Action::Add),
+        Some(ManagementBase::AccountCapital)
+    );
+    assert_eq!(
+        management_base(Action::Reduce),
+        Some(ManagementBase::Inventory)
+    );
+    assert_eq!(
+        management_base(Action::Exit),
+        Some(ManagementBase::Inventory)
+    );
     for a in [Action::Buy, Action::Watch, Action::Skip, Action::Hold] {
-        assert_eq!(management_base(a), None, "{a:?} is not a management magnitude");
+        assert_eq!(
+            management_base(a),
+            None,
+            "{a:?} is not a management magnitude"
+        );
         assert_eq!(
             resolve_management_clip_lamports(a, 1, 1, 1),
             None,
@@ -177,8 +196,8 @@ fn reduce_and_exit_are_fractions_of_the_position() {
 fn the_resolver_saturates_and_is_monotone_in_capital() {
     // A maximal account resolves to HALF of it (the 5_000 bp fraction applied to
     // the capital), and must never wrap to a small number.
-    let huge = resolve_management_clip_lamports(Action::Add, 0, u64::MAX, u64::MAX)
-        .expect("ADD resolves");
+    let huge =
+        resolve_management_clip_lamports(Action::Add, 0, u64::MAX, u64::MAX).expect("ADD resolves");
     assert_eq!(
         huge,
         u64::MAX / 2,

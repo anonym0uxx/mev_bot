@@ -149,7 +149,10 @@ fn main() -> ExitCode {
     println!("journal_digest    {:#018x}", report.journal_digest);
     println!("junction_drained  {}", junction_events_drained);
     let overflow = queue.overflow_stats();
-    println!("junction_overflow {} (last_drop_slot {})", overflow.dropped, overflow.last_drop_slot);
+    println!(
+        "junction_overflow {} (last_drop_slot {})",
+        overflow.dropped, overflow.last_drop_slot
+    );
 
     ExitCode::SUCCESS
 }

@@ -88,10 +88,8 @@ impl LiveStateSimulator for RpcSimulator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ex_construction_gate::{
-        GateSide, GateVenue, IX_DATA_LEN, PhaseBDeferredSim,
-    };
-    use pump_quant_protocol::venue_accounts::{PUMP_PROGRAM_ID, PUMPSWAP_PROGRAM_ID};
+    use crate::ex_construction_gate::{GateSide, GateVenue, PhaseBDeferredSim, IX_DATA_LEN};
+    use pump_quant_protocol::venue_accounts::{PUMPSWAP_PROGRAM_ID, PUMP_PROGRAM_ID};
 
     #[test]
     fn rpc_simulator_accepts_pump_fun_program() {

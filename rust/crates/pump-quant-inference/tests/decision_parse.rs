@@ -46,7 +46,10 @@ fn every_corpus_completion_parses_to_what_the_corpus_says_it_is() {
                 "price limit drifted at line {}: {a} vs {b}",
                 i + 1
             ),
-            (a, b) => panic!("price-limit presence drifted at line {}: {a:?} vs {b:?}", i + 1),
+            (a, b) => panic!(
+                "price-limit presence drifted at line {}: {a:?} vs {b:?}",
+                i + 1
+            ),
         }
         n += 1;
     }

@@ -22,14 +22,17 @@
 //! `ProvenancedEvent` pipeline. The only difference is the transport
 //! (gRPC vs WS vs file replay), not the decode path.
 
-#![warn(clippy::all, clippy::integer_arithmetic, clippy::cast_possible_truncation)]
+#![warn(
+    clippy::all,
+    clippy::integer_arithmetic,
+    clippy::cast_possible_truncation
+)]
 
 use pump_quant_app::event::AppEvent;
 use pump_quant_domain::ids::Mint;
 use pump_quant_protocol::ix::{BUY_DISCRIMINATOR, SELL_DISCRIMINATOR};
 use pump_quant_protocol::pumpswap_ix::{
-    decode_pumpswap_ix, PumpSwapIx,
-    PUMP_MIGRATE_DISCRIMINATOR,
+    decode_pumpswap_ix, PumpSwapIx, PUMP_MIGRATE_DISCRIMINATOR,
 };
 
 use crate::{ProvenanceSource, ProvenancedEvent};
@@ -117,14 +120,9 @@ pub enum PumpInstruction {
         seller: [u8; 32],
     },
     /// PumpSwap pool creation (migration event).
-    CreatePool {
-        pool: [u8; 32],
-        base_mint: [u8; 32],
-    },
+    CreatePool { pool: [u8; 32], base_mint: [u8; 32] },
     /// pump.fun → PumpSwap migration.
-    Migrate {
-        mint: [u8; 32],
-    },
+    Migrate { mint: [u8; 32] },
 }
 
 /// Decode a LaserStream transaction into classified pump.fun instructions.
@@ -145,13 +143,13 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
                 if disc == BUY_DISCRIMINATOR && ix.data.len() >= 8 + 8 + 8 {
                     // Account [2] = mint (per `venue_accounts::pump_buy_accounts`)
                     // Account [6] = user (signer — the buyer's wallet pubkey)
-                    if let (Some(mint), Some(buyer)) = (account_key_at(ix, tx, 2), account_key_at(ix, tx, 6)) {
-                        let amount = u64::from_le_bytes(
-                            ix.data[8..16].try_into().unwrap_or([0; 8]),
-                        );
-                        let min_tokens = u64::from_le_bytes(
-                            ix.data[16..24].try_into().unwrap_or([0; 8]),
-                        );
+                    if let (Some(mint), Some(buyer)) =
+                        (account_key_at(ix, tx, 2), account_key_at(ix, tx, 6))
+                    {
+                        let amount =
+                            u64::from_le_bytes(ix.data[8..16].try_into().unwrap_or([0; 8]));
+                        let min_tokens =
+                            u64::from_le_bytes(ix.data[16..24].try_into().unwrap_or([0; 8]));
                         out.push(PumpInstruction::Buy {
                             mint,
                             amount_lamports: amount,
@@ -161,13 +159,13 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
                     }
                 } else if disc == SELL_DISCRIMINATOR && ix.data.len() >= 8 + 8 + 8 {
                     // Account [2] = mint, Account [6] = user (signer — the seller's wallet)
-                    if let (Some(mint), Some(seller)) = (account_key_at(ix, tx, 2), account_key_at(ix, tx, 6)) {
-                        let amount = u64::from_le_bytes(
-                            ix.data[8..16].try_into().unwrap_or([0; 8]),
-                        );
-                        let min_lamports = u64::from_le_bytes(
-                            ix.data[16..24].try_into().unwrap_or([0; 8]),
-                        );
+                    if let (Some(mint), Some(seller)) =
+                        (account_key_at(ix, tx, 2), account_key_at(ix, tx, 6))
+                    {
+                        let amount =
+                            u64::from_le_bytes(ix.data[8..16].try_into().unwrap_or([0; 8]));
+                        let min_lamports =
+                            u64::from_le_bytes(ix.data[16..24].try_into().unwrap_or([0; 8]));
                         out.push(PumpInstruction::Sell {
                             mint,
                             amount_tokens: amount,
@@ -182,7 +180,9 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
                 match parsed {
                     PumpSwapIx::Buy(args) => {
                         // Account [0] = pool, Account [1] = user (signer — buyer's wallet)
-                        if let (Some(pool), Some(buyer)) = (account_key_at(ix, tx, 0), account_key_at(ix, tx, 1)) {
+                        if let (Some(pool), Some(buyer)) =
+                            (account_key_at(ix, tx, 0), account_key_at(ix, tx, 1))
+                        {
                             out.push(PumpInstruction::PumpSwapBuy {
                                 pool,
                                 amount_lamports: args.max_quote_amount_in,
@@ -193,7 +193,9 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
                     }
                     PumpSwapIx::Sell(args) => {
                         // Account [0] = pool, Account [1] = user (signer — seller's wallet)
-                        if let (Some(pool), Some(seller)) = (account_key_at(ix, tx, 0), account_key_at(ix, tx, 1)) {
+                        if let (Some(pool), Some(seller)) =
+                            (account_key_at(ix, tx, 0), account_key_at(ix, tx, 1))
+                        {
                             out.push(PumpInstruction::PumpSwapSell {
                                 pool,
                                 amount_tokens: args.base_amount_in,
@@ -226,11 +228,7 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
 
 /// Resolve an account key from an instruction's account index.
 /// Returns None if the index is out of bounds (fail-safe, not panic).
-fn account_key_at(
-    ix: &LaserStreamInstruction,
-    tx: &LaserStreamTx,
-    idx: usize,
-) -> Option<[u8; 32]> {
+fn account_key_at(ix: &LaserStreamInstruction, tx: &LaserStreamTx, idx: usize) -> Option<[u8; 32]> {
     if idx >= ix.accounts.len() {
         return None;
     }
@@ -288,7 +286,12 @@ pub fn instructions_to_events(
 
     for ix in instructions {
         match ix {
-            PumpInstruction::Buy { mint, amount_lamports, buyer, .. } => {
+            PumpInstruction::Buy {
+                mint,
+                amount_lamports,
+                buyer,
+                ..
+            } => {
                 events.push(ProvenancedEvent {
                     event: AppEvent::MarketTrade {
                         mint: Mint(*mint),
@@ -297,14 +300,19 @@ pub fn instructions_to_events(
                         liquidity_lamports: 0, // Filled by OnchainConfirm
                         signed_base: i64::try_from(*amount_lamports).unwrap_or(i64::MAX),
                         buyer_entity: wallet_entity_id(buyer),
-                        age_slots: 0,   // Not available from ix data alone
+                        age_slots: 0, // Not available from ix data alone
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
                     is_live,
                 });
             }
-            PumpInstruction::Sell { mint, amount_tokens, seller, .. } => {
+            PumpInstruction::Sell {
+                mint,
+                amount_tokens,
+                seller,
+                ..
+            } => {
                 events.push(ProvenancedEvent {
                     event: AppEvent::MarketTrade {
                         mint: Mint(*mint),
@@ -320,7 +328,12 @@ pub fn instructions_to_events(
                     is_live,
                 });
             }
-            PumpInstruction::PumpSwapBuy { pool, amount_lamports, buyer, .. } => {
+            PumpInstruction::PumpSwapBuy {
+                pool,
+                amount_lamports,
+                buyer,
+                ..
+            } => {
                 events.push(ProvenancedEvent {
                     event: AppEvent::MarketTrade {
                         mint: Mint(*pool),
@@ -336,7 +349,12 @@ pub fn instructions_to_events(
                     is_live,
                 });
             }
-            PumpInstruction::PumpSwapSell { pool, amount_tokens, seller, .. } => {
+            PumpInstruction::PumpSwapSell {
+                pool,
+                amount_tokens,
+                seller,
+                ..
+            } => {
                 events.push(ProvenancedEvent {
                     event: AppEvent::MarketTrade {
                         mint: Mint(*pool),
@@ -509,7 +527,9 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                             }
                             let program_id = Pubkey::from_str(prog_str).ok()?.to_bytes();
                             // Try data_b64 first, then data_b58 as fallback
-                            let data_b64 = ix.get("data_b64").and_then(|v| v.as_str())
+                            let data_b64 = ix
+                                .get("data_b64")
+                                .and_then(|v| v.as_str())
                                 .or_else(|| ix.get("data_b58").and_then(|v| v.as_str()))?;
                             let data = B64.decode(data_b64).ok()?;
                             let accounts: Vec<u8> = ix
@@ -627,12 +647,12 @@ mod tests {
         // index [6] for the buyer's wallet (ctx.user). Indices [0]-[2] are
         // PUMP_GLOBAL, fee_recipient, mint.
         tx.account_keys = vec![
-            [0x11; 32], // [0] PUMP_GLOBAL
-            [0x22; 32], // [1] fee_recipient
+            [0x11; 32],  // [0] PUMP_GLOBAL
+            [0x22; 32],  // [1] fee_recipient
             mint_bytes,  // [2] mint
-            [0x33; 32], // [3] bonding_curve
-            [0x44; 32], // [4] associated_bonding_curve
-            [0x55; 32], // [5] associated_user (buyer's ATA)
+            [0x33; 32],  // [3] bonding_curve
+            [0x44; 32],  // [4] associated_bonding_curve
+            [0x55; 32],  // [5] associated_user (buyer's ATA)
             buyer_bytes, // [6] user (buyer's wallet — the signer)
         ];
         tx.instructions.push(LaserStreamInstruction {
@@ -662,12 +682,12 @@ mod tests {
         let seller_bytes = [0x43; 32]; // The seller's wallet pubkey at index [6]
         let mut tx = make_tx(456, true);
         tx.account_keys = vec![
-            [0x11; 32], // [0] PUMP_GLOBAL
-            [0x22; 32], // [1] fee_recipient
-            mint_bytes,  // [2] mint
-            [0x33; 32], // [3] bonding_curve
-            [0x44; 32], // [4] associated_bonding_curve
-            [0x55; 32], // [5] associated_user (seller's ATA)
+            [0x11; 32],   // [0] PUMP_GLOBAL
+            [0x22; 32],   // [1] fee_recipient
+            mint_bytes,   // [2] mint
+            [0x33; 32],   // [3] bonding_curve
+            [0x44; 32],   // [4] associated_bonding_curve
+            [0x55; 32],   // [5] associated_user (seller's ATA)
             seller_bytes, // [6] user (seller's wallet — the signer)
         ];
         tx.instructions.push(LaserStreamInstruction {
@@ -721,7 +741,12 @@ mod tests {
         assert!(events[0].is_live);
         assert_eq!(events[0].slot, 123);
         match &events[0].event {
-            AppEvent::MarketTrade { mint: m, signed_base, quote_lamports, .. } => {
+            AppEvent::MarketTrade {
+                mint: m,
+                signed_base,
+                quote_lamports,
+                ..
+            } => {
                 assert_eq!(m, &Mint(mint));
                 assert!(*signed_base > 0); // Buy = positive signed_base
                 assert_eq!(quote_lamports, &1_000_000u64);
@@ -815,15 +840,15 @@ mod tests {
         tx.account_keys = vec![
             [0x11; 32], // [0] PUMP_GLOBAL
             [0x22; 32], // [1] fee_recipient
-            mint1,       // [2] mint1
+            mint1,      // [2] mint1
             [0x33; 32], // [3] bonding_curve / bonding_curve for mint2
-            mint2,       // [4] mint2
+            mint2,      // [4] mint2
             [0x44; 32], // [5] associated_user (filler)
-            buyer,       // [6] user (buyer's wallet for ix1)
+            buyer,      // [6] user (buyer's wallet for ix1)
             [0x55; 32], // [7] bonding_curve for mint2
             [0x66; 32], // [8] creator_vault
             [0x77; 32], // [9] filler
-            seller,      // [10] user (seller's wallet for ix2)
+            seller,     // [10] user (seller's wallet for ix2)
         ];
 
         // Buy instruction: accounts [0,1,2,3,4,5,6] = PUMP_GLOBAL, fee, mint1, bonding_curve, assoc_curve, assoc_user, buyer
@@ -893,15 +918,22 @@ mod tests {
         let pump_pk = Pubkey::from_str(pump_str).expect("pump.fun program id must parse");
         let pumpswap_pk = Pubkey::from_str(pumpswap_str).expect("pumpswap program id must parse");
 
-        assert_eq!(pump_pk.to_bytes(), PUMP_FUN_PROGRAM,
-            "PUMP_FUN_PROGRAM bytes must match base58-decoded 6EF8rrect...");
-        assert_eq!(pumpswap_pk.to_bytes(), PUMP_SWAP_PROGRAM,
-            "PUMP_SWAP_PROGRAM bytes must match base58-decoded pAMMBay6...");
+        assert_eq!(
+            pump_pk.to_bytes(),
+            PUMP_FUN_PROGRAM,
+            "PUMP_FUN_PROGRAM bytes must match base58-decoded 6EF8rrect..."
+        );
+        assert_eq!(
+            pumpswap_pk.to_bytes(),
+            PUMP_SWAP_PROGRAM,
+            "PUMP_SWAP_PROGRAM bytes must match base58-decoded pAMMBay6..."
+        );
     }
 
     #[test]
     fn test_parse_ndjson_slot() {
-        let line = r#"{"lane":"laserstream","kind":"slot","slot":123456,"recv_unix_ms":1700000000000}"#;
+        let line =
+            r#"{"lane":"laserstream","kind":"slot","slot":123456,"recv_unix_ms":1700000000000}"#;
         let update = parse_ndjson_line(line).expect("slot line must parse");
         match update {
             LaserStreamUpdate::Slot { slot } => assert_eq!(slot, 123456),
@@ -1021,8 +1053,20 @@ mod tests {
             assert_eq!(ep.source, el.source);
             assert_eq!(ep.is_live, el.is_live);
             match (&ep.event, &el.event) {
-                (AppEvent::MarketTrade { mint: mp, signed_base: sb_p, quote_lamports: ql_p, .. },
-                 AppEvent::MarketTrade { mint: ml, signed_base: sb_l, quote_lamports: ql_l, .. }) => {
+                (
+                    AppEvent::MarketTrade {
+                        mint: mp,
+                        signed_base: sb_p,
+                        quote_lamports: ql_p,
+                        ..
+                    },
+                    AppEvent::MarketTrade {
+                        mint: ml,
+                        signed_base: sb_l,
+                        quote_lamports: ql_l,
+                        ..
+                    },
+                ) => {
                     assert_eq!(mp.0, ml.0);
                     assert_eq!(sb_p, sb_l);
                     assert_eq!(ql_p, ql_l);
@@ -1062,19 +1106,19 @@ mod tests {
             s.push_str("{\"lane\":\"laserstream\",\"kind\":\"transaction\",\"slot\":");
             s.push_str(&777u64.to_string());
             s.push_str(",\"recv_unix_ms\":0,\"signature_b58\":\"\",\"account_keys\":[\"");
-            s.push_str(pump_b58);       // [0] PUMP_GLOBAL
+            s.push_str(pump_b58); // [0] PUMP_GLOBAL
             s.push_str("\",\"");
-            s.push_str(filler_b58);     // [1] fee_recipient
+            s.push_str(filler_b58); // [1] fee_recipient
             s.push_str("\",\"");
-            s.push_str(mint_b58);       // [2] mint
+            s.push_str(mint_b58); // [2] mint
             s.push_str("\",\"");
-            s.push_str(filler_b58);     // [3] bonding_curve
+            s.push_str(filler_b58); // [3] bonding_curve
             s.push_str("\",\"");
-            s.push_str(filler_b58);     // [4] assoc_bonding_curve
+            s.push_str(filler_b58); // [4] assoc_bonding_curve
             s.push_str("\",\"");
-            s.push_str(filler_b58);     // [5] assoc_user
+            s.push_str(filler_b58); // [5] assoc_user
             s.push_str("\",\"");
-            s.push_str(user_b58);       // [6] user (buyer's wallet)
+            s.push_str(user_b58); // [6] user (buyer's wallet)
             s.push_str("\"],\"instructions\":[{\"program_b58\":\"");
             s.push_str(pump_b58);
             s.push_str("\",\"data_b64\":\"");
@@ -1102,8 +1146,18 @@ mod tests {
             assert!(el.is_live);
             assert!(!er.is_live);
             match (&el.event, &er.event) {
-                (AppEvent::MarketTrade { mint: ml, signed_base: sbl, .. },
-                 AppEvent::MarketTrade { mint: mr, signed_base: sbr, .. }) => {
+                (
+                    AppEvent::MarketTrade {
+                        mint: ml,
+                        signed_base: sbl,
+                        ..
+                    },
+                    AppEvent::MarketTrade {
+                        mint: mr,
+                        signed_base: sbr,
+                        ..
+                    },
+                ) => {
                     assert_eq!(ml.0, mr.0);
                     assert_eq!(sbl, sbr);
                 }

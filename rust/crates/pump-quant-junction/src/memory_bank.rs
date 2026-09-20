@@ -28,7 +28,7 @@
 //! * Memory-bounded (§57). Each summary table is capped; overflow evicts
 //!   the least-recently-updated entry.
 
-use crate::trade_journal::{TradeRecord, TradeOutcome, RunMode};
+use crate::trade_journal::{RunMode, TradeOutcome, TradeRecord};
 use std::collections::HashMap;
 
 // ─── Per-mint summary ─────────────────────────────────────────────────────
@@ -178,7 +178,8 @@ impl StrategySummary {
         let old = self.old_net_lamports as i128;
         let ppm = recent * 1_000_000 / old;
         // saturate to i64
-        ppm.try_into().unwrap_or(if ppm > 0 { i64::MAX } else { i64::MIN })
+        ppm.try_into()
+            .unwrap_or(if ppm > 0 { i64::MAX } else { i64::MIN })
     }
 
     /// Is the strategy decaying (recent edge < old edge)?
@@ -350,13 +351,34 @@ impl MemoryBank {
         self.global.total_trades = self.global.total_trades.saturating_add(1);
         self.global.net_lamports = self.global.net_lamports.saturating_add(net);
         self.global.fees_lamports = self.global.fees_lamports.saturating_add(rec.fees_lamports);
-        self.global.slippage_lamports = self.global.slippage_lamports.saturating_add(rec.slippage_lamports);
-        self.global.total_decision_latency_us = self.global.total_decision_latency_us.saturating_add(rec.decision_latency_us);
-        self.global.total_confirm_latency_us = self.global.total_confirm_latency_us.saturating_add(rec.confirm_latency_us);
-        self.global.total_submit_call_us = self.global.total_submit_call_us.saturating_add(rec.submit_call_us);
-        self.global.total_submit_rpc_us = self.global.total_submit_rpc_us.saturating_add(rec.submit_rpc_us);
-        self.global.total_exit_submit_rpc_us = self.global.total_exit_submit_rpc_us.saturating_add(rec.exit_submit_rpc_us);
-        self.global.total_exit_submit_call_us = self.global.total_exit_submit_call_us.saturating_add(rec.exit_submit_call_us);
+        self.global.slippage_lamports = self
+            .global
+            .slippage_lamports
+            .saturating_add(rec.slippage_lamports);
+        self.global.total_decision_latency_us = self
+            .global
+            .total_decision_latency_us
+            .saturating_add(rec.decision_latency_us);
+        self.global.total_confirm_latency_us = self
+            .global
+            .total_confirm_latency_us
+            .saturating_add(rec.confirm_latency_us);
+        self.global.total_submit_call_us = self
+            .global
+            .total_submit_call_us
+            .saturating_add(rec.submit_call_us);
+        self.global.total_submit_rpc_us = self
+            .global
+            .total_submit_rpc_us
+            .saturating_add(rec.submit_rpc_us);
+        self.global.total_exit_submit_rpc_us = self
+            .global
+            .total_exit_submit_rpc_us
+            .saturating_add(rec.exit_submit_rpc_us);
+        self.global.total_exit_submit_call_us = self
+            .global
+            .total_exit_submit_call_us
+            .saturating_add(rec.exit_submit_call_us);
 
         match rec.run_mode {
             RunMode::Paper => self.global.paper_trades = self.global.paper_trades.saturating_add(1),
@@ -391,12 +413,20 @@ impl MemoryBank {
         mint.net_lamports = mint.net_lamports.saturating_add(net);
         mint.fees_lamports = mint.fees_lamports.saturating_add(rec.fees_lamports);
         mint.slippage_lamports = mint.slippage_lamports.saturating_add(rec.slippage_lamports);
-        mint.total_decision_latency_us = mint.total_decision_latency_us.saturating_add(rec.decision_latency_us);
-        mint.total_confirm_latency_us = mint.total_confirm_latency_us.saturating_add(rec.confirm_latency_us);
+        mint.total_decision_latency_us = mint
+            .total_decision_latency_us
+            .saturating_add(rec.decision_latency_us);
+        mint.total_confirm_latency_us = mint
+            .total_confirm_latency_us
+            .saturating_add(rec.confirm_latency_us);
         mint.total_submit_call_us = mint.total_submit_call_us.saturating_add(rec.submit_call_us);
         mint.total_submit_rpc_us = mint.total_submit_rpc_us.saturating_add(rec.submit_rpc_us);
-        mint.total_exit_submit_rpc_us = mint.total_exit_submit_rpc_us.saturating_add(rec.exit_submit_rpc_us);
-        mint.total_exit_submit_call_us = mint.total_exit_submit_call_us.saturating_add(rec.exit_submit_call_us);
+        mint.total_exit_submit_rpc_us = mint
+            .total_exit_submit_rpc_us
+            .saturating_add(rec.exit_submit_rpc_us);
+        mint.total_exit_submit_call_us = mint
+            .total_exit_submit_call_us
+            .saturating_add(rec.exit_submit_call_us);
         mint.last_slot = rec.slot;
         if net > mint.best_trade_lamports {
             mint.best_trade_lamports = net;
@@ -460,10 +490,8 @@ impl MemoryBank {
 
     /// Top-N most profitable mints by total net lamports.
     pub fn top_mints(&self, n: usize) -> Vec<(&str, &MintSummary)> {
-        let mut all: Vec<(&str, &MintSummary)> = self.mints
-            .iter()
-            .map(|(k, v)| (k.as_str(), v))
-            .collect();
+        let mut all: Vec<(&str, &MintSummary)> =
+            self.mints.iter().map(|(k, v)| (k.as_str(), v)).collect();
         all.sort_by(|a, b| b.1.net_lamports.cmp(&a.1.net_lamports));
         all.into_iter().take(n).collect()
     }
@@ -513,7 +541,8 @@ impl MemoryBank {
 
     /// Evict the least-recently-updated mint (smallest last_slot).
     fn evict_oldest_mint(&mut self) {
-        if let Some(oldest_key) = self.mints
+        if let Some(oldest_key) = self
+            .mints
             .iter()
             .min_by_key(|(_, v)| v.last_slot)
             .map(|(k, _)| k.clone())
@@ -524,7 +553,8 @@ impl MemoryBank {
 
     /// Evict the least-recently-updated strategy.
     fn evict_oldest_strategy(&mut self) {
-        if let Some(oldest_key) = self.strategies
+        if let Some(oldest_key) = self
+            .strategies
             .iter()
             .min_by_key(|(_, v)| v.last_slot)
             .map(|(k, _)| *k)
@@ -540,7 +570,7 @@ impl MemoryBank {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trade_journal::{TradeRecord, TradeSide, RunMode};
+    use crate::trade_journal::{RunMode, TradeRecord, TradeSide};
     use crate::ProvenanceSource;
 
     fn make_record(slot: u64, pnl: i64, fees: u64, mint: &str, strat: u64) -> TradeRecord {
@@ -696,7 +726,10 @@ mod tests {
 
     #[test]
     fn test_memory_bounds_mints() {
-        let config = MemoryBankConfig { max_mints: 3, ..Default::default() };
+        let config = MemoryBankConfig {
+            max_mints: 3,
+            ..Default::default()
+        };
         let mut bank = MemoryBank::new(config);
 
         bank.ingest(&make_record(1, 1, 0, "A", 1));

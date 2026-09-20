@@ -100,7 +100,12 @@ impl PriceCache {
     /// state, and it is explicit rather than a panic.
     #[must_use]
     pub fn new(capacity: usize, max_staleness_ticks: u64) -> Self {
-        Self { capacity, max_staleness_ticks, entries: BTreeMap::new(), evictions: 0 }
+        Self {
+            capacity,
+            max_staleness_ticks,
+            entries: BTreeMap::new(),
+            evictions: 0,
+        }
     }
 
     /// Maximum number of mints held.
@@ -150,7 +155,12 @@ impl PriceCache {
         if self.capacity == 0 {
             return false;
         }
-        let quote = Quote { price_fp, venue, tick, slot };
+        let quote = Quote {
+            price_fp,
+            venue,
+            tick,
+            slot,
+        };
         if let Some(e) = self.entries.get_mut(&mint) {
             e.quote = quote;
             e.touched = tick;
@@ -169,7 +179,13 @@ impl PriceCache {
                 self.evictions += 1;
             }
         }
-        self.entries.insert(mint, Entry { quote, touched: tick });
+        self.entries.insert(
+            mint,
+            Entry {
+                quote,
+                touched: tick,
+            },
+        );
         true
     }
 
@@ -194,7 +210,9 @@ impl PriceCache {
     /// Age of the cached quote for `mint` as of `now`, if any is held.
     #[must_use]
     pub fn age_ticks(&self, mint: &Mint, now: u64) -> Option<u64> {
-        self.entries.get(mint).map(|e| now.saturating_sub(e.quote.tick))
+        self.entries
+            .get(mint)
+            .map(|e| now.saturating_sub(e.quote.tick))
     }
 
     /// Drop a mint's quote (e.g. the watchlist dropped it, or its market resolved).
@@ -230,9 +248,17 @@ mod tests {
         c.on_tick(m(1), 7_000, PriceVenue::Amm, 100, 5);
         assert_eq!(
             c.lookup(&m(1), 105),
-            PriceLookup::Fresh(Quote { price_fp: 7_000, venue: PriceVenue::Amm, tick: 100, slot: 5 })
+            PriceLookup::Fresh(Quote {
+                price_fp: 7_000,
+                venue: PriceVenue::Amm,
+                tick: 100,
+                slot: 5
+            })
         );
-        assert!(c.lookup(&m(1), 110).is_fresh(), "age == bound is still fresh");
+        assert!(
+            c.lookup(&m(1), 110).is_fresh(),
+            "age == bound is still fresh"
+        );
         match c.lookup(&m(1), 111) {
             PriceLookup::Stale(q) => assert_eq!(q.price_fp, 7_000),
             other => panic!("expected Stale, got {other:?}"),
@@ -245,7 +271,10 @@ mod tests {
     fn a_refresh_updates_price_venue_and_recency_without_evicting() {
         let mut c = PriceCache::new(2, 10);
         c.on_tick(m(1), 100, PriceVenue::BondingCurve, 1, 1);
-        assert!(c.on_tick(m(1), 260, PriceVenue::Amm, 5, 9), "refresh accepted");
+        assert!(
+            c.on_tick(m(1), 260, PriceVenue::Amm, 5, 9),
+            "refresh accepted"
+        );
         assert_eq!(c.len(), 1);
         assert_eq!(c.evictions(), 0, "a refresh is not an eviction");
         let q = c.lookup(&m(1), 5).quote().unwrap();

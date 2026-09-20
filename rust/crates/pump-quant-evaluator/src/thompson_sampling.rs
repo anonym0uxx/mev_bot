@@ -309,7 +309,11 @@ mod tests {
         }
         let mean = b.mean_millionths();
         // α=91, β=11 → mean = 91/102 ≈ 0.892 → 892_156 millionths
-        assert!(mean > 850_000 && mean < 950_000, "mean should be ~0.89, got {}", mean as f64 / 1_000_000.0);
+        assert!(
+            mean > 850_000 && mean < 950_000,
+            "mean should be ~0.89, got {}",
+            mean as f64 / 1_000_000.0
+        );
         assert!(b.is_informed());
     }
 
@@ -336,11 +340,17 @@ mod tests {
         let arms = vec![
             ThompsonArm {
                 strategy_type: StrategyTypeId::new(0),
-                posterior: BetaPosterior { alpha: 91, beta: 11 },
+                posterior: BetaPosterior {
+                    alpha: 91,
+                    beta: 11,
+                },
             },
             ThompsonArm {
                 strategy_type: StrategyTypeId::new(1),
-                posterior: BetaPosterior { alpha: 11, beta: 91 },
+                posterior: BetaPosterior {
+                    alpha: 11,
+                    beta: 91,
+                },
             },
             ThompsonArm {
                 strategy_type: StrategyTypeId::new(2),
@@ -359,7 +369,11 @@ mod tests {
             }
         }
         // Arm 0 (90% win rate) should be ranked first in >80% of seeds.
-        assert!(arm0_first > 800, "arm 0 should win most seeds, got {}/999", arm0_first);
+        assert!(
+            arm0_first > 800,
+            "arm 0 should win most seeds, got {}/999",
+            arm0_first
+        );
     }
 
     #[test]
@@ -409,7 +423,10 @@ mod tests {
     #[test]
     fn sample_beta_clamps_to_valid_range() {
         let mut rng = ThompsonRng::new(42);
-        let posterior = BetaPosterior { alpha: 1, beta: 100 };
+        let posterior = BetaPosterior {
+            alpha: 1,
+            beta: 100,
+        };
         for _ in 0..100 {
             let sample = sample_beta_millionths(&posterior, &mut rng);
             assert!(sample <= 1_000_000, "sample {} exceeds 1M", sample);
@@ -421,11 +438,17 @@ mod tests {
         let arms = vec![
             ThompsonArm {
                 strategy_type: StrategyTypeId::new(0),
-                posterior: BetaPosterior { alpha: 91, beta: 11 },
+                posterior: BetaPosterior {
+                    alpha: 91,
+                    beta: 11,
+                },
             },
             ThompsonArm {
                 strategy_type: StrategyTypeId::new(1),
-                posterior: BetaPosterior { alpha: 11, beta: 91 },
+                posterior: BetaPosterior {
+                    alpha: 11,
+                    beta: 91,
+                },
             },
         ];
         let d1 = allocate(&arms, 1, 123);

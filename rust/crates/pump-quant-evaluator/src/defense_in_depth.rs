@@ -40,7 +40,7 @@ pub struct CliffVetoConfig {
 impl Default for CliffVetoConfig {
     fn default() -> Self {
         Self {
-            max_dd_bps: 5_000, // 50% of bankroll
+            max_dd_bps: 5_000,                // 50% of bankroll
             bankroll_lamports: 2_000_000_000, // 2 SOL
         }
     }
@@ -77,10 +77,7 @@ pub struct CliffVetoVerdict {
 
 /// Evaluate the cliff veto for a given drawdown.
 #[must_use]
-pub fn evaluate_cliff_veto(
-    max_dd_lamports: i64,
-    config: &CliffVetoConfig,
-) -> CliffVetoVerdict {
+pub fn evaluate_cliff_veto(max_dd_lamports: i64, config: &CliffVetoConfig) -> CliffVetoVerdict {
     let threshold = config.threshold_lamports();
     let dd_bps = if config.bankroll_lamports > 0 {
         ((max_dd_lamports.max(0) as i128 * 10_000) / config.bankroll_lamports as i128) as u32
@@ -401,7 +398,7 @@ mod tests {
             100_000, // small DD
             &CliffVetoConfig::default(),
             &CircuitBreakerState::default(), // not tripped
-            &KillSwitch::default(), // not active
+            &KillSwitch::default(),          // not active
             LifecycleStage::ShadowValidated,
         );
         assert!(!verdict.blocked);

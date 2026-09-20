@@ -97,11 +97,7 @@ impl AuditEntry {
 
         let line = serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string());
 
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        {
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
             let _ = writeln!(file, "{line}");
         }
     }

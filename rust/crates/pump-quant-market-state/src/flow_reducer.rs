@@ -166,10 +166,14 @@ impl FlowAggregates {
         let micro = |v: i64| v as f64 / 1_000_000.0;
         CorpusFlowValues {
             net_flow_sol_300s: micro(self.net_flow_sol_300s_micro),
-            fresh_wallet_share_300s: self.fresh_wallet_share_300s_micro.map(|v| f64::from(v) / 1e6),
+            fresh_wallet_share_300s: self
+                .fresh_wallet_share_300s_micro
+                .map(|v| f64::from(v) / 1e6),
             flow_lookback_d: f64::from(self.flow_lookback_d_tenths) / 10.0,
             sniper_share_300s: self.sniper_share_300s_micro.map(|v| f64::from(v) / 1e6),
-            bot_uniform_share_300s: self.bot_uniform_share_300s_micro.map(|v| f64::from(v) / 1e6),
+            bot_uniform_share_300s: self
+                .bot_uniform_share_300s_micro
+                .map(|v| f64::from(v) / 1e6),
             smart_net_flow_sol_300s: micro(self.smart_net_flow_sol_300s_micro),
         }
     }
@@ -311,8 +315,18 @@ impl FlowReducer {
             let eb = self.early_buyers.entry(e.mint).or_default();
             if eb.len() < self.p.early_n && !eb.contains(&w) {
                 for other in eb.iter() {
-                    *self.copartners.entry(w).or_default().entry(*other).or_insert(0) += 1;
-                    *self.copartners.entry(*other).or_default().entry(w).or_insert(0) += 1;
+                    *self
+                        .copartners
+                        .entry(w)
+                        .or_default()
+                        .entry(*other)
+                        .or_insert(0) += 1;
+                    *self
+                        .copartners
+                        .entry(*other)
+                        .or_default()
+                        .entry(w)
+                        .or_insert(0) += 1;
                 }
                 eb.push(w);
             }
@@ -371,13 +385,20 @@ impl FlowReducer {
         let empty: VecDeque<Ev> = VecDeque::new();
         let dq = self.windows.get(mint).unwrap_or(&empty);
         let lo = t_dec_ms - self.p.window_300_ms;
-        let events: Vec<&Ev> = dq.iter().filter(|e| e.recv < t_dec_ms && e.recv >= lo).collect();
+        let events: Vec<&Ev> = dq
+            .iter()
+            .filter(|e| e.recv < t_dec_ms && e.recv >= lo)
+            .collect();
 
         if events.is_empty() && !self.seen_mints.contains(mint) {
             return FlowOutcome::NoPriorFlow;
         }
 
-        let buys: Vec<&Ev> = events.iter().copied().filter(|e| e.side == Side::Buy).collect();
+        let buys: Vec<&Ev> = events
+            .iter()
+            .copied()
+            .filter(|e| e.side == Side::Buy)
+            .collect();
         // Distinct buyers. The builder's `ent_set` is a set and no output depends on entrant
         // order, so a set is both exact and immune to the quadratic membership scan.
         let buyers: BTreeSet<Wallet> = buys.iter().map(|e| e.trader).collect();
@@ -388,7 +409,11 @@ impl FlowReducer {
             .collect::<BTreeSet<Wallet>>()
             .len();
 
-        let net_flow: i64 = 0i64.saturating_sub(events.iter().fold(0i64, |a, e| a.saturating_add(e.lamports)));
+        let net_flow: i64 = 0i64.saturating_sub(
+            events
+                .iter()
+                .fold(0i64, |a, e| a.saturating_add(e.lamports)),
+        );
         let fresh = buyers
             .iter()
             .filter(|w| {
@@ -410,7 +435,10 @@ impl FlowReducer {
         for e in &buys {
             *amt.entry(e.lamports).or_insert(0) += 1;
         }
-        let uniform = buys.iter().filter(|e| amt.get(&e.lamports).copied().unwrap_or(0) >= 3).count();
+        let uniform = buys
+            .iter()
+            .filter(|e| amt.get(&e.lamports).copied().unwrap_or(0) >= 3)
+            .count();
         let smart: Vec<Wallet> = buyers
             .iter()
             .copied()
@@ -431,7 +459,8 @@ impl FlowReducer {
             .iter()
             .filter(|w| {
                 self.copartners.get(*w).is_some_and(|cp| {
-                    cp.iter().any(|(p, c)| *c >= self.p.coentry_min && buyers.contains(p))
+                    cp.iter()
+                        .any(|(p, c)| *c >= self.p.coentry_min && buyers.contains(p))
                 })
             })
             .count();
@@ -445,13 +474,17 @@ impl FlowReducer {
         FlowOutcome::Aggregates(FlowAggregates {
             entrants_60s: entrants_60s as u32,
             entrants_300s: n as u32,
-            net_flow_sol_300s_micro: round_div_half_even(i128::from(net_flow) * 1_000_000, 1_000_000_000) as i64,
+            net_flow_sol_300s_micro: round_div_half_even(
+                i128::from(net_flow) * 1_000_000,
+                1_000_000_000,
+            ) as i64,
             fresh_wallet_share_300s_micro: if n == 0 {
                 None
             } else {
                 Some(round_div_half_even(i128::from(fresh as i64) * 1_000_000, n as i128) as u32)
             },
-            flow_lookback_d_tenths: round_div_half_even(i128::from(lookback_ms) * 10, 86_400_000) as u32,
+            flow_lookback_d_tenths: round_div_half_even(i128::from(lookback_ms) * 10, 86_400_000)
+                as u32,
             sniper_share_300s_micro: if n == 0 {
                 None
             } else {
@@ -463,7 +496,10 @@ impl FlowReducer {
                 Some(round_div_half_even(i128::from(uniform as i64) * 1_000_000, nb as i128) as u32)
             },
             smart_entrants_300s: smart.len() as u32,
-            smart_net_flow_sol_300s_micro: round_div_half_even(i128::from(smart_flow) * 1_000_000, 1_000_000_000) as i64,
+            smart_net_flow_sol_300s_micro: round_div_half_even(
+                i128::from(smart_flow) * 1_000_000,
+                1_000_000_000,
+            ) as i64,
             coentry_wallets_300s: coent as u32,
             creator_trading_own_mint: self.creator_traded.contains(mint),
             entrant_fee_p90_lamports: pct90(&fees),
@@ -579,10 +615,24 @@ mod tests {
         };
         assert_eq!(a.entrants_300s, 2);
         assert_eq!(a.entrants_60s, 2);
-        assert_eq!(a.net_flow_sol_300s_micro, 1_250_000, "1.25 SOL net in = 1_250_000 millionths");
-        assert_eq!(a.smart_net_flow_sol_300s_micro, 0, "nobody qualifies as smart");
-        assert_eq!(a.fresh_wallet_share_300s_micro, Some(1_000_000), "both fresh");
-        assert_eq!(a.bot_uniform_share_300s_micro, Some(0), "no repeated amounts");
+        assert_eq!(
+            a.net_flow_sol_300s_micro, 1_250_000,
+            "1.25 SOL net in = 1_250_000 millionths"
+        );
+        assert_eq!(
+            a.smart_net_flow_sol_300s_micro, 0,
+            "nobody qualifies as smart"
+        );
+        assert_eq!(
+            a.fresh_wallet_share_300s_micro,
+            Some(1_000_000),
+            "both fresh"
+        );
+        assert_eq!(
+            a.bot_uniform_share_300s_micro,
+            Some(0),
+            "no repeated amounts"
+        );
         assert_eq!(a.entrant_fee_p90_lamports, Some(5_000));
         assert_eq!(a.entrant_cu_p50, Some(100_000));
     }

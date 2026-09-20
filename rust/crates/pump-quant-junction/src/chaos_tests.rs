@@ -7,11 +7,9 @@
 //! * §18.2 — fail closed on unknown, never guess benign.
 //! * §22 — integer-only, deterministic, no float / clock / RNG / I/O.
 
-use crate::laserstream::{parse_ndjson_line, LaserStreamUpdate, classify_pump_instructions};
-use crate::trade_journal::{
-    TradeRecord, TradeOutcome, TradeSide, RunMode,
-};
+use crate::laserstream::{classify_pump_instructions, parse_ndjson_line, LaserStreamUpdate};
 use crate::memory_bank::{MemoryBank, MemoryBankConfig};
+use crate::trade_journal::{RunMode, TradeOutcome, TradeRecord, TradeSide};
 use crate::ProvenanceSource;
 
 // ---------------------------------------------------------------------------
@@ -83,7 +81,17 @@ mod chaos_parser {
     /// Wrong kind field must not panic.
     #[test]
     fn chaos_wrong_kind() {
-        let kinds = ["", "unknown", "T", "transaction ", " account", "SLOT", "null", "123", "true"];
+        let kinds = [
+            "",
+            "unknown",
+            "T",
+            "transaction ",
+            " account",
+            "SLOT",
+            "null",
+            "123",
+            "true",
+        ];
         for k in &kinds {
             let line = format!("{{\"lane\":\"laserstream\",\"kind\":\"{}\",\"slot\":1}}", k);
             let _ = parse_ndjson_line(&line); // must not panic
@@ -227,9 +235,17 @@ mod chaos_journal {
         TradeRecord {
             slot: seed % 1_000_000,
             mint_b58: format!("mint_{}", seed % 100),
-            side: if seed % 2 == 0 { TradeSide::Buy } else { TradeSide::Sell },
+            side: if seed % 2 == 0 {
+                TradeSide::Buy
+            } else {
+                TradeSide::Sell
+            },
             entry_price_fp: (seed as i128) * 1_000_000,
-            exit_price_fp: if seed % 3 == 0 { 0 } else { (seed as i128) * 1_000_001 },
+            exit_price_fp: if seed % 3 == 0 {
+                0
+            } else {
+                (seed as i128) * 1_000_001
+            },
             size_lamports: seed % 1_000_000_000,
             strategy_id: seed % 10,
             source: ProvenanceSource::LaserStream,
@@ -240,7 +256,11 @@ mod chaos_journal {
             } else {
                 TradeOutcome::Filled
             },
-            realized_pnl_lamports: if seed % 2 == 0 { (seed % 100_000) as i64 } else { -((seed % 50_000) as i64) },
+            realized_pnl_lamports: if seed % 2 == 0 {
+                (seed % 100_000) as i64
+            } else {
+                -((seed % 50_000) as i64)
+            },
             fees_lamports: seed % 10_000,
             slippage_lamports: seed % 5_000,
             decision_latency_us: seed % 10_000,
@@ -249,7 +269,11 @@ mod chaos_journal {
             submit_rpc_us: 0,
             exit_submit_rpc_us: 0,
             exit_submit_call_us: 0,
-            run_mode: if seed % 2 == 0 { RunMode::Paper } else { RunMode::Live },
+            run_mode: if seed % 2 == 0 {
+                RunMode::Paper
+            } else {
+                RunMode::Live
+            },
             error_code: if seed % 3 == 0 { 6001 } else { 0 },
             seq: seed,
             lane: None,
@@ -353,16 +377,24 @@ mod chaos_journal {
 #[cfg(test)]
 mod chaos_memory {
     use super::*;
-    use crate::trade_journal::{TradeRecord, TradeOutcome, TradeSide, RunMode};
+    use crate::trade_journal::{RunMode, TradeOutcome, TradeRecord, TradeSide};
     use crate::ProvenanceSource;
 
     fn make_record(seed: u64) -> TradeRecord {
         TradeRecord {
             slot: seed % 1_000_000,
             mint_b58: format!("mint_{}", seed % 100),
-            side: if seed % 2 == 0 { TradeSide::Buy } else { TradeSide::Sell },
+            side: if seed % 2 == 0 {
+                TradeSide::Buy
+            } else {
+                TradeSide::Sell
+            },
             entry_price_fp: (seed as i128) * 1_000_000,
-            exit_price_fp: if seed % 3 == 0 { 0 } else { (seed as i128) * 1_000_001 },
+            exit_price_fp: if seed % 3 == 0 {
+                0
+            } else {
+                (seed as i128) * 1_000_001
+            },
             size_lamports: seed % 1_000_000_000,
             strategy_id: seed % 10,
             source: ProvenanceSource::LaserStream,
@@ -373,7 +405,11 @@ mod chaos_memory {
             } else {
                 TradeOutcome::Filled
             },
-            realized_pnl_lamports: if seed % 2 == 0 { (seed % 100_000) as i64 } else { -((seed % 50_000) as i64) },
+            realized_pnl_lamports: if seed % 2 == 0 {
+                (seed % 100_000) as i64
+            } else {
+                -((seed % 50_000) as i64)
+            },
             fees_lamports: seed % 10_000,
             slippage_lamports: seed % 5_000,
             decision_latency_us: seed % 10_000,
@@ -382,7 +418,11 @@ mod chaos_memory {
             submit_rpc_us: 0,
             exit_submit_rpc_us: 0,
             exit_submit_call_us: 0,
-            run_mode: if seed % 2 == 0 { RunMode::Paper } else { RunMode::Live },
+            run_mode: if seed % 2 == 0 {
+                RunMode::Paper
+            } else {
+                RunMode::Live
+            },
             error_code: if seed % 3 == 0 { 6001 } else { 0 },
             seq: seed,
             lane: None,

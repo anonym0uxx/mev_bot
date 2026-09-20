@@ -11,12 +11,7 @@ use pump_quant_telemetry::{
 };
 
 /// Build an account state whose equity is `equity` lamports, all of it realized.
-fn book(
-    equity: i64,
-    open_positions: u32,
-    peak: u64,
-    floor: u64,
-) -> AccountState {
+fn book(equity: i64, open_positions: u32, peak: u64, floor: u64) -> AccountState {
     AccountState {
         bankroll_realized_lamports: equity,
         bankroll_committed_lamports: 0,
@@ -48,7 +43,10 @@ fn idle_healthy_book_produces_no_alerts() {
     let s = TelemetrySnapshot::observe(None, &idle);
     assert!(s.is_idle());
     assert_eq!(s.band_health, BandHealth::Healthy);
-    assert_eq!(s.pnl_delta_lamports, 0, "no predecessor => no delta claimed");
+    assert_eq!(
+        s.pnl_delta_lamports, 0,
+        "no predecessor => no delta claimed"
+    );
     assert!(
         alerts(&s).is_empty(),
         "an idle book with no drawdown must be silent: {:?}",
@@ -91,7 +89,12 @@ fn floor_breach_pages_exactly_once_and_is_ordered_first() {
         },
         "the floor breach is the operator's first-read item"
     );
-    assert_eq!(both[1], Alert::DrawdownCritical { drawdown_bps: 3_000 });
+    assert_eq!(
+        both[1],
+        Alert::DrawdownCritical {
+            drawdown_bps: 3_000
+        }
+    );
 
     // Equity exactly AT the floor is not a breach — the rule is strictly below.
     let at_floor = book(9_700, 2, 10_000, 9_700);
@@ -112,7 +115,8 @@ fn drawdown_is_exact_at_the_named_constant_boundaries() {
     let peak = 10_000_000u64;
 
     // Exactly the degraded boundary, inclusive: (peak-equity)*10_000/peak == DEGRADED.
-    let equity = peak as i64 - (peak as i64 * DEGRADED_DRAWDOWN_BPS as i64) / BPS_DENOMINATOR as i64;
+    let equity =
+        peak as i64 - (peak as i64 * DEGRADED_DRAWDOWN_BPS as i64) / BPS_DENOMINATOR as i64;
     let s = TelemetrySnapshot::observe(None, &book(equity, 1, peak, 0));
     assert_eq!(s.equity_lamports, 8_500_000);
     assert_eq!(s.drawdown_bps, DEGRADED_DRAWDOWN_BPS);
@@ -187,7 +191,10 @@ fn large_negative_equity_floors_at_zero() {
         floor_lamports: 1,
     };
     let s = TelemetrySnapshot::observe(None, &state);
-    assert_eq!(s.equity_lamports, 0, "negative equity is not a positive book");
+    assert_eq!(
+        s.equity_lamports, 0,
+        "negative equity is not a positive book"
+    );
     assert_eq!(s.realized_lamports, i64::MIN);
     // The whole peak is drawn down, saturating at exactly BPS_DENOMINATOR.
     assert_eq!(s.drawdown_bps, BPS_DENOMINATOR);

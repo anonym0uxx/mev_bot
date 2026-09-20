@@ -157,10 +157,7 @@ impl OutboundSink for CreatorHistoryVetoSink {
             cache.insert(creator_pubkey, (now, count));
             // Bound the cache (§99): evict oldest entry if > 10_000.
             if cache.len() > 10_000 {
-                let oldest_key = cache
-                    .iter()
-                    .min_by_key(|(_, (t, _))| *t)
-                    .map(|(k, _)| *k);
+                let oldest_key = cache.iter().min_by_key(|(_, (t, _))| *t).map(|(k, _)| *k);
                 if let Some(key) = oldest_key {
                     cache.remove(&key);
                 }
@@ -298,11 +295,17 @@ mod tests {
 
     #[test]
     fn sell_always_passes_through() {
-        let inner = Box::leak(Box::new(RecordingSink { calls: AtomicU32::new(0) }));
+        let inner = Box::leak(Box::new(RecordingSink {
+            calls: AtomicU32::new(0),
+        }));
         let sink = CreatorHistoryVetoSink::new(
             inner as &'static dyn OutboundSink,
             leaked_lookup(HashMap::new()),
-            Box::leak(Box::new(MockRpc { count: 9999, err: false, calls: AtomicU32::new(0) })),
+            Box::leak(Box::new(MockRpc {
+                count: 9999,
+                err: false,
+                calls: AtomicU32::new(0),
+            })),
             10, // low threshold
         );
         let outcome = sink.on_admit(&sell_record(dummy_mint(1)));
@@ -311,11 +314,17 @@ mod tests {
 
     #[test]
     fn unknown_creator_fail_open() {
-        let inner = Box::leak(Box::new(RecordingSink { calls: AtomicU32::new(0) }));
+        let inner = Box::leak(Box::new(RecordingSink {
+            calls: AtomicU32::new(0),
+        }));
         let sink = CreatorHistoryVetoSink::new(
             inner as &'static dyn OutboundSink,
             leaked_lookup(HashMap::new()), // empty → no lookup
-            Box::leak(Box::new(MockRpc { count: 9999, err: false, calls: AtomicU32::new(0) })),
+            Box::leak(Box::new(MockRpc {
+                count: 9999,
+                err: false,
+                calls: AtomicU32::new(0),
+            })),
             10,
         );
         let outcome = sink.on_admit(&buy_record(dummy_mint(1)));
@@ -326,11 +335,17 @@ mod tests {
     fn rpc_error_fail_open() {
         let mut map = HashMap::new();
         map.insert(dummy_mint(1), dummy_creator(42));
-        let inner = Box::leak(Box::new(RecordingSink { calls: AtomicU32::new(0) }));
+        let inner = Box::leak(Box::new(RecordingSink {
+            calls: AtomicU32::new(0),
+        }));
         let sink = CreatorHistoryVetoSink::new(
             inner as &'static dyn OutboundSink,
             leaked_lookup(map),
-            Box::leak(Box::new(MockRpc { count: 0, err: true, calls: AtomicU32::new(0) })),
+            Box::leak(Box::new(MockRpc {
+                count: 0,
+                err: true,
+                calls: AtomicU32::new(0),
+            })),
             10,
         );
         let outcome = sink.on_admit(&buy_record(dummy_mint(1)));
@@ -341,8 +356,14 @@ mod tests {
     fn veto_when_count_above_threshold() {
         let mut map = HashMap::new();
         map.insert(dummy_mint(1), dummy_creator(42));
-        let rpc_tracker = Box::leak(Box::new(MockRpc { count: 100, err: false, calls: AtomicU32::new(0) }));
-        let inner = Box::leak(Box::new(RecordingSink { calls: AtomicU32::new(0) }));
+        let rpc_tracker = Box::leak(Box::new(MockRpc {
+            count: 100,
+            err: false,
+            calls: AtomicU32::new(0),
+        }));
+        let inner = Box::leak(Box::new(RecordingSink {
+            calls: AtomicU32::new(0),
+        }));
         let sink = CreatorHistoryVetoSink::new(
             inner as &'static dyn OutboundSink,
             leaked_lookup(map),
@@ -360,8 +381,14 @@ mod tests {
     fn pass_when_count_below_threshold() {
         let mut map = HashMap::new();
         map.insert(dummy_mint(1), dummy_creator(42));
-        let rpc_tracker = Box::leak(Box::new(MockRpc { count: 100, err: false, calls: AtomicU32::new(0) }));
-        let inner = Box::leak(Box::new(RecordingSink { calls: AtomicU32::new(0) }));
+        let rpc_tracker = Box::leak(Box::new(MockRpc {
+            count: 100,
+            err: false,
+            calls: AtomicU32::new(0),
+        }));
+        let inner = Box::leak(Box::new(RecordingSink {
+            calls: AtomicU32::new(0),
+        }));
         let sink = CreatorHistoryVetoSink::new(
             inner as &'static dyn OutboundSink,
             leaked_lookup(map),
@@ -377,8 +404,14 @@ mod tests {
     fn cache_prevents_duplicate_rpc_calls() {
         let mut map = HashMap::new();
         map.insert(dummy_mint(1), dummy_creator(42));
-        let rpc_tracker = Box::leak(Box::new(MockRpc { count: 100, err: false, calls: AtomicU32::new(0) }));
-        let inner = Box::leak(Box::new(RecordingSink { calls: AtomicU32::new(0) }));
+        let rpc_tracker = Box::leak(Box::new(MockRpc {
+            count: 100,
+            err: false,
+            calls: AtomicU32::new(0),
+        }));
+        let inner = Box::leak(Box::new(RecordingSink {
+            calls: AtomicU32::new(0),
+        }));
         let sink = CreatorHistoryVetoSink::new(
             inner as &'static dyn OutboundSink,
             leaked_lookup(map),
@@ -392,6 +425,10 @@ mod tests {
         // Second call — should use cache, NO new RPC call
         let outcome2 = sink.on_admit(&buy_record(dummy_mint(1)));
         assert!(matches!(outcome2, OutboundOutcome::Accepted { .. }));
-        assert_eq!(rpc_tracker.calls.load(Ordering::SeqCst), 1, "cache should prevent 2nd RPC call");
+        assert_eq!(
+            rpc_tracker.calls.load(Ordering::SeqCst),
+            1,
+            "cache should prevent 2nd RPC call"
+        );
     }
 }

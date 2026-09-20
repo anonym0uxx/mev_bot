@@ -18,9 +18,9 @@ pub mod seam;
 
 pub use seam::{
     management_base, management_fraction_bps, parse_decision_payload, parse_headline,
-    resolve_entry_clip_lamports, resolve_management_clip_lamports, route, Decision, DriftLedger,
-    EntryVenue, Headline, ManagementBase, OffContract, PayloadError, Route, SizeError, SizeTier,
-    DEPLOY_LAMPORTS_CANONICAL, FEE_BUFFER_LAMPORTS, MIN_CLIP_LAMPORTS,
+    resolve_clip_at_fraction_bps, resolve_entry_clip_lamports, resolve_management_clip_lamports,
+    route, Decision, DriftLedger, EntryVenue, Headline, ManagementBase, OffContract, PayloadError,
+    Route, SizeError, SizeTier, DEPLOY_LAMPORTS_CANONICAL, FEE_BUFFER_LAMPORTS, MIN_CLIP_LAMPORTS,
 };
 
 /// A completion that failed the trained-format contract converts to the client's error type

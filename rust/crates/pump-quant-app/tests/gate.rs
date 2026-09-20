@@ -31,7 +31,7 @@ fn numeric_feats() -> Features {
         buy_pressure_bp: 9_000,
         unique_buyers: 12,
         age_slots: 40,
-        buy_ratio_bp: 10_000, // 100% buys — passes any entry filter
+        buy_ratio_bp: 10_000,  // 100% buys — passes any entry filter
         max_trade_lamports: 0, // no whale trades
         trades_observed: 100,  // plenty of evidence
         volume_lamports: 0,
@@ -244,12 +244,7 @@ fn tp1_unreachable_refuses_low_model_estimate() {
         cfg.gate_expected_move_bps,
         cfg.expectancy_min_lane_trades,
     );
-    let d = decide(
-        &cand(Lane::ActiveMarketScalp),
-        Some(conf),
-        &cfg,
-        pm,
-    );
+    let d = decide(&cand(Lane::ActiveMarketScalp), Some(conf), &cfg, pm);
     assert_eq!(
         d,
         GateDecision::Reject(GateReject::Tp1Unreachable),
@@ -317,14 +312,11 @@ fn tp1_reachable_admits_high_model_estimate() {
         cfg.gate_expected_move_bps,
         cfg.expectancy_min_lane_trades,
     );
-    let d = decide(
-        &cand(Lane::ActiveMarketScalp),
-        Some(conf),
-        &cfg,
-        pm,
-    );
+    let d = decide(&cand(Lane::ActiveMarketScalp), Some(conf), &cfg, pm);
     match d {
-        GateDecision::Admit(band) => assert!(band.x_max > 0, "model estimate above TP1+cost must admit"),
+        GateDecision::Admit(band) => {
+            assert!(band.x_max > 0, "model estimate above TP1+cost must admit")
+        }
         GateDecision::Reject(GateReject::Tp1Unreachable) => {
             panic!("Tp1Unreachable must NOT fire when model estimate exceeds TP1+cost")
         }

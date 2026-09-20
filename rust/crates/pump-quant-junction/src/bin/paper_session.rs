@@ -38,25 +38,23 @@ use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
-use pump_quant_app::config::Config;
-use pump_quant_app::engine::{Engine, RunMode};
-use pump_quant_core::config::Creds;
-use pump_quant_junction::decode::decode_onchain_confirm_with_curve;
-use pump_quant_junction::pumpportal::{
-    handle_create_payload, handle_trade_payload, handle_migration_payload,
-};
-use pump_quant_junction::reserve_delta::{
-    derive_market_trade_from_delta, ReserveSnapshot,
-};
-use pump_quant_junction::laserstream::{
-    parse_ndjson_line, classify_pump_instructions, instructions_to_events,
-    LaserStreamUpdate, LaserStreamState,
-};
-use pump_quant_junction::queue::BoundedJunctionQueue;
 use pq_stream_capture::helius_ws;
 use pq_stream_capture::json::{self, Value};
 use pq_stream_capture::pumpportal_ws;
 use pq_stream_capture::ws::{WsConn, WsEvent};
+use pump_quant_app::config::Config;
+use pump_quant_app::engine::{Engine, RunMode};
+use pump_quant_core::config::Creds;
+use pump_quant_junction::decode::decode_onchain_confirm_with_curve;
+use pump_quant_junction::laserstream::{
+    classify_pump_instructions, instructions_to_events, parse_ndjson_line, LaserStreamState,
+    LaserStreamUpdate,
+};
+use pump_quant_junction::pumpportal::{
+    handle_create_payload, handle_migration_payload, handle_trade_payload,
+};
+use pump_quant_junction::queue::BoundedJunctionQueue;
+use pump_quant_junction::reserve_delta::{derive_market_trade_from_delta, ReserveSnapshot};
 use solana_program::pubkey::Pubkey;
 
 /// pump.fun program id (bonding-curve program).
@@ -98,7 +96,9 @@ fn parse_args() -> Result<(u64, usize, String), u8> {
                 }
                 i += 2;
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
     Ok((duration_secs, junction_cap, commitment))
@@ -121,7 +121,9 @@ fn bonding_curve_pda(mint: &[u8; 32]) -> Pubkey {
 
 fn hex_short(b: &[u8; 32]) -> String {
     let mut s = String::with_capacity(8);
-    for &n in &b[..4] { s.push_str(&format!("{n:02x}")); }
+    for &n in &b[..4] {
+        s.push_str(&format!("{n:02x}"));
+    }
     s
 }
 
@@ -169,8 +171,8 @@ struct SessionStats {
     /// Snapshots that produced no trade delta.
     delta_no_trade: u64,
     pdas_derived: usize,
-    pda_venue_matches: usize,  // venue-supplied address matched derived PDA
-    pda_venue_present: usize,  // venue supplied an address at all
+    pda_venue_matches: usize, // venue-supplied address matched derived PDA
+    pda_venue_present: usize, // venue supplied an address at all
     junction_events_drained: u64,
     junction_overflow_dropped: u64,
     /// Queue dwell-time stats (item 2a): max/mean/p99 of time between enqueue and drain.
@@ -193,24 +195,40 @@ struct SessionStats {
 impl SessionStats {
     fn new() -> Self {
         Self {
-            pp_trades_received: 0, pp_trades_enqueued: 0,
-            pp_creates_received: 0, pp_creates_parsed: 0,
-            pp_migrations_received: 0, pp_migrations_parsed: 0,
+            pp_trades_received: 0,
+            pp_trades_enqueued: 0,
+            pp_creates_received: 0,
+            pp_creates_parsed: 0,
+            pp_migrations_received: 0,
+            pp_migrations_parsed: 0,
             pp_trade_subs_sent: 0,
-            helius_account_notifications: 0, helius_onchain_confirms_decoded: 0,
+            helius_account_notifications: 0,
+            helius_onchain_confirms_decoded: 0,
             helius_slot_notifications: 0,
-            account_subs_active: 0, account_subs_total_attempted: 0, account_subs_evicted: 0,
-            delta_trades_derived: 0, delta_no_trade: 0,
-            pdas_derived: 0, pda_venue_matches: 0, pda_venue_present: 0,
-            junction_events_drained: 0, junction_overflow_dropped: 0,
-            dwell_max_ms: 0, dwell_mean_ms: 0, dwell_p99_ms: 0,
-            pp_reconnects: 0, helius_reconnects: 0,
+            account_subs_active: 0,
+            account_subs_total_attempted: 0,
+            account_subs_evicted: 0,
+            delta_trades_derived: 0,
+            delta_no_trade: 0,
+            pdas_derived: 0,
+            pda_venue_matches: 0,
+            pda_venue_present: 0,
+            junction_events_drained: 0,
+            junction_overflow_dropped: 0,
+            dwell_max_ms: 0,
+            dwell_mean_ms: 0,
+            dwell_p99_ms: 0,
+            pp_reconnects: 0,
+            helius_reconnects: 0,
             ws_errors: 0,
-            ls_transactions_received: 0, ls_instructions_classified: 0,
-            ls_events_emitted: 0, ls_slots_received: 0,
-            ls_spawned: false, ls_reconnects: 0,
+            ls_transactions_received: 0,
+            ls_instructions_classified: 0,
+            ls_events_emitted: 0,
+            ls_slots_received: 0,
+            ls_spawned: false,
+            ls_reconnects: 0,
             stubbed_or_assumed: vec![
-                "Config: dev_portable (no live config file provided)".to_string(),
+                "Config: dev_portable (no live config file provided)".to_string()
             ],
         }
     }
@@ -351,8 +369,8 @@ fn main() -> ExitCode {
     // never be logged as String. Expose only to pass to the WS connect.
     let helius_url = creds.ws_url().expose().to_string();
 
-    let pp_url = std::env::var("PUMPPORTAL_WS_URL")
-        .unwrap_or_else(|_| PUMPPORTAL_DEFAULT_URL.to_string());
+    let pp_url =
+        std::env::var("PUMPPORTAL_WS_URL").unwrap_or_else(|_| PUMPPORTAL_DEFAULT_URL.to_string());
 
     // Build the engine config early so we can report the tick period in the
     // startup banner. The config is moved into the engine later.
@@ -432,7 +450,8 @@ fn main() -> ExitCode {
     // accountSubscribe is real on-chain data, just higher latency.
     let (ls_tx, ls_rx) = mpsc::channel::<LaserStreamUpdate>();
     let mut ls_child: Option<std::process::Child> = None;
-    let ls_bin: Option<String> = std::env::var("PQ_LASERSTREAM_BIN").ok()
+    let ls_bin: Option<String> = std::env::var("PQ_LASERSTREAM_BIN")
+        .ok()
         .or_else(|| {
             // Try to find the binary relative to our own executable
             let target_dir = std::env::current_exe()
@@ -456,7 +475,7 @@ fn main() -> ExitCode {
     if let Some(bin_path) = &ls_bin {
         let mut cmd = std::process::Command::new(bin_path);
         cmd.stdout(std::process::Stdio::piped())
-           .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped());
         // Pass credentials via env so the gRPC server can connect.
         if let Ok(endpoint) = std::env::var("LASERSTREAM_ENDPOINT") {
             cmd.env("LASERSTREAM_ENDPOINT", endpoint);
@@ -491,18 +510,20 @@ fn main() -> ExitCode {
             }
             Err(e) => {
                 eprintln!("[paper-session] LaserStream spawn FAILED: {e}");
-                eprintln!("[paper-session] Proceeding with Helius WS as secondary lane (NOT a stub)");
+                eprintln!(
+                    "[paper-session] Proceeding with Helius WS as secondary lane (NOT a stub)"
+                );
                 stats.stubbed_or_assumed.push(
-                    "LaserStream gRPC spawn failed — Helius WS as fallback ingest".to_string()
+                    "LaserStream gRPC spawn failed — Helius WS as fallback ingest".to_string(),
                 );
             }
         }
     } else {
         eprintln!("[paper-session] LaserStream binary not found — set PQ_LASERSTREAM_BIN");
         eprintln!("[paper-session] Proceeding with Helius WS as secondary lane (NOT a stub)");
-        stats.stubbed_or_assumed.push(
-            "LaserStream gRPC binary not found — Helius WS as fallback ingest".to_string()
-        );
+        stats
+            .stubbed_or_assumed
+            .push("LaserStream gRPC binary not found — Helius WS as fallback ingest".to_string());
     }
     let mut ls_state = LaserStreamState::new();
 
@@ -565,8 +586,7 @@ fn main() -> ExitCode {
             Ok(Some(WsEvent::Text(text))) => {
                 did_work = true;
                 let is_create = text.contains("\"txType\":\"create\"");
-                let is_migration =
-                    text.contains("\"txType\":\"migrate\"")
+                let is_migration = text.contains("\"txType\":\"migrate\"")
                     || text.contains("\"txType\":\"migration\"");
 
                 if is_create {
@@ -575,9 +595,9 @@ fn main() -> ExitCode {
                         stats.pp_creates_parsed += 1;
                     }
                     // Parse the create to get mint → subscribe to trades + derive PDA → accountSubscribe.
-                    if let Some(meta) =
-                        pump_quant_ingest::pumpportal_parse::parse_pumpportal_create(text.as_bytes())
-                    {
+                    if let Some(meta) = pump_quant_ingest::pumpportal_parse::parse_pumpportal_create(
+                        text.as_bytes(),
+                    ) {
                         let mint_bytes = meta.mint;
                         let mint_b58 = Pubkey::try_from(mint_bytes)
                             .map(|pk| pk.to_string())
@@ -596,9 +616,7 @@ fn main() -> ExitCode {
                                     );
                                 }
                                 Err(e) => {
-                                    eprintln!(
-                                        "[paper-session] subscribeTokenTrade FAILED: {e}"
-                                    );
+                                    eprintln!("[paper-session] subscribeTokenTrade FAILED: {e}");
                                     stats.ws_errors += 1;
                                 }
                             }
@@ -615,7 +633,9 @@ fn main() -> ExitCode {
                         if !already_subscribed {
                             // Evict oldest if at capacity (FIFO)
                             if sub_tracker.len() >= MAX_ACCOUNT_SUBS {
-                                if let Some((evicted_req, evicted_mint)) = sub_tracker.evict_oldest() {
+                                if let Some((evicted_req, evicted_mint)) =
+                                    sub_tracker.evict_oldest()
+                                {
                                     stats.account_subs_evicted += 1;
                                     // Clean up the reserve tracker for the evicted mint
                                     reserve_tracker.remove(&evicted_mint);
@@ -640,9 +660,8 @@ fn main() -> ExitCode {
 
                             let req_id = next_req_id;
                             next_req_id += 1;
-                            let req = helius_ws::account_subscribe_request(
-                                req_id, &pda_str, &commitment,
-                            );
+                            let req =
+                                helius_ws::account_subscribe_request(req_id, &pda_str, &commitment);
                             match helius_conn.send_text(&req) {
                                 Ok(()) => {
                                     sub_tracker.record_request(req_id, mint_bytes);
@@ -698,7 +717,9 @@ fn main() -> ExitCode {
                 };
             }
             Ok(Some(WsEvent::Pong)) | Ok(None) => {}
-            Ok(Some(WsEvent::Binary(_))) => { stats.ws_errors += 1; }
+            Ok(Some(WsEvent::Binary(_))) => {
+                stats.ws_errors += 1;
+            }
             Err(e) => {
                 eprintln!("[paper-session] PumpPortal poll error: {e}");
                 stats.ws_errors += 1;
@@ -711,7 +732,10 @@ fn main() -> ExitCode {
                 did_work = true;
                 let v = match json::parse(&text) {
                     Ok(v) => v,
-                    Err(_) => { stats.ws_errors += 1; continue; }
+                    Err(_) => {
+                        stats.ws_errors += 1;
+                        continue;
+                    }
                 };
 
                 // Handle Acks FIRST — they map our request_id → server_sub_id
@@ -719,9 +743,7 @@ fn main() -> ExitCode {
                     // The Ack's "result" field is the server-assigned subscription id
                     if let Some(server_sub_id) = v.get("result").and_then(Value::as_u64) {
                         sub_tracker.record_ack(id, server_sub_id);
-                        eprintln!(
-                            "[paper-session] ACK req={id} → server_sub={server_sub_id}"
-                        );
+                        eprintln!("[paper-session] ACK req={id} → server_sub={server_sub_id}");
                         // Flush pending notifications that were waiting for this Ack
                         let mut still_pending = VecDeque::new();
                         while let Some((ssub, data_str, slot)) = pending_notifications.pop_front() {
@@ -730,7 +752,11 @@ fn main() -> ExitCode {
                                 if let Some(mb) = sub_tracker.mint_for_server_sub(ssub) {
                                     if let Ok(account_data) = B64.decode(data_str.as_bytes()) {
                                         if let Some((provenanced, curve)) =
-                                            decode_onchain_confirm_with_curve(&mb, &account_data, slot)
+                                            decode_onchain_confirm_with_curve(
+                                                &mb,
+                                                &account_data,
+                                                slot,
+                                            )
                                         {
                                             queue.push(provenanced, slot);
                                             stats.helius_onchain_confirms_decoded += 1;
@@ -755,11 +781,14 @@ fn main() -> ExitCode {
                                                 stats.delta_no_trade += 1;
                                             }
                                             // Update the snapshot for next delta.
-                                            reserve_tracker.insert(mb, ReserveSnapshot {
-                                                virtual_sol: curve.virtual_sol,
-                                                virtual_token: curve.virtual_token,
-                                                slot,
-                                            });
+                                            reserve_tracker.insert(
+                                                mb,
+                                                ReserveSnapshot {
+                                                    virtual_sol: curve.virtual_sol,
+                                                    virtual_token: curve.virtual_token,
+                                                    slot,
+                                                },
+                                            );
                                         }
                                     }
                                 }
@@ -787,9 +816,8 @@ fn main() -> ExitCode {
                                 // Extract the server sub_id from params.subscription
                                 // (NOT from the result array)
                                 let params = v.get("params");
-                                let server_sub = params
-                                    .and_then(|p| extract_server_sub_id(p))
-                                    .unwrap_or(0);
+                                let server_sub =
+                                    params.and_then(|p| extract_server_sub_id(p)).unwrap_or(0);
 
                                 // Look up the mint via server_sub_id
                                 let mint_bytes = sub_tracker.mint_for_server_sub(server_sub);
@@ -800,7 +828,11 @@ fn main() -> ExitCode {
                                     if let Some(data_str) = data_b64 {
                                         if let Ok(account_data) = B64.decode(data_str.as_bytes()) {
                                             if let Some((provenanced, curve)) =
-                                                decode_onchain_confirm_with_curve(&mb, &account_data, slot)
+                                                decode_onchain_confirm_with_curve(
+                                                    &mb,
+                                                    &account_data,
+                                                    slot,
+                                                )
                                             {
                                                 queue.push(provenanced, slot);
                                                 stats.helius_onchain_confirms_decoded += 1;
@@ -812,9 +844,11 @@ fn main() -> ExitCode {
 
                                                 // ── Reserve-delta: derive MarketTrade from reserve change ──
                                                 let prev = reserve_tracker.get(&mb).copied();
-                                                if let Some(trade_pe) = derive_market_trade_from_delta(
-                                                    &mb, prev, &curve, slot, true,
-                                                ) {
+                                                if let Some(trade_pe) =
+                                                    derive_market_trade_from_delta(
+                                                        &mb, prev, &curve, slot, true,
+                                                    )
+                                                {
                                                     queue.push(trade_pe, slot);
                                                     stats.delta_trades_derived += 1;
                                                     eprintln!(
@@ -825,11 +859,14 @@ fn main() -> ExitCode {
                                                     stats.delta_no_trade += 1;
                                                 }
                                                 // Update the snapshot for next delta.
-                                                reserve_tracker.insert(mb, ReserveSnapshot {
-                                                    virtual_sol: curve.virtual_sol,
-                                                    virtual_token: curve.virtual_token,
-                                                    slot,
-                                                });
+                                                reserve_tracker.insert(
+                                                    mb,
+                                                    ReserveSnapshot {
+                                                        virtual_sol: curve.virtual_sol,
+                                                        virtual_token: curve.virtual_token,
+                                                        slot,
+                                                    },
+                                                );
                                             } else {
                                                 // Discriminator mismatch — log loudly
                                                 if account_data.len() >= 8 {
@@ -858,7 +895,9 @@ fn main() -> ExitCode {
                                     );
                                 }
                             }
-                            _ => { stats.ws_errors += 1; }
+                            _ => {
+                                stats.ws_errors += 1;
+                            }
                         }
                     }
                     helius_ws::Inbound::Ack { id } => {
@@ -891,9 +930,8 @@ fn main() -> ExitCode {
                             let pda_str = pda.to_string();
                             let req_id = next_req_id;
                             next_req_id += 1;
-                            let req = helius_ws::account_subscribe_request(
-                                req_id, &pda_str, &commitment,
-                            );
+                            let req =
+                                helius_ws::account_subscribe_request(req_id, &pda_str, &commitment);
                             let _ = c.send_text(&req);
                             // Note: we keep the old tracker entries; the new
                             // Acks will update the server_sub mappings.
@@ -908,7 +946,9 @@ fn main() -> ExitCode {
                 };
             }
             Ok(Some(WsEvent::Pong)) | Ok(None) => {}
-            Ok(Some(WsEvent::Binary(_))) => { stats.ws_errors += 1; }
+            Ok(Some(WsEvent::Binary(_))) => {
+                stats.ws_errors += 1;
+            }
             Err(e) => {
                 eprintln!("[paper-session] Helius poll error: {e}");
                 stats.ws_errors += 1;
@@ -932,9 +972,8 @@ fn main() -> ExitCode {
                         let pda_str = pda.to_string();
                         let req_id = next_req_id;
                         next_req_id += 1;
-                        let req = helius_ws::account_subscribe_request(
-                            req_id, &pda_str, &commitment,
-                        );
+                        let req =
+                            helius_ws::account_subscribe_request(req_id, &pda_str, &commitment);
                         let _ = c.send_text(&req);
                     }
                     last_slot_time = Instant::now();
@@ -976,14 +1015,14 @@ fn main() -> ExitCode {
     let drain_budget = Instant::now() + Duration::from_secs(5);
     let mut pp_empty_streak = 0u32;
     let mut helius_empty_streak = 0u32;
-    while (pp_empty_streak < 2 || helius_empty_streak < 2)
-        && Instant::now() < drain_budget
-    {
+    while (pp_empty_streak < 2 || helius_empty_streak < 2) && Instant::now() < drain_budget {
         let mut did_work = false;
 
         // Drain PumpPortal socket
         match pp_conn.poll_event() {
-            Ok(None) => { pp_empty_streak += 1; }
+            Ok(None) => {
+                pp_empty_streak += 1;
+            }
             Ok(Some(_ws_event)) => {
                 pp_empty_streak = 0;
                 did_work = true;
@@ -991,17 +1030,23 @@ fn main() -> ExitCode {
                 // for the final drain we only care about enqueuing trade
                 // events into the junction queue.
             }
-            Err(_) => { pp_empty_streak += 1; }
+            Err(_) => {
+                pp_empty_streak += 1;
+            }
         }
 
         // Drain Helius socket
         match helius_conn.poll_event() {
-            Ok(None) => { helius_empty_streak += 1; }
+            Ok(None) => {
+                helius_empty_streak += 1;
+            }
             Ok(Some(_ws_event)) => {
                 helius_empty_streak = 0;
                 did_work = true;
             }
-            Err(_) => { helius_empty_streak += 1; }
+            Err(_) => {
+                helius_empty_streak += 1;
+            }
         }
 
         // Drain junction queue
@@ -1030,7 +1075,9 @@ fn main() -> ExitCode {
         stats.dwell_max_ms = *dwell_samples.last().unwrap();
         let sum: u64 = dwell_samples.iter().sum();
         stats.dwell_mean_ms = sum / n;
-        let p99_idx = ((n as f64 * 0.99).ceil() as u64).saturating_sub(1).min(n - 1);
+        let p99_idx = ((n as f64 * 0.99).ceil() as u64)
+            .saturating_sub(1)
+            .min(n - 1);
         stats.dwell_p99_ms = dwell_samples[p99_idx as usize];
     }
 
@@ -1056,31 +1103,58 @@ fn main() -> ExitCode {
     println!("  reconnects:            {}", stats.pp_reconnects);
     println!();
     println!("-- Helius (free tier, accountSubscribe) --");
-    println!("  slot_notifications:        {}", stats.helius_slot_notifications);
-    println!("  account_notifications:     {}", stats.helius_account_notifications);
-    println!("  onchain_confirms_decoded:  {}", stats.helius_onchain_confirms_decoded);
+    println!(
+        "  slot_notifications:        {}",
+        stats.helius_slot_notifications
+    );
+    println!(
+        "  account_notifications:     {}",
+        stats.helius_account_notifications
+    );
+    println!(
+        "  onchain_confirms_decoded:  {}",
+        stats.helius_onchain_confirms_decoded
+    );
     println!("  account_subs_active:       {}", stats.account_subs_active);
-    println!("  account_subs_attempted:    {}", stats.account_subs_total_attempted);
-    println!("  account_subs_evicted:      {}", stats.account_subs_evicted);
+    println!(
+        "  account_subs_attempted:    {}",
+        stats.account_subs_total_attempted
+    );
+    println!(
+        "  account_subs_evicted:      {}",
+        stats.account_subs_evicted
+    );
     println!("  pdas_derived:              {}", stats.pdas_derived);
     println!("  pda_venue_present:         {}", stats.pda_venue_present);
     println!("  pda_venue_matches:         {}", stats.pda_venue_matches);
-    println!("  delta_trades_derived:      {}", stats.delta_trades_derived);
+    println!(
+        "  delta_trades_derived:      {}",
+        stats.delta_trades_derived
+    );
     println!("  delta_no_trade:            {}", stats.delta_no_trade);
     println!("  last_slot_seen:            {last_slot_seen}");
     println!("  reconnects:                {}", stats.helius_reconnects);
     println!();
     println!("-- LaserStream gRPC (primary ingest lane) --");
     println!("  spawned:                {}", stats.ls_spawned);
-    println!("  transactions_received:  {}", stats.ls_transactions_received);
-    println!("  instructions_classified: {}", stats.ls_instructions_classified);
+    println!(
+        "  transactions_received:  {}",
+        stats.ls_transactions_received
+    );
+    println!(
+        "  instructions_classified: {}",
+        stats.ls_instructions_classified
+    );
     println!("  events_emitted:         {}", stats.ls_events_emitted);
     println!("  slots_received:         {}", stats.ls_slots_received);
     println!("  reconnects:             {}", stats.ls_reconnects);
     println!();
     println!("-- Junction queue --");
     println!("  events_drained:        {}", stats.junction_events_drained);
-    println!("  overflow_dropped:      {}", stats.junction_overflow_dropped);
+    println!(
+        "  overflow_dropped:      {}",
+        stats.junction_overflow_dropped
+    );
     println!("  dwell_max_ms:          {}", stats.dwell_max_ms);
     println!("  dwell_mean_ms:         {}", stats.dwell_mean_ms);
     println!("  dwell_p99_ms:          {}", stats.dwell_p99_ms);

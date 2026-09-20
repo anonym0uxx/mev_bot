@@ -678,25 +678,15 @@ impl CreatorLedgerConfig {
             return None;
         }
         let mut p = pos;
-        let survival_horizon_slots = u64::from_le_bytes(
-            buf[p..p + 8].try_into().ok()?,
-        );
+        let survival_horizon_slots = u64::from_le_bytes(buf[p..p + 8].try_into().ok()?);
         p += 8;
-        let min_survived_for_proven = u32::from_le_bytes(
-            buf[p..p + 4].try_into().ok()?,
-        );
+        let min_survived_for_proven = u32::from_le_bytes(buf[p..p + 4].try_into().ok()?);
         p += 4;
-        let serial_window_slots = u64::from_le_bytes(
-            buf[p..p + 8].try_into().ok()?,
-        );
+        let serial_window_slots = u64::from_le_bytes(buf[p..p + 8].try_into().ok()?);
         p += 8;
-        let serial_min_launches = u32::from_le_bytes(
-            buf[p..p + 4].try_into().ok()?,
-        );
+        let serial_min_launches = u32::from_le_bytes(buf[p..p + 4].try_into().ok()?);
         p += 4;
-        let min_rugs_for_toxic = u32::from_le_bytes(
-            buf[p..p + 4].try_into().ok()?,
-        );
+        let min_rugs_for_toxic = u32::from_le_bytes(buf[p..p + 4].try_into().ok()?);
         p += 4;
         let (max_creators, n) = decode_varint(buf, p)?;
         p += n;
@@ -810,13 +800,17 @@ impl CreatorLedger {
         if buf[..4] != LEDGER_MAGIC {
             return Err(LedgerSerError::BadMagic);
         }
-        let version = u32::from_le_bytes(buf[4..8].try_into().map_err(|_| LedgerSerError::Truncated)?);
+        let version = u32::from_le_bytes(
+            buf[4..8]
+                .try_into()
+                .map_err(|_| LedgerSerError::Truncated)?,
+        );
         if version != LEDGER_VERSION {
             return Err(LedgerSerError::UnsupportedVersion(version));
         }
         let mut pos = 8;
-        let (cfg, n) = CreatorLedgerConfig::decode_from(buf, pos)
-            .ok_or(LedgerSerError::Truncated)?;
+        let (cfg, n) =
+            CreatorLedgerConfig::decode_from(buf, pos).ok_or(LedgerSerError::Truncated)?;
         pos += n;
         let (entry_count, n) = decode_varint(buf, pos).ok_or(LedgerSerError::Truncated)?;
         pos += n;
@@ -843,8 +837,8 @@ impl CreatorLedger {
             }
             let mut launches: Vec<LaunchRecord> = Vec::with_capacity(launch_count as usize);
             for _ in 0..launch_count {
-                let (rec, n) = LaunchRecord::decode_from(buf, pos)
-                    .ok_or(LedgerSerError::Truncated)?;
+                let (rec, n) =
+                    LaunchRecord::decode_from(buf, pos).ok_or(LedgerSerError::Truncated)?;
                 pos += n;
                 launches.push(rec);
             }
@@ -877,7 +871,10 @@ mod ser_tests {
         let restored = CreatorLedger::deserialize(&buf).unwrap();
         assert_eq!(restored.len(), 0);
         assert_eq!(restored.creator_evictions(), 0);
-        assert_eq!(restored.config().survival_horizon_slots, ledger.config().survival_horizon_slots);
+        assert_eq!(
+            restored.config().survival_horizon_slots,
+            ledger.config().survival_horizon_slots
+        );
     }
 
     #[test]

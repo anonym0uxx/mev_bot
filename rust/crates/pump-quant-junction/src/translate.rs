@@ -6,9 +6,9 @@
 //! functions are pure and allocation-free.
 
 use pump_quant_app::event::AppEvent;
+use pump_quant_domain::ids::Mint;
 use pump_quant_ingest::canonical::{CanonicalTx, TradeDirection, TxKind};
 use pump_quant_ingest::token_metadata_parse::RawTokenMetadata;
-use pump_quant_domain::ids::Mint;
 use pump_quant_market_state::meta::{classify_category, TAXONOMY_V1, TAXONOMY_VERSION_V1};
 
 use crate::{ProvenanceSource, ProvenancedEvent};
@@ -315,12 +315,7 @@ mod tests {
             real_token: 800_000_000,
             complete: false,
         };
-        let result = decoded_snapshot_to_onchain_confirm(
-            &[0xAB; 32],
-            &curve,
-            1000,
-            true,
-        );
+        let result = decoded_snapshot_to_onchain_confirm(&[0xAB; 32], &curve, 1000, true);
 
         if let AppEvent::OnchainConfirm {
             mint,

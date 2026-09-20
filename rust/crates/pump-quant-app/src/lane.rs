@@ -80,7 +80,12 @@ fn entry_quality_from_ring(trades: &[TradeEvent]) -> (u32, u64, u32, u64) {
     let buy_ratio_bp = ((buys as u64 * 10_000) / n as u64) as u32;
     let max_trade_lamports = trades.iter().map(|t| t.quote_qty).max().unwrap_or(0);
     let volume_lamports = trades.iter().map(|t| t.quote_qty as u128).sum::<u128>();
-    (buy_ratio_bp, max_trade_lamports, n as u32, volume_lamports as u64)
+    (
+        buy_ratio_bp,
+        max_trade_lamports,
+        n as u32,
+        volume_lamports as u64,
+    )
 }
 
 /// Map order-flow imbalance (bps, −10_000..=10_000, or `None` on empty flow) onto

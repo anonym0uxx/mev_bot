@@ -957,9 +957,6 @@ mod landing_slot_tests {
 
     #[test]
     fn overflow_refuses() {
-        assert_eq!(
-            landing_adjusted_buy_fill_fp(SPOT, VSOL, u64::MAX, 1),
-            None,
-        );
+        assert_eq!(landing_adjusted_buy_fill_fp(SPOT, VSOL, u64::MAX, 1), None,);
     }
 }

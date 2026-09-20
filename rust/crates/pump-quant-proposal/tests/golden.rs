@@ -1,7 +1,9 @@
 //! Golden-file parity: the rendered lines must match real c11 corpus rows
 //! byte-for-byte. Fixtures are copied verbatim from `candidate_sft_c11`.
 
-use pump_quant_proposal::{render_flow_citation, render_live_flow_state, render_no_prior_flow, FlowState};
+use pump_quant_proposal::{
+    render_flow_citation, render_live_flow_state, render_no_prior_flow, FlowState,
+};
 
 /// A real decision-family row (mint BHnsBYhzNrsEowdAt2QQ7Z39bi4qNhKS54xDBvyApump,
 /// t_dec_ms 1788970423162) — populated, positive net flow.
@@ -91,7 +93,10 @@ fn live_flow_state_negative_flow_byte_for_byte() {
 
 #[test]
 fn no_prior_flow_matches_corpus() {
-    assert_eq!(render_no_prior_flow(), "LIVE FLOW STATE: no_prior_flow=true");
+    assert_eq!(
+        render_no_prior_flow(),
+        "LIVE FLOW STATE: no_prior_flow=true"
+    );
 }
 
 /// The shared cost model is verbatim in all four system prompts; each family
@@ -116,6 +121,8 @@ fn system_prompts_have_family_specific_tails() {
     assert!(system_prompt(Decision).ends_with("COUNTEREVIDENCE, EVIDENCE_STATUS."));
     assert!(system_prompt(Management).contains("HOLD, ADD, REDUCE, EXIT"));
     assert!(system_prompt(Management).ends_with("Answer in the fixed format."));
-    assert!(system_prompt(UtilityReasoning).contains("Show the arithmetic. Never use any future price"));
+    assert!(
+        system_prompt(UtilityReasoning).contains("Show the arithmetic. Never use any future price")
+    );
     assert!(system_prompt(UtilityRegression).contains("FORECAST_NET_BP, FORECAST_MFE_BP, FORECAST_MAE_BP, FORECAST_OUTCOME, FORECAST_CENSORED, BASIS, EVIDENCE_STATUS."));
 }

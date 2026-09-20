@@ -52,7 +52,6 @@
 pub mod curve;
 pub mod decode;
 pub mod errors;
-pub mod runtime_errors;
 pub mod ix;
 pub mod layout;
 pub mod message;
@@ -61,6 +60,7 @@ pub mod pumpswap;
 pub mod pumpswap_event;
 pub mod pumpswap_ix;
 pub mod registry;
+pub mod runtime_errors;
 pub mod sha256;
 pub mod tx_build;
 pub mod venue_accounts;

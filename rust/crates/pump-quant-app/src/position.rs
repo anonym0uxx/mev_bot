@@ -138,14 +138,14 @@ impl LifecycleParams {
             trail_base_bps: 2_200, // ≥22% give-back before trailing out
             trail_k_div: 4,        // widen the trail as the winner runs
             trail_max_bps: 12_000,
-            tp1_bps: 11_000,          // Re-pin #29: +10% cost-aware fallback (derived ladder overrides per-market)
-            tp1_frac_bps: 3_500,      // Re-pin #29: FIXED 35% — lock profit, leave 65% (was cost-recovery ~97%)
-            tp2_bps: 25_000,          // Re-pin #29: 2.5× moderate runner (arXiv:2606.08232 fat-tail capture)
-            tp2_frac_bps: 2_500,      // Re-pin #29: 25% — trim quarter, leave rest for TP3+moon bag
-            tp3_bps: 50_000,          // Re-pin #29: 5× strong runner — fat-tail zone (top 1.6% of trades)
-            tp3_frac_bps: 3_000,      // sell 30% of original — leaves 10% moon bag to trail
+            tp1_bps: 11_000, // Re-pin #29: +10% cost-aware fallback (derived ladder overrides per-market)
+            tp1_frac_bps: 3_500, // Re-pin #29: FIXED 35% — lock profit, leave 65% (was cost-recovery ~97%)
+            tp2_bps: 25_000, // Re-pin #29: 2.5× moderate runner (arXiv:2606.08232 fat-tail capture)
+            tp2_frac_bps: 2_500, // Re-pin #29: 25% — trim quarter, leave rest for TP3+moon bag
+            tp3_bps: 50_000, // Re-pin #29: 5× strong runner — fat-tail zone (top 1.6% of trades)
+            tp3_frac_bps: 3_000, // sell 30% of original — leaves 10% moon bag to trail
             cvd_hold_frac_bps: 3_000, // Re-pin #28: 30% — survive deeper drawdowns so TP1 can fire
-            stall_ticks: 75,          // Re-pin #28: 3× wider — let winners breathe before stall exit
+            stall_ticks: 75, // Re-pin #28: 3× wider — let winners breathe before stall exit
             max_hold_ticks: 300,
             precursor_drop_bps: 3_000, // −30% single-swap step = collapse onset
             fee_bps: crate::cost_model::VENUE_FEE_BPS_CURVE,
@@ -253,9 +253,7 @@ pub fn exit_token_amount(size_lamports: u64, frac_bps: u32, entry_price_fp: u64)
     if entry_price_fp == 0 || frac_bps == 0 || size_lamports == 0 {
         return 0;
     }
-    let notional_frac = u128::from(size_lamports)
-        .saturating_mul(u128::from(frac_bps))
-        / 10_000;
+    let notional_frac = u128::from(size_lamports).saturating_mul(u128::from(frac_bps)) / 10_000;
     let tokens = notional_frac.saturating_mul(1_000_000_000) / u128::from(entry_price_fp);
     u64::try_from(tokens).unwrap_or(0)
 }
@@ -594,7 +592,10 @@ impl ScalpLifecycle {
     /// Returns entry tick, entry price, current tick, mark price, unrealized PnL,
     /// and remaining fraction. Sorted by mint for determinism (§22).
     #[must_use]
-    pub fn open_positions_snapshot(&self, current_tick: u64) -> Vec<crate::live_status::OpenPositionSnapshot> {
+    pub fn open_positions_snapshot(
+        &self,
+        current_tick: u64,
+    ) -> Vec<crate::live_status::OpenPositionSnapshot> {
         self.open
             .iter()
             .map(|(mint, pos)| {
@@ -604,7 +605,8 @@ impl ScalpLifecycle {
                 // Unrealized PnL = (mark - entry) × remaining_size
                 let remaining_size = size_lamports * remaining_frac / 10_000;
                 let pnl_per_unit = mark_price_fp as i128 - pos.entry_price_fp as i128;
-                let unrealized_pnl = remaining_size.saturating_mul(pnl_per_unit) / 1_000_000_000_000_000_000i128;
+                let unrealized_pnl =
+                    remaining_size.saturating_mul(pnl_per_unit) / 1_000_000_000_000_000_000i128;
                 crate::live_status::OpenPositionSnapshot {
                     mint: *mint,
                     entry_tick: pos.entry_tick,
@@ -909,7 +911,9 @@ impl ScalpLifecycle {
         } else {
             p.stall_ticks
         };
-        let stalled = p.stall_ticks < 99_999 && mult > 10_000 && tick.saturating_sub(pos.last_high_tick) >= stall_window;
+        let stalled = p.stall_ticks < 99_999
+            && mult > 10_000
+            && tick.saturating_sub(pos.last_high_tick) >= stall_window;
         if cvd_dead || stalled {
             // §Quant-Rev-5: conditional moon bag — if the graduation velocity
             // is positive (curve SOL accelerating toward graduation), retain
@@ -917,7 +921,8 @@ impl ScalpLifecycle {
             // the moon bag fraction and keep the rest open.
             if p.conditional_moon_bag_enable
                 && pos.graduation_velocity_positive(p.moon_bag_acceleration_window)
-                && pos.remaining_bps > 1_000 // retain at least 10% moon bag
+                && pos.remaining_bps > 1_000
+            // retain at least 10% moon bag
             {
                 // Sell down to 10% (1_000 bps) — the moon bag.
                 let sell_frac = pos.remaining_bps.saturating_sub(1_000);
@@ -925,9 +930,9 @@ impl ScalpLifecycle {
                     pos.tranche_mask |= 0b1000; // mark partial exit
                     let net = pos.realize(sell_frac, mult, &p);
                     let (mfe_bps, mae_bps) = pos.excursions_bps();
-                    let exit_px = u64::try_from(
-                        u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000
-                    ).unwrap_or(pos.entry_price_fp);
+                    let exit_px =
+                        u64::try_from(u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000)
+                            .unwrap_or(pos.entry_price_fp);
                     let tkn = exit_token_amount(pos.size_lamports, sell_frac, pos.entry_price_fp);
                     return Some(Exit {
                         mint: *mint,
@@ -980,9 +985,8 @@ impl ScalpLifecycle {
             pos.tranche_mask |= 0b001;
             let net = pos.realize(frac, mult, &p);
             let (mfe_bps, mae_bps) = pos.excursions_bps();
-            let exit_px = u64::try_from(
-                u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000
-            ).unwrap_or(pos.entry_price_fp);
+            let exit_px = u64::try_from(u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000)
+                .unwrap_or(pos.entry_price_fp);
             let tkn = exit_token_amount(pos.size_lamports, frac, pos.entry_price_fp);
             return Some(Exit {
                 mint: *mint,
@@ -1002,9 +1006,8 @@ impl ScalpLifecycle {
             pos.tranche_mask |= 0b010;
             let net = pos.realize(f2, mult, &p);
             let (mfe_bps, mae_bps) = pos.excursions_bps();
-            let exit_px = u64::try_from(
-                u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000
-            ).unwrap_or(pos.entry_price_fp);
+            let exit_px = u64::try_from(u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000)
+                .unwrap_or(pos.entry_price_fp);
             let tkn = exit_token_amount(pos.size_lamports, f2, pos.entry_price_fp);
             return Some(Exit {
                 mint: *mint,
@@ -1024,9 +1027,8 @@ impl ScalpLifecycle {
             pos.tranche_mask |= 0b100;
             let net = pos.realize(f3, mult, &p);
             let (mfe_bps, mae_bps) = pos.excursions_bps();
-            let exit_px = u64::try_from(
-                u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000
-            ).unwrap_or(pos.entry_price_fp);
+            let exit_px = u64::try_from(u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000)
+                .unwrap_or(pos.entry_price_fp);
             let tkn = exit_token_amount(pos.size_lamports, f3, pos.entry_price_fp);
             return Some(Exit {
                 mint: *mint,
@@ -1241,8 +1243,9 @@ impl ScalpLifecycle {
             if pos.entry_price_fp > 0 && pos.size_lamports > 0 {
                 let frac_bps = u32::try_from(
                     u128::from(token_amount) * u128::from(pos.entry_price_fp)
-                        / (u128::from(pos.size_lamports) * 1_000_000_000 / 10_000)
-                ).unwrap_or(0);
+                        / (u128::from(pos.size_lamports) * 1_000_000_000 / 10_000),
+                )
+                .unwrap_or(0);
                 pos.remaining_bps = pos.remaining_bps.saturating_add(frac_bps).min(10_000);
             }
             // Clear the tranche mask bit for the most recent tranche so it can re-fire.
@@ -1266,13 +1269,16 @@ impl ScalpLifecycle {
         // → no on-chain sell ever submitted (the sell-vs-tape gap root cause).
         let remaining_bps_at_close = pos.remaining_bps;
         let net = pos.realize(pos.remaining_bps, mult_bps, &self.params);
-        let exit_px = u64::try_from(
-            u128::from(pos.entry_price_fp) * u128::from(mult_bps) / 10_000
-        ).unwrap_or(pos.entry_price_fp);
+        let exit_px = u64::try_from(u128::from(pos.entry_price_fp) * u128::from(mult_bps) / 10_000)
+            .unwrap_or(pos.entry_price_fp);
         // Token amount for the on-chain sell: the FULL remaining fraction
         // (remaining_bps at close time, before realize zeroed it) of the notional,
         // priced at entry.
-        let tkn = exit_token_amount(pos.size_lamports, remaining_bps_at_close, pos.entry_price_fp);
+        let tkn = exit_token_amount(
+            pos.size_lamports,
+            remaining_bps_at_close,
+            pos.entry_price_fp,
+        );
         Exit {
             mint: *mint,
             net_lamports: net,
@@ -1321,10 +1327,7 @@ mod tests {
         let mut total: i128 = 0;
         let mut closed = false;
         // ramp up: 1× -> 5.5× over rising prices, then sharp drop closes the moon bag
-        for (i, m) in [15_000u64, 28_000, 55_000, 35_000]
-            .iter()
-            .enumerate()
-        {
+        for (i, m) in [15_000u64, 28_000, 55_000, 35_000].iter().enumerate() {
             let price = 1_000_000 * m / 10_000;
             if let Some(e) =
                 lc.on_trade(&[1u8; 32], price, 500_000, i as u64 + 1, TEST_LIQ_LAMPORTS)
@@ -1446,7 +1449,13 @@ mod tests {
         p.conditional_moon_bag_enable = false; // isolate Rev-4
         let mut lc = ScalpLifecycle::new(p, 64);
         // Use a larger position to amortize fixed costs: 10M lamports.
-        lc.open([7u8; 32], 10_000_000, 10_000_000, 10_000_000 + p.fixed_lamports_per_leg, 0);
+        lc.open(
+            [7u8; 32],
+            10_000_000,
+            10_000_000,
+            10_000_000 + p.fixed_lamports_per_leg,
+            0,
+        );
         // Arm with mcap-position-derived targets: TP1 at +50% (15_000 bps),
         // smaller TP1 fraction (20% = 2_000 bps instead of the default 4_000).
         lc.arm_context(
@@ -1467,7 +1476,11 @@ mod tests {
         let e = lc
             .on_trade(&[7u8; 32], price, 5_000_000, 1, TEST_LIQ_LAMPORTS)
             .expect("TP1 fires at +50%");
-        assert!(e.net_lamports > 0, "TP1 tranche nets positive (net={})", e.net_lamports);
+        assert!(
+            e.net_lamports > 0,
+            "TP1 tranche nets positive (net={})",
+            e.net_lamports
+        );
         // Position should still be open (only 20% sold, 80% remaining).
         assert!(lc.has(&[7u8; 32]), "position remains after TP1 partial");
     }
@@ -1478,14 +1491,24 @@ mod tests {
     fn rev4_no_derived_targets_falls_back_to_global() {
         let mut lc = ScalpLifecycle::new(P, 64);
         // Use a larger position to amortize fixed costs: 10M lamports.
-        lc.open([8u8; 32], 10_000_000, 10_000_000, 10_000_000 + P.fixed_lamports_per_leg, 0);
+        lc.open(
+            [8u8; 32],
+            10_000_000,
+            10_000_000,
+            10_000_000 + P.fixed_lamports_per_leg,
+            0,
+        );
         // No arm_context call — derived targets are None.
         // Push to TP1 (11_000 = +10%): default tp1_frac_bps should fire.
         let price = 10_000_000u64 * 11_000 / 10_000;
         let e = lc
             .on_trade(&[8u8; 32], price, 5_000_000, 1, TEST_LIQ_LAMPORTS)
             .expect("TP1 fires at +10%");
-        assert!(e.net_lamports > 0, "TP1 nets positive (net={})", e.net_lamports);
+        assert!(
+            e.net_lamports > 0,
+            "TP1 nets positive (net={})",
+            e.net_lamports
+        );
     }
 
     // ─── §Quant-Rev-5: Conditional moon bag ─────────────────────────────
@@ -1499,7 +1522,13 @@ mod tests {
         p.conditional_moon_bag_enable = true;
         p.moon_bag_acceleration_window = 5;
         let mut lc = ScalpLifecycle::new(p, 64);
-        lc.open([5u8; 32], 1_000_000, 1_000_000, 1_000_000 + p.fixed_lamports_per_leg, 0);
+        lc.open(
+            [5u8; 32],
+            1_000_000,
+            1_000_000,
+            1_000_000 + p.fixed_lamports_per_leg,
+            0,
+        );
         // Build CVD peak with buys, then roll over with a large sell.
         // CVD peak = 5M+5M+3M+3M = 16M. A sell of -12M brings CVD to 4M = 25%
         // of peak, below the 30% hold threshold → thesis-invalidation fires.
@@ -1514,7 +1543,10 @@ mod tests {
             .expect("some exit fires");
         // If the moon bag was retained, the position should still be open
         // and the exit should NOT be fully closed.
-        assert!(!e.closed, "moon bag retained — exit is partial, not full close");
+        assert!(
+            !e.closed,
+            "moon bag retained — exit is partial, not full close"
+        );
         assert!(lc.has(&[5u8; 32]), "position remains — moon bag held");
     }
 
@@ -1525,7 +1557,13 @@ mod tests {
         let mut p = P;
         p.conditional_moon_bag_enable = false; // disabled
         let mut lc = ScalpLifecycle::new(p, 64);
-        lc.open([6u8; 32], 1_000_000, 1_000_000, 1_000_000 + p.fixed_lamports_per_leg, 0);
+        lc.open(
+            [6u8; 32],
+            1_000_000,
+            1_000_000,
+            1_000_000 + p.fixed_lamports_per_leg,
+            0,
+        );
         // Build CVD peak then roll over — standard thesis-invalidation.
         lc.on_trade(&[6u8; 32], 1_050_000, 5_000_000, 1, TEST_LIQ_LAMPORTS);
         lc.on_trade(&[6u8; 32], 1_060_000, 5_000_000, 2, TEST_LIQ_LAMPORTS);
@@ -1542,7 +1580,13 @@ mod tests {
     #[test]
     fn rev5_graduation_velocity_insufficient_data() {
         let mut lc = ScalpLifecycle::new(P, 64);
-        lc.open([3u8; 32], 1_000_000, 1_000_000, 1_000_000 + P.fixed_lamports_per_leg, 0);
+        lc.open(
+            [3u8; 32],
+            1_000_000,
+            1_000_000,
+            1_000_000 + P.fixed_lamports_per_leg,
+            0,
+        );
         // Only 2 trades — not enough for velocity computation.
         lc.on_trade(&[3u8; 32], 1_050_000, 100_000, 1, 30_000_000_000);
         lc.on_trade(&[3u8; 32], 1_060_000, 100_000, 2, 35_000_000_000);
@@ -1558,7 +1602,13 @@ mod tests {
         p.conditional_moon_bag_enable = true;
         p.moon_bag_acceleration_window = 5;
         let mut lc = ScalpLifecycle::new(p, 64);
-        lc.open([4u8; 32], 1_000_000, 1_000_000, 1_000_000 + p.fixed_lamports_per_leg, 0);
+        lc.open(
+            [4u8; 32],
+            1_000_000,
+            1_000_000,
+            1_000_000 + p.fixed_lamports_per_leg,
+            0,
+        );
         // Rising SOL but DECELERATING: +5M, +3M, +1M, +0.5M — velocity decreasing.
         lc.on_trade(&[4u8; 32], 1_050_000, 5_000_000, 1, 30_000_000_000);
         lc.on_trade(&[4u8; 32], 1_055_000, 3_000_000, 2, 35_000_000_000);

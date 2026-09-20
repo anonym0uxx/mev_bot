@@ -164,12 +164,14 @@ pub fn classify_transaction_error(err: TransactionError) -> FailureClass6 {
         | TransactionError::BlockhashNotExpired => FailureClass6::Transient,
 
         // Account locking — transient (slot-level contention).
-        TransactionError::AccountInUse
-        | TransactionError::DuplicateAccountIndex => FailureClass6::Transient,
+        TransactionError::AccountInUse | TransactionError::DuplicateAccountIndex => {
+            FailureClass6::Transient
+        }
 
         // Account loading defects — route error (wrong accounts loaded).
-        TransactionError::AccountLoadedNotWritable
-        | TransactionError::AccountNotLoaded => FailureClass6::RouteError,
+        TransactionError::AccountLoadedNotWritable | TransactionError::AccountNotLoaded => {
+            FailureClass6::RouteError
+        }
 
         // Instruction-level failure — needs the instruction error to classify
         // further; we default to Fatal here (fail closed, the caller should
@@ -352,13 +354,28 @@ mod tests {
     #[test]
     fn rpc_errors_classify_correctly() {
         // Rate limit → Transient
-        assert_eq!(classify_rpc_error(RpcError::RateLimited), FailureClass6::Transient);
-        assert_eq!(classify_rpc_error(RpcError::Timeout), FailureClass6::Transient);
-        assert_eq!(classify_rpc_error(RpcError::NodeOverloaded), FailureClass6::Transient);
+        assert_eq!(
+            classify_rpc_error(RpcError::RateLimited),
+            FailureClass6::Transient
+        );
+        assert_eq!(
+            classify_rpc_error(RpcError::Timeout),
+            FailureClass6::Transient
+        );
+        assert_eq!(
+            classify_rpc_error(RpcError::NodeOverloaded),
+            FailureClass6::Transient
+        );
 
         // Internal error → Fatal (fail closed)
-        assert_eq!(classify_rpc_error(RpcError::InternalError), FailureClass6::Fatal);
-        assert_eq!(classify_rpc_error(RpcError::Unknown(-1)), FailureClass6::Fatal);
+        assert_eq!(
+            classify_rpc_error(RpcError::InternalError),
+            FailureClass6::Fatal
+        );
+        assert_eq!(
+            classify_rpc_error(RpcError::Unknown(-1)),
+            FailureClass6::Fatal
+        );
     }
 
     #[test]
@@ -450,16 +467,18 @@ mod tests {
     #[test]
     fn retryable_and_replan_for_runtime() {
         // Transient (CU) is retryable
-        assert!(classify_runtime_error(RuntimeError::ComputationalBudgetExceeded)
-            .retryable_with_capital());
+        assert!(
+            classify_runtime_error(RuntimeError::ComputationalBudgetExceeded)
+                .retryable_with_capital()
+        );
         // Fatal (auth) is NOT retryable
-        assert!(!classify_runtime_error(RuntimeError::MissingRequiredSignature)
-            .retryable_with_capital());
+        assert!(
+            !classify_runtime_error(RuntimeError::MissingRequiredSignature)
+                .retryable_with_capital()
+        );
         // VersionDrift (layout) requires replan
-        assert!(classify_runtime_error(RuntimeError::InvalidInstructionData)
-            .requires_replan());
+        assert!(classify_runtime_error(RuntimeError::InvalidInstructionData).requires_replan());
         // StateDrift (account) requires replan
-        assert!(classify_runtime_error(RuntimeError::AccountNotRentExempt)
-            .requires_replan());
+        assert!(classify_runtime_error(RuntimeError::AccountNotRentExempt).requires_replan());
     }
 }

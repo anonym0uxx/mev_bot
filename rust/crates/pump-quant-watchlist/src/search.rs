@@ -60,12 +60,7 @@ pub struct Hit {
 
 /// Run a query over the registry and its price cache, as of logical time `now`.
 #[must_use]
-pub fn search(
-    state: &WatchlistState,
-    cache: &PriceCache,
-    q: &SearchQuery,
-    now: u64,
-) -> Vec<Hit> {
+pub fn search(state: &WatchlistState, cache: &PriceCache, q: &SearchQuery, now: u64) -> Vec<Hit> {
     if q.limit == 0 {
         return Vec::new();
     }
@@ -133,10 +128,25 @@ mod tests {
     #[test]
     fn a_zero_query_returns_everything_in_rank_order() {
         let mut s = state();
-        insert(&mut s, 1, Lane::EarlyConfirmation, 500, feats(10, 3, 1_000, 5));
-        insert(&mut s, 2, Lane::EarlyConfirmation, 900, feats(20, 4, 2_000, 6));
+        insert(
+            &mut s,
+            1,
+            Lane::EarlyConfirmation,
+            500,
+            feats(10, 3, 1_000, 5),
+        );
+        insert(
+            &mut s,
+            2,
+            Lane::EarlyConfirmation,
+            900,
+            feats(20, 4, 2_000, 6),
+        );
         let cache = PriceCache::new(4, 10);
-        let q = SearchQuery { limit: usize::MAX, ..SearchQuery::default() };
+        let q = SearchQuery {
+            limit: usize::MAX,
+            ..SearchQuery::default()
+        };
         let hits = search(&s, &cache, &q, 100);
         assert_eq!(hits.len(), 2);
         assert!(hits[0].rank >= hits[1].rank, "descending rank");
@@ -149,18 +159,43 @@ mod tests {
             insert(&mut s, b, Lane::EarlyConfirmation, 400, feats(1, 1, 1, 1));
         }
         let cache = PriceCache::new(4, 10);
-        let q = SearchQuery { limit: usize::MAX, ..SearchQuery::default() };
+        let q = SearchQuery {
+            limit: usize::MAX,
+            ..SearchQuery::default()
+        };
         let hits = search(&s, &cache, &q, 100);
         let order: Vec<[u8; 32]> = hits.iter().map(|h| h.mint.bytes()).collect();
-        assert_eq!(order, vec![[3u8; 32], [7u8; 32], [9u8; 32]], "ties break by mint");
+        assert_eq!(
+            order,
+            vec![[3u8; 32], [7u8; 32], [9u8; 32]],
+            "ties break by mint"
+        );
     }
 
     #[test]
     fn filters_compose_without_widening_each_other() {
         let mut s = state();
-        insert(&mut s, 1, Lane::EarlyConfirmation, 900, feats(50, 5, 9_000, 3));
-        insert(&mut s, 2, Lane::GraduationTransition, 900, feats(50, 5, 9_000, 3));
-        insert(&mut s, 3, Lane::EarlyConfirmation, 900, feats(1, 5, 9_000, 3));
+        insert(
+            &mut s,
+            1,
+            Lane::EarlyConfirmation,
+            900,
+            feats(50, 5, 9_000, 3),
+        );
+        insert(
+            &mut s,
+            2,
+            Lane::GraduationTransition,
+            900,
+            feats(50, 5, 9_000, 3),
+        );
+        insert(
+            &mut s,
+            3,
+            Lane::EarlyConfirmation,
+            900,
+            feats(1, 5, 9_000, 3),
+        );
         let cache = PriceCache::new(4, 10);
         let q = SearchQuery {
             lane: Some(Lane::EarlyConfirmation),
@@ -182,7 +217,11 @@ mod tests {
         let mut cache = PriceCache::new(4, 10);
         cache.on_tick(m(1), 1, crate::price_cache::PriceVenue::Amm, 100, 0);
         cache.on_tick(m(2), 1, crate::price_cache::PriceVenue::Amm, 0, 0);
-        let q = SearchQuery { require_fresh_price: true, limit: usize::MAX, ..Default::default() };
+        let q = SearchQuery {
+            require_fresh_price: true,
+            limit: usize::MAX,
+            ..Default::default()
+        };
         let hits = search(&s, &cache, &q, 100);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].mint, m(1));
@@ -193,12 +232,24 @@ mod tests {
     fn limit_caps_the_result_and_zero_means_zero() {
         let mut s = state();
         for b in 1..=5u8 {
-            insert(&mut s, b, Lane::EarlyConfirmation, 100 * u64::from(b), feats(1, 1, 1, 1));
+            insert(
+                &mut s,
+                b,
+                Lane::EarlyConfirmation,
+                100 * u64::from(b),
+                feats(1, 1, 1, 1),
+            );
         }
         let cache = PriceCache::new(4, 10);
-        let q = SearchQuery { limit: 2, ..Default::default() };
+        let q = SearchQuery {
+            limit: 2,
+            ..Default::default()
+        };
         assert_eq!(search(&s, &cache, &q, 100).len(), 2);
-        let q0 = SearchQuery { limit: 0, ..Default::default() };
+        let q0 = SearchQuery {
+            limit: 0,
+            ..Default::default()
+        };
         assert!(search(&s, &cache, &q0, 100).is_empty());
     }
 }

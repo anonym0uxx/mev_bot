@@ -17,13 +17,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use pq_stream_capture::signer::{WalletSigner, decode_base58_32};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use pq_stream_capture::signer::{decode_base58_32, WalletSigner};
 
+use crate::audit::AuditEntry;
 use crate::policy::TreasuryPolicy;
 use crate::rpc::HeliusRpc;
-use crate::audit::AuditEntry;
 
 /// A transfer request: destination + amount + purpose.
 #[derive(Debug, Clone)]
@@ -73,9 +73,17 @@ pub enum TransferError {
     /// The destination is not in the whitelist.
     NotWhitelisted(String),
     /// Amount exceeds per-tx limit for this address.
-    ExceedsPerTx { destination: String, requested: u64, max: u64 },
+    ExceedsPerTx {
+        destination: String,
+        requested: u64,
+        max: u64,
+    },
     /// Amount exceeds daily limit for this address.
-    ExceedsDaily { destination: String, requested: u64, max: u64 },
+    ExceedsDaily {
+        destination: String,
+        requested: u64,
+        max: u64,
+    },
     /// Signing failed.
     SignError(String),
     /// RPC submission failed.
@@ -87,10 +95,18 @@ impl std::fmt::Display for TransferError {
         match self {
             Self::InvalidDestination(a) => write!(f, "invalid destination address: {a}"),
             Self::NotWhitelisted(a) => write!(f, "destination {a} is not whitelisted"),
-            Self::ExceedsPerTx { destination, requested, max } => {
+            Self::ExceedsPerTx {
+                destination,
+                requested,
+                max,
+            } => {
                 write!(f, "transfer of {requested} lamports to {destination} exceeds per-tx limit of {max}")
             }
-            Self::ExceedsDaily { destination, requested, max } => {
+            Self::ExceedsDaily {
+                destination,
+                requested,
+                max,
+            } => {
                 write!(f, "transfer of {requested} lamports to {destination} exceeds daily limit of {max}")
             }
             Self::SignError(s) => write!(f, "signing error: {s}"),
@@ -141,7 +157,12 @@ pub fn execute_transfer(
     let dest_bytes = match decode_base58_32(destination) {
         Some(b) => b,
         None => {
-            let entry = AuditEntry::rejected(destination, lamports, "invalid destination address", purpose);
+            let entry = AuditEntry::rejected(
+                destination,
+                lamports,
+                "invalid destination address",
+                purpose,
+            );
             entry.write(audit_path);
             return TransferOutcome::Rejected {
                 reason: format!("invalid destination address: {destination}"),
@@ -155,7 +176,12 @@ pub fn execute_transfer(
     let whitelist = match policy.find_whitelist(destination) {
         Some(entry) => entry,
         None => {
-            let entry = AuditEntry::rejected(destination, lamports, "destination not whitelisted", purpose);
+            let entry = AuditEntry::rejected(
+                destination,
+                lamports,
+                "destination not whitelisted",
+                purpose,
+            );
             entry.write(audit_path);
             return TransferOutcome::Rejected {
                 reason: format!("destination {destination} is not whitelisted"),
@@ -173,10 +199,11 @@ pub fn execute_transfer(
         match codeword {
             Some(cw) if policy.verify_codeword(cw) => {
                 // Codeword correct — proceed.
-            },
+            }
             _ => {
                 let entry = AuditEntry::rejected(
-                    destination, lamports,
+                    destination,
+                    lamports,
                     "codeword required but not provided or incorrect",
                     purpose,
                 );
@@ -186,20 +213,27 @@ pub fn execute_transfer(
                     destination: destination.to_string(),
                     lamports,
                 };
-            },
+            }
         }
     }
 
     // ── Step 3: Check per-tx limit ──
     if lamports > whitelist.max_per_tx_lamports {
         let entry = AuditEntry::rejected(
-            destination, lamports,
-            &format!("exceeds per-tx limit of {} lamports", whitelist.max_per_tx_lamports),
+            destination,
+            lamports,
+            &format!(
+                "exceeds per-tx limit of {} lamports",
+                whitelist.max_per_tx_lamports
+            ),
             purpose,
         );
         entry.write(audit_path);
         return TransferOutcome::Rejected {
-            reason: format!("exceeds per-tx limit of {} lamports", whitelist.max_per_tx_lamports),
+            reason: format!(
+                "exceeds per-tx limit of {} lamports",
+                whitelist.max_per_tx_lamports
+            ),
             destination: destination.to_string(),
             lamports,
         };
@@ -263,15 +297,20 @@ pub fn execute_transfer(
 
     // Account keys
     msg.extend_from_slice(&encode_compact_u16(num_accounts));
-    msg.extend_from_slice(&from_bytes);       // index 0: from (signer, writable)
-    msg.extend_from_slice(&to_bytes);         // index 1: to (writable)
+    msg.extend_from_slice(&from_bytes); // index 0: from (signer, writable)
+    msg.extend_from_slice(&to_bytes); // index 1: to (writable)
     msg.extend_from_slice(&SYSTEM_PROGRAM_ID); // index 2: system program (readonly)
 
     // Recent blockhash — fetched from RPC
     let blockhash = match rpc.get_recent_blockhash() {
         Ok(h) => h,
         Err(e) => {
-            let entry = AuditEntry::failed(destination, lamports, &format!("blockhash fetch: {e}"), purpose);
+            let entry = AuditEntry::failed(
+                destination,
+                lamports,
+                &format!("blockhash fetch: {e}"),
+                purpose,
+            );
             entry.write(audit_path);
             return TransferOutcome::Failed {
                 reason: format!("blockhash fetch failed: {e}"),
@@ -297,7 +336,8 @@ pub fn execute_transfer(
     let signature = match signer.sign(&msg) {
         Ok(sig) => sig,
         Err(e) => {
-            let entry = AuditEntry::failed(destination, lamports, &format!("signing: {e}"), purpose);
+            let entry =
+                AuditEntry::failed(destination, lamports, &format!("signing: {e}"), purpose);
             entry.write(audit_path);
             return TransferOutcome::Failed {
                 reason: format!("signing failed: {e}"),
@@ -321,7 +361,8 @@ pub fn execute_transfer(
     let tx_signature = match rpc.send_transaction(&encoded) {
         Ok(sig) => sig,
         Err(e) => {
-            let entry = AuditEntry::failed(destination, lamports, &format!("RPC submit: {e}"), purpose);
+            let entry =
+                AuditEntry::failed(destination, lamports, &format!("RPC submit: {e}"), purpose);
             entry.write(audit_path);
             return TransferOutcome::Failed {
                 reason: format!("RPC submission failed: {e}"),
@@ -332,12 +373,7 @@ pub fn execute_transfer(
     };
 
     // ── Step 11: Audit log ──
-    let entry = AuditEntry::confirmed(
-        destination,
-        lamports,
-        &tx_signature,
-        purpose,
-    );
+    let entry = AuditEntry::confirmed(destination, lamports, &tx_signature, purpose);
     entry.write(audit_path);
 
     TransferOutcome::Confirmed {

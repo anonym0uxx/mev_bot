@@ -15,7 +15,10 @@ fn temp_path(tag: &str) -> PathBuf {
         .expect("clock after the epoch")
         .as_nanos();
     let mut p = std::env::temp_dir();
-    p.push(format!("pq_tape_{tag}_{}_{nanos}.jsonl", std::process::id()));
+    p.push(format!(
+        "pq_tape_{tag}_{}_{nanos}.jsonl",
+        std::process::id()
+    ));
     let _ = std::fs::remove_file(&p);
     p
 }
@@ -52,24 +55,48 @@ fn writes_reads_back_and_appends_rather_than_truncating() {
     assert!(w.append(&b).expect("append b"));
     assert_eq!(w.records_written(), 2);
     let after_two = w.bytes_written();
-    assert_eq!(after_two, (a.to_jsonl_line().len() + b.to_jsonl_line().len() + 2) as u64);
-    assert_eq!(w.flushed_through(), 0, "nothing claimed durable before flush");
+    assert_eq!(
+        after_two,
+        (a.to_jsonl_line().len() + b.to_jsonl_line().len() + 2) as u64
+    );
+    assert_eq!(
+        w.flushed_through(),
+        0,
+        "nothing claimed durable before flush"
+    );
     w.flush().expect("flush");
     assert_eq!(w.flushed_through(), after_two);
     let size_on_disk = std::fs::metadata(&path).expect("stat").len();
-    assert_eq!(size_on_disk, after_two, "one newline per record, nothing else");
+    assert_eq!(
+        size_on_disk, after_two,
+        "one newline per record, nothing else"
+    );
     drop(w);
 
-    assert_eq!(read_back(&path).expect("read back"), vec![a.clone(), b.clone()]);
+    assert_eq!(
+        read_back(&path).expect("read back"),
+        vec![a.clone(), b.clone()]
+    );
 
     // Session two: opening the same tape APPENDS. The first two records must survive.
     let mut w2 = TapeWriter::open(&path, 1 << 20).expect("reopen");
-    assert_eq!(w2.bytes_written(), after_two, "existing length counts against the cap");
-    assert_eq!(w2.records_written(), 0, "a fresh writer counts only its own records");
+    assert_eq!(
+        w2.bytes_written(),
+        after_two,
+        "existing length counts against the cap"
+    );
+    assert_eq!(
+        w2.records_written(),
+        0,
+        "a fresh writer counts only its own records"
+    );
     let c = rec("Cccc", "capitulation");
     assert!(w2.append(&c).expect("append c"));
     assert_eq!(w2.records_written(), 1);
-    assert_eq!(w2.bytes_written(), after_two + c.to_jsonl_line().len() as u64 + 1);
+    assert_eq!(
+        w2.bytes_written(),
+        after_two + c.to_jsonl_line().len() as u64 + 1
+    );
     w2.flush().expect("flush 2");
     drop(w2);
 
@@ -79,7 +106,10 @@ fn writes_reads_back_and_appends_rather_than_truncating() {
 
     // Every line round-trips through the strict parser.
     for r in &all {
-        assert_eq!(&TapeRecord::from_jsonl_line(&r.to_jsonl_line()).expect("round trip"), r);
+        assert_eq!(
+            &TapeRecord::from_jsonl_line(&r.to_jsonl_line()).expect("round trip"),
+            r
+        );
     }
 
     // The on-disk bytes are exactly the rendered lines, newline-terminated.
@@ -103,16 +133,27 @@ fn byte_cap_refuses_the_record_that_would_cross_it_and_still_takes_a_smaller_one
 
     let small_line = small.to_jsonl_line().len() as u64 + 1;
     let big_line = big.to_jsonl_line().len() as u64 + 1;
-    assert!(big_line >= 2 * small_line, "the test needs a clearly larger record");
+    assert!(
+        big_line >= 2 * small_line,
+        "the test needs a clearly larger record"
+    );
 
     // Room for exactly one small record, not for the big one, not for a second small one.
     let cap = 2 * small_line - 1;
     let mut w = TapeWriter::open(&path, cap).expect("open");
 
-    assert_eq!(w.append(&big).expect("append big"), false, "big record must be refused");
+    assert_eq!(
+        w.append(&big).expect("append big"),
+        false,
+        "big record must be refused"
+    );
     assert_eq!(w.records_written(), 0);
     assert_eq!(w.bytes_written(), 0);
-    assert_eq!(std::fs::metadata(&path).expect("stat").len(), 0, "a refusal writes nothing");
+    assert_eq!(
+        std::fs::metadata(&path).expect("stat").len(),
+        0,
+        "a refusal writes nothing"
+    );
 
     assert!(w.append(&small).expect("append small"), "small record fits");
     assert_eq!(w.bytes_written(), small_line);
@@ -158,9 +199,18 @@ fn quotes_backslashes_newlines_and_non_ascii_round_trip_byte_exactly() {
     assert!(line.contains("\\\""), "quotes are escaped");
     assert!(line.contains("\\\\"), "backslashes are escaped");
     assert!(line.contains("\\n"), "newlines are escaped");
-    assert!(line.contains("\\u0001"), "low control bytes are \\u-escaped");
-    assert!(line.contains("\\b") && line.contains("\\f"), "short forms used where JSON has them");
-    assert!(line.contains("Ω𐍈✅日本語"), "non-ASCII passes through unescaped");
+    assert!(
+        line.contains("\\u0001"),
+        "low control bytes are \\u-escaped"
+    );
+    assert!(
+        line.contains("\\b") && line.contains("\\f"),
+        "short forms used where JSON has them"
+    );
+    assert!(
+        line.contains("Ω𐍈✅日本語"),
+        "non-ASCII passes through unescaped"
+    );
 
     // The line is a single physical line and round-trips byte for byte.
     let mut w = TapeWriter::open(&path, 1 << 20).expect("open");

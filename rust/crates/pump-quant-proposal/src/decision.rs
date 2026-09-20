@@ -196,8 +196,14 @@ pub fn render_curve(c: &CurveState) -> String {
             pe = if *pricing_eligible { "true" } else { "false" },
             vt = v_tokens_reserves,
             rt = real_tokens_reserves,
-            vs = py_fixed(*v_sol_reserves_lamports as f64 / crate::cost::LAMPORTS_PER_SOL, 9),
-            rs = py_fixed(*real_sol_reserves_lamports as f64 / crate::cost::LAMPORTS_PER_SOL, 9),
+            vs = py_fixed(
+                *v_sol_reserves_lamports as f64 / crate::cost::LAMPORTS_PER_SOL,
+                9
+            ),
+            rs = py_fixed(
+                *real_sol_reserves_lamports as f64 / crate::cost::LAMPORTS_PER_SOL,
+                9
+            ),
             pr = py_fixed(*curve_price_sol_per_raw_token, 18),
             prog = py_fixed(*curve_progress, 6),
         ),
@@ -345,7 +351,11 @@ pub fn render_decision(b: &DecisionBundle) -> String {
         "\n\nChoose exactly one action: BUY, WATCH, SKIP. Respect the stated round-trip cost. \
          Answer in the fixed format.\n",
     );
-    let regime = if b.size_amm { Regime::Amm } else { Regime::BondingCurve };
+    let regime = if b.size_amm {
+        Regime::Amm
+    } else {
+        Regime::BondingCurve
+    };
     out.push_str(&size_options(regime, b.size_depth_sol, false));
     out.push('\n');
     out
@@ -409,11 +419,18 @@ mod tests {
                 volume_sol_at_t: PyNum::Float(0.0),
                 wash_ratio: PyNum::Float(0.0),
             },
-            dev: DevHistoryDecision { creator_past_launches: None, creator_known: 0 },
+            dev: DevHistoryDecision {
+                creator_past_launches: None,
+                creator_known: 0,
+            },
             flow: flow(),
             flow_no_prior: false,
-            curve: CurveState::Absent { reason: "no_reserves".into() },
-            amm: AmmState::Absent { reason: "no_pool".into() },
+            curve: CurveState::Absent {
+                reason: "no_reserves".into(),
+            },
+            amm: AmmState::Absent {
+                reason: "no_pool".into(),
+            },
             size_depth_sol: None,
             size_amm: false,
         };
@@ -421,7 +438,10 @@ mod tests {
         assert!(s.contains("ret_5s_bp=n/a"), "{s}");
         assert!(s.contains("buyer_seller_ratio=n/a"), "{s}");
         assert!(s.contains("mcap_sol_at_t=na mcap_source=curve"), "{s}");
-        assert!(s.contains("creator_past_launches=unknown creator_known=0"), "{s}");
+        assert!(
+            s.contains("creator_past_launches=unknown creator_known=0"),
+            "{s}"
+        );
         assert!(s.contains("price_lamports_per_raw_token=absent reason=no_supplied_price"));
         assert!(s.contains("curve_reserves=absent reason=no_reserves"));
         assert!(s.contains("amm_reserves=absent reason=no_pool"));

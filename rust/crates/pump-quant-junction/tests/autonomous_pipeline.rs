@@ -7,16 +7,15 @@
 //! This test does NOT require network connectivity. It uses synthetic trade
 //! data that mimics what pq-daemon would produce during a real paper session.
 
-use pump_quant_junction::tape_export::{TapeExporter, TapeRecord, TapeLane};
-use pump_quant_junction::trade_journal::{
-    JournalConfig, TradeJournal, TradeRecord, TradeOutcome, TradeSide, RunMode,
-};
-use pump_quant_junction::ProvenanceSource;
 use pump_quant_execution::ex_promotion_gate::{
-    PaperEvidence, PromotionCriteria, evaluate,
-    PaperEnvelopeEvidence, derive_envelope,
+    derive_envelope, evaluate, PaperEnvelopeEvidence, PaperEvidence, PromotionCriteria,
     PromotionVerdict,
 };
+use pump_quant_junction::tape_export::{TapeExporter, TapeLane, TapeRecord};
+use pump_quant_junction::trade_journal::{
+    JournalConfig, RunMode, TradeJournal, TradeOutcome, TradeRecord, TradeSide,
+};
+use pump_quant_junction::ProvenanceSource;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Test helpers
@@ -57,8 +56,8 @@ fn make_trade(
         error_code: 0,
         seq: slot,
         lane: None,
-            mfe_bps: 0,
-            mae_bps: 0,
+        mfe_bps: 0,
+        mae_bps: 0,
     }
 }
 
@@ -162,8 +161,8 @@ fn step1_tape_export_from_trade_journal() {
     exporter.flush().expect("tape flush should succeed");
 
     // Read back and verify
-    let jsonl = std::fs::read_to_string("data/test_tape_step1.jsonl")
-        .expect("tape file should exist");
+    let jsonl =
+        std::fs::read_to_string("data/test_tape_step1.jsonl").expect("tape file should exist");
     let lines: Vec<&str> = jsonl.lines().filter(|l| !l.is_empty()).collect();
     assert_eq!(lines.len(), 25);
 
@@ -176,16 +175,19 @@ fn step1_tape_export_from_trade_journal() {
 
 #[test]
 fn step2_promotion_gate_passes_on_good_paper() {
-    let pnls: Vec<i64> = (0..150).map(|i| {
-        if i < 120 { 50_000 } else { -30_000 }
-    }).collect();
+    let pnls: Vec<i64> = (0..150)
+        .map(|i| if i < 120 { 50_000 } else { -30_000 })
+        .collect();
 
     let evidence = build_paper_evidence(&pnls, 200_000, 150, 150, 100_000, 50);
     let criteria = PromotionCriteria::conservative();
     let report = evaluate(&evidence, &criteria);
 
-    assert_eq!(report.verdict, PromotionVerdict::Promote,
-        "promotion gate should pass on 150 trades with positive net PnL");
+    assert_eq!(
+        report.verdict,
+        PromotionVerdict::Promote,
+        "promotion gate should pass on 150 trades with positive net PnL"
+    );
 }
 
 #[test]
@@ -195,8 +197,10 @@ fn step2_promotion_gate_refuses_on_insufficient_sample() {
     let criteria = PromotionCriteria::conservative();
     let report = evaluate(&evidence, &criteria);
 
-    assert!(matches!(report.verdict, PromotionVerdict::Refuse(_)),
-        "promotion gate should refuse on <100 closed positions");
+    assert!(
+        matches!(report.verdict, PromotionVerdict::Refuse(_)),
+        "promotion gate should refuse on <100 closed positions"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -266,21 +270,22 @@ fn step4_full_pipeline_tape_to_gate_to_envelope() {
 
     // ── Step 1: Flush tape ────────────────────────────────────────────────
     exporter.flush().expect("tape should flush");
-    let tape_content = std::fs::read_to_string("data/test_tape_step4.jsonl")
-        .expect("tape file should exist");
+    let tape_content =
+        std::fs::read_to_string("data/test_tape_step4.jsonl").expect("tape file should exist");
     let tape_lines: Vec<&str> = tape_content.lines().filter(|l| !l.is_empty()).collect();
     assert_eq!(tape_lines.len(), 150, "tape should have 150 trade records");
 
     // ── Step 2: Build paper evidence from the trades ─────────────────────
-    let paper_evidence = build_paper_evidence(
-        &pnls, 200_000, 150, 150, 100_000, 50,
-    );
+    let paper_evidence = build_paper_evidence(&pnls, 200_000, 150, 150, 100_000, 50);
 
     // ── Step 3: Run the promotion gate ───────────────────────────────────
     let criteria = PromotionCriteria::conservative();
     let report = evaluate(&paper_evidence, &criteria);
-    assert_eq!(report.verdict, PromotionVerdict::Promote,
-        "gate should promote: 150 trades, positive net, t^2 > 4, fill rate 100%");
+    assert_eq!(
+        report.verdict,
+        PromotionVerdict::Promote,
+        "gate should promote: 150 trades, positive net, t^2 > 4, fill rate 100%"
+    );
 
     // ── Step 4: Derive the envelope from paper evidence ──────────────────
     let env_evidence = PaperEnvelopeEvidence {
@@ -323,7 +328,7 @@ fn step5_refused_promotion_yields_closed_envelope() {
             pump_quant_execution::ex_promotion_gate::RefusalReason::SampleTooSmall {
                 closed: 50,
                 required: 100,
-            }
+            },
         ),
         max_drawdown_lamports: 500_000,
         closed_positions: 50,
@@ -338,7 +343,10 @@ fn step5_refused_promotion_yields_closed_envelope() {
     };
 
     let envelope = derive_envelope(&env_evidence);
-    assert!(!envelope.admits_anything(), "refused promotion must yield closed envelope");
+    assert!(
+        !envelope.admits_anything(),
+        "refused promotion must yield closed envelope"
+    );
     assert_eq!(envelope.max_position_lamports, 0);
 }
 
@@ -371,13 +379,16 @@ fn step6_tape_jsonl_roundtrip() {
     assert_eq!(exporter.pending_count(), 10);
     exporter.flush().expect("flush should succeed");
 
-    let content = std::fs::read_to_string("data/test_tape_roundtrip.jsonl")
-        .expect("file should exist");
+    let content =
+        std::fs::read_to_string("data/test_tape_roundtrip.jsonl").expect("file should exist");
     let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
     assert_eq!(lines.len(), 10, "should have 10 JSONL lines");
 
     for line in &lines {
-        assert!(line.contains("\"kind\""), "each line should have a kind field");
+        assert!(
+            line.contains("\"kind\""),
+            "each line should have a kind field"
+        );
         assert!(
             line.contains("\"trade_full\"") || line.contains("\"trade\""),
             "each line should be a trade record (kind=trade or kind=trade_full)"
@@ -417,11 +428,23 @@ fn step7_envelope_never_exceeds_paper_capacity() {
 
         let envelope = derive_envelope(&env_evidence);
 
-        assert!(envelope.max_position_lamports <= *max_win,
-            "position {} > paper max {}", envelope.max_position_lamports, max_win);
-        assert!(envelope.max_total_deployed_lamports <= *peak_dep,
-            "deployed {} > paper peak {}", envelope.max_total_deployed_lamports, peak_dep);
-        assert!(envelope.max_open_positions <= *peak_conc,
-            "open {} > paper peak {}", envelope.max_open_positions, peak_conc);
+        assert!(
+            envelope.max_position_lamports <= *max_win,
+            "position {} > paper max {}",
+            envelope.max_position_lamports,
+            max_win
+        );
+        assert!(
+            envelope.max_total_deployed_lamports <= *peak_dep,
+            "deployed {} > paper peak {}",
+            envelope.max_total_deployed_lamports,
+            peak_dep
+        );
+        assert!(
+            envelope.max_open_positions <= *peak_conc,
+            "open {} > paper peak {}",
+            envelope.max_open_positions,
+            peak_conc
+        );
     }
 }

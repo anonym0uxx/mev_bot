@@ -175,7 +175,12 @@ pub fn compute_dsr(cfg: &DsrConfig) -> DsrResult {
     let var_bps2 = if cfg.sr_variance_bps2 != 0 {
         cfg.sr_variance_bps2
     } else {
-        sr_variance_bps(cfg.skewness_bps, cfg.kurtosis_bps, cfg.sharpe_observed_bps, cfg.n_returns)
+        sr_variance_bps(
+            cfg.skewness_bps,
+            cfg.kurtosis_bps,
+            cfg.sharpe_observed_bps,
+            cfg.n_returns,
+        )
     };
 
     if var_bps2 <= 0 {
@@ -313,13 +318,17 @@ mod tests {
             n_returns: 50,
             sharpe_observed_bps: 30_000, // SR = 3.0
             skewness_bps: 0,
-            kurtosis_bps: 0,    // normal distribution → excess kurtosis = 0
+            kurtosis_bps: 0, // normal distribution → excess kurtosis = 0
             sr_variance_bps2: 0,
         };
         let result = compute_dsr(&cfg);
         // SR=3.0, expected max ≈1.49, variance = (1 + 2*9/4)/50 = (1+4.5)/50 = 0.11
         // std = 0.33, DSR = (3.0 - 1.49)/0.33 ≈ 4.58 → should pass
-        assert!(result.passed, "SR=3.0 with 10 trials should pass DSR (DSR={})", result.dsr_bps);
+        assert!(
+            result.passed,
+            "SR=3.0 with 10 trials should pass DSR (DSR={})",
+            result.dsr_bps
+        );
         assert_eq!(result.verdict, DsrVerdict::Significant);
     }
 
@@ -360,11 +369,19 @@ mod tests {
         let r1 = compute_dsr(&cfg_symmetric);
         let r2 = compute_dsr(&cfg_neg_skew);
         // Negative skew + heavy tails increases Var(SR), reducing DSR
-        assert!(r2.sr_variance_bps2 > r1.sr_variance_bps2,
-            "negative skew + heavy tails should increase variance (r1={}, r2={})", r1.sr_variance_bps2, r2.sr_variance_bps2);
+        assert!(
+            r2.sr_variance_bps2 > r1.sr_variance_bps2,
+            "negative skew + heavy tails should increase variance (r1={}, r2={})",
+            r1.sr_variance_bps2,
+            r2.sr_variance_bps2
+        );
         // DSR is (SR - SR_max) / sqrt(Var(SR)). Higher variance → lower DSR.
-        assert!(r2.dsr_bps <= r1.dsr_bps,
-            "negative skew should reduce DSR (r1={}, r2={})", r1.dsr_bps, r2.dsr_bps);
+        assert!(
+            r2.dsr_bps <= r1.dsr_bps,
+            "negative skew should reduce DSR (r1={}, r2={})",
+            r1.dsr_bps,
+            r2.dsr_bps
+        );
     }
 
     #[test]
@@ -379,10 +396,17 @@ mod tests {
     #[test]
     fn sharpe_from_mixed_returns() {
         // Uniform symmetric distribution centered at 0
-        let returns: Vec<i64> = (0..50).map(|i| ((i as i64 - 24) * 10_000) - 50_000).collect();
+        let returns: Vec<i64> = (0..50)
+            .map(|i| ((i as i64 - 24) * 10_000) - 50_000)
+            .collect();
         // Actually just use a perfectly symmetric set: [-24,-23,...,-1,0,1,...,24,0]
-        let returns: Vec<i64> = (-25..=24).map(|i| i * 10_000).collect::<Vec<_>>()
-            .iter().chain(std::iter::once(&0i64)).cloned().collect();
+        let returns: Vec<i64> = (-25..=24)
+            .map(|i| i * 10_000)
+            .collect::<Vec<_>>()
+            .iter()
+            .chain(std::iter::once(&0i64))
+            .cloned()
+            .collect();
         let (sr, skew, kurt) = sharpe_from_returns(&returns);
         // Mean of (-25..24 + 0) = -25+24+0 = -1 → mean = -10 → SR is slightly negative
         // Let's use a truly symmetric set instead
@@ -399,23 +423,26 @@ mod tests {
     fn sharpe_from_profitable_returns() {
         // Consistently profitable with some variance — symmetric distribution
         let returns: Vec<i64> = vec![
-            100_000, 150_000, 80_000, 120_000, 200_000,
-            90_000, 110_000, 180_000, 75_000, 160_000,
-            100_000, 130_000, 85_000, 140_000, 170_000,
-            95_000, 115_000, 125_000, 135_000, 105_000,
-            100_000, 150_000, 80_000, 120_000, 200_000,
-            90_000, 110_000, 180_000, 75_000, 160_000,
-            100_000, 130_000, 85_000, 140_000, 170_000,
-            95_000, 115_000, 125_000, 135_000, 105_000,
-            100_000, 150_000, 80_000, 120_000, 200_000,
-            90_000, 110_000, 180_000, 75_000, 160_000,
+            100_000, 150_000, 80_000, 120_000, 200_000, 90_000, 110_000, 180_000, 75_000, 160_000,
+            100_000, 130_000, 85_000, 140_000, 170_000, 95_000, 115_000, 125_000, 135_000, 105_000,
+            100_000, 150_000, 80_000, 120_000, 200_000, 90_000, 110_000, 180_000, 75_000, 160_000,
+            100_000, 130_000, 85_000, 140_000, 170_000, 95_000, 115_000, 125_000, 135_000, 105_000,
+            100_000, 150_000, 80_000, 120_000, 200_000, 90_000, 110_000, 180_000, 75_000, 160_000,
         ];
         let (sr, skew, kurt) = sharpe_from_returns(&returns);
         assert!(sr > 0, "consistently profitable → positive SR (sr={})", sr);
         // Skew tolerance: this is not perfectly symmetric, allow ±15k bps
-        assert!(skew.abs() < 15_000, "skew should be moderate (skew={})", skew);
+        assert!(
+            skew.abs() < 15_000,
+            "skew should be moderate (skew={})",
+            skew
+        );
         // Kurtosis tolerance: allow ±20k bps for this distribution
-        assert!(kurt.abs() < 20_000, "kurtosis should be moderate (kurt={})", kurt);
+        assert!(
+            kurt.abs() < 20_000,
+            "kurtosis should be moderate (kurt={})",
+            kurt
+        );
     }
 
     #[test]
@@ -436,7 +463,10 @@ mod tests {
         // SR=1.5 < 2.63 → should be inflated (DSR < 0)
         // This matches Bailey/LdP's finding that SR=1.5 is not significant
         // when testing 100 strategies
-        assert!(!result.passed, "Bailey/LdP: SR=1.5 with 100 trials is inflated");
+        assert!(
+            !result.passed,
+            "Bailey/LdP: SR=1.5 with 100 trials is inflated"
+        );
         assert_eq!(result.verdict, DsrVerdict::Inflated);
     }
 }

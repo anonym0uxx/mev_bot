@@ -103,13 +103,19 @@ impl Committee {
     /// Create a new empty committee.
     #[must_use]
     pub fn new() -> Self {
-        Self { members: Vec::new() }
+        Self {
+            members: Vec::new(),
+        }
     }
 
     /// Add a member to the committee.
     pub fn add_member(&mut self, member: Member) {
         // Replace if already exists (same strategy_type_id)
-        if let Some(existing) = self.members.iter_mut().find(|m| m.strategy_type_id == member.strategy_type_id) {
+        if let Some(existing) = self
+            .members
+            .iter_mut()
+            .find(|m| m.strategy_type_id == member.strategy_type_id)
+        {
             *existing = member;
         } else {
             self.members.push(member);
@@ -136,10 +142,13 @@ impl Committee {
                 continue;
             }
             // Find the vote for this member
-            let vote = votes.iter().find(|v| v.strategy_type_id == member.strategy_type_id);
+            let vote = votes
+                .iter()
+                .find(|v| v.strategy_type_id == member.strategy_type_id);
             match vote {
                 Some(v) => {
-                    let weighted_confidence = (v.confidence_bps as u64 * member.weight_bps as u64) / 10_000;
+                    let weighted_confidence =
+                        (v.confidence_bps as u64 * member.weight_bps as u64) / 10_000;
                     match v.decision {
                         VoteDecision::Yes => {
                             yes_weight += member.weight_bps;
@@ -237,8 +246,16 @@ mod tests {
         });
         // 1 yes, 1 no -> tie, no majority
         let votes = vec![
-            MemberVote { strategy_type_id: 0, decision: VoteDecision::Yes, confidence_bps: 8_000 },
-            MemberVote { strategy_type_id: 1, decision: VoteDecision::No, confidence_bps: 7_000 },
+            MemberVote {
+                strategy_type_id: 0,
+                decision: VoteDecision::Yes,
+                confidence_bps: 8_000,
+            },
+            MemberVote {
+                strategy_type_id: 1,
+                decision: VoteDecision::No,
+                confidence_bps: 7_000,
+            },
         ];
         let verdict = committee.vote(&votes);
         assert!(!verdict.execute);
@@ -260,8 +277,16 @@ mod tests {
             lifecycle_stage: LifecycleStage::ShadowValidated,
         });
         let votes = vec![
-            MemberVote { strategy_type_id: 0, decision: VoteDecision::Yes, confidence_bps: 9_000 },
-            MemberVote { strategy_type_id: 1, decision: VoteDecision::No, confidence_bps: 9_000 },
+            MemberVote {
+                strategy_type_id: 0,
+                decision: VoteDecision::Yes,
+                confidence_bps: 9_000,
+            },
+            MemberVote {
+                strategy_type_id: 1,
+                decision: VoteDecision::No,
+                confidence_bps: 9_000,
+            },
         ];
         let verdict = committee.vote(&votes);
         assert!(verdict.execute);

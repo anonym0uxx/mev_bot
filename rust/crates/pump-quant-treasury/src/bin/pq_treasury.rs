@@ -16,8 +16,8 @@
 //! This binary is run BY ALON, not by the agent. The agent does not have
 //! access to PQ_KEYPAIR_PATH or the keypair file.
 
-use std::path::PathBuf;
 use std::env;
+use std::path::PathBuf;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -37,7 +37,8 @@ fn main() {
         &wallet_address,
         &PathBuf::from(&policy_path),
         &PathBuf::from(&audit_path),
-    ).unwrap_or_else(|e| {
+    )
+    .unwrap_or_else(|e| {
         eprintln!("FATAL: failed to load treasury: {e}");
         std::process::exit(1);
     });
@@ -59,7 +60,10 @@ fn main() {
 
             println!("Wallet: {}", treasury.wallet_address());
             println!("Destination: {destination}");
-            println!("Amount: {lamports} lamports ({} SOL)", lamports as f64 / 1e9);
+            println!(
+                "Amount: {lamports} lamports ({} SOL)",
+                lamports as f64 / 1e9
+            );
             println!("Purpose: {purpose}");
             println!();
 
@@ -115,7 +119,10 @@ fn main() {
             match rpc.get_balance(addr) {
                 Ok(lamports) => {
                     println!("Wallet: {addr}");
-                    println!("Balance: {lamports} lamports ({} SOL)", lamports as f64 / 1e9);
+                    println!(
+                        "Balance: {lamports} lamports ({} SOL)",
+                        lamports as f64 / 1e9
+                    );
                 }
                 Err(e) => {
                     eprintln!("Failed to get balance: {e}");
@@ -127,16 +134,37 @@ fn main() {
         "policy-check" => {
             println!("Wallet: {}", treasury.wallet_address());
             println!("Policy loaded successfully.");
-            println!("  Auto-max: {} lamports", treasury.policy().limits.auto_max_lamports);
-            println!("  Approval threshold: {} lamports", treasury.policy().limits.approval_threshold_lamports);
-            println!("  Time-lock: {}s", treasury.policy().limits.time_lock_seconds);
-            println!("  Daily cap: {} lamports", treasury.policy().limits.daily_cap_lamports);
-            println!("  Codeword gate: {}", if treasury.policy().has_codeword() { "ENABLED" } else { "disabled" });
+            println!(
+                "  Auto-max: {} lamports",
+                treasury.policy().limits.auto_max_lamports
+            );
+            println!(
+                "  Approval threshold: {} lamports",
+                treasury.policy().limits.approval_threshold_lamports
+            );
+            println!(
+                "  Time-lock: {}s",
+                treasury.policy().limits.time_lock_seconds
+            );
+            println!(
+                "  Daily cap: {} lamports",
+                treasury.policy().limits.daily_cap_lamports
+            );
+            println!(
+                "  Codeword gate: {}",
+                if treasury.policy().has_codeword() {
+                    "ENABLED"
+                } else {
+                    "disabled"
+                }
+            );
             println!("  Whitelisted addresses:");
             for entry in &treasury.policy().whitelist {
                 println!("    {} ({})", entry.address, entry.label);
-                println!("      per-tx: {} lamports, daily: {} lamports",
-                         entry.max_per_tx_lamports, entry.max_daily_lamports);
+                println!(
+                    "      per-tx: {} lamports, daily: {} lamports",
+                    entry.max_per_tx_lamports, entry.max_daily_lamports
+                );
             }
         }
 

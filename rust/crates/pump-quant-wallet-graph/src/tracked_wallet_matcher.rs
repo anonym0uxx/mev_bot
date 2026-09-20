@@ -89,7 +89,8 @@ impl TrackedWalletMatcher {
     pub fn insert(&mut self, pubkey: [u8; 32], name: String, tier: TrackedWalletTier) {
         let entity_id = wallet_entity_id(&pubkey);
         self.entity_ids.insert(entity_id, tier);
-        self.map.insert(pubkey, TrackedWalletInfo { pubkey, name, tier });
+        self.map
+            .insert(pubkey, TrackedWalletInfo { pubkey, name, tier });
     }
 
     /// O(1) check: is this pubkey in the tracked list?
@@ -171,10 +172,7 @@ mod tests {
 
     #[test]
     fn test_entity_id_distinct() {
-        assert_ne!(
-            wallet_entity_id(&[0x42; 32]),
-            wallet_entity_id(&[0x43; 32])
-        );
+        assert_ne!(wallet_entity_id(&[0x42; 32]), wallet_entity_id(&[0x43; 32]));
     }
 
     #[test]

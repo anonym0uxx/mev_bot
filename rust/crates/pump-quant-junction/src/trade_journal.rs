@@ -215,13 +215,28 @@ impl TradeRecord {
         s.push_str(&format!(",\"outcome\":\"{}\"", self.outcome.tag()));
         s.push_str(&format!(",\"pnl_lamports\":{}", self.realized_pnl_lamports));
         s.push_str(&format!(",\"fees_lamports\":{}", self.fees_lamports));
-        s.push_str(&format!(",\"slippage_lamports\":{}", self.slippage_lamports));
-        s.push_str(&format!(",\"decision_latency_us\":{}", self.decision_latency_us));
-        s.push_str(&format!(",\"confirm_latency_us\":{}", self.confirm_latency_us));
+        s.push_str(&format!(
+            ",\"slippage_lamports\":{}",
+            self.slippage_lamports
+        ));
+        s.push_str(&format!(
+            ",\"decision_latency_us\":{}",
+            self.decision_latency_us
+        ));
+        s.push_str(&format!(
+            ",\"confirm_latency_us\":{}",
+            self.confirm_latency_us
+        ));
         s.push_str(&format!(",\"submit_call_us\":{}", self.submit_call_us));
         s.push_str(&format!(",\"submit_rpc_us\":{}", self.submit_rpc_us));
-        s.push_str(&format!(",\"exit_submit_call_us\":{}", self.exit_submit_call_us));
-        s.push_str(&format!(",\"exit_submit_rpc_us\":{}", self.exit_submit_rpc_us));
+        s.push_str(&format!(
+            ",\"exit_submit_call_us\":{}",
+            self.exit_submit_call_us
+        ));
+        s.push_str(&format!(
+            ",\"exit_submit_rpc_us\":{}",
+            self.exit_submit_rpc_us
+        ));
         s.push_str(&format!(",\"run_mode\":\"{}\"", self.run_mode.tag()));
         s.push_str(&format!(",\"error_code\":{}", self.error_code));
         s.push_str(&format!(",\"seq\":{}", self.seq));
@@ -276,7 +291,9 @@ pub struct JournalConfig {
 impl Default for JournalConfig {
     fn default() -> Self {
         // 10_000 trades is ~1.2 MB in-memory — generous for a scalp bot.
-        Self { max_records: 10_000 }
+        Self {
+            max_records: 10_000,
+        }
     }
 }
 
@@ -338,8 +355,8 @@ impl TradeJournal {
     /// Overwrites the file if it exists. Returns the number of lines written.
     pub fn flush_jsonl(&self, path: &str) -> Result<usize, String> {
         use std::io::Write;
-        let mut file = std::fs::File::create(path)
-            .map_err(|e| format!("flush_jsonl: create {path}: {e}"))?;
+        let mut file =
+            std::fs::File::create(path).map_err(|e| format!("flush_jsonl: create {path}: {e}"))?;
         let mut count = 0usize;
         for rec in &self.records {
             let line = format!("{}\n", rec.to_jsonl());
@@ -398,7 +415,14 @@ impl TradeJournal {
     /// Get the last N records (most recent), for the memory bank's rolling window.
     pub fn last_n(&self, n: usize) -> Vec<&TradeRecord> {
         let n = n.min(self.records.len());
-        self.records.iter().rev().take(n).collect::<Vec<_>>().into_iter().rev().collect()
+        self.records
+            .iter()
+            .rev()
+            .take(n)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
     }
 }
 
@@ -579,7 +603,10 @@ mod tests {
         assert_eq!(rec_paper.slot, rec_live.slot);
         assert_eq!(rec_paper.mint_b58, rec_live.mint_b58);
         assert_eq!(rec_paper.entry_price_fp, rec_live.entry_price_fp);
-        assert_eq!(rec_paper.realized_pnl_lamports, rec_live.realized_pnl_lamports);
+        assert_eq!(
+            rec_paper.realized_pnl_lamports,
+            rec_live.realized_pnl_lamports
+        );
         assert_eq!(rec_paper.net_lamports(), rec_live.net_lamports());
         assert_ne!(rec_paper.run_mode, rec_live.run_mode);
     }

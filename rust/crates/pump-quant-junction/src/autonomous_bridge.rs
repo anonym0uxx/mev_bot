@@ -20,8 +20,8 @@ use std::process::Command;
 
 use pump_quant_app::config::Config;
 use pump_quant_evaluator::defense_in_depth::{
-    CircuitBreakerConfig, CircuitBreakerState, CliffVetoConfig,
-    DefenseVerdict, KillSwitch, evaluate_defense,
+    evaluate_defense, CircuitBreakerConfig, CircuitBreakerState, CliffVetoConfig, DefenseVerdict,
+    KillSwitch,
 };
 use pump_quant_evaluator::evaluator_state::LifecycleStage;
 
@@ -121,7 +121,9 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
     };
 
     // Use modified timestamp (seconds since epoch on Windows via std::fs::Metadata)
-    let mtime = metadata.modified().ok()
+    let mtime = metadata
+        .modified()
+        .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
         .unwrap_or(0);
@@ -186,9 +188,7 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
             }
             Err(e) => {
                 apply_errors.push(format!("{name}={to_val}: {e}"));
-                eprintln!(
-                    "[autonomous-bridge] config apply FAILED for {name}={to_val}: {e}"
-                );
+                eprintln!("[autonomous-bridge] config apply FAILED for {name}={to_val}: {e}");
             }
         }
     }
@@ -368,9 +368,7 @@ impl DefenseState {
             .breaker_state
             .record_trade(profitable, cycle, &self.breaker_config);
         if tripped {
-            eprintln!(
-                "[autonomous-bridge] CIRCUIT BREAKER TRIPPED at cycle {cycle}"
-            );
+            eprintln!("[autonomous-bridge] CIRCUIT BREAKER TRIPPED at cycle {cycle}");
         }
     }
 
@@ -690,13 +688,19 @@ pub fn read_auto_revert_state() -> Option<AutoRevertState> {
     };
     Some(AutoRevertState {
         promoted_fingerprint: u64::from_str_radix(
-            extract("promoted_fingerprint")?.trim_start_matches('\"').trim_end_matches('\"'),
+            extract("promoted_fingerprint")?
+                .trim_start_matches('\"')
+                .trim_end_matches('\"'),
             16,
-        ).ok()?,
+        )
+        .ok()?,
         prior_champion_fingerprint: u64::from_str_radix(
-            extract("prior_champion_fingerprint")?.trim_start_matches('\"').trim_end_matches('\"'),
+            extract("prior_champion_fingerprint")?
+                .trim_start_matches('\"')
+                .trim_end_matches('\"'),
             16,
-        ).ok()?,
+        )
+        .ok()?,
         pnl_at_promotion: extract("pnl_at_promotion")?.parse().ok()?,
         ticks_since_promotion: extract("ticks_since_promotion")?.parse().ok()?,
         trades_at_promotion: extract("trades_at_promotion")
@@ -739,9 +743,8 @@ pub fn check_auto_revert(
 
     // Compute the variance-based threshold: max(FLOOR, k × σ × √n)
     let n = trades_since_promotion as f64;
-    let dynamic_threshold = (AUTO_REVERT_CONFIDENCE_K
-        * AUTO_REVERT_PER_TRADE_SIGMA_LAMPORTS
-        * n.sqrt()) as i128;
+    let dynamic_threshold =
+        (AUTO_REVERT_CONFIDENCE_K * AUTO_REVERT_PER_TRADE_SIGMA_LAMPORTS * n.sqrt()) as i128;
     let threshold = AUTO_REVERT_DRAWDOWN_FLOOR_LAMPORTS.max(dynamic_threshold);
 
     // Check deterioration: has PnL dropped below the threshold?
@@ -864,7 +867,9 @@ pub fn refiner_running() -> bool {
         Ok(m) => m,
         Err(_) => return false,
     };
-    let mtime = metadata.modified().ok()
+    let mtime = metadata
+        .modified()
+        .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
         .unwrap_or(0);
@@ -939,7 +944,7 @@ mod tests {
         // We need DD > 1 SOL to trigger the veto.
         let mut ds = DefenseState::with_bankroll(2_000_000_000); // 2 SOL
         ds.update_drawdown(2_000_000_000); // peak at 2 SOL
-        ds.update_drawdown(500_000_000);   // DD of 1.5 SOL > 1 SOL threshold
+        ds.update_drawdown(500_000_000); // DD of 1.5 SOL > 1 SOL threshold
         assert!(!ds.trading_allowed());
     }
 

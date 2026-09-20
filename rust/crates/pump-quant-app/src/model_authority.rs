@@ -30,12 +30,14 @@
 //! Every refusal is typed, so telemetry can count causes instead of parsing log text.
 
 use pump_quant_inference::seam::{
-    management_base, management_fraction_bps, parse_decision_payload, resolve_entry_clip_lamports,
-    route, Decision, ManagementBase,
-    DriftLedger, OffContract, Route, SizeError, SizeTier, DEPLOY_LAMPORTS_CANONICAL,
-    FEE_BUFFER_LAMPORTS,
+    management_base, management_fraction_bps, parse_decision_payload, route, Decision, DriftLedger,
+    ManagementBase, OffContract, Route, SizeError, SizeTier, FEE_BUFFER_LAMPORTS,
 };
-use pump_quant_inference::{EntryVenue, InferenceClient, InferenceError};
+use pump_quant_inference::{
+    resolve_clip_at_fraction_bps, EntryVenue, InferenceClient, InferenceError,
+};
+
+use crate::portfolio::{Admission, AdmissionRefusal, PortfolioCap};
 
 /// Anything that can answer a completion request — the live llama-server client, or a
 /// stub in tests. Kept as a trait so the authority logic is testable without a model.
@@ -64,6 +66,12 @@ pub struct EntryRequest<'a> {
     pub bankroll_floor_lamports: u64,
     /// The venue this candidate would trade on — the row meta the ruled size policy reads.
     pub venue: EntryVenue,
+    /// The mint under consideration — what "one position per mint episode" is keyed on.
+    pub mint: [u8; 32],
+    /// The mints with a live position right now: the portfolio layer's whole view.
+    pub live_mints: &'a std::collections::BTreeSet<[u8; 32]>,
+    /// The portfolio-layer cap in force for this decision.
+    pub portfolio: PortfolioCap,
 }
 
 /// What the authority concluded. `Buy` is the only variant that may move capital.
@@ -100,6 +108,9 @@ pub enum NoTradeReason {
     /// The entry prompt was answered with a management verb (ADD/REDUCE/EXIT) — a routing
     /// error by the caller, not an entry decision.
     ManagementVerb,
+    /// The portfolio layer refused: the mint already has a live position, or the concurrency
+    /// cap is reached (`KELLY_AUDIT_C12`'s exposure control).
+    Portfolio(AdmissionRefusal),
 }
 
 /// Ask the model, then resolve and veto. The single entry point of R3.
@@ -129,6 +140,13 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
 
     match route(decision.action) {
         Route::Open => {
+            // Portfolio layer first (`KELLY_AUDIT_C12`): whether there is ROOM is a question
+            // about the book, not about the completion. Checked before the contract so a mint
+            // we already hold is refused for the reason a human needs to read, whatever the
+            // model said about its size.
+            if let Admission::Refuse(cause) = req.portfolio.admit(req.live_mints, &req.mint) {
+                return EntryAuthority::NoTrade(NoTradeReason::Portfolio(cause));
+            }
             let Some(model_tier) = decision.size else {
                 // The corpus asked for a size on all 13,376 trained BUYs and got one every
                 // time. Refuse; never guess.
@@ -147,10 +165,26 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
             if model_tier != tier {
                 ledger.record(OffContract::BuyWithVenueMismatchedSize);
             }
-            match resolve_entry_clip_lamports(
-                tier,
+            // The notional is the DEPLOYABLE budget split across the concurrency cap, not the
+            // fixed 1 SOL reference: under the cap a full book is the account's deployable
+            // budget rather than a multiple of it, and the survival floor is respected by
+            // construction because it is carved out before the split.
+            let deployable = req
+                .free_cash_lamports
+                .saturating_sub(req.bankroll_floor_lamports);
+            // No deployable capital means the survival floor is the whole account: a hard
+            // veto, and the only way this path may refuse for the floor. On every other path
+            // the floor is structural — the clip cannot exceed `deployable / k_max`, so it
+            // can never strand the account, and the veto below stays as the belt to that
+            // brace rather than as the working limit.
+            if deployable == 0 {
+                return EntryAuthority::NoTrade(NoTradeReason::BreachesBankrollFloor);
+            }
+            let notional = req.portfolio.per_position_notional(deployable);
+            match resolve_clip_at_fraction_bps(
+                req.portfolio.served_fraction_bps(req.venue),
                 req.free_cash_lamports,
-                DEPLOY_LAMPORTS_CANONICAL,
+                notional,
                 FEE_BUFFER_LAMPORTS,
             ) {
                 Ok(clip_lamports) => {
@@ -186,6 +220,7 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::time::Duration;
 
     /// A source that returns a canned completion.
@@ -214,6 +249,9 @@ mod tests {
             free_cash_lamports: free,
             bankroll_floor_lamports: floor,
             venue,
+            mint: MINT,
+            live_mints: no_live(),
+            portfolio: PortfolioCap::enforced(3),
         }
     }
 
@@ -222,28 +260,48 @@ mod tests {
         req(free, floor, EntryVenue::Amm)
     }
 
+    /// The candidate mint these tests trade.
+    const MINT: [u8; 32] = [7u8; 32];
+
+    /// The empty live book, `'static` so a request can borrow it.
+    fn no_live() -> &'static BTreeSet<[u8; 32]> {
+        static EMPTY: std::sync::OnceLock<BTreeSet<[u8; 32]>> = std::sync::OnceLock::new();
+        EMPTY.get_or_init(BTreeSet::new)
+    }
+
+    /// A live book holding `mints`. Leaks a set per call — tests only.
+    fn live_of(mints: &[[u8; 32]]) -> &'static BTreeSet<[u8; 32]> {
+        Box::leak(Box::new(mints.iter().copied().collect::<BTreeSet<_>>()))
+    }
+
     /// Real corpus completions, verbatim shapes from the c11 fixtures.
     pub(super) const BUY_FULL: &str = "DECISION: BUY\nSIZE: FULL\nPRICE LIMIT: 0.02445740498411998\nINVALIDATION: exit if net_flow_lamports turns negative\nEVIDENCE: round-trip cost floor 92 bp must be cleared";
     const BUY_SMALL: &str = "DECISION: BUY\nSIZE: SMALL\nPRICE LIMIT: 0.02\nINVALIDATION: none\nEVIDENCE: flow sustained";
-    const BUY_NO_SIZE: &str = "DECISION: BUY\nPRICE LIMIT: 0.02\nINVALIDATION: none\nEVIDENCE: flow sustained";
+    const BUY_NO_SIZE: &str =
+        "DECISION: BUY\nPRICE LIMIT: 0.02\nINVALIDATION: none\nEVIDENCE: flow sustained";
     const WATCH: &str = "DECISION: WATCH\nSIZE: NONE\nINVALIDATION: re-evaluate when net_flow_lamports > 0\nEVIDENCE: net_flow_lamports is not decisively positive";
     const SKIP: &str = "DECISION: SKIP\nSIZE: NONE\nINVALIDATION: none for this snapshot\nEVIDENCE: 52 sells vs 738 buys; top1 share 0.4";
     pub(super) const GARBAGE: &str = "I think this looks pretty good, maybe buy a little?";
-    pub(super) const ADD: &str = "DECISION: ADD\nSIZE: NONE\nINVALIDATION: none\nEVIDENCE: scale in";
-    pub(super) const REDUCE: &str = "DECISION: REDUCE\nSIZE: NONE\nINVALIDATION: none\nEVIDENCE: trim";
-    pub(super) const EXIT: &str = "DECISION: EXIT\nSIZE: NONE\nINVALIDATION: none\nEVIDENCE: close it";
-    pub(super) const HOLD: &str = "DECISION: HOLD\nSIZE: NONE\nINVALIDATION: none\nEVIDENCE: nothing to manage here";
+    pub(super) const ADD: &str =
+        "DECISION: ADD\nSIZE: NONE\nINVALIDATION: none\nEVIDENCE: scale in";
+    pub(super) const REDUCE: &str =
+        "DECISION: REDUCE\nSIZE: NONE\nINVALIDATION: none\nEVIDENCE: trim";
+    pub(super) const EXIT: &str =
+        "DECISION: EXIT\nSIZE: NONE\nINVALIDATION: none\nEVIDENCE: close it";
+    pub(super) const HOLD: &str =
+        "DECISION: HOLD\nSIZE: NONE\nINVALIDATION: none\nEVIDENCE: nothing to manage here";
 
     #[test]
-    fn a_buy_deploys_the_models_own_tier_capped_by_payable_cash() {
+    fn a_buy_deploys_the_ruled_size_of_the_per_position_notional() {
         let mut l = DriftLedger::new();
         let a = decide_entry(&Stub(BUY_FULL), &amm(2_000_000_000, 0), &mut l);
-        // FULL = 100% of the 1 SOL canonical notional; cash 2 SOL so nothing caps it.
+        // FULL = 100% of the per-position notional, and the notional is the deployable
+        // budget (2 SOL) split across the cap (3): 666,666,666 lamports.
         assert_eq!(
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Full,
-                clip_lamports: 1_000_000_000
+                clip_lamports: 666_666_666
             }
         );
         assert_eq!(l.accepted(), 1);
@@ -264,16 +322,17 @@ mod tests {
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Small,
-                clip_lamports: 250_000_000
+                clip_lamports: 416_666_666
             }
         );
-        // And the fee buffer is respected: 0.30 SOL free cannot fund FULL's 1.00 SOL.
+        // And the fee buffer is respected: 0.30 SOL free is split three ways, so FULL gets
+        // 0.10 SOL — not the 0.25 SOL left after the buffer.
         let a = decide_entry(&Stub(BUY_FULL), &amm(300_000_000, 0), &mut l);
         assert_eq!(
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Full,
-                clip_lamports: 250_000_000
+                clip_lamports: 100_000_000
             }
         );
     }
@@ -289,7 +348,7 @@ mod tests {
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Full,
-                clip_lamports: 1_000_000_000
+                clip_lamports: 666_666_666
             }
         );
         assert_eq!(l.count(OffContract::BuyWithVenueMismatchedSize), 1);
@@ -321,54 +380,109 @@ mod tests {
             EntryAuthority::NoTrade(NoTradeReason::OffContract(_))
         ));
 
-        let dead = Unreachable(InferenceClient::new("http://127.0.0.1:1", Duration::from_millis(50)));
+        let dead = Unreachable(InferenceClient::new(
+            "http://127.0.0.1:1",
+            Duration::from_millis(50),
+        ));
         let a = decide_entry(&dead, &amm(2_000_000_000, 0), &mut l);
         assert_eq!(a, EntryAuthority::NoTrade(NoTradeReason::ModelUnreachable));
     }
 
     #[test]
-    fn the_bankroll_floor_vetoes_a_trade_that_would_strand_the_account() {
+    fn the_floor_is_structural_and_vetoes_only_when_nothing_is_deployable() {
         let mut l = DriftLedger::new();
-        // 1 SOL free, floor 0.9 SOL: FULL's 1 SOL clip leaves 0 free → refused.
+        // 1 SOL free with a 0.9 SOL floor: the deployable 0.1 SOL is split across the cap, so
+        // the trade SHRINKS to fit the floor instead of being refused. That is the audit's
+        // point — the floor is an input to the notional, not a post-hoc clamp.
         let a = decide_entry(&Stub(BUY_FULL), &amm(1_000_000_000, 900_000_000), &mut l);
-        assert_eq!(a, EntryAuthority::NoTrade(NoTradeReason::BreachesBankrollFloor));
-        // Floor 0.2 SOL: the same trade leaves 0.25 SOL free (cash 1.25) → allowed.
-        let a = decide_entry(&Stub(BUY_FULL), &amm(1_250_000_000, 200_000_000), &mut l);
+        let EntryAuthority::Buy { clip_lamports, .. } = a else {
+            panic!("expected a buy sized to fit the floor, got {a:?}");
+        };
+        assert_eq!(clip_lamports, 33_333_333);
+        // The invariant the structural floor exists to guarantee.
+        assert!(1_000_000_000u64.saturating_sub(clip_lamports) >= 900_000_000);
+        // Free cash at or below the floor is the one hard veto: nothing is deployable.
+        let a = decide_entry(&Stub(BUY_FULL), &amm(1_000_000_000, 1_200_000_000), &mut l);
         assert_eq!(
             a,
-            EntryAuthority::Buy {
-                tier: SizeTier::Full,
-                clip_lamports: 1_000_000_000
-            }
+            EntryAuthority::NoTrade(NoTradeReason::BreachesBankrollFloor)
+        );
+        let a = decide_entry(&Stub(BUY_FULL), &amm(1_000_000_000, 1_000_000_000), &mut l);
+        assert_eq!(
+            a,
+            EntryAuthority::NoTrade(NoTradeReason::BreachesBankrollFloor)
         );
     }
 
     #[test]
     fn unwatchable_cash_is_refused_not_rounded_up() {
         let mut l = DriftLedger::new();
-        // 0.05 SOL free is exactly the fee buffer: nothing is payable.
-        // A curve candidate: the ruled size here is SMALL, so the cash question is the only
-        // thing under test.
+        // 0.10 SOL free split three ways is a 0.033 SOL notional; a quarter of that is
+        // 0.008 SOL, under the 0.01 SOL minimum → refused, never rounded up.
         let a = decide_entry(
             &Stub(BUY_SMALL),
-            &req(50_000_000, 0, EntryVenue::BondingCurve),
+            &req(100_000_000, 0, EntryVenue::BondingCurve),
             &mut l,
         );
         assert!(matches!(
             a,
             EntryAuthority::NoTrade(NoTradeReason::UnpayableClip(_))
         ));
-        // 0.06 SOL leaves 0.01 SOL payable == the venue minimum → a real (tiny) clip.
+        // 0.13 SOL free clears it: a 0.043 SOL notional, a quarter of which is 0.0108 SOL.
         let a = decide_entry(
             &Stub(BUY_SMALL),
-            &req(60_000_000, 0, EntryVenue::BondingCurve),
+            &req(130_000_000, 0, EntryVenue::BondingCurve),
             &mut l,
         );
         assert_eq!(
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Small,
-                clip_lamports: 10_000_000
+                clip_lamports: 10_833_333
+            }
+        );
+    }
+
+    /// `KELLY_AUDIT_C12`'s exposure control: one position per mint episode, and the cap on
+    /// the book — refused with the cause, never silently.
+    #[test]
+    fn the_portfolio_layer_refuses_a_held_mint_and_a_full_book() {
+        let mut l = DriftLedger::new();
+        let mut r = amm(2_000_000_000, 0);
+        r.live_mints = live_of(&[MINT]);
+        let a = decide_entry(&Stub(BUY_FULL), &r, &mut l);
+        assert_eq!(
+            a,
+            EntryAuthority::NoTrade(NoTradeReason::Portfolio(AdmissionRefusal::AlreadyHeld))
+        );
+        let mut r = amm(2_000_000_000, 0);
+        r.live_mints = live_of(&[[1u8; 32], [2u8; 32], [3u8; 32]]);
+        let a = decide_entry(&Stub(BUY_FULL), &r, &mut l);
+        assert_eq!(
+            a,
+            EntryAuthority::NoTrade(NoTradeReason::Portfolio(AdmissionRefusal::CapReached))
+        );
+        // Two live out of three: there is room, and it deploys.
+        let mut r = amm(2_000_000_000, 0);
+        r.live_mints = live_of(&[[1u8; 32], [2u8; 32]]);
+        let a = decide_entry(&Stub(BUY_FULL), &r, &mut l);
+        assert!(matches!(a, EntryAuthority::Buy { .. }));
+    }
+
+    /// The unenforceable-cap fallback: uniform half — a Rust-chosen FRACTION, not the
+    /// retired MID tier the model may name.
+    #[test]
+    fn an_unenforceable_cap_sizes_uniformly_at_half() {
+        let mut l = DriftLedger::new();
+        let mut r = amm(2_000_000_000, 0);
+        r.portfolio = PortfolioCap::unenforceable(3);
+        let a = decide_entry(&Stub(BUY_FULL), &r, &mut l);
+        // Half of the 666,666,666 per-position notional.
+        assert_eq!(
+            a,
+            EntryAuthority::Buy {
+                tier: SizeTier::Full,
+                clip_lamports: 333_333_333
             }
         );
     }

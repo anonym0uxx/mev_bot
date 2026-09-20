@@ -30,10 +30,9 @@
 //! - §99: Bounded — SPRT ledgers capped by truncation
 
 use crate::evaluator_state::{
-    CusumState, CusumVerdict, LifecycleStage, LifecycleState, SprtLedger, SprtVerdict,
-    ThompsonPosterior, EvaluatorState,
-    SPRT_LOWER_BOUND, SPRT_TRUNCATION, SPRT_UPPER_BOUND,
-    MIN_SAMPLES_LEARNING_HORIZON,
+    CusumState, CusumVerdict, EvaluatorState, LifecycleStage, LifecycleState, SprtLedger,
+    SprtVerdict, ThompsonPosterior, MIN_SAMPLES_LEARNING_HORIZON, SPRT_LOWER_BOUND,
+    SPRT_TRUNCATION, SPRT_UPPER_BOUND,
 };
 
 // ============================================================================
@@ -85,11 +84,11 @@ impl<'a> StrategyTypeSprt<'a> {
     ///
     /// Returns the SPRT verdict and lifecycle action.
     pub fn push_pair(&mut self, strategy_type_id: u64, challenger_won: bool) -> SprtTypeResult {
-    let ledger = self
-        .state
-        .sprt_ledgers
-        .entry(strategy_type_id)
-        .or_insert_with(|| SprtLedger::new(strategy_type_id));
+        let ledger = self
+            .state
+            .sprt_ledgers
+            .entry(strategy_type_id)
+            .or_insert_with(|| SprtLedger::new(strategy_type_id));
 
         let verdict = ledger.push_pair(challenger_won);
 
@@ -357,7 +356,7 @@ mod tests {
         let mut state = EvaluatorState::initial();
         let mut mgr = StrategyTypeSprt::new(&mut state);
 
-        mgr.record_trade(10, 500_000);  // profitable
+        mgr.record_trade(10, 500_000); // profitable
         mgr.record_trade(10, -200_000); // unprofitable
 
         let mean = mgr.thompson_mean_bps(10);
@@ -386,7 +385,10 @@ mod tests {
 
         // Apply the advancement.
         mgr.apply_lifecycle_action(99, action, 1);
-        assert_eq!(mgr.lifecycle_stage(99), LifecycleStage::RegisteredChallenger);
+        assert_eq!(
+            mgr.lifecycle_stage(99),
+            LifecycleStage::RegisteredChallenger
+        );
     }
 
     #[test]

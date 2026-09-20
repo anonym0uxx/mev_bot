@@ -33,41 +33,37 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
-use pump_quant_app::config::Config;
-use pump_quant_app::engine::{Engine, RunMode};
-use pump_quant_app::event::AppEvent;
-use pump_quant_domain::ids::Mint;
-use std::io::Write; // needed for fc_child stdin.write_all()
-use pump_quant_core::config::Creds;
-use pump_quant_junction::decode::decode_onchain_confirm_with_curve;
-use pump_quant_protocol::decode::decode_pump_curve_tail;
-use pump_quant_junction::pumpportal::{
-    handle_create_payload, handle_trade_payload, handle_migration_payload,
-};
-use pump_quant_junction::reserve_delta::{
-    derive_market_trade_from_delta, ReserveSnapshot,
-};
-use pump_quant_junction::laserstream::{
-    parse_ndjson_line, classify_pump_instructions, instructions_to_events,
-    LaserStreamUpdate, LaserStreamState,
-};
-use pump_quant_junction::queue::BoundedJunctionQueue;
-use pump_quant_junction::tape_export::{TapeExporter, TapeRecord, TapeLane};
-use pump_quant_junction::memory_bank::{MemoryBank, MemoryBankConfig};
-use pump_quant_junction::trade_journal::{
-    TradeRecord, TradeOutcome, TradeSide, TradeLane,
-};
-use pump_quant_junction::trade_journal::RunMode as JournalRunMode;
-use pump_quant_junction::ProvenanceSource;
-use pump_quant_junction::ProvenancedEvent;
-use pump_quant_junction::event_stream::EventStreamWriter;
-use pump_quant_junction::autonomous_bridge::{
-    DefenseState, try_reload_config, RefinerSpawner,
-    AutoRevertState, write_auto_revert_state, check_auto_revert,
-};
 use pq_stream_capture::helius_ws;
 use pq_stream_capture::json::{self, Value};
 use pq_stream_capture::pumpportal_ws;
+use pump_quant_app::config::Config;
+use pump_quant_app::engine::{Engine, RunMode};
+use pump_quant_app::event::AppEvent;
+use pump_quant_core::config::Creds;
+use pump_quant_domain::ids::Mint;
+use pump_quant_junction::autonomous_bridge::{
+    check_auto_revert, try_reload_config, write_auto_revert_state, AutoRevertState, DefenseState,
+    RefinerSpawner,
+};
+use pump_quant_junction::decode::decode_onchain_confirm_with_curve;
+use pump_quant_junction::event_stream::EventStreamWriter;
+use pump_quant_junction::laserstream::{
+    classify_pump_instructions, instructions_to_events, parse_ndjson_line, LaserStreamState,
+    LaserStreamUpdate,
+};
+use pump_quant_junction::memory_bank::{MemoryBank, MemoryBankConfig};
+use pump_quant_junction::pumpportal::{
+    handle_create_payload, handle_migration_payload, handle_trade_payload,
+};
+use pump_quant_junction::queue::BoundedJunctionQueue;
+use pump_quant_junction::reserve_delta::{derive_market_trade_from_delta, ReserveSnapshot};
+use pump_quant_junction::tape_export::{TapeExporter, TapeLane, TapeRecord};
+use pump_quant_junction::trade_journal::RunMode as JournalRunMode;
+use pump_quant_junction::trade_journal::{TradeLane, TradeOutcome, TradeRecord, TradeSide};
+use pump_quant_junction::ProvenanceSource;
+use pump_quant_junction::ProvenancedEvent;
+use pump_quant_protocol::decode::decode_pump_curve_tail;
+use std::io::Write; // needed for fc_child stdin.write_all()
 
 // ── R-3 creator on-chain history veto ─────────────────────────────────────
 /// Shared map from mint pubkey → creator wallet pubkey, populated on PumpPortal
@@ -75,7 +71,7 @@ use pq_stream_capture::pumpportal_ws;
 type CreatorPubkeyMap = std::sync::Arc<std::sync::Mutex<HashMap<[u8; 32], [u8; 32]>>>;
 
 use pump_quant_execution::ex_creator_history_veto::{
-    CreatorHistoryVetoSink, CreatorPubkeyLookup, CreatorHistoryRpc,
+    CreatorHistoryRpc, CreatorHistoryVetoSink, CreatorPubkeyLookup,
 };
 
 // ── R-3 daemon-side trait implementations ─────────────────────────────────
@@ -106,9 +102,7 @@ struct DaemonCreatorHistoryRpc {
 
 impl CreatorHistoryRpc for DaemonCreatorHistoryRpc {
     fn query_signature_count(&self, creator_pubkey: &[u8; 32]) -> Option<u32> {
-        let creator_b58 = Pubkey::try_from(*creator_pubkey)
-            .ok()?
-            .to_string();
+        let creator_b58 = Pubkey::try_from(*creator_pubkey).ok()?.to_string();
 
         // Request up to 1000 recent signatures (the RPC max per call).
         // Each pump.fun mint creation produces ~1-3 signatures for the creator
@@ -129,8 +123,8 @@ impl CreatorHistoryRpc for DaemonCreatorHistoryRpc {
     }
 }
 use pq_stream_capture::ws::{WsConn, WsEvent};
-use solana_program::pubkey::Pubkey;
 use pump_quant_ingest::social_source::{RawSocialPayload, SocialSource};
+use solana_program::pubkey::Pubkey;
 
 // ─── Wangr Rev-14: UTC time helper (no chrono dependency) ──────────────────
 /// Compute (day_of_week, hour_utc) from `SystemTime::now()`.
@@ -143,7 +137,7 @@ fn utc_dow_hour(now: SystemTime) -> (u8, u8) {
     };
     let hour_utc = ((secs / 3600) % 24) as u8;
     let days = secs / 86400; // days since 1970-01-01 (Thursday)
-    // 1970-01-01 was a Thursday (dow=4). (days + 4) % 7 gives 0=Sunday..6=Saturday.
+                             // 1970-01-01 was a Thursday (dow=4). (days + 4) % 7 gives 0=Sunday..6=Saturday.
     let dow = ((days + 4) % 7) as u8;
     (dow, hour_utc)
 }
@@ -336,7 +330,10 @@ fn parse_args() -> Result<DaemonArgs, u8> {
             }
             "--commitment" if i + 1 < args.len() => {
                 a.commitment = args[i + 1].clone();
-                if !matches!(a.commitment.as_str(), "processed" | "confirmed" | "finalized") {
+                if !matches!(
+                    a.commitment.as_str(),
+                    "processed" | "confirmed" | "finalized"
+                ) {
                     eprintln!("bad --commitment {:?}", a.commitment);
                     return Err(2);
                 }
@@ -370,7 +367,9 @@ fn parse_args() -> Result<DaemonArgs, u8> {
                 a.wallet_address = String::from(&args[i + 1]);
                 i += 2;
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
     Ok(a)
@@ -452,20 +451,19 @@ fn extract_json_int(line: &str, key: &str) -> Option<i64> {
         Some('-') => true,
         Some(c) if c.is_ascii_digit() => {
             // Put it back — we need to parse from here
-            let num_str: String = rest.chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
+            let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
             return num_str.parse().ok();
         }
         _ => return None,
     };
-    let num_str: String = chars
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
+    let num_str: String = chars.take_while(|c| c.is_ascii_digit()).collect();
     if num_str.is_empty() {
         return None;
     }
-    num_str.parse::<i64>().ok().map(|v| if negative { -v } else { v })
+    num_str
+        .parse::<i64>()
+        .ok()
+        .map(|v| if negative { -v } else { v })
 }
 
 /// Compute a deterministic config fingerprint (FNV-1a hash of dump_to_text).
@@ -635,7 +633,9 @@ fn bonding_curve_pda(mint: &[u8; 32]) -> Pubkey {
 
 fn hex_short(b: &[u8; 32]) -> String {
     let mut s = String::with_capacity(8);
-    for &n in &b[..4] { s.push_str(&format!("{n:02x}")); }
+    for &n in &b[..4] {
+        s.push_str(&format!("{n:02x}"));
+    }
     s
 }
 
@@ -763,27 +763,49 @@ struct SessionStats {
 impl SessionStats {
     fn new() -> Self {
         Self {
-            pp_trades_received: 0, pp_trades_enqueued: 0,
-            pp_creates_received: 0, pp_creates_parsed: 0,
-            pp_migrations_received: 0, pp_migrations_parsed: 0,
+            pp_trades_received: 0,
+            pp_trades_enqueued: 0,
+            pp_creates_received: 0,
+            pp_creates_parsed: 0,
+            pp_migrations_received: 0,
+            pp_migrations_parsed: 0,
             pp_trade_subs_sent: 0,
-            helius_account_notifications: 0, helius_onchain_confirms_decoded: 0,
+            helius_account_notifications: 0,
+            helius_onchain_confirms_decoded: 0,
             helius_slot_notifications: 0,
-            account_subs_active: 0, account_subs_total_attempted: 0, account_subs_evicted: 0,
-            subs_leaked_no_ack: 0, sub_cap_errors: 0, last_confirm_tick: 0,
-            delta_trades_derived: 0, delta_no_trade: 0,
-            pdas_derived: 0, pda_venue_matches: 0, pda_venue_present: 0,
-            junction_events_drained: 0, junction_overflow_dropped: 0,
-            dwell_max_ms: 0, dwell_mean_ms: 0, dwell_p99_ms: 0,
-            pp_reconnects: 0, helius_reconnects: 0,
+            account_subs_active: 0,
+            account_subs_total_attempted: 0,
+            account_subs_evicted: 0,
+            subs_leaked_no_ack: 0,
+            sub_cap_errors: 0,
+            last_confirm_tick: 0,
+            delta_trades_derived: 0,
+            delta_no_trade: 0,
+            pdas_derived: 0,
+            pda_venue_matches: 0,
+            pda_venue_present: 0,
+            junction_events_drained: 0,
+            junction_overflow_dropped: 0,
+            dwell_max_ms: 0,
+            dwell_mean_ms: 0,
+            dwell_p99_ms: 0,
+            pp_reconnects: 0,
+            helius_reconnects: 0,
             ws_errors: 0,
-            ls_transactions_received: 0, ls_instructions_classified: 0,
-            ls_events_emitted: 0, ls_slots_received: 0,
-            ls_spawned: false, ls_reconnects: 0,
-            ls_account_received: 0, ls_onchain_confirms_decoded: 0, ls_account_unresolved: 0,
-            fc_spawned: false, fc_triggers_emitted: 0, fc_events_ingested: 0,
+            ls_transactions_received: 0,
+            ls_instructions_classified: 0,
+            ls_events_emitted: 0,
+            ls_slots_received: 0,
+            ls_spawned: false,
+            ls_reconnects: 0,
+            ls_account_received: 0,
+            ls_onchain_confirms_decoded: 0,
+            ls_account_unresolved: 0,
+            fc_spawned: false,
+            fc_triggers_emitted: 0,
+            fc_events_ingested: 0,
             stubbed_or_assumed: vec![
-                "Config: dev_portable (no live config file provided)".to_string(),
+                "Config: dev_portable (no live config file provided)".to_string()
             ],
         }
     }
@@ -865,7 +887,8 @@ impl SubTracker {
             return None;
         }
         // Tier 1: find the index of the oldest subscription with no trades.
-        let dormant_idx = self.subscription_order
+        let dormant_idx = self
+            .subscription_order
             .iter()
             .position(|(_, _, has_trades)| !*has_trades);
 
@@ -902,7 +925,8 @@ impl SubTracker {
     /// starts from a clean slate.
     fn clear_server_subs(&mut self) -> Vec<[u8; 32]> {
         // Snapshot the mints we need to re-subscribe on the new connection.
-        let mints: Vec<[u8; 32]> = self.subscription_order
+        let mints: Vec<[u8; 32]> = self
+            .subscription_order
             .iter()
             .map(|(_, mint, _)| *mint)
             .collect();
@@ -996,9 +1020,8 @@ fn extract_helius_rpc_url(_args: &DaemonArgs) -> String {
     let mut api_key = String::new();
 
     // Try creds file first
-    let creds_path = std::env::var("PQ_CREDS_FILE").unwrap_or_else(|_| {
-        "C:/Users/Alon/.hermes/creds/pump-quant.env".to_string()
-    });
+    let creds_path = std::env::var("PQ_CREDS_FILE")
+        .unwrap_or_else(|_| "C:/Users/Alon/.hermes/creds/pump-quant.env".to_string());
     if let Ok(creds) = std::fs::read_to_string(&creds_path) {
         for line in creds.lines() {
             if let Some(v) = line.strip_prefix("HELIUS_WS_URL=") {
@@ -1051,8 +1074,8 @@ fn reconcile_wallet_balance(rpc_url: &str, wallet_address: &str) -> Result<u64, 
         .post_json_once(rpc_url, &body)
         .map_err(|e| format!("RPC request failed: {e}"))?;
 
-    let json: Value = pq_stream_capture::json::parse(&body_str)
-        .map_err(|e| format!("JSON parse failed: {e}"))?;
+    let json: Value =
+        pq_stream_capture::json::parse(&body_str).map_err(|e| format!("JSON parse failed: {e}"))?;
 
     // Navigate: result.value.lamports. If value is null, the account doesn't
     // exist → balance = 0 (valid on-chain state, not an error).
@@ -1213,10 +1236,7 @@ fn poll_signature_confirmations(
                 Some(Value::Null) | None => true,
                 _ => false,
             };
-            let slot = entry
-                .get("slot")
-                .and_then(|s| s.as_u64())
-                .unwrap_or(0);
+            let slot = entry.get("slot").and_then(|s| s.as_u64()).unwrap_or(0);
 
             eprintln!(
                 "[pq-daemon] ON-CHAIN FEEDBACK: {} tx {:} — {} (slot {})",
@@ -1267,14 +1287,12 @@ fn construct_live_engine(
     u8,
 > {
     use pump_quant_app::engine::Engine;
-    use pump_quant_execution::ex_live_io_traits::{
-        LiveSigner, LiveStateFetcher, LiveSubmitter,
-    };
+    use pump_quant_execution::ex_live_io_traits::{LiveSigner, LiveStateFetcher, LiveSubmitter};
     use pump_quant_execution::ex_live_sink::{LiveOutboundSink, LiveSinkConfig};
     use pump_quant_execution::ex_outbound_sink::OutboundSink;
     use pump_quant_junction::live_adapters::{
-        HeliusSenderSubmitter, LiveWalletSigner, PrefetchConfig, RpcLiveStateFetcher,
-        spawn_blockhash_warmer,
+        spawn_blockhash_warmer, HeliusSenderSubmitter, LiveWalletSigner, PrefetchConfig,
+        RpcLiveStateFetcher,
     };
     use pump_quant_protocol::layout::{
         LayoutKey, LayoutRegistry, Side, Variant, Venue, VerifiedLayout,
@@ -1349,7 +1367,10 @@ fn construct_live_engine(
     }
 
     // Inject api-key into the RPC URL if not already present.
-    if !helius_rpc_url.is_empty() && !helius_api_key.is_empty() && !helius_rpc_url.contains("api-key=") {
+    if !helius_rpc_url.is_empty()
+        && !helius_api_key.is_empty()
+        && !helius_rpc_url.contains("api-key=")
+    {
         helius_rpc_url = format!("{}/?api-key={}", helius_rpc_url, helius_api_key);
     }
 
@@ -1364,11 +1385,11 @@ fn construct_live_engine(
     );
 
     // ── 1. Reconcile wallet balance via RPC ────────────────────────────
-    let wallet_balance_lamports =
-        reconcile_wallet_balance(&helius_rpc_url, &args.wallet_address).map_err(|e| {
-            eprintln!("[pq-daemon] FATAL: wallet balance reconciliation failed: {e}");
-            1u8
-        })?;
+    let wallet_balance_lamports = reconcile_wallet_balance(&helius_rpc_url, &args.wallet_address)
+        .map_err(|e| {
+        eprintln!("[pq-daemon] FATAL: wallet balance reconciliation failed: {e}");
+        1u8
+    })?;
 
     eprintln!(
         "[pq-daemon] Wallet balance reconciled: {} lamports ({} SOL)",
@@ -1386,14 +1407,11 @@ fn construct_live_engine(
     );
     eprintln!("[pq-daemon] Loading keypair from {keypair_path}");
 
-    let signer = LiveWalletSigner::load(
-        std::path::Path::new(&keypair_path),
-        &args.wallet_address,
-    )
-    .map_err(|e| {
-        eprintln!("[pq-daemon] FATAL: signer load failed: {e:?}");
-        1u8
-    })?;
+    let signer = LiveWalletSigner::load(std::path::Path::new(&keypair_path), &args.wallet_address)
+        .map_err(|e| {
+            eprintln!("[pq-daemon] FATAL: signer load failed: {e:?}");
+            1u8
+        })?;
 
     eprintln!("[pq-daemon] Signer loaded: {}", signer.address());
 
@@ -1424,10 +1442,10 @@ fn construct_live_engine(
             swqos_only,
             mev_protect,
         )
-            .map_err(|e| {
-                eprintln!("[pq-daemon] FATAL: submitter construction failed: {e:?}");
-                1u8
-            })?
+        .map_err(|e| {
+            eprintln!("[pq-daemon] FATAL: submitter construction failed: {e:?}");
+            1u8
+        })?
     } else {
         HeliusSenderSubmitter::new(&sender_url, swqos_only, mev_protect).map_err(|e| {
             eprintln!("[pq-daemon] FATAL: submitter construction failed: {e:?}");
@@ -1490,10 +1508,9 @@ fn construct_live_engine(
     // See: https://www.helius.dev/docs/sending-transactions/sender-swqos-only
     let tip: Option<TipPlan> = Some(TipPlan {
         to: [
-            0x1a, 0xa2, 0xf0, 0x5a, 0x6f, 0x89, 0x50, 0xfc,
-            0xbf, 0x5d, 0xf9, 0xca, 0x39, 0x48, 0x1c, 0x6d,
-            0xf1, 0x33, 0x05, 0xc8, 0xb8, 0x7c, 0x64, 0x4f,
-            0x4d, 0x8c, 0x6d, 0x82, 0x0b, 0x37, 0x89, 0xa6,
+            0x1a, 0xa2, 0xf0, 0x5a, 0x6f, 0x89, 0x50, 0xfc, 0xbf, 0x5d, 0xf9, 0xca, 0x39, 0x48,
+            0x1c, 0x6d, 0xf1, 0x33, 0x05, 0xc8, 0xb8, 0x7c, 0x64, 0x4f, 0x4d, 0x8c, 0x6d, 0x82,
+            0x0b, 0x37, 0x89, 0xa6,
         ],
         lamports: 5_000, // 0.000005 SOL — SWQOS-only minimum
     });
@@ -1566,12 +1583,13 @@ fn construct_live_engine(
     // veto's RPC): `on_admit` hands the record to a worker and returns `Queued`. The
     // worker's verdict is drained in the tick loop below, and the engine finishes the
     // accounting there — including reversing a phantom buy position.
-    let async_sink: &'static pump_quant_junction::async_sink::AsyncOutboundSink =
-        Box::leak(Box::new(pump_quant_junction::async_sink::AsyncOutboundSink::new(
+    let async_sink: &'static pump_quant_junction::async_sink::AsyncOutboundSink = Box::leak(
+        Box::new(pump_quant_junction::async_sink::AsyncOutboundSink::new(
             inner_sink,
             OUTBOUND_LANES,
             OUTBOUND_QUEUE_DEPTH,
-        )));
+        )),
+    );
     eng.install_outbound_sink(async_sink as &'static dyn OutboundSink);
     eprintln!(
         "[pq-daemon] AsyncOutboundSink installed — submissions run off the decision thread ({OUTBOUND_LANES} per-mint lanes, {OUTBOUND_QUEUE_DEPTH} deep each)"
@@ -1598,8 +1616,8 @@ fn main() -> ExitCode {
         }
     };
     let helius_url = creds.ws_url().expose().to_string();
-    let pp_url = std::env::var("PUMPPORTAL_WS_URL")
-        .unwrap_or_else(|_| PUMPPORTAL_DEFAULT_URL.to_string());
+    let pp_url =
+        std::env::var("PUMPPORTAL_WS_URL").unwrap_or_else(|_| PUMPPORTAL_DEFAULT_URL.to_string());
 
     // Load CHAMPION_CONFIG.txt over compiled defaults — the config file is the
     // operator's source of truth for all tunable knobs (TP ladder, brain
@@ -1644,8 +1662,14 @@ fn main() -> ExitCode {
     eprintln!("[pq-daemon] === AUTONOMOUS DAEMON STARTING ===");
     eprintln!("[pq-daemon] PumpPortal: {pp_url}");
     eprintln!("[pq-daemon] Helius WS:  {}", creds.ws_url_redacted());
-    eprintln!("[pq-daemon] cap={} commitment={} tick={}ms", args.junction_cap, args.commitment, tick_period_ms);
-    eprintln!("[pq-daemon] status_every={} ticks  brain_snapshot_every={} ticks", args.status_every_ticks, args.brain_snapshot_every_ticks);
+    eprintln!(
+        "[pq-daemon] cap={} commitment={} tick={}ms",
+        args.junction_cap, args.commitment, tick_period_ms
+    );
+    eprintln!(
+        "[pq-daemon] status_every={} ticks  brain_snapshot_every={} ticks",
+        args.status_every_ticks, args.brain_snapshot_every_ticks
+    );
     eprintln!("[pq-daemon] shutdown: {DAEMON_STOP_FILE}  emergency: {EMERGENCY_STOP_FILE}");
     eprintln!("[pq-daemon] NO duration bound — runs forever until shutdown signal");
 
@@ -1708,13 +1732,13 @@ fn main() -> ExitCode {
     // ── R-3: create the shared creator pubkey map before engine construction ──
     // Populated on PumpPortal create events (traderPublicKey → creator pubkey),
     // consulted by the CreatorHistoryVetoSink on buy admits.
-    let creator_pubkey_map: CreatorPubkeyMap = std::sync::Arc::new(
-        std::sync::Mutex::new(HashMap::new()),
-    );
+    let creator_pubkey_map: CreatorPubkeyMap =
+        std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
 
     // E3: the async outbound handle lives in main's scope so the tick loop can drain
     // the worker's verdicts. `None` in paper mode — there is no sink there at all.
-    let mut async_outbound: Option<&'static pump_quant_junction::async_sink::AsyncOutboundSink> = None;
+    let mut async_outbound: Option<&'static pump_quant_junction::async_sink::AsyncOutboundSink> =
+        None;
     // C1: the curve cache, so decoded stream reserves can be published into it.
     let mut live_state_fetcher: Option<
         std::sync::Arc<pump_quant_junction::live_adapters::RpcLiveStateFetcher>,
@@ -1761,7 +1785,9 @@ fn main() -> ExitCode {
             Ok(bytes) => {
                 if engine.restore_creator_ledger(&bytes) {
                     let len = engine.measured().creator_ledger_len();
-                    eprintln!("[pq-daemon] creator ledger restored: {len} entries from {LEDGER_PATH}");
+                    eprintln!(
+                        "[pq-daemon] creator ledger restored: {len} entries from {LEDGER_PATH}"
+                    );
                 }
             }
             Err(e) => eprintln!("[pq-daemon] creator ledger read error: {e} — starting fresh"),
@@ -1803,7 +1829,11 @@ fn main() -> ExitCode {
                 report.admitted(),
                 report.snapshot_admitted,
                 report.journal_admitted,
-                if report.saw_damage() { " [DAMAGE SEEN]" } else { "" }
+                if report.saw_damage() {
+                    " [DAMAGE SEEN]"
+                } else {
+                    ""
+                }
             ),
             Err(e) => eprintln!(
                 "[pq-daemon] brain persistence disarmed: cannot open {} ({e})",
@@ -1874,7 +1904,11 @@ fn main() -> ExitCode {
         })
         .or_else(|| {
             let p = std::path::PathBuf::from("pq-laserstream-grpc.exe");
-            if p.exists() { p.to_str().map(|s| s.to_string()) } else { None }
+            if p.exists() {
+                p.to_str().map(|s| s.to_string())
+            } else {
+                None
+            }
         });
 
     // ─── LaserStream spawn helper ────────────────────────────────────────
@@ -1890,7 +1924,7 @@ fn main() -> ExitCode {
     let spawn_ls = |bin_path: &str| -> Option<std::process::Child> {
         let mut cmd = std::process::Command::new(bin_path);
         cmd.stdout(std::process::Stdio::piped())
-           .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped());
         // Pass through credential env vars to the subprocess.
         if let Ok(endpoint) = std::env::var("LASERSTREAM_ENDPOINT") {
             cmd.env("LASERSTREAM_ENDPOINT", endpoint);
@@ -1905,7 +1939,10 @@ fn main() -> ExitCode {
         // When PQ_LASERSTREAM_BIN=wsl.exe, these vars are injected into WSL2
         // so the Linux gRPC binary can read them. WSLENV format: VAR/u
         // (the /u suffix converts Windows paths to Linux paths if needed).
-        cmd.env("WSLENV", "HELIUS_API_KEY/u:LASERSTREAM_ENDPOINT/u:HELIUS_WS_URL/u");
+        cmd.env(
+            "WSLENV",
+            "HELIUS_API_KEY/u:LASERSTREAM_ENDPOINT/u:HELIUS_WS_URL/u",
+        );
         // Inject extra args (subcommand + flags) if provided.
         for arg in &ls_extra_args {
             cmd.arg(arg);
@@ -1957,16 +1994,16 @@ fn main() -> ExitCode {
             }
             None => {
                 eprintln!("[pq-daemon] Proceeding with Helius WS as secondary lane");
-                stats.stubbed_or_assumed.push(
-                    "LaserStream spawn failed — Helius WS as fallback".to_string()
-                );
+                stats
+                    .stubbed_or_assumed
+                    .push("LaserStream spawn failed — Helius WS as fallback".to_string());
             }
         }
     } else {
         eprintln!("[pq-daemon] LaserStream binary not found — set PQ_LASERSTREAM_BIN");
-        stats.stubbed_or_assumed.push(
-            "LaserStream binary not found — Helius WS as fallback".to_string()
-        );
+        stats
+            .stubbed_or_assumed
+            .push("LaserStream binary not found — Helius WS as fallback".to_string());
     }
     let _ls_state = LaserStreamState::new(); // reserved for future per-slot accounting
     let mut ls_respawn_count: u32 = 0;
@@ -1980,7 +2017,8 @@ fn main() -> ExitCode {
     // the daemon continues trading without social intelligence.
     let (fc_tx, fc_rx) = mpsc::channel::<Vec<u8>>(); // raw NDJSON bytes
     let mut fc_child: Option<std::process::Child> = None;
-    let fc_bin: Option<String> = std::env::var("PQ_FIRECRAWL_BIN").ok()
+    let fc_bin: Option<String> = std::env::var("PQ_FIRECRAWL_BIN")
+        .ok()
         .or_else(|| {
             // Look for the bridge binary next to the daemon exe
             let target_dir = std::env::current_exe()
@@ -1994,7 +2032,7 @@ fn main() -> ExitCode {
         .or_else(|| {
             // Check the tools directory
             let p = std::path::PathBuf::from(
-                "../../../tools/firecrawl-bridge-rs/target/release/pq-firecrawl-bridge.exe"
+                "../../../tools/firecrawl-bridge-rs/target/release/pq-firecrawl-bridge.exe",
             );
             if p.exists() {
                 p.canonicalize()
@@ -2008,8 +2046,8 @@ fn main() -> ExitCode {
     if let Some(bin_path) = &fc_bin {
         let mut cmd = std::process::Command::new(bin_path);
         cmd.stdout(std::process::Stdio::piped())
-           .stderr(std::process::Stdio::piped())
-           .stdin(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::piped());
         match cmd.spawn() {
             Ok(mut child) => {
                 eprintln!("[pq-daemon] Firecrawl bridge spawned: {bin_path:?}");
@@ -2037,16 +2075,16 @@ fn main() -> ExitCode {
             }
             Err(e) => {
                 eprintln!("[pq-daemon] Firecrawl bridge spawn FAILED: {e}");
-                stats.stubbed_or_assumed.push(
-                    "Firecrawl bridge spawn failed — no social intelligence".to_string()
-                );
+                stats
+                    .stubbed_or_assumed
+                    .push("Firecrawl bridge spawn failed — no social intelligence".to_string());
             }
         }
     } else {
         eprintln!("[pq-daemon] Firecrawl bridge binary not found — set PQ_FIRECRAWL_BIN");
-        stats.stubbed_or_assumed.push(
-            "Firecrawl bridge not found — no social intelligence".to_string()
-        );
+        stats
+            .stubbed_or_assumed
+            .push("Firecrawl bridge not found — no social intelligence".to_string());
     }
 
     let tick_period = Duration::from_millis(tick_period_ms);
@@ -2069,12 +2107,15 @@ fn main() -> ExitCode {
     // architecture gap where paper PnL was recorded as live without verifying
     // the on-chain outcome. Only active in live mode.
     let confirm_poll_interval_secs: u64 = 5;
-    let mut next_confirm_poll: Instant = Instant::now() + Duration::from_secs(confirm_poll_interval_secs);
+    let mut next_confirm_poll: Instant =
+        Instant::now() + Duration::from_secs(confirm_poll_interval_secs);
     // Extract the Helius RPC URL from creds file or env (same logic as
     // construct_live_engine, but we need it in main's scope for the poller).
     let rpc_url_for_confirm = if args.live_mode {
         extract_helius_rpc_url(&args)
-    } else { String::new() };
+    } else {
+        String::new()
+    };
     let wallet_for_confirm = args.wallet_address.clone();
 
     // ─── Autonomous bridge: config hot-reload + defense-in-depth ────────
@@ -2146,7 +2187,8 @@ fn main() -> ExitCode {
         | ((std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs()) << 32);
+            .as_secs())
+            << 32);
     eprintln!("[pq-daemon] session_id={:#018x}", session_id);
 
     // ── SUBSCRIPTION CAP SELF-HEALING ──────────────────────────────────
@@ -2164,17 +2206,23 @@ fn main() -> ExitCode {
             // Don't clean up — the operator triggered this deliberately.
             // Print a minimal status and exit.
             let st = engine.live_status();
-            eprintln!("[pq-daemon] EMERGENCY: ticks={} promoted={} admitted={} net={}lamports",
-                st.info_time_tick, st.promoted, st.admitted, st.net_realized_lamports);
+            eprintln!(
+                "[pq-daemon] EMERGENCY: ticks={} promoted={} admitted={} net={}lamports",
+                st.info_time_tick, st.promoted, st.admitted, st.net_realized_lamports
+            );
             // Kill LaserStream child if present — use kill_process_tree to
             // kill the entire process tree (prevents orphaned gRPC in WSL2).
             // GAP #13: bare child.kill() leaves wsl.exe grandchildren alive.
-            if let Some(ref mut child) = ls_child { kill_process_tree(child); }
+            if let Some(ref mut child) = ls_child {
+                kill_process_tree(child);
+            }
             // Kill Firecrawl bridge child if present — same tree-kill logic.
-            if let Some(ref mut child) = fc_child { kill_process_tree(child); }
+            if let Some(ref mut child) = fc_child {
+                kill_process_tree(child);
+            }
             return ExitCode::from(EXIT_EMERGENCY);
         }
-        
+
         // ── Graceful shutdown check (every iteration) ────────────────────
         if daemon_stop_requested() {
             eprintln!("[pq-daemon] DAEMON_STOP detected — initiating graceful shutdown");
@@ -2200,7 +2248,7 @@ fn main() -> ExitCode {
             let active_mints_vec = sub_tracker.clear_server_subs();
             stats.sub_cap_errors = 0; // reset after reconnect
             stats.subs_leaked_no_ack = 0; // fresh connection, no leaks
-            // Re-subscribe with the standard backoff ladder.
+                                          // Re-subscribe with the standard backoff ladder.
             let mut backoff_ms = WS_RECONNECT_SLEEP_MS;
             let mut reconnected = false;
             for _ in 0..MAX_RECONNECT_ATTEMPTS {
@@ -2215,7 +2263,9 @@ fn main() -> ExitCode {
                                 let req_id = next_req_id;
                                 next_req_id += 1;
                                 let req = helius_ws::account_subscribe_request(
-                                    req_id, &pda_str, &args.commitment,
+                                    req_id,
+                                    &pda_str,
+                                    &args.commitment,
                                 );
                                 let _ = c.send_text(&req);
                                 sub_tracker.record_request(req_id, *mint);
@@ -2249,7 +2299,6 @@ fn main() -> ExitCode {
             did_work = true;
         }
 
-
         // ── Wall-clock status heartbeat (top-of-loop) ─────────────────────
         // This fires on EVERY loop iteration, independent of tick timing.
         // Even if the loop is blocked by WS reconnect sleeps or slow polls,
@@ -2267,9 +2316,11 @@ fn main() -> ExitCode {
             {
                 let snaps = engine.open_positions_snapshot();
                 let open_path = std::path::Path::new("data/open_positions.json");
-                let _ = pump_quant_app::live_status::OpenPositionSnapshot::write_to_path(&snaps, open_path);
-                }
-                // Restart-amnesia fix: write cumulative_pnl.json alongside
+                let _ = pump_quant_app::live_status::OpenPositionSnapshot::write_to_path(
+                    &snaps, open_path,
+                );
+            }
+            // Restart-amnesia fix: write cumulative_pnl.json alongside
             // live_status.json. This gives the cron a trustworthy PnL
             // number that persists across daemon restarts.
             if let Err(e) = write_cumulative_pnl(
@@ -2384,7 +2435,12 @@ fn main() -> ExitCode {
                     last_slot_seen = slot;
                     last_slot_time = Instant::now();
                 }
-                Ok(LaserStreamUpdate::Account { pubkey, owner, data, slot }) => {
+                Ok(LaserStreamUpdate::Account {
+                    pubkey,
+                    owner,
+                    data,
+                    slot,
+                }) => {
                     did_work = true;
                     stats.ls_account_received += 1;
 
@@ -2417,34 +2473,40 @@ fn main() -> ExitCode {
                                     },
                                     None => 0,
                                 };
-                                queue.push(ProvenancedEvent {
-                                    event: AppEvent::MarketAuxiliary {
-                                        mint: Mint(mb),
-                                        token_standard,
-                                        symbol_len: 0,
+                                queue.push(
+                                    ProvenancedEvent {
+                                        event: AppEvent::MarketAuxiliary {
+                                            mint: Mint(mb),
+                                            token_standard,
+                                            symbol_len: 0,
+                                        },
+                                        source: ProvenanceSource::LaserStreamAccount,
+                                        slot,
+                                        is_live: true,
                                     },
-                                    source: ProvenanceSource::LaserStreamAccount,
                                     slot,
-                                    is_live: true,
-                                }, slot);
+                                );
                             }
 
                             // Derive market trade from reserve delta — same
                             // logic as the WS account notification handler.
                             let prev = reserve_tracker.get(&mb).copied();
-                            if let Some(trade_pe) = derive_market_trade_from_delta(
-                                &mb, prev, &curve, slot, true,
-                            ) {
+                            if let Some(trade_pe) =
+                                derive_market_trade_from_delta(&mb, prev, &curve, slot, true)
+                            {
                                 queue.push(trade_pe, slot);
                                 stats.delta_trades_derived += 1;
                             } else {
                                 stats.delta_no_trade += 1;
                             }
-                            reserve_tracker.insert(mb, ReserveSnapshot {
-                                virtual_sol: curve.virtual_sol,
-                                virtual_token: curve.virtual_token,
-                                slot,
-                            });
+                            reserve_tracker.insert(
+                                mb,
+                                ReserveSnapshot {
+                                    virtual_sol: curve.virtual_sol,
+                                    virtual_token: curve.virtual_token,
+                                    slot,
+                                },
+                            );
                             // C1: publish these reserves into the curve cache. The hot path (and the
                             // outbound sink's state fetch) then answers from the stream instead of paying a
                             // cold 4-RTT fetch. Returns false for a mint whose ctx was never learned — the
@@ -2492,7 +2554,7 @@ fn main() -> ExitCode {
                                 ls_respawn_count
                             );
                             stats.stubbed_or_assumed.push(
-                                "LaserStream exhausted respawns — Helius WS fallback".to_string()
+                                "LaserStream exhausted respawns — Helius WS fallback".to_string(),
                             );
                             // Mark ls_spawned false so we don't keep trying
                             stats.ls_spawned = false;
@@ -2578,8 +2640,7 @@ fn main() -> ExitCode {
             Ok(Some(WsEvent::Text(text))) => {
                 did_work = true;
                 let is_create = text.contains("\"txType\":\"create\"");
-                let is_migration =
-                    text.contains("\"txType\":\"migrate\"")
+                let is_migration = text.contains("\"txType\":\"migrate\"")
                     || text.contains("\"txType\":\"migration\"");
 
                 if is_create {
@@ -2587,9 +2648,9 @@ fn main() -> ExitCode {
                     if handle_create_payload(text.as_bytes(), 0, &queue) {
                         stats.pp_creates_parsed += 1;
                     }
-                    if let Some(meta) =
-                        pump_quant_ingest::pumpportal_parse::parse_pumpportal_create(text.as_bytes())
-                    {
+                    if let Some(meta) = pump_quant_ingest::pumpportal_parse::parse_pumpportal_create(
+                        text.as_bytes(),
+                    ) {
                         let mint_bytes = meta.mint;
                         let mint_b58 = Pubkey::try_from(mint_bytes)
                             .map(|pk| pk.to_string())
@@ -2621,16 +2682,19 @@ fn main() -> ExitCode {
                         // when the OnchainConfirm decodes the curve tail).
                         if aux_emitted.insert(mint_bytes) {
                             let symbol_len = meta.symbol.len().min(255) as u8;
-                            queue.push(ProvenancedEvent {
-                                event: AppEvent::MarketAuxiliary {
-                                    mint: Mint(mint_bytes),
-                                    token_standard: 0, // unknown until OnchainConfirm
-                                    symbol_len,
+                            queue.push(
+                                ProvenancedEvent {
+                                    event: AppEvent::MarketAuxiliary {
+                                        mint: Mint(mint_bytes),
+                                        token_standard: 0, // unknown until OnchainConfirm
+                                        symbol_len,
+                                    },
+                                    source: ProvenanceSource::PumpPortalTrade,
+                                    slot: 0,
+                                    is_live: true,
                                 },
-                                source: ProvenanceSource::PumpPortalTrade,
-                                slot: 0,
-                                is_live: true,
-                            }, 0);
+                                0,
+                            );
                         }
 
                         if trade_sub_tracker.add(&mint_b58) {
@@ -2669,23 +2733,23 @@ fn main() -> ExitCode {
                                     hex_short(&mint_bytes)
                                 );
                             } else {
-                            // ── PROACTIVE RECONNECT CHECK ──────────────────────
-                            // Before subscribing, check if leaked server-side
-                            // subscriptions are approaching the Helius cap.
-                            // The estimate: every eviction where server_sub_id
-                            // is None (ACK never arrived) leaks one server slot
-                            // that we can't reclaim via accountUnsubscribe.
-                            // If cumulative leaks exceed the threshold, force a
-                            // reconnect now to reset the server-side count.
-                            // This is the PROACTIVE layer — we don't wait for
-                            // the -32006 error to know we're leaking.
-                            let estimated_server_subs =
-                                sub_tracker.server_visible_count() as u64
-                                + stats.subs_leaked_no_ack;
-                            let threshold = (HELIUS_SUB_CAP as f64
-                                * SUB_CAP_RECONNECT_THRESHOLD) as u64;
-                            if estimated_server_subs >= threshold {
-                                eprintln!(
+                                // ── PROACTIVE RECONNECT CHECK ──────────────────────
+                                // Before subscribing, check if leaked server-side
+                                // subscriptions are approaching the Helius cap.
+                                // The estimate: every eviction where server_sub_id
+                                // is None (ACK never arrived) leaks one server slot
+                                // that we can't reclaim via accountUnsubscribe.
+                                // If cumulative leaks exceed the threshold, force a
+                                // reconnect now to reset the server-side count.
+                                // This is the PROACTIVE layer — we don't wait for
+                                // the -32006 error to know we're leaking.
+                                let estimated_server_subs = sub_tracker.server_visible_count()
+                                    as u64
+                                    + stats.subs_leaked_no_ack;
+                                let threshold =
+                                    (HELIUS_SUB_CAP as f64 * SUB_CAP_RECONNECT_THRESHOLD) as u64;
+                                if estimated_server_subs >= threshold {
+                                    eprintln!(
                                     "[pq-daemon] PROACTIVE RECONNECT: estimated server \
                                      subs ({estimated_server_subs}) >= threshold ({threshold}), \
                                      leaked_no_ack={}, pending_acks={}, acked={}, forcing Helius reconnect to reset cap",
@@ -2693,116 +2757,121 @@ fn main() -> ExitCode {
                                     sub_tracker.pending_ack_count(),
                                     sub_tracker.acked_count()
                                 );
-                                // Force reconnect by closing the old connection
-                                // and re-establishing. The close() sends a WS
-                                // Close frame so Helius releases slots NOW.
-                                let _ = helius_conn.close();
-                                stats.helius_reconnects += 1;
-                                stats.sub_cap_errors = 0; // reset after reconnect
-                                stats.subs_leaked_no_ack = 0; // reset after reconnect
-                                let active_mints_vec = sub_tracker.clear_server_subs();
-                                match WsConn::connect(&helius_url) {
-                                    Ok(mut c) => {
-                                        let _ = c.set_read_timeout(
-                                            Duration::from_millis(WS_READ_TIMEOUT_MS),
-                                        );
-                                        let _ = c.send_text(
-                                            &helius_ws::slot_subscribe_request(),
-                                        );
-                                        for mint in &active_mints_vec {
-                                            let pda = bonding_curve_pda(mint);
-                                            let pda_str = pda.to_string();
-                                            let req_id = next_req_id;
-                                            next_req_id += 1;
-                                            let req = helius_ws::account_subscribe_request(
-                                                req_id, &pda_str, &args.commitment,
-                                            );
-                                            let _ = c.send_text(&req);
-                                            sub_tracker.record_request(req_id, *mint);
+                                    // Force reconnect by closing the old connection
+                                    // and re-establishing. The close() sends a WS
+                                    // Close frame so Helius releases slots NOW.
+                                    let _ = helius_conn.close();
+                                    stats.helius_reconnects += 1;
+                                    stats.sub_cap_errors = 0; // reset after reconnect
+                                    stats.subs_leaked_no_ack = 0; // reset after reconnect
+                                    let active_mints_vec = sub_tracker.clear_server_subs();
+                                    match WsConn::connect(&helius_url) {
+                                        Ok(mut c) => {
+                                            let _ = c.set_read_timeout(Duration::from_millis(
+                                                WS_READ_TIMEOUT_MS,
+                                            ));
+                                            let _ =
+                                                c.send_text(&helius_ws::slot_subscribe_request());
+                                            for mint in &active_mints_vec {
+                                                let pda = bonding_curve_pda(mint);
+                                                let pda_str = pda.to_string();
+                                                let req_id = next_req_id;
+                                                next_req_id += 1;
+                                                let req = helius_ws::account_subscribe_request(
+                                                    req_id,
+                                                    &pda_str,
+                                                    &args.commitment,
+                                                );
+                                                let _ = c.send_text(&req);
+                                                sub_tracker.record_request(req_id, *mint);
+                                            }
+                                            helius_conn_established_at = Instant::now();
+                                            last_slot_time = Instant::now();
+                                            helius_conn = c;
+                                            eprintln!("[pq-daemon] PROACTIVE reconnect succeeded");
                                         }
-                                        helius_conn_established_at = Instant::now();
-                                        last_slot_time = Instant::now();
-                                        helius_conn = c;
-                                        eprintln!(
-                                            "[pq-daemon] PROACTIVE reconnect succeeded"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        eprintln!(
-                                            "[pq-daemon] PROACTIVE reconnect FAILED: {e} — \
-                                             degrading, will retry on next tick"
-                                        );
-                                        stats.ws_errors += 1;
-                                        last_slot_time = Instant::now();
-                                    }
-                                }
-                            }
-
-                            if sub_tracker.len() >= MAX_ACCOUNT_SUBS {
-                                if let Some((evicted_req, evicted_mint, evicted_server_sub)) = sub_tracker.evict_oldest() {
-                                    stats.account_subs_evicted += 1;
-                                    reserve_tracker.remove(&evicted_mint);
-                                    // Track leaked subscriptions: if the ACK
-                                    // never arrived (server_sub_id is None),
-                                    // we CANNOT send accountUnsubscribe, and
-                                    // the server-side slot leaks permanently
-                                    // until TCP timeout. This is the root cause
-                                    // of the 1000-sub cap death spiral.
-                                    if evicted_server_sub.is_none() {
-                                        stats.subs_leaked_no_ack += 1;
-                                        eprintln!(
-                                            "[pq-daemon] EVICT LEAK: req={evicted_req} \
-                                             mint={:.8} — ACK never arrived, server slot \
-                                             leaked (total leaked: {})",
-                                            hex_short(&evicted_mint),
-                                            stats.subs_leaked_no_ack
-                                        );
-                                    } else {
-                                        // Send accountUnsubscribe to release the Helius
-                                        // server-side subscription slot. Without this the
-                                        // connection leaks subscriptions until Helius caps
-                                        // at 1000, after which no new accountSubscribe
-                                        // succeeds and ALL new candidates fail with
-                                        // NeedsOnchainConfirmation.
-                                        let ssid = evicted_server_sub.unwrap();
-                                        let unsub_id = next_req_id;
-                                        next_req_id += 1;
-                                        let unsub = helius_ws::account_unsubscribe_request(unsub_id, ssid);
-                                        if let Err(e) = helius_conn.send_text(&unsub) {
+                                        Err(e) => {
                                             eprintln!(
-                                                "[pq-daemon] accountUnsubscribe send error (server_sub={ssid}): {e}"
+                                                "[pq-daemon] PROACTIVE reconnect FAILED: {e} — \
+                                             degrading, will retry on next tick"
                                             );
                                             stats.ws_errors += 1;
+                                            last_slot_time = Instant::now();
                                         }
                                     }
-                                    eprintln!(
-                                        "[pq-daemon] EVICT sub req={evicted_req} mint={:.8}",
-                                        hex_short(&evicted_mint)
-                                    );
                                 }
-                            }
 
-                            let pda = bonding_curve_pda(&mint_bytes);
-                            let pda_str = pda.to_string();
-                            stats.pdas_derived += 1;
-                            stats.pda_venue_present += 1;
+                                if sub_tracker.len() >= MAX_ACCOUNT_SUBS {
+                                    if let Some((evicted_req, evicted_mint, evicted_server_sub)) =
+                                        sub_tracker.evict_oldest()
+                                    {
+                                        stats.account_subs_evicted += 1;
+                                        reserve_tracker.remove(&evicted_mint);
+                                        // Track leaked subscriptions: if the ACK
+                                        // never arrived (server_sub_id is None),
+                                        // we CANNOT send accountUnsubscribe, and
+                                        // the server-side slot leaks permanently
+                                        // until TCP timeout. This is the root cause
+                                        // of the 1000-sub cap death spiral.
+                                        if evicted_server_sub.is_none() {
+                                            stats.subs_leaked_no_ack += 1;
+                                            eprintln!(
+                                                "[pq-daemon] EVICT LEAK: req={evicted_req} \
+                                             mint={:.8} — ACK never arrived, server slot \
+                                             leaked (total leaked: {})",
+                                                hex_short(&evicted_mint),
+                                                stats.subs_leaked_no_ack
+                                            );
+                                        } else {
+                                            // Send accountUnsubscribe to release the Helius
+                                            // server-side subscription slot. Without this the
+                                            // connection leaks subscriptions until Helius caps
+                                            // at 1000, after which no new accountSubscribe
+                                            // succeeds and ALL new candidates fail with
+                                            // NeedsOnchainConfirmation.
+                                            let ssid = evicted_server_sub.unwrap();
+                                            let unsub_id = next_req_id;
+                                            next_req_id += 1;
+                                            let unsub = helius_ws::account_unsubscribe_request(
+                                                unsub_id, ssid,
+                                            );
+                                            if let Err(e) = helius_conn.send_text(&unsub) {
+                                                eprintln!(
+                                                "[pq-daemon] accountUnsubscribe send error (server_sub={ssid}): {e}"
+                                            );
+                                                stats.ws_errors += 1;
+                                            }
+                                        }
+                                        eprintln!(
+                                            "[pq-daemon] EVICT sub req={evicted_req} mint={:.8}",
+                                            hex_short(&evicted_mint)
+                                        );
+                                    }
+                                }
 
-                            let req_id = next_req_id;
-                            next_req_id += 1;
-                            let req = helius_ws::account_subscribe_request(
-                                req_id, &pda_str, &args.commitment,
-                            );
-                            match helius_conn.send_text(&req) {
-                                Ok(()) => {
-                                    sub_tracker.record_request(req_id, mint_bytes);
-                                    stats.account_subs_active = sub_tracker.len();
-                                    stats.account_subs_total_attempted += 1;
+                                let pda = bonding_curve_pda(&mint_bytes);
+                                let pda_str = pda.to_string();
+                                stats.pdas_derived += 1;
+                                stats.pda_venue_present += 1;
+
+                                let req_id = next_req_id;
+                                next_req_id += 1;
+                                let req = helius_ws::account_subscribe_request(
+                                    req_id,
+                                    &pda_str,
+                                    &args.commitment,
+                                );
+                                match helius_conn.send_text(&req) {
+                                    Ok(()) => {
+                                        sub_tracker.record_request(req_id, mint_bytes);
+                                        stats.account_subs_active = sub_tracker.len();
+                                        stats.account_subs_total_attempted += 1;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[pq-daemon] accountSubscribe send error: {e}");
+                                        stats.ws_errors += 1;
+                                    }
                                 }
-                                Err(e) => {
-                                    eprintln!("[pq-daemon] accountSubscribe send error: {e}");
-                                    stats.ws_errors += 1;
-                                }
-                            }
                             } // Rev-30: close else (WS fallback) block
                         }
                     }
@@ -2822,7 +2891,9 @@ fn main() -> ExitCode {
                     // buying pressure could be evicted just because it was
                     // subscribed early, losing its OnchainConfirm slot
                     // precisely when it matters most.
-                    if let Some(tx) = pump_quant_ingest::pumpportal_parse::parse_pumpportal(text.as_bytes()) {
+                    if let Some(tx) =
+                        pump_quant_ingest::pumpportal_parse::parse_pumpportal(text.as_bytes())
+                    {
                         sub_tracker.mark_trade_seen(&tx.mint);
                     }
                 }
@@ -2851,7 +2922,8 @@ fn main() -> ExitCode {
                         // Try to reconnect the existing connection object
                         match WsConn::connect(&pp_url) {
                             Ok(mut c) => {
-                                let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
+                                let _ =
+                                    c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
                                 for sub in pumpportal_ws::subscription_batch(&[]) {
                                     let _ = c.send_text(&sub);
                                 }
@@ -2876,7 +2948,9 @@ fn main() -> ExitCode {
                 };
             }
             Ok(Some(WsEvent::Pong)) | Ok(None) => {}
-            Ok(Some(WsEvent::Binary(_))) => { stats.ws_errors += 1; }
+            Ok(Some(WsEvent::Binary(_))) => {
+                stats.ws_errors += 1;
+            }
             Err(e) => {
                 eprintln!("[pq-daemon] PumpPortal poll error: {e}");
                 stats.ws_errors += 1;
@@ -2889,7 +2963,10 @@ fn main() -> ExitCode {
                 did_work = true;
                 let v = match json::parse(&text) {
                     Ok(v) => v,
-                    Err(_) => { stats.ws_errors += 1; continue; }
+                    Err(_) => {
+                        stats.ws_errors += 1;
+                        continue;
+                    }
                 };
 
                 if let helius_ws::Inbound::Ack { id } = helius_ws::classify(&v) {
@@ -2901,7 +2978,11 @@ fn main() -> ExitCode {
                                 if let Some(mb) = sub_tracker.mint_for_server_sub(ssub) {
                                     if let Ok(account_data) = B64.decode(data_str.as_bytes()) {
                                         if let Some((provenanced, curve)) =
-                                            decode_onchain_confirm_with_curve(&mb, &account_data, slot)
+                                            decode_onchain_confirm_with_curve(
+                                                &mb,
+                                                &account_data,
+                                                slot,
+                                            )
                                         {
                                             queue.push(provenanced, slot);
                                             stats.helius_onchain_confirms_decoded += 1;
@@ -2913,14 +2994,15 @@ fn main() -> ExitCode {
                                             // Some(true)=mayhem/token2022. Wangr study found legacy
                                             // tokens graduate 5× more often.
                                             if aux_emitted.contains(&mb) {
-                                                let token_standard = match decode_pump_curve_tail(&account_data) {
-                                                    Some(tail) => match tail.is_mayhem_mode {
-                                                        Some(true) => 2,  // mayhem/token2022
-                                                        Some(false) => 1, // legacy SPL
-                                                        None => 0,        // unknown
-                                                    },
-                                                    None => 0,
-                                                };
+                                                let token_standard =
+                                                    match decode_pump_curve_tail(&account_data) {
+                                                        Some(tail) => match tail.is_mayhem_mode {
+                                                            Some(true) => 2,  // mayhem/token2022
+                                                            Some(false) => 1, // legacy SPL
+                                                            None => 0,        // unknown
+                                                        },
+                                                        None => 0,
+                                                    };
                                                 queue.push(ProvenancedEvent {
                                                     event: AppEvent::MarketAuxiliary {
                                                         mint: Mint(mb),
@@ -2942,11 +3024,14 @@ fn main() -> ExitCode {
                                             } else {
                                                 stats.delta_no_trade += 1;
                                             }
-                                            reserve_tracker.insert(mb, ReserveSnapshot {
-                                                virtual_sol: curve.virtual_sol,
-                                                virtual_token: curve.virtual_token,
-                                                slot,
-                                            });
+                                            reserve_tracker.insert(
+                                                mb,
+                                                ReserveSnapshot {
+                                                    virtual_sol: curve.virtual_sol,
+                                                    virtual_token: curve.virtual_token,
+                                                    slot,
+                                                },
+                                            );
                                             // C1: publish these reserves into the curve cache. The hot path (and the
                                             // outbound sink's state fetch) then answers from the stream instead of paying a
                                             // cold 4-RTT fetch. Returns false for a mint whose ctx was never learned — the
@@ -2985,9 +3070,8 @@ fn main() -> ExitCode {
                             "account" => {
                                 stats.helius_account_notifications += 1;
                                 let params = v.get("params");
-                                let server_sub = params
-                                    .and_then(|p| extract_server_sub_id(p))
-                                    .unwrap_or(0);
+                                let server_sub =
+                                    params.and_then(|p| extract_server_sub_id(p)).unwrap_or(0);
 
                                 let mint_bytes = sub_tracker.mint_for_server_sub(server_sub);
 
@@ -2997,7 +3081,11 @@ fn main() -> ExitCode {
                                     if let Some(data_str) = data_b64 {
                                         if let Ok(account_data) = B64.decode(data_str.as_bytes()) {
                                             if let Some((provenanced, curve)) =
-                                                decode_onchain_confirm_with_curve(&mb, &account_data, slot)
+                                                decode_onchain_confirm_with_curve(
+                                                    &mb,
+                                                    &account_data,
+                                                    slot,
+                                                )
                                             {
                                                 queue.push(provenanced, slot);
                                                 stats.helius_onchain_confirms_decoded += 1;
@@ -3009,14 +3097,17 @@ fn main() -> ExitCode {
                                                 // Some(true)=mayhem/token2022. Wangr study found legacy
                                                 // tokens graduate 5× more often.
                                                 if aux_emitted.contains(&mb) {
-                                                    let token_standard = match decode_pump_curve_tail(&account_data) {
-                                                        Some(tail) => match tail.is_mayhem_mode {
-                                                            Some(true) => 2,  // mayhem/token2022
-                                                            Some(false) => 1, // legacy SPL
-                                                            None => 0,        // unknown
-                                                        },
-                                                        None => 0,
-                                                    };
+                                                    let token_standard =
+                                                        match decode_pump_curve_tail(&account_data)
+                                                        {
+                                                            Some(tail) => match tail.is_mayhem_mode
+                                                            {
+                                                                Some(true) => 2,  // mayhem/token2022
+                                                                Some(false) => 1, // legacy SPL
+                                                                None => 0,        // unknown
+                                                            },
+                                                            None => 0,
+                                                        };
                                                     queue.push(ProvenancedEvent {
                                                         event: AppEvent::MarketAuxiliary {
                                                             mint: Mint(mb),
@@ -3030,19 +3121,24 @@ fn main() -> ExitCode {
                                                 }
 
                                                 let prev = reserve_tracker.get(&mb).copied();
-                                                if let Some(trade_pe) = derive_market_trade_from_delta(
-                                                    &mb, prev, &curve, slot, true,
-                                                ) {
+                                                if let Some(trade_pe) =
+                                                    derive_market_trade_from_delta(
+                                                        &mb, prev, &curve, slot, true,
+                                                    )
+                                                {
                                                     queue.push(trade_pe, slot);
                                                     stats.delta_trades_derived += 1;
                                                 } else {
                                                     stats.delta_no_trade += 1;
                                                 }
-                                                reserve_tracker.insert(mb, ReserveSnapshot {
-                                                    virtual_sol: curve.virtual_sol,
-                                                    virtual_token: curve.virtual_token,
-                                                    slot,
-                                                });
+                                                reserve_tracker.insert(
+                                                    mb,
+                                                    ReserveSnapshot {
+                                                        virtual_sol: curve.virtual_sol,
+                                                        virtual_token: curve.virtual_token,
+                                                        slot,
+                                                    },
+                                                );
                                                 // C1: publish these reserves into the curve cache. The hot path (and the
                                                 // outbound sink's state fetch) then answers from the stream instead of paying a
                                                 // cold 4-RTT fetch. Returns false for a mint whose ctx was never learned — the
@@ -3069,7 +3165,9 @@ fn main() -> ExitCode {
                                     }
                                 }
                             }
-                            _ => { stats.ws_errors += 1; }
+                            _ => {
+                                stats.ws_errors += 1;
+                            }
                         }
                     }
                     helius_ws::Inbound::Ack { id } => {
@@ -3137,7 +3235,8 @@ fn main() -> ExitCode {
                     if !reconnected {
                         match WsConn::connect(&helius_url) {
                             Ok(mut c) => {
-                                let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
+                                let _ =
+                                    c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
                                 let _ = c.send_text(&helius_ws::slot_subscribe_request());
                                 // GAP #8: record_request() MUST be called for
                                 // each re-subscription. Without it, the ACK
@@ -3152,7 +3251,9 @@ fn main() -> ExitCode {
                                     let req_id = next_req_id;
                                     next_req_id += 1;
                                     let req = helius_ws::account_subscribe_request(
-                                        req_id, &pda_str, &args.commitment,
+                                        req_id,
+                                        &pda_str,
+                                        &args.commitment,
                                     );
                                     let _ = c.send_text(&req);
                                     // CRITICAL: register the req_id → mint
@@ -3184,7 +3285,9 @@ fn main() -> ExitCode {
                 }
             }
             Ok(Some(WsEvent::Pong)) | Ok(None) => {}
-            Ok(Some(WsEvent::Binary(_))) => { stats.ws_errors += 1; }
+            Ok(Some(WsEvent::Binary(_))) => {
+                stats.ws_errors += 1;
+            }
             Err(e) => {
                 // GAP #9: Err path recovery — THE ACTIVE ROOT CAUSE.
                 //
@@ -3218,7 +3321,8 @@ fn main() -> ExitCode {
                     if !reconnected {
                         match WsConn::connect(&helius_url) {
                             Ok(mut c) => {
-                                let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
+                                let _ =
+                                    c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
                                 let _ = c.send_text(&helius_ws::slot_subscribe_request());
                                 for mint in &active_mints_vec {
                                     let pda = bonding_curve_pda(mint);
@@ -3226,7 +3330,9 @@ fn main() -> ExitCode {
                                     let req_id = next_req_id;
                                     next_req_id += 1;
                                     let req = helius_ws::account_subscribe_request(
-                                        req_id, &pda_str, &args.commitment,
+                                        req_id,
+                                        &pda_str,
+                                        &args.commitment,
                                     );
                                     let _ = c.send_text(&req);
                                     sub_tracker.record_request(req_id, *mint);
@@ -3302,7 +3408,9 @@ fn main() -> ExitCode {
                                 let req_id = next_req_id;
                                 next_req_id += 1;
                                 let req = helius_ws::account_subscribe_request(
-                                    req_id, &pda_str, &args.commitment,
+                                    req_id,
+                                    &pda_str,
+                                    &args.commitment,
                                 );
                                 let _ = c.send_text(&req);
                                 sub_tracker.record_request(req_id, *mint);
@@ -3364,20 +3472,17 @@ fn main() -> ExitCode {
             loop {
                 match fc_rx.try_recv() {
                     Ok(json_bytes) => {
-                        batch.push(
-                            pump_quant_ingest::social_source::RawSocialPayload::new(
-                                json_bytes,
-                                now_ns,
-                            ),
-                        );
+                        batch.push(pump_quant_ingest::social_source::RawSocialPayload::new(
+                            json_bytes, now_ns,
+                        ));
                     }
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
                         if stats.fc_spawned {
                             eprintln!("[pq-daemon] Firecrawl bridge disconnected — social intelligence degraded");
-                            stats.stubbed_or_assumed.push(
-                                "Firecrawl bridge disconnected mid-session".to_string()
-                            );
+                            stats
+                                .stubbed_or_assumed
+                                .push("Firecrawl bridge disconnected mid-session".to_string());
                         }
                         break;
                     }
@@ -3417,73 +3522,73 @@ fn main() -> ExitCode {
                 Ok(Some(_status)) => {
                     // Child has exited — stop trying to write to its stdin
                     eprintln!("[pq-daemon] Firecrawl bridge child exited — dropping fc_child, social intelligence disabled");
-                    stats.stubbed_or_assumed.push(
-                        "Firecrawl bridge exited — social intelligence disabled".to_string()
-                    );
+                    stats
+                        .stubbed_or_assumed
+                        .push("Firecrawl bridge exited — social intelligence disabled".to_string());
                     drop(child.stdin.take()); // drop stdin to close the pipe cleanly
                     fc_child = None;
                 }
                 Ok(None) => {
                     // Child still running — safe to write to stdin
                     if let Some(ref mut stdin) = child.stdin {
-                let st = engine.live_status();
-                let ts_ns = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos();
+                        let st = engine.live_status();
+                        let ts_ns = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos();
 
-                // Trigger 1: band_entry — check if any promoted coin is in band
-                if st.promoted > 0 && st.promoted % 50 == 0 {
-                    let trigger = format!(
-                        r#"{{"trigger":"band_entry","mint_count":{},"ts":{}}}"#,
-                        st.promoted, ts_ns
-                    );
-                    if stdin.write_all(format!("{trigger}\n").as_bytes()).is_ok() {
-                        stats.fc_triggers_emitted += 1;
-                    }
-                }
+                        // Trigger 1: band_entry — check if any promoted coin is in band
+                        if st.promoted > 0 && st.promoted % 50 == 0 {
+                            let trigger = format!(
+                                r#"{{"trigger":"band_entry","mint_count":{},"ts":{}}}"#,
+                                st.promoted, ts_ns
+                            );
+                            if stdin.write_all(format!("{trigger}\n").as_bytes()).is_ok() {
+                                stats.fc_triggers_emitted += 1;
+                            }
+                        }
 
-                // Trigger 2: velocity_spike — check net realized for spike detection
-                if st.net_realized_lamports.abs() > 1_000_000_000 {
-                    let trigger = format!(
-                        r#"{{"trigger":"velocity_spike","net_lamports":{},"ts":{}}}"#,
-                        st.net_realized_lamports, ts_ns
-                    );
-                    if stdin.write_all(format!("{trigger}\n").as_bytes()).is_ok() {
-                        stats.fc_triggers_emitted += 1;
-                    }
-                }
+                        // Trigger 2: velocity_spike — check net realized for spike detection
+                        if st.net_realized_lamports.abs() > 1_000_000_000 {
+                            let trigger = format!(
+                                r#"{{"trigger":"velocity_spike","net_lamports":{},"ts":{}}}"#,
+                                st.net_realized_lamports, ts_ns
+                            );
+                            if stdin.write_all(format!("{trigger}\n").as_bytes()).is_ok() {
+                                stats.fc_triggers_emitted += 1;
+                            }
+                        }
 
-                // Trigger 3: mint_promotion — on each promotion milestone
-                if st.promoted > 0 && st.promoted % 100 == 0 {
-                    let trigger = format!(
-                        r#"{{"trigger":"mint_promotion","total_promoted":{},"ts":{}}}"#,
-                        st.promoted, ts_ns
-                    );
-                    if stdin.write_all(format!("{trigger}\n").as_bytes()).is_ok() {
-                        stats.fc_triggers_emitted += 1;
-                    }
-                }
+                        // Trigger 3: mint_promotion — on each promotion milestone
+                        if st.promoted > 0 && st.promoted % 100 == 0 {
+                            let trigger = format!(
+                                r#"{{"trigger":"mint_promotion","total_promoted":{},"ts":{}}}"#,
+                                st.promoted, ts_ns
+                            );
+                            if stdin.write_all(format!("{trigger}\n").as_bytes()).is_ok() {
+                                stats.fc_triggers_emitted += 1;
+                            }
+                        }
 
-                // Trigger 4: position_event — on admission changes
-                if st.admitted > 0 && st.admitted % 10 == 0 {
-                    let trigger = format!(
-                        r#"{{"trigger":"position_event","admitted":{},"ts":{}}}"#,
-                        st.admitted, ts_ns
-                    );
-                    if stdin.write_all(format!("{trigger}\n").as_bytes()).is_ok() {
-                        stats.fc_triggers_emitted += 1;
-                    }
-                }
-                }  // close if let Some(ref mut stdin)
-                }  // close Ok(None) => arm
+                        // Trigger 4: position_event — on admission changes
+                        if st.admitted > 0 && st.admitted % 10 == 0 {
+                            let trigger = format!(
+                                r#"{{"trigger":"position_event","admitted":{},"ts":{}}}"#,
+                                st.admitted, ts_ns
+                            );
+                            if stdin.write_all(format!("{trigger}\n").as_bytes()).is_ok() {
+                                stats.fc_triggers_emitted += 1;
+                            }
+                        }
+                    } // close if let Some(ref mut stdin)
+                } // close Ok(None) => arm
                 Err(e) => {
                     eprintln!("[pq-daemon] Firecrawl bridge try_wait error: {e}");
                     drop(child.stdin.take());
                     fc_child = None;
                 }
-            }  // close match child.try_wait()
-        }  // close if let Some(ref mut child) = fc_child
+            } // close match child.try_wait()
+        } // close if let Some(ref mut child) = fc_child
 
         // ── Periodic Tick (engine evaluate) ──────────────────────────────
         if Instant::now() >= next_tick {
@@ -3506,10 +3611,9 @@ fn main() -> ExitCode {
             // the engine replay never triggers admission decisions — making
             // the refiner's engine-replay subprocess useless.
             if let Some(ref mut writer) = event_stream_writer {
-                if let Err(e) = writer.write_event(
-                    &pump_quant_app::event::AppEvent::Tick,
-                    last_slot_seen,
-                ) {
+                if let Err(e) =
+                    writer.write_event(&pump_quant_app::event::AppEvent::Tick, last_slot_seen)
+                {
                     eprintln!("[pq-daemon] event_stream tick write error: {}", e);
                 }
             }
@@ -3533,8 +3637,12 @@ fn main() -> ExitCode {
                     };
                     match accepted {
                         Some(sig) if sig != [0u8; 64] => {
-                            if engine.complete_async_outbound(r.ticket, sig, r.worker_us, submit_rpc_us)
-                            {
+                            if engine.complete_async_outbound(
+                                r.ticket,
+                                sig,
+                                r.worker_us,
+                                submit_rpc_us,
+                            ) {
                                 eprintln!(
                                     "[pq-daemon] outbound ticket={} {:?} ACCEPTED in {}µs (worker)",
                                     r.ticket,
@@ -3570,7 +3678,8 @@ fn main() -> ExitCode {
             // landed on-chain. Feed the results back into the engine as
             // OurBuyConfirmed/OurBuyFailed/OurSellConfirmed/OurSellFailed.
             if args.live_mode && Instant::now() >= next_confirm_poll {
-                next_confirm_poll = Instant::now() + Duration::from_secs(confirm_poll_interval_secs);
+                next_confirm_poll =
+                    Instant::now() + Duration::from_secs(confirm_poll_interval_secs);
                 let pending_buys = engine.pending_buy_signatures();
                 let pending_sells = engine.pending_sell_signatures();
                 if !pending_buys.is_empty() || !pending_sells.is_empty() {
@@ -3582,9 +3691,15 @@ fn main() -> ExitCode {
                     );
                     for r in &results {
                         let mint_bytes = if r.kind == "buy" {
-                            pending_buys.iter().find(|(_, s)| s == &r.signature).map(|(m, _)| *m)
+                            pending_buys
+                                .iter()
+                                .find(|(_, s)| s == &r.signature)
+                                .map(|(m, _)| *m)
                         } else {
-                            pending_sells.iter().find(|(_, s)| s == &r.signature).map(|(m, _)| *m)
+                            pending_sells
+                                .iter()
+                                .find(|(_, s)| s == &r.signature)
+                                .map(|(m, _)| *m)
                         };
                         let mint_bytes = match mint_bytes {
                             Some(m) => m,
@@ -3658,7 +3773,9 @@ fn main() -> ExitCode {
                 {
                     let snaps = engine.open_positions_snapshot();
                     let open_path = std::path::Path::new("data/open_positions.json");
-                    let _ = pump_quant_app::live_status::OpenPositionSnapshot::write_to_path(&snaps, open_path);
+                    let _ = pump_quant_app::live_status::OpenPositionSnapshot::write_to_path(
+                        &snaps, open_path,
+                    );
                 }
                 // Restart-amnesia fix: write cumulative_pnl.json alongside
                 // live_status.json on every periodic status write too.
@@ -3673,15 +3790,15 @@ fn main() -> ExitCode {
                     st.info_time_tick,
                 ) {
                     eprintln!("[pq-daemon] cumulative_pnl write failed: {e}");
-                    }
+                }
 
-                    // Crash resilience: periodically append to session_history.jsonl
-                    // (every ~20 heartbeats ≈ 5 min). If the daemon is killed by the
-                    // watchdog (taskkill /F) or crashes, the last periodic entry is
-                    // the best available record for that session. On graceful
-                    // shutdown, a final=true entry is appended (see shutdown section).
-                    session_history_write_counter += 1;
-                    if session_history_write_counter >= 20 {
+                // Crash resilience: periodically append to session_history.jsonl
+                // (every ~20 heartbeats ≈ 5 min). If the daemon is killed by the
+                // watchdog (taskkill /F) or crashes, the last periodic entry is
+                // the best available record for that session. On graceful
+                // shutdown, a final=true entry is appended (see shutdown section).
+                session_history_write_counter += 1;
+                if session_history_write_counter >= 20 {
                     session_history_write_counter = 0;
                     let uptime = session_start.elapsed().as_secs();
                     let _ = append_session_history(
@@ -3699,8 +3816,8 @@ fn main() -> ExitCode {
                         false, // final = false (periodic checkpoint)
                         session_id,
                     );
-                    }
-                    engine.write_brain_analysis();
+                }
+                engine.write_brain_analysis();
                 // Export memory bank summaries for the refiner to consume.
                 // This is the learning loop's output: per-mint and per-strategy
                 // performance data that feeds progressive refinement.
@@ -3723,7 +3840,11 @@ fn main() -> ExitCode {
             if tick_counter - last_tape_flush_tick >= args.tape_every_ticks {
                 let trades = engine.take_tape_trades();
                 for t in &trades {
-                    let lane = if t.scalp { TapeLane::Scalp } else { TapeLane::Early };
+                    let lane = if t.scalp {
+                        TapeLane::Scalp
+                    } else {
+                        TapeLane::Early
+                    };
                     let net = t.gross as i64 - t.fees as i64 - t.tips as i64 - t.failed as i64;
                     // Emit enriched TradeFull record (16-field format for replay).
                     // Fields not yet available from engine.take_tape_trades() are
@@ -3769,7 +3890,11 @@ fn main() -> ExitCode {
                     // Feed the memory bank — the learning loop. Every exited
                     // trade is recorded with full provenance so the bank can
                     // build per-mint and per-strategy performance summaries.
-                    let trade_lane = if t.scalp { TradeLane::Scalp } else { TradeLane::Early };
+                    let trade_lane = if t.scalp {
+                        TradeLane::Scalp
+                    } else {
+                        TradeLane::Early
+                    };
                     let rec = TradeRecord {
                         slot: last_slot_seen,
                         mint_b58: Pubkey::try_from(t.mint)
@@ -3780,10 +3905,16 @@ fn main() -> ExitCode {
                         exit_price_fp: t.exit_price_fp as i128,
                         size_lamports: t.size_lamports,
                         strategy_id: t.archetype as u64,
-                        source: if t.scalp { ProvenanceSource::HeliusAccountSubscribe }
-                                else { ProvenanceSource::PumpPortalTrade },
-                        outcome: if net >= 0 { TradeOutcome::Filled }
-                                 else { TradeOutcome::FilledWithSlippage },
+                        source: if t.scalp {
+                            ProvenanceSource::HeliusAccountSubscribe
+                        } else {
+                            ProvenanceSource::PumpPortalTrade
+                        },
+                        outcome: if net >= 0 {
+                            TradeOutcome::Filled
+                        } else {
+                            TradeOutcome::FilledWithSlippage
+                        },
                         realized_pnl_lamports: net,
                         fees_lamports: (t.fees + t.tips) as u64,
                         slippage_lamports: t.failed as u64,
@@ -3855,14 +3986,13 @@ fn main() -> ExitCode {
                     // we can detect post-promotion deterioration and revert.
                     if post_reload_fp != pre_reload_fp {
                         let st = engine.live_status();
-                        let cumulative_pnl = prior_tape_pnl.saturating_add(
-                            st.net_realized_lamports as i64
-                        );
+                        let cumulative_pnl =
+                            prior_tape_pnl.saturating_add(st.net_realized_lamports as i64);
                         // Snapshot the cumulative trade count at promotion time
                         // so we can compute trades-since-promotion for the
                         // variance-based auto-revert threshold.
-                        let cumulative_trades = prior_tape_trades
-                            .saturating_add(tape_exporter.total_exported());
+                        let cumulative_trades =
+                            prior_tape_trades.saturating_add(tape_exporter.total_exported());
                         trades_at_promotion = cumulative_trades;
                         auto_revert_state = AutoRevertState {
                             promoted_fingerprint: post_reload_fp,
@@ -3886,20 +4016,16 @@ fn main() -> ExitCode {
                 // ── GAP B: auto-revert check ───────────────────────────
                 // After the grace period, check if the promoted config is
                 // deteriorating PnL. If so, revert to the archived champion.
-                if auto_revert_state.promoted_fingerprint != 0
-                    && !auto_revert_state.reverted
-                {
+                if auto_revert_state.promoted_fingerprint != 0 && !auto_revert_state.reverted {
                     let ticks_since = tick_counter.saturating_sub(promotion_tick);
                     let st = engine.live_status();
-                    let cumulative_pnl = prior_tape_pnl.saturating_add(
-                        st.net_realized_lamports as i64
-                    );
+                    let cumulative_pnl =
+                        prior_tape_pnl.saturating_add(st.net_realized_lamports as i64);
                     // Compute trades-since-promotion for the variance-based
                     // auto-revert threshold.
-                    let cumulative_trades = prior_tape_trades
-                        .saturating_add(tape_exporter.total_exported());
-                    let trades_since = cumulative_trades
-                        .saturating_sub(trades_at_promotion);
+                    let cumulative_trades =
+                        prior_tape_trades.saturating_add(tape_exporter.total_exported());
+                    let trades_since = cumulative_trades.saturating_sub(trades_at_promotion);
                     let current_fp = config_fingerprint(&cfg.dump_to_text());
                     if let Some(revert_config_text) = check_auto_revert(
                         current_fp,
@@ -3908,12 +4034,12 @@ fn main() -> ExitCode {
                         trades_since,
                     ) {
                         // Revert: parse the archived champion config back
-                        eprintln!(
-                            "[pq-daemon] AUTO-REVERT: reverting config to archived champion"
-                        );
-                        if let Ok(reverted_cfg) = pump_quant_app::config::Config::from_str_over_default(
-                            &revert_config_text
-                        ) {
+                        eprintln!("[pq-daemon] AUTO-REVERT: reverting config to archived champion");
+                        if let Ok(reverted_cfg) =
+                            pump_quant_app::config::Config::from_str_over_default(
+                                &revert_config_text,
+                            )
+                        {
                             cfg = reverted_cfg;
                             auto_revert_state.reverted = true;
                             write_auto_revert_state(&auto_revert_state);
@@ -3931,23 +4057,22 @@ fn main() -> ExitCode {
             {
                 let st = engine.live_status();
                 // Track realized P&L for drawdown.
-                defense_state.update_drawdown(
-                    st.net_realized_lamports.max(0) as i64
-                );
+                defense_state.update_drawdown(st.net_realized_lamports.max(0) as i64);
                 if !defense_state.trading_allowed() {
                     eprintln!(
                         "[pq-daemon] DEFENSE-IN-DEPTH: TRADING HALTED — reason: {:?}",
                         defense_state.kill_reason()
                     );
                     // Write an EMERGENCY_STOP sentinel so the operator sees it.
-                    let _ = std::fs::write(
-                        EMERGENCY_STOP_FILE,
-                        "defense-in-depth automatic halt",
-                    );
+                    let _ = std::fs::write(EMERGENCY_STOP_FILE, "defense-in-depth automatic halt");
                     // Kill LaserStream child if present — tree-kill to prevent
                     // orphaned gRPC processes burning Helius credits. GAP #13.
-                    if let Some(ref mut child) = ls_child { kill_process_tree(child); }
-                    if let Some(ref mut child) = fc_child { kill_process_tree(child); }
+                    if let Some(ref mut child) = ls_child {
+                        kill_process_tree(child);
+                    }
+                    if let Some(ref mut child) = fc_child {
+                        kill_process_tree(child);
+                    }
                     return ExitCode::from(EXIT_EMERGENCY);
                 }
             }
@@ -3974,12 +4099,8 @@ fn main() -> ExitCode {
                     snap.retired[0], snap.retired[1], snap.retired[2], snap.retired[3],
                 ));
                 match refiner_spawner.spawn(tick_counter, &config_text) {
-                    Ok(pid) => eprintln!(
-                        "[pq-daemon] pq-refiner spawned: pid={pid}"
-                    ),
-                    Err(e) => eprintln!(
-                        "[pq-daemon] pq-refiner spawn FAILED: {e}"
-                    ),
+                    Ok(pid) => eprintln!("[pq-daemon] pq-refiner spawned: pid={pid}"),
+                    Err(e) => eprintln!("[pq-daemon] pq-refiner spawn FAILED: {e}"),
                 }
                 last_refiner_spawn_tick = tick_counter;
             }
@@ -4022,7 +4143,9 @@ fn main() -> ExitCode {
         stats.dwell_max_ms = *dwell_samples.last().unwrap();
         let sum: u64 = dwell_samples.iter().sum();
         stats.dwell_mean_ms = sum / n;
-        let p99_idx = ((n as f64 * 0.99).ceil() as u64).saturating_sub(1).min(n - 1);
+        let p99_idx = ((n as f64 * 0.99).ceil() as u64)
+            .saturating_sub(1)
+            .min(n - 1);
         stats.dwell_p99_ms = dwell_samples[p99_idx as usize];
     }
 
@@ -4052,13 +4175,21 @@ fn main() -> ExitCode {
     // Final tape flush — drain any remaining trades to disk
     let trades = engine.take_tape_trades();
     for t in &trades {
-        let _lane = if t.scalp { TapeLane::Scalp } else { TapeLane::Early };
+        let _lane = if t.scalp {
+            TapeLane::Scalp
+        } else {
+            TapeLane::Early
+        };
         let net = t.gross as i64 - t.fees as i64 - t.tips as i64 - t.failed as i64;
-            let mint_b58 = Pubkey::try_from(t.mint)
+        let mint_b58 = Pubkey::try_from(t.mint)
             .map(|pk| pk.to_string())
             .unwrap_or_else(|_| hex_short(&t.mint));
         // Feed final trades to memory bank too
-        let trade_lane = if t.scalp { TradeLane::Scalp } else { TradeLane::Early };
+        let trade_lane = if t.scalp {
+            TradeLane::Scalp
+        } else {
+            TradeLane::Early
+        };
         let rec = TradeRecord {
             slot: last_slot_seen,
             mint_b58: mint_b58.clone(),
@@ -4067,10 +4198,16 @@ fn main() -> ExitCode {
             exit_price_fp: t.exit_price_fp as i128,
             size_lamports: t.size_lamports,
             strategy_id: t.archetype as u64,
-            source: if t.scalp { ProvenanceSource::HeliusAccountSubscribe }
-                    else { ProvenanceSource::PumpPortalTrade },
-            outcome: if net >= 0 { TradeOutcome::Filled }
-                     else { TradeOutcome::FilledWithSlippage },
+            source: if t.scalp {
+                ProvenanceSource::HeliusAccountSubscribe
+            } else {
+                ProvenanceSource::PumpPortalTrade
+            },
+            outcome: if net >= 0 {
+                TradeOutcome::Filled
+            } else {
+                TradeOutcome::FilledWithSlippage
+            },
             realized_pnl_lamports: net,
             fees_lamports: (t.fees + t.tips) as u64,
             slippage_lamports: t.failed as u64,
@@ -4086,8 +4223,8 @@ fn main() -> ExitCode {
             lane: Some(trade_lane),
             mfe_bps: t.mfe_bps,
             mae_bps: t.mae_bps,
-            };
-            memory_bank.ingest(&rec);
+        };
+        memory_bank.ingest(&rec);
         tape_exporter.push(TapeRecord::TradeFull {
             slot: last_slot_seen,
             mint_b58,
@@ -4210,13 +4347,25 @@ fn main() -> ExitCode {
     println!("  reconnects:            {}", stats.pp_reconnects);
     println!();
     println!("-- Helius --");
-    println!("  slot_notifications:        {}", stats.helius_slot_notifications);
-    println!("  account_notifications:     {}", stats.helius_account_notifications);
-    println!("  onchain_confirms_decoded:  {}", stats.helius_onchain_confirms_decoded);
+    println!(
+        "  slot_notifications:        {}",
+        stats.helius_slot_notifications
+    );
+    println!(
+        "  account_notifications:     {}",
+        stats.helius_account_notifications
+    );
+    println!(
+        "  onchain_confirms_decoded:  {}",
+        stats.helius_onchain_confirms_decoded
+    );
     println!("  reconnects:                {}", stats.helius_reconnects);
     println!();
     println!("-- LaserStream gRPC --");
-    println!("  transactions_received:  {}", stats.ls_transactions_received);
+    println!(
+        "  transactions_received:  {}",
+        stats.ls_transactions_received
+    );
     println!("  events_emitted:         {}", stats.ls_events_emitted);
     println!("  slots_received:         {}", stats.ls_slots_received);
     println!("  reconnects:             {}", stats.ls_reconnects);
@@ -4228,7 +4377,10 @@ fn main() -> ExitCode {
     println!();
     println!("-- Junction queue --");
     println!("  events_drained:        {}", stats.junction_events_drained);
-    println!("  overflow_dropped:      {}", stats.junction_overflow_dropped);
+    println!(
+        "  overflow_dropped:      {}",
+        stats.junction_overflow_dropped
+    );
     println!("  dwell_max_ms:          {}", stats.dwell_max_ms);
     println!("  dwell_mean_ms:         {}", stats.dwell_mean_ms);
     println!("  dwell_p99_ms:          {}", stats.dwell_p99_ms);
@@ -4248,9 +4400,13 @@ fn main() -> ExitCode {
         for pos in &open_positions {
             let entry_sol = pos.entry_price_fp as f64 / 1e18;
             let pnl_sol = pos.unrealized_pnl_lamports as f64 / 1e9;
-            println!("  mint={} entry={:.6} unrealized_pnl={:.6} remaining={}bps",
+            println!(
+                "  mint={} entry={:.6} unrealized_pnl={:.6} remaining={}bps",
                 Pubkey::from(pos.mint).to_string(),
-                entry_sol, pnl_sol, pos.remaining_bps);
+                entry_sol,
+                pnl_sol,
+                pos.remaining_bps
+            );
         }
     }
     println!();

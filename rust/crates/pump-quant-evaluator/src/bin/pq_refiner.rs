@@ -26,20 +26,20 @@ use std::fs;
 use std::path::Path;
 
 // Re-use the evaluator's own types.
-use pump_quant_evaluator::evaluator_stats::{net_sol, Lane, NetSol, ReconTrade};
 use pump_quant_evaluator::champion_challenger::{challenger_defeats_champion, ChampionVerdict};
+use pump_quant_evaluator::eight_gate::{evaluate_8gate, FoldResults, GateInput, GateVerdict};
+use pump_quant_evaluator::evaluator_stats::{net_sol, Lane, NetSol, ReconTrade};
 use pump_quant_evaluator::tape::parse_jsonl;
-use pump_quant_evaluator::eight_gate::{
-    evaluate_8gate, GateInput, GateVerdict, FoldResults,
-};
 // Persistent state across refiner cycles (§51 cumulative FDR, §56.3 reproducibility).
 use pump_quant_evaluator::evaluator_state::{EvaluatorState, ThompsonPosterior};
 // G7: Thompson sampling for budget allocation across strategy types
-use pump_quant_evaluator::thompson_sampling::{ThompsonArm, BetaPosterior, allocate as thompson_allocate, StrategyTypeId};
+use pump_quant_evaluator::thompson_sampling::{
+    allocate as thompson_allocate, BetaPosterior, StrategyTypeId, ThompsonArm,
+};
 // G8: SPRT early termination for challengers
 use pump_quant_evaluator::strategy_type_sprt::StrategyTypeSprt;
 // G5: Strategy committee for ensemble voting
-use pump_quant_evaluator::strategy_committee::{Committee, MemberVote, VoteDecision, Member};
+use pump_quant_evaluator::strategy_committee::{Committee, Member, MemberVote, VoteDecision};
 // G6: Edge attribution for P&L decomposition
 use pump_quant_evaluator::edge_attribution::decompose_trade;
 
@@ -76,11 +76,13 @@ struct RefinerArgs {
 /// the edge decomposition functions expect.
 fn saturating_cast_i128_to_i64(v: i128) -> i64 {
     i64::try_from(v).unwrap_or_else(|_| {
-        if v > i128::from(i64::MAX) { i64::MAX }
-        else { i64::MIN }
+        if v > i128::from(i64::MAX) {
+            i64::MAX
+        } else {
+            i64::MIN
+        }
     })
 }
-
 
 fn parse_args() -> RefinerArgs {
     let args: Vec<String> = std::env::args().collect();
@@ -119,7 +121,9 @@ fn parse_args() -> RefinerArgs {
                 a.replay_window_ticks = args[i + 1].parse().unwrap_or(0);
                 i += 2;
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
     a
@@ -246,12 +250,7 @@ fn generate_challengers(
             if is_reflection_denied(name.as_str()) {
                 continue;
             }
-            generate_adaptive_challengers(
-                name.as_str(),
-                *val,
-                &mut challengers,
-                &mut id_counter,
-            );
+            generate_adaptive_challengers(name.as_str(), *val, &mut challengers, &mut id_counter);
         }
     }
 
@@ -283,7 +282,10 @@ fn generate_challengers(
                 );
             }
             // Advance the cursor for next cycle
-            exploration_cursor.insert(cycle_tier, (cursor + tier_params.len() as u64) % param_count.max(1));
+            exploration_cursor.insert(
+                cycle_tier,
+                (cursor + tier_params.len() as u64) % param_count.max(1),
+            );
         }
     }
 
@@ -358,63 +360,97 @@ fn classify_params_by_tier(
 /// Rev-11 §1: Map a parameter name to its priority tier (0=highest, 7=lowest).
 fn param_tier(name: &str) -> u8 {
     // T0: Exit / TP / SL / Trail — directly controls per-trade PnL outcome
-    if name.starts_with("lc_tp") || name.starts_with("lc_trail") || name.starts_with("lc_hard_sl")
-        || name.starts_with("lc_tp1_") || name.starts_with("lc_tp2_") || name.starts_with("lc_tp3_")
-        || name.starts_with("mcap_position_") || name.starts_with("exit_")
-        || name.starts_with("target_") || name.starts_with("into_strength_")
-        || name.starts_with("conditional_moon") || name.starts_with("moon_bag")
-        || name == "lc_max_hold_ticks" || name == "lc_stall_ticks"
-        || name == "lc_precursor_drop_bps" || name == "lc_cvd_hold_frac_bps"
+    if name.starts_with("lc_tp")
+        || name.starts_with("lc_trail")
+        || name.starts_with("lc_hard_sl")
+        || name.starts_with("lc_tp1_")
+        || name.starts_with("lc_tp2_")
+        || name.starts_with("lc_tp3_")
+        || name.starts_with("mcap_position_")
+        || name.starts_with("exit_")
+        || name.starts_with("target_")
+        || name.starts_with("into_strength_")
+        || name.starts_with("conditional_moon")
+        || name.starts_with("moon_bag")
+        || name == "lc_max_hold_ticks"
+        || name == "lc_stall_ticks"
+        || name == "lc_precursor_drop_bps"
+        || name == "lc_cvd_hold_frac_bps"
     {
         0
     }
     // T1: Entry / Fee / Tip — controls entry price and cost basis
-    else if name.starts_with("entry_") || name.starts_with("confirm_ttl")
-        || name.starts_with("creation_") || name.starts_with("landing_")
-        || name.starts_with("fill_") || name == "designated_caller_weight"
-        || name == "curve_exact_fill_enable" || name == "entry_mode_leaves_enable"
+    else if name.starts_with("entry_")
+        || name.starts_with("confirm_ttl")
+        || name.starts_with("creation_")
+        || name.starts_with("landing_")
+        || name.starts_with("fill_")
+        || name == "designated_caller_weight"
+        || name == "curve_exact_fill_enable"
+        || name == "entry_mode_leaves_enable"
     {
         1
     }
     // T2: Sizing / Risk / Drawdown / Cap — controls loss magnitude and capital allocation
-    else if name.starts_with("dd_") || name.starts_with("total_risk")
-        || name.starts_with("min_trade_size") || name.starts_with("max_concurrent")
-        || name.starts_with("bankroll_") || name.starts_with("vol_stop")
-        || name == "confirmed_capacity_mult" || name == "floor_fraction_bps"
-        || name == "f_base_bp" || name == "baseline_margin_lamports"
-        || name == "baseline_min_trades" || name == "scale_confirm_auth_min_bp"
+    else if name.starts_with("dd_")
+        || name.starts_with("total_risk")
+        || name.starts_with("min_trade_size")
+        || name.starts_with("max_concurrent")
+        || name.starts_with("bankroll_")
+        || name.starts_with("vol_stop")
+        || name == "confirmed_capacity_mult"
+        || name == "floor_fraction_bps"
+        || name == "f_base_bp"
+        || name == "baseline_margin_lamports"
+        || name == "baseline_min_trades"
+        || name == "scale_confirm_auth_min_bp"
     {
         2
     }
     // T3: Moon bag / Reentry — asymmetric upside capture and re-entry timing
-    else if name.starts_with("reentry_") || name.starts_with("revert_")
-        || name == "roll_revert_bp" || name == "roll_trend_bp"
+    else if name.starts_with("reentry_")
+        || name.starts_with("revert_")
+        || name == "roll_revert_bp"
+        || name == "roll_trend_bp"
     {
         3
     }
     // T4: Gate / Margin — admission filter sensitivity
-    else if name.starts_with("gate_") || name.starts_with("probe_")
-        || name.starts_with("sim_impact") || name.starts_with("expectancy_")
+    else if name.starts_with("gate_")
+        || name.starts_with("probe_")
+        || name.starts_with("sim_impact")
+        || name.starts_with("expectancy_")
         || name.starts_with("expected_move")
     {
         4
     }
     // T5: Brain / Reflect — meta-learning (slow convergence, lower priority)
-    else if name.starts_with("brain_") || name.starts_with("reflect_")
-        || name.starts_with("narrative_") || name.starts_with("thesis_")
+    else if name.starts_with("brain_")
+        || name.starts_with("reflect_")
+        || name.starts_with("narrative_")
+        || name.starts_with("thesis_")
     {
         5
     }
     // T6: Meta / Universe / Creator — infrastructure-level
-    else if name.starts_with("meta_") || name.starts_with("universe_")
-        || name.starts_with("creator_") || name.starts_with("dev_")
-        || name.starts_with("deployer_") || name.starts_with("coordinated_")
-        || name.starts_with("bundle_") || name.starts_with("tracked_")
-        || name.starts_with("smart_money") || name.starts_with("wallet_")
-        || name.starts_with("watchlist_") || name.starts_with("holder_")
-        || name.starts_with("money_proxy") || name.starts_with("designated_caller_enable")
-        || name.starts_with("promote_") || name.starts_with("x_min_")
-        || name == "mcap_band_enable" || name == "mcap_band_hi_lamports"
+    else if name.starts_with("meta_")
+        || name.starts_with("universe_")
+        || name.starts_with("creator_")
+        || name.starts_with("dev_")
+        || name.starts_with("deployer_")
+        || name.starts_with("coordinated_")
+        || name.starts_with("bundle_")
+        || name.starts_with("tracked_")
+        || name.starts_with("smart_money")
+        || name.starts_with("wallet_")
+        || name.starts_with("watchlist_")
+        || name.starts_with("holder_")
+        || name.starts_with("money_proxy")
+        || name.starts_with("designated_caller_enable")
+        || name.starts_with("promote_")
+        || name.starts_with("x_min_")
+        || name == "mcap_band_enable"
+        || name == "mcap_band_hi_lamports"
         || name == "mcap_band_lo_lamports"
     {
         6
@@ -523,7 +559,10 @@ fn generate_adaptive_challengers(
                     name: name.to_string(),
                     current_value: val,
                     proposed_value: plus2_val,
-                    rationale: format!("+{}% {name}: {val} → {plus2_val} (aggressive bracket)", pct * 2),
+                    rationale: format!(
+                        "+{}% {name}: {val} → {plus2_val} (aggressive bracket)",
+                        pct * 2
+                    ),
                 }],
             });
             *id_counter += 1;
@@ -539,12 +578,16 @@ fn adaptive_mutation_pct(name: &str) -> i64 {
         10 // Lamport params: ±10%
     } else if name.ends_with("_ticks") || name.ends_with("_tick") {
         20 // Tick params: ±20%
-    } else if name.ends_with("_count") || name.ends_with("_cap")
-        || name == "max_concurrent_positions" || name.ends_with("_min")
-        || name.ends_with("_max") || name.ends_with("_window")
-        || name.ends_with("_slots") || name.ends_with("_capacity")
+    } else if name.ends_with("_count")
+        || name.ends_with("_cap")
+        || name == "max_concurrent_positions"
+        || name.ends_with("_min")
+        || name.ends_with("_max")
+        || name.ends_with("_window")
+        || name.ends_with("_slots")
+        || name.ends_with("_capacity")
     {
-        0  // Signal for absolute mutation, not percentage
+        0 // Signal for absolute mutation, not percentage
     } else {
         10 // Default: ±10%
     }
@@ -774,8 +817,10 @@ fn run_engine_replay(
 
     // Spawn the subprocess.
     let mut cmd = std::process::Command::new(&replay_bin);
-    cmd.arg("--event-stream").arg(event_stream_path)
-        .arg("--config").arg(&temp_config)
+    cmd.arg("--event-stream")
+        .arg(event_stream_path)
+        .arg("--config")
+        .arg(&temp_config)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
@@ -783,7 +828,8 @@ fn run_engine_replay(
     // stream. This optimizes for CURRENT market conditions rather than the
     // full historical tape. A window of 20000 ticks ≈ 1.4h at 14400 ticks/hr.
     if replay_window_ticks > 0 {
-        cmd.arg("--replay-window-ticks").arg(replay_window_ticks.to_string());
+        cmd.arg("--replay-window-ticks")
+            .arg(replay_window_ticks.to_string());
     }
 
     let output = cmd.spawn().ok()?.wait_with_output().ok()?;
@@ -795,7 +841,10 @@ fn run_engine_replay(
         eprintln!(
             "[pq-refiner] engine-replay FAILED: exit={:?} stderr={}",
             output.status,
-            String::from_utf8_lossy(&output.stderr).lines().last().unwrap_or("(empty)")
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .last()
+                .unwrap_or("(empty)")
         );
         return None;
     }
@@ -815,7 +864,9 @@ fn parse_engine_replay_json(json: &str) -> Option<EngineReplayScore> {
         let needle = format!("\"{key}\":");
         let pos = json.find(&needle)?;
         let rest = &json[pos + needle.len()..];
-        let end = rest.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit() && c != '-')
+            .unwrap_or(rest.len());
         rest[..end].parse().ok()
     };
 
@@ -909,7 +960,10 @@ fn shadow_replay(
                     if remove_count > 0 {
                         // Sort by net (gross - fees - tips - failed) and remove worst
                         adjusted_trades.sort_by_key(|t| {
-                            t.gross_lamports - t.fees as i128 - t.tips as i128 - t.failed_costs as i128
+                            t.gross_lamports
+                                - t.fees as i128
+                                - t.tips as i128
+                                - t.failed_costs as i128
                         });
                         adjusted_trades.drain(..remove_count);
                     }
@@ -919,8 +973,7 @@ fn shadow_replay(
                 // Higher fail rate → more failed cost per trade
                 let cost_mult = 1.0 + pct_change;
                 for t in &mut adjusted_trades {
-                    t.failed_costs = ((t.failed_costs as f64 * cost_mult) as u128)
-                        .min(u128::MAX);
+                    t.failed_costs = ((t.failed_costs as f64 * cost_mult) as u128).min(u128::MAX);
                 }
             }
             "sim_impact_k_bps" => {
@@ -982,11 +1035,8 @@ fn shadow_replay(
     let challenger_net_early = net_sol(&adjusted_trades, Lane::Early);
 
     // Use the scalp lane for the champion comparison (the primary lane)
-    let verdict = challenger_defeats_champion(
-        &champion_net_scalp,
-        &challenger_net_scalp,
-        margin_lamports,
-    );
+    let verdict =
+        challenger_defeats_champion(&champion_net_scalp, &challenger_net_scalp, margin_lamports);
 
     let summary = if verdict.defeats() {
         format!(
@@ -999,9 +1049,7 @@ fn shadow_replay(
     } else {
         format!(
             "{} fails: challenger_net={} champion_net={}",
-            challenger.id,
-            challenger_net_scalp.net_lamports,
-            champion_net_scalp.net_lamports,
+            challenger.id, challenger_net_scalp.net_lamports, champion_net_scalp.net_lamports,
         )
     };
 
@@ -1038,7 +1086,9 @@ fn main() -> std::process::ExitCode {
     });
     eprintln!(
         "[pq-refiner] state: trials={}, challengers_history={}, cycle={}",
-        state.cumulative_trial_count, state.challenger_history.len(), state.last_cycle
+        state.cumulative_trial_count,
+        state.challenger_history.len(),
+        state.last_cycle
     );
 
     // 1. Read the tape
@@ -1052,7 +1102,10 @@ fn main() -> std::process::ExitCode {
             t
         }
         Err(e) => {
-            eprintln!("[pq-refiner] no tape file at {} ({}), skipping cycle", args.tape_path, e);
+            eprintln!(
+                "[pq-refiner] no tape file at {} ({}), skipping cycle",
+                args.tape_path, e
+            );
             write_refiner_status(0, 0, "no_tape");
             return std::process::ExitCode::from(0);
         }
@@ -1086,9 +1139,12 @@ fn main() -> std::process::ExitCode {
             .unwrap_or_else(|| "pq-replay".to_string());
         eprintln!("[pq-refiner] G10: spawning pq-replay subprocess: {replay_bin}");
         let replay_cmd = std::process::Command::new(&replay_bin)
-            .arg("--tape").arg(&args.tape_path)
-            .arg("--lane").arg("scalp")
-            .arg("--margin-lamports").arg("0")
+            .arg("--tape")
+            .arg(&args.tape_path)
+            .arg("--lane")
+            .arg("scalp")
+            .arg("--margin-lamports")
+            .arg("0")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn();
@@ -1101,7 +1157,9 @@ fn main() -> std::process::ExitCode {
                         let stdout = String::from_utf8_lossy(&output.stdout);
                         eprintln!(
                             "[pq-refiner] G10: replay exit={:?} stdout={}B stderr={}",
-                            output.status, stdout.len(), stderr.lines().last().unwrap_or("(empty)")
+                            output.status,
+                            stdout.len(),
+                            stderr.lines().last().unwrap_or("(empty)")
                         );
                     }
                     Err(e) => {
@@ -1110,7 +1168,10 @@ fn main() -> std::process::ExitCode {
                 }
             }
             Err(e) => {
-                eprintln!("[pq-refiner] G10: could not spawn pq-replay ({}): {e}", replay_bin);
+                eprintln!(
+                    "[pq-refiner] G10: could not spawn pq-replay ({}): {e}",
+                    replay_bin
+                );
             }
         }
     }
@@ -1119,15 +1180,20 @@ fn main() -> std::process::ExitCode {
     let champion_net_scalp = net_sol(&tape.trades, Lane::Scalp);
     let champion_net_early = net_sol(&tape.trades, Lane::Early);
 
-    eprintln!("[pq-refiner] champion scalp: net={} n={}", champion_net_scalp.net_lamports, champion_net_scalp.n);
-    eprintln!("[pq-refiner] champion early: net={} n={}", champion_net_early.net_lamports, champion_net_early.n);
+    eprintln!(
+        "[pq-refiner] champion scalp: net={} n={}",
+        champion_net_scalp.net_lamports, champion_net_scalp.n
+    );
+    eprintln!(
+        "[pq-refiner] champion early: net={} n={}",
+        champion_net_early.net_lamports, champion_net_early.n
+    );
 
     // 3. Read the champion config
-    let champion_config_text = fs::read_to_string(&args.config_path)
-        .unwrap_or_else(|_| {
-            eprintln!("[pq-refiner] config file not found, using defaults");
-            String::new()
-        });
+    let champion_config_text = fs::read_to_string(&args.config_path).unwrap_or_else(|_| {
+        eprintln!("[pq-refiner] config file not found, using defaults");
+        String::new()
+    });
 
     // 4. Generate challengers (Rev-11: tier-based priority queue + adaptive mutations)
     // Rev-11 §4: Adaptive challenger cap — scale based on last cycle's duration.
@@ -1148,8 +1214,15 @@ fn main() -> std::process::ExitCode {
         };
         adjusted.clamp(24, 128)
     };
-    let challengers = generate_challengers(&champion_config_text, adaptive_cap, &mut state.exploration_cursor);
-    eprintln!("[pq-refiner] generated {} challengers (pre-dedup)", challengers.len());
+    let challengers = generate_challengers(
+        &champion_config_text,
+        adaptive_cap,
+        &mut state.exploration_cursor,
+    );
+    eprintln!(
+        "[pq-refiner] generated {} challengers (pre-dedup)",
+        challengers.len()
+    );
 
     // 4b. Dedup: filter out challengers whose config hash matches a past trial.
     // This prevents re-testing the same ±10% mutation every cycle.
@@ -1199,11 +1272,18 @@ fn main() -> std::process::ExitCode {
             "[pq-refiner] Phase 3: engine replay enabled — event stream: {}",
             args.event_stream_path
         );
-        let champ_cfg = build_challenger_config_text(&champion_config_text, &Challenger {
-            id: "champion".to_string(),
-            mutations: vec![],
-        });
-        match run_engine_replay(&args.event_stream_path, &champ_cfg, args.replay_window_ticks) {
+        let champ_cfg = build_challenger_config_text(
+            &champion_config_text,
+            &Challenger {
+                id: "champion".to_string(),
+                mutations: vec![],
+            },
+        );
+        match run_engine_replay(
+            &args.event_stream_path,
+            &champ_cfg,
+            args.replay_window_ticks,
+        ) {
             Some(score) => {
                 eprintln!(
                     "[pq-refiner] champion engine-replay: net={} admitted={} rejected={}",
@@ -1222,10 +1302,15 @@ fn main() -> std::process::ExitCode {
     };
 
     for challenger in &challengers {
-        eprintln!("[pq-refiner] shadow replay: {} (mutations: {})",
+        eprintln!(
+            "[pq-refiner] shadow replay: {} (mutations: {})",
             challenger.id,
-            challenger.mutations.iter().map(|m| m.rationale.clone())
-                .collect::<Vec<_>>().join(", ")
+            challenger
+                .mutations
+                .iter()
+                .map(|m| m.rationale.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
 
         let mut result = shadow_replay(
@@ -1244,11 +1329,12 @@ fn main() -> std::process::ExitCode {
         // with the engine replay's net_lamports and re-derive the verdict.
         // This is the REAL scoring path — no proxy heuristics.
         if let Some(ref champ_er) = champion_engine_replay {
-            let challenger_cfg = build_challenger_config_text(
-                &champion_config_text,
-                challenger,
-            );
-            match run_engine_replay(&args.event_stream_path, &challenger_cfg, args.replay_window_ticks) {
+            let challenger_cfg = build_challenger_config_text(&champion_config_text, challenger);
+            match run_engine_replay(
+                &args.event_stream_path,
+                &challenger_cfg,
+                args.replay_window_ticks,
+            ) {
                 Some(score) => {
                     eprintln!(
                         "[pq-refiner]   engine-replay: {} net={} admitted={} rejected={}",
@@ -1282,9 +1368,13 @@ fn main() -> std::process::ExitCode {
         if result.verdict.defeats() {
             any_defeated = true;
             // Track the best challenger (highest net)
-            if best_challenger.is_none() ||
-               result.challenger_net_scalp.net_lamports >
-               best_challenger.as_ref().unwrap().challenger_net_scalp.net_lamports
+            if best_challenger.is_none()
+                || result.challenger_net_scalp.net_lamports
+                    > best_challenger
+                        .as_ref()
+                        .unwrap()
+                        .challenger_net_scalp
+                        .net_lamports
             {
                 best_challenger = Some(result.clone());
                 // Rev-11 §3: Record whether this best challenger has genuine
@@ -1346,7 +1436,8 @@ fn main() -> std::process::ExitCode {
                 continue;
             }
             let is_win = ft.realized_pnl_lamports > 0;
-            let entry = state.thompson_posteriors
+            let entry = state
+                .thompson_posteriors
                 .entry(ft.strategy_id)
                 .or_insert_with(|| ThompsonPosterior {
                     alpha: 1,
@@ -1359,9 +1450,9 @@ fn main() -> std::process::ExitCode {
                     lane: String::new(),
                 });
             entry.n_trades += 1;
-            entry.cumulative_netsol_lamports =
-                entry.cumulative_netsol_lamports
-                    .saturating_add(ft.realized_pnl_lamports);
+            entry.cumulative_netsol_lamports = entry
+                .cumulative_netsol_lamports
+                .saturating_add(ft.realized_pnl_lamports);
             if is_win {
                 entry.alpha += 1;
             } else {
@@ -1384,7 +1475,10 @@ fn main() -> std::process::ExitCode {
         eprintln!(
             "[pq-refiner] Thompson posterior update: {} strategy types, {} trades fed",
             state.thompson_posteriors.len(),
-            tape.full_trades.iter().filter(|t| t.strategy_id != 0).count()
+            tape.full_trades
+                .iter()
+                .filter(|t| t.strategy_id != 0)
+                .count()
         );
     }
 
@@ -1410,13 +1504,19 @@ fn main() -> std::process::ExitCode {
             });
         }
         if !arms.is_empty() {
-            let seed = state.cumulative_trial_count.wrapping_mul(0x9E3779B97F4A7C15);
+            let seed = state
+                .cumulative_trial_count
+                .wrapping_mul(0x9E3779B97F4A7C15);
             let alloc = thompson_allocate(&arms, 3, seed);
             eprintln!(
                 "[pq-refiner] Thompson allocation: {}/{} types funded, ranking: {:?}",
                 alloc.n_funded,
                 arms.len(),
-                alloc.ranked_types.iter().map(|t| t.raw()).collect::<Vec<_>>()
+                alloc
+                    .ranked_types
+                    .iter()
+                    .map(|t| t.raw())
+                    .collect::<Vec<_>>()
             );
         }
     }
@@ -1469,7 +1569,8 @@ fn main() -> std::process::ExitCode {
             committee.add_member(Member {
                 strategy_type_id: *type_id,
                 weight_bps: 10_000, // equal weight
-                lifecycle_stage: pump_quant_evaluator::evaluator_state::LifecycleStage::ShadowValidated,
+                lifecycle_stage:
+                    pump_quant_evaluator::evaluator_state::LifecycleStage::ShadowValidated,
             });
         }
         // If no members yet, seed one for the champion type
@@ -1477,7 +1578,8 @@ fn main() -> std::process::ExitCode {
             committee.add_member(Member {
                 strategy_type_id: 1,
                 weight_bps: 10_000,
-                lifecycle_stage: pump_quant_evaluator::evaluator_state::LifecycleStage::ShadowValidated,
+                lifecycle_stage:
+                    pump_quant_evaluator::evaluator_state::LifecycleStage::ShadowValidated,
             });
         }
         // Collect votes: each member votes based on whether any challenger defeated
@@ -1500,8 +1602,12 @@ fn main() -> std::process::ExitCode {
             let verdict = committee.vote(&votes);
             eprintln!(
                 "[pq-refiner] committee: execute={} yes={} no={} abstain={} net_conf={}bps {}",
-                verdict.execute, verdict.yes_count, verdict.no_count,
-                verdict.abstain_count, verdict.net_confidence_bps, verdict.summary
+                verdict.execute,
+                verdict.yes_count,
+                verdict.no_count,
+                verdict.abstain_count,
+                verdict.net_confidence_bps,
+                verdict.summary
             );
             // If committee says NO, override the promotion decision
             if !verdict.execute && any_gates_passed {
@@ -1522,7 +1628,9 @@ fn main() -> std::process::ExitCode {
         if !tape.full_trades.is_empty() {
             // Compute equal-weight baseline size once from the full trade set.
             let n = tape.full_trades.len() as u64;
-            let total_size: u64 = tape.full_trades.iter()
+            let total_size: u64 = tape
+                .full_trades
+                .iter()
                 .map(|t| t.size_lamports)
                 .sum::<u64>()
                 .max(1);
@@ -1562,8 +1670,12 @@ fn main() -> std::process::ExitCode {
                 let decomp = decompose_trade(
                     trade.gross_lamports as i64,
                     trade.gross_lamports as i64,
-                    0, 0, 1, 1,
-                    trade.gross_lamports as i64, 0,
+                    0,
+                    0,
+                    1,
+                    1,
+                    trade.gross_lamports as i64,
+                    0,
                 );
                 total_entry_edge += decomp.entry_edge_lamports;
                 total_exit_edge += decomp.exit_edge_lamports;
@@ -1587,13 +1699,10 @@ fn main() -> std::process::ExitCode {
             let result = registry.try_advance(
                 1,
                 state.last_cycle,
-                true,  // SPRT adoptable
-                8,     // gates passed (all)
+                true, // SPRT adoptable
+                8,    // gates passed (all)
             );
-            eprintln!(
-                "[pq-refiner] lifecycle FSM: {:?}",
-                result
-            );
+            eprintln!("[pq-refiner] lifecycle FSM: {:?}", result);
         }
     }
     if let Some(ref best) = best_challenger {
@@ -1611,7 +1720,9 @@ fn main() -> std::process::ExitCode {
             write_refiner_status(challengers.len(), 0, "gate_passed_no_engine_replay");
             append_refiner_log(&results, false);
         } else {
-            eprintln!("[pq-refiner] champion defeated on margin but 8-gate NOT passed — no promotion");
+            eprintln!(
+                "[pq-refiner] champion defeated on margin but 8-gate NOT passed — no promotion"
+            );
             write_refiner_status(challengers.len(), 0, "margin_only_no_gate");
             append_refiner_log(&results, false);
         }
@@ -1630,12 +1741,16 @@ fn main() -> std::process::ExitCode {
             let mutations: Vec<String> = c.mutations.iter().map(|m| m.name.clone()).collect();
             state.record_challenger(
                 hash,
-                if result.verdict.defeats() { "adoptable" } else { "dropped" },
+                if result.verdict.defeats() {
+                    "adoptable"
+                } else {
+                    "dropped"
+                },
                 state.last_cycle,
                 result.challenger_net_scalp.net_lamports as i64,
                 result.challenger_net_scalp.n as u64,
-                0,    // SPRT LLR — not yet wired
-                0,    // FDR adjusted p — not yet wired
+                0, // SPRT LLR — not yet wired
+                0, // FDR adjusted p — not yet wired
                 mutations,
             );
         }
@@ -1645,19 +1760,23 @@ fn main() -> std::process::ExitCode {
     // Each challenger that defeated the champion is a "win" for its strategy type.
     {
         let type_id = 1u64; // default strategy type
-        let current = state.thompson_posteriors.get(&type_id).cloned().unwrap_or_else(|| {
-            // Create a default posterior if it doesn't exist
-            pump_quant_evaluator::evaluator_state::ThompsonPosterior {
-                alpha: 1,
-                beta: 1,
-                n_trades: 0,
-                cumulative_netsol_lamports: 0,
-                entry_mode: String::new(),
-                archetype: String::new(),
-                sizing: String::new(),
-                lane: String::new(),
-            }
-        });
+        let current = state
+            .thompson_posteriors
+            .get(&type_id)
+            .cloned()
+            .unwrap_or_else(|| {
+                // Create a default posterior if it doesn't exist
+                pump_quant_evaluator::evaluator_state::ThompsonPosterior {
+                    alpha: 1,
+                    beta: 1,
+                    n_trades: 0,
+                    cumulative_netsol_lamports: 0,
+                    entry_mode: String::new(),
+                    archetype: String::new(),
+                    sizing: String::new(),
+                    lane: String::new(),
+                }
+            });
         let n_wins = results.iter().filter(|r| r.verdict.defeats()).count() as u64;
         let n_losses = results.iter().filter(|r| !r.verdict.defeats()).count() as u64;
         let updated = pump_quant_evaluator::evaluator_state::ThompsonPosterior {
@@ -1665,7 +1784,8 @@ fn main() -> std::process::ExitCode {
             beta: current.beta + n_losses,
             n_trades: current.n_trades + n_wins + n_losses,
             cumulative_netsol_lamports: current.cumulative_netsol_lamports
-                + results.iter()
+                + results
+                    .iter()
                     .map(|r| r.challenger_net_scalp.net_lamports as i64)
                     .sum::<i64>(),
             entry_mode: current.entry_mode.clone(),
@@ -1684,7 +1804,10 @@ fn main() -> std::process::ExitCode {
     state.last_cycle += 1;
     // Rev-11 §4: Save cycle duration for adaptive cap next cycle.
     state.last_cycle_duration_secs = cycle_start.elapsed().as_secs();
-    eprintln!("[pq-refiner] §4: cycle took {}s", state.last_cycle_duration_secs);
+    eprintln!(
+        "[pq-refiner] §4: cycle took {}s",
+        state.last_cycle_duration_secs
+    );
 
     // 8. SAVE persistent state
     if let Err(e) = state.save(STATE_FILE) {
@@ -1692,7 +1815,9 @@ fn main() -> std::process::ExitCode {
     } else {
         eprintln!(
             "[pq-refiner] state saved: trials={}, history={}, cycle={}",
-            state.cumulative_trial_count, state.challenger_history.len(), state.last_cycle
+            state.cumulative_trial_count,
+            state.challenger_history.len(),
+            state.last_cycle
         );
     }
 
@@ -1731,8 +1856,8 @@ impl ReflectionHealth {
         early_trades: u32,
         brain_decay_min_sample: u32,
     ) -> Self {
-        let lane_starved = scalp_trades < brain_decay_min_sample
-            || early_trades < brain_decay_min_sample;
+        let lane_starved =
+            scalp_trades < brain_decay_min_sample || early_trades < brain_decay_min_sample;
         ReflectionHealth {
             reflect_every_ticks,
             scalp_trades,
@@ -1858,18 +1983,24 @@ fn write_promotion_file(result: &ShadowReplayResult, challengers: &[Challenger])
     }
 
     let mutations_json = if let Some(c) = challenger {
-        c.mutations.iter()
-            .map(|m| format!(
-                "    {{\"name\": \"{}\", \"from\": {}, \"to\": {}}}",
-                m.name, m.current_value, m.proposed_value
-            ))
+        c.mutations
+            .iter()
+            .map(|m| {
+                format!(
+                    "    {{\"name\": \"{}\", \"from\": {}, \"to\": {}}}",
+                    m.name, m.current_value, m.proposed_value
+                )
+            })
             .collect::<Vec<_>>()
             .join(",\n")
     } else {
         String::new()
     };
 
-    let gate_verdict_str = result.gate_verdict.clone().unwrap_or_else(|| "not_evaluated".to_string());
+    let gate_verdict_str = result
+        .gate_verdict
+        .clone()
+        .unwrap_or_else(|| "not_evaluated".to_string());
 
     // Phase 3: include engine replay evidence if available.
     let engine_replay_json = if let Some(er) = &result.engine_replay {
@@ -1916,7 +2047,8 @@ fn append_refiner_log(results: &[ShadowReplayResult], any_promoted: bool) {
     let log_line = format!(
         "{{\"ts\": \"refiner\", \"promoted\": {}, \"results\": [{}]}}\n",
         any_promoted,
-        results.iter()
+        results
+            .iter()
             .map(|r| format!(
                 "{{\"id\": \"{}\", \"defeats\": {}, \"net\": {}}}",
                 r.challenger_id,
@@ -2124,16 +2256,25 @@ mod tests {
         // No challenger should mutate a denylisted param
         for c in &challengers {
             for m in &c.mutations {
-                assert!(!is_reflection_denied(m.name.as_str()),
-                    "S3: challenger {} mutates denylisted param {}", c.id, m.name);
+                assert!(
+                    !is_reflection_denied(m.name.as_str()),
+                    "S3: challenger {} mutates denylisted param {}",
+                    c.id,
+                    m.name
+                );
             }
         }
         // reflect_every_ticks (safe) should still generate challengers
-        let has_reflect_every = challengers.iter()
+        let has_reflect_every = challengers
+            .iter()
             .any(|c| c.mutations.iter().any(|m| m.name == "reflect_every_ticks"));
-        assert!(has_reflect_every, "S3: reflect_every_ticks should NOT be denied");
+        assert!(
+            has_reflect_every,
+            "S3: reflect_every_ticks should NOT be denied"
+        );
         // gate_margin_bps should still generate challengers
-        let has_gate_margin = challengers.iter()
+        let has_gate_margin = challengers
+            .iter()
             .any(|c| c.mutations.iter().any(|m| m.name == "gate_margin_bps"));
         assert!(has_gate_margin, "S3: gate_margin_bps should NOT be denied");
     }
@@ -2163,8 +2304,10 @@ mod tests {
         }];
         write_promotion_file(&result, &challengers);
         // The promotion file should NOT exist (denylisted param → refused)
-        assert!(!Path::new(PROMOTION_FILE).exists(),
-            "S3: promotion file must NOT be written for denylisted param");
+        assert!(
+            !Path::new(PROMOTION_FILE).exists(),
+            "S3: promotion file must NOT be written for denylisted param"
+        );
         // Clean up just in case
         let _ = fs::remove_file(PROMOTION_FILE);
     }
@@ -2174,7 +2317,10 @@ mod tests {
     #[test]
     fn s4_reflection_health_healthy_lanes() {
         let h = ReflectionHealth::new(50, 100, 80, 12);
-        assert!(!h.lane_starved, "100 and 80 trades > 12 min sample → not starved");
+        assert!(
+            !h.lane_starved,
+            "100 and 80 trades > 12 min sample → not starved"
+        );
         let json = h.to_json();
         assert!(json.contains("\"reflect_every_ticks\": 50"));
         assert!(json.contains("\"scalp_trades\": 100"));
@@ -2246,8 +2392,10 @@ mod tests {
         let result = shadow_replay(&challenger, &trades, champion_net, NetSol::missing(), 100);
         // +10% pct_change * 0.02 confidence = +0.2% gross bonus
         // challenger gross should be slightly higher than champion gross
-        assert!(result.challenger_net_scalp.gross_lamports > champion_net.gross_lamports,
-            "S5: +10% reflect_every_ticks should produce a positive confidence bonus");
+        assert!(
+            result.challenger_net_scalp.gross_lamports > champion_net.gross_lamports,
+            "S5: +10% reflect_every_ticks should produce a positive confidence bonus"
+        );
     }
 
     #[test]
@@ -2271,8 +2419,10 @@ mod tests {
         };
         let result = shadow_replay(&challenger, &trades, champion_net, NetSol::missing(), 100);
         // -10% pct_change * 0.02 confidence = -0.2% gross penalty
-        assert!(result.challenger_net_scalp.gross_lamports < champion_net.gross_lamports,
-            "S5: -10% reflect_every_ticks should produce a negative confidence penalty");
+        assert!(
+            result.challenger_net_scalp.gross_lamports < champion_net.gross_lamports,
+            "S5: -10% reflect_every_ticks should produce a negative confidence penalty"
+        );
     }
 
     #[test]
@@ -2281,9 +2431,7 @@ mod tests {
         // 10%+). Verify the adjustment is conservative — the challenger
         // should NOT defeat the champion on a thin tape (only 2 trades,
         // margin=10000).
-        let trades = vec![
-            ReconTrade::test(Lane::Scalp, 100_000, 1_000, 0, 0),
-        ];
+        let trades = vec![ReconTrade::test(Lane::Scalp, 100_000, 1_000, 0, 0)];
         let champion_net = net_sol(&trades, Lane::Scalp);
         let challenger = Challenger {
             id: "s5_small".to_string(),
@@ -2294,10 +2442,18 @@ mod tests {
                 rationale: "+10%".to_string(),
             }],
         };
-        let result = shadow_replay(&challenger, &trades, champion_net, NetSol::missing(), 10_000);
+        let result = shadow_replay(
+            &challenger,
+            &trades,
+            champion_net,
+            NetSol::missing(),
+            10_000,
+        );
         // With only 1 trade and 10k margin, the tiny bonus shouldn't defeat
-        assert!(!result.verdict.defeats(),
-            "S5: the confidence bonus is intentionally small — should not defeat on thin tape");
+        assert!(
+            !result.verdict.defeats(),
+            "S5: the confidence bonus is intentionally small — should not defeat on thin tape"
+        );
     }
 
     // ─── S7: Reflection-aware promotion guard tests ───────────────────────
@@ -2315,8 +2471,10 @@ mod tests {
                 rationale: "+10%".to_string(),
             }],
         };
-        assert!(reflection_promotion_guard(Some(&challenger), Some(&health)),
-            "S7: healthy lanes → promotion should proceed");
+        assert!(
+            reflection_promotion_guard(Some(&challenger), Some(&health)),
+            "S7: healthy lanes → promotion should proceed"
+        );
     }
 
     #[test]
@@ -2332,8 +2490,10 @@ mod tests {
                 rationale: "+10%".to_string(),
             }],
         };
-        assert!(!reflection_promotion_guard(Some(&challenger), Some(&health)),
-            "S7: starved lanes + tighter gate → should defer");
+        assert!(
+            !reflection_promotion_guard(Some(&challenger), Some(&health)),
+            "S7: starved lanes + tighter gate → should defer"
+        );
     }
 
     #[test]
@@ -2349,8 +2509,10 @@ mod tests {
                 rationale: "+10%".to_string(),
             }],
         };
-        assert!(!reflection_promotion_guard(Some(&challenger), Some(&health)),
-            "S7: starved lanes + higher fail rate → should defer");
+        assert!(
+            !reflection_promotion_guard(Some(&challenger), Some(&health)),
+            "S7: starved lanes + higher fail rate → should defer"
+        );
     }
 
     #[test]
@@ -2366,8 +2528,10 @@ mod tests {
                 rationale: "-10%".to_string(),
             }],
         };
-        assert!(reflection_promotion_guard(Some(&challenger), Some(&health)),
-            "S7: starved lanes but looser gate → should proceed (more trades = more samples)");
+        assert!(
+            reflection_promotion_guard(Some(&challenger), Some(&health)),
+            "S7: starved lanes but looser gate → should proceed (more trades = more samples)"
+        );
     }
 
     #[test]
@@ -2382,8 +2546,10 @@ mod tests {
                 rationale: "+10%".to_string(),
             }],
         };
-        assert!(reflection_promotion_guard(Some(&challenger), None),
-            "S7: no health data → should allow promotion");
+        assert!(
+            reflection_promotion_guard(Some(&challenger), None),
+            "S7: no health data → should allow promotion"
+        );
     }
 
     #[test]
@@ -2399,7 +2565,9 @@ mod tests {
                 rationale: "+10%".to_string(),
             }],
         };
-        assert!(reflection_promotion_guard(Some(&challenger), Some(&health)),
-            "S7: starved lanes but unrelated mutation → should proceed");
+        assert!(
+            reflection_promotion_guard(Some(&challenger), Some(&health)),
+            "S7: starved lanes but unrelated mutation → should proceed"
+        );
     }
 }

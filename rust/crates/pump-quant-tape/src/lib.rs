@@ -450,10 +450,7 @@ impl<'a> Scanner<'a> {
             found => Err(if c == b'{' && found.is_none() {
                 TapeError::NotAnObject
             } else {
-                TapeError::UnexpectedByte {
-                    expected: c,
-                    found,
-                }
+                TapeError::UnexpectedByte { expected: c, found }
             }),
         }
     }
@@ -766,10 +763,7 @@ mod tests {
         );
 
         // duplicate key: the second `mint` stands where `trader` belongs
-        let dup = good.replace(
-            "\"trader\": \"Trader111\"",
-            "\"mint\": \"Trader111\"",
-        );
+        let dup = good.replace("\"trader\": \"Trader111\"", "\"mint\": \"Trader111\"");
         assert_eq!(
             TapeRecord::from_jsonl_line(&dup).unwrap_err(),
             TapeError::DuplicateKey("mint".to_string())
@@ -861,7 +855,10 @@ mod tests {
             TapeRecord::from_jsonl_line(&format!("{good} ")).unwrap(),
             sample()
         );
-        let trailing = good.replace("\"regime\": \"trending_up\"}", "\"regime\": \"trending_up\"} 1");
+        let trailing = good.replace(
+            "\"regime\": \"trending_up\"}",
+            "\"regime\": \"trending_up\"} 1",
+        );
         assert_eq!(
             TapeRecord::from_jsonl_line(&trailing).unwrap_err(),
             TapeError::TrailingData

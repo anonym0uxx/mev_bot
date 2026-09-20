@@ -9,7 +9,7 @@
 //! is allocation-free on the hot path: it pre-allocates a fixed-capacity
 //! ring at construction and reuses slots.
 
-use crate::{ProvenancedEvent, JUNCTION_QUEUE_CAP, OverflowStats};
+use crate::{OverflowStats, ProvenancedEvent, JUNCTION_QUEUE_CAP};
 
 /// Bounded ring buffer for the ingest→junction→engine pipeline.
 ///
@@ -99,8 +99,7 @@ impl BoundedJunctionQueue {
         buf[idx] = Some(event);
         let ts_buf = unsafe { &mut *self.enqueued_at.get() };
         ts_buf[idx] = Some(std::time::Instant::now());
-        self.tail
-            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        self.tail.fetch_add(1, std::sync::atomic::Ordering::Release);
         true
     }
 
@@ -118,8 +117,7 @@ impl BoundedJunctionQueue {
         // thread can read from this slot while we hold the head index.
         let buf = unsafe { &mut *self.buf.get() };
         let event = buf[idx].take();
-        self.head
-            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        self.head.fetch_add(1, std::sync::atomic::Ordering::Release);
         event
     }
 
@@ -159,13 +157,10 @@ impl BoundedJunctionQueue {
         let event = buf[idx].take();
         let ts_buf = unsafe { &mut *self.enqueued_at.get() };
         let enqueued = ts_buf[idx].take();
-        self.head
-            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        self.head.fetch_add(1, std::sync::atomic::Ordering::Release);
 
         event.map(|e| {
-            let dwell = enqueued
-                .map(|t| t.elapsed())
-                .unwrap_or_default();
+            let dwell = enqueued.map(|t| t.elapsed()).unwrap_or_default();
             (e, dwell)
         })
     }
@@ -180,8 +175,8 @@ impl Default for BoundedJunctionQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pump_quant_app::event::AppEvent;
     use crate::ProvenanceSource;
+    use pump_quant_app::event::AppEvent;
 
     fn make_event(slot: u64) -> ProvenancedEvent {
         ProvenancedEvent {
@@ -260,7 +255,10 @@ mod tests {
 
         // Counter must reflect every drop.
         let stats = q.overflow_stats();
-        assert_eq!(stats.dropped, overrun, "overflow counter must equal overrun");
+        assert_eq!(
+            stats.dropped, overrun,
+            "overflow counter must equal overrun"
+        );
         assert_eq!(
             stats.last_drop_slot,
             cap as u64 + overrun - 1,
@@ -273,6 +271,9 @@ mod tests {
         // Surfacing: the overflow counter is readable and non-zero — this is
         // the value the junction-run binary prints as junction_overflow.
         // A silent counter would be invisible; this one is surfaced.
-        assert!(stats.dropped > 0, "overflow counter must be non-zero after overrun");
+        assert!(
+            stats.dropped > 0,
+            "overflow counter must be non-zero after overrun"
+        );
     }
 }

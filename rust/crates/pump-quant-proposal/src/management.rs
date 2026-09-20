@@ -155,23 +155,29 @@ pub fn render_management(m: &ManagementBundle) -> String {
         "  mark price (SOL per whole token): {}\n",
         py_g(m.mark * 1e6 / 1e9, 12)
     ));
-    out.push_str(&format!("  {}\n\n", cost_line(clip, Some(m.depth_sol), regime)));
+    out.push_str(&format!(
+        "  {}\n\n",
+        cost_line(clip, Some(m.depth_sol), regime)
+    ));
     out.push_str("POSITION STATE (at the decision instant, before any action):\n");
     out.push_str(&format!(
         "  entry price (lamports per raw token): {}\n",
         py_g(m.entry_px, 12)
     ));
-    out.push_str(&format!("  unrealized PnL: {} bp\n", py_fixed(m.upnl_bp, 1)));
+    out.push_str(&format!(
+        "  unrealized PnL: {} bp\n",
+        py_fixed(m.upnl_bp, 1)
+    ));
     out.push_str(&format!("  holding time: {} s\n", py_fixed(m.held_s, 0)));
     out.push_str(&format!(
         "  max favourable so far: {} bp\n",
         py_fixed(m.mfe_bp, 1)
     ));
-    out.push_str(&format!("  max adverse so far: {} bp\n", py_fixed(m.mae_bp, 1)));
     out.push_str(&format!(
-        "  inventory: {} raw tokens\n",
-        py_g(m.qty_pre, 6)
+        "  max adverse so far: {} bp\n",
+        py_fixed(m.mae_bp, 1)
     ));
+    out.push_str(&format!("  inventory: {} raw tokens\n", py_g(m.qty_pre, 6)));
     out.push_str(&format!("  cash: {} SOL\n", py_g(m.cash_pre, 6)));
     out.push_str(&format!(
         "  position value at mark: {} SOL\n",
@@ -283,7 +289,10 @@ mod tests {
             holders_at_t: Some(PyNum::Int(5)),
             ..Default::default()
         };
-        assert_eq!(render_enriched(&e), "ENRICHED CANDIDATE STATE: holders_at_t=5");
+        assert_eq!(
+            render_enriched(&e),
+            "ENRICHED CANDIDATE STATE: holders_at_t=5"
+        );
         assert_eq!(render_dev(&DevHistoryManagement::default()), "DEV HISTORY:");
     }
 }

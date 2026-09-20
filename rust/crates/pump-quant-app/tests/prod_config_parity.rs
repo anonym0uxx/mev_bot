@@ -27,8 +27,8 @@ use pump_quant_app::config::Config;
 /// always runs. When the file IS present (any real deployment), the shipped side is
 /// asserted too, and that is where the R7 inversion actually lived.
 fn shipped_config() -> Option<Config> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../data/CHAMPION_CONFIG.txt");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/CHAMPION_CONFIG.txt");
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(_) => {

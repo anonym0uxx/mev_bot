@@ -243,9 +243,7 @@ pub fn decide(
         // regardless of trade count is whale concentration, not organic demand.
         // ArXiv:2412.18848 ML model ranks unique buyer count as a top-5 feature.
         // 0 = disabled (Rev-16 compat).
-        if cfg.entry_min_unique_buyers > 0
-            && feats.unique_buyers < cfg.entry_min_unique_buyers
-        {
+        if cfg.entry_min_unique_buyers > 0 && feats.unique_buyers < cfg.entry_min_unique_buyers {
             return GateDecision::Reject(GateReject::EntryQualityFilter);
         }
     }
@@ -302,8 +300,7 @@ pub fn decide(
     // [wangr_symbol_len_min, wangr_symbol_len_max].
     if cfg.wangr_symbol_len_filter_enable
         && nf.symbol_len != 0
-        && (nf.symbol_len < cfg.wangr_symbol_len_min
-            || nf.symbol_len > cfg.wangr_symbol_len_max)
+        && (nf.symbol_len < cfg.wangr_symbol_len_min || nf.symbol_len > cfg.wangr_symbol_len_max)
     {
         return GateDecision::Reject(GateReject::WangrSymbolLength);
     }

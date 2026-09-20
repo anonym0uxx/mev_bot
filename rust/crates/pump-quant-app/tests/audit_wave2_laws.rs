@@ -401,8 +401,7 @@ fn derived_targets_bank_the_grind_the_fixed_ladder_misses() {
         armed.net_lamports, neut.net_lamports,
         "the §24 ladder toggle must produce different nets on a grind-then-crater \
          tape ({} vs {}) — dead-code would make them equal",
-        armed.net_lamports,
-        neut.net_lamports
+        armed.net_lamports, neut.net_lamports
     );
 }
 

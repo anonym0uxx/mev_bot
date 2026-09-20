@@ -15,8 +15,10 @@
 //! points. They allocate only inside the parsers (which build `CanonicalTx`
 //! or `RawTokenMetadata` — the minimal allocations the replay path makes).
 
-use pump_quant_ingest::pumpportal_parse::{parse_pumpportal, parse_pumpportal_create, parse_pumpportal_migration};
 use pump_quant_ingest::canonical::TxKind;
+use pump_quant_ingest::pumpportal_parse::{
+    parse_pumpportal, parse_pumpportal_create, parse_pumpportal_migration,
+};
 
 use crate::queue::BoundedJunctionQueue;
 use crate::translate::{canonical_tx_to_market_trade, raw_token_metadata_to_event};
@@ -33,11 +35,7 @@ use pump_quant_domain::ids::Mint;
 ///
 /// The caller owns the WebSocket frame. This function is purely synchronous
 /// and allocation-free outside the parser.
-pub fn handle_trade_payload(
-    payload: &[u8],
-    slot: u64,
-    queue: &BoundedJunctionQueue,
-) -> bool {
+pub fn handle_trade_payload(payload: &[u8], slot: u64, queue: &BoundedJunctionQueue) -> bool {
     // Parse the raw WS payload into a CanonicalTx.
     let Some(tx) = parse_pumpportal(payload) else {
         return false;
@@ -73,11 +71,7 @@ pub fn handle_trade_payload(
 ///
 /// Returns `true` if the creation was parsed, classified, and enqueued.
 /// Returns `false` on parse failure or zero-mint (nothing to attribute).
-pub fn handle_create_payload(
-    payload: &[u8],
-    slot: u64,
-    queue: &BoundedJunctionQueue,
-) -> bool {
+pub fn handle_create_payload(payload: &[u8], slot: u64, queue: &BoundedJunctionQueue) -> bool {
     let Some(raw) = parse_pumpportal_create(payload) else {
         return false;
     };
@@ -98,11 +92,7 @@ pub fn handle_create_payload(
 /// engine flips the market's venue-mechanics phase.
 ///
 /// Returns `true` if the migration was parsed and enqueued.
-pub fn handle_migration_payload(
-    payload: &[u8],
-    slot: u64,
-    queue: &BoundedJunctionQueue,
-) -> bool {
+pub fn handle_migration_payload(payload: &[u8], slot: u64, queue: &BoundedJunctionQueue) -> bool {
     let Some(mint_bytes) = parse_pumpportal_migration(payload) else {
         return false;
     };
@@ -145,9 +135,7 @@ mod tests {
     }
 
     fn migration_payload() -> Vec<u8> {
-        format!(
-            r#"{{"mint":"{KEY_REAL}","txType":"migrate"}}"#
-        ).into_bytes()
+        format!(r#"{{"mint":"{KEY_REAL}","txType":"migrate"}}"#).into_bytes()
     }
 
     #[test]

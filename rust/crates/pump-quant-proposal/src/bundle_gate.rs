@@ -68,9 +68,9 @@ impl FieldFamily {
             FieldFamily::LiveFlowState => true,
             // Everything else is captured for a corpus that does not exist yet. Enabling any of
             // these before its corpus lands is the OOD failure this gate exists to prevent.
-            FieldFamily::CalloutImpact | FieldFamily::LeadingIndicators | FieldFamily::FundingGraph => {
-                false
-            }
+            FieldFamily::CalloutImpact
+            | FieldFamily::LeadingIndicators
+            | FieldFamily::FundingGraph => false,
         }
     }
 }

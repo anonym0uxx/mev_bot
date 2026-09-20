@@ -67,9 +67,17 @@ fn funding_edge_created_on_buy_after_sell() {
     one(&mut e, m, 100, 1_000, buyer);
 
     // Both entities should be registered in the graph.
-    assert_eq!(e.wallet_graph_entity_count(), 2, "buyer + seller should be in graph");
+    assert_eq!(
+        e.wallet_graph_entity_count(),
+        2,
+        "buyer + seller should be in graph"
+    );
     // One funding edge between them.
-    assert_eq!(e.wallet_graph_edge_count(), 1, "one funding edge buyer→seller");
+    assert_eq!(
+        e.wallet_graph_edge_count(),
+        1,
+        "one funding edge buyer→seller"
+    );
 }
 
 #[test]
@@ -85,7 +93,11 @@ fn funding_edge_created_on_sell_after_buy() {
     one(&mut e, m, 100, -1_000, seller);
 
     assert_eq!(e.wallet_graph_entity_count(), 2);
-    assert_eq!(e.wallet_graph_edge_count(), 1, "one funding edge buyer→seller");
+    assert_eq!(
+        e.wallet_graph_edge_count(),
+        1,
+        "one funding edge buyer→seller"
+    );
 }
 
 #[test]
@@ -121,7 +133,7 @@ fn multiple_funding_edges_accumulate() {
     // Sequence: buy(1) → sell(2) → buy(3) → sell(4)
     one(&mut e, m, 100, 1_000, 1);
     one(&mut e, m, 100, -1_000, 2); // edge 1↔2
-    one(&mut e, m, 100, 1_000, 3);  // edge 2↔3
+    one(&mut e, m, 100, 1_000, 3); // edge 2↔3
     one(&mut e, m, 100, -1_000, 4); // edge 3↔4
 
     assert_eq!(e.wallet_graph_entity_count(), 4, "4 distinct wallets");
@@ -136,17 +148,13 @@ fn last_mint_buyer_and_seller_tracked() {
     let m = mint(5);
     let bytes = *m.as_bytes();
 
-    one(&mut e, m, 100, 1_000, 42);  // buy
+    one(&mut e, m, 100, 1_000, 42); // buy
     assert_eq!(
         e.last_mint_buyer_entity(&bytes),
         Some(42),
         "last buyer should be 42"
     );
-    assert_eq!(
-        e.last_mint_seller_entity(&bytes),
-        None,
-        "no seller yet"
-    );
+    assert_eq!(e.last_mint_seller_entity(&bytes), None, "no seller yet");
 
     one(&mut e, m, 100, -1_000, 99); // sell
     assert_eq!(

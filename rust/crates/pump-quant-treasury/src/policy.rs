@@ -217,10 +217,16 @@ impl TreasuryPolicy {
                 return Err(format!("whitelist entry {i} has empty address"));
             }
             if entry.max_per_tx_lamports == 0 {
-                return Err(format!("whitelist entry {i} ({}) has zero max_per_tx", entry.address));
+                return Err(format!(
+                    "whitelist entry {i} ({}) has zero max_per_tx",
+                    entry.address
+                ));
             }
             if entry.max_daily_lamports == 0 {
-                return Err(format!("whitelist entry {i} ({}) has zero max_daily", entry.address));
+                return Err(format!(
+                    "whitelist entry {i} ({}) has zero max_daily",
+                    entry.address
+                ));
             }
             if whitelist_map.contains_key(&entry.address) {
                 return Err(format!("duplicate whitelist address: {}", entry.address));
@@ -245,9 +251,7 @@ impl TreasuryPolicy {
     /// Look up a whitelist entry by address. Returns None if not whitelisted.
     #[must_use]
     pub fn find_whitelist(&self, address: &str) -> Option<&WhitelistEntry> {
-        self.whitelist_map
-            .get(address)
-            .map(|&i| &self.whitelist[i])
+        self.whitelist_map.get(address).map(|&i| &self.whitelist[i])
     }
 
     /// Verify a codeword against the policy's stored hash.
@@ -292,12 +296,14 @@ impl TreasuryPolicy {
 
 /// Parse a u64 from a TOML value, stripping underscores and trailing comments.
 fn parse_u64(raw: &str, key: &str) -> Result<u64, String> {
-    let cleaned = raw
-        .trim()
-        .trim_matches('"')
-        .replace('_', "");
+    let cleaned = raw.trim().trim_matches('"').replace('_', "");
     // Strip trailing comments
-    let cleaned = cleaned.split('#').next().unwrap_or(&cleaned).trim().to_string();
+    let cleaned = cleaned
+        .split('#')
+        .next()
+        .unwrap_or(&cleaned)
+        .trim()
+        .to_string();
 
     cleaned
         .parse::<u64>()
@@ -341,7 +347,10 @@ max_daily_lamports = 30_000_000_000
         assert_eq!(policy.whitelist.len(), 2);
 
         let entry0 = &policy.whitelist[0];
-        assert_eq!(entry0.address, "GqYcSFbu5B1hGY1KKfFWUg6Zeau1SZX9qsfy1CnbggiM");
+        assert_eq!(
+            entry0.address,
+            "GqYcSFbu5B1hGY1KKfFWUg6Zeau1SZX9qsfy1CnbggiM"
+        );
         assert_eq!(entry0.label, "Alon_personal");
         assert_eq!(entry0.max_per_tx_lamports, 50_000_000_000);
         assert_eq!(entry0.max_daily_lamports, 200_000_000_000);
@@ -350,7 +359,9 @@ max_daily_lamports = 30_000_000_000
     #[test]
     fn whitelist_lookup() {
         let policy = TreasuryPolicy::from_toml(SAMPLE_TOML).unwrap();
-        assert!(policy.find_whitelist("GqYcSFbu5B1hGY1KKfFWUg6Zeau1SZX9qsfy1CnbggiM").is_some());
+        assert!(policy
+            .find_whitelist("GqYcSFbu5B1hGY1KKfFWUg6Zeau1SZX9qsfy1CnbggiM")
+            .is_some());
         assert!(policy.find_whitelist("SomeRandomAddress").is_none());
     }
 

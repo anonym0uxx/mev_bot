@@ -21,10 +21,10 @@
 //! gate (LayoutRegistry) gates the *build*, not the fetch; this layer fetches
 //! raw state and lets the builder refuse if the layout is unverified.
 
-use pump_quant_protocol::decode::{decode_global, decode_pump_curve_tail};
-use pump_quant_protocol::venue_accounts::{PumpCurveCtx, PUMP_GLOBAL};
 use pq_stream_capture::json::{parse, Value};
 use pq_stream_capture::rpc::{redact_url, Reply, Transport};
+use pump_quant_protocol::decode::{decode_global, decode_pump_curve_tail};
+use pump_quant_protocol::venue_accounts::{PumpCurveCtx, PUMP_GLOBAL};
 
 // ─── Error ───────────────────────────────────────────────────────────────
 
@@ -121,11 +121,7 @@ pub struct FetchedState {
 pub trait StateFetch {
     /// Fetch `mint`'s curve context plus a recent blockhash, decoded and
     /// validated. `user` is the fee-payer / signer pubkey.
-    fn fetch(
-        &self,
-        mint: &[u8; 32],
-        user: &[u8; 32],
-    ) -> Result<FetchedState, StateFetchError>;
+    fn fetch(&self, mint: &[u8; 32], user: &[u8; 32]) -> Result<FetchedState, StateFetchError>;
 }
 
 // ─── RPC state-fetch implementation ──────────────────────────────────────
@@ -159,13 +155,14 @@ impl<'a> RpcStateFetch<'a> {
     fn rpc_call(&self, method: &str, params: &str) -> Result<Value, StateFetchError> {
         let id = self.id_counter.get();
         self.id_counter.set(id + 1);
-        let body = format!(
-            r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{params}}}"#,
-        );
-        let Reply { body: resp, .. } = self
-            .transport
-            .post_json(&self.rpc_url, &body)
-            .map_err(|e| StateFetchError::Transport(format!("{}: {e}", redact_url(&self.rpc_url))))?;
+        let body =
+            format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{params}}}"#,);
+        let Reply { body: resp, .. } =
+            self.transport
+                .post_json(&self.rpc_url, &body)
+                .map_err(|e| {
+                    StateFetchError::Transport(format!("{}: {e}", redact_url(&self.rpc_url)))
+                })?;
         let val = parse(&resp).map_err(StateFetchError::Transport)?;
         // Check for error first — JSON-RPC forbids both result and error.
         if let Some(err) = val.get("error") {
@@ -225,20 +222,19 @@ impl<'a> RpcStateFetch<'a> {
     /// Extract `result.value.lastValidBlockHeight` — the slot height past which the
     /// blockhash in the same response is no longer valid. `None` when absent.
     fn last_valid_block_height(val: &Value) -> Option<u64> {
-        Self::result(val)?.get("value")?.get("lastValidBlockHeight")?.as_u64()
+        Self::result(val)?
+            .get("value")?
+            .get("lastValidBlockHeight")?
+            .as_u64()
     }
 }
 
 impl<'a> StateFetch for RpcStateFetch<'a> {
-    fn fetch(
-        &self,
-        mint: &[u8; 32],
-        user: &[u8; 32],
-    ) -> Result<FetchedState, StateFetchError> {
+    fn fetch(&self, mint: &[u8; 32], user: &[u8; 32]) -> Result<FetchedState, StateFetchError> {
         // ── 1. Recent blockhash ────────────────────────────────────────────
         let bh_val = self.rpc_call("getLatestBlockhash", "[]")?;
-        let recent_blockhash = Self::blockhash(&bh_val)
-            .ok_or(StateFetchError::DecodeFailed("blockhash"))?;
+        let recent_blockhash =
+            Self::blockhash(&bh_val).ok_or(StateFetchError::DecodeFailed("blockhash"))?;
         if recent_blockhash == [0u8; 32] {
             return Err(StateFetchError::DecodeFailed("blockhash (all-zero)"));
         }
@@ -256,12 +252,13 @@ impl<'a> StateFetch for RpcStateFetch<'a> {
         // interpreted as an escaped quote, not a literal backslash+quote.
         // Raw strings don't process escape sequences, so \" in r#""# produces
         // malformed JSON with literal backslashes → Helius returns Parse error.
-        let global_params = format!("[\"{global_b58}\",{{\"encoding\":\"base64\",\"commitment\":\"confirmed\"}}]");
+        let global_params =
+            format!("[\"{global_b58}\",{{\"encoding\":\"base64\",\"commitment\":\"confirmed\"}}]");
         let global_val = self.rpc_call("getAccountInfo", &global_params)?;
-        let global_data = Self::account_data(&global_val)
-            .ok_or(StateFetchError::AccountNotFound("Global"))?;
-        let pump_global = decode_global(&global_data)
-            .ok_or(StateFetchError::DecodeFailed("Global"))?;
+        let global_data =
+            Self::account_data(&global_val).ok_or(StateFetchError::AccountNotFound("Global"))?;
+        let pump_global =
+            decode_global(&global_data).ok_or(StateFetchError::DecodeFailed("Global"))?;
 
         // ── 3. Bonding curve → creator, is_cashback_coin, quote_mint ────────
         // PDA: ["bonding-curve", mint] under PUMP_PROGRAM_ID
@@ -273,10 +270,11 @@ impl<'a> StateFetch for RpcStateFetch<'a> {
         .map_err(|_| StateFetchError::DecodeFailed("bonding-curve PDA"))?;
         let bc_b58 = encode_base58(&bonding_curve);
         // NOTE: regular string (not raw) so \" is an escaped quote.
-        let bc_params = format!("[\"{bc_b58}\",{{\"encoding\":\"base64\",\"commitment\":\"confirmed\"}}]");
+        let bc_params =
+            format!("[\"{bc_b58}\",{{\"encoding\":\"base64\",\"commitment\":\"confirmed\"}}]");
         let bc_val = self.rpc_call("getAccountInfo", &bc_params)?;
-        let bc_data = Self::account_data(&bc_val)
-            .ok_or(StateFetchError::AccountNotFound("BondingCurve"))?;
+        let bc_data =
+            Self::account_data(&bc_val).ok_or(StateFetchError::AccountNotFound("BondingCurve"))?;
 
         // Decode the tail (includes the prefix identity check).
         let tail = decode_pump_curve_tail(&bc_data)
@@ -289,7 +287,9 @@ impl<'a> StateFetch for RpcStateFetch<'a> {
             return Err(StateFetchError::CurveComplete);
         }
 
-        let creator = tail.creator.ok_or(StateFetchError::DecodeFailed("creator"))?;
+        let creator = tail
+            .creator
+            .ok_or(StateFetchError::DecodeFailed("creator"))?;
 
         // ── 2026-08-19: CORRECTED — use decoded `is_cashback_coin` from byte 82 ──
         //
@@ -313,9 +313,7 @@ impl<'a> StateFetch for RpcStateFetch<'a> {
         //
         // `quote_mint` defaults to WSOL for native-SOL curves; the builder's
         // `validate()` refuses non-SOL quote mints.
-        let is_cashback_coin = tail
-            .is_cashback_coin
-            .unwrap_or(false);
+        let is_cashback_coin = tail.is_cashback_coin.unwrap_or(false);
         // `quote_mint` at offset 83 is unreliable — on-chain bonding-curve
         // accounts store all-zeros, NOT the WSOL mint address.  Pump.fun
         // bonding curves are ALWAYS SOL-quoted by protocol design, so we
@@ -327,14 +325,15 @@ impl<'a> StateFetch for RpcStateFetch<'a> {
         // ── 4. Mint account → owner = token_program ────────────────────────
         let mint_b58 = encode_base58(mint);
         // NOTE: regular string (not raw) so \" is an escaped quote.
-        let mint_params = format!("[\"{mint_b58}\",{{\"encoding\":\"base64\",\"commitment\":\"confirmed\"}}]");
+        let mint_params =
+            format!("[\"{mint_b58}\",{{\"encoding\":\"base64\",\"commitment\":\"confirmed\"}}]");
         let mint_val = self.rpc_call("getAccountInfo", &mint_params)?;
-        let token_program = Self::account_owner(&mint_val)
-            .ok_or(StateFetchError::AccountNotFound("Mint"))?;
+        let token_program =
+            Self::account_owner(&mint_val).ok_or(StateFetchError::AccountNotFound("Mint"))?;
         // Check if the owner is a known token program (spl-token or Token-2022).
         // The builder's validate() will also check this, but failing early here
         // gives a clearer error.
-        use pump_quant_protocol::venue_accounts::{TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID};
+        use pump_quant_protocol::venue_accounts::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
         if token_program != TOKEN_PROGRAM_ID && token_program != TOKEN_2022_PROGRAM_ID {
             return Err(StateFetchError::UnknownTokenProgram);
         }
@@ -502,11 +501,7 @@ pub struct MockStateFetch {
 
 #[cfg(test)]
 impl StateFetch for MockStateFetch {
-    fn fetch(
-        &self,
-        _mint: &[u8; 32],
-        _user: &[u8; 32],
-    ) -> Result<FetchedState, StateFetchError> {
+    fn fetch(&self, _mint: &[u8; 32], _user: &[u8; 32]) -> Result<FetchedState, StateFetchError> {
         // Clone the error or the ok value — both implement Clone.
         self.result.clone()
     }
@@ -547,9 +542,23 @@ mod tests {
                     // The first getAccountInfo is Global, the second is
                     // bonding curve, the third is mint. We distinguish by
                     // the account pubkey in the params.
-                    if self.call_log.borrow().iter().filter(|m| *m == "getAccountInfo").count() == 1 {
+                    if self
+                        .call_log
+                        .borrow()
+                        .iter()
+                        .filter(|m| *m == "getAccountInfo")
+                        .count()
+                        == 1
+                    {
                         self.global_body.clone()
-                    } else if self.call_log.borrow().iter().filter(|m| *m == "getAccountInfo").count() == 2 {
+                    } else if self
+                        .call_log
+                        .borrow()
+                        .iter()
+                        .filter(|m| *m == "getAccountInfo")
+                        .count()
+                        == 2
+                    {
                         self.curve_body.clone()
                     } else {
                         self.mint_body.clone()
@@ -557,7 +566,10 @@ mod tests {
                 }
                 _ => return Err("unknown method".to_string()),
             };
-            Ok(Reply { body: resp, latency_us: 100 })
+            Ok(Reply {
+                body: resp,
+                latency_us: 100,
+            })
         }
     }
 
@@ -587,38 +599,34 @@ mod tests {
             let mut pk = [0u8; 32];
             pk[0] = 0xB0 + i;
             pk[31] = 0xBB + i;
-            buf[741 + (i as usize) * 32..741 + (i as usize) * 32 + 32]
-                .copy_from_slice(&pk);
+            buf[741 + (i as usize) * 32..741 + (i as usize) * 32 + 32].copy_from_slice(&pk);
         }
         buf
     }
 
     // Build a valid BondingCurve account with creator, cashback flag, and
     // quote_mint at the correct offsets.
-    fn make_curve_account(
-        creator: [u8; 32],
-        is_cashback: bool,
-        quote_mint: [u8; 32],
-    ) -> Vec<u8> {
+    fn make_curve_account(creator: [u8; 32], is_cashback: bool, quote_mint: [u8; 32]) -> Vec<u8> {
         let mut buf = vec![0u8; 120];
         // Discriminator: sha256("account:BondingCurve")[..8]
         buf[0..8].copy_from_slice(&[23, 183, 248, 55, 96, 216, 172, 96]);
         // Prefix fields (offsets 8..49): virtual_token, virtual_sol,
         // real_token, real_sol, complete.
-        buf[8..16].copy_from_slice(&1_000_000u64.to_le_bytes());  // virtual_token
-        buf[16..24].copy_from_slice(&500_000u64.to_le_bytes());   // virtual_sol
+        buf[8..16].copy_from_slice(&1_000_000u64.to_le_bytes()); // virtual_token
+        buf[16..24].copy_from_slice(&500_000u64.to_le_bytes()); // virtual_sol
         buf[40] = 0; // complete = false
-        // Tail fields:
-        buf[49..81].copy_from_slice(&creator);         // creator (offset 49)
-        buf[81] = 0;                                    // is_mayhem_mode = false
-        buf[82] = is_cashback as u8;                    // is_cashback_coin (offset 82)
-        buf[83..115].copy_from_slice(&quote_mint);      // quote_mint (offset 83)
+                     // Tail fields:
+        buf[49..81].copy_from_slice(&creator); // creator (offset 49)
+        buf[81] = 0; // is_mayhem_mode = false
+        buf[82] = is_cashback as u8; // is_cashback_coin (offset 82)
+        buf[83..115].copy_from_slice(&quote_mint); // quote_mint (offset 83)
         buf
     }
 
     fn b64(bytes: &[u8]) -> String {
         // Inline base64 encoder — no external dep needed.
-        const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut out = String::new();
         for chunk in bytes.chunks(3) {
             let b0 = chunk[0];
@@ -643,20 +651,18 @@ mod tests {
 
     /// A non-zero blockhash for the mock.
     const MOCK_BLOCKHASH: [u8; 32] = [
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-        17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+        26, 27, 28, 29, 30, 31, 32,
     ];
 
     const MOCK_FEE_RECIPIENT: [u8; 32] = [
-        101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112,
-        113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124,
-        125, 126, 127, 128, 129, 130, 131, 132,
+        101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118,
+        119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132,
     ];
 
     const MOCK_CREATOR: [u8; 32] = [
-        201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
-        213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224,
-        225, 226, 227, 228, 229, 230, 231, 232,
+        201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218,
+        219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232,
     ];
 
     /// `So111...12` — the native-SOL wrapped mint.
@@ -720,17 +726,32 @@ mod tests {
         // The test mock sets is_cashback=true at offset 82, so fetch() now
         // correctly reads it as true.  Previously hardcoded to false, which
         // caused sells on cashback coins to fail with error 6073.
-        assert!(state.ctx.is_cashback_coin, "cashback should be true (decoded from byte 82)");
+        assert!(
+            state.ctx.is_cashback_coin,
+            "cashback should be true (decoded from byte 82)"
+        );
 
         // buyback_fee_recipients should be decoded from the 1045-byte Global.
-        assert_ne!(state.buyback_fee_recipients[0], [0u8; 32], "buyback_fee_recipients[0] should be non-zero");
-        assert_eq!(state.buyback_fee_recipients[0][0], 0xB0, "first buyback recipient byte 0");
-        assert_eq!(state.buyback_fee_recipients[7][0], 0xB7, "last buyback recipient byte 0");
+        assert_ne!(
+            state.buyback_fee_recipients[0], [0u8; 32],
+            "buyback_fee_recipients[0] should be non-zero"
+        );
+        assert_eq!(
+            state.buyback_fee_recipients[0][0], 0xB0,
+            "first buyback recipient byte 0"
+        );
+        assert_eq!(
+            state.buyback_fee_recipients[7][0], 0xB7,
+            "last buyback recipient byte 0"
+        );
 
         // observed_slot is plumbed from the getLatestBlockhash response's
         // result.context.slot (fixture = 123) — not hardcoded 0. This is what
         // lets the curve-cache staleness check compare two real slots.
-        assert_eq!(state.observed_slot, 123, "observed_slot should be the fixture slot 123");
+        assert_eq!(
+            state.observed_slot, 123,
+            "observed_slot should be the fixture slot 123"
+        );
         // E7: the fixture carries lastValidBlockHeight=99999 — pinned so a parser
         // regression cannot silently drop the expiry bound back to 0.
         assert_eq!(
@@ -775,7 +796,9 @@ mod tests {
     #[test]
     fn state_fetch_missing_global_account() {
         let mut t = make_mock_transport(true, TOKEN_PROGRAM);
-        t.global_body = r#"{"jsonrpc":"2.0","id":2,"result":{"context":{"slot":123},"value":null}}"#.to_string();
+        t.global_body =
+            r#"{"jsonrpc":"2.0","id":2,"result":{"context":{"slot":123},"value":null}}"#
+                .to_string();
         let fetcher = RpcStateFetch::new(&t, "http://test".to_string());
         let err = fetcher.fetch(&[0xAA; 32], &[0xBB; 32]).unwrap_err();
         assert!(matches!(err, StateFetchError::AccountNotFound("Global")));
@@ -796,7 +819,8 @@ mod tests {
     fn state_fetch_rpc_error() {
         let mut t = make_mock_transport(true, TOKEN_PROGRAM);
         t.blockhash_body =
-            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"too many requests"}}"#.to_string();
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"too many requests"}}"#
+                .to_string();
         let fetcher = RpcStateFetch::new(&t, "http://test".to_string());
         let err = fetcher.fetch(&[0xAA; 32], &[0xBB; 32]).unwrap_err();
         assert!(matches!(err, StateFetchError::Rpc { .. }));

@@ -350,7 +350,6 @@ pub fn suggested_initial_envelope(
     }
 }
 
-
 // ============================================================================
 // Phase 5: Algorithmic envelope derivation — derive ALL LiveEnvelope fields
 // from paper trading evidence. No operator guesses. The envelope is always
@@ -390,7 +389,8 @@ pub fn derive_envelope(e: &PaperEnvelopeEvidence) -> LiveEnvelope {
     } else {
         (e.paper_max_winning_position_lamports / 2).max(1)
     };
-    let max_total_deployed_lamports = (e.peak_deployed_lamports / 5).saturating_mul(3)
+    let max_total_deployed_lamports = (e.peak_deployed_lamports / 5)
+        .saturating_mul(3)
         .max(max_position_lamports);
     let max_open_positions = e.peak_concurrent_open.min(3).max(1);
     let max_entries_per_hour = if e.session_duration_secs == 0 {
@@ -431,8 +431,13 @@ mod derive_envelope_tests {
     use super::*;
 
     fn make_evidence(
-        max_winning: u64, peak_concurrent: u32, peak_deployed: u64,
-        slippage_p95: u32, slot_interval_ms: u64, total_entries: u32, duration_secs: u64,
+        max_winning: u64,
+        peak_concurrent: u32,
+        peak_deployed: u64,
+        slippage_p95: u32,
+        slot_interval_ms: u64,
+        total_entries: u32,
+        duration_secs: u64,
     ) -> PaperEnvelopeEvidence {
         PaperEnvelopeEvidence {
             verdict: PromotionVerdict::Promote,
@@ -452,7 +457,10 @@ mod derive_envelope_tests {
     #[test]
     fn test_refused_verdict_yields_closed() {
         let mut e = make_evidence(100, 2, 200, 100, 400, 300, 3600);
-        e.verdict = PromotionVerdict::Refuse(RefusalReason::SampleTooSmall { closed: 10, required: 100 });
+        e.verdict = PromotionVerdict::Refuse(RefusalReason::SampleTooSmall {
+            closed: 10,
+            required: 100,
+        });
         let env = derive_envelope(&e);
         assert!(!env.admits_anything());
     }

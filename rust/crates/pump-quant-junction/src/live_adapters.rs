@@ -35,13 +35,13 @@ use std::sync::{
 };
 
 use pump_quant_execution::ex_live_io_traits::{
-    LiveBlockhash, LiveCurveState, LiveSigner, LiveStateFetcher, LiveSubmitter,
-    SignError, StateFetchError, SubmitError,
+    LiveBlockhash, LiveCurveState, LiveSigner, LiveStateFetcher, LiveSubmitter, SignError,
+    StateFetchError, SubmitError,
 };
 
 use pq_stream_capture::rpc::{Reply, Transport, UreqTransport};
 use pq_stream_capture::sender::{Accepted, SenderClient, SenderEndpoint, SenderError};
-use pq_stream_capture::signer::{WalletSigner, SignerError, SIGNATURE_BYTES};
+use pq_stream_capture::signer::{SignerError, WalletSigner, SIGNATURE_BYTES};
 
 use base64::Engine as _;
 
@@ -87,9 +87,7 @@ impl LiveWalletSigner {
 
 impl LiveSigner for LiveWalletSigner {
     fn sign(&self, message_bytes: &[u8]) -> Result<[u8; 64], SignError> {
-        self.inner
-            .sign(message_bytes)
-            .map_err(map_signer_error)
+        self.inner.sign(message_bytes).map_err(map_signer_error)
     }
 
     fn public_key(&self) -> [u8; 32] {
@@ -127,9 +125,13 @@ pub struct HeliusSenderSubmitter {
 impl HeliusSenderSubmitter {
     /// Construct from a Helius Sender endpoint URL. Refuses plaintext HTTP
     /// unless explicitly allowed.
-    pub fn new(endpoint_url: &str, swqos_only: bool, mev_protect: bool) -> Result<Self, SubmitError> {
-        let endpoint = SenderEndpoint::new(endpoint_url, swqos_only, mev_protect)
-            .map_err(map_sender_error)?;
+    pub fn new(
+        endpoint_url: &str,
+        swqos_only: bool,
+        mev_protect: bool,
+    ) -> Result<Self, SubmitError> {
+        let endpoint =
+            SenderEndpoint::new(endpoint_url, swqos_only, mev_protect).map_err(map_sender_error)?;
         Ok(Self {
             transport: UreqTransport::new(),
             endpoint,
@@ -154,7 +156,11 @@ impl HeliusSenderSubmitter {
 
     /// Colocated variant: allows plaintext HTTP for datacentre-to-datacentre
     /// submission with lower latency (no TLS handshake).
-    pub fn new_colocated(endpoint_url: &str, swqos_only: bool, mev_protect: bool) -> Result<Self, SubmitError> {
+    pub fn new_colocated(
+        endpoint_url: &str,
+        swqos_only: bool,
+        mev_protect: bool,
+    ) -> Result<Self, SubmitError> {
         let endpoint = SenderEndpoint::new_allow_plaintext(endpoint_url, swqos_only, mev_protect)
             .map_err(map_sender_error)?;
         Ok(Self {
@@ -526,11 +532,13 @@ impl RpcLiveStateFetcher {
     /// Fetch fresh state from the RPC (the real round-trip). Used by both
     /// `prefetch_state` (background) and `fetch_state_hot` (fallback when the
     /// cache is cold or stale).
-    fn fetch_fresh(&self, mint: &[u8; 32], user: &[u8; 32]) -> Result<LiveCurveState, StateFetchError> {
+    fn fetch_fresh(
+        &self,
+        mint: &[u8; 32],
+        user: &[u8; 32],
+    ) -> Result<LiveCurveState, StateFetchError> {
         let fetcher = RpcStateFetch::new(&self.transport, self.rpc_url.clone());
-        let fetched = fetcher
-            .fetch(mint, user)
-            .map_err(map_state_fetch_error)?;
+        let fetched = fetcher.fetch(mint, user).map_err(map_state_fetch_error)?;
 
         // ── Latency optimization: write the blockhash from this fetch into the
         // cache so `latest_blockhash()` doesn't need a second RPC round-trip.
@@ -544,7 +552,7 @@ impl RpcLiveStateFetcher {
             *self.blockhash_cache.lock().unwrap() = Some(CachedBlockhash {
                 blockhash: fetched.recent_blockhash,
                 slot: fetched.observed_slot, // same getLatestBlockhash call's
-                                             // result.context.slot
+                // result.context.slot
                 // E7: the expiry bound arrives with the hash — no second RPC, no
                 // inference from elapsed time.
                 last_valid_block_height: fetched.last_valid_block_height,
@@ -582,22 +590,22 @@ impl RpcLiveStateFetcher {
             .map_err(|e| StateFetchError::RpcError(e))?;
 
         // Parse the blockhash from the JSON response.
-        let blockhash_str = extract_blockhash_from_response(&reply.body)
-            .ok_or(StateFetchError::ZeroBlockhash)?;
+        let blockhash_str =
+            extract_blockhash_from_response(&reply.body).ok_or(StateFetchError::ZeroBlockhash)?;
 
         if blockhash_str.chars().all(|c| c == '1') {
             // All-zeros base58 is "111...111" — degenerate.
             return Err(StateFetchError::ZeroBlockhash);
         }
 
-        let blockhash = decode_base58_32(&blockhash_str)
-            .ok_or(StateFetchError::DecodeError("blockhash not valid base58".into()))?;
+        let blockhash = decode_base58_32(&blockhash_str).ok_or(StateFetchError::DecodeError(
+            "blockhash not valid base58".into(),
+        ))?;
 
-        let slot = extract_slot_from_response(&reply.body)
-            .unwrap_or(0);
+        let slot = extract_slot_from_response(&reply.body).unwrap_or(0);
         // E7: previously parsed nowhere — the response always carried it.
-        let last_valid_block_height = extract_last_valid_block_height_from_response(&reply.body)
-            .unwrap_or(0);
+        let last_valid_block_height =
+            extract_last_valid_block_height_from_response(&reply.body).unwrap_or(0);
         if slot > 0 {
             self.newest_slot.fetch_max(slot, Ordering::Relaxed);
         }
@@ -699,9 +707,8 @@ impl LiveStateFetcher for RpcLiveStateFetcher {
         let ata_b58 = encode_base58_pubkey(&ata);
 
         // RPC: getAccountInfo(ata, { encoding: base64, commitment: confirmed }).
-        let params = format!(
-            "[\"{ata_b58}\",{{\"encoding\":\"base64\",\"commitment\":\"confirmed\"}}]"
-        );
+        let params =
+            format!("[\"{ata_b58}\",{{\"encoding\":\"base64\",\"commitment\":\"confirmed\"}}]");
         let body = format!(
             "{{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"getAccountInfo\",\"params\":{params}}}"
         );
@@ -730,12 +737,8 @@ fn map_state_fetch_error(e: JunctionStateFetchError) -> StateFetchError {
         JunctionStateFetchError::AccountNotFound(s) => {
             StateFetchError::AccountNotFound(s.to_string())
         }
-        JunctionStateFetchError::BadEncoding(s) => {
-            StateFetchError::DecodeError(s.to_string())
-        }
-        JunctionStateFetchError::DecodeFailed(s) => {
-            StateFetchError::DecodeError(s.to_string())
-        }
+        JunctionStateFetchError::BadEncoding(s) => StateFetchError::DecodeError(s.to_string()),
+        JunctionStateFetchError::DecodeFailed(s) => StateFetchError::DecodeError(s.to_string()),
         JunctionStateFetchError::UnknownTokenProgram => {
             StateFetchError::DecodeError("unknown token program".to_string())
         }
@@ -906,11 +909,7 @@ fn extract_ata_balance(body: &str) -> Option<u64> {
         return Some(0); // Too short — treat as 0 balance.
     }
     let amount_bytes = &raw[64..72];
-    let amount = u64::from_le_bytes(
-        amount_bytes
-            .try_into()
-            .ok()?,
-    );
+    let amount = u64::from_le_bytes(amount_bytes.try_into().ok()?);
     Some(amount)
 }
 
@@ -965,9 +964,9 @@ impl Default for PrefetchConfig {
     fn default() -> Self {
         Self {
             blockhash_refresh_ms: 5_000, // 5 seconds — well within the 60s
-                                          // blockhash validity window.
-            curve_refresh_ms: 3_000,     // 3 seconds — fast enough for the
-                                          // bonding curve to not drift.
+            // blockhash validity window.
+            curve_refresh_ms: 3_000, // 3 seconds — fast enough for the
+                                     // bonding curve to not drift.
         }
     }
 }
@@ -1142,7 +1141,10 @@ mod e7_blockhash_validity {
             ),
             None
         );
-        assert_eq!(extract_last_valid_block_height_from_response("not json"), None);
+        assert_eq!(
+            extract_last_valid_block_height_from_response("not json"),
+            None
+        );
     }
 
     fn fetcher() -> RpcLiveStateFetcher {
@@ -1163,7 +1165,10 @@ mod e7_blockhash_validity {
         let f = fetcher();
         let c = entry(epoch_secs());
         f.newest_slot.store(149, Ordering::Relaxed);
-        assert!(f.cached_blockhash_is_usable(&c), "height still below the bound");
+        assert!(
+            f.cached_blockhash_is_usable(&c),
+            "height still below the bound"
+        );
         // The chain reached the bound. The hash is now refused although far less
         // than the old 5 s clock had elapsed — that is the whole point of E7.
         f.newest_slot.store(150, Ordering::Relaxed);
@@ -1202,7 +1207,6 @@ mod e7_blockhash_validity {
         );
     }
 }
-
 
 #[cfg(test)]
 mod c1_stream_fed_cache {
@@ -1322,7 +1326,9 @@ mod c1_stream_fed_cache {
         let f = fetcher();
         f.seed_curve_for_test(state(6, 1_000, 2_000, 100));
         assert!(f.note_stream_reserves(&[6u8; 32], 1_100, 2_100, false, 100));
-        let served = f.fetch_state_hot(&[6u8; 32], &[0u8; 32]).expect("a live feed answers");
+        let served = f
+            .fetch_state_hot(&[6u8; 32], &[0u8; 32])
+            .expect("a live feed answers");
         assert_eq!(served.virtual_sol_reserves, 1_100);
         // The stream stops; the chain does not.
         f.newest_slot

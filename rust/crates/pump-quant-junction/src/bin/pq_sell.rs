@@ -51,17 +51,13 @@ fn main() -> ExitCode {
     eprintln!("[pq-sell] Slippage: {slippage_bps} bps");
 
     // ── Load dependencies ────────────────────────────────────────────────
+    use pump_quant_execution::ex_live_io_traits::{LiveSigner, LiveStateFetcher, LiveSubmitter};
+    use pump_quant_execution::ex_live_sink::{LiveOutboundSink, LiveSinkConfig};
+    use pump_quant_execution::ex_outbound_sink::{AdmitRecord, OutboundOutcome, OutboundSink};
     use pump_quant_junction::live_adapters::{
         HeliusSenderSubmitter, LiveWalletSigner, RpcLiveStateFetcher,
     };
-    use pump_quant_execution::ex_live_io_traits::{
-        LiveSigner, LiveStateFetcher, LiveSubmitter,
-    };
-    use pump_quant_execution::ex_live_sink::{LiveOutboundSink, LiveSinkConfig};
-    use pump_quant_execution::ex_outbound_sink::{AdmitRecord, OutboundSink, OutboundOutcome};
-    use pump_quant_protocol::layout::{
-        LayoutRegistry,
-    };
+    use pump_quant_protocol::layout::LayoutRegistry;
     use pump_quant_protocol::tx_build::{ComputePlan, TipPlan};
     use pump_quant_protocol::venue_accounts::FeeTail;
     use std::sync::Arc;
@@ -110,7 +106,10 @@ fn main() -> ExitCode {
         }
     }
 
-    if !helius_rpc_url.is_empty() && !helius_api_key.is_empty() && !helius_rpc_url.contains("api-key=") {
+    if !helius_rpc_url.is_empty()
+        && !helius_api_key.is_empty()
+        && !helius_rpc_url.contains("api-key=")
+    {
         helius_rpc_url = format!("{}/?api-key={}", helius_rpc_url, helius_api_key);
     }
 
@@ -141,10 +140,8 @@ fn main() -> ExitCode {
     );
     eprintln!("[pq-sell] Loading keypair from {keypair_path}");
 
-    let signer = match LiveWalletSigner::load(
-        std::path::Path::new(&keypair_path),
-        &wallet_address,
-    ) {
+    let signer = match LiveWalletSigner::load(std::path::Path::new(&keypair_path), &wallet_address)
+    {
         Ok(s) => s,
         Err(e) => {
             eprintln!("[pq-sell] FATAL: signer load failed: {e:?}");
@@ -165,9 +162,7 @@ fn main() -> ExitCode {
     };
 
     let submitter = if !helius_api_key.is_empty() {
-        match HeliusSenderSubmitter::new_with_api_key(
-            &sender_url, &helius_api_key, true, false,
-        ) {
+        match HeliusSenderSubmitter::new_with_api_key(&sender_url, &helius_api_key, true, false) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("[pq-sell] FATAL: submitter construction failed: {e:?}");
@@ -198,19 +193,22 @@ fn main() -> ExitCode {
     eprintln!("[pq-sell] LayoutRegistry populated");
 
     // ── Sink config (same as daemon) ─────────────────────────────────────
-    let compute = ComputePlan { unit_limit: 120_000, unit_price_micro_lamports: 5_000 };
+    let compute = ComputePlan {
+        unit_limit: 120_000,
+        unit_price_micro_lamports: 5_000,
+    };
     let tip = Some(TipPlan {
         to: [
-            0x1a, 0xa2, 0xf0, 0x5a, 0x6f, 0x89, 0x50, 0xfc,
-            0xbf, 0x5d, 0xf9, 0xca, 0x39, 0x48, 0x1c, 0x6d,
-            0xf1, 0x33, 0x05, 0xc8, 0xb8, 0x7c, 0x64, 0x4f,
-            0x4d, 0x8c, 0x6d, 0x82, 0x0b, 0x37, 0x89, 0xa6,
+            0x1a, 0xa2, 0xf0, 0x5a, 0x6f, 0x89, 0x50, 0xfc, 0xbf, 0x5d, 0xf9, 0xca, 0x39, 0x48,
+            0x1c, 0x6d, 0xf1, 0x33, 0x05, 0xc8, 0xb8, 0x7c, 0x64, 0x4f, 0x4d, 0x8c, 0x6d, 0x82,
+            0x0b, 0x37, 0x89, 0xa6,
         ],
         lamports: 5_000,
     });
 
     let sink_config = LiveSinkConfig {
-        compute, tip,
+        compute,
+        tip,
         fee_tail: FeeTail::None,
         max_slippage_bps: slippage_bps,
         mcap_band_enable: false, // pq_sell only sells, no buy-side mcap re-check
@@ -234,7 +232,7 @@ fn main() -> ExitCode {
     let record = AdmitRecord {
         mint: mint_arr,
         user: [0u8; 32],
-        is_buy: false,       // SELL
+        is_buy: false, // SELL
         size_lamports: token_amount,
         entry_price: 0,
         max_slippage_bps: slippage_bps,

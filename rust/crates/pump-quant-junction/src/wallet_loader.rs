@@ -68,9 +68,7 @@ pub fn load_tracked_wallets_from_json(
 ///
 /// This is the pure-function core (no file I/O) — testable without touching
 /// the filesystem.
-pub fn parse_tracked_wallets_json(
-    text: &str,
-) -> Result<(TrackedWalletMatcher, LoadStats), String> {
+pub fn parse_tracked_wallets_json(text: &str) -> Result<(TrackedWalletMatcher, LoadStats), String> {
     // We use a simple regex-free scanner: find every occurrence of the
     // literal `"pubkey"` key, then extract the quoted string value that
     // follows it. This avoids the fragility of a general state machine
@@ -89,15 +87,19 @@ pub fn parse_tracked_wallets_json(
         // Skip past the "pubkey" key and find the ':' after it
         let mut i = pos + needle.len();
         // Skip whitespace
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() { i += 1; }
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
         if i >= bytes.len() || bytes[i] != b':' {
             // Not a key-value pair — skip
             search_from = pos + 1;
             continue;
         }
         i += 1; // consume ':'
-        // Skip whitespace
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() { i += 1; }
+                // Skip whitespace
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
         if i >= bytes.len() || bytes[i] != b'"' {
             // Value is not a string — skip
             search_from = pos + 1;
@@ -107,7 +109,9 @@ pub fn parse_tracked_wallets_json(
         let vstart = i + 1;
         let mut vj = vstart;
         while vj < bytes.len() && bytes[vj] != b'"' {
-            if bytes[vj] == b'\\' { vj += 1; } // skip escaped char
+            if bytes[vj] == b'\\' {
+                vj += 1;
+            } // skip escaped char
             vj += 1;
         }
         if vj >= bytes.len() {
@@ -141,7 +145,10 @@ pub fn parse_tracked_wallets_json(
             None => {
                 stats.decode_failures += 1;
                 if stats.decode_failures <= 5 {
-                    eprintln!("[wallet_loader] base58 decode failed for: {}", entry.pubkey_str);
+                    eprintln!(
+                        "[wallet_loader] base58 decode failed for: {}",
+                        entry.pubkey_str
+                    );
                 }
             }
         }

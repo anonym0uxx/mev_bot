@@ -86,8 +86,8 @@ pub struct CostBreakdown {
 pub fn cost_floor_bps(regime: Regime, notional_sol: f64, expected_impact_bps: i64) -> i64 {
     let notional_lamports = (notional_sol * LAMPORTS_PER_SOL).max(1.0);
     let fixed_bps_per_leg = FIXED_LAMPORTS_PER_LEG_P50 / notional_lamports * BPS_ONE;
-    let floor = 2.0 * (regime.venue_bp_per_leg() + fixed_bps_per_leg)
-        + 2.0 * expected_impact_bps as f64;
+    let floor =
+        2.0 * (regime.venue_bp_per_leg() + fixed_bps_per_leg) + 2.0 * expected_impact_bps as f64;
     round_half_even(floor) as i64
 }
 
@@ -104,11 +104,7 @@ pub fn decompose(clip_sol: f64, depth_sol: Option<f64>, regime: Regime) -> CostB
         Some(d) => clip_sol / d * BPS_ONE,
         None => 0.0,
     };
-    let total = cost_floor_bps(
-        regime,
-        clip_sol,
-        round_half_even(impact_bp_per_leg) as i64,
-    );
+    let total = cost_floor_bps(regime, clip_sol, round_half_even(impact_bp_per_leg) as i64);
     CostBreakdown {
         clip_sol,
         depth_sol: depth,
@@ -120,8 +116,7 @@ pub fn decompose(clip_sol: f64, depth_sol: Option<f64>, regime: Regime) -> CostB
 }
 
 /// The size tiers the entry family offers, as (label, fraction of the canonical notional).
-pub const SIZE_TIERS: [(&str, f64); 3] =
-    [("SMALL", 0.25), ("MID", 0.50), ("FULL", 1.00)];
+pub const SIZE_TIERS: [(&str, f64); 3] = [("SMALL", 0.25), ("MID", 0.50), ("FULL", 1.00)];
 
 /// The SIZE OPTIONS block, generated from the same authority as the cost line so the
 /// numbers in a row can never disagree with its own system prompt.
@@ -202,10 +197,14 @@ mod tests {
         let a = decompose(1.0, Some(4000.0), Regime::Amm);
         let c = decompose(1.0, Some(4000.0), Regime::BondingCurve);
         assert!(a.round_trip_bp < c.round_trip_bp);
-        assert!(decompose(1.0, Some(10.0), Regime::Amm).round_trip_bp
-            > decompose(1.0, Some(1000.0), Regime::Amm).round_trip_bp);
-        assert!(decompose(1.0, Some(100.0), Regime::Amm).round_trip_bp
-            > decompose(0.25, Some(100.0), Regime::Amm).round_trip_bp);
+        assert!(
+            decompose(1.0, Some(10.0), Regime::Amm).round_trip_bp
+                > decompose(1.0, Some(1000.0), Regime::Amm).round_trip_bp
+        );
+        assert!(
+            decompose(1.0, Some(100.0), Regime::Amm).round_trip_bp
+                > decompose(0.25, Some(100.0), Regime::Amm).round_trip_bp
+        );
     }
 
     #[test]

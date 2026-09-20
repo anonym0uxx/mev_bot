@@ -300,9 +300,21 @@ mod tests {
     #[test]
     fn rank_reversal_no_reversal_when_champion_wins_both() {
         let candidates = vec![
-            RankCandidate { id: 0, netsol_lamports: 500_000, maxdd_lamports: -10_000 },
-            RankCandidate { id: 1, netsol_lamports: 300_000, maxdd_lamports: -50_000 },
-            RankCandidate { id: 2, netsol_lamports: 100_000, maxdd_lamports: -80_000 },
+            RankCandidate {
+                id: 0,
+                netsol_lamports: 500_000,
+                maxdd_lamports: -10_000,
+            },
+            RankCandidate {
+                id: 1,
+                netsol_lamports: 300_000,
+                maxdd_lamports: -50_000,
+            },
+            RankCandidate {
+                id: 2,
+                netsol_lamports: 100_000,
+                maxdd_lamports: -80_000,
+            },
         ];
         let r = rank_reversal(&candidates);
         assert!(!r.reversal_detected);
@@ -316,8 +328,16 @@ mod tests {
     #[test]
     fn rank_reversal_detected_when_champion_wins_netsol_but_loses_maxdd() {
         let candidates = vec![
-            RankCandidate { id: 0, netsol_lamports: 500_000, maxdd_lamports: -100_000 },
-            RankCandidate { id: 1, netsol_lamports: 300_000, maxdd_lamports: -10_000 },
+            RankCandidate {
+                id: 0,
+                netsol_lamports: 500_000,
+                maxdd_lamports: -100_000,
+            },
+            RankCandidate {
+                id: 1,
+                netsol_lamports: 300_000,
+                maxdd_lamports: -10_000,
+            },
         ];
         let r = rank_reversal(&candidates);
         assert!(r.reversal_detected);
@@ -331,9 +351,21 @@ mod tests {
     #[test]
     fn rank_reversal_detected_when_champion_loses_both() {
         let candidates = vec![
-            RankCandidate { id: 0, netsol_lamports: 100_000, maxdd_lamports: -80_000 },
-            RankCandidate { id: 1, netsol_lamports: 500_000, maxdd_lamports: -10_000 },
-            RankCandidate { id: 2, netsol_lamports: 300_000, maxdd_lamports: -30_000 },
+            RankCandidate {
+                id: 0,
+                netsol_lamports: 100_000,
+                maxdd_lamports: -80_000,
+            },
+            RankCandidate {
+                id: 1,
+                netsol_lamports: 500_000,
+                maxdd_lamports: -10_000,
+            },
+            RankCandidate {
+                id: 2,
+                netsol_lamports: 300_000,
+                maxdd_lamports: -30_000,
+            },
         ];
         let r = rank_reversal(&candidates);
         assert!(r.reversal_detected);
@@ -351,9 +383,11 @@ mod tests {
 
     #[test]
     fn rank_reversal_single_candidate_no_reversal() {
-        let candidates = vec![
-            RankCandidate { id: 0, netsol_lamports: 200_000, maxdd_lamports: -20_000 },
-        ];
+        let candidates = vec![RankCandidate {
+            id: 0,
+            netsol_lamports: 200_000,
+            maxdd_lamports: -20_000,
+        }];
         let r = rank_reversal(&candidates);
         assert!(!r.reversal_detected);
         assert_eq!(r.champion_netsol_rank, 1);

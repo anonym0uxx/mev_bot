@@ -16,9 +16,7 @@
 //! one self-contained JSON object, so a trailing `\r` is trimmed before parsing.
 
 use pump_quant_proposal::decision::{AmmState, CurveState, DecisionBundle, EnrichedCandidate};
-use pump_quant_proposal::management::{
-    DevHistoryManagement, EnrichedManagement, ManagementBundle,
-};
+use pump_quant_proposal::management::{DevHistoryManagement, EnrichedManagement, ManagementBundle};
 use pump_quant_proposal::{render_decision, render_management, FlowState, PyNum};
 use serde_json::Value;
 
@@ -28,9 +26,10 @@ fn pynum(v: &Value) -> PyNum {
     } else if v.is_f64() {
         PyNum::Float(v.as_f64().expect("f64"))
     } else {
-        PyNum::Int(v.as_i64().unwrap_or_else(|| {
-            panic!("fixture number is neither int, float nor bool: {v}")
-        }))
+        PyNum::Int(
+            v.as_i64()
+                .unwrap_or_else(|| panic!("fixture number is neither int, float nor bool: {v}")),
+        )
     }
 }
 
@@ -43,25 +42,41 @@ fn pynum_opt(v: &Value) -> Option<PyNum> {
 }
 
 fn i64k(v: &Value, k: &str) -> i64 {
-    v.as_i64().unwrap_or_else(|| panic!("expected integer at {k}: got {v}"))
+    v.as_i64()
+        .unwrap_or_else(|| panic!("expected integer at {k}: got {v}"))
 }
 
 #[allow(dead_code)]
 fn i64_of(v: &Value) -> i64 {
-    v.as_i64().unwrap_or_else(|| panic!("expected integer at {}: got {v}", std::backtrace::Backtrace::capture().to_string().lines().count()))
+    v.as_i64().unwrap_or_else(|| {
+        panic!(
+            "expected integer at {}: got {v}",
+            std::backtrace::Backtrace::capture()
+                .to_string()
+                .lines()
+                .count()
+        )
+    })
 }
 
 /// A flow field that the `no_prior_flow` variant does not carry.
 fn i64_or0(v: &Value) -> i64 {
-    if v.is_null() { 0 } else { i64_of(v) }
+    if v.is_null() {
+        0
+    } else {
+        i64_of(v)
+    }
 }
 
 fn f64_of(v: &Value) -> f64 {
-    v.as_f64().unwrap_or_else(|| panic!("expected number, got {v}"))
+    v.as_f64()
+        .unwrap_or_else(|| panic!("expected number, got {v}"))
 }
 
 fn s_of(v: &Value) -> String {
-    v.as_str().unwrap_or_else(|| panic!("expected string, got {v}")).to_string()
+    v.as_str()
+        .unwrap_or_else(|| panic!("expected string, got {v}"))
+        .to_string()
 }
 
 fn opt_i64(v: &Value) -> Option<i64> {
@@ -73,7 +88,12 @@ fn opt_i64(v: &Value) -> Option<i64> {
 }
 
 fn u64_or0(v: &Value) -> u64 {
-    if v.is_null() { 0 } else { v.as_u64().unwrap_or_else(|| panic!("expected uint, got {v}")) }
+    if v.is_null() {
+        0
+    } else {
+        v.as_u64()
+            .unwrap_or_else(|| panic!("expected uint, got {v}"))
+    }
 }
 
 fn flow_state(v: &Value) -> FlowState {
@@ -98,13 +118,18 @@ fn flow_state(v: &Value) -> FlowState {
 
 fn curve_state(v: &Value) -> CurveState {
     match v["kind"].as_str().expect("curve.kind") {
-        "absent" => CurveState::Absent { reason: s_of(&v["reason"]) },
+        "absent" => CurveState::Absent {
+            reason: s_of(&v["reason"]),
+        },
         "present" => CurveState::Present {
             staleness_ms: i64k(&v["staleness_ms"], "staleness_ms"),
             pricing_eligible: v["pricing_eligible"].as_bool().expect("pricing_eligible"),
             v_sol_reserves_lamports: i64k(&v["v_sol_reserves_lamports"], "v_sol_reserves_lamports"),
             v_tokens_reserves: i64k(&v["v_tokens_reserves"], "v_tokens_reserves"),
-            real_sol_reserves_lamports: i64k(&v["real_sol_reserves_lamports"], "real_sol_reserves_lamports"),
+            real_sol_reserves_lamports: i64k(
+                &v["real_sol_reserves_lamports"],
+                "real_sol_reserves_lamports",
+            ),
             real_tokens_reserves: i64k(&v["real_tokens_reserves"], "real_tokens_reserves"),
             curve_price_sol_per_raw_token: f64_of(&v["curve_price_sol_per_raw_token"]),
             curve_k: s_of(&v["curve_k"]),
@@ -124,7 +149,9 @@ fn opt_slot(v: &Value) -> Option<i64> {
 
 fn amm_state(v: &Value) -> AmmState {
     match v["kind"].as_str().expect("amm.kind") {
-        "absent" => AmmState::Absent { reason: s_of(&v["reason"]) },
+        "absent" => AmmState::Absent {
+            reason: s_of(&v["reason"]),
+        },
         "present" => AmmState::Present {
             pool: s_of(&v["pool"]),
             staleness_ms: i64k(&v["staleness_ms"], "staleness_ms"),
@@ -139,11 +166,22 @@ fn amm_state(v: &Value) -> AmmState {
 }
 
 fn decision_bundle(v: &Value) -> DecisionBundle {
-    for k in ["t_dec_ms", "n_prior_trades", "buy_count", "sell_count", "unique_traders",
-              "buy_volume_lamports", "sell_volume_lamports", "net_flow_lamports"] {
+    for k in [
+        "t_dec_ms",
+        "n_prior_trades",
+        "buy_count",
+        "sell_count",
+        "unique_traders",
+        "buy_volume_lamports",
+        "sell_volume_lamports",
+        "net_flow_lamports",
+    ] {
         assert!(!v[k].is_null(), "null int field {k}");
     }
-    assert!(!v["dev"]["creator_known"].is_null(), "null dev.creator_known");
+    assert!(
+        !v["dev"]["creator_known"].is_null(),
+        "null dev.creator_known"
+    );
     let e = &v["enriched"];
     let d = &v["dev"];
     DecisionBundle {

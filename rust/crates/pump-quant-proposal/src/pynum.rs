@@ -31,7 +31,13 @@ impl PyNum {
         match self {
             PyNum::Int(v) => v.to_string(),
             PyNum::Float(v) => py_float(v),
-            PyNum::Bool(v) => if v { "True".to_string() } else { "False".to_string() },
+            PyNum::Bool(v) => {
+                if v {
+                    "True".to_string()
+                } else {
+                    "False".to_string()
+                }
+            }
         }
     }
 
@@ -40,7 +46,13 @@ impl PyNum {
         match self {
             PyNum::Int(v) => v as f64,
             PyNum::Float(v) => v,
-            PyNum::Bool(v) => if v { 1.0 } else { 0.0 },
+            PyNum::Bool(v) => {
+                if v {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
         }
     }
 

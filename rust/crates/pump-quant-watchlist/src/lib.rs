@@ -37,8 +37,8 @@ pub mod lane_ingest;
 pub mod lane_performance;
 pub mod price_cache;
 pub mod promote;
-pub mod search;
 pub mod rank;
+pub mod search;
 pub mod state;
 
 pub use candidate::{Candidate, Features, Lane, Mint};
@@ -46,6 +46,6 @@ pub use lane_ingest::ingest_union;
 pub use lane_performance::LanePerformance;
 pub use price_cache::{PriceCache, PriceLookup, PriceVenue, Quote};
 pub use promote::promote_top;
-pub use search::{search, Hit, SearchQuery};
 pub use rank::{recency_factor, score_rank, LaneWeights, RankParams, RECENCY_ONE, WEIGHT_ONE};
+pub use search::{search, Hit, SearchQuery};
 pub use state::WatchlistState;

@@ -18,10 +18,10 @@
 //! The emergency-stop sentinel (`data/EMERGENCY_STOP`) is checked BEFORE each
 //! restart — if it exists, the watchdog exits immediately without restarting.
 
-use std::process::{Command, Stdio, Child, ExitStatus};
-use std::time::{Duration, Instant};
-use std::path::Path;
 use std::fs;
+use std::path::Path;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 const EMERGENCY_STOP_FILE: &str = "data/EMERGENCY_STOP";
 const STOP_WATCHDOG_FILE: &str = "data/STOP_WATCHDOG";
@@ -117,7 +117,7 @@ struct WatchdogArgs {
 fn parse_args() -> WatchdogArgs {
     let args: Vec<String> = std::env::args().collect();
     let mut a = WatchdogArgs {
-        max_restarts: 100,       // effectively unlimited
+        max_restarts: 100,        // effectively unlimited
         health_timeout_secs: 120, // 2 minutes without status = hung
         backoff_cap_secs: 60,
         initial_backoff_secs: 2,
@@ -146,7 +146,9 @@ fn parse_args() -> WatchdogArgs {
                 a.daemon_args = args[i + 1].clone();
                 i += 2;
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
     a
@@ -183,9 +185,9 @@ fn daemon_is_healthy(health_timeout_secs: u64) -> bool {
     }
     match fs::metadata(path) {
         Ok(meta) => {
-            let mtime = meta.modified().unwrap_or_else(|_| {
-                std::time::SystemTime::now()
-            });
+            let mtime = meta
+                .modified()
+                .unwrap_or_else(|_| std::time::SystemTime::now());
             let elapsed = mtime.elapsed().unwrap_or(Duration::ZERO);
             elapsed.as_secs() < health_timeout_secs
         }
@@ -241,9 +243,7 @@ fn extract_json_u64(json: &str, key: &str) -> Option<Option<u64>> {
     let rest = rest.strip_prefix(':')?;
     let rest = rest.trim_start();
     // Parse the number
-    let num_str: String = rest.chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
+    let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
     if num_str.is_empty() {
         return Some(None);
     }
@@ -271,7 +271,9 @@ fn write_watchdog_status(
 fn log_wangr_filter_state() {
     let path = Path::new(CHAMPION_CONFIG_FILE);
     if !path.exists() {
-        eprintln!("[pq-watchdog] wangr: no CHAMPION_CONFIG.txt — all 6 filters DISABLED (dev defaults)");
+        eprintln!(
+            "[pq-watchdog] wangr: no CHAMPION_CONFIG.txt — all 6 filters DISABLED (dev defaults)"
+        );
         return;
     }
     let text = match fs::read_to_string(path) {
@@ -286,10 +288,10 @@ fn log_wangr_filter_state() {
     let mut disabled: Vec<&str> = Vec::new();
     let wangr_keys: &[(&str, &str)] = &[
         ("wangr_require_legacy_enable", "Legacy-Token(5× grad)"),
-        ("wangr_dow_filter_enable",     "DoW-Skip/Boost"),
-        ("wangr_hour_filter_enable",    "Hour-Skip/Boost"),
+        ("wangr_dow_filter_enable", "DoW-Skip/Boost"),
+        ("wangr_hour_filter_enable", "Hour-Skip/Boost"),
         ("wangr_symbol_len_filter_enable", "Symbol-Length(4-6)"),
-        ("wangr_creator_min_launches",  "Creator-Min-Launches"),
+        ("wangr_creator_min_launches", "Creator-Min-Launches"),
         ("wangr_liq_zone_filter_enable", "Liquidity-Zone(1k-10k)"),
     ];
     for &(key, label) in wangr_keys {
@@ -310,8 +312,14 @@ fn log_wangr_filter_state() {
             disabled.push(label);
         }
     }
-    eprintln!("[pq-watchdog] wangr filters ENABLED:  [{}]", enabled.join(", "));
-    eprintln!("[pq-watchdog] wangr filters DISABLED: [{}]", disabled.join(", "));
+    eprintln!(
+        "[pq-watchdog] wangr filters ENABLED:  [{}]",
+        enabled.join(", ")
+    );
+    eprintln!(
+        "[pq-watchdog] wangr filters DISABLED: [{}]",
+        disabled.join(", ")
+    );
 }
 
 /// Spawn the pq-daemon child process.
@@ -351,9 +359,8 @@ fn spawn_daemon(daemon_args: &str) -> Result<Child, String> {
     cmd.stdout(Stdio::inherit());
     cmd.stderr(stderr);
 
-    cmd.spawn().map_err(|e| {
-        format!("Failed to spawn pq-daemon at {daemon_path_str}: {e}")
-    })
+    cmd.spawn()
+        .map_err(|e| format!("Failed to spawn pq-daemon at {daemon_path_str}: {e}"))
 }
 
 /// Reap orphaned LaserStream processes before spawning a new daemon.
@@ -376,7 +383,9 @@ fn reap_orphaned_laserstream() {
         let stdout = String::from_utf8_lossy(&out.stdout);
         for line in stdout.lines() {
             if let Ok(pid) = line.trim().parse::<u32>() {
-                if pid == 0 { continue; }
+                if pid == 0 {
+                    continue;
+                }
                 eprintln!("[pq-watchdog] reaping orphaned wsl.exe (pid={pid})");
                 let _ = Command::new("taskkill")
                     .args(["/T", "/F", "/PID", &pid.to_string()])
@@ -452,7 +461,7 @@ fn wait_with_health(
                     return None;
                 }
                 Some(true) => {} // healthy
-                None => {} // can't parse — fail-open, mtime check is primary
+                None => {}       // can't parse — fail-open, mtime check is primary
             }
         }
 
@@ -473,7 +482,11 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::from(4);
     }
     write_pid_file();
-    eprintln!("[pq-watchdog] PID file written: {} (pid={})", WATCHDOG_PID_FILE, std::process::id());
+    eprintln!(
+        "[pq-watchdog] PID file written: {} (pid={})",
+        WATCHDOG_PID_FILE,
+        std::process::id()
+    );
 
     eprintln!("[pq-watchdog] === STARTING ===");
     eprintln!("[pq-watchdog] max_restarts={}", args.max_restarts);
@@ -496,7 +509,12 @@ fn main() -> std::process::ExitCode {
         // Check emergency stop BEFORE spawning
         if emergency_stop_requested() {
             eprintln!("[pq-watchdog] EMERGENCY STOP requested — halting, no restart");
-            write_watchdog_status(restart_count, None, start_time.elapsed().as_secs(), "emergency_stop");
+            write_watchdog_status(
+                restart_count,
+                None,
+                start_time.elapsed().as_secs(),
+                "emergency_stop",
+            );
             remove_pid_file();
             return std::process::ExitCode::from(2);
         }
@@ -504,7 +522,12 @@ fn main() -> std::process::ExitCode {
         // Check watchdog stop
         if stop_watchdog_requested() {
             eprintln!("[pq-watchdog] STOP_WATCHDOG requested — exiting gracefully");
-            write_watchdog_status(restart_count, None, start_time.elapsed().as_secs(), "watchdog_stopped");
+            write_watchdog_status(
+                restart_count,
+                None,
+                start_time.elapsed().as_secs(),
+                "watchdog_stopped",
+            );
             let _ = fs::remove_file(STOP_WATCHDOG_FILE);
             remove_pid_file();
             return std::process::ExitCode::from(0);
@@ -512,18 +535,36 @@ fn main() -> std::process::ExitCode {
 
         // Check restart limit
         if restart_count >= args.max_restarts {
-            eprintln!("[pq-watchdog] MAX RESTARTS ({}) exceeded — giving up", args.max_restarts);
-            let _ = fs::write(WATCHDOG_GAVE_UP_FILE, format!(
-                "Watchdog gave up after {restart_count} restarts."
-            ));
-            write_watchdog_status(restart_count, None, start_time.elapsed().as_secs(), "gave_up");
+            eprintln!(
+                "[pq-watchdog] MAX RESTARTS ({}) exceeded — giving up",
+                args.max_restarts
+            );
+            let _ = fs::write(
+                WATCHDOG_GAVE_UP_FILE,
+                format!("Watchdog gave up after {restart_count} restarts."),
+            );
+            write_watchdog_status(
+                restart_count,
+                None,
+                start_time.elapsed().as_secs(),
+                "gave_up",
+            );
             remove_pid_file();
             return std::process::ExitCode::from(3);
         }
 
         // Spawn the daemon
-        eprintln!("[pq-watchdog] spawning pq-daemon (attempt {}/{})", restart_count + 1, args.max_restarts);
-        write_watchdog_status(restart_count, None, start_time.elapsed().as_secs(), "spawning");
+        eprintln!(
+            "[pq-watchdog] spawning pq-daemon (attempt {}/{})",
+            restart_count + 1,
+            args.max_restarts
+        );
+        write_watchdog_status(
+            restart_count,
+            None,
+            start_time.elapsed().as_secs(),
+            "spawning",
+        );
 
         // GAP #14: Reap orphaned LS/wsl.exe processes from a PREVIOUS daemon
         // session before spawning a new one. Without this, each restart layer
@@ -538,7 +579,12 @@ fn main() -> std::process::ExitCode {
         let mut child = match spawn_daemon(&args.daemon_args) {
             Ok(c) => {
                 eprintln!("[pq-watchdog] pq-daemon spawned (pid={})", c.id());
-                write_watchdog_status(restart_count, Some(c.id()), start_time.elapsed().as_secs(), "running");
+                write_watchdog_status(
+                    restart_count,
+                    Some(c.id()),
+                    start_time.elapsed().as_secs(),
+                    "running",
+                );
                 c
             }
             Err(e) => {
@@ -571,7 +617,9 @@ fn main() -> std::process::ExitCode {
                 );
             }
         } else {
-            eprintln!("[pq-watchdog] refiner status: no status file yet (autonomous loop warming up)");
+            eprintln!(
+                "[pq-watchdog] refiner status: no status file yet (autonomous loop warming up)"
+            );
         }
 
         match exit_status {
@@ -582,7 +630,12 @@ fn main() -> std::process::ExitCode {
                 if stop_watchdog_requested() {
                     eprintln!("[pq-watchdog] STOP_WATCHDOG requested — exiting");
                     let _ = fs::remove_file(STOP_WATCHDOG_FILE);
-                    write_watchdog_status(restart_count, None, start_time.elapsed().as_secs(), "clean_stop");
+                    write_watchdog_status(
+                        restart_count,
+                        None,
+                        start_time.elapsed().as_secs(),
+                        "clean_stop",
+                    );
                     remove_pid_file();
                     return std::process::ExitCode::from(0);
                 }
@@ -596,7 +649,12 @@ fn main() -> std::process::ExitCode {
                 // Daemon crashed (non-zero exit)
                 let code = status.code().unwrap_or(-1);
                 eprintln!("[pq-watchdog] pq-daemon CRASHED (exit code={code})");
-                write_watchdog_status(restart_count, None, start_time.elapsed().as_secs(), "crashed");
+                write_watchdog_status(
+                    restart_count,
+                    None,
+                    start_time.elapsed().as_secs(),
+                    "crashed",
+                );
                 restart_count += 1;
                 eprintln!("[pq-watchdog] backing off for {current_backoff}s before restart");
                 std::thread::sleep(Duration::from_secs(current_backoff));
@@ -605,7 +663,12 @@ fn main() -> std::process::ExitCode {
             None => {
                 // We killed the daemon due to health check failure
                 eprintln!("[pq-watchdog] pq-daemon killed by health check");
-                write_watchdog_status(restart_count, None, start_time.elapsed().as_secs(), "health_kill");
+                write_watchdog_status(
+                    restart_count,
+                    None,
+                    start_time.elapsed().as_secs(),
+                    "health_kill",
+                );
                 restart_count += 1;
                 // Reset backoff for health-kill restarts (the daemon wasn't crashing,
                 // it was hung — likely a network issue that may have resolved)

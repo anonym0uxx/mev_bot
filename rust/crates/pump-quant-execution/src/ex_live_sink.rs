@@ -49,18 +49,16 @@
 
 use std::sync::Arc;
 
-use crate::ex_live_io_traits::{
-    LiveSigner, LiveStateFetcher, LiveSubmitter,
-};
+use crate::ex_live_io_traits::{LiveSigner, LiveStateFetcher, LiveSubmitter};
 use crate::ex_outbound_sink::{AdmitRecord, OutboundOutcome, OutboundSink};
 
+use pump_quant_protocol::ix::{BuyParams, SellParams};
 use pump_quant_protocol::layout::LayoutRegistry;
+use pump_quant_protocol::message::{assemble_transaction, MessageError};
 use pump_quant_protocol::tx_build::{
     build_pump_buy_message, build_pump_sell_message, BuildEnv, ComputePlan, TipPlan, TxBuildError,
 };
-use pump_quant_protocol::ix::{BuyParams, SellParams};
 use pump_quant_protocol::venue_accounts::FeeTail;
-use pump_quant_protocol::message::{assemble_transaction, MessageError};
 
 /// Configuration for the live outbound sink.
 #[derive(Debug, Clone)]
@@ -160,15 +158,10 @@ impl OutboundSink for LiveOutboundSink {
         // The token_program is decoded from the mint account's owner — this
         // is the fix for the 941-failure root cause: the old code hardcoded
         // spl-token, but many mints use Token-2022.
-        let state = match self.state_fetcher.fetch_state_hot(
-            &record.mint,
-            &real_user,
-        ) {
+        let state = match self.state_fetcher.fetch_state_hot(&record.mint, &real_user) {
             Ok(s) => s,
             Err(e) => {
-                return OutboundOutcome::StateFetch(format!(
-                    "state fetch failed: {e:?}"
-                ));
+                return OutboundOutcome::StateFetch(format!("state fetch failed: {e:?}"));
             }
         };
 
@@ -266,9 +259,7 @@ impl OutboundSink for LiveOutboundSink {
             recent_blockhash: match self.state_fetcher.latest_blockhash() {
                 Ok(bh) => bh.blockhash,
                 Err(e) => {
-                    return OutboundOutcome::StateFetch(format!(
-                        "blockhash fetch failed: {e:?}"
-                    ));
+                    return OutboundOutcome::StateFetch(format!("blockhash fetch failed: {e:?}"));
                 }
             },
             registry: &self.registry,
@@ -288,9 +279,8 @@ impl OutboundSink for LiveOutboundSink {
                 );
             }
             // expected_tokens = sol_in * vtokens / vsol  (u128 to prevent overflow)
-            let expected_tokens = (record.size_lamports as u128)
-                .saturating_mul(vtokens as u128)
-                / (vsol as u128);
+            let expected_tokens =
+                (record.size_lamports as u128).saturating_mul(vtokens as u128) / (vsol as u128);
             // Apply slippage: min_tokens = expected_tokens * (10000 - bps) / 10000
             let slippage_factor = 10_000u32.saturating_sub(self.config.max_slippage_bps as u32);
             let min_tokens = (expected_tokens * slippage_factor as u128 / 10_000u128) as u64;
@@ -319,9 +309,7 @@ impl OutboundSink for LiveOutboundSink {
             ) {
                 Ok(bal) => bal,
                 Err(e) => {
-                    return OutboundOutcome::StateFetch(format!(
-                        "ATA balance fetch failed: {e:?}"
-                    ));
+                    return OutboundOutcome::StateFetch(format!("ATA balance fetch failed: {e:?}"));
                 }
             };
 
@@ -349,9 +337,8 @@ impl OutboundSink for LiveOutboundSink {
                 );
             }
             // expected_sol = sell_amount * vsol / vtokens
-            let expected_sol = (sell_amount as u128)
-                .saturating_mul(vsol as u128)
-                / (vtokens as u128);
+            let expected_sol =
+                (sell_amount as u128).saturating_mul(vsol as u128) / (vtokens as u128);
             let slippage_factor = 10_000u32.saturating_sub(self.config.max_slippage_bps as u32);
             let min_sol = (expected_sol * slippage_factor as u128 / 10_000u128) as u64;
 
@@ -366,12 +353,8 @@ impl OutboundSink for LiveOutboundSink {
             // This prevents Custom:11 (CloseAccount fails when dust remains).
             let close_token_account = ata_balance <= sell_amount;
 
-            match build_pump_sell_message(
-                &state.curve_ctx,
-                params,
-                &build_env,
-                close_token_account,
-            ) {
+            match build_pump_sell_message(&state.curve_ctx, params, &build_env, close_token_account)
+            {
                 Ok(msg) => msg,
                 Err(e) => return OutboundOutcome::Construction(build_err_str(&e)),
             }
@@ -385,9 +368,7 @@ impl OutboundSink for LiveOutboundSink {
         let signature = match self.signer.sign(&compiled_msg.bytes) {
             Ok(sig) => sig,
             Err(e) => {
-                return OutboundOutcome::Signer(format!(
-                    "signing failed: {e:?}"
-                ));
+                return OutboundOutcome::Signer(format!("signing failed: {e:?}"));
             }
         };
 
@@ -417,9 +398,7 @@ impl OutboundSink for LiveOutboundSink {
         let on_chain_sig = match self.submitter.submit(&wire_tx, record.is_buy) {
             Ok(sig) => sig,
             Err(e) => {
-                return OutboundOutcome::Sender(format!(
-                    "submission failed: {e:?}"
-                ));
+                return OutboundOutcome::Sender(format!("submission failed: {e:?}"));
             }
         };
 
@@ -443,8 +422,8 @@ impl OutboundSink for LiveOutboundSink {
 mod tests {
     use super::*;
     use crate::ex_live_io_traits::{
-        LiveBlockhash, LiveCurveState, LiveSigner, LiveStateFetcher, LiveSubmitter,
-        SignError, StateFetchError, SubmitError,
+        LiveBlockhash, LiveCurveState, LiveSigner, LiveStateFetcher, LiveSubmitter, SignError,
+        StateFetchError, SubmitError,
     };
     use pump_quant_protocol::venue_accounts::PumpCurveCtx;
 

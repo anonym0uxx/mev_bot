@@ -44,7 +44,7 @@
 //! evaluator's own replay, not by the tape exporter. The tape exporter focuses
 //! on the `trade` records which carry the realized evidence.
 
-use crate::trade_journal::{TradeRecord, TradeOutcome, TradeSide, RunMode};
+use crate::trade_journal::{RunMode, TradeOutcome, TradeRecord, TradeSide};
 
 /// The lane a trade belongs to, matching the evaluator's `Lane` enum.
 /// The evaluator only supports "scalp" and "early".
@@ -165,7 +165,13 @@ impl TapeRecord {
     /// All values are integers or quoted strings. No floats (§22).
     pub fn to_jsonl(&self) -> String {
         match self {
-            TapeRecord::Trade { lane, gross, fees, tips, failed } => {
+            TapeRecord::Trade {
+                lane,
+                gross,
+                fees,
+                tips,
+                failed,
+            } => {
                 format!(
                     r#"{{"kind":"trade","lane":"{lane}","gross":{gross},"fees":{fees},"tips":{tips},"failed":{failed}}}"#,
                     lane = lane.tag(),
@@ -176,11 +182,25 @@ impl TapeRecord {
                 )
             }
             TapeRecord::TradeFull {
-                slot, mint_b58, side_tag, entry_price_fp, exit_price_fp,
-                size_lamports, strategy_id, source_tag, outcome_tag,
-                realized_pnl_lamports, fees_lamports, slippage_lamports,
-                decision_latency_us, confirm_latency_us, run_mode_tag,
-                error_code, seq, mfe_bps, mae_bps,
+                slot,
+                mint_b58,
+                side_tag,
+                entry_price_fp,
+                exit_price_fp,
+                size_lamports,
+                strategy_id,
+                source_tag,
+                outcome_tag,
+                realized_pnl_lamports,
+                fees_lamports,
+                slippage_lamports,
+                decision_latency_us,
+                confirm_latency_us,
+                run_mode_tag,
+                error_code,
+                seq,
+                mfe_bps,
+                mae_bps,
             } => {
                 format!(
                     r#"{{"kind":"trade_full","slot":{slot},"mint":"{mint}","side":"{side}","entry_price_fp":{ep},"exit_price_fp":{xp},"size_lamports":{sz},"strategy_id":{sid},"source":"{src}","outcome":"{out}","realized_pnl":{pnl},"fees":{fees},"slippage":{slip},"decision_latency_us":{dl},"confirm_latency_us":{cl},"run_mode":"{rm}","error_code":{ec},"seq":{seq},"mfe_bps":{mfe},"mae_bps":{mae}}}"#,
@@ -214,10 +234,7 @@ impl TapeRecord {
             }
             TapeRecord::Perf { row } => {
                 let ints: Vec<String> = row.iter().map(|v| v.to_string()).collect();
-                format!(
-                    r#"{{"kind":"perf","row":[{row}]}}"#,
-                    row = ints.join(","),
-                )
+                format!(r#"{{"kind":"perf","row":[{row}]}}"#, row = ints.join(","),)
             }
             TapeRecord::BaselineEvent {
                 index,
@@ -517,7 +534,13 @@ mod tests {
         let rec = make_trade_record(WIN, 5000, 200, 100000, 100);
         let tape = trade_record_to_tape(&rec);
         match tape {
-            TapeRecord::Trade { lane, gross, fees, tips: _, failed } => {
+            TapeRecord::Trade {
+                lane,
+                gross,
+                fees,
+                tips: _,
+                failed,
+            } => {
                 assert_eq!(lane, TapeLane::Scalp);
                 assert_eq!(gross, 5000);
                 assert_eq!(fees, 200);
@@ -533,7 +556,13 @@ mod tests {
         rec.error_code = 1;
         let tape = trade_record_to_tape(&rec);
         match tape {
-            TapeRecord::Trade { lane, gross, fees, tips: _, failed } => {
+            TapeRecord::Trade {
+                lane,
+                gross,
+                fees,
+                tips: _,
+                failed,
+            } => {
                 assert_eq!(gross, 0);
                 assert_eq!(fees, 50);
                 assert_eq!(failed, 100000); // size at risk
@@ -552,8 +581,11 @@ mod tests {
         let tape = trade_record_to_tape(&rec);
         match tape {
             TapeRecord::Trade { lane, .. } => {
-                assert_eq!(lane, TapeLane::Early,
-                    "S2: lane must be Early when TradeRecord.lane=Some(Early)");
+                assert_eq!(
+                    lane,
+                    TapeLane::Early,
+                    "S2: lane must be Early when TradeRecord.lane=Some(Early)"
+                );
             }
             _ => panic!("expected Trade record"),
         }
@@ -568,8 +600,11 @@ mod tests {
         let tape = trade_record_to_tape(&rec);
         match tape {
             TapeRecord::Trade { lane, .. } => {
-                assert_eq!(lane, TapeLane::Scalp,
-                    "S2: lane must be Scalp when TradeRecord.lane=Some(Scalp)");
+                assert_eq!(
+                    lane,
+                    TapeLane::Scalp,
+                    "S2: lane must be Scalp when TradeRecord.lane=Some(Scalp)"
+                );
             }
             _ => panic!("expected Trade record"),
         }
@@ -583,8 +618,11 @@ mod tests {
         let tape = trade_record_to_tape(&rec);
         match tape {
             TapeRecord::Trade { lane, .. } => {
-                assert_eq!(lane, TapeLane::Scalp,
-                    "S2: lane must default to Scalp when TradeRecord.lane=None");
+                assert_eq!(
+                    lane,
+                    TapeLane::Scalp,
+                    "S2: lane must default to Scalp when TradeRecord.lane=None"
+                );
             }
             _ => panic!("expected Trade record"),
         }
@@ -621,7 +659,10 @@ mod tests {
 
     #[test]
     fn pvalue_record_format() {
-        let rec = TapeRecord::PValue { id: 42, p_ppm: 5000 };
+        let rec = TapeRecord::PValue {
+            id: 42,
+            p_ppm: 5000,
+        };
         let jsonl = rec.to_jsonl();
         assert!(jsonl.contains(r#""kind":"pvalue""#));
         assert!(jsonl.contains(r#""id":42"#));
@@ -630,7 +671,9 @@ mod tests {
 
     #[test]
     fn perf_record_format() {
-        let rec = TapeRecord::Perf { row: vec![5, -3, 8, -1] };
+        let rec = TapeRecord::Perf {
+            row: vec![5, -3, 8, -1],
+        };
         let jsonl = rec.to_jsonl();
         assert!(jsonl.contains(r#""kind":"perf""#));
         assert!(jsonl.contains(r#""row":[5,-3,8,-1]"#));
@@ -771,7 +814,8 @@ mod tests {
         // The evaluator parser expects:
         // {"kind":"trade","lane":"scalp","gross":5000,"fees":200,"tips":0,"failed":0}
         // Verify our output matches this exactly.
-        let expected = r#"{"kind":"trade","lane":"scalp","gross":5000,"fees":200,"tips":0,"failed":0}"#;
+        let expected =
+            r#"{"kind":"trade","lane":"scalp","gross":5000,"fees":200,"tips":0,"failed":0}"#;
         assert_eq!(jsonl, expected);
     }
 

@@ -25,7 +25,7 @@ use pump_quant_app::event::AppEvent;
 use pump_quant_domain::ids::Mint;
 use pump_quant_protocol::decode::{decode_pump_curve, PumpCurve};
 
-use crate::{DecodedRealSol, ProvenancedEvent, ProvenanceSource};
+use crate::{DecodedRealSol, ProvenanceSource, ProvenancedEvent};
 
 /// Decode a bonding-curve account blob into a provenanced `OnchainConfirm`.
 ///
@@ -142,7 +142,10 @@ mod tests {
         );
         let result = decode_onchain_confirm(&[0xAB; 32], &blob, 12345).unwrap();
 
-        assert_eq!(result.source, crate::ProvenanceSource::HeliusAccountSubscribe);
+        assert_eq!(
+            result.source,
+            crate::ProvenanceSource::HeliusAccountSubscribe
+        );
         assert_eq!(result.slot, 12345);
         assert!(result.is_live);
 
@@ -172,7 +175,11 @@ mod tests {
     #[test]
     fn test_decode_wrong_discriminator() {
         let mut blob = make_curve_blob(
-            1_000_000_000, 30_000_000_000, 800_000_000, 5_000_000_000, false,
+            1_000_000_000,
+            30_000_000_000,
+            800_000_000,
+            5_000_000_000,
+            false,
         );
         // Corrupt the discriminator.
         blob[0] = 0x00;
@@ -185,7 +192,11 @@ mod tests {
         // but does not prevent OnchainConfirm. The engine decides what to do
         // with a completed curve (it may treat it as migrated).
         let blob = make_curve_blob(
-            1_000_000_000, 60_000_000_000, 100_000_000, 30_000_000_000, true,
+            1_000_000_000,
+            60_000_000_000,
+            100_000_000,
+            30_000_000_000,
+            true,
         );
         let result = decode_onchain_confirm(&[0xAB; 32], &blob, 100).unwrap();
 
