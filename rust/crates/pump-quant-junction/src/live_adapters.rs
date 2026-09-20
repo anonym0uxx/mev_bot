@@ -835,6 +835,40 @@ pub fn spawn_prefetch_thread(
         .expect("prefetch thread spawn")
 }
 
+/// Start a background thread that refreshes ONLY the blockhash on a timer,
+/// keeping the global blockhash cache warm so `latest_blockhash()` never pays
+/// a synchronous RPC on the hot path.
+///
+/// Unlike `spawn_prefetch_thread`, this takes no mint — the blockhash cache is
+/// global and benefits every mint. Use it in the multi-mint daemon, where there
+/// is no single "active mint" to curve-prefetch (curve-prefetch stays on-demand
+/// in `fetch_state_hot`). The first refresh runs immediately, before the loop,
+/// so the cache is warm before the first decision (no cold-start fetch).
+pub fn spawn_blockhash_warmer(
+    fetcher: Arc<RpcLiveStateFetcher>,
+    config: PrefetchConfig,
+) -> std::thread::JoinHandle<()> {
+    std::thread::Builder::new()
+        .name("pq-blockhash-warmer".into())
+        .spawn(move || {
+            // Warm the cache immediately — avoids the cold-start synchronous
+            // fetch on the very first decision.
+            let _ = fetcher.refresh_blockhash_inner();
+
+            let mut blockhash_timer = 0u64;
+            // 100ms tick — fine-grained enough to honour refresh_ms closely.
+            while !fetcher.is_shutdown() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                blockhash_timer += 100;
+                if blockhash_timer >= config.blockhash_refresh_ms {
+                    blockhash_timer = 0;
+                    let _ = fetcher.refresh_blockhash_inner();
+                }
+            }
+        })
+        .expect("blockhash warmer thread spawn")
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

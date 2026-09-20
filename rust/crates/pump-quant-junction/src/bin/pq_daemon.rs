@@ -1256,7 +1256,8 @@ fn construct_live_engine(
     use pump_quant_execution::ex_live_sink::{LiveOutboundSink, LiveSinkConfig};
     use pump_quant_execution::ex_outbound_sink::OutboundSink;
     use pump_quant_junction::live_adapters::{
-        HeliusSenderSubmitter, LiveWalletSigner, RpcLiveStateFetcher,
+        HeliusSenderSubmitter, LiveWalletSigner, PrefetchConfig, RpcLiveStateFetcher,
+        spawn_blockhash_warmer,
     };
     use pump_quant_protocol::layout::{
         LayoutKey, LayoutRegistry, Side, Variant, Venue, VerifiedLayout,
@@ -1379,8 +1380,12 @@ fn construct_live_engine(
 
     eprintln!("[pq-daemon] Signer loaded: {}", signer.address());
 
-    let state_fetcher = RpcLiveStateFetcher::new(helius_rpc_url.clone());
-    eprintln!("[pq-daemon] State fetcher constructed");
+    let state_fetcher = Arc::new(RpcLiveStateFetcher::new(helius_rpc_url.clone()));
+    // C6: keep the blockhash warm in the background so latest_blockhash() never
+    // pays a synchronous getLatestBlockhash on the decision hot path. (Multi-mint
+    // daemon — warm the global blockhash; curve state stays on-demand.)
+    let _prefetch_handle = spawn_blockhash_warmer(state_fetcher.clone(), PrefetchConfig::default());
+    eprintln!("[pq-daemon] State fetcher constructed (blockhash warmer started)");
 
     let sender_url = if helius_sender_url.is_empty() {
         helius_rpc_url.replacen("/rpc", "/rpc/sender", 1)
@@ -1494,7 +1499,7 @@ fn construct_live_engine(
     let live_sink = Box::new(LiveOutboundSink::new(
         sink_config,
         Arc::new(registry),
-        Arc::new(state_fetcher) as Arc<dyn LiveStateFetcher>,
+        state_fetcher.clone() as Arc<dyn LiveStateFetcher>,
         Arc::new(signer) as Arc<dyn LiveSigner>,
         Arc::new(submitter) as Arc<dyn LiveSubmitter>,
     ));
