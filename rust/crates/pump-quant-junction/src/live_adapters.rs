@@ -275,9 +275,28 @@ struct CachedCurveState {
 struct CachedBlockhash {
     blockhash: [u8; 32],
     slot: u64,
-    /// Unix-epoch seconds when this blockhash was fetched — used for
-    /// freshness checks in `latest_blockhash()`.
+    /// E7: `lastValidBlockHeight` for `blockhash` — the height past which Solana
+    /// refuses it. 0 = the RPC did not report one. This, not a wall clock, is what
+    /// decides whether the cached hash may still be handed to a builder.
+    last_valid_block_height: u64,
+    /// Unix-epoch seconds when this blockhash was fetched. E7 demoted this from the
+    /// freshness criterion to a protocol backstop: a hash older than the chain's own
+    /// ~60 s validity window is refused even if the height test cannot fire (a slot
+    /// observation may lag on a busy RPC). See `cached_blockhash_is_usable`.
     fetched_at_secs: u64,
+}
+
+/// The chain's own blockhash validity ceiling. A blockhash is refused past this age
+/// regardless of `lastValidBlockHeight` — the backstop for the case where the height
+/// test has no fresh observation to compare against.
+const BLOCKHASH_PROTOCOL_EXPIRY_SECS: u64 = 60;
+
+/// Unix-epoch seconds, saturating (a pre-epoch clock is not a panic).
+fn epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Production state fetcher backed by `RpcStateFetch` (RPC getAccountInfo +
@@ -302,6 +321,10 @@ pub struct RpcLiveStateFetcher {
     // ── Blockhash cache: refreshed every ~5s by the background thread ─────
     blockhash_cache: Mutex<Option<CachedBlockhash>>,
 
+    // ── E7: the newest slot this adapter has observed, from either a state fetch
+    // or a blockhash refresh. This is the reference height for blockhash validity.
+    newest_slot: AtomicU64,
+
     // ── Staleness threshold: if the cached state is older than this many
     // slots, the hot path falls back to a synchronous fetch.
     max_stale_slots: u64,
@@ -318,6 +341,7 @@ impl RpcLiveStateFetcher {
             rpc_url,
             curve_cache: RwLock::new(None),
             blockhash_cache: Mutex::new(None),
+            newest_slot: AtomicU64::new(0),
             max_stale_slots: 150, // ≈ 60 s at ~2.5 slots/s (400 ms/slot) — NOT ~5 s
             shutdown: Arc::new(AtomicBool::new(false)),
         }
@@ -338,6 +362,27 @@ impl RpcLiveStateFetcher {
         self.shutdown.load(Ordering::SeqCst)
     }
 
+    /// E7: may the cached blockhash still be handed to a builder?
+    ///
+    /// The criterion is the height Solana itself publishes: the hash is accepted
+    /// while the chain height is below `last_valid_block_height`. We compare that
+    /// bound against the newest slot this adapter has OBSERVED. A slot is never
+    /// below the block height at the same instant, so `newest_slot >=
+    /// last_valid_block_height` is a sound "expired" verdict — at worst it retires a
+    /// hash one block early, which costs one RPC and can never produce a bad
+    /// submission.
+    ///
+    /// The wall clock survives only as the protocol ceiling (`BLOCKHASH_PROTOCOL_EXPIRY_SECS`),
+    /// which covers the case where no fresh slot observation exists to compare
+    /// against. It is a backstop, not the criterion — the 5 s clock is gone.
+    fn cached_blockhash_is_usable(&self, c: &CachedBlockhash) -> bool {
+        let newest_slot = self.newest_slot.load(Ordering::Relaxed);
+        if c.last_valid_block_height != 0 && newest_slot >= c.last_valid_block_height {
+            return false;
+        }
+        epoch_secs().saturating_sub(c.fetched_at_secs) < BLOCKHASH_PROTOCOL_EXPIRY_SECS
+    }
+
     /// Fetch fresh state from the RPC (the real round-trip). Used by both
     /// `prefetch_state` (background) and `fetch_state_hot` (fallback when the
     /// cache is cold or stale).
@@ -351,15 +396,19 @@ impl RpcLiveStateFetcher {
         // cache so `latest_blockhash()` doesn't need a second RPC round-trip.
         // The fetch already called getLatestBlockhash as part of its batched
         // RPC — reusing it saves ~50-100ms on the hot path. ──
+        if fetched.observed_slot > 0 {
+            self.newest_slot
+                .fetch_max(fetched.observed_slot, Ordering::Relaxed);
+        }
         if fetched.recent_blockhash != [0u8; 32] {
             *self.blockhash_cache.lock().unwrap() = Some(CachedBlockhash {
                 blockhash: fetched.recent_blockhash,
                 slot: fetched.observed_slot, // same getLatestBlockhash call's
                                              // result.context.slot
-                fetched_at_secs: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0),
+                // E7: the expiry bound arrives with the hash — no second RPC, no
+                // inference from elapsed time.
+                last_valid_block_height: fetched.last_valid_block_height,
+                fetched_at_secs: epoch_secs(),
             });
         }
 
@@ -406,18 +455,26 @@ impl RpcLiveStateFetcher {
 
         let slot = extract_slot_from_response(&reply.body)
             .unwrap_or(0);
+        // E7: previously parsed nowhere — the response always carried it.
+        let last_valid_block_height = extract_last_valid_block_height_from_response(&reply.body)
+            .unwrap_or(0);
+        if slot > 0 {
+            self.newest_slot.fetch_max(slot, Ordering::Relaxed);
+        }
 
         // Update the cache.
         *self.blockhash_cache.lock().unwrap() = Some(CachedBlockhash {
             blockhash,
             slot,
-            fetched_at_secs: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
+            last_valid_block_height,
+            fetched_at_secs: epoch_secs(),
         });
 
-        Ok(LiveBlockhash { blockhash, slot })
+        Ok(LiveBlockhash {
+            blockhash,
+            slot,
+            last_valid_block_height,
+        })
     }
 }
 
@@ -500,25 +557,20 @@ impl LiveStateFetcher for RpcLiveStateFetcher {
     }
 
     fn latest_blockhash(&self) -> Result<LiveBlockhash, StateFetchError> {
-        // Try the cache first — but only if it's fresh (< 5 seconds old).
-        // Solana blockhashes expire after ~60s, but we refresh aggressively
-        // to avoid landing failures on high-latency submissions.
+        // Try the cache first — accepting it only while it is provably still valid.
         {
             let cache = self.blockhash_cache.lock().unwrap();
             if let Some(ref cached) = *cache {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                if now.saturating_sub(cached.fetched_at_secs) < 5 {
+                if self.cached_blockhash_is_usable(cached) {
                     return Ok(LiveBlockhash {
                         blockhash: cached.blockhash,
                         slot: cached.slot,
+                        last_valid_block_height: cached.last_valid_block_height,
                     });
                 }
             }
         }
-        // Cache miss or stale: fetch synchronously.
+        // Cache miss or expired: fetch synchronously.
         self.refresh_blockhash_inner()
     }
 
@@ -648,6 +700,20 @@ fn extract_blockhash_from_response(body: &str) -> Option<String> {
     let open_quote = after.strip_prefix('"')?;
     let close_quote = open_quote.find('"')?;
     Some(open_quote[..close_quote].to_string())
+}
+
+/// E7: extract `"lastValidBlockHeight":<number>` from a `getLatestBlockhash`
+/// response. The field sits inside `result.value`, next to the blockhash string.
+fn extract_last_valid_block_height_from_response(body: &str) -> Option<u64> {
+    let key = "\"lastValidBlockHeight\"";
+    let start = body.find(key)?;
+    let rest = body.get(start + key.len()..)?;
+    let colon = rest.find(':')?;
+    let after = rest.get(colon + 1..)?.trim_start();
+    let end = after
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(after.len());
+    after[..end].parse::<u64>().ok()
 }
 
 /// Extract the `"slot":<number>` field from a JSON-RPC response.
@@ -939,5 +1005,87 @@ mod tests {
         assert!(!id.is_empty());
         assert!(id.len() <= 64);
         assert!(id.bytes().all(|c| c.is_ascii_alphanumeric()));
+    }
+}
+
+#[cfg(test)]
+mod e7_blockhash_validity {
+    //! E7: a blockhash's freshness is decided by the chain's own
+    //! `lastValidBlockHeight`, not by elapsed wall-clock time.
+    use super::*;
+
+    #[test]
+    fn last_valid_block_height_parses_from_the_real_response_shape() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":123},"value":{"blockhash":"FfLaDnxr9mZfffm9tKuCAjKbbfXhpiEfrT2qKpShZgF7","lastValidBlockHeight":99999}}}"#;
+        assert_eq!(
+            extract_last_valid_block_height_from_response(body),
+            Some(99999),
+            "the field is present in every getLatestBlockhash response"
+        );
+        // Absent / malformed shapes must not fabricate a bound.
+        assert_eq!(
+            extract_last_valid_block_height_from_response(
+                r#"{"result":{"context":{"slot":1},"value":{"blockhash":"x"}}}"#
+            ),
+            None
+        );
+        assert_eq!(extract_last_valid_block_height_from_response("not json"), None);
+    }
+
+    fn fetcher() -> RpcLiveStateFetcher {
+        RpcLiveStateFetcher::new("http://127.0.0.1:1".to_string())
+    }
+
+    fn entry(now: u64) -> CachedBlockhash {
+        CachedBlockhash {
+            blockhash: [7u8; 32],
+            slot: 100,
+            last_valid_block_height: 150,
+            fetched_at_secs: now,
+        }
+    }
+
+    #[test]
+    fn expires_by_height_even_moments_after_being_fetched() {
+        let f = fetcher();
+        let c = entry(epoch_secs());
+        f.newest_slot.store(149, Ordering::Relaxed);
+        assert!(f.cached_blockhash_is_usable(&c), "height still below the bound");
+        // The chain reached the bound. The hash is now refused although far less
+        // than the old 5 s clock had elapsed — that is the whole point of E7.
+        f.newest_slot.store(150, Ordering::Relaxed);
+        assert!(!f.cached_blockhash_is_usable(&c), "bound reached → expired");
+    }
+
+    #[test]
+    fn protocol_ceiling_still_bounds_an_unknown_height() {
+        let f = fetcher();
+        f.newest_slot.store(1, Ordering::Relaxed);
+        // Unknown bound: the chain never told us, so the 60 s protocol ceiling is
+        // the only guard — a fresh hash is served, an over-age one never is.
+        let unknown = CachedBlockhash {
+            last_valid_block_height: 0,
+            ..entry(epoch_secs())
+        };
+        assert!(f.cached_blockhash_is_usable(&unknown));
+        let over_age = CachedBlockhash {
+            last_valid_block_height: 0,
+            ..entry(epoch_secs() - (BLOCKHASH_PROTOCOL_EXPIRY_SECS + 1))
+        };
+        assert!(
+            !f.cached_blockhash_is_usable(&over_age),
+            "past the chain's own validity window → refuse"
+        );
+    }
+
+    #[test]
+    fn no_observed_slot_leaves_the_height_test_inert() {
+        let f = fetcher();
+        f.newest_slot.store(0, Ordering::Relaxed);
+        let c = entry(epoch_secs());
+        assert!(
+            f.cached_blockhash_is_usable(&c),
+            "no observation cannot prove expiry → the ceiling decides"
+        );
     }
 }

@@ -68,6 +68,10 @@ pub struct LiveBlockhash {
     pub blockhash: [u8; 32],
     /// The slot at which this blockhash was observed.
     pub slot: u64,
+    /// The slot height past which this blockhash is no longer accepted on-chain
+    /// (`lastValidBlockHeight`). 0 = the RPC did not report one — the caller must
+    /// then fall back to its protocol-level ceiling, never to a short wall clock.
+    pub last_valid_block_height: u64,
 }
 
 /// Why a state fetch failed. Maps to `OutboundOutcome::StateFetch`.

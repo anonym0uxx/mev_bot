@@ -566,6 +566,7 @@ mod tests {
             blockhash: LiveBlockhash {
                 blockhash,
                 slot: 440_000_000,
+                last_valid_block_height: 440_000_150,
             },
         };
 

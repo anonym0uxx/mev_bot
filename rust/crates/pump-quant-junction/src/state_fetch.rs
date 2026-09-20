@@ -104,6 +104,12 @@ pub struct FetchedState {
     /// hardcoded 0 made every decision look maximally stale and defeated the
     /// cache (see live_adapters::fetch_fresh).
     pub observed_slot: u64,
+    /// The `result.value.lastValidBlockHeight` from the same `getLatestBlockhash`
+    /// response that produced `recent_blockhash`. 0 means the RPC did not report
+    /// one. This is the ONLY correct expiry bound for a blockhash: it says the
+    /// height up to which Solana will still accept the hash — a wall clock says
+    /// nothing about it. Parsed here, at the source, so no caller has to guess.
+    pub last_valid_block_height: u64,
 }
 
 // ─── StateFetch trait ────────────────────────────────────────────────────
@@ -215,6 +221,12 @@ impl<'a> RpcStateFetch<'a> {
     fn slot(val: &Value) -> Option<u64> {
         Self::result(val)?.get("context")?.get("slot")?.as_u64()
     }
+
+    /// Extract `result.value.lastValidBlockHeight` — the slot height past which the
+    /// blockhash in the same response is no longer valid. `None` when absent.
+    fn last_valid_block_height(val: &Value) -> Option<u64> {
+        Self::result(val)?.get("value")?.get("lastValidBlockHeight")?.as_u64()
+    }
 }
 
 impl<'a> StateFetch for RpcStateFetch<'a> {
@@ -234,6 +246,9 @@ impl<'a> StateFetch for RpcStateFetch<'a> {
         // `result.context.slot`. Plumb it through so the curve cache can
         // compare staleness against a real slot (a hardcoded 0 defeated it).
         let observed_slot = Self::slot(&bh_val).unwrap_or(0);
+        // E7: the expiry bound travels WITH the blockhash. Parsed nowhere before —
+        // which is why blockhash freshness had to be guessed with a wall clock.
+        let last_valid_block_height = Self::last_valid_block_height(&bh_val).unwrap_or(0);
 
         // ── 2. Global account → fee_recipient ──────────────────────────────
         let global_b58 = encode_base58(&PUMP_GLOBAL);
@@ -343,6 +358,7 @@ impl<'a> StateFetch for RpcStateFetch<'a> {
             is_complete: false, // we already returned CurveComplete above
             buyback_fee_recipients: pump_global.buyback_fee_recipients,
             observed_slot,
+            last_valid_block_height,
         })
     }
 }
@@ -715,6 +731,12 @@ mod tests {
         // result.context.slot (fixture = 123) — not hardcoded 0. This is what
         // lets the curve-cache staleness check compare two real slots.
         assert_eq!(state.observed_slot, 123, "observed_slot should be the fixture slot 123");
+        // E7: the fixture carries lastValidBlockHeight=99999 — pinned so a parser
+        // regression cannot silently drop the expiry bound back to 0.
+        assert_eq!(
+            state.last_valid_block_height, 99999,
+            "lastValidBlockHeight must be parsed from the getLatestBlockhash response"
+        );
     }
 
     /// Cashback=false flows through correctly.
