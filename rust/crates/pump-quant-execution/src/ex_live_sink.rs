@@ -276,14 +276,10 @@ impl OutboundSink for LiveOutboundSink {
         };
 
         let compiled_msg = if record.is_buy {
-            // Buy: compute min_tokens_out from entry_price and max_slippage_bps.
-            // min_tokens_out = expected_tokens * (10000 - max_slippage_bps) / 10000
-            // where expected_tokens = size_lamports / entry_price (in token base units).
-            // We use the curve's virtual reserves to compute expected tokens.
-            //
-            // For a linear curve: tokens_out = sol_in * virtual_token_reserves / virtual_sol_reserves
-            // (approximately — the exact formula accounts for the fee and curve mechanics,
-            // but the slippage guard just needs a lower bound).
+            // Buy: compute min_tokens_out from the FRESH curve reserves and
+            // max_slippage_bps — NOT the gate's entry_price, which would be a stale
+            // TOCTOU source. expected = size_lamports * vtokens / vsol, then
+            // min_tokens_out = expected * (10000 - bps) / 10000.
             let vtokens = state.virtual_token_reserves;
             let vsol = state.virtual_sol_reserves;
             if vsol == 0 {
