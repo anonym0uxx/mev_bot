@@ -274,6 +274,10 @@ mod tests {
             size_lamports: 10_000_000,
             entry_price: 1_000_000,
             max_slippage_bps: 500,
+            // The model's price limit is not plumbed to this call site yet:
+            // when the Qwen wiring lands, the engine fills it in from the
+            // parsed decision. Until then the slippage budget protects the order.
+            price_limit_lamports_per_raw_token: None,
         }
     }
 
@@ -285,6 +289,10 @@ mod tests {
             size_lamports: 10_000_000,
             entry_price: 1_000_000,
             max_slippage_bps: 500,
+            // The model's price limit is not plumbed to this call site yet:
+            // when the Qwen wiring lands, the engine fills it in from the
+            // parsed decision. Until then the slippage budget protects the order.
+            price_limit_lamports_per_raw_token: None,
         }
     }
 

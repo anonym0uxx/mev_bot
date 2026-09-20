@@ -30,7 +30,9 @@
 
 /// A trade admitted by the engine's gate. This is the payload the outbound
 /// sink receives — the minimum the junction needs to fetch state and build.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// NOT `Eq`: the record now carries the model's price limit as an `f64`, and a float has no
+// total equality. `PartialEq` is what the callers use.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AdmitRecord {
     /// The mint being traded.
     pub mint: [u8; 32],
@@ -44,6 +46,13 @@ pub struct AdmitRecord {
     pub entry_price: u64,
     /// The max slippage in basis points the engine will tolerate.
     pub max_slippage_bps: u16,
+    /// The trading brain's own `PRICE LIMIT` for this entry, in LAMPORTS PER RAW TOKEN — the
+    /// same unit the corpus renders (established against a real row's `PRICE UNITS` line, not
+    /// assumed). `None` when the completion carried none, which is 68% of trained BUYs.
+    ///
+    /// When present it governs `min_tokens_out`; the slippage budget is the fallback. See
+    /// [`crate::price_anchor`].
+    pub price_limit_lamports_per_raw_token: Option<f64>,
 }
 
 /// The outcome of an outbound submission attempt. The engine logs this for the

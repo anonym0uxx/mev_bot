@@ -4709,6 +4709,10 @@ impl Engine {
                     size_lamports: probe,
                     entry_price: e.entry_price,
                     max_slippage_bps: 500, // 5% default; sink may override
+                    // The model's price limit is not plumbed to this call site yet:
+                    // when the Qwen wiring lands, the engine fills it in from the
+                    // parsed decision. Until then the slippage budget protects the order.
+                    price_limit_lamports_per_raw_token: None,
                 };
                 let t_call = Instant::now();
                 let outcome = sink.on_admit(&record);
@@ -4960,6 +4964,10 @@ impl Engine {
                     size_lamports: e.token_amount, // token base units to sell
                     entry_price: e.exit_price_fp, // current exit price for slippage bound
                     max_slippage_bps: 500, // 5% default; sink may override
+                    // The model's price limit is not plumbed to this call site yet:
+                    // when the Qwen wiring lands, the engine fills it in from the
+                    // parsed decision. Until then the slippage budget protects the order.
+                    price_limit_lamports_per_raw_token: None,
                 };
                 let t_call = Instant::now();
                 let outcome = sink.on_admit(&record);

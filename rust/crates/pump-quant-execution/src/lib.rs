@@ -87,5 +87,6 @@ pub mod ex_sell_ladder_escalate;
 pub mod ex_sell_ladder_state;
 pub mod ex_sender_route;
 pub mod ex_tip_compute;
+pub mod price_anchor;
 pub mod remediation_paths;
 pub mod si_incident_gate;

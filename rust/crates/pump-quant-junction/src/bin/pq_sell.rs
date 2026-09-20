@@ -236,6 +236,10 @@ fn main() -> ExitCode {
         size_lamports: token_amount,
         entry_price: 0,
         max_slippage_bps: slippage_bps,
+        // The model's price limit is not plumbed to this call site yet:
+        // when the Qwen wiring lands, the engine fills it in from the
+        // parsed decision. Until then the slippage budget protects the order.
+        price_limit_lamports_per_raw_token: None,
     };
 
     let outcome = live_sink.on_admit(&record);

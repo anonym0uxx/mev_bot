@@ -283,9 +283,21 @@ impl OutboundSink for LiveOutboundSink {
                 (record.size_lamports as u128).saturating_mul(vtokens as u128) / (vsol as u128);
             // Apply slippage: min_tokens = expected_tokens * (10000 - bps) / 10000
             let slippage_factor = 10_000u32.saturating_sub(self.config.max_slippage_bps as u32);
-            let min_tokens = (expected_tokens * slippage_factor as u128 / 10_000u128) as u64;
+            let slippage_min_tokens =
+                (expected_tokens * slippage_factor as u128 / 10_000u128) as u64;
+            // The brain's own PRICE LIMIT governs when the completion carried one; the
+            // slippage count is the fallback for the 68% of trained BUYs that carry none.
+            // This is the authority rule applied to the order's bound: the model decides the
+            // worst price it will pay, and Rust resolves that into a `min_tokens_out` rather
+            // than substituting its own.
+            let (min_tokens, min_tokens_source) = crate::price_anchor::resolve_min_tokens_out(
+                record.size_lamports,
+                record.price_limit_lamports_per_raw_token,
+                slippage_min_tokens,
+            );
             // max_sol_cost = size_lamports (the engine already sized this)
             let max_sol_cost = record.size_lamports;
+            let _ = min_tokens_source;
 
             let params = BuyParams {
                 min_tokens_out: min_tokens,
@@ -591,6 +603,10 @@ mod tests {
             size_lamports: 100_000_000, // 0.1 SOL
             entry_price: 28_000,
             max_slippage_bps: 500,
+            // The model's price limit is not plumbed to this call site yet:
+            // when the Qwen wiring lands, the engine fills it in from the
+            // parsed decision. Until then the slippage budget protects the order.
+            price_limit_lamports_per_raw_token: None,
         };
 
         let outcome = sink.on_admit(&record);
@@ -640,6 +656,10 @@ mod tests {
             size_lamports: 0,
             entry_price: 0,
             max_slippage_bps: 0,
+            // The model's price limit is not plumbed to this call site yet:
+            // when the Qwen wiring lands, the engine fills it in from the
+            // parsed decision. Until then the slippage budget protects the order.
+            price_limit_lamports_per_raw_token: None,
         };
         let outcome = sink.on_admit(&record);
         match outcome {
