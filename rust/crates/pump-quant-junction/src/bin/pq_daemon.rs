@@ -206,10 +206,15 @@ const HELIUS_SUB_CAP: usize = 1000;
 /// low and the stagnation detector catches death-spiral symptoms within 120s.
 const SUB_CAP_RECONNECT_THRESHOLD: f64 = 0.95;
 
-/// E3: how many submissions the async outbound worker may have backlogged before the
-/// decision thread refuses further ones. Refusal reverses the position (safe
-/// direction) and is counted, so a saturated queue is visible rather than silent.
-const OUTBOUND_QUEUE_DEPTH: usize = 64;
+/// E3: how many submissions ONE outbound lane may have backlogged before the decision
+/// thread refuses further ones. Refusal reverses the position (safe direction) and is
+/// counted, so a saturated lane is visible rather than silent.
+const OUTBOUND_QUEUE_DEPTH: usize = 32;
+
+/// E3: submission lanes. Records are routed to a lane by MINT, so a position's own
+/// buy/sell stream stays FIFO while different positions submit in parallel — ten
+/// positions are ten independent streams, not one queue.
+const OUTBOUND_LANES: usize = pump_quant_junction::async_sink::DEFAULT_LANES;
 
 /// OnchainConfirm stagnation detection: if confirms don't advance for this
 /// many seconds while the daemon is running and LS is healthy, the Helius WS
@@ -1557,11 +1562,12 @@ fn construct_live_engine(
     let async_sink: &'static pump_quant_junction::async_sink::AsyncOutboundSink =
         Box::leak(Box::new(pump_quant_junction::async_sink::AsyncOutboundSink::new(
             inner_sink,
+            OUTBOUND_LANES,
             OUTBOUND_QUEUE_DEPTH,
         )));
     eng.install_outbound_sink(async_sink as &'static dyn OutboundSink);
     eprintln!(
-        "[pq-daemon] AsyncOutboundSink installed — submissions run off the decision thread (queue depth {OUTBOUND_QUEUE_DEPTH})"
+        "[pq-daemon] AsyncOutboundSink installed — submissions run off the decision thread ({OUTBOUND_LANES} per-mint lanes, {OUTBOUND_QUEUE_DEPTH} deep each)"
     );
 
     Ok((eng, async_sink))
@@ -4058,10 +4064,11 @@ fn main() -> ExitCode {
     // summary makes a saturated/refusing queue auditable after the fact.
     if let Some(sink) = async_outbound {
         eprintln!(
-            "[pq-daemon] outbound worker: {} verdicts delivered, {} refused, {} still in flight",
+            "[pq-daemon] outbound lanes: {} verdicts delivered, {} refused, {} still in flight, per-lane refusals {:?}",
             sink.delivered(),
             sink.refused(),
-            sink.in_flight()
+            sink.in_flight(),
+            sink.lane_stats()
         );
         if sink.in_flight() > 0 {
             eprintln!(
