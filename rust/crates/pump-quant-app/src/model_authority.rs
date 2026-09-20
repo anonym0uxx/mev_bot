@@ -163,14 +163,19 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
                     OffContract::BuyWithoutSize,
                 ));
             };
-            // M1 (`KELLY_AUDIT_C12`): the size that SIZES the trade is the ruled venue rule
-            // (amm -> FULL, curve -> SMALL), not the token the model emitted. The rule is the
-            // label authority the corpus was rebuilt under, so serving it is what makes
-            // train==serve structural; the model's own token is an ordinal consent that gets
-            // graded against the rule and journalled. A mismatch is drift — counted, not fatal,
-            // and never allowed to size the position in either direction.
-            let tier = req.venue.ruled_size();
-            if model_tier != tier {
+            // AUTHORITY: the model decides the size. Rust RESOLVES and VETOES, it never
+            // substitutes its own inference — so the tier that sizes this trade is the one the
+            // model emitted, and the venue rule (`KELLY_AUDIT_C12`: amm -> FULL, curve ->
+            // SMALL) is a DEFAULT for callers with no verdict, not an override of one.
+            //
+            // The rule stays fully observable: a divergence from it is journalled as drift
+            // rather than corrected, because "the model chose something the rule would not
+            // have" is a fact about the trading brain that the record has to carry, not an
+            // error to be silently repaired. Capital safety still bounds the result — the
+            // per-position notional and the payability headroom cap the clip — but a bound is
+            // not a substitute for a decision.
+            let tier = model_tier;
+            if model_tier != req.venue.ruled_size() {
                 ledger.record(OffContract::BuyWithVenueMismatchedSize);
             }
             // The notional is the DEPLOYABLE budget split across the concurrency cap, not the
@@ -188,7 +193,7 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
             }
             let notional = req.portfolio.per_position_notional(deployable);
             match resolve_clip_at_fraction_bps(
-                req.portfolio.served_fraction_bps(req.venue),
+                req.portfolio.fraction_bps_for(tier),
                 req.free_cash_lamports,
                 notional,
                 FEE_BUFFER_LAMPORTS,
@@ -347,25 +352,44 @@ mod tests {
         );
     }
 
-    /// M1 (`KELLY_AUDIT_C12`): the venue rule sizes the trade. A model token that disagrees
-    /// is drift — counted and visible — and it moves the clip in neither direction.
+    /// AUTHORITY: the model's token sizes the trade. Rust resolves and vetoes, it does not
+    /// substitute its own inference — so a SMALL verdict on an AMM candidate deploys SMALL,
+    /// and the divergence from the venue rule is DRIFT: counted and visible, never corrected.
     #[test]
-    fn the_venue_rule_sizes_the_trade_not_the_models_token() {
+    fn the_models_token_sizes_the_trade_and_the_rule_is_only_the_default() {
         let mut l = DriftLedger::new();
-        // SMALL emitted on an AMM candidate: the ruled AMM size is FULL, and FULL deploys.
         let a = decide_entry(&Stub(BUY_SMALL), &amm(2_000_000_000, 0), &mut l);
         assert_eq!(
             a,
             EntryAuthority::Buy {
-                tier: SizeTier::Full,
-                clip_lamports: 666_666_666
-            }
+                tier: SizeTier::Small,
+                clip_lamports: 166_666_666
+            },
+            "SMALL must deploy SMALL even though the AMM rule would say FULL"
         );
-        assert_eq!(l.count(OffContract::BuyWithVenueMismatchedSize), 1);
+        assert_eq!(
+            l.count(OffContract::BuyWithVenueMismatchedSize),
+            1,
+            "diverging from the venue rule is drift on the record"
+        );
         // The agreeing case stays silent.
         let mut l2 = DriftLedger::new();
         let _ = decide_entry(&Stub(BUY_FULL), &amm(2_000_000_000, 0), &mut l2);
         assert_eq!(l2.count(OffContract::BuyWithVenueMismatchedSize), 0);
+
+        // The venue rule is still the DEFAULT for a caller with no verdict to serve — that is
+        // the pre-weights / harness path, and it is where `KELLY_AUDIT_C12` still decides.
+        let cap = crate::portfolio::PortfolioCap::enforced(3);
+        assert_eq!(cap.served_fraction_bps(EntryVenue::Amm), 10_000);
+        assert_eq!(cap.served_fraction_bps(EntryVenue::BondingCurve), 2_500);
+        // A model-chosen tier is what governs when a verdict exists.
+        assert_eq!(cap.fraction_bps_for(SizeTier::Full), 10_000);
+        assert_eq!(cap.fraction_bps_for(SizeTier::Small), 2_500);
+        assert_eq!(cap.fraction_bps_for(SizeTier::Mid), 5_000);
+        // ...and when the cap cannot be counted live, the model's weight is not trusted to
+        // bound the book: the audit's uniform-half fallback applies instead.
+        let uncountable = crate::portfolio::PortfolioCap::unenforceable(3);
+        assert_eq!(uncountable.fraction_bps_for(SizeTier::Full), 5_000);
     }
 
     #[test]

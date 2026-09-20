@@ -23,6 +23,7 @@
 //! retired `MID` tier — `EntryVenue::ruled_size` never returns `Mid`, and the fallback goes
 //! through [`resolve_clip_at_fraction_bps`] precisely so the two are not confusable.
 
+use pump_quant_inference::SizeTier;
 use std::collections::BTreeSet;
 
 use pump_quant_inference::EntryVenue;
@@ -132,9 +133,30 @@ impl PortfolioCap {
 
     /// The fraction of the per-position notional that is served.
     #[must_use]
+    /// The fraction the VENUE RULE would use — `KELLY_AUDIT_C12`'s amm->FULL / curve->SMALL.
+    ///
+    /// This is a **default**, not the serving authority: since the trading brain holds
+    /// decision authority, the size that sizes a trade is the tier the MODEL emitted (see
+    /// [`PortfolioCap::fraction_bps_for`]). This accessor is what a non-model caller — a
+    /// replay harness, a stub, a pre-weights smoke — sizes with when no verdict exists.
     pub fn served_fraction_bps(&self, venue: EntryVenue) -> u32 {
         if self.enforced {
             venue.ruled_size().fraction_bps()
+        } else {
+            UNENFORCEABLE_FALLBACK_BPS
+        }
+    }
+
+    /// The clip fraction for a tier **the model chose**.
+    ///
+    /// The model's own weight governs. The one exception is capital safety, not inference:
+    /// when the concurrency cap cannot be counted live (`enforced == false`) a per-row weight
+    /// cannot be trusted to keep the book bounded, so the audit's uniform-half fallback is
+    /// used instead. That substitution is about the book being uncountable, not about the
+    /// model being overruled.
+    pub fn fraction_bps_for(&self, tier: SizeTier) -> u32 {
+        if self.enforced {
+            tier.fraction_bps()
         } else {
             UNENFORCEABLE_FALLBACK_BPS
         }
