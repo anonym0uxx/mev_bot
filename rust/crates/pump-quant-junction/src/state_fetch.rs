@@ -98,6 +98,12 @@ pub struct FetchedState {
     /// All-zero entries mean the Global account didn't have this field
     /// (short account or test fixture) — FeeTail::None is the fallback.
     pub buyback_fee_recipients: [[u8; 32]; 8],
+    /// The slot at which this state was observed (from `getLatestBlockhash`'s
+    /// `result.context.slot`). 0 means the RPC did not report one. This is what
+    /// the curve-cache staleness check must compare against a real slot — a
+    /// hardcoded 0 made every decision look maximally stale and defeated the
+    /// cache (see live_adapters::fetch_fresh).
+    pub observed_slot: u64,
 }
 
 // ─── StateFetch trait ────────────────────────────────────────────────────
@@ -204,6 +210,11 @@ impl<'a> RpcStateFetch<'a> {
         let bh = value.get("blockhash")?.as_str()?;
         decode_base58(bh)
     }
+
+    /// Extract the `result.context.slot` observation slot from a JSON-RPC response.
+    fn slot(val: &Value) -> Option<u64> {
+        Self::result(val)?.get("context")?.get("slot")?.as_u64()
+    }
 }
 
 impl<'a> StateFetch for RpcStateFetch<'a> {
@@ -219,6 +230,10 @@ impl<'a> StateFetch for RpcStateFetch<'a> {
         if recent_blockhash == [0u8; 32] {
             return Err(StateFetchError::DecodeFailed("blockhash (all-zero)"));
         }
+        // The getLatestBlockhash response carries the observation slot in
+        // `result.context.slot`. Plumb it through so the curve cache can
+        // compare staleness against a real slot (a hardcoded 0 defeated it).
+        let observed_slot = Self::slot(&bh_val).unwrap_or(0);
 
         // ── 2. Global account → fee_recipient ──────────────────────────────
         let global_b58 = encode_base58(&PUMP_GLOBAL);
@@ -327,6 +342,7 @@ impl<'a> StateFetch for RpcStateFetch<'a> {
             virtual_token_reserves: curve_prefix.virtual_token,
             is_complete: false, // we already returned CurveComplete above
             buyback_fee_recipients: pump_global.buyback_fee_recipients,
+            observed_slot,
         })
     }
 }
@@ -694,6 +710,11 @@ mod tests {
         assert_ne!(state.buyback_fee_recipients[0], [0u8; 32], "buyback_fee_recipients[0] should be non-zero");
         assert_eq!(state.buyback_fee_recipients[0][0], 0xB0, "first buyback recipient byte 0");
         assert_eq!(state.buyback_fee_recipients[7][0], 0xB7, "last buyback recipient byte 0");
+
+        // observed_slot is plumbed from the getLatestBlockhash response's
+        // result.context.slot (fixture = 123) — not hardcoded 0. This is what
+        // lets the curve-cache staleness check compare two real slots.
+        assert_eq!(state.observed_slot, 123, "observed_slot should be the fixture slot 123");
     }
 
     /// Cashback=false flows through correctly.

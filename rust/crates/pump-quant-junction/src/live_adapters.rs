@@ -318,7 +318,7 @@ impl RpcLiveStateFetcher {
             rpc_url,
             curve_cache: RwLock::new(None),
             blockhash_cache: Mutex::new(None),
-            max_stale_slots: 150, // ~5 seconds at 3 slots/sec → generous
+            max_stale_slots: 150, // ≈ 60 s at ~2.5 slots/s (400 ms/slot) — NOT ~5 s
             shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -354,8 +354,8 @@ impl RpcLiveStateFetcher {
         if fetched.recent_blockhash != [0u8; 32] {
             *self.blockhash_cache.lock().unwrap() = Some(CachedBlockhash {
                 blockhash: fetched.recent_blockhash,
-                slot: 0, // RpcStateFetch doesn't return the slot; freshness is
-                         // tracked via fetched_at_secs instead.
+                slot: fetched.observed_slot, // same getLatestBlockhash call's
+                                             // result.context.slot
                 fetched_at_secs: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
@@ -368,9 +368,7 @@ impl RpcLiveStateFetcher {
             virtual_sol_reserves: fetched.virtual_sol_reserves,
             virtual_token_reserves: fetched.virtual_token_reserves,
             is_complete: fetched.is_complete,
-            observed_slot: 0, // RpcStateFetch doesn't return the slot; the
-                              // background thread can set this from the
-                              // blockhash cache.
+            observed_slot: fetched.observed_slot,
             buyback_fee_recipients: fetched.buyback_fee_recipients,
         })
     }
