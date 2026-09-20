@@ -1,0 +1,427 @@
+{
+ "authority": "/training/v2/code/src/v2/build_states_v2.py",
+ "trades": [
+  {
+   "recv_unix_ms": 1700000000000,
+   "price_sol_per_raw": 2e-08,
+   "sol_lamports_signed": -900000000,
+   "is_buy": true,
+   "trader": 1,
+   "venue": "pumpfun"
+  },
+  {
+   "recv_unix_ms": 1700000000400,
+   "price_sol_per_raw": 2.01e-08,
+   "sol_lamports_signed": -50000000,
+   "is_buy": true,
+   "trader": 2,
+   "venue": "pumpfun"
+  },
+  {
+   "recv_unix_ms": 1700000000700,
+   "price_sol_per_raw": 1.99e-08,
+   "sol_lamports_signed": 40000000,
+   "is_buy": false,
+   "trader": 1,
+   "venue": "pumpfun"
+  },
+  {
+   "recv_unix_ms": 1700000001200,
+   "price_sol_per_raw": 2.05e-08,
+   "sol_lamports_signed": -25000000,
+   "is_buy": true,
+   "trader": 3,
+   "venue": "pumpfun"
+  },
+  {
+   "recv_unix_ms": 1700000001500,
+   "price_sol_per_raw": 2.1e-08,
+   "sol_lamports_signed": 12000000,
+   "is_buy": false,
+   "trader": 2,
+   "venue": "pumpfun"
+  },
+  {
+   "recv_unix_ms": 1700000002100,
+   "price_sol_per_raw": 2.2e-08,
+   "sol_lamports_signed": -300000000,
+   "is_buy": true,
+   "trader": 1,
+   "venue": "pumpfun"
+  },
+  {
+   "recv_unix_ms": 1700000002600,
+   "price_sol_per_raw": null,
+   "sol_lamports_signed": -70000000,
+   "is_buy": true,
+   "trader": 2,
+   "venue": "pumpfun"
+  },
+  {
+   "recv_unix_ms": 1700000003000,
+   "price_sol_per_raw": 2.3e-08,
+   "sol_lamports_signed": 33000000,
+   "is_buy": false,
+   "trader": 3,
+   "venue": "pumpfun"
+  },
+  {
+   "recv_unix_ms": 1700000004000,
+   "price_sol_per_raw": 2.25e-08,
+   "sol_lamports_signed": -18000000,
+   "is_buy": true,
+   "trader": 1,
+   "venue": "pumpfun"
+  },
+  {
+   "recv_unix_ms": 1700000005100,
+   "price_sol_per_raw": 2.4e-08,
+   "sol_lamports_signed": -140000000,
+   "is_buy": true,
+   "trader": 2,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000006000,
+   "price_sol_per_raw": 0.0,
+   "sol_lamports_signed": -15000000,
+   "is_buy": true,
+   "trader": 3,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000007000,
+   "price_sol_per_raw": 2.5e-08,
+   "sol_lamports_signed": 60000000,
+   "is_buy": false,
+   "trader": 1,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000008000,
+   "price_sol_per_raw": 2.55e-08,
+   "sol_lamports_signed": -22000000,
+   "is_buy": true,
+   "trader": 2,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000009500,
+   "price_sol_per_raw": 2.6e-08,
+   "sol_lamports_signed": -31000000,
+   "is_buy": true,
+   "trader": 3,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000011000,
+   "price_sol_per_raw": 2.58e-08,
+   "sol_lamports_signed": 45000000,
+   "is_buy": false,
+   "trader": 1,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000012500,
+   "price_sol_per_raw": 2.7e-08,
+   "sol_lamports_signed": -260000000,
+   "is_buy": true,
+   "trader": 2,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000014000,
+   "price_sol_per_raw": 2.72e-08,
+   "sol_lamports_signed": -80000000,
+   "is_buy": true,
+   "trader": 3,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000016000,
+   "price_sol_per_raw": 2.68e-08,
+   "sol_lamports_signed": 95000000,
+   "is_buy": false,
+   "trader": 1,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000018000,
+   "price_sol_per_raw": 2.8e-08,
+   "sol_lamports_signed": -120000000,
+   "is_buy": true,
+   "trader": 2,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000020000,
+   "price_sol_per_raw": 2.9e-08,
+   "sol_lamports_signed": -55000000,
+   "is_buy": true,
+   "trader": 3,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000023000,
+   "price_sol_per_raw": 3e-08,
+   "sol_lamports_signed": 70000000,
+   "is_buy": false,
+   "trader": 1,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000026000,
+   "price_sol_per_raw": 3.05e-08,
+   "sol_lamports_signed": -44000000,
+   "is_buy": true,
+   "trader": 2,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000029000,
+   "price_sol_per_raw": 3.1e-08,
+   "sol_lamports_signed": -19000000,
+   "is_buy": true,
+   "trader": 3,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000032000,
+   "price_sol_per_raw": 3.02e-08,
+   "sol_lamports_signed": 150000000,
+   "is_buy": false,
+   "trader": 1,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000035000,
+   "price_sol_per_raw": 3.2e-08,
+   "sol_lamports_signed": -210000000,
+   "is_buy": true,
+   "trader": 2,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000038000,
+   "price_sol_per_raw": 3.3e-08,
+   "sol_lamports_signed": -33000000,
+   "is_buy": true,
+   "trader": 3,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000128000,
+   "price_sol_per_raw": 3.4e-08,
+   "sol_lamports_signed": -66000000,
+   "is_buy": true,
+   "trader": 1,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000131000,
+   "price_sol_per_raw": 3.45e-08,
+   "sol_lamports_signed": 21000000,
+   "is_buy": false,
+   "trader": 2,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000134000,
+   "price_sol_per_raw": 3.5e-08,
+   "sol_lamports_signed": -28000000,
+   "is_buy": true,
+   "trader": 3,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000137000,
+   "price_sol_per_raw": 3.55e-08,
+   "sol_lamports_signed": -24000000,
+   "is_buy": true,
+   "trader": 1,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000140000,
+   "price_sol_per_raw": 3.6e-08,
+   "sol_lamports_signed": 18000000,
+   "is_buy": false,
+   "trader": 2,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000143000,
+   "price_sol_per_raw": 3.66e-08,
+   "sol_lamports_signed": -40000000,
+   "is_buy": true,
+   "trader": 3,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000146000,
+   "price_sol_per_raw": 3.7e-08,
+   "sol_lamports_signed": -36000000,
+   "is_buy": true,
+   "trader": 1,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000149000,
+   "price_sol_per_raw": 3.75e-08,
+   "sol_lamports_signed": 12000000,
+   "is_buy": false,
+   "trader": 2,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000152000,
+   "price_sol_per_raw": 3.8e-08,
+   "sol_lamports_signed": -52000000,
+   "is_buy": true,
+   "trader": 3,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000155000,
+   "price_sol_per_raw": 3.85e-08,
+   "sol_lamports_signed": -48000000,
+   "is_buy": true,
+   "trader": 1,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000158000,
+   "price_sol_per_raw": 3.9e-08,
+   "sol_lamports_signed": 30000000,
+   "is_buy": false,
+   "trader": 2,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000161000,
+   "price_sol_per_raw": 3.95e-08,
+   "sol_lamports_signed": -58000000,
+   "is_buy": true,
+   "trader": 3,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000164000,
+   "price_sol_per_raw": 4e-08,
+   "sol_lamports_signed": -62000000,
+   "is_buy": true,
+   "trader": 1,
+   "venue": "pumpswap"
+  },
+  {
+   "recv_unix_ms": 1700000167000,
+   "price_sol_per_raw": 4.05e-08,
+   "sol_lamports_signed": 25000000,
+   "is_buy": false,
+   "trader": 2,
+   "venue": "pumpswap"
+  }
+ ],
+ "clocks": [
+  {
+   "t_dec_ms": 1700000023000,
+   "expected": {
+    "n_prior_trades": 20,
+    "buy_count": 14,
+    "sell_count": 6,
+    "unique_traders": 3,
+    "sol_volume_lamports": 2371000000,
+    "buy_volume_lamports": 2086000000,
+    "sell_volume_lamports": 285000000,
+    "net_flow_lamports": 1801000000,
+    "price_sol_per_raw": 2.9e-08,
+    "age_s": 23.0,
+    "last_trade_age_s": 3.0,
+    "top1_trader_share": 0.6149304091100801,
+    "top5_trader_share": 1.0,
+    "buyer_seller_ratio": 2.3333333333333335,
+    "price_volatility_30s_bp": null,
+    "venue": "mixed",
+    "evidence_status": "partial",
+    "ret_5s_bp": 357.14285714285796,
+    "ret_30s_bp": 4500.000000000001,
+    "ret_300s_bp": 4500.000000000001
+   }
+  },
+  {
+   "t_dec_ms": 1700000128000,
+   "expected": {
+    "n_prior_trades": 26,
+    "buy_count": 18,
+    "sell_count": 8,
+    "unique_traders": 3,
+    "sol_volume_lamports": 2897000000,
+    "buy_volume_lamports": 2392000000,
+    "sell_volume_lamports": 505000000,
+    "net_flow_lamports": 1887000000,
+    "price_sol_per_raw": 3.3e-08,
+    "age_s": 128.0,
+    "last_trade_age_s": 90.0,
+    "top1_trader_share": 0.5792198826372109,
+    "top5_trader_share": 1.0,
+    "buyer_seller_ratio": 2.25,
+    "price_volatility_30s_bp": null,
+    "venue": "mixed",
+    "evidence_status": "partial",
+    "ret_5s_bp": null,
+    "ret_30s_bp": null,
+    "ret_300s_bp": 6499.999999999998
+   }
+  },
+  {
+   "t_dec_ms": 1700000167000,
+   "expected": {
+    "n_prior_trades": 39,
+    "buy_count": 27,
+    "sell_count": 12,
+    "unique_traders": 3,
+    "sol_volume_lamports": 3392000000,
+    "buy_volume_lamports": 2806000000,
+    "sell_volume_lamports": 586000000,
+    "net_flow_lamports": 2220000000,
+    "price_sol_per_raw": 4e-08,
+    "age_s": 167.0,
+    "last_trade_age_s": 3.0,
+    "top1_trader_share": 0.5642688679245284,
+    "top5_trader_share": 1.0,
+    "buyer_seller_ratio": 2.25,
+    "price_volatility_30s_bp": 14.084729139267651,
+    "venue": "mixed",
+    "evidence_status": "partial",
+    "ret_5s_bp": 0.0,
+    "ret_30s_bp": 1267.6056338028172,
+    "ret_300s_bp": 10000.0
+   }
+  },
+  {
+   "t_dec_ms": 1700000038001,
+   "expected": {
+    "n_prior_trades": 26,
+    "buy_count": 18,
+    "sell_count": 8,
+    "unique_traders": 3,
+    "sol_volume_lamports": 2897000000,
+    "buy_volume_lamports": 2392000000,
+    "sell_volume_lamports": 505000000,
+    "net_flow_lamports": 1887000000,
+    "price_sol_per_raw": 3.3e-08,
+    "age_s": 38.001,
+    "last_trade_age_s": 0.001,
+    "top1_trader_share": 0.5792198826372109,
+    "top5_trader_share": 1.0,
+    "buyer_seller_ratio": 2.25,
+    "price_volatility_30s_bp": null,
+    "venue": "mixed",
+    "evidence_status": "partial",
+    "ret_5s_bp": 312.49999999999864,
+    "ret_30s_bp": 2692.307692307691,
+    "ret_300s_bp": 6499.999999999998
+   }
+  }
+ ]
+}

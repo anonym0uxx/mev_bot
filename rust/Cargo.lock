@@ -962,6 +962,7 @@ dependencies = [
  "pump-quant-strategy",
  "pump-quant-wallet-graph",
  "pump-quant-watchlist",
+ "serde_json",
 ]
 
 [[package]]
