@@ -57,6 +57,13 @@ use pump_quant_junction::pumpportal::{
 };
 use pump_quant_junction::queue::BoundedJunctionQueue;
 use pump_quant_junction::reserve_delta::{derive_market_trade_from_delta, ReserveSnapshot};
+use pump_quant_junction::trade_join::{JoinOutcome, TradeJoin};
+
+/// How many `(mint, slot)` keys the instruction-identity table holds before it drops the
+/// oldest, and how far behind the newest slot a key survives. Bounded (§99): an instruction
+/// whose reserve print never arrives must not accumulate.
+const TRADE_JOIN_CAP: usize = 4_096;
+const TRADE_JOIN_HORIZON_SLOTS: u64 = 8;
 use pump_quant_junction::tape_export::{TapeExporter, TapeLane, TapeRecord};
 use pump_quant_junction::trade_journal::RunMode as JournalRunMode;
 use pump_quant_junction::trade_journal::{TradeLane, TradeOutcome, TradeRecord, TradeSide};
@@ -1867,6 +1874,8 @@ fn main() -> ExitCode {
         std::collections::HashMap::new();
 
     let mut reserve_tracker: HashMap<[u8; 32], ReserveSnapshot> = HashMap::new();
+    // The instruction prints' wallets, waiting for their reserve prints (see `trade_join`).
+    let mut trade_join = TradeJoin::new(TRADE_JOIN_CAP, TRADE_JOIN_HORIZON_SLOTS);
     // Wangr Rev-14: tracks which mints we've already emitted MarketAuxiliary
     // for (prevents duplicate aux events on re-subscribe/reconnect).
     // Note: creator_launches is tracked internally by the engine via its own
@@ -2423,6 +2432,27 @@ fn main() -> ExitCode {
                     stats.ls_instructions_classified += classified.len() as u64;
                     let events =
                         instructions_to_events(&classified, tx.slot, tx.is_live, tx.recv_unix_ms);
+                    // The instruction print is the ONLY one that knows the wallet. Note it
+                    // against (mint, slot) so the reserve-delta print — which knows the price —
+                    // can claim it when it is derived.
+                    for ev in &events {
+                        if let AppEvent::MarketTrade {
+                            mint,
+                            signed_base,
+                            buyer_entity,
+                            recv_unix_ms,
+                            ..
+                        } = &ev.event
+                        {
+                            trade_join.note_instruction(
+                                mint.as_bytes(),
+                                ev.slot,
+                                *buyer_entity,
+                                *signed_base > 0,
+                                *recv_unix_ms,
+                            );
+                        }
+                    }
                     for ev in &events {
                         stats.ls_events_emitted += 1;
                         if !queue.push(ev.clone(), tx.slot) {
@@ -2496,7 +2526,7 @@ fn main() -> ExitCode {
                             // The account notification's wire receive time is the print's
                             // clock: this is the only producer with a real `price_fp`, so it
                             // is the feed the live state ledger's windows key on.
-                            if let Some(trade_pe) = derive_market_trade_from_delta(
+                            if let Some(mut trade_pe) = derive_market_trade_from_delta(
                                 &mb,
                                 prev,
                                 &curve,
@@ -2504,6 +2534,22 @@ fn main() -> ExitCode {
                                 true,
                                 recv_unix_ms,
                             ) {
+                                // Join the two halves: this producer knows the price and both
+                                // legs, the instruction print knows the trader. An ambiguous or
+                                // missing match leaves `buyer_entity: 0` — the ledger reports
+                                // `identity_known: false` rather than a guessed concentration.
+                                if let AppEvent::MarketTrade {
+                                    signed_base,
+                                    buyer_entity,
+                                    ..
+                                } = &mut trade_pe.event
+                                {
+                                    if let JoinOutcome::Identity(id) =
+                                        trade_join.take_identity(&mb, slot, *signed_base > 0)
+                                    {
+                                        *buyer_entity = id;
+                                    }
+                                }
                                 queue.push(trade_pe, slot);
                                 stats.delta_trades_derived += 1;
                             } else {

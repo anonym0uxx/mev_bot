@@ -126,6 +126,7 @@ pub mod queue;
 pub mod reserve_delta;
 pub mod state_fetch;
 pub mod tape_export;
+pub mod trade_join;
 pub mod trade_journal;
 pub mod translate;
 pub mod wallet_loader;
