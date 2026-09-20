@@ -49,6 +49,17 @@ pub const CONC_WINDOW: usize = 2_000;
 pub const VENUE_WINDOW: usize = 200;
 /// Hard per-mint ring bound. Must exceed [`CONC_WINDOW`] and any realistic 300 s of tape.
 pub const RING_CAP: usize = 8_192;
+/// `pump_quant_features::types::PRICE_SCALE` — `price_fp` is **lamports per raw token**, so
+/// SOL per raw token is `price_fp / (PRICE_SCALE * LAMPORTS_PER_SOL)` = `price_fp / 1e18`.
+///
+/// Both scales are real and only one of them is the one people remember: the corpus's price is
+/// SOL per raw token (~2.8e-8), the engine's `price_fp` is that times 1e9 for the lamport leg
+/// and times another 1e9 for SOL→lamports. Getting this wrong by a single factor of 1e9 puts
+/// every window's reference price off by 1e9 — which is exactly the class of error the corpus's
+/// price floors (1e-11 prices, 1e12x moves) were introduced to kill.
+pub const PRICE_SCALE: f64 = 1_000_000_000.0;
+/// Lamports per SOL, as the engine's own conversion does it (`live_status.rs`: `price_fp / 1e18`).
+pub const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 /// Below this, a SOL leg is a pass-through, not a swap (`build_states_v2.MIN_SOL_LAMPORTS`).
 pub const MIN_SOL_LAMPORTS: i64 = 100_000;
 /// Below this, a token leg is rounding residue (`build_states_v2.MIN_TOKENS_RAW`).
@@ -101,6 +112,52 @@ pub struct StateTrade {
 }
 
 impl StateTrade {
+    /// Build the ledger's view of one live engine print.
+    ///
+    /// This is the ONLY way a live trade should enter the ledger, because each refusal below
+    /// is a print that cannot honestly contribute to a corpus-parity number:
+    ///
+    /// * `price_fp <= 0` — the LaserStream path emits `price_fp: 0` until the reserve-delta or
+    ///   account-snapshot step fills it. A zero price is a **placeholder, not a price**: the
+    ///   corpus never priced 0 (its own floors reject such legs), and admitting one would drag
+    ///   every window's reference price to zero.
+    /// * `buyer_entity == 0` — the producer's "wallet could not be extracted" sentinel. Every
+    ///   unknown trader would collapse into ONE entity, so unique-trader counts and the top-1 /
+    ///   top-5 shares would read a single whale where the corpus saw many wallets.
+    /// * `signed_base == 0` or `quote_lamports == 0` — no base moved and no quote paid: the
+    ///   print carries no trade, and the corpus's `n_prior_trades` never counted it.
+    ///
+    /// `recv_unix_ms` is passed in rather than read here: this module never samples a clock, so
+    /// a replay caller cannot fabricate wall-clock windows it did not record. Dust is NOT
+    /// refused here — [`StateLedger::on_trade`] owns that floor so there is one authority.
+    #[must_use]
+    pub fn from_market_trade(
+        recv_unix_ms: i64,
+        price_fp: i128,
+        quote_lamports: u64,
+        signed_base: i64,
+        buyer_entity: u64,
+        venue: VenueLabel,
+    ) -> Option<StateTrade> {
+        if price_fp <= 0 || buyer_entity == 0 || signed_base == 0 || quote_lamports == 0 {
+            return None;
+        }
+        let is_buy = signed_base > 0;
+        // The tape's sign convention (buys negative), which is also what `FlowEvent` carries.
+        let magnitude = i64::try_from(quote_lamports).unwrap_or(i64::MAX);
+        let sol_lamports_signed = if is_buy { -magnitude } else { magnitude };
+        Some(StateTrade {
+            recv_unix_ms,
+            // lamports-per-raw-token / 1e9 = SOL per raw token (cross-check against the
+            // engine's own `entry_price_fp / 1e18` in `live_status.rs`)).
+            price_sol_per_raw: Some(price_fp as f64 / (PRICE_SCALE * LAMPORTS_PER_SOL)),
+            sol_lamports_signed,
+            is_buy,
+            trader: buyer_entity,
+            venue,
+        })
+    }
+
     /// The trade's volume, `abs()` as the corpus takes it (`vol = np.abs(sv)`).
     #[must_use]
     pub fn volume_lamports(self) -> i64 {
@@ -420,4 +477,107 @@ fn volatility_30s(before: &[&StateTrade], _price: f64, t_dec_ms: i64) -> Option<
     let mean = rets.iter().sum::<f64>() / rets.len() as f64;
     let var = rets.iter().map(|r| (r - mean) * (r - mean)).sum::<f64>() / rets.len() as f64;
     Some(var.sqrt() * 10_000.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A real print: 2.5e-8 SOL per raw token, 0.4 SOL bought.
+    fn buy_print(t: i64) -> Option<StateTrade> {
+        StateTrade::from_market_trade(
+            t,
+            25_000_000_000, // price_fp = 2.5e-8 SOL/raw-token * 1e18
+            400_000_000,
+            1_234_567, // positive base = buy on the EVENT's convention (signed_base > 0)
+            42,
+            VenueLabel::Pumpfun,
+        )
+    }
+
+    #[test]
+    fn a_real_print_converts_with_the_corpus_units() {
+        let t = buy_print(1_700_000_000_000).expect("accepted");
+        assert_eq!(t.price_sol_per_raw, Some(2.5e-8));
+        assert!(t.is_buy);
+        assert_eq!(t.volume_lamports(), 400_000_000);
+        assert_eq!(
+            t.sol_lamports_signed, -400_000_000,
+            "the tape records buys negative"
+        );
+        assert_eq!(t.trader, 42);
+        assert!(!t.is_dust());
+    }
+
+    /// Every refusal is a print that would otherwise corrupt a corpus-parity number.
+    #[test]
+    fn prints_that_cannot_honestly_contribute_are_refused() {
+        let t = 1_700_000_000_000;
+        // The LaserStream placeholder: price_fp is filled by the reserve-delta step, not here.
+        assert!(
+            StateTrade::from_market_trade(t, 0, 400_000_000, 1, 42, VenueLabel::Pumpfun).is_none()
+        );
+        // Unknown-trader sentinel: every unknown wallet would collapse into one entity.
+        assert!(StateTrade::from_market_trade(
+            t,
+            25_000_000_000,
+            400_000_000,
+            -1,
+            0,
+            VenueLabel::Pumpfun
+        )
+        .is_none());
+        // No base movement, or no quote paid: not a swap.
+        assert!(StateTrade::from_market_trade(
+            t,
+            25_000_000_000,
+            400_000_000,
+            0,
+            42,
+            VenueLabel::Pumpfun
+        )
+        .is_none());
+        assert!(
+            StateTrade::from_market_trade(t, 25_000_000_000, 0, 1, 42, VenueLabel::Pumpfun)
+                .is_none()
+        );
+    }
+
+    /// A refused print changes nothing downstream: not a count, not a price, not a window.
+    #[test]
+    fn a_refused_print_never_reaches_a_window() {
+        let mut ledger = StateLedger::new();
+        let mint = [21u8; 32];
+        assert!(ledger.on_trade(&mint, buy_print(1_000).expect("accepted")));
+        // The unpatched placeholder arrives between two real prints.
+        let placeholder =
+            StateTrade::from_market_trade(1_500, 0, 400_000_000, 1, 42, VenueLabel::Pumpfun);
+        assert!(placeholder.is_none(), "refused, so nothing is fed");
+        assert!(ledger.on_trade(&mint, buy_print(2_000).expect("accepted")));
+        let s = ledger.serve(&mint, 3_000).expect("snapshot");
+        assert_eq!(s.n_prior_trades, 2, "the placeholder is not a trade");
+        assert_eq!(s.price_sol_per_raw, 2.5e-8, "nor a price");
+    }
+
+    /// Dust is refused by the LEDGER, not the adapter: one authority for the floor, so a future
+    /// caller cannot bypass it by constructing a `StateTrade` directly.
+    #[test]
+    fn the_dust_floor_has_exactly_one_authority() {
+        let mut ledger = StateLedger::new();
+        let mint = [22u8; 32];
+        let dust = StateTrade::from_market_trade(
+            1_000,
+            25_000_000_000,
+            99_999,
+            -1,
+            42,
+            VenueLabel::Pumpswap,
+        )
+        .expect("the adapter is not the floor");
+        assert!(!ledger.on_trade(&mint, dust), "the ledger refuses it");
+        assert!(
+            ledger.serve(&mint, 2_000).is_none(),
+            "and no snapshot exists"
+        );
+    }
 }
