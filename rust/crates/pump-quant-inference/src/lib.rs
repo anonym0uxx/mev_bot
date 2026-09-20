@@ -34,7 +34,7 @@ impl From<PayloadError> for InferenceError {
 
 use std::io::{BufRead, BufReader, Read};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The seven actions the c11 corpus actually trains (union of the `decision`
 /// entry family and the `management_replay` management family). `SELL` is
@@ -101,6 +101,24 @@ pub enum InferenceError {
     /// The completion did not contain a parseable `DECISION: <ACTION>` line.
     Unparseable(String),
 }
+
+impl InferenceError {
+    /// Whether this failure is transient and worth retrying. A [`Transport`] error —
+    /// unreachable server, timeout, dropped connection, non-200 — may be transient;
+    /// an [`Unparseable`] one is a contract failure the server has already answered,
+    /// so a retry would not change it.
+    ///
+    /// [`Transport`]: InferenceError::Transport
+    /// [`Unparseable`]: InferenceError::Unparseable
+    #[must_use]
+    pub fn is_transport(&self) -> bool {
+        matches!(self, InferenceError::Transport(_))
+    }
+}
+
+/// Backoff between transport retries. Kept small: the retry budget is governed by
+/// the caller's deadline, not by the sleep.
+const RETRY_BACKOFF: Duration = Duration::from_millis(50);
 
 /// Manual `std::error::Error` impl (no `thiserror` dependency needed).
 impl std::fmt::Display for InferenceError {
@@ -221,12 +239,70 @@ impl InferenceClient {
         let text = resp
             .into_string()
             .map_err(|e| InferenceError::Transport(e.to_string()))?;
+        // A 200 with a body that is not JSON is a CONTRACT failure (the server
+        // answered but the response is malformed), not a transient transport one —
+        // so it is Unparseable, and a retry would not change it.
         let v: serde_json::Value =
-            serde_json::from_str(&text).map_err(|e| InferenceError::Transport(e.to_string()))?;
+            serde_json::from_str(&text).map_err(|_| InferenceError::Unparseable(text.clone()))?;
         v["choices"][0]["message"]["content"]
             .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| InferenceError::Unparseable(text))
+    }
+
+    /// [`complete`](Self::complete) with transport retry. Transient failures are
+    /// retried (short backoff) until `deadline` is spent; a malformed completion is
+    /// returned immediately, because it is a contract failure, not a transient one.
+    /// The loop stops the instant the deadline elapses or a decision (or a
+    /// parse-refusal) is produced.
+    pub fn complete_retrying(
+        &self,
+        system: &str,
+        user: &str,
+        deadline: Duration,
+    ) -> Result<String, InferenceError> {
+        let start = Instant::now();
+        loop {
+            match self.complete(system, user) {
+                Ok(text) => return Ok(text),
+                Err(InferenceError::Unparseable(d)) => {
+                    return Err(InferenceError::Unparseable(d));
+                }
+                Err(InferenceError::Transport(d)) => {
+                    if start.elapsed() >= deadline {
+                        return Err(InferenceError::Transport(d));
+                    }
+                    std::thread::sleep(RETRY_BACKOFF);
+                }
+            }
+        }
+    }
+
+    /// [`complete_streaming`](Self::complete_streaming) with the same transport-retry
+    /// semantics as [`complete_retrying`](Self::complete_retrying): transient failures
+    /// retried until `deadline`, a parse-refusal (or any returned decision) returned
+    /// immediately.
+    pub fn complete_streaming_retrying(
+        &self,
+        system: &str,
+        user: &str,
+        deadline: Duration,
+    ) -> Result<StreamedDecision, InferenceError> {
+        let start = Instant::now();
+        loop {
+            match self.complete_streaming(system, user) {
+                Ok(sd) => return Ok(sd),
+                Err(InferenceError::Unparseable(d)) => {
+                    return Err(InferenceError::Unparseable(d));
+                }
+                Err(InferenceError::Transport(d)) => {
+                    if start.elapsed() >= deadline {
+                        return Err(InferenceError::Transport(d));
+                    }
+                    std::thread::sleep(RETRY_BACKOFF);
+                }
+            }
+        }
     }
 
     /// Send a streaming completion and return the moment the decision headline
@@ -711,5 +787,78 @@ mod streaming_tests {
         assert_eq!(slot.take(), None); // consumed
         slot.publish(3_u64);
         assert_eq!(slot.take(), Some(3));
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn is_transport_distinguishes_transient_from_contract_failures() {
+        assert!(InferenceError::Transport("up".into()).is_transport());
+        assert!(!InferenceError::Unparseable("no".into()).is_transport());
+    }
+
+    /// A 200 whose body is not JSON is a CONTRACT failure (Unparseable), never a
+    /// transient Transport one — so a retry loop must not re-issue it.
+    #[test]
+    fn a_malformed_200_body_is_unparseable_not_transport() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut buf = [0_u8; 8192];
+            let _ = conn.read(&mut buf);
+            conn.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\ngarbage!!!",
+            )
+            .unwrap();
+        });
+        let client =
+            InferenceClient::new(format!("http://127.0.0.1:{port}"), Duration::from_secs(5));
+        let err = client.complete("SYSTEM", "USER").unwrap_err();
+        assert!(matches!(err, InferenceError::Unparseable(_)), "got {err:?}");
+        handle.join().unwrap();
+    }
+
+    /// A transient 500 is retried until the server succeeds, within the deadline.
+    #[test]
+    fn transport_failure_is_retried_until_success() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            // First request: a transient 500.
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut buf = [0_u8; 8192];
+            let _ = conn.read(&mut buf);
+            conn.write_all(
+                b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+
+            // Second request: a clean decision.
+            let (mut conn, _) = listener.accept().unwrap();
+            let _ = conn.read(&mut buf);
+            let body = serde_json::json!({"choices":[{"message":{"content":"DECISION: BUY\nSIZE: FULL"}}]});
+            let body = body.to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            conn.write_all(resp.as_bytes()).unwrap();
+        });
+        let client =
+            InferenceClient::new(format!("http://127.0.0.1:{port}"), Duration::from_secs(5));
+        let text = client
+            .complete_retrying("SYSTEM", "USER", Duration::from_secs(2))
+            .unwrap();
+        assert!(text.contains("DECISION: BUY"));
+        handle.join().unwrap();
     }
 }
